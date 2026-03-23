@@ -1,11 +1,6 @@
 /**
- * 오디오 엔진 오케스트레이터
- * Python 파이프라인을 Node.js에서 제어하는 서비스 레이어
- *
- * 역할:
- * - Python 브릿지를 통한 분석/마스터링/QC 명령 전달
- * - 진행률 이벤트 중계 (Python → IPC → Renderer)
- * - 작업 큐 관리 (배치 처리)
+ * 오디오 엔진 오케스트레이터 v2
+ * Python 파이프라인 제어 + 진행률 중계 + 작업 관리
  */
 import { BrowserWindow } from 'electron'
 import { EventEmitter } from 'events'
@@ -17,90 +12,88 @@ import { settingsService } from './SettingsService'
 import { getTempDir } from '../utils/pathUtils'
 import { logger } from '../utils/logger'
 
-// ─────────────────────────────────────────
-// 타입 정의
-// ─────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────
+// 타입 (Python 결과를 그대로 통과시키는 인터페이스)
+// ─────────────────────────────────────────────────────
 export interface AudioAnalysisResult {
-  filePath: string
-  duration: number          // 초
-  sampleRate: number
-  bitDepth: number
-  channels: number
-  fileSize: number          // bytes
-  lufsIntegrated: number
-  lufsShortterm: number
-  lfusMomentary: number
-  truePeak: number          // dBTP
-  lra: number               // Loudness Range
-  dynamicRange: number      // DR
-  spectral: {
-    lowEnergy: number       // 0~250Hz 에너지 비율
-    midEnergy: number       // 250Hz~4kHz
-    highEnergy: number      // 4kHz~
-    centroid: number        // 스펙트럼 중심 주파수
-  }
+  filePath:         string
+  duration:         number
+  sampleRate:       number
+  bitDepth:         number
+  channels:         number
+  fileSize:         number
+  codec:            string
+  lufsIntegrated:   number
+  lufsShortterm:    number
+  lfusMomentary:    number
+  truePeak:         number
+  lra:              number
+  dynamicRange:     number
+  spectral:         Record<string, number>
   clippingDetected: boolean
-  clippingSamples: number
+  clippingSamples:  number
+  aiDetection:      Record<string, unknown>
+  dcOffset:         number
+  silenceStartMs:   number
+  silenceEndMs:     number
+  intersampleRisk:  boolean
+  upsampleSuspected:boolean
 }
 
 export interface MasteringOptions {
-  preset: string
-  targetLUFS: number
-  targetTruePeak: number
-  enableEQ: boolean
-  enableCompression: boolean
-  enableStereoEnhance: boolean
-  outputFormat: 'wav' | 'flac' | 'mp3'
-  outputBitDepth: 16 | 24 | 32
-  outputSampleRate: 44100 | 48000 | 96000
-  outputPath: string
+  style:              string
+  targetLUFS:         number
+  targetTruePeak:     number
+  enableEQ:           boolean
+  enableCompression:  boolean
+  outputFormat:       'wav' | 'flac' | 'mp3'
+  outputBitDepth:     16 | 24 | 32
+  outputSampleRate:   44100 | 48000 | 96000
+  outputPath:         string
 }
 
 export interface MasteringResult {
-  success: boolean
-  outputPath: string
-  jobId: string
-  inputAnalysis: AudioAnalysisResult
-  outputAnalysis: AudioAnalysisResult
-  processedAt: string
-  processingTimeMs: number
+  success:              boolean
+  outputPath:           string
+  previewPath:          string | null
+  jobId:                string
+  style:                string
+  inputAnalysis:        AudioAnalysisResult
+  outputAnalysis:       AudioAnalysisResult
+  processedAt:          string
+  processingTimeMs:     number
+  aiCorrectionsApplied: string[]
 }
 
 export interface QCResult {
-  passed: boolean
-  platforms: PlatformQC[]
-  summary: string
-}
-
-export interface PlatformQC {
-  platform: string
-  targetLUFS: number
-  targetTP: number
-  measuredLUFS: number
-  measuredTP: number
-  passed: boolean
-  issues: string[]
+  passed:     boolean
+  overall:    string
+  summary:    string
+  passCount:  number
+  totalCount: number
+  items:      Array<{ name: string; status: string; message: string; value: unknown }>
+  platforms:  Array<Record<string, unknown>>
+  analysis:   Record<string, number>
+  aiDetection:Record<string, unknown>
 }
 
 export type JobStatus = 'queued' | 'analyzing' | 'processing' | 'done' | 'error'
 
 interface Job {
-  id: string
+  id:        string
   inputPath: string
-  options: MasteringOptions
-  status: JobStatus
-  progress: number
-  stage: string
-  result?: MasteringResult
-  error?: string
+  options:   MasteringOptions
+  status:    JobStatus
+  progress:  number
+  stage:     string
+  result?:   MasteringResult
+  error?:    string
   createdAt: Date
 }
 
-// ─────────────────────────────────────────
-// AudioEngine 구현
-// ─────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────
+// AudioEngine
+// ─────────────────────────────────────────────────────
 class AudioEngine extends EventEmitter {
   private bridge: PythonBridge
   private jobs: Map<string, Job> = new Map()
@@ -110,76 +103,55 @@ class AudioEngine extends EventEmitter {
     super()
     this.bridge = bridge
 
-    // Python에서 오는 진행률 이벤트를 렌더러로 중계
+    // Python 진행률 이벤트 → 렌더러로 중계
     this.bridge.on('progress', (msg: { jobId: string; percent: number; stage: string }) => {
       const job = this.jobs.get(msg.jobId)
-      if (job) {
-        job.progress = msg.percent
-        job.stage = msg.stage
-      }
+      if (job) { job.progress = msg.percent; job.stage = msg.stage }
       this.sendToRenderer('audio:progress', msg)
     })
   }
 
-  setMainWindow(win: BrowserWindow): void {
-    this.mainWindow = win
-  }
+  setMainWindow(win: BrowserWindow): void { this.mainWindow = win }
 
-  /**
-   * 오디오 파일 분석 (마스터링 전 Pre-analysis)
-   */
   async analyze(filePath: string): Promise<AudioAnalysisResult> {
     logger.info(`Analyzing: ${filePath}`)
     this.validateFilePath(filePath)
-
-    const result = await this.bridge.call<AudioAnalysisResult>('analyze', {
+    return this.bridge.call<AudioAnalysisResult>('analyze', {
       filePath,
-      ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
+      ffmpegPath:  process.env.FFMPEG_PATH  || 'ffmpeg',
       ffprobePath: process.env.FFPROBE_PATH || 'ffprobe',
     })
-
-    logger.info(`Analysis complete: LUFS=${result.lufsIntegrated} TP=${result.truePeak}`)
-    return result
   }
 
-  /**
-   * 마스터링 실행
-   */
-  async master(inputPath: string, options?: Partial<MasteringOptions>): Promise<MasteringResult> {
+  async master(
+    inputPath: string,
+    options?: Partial<MasteringOptions>
+  ): Promise<MasteringResult> {
     this.validateFilePath(inputPath)
 
-    const settings = settingsService.getAll()
-    const jobId = uuidv4()
-
-    // 출력 파일 경로 결정
+    const settings   = settingsService.getAll()
+    const jobId      = uuidv4()
     const outputFilename = settingsService.buildOutputFilename(inputPath)
     const outputPath = options?.outputPath || path.join(settings.outputDir, outputFilename)
 
-    // 출력 디렉토리 생성
     fs.mkdirSync(path.dirname(outputPath), { recursive: true })
 
     const mergedOptions: MasteringOptions = {
-      preset: settings.defaultPreset,
-      targetLUFS: settings.targetLUFS,
-      targetTruePeak: settings.targetTruePeak,
-      enableEQ: true,
+      style:             settings.defaultPreset || 'balanced',
+      targetLUFS:        settings.targetLUFS,
+      targetTruePeak:    settings.targetTruePeak,
+      enableEQ:          true,
       enableCompression: true,
-      enableStereoEnhance: false,
-      outputFormat: settings.outputFormat,
-      outputBitDepth: settings.outputBitDepth,
-      outputSampleRate: settings.outputSampleRate,
+      outputFormat:      settings.outputFormat,
+      outputBitDepth:    settings.outputBitDepth,
+      outputSampleRate:  settings.outputSampleRate,
       outputPath,
       ...options,
     }
 
-    // 작업 등록
     const job: Job = {
-      id: jobId,
-      inputPath,
-      options: mergedOptions,
-      status: 'analyzing',
-      progress: 0,
-      stage: '초기화 중...',
+      id: jobId, inputPath, options: mergedOptions,
+      status: 'analyzing', progress: 0, stage: '초기화 중...',
       createdAt: new Date(),
     }
     this.jobs.set(jobId, job)
@@ -193,15 +165,13 @@ class AudioEngine extends EventEmitter {
         jobId,
         inputPath,
         options: mergedOptions,
-        ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
+        ffmpegPath:  process.env.FFMPEG_PATH  || 'ffmpeg',
         ffprobePath: process.env.FFPROBE_PATH || 'ffprobe',
         tempDir: getTempDir(),
       })
 
       result.processingTimeMs = Date.now() - startTime
-      job.status = 'done'
-      job.result = result
-      job.progress = 100
+      job.status = 'done'; job.result = result; job.progress = 100
 
       logger.info(`Mastering complete: ${jobId} in ${result.processingTimeMs}ms`)
       return result
@@ -213,32 +183,14 @@ class AudioEngine extends EventEmitter {
     }
   }
 
-  /**
-   * QC 검사 실행
-   */
   async runQC(filePath: string): Promise<QCResult> {
     this.validateFilePath(filePath)
-    logger.info(`Running QC: ${filePath}`)
-
-    const result = await this.bridge.call<QCResult>('qc_check', {
+    return this.bridge.call<QCResult>('qc_check', {
       filePath,
       ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
     })
-
-    logger.info(`QC complete: passed=${result.passed}`)
-    return result
   }
 
-  /**
-   * 작업 상태 조회
-   */
-  getJob(jobId: string): Job | undefined {
-    return this.jobs.get(jobId)
-  }
-
-  /**
-   * 렌더러로 이벤트 전송 (IPC push)
-   */
   private sendToRenderer(channel: string, data: unknown): void {
     if (this.mainWindow?.webContents && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send(channel, data)
@@ -246,13 +198,10 @@ class AudioEngine extends EventEmitter {
   }
 
   private validateFilePath(filePath: string): void {
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`파일을 찾을 수 없습니다: ${filePath}`)
-    }
+    if (!fs.existsSync(filePath)) throw new Error(`파일을 찾을 수 없습니다: ${filePath}`)
     const ext = path.extname(filePath).toLowerCase()
-    const allowed = ['.wav', '.flac', '.aiff', '.mp3', '.m4a']
-    if (!allowed.includes(ext)) {
-      throw new Error(`지원하지 않는 파일 형식입니다: ${ext}`)
+    if (!['.wav', '.flac', '.aiff', '.mp3', '.m4a'].includes(ext)) {
+      throw new Error(`지원하지 않는 파일 형식: ${ext}`)
     }
   }
 }

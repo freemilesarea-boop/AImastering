@@ -1,195 +1,186 @@
 /**
- * 라이센스 관리 서비스
+ * 라이센스 관리 서비스 v2
  *
- * 구조:
- * - 로컬 우선 (HMAC 서명 검증)
- * - 온라인 시 서버 검증
- * - 무료 체험: 3회 처리 또는 7일
- * - 오프라인 허용: 7일
+ * 정책:
+ * ┌───────────────┬──────────────────────────────────────────────┐
+ * │ 무료 체험     │ 총 3회 처리 가능                              │
+ * │               │ Preview MP3만 저장 가능                       │
+ * │               │ Master WAV 저장 불가                          │
+ * │               │ 분석/QC 리포트 화면 표시 (내보내기 불가)       │
+ * ├───────────────┼──────────────────────────────────────────────┤
+ * │ 유료 (basic+) │ 무제한 처리 (또는 라이센스 정책 범위)          │
+ * │               │ Master WAV 저장 가능                          │
+ * │               │ 모든 프리셋 사용 가능                          │
+ * │               │ 분석 리포트 내보내기 가능                      │
+ * └───────────────┴──────────────────────────────────────────────┘
+ *
+ * 인증 방식:
+ * - 로컬 HMAC 서명 검증 (1차)
+ * - 온라인 시 서버 검증 (2차, 실패 시 오프라인 7일 허용)
+ * - 키 형식: AIMASTER-XXXX-XXXX-XXXX
+ * - 초기 버전: 만료 없는 1회 등록 (향후 서버 검증 인터페이스 분리됨)
  */
 import * as crypto from 'crypto'
 import Store from 'electron-store'
 import { getMachineId } from 'node-machine-id'
-import fetch from 'electron/common' // 실제로는 node-fetch 또는 electron net
 import { logger } from '../utils/logger'
-import { getUserDataPath } from '../utils/pathUtils'
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────
 // 타입 정의
-// ─────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────
 export type LicenseTier = 'free_trial' | 'basic' | 'pro' | 'enterprise'
 
 export interface LicenseInfo {
-  tier: LicenseTier
-  key: string | null
-  activatedAt: string | null
-  expiresAt: string | null
-  machineId: string
-  lastValidated: string | null
-  offlineUsedDays: number
-  trialUsed: number        // 무료 체험 처리 횟수
-  trialMax: number         // 최대 무료 체험 횟수
-  isValid: boolean
-  validationMessage: string
+  tier:             LicenseTier
+  key:              string | null
+  activatedAt:      string | null
+  expiresAt:        string | null
+  machineId:        string
+  lastValidated:    string | null
+  offlineUsedDays:  number
+  trialUsed:        number
+  trialMax:         number
+  isValid:          boolean
+  validationMessage:string
+  // 기능 권한
+  canSaveMasterWav: boolean   // Master WAV 저장 가능 여부
+  canExportReport:  boolean   // 리포트 내보내기 가능 여부
+  canUseAllPresets: boolean   // 모든 프리셋 사용 가능 여부
 }
 
 interface LicenseStore {
-  key: string | null
-  activatedAt: string | null
-  expiresAt: string | null
-  lastValidated: string | null
+  key:             string | null
+  activatedAt:     string | null
+  expiresAt:       string | null
+  lastValidated:   string | null
   offlineUsedDays: number
-  tier: LicenseTier
-  trialUsed: number
-  signature: string | null  // HMAC 서명 (위변조 방지)
+  tier:            LicenseTier
+  trialUsed:       number
+  signature:       string | null
 }
 
-// ─────────────────────────────────────────
+// ─────────────────────────────────────────────────────
 // 상수
-// ─────────────────────────────────────────
-
-const TRIAL_MAX = 3
+// ─────────────────────────────────────────────────────
+const TRIAL_MAX              = 3
 const OFFLINE_ALLOWANCE_DAYS = 7
-// 실제 배포 시에는 환경 변수 또는 빌드 시 주입
-const HMAC_SECRET = 'aimastering-local-secret-2024'
+const HMAC_SECRET = 'aimaster-local-secret-v2-2024'
 const LICENSE_SERVER_URL = process.env.LICENSE_SERVER_URL || 'https://license.aimastering.app/v1'
 
-// ─────────────────────────────────────────
-// 서비스 구현
-// ─────────────────────────────────────────
-
+// ─────────────────────────────────────────────────────
+// 서비스
+// ─────────────────────────────────────────────────────
 class LicenseService {
   private store: Store<LicenseStore>
-  private machineId: string = ''
+  private machineId = ''
 
   constructor() {
     this.store = new Store<LicenseStore>({
       name: 'license',
-      encryptionKey: HMAC_SECRET, // electron-store 내장 암호화
+      encryptionKey: HMAC_SECRET,
       defaults: {
-        key: null,
-        activatedAt: null,
-        expiresAt: null,
-        lastValidated: null,
+        key:             null,
+        activatedAt:     null,
+        expiresAt:       null,
+        lastValidated:   null,
         offlineUsedDays: 0,
-        tier: 'free_trial',
-        trialUsed: 0,
-        signature: null,
+        tier:            'free_trial',
+        trialUsed:       0,
+        signature:       null,
       },
     })
   }
 
-  /**
-   * 서비스 초기화 (머신 ID 획득)
-   */
   async init(): Promise<void> {
     try {
       this.machineId = await getMachineId()
     } catch {
-      // 머신 ID 획득 실패 시 랜덤 ID 생성 후 저장
       this.machineId = crypto.randomBytes(16).toString('hex')
       logger.warn('Could not get machine ID, using random ID')
     }
   }
 
-  /**
-   * 현재 라이센스 상태 반환
-   */
   async getStatus(): Promise<LicenseInfo> {
     const stored = this.store.store
 
-    // 1. 라이센스 키 없음 → 무료 체험
+    // ── 무료 체험 ───────────────────────────────────
     if (!stored.key) {
-      const trialRemaining = TRIAL_MAX - stored.trialUsed
-      return {
-        tier: 'free_trial',
-        key: null,
-        activatedAt: null,
-        expiresAt: null,
-        machineId: this.machineId,
-        lastValidated: null,
-        offlineUsedDays: stored.offlineUsedDays,
-        trialUsed: stored.trialUsed,
-        trialMax: TRIAL_MAX,
-        isValid: trialRemaining > 0,
-        validationMessage: trialRemaining > 0
-          ? `무료 체험 ${trialRemaining}회 남음`
-          : '무료 체험 횟수 초과. 라이센스를 구매하세요.',
-      }
+      const remaining = TRIAL_MAX - stored.trialUsed
+      const isValid   = remaining > 0
+
+      return this._buildInfo('free_trial', stored, {
+        isValid,
+        validationMessage: isValid
+          ? `무료 체험 — ${remaining}회 남음 (전체 ${TRIAL_MAX}회)`
+          : '무료 체험 횟수를 모두 사용했습니다. 라이센스를 구매하세요.',
+      })
     }
 
-    // 2. 로컬 서명 검증
-    const isLocalValid = this.verifyLocalSignature(stored)
-    if (!isLocalValid) {
-      logger.warn('License signature invalid - possible tampering')
-      return this.buildInvalidResult('라이센스 파일이 손상되었습니다.')
+    // ── 로컬 서명 검증 ─────────────────────────────
+    if (!this.verifyLocalSignature(stored)) {
+      logger.warn('License signature invalid')
+      return this._buildInfo('free_trial', stored, {
+        isValid: false,
+        validationMessage: '라이센스 파일이 손상되었습니다. 재활성화가 필요합니다.',
+      })
     }
 
-    // 3. 만료 확인
+    // ── 만료 확인 ─────────────────────────────────
     if (stored.expiresAt && new Date(stored.expiresAt) < new Date()) {
-      return this.buildInvalidResult('라이센스가 만료되었습니다.')
+      return this._buildInfo(stored.tier, stored, {
+        isValid: false,
+        validationMessage: '라이센스가 만료되었습니다.',
+      })
     }
 
-    // 4. 온라인 검증 시도
+    // ── 온라인 검증 ────────────────────────────────
     try {
       const serverResult = await this.validateWithServer(stored.key, stored.tier)
       if (!serverResult.valid) {
-        return this.buildInvalidResult(serverResult.message || '서버 검증 실패')
+        return this._buildInfo(stored.tier, stored, {
+          isValid: false,
+          validationMessage: serverResult.message || '서버 검증 실패',
+        })
       }
-      // 검증 시간 업데이트
       this.store.set('lastValidated', new Date().toISOString())
       this.store.set('offlineUsedDays', 0)
       this.updateSignature()
     } catch {
-      // 5. 오프라인 처리: 허용 기간 확인
-      logger.warn('License server unreachable, checking offline allowance')
+      // ── 오프라인 처리 ──────────────────────────
       const offlineDays = this.getOfflineDays(stored.lastValidated)
       if (offlineDays > OFFLINE_ALLOWANCE_DAYS) {
-        return this.buildInvalidResult(
-          `오프라인 허용 기간(${OFFLINE_ALLOWANCE_DAYS}일) 초과. 인터넷 연결 후 재시도하세요.`
-        )
+        return this._buildInfo(stored.tier, stored, {
+          isValid: false,
+          validationMessage: `오프라인 허용 기간(${OFFLINE_ALLOWANCE_DAYS}일) 초과. 인터넷 연결 후 재시도하세요.`,
+        })
       }
       this.store.set('offlineUsedDays', offlineDays)
+      logger.warn(`Offline mode: ${offlineDays}/${OFFLINE_ALLOWANCE_DAYS} days`)
     }
 
-    return {
-      tier: stored.tier,
-      key: stored.key,
-      activatedAt: stored.activatedAt,
-      expiresAt: stored.expiresAt,
-      machineId: this.machineId,
-      lastValidated: stored.lastValidated,
-      offlineUsedDays: stored.offlineUsedDays,
-      trialUsed: stored.trialUsed,
-      trialMax: TRIAL_MAX,
-      isValid: true,
-      validationMessage: '라이센스가 유효합니다.',
-    }
+    return this._buildInfo(stored.tier, stored, { isValid: true, validationMessage: '라이센스 유효' })
   }
 
   /**
    * 라이센스 키 활성화
    */
   async activate(key: string): Promise<{ success: boolean; message: string; tier?: LicenseTier }> {
-    const trimmedKey = key.trim().toUpperCase()
+    const trimmed = key.trim().toUpperCase()
 
-    // 키 형식 검증 (예: AIMASTER-XXXX-XXXX-XXXX)
-    if (!/^AIMASTER-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(trimmedKey)) {
-      return { success: false, message: '올바른 라이센스 키 형식이 아닙니다.' }
+    if (!/^AIMASTER-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(trimmed)) {
+      return { success: false, message: '올바른 라이센스 키 형식이 아닙니다.\n형식: AIMASTER-XXXX-XXXX-XXXX' }
     }
 
     try {
-      const result = await this.validateWithServer(trimmedKey, null)
+      const result = await this.validateWithServer(trimmed, null)
       if (!result.valid) {
         return { success: false, message: result.message || '유효하지 않은 라이센스 키입니다.' }
       }
 
-      // 라이센스 저장
-      this.store.set('key', trimmedKey)
-      this.store.set('tier', result.tier || 'basic')
-      this.store.set('activatedAt', new Date().toISOString())
-      this.store.set('expiresAt', result.expiresAt || null)
+      this.store.set('key',           trimmed)
+      this.store.set('tier',          result.tier || 'basic')
+      this.store.set('activatedAt',   new Date().toISOString())
+      this.store.set('expiresAt',     result.expiresAt || null)
       this.store.set('lastValidated', new Date().toISOString())
       this.store.set('offlineUsedDays', 0)
       this.updateSignature()
@@ -197,90 +188,97 @@ class LicenseService {
       logger.info(`License activated: tier=${result.tier}`)
       return { success: true, message: '라이센스가 활성화되었습니다.', tier: result.tier }
     } catch {
-      return { success: false, message: '서버에 연결할 수 없습니다. 나중에 다시 시도하세요.' }
+      return { success: false, message: '서버에 연결할 수 없습니다.\n인터넷 연결 후 다시 시도하세요.' }
     }
   }
 
   /**
-   * 처리 1회 소모 (무료 체험 카운터 증가)
+   * 처리 가능 여부 확인 (라이센스 + 무료 체험 횟수)
    */
+  async canProcess(): Promise<{ allowed: boolean; message: string; isPaid: boolean }> {
+    const status = await this.getStatus()
+
+    if (!status.isValid) {
+      return { allowed: false, message: status.validationMessage, isPaid: false }
+    }
+    if (status.tier === 'free_trial') {
+      if (status.trialUsed >= status.trialMax) {
+        return { allowed: false, message: '무료 체험 횟수를 모두 사용했습니다.', isPaid: false }
+      }
+      return { allowed: true, message: `무료 체험 ${status.trialMax - status.trialUsed}회 남음`, isPaid: false }
+    }
+    return { allowed: true, message: 'OK', isPaid: true }
+  }
+
+  /** 무료 체험 카운터 소모 */
   consumeTrial(): void {
     const current = this.store.get('trialUsed')
     this.store.set('trialUsed', current + 1)
+    logger.info(`Trial used: ${current + 1}/${TRIAL_MAX}`)
   }
 
-  /**
-   * 처리 가능 여부 확인
-   */
-  async canProcess(): Promise<{ allowed: boolean; message: string }> {
-    const status = await this.getStatus()
-    if (!status.isValid) {
-      return { allowed: false, message: status.validationMessage }
-    }
-    if (status.tier === 'free_trial' && status.trialUsed >= status.trialMax) {
-      return { allowed: false, message: '무료 체험 횟수를 모두 사용했습니다.' }
-    }
-    return { allowed: true, message: 'OK' }
-  }
-
-  /**
-   * 라이센스 비활성화 (기기 변경 시)
-   */
   async deactivate(): Promise<void> {
     const key = this.store.get('key')
     if (key) {
-      try {
-        await this.validateWithServer(key, null, 'deactivate')
-      } catch {
-        logger.warn('Deactivation server call failed (continuing locally)')
-      }
+      try { await this.validateWithServer(key, null, 'deactivate') } catch {}
     }
     this.store.clear()
     logger.info('License deactivated')
   }
 
-  // ─────────────────────────────────────────
-  // Private helpers
-  // ─────────────────────────────────────────
+  // ─────────────────────────────────────────────────
+  // Private
+  // ─────────────────────────────────────────────────
+
+  private _buildInfo(
+    tier: LicenseTier,
+    stored: LicenseStore,
+    overrides: Partial<LicenseInfo>
+  ): LicenseInfo {
+    const isPaid = tier !== 'free_trial'
+
+    return {
+      tier,
+      key:              stored.key,
+      activatedAt:      stored.activatedAt,
+      expiresAt:        stored.expiresAt,
+      machineId:        this.machineId,
+      lastValidated:    stored.lastValidated,
+      offlineUsedDays:  stored.offlineUsedDays,
+      trialUsed:        stored.trialUsed,
+      trialMax:         TRIAL_MAX,
+      isValid:          true,
+      validationMessage:'',
+      // 기능 권한
+      canSaveMasterWav: isPaid,
+      canExportReport:  isPaid,
+      canUseAllPresets: isPaid,
+      ...overrides,
+    }
+  }
 
   private async validateWithServer(
     key: string | null,
     tier: LicenseTier | null,
     action = 'validate'
   ): Promise<{ valid: boolean; message?: string; tier?: LicenseTier; expiresAt?: string }> {
-    // 개발 환경에서는 모의 서버 응답
+    // 개발 환경 모의 응답
     if (process.env.NODE_ENV === 'development') {
-      return { valid: true, tier: 'pro', expiresAt: '2025-12-31T00:00:00Z' }
+      return { valid: true, tier: 'pro', expiresAt: '2099-12-31T00:00:00Z' }
     }
 
-    const response = await globalThis.fetch(`${LICENSE_SERVER_URL}/${action}`, {
+    const resp = await globalThis.fetch(`${LICENSE_SERVER_URL}/${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, machineId: this.machineId, action }),
-      signal: AbortSignal.timeout(5000), // 5초 타임아웃
+      body: JSON.stringify({ key, machineId: this.machineId }),
+      signal: AbortSignal.timeout(5000),
     })
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}))
-      return { valid: false, message: (error as Record<string, string>).message || '서버 오류' }
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({})) as Record<string, string>
+      return { valid: false, message: err.message || '서버 오류' }
     }
-    return response.json() as Promise<{ valid: boolean; message?: string; tier?: LicenseTier; expiresAt?: string }>
-  }
-
-  private buildInvalidResult(message: string): LicenseInfo {
-    return {
-      tier: 'free_trial',
-      key: null,
-      activatedAt: null,
-      expiresAt: null,
-      machineId: this.machineId,
-      lastValidated: null,
-      offlineUsedDays: 0,
-      trialUsed: this.store.get('trialUsed'),
-      trialMax: TRIAL_MAX,
-      isValid: false,
-      validationMessage: message,
-    }
+    return resp.json() as Promise<{ valid: boolean; message?: string; tier?: LicenseTier; expiresAt?: string }>
   }
 
   private getOfflineDays(lastValidated: string | null): number {
@@ -292,10 +290,12 @@ class LicenseService {
   private verifyLocalSignature(stored: LicenseStore): boolean {
     if (!stored.signature) return false
     const expected = this.computeSignature(stored)
-    return crypto.timingSafeEqual(
-      Buffer.from(stored.signature, 'hex'),
-      Buffer.from(expected, 'hex')
-    )
+    try {
+      return crypto.timingSafeEqual(
+        Buffer.from(stored.signature, 'hex'),
+        Buffer.from(expected, 'hex')
+      )
+    } catch { return false }
   }
 
   private computeSignature(stored: LicenseStore): string {
@@ -304,9 +304,7 @@ class LicenseService {
   }
 
   private updateSignature(): void {
-    const stored = this.store.store
-    const sig = this.computeSignature(stored)
-    this.store.set('signature', sig)
+    this.store.set('signature', this.computeSignature(this.store.store))
   }
 }
 

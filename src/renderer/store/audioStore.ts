@@ -1,13 +1,20 @@
 /**
- * 오디오 처리 상태 스토어 (Zustand)
+ * 오디오 처리 상태 스토어 (Zustand) — v2
  */
 import { create } from 'zustand'
-import { AudioAnalysisResult, MasteringResult, MasteringOptions, QCResult, ProgressEvent } from '../types/audio'
+import {
+  AudioAnalysisResult,
+  MasteringResult,
+  MasteringOptions,
+  QCResult,
+  ProgressEvent,
+  MasteringStyle,
+} from '../types/audio'
 
-type ProcessingState = 'idle' | 'analyzing' | 'processing' | 'done' | 'error'
+export type ProcessingState = 'idle' | 'analyzing' | 'processing' | 'done' | 'error'
 
 interface AudioState {
-  // 현재 선택된 파일
+  // 선택 파일
   selectedFile: string | null
   fileInfo: { name: string; size: number; ext: string } | null
 
@@ -16,9 +23,9 @@ interface AudioState {
 
   // 처리 상태
   processingState: ProcessingState
-  progress: number        // 0-100
-  currentStage: string    // 현재 처리 단계 설명
-  error: string | null
+  progress:        number
+  currentStage:    string
+  error:           string | null
 
   // 마스터링 결과
   masteringResult: MasteringResult | null
@@ -30,58 +37,66 @@ interface AudioState {
   masteringOptions: Partial<MasteringOptions>
 
   // Actions
-  setSelectedFile: (path: string | null) => void
-  setFileInfo: (info: AudioState['fileInfo']) => void
-  setAnalysisResult: (result: AudioAnalysisResult | null) => void
-  setProcessingState: (state: ProcessingState) => void
-  setProgress: (progress: ProgressEvent) => void
-  setError: (error: string | null) => void
-  setMasteringResult: (result: MasteringResult | null) => void
-  setQCResult: (result: QCResult | null) => void
-  updateMasteringOptions: (opts: Partial<MasteringOptions>) => void
-  reset: () => void
+  setSelectedFile:       (path: string | null) => void
+  setFileInfo:           (info: AudioState['fileInfo']) => void
+  setAnalysisResult:     (result: AudioAnalysisResult | null) => void
+  setProcessingState:    (state: ProcessingState) => void
+  setProgress:           (progress: ProgressEvent) => void
+  setError:              (error: string | null) => void
+  setMasteringResult:    (result: MasteringResult | null) => void
+  setQCResult:           (result: QCResult | null) => void
+  updateMasteringOptions:(opts: Partial<MasteringOptions>) => void
+  setStyle:              (style: MasteringStyle) => void
+  reset:                 () => void
+}
+
+const initialOptions: Partial<MasteringOptions> = {
+  style:               'balanced',
+  targetLUFS:          -14,
+  targetTruePeak:      -1.0,
+  enableEQ:            true,
+  enableCompression:   true,
+  enableStereoEnhance: false,
+  outputFormat:        'wav',
+  outputBitDepth:      24,
+  outputSampleRate:    44100,
 }
 
 const initialState = {
-  selectedFile: null,
-  fileInfo: null,
-  analysisResult: null,
-  processingState: 'idle' as ProcessingState,
-  progress: 0,
-  currentStage: '',
-  error: null,
-  masteringResult: null,
-  qcResult: null,
-  masteringOptions: {
-    preset: 'youtube_music',
-    targetLUFS: -14,
-    targetTruePeak: -1.0,
-    enableEQ: true,
-    enableCompression: true,
-    enableStereoEnhance: false,
-    outputFormat: 'wav' as const,
-    outputBitDepth: 24 as const,
-    outputSampleRate: 44100 as const,
-  },
+  selectedFile:     null,
+  fileInfo:         null,
+  analysisResult:   null,
+  processingState:  'idle' as ProcessingState,
+  progress:         0,
+  currentStage:     '',
+  error:            null,
+  masteringResult:  null,
+  qcResult:         null,
+  masteringOptions: initialOptions,
 }
 
 export const useAudioStore = create<AudioState>((set) => ({
   ...initialState,
 
-  setSelectedFile: (path) => set({ selectedFile: path, error: null }),
-  setFileInfo: (info) => set({ fileInfo: info }),
-  setAnalysisResult: (result) => set({ analysisResult: result }),
-  setProcessingState: (state) => set({ processingState: state }),
+  setSelectedFile:    (path)   => set({ selectedFile: path, error: null }),
+  setFileInfo:        (info)   => set({ fileInfo: info }),
+  setAnalysisResult:  (result) => set({ analysisResult: result }),
+  setProcessingState: (state)  => set({ processingState: state }),
 
   setProgress: ({ percent, stage }: ProgressEvent) =>
     set({ progress: percent, currentStage: stage }),
 
-  setError: (error) => set({ error, processingState: error ? 'error' : 'idle' }),
-  setMasteringResult: (result) => set({ masteringResult: result }),
-  setQCResult: (result) => set({ qcResult: result }),
+  setError: (error) =>
+    set({ error, processingState: error ? 'error' : 'idle' }),
+
+  setMasteringResult:    (result) => set({ masteringResult: result }),
+  setQCResult:           (result) => set({ qcResult: result }),
 
   updateMasteringOptions: (opts) =>
     set((state) => ({ masteringOptions: { ...state.masteringOptions, ...opts } })),
+
+  setStyle: (style) =>
+    set((state) => ({ masteringOptions: { ...state.masteringOptions, style } })),
 
   reset: () => set(initialState),
 }))
