@@ -1,0 +1,45 @@
+appId: com.aimaster.desktop
+productName: AIMASTER
+copyright: Copyright © 2025 AIMASTER
+
+directories:
+  output: out
+  buildResources: public
+
+files:
+  - dist/**/*
+  - "!dist/renderer/**/*.map"
+
+extraResources:
+  - from: "../../services/python-audio"
+    to: "python-audio"
+    filter:
+      - "**/*"
+      - "!.venv/**"
+      - "!__pycache__/**"
+      - "!*.pyc"
+
+mac:
+  category: public.app-category.music
+  icon: public/icon.icns
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  entitlements: public/entitlements.mac.plist
+  entitlementsInherit: public/entitlements.mac.plist
+
+win:
+  icon: public/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  target:
+    - AppImage
+  category: Audio

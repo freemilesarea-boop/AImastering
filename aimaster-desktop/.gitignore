@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.turbo/
+*.log
+.env
+.env.local
+*.vsix
+
+# Electron build outputs
+apps/desktop/out/
+apps/desktop/release/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+services/python-audio/.venv/
+
+# OS
+.DS_Store
+Thumbs.db
