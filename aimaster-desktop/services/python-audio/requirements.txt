@@ -1,2 +1,5 @@
 soundfile>=0.12.1
 numpy>=1.24.0
+
+# Dev / test
+pytest>=7.4.0

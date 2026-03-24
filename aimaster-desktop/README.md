@@ -1,96 +1,53 @@
 # AIMASTER Desktop
 
-AI 기반 음원 자동 마스터링 데스크톱 애플리케이션.
+오디오 파일을 -14 LUFS / -1 dBTP 기준으로 자동 마스터링하는 Electron 데스크톱 앱.
 
 > WAV / FLAC / MP3 업로드 → AI 아티팩트 감지 → 스타일 프리셋 선택 → 자동 마스터링 → QC 체크 → 저장
-
-YouTube Music · Spotify · Apple Music 기준 **−14 LUFS / −1.0 dBTP** 타깃으로 자동 정규화합니다.
 
 ---
 
 ## 목차
 
-1. [요구 사항](#요구-사항)
-2. [FFmpeg 준비](#ffmpeg-준비)
-3. [설치](#설치)
-4. [개발 실행](#개발-실행)
-5. [빌드 · 패키징](#빌드--패키징)
-6. [앱 기능](#앱-기능)
-7. [기술 스택](#기술-스택)
-8. [패키지 구조](#패키지-구조)
-9. [환경 변수](#환경-변수)
+1. [사전 요구 사항](#사전-요구-사항)
+2. [설치](#설치)
+3. [개발 실행](#개발-실행)
+4. [빌드 및 패키징](#빌드-및-패키징)
+5. [환경 변수](#환경-변수)
+6. [프로젝트 구조](#프로젝트-구조)
+7. [구현 상태](#구현-상태)
+8. [에러 로그 위치](#에러-로그-위치)
 
 ---
 
-## 요구 사항
+## 사전 요구 사항
 
-| 도구     | 최소 버전 | 설치 링크                        |
-|----------|-----------|----------------------------------|
-| Node.js  | 20        | https://nodejs.org               |
-| pnpm     | 9         | `npm i -g pnpm`                  |
-| Python   | 3.10      | https://python.org               |
-| FFmpeg   | 4.x 이상  | [FFmpeg 준비](#ffmpeg-준비) 참조 |
+| 도구 | 최소 버전 | 확인 명령어 |
+|------|-----------|-------------|
+| Node.js | 20.x | `node --version` |
+| pnpm | 9.x | `pnpm --version` |
+| Python | 3.10+ | `python3 --version` |
+| FFmpeg | 4.4+ | `ffmpeg -version` |
+| FFprobe | FFmpeg 포함 | `ffprobe -version` |
 
----
+### FFmpeg 설치
 
-## FFmpeg 준비
-
-AIMASTER는 오디오 분석과 마스터링에 **FFmpeg** 와 **FFprobe** 를 사용합니다.
-앱이 실행되는 머신에 두 바이너리가 모두 설치되어 있어야 합니다.
-
-### macOS
-
+**macOS**
 ```bash
-# Homebrew (권장)
 brew install ffmpeg
-
-# 설치 확인
-ffmpeg -version
-ffprobe -version
+# 확인
+ffmpeg -version | head -1
+ffprobe -version | head -1
 ```
 
-### Linux (Ubuntu / Debian)
-
+**Ubuntu / Debian**
 ```bash
-sudo apt update
-sudo apt install ffmpeg
-
-# 설치 확인
-ffmpeg -version
+sudo apt update && sudo apt install -y ffmpeg
 ```
 
-### Windows
-
-**방법 A — winget (Windows 10/11)**
-```powershell
-winget install Gyan.FFmpeg
-```
-
-**방법 B — Scoop**
-```powershell
-scoop install ffmpeg
-```
-
-**방법 C — 수동 설치**
-1. https://ffmpeg.org/download.html 에서 Windows 빌드 다운로드
+**Windows**
+1. https://www.gyan.dev/ffmpeg/builds/ 에서 `ffmpeg-release-essentials.zip` 다운로드
 2. 압축 해제 후 `bin/` 폴더를 시스템 PATH에 추가
-
-### 경로 직접 지정 (선택)
-
-시스템 PATH 외의 위치에 FFmpeg가 설치된 경우 환경 변수로 지정합니다.
-
-```bash
-# .env 파일 또는 셸 프로파일
-export AIMASTER_FFMPEG=/opt/custom/bin/ffmpeg
-export AIMASTER_FFPROBE=/opt/custom/bin/ffprobe
-```
-
-앱은 다음 순서로 FFmpeg 바이너리를 탐색합니다.
-
-1. 패키징된 앱 내부 `resources/bin/` (배포 빌드 전용)
-2. `AIMASTER_FFMPEG` / `AIMASTER_FFPROBE` 환경 변수
-3. 플랫폼 기본 설치 디렉토리 (Homebrew, apt, Scoop 등)
-4. 시스템 `PATH` (최후 수단)
+3. 새 PowerShell에서 `ffmpeg -version` 확인
 
 ---
 
@@ -101,225 +58,235 @@ export AIMASTER_FFPROBE=/opt/custom/bin/ffprobe
 git clone <repo-url>
 cd aimaster-desktop
 
-# 2. Node 패키지 설치 (모노레포 전체)
+# 2. Node.js 의존성 설치 (루트에서 실행 — pnpm workspaces가 모든 패키지 처리)
 pnpm install
 
-# 3. Python 가상 환경 및 의존성 설치
-./scripts/setup-python.sh
+# 3. Python 가상환경 생성 및 의존성 설치
+./setup-python.sh
+
+# 완료 후 표시된 export 명령어를 복사해 셸에 적용
+# 예: export AIMASTER_PYTHON='/path/to/.venv/bin/python'
 ```
 
-`setup-python.sh` 는 `services/python-audio/` 하위에 `.venv` 를 생성하고
-`requirements.txt` 의 패키지를 설치합니다.
-
-> **Windows 사용자** — PowerShell에서 `bash ./scripts/setup-python.sh` 로 실행하거나,
-> 스크립트 내용을 참고하여 수동으로 가상 환경을 생성하세요.
+**setup-python.sh가 실패하는 경우 — 수동 설치:**
+```bash
+python3 -m venv services/python-audio/.venv
+source services/python-audio/.venv/bin/activate
+pip install -r services/python-audio/requirements.txt
+deactivate
+export AIMASTER_PYTHON="$(pwd)/services/python-audio/.venv/bin/python"
+```
 
 ---
 
 ## 개발 실행
 
+> **주의:** `AIMASTER_PYTHON` 환경 변수가 설정되어 있어야 Python 오디오 엔진이 실행됩니다.
+
 ```bash
-# Electron + Vite HMR 동시 실행 (권장)
+# 한 번에 실행 (권장)
+export AIMASTER_PYTHON="$(pwd)/services/python-audio/.venv/bin/python"
 pnpm desktop
-```
-
-내부적으로 다음을 병렬 실행합니다.
-
-- `vite` — 렌더러(React) 개발 서버 (포트 5173, HMR 포함)
-- `tsc --watch` — main 프로세스 TypeScript 컴파일
-- `electron .` — 컴파일 완료 후 앱 실행
-
-```bash
-# 패키지별 개별 실행
+# 또는
 pnpm --filter @aimaster/desktop dev
-
-# 타입 검사 (전체 모노레포)
-pnpm typecheck
-
-# 린트
-pnpm lint
 ```
 
-### Python 서비스 수동 테스트
+내부적으로 `concurrently`가 두 프로세스를 동시에 실행합니다:
+- **RENDERER**: `vite` — http://localhost:5173 에서 React 렌더러 서빙
+- **MAIN**: `node esbuild.main.cjs --dev` → `wait-on http://localhost:5173` → `electron dist/main/index.js`
+
+Electron DevTools는 개발 모드에서 자동으로 열립니다.
+
+### 각 프로세스를 분리해서 실행 (디버깅용)
 
 ```bash
+# 터미널 1: Renderer Vite dev server
+cd apps/desktop
+pnpm dev:renderer
+# → "Local: http://localhost:5173/" 출력 확인 후 터미널 2 실행
+
+# 터미널 2: Main process
+cd apps/desktop
+export AIMASTER_PYTHON="/absolute/path/.venv/bin/python"
+pnpm dev:main
+```
+
+### Python 엔진만 단독 테스트
+
+```bash
+# 엔진 단독 실행 (stdin에 JSON-RPC 요청을 수동으로 보낼 수 있음)
+source services/python-audio/.venv/bin/activate
 cd services/python-audio
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
 python -m app.main
-# stdin에 JSON-RPC 요청을 입력하면 stdout으로 응답이 나옵니다
+# stderr에 "READY" 출력되면 정상
+# Ctrl+D로 종료
 ```
 
 ---
 
-## 빌드 · 패키징
-
-### 1단계 — 모든 TypeScript 패키지 빌드
+## 빌드 및 패키징
 
 ```bash
+# 1. 전체 빌드
+cd apps/desktop
 pnpm build
+
+# 생성 파일:
+#   dist/renderer/   — Vite로 번들된 React 앱
+#   dist/main/       — esbuild로 번들된 Electron main (단일 CJS, @aimaster/* 패키지 인라인)
+#   dist/preload/    — esbuild로 번들된 preload 스크립트
+
+# 2. 배포 패키지 생성 (electron-builder)
+pnpm dist
+
+# 결과물: apps/desktop/out/
+#   macOS  → AIMASTER-x.x.x.dmg (arm64 + x64 universal)
+#   Windows → AIMASTER Setup x.x.x.exe (NSIS)
+#   Linux  → AIMASTER-x.x.x.AppImage
 ```
 
-Turborepo가 의존성 순서를 자동으로 파악하여 빌드합니다.
-
-```
-shared-types → audio-engine, license-core → desktop
-```
-
-### 2단계 — 배포용 앱 패키징
-
+**빌드 전 타입 체크:**
 ```bash
-pnpm --filter @aimaster/desktop dist
+cd apps/desktop
+pnpm typecheck
 ```
-
-`electron-builder` 가 실행되어 플랫폼에 맞는 설치 파일을 생성합니다.
-
-| 플랫폼  | 출력 파일                          |
-|---------|------------------------------------|
-| macOS   | `dist/AIMASTER-*.dmg`              |
-| Windows | `dist/AIMASTER-Setup-*.exe`        |
-| Linux   | `dist/AIMASTER-*.AppImage`         |
-
-> **주의** — 패키징 빌드에는 FFmpeg 바이너리를 `resources/bin/` 에 사전 배치해야
-> 사용자 머신에 FFmpeg가 없어도 앱이 동작합니다. 자세한 내용은
-> `apps/desktop/electron-builder.yml` 을 참고하세요.
-
----
-
-## 앱 기능
-
-### 화면 구성
-
-```
-홈 (파일 업로드)
-  └→ 분석 결과
-       └→ 처리 중 (진행 상황)
-            └→ 결과 (저장 / 비교)
-```
-
-#### 1. 홈 — 파일 업로드
-
-- 드래그 앤 드롭 또는 파일 선택 대화상자로 오디오 파일 불러오기
-- 지원 포맷: **WAV, FLAC, AIFF, AIF, MP3, M4A**
-- 파일을 불러오면 즉시 분석 단계로 이동
-
-#### 2. 분석 결과
-
-| 항목 | 내용 |
-|------|------|
-| 파일 정보 | 포맷 · 샘플레이트 · 비트 뎁스 · 채널 · 길이 · 파일 크기 |
-| Loudness | Integrated LUFS · True Peak · Loudness Range (LRA) + QC 상태 뱃지 |
-| 묵음 구간 | 시작/끝 무음이 500ms 초과 시 경고 표시 |
-| 스타일 프리셋 | Balanced / Warm / Bright / Punch 4가지 중 선택 |
-
-#### 3. 처리 중
-
-5단계 파이프라인 진행 상황을 실시간으로 표시합니다.
-
-1. 파일 검사
-2. 분석 (loudnorm pass-1)
-3. 톤 보정 (EQ + 다이나믹스)
-4. Loudness normalization (pass-2)
-5. 사후 검증
-
-오류 발생 시 오류 유형별 한국어 안내 메시지와 재시도 버튼이 표시됩니다.
-
-#### 4. 결과
-
-| 구성 요소 | 설명 |
-|-----------|------|
-| Before / After 비교 | Integrated LUFS · True Peak · LRA 수치 비교 (증감 표시) |
-| 프리뷰 플레이어 | 320 kbps MP3 프리뷰 재생 (시크 바 포함) |
-| 저장 버튼 | MP3 저장 (무료/유료 공통) · WAV 마스터 저장 (유료 전용) |
-| QC 요약 | −14 LUFS 달성 여부 · True Peak −1 dBTP 이하 여부 · 처리 시간 |
-
-### 스타일 프리셋
-
-| 프리셋 | 특성 | 적합한 장르 |
-|--------|------|-------------|
-| **Balanced** | 중립, 원음 보존 | 범용 |
-| **Warm** | 3.5 kHz 완화, 고역 롤오프 | 보컬, 어쿠스틱, 복고풍 |
-| **Bright** | 9 kHz 존재감, 저역 클린업 | 팝, 일렉트로닉, 현대적 |
-| **Punch** | 80 Hz 바디, 2 kHz 어택감 | 힙합, EDM, 댄스 |
-
-### AI 아티팩트 보정
-
-FFT 에너지 비율 분석을 통해 다음 문제를 자동 감지하고 보정합니다.
-
-| 감지 항목 | 기준 | 처리 |
-|-----------|------|------|
-| 거친 고음역 (Harsh High-Mid) | 3–5 kHz 에너지 > 28% | 4 kHz −3 dB 보정 |
-| 과도한 저역 (Boomy Low-End)  | 60–200 Hz 에너지 > 45% | 120 Hz −4 dB 보정 |
-
-### 라이선스 티어
-
-| 항목 | 무료 | 유료 (Pro) |
-|------|------|------------|
-| 처리 횟수 | 3회 (총) | 무제한 |
-| MP3 프리뷰 저장 | ✓ | ✓ |
-| WAV 마스터 저장 | ✗ | ✓ |
-| 스타일 프리셋 | Balanced만 | 전체 4종 |
-| 레포트 내보내기 | 보기 전용 | ✓ |
-
-라이선스 키 형식: `AIMASTER-XXXX-XXXX-XXXX`
-
----
-
-## 기술 스택
-
-| 레이어 | 기술 |
-|--------|------|
-| 데스크톱 셸 | Electron 28 |
-| UI | React 18 + TypeScript + Tailwind CSS v3 |
-| 상태 관리 | Zustand |
-| 렌더러 빌드 | Vite 5 |
-| 패키징 | electron-builder |
-| 모노레포 | pnpm workspaces + Turborepo |
-| 오디오 엔진 | Python 3.10 + FFmpeg + soundfile + numpy |
-| IPC 프로토콜 | JSON-RPC over stdin/stdout |
-| 라이선스 저장 | electron-store (AES-256-CBC 암호화) |
-
----
-
-## 패키지 구조
-
-```
-aimaster-desktop/
-├── apps/
-│   └── desktop/               # Electron 앱 (main + renderer + preload)
-├── packages/
-│   ├── audio-engine/          # Node.js 오케스트레이션 (PythonBridge, FFmpeg 유틸)
-│   ├── license-core/          # HMAC 라이선스 검증 서비스
-│   └── shared-types/          # 공유 TypeScript 인터페이스
-├── services/
-│   └── python-audio/          # 오디오 처리 서비스 (JSON-RPC 서버)
-├── scripts/
-│   └── setup-python.sh        # Python venv 초기화 스크립트
-└── docs/
-    ├── ARCHITECTURE.md        # 아키텍처 상세
-    ├── MASTERING_SPEC.md      # 마스터링 파이프라인 명세
-    ├── LICENSE_FLOW.md        # 라이선스 정책 및 활성화 흐름
-    └── DEV_SETUP.md           # 개발 환경 상세 설정
-```
-
-자세한 내용은 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 를 참고하세요.
 
 ---
 
 ## 환경 변수
 
-`.env` 파일을 저장소 루트에 생성하여 설정합니다 (`.gitignore` 에 포함됨).
+| 변수 | 설명 | 기본값 |
+|------|------|--------|
+| `AIMASTER_PYTHON` | Python 인터프리터 절대 경로 | `python3` (PATH에서 탐색) |
+| `LICENSE_HMAC_SECRET` | 라이선스 HMAC 서명 비밀키 (프로덕션 시 교체 필수) | `aimaster-local-secret-v1` |
 
-```dotenv
-# Python 인터프리터 경로 (기본값: python3)
-AIMASTER_PYTHON=/path/to/python3
+---
 
-# FFmpeg 바이너리 경로 (PATH 탐색보다 우선)
-AIMASTER_FFMPEG=/opt/homebrew/bin/ffmpeg
-AIMASTER_FFPROBE=/opt/homebrew/bin/ffprobe
+## 프로젝트 구조
 
-# 라이선스 HMAC 서명 시크릿 (프로덕션에서 반드시 변경)
-LICENSE_HMAC_SECRET=your-secure-random-secret
+```
+aimaster-desktop/
+├── apps/desktop/               — Electron 앱
+│   ├── esbuild.main.cjs        — Main + Preload 번들러 (빌드 시 모두 처리)
+│   ├── electron-builder.yml    — 패키지 설정
+│   ├── public/
+│   │   └── entitlements.mac.plist  — macOS 하드닝 런타임 권한
+│   └── src/
+│       ├── main/               — Electron main process (Node.js)
+│       │   ├── index.ts        — BrowserWindow 생성, IPC 등록
+│       │   ├── ipc/            — audioHandlers, licenseHandlers, fileHandlers, settingsHandlers
+│       │   └── utils/logger.ts — 파일 + stdout 이중 로거
+│       ├── preload/index.ts    — contextBridge (electronAPI 노출)
+│       └── renderer/           — React 18 UI (Vite + Tailwind)
+│           ├── pages/          — HomePage, AnalysisPage, MasteringPage, ResultPage, QCPage, SettingsPage
+│           └── stores/         — audioStore, licenseStore, appStore (Zustand)
+├── packages/
+│   ├── audio-engine/           — FFmpeg 래퍼, PythonBridge, AppError 10종
+│   ├── license-core/           — LicenseService (HMAC 검증, free/pro 게이트)
+│   └── shared-types/           — TypeScript 공유 인터페이스
+├── services/python-audio/      — Python 오디오 엔진 (JSON-RPC over stdin/stdout)
+│   ├── app/main.py             — JSON-RPC 디스패처 (analyze / master / qc_check)
+│   ├── app/analyzers/          — ffprobe + soundfile 파형 분석
+│   ├── app/mastering/          — 6단계 파이프라인 (EQ → 다이내믹스 → loudnorm 2-pass)
+│   └── app/utils/
+│       ├── ffmpeg_wrapper.py   — FFmpeg / FFprobe 래퍼 (loudnorm 파싱 포함)
+│       └── logger.py           — stderr 구조화 로거
+├── setup-python.sh             — Python 환경 자동 설정 스크립트
+└── docs/
+    ├── ARCHITECTURE.md
+    ├── LICENSE_FLOW.md
+    ├── MASTERING_SPEC.md
+    ├── QA_CHECKLIST.md         — 수동 QA 체크리스트 (기능별 확인 방법)
+    └── TEST_SCENARIOS.md       — E2E 테스트 시나리오 5개
 ```
 
-> `LICENSE_HMAC_SECRET` 은 프로덕션 배포 전 반드시 충분히 긴 무작위 값으로 교체하세요.
-> 기본값 `aimaster-local-secret-v1` 은 개발 전용입니다.
+---
+
+## 구현 상태
+
+### ✅ 완전히 동작하는 기능
+
+| 기능 | 확인 방법 |
+|------|-----------|
+| 파일 드롭 / 파일 탐색기 열기 | HomePage에 WAV/FLAC/MP3 드롭 또는 버튼 클릭 |
+| ffprobe 메타데이터 분석 | AnalysisPage에 샘플레이트·비트뎁스·채널·길이·파일크기 표시 |
+| Integrated LUFS 측정 | AnalysisPage 라우드니스 카드 (QC 뱃지 포함) |
+| True Peak 측정 | AnalysisPage 라우드니스 카드 |
+| Loudness Range (LRA) 측정 | AnalysisPage 라우드니스 카드 |
+| 묵음 구간 감지 | AnalysisPage 묵음 카드 (500ms 초과 시 표시) |
+| AI 아티팩트 감지 | harshHighMid / boomyLowEnd / brickwall / 기타 6종 |
+| 스타일 프리셋 선택 | AnalysisPage 프리셋 그리드 (Balanced / Warm / Bright / Punch) |
+| 6단계 마스터링 파이프라인 | MasteringPage 진행률 + 단계 표시 |
+| 2-pass loudnorm (-14 LUFS / -1 dBTP) | Python `ffmpeg_wrapper.py` |
+| MP3 프리뷰 생성 (320kbps) | ResultPage 오디오 플레이어 |
+| Before/After 라우드니스 비교 | ResultPage 비교 테이블 |
+| MP3 저장 (파일 대화상자) | ResultPage "프리뷰 MP3 저장" 버튼 |
+| WAV 저장 — Pro 전용 잠금 | ResultPage "마스터 WAV 저장" (Pro 시 활성화) |
+| 무료 3회 체험 카운터 | 처리 완료마다 자동 차감, 소진 시 라이선스 모달 |
+| 라이선스 키 활성화 (형식 검증) | SettingsPage 또는 잠금 모달 |
+| HMAC-SHA256 위변조 감지 | 라이선스·트라이얼 레코드 서명 검증 |
+| 10종 구조화 에러 처리 | 각 에러코드별 한국어 메시지 + 복구 버튼 |
+| 에러 로그 파일 저장 | 날짜별 로그 파일 자동 생성 |
+| QC 리포트 | QCPage 항목별 pass/warn/fail + 플랫폼 비교 |
+| 출력 디렉토리 / 오디오 기본값 설정 | SettingsPage |
+| 진행 중 에러 → 재시도 | MasteringPage ErrorCard + recoverable 분기 |
+
+### ⚠️ 동작하지만 제한 있음
+
+| 기능 | 제한 |
+|------|------|
+| AI 아티팩트 감지 정확도 | FFT 에너지 비율 기반 — 훈련된 ML 모델 대비 오탐 가능성 있음 |
+| DC 오프셋 | 감지 후 경고만 표시, HPF 자동 제거 미구현 |
+| 스테레오 이미징 | 불균형 감지는 되나 M/S 처리 없음 |
+
+### ❌ 미구현 기능
+
+| 기능 | 비고 |
+|------|------|
+| 서버 라이선스 검증 | `LocalValidator` (포맷 체크만) → `RemoteValidator`로 교체 필요 |
+| 자동 업데이트 | `electron-updater` 설정 없음 |
+| 최근 파일 목록 | `file:get-recent` 핸들러가 `[]` 반환하는 스텁 |
+| 배치 처리 | 단일 파일만 지원 |
+| 앱 아이콘 | `public/icon.icns`, `public/icon.ico` 없음 → 빌드 시 기본 아이콘 |
+
+---
+
+## 에러 로그 위치
+
+### Electron 메인 프로세스 로그 (날짜별)
+
+```
+macOS:   ~/Library/Application Support/AIMASTER/logs/YYYY-MM-DD.log
+Linux:   ~/.config/AIMASTER/logs/YYYY-MM-DD.log
+Windows: %APPDATA%\AIMASTER\logs\YYYY-MM-DD.log
+```
+
+앱 내에서 열기: **Settings → 정보 → 로그 폴더 열기**
+
+```bash
+# macOS 실시간 모니터링
+tail -f ~/Library/Application\ Support/AIMASTER/logs/$(date +%Y-%m-%d).log
+
+# 에러만 필터
+grep '\[ERROR\]' ~/Library/Application\ Support/AIMASTER/logs/$(date +%Y-%m-%d).log
+
+# Python 엔진 로그만 필터
+grep '\[python\]' ~/Library/Application\ Support/AIMASTER/logs/$(date +%Y-%m-%d).log
+```
+
+### 개발 모드 실시간 로그
+
+개발 모드에서는 stdout에도 동시 출력됩니다:
+
+```bash
+pnpm desktop 2>&1 | grep -E '\[ERROR\]|\[WARN\]|\[python\]'
+```
+
+### 로그 포맷
+
+```
+[2025-01-15T03:42:17.123Z] [INFO]  FFmpeg status {"available":true,"version":"6.1","ffprobeAvailable":true}
+[2025-01-15T03:42:18.456Z] [INFO]  [python] AIMASTER Python audio engine started
+[2025-01-15T03:42:19.789Z] [INFO]  [python] → analyze [a1b2c3d4]
+[2025-01-15T03:42:20.001Z] [ERROR] [audio:master] error {"filePath":"/path/file.wav","err":"...","bridgeDied":false}
+```
