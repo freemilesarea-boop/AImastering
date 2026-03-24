@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "aimaster-audio-engine"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "soundfile>=0.12.1",
+    "numpy>=1.24.0",
+]
+
+[tool.pytest.ini_options]
+# pytest를 aimaster-desktop/services/python-audio/ 디렉토리에서 실행:
+#   cd aimaster-desktop/services/python-audio
+#   pytest tests/ -v
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+timeout = 120
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

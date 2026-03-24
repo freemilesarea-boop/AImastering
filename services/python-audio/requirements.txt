@@ -1,0 +1,14 @@
+# AI 마스터링 Python 오디오 엔진 의존성
+# 설치: pip install -r requirements.txt
+
+# 오디오 I/O & 파형 분석
+soundfile>=0.12.1          # WAV/FLAC 읽기/쓰기
+numpy>=1.24.0              # 수치 연산 (FFT, RMS, peak 분석)
+
+# 선택적 의존성 (없어도 기본 기능 동작, 있으면 AI 분석 활성화)
+# librosa>=0.10.0          # 고급 오디오 분석 (spectral, onset 등)
+# resampy>=0.4.2           # 고품질 리샘플링 (librosa 의존)
+
+# 개발 / 테스트 도구
+pytest>=7.4.0
+pytest-timeout>=2.1.0      # 장기 실행 테스트 타임아웃 제어

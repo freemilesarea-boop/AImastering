@@ -68,6 +68,26 @@ npm run setup:python
 npm run dev
 ```
 
+### Python 오디오 엔진 단독 실행 및 테스트 (macOS 기준)
+
+```bash
+# 프로젝트 루트에서 실행
+cd services/python-audio
+
+# 가상 환경 생성 및 활성화
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 의존성 설치
+pip install -r requirements.txt
+
+# 테스트 실행 (ffmpeg가 시스템 PATH에 있어야 함)
+pytest tests/ -v
+```
+
+> **참고:** `pytest-timeout` 패키지가 설치되어 있지 않은 경우 `pip install pytest-timeout` 으로 별도 설치하거나,
+> `requirements.txt`를 통해 자동 설치됩니다. ffmpeg 미설치 환경에서는 해당 테스트가 자동으로 skip됩니다.
+
 ### 빌드 및 패키징
 
 ```bash
@@ -81,25 +101,35 @@ npm run dist:win
 ## 폴더 구조
 
 ```
-AImastering/
+AImastering/                        ← 프로젝트 루트
 ├── src/
-│   ├── main/           # Electron 메인 프로세스
-│   │   ├── ipc/        # IPC 핸들러
-│   │   ├── services/   # 비즈니스 로직 서비스
-│   │   └── utils/      # 유틸리티
-│   ├── preload/        # contextBridge API
-│   └── renderer/       # React UI
-│       ├── components/ # UI 컴포넌트
-│       ├── pages/      # 페이지 단위 뷰
-│       ├── store/      # Zustand 스토어
-│       └── hooks/      # 커스텀 훅
-├── python/
-│   ├── main.py         # JSON-RPC 서버 진입점
-│   ├── pipeline/       # 마스터링 파이프라인
-│   ├── analysis/       # QC 분석
-│   └── utils/          # FFmpeg 래퍼, 오디오 I/O
-├── docs/               # 설계 문서
-└── scripts/            # 빌드/설정 스크립트
+│   ├── main/                       # Electron 메인 프로세스
+│   │   ├── ipc/                    # IPC 핸들러
+│   │   ├── services/               # 비즈니스 로직 서비스
+│   │   └── utils/                  # 유틸리티
+│   ├── preload/                    # contextBridge API
+│   └── renderer/                   # React UI
+│       ├── components/             # UI 컴포넌트
+│       ├── pages/                  # 페이지 단위 뷰
+│       ├── store/                  # Zustand 스토어
+│       └── hooks/                  # 커스텀 훅
+├── services/
+│   └── python-audio/               # Python 오디오 엔진 (JSON-RPC)
+│       ├── app/
+│       │   ├── main.py             # JSON-RPC 서버 진입점
+│       │   ├── analyzers/          # 오디오 분석 (LUFS, TP, LRA)
+│       │   ├── mastering/          # 마스터링 파이프라인 (EQ, 컴프, loudnorm)
+│       │   ├── qc/                 # QC 검사기
+│       │   └── utils/              # FFmpeg 래퍼, 오디오 I/O, 로거
+│       ├── tests/                  # pytest 테스트 스위트
+│       │   ├── conftest.py         # 공용 픽스처 (ffmpeg 기반 테스트 오디오 생성)
+│       │   ├── test_ffmpeg_wrapper.py
+│       │   ├── test_pipeline.py
+│       │   └── test_rpc_dispatcher.py
+│       ├── pyproject.toml          # pytest 설정 (pythonpath, testpaths)
+│       └── requirements.txt        # Python 의존성
+├── docs/                           # 설계 문서
+└── scripts/                        # 빌드/설정 스크립트
 ```
 
 ## 오디오 처리 파이프라인

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "aimaster-audio-engine"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "soundfile>=0.12.1",
+    "numpy>=1.24.0",
+]
+
+[tool.pytest.ini_options]
+# pytest를 services/python-audio/ 디렉토리에서 실행:
+#   cd services/python-audio
+#   pytest tests/ -v
+testpaths = ["tests"]
+pythonpath = ["."]          # app/ 패키지를 import 가능하게 함 (Python 3.11+는 자동)
+addopts = "-v --tb=short"
+timeout = 120               # 각 테스트 최대 실행시간 (초)
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
