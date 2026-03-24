@@ -3,12 +3,13 @@
  *
  * Shows a 5-stage progress pipeline while mastering runs.
  * Reads progress % from audioStore (set by AnalysisPage's IPC listener).
- * On error: shows message + retry button.
+ * On error: shows error-type-specific card with conditional retry button.
  */
 import React, { useCallback } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
-import { useAudioStore } from '../stores/audioStore.js';
+import { useAudioStore, toStructuredError } from '../stores/audioStore.js';
+import type { StructuredError } from '../stores/audioStore.js';
 import type { MasteringResult } from '@aimaster/shared-types';
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
@@ -72,25 +73,61 @@ function StageRow({ label, status }: { label: string; status: StageStatus }) {
 
 // ── Error card ────────────────────────────────────────────────────────────────
 
+/** Map error codes to actionable hint text shown below the message. */
+function errorHint(code: StructuredError['code']): string | null {
+  switch (code) {
+    case 'FFMPEG_NOT_FOUND':
+    case 'FFPROBE_NOT_FOUND':
+      return 'FFmpeg를 설치한 후 앱을 재시작해주세요. (https://ffmpeg.org/download.html)';
+    case 'FILE_CORRUPTED':
+      return '다른 파일로 시도하거나 파일을 다시 내보내주세요.';
+    case 'FORMAT_UNSUPPORTED':
+      return 'WAV, FLAC, AIFF, MP3, M4A 형식의 파일을 사용해주세요.';
+    case 'PATH_ENCODING_ERROR':
+      return '파일을 경로에 한글/특수문자가 없는 폴더로 이동한 후 다시 시도해주세요.';
+    case 'OUTPUT_DIR_NOT_WRITABLE':
+      return '디스크 여유 공간을 확인하거나 권한 설정을 확인해주세요.';
+    case 'LOUDNORM_PARSE_FAILED':
+      return '파일이 너무 짧거나 무음인지 확인해주세요.';
+    case 'PYTHON_PROCESS_FAILED':
+      return '잠시 후 다시 시도해주세요.';
+    case 'LICENSE_STORE_CORRUPTED':
+    case 'TRIAL_COUNT_ANOMALY':
+      return '앱을 재시작하거나 라이선스를 다시 활성화해주세요.';
+    default:
+      return null;
+  }
+}
+
 function ErrorCard({
-  message,
+  error,
   onRetry,
 }: {
-  message: string;
+  error: StructuredError;
   onRetry: () => void;
 }) {
+  const hint = errorHint(error.code);
+
   return (
-    <div className="rounded-xl bg-red-500/5 border border-red-500/20 p-4">
-      <p className="text-xs text-red-400 font-medium mb-1">처리 실패</p>
-      <p className="text-sm text-zinc-400 leading-relaxed">{message}</p>
-      <button
-        onClick={onRetry}
-        className="no-drag mt-3 px-4 py-2 rounded-lg text-sm font-medium
-                   bg-zinc-800 border border-zinc-700 text-zinc-300
-                   hover:border-zinc-600 hover:text-zinc-100 transition-colors"
-      >
-        다시 시도
-      </button>
+    <div className="rounded-xl bg-red-500/5 border border-red-500/20 p-4 space-y-2">
+      <p className="text-xs text-red-400 font-medium uppercase tracking-wide">처리 실패</p>
+      <p className="text-sm text-zinc-300 leading-relaxed">{error.userMessage}</p>
+      {hint && (
+        <p className="text-xs text-zinc-500 leading-relaxed">{hint}</p>
+      )}
+      <div className="flex items-center gap-2 pt-1">
+        {error.recoverable && (
+          <button
+            onClick={onRetry}
+            className="no-drag px-4 py-2 rounded-lg text-sm font-medium
+                       bg-zinc-800 border border-zinc-700 text-zinc-300
+                       hover:border-zinc-600 hover:text-zinc-100 transition-colors"
+          >
+            다시 시도
+          </button>
+        )}
+        <span className="text-[10px] text-zinc-700 font-mono">{error.code}</span>
+      </div>
     </div>
   );
 }
@@ -137,8 +174,9 @@ export default function MasteringPage() {
       setMasteringResult(result);
       setPage('result');
     } catch (err) {
-      setError((err as Error).message);
-      notify('마스터링 실패. 파일을 확인해주세요.', 'error');
+      const structured = toStructuredError(err);
+      setError(structured);
+      notify(structured.userMessage, 'error');
     } finally {
       cleanupProgress();
       setIsMastering(false);
@@ -185,7 +223,7 @@ export default function MasteringPage() {
           )}
 
           {/* Error state */}
-          {error && <ErrorCard message={error} onRetry={handleRetry} />}
+          {error && <ErrorCard error={error} onRetry={handleRetry} />}
 
         </div>
       </div>

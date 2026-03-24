@@ -1,3 +1,22 @@
+// ── Error types ────────────────────────────────────────────────────────────────
+export {
+  AppError,
+  isAppError,
+  fromIPC,
+  ffmpegNotFound,
+  ffprobeNotFound,
+  fileCorrupted,
+  formatUnsupported,
+  pathEncodingError,
+  outputDirNotWritable,
+  loudnormParseFailed,
+  pythonProcessFailed,
+  licenseStoreCorrupted,
+  trialCountAnomaly,
+  unknownError,
+} from './errors.js';
+export type { AppErrorCode } from './errors.js';
+
 // ── Python bridge & high-level API ────────────────────────────────────────────
 export { PythonBridge }  from './utils/pythonBridge.js';
 export { analyzeFile }   from './analyzers/index.js';
@@ -19,6 +38,7 @@ export {
   encodePreviewMp3,
   FFmpegSpawnError,
   FFmpegParseError,
+  classifyFFmpegError,
 } from './ffmpeg/runner.js';
 
 // ── Startup health check ───────────────────────────────────────────────────────

@@ -13,7 +13,7 @@
 import React, { useCallback } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
-import { useAudioStore } from '../stores/audioStore.js';
+import { useAudioStore, toStructuredError } from '../stores/audioStore.js';
 import type { AudioAnalysisResult, MasteringStyle, MasteringResult } from '@aimaster/shared-types';
 
 // ── Tiny helpers ──────────────────────────────────────────────────────────────
@@ -204,7 +204,7 @@ export default function AnalysisPage() {
       setMasteringResult(result);
       setPage('result');
     } catch (err) {
-      setError((err as Error).message);
+      setError(toStructuredError(err));
       // Stay on 'mastering' to show retry
     } finally {
       cleanupProgress();

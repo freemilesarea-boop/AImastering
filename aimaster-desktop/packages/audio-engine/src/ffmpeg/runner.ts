@@ -20,6 +20,16 @@
 
 import { spawn } from 'node:child_process';
 import { resolveFFmpegPath, resolveFFprobePath, type ResolveBinOptions } from './resolver.js';
+import {
+  AppError,
+  ffmpegNotFound,
+  ffprobeNotFound,
+  fileCorrupted,
+  formatUnsupported,
+  loudnormParseFailed,
+  unknownError,
+  type AppErrorCode,
+} from '../errors.js';
 
 // ── Error types ───────────────────────────────────────────────────────────────
 
@@ -409,4 +419,91 @@ export async function encodePreviewMp3(
   ];
 
   await spawnCollect(bin, args, opts.timeoutMs);
+}
+
+// ── Error classification ───────────────────────────────────────────────────────
+
+/** Stderr patterns that indicate a corrupt / unreadable file. */
+const CORRUPT_PATTERNS = [
+  /invalid data found/i,
+  /moov atom not found/i,
+  /end of file/i,
+  /no such file or directory/i,
+  /input\/output error/i,
+];
+
+/** Stderr patterns that indicate an unsupported codec or container. */
+const UNSUPPORTED_PATTERNS = [
+  /decoder .+ not found/i,
+  /unknown encoder/i,
+  /codec not currently supported/i,
+  /unable to find a suitable output format/i,
+];
+
+/**
+ * Convert a raw `FFmpegSpawnError` or `FFmpegParseError` into an `AppError`
+ * with a Korean user message, English dev detail, and recoverable flag.
+ *
+ * @param err       The raw error thrown by runner functions
+ * @param isFfprobe Pass true when the failing binary is ffprobe (not ffmpeg)
+ * @param filePath  Optional: the input file path, for richer error messages
+ */
+export function classifyFFmpegError(
+  err: unknown,
+  isFfprobe = false,
+  filePath = '',
+): AppError {
+  // Already classified — pass through
+  if (err instanceof AppError) return err;
+
+  if (err instanceof FFmpegParseError) {
+    return loudnormParseFailed(err.message + (err.raw ? ` | raw: ${err.raw.slice(0, 300)}` : ''));
+  }
+
+  if (err instanceof FFmpegSpawnError) {
+    const msg    = err.message;
+    const stderr = err.stderr ?? '';
+
+    // Binary not found (ENOENT on spawn)
+    if (/ENOENT/i.test(msg) || /Failed to start process/i.test(msg)) {
+      return isFfprobe
+        ? ffprobeNotFound(`spawn ENOENT for "${err.bin}" — ${msg}`)
+        : ffmpegNotFound(`spawn ENOENT for "${err.bin}" — ${msg}`);
+    }
+
+    // Timeout
+    if (/timed out/i.test(msg)) {
+      return new AppError(
+        'PYTHON_PROCESS_FAILED' as AppErrorCode,
+        '처리 시간이 초과되었습니다. 파일 크기를 확인하거나 다시 시도해주세요.',
+        `FFmpeg timeout: ${msg}`,
+        true,
+      );
+    }
+
+    // Unsupported format
+    for (const pat of UNSUPPORTED_PATTERNS) {
+      if (pat.test(stderr)) {
+        const match = stderr.match(/decoder (.+?) not found/i);
+        const codec = match?.[1] ?? 'unknown';
+        return formatUnsupported(filePath, codec);
+      }
+    }
+
+    // Corrupted file
+    for (const pat of CORRUPT_PATTERNS) {
+      if (pat.test(stderr)) {
+        return fileCorrupted(filePath, `ffmpeg exit ${err.exitCode}: ${stderr.slice(0, 300)}`);
+      }
+    }
+
+    // Catch-all for non-zero exit
+    return fileCorrupted(
+      filePath,
+      `ffmpeg exited ${err.exitCode}: ${stderr.slice(0, 500)}`,
+    );
+  }
+
+  // Unrecognised error
+  return unknownError((err as Error).message ?? String(err));
 }

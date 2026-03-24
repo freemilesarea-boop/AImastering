@@ -26,6 +26,18 @@ import crypto from 'node:crypto';
 import { machineIdSync } from 'node-machine-id';
 import type { LicenseInfo, LicenseTier } from '@aimaster/shared-types';
 
+// ── Developer log shim (avoids a circular dep on apps/desktop/logger) ─────────
+// In production this is picked up by the Electron logger; in tests it goes
+// to stderr so failures are still visible.
+function devLog(level: 'warn' | 'error', msg: string, extra?: unknown): void {
+  const line = `[license-core] [${level.toUpperCase()}] ${msg}${extra !== undefined ? ' ' + JSON.stringify(extra) : ''}`;
+  if (level === 'error') {
+    process.stderr.write(line + '\n');
+  } else {
+    process.stderr.write(line + '\n');
+  }
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const KEY_REGEX   = /^AIMASTER-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
@@ -88,9 +100,27 @@ function verifyTrial(record: TrialRecord): boolean {
   try {
     const expected = Buffer.from(signTrial(record.used, record.machineId));
     const actual   = Buffer.from(record.hmac);
-    if (expected.length !== actual.length) return false;
-    return crypto.timingSafeEqual(expected, actual);
-  } catch {
+    if (expected.length !== actual.length) {
+      // Case 9: HMAC length mismatch — possible store corruption or tampering
+      devLog('error', 'Trial HMAC length mismatch — treating as maxed-out (corruption or tamper)', {
+        expectedLen: expected.length,
+        actualLen:   actual.length,
+        used:        record.used,
+      });
+      return false;
+    }
+    const ok = crypto.timingSafeEqual(expected, actual);
+    if (!ok) {
+      // Case 9: HMAC mismatch — log for developer
+      devLog('error', 'Trial HMAC verification failed — treating as maxed-out (possible tamper)', {
+        used:      record.used,
+        machineId: record.machineId,
+      });
+    }
+    return ok;
+  } catch (err) {
+    // Case 9: unexpected exception during verification
+    devLog('error', 'Trial HMAC verification threw — treating as maxed-out', { err: String(err) });
     return false;
   }
 }
@@ -167,18 +197,68 @@ export class LicenseService {
   // ── Internal readers ───────────────────────────────────────────────────────
 
   private _readLicense(): StoredLicense | null {
-    const stored = this.store.get<StoredLicense>('license') ?? null;
+    let stored: StoredLicense | undefined;
+    try {
+      stored = this.store.get<StoredLicense>('license');
+    } catch (err) {
+      // Case 9: store read threw (corrupted electron-store file)
+      devLog('error', 'Failed to read license record from store — falling back to free tier', { err: String(err) });
+      return null;
+    }
     if (!stored) return null;
-    return verifyLicense(stored) ? stored : null;
+    if (!verifyLicense(stored)) {
+      // Case 9: HMAC mismatch on license record
+      devLog('error', 'License HMAC verification failed — falling back to free tier', {
+        key:  stored.key,
+        tier: stored.tier,
+      });
+      return null;
+    }
+    return stored;
   }
 
   private _readTrialUsed(): number {
     const machineId = getMachineId();
-    const record    = this.store.get<TrialRecord>('trial');
+    let record: TrialRecord | undefined;
+
+    try {
+      record = this.store.get<TrialRecord>('trial');
+    } catch (err) {
+      // Case 9: store read threw (possibly corrupted electron-store file)
+      devLog('error', 'Failed to read trial record from store — treating as maxed-out', { err: String(err) });
+      return TRIAL_MAX;
+    }
 
     if (!record) return 0;
-    // If HMAC verification fails, treat as maxed-out (tamper denial)
-    if (!verifyTrial(record) || record.machineId !== machineId) return TRIAL_MAX;
+
+    // Case 9: machineId mismatch (device change or store corruption)
+    if (record.machineId !== machineId) {
+      devLog('warn', 'Trial record machineId mismatch — treating as maxed-out', {
+        stored:  record.machineId,
+        current: machineId,
+      });
+      return TRIAL_MAX;
+    }
+
+    // Case 9: HMAC verification fails → tamper or corruption
+    if (!verifyTrial(record)) return TRIAL_MAX;
+
+    // Case 10: trial count anomaly — used > TRIAL_MAX indicates tampering or corruption
+    if (record.used > TRIAL_MAX) {
+      devLog('error', 'Trial count anomaly detected — used exceeds maximum', {
+        used:     record.used,
+        trialMax: TRIAL_MAX,
+      });
+      return TRIAL_MAX;
+    }
+
+    if (record.used < 0) {
+      devLog('error', 'Trial count anomaly detected — negative usage count', {
+        used: record.used,
+      });
+      return TRIAL_MAX;
+    }
+
     return record.used;
   }
 
