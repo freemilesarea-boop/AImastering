@@ -21,14 +21,14 @@ export interface LoudnessStats {
 }
 
 export interface AIDetectionResult {
-  harshHighMid: boolean;     // 3–5 kHz energy ratio > 0.28
-  boomyLowEnd: boolean;      // 60–200 Hz energy ratio > 0.45
-  brickwallCompression: boolean; // LRA < 2.5 LU
-  stereoImbalance: boolean;  // L/R RMS diff > 3 dB
-  silenceAtStart: boolean;   // > 500 ms
-  silenceAtEnd: boolean;     // > 500 ms
-  intersampleRisk: boolean;  // true peak > -0.5 dBTP
-  upsampleSuspected: boolean; // Nyquist energy heuristic
+  harshHighMid: boolean;
+  boomyLowEnd: boolean;
+  brickwallCompression: boolean;
+  stereoImbalance: boolean;
+  silenceAtStart: boolean;
+  silenceAtEnd: boolean;
+  intersampleRisk: boolean;
+  upsampleSuspected: boolean;
 }
 
 export interface AudioAnalysisResult {
@@ -42,16 +42,18 @@ export interface AudioAnalysisResult {
 
 export interface MasteringOptions {
   style: MasteringStyle;
-  targetLufs: number;     // default -14
-  targetTp: number;       // default -1.0
-  sampleRate: number;     // default 44100
-  bitDepth: number;       // 16 | 24
+  targetLufs: number;
+  targetTp: number;
+  sampleRate: number;
+  bitDepth: number;
   applyAiCorrections: boolean;
 }
 
 export interface MasteringResult {
-  outputPath: string;       // WAV — empty string for free tier
-  previewPath: string;      // MP3 320 kbps — always set
+  /** Absolute path to the master WAV.  Empty string when WAV save is blocked (free tier). */
+  outputPath: string;
+  /** Absolute path to the MP3 preview.  Always populated on success. */
+  previewPath: string;
   appliedCorrections: string[];
   loudnessAfter: LoudnessStats;
   processingTimeSec: number;
@@ -101,24 +103,43 @@ export interface LicenseInfo {
   canUseAllPresets: boolean;
 }
 
+/** Returned by the license:can-process IPC handler. */
+export interface CanProcessResult {
+  allowed: boolean;
+  isPaid: boolean;
+  /** Remaining free-tier uses (Infinity for paid). */
+  remaining: number;
+  /** Korean-language reason shown in the UI when allowed is false. */
+  reason?: string;
+}
+
 // ── IPC Channels ──────────────────────────────────────────────────────────────
 
 export const IPC = {
-  ANALYZE: 'audio:analyze',
-  MASTER:  'audio:master',
-  QC:      'audio:qc',
-  PROGRESS:'audio:progress',
-  LICENSE_STATUS:     'license:status',
-  LICENSE_ACTIVATE:   'license:activate',
-  LICENSE_DEACTIVATE: 'license:deactivate',
-  FILE_OPEN:    'file:open-dialog',
-  FILE_SAVE:    'file:save-dialog',
-  FILE_INFO:    'file:get-info',
-  FILE_RECENT:  'file:get-recent',
-  FILE_REVEAL:  'file:open-in-finder',
-  SETTINGS_GET: 'settings:get',
-  SETTINGS_SET: 'settings:set',
-  FFMPEG_STATUS:'system:ffmpeg-status',
+  // Audio
+  ANALYZE:  'audio:analyze',
+  MASTER:   'audio:master',
+  QC:       'audio:qc',
+  PROGRESS: 'audio:progress',
+  // License
+  LICENSE_STATUS:          'license:status',
+  LICENSE_ACTIVATE:        'license:activate',
+  LICENSE_DEACTIVATE:      'license:deactivate',
+  LICENSE_CAN_PROCESS:     'license:can-process',
+  LICENSE_DECREMENT_TRIAL: 'license:decrement-trial',
+  LICENSE_GET_REMAINING:   'license:get-remaining',
+  // Files
+  FILE_OPEN:   'file:open-dialog',
+  FILE_SAVE:   'file:save-dialog',
+  FILE_INFO:   'file:get-info',
+  FILE_RECENT: 'file:get-recent',
+  FILE_REVEAL: 'file:open-in-finder',
+  // Settings
+  SETTINGS_GET:        'settings:get',
+  SETTINGS_SET:        'settings:set',
+  SETTINGS_OUTPUT_DIR: 'settings:choose-output-dir',
+  // System
+  FFMPEG_STATUS: 'system:ffmpeg-status',
 } as const;
 
 export type IPCChannel = typeof IPC[keyof typeof IPC];

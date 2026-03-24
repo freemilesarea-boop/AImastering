@@ -2,11 +2,17 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { IpcRendererEvent } from 'electron';
 
 const INVOKE_CHANNELS = [
+  // Audio
   'audio:analyze', 'audio:master', 'audio:qc',
+  // License
   'license:status', 'license:activate', 'license:deactivate',
+  'license:can-process', 'license:decrement-trial', 'license:get-remaining',
+  // Files
   'file:open-dialog', 'file:save-dialog', 'file:get-info',
   'file:open-in-finder', 'file:get-recent',
+  // Settings
   'settings:get', 'settings:set', 'settings:choose-output-dir',
+  // System
   'system:ffmpeg-status',
 ] as const;
 
