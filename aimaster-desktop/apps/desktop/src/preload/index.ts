@@ -8,8 +8,8 @@ const INVOKE_CHANNELS = [
   'license:status', 'license:activate', 'license:deactivate',
   'license:can-process', 'license:decrement-trial', 'license:get-remaining',
   // Files
-  'file:open-dialog', 'file:save-dialog', 'file:get-info',
-  'file:open-in-finder', 'file:get-recent',
+  'file:open-dialog', 'file:save-dialog', 'file:save-wav',
+  'file:get-info', 'file:open-in-finder', 'file:get-recent',
   // Settings
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // System
@@ -39,5 +39,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener(channel, wrapped);
   },
   platform: process.platform,
-  version: process.env['npm_package_version'] ?? '1.0.0',
+  version:  process.env['npm_package_version'] ?? '1.0.0',
 });

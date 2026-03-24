@@ -6,7 +6,7 @@ import type {
   MasteringStyle,
 } from '@aimaster/shared-types';
 
-interface MasteringOptions {
+export interface MasteringOptions {
   style: MasteringStyle;
   targetLufs: number;
   targetTp: number;
@@ -24,6 +24,7 @@ interface AudioStore {
   isMastering: boolean;
   progress: number;
   progressStage: string;
+  error: string | null;
   options: MasteringOptions;
 
   setFile: (path: string | null) => void;
@@ -33,37 +34,40 @@ interface AudioStore {
   setIsAnalyzing: (v: boolean) => void;
   setIsMastering: (v: boolean) => void;
   setProgress: (percent: number, stage: string) => void;
+  setError: (msg: string | null) => void;
   setStyle: (style: MasteringStyle) => void;
   reset: () => void;
 }
 
 const defaultOptions: MasteringOptions = {
-  style: 'balanced',
-  targetLufs: -14,
-  targetTp: -1.0,
-  sampleRate: 44100,
-  bitDepth: 24,
+  style:              'balanced',
+  targetLufs:         -14,
+  targetTp:           -1.0,
+  sampleRate:         44100,
+  bitDepth:           24,
   applyAiCorrections: true,
 };
 
 export const useAudioStore = create<AudioStore>((set) => ({
-  selectedFile: null,
-  analysis: null,
+  selectedFile:    null,
+  analysis:        null,
   masteringResult: null,
-  qcResult: null,
-  isAnalyzing: false,
-  isMastering: false,
-  progress: 0,
-  progressStage: '',
-  options: defaultOptions,
+  qcResult:        null,
+  isAnalyzing:     false,
+  isMastering:     false,
+  progress:        0,
+  progressStage:   '',
+  error:           null,
+  options:         defaultOptions,
 
-  setFile: (path) => set({ selectedFile: path, analysis: null, masteringResult: null, qcResult: null }),
-  setAnalysis: (r) => set({ analysis: r }),
-  setMasteringResult: (r) => set({ masteringResult: r }),
-  setQcResult: (r) => set({ qcResult: r }),
-  setIsAnalyzing: (v) => set({ isAnalyzing: v }),
-  setIsMastering: (v) => set({ isMastering: v }),
-  setProgress: (percent, stage) => set({ progress: percent, progressStage: stage }),
-  setStyle: (style) => set((s) => ({ options: { ...s.options, style } })),
-  reset: () => set({ selectedFile: null, analysis: null, masteringResult: null, qcResult: null }),
+  setFile:           (path)         => set({ selectedFile: path, analysis: null, masteringResult: null, qcResult: null, error: null }),
+  setAnalysis:       (r)            => set({ analysis: r }),
+  setMasteringResult:(r)            => set({ masteringResult: r }),
+  setQcResult:       (r)            => set({ qcResult: r }),
+  setIsAnalyzing:    (v)            => set({ isAnalyzing: v }),
+  setIsMastering:    (v)            => set({ isMastering: v }),
+  setProgress:       (pct, stage)   => set({ progress: pct, progressStage: stage }),
+  setError:          (msg)          => set({ error: msg }),
+  setStyle:          (style)        => set((s) => ({ options: { ...s.options, style } })),
+  reset:             ()             => set({ selectedFile: null, analysis: null, masteringResult: null, qcResult: null, error: null, progress: 0, progressStage: '' }),
 }));
