@@ -153,6 +153,20 @@ export default function HomePage() {
           {/* Drop zone */}
           <DropZone onFile={handleFile} isLoading={isAnalyzing} />
 
+          {/* Native dialog divider */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-zinc-800" />
+            <button
+              onClick={handleOpenDialog}
+              disabled={isAnalyzing}
+              className="no-drag text-xs text-zinc-600 hover:text-zinc-400 transition-colors
+                         disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              파일 탐색기로 열기
+            </button>
+            <div className="flex-1 h-px bg-zinc-800" />
+          </div>
+
           {/* Recent files — v1 placeholder */}
           <div>
             <p className="text-xs text-zinc-700 mb-2 uppercase tracking-wider">최근 파일</p>

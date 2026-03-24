@@ -138,16 +138,31 @@ def loudnorm_pass1(
         "-f", "null", "-",
     ])
 
-    # loudnorm JSON is embedded in stderr with surrounding log lines
-    match = re.search(r"\{[\s\S]*?\}", stderr)
-    if not match:
+    # loudnorm JSON is embedded in stderr — find the LAST complete {...} block
+    # using a backward scan so nested braces are handled correctly.
+    last_close = stderr.rfind("}")
+    match_text: str | None = None
+    if last_close != -1:
+        depth, start = 0, -1
+        for i in range(last_close, -1, -1):
+            if stderr[i] == "}":
+                depth += 1
+            elif stderr[i] == "{":
+                depth -= 1
+                if depth == 0:
+                    start = i
+                    break
+        if start != -1:
+            match_text = stderr[start: last_close + 1]
+
+    if match_text is None:
         log("ERROR", f"loudnorm pass1 full stderr:\n{stderr}")
         raise FFmpegError(
             "라우드니스 측정에 실패했습니다. 오디오가 너무 짧거나 완전한 무음 파일일 수 있습니다.",
             stderr,
         )
     try:
-        data = json.loads(match.group())
+        data = json.loads(match_text)
     except json.JSONDecodeError:
         raise FFmpegError("라우드니스 측정 결과를 읽을 수 없습니다.", stderr)
 

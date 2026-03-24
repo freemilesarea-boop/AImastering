@@ -11,11 +11,21 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** Queued call waiting for the bridge to become ready. */
+interface QueuedCall {
+  method: RPCRequest['method'];
+  params: Record<string, unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason: Error) => void;
+}
+
 export class PythonBridge extends EventEmitter {
   private proc: ChildProcess | null = null;
   private pending = new Map<string, PendingRequest>();
   private buffer = '';
   private ready = false;
+  /** Calls that arrived before the bridge printed READY. */
+  private readyQueue: QueuedCall[] = [];
 
   constructor(private readonly opts: { pythonPath: string; scriptPath: string; timeoutMs?: number }) {
     super();
@@ -32,9 +42,14 @@ export class PythonBridge extends EventEmitter {
 
     this.proc.stderr!.setEncoding('utf8');
     this.proc.stderr!.on('data', (line: string) => {
-      if (line.includes('READY')) {
+      if (line.includes('READY') && !this.ready) {
         this.ready = true;
         this.emit('ready');
+        // Flush queued calls now that the bridge is ready
+        for (const queued of this.readyQueue) {
+          this._sendCall(queued.method, queued.params, queued.resolve, queued.reject);
+        }
+        this.readyQueue = [];
       }
       // stderr lines are for logging only
       this.emit('log', line.trim());
@@ -76,22 +91,40 @@ export class PythonBridge extends EventEmitter {
   }
 
   call<T = unknown>(method: RPCRequest['method'], params: Record<string, unknown>): Promise<T> {
-    return new Promise((resolve, reject) => {
-      if (!this.proc || !this.ready) {
-        return reject(new Error('Python bridge is not ready'));
+    return new Promise<T>((resolve, reject) => {
+      if (!this.proc) {
+        return reject(new Error('Python bridge has not been spawned'));
       }
-      const id = uuidv4();
-      const timeoutMs = this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`RPC timeout after ${timeoutMs}ms (method: ${method})`));
-      }, timeoutMs);
-
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
-
-      const req: RPCRequest = { id, method, params };
-      this.proc.stdin!.write(JSON.stringify(req) + '\n');
+      if (!this.ready) {
+        // Queue until READY received
+        this.readyQueue.push({
+          method, params,
+          resolve: resolve as (v: unknown) => void,
+          reject,
+        });
+        return;
+      }
+      this._sendCall(method, params, resolve as (v: unknown) => void, reject);
     });
+  }
+
+  private _sendCall(
+    method: RPCRequest['method'],
+    params: Record<string, unknown>,
+    resolve: (v: unknown) => void,
+    reject: (e: Error) => void,
+  ): void {
+    const id = uuidv4();
+    const timeoutMs = this.opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timer = setTimeout(() => {
+      this.pending.delete(id);
+      reject(new Error(`RPC timeout after ${timeoutMs}ms (method: ${method})`));
+    }, timeoutMs);
+
+    this.pending.set(id, { resolve, reject, timer });
+
+    const req: RPCRequest = { id, method, params };
+    this.proc!.stdin!.write(JSON.stringify(req) + '\n');
   }
 
   private _rejectAll(err: Error): void {

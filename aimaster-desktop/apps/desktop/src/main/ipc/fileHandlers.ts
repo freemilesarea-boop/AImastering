@@ -1,5 +1,5 @@
 import type { IpcMain, BrowserWindow } from 'electron';
-import { dialog, shell } from 'electron';
+import { app, dialog, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -56,8 +56,14 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   });
 
   // ── Reveal in Finder / Explorer ───────────────────────────────────────
+  // Special token 'logs' resolves to the app log directory.
   ipc.handle('file:open-in-finder', (_e, filePath: string) => {
-    shell.showItemInFolder(filePath);
+    const resolved = filePath === 'logs'
+      ? path.join(app.getPath('userData'), 'logs')
+      : filePath;
+    // Ensure the directory exists before trying to reveal it
+    if (!fs.existsSync(resolved)) fs.mkdirSync(resolved, { recursive: true });
+    shell.showItemInFolder(resolved);
   });
 
   // ── Recent files (v1 stub) ────────────────────────────────────────────

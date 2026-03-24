@@ -4,7 +4,20 @@
     "module": "CommonJS",
     "moduleResolution": "node",
     "outDir": "dist/main",
-    "rootDir": "src"
+    "rootDir": "src",
+    "noEmit": true,
+    "paths": {
+      "@aimaster/audio-engine": ["../../packages/audio-engine/src/index.ts"],
+      "@aimaster/audio-engine/*": ["../../packages/audio-engine/src/*"],
+      "@aimaster/license-core": ["../../packages/license-core/src/index.ts"],
+      "@aimaster/shared-types": ["../../packages/shared-types/src/index.ts"]
+    }
   },
-  "include": ["src/main", "src/preload"]
+  "include": [
+    "src/main",
+    "src/preload",
+    "../../packages/audio-engine/src/**/*",
+    "../../packages/license-core/src/**/*",
+    "../../packages/shared-types/src/**/*"
+  ]
 }

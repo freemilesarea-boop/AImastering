@@ -270,7 +270,11 @@ def analyze_file(file_path: str) -> dict[str, Any]:
             "lra":            round(lra, 2),
             "shortTermMax":   round(loudness_thresh, 2),
         },
-        # ── Waveform (from soundfile/numpy) ────────────────────────────
+        # ── Top-level waveform scalar fields (AudioAnalysisResult) ────
+        "dcOffsetDb":     round(waveform.dc_offset_db_l if waveform else 0.0, 3),
+        "silenceStartMs": round(waveform.silence_start_ms if waveform else 0.0, 1),
+        "silenceEndMs":   round(waveform.silence_end_ms   if waveform else 0.0, 1),
+        # ── Waveform full stats (optional, for UI charts) ──────────────
         "waveform": waveform_dict,
         # ── AI artifact detection ──────────────────────────────────────
         "aiDetection": ai_detection,
