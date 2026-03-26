@@ -13,6 +13,7 @@ export function useLicense() {
   useEffect(() => { loadStatus() }, [])
 
   const loadStatus = useCallback(async () => {
+    if (!window.electronAPI) return
     setLoading(true)
     try {
       const resp = await window.electronAPI.invoke<{ success: boolean; data: LicenseInfo }>('license:status')

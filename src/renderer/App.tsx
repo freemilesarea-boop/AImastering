@@ -31,6 +31,7 @@ export default function App() {
 
   // IPC navigate 이벤트 수신 (메뉴에서 호출)
   useEffect(() => {
+    if (!window.electronAPI) return
     const cleanup = window.electronAPI.on('navigate', (path) => {
       const pageMap: Record<string, Parameters<typeof navigateTo>[0]> = {
         '/': 'home', '/settings': 'settings', '/qc': 'qc',
@@ -150,7 +151,7 @@ export default function App() {
       {/* 메인 콘텐츠 */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* macOS 트래픽 라이트 공간 */}
-        {window.electronAPI.platform === 'darwin' && (
+        {window.electronAPI?.platform === 'darwin' && (
           <div className="h-8 flex-shrink-0 [-webkit-app-region:drag]" />
         )}
 

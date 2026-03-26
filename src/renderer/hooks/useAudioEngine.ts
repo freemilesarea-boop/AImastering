@@ -22,6 +22,7 @@ export function useAudioEngine() {
 
   // 진행률 이벤트 구독
   useEffect(() => {
+    if (!window.electronAPI) return
     const cleanup = window.electronAPI.on('audio:progress', (data) => {
       const p = data as { jobId: string; percent: number; stage: string }
       setProgress(p)
