@@ -12,7 +12,8 @@ interface ElectronAPI {
 
 declare global {
   interface Window {
-    electronAPI: ElectronAPI
+    // preload가 로드되지 않은 경우 undefined일 수 있으므로 optional로 선언
+    electronAPI?: ElectronAPI
   }
 }
 

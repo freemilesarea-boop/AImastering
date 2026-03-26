@@ -95,11 +95,33 @@ class ErrorBoundary extends React.Component<
 }
 
 // ─────────────────────────────────────────
+// 시작 진단 로그 (DevTools 콘솔에서 확인)
+// ─────────────────────────────────────────
+console.log('[AImastering] renderer starting...')
+console.log('[AImastering] electronAPI:', (window as Window & { electronAPI?: unknown }).electronAPI ?? 'NOT EXPOSED (preload missing)')
+
+// ─────────────────────────────────────────
+// ErrorBoundary 동작 검증용 컴포넌트 (dev only)
+// 개발 모드에서 콘솔에 에러를 던져 ErrorBoundary가 잡는지 확인
+// ─────────────────────────────────────────
+function DevErrorThrower({ shouldThrow }: { shouldThrow: boolean }) {
+  if (shouldThrow) {
+    throw new Error('[DevTest] ErrorBoundary test: this error is intentional')
+  }
+  return null
+}
+
+// ─────────────────────────────────────────
 // 앱 마운트
 // ─────────────────────────────────────────
+const isDev = import.meta.env.DEV
+// shouldThrow는 false로 유지 — true로 바꾸면 ErrorBoundary 동작 확인 가능
+const _testErrorBoundary = false
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ErrorBoundary>
+      {isDev && <DevErrorThrower shouldThrow={_testErrorBoundary} />}
       <App />
     </ErrorBoundary>
   </React.StrictMode>

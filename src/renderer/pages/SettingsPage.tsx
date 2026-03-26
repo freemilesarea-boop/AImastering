@@ -4,7 +4,7 @@
 import React, { useEffect, useState } from 'react'
 import { Button } from '../components/common/Button'
 import { useAppStore } from '../store/appStore'
-import { AppSettings } from '../../main/services/SettingsService'
+import { AppSettings } from '../types/settings'
 
 export function SettingsPage() {
   const { navigateTo, showNotification } = useAppStore()
@@ -12,12 +12,14 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
+    if (!window.electronAPI) return
     window.electronAPI.invoke<{ success: boolean; data: AppSettings }>('settings:get')
       .then((resp) => { if (resp.success) setSettings(resp.data) })
+      .catch((err) => console.error('settings:get error', err))
   }, [])
 
   const handleSave = async () => {
-    if (!settings) return
+    if (!settings || !window.electronAPI) return
     setSaving(true)
     try {
       await window.electronAPI.invoke('settings:set', settings)
@@ -30,6 +32,7 @@ export function SettingsPage() {
   }
 
   const handleChooseOutputDir = async () => {
+    if (!window.electronAPI) return
     const resp = await window.electronAPI.invoke<{ success: boolean; data: string }>('settings:choose-output-dir')
     if (resp.success && settings) {
       setSettings({ ...settings, outputDir: resp.data })
