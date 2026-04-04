@@ -343,6 +343,10 @@ export class LicenseService {
    * (Spec: decrementTrialUsage)
    */
   decrementTrialUsage(): void {
+    // Dev bypass: don't consume trial counts in development mode
+    if (process.env['NODE_ENV'] === 'development' || process.env['AIMASTER_DEV_LICENSE'] === '1') {
+      return;
+    }
     const current = this._readTrialUsed();
     // Never exceed TRIAL_MAX (belt-and-suspenders)
     this._writeTrialUsed(Math.min(current + 1, TRIAL_MAX));
@@ -354,6 +358,11 @@ export class LicenseService {
    * (Spec: canProcess)
    */
   canProcess(): { allowed: boolean; isPaid: boolean; remaining: number; reason?: string } {
+    // Dev bypass: skip all license checks in development mode
+    if (process.env['NODE_ENV'] === 'development' || process.env['AIMASTER_DEV_LICENSE'] === '1') {
+      return { allowed: true, isPaid: true, remaining: Infinity };
+    }
+
     const stored    = this._readLicense();
     const trialUsed = this._readTrialUsed();
 
