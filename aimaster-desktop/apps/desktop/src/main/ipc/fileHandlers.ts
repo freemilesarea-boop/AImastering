@@ -77,6 +77,30 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     shell.showItemInFolder(resolved);
   });
 
+  // ── Batch save: folder picker → copy all WAV/MP3 files ───────────────
+  ipc.handle('file:batch-save-wav', async (_e, srcPaths: string[]) => {
+    if (!win || !Array.isArray(srcPaths) || !srcPaths.length) return null;
+
+    const folderResult = await dialog.showOpenDialog(win, {
+      title: '저장할 폴더 선택',
+      buttonLabel: '이 폴더에 저장',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (folderResult.canceled || !folderResult.filePaths[0]) return null;
+
+    const destDir = folderResult.filePaths[0];
+    let saved = 0;
+    for (const src of srcPaths) {
+      if (!src) continue;
+      try {
+        const dest = path.join(destDir, path.basename(src));
+        fs.copyFileSync(src, dest);
+        saved++;
+      } catch { /* skip missing/inaccessible files */ }
+    }
+    return { destDir, saved };
+  });
+
   // ── Recent files (v1 stub) ────────────────────────────────────────────
   ipc.handle('file:get-recent', () => []);
 }

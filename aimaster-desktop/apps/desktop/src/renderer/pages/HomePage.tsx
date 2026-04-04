@@ -31,11 +31,13 @@ const ACCEPT = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// Use aimaster-local:// custom protocol so Chromium doesn't block file:// from
+// the http://localhost:5173 dev origin (and avoids CSP issues in prod too).
 function toFileUrl(p: string): string {
   if (!p) return '';
   const normalized = p.replace(/\\/g, '/');
   const withSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
-  return `file://${encodeURI(withSlash)}`;
+  return `aimaster-local://${encodeURI(withSlash)}`;
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -472,6 +474,25 @@ export default function HomePage() {
     if (paths?.length) addFilesToQueue(paths);
   }, [addFilesToQueue]);
 
+  // ── Batch WAV/MP3 download ────────────────────────────────────────────
+  const handleBatchSaveWav = useCallback(async () => {
+    const wavPaths = queue
+      .filter((i) => i.status === 'done' && i.masteringResult?.outputPath)
+      .map((i) => i.masteringResult!.outputPath);
+    if (!wavPaths.length) return;
+    const res = await window.electronAPI!.invoke('file:batch-save-wav', wavPaths) as { destDir: string; saved: number } | null;
+    if (res) notify(`WAV ${res.saved}곡 저장 완료`, 'success');
+  }, [queue, notify]);
+
+  const handleBatchSaveMp3 = useCallback(async () => {
+    const mp3Paths = queue
+      .filter((i) => i.status === 'done' && i.masteringResult?.previewPath)
+      .map((i) => i.masteringResult!.previewPath);
+    if (!mp3Paths.length) return;
+    const res = await window.electronAPI!.invoke('file:batch-save-wav', mp3Paths) as { destDir: string; saved: number } | null;
+    if (res) notify(`MP3 ${res.saved}곡 저장 완료`, 'success');
+  }, [queue, notify]);
+
   // ── Navigate to detail view ───────────────────────────────────────────
   const handleViewResult = useCallback((item: QueueItem) => {
     if (!item.analysis || !item.masteringResult) return;
@@ -640,6 +661,29 @@ export default function HomePage() {
                     ? '처리 중…'
                     : `마스터링 시작 (${pendingCount}곡)`}
                 </button>
+              )}
+
+              {/* Batch download — shown as soon as ≥1 item is done */}
+              {doneCount > 0 && !isBatchRunning && (
+                <div className="space-y-2">
+                  <p className="text-[10px] text-zinc-600 uppercase tracking-wider">일괄 저장</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleBatchSaveWav}
+                      className="no-drag flex-1 py-2 rounded-xl text-xs font-medium
+                                 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 transition-colors"
+                    >
+                      전체 WAV 저장 ({doneCount}곡)
+                    </button>
+                    <button
+                      onClick={handleBatchSaveMp3}
+                      className="no-drag flex-1 py-2 rounded-xl text-xs font-medium
+                                 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 transition-colors"
+                    >
+                      전체 MP3 저장 ({doneCount}곡)
+                    </button>
+                  </div>
+                </div>
               )}
 
               {/* All done CTA */}

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, net } from 'electron';
 import path from 'node:path';
 import { checkFFmpeg } from '@aimaster/audio-engine';
 import { registerAudioHandlers } from './ipc/audioHandlers.js';
@@ -10,6 +10,14 @@ import { log } from './utils/logger.js';
 const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | null = null;
+
+// ── Local-file protocol (for audio preview in renderer) ───────────────────────
+// Renderer loads from http://localhost:5173 (dev) or file:// (prod).
+// Chromium blocks file:// resources from http:// origins, so we register a
+// custom scheme that proxies local file reads without relaxing webSecurity.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'aimaster-local', privileges: { bypassCSP: true, supportFetchAPI: true, stream: true } },
+]);
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -43,6 +51,13 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // ── 0. 로컬 파일 프로토콜 핸들러 ─────────────────────────────────────────
+  // aimaster-local:///<absolute-path> → reads from local filesystem
+  protocol.handle('aimaster-local', (request) => {
+    const filePath = decodeURIComponent(request.url.slice('aimaster-local://'.length));
+    return net.fetch(`file://${filePath}`);
+  });
+
   // ── 1. 창을 먼저 생성 ─────────────────────────────────────────────────────
   // IPC 핸들러에 mainWindow 참조를 전달하려면 createWindow()가 먼저 실행되어야 함.
   // 이전 코드에서는 registerXxxHandlers() 이후 createWindow()가 호출되어
