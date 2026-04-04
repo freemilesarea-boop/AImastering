@@ -28,6 +28,13 @@ function getBridge(): PythonBridge {
   const scriptPath = app.isPackaged
     ? path.join(process.resourcesPath, 'python-audio', 'app', 'main.py')
     : path.join(__dirname, '../../../../services/python-audio/app/main.py');
+
+  // Python script does `from app.analyzers.analyzer import ...`
+  // so PYTHONPATH must include the directory that contains the `app` package
+  // (i.e. services/python-audio/, not services/python-audio/app/)
+  const pythonRoot = path.dirname(path.dirname(scriptPath));
+  process.env['PYTHONPATH'] = pythonRoot;
+
   bridge = new PythonBridge({ pythonPath, scriptPath });
   bridge.on('log', (line: string) => log.info('[python]', line));
   bridge.spawn();
