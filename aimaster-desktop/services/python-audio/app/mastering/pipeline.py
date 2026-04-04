@@ -38,8 +38,8 @@ from app.utils.ffmpeg_wrapper import (
     parse_bit_depth,
 )
 from app.utils.audio_io import analyze_waveform, waveform_stats_to_dict
-from app.mastering.eq import build_eq_filter
-from app.mastering.dynamics import build_dynamics_filter, describe_dynamics
+from app.mastering.eq import build_eq_filter, build_eq_filter_with_report
+from app.mastering.dynamics import build_dynamics_filter, describe_dynamics, get_comp_params, estimate_comp_gr
 from app.utils.logger import log
 
 # ── Quality-check thresholds ──────────────────────────────────────────────────
@@ -67,15 +67,15 @@ def _build_filter_chain(
     input_peak_db: float,
     low_to_mid_db: float,
     high_to_mid_db: float,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], list[dict]]:
     """
     Combine Stage-3 EQ and Stage-4 dynamics into a single ffmpeg filter chain.
-    Returns (filter_string, list_of_applied_correction_descriptions).
+    Returns (filter_string, applied_correction_strings, eq_move_dicts).
     """
     applied: list[str] = []
 
-    # Stage 3 — Adaptive streaming EQ
-    eq_chain = build_eq_filter(
+    # Stage 3 — Adaptive streaming EQ (with per-band report)
+    eq_chain, eq_moves = build_eq_filter_with_report(
         style,
         low_to_mid_db=low_to_mid_db,
         high_to_mid_db=high_to_mid_db,
@@ -89,7 +89,7 @@ def _build_filter_chain(
         if ai_detections.get("boomyLowEnd"):
             applied.append("저음역 과잉 보정 (120 Hz −4 dB)")
 
-    applied.append(f"스트리밍 베이스 EQ (80Hz 밀도 +, 250Hz 머드 -, 10kHz 에어 +)")
+    applied.append("스트리밍 베이스 EQ (80Hz 밀도 +, 250Hz 머드 -, 10kHz 에어 +)")
     if style != "balanced":
         applied.append(f"{style.capitalize()} 스타일 오버레이 적용")
 
@@ -98,7 +98,7 @@ def _build_filter_chain(
     applied.append(describe_dynamics(style))
 
     parts = [p for p in (eq_chain, dyn_chain) if p]
-    return ",".join(parts), applied
+    return ",".join(parts), applied, eq_moves
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -220,7 +220,7 @@ def run_pipeline(
                 f"low_to_mid={low_to_mid_db:.1f}, high_to_mid={high_to_mid_db:.1f})")
 
     ai = ai_detections or {}
-    pre_filter, applied_corrections = _build_filter_chain(
+    pre_filter, applied_corrections, eq_moves = _build_filter_chain(
         style, ai, apply_ai_corrections, input_peak_db,
         low_to_mid_db, high_to_mid_db,
     )
@@ -307,14 +307,18 @@ def run_pipeline(
 
     # ═══════════════════════════════════════════════════════════════════════
     # Stage 6 — Brickwall true-peak limiter (ceiling -1.0 dBTP)
-    #
-    # loudnorm already targets TP=-1.5, so the limiter only engages on
-    # genuine inter-sample peak overshoots (typically < 0.5 dB GR).
-    # Attack=5ms is fast enough to catch sharp transients without coloring
-    # the sound; release=50ms is inaudible at -1 dBTP headroom.
     # ═══════════════════════════════════════════════════════════════════════
     progress(job_id, 65, "트루 피크 리미터 적용 중")
     log("INFO", f"[pipeline] stage6 — brickwall limiter → {output_path}")
+
+    # Measure pre-limiter peak so we can report actual limiter gain reduction
+    try:
+        pre_lim_stats   = measure_output(tmp_wav, target_lufs, target_tp)
+        pre_lim_peak_db = pre_lim_stats.get("truePeakDbtp", 0.0)
+        pre_lim_lufs    = pre_lim_stats.get("integratedLufs", -99.0)
+    except FFmpegError:
+        pre_lim_peak_db = 0.0
+        pre_lim_lufs    = -99.0
 
     try:
         apply_limiter(
@@ -430,6 +434,69 @@ def run_pipeline(
     elapsed = round(time.time() - t_start, 2)
     log("INFO", f"[pipeline] done in {elapsed}s")
 
+    # ── Build analysis report ──────────────────────────────────────────────
+    comp_params  = get_comp_params(style)
+    comp_gr_est  = estimate_comp_gr(style, input_peak_db)
+    lim_gr       = round(max(0.0, pre_lim_peak_db - target_tp), 2)
+    loudnorm_gain = round(target_lufs - float(pass1_raw.get("input_i", pre_lufs)), 1)
+
+    post_spectral = None
+    if post_waveform and hasattr(post_waveform, "low_to_mid_db"):
+        post_spectral = {
+            "lowToMidDb":  round(post_waveform.low_to_mid_db, 1),
+            "highToMidDb": round(post_waveform.high_to_mid_db, 1),
+        }
+
+    analysis_report = {
+        # Per-band EQ description
+        "eqMoves": eq_moves,
+
+        # Compressor
+        "compressor": {
+            "style":          style,
+            "thresholdDb":    comp_params["threshold"],
+            "ratio":          comp_params["ratio"],
+            "attackMs":       comp_params["attack"],
+            "releaseMs":      comp_params["release"],
+            "makeupDb":       min(comp_params["makeup"], 3.0),
+            "estimatedGrDb":  comp_gr_est,
+        },
+
+        # Limiter
+        "limiter": {
+            "ceilingDbtp":    target_tp,
+            "preGainDbtp":    round(pre_lim_peak_db, 2),
+            "appliedGrDb":    lim_gr,
+            "preLimLufs":     round(pre_lim_lufs, 2),
+        },
+
+        # Loudnorm
+        "loudnorm": {
+            "targetLufs":     target_lufs,
+            "measuredBefore": round(pre_lufs, 2),
+            "gainAppliedDb":  loudnorm_gain,
+        },
+
+        # Spectral before/after
+        "spectralBefore": {
+            "lowToMidDb":  round(low_to_mid_db, 1),
+            "highToMidDb": round(high_to_mid_db, 1),
+        } if waveform else None,
+        "spectralAfter": post_spectral,
+
+        # Key loudness metrics
+        "loudnessBefore": {
+            "integratedLufs": round(pre_lufs, 2),
+            "truePeakDbtp":   round(pre_tp, 2),
+            "lra":            round(pre_lra, 2),
+        },
+        "loudnessAfter": {
+            "integratedLufs": round(post_lufs, 2),
+            "truePeakDbtp":   round(post_tp, 2),
+            "lra":            round(post_lra, 2),
+        },
+    }
+
     return {
         # Output files
         "outputPath":  output_path,
@@ -460,6 +527,9 @@ def run_pipeline(
 
         # Post-waveform (clipping check on output)
         "postWaveform": waveform_stats_to_dict(post_waveform) if post_waveform else None,
+
+        # Full analysis report (EQ moves, compressor, limiter, spectral before/after)
+        "analysisReport": analysis_report,
 
         # Warnings
         "pipelineWarnings": pipeline_warnings,

@@ -13,17 +13,18 @@ import React, { useCallback, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
+import type { AnalysisReport as AnalysisReportType } from '@aimaster/shared-types';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number, d = 1) { return n.toFixed(d); }
 
-/** Convert a filesystem path to a file:// URL usable in <audio src=...> */
+/** Convert a filesystem path to aimaster-local:// URL (bypasses Chromium file:// block). */
 function toFileUrl(p: string): string {
   if (!p) return '';
-  // Windows: C:\path → file:///C:/path
   const normalized = p.replace(/\\/g, '/');
-  return normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`;
+  const withSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
+  return `aimaster-local://${encodeURI(withSlash)}`;
 }
 
 // ── Arrow delta ───────────────────────────────────────────────────────────────
@@ -298,6 +299,130 @@ function QCSummary() {
   );
 }
 
+// ── Analysis Report card ──────────────────────────────────────────────────────
+
+function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
+  const [open, setOpen] = useState(false);
+
+  const specDelta = (before: number | undefined, after: number | undefined, label: string) => {
+    if (before == null || after == null) return null;
+    const diff = after - before;
+    const sign = diff > 0 ? '+' : '';
+    const color = diff > 0.5 ? 'text-emerald-400' : diff < -0.5 ? 'text-amber-400' : 'text-zinc-500';
+    return (
+      <div key={label} className="flex justify-between">
+        <span className="text-zinc-600">{label}</span>
+        <span className={`font-mono text-xs ${color}`}>
+          {before.toFixed(1)} → {after.toFixed(1)} ({sign}{diff.toFixed(1)} dB)
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="no-drag w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-800/30 transition-colors"
+      >
+        <span className="text-xs text-zinc-500 uppercase tracking-wider">분석 리포트</span>
+        <span className="text-[10px] text-zinc-700">{open ? '접기 ▲' : '펼치기 ▼'}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-4 border-t border-zinc-800">
+
+          {/* EQ Moves */}
+          <div>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mt-3 mb-1.5">EQ 적용 밴드</p>
+            <div className="space-y-1">
+              {report.eqMoves.map((m, i) => (
+                <div key={i} className="flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-1 h-1 rounded-full shrink-0 ${m.gainDb >= 0 ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                    <span className="text-zinc-500">{m.band}</span>
+                    {m.adaptive && <span className="text-[9px] text-zinc-700 border border-zinc-800 rounded px-1">적응형</span>}
+                  </div>
+                  <div className="flex items-center gap-2 font-mono">
+                    <span className="text-zinc-700">{m.freqHz >= 1000 ? `${m.freqHz / 1000}kHz` : `${m.freqHz}Hz`}</span>
+                    <span className={m.gainDb >= 0 ? 'text-emerald-400' : 'text-amber-400'}>{m.gainStr} dB</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Compressor */}
+          <div>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">컴프레서</p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+              {[
+                ['Threshold', `${report.compressor.thresholdDb} dBFS`],
+                ['Ratio', `${report.compressor.ratio}:1`],
+                ['Attack', `${report.compressor.attackMs} ms`],
+                ['Release', `${report.compressor.releaseMs} ms`],
+                ['Makeup', `+${report.compressor.makeupDb} dB`],
+                ['Est. GR', `−${report.compressor.estimatedGrDb} dB`],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between">
+                  <span className="text-zinc-600">{k}</span>
+                  <span className="font-mono text-zinc-400">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Limiter */}
+          <div>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">리미터</p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+              {[
+                ['Ceiling', `${report.limiter.ceilingDbtp} dBTP`],
+                ['Pre-lim Peak', `${report.limiter.preGainDbtp.toFixed(1)} dBTP`],
+                ['GR Applied', report.limiter.appliedGrDb > 0 ? `−${report.limiter.appliedGrDb.toFixed(2)} dB` : '없음'],
+                ['Pre-lim LUFS', `${report.limiter.preLimLufs.toFixed(1)} LUFS`],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between">
+                  <span className="text-zinc-600">{k}</span>
+                  <span className="font-mono text-zinc-400">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Loudnorm */}
+          <div>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">라우드니스 정규화</p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+              {[
+                ['Target', `${report.loudnorm.targetLufs} LUFS`],
+                ['Measured Before', `${report.loudnorm.measuredBefore.toFixed(1)} LUFS`],
+                ['Gain Applied', `${report.loudnorm.gainAppliedDb > 0 ? '+' : ''}${report.loudnorm.gainAppliedDb} dB`],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between">
+                  <span className="text-zinc-600">{k}</span>
+                  <span className="font-mono text-zinc-400">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Spectral before/after */}
+          {report.spectralBefore && report.spectralAfter && (
+            <div>
+              <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">스펙트럴 밸런스 변화</p>
+              <div className="space-y-1 text-[11px]">
+                {specDelta(report.spectralBefore.lowToMidDb, report.spectralAfter.lowToMidDb, 'Low / Mid 비율')}
+                {specDelta(report.spectralBefore.highToMidDb, report.spectralAfter.highToMidDb, 'High / Mid 비율')}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── ResultPage ────────────────────────────────────────────────────────────────
 
 export default function ResultPage() {
@@ -335,6 +460,9 @@ export default function ResultPage() {
           {previewSrc && <PreviewPlayer src={previewSrc} />}
           <SaveButtons />
           <QCSummary />
+          {masteringResult?.analysisReport && (
+            <AnalysisReportCard report={masteringResult.analysisReport} />
+          )}
 
           <div className="h-4" />
         </div>
