@@ -117,24 +117,26 @@ def parse_bit_depth(audio_stream: dict[str, Any]) -> int:
 
 def loudnorm_pass1(
     file_path: str,
-    target_lufs: float = -14.0,
-    target_tp: float = -1.0,
+    target_lufs: float = -14.5,
+    target_tp: float = -1.5,
     lra: float = 11.0,
     pre_filter: str = "",
 ) -> dict[str, str]:
     """
     Run loudnorm pass 1 (measurement only, no output written).
 
-    pre_filter: optional comma-joined filter chain applied BEFORE loudnorm,
-                e.g. EQ + compressor. Pass the same pre_filter used in pass2
-                so the measurements reflect the actual filtered signal.
+    pre_filter: optional comma-joined filter chain applied BEFORE loudnorm.
+                Pass the same pre_filter used in pass2 so the measurements
+                reflect the actual filtered signal and loudnorm hits the target.
 
     Returns dict with keys from ffmpeg loudnorm JSON:
-      input_i, input_lra, input_tp, input_thresh, target_offset,
-      normalization_type, output_i, output_lra, output_tp
+      input_i, input_lra, input_tp, input_thresh, target_offset
     """
-    loudnorm_filter = f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={lra}:print_format=json"
+    loudnorm_filter = (
+        f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={lra}:print_format=json"
+    )
     filter_str = f"{pre_filter},{loudnorm_filter}" if pre_filter else loudnorm_filter
+
     _, stderr = _run([
         "ffmpeg", "-hide_banner",
         "-i", file_path,
@@ -143,7 +145,6 @@ def loudnorm_pass1(
     ])
 
     # loudnorm JSON is embedded in stderr — find the LAST complete {...} block
-    # using a backward scan so nested braces are handled correctly.
     last_close = stderr.rfind("}")
     match_text: str | None = None
     if last_close != -1:
@@ -185,8 +186,8 @@ def loudnorm_pass2(
     output_path: str,
     pass1: dict[str, str],
     *,
-    target_lufs: float = -14.0,
-    target_tp: float = -1.0,
+    target_lufs: float = -14.5,
+    target_tp: float = -1.5,
     lra: float = 11.0,
     sample_rate: int = 44100,
     bit_depth: int = 24,
@@ -194,6 +195,9 @@ def loudnorm_pass2(
 ) -> str:
     """
     Apply loudnorm in linear mode using pass-1 measurements.
+
+    target_tp is set to -1.5 by default to leave 0.5 dB of headroom
+    for the brickwall limiter stage that follows.
 
     pre_filter: comma-joined ffmpeg audio filter string applied BEFORE loudnorm
                 (EQ → compressor chain goes here).
@@ -223,11 +227,63 @@ def loudnorm_pass2(
     return output_path
 
 
+# ── Brickwall true-peak limiter ───────────────────────────────────────────────
+
+def apply_limiter(
+    input_path: str,
+    output_path: str,
+    *,
+    ceiling_dbfs: float = -1.0,
+    attack_ms: float = 5.0,
+    release_ms: float = 50.0,
+    sample_rate: int = 44100,
+    bit_depth: int = 24,
+) -> str:
+    """
+    Apply a brickwall peak limiter as the final mastering stage.
+
+    This is a safety net that prevents any sample from exceeding ceiling_dbfs.
+    It runs after loudnorm (which targets TP=-1.5), so the limiter only
+    engages on genuine inter-sample peak overshoots — typically 0 to -0.5 dB
+    of gain reduction, not audible if loudnorm is working correctly.
+
+    Args:
+        ceiling_dbfs: output ceiling in dBFS (default -1.0)
+        attack_ms:    limiter attack time in milliseconds (default 5 ms)
+        release_ms:   limiter release time in milliseconds (default 50 ms)
+
+    Returns output_path on success.
+    """
+    limit_linear = 10.0 ** (ceiling_dbfs / 20.0)
+
+    limiter = (
+        f"alimiter="
+        f"level_in=1"
+        f":level_out=1"
+        f":limit={limit_linear:.6f}"
+        f":attack={attack_ms}"
+        f":release={release_ms}"
+        f":asc=1"
+    )
+    codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
+
+    _, stderr = _run([
+        "ffmpeg", "-hide_banner", "-y",
+        "-i", input_path,
+        "-af", limiter,
+        "-ar", str(sample_rate),
+        "-acodec", codec,
+        output_path,
+    ])
+    log("DEBUG", f"limiter stderr tail:\n{stderr[-200:]}")
+    return output_path
+
+
 # ── Post-verification re-measurement ─────────────────────────────────────────
 
 def measure_output(
     file_path: str,
-    target_lufs: float = -14.0,
+    target_lufs: float = -14.5,
     target_tp: float = -1.0,
 ) -> dict[str, float]:
     """

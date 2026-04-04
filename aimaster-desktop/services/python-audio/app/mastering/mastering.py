@@ -41,7 +41,7 @@ def master_file(
     input_path  = params["input_path"]
     output_path = params["output_path"]
     style       = str(params.get("style", "balanced"))
-    target_lufs = float(params.get("target_lufs", -14.0))
+    target_lufs = float(params.get("target_lufs", -14.5))
     target_tp   = float(params.get("target_tp", -1.0))
     lra         = float(params.get("lra", 11.0))
     sample_rate = int(params.get("sample_rate", 44100))
