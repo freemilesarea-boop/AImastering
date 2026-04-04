@@ -148,15 +148,8 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         throw pythonProcessFailed('Bridge process exited during masterFile()', true);
       }
 
-      if (gate.isPaid) {
-        licenseService.decrementTrialUsage();   // no-op for paid (remains TRIAL_MAX)
-      } else {
-        // Free: delete the WAV, return empty path
-        try { fs.unlinkSync(wavTempPath); } catch { /* already gone */ }
-        result.outputPath = '';
-        licenseService.decrementTrialUsage();
-        log.info(`[license] trial used — ${licenseService.getRemainingTrials()} remaining`);
-      }
+      // WAV download always available — no license restriction
+      licenseService.decrementTrialUsage();
 
       return {
         ...result,
