@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from './stores/appStore.js';
 import { useLicenseStore } from './stores/licenseStore.js';
 import LicenseModal from './components/LicenseModal.js';
@@ -9,6 +9,7 @@ import ResultPage   from './pages/ResultPage.js';
 import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
+import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 
 // ── Toast notification ────────────────────────────────────────────────────────
 
@@ -106,6 +107,89 @@ function NoApiUI() {
   );
 }
 
+// ── Global file drag overlay ──────────────────────────────────────────────────
+// Electron issue: when dragging files from an external app (Finder/Explorer),
+// the drag enters via the TopBar which has -webkit-app-region: drag.  That CSS
+// property intercepts native drag events before they reach react-dropzone.
+// Solution: listen at the document level and show a full-screen overlay
+// (z-index > TopBar, -webkit-app-region: no-drag) that captures the drop.
+
+const AUDIO_EXTENSIONS = new Set(['.wav', '.flac', '.aiff', '.aif', '.mp3', '.m4a']);
+
+function isAudioDrag(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  return Array.from(dt.types).includes('Files');
+}
+
+function GlobalDropOverlay() {
+  const [active, setActive] = useState(false);
+  const counter = useRef(0);
+  const addFilesToQueue = useAudioStore((s) => s.addFilesToQueue);
+  const setPage         = useAppStore((s) => s.setPage);
+
+  useEffect(() => {
+    const onEnter = (e: DragEvent) => {
+      if (!isAudioDrag(e.dataTransfer)) return;
+      counter.current += 1;
+      setActive(true);
+    };
+    const onLeave = (e: DragEvent) => {
+      if (!isAudioDrag(e.dataTransfer)) return;
+      counter.current -= 1;
+      if (counter.current <= 0) { counter.current = 0; setActive(false); }
+    };
+    const onDragOver = (e: DragEvent) => { if (isAudioDrag(e.dataTransfer)) e.preventDefault(); };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      counter.current = 0;
+      setActive(false);
+
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      const paths = files
+        .map((f) => (f as File & { path?: string }).path ?? '')
+        .filter((p) => {
+          if (!p) return false;
+          const ext = p.slice(p.lastIndexOf('.')).toLowerCase();
+          return AUDIO_EXTENSIONS.has(ext);
+        })
+        .slice(0, MAX_QUEUE_SIZE);
+
+      if (paths.length) {
+        addFilesToQueue(paths);
+        setPage('home');
+      }
+    };
+
+    document.addEventListener('dragenter', onEnter);
+    document.addEventListener('dragleave', onLeave);
+    document.addEventListener('dragover',  onDragOver);
+    document.addEventListener('drop',      onDrop);
+    return () => {
+      document.removeEventListener('dragenter', onEnter);
+      document.removeEventListener('dragleave', onLeave);
+      document.removeEventListener('dragover',  onDragOver);
+      document.removeEventListener('drop',      onDrop);
+    };
+  }, [addFilesToQueue, setPage]);
+
+  if (!active) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-3
+                 bg-zinc-900/90 backdrop-blur-sm pointer-events-none"
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+    >
+      <svg className="w-12 h-12 text-zinc-300" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+        <path d="M2 12h2M20 12h2M6 8v8M18 8v8M10 5v14M14 5v14" />
+      </svg>
+      <p className="text-base font-medium text-zinc-200">파일을 놓으세요</p>
+      <p className="text-xs text-zinc-500">WAV · FLAC · AIFF · MP3 · M4A</p>
+    </div>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -149,6 +233,10 @@ function AppInner() {
 
       {/* Toast notifications */}
       <Toast />
+
+      {/* Global drag overlay — captures drops from external apps (Finder/Explorer)
+          even when TopBar has -webkit-app-region: drag */}
+      <GlobalDropOverlay />
     </div>
   );
 }

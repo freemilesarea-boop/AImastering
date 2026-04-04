@@ -17,7 +17,6 @@ import {
   pathEncodingError,
 } from '@aimaster/audio-engine';
 import type { MasteringOptions } from '@aimaster/shared-types';
-import { licenseService } from './licenseHandlers.js';
 import { log } from '../utils/logger.js';
 
 let bridge: PythonBridge | null = null;
@@ -110,18 +109,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     _outputPath: string,   // ignored — we always generate temp paths here
     options: MasteringOptions,
   ) => {
-    // ── License gate ──────────────────────────────────────────────────────
-    const gate = licenseService.canProcess();
-    if (!gate.allowed) {
-      throw new AppError(
-        'TRIAL_COUNT_ANOMALY',
-        gate.reason ?? '처리 횟수 초과',
-        `License gate blocked: ${gate.reason}`,
-        false,
-      );
-    }
-
-    // ── Write-permission pre-check (case 6) ───────────────────────────────
+    // ── Write-permission pre-check ────────────────────────────────────────
     assertTmpWritable();
 
     const b = getBridge();
@@ -147,9 +135,6 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       if (bridgeDied) {
         throw pythonProcessFailed('Bridge process exited during masterFile()', true);
       }
-
-      // WAV download always available — no license restriction
-      licenseService.decrementTrialUsage();
 
       return {
         ...result,
