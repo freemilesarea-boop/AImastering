@@ -130,26 +130,8 @@ def run_pipeline(
     input_bit_depth   = parse_bit_depth(audio)
     input_duration    = float(fmt.get("duration") or audio.get("duration") or 0.0)
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # Stage 1 — loudnorm pass-1 on INPUT (measure pre-mastering stats)
-    # ═══════════════════════════════════════════════════════════════════════
-    progress(job_id, 12, "라우드니스 측정 중 (1/2)")
-    log("INFO", f"[pipeline] stage1 — loudnorm pass1 on input")
-
-    try:
-        pass1 = loudnorm_pass1(input_path, target_lufs, target_tp, lra)
-    except FFmpegError as exc:
-        log("ERROR", f"loudnorm pass1 failed: {exc}\nstderr:\n{exc.stderr}")
-        raise
-
-    pre_lufs = float(pass1.get("input_i", -99.0))
-    pre_tp   = float(pass1.get("input_tp", 0.0))
-    pre_lra  = float(pass1.get("input_lra", 0.0))
-    log("INFO", f"[pipeline] pre-master: LUFS={pre_lufs:.1f}, TP={pre_tp:.1f}, LRA={pre_lra:.1f}")
-
-    # Waveform analysis for peak, DC, silence
+    # Waveform analysis for peak, DC, silence (needed before filter chain build)
     waveform = analyze_waveform(input_path)
-    input_peak_db = waveform.sample_peak_db if waveform else pre_tp
 
     # ═══════════════════════════════════════════════════════════════════════
     # Stage 2 — Preprocessing warnings (no processing yet)
@@ -195,6 +177,49 @@ def run_pipeline(
             ),
         })
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Stage 3 + 4 — Build filter chain (EQ + Dynamics)
+    # ═══════════════════════════════════════════════════════════════════════
+    progress(job_id, 25, "필터 체인 구성 중")
+    log("INFO", f"[pipeline] stage3+4 — building filter chain (style={style})")
+
+    # Use probe-based peak if waveform analysis failed
+    input_peak_db = waveform.sample_peak_db if waveform else float(
+        ffprobe_info(input_path).get("format", {}).get("max_volume", -3.0) or -3.0
+    )
+
+    ai = ai_detections or {}
+    pre_filter, applied_corrections = _build_filter_chain(
+        style, ai, apply_ai_corrections, input_peak_db
+    )
+    log("INFO", f"[pipeline] filter chain: {pre_filter or '(none)'}")
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Stage 1 — loudnorm pass-1 on FILTERED signal (accurate measurement)
+    # ═══════════════════════════════════════════════════════════════════════
+    # IMPORTANT: pass1 must measure the same signal that pass2 will normalize.
+    # Running pass1 on the raw input gives wrong measured_I/TP values when
+    # EQ or compression changes the loudness before loudnorm in pass2.
+    progress(job_id, 35, "라우드니스 측정 중 (1/2)")
+    log("INFO", f"[pipeline] stage5-pass1 — loudnorm measurement (with pre_filter)")
+
+    try:
+        pass1 = loudnorm_pass1(input_path, target_lufs, target_tp, lra, pre_filter)
+    except FFmpegError as exc:
+        log("ERROR", f"loudnorm pass1 failed: {exc}\nstderr:\n{exc.stderr}")
+        raise
+
+    # Also measure raw input for "before" stats displayed in the UI
+    try:
+        pass1_raw = loudnorm_pass1(input_path, target_lufs, target_tp, lra)
+    except FFmpegError:
+        pass1_raw = pass1  # fallback: use filtered measurement
+
+    pre_lufs = float(pass1_raw.get("input_i", -99.0))
+    pre_tp   = float(pass1_raw.get("input_tp", 0.0))
+    pre_lra  = float(pass1_raw.get("input_lra", 0.0))
+    log("INFO", f"[pipeline] pre-master (raw): LUFS={pre_lufs:.1f}, TP={pre_tp:.1f}, LRA={pre_lra:.1f}")
+
     if pre_lra < 2.5:
         pipeline_warnings.append({
             "code": "BRICKWALL_INPUT",
@@ -202,18 +227,6 @@ def run_pipeline(
             "userMessage": f"입력 파일의 LRA가 {pre_lra:.1f} LU로 매우 낮습니다. "
                            f"이미 과도한 압축이 적용된 것으로 보입니다.",
         })
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # Stage 3 + 4 — Build filter chain (EQ + Dynamics)
-    # ═══════════════════════════════════════════════════════════════════════
-    progress(job_id, 28, "필터 체인 구성 중")
-    log("INFO", f"[pipeline] stage3+4 — building filter chain (style={style})")
-
-    ai = ai_detections or {}
-    pre_filter, applied_corrections = _build_filter_chain(
-        style, ai, apply_ai_corrections, input_peak_db
-    )
-    log("INFO", f"[pipeline] filter chain: {pre_filter or '(none)'}")
 
     # ═══════════════════════════════════════════════════════════════════════
     # Stage 5 — loudnorm pass-2 (apply normalization)

@@ -37,27 +37,27 @@ _STYLE_COMP: dict[str, dict] = {
         "ratio":     2.0,
         "attack":    30,
         "release":   300,
-        "makeup":    1.5,
+        "makeup":    1.0,   # reduced from 1.5 — less makeup prevents pushing into EQ-cut zones
         "knee":      8.0,
     },
 
-    # Bright: slightly faster and more transparent; still gentle
+    # Bright: faster attack to catch transient resonances at high frequencies
     "bright": {
         "threshold": -20,
         "ratio":     2.5,
-        "attack":    15,
+        "attack":     5,   # faster than before (was 15 ms) — tames transient harshness
         "release":   200,
-        "makeup":    1.5,
+        "makeup":    1.0,   # reduced from 1.5 — prevents over-driving boosted highs
         "knee":      5.0,
     },
 
-    # Punch: bus-comp feel; faster attack for density; higher ratio for weight
+    # Punch: bus-comp feel; faster attack for density; reduced makeup to avoid distortion
     "punch": {
         "threshold": -16,
         "ratio":     3.5,
         "attack":     8,
         "release":   120,
-        "makeup":    2.0,
+        "makeup":    1.5,   # reduced from 2.0 — prevents 2 kHz boost from clipping
         "knee":      4.0,
     },
 }

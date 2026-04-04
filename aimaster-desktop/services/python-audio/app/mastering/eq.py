@@ -35,26 +35,30 @@ _STYLE_EQ: dict[str, list[str]] = {
     # Principle: soften 2.5–5 kHz over-stimulation; preserve 150–350 Hz warmth;
     #            gentle high rolloff to reduce "sharp" impression.
     "warm": [
-        # Reduce harsh upper-mids (2.5–5 kHz) — narrow bell, moderate cut
-        "equalizer=f=3500:t=o:w=2.0:g=-2.0",
-        # Preserve body warmth (150–350 Hz) — very gentle shelf lift
-        "equalizer=f=250:t=o:w=1.5:g=+0.5",
-        # Soften air/presence shelf above 8 kHz — do not kill, just tame
-        "highshelf=f=8000:t=h:g=-1.5",
+        # Reduce harsh upper-mids (3–4 kHz) — moderate bell, conservative cut
+        # w=1.5 → ~1.7 octave span; avoids phase artifacts from overly wide cuts
+        "equalizer=f=3500:t=o:w=1.5:g=-1.5",
+        # Preserve body warmth (200–300 Hz) — very gentle lift
+        "equalizer=f=250:t=o:w=1.0:g=+0.5",
+        # Tame air shelf above 8 kHz without killing it
+        "highshelf=f=8000:g=-1.5",
     ],
 
     # ── Bright ────────────────────────────────────────────────────────────
     # Principle: enhance 6–12 kHz presence; light cleanup of mid-low mud;
     #            must NOT introduce sibilance or harshness.
+    # CRITICAL: narrow boost width + strong de-ess to prevent ringing artifacts.
     "bright": [
         # Gently clean up mid-low mud (250–400 Hz)
         "equalizer=f=300:t=o:w=1.0:g=-1.0",
-        # Lift overall air/presence (7–12 kHz) — wide bell, modest gain
-        "equalizer=f=9000:t=o:w=2.0:g=+1.5",
-        # Subtle air shelf for the very top
-        "highshelf=f=12000:t=h:g=+1.0",
-        # Sibilance guard: slight de-ess around 8 kHz to counteract the lift
-        "equalizer=f=8000:t=o:w=1.0:g=-0.5",
+        # Lift air/presence (8–12 kHz) — NARROW bell, conservative gain
+        # w=1.0 (was 2.0) keeps boost focused; g=+0.8 (was +1.5) prevents harshness
+        "equalizer=f=9000:t=o:w=1.0:g=+0.8",
+        # Very subtle top-end shelf — just a whisper of air
+        "highshelf=f=12000:g=+0.5",
+        # De-ess: stronger cut at 8 kHz to prevent sibilance ringing
+        # g=-2.0 (was -0.5) properly counteracts the 9 kHz boost in the 7–9 kHz zone
+        "equalizer=f=8000:t=o:w=0.8:g=-2.0",
     ],
 
     # ── Punch ─────────────────────────────────────────────────────────────
@@ -65,8 +69,9 @@ _STYLE_EQ: dict[str, list[str]] = {
         "equalizer=f=80:t=o:w=1.0:g=+1.5",
         # Clean up boxy low-mid buildup (300–400 Hz)
         "equalizer=f=350:t=o:w=1.0:g=-1.0",
-        # Presence/attack (1–3 kHz) — adds transient definition
-        "equalizer=f=2000:t=o:w=1.5:g=+1.5",
+        # Presence/attack (1–3 kHz) — NARROWER width, lower gain to prevent resonance
+        # w=1.0 (was 1.5) + g=+1.0 (was +1.5) reduces mid-frequency buildup / ringing
+        "equalizer=f=2000:t=o:w=1.0:g=+1.0",
     ],
 }
 

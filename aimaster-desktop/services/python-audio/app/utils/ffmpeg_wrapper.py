@@ -120,17 +120,21 @@ def loudnorm_pass1(
     target_lufs: float = -14.0,
     target_tp: float = -1.0,
     lra: float = 11.0,
+    pre_filter: str = "",
 ) -> dict[str, str]:
     """
     Run loudnorm pass 1 (measurement only, no output written).
+
+    pre_filter: optional comma-joined filter chain applied BEFORE loudnorm,
+                e.g. EQ + compressor. Pass the same pre_filter used in pass2
+                so the measurements reflect the actual filtered signal.
 
     Returns dict with keys from ffmpeg loudnorm JSON:
       input_i, input_lra, input_tp, input_thresh, target_offset,
       normalization_type, output_i, output_lra, output_tp
     """
-    filter_str = (
-        f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={lra}:print_format=json"
-    )
+    loudnorm_filter = f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={lra}:print_format=json"
+    filter_str = f"{pre_filter},{loudnorm_filter}" if pre_filter else loudnorm_filter
     _, stderr = _run([
         "ffmpeg", "-hide_banner",
         "-i", file_path,
