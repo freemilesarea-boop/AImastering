@@ -23,38 +23,38 @@ from app.utils.logger import log
 _STYLE_COMP: dict[str, dict] = {
 
     "balanced": {
-        "threshold": -18,
-        "ratio":     2.5,
+        "threshold": -20,
+        "ratio":     1.8,
         "attack":    35,
         "release":   150,
-        "makeup":    2.0,
+        "makeup":    1.5,
         "knee":      8.0,
     },
 
     "warm": {
-        "threshold": -16,
-        "ratio":     3.0,
+        "threshold": -18,
+        "ratio":     2.0,
         "attack":    40,    # slow attack — transients breathe through
         "release":   180,
-        "makeup":    2.0,
-        "knee":      10.0,  # very soft knee — gradual onset
+        "makeup":    1.5,
+        "knee":      10.0,
     },
 
     "bright": {
-        "threshold": -18,
-        "ratio":     2.5,
+        "threshold": -20,
+        "ratio":     2.0,
         "attack":    20,    # faster — controls harshness from presence boosts
         "release":   100,
-        "makeup":    2.0,
+        "makeup":    1.5,
         "knee":      6.0,
     },
 
     "punch": {
-        "threshold": -16,
-        "ratio":     3.5,
-        "attack":    15,    # fast — preserves kick snap; clamps sustain
+        "threshold": -18,
+        "ratio":     2.5,
+        "attack":    15,
         "release":   80,
-        "makeup":    2.5,
+        "makeup":    2.0,
         "knee":      4.0,
     },
 }
@@ -69,8 +69,11 @@ def build_dynamics_filter(
     """Return comma-separated FFmpeg filter string (Stage 4)."""
     parts: list[str] = []
 
-    # Pre-gain reduction if input is hot/clipped
-    if input_peak_db >= -0.5:
+    # Pre-gain reduction only for actually clipped input (>= 0 dBFS).
+    # Previously this triggered at -0.5 dBFS, which hit almost every
+    # commercial track and silently reduced gain before the compressor,
+    # causing perceived volume loss even after loudnorm compensation.
+    if input_peak_db >= 0.0:
         target_peak = -3.0
         reduction_db = target_peak - input_peak_db
         if reduction_db < -0.1:
