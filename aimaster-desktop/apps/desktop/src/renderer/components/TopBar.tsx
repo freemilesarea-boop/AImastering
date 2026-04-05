@@ -49,8 +49,8 @@ export default function TopBar({ subtitle, actions }: TopBarProps) {
     <div className="drag-region h-10 shrink-0 flex items-center px-4 gap-3
                     border-b border-zinc-800/60">
       {/* App wordmark — left side of drag region */}
-      <span className="font-mono text-[11px] tracking-[0.18em] text-zinc-600 select-none uppercase">
-        AIMASTER
+      <span className="font-semibold text-[12px] tracking-wide text-zinc-300 select-none">
+        Louver Mastering AI
       </span>
 
       {subtitle && (

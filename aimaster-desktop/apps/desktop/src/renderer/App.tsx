@@ -228,6 +228,13 @@ function AppInner() {
     <div className="h-screen flex flex-col overflow-hidden">
       {pages[page] ?? <HomePage />}
 
+      {/* Creator watermark — fixed bottom-left */}
+      <div className="fixed bottom-3 left-4 pointer-events-none select-none z-10">
+        <span className="text-[10px] font-mono text-zinc-700 tracking-widest uppercase">
+          루베르
+        </span>
+      </div>
+
       {/* License modal — overlays any page */}
       <LicenseModal />
 
