@@ -96,26 +96,24 @@ def _build_base_eq(
     low_gain = _adaptive_low_boost(low_to_mid_db)
     air_gain = _adaptive_air_boost(high_to_mid_db)
 
-    # Supplements — proportional but with a minimum floor
-    lo_supp  = max(0.8, round(low_gain * 0.40, 1))
-    presence = max(0.8, round(air_gain * 0.40, 1))
+    # Upper-bass supplement: 40% of primary, min 0.8 dB
+    lo_supp = max(0.8, round(low_gain * 0.40, 1))
 
     filters = [
         f"equalizer=f=80:t=o:w=2.0:g=+{low_gain:.1f}",
         f"equalizer=f=120:t=o:w=1.2:g=+{lo_supp:.1f}",
         "equalizer=f=250:t=o:w=1.2:g=-3.0",
         "equalizer=f=320:t=o:w=0.8:g=-1.0",
-        f"highshelf=f=10000:g=+{air_gain:.1f}",
-        f"equalizer=f=8000:t=o:w=1.5:g=+{presence:.1f}",
+        # Air shelf starts at 12kHz to avoid vocal presence range (4-10kHz)
+        f"highshelf=f=12000:g=+{air_gain:.1f}",
     ]
 
     moves = [
-        EqMove("Low-end density",       80,    +low_gain, "bell",      adaptive=True),
-        EqMove("Upper-bass punch",      120,   +lo_supp,  "bell",      adaptive=True),
-        EqMove("Mud removal (main)",    250,   -3.0,      "bell"),
-        EqMove("Mud removal (secondary)",320,  -1.0,      "bell"),
-        EqMove("Air shelf",             10000, +air_gain, "highshelf", adaptive=True),
-        EqMove("Presence / clarity",    8000,  +presence, "bell",      adaptive=True),
+        EqMove("Low-end density",        80,    +low_gain, "bell",      adaptive=True),
+        EqMove("Upper-bass punch",       120,   +lo_supp,  "bell",      adaptive=True),
+        EqMove("Mud removal (main)",     250,   -3.0,      "bell"),
+        EqMove("Mud removal (secondary)", 320,  -1.0,      "bell"),
+        EqMove("Air shelf",              12000, +air_gain, "highshelf", adaptive=True),
     ]
 
     return filters, moves
@@ -150,33 +148,32 @@ _STYLE_OVERLAYS: dict[str, StyleOverlay] = {
         ],
     ),
 
-    # Bright: modern clarity — presence forward, extended air, safe de-ess
+    # Bright: modern clarity — open air above vocals, slight upper-mid definition
+    # 4kHz was too vocal-forward; moved definition to 5kHz (less vocal body)
+    # and kept air above 12kHz shelf (already in base)
     "bright": StyleOverlay(
         filters=[
-            "equalizer=f=4000:t=o:w=1.2:g=+2.0",   # presence / definition
-            "equalizer=f=12000:t=o:w=1.5:g=+1.5",  # extended air
-            "equalizer=f=7500:t=o:w=0.8:g=-1.0",   # de-ess safety notch
+            "equalizer=f=5000:t=o:w=1.0:g=+1.5",   # definition (above vocal body)
+            "equalizer=f=14000:t=o:w=1.5:g=+1.5",  # extended air (above sibilance)
         ],
         moves=[
-            EqMove("Presence (bright)",    4000,  +2.0, "bell"),
-            EqMove("Extended air (bright)", 12000, +1.5, "bell"),
-            EqMove("De-ess safety (bright)", 7500, -1.0, "bell"),
+            EqMove("Definition (bright)",     5000,  +1.5, "bell"),
+            EqMove("Extended air (bright)",   14000, +1.5, "bell"),
         ],
     ),
 
-    # Punch: club/EDM — sub weight, tight mid, attack snap
+    # Punch: club/EDM — sub weight, tighter mid, transient snap
+    # Removed 5kHz upper-edge (was emphasising vocal air)
     "punch": StyleOverlay(
         filters=[
             "equalizer=f=60:t=o:w=0.9:g=+2.5",     # sub-kick weight
             "equalizer=f=350:t=o:w=1.0:g=-2.5",    # tight mid mud cut
-            "equalizer=f=2500:t=o:w=1.0:g=+2.0",   # attack presence / snare
-            "equalizer=f=5000:t=o:w=0.8:g=+1.0",   # upper presence edge
+            "equalizer=f=2500:t=o:w=1.0:g=+1.5",   # snare/attack snap (reduced)
         ],
         moves=[
             EqMove("Sub-kick weight (punch)",   60,   +2.5, "bell"),
             EqMove("Mid tightness (punch)",     350,  -2.5, "bell"),
-            EqMove("Attack presence (punch)",   2500, +2.0, "bell"),
-            EqMove("Upper edge (punch)",        5000, +1.0, "bell"),
+            EqMove("Attack snap (punch)",       2500, +1.5, "bell"),
         ],
     ),
 }

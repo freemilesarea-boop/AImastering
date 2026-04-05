@@ -44,12 +44,12 @@ from app.utils.logger import log
 
 # ── Quality-check thresholds ──────────────────────────────────────────────────
 
-_TARGET_LUFS      = -14.5   # streaming target (Spotify/YouTube -14, with buffer)
-_TARGET_TP        = -1.0    # final true-peak ceiling (dBTP)
-_LOUDNORM_TP      = -1.5    # loudnorm internal TP target (leaves room for limiter)
+_TARGET_LUFS      = -14.0   # streaming target (one step louder than -14.5, still within platform norms)
+_TARGET_TP        = -0.5    # limiter ceiling — tighter than before so more peaks get caught
+_LOUDNORM_TP      = -2.0    # loudnorm internal TP target — wider gap → limiter engages on more material
 _LUFS_TOLERANCE   = 1.0     # dB: warn if |result - target| > this
 _MIN_LRA          = 4.0     # LU: below this = over-compressed output → warn
-_TP_MAX           = -1.0    # hard true-peak requirement after limiting
+_TP_MAX           = -0.5    # hard true-peak requirement after limiting
 
 ProgressCallback = Callable[[str, int, str], None]
 
@@ -325,8 +325,8 @@ def run_pipeline(
             tmp_wav,
             output_path,
             ceiling_dbfs=target_tp,
-            attack_ms=5.0,
-            release_ms=50.0,
+            attack_ms=2.0,    # faster — catches more peaks before they exceed ceiling
+            release_ms=40.0,
             sample_rate=sample_rate,
             bit_depth=bit_depth,
         )
