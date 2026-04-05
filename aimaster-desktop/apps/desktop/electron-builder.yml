@@ -1,45 +1,74 @@
-appId: com.aimaster.desktop
-productName: AIMASTER
-copyright: Copyright © 2025 AIMASTER
+appId: com.louver.mastering
+productName: Louver Mastering AI
+copyright: Copyright © 2025 루베르
 
 directories:
   output: out
   buildResources: public
 
+# ── App files ─────────────────────────────────────────────────────────────────
 files:
   - dist/**/*
-  - "!dist/renderer/**/*.map"
+  - "!dist/renderer/**/*.map"   # strip source maps from production build
 
+# ── Bundled native binaries ───────────────────────────────────────────────────
+# public/bin/ is populated by scripts/prebuild.cjs (FFmpeg) and
+# the build scripts (PyInstaller engine).  All three binaries land in
+# Resources/bin/ inside the final app bundle.
 extraResources:
-  - from: "../../services/python-audio"
-    to: "python-audio"
+  - from: "public/bin"
+    to: "bin"
     filter:
       - "**/*"
-      - "!.venv/**"
-      - "!__pycache__/**"
-      - "!*.pyc"
 
+# ── macOS ─────────────────────────────────────────────────────────────────────
 mac:
   category: public.app-category.music
-  icon: public/icon.icns
+  # electron-builder converts icon.png → .icns automatically on macOS
+  icon: public/icon.png
   target:
     - target: dmg
-      arch: [arm64, x64]
+      arch:
+        - arm64   # Apple Silicon (M1/M2/M3)
+        - x64     # Intel Mac
   hardenedRuntime: true
   entitlements: public/entitlements.mac.plist
   entitlementsInherit: public/entitlements.mac.plist
+  # PyInstaller engine binary must be executable — electron-builder signs it
+  extraFiles: []
 
+dmg:
+  title: "Louver Mastering AI"
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# ── Windows ───────────────────────────────────────────────────────────────────
 win:
-  icon: public/icon.ico
+  # electron-builder converts icon.png → .ico automatically
+  icon: public/icon.png
   target:
     - target: nsis
-      arch: [x64]
+      arch:
+        - x64
 
 nsis:
   oneClick: false
+  perMachine: false
   allowToChangeInstallationDirectory: true
+  installerIcon: public/icon.png
+  uninstallerIcon: public/icon.png
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "Louver Mastering AI"
 
+# ── Linux (optional AppImage) ─────────────────────────────────────────────────
 linux:
+  category: Audio
+  icon: public/icon.png
   target:
     - AppImage
-  category: Audio

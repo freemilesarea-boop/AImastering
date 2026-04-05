@@ -10,10 +10,13 @@
     "build": "pnpm build:renderer && pnpm build:main",
     "build:renderer": "vite build",
     "build:main": "node esbuild.main.cjs",
-    "dist": "pnpm build && electron-builder",
+    "prebuild:ffmpeg": "node scripts/prebuild.cjs",
+    "dist": "node scripts/prebuild.cjs && pnpm build && electron-builder",
+    "dist:mac": "bash ../../scripts/build-mac.sh",
+    "dist:win": "cmd /c ..\\..\\scripts\\build-win.bat",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
-    "clean": "rm -rf dist out"
+    "clean": "rm -rf dist out public/bin"
   },
   "dependencies": {
     "@aimaster/audio-engine": "workspace:*",
@@ -24,6 +27,8 @@
     "uuid": "^9.0.0"
   },
   "devDependencies": {
+    "@ffprobe-installer/ffprobe": "^1.4.1",
+    "ffmpeg-static": "^5.2.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@types/uuid": "^9.0.0",

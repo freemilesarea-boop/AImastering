@@ -20,19 +20,45 @@ import { log } from '../utils/logger.js';
 
 let bridge: PythonBridge | null = null;
 
+/**
+ * Resolve the paths for the Python engine and FFmpeg binaries.
+ *
+ * DEV mode  : uses system python3 + source tree main.py
+ * PACKAGED  : uses the PyInstaller-built standalone `engine` binary
+ *             (no Python installation required on the user's machine)
+ *
+ * FFmpeg is always resolved to the bundled binary in packaged mode via
+ * AIMASTER_FFMPEG / AIMASTER_FFPROBE env vars that ffmpeg_wrapper.py reads.
+ */
+function resolvePaths(): { pythonPath: string; scriptPath: string } {
+  const isWin = process.platform === 'win32';
+  const ext   = isWin ? '.exe' : '';
+
+  if (app.isPackaged) {
+    const binDir = path.join(process.resourcesPath, 'bin');
+
+    // Point the Python engine to the bundled FFmpeg
+    process.env['AIMASTER_FFMPEG']  = path.join(binDir, `ffmpeg${ext}`);
+    process.env['AIMASTER_FFPROBE'] = path.join(binDir, `ffprobe${ext}`);
+
+    return {
+      pythonPath: path.join(binDir, `engine${ext}`),
+      scriptPath: '',   // PyInstaller binary — no script arg needed
+    };
+  }
+
+  // DEV: use system python + source tree
+  const pythonPath = process.env['AIMASTER_PYTHON'] ?? 'python3';
+  const scriptPath = path.join(__dirname, '../../../../services/python-audio/app/main.py');
+  // PYTHONPATH must point to the directory containing the `app` package
+  process.env['PYTHONPATH'] = path.dirname(path.dirname(scriptPath));
+
+  return { pythonPath, scriptPath };
+}
+
 function getBridge(): PythonBridge {
   if (bridge) return bridge;
-  const pythonPath = process.env['AIMASTER_PYTHON'] ?? 'python3';
-  const scriptPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'python-audio', 'app', 'main.py')
-    : path.join(__dirname, '../../../../services/python-audio/app/main.py');
-
-  // Python script does `from app.analyzers.analyzer import ...`
-  // so PYTHONPATH must include the directory that contains the `app` package
-  // (i.e. services/python-audio/, not services/python-audio/app/)
-  const pythonRoot = path.dirname(path.dirname(scriptPath));
-  process.env['PYTHONPATH'] = pythonRoot;
-
+  const { pythonPath, scriptPath } = resolvePaths();
   bridge = new PythonBridge({ pythonPath, scriptPath });
   bridge.on('log', (line: string) => log.info('[python]', line));
   bridge.spawn();

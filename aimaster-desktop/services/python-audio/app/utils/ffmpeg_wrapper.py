@@ -1,6 +1,10 @@
 """
 FFmpeg / FFprobe wrappers for AIMASTER.
 
+Binary resolution order:
+  1. AIMASTER_FFMPEG / AIMASTER_FFPROBE env vars  (set by Electron in packaged mode)
+  2. System PATH (dev mode / fallback)
+
 Error policy:
   - Developer detail  → app.utils.logger (→ stderr, log files)
   - User-facing msg   → FFmpegError.user_msg (Korean, shown in UI)
@@ -9,11 +13,23 @@ Error policy:
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from typing import Any
 
 from app.utils.logger import log
+
+
+# ── Binary paths ──────────────────────────────────────────────────────────────
+# Electron sets these env vars in packaged mode so the engine finds the
+# bundled FFmpeg without relying on the user's PATH.
+
+_FFMPEG_BIN  = os.environ.get('AIMASTER_FFMPEG',  'ffmpeg')
+_FFPROBE_BIN = os.environ.get('AIMASTER_FFPROBE', 'ffprobe')
+
+log("INFO", f"ffmpeg  binary: {_FFMPEG_BIN}")
+log("INFO", f"ffprobe binary: {_FFPROBE_BIN}")
 
 
 # ── Custom exception ──────────────────────────────────────────────────────────
@@ -78,7 +94,7 @@ def _run(cmd: list[str], *, timeout: int = 300) -> tuple[str, str]:
 def ffprobe_info(file_path: str) -> dict[str, Any]:
     """Return full ffprobe JSON for a file (streams + format)."""
     stdout, _ = _run([
-        "ffprobe", "-v", "quiet",
+        _FFPROBE_BIN, "-v", "quiet",
         "-print_format", "json",
         "-show_streams", "-show_format",
         file_path,
@@ -138,7 +154,7 @@ def loudnorm_pass1(
     filter_str = f"{pre_filter},{loudnorm_filter}" if pre_filter else loudnorm_filter
 
     _, stderr = _run([
-        "ffmpeg", "-hide_banner",
+        _FFMPEG_BIN, "-hide_banner",
         "-i", file_path,
         "-af", filter_str,
         "-f", "null", "-",
@@ -216,7 +232,7 @@ def loudnorm_pass2(
     codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
 
     _, stderr = _run([
-        "ffmpeg", "-hide_banner", "-y",
+        _FFMPEG_BIN, "-hide_banner", "-y",
         "-i", input_path,
         "-af", af,
         "-ar", str(sample_rate),
@@ -268,7 +284,7 @@ def apply_limiter(
     codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
 
     _, stderr = _run([
-        "ffmpeg", "-hide_banner", "-y",
+        _FFMPEG_BIN, "-hide_banner", "-y",
         "-i", input_path,
         "-af", limiter,
         "-ar", str(sample_rate),
@@ -306,7 +322,7 @@ def measure_output(
 def export_preview_mp3(wav_path: str, mp3_path: str, bitrate: str = "320k") -> str:
     """Encode a 320 kbps MP3 preview from the master WAV."""
     _run([
-        "ffmpeg", "-hide_banner", "-y",
+        _FFMPEG_BIN, "-hide_banner", "-y",
         "-i", wav_path,
         "-acodec", "libmp3lame",
         "-b:a", bitrate,

@@ -32,7 +32,10 @@ export class PythonBridge extends EventEmitter {
   }
 
   spawn(): void {
-    this.proc = spawn(this.opts.pythonPath, [this.opts.scriptPath], {
+    // When scriptPath is empty (e.g. PyInstaller standalone engine),
+    // run the binary directly with no positional args.
+    const args = this.opts.scriptPath ? [this.opts.scriptPath] : [];
+    this.proc = spawn(this.opts.pythonPath, args, {
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
