@@ -3,8 +3,7 @@ import { app } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { v4 as uuidv4 } from 'uuid';
-import {
+import { v4 as uuidv4 } from 'uuid';import {
   PythonBridge,
   analyzeFile,
   masterFile,
@@ -40,8 +39,50 @@ function getBridge(): PythonBridge {
   return bridge;
 }
 
-/** Generate a temp file path under the OS temp directory. */
-function tempPath(suffix: string): string {
+/**
+ * Remove characters that are illegal in filenames on Windows or Unix.
+ * Spaces are replaced with underscores; the result is trimmed.
+ * Falls back to 'untitled' if the result is empty.
+ */
+function sanitizeFilename(name: string): string {
+  return (
+    name
+      // eslint-disable-next-line no-control-regex
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')  // illegal on Windows/Unix
+      .replace(/\s+/g, '_')                     // spaces → underscores
+      .replace(/\.+$/, '')                      // trailing dots (Windows disallows)
+      .trim()
+  ) || 'untitled';
+}
+
+/**
+ * Build `{tmpDir}/{sanitized_basename}_master.ext`, incrementing a numeric
+ * suffix when the path already exists:
+ *   song_master.wav → song_master(1).wav → song_master(2).wav …
+ *
+ * UUID is never exposed in the output filename; it is used only as an
+ * emergency fallback if all 999 numeric slots are somehow taken.
+ */
+function resolveOutputPath(inputFilePath: string, ext: string): string {
+  const tmpDir  = os.tmpdir();
+  const rawBase = path.basename(inputFilePath, path.extname(inputFilePath));
+  const safe    = sanitizeFilename(rawBase);
+  const stem    = `${safe}_master`;
+
+  const primary = path.join(tmpDir, `${stem}${ext}`);
+  if (!fs.existsSync(primary)) return primary;
+
+  for (let i = 1; i < 1000; i++) {
+    const candidate = path.join(tmpDir, `${stem}(${i})${ext}`);
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+
+  // Emergency fallback — should never be reached in normal usage
+  return path.join(tmpDir, `${stem}_${uuidv4().slice(0, 8)}${ext}`);
+}
+
+/** UUID-based temp path — for internal / ephemeral files only (not user-visible). */
+function internalTempPath(suffix: string): string {
   return path.join(os.tmpdir(), `aimaster_${uuidv4()}${suffix}`);
 }
 
@@ -125,9 +166,12 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     const bridgeExitHandler = () => { bridgeDied = true; };
     b.once('exit', bridgeExitHandler);
 
-    // Generate temp paths — main process owns these
-    const wavTempPath = tempPath('_master.wav');
-    const mp3TempPath = tempPath('_preview.mp3');
+    // ── Output path: original-filename-based, not UUID ────────────────────
+    // Python derives the preview MP3 path as: outputPath_without_ext + "_preview.mp3"
+    // so naming the WAV correctly automatically names the preview correctly too.
+    const wavTempPath = resolveOutputPath(filePath, '.wav');
+    // Fallback MP3 path — used only if Python fails to generate the preview
+    const mp3FallbackPath = internalTempPath('_preview.mp3');
 
     try {
       const result = await masterFile(b, filePath, wavTempPath, options);
@@ -139,7 +183,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       return {
         ...result,
         outputPath:  result.outputPath,
-        previewPath: result.previewPath || mp3TempPath,
+        previewPath: result.previewPath || mp3FallbackPath,
       };
     } catch (err) {
       // Clean up temp WAV on any error to avoid leaking disk space
