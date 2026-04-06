@@ -1,0 +1,154 @@
+name: Build Louver Mastering AI
+
+on:
+  push:
+    branches:
+      - claude/fix-electron-black-screen-uh3ll
+      - main
+  workflow_dispatch:   # 수동 실행 버튼
+
+jobs:
+  # ── macOS (arm64 + x64 DMG) ──────────────────────────────────────────────────
+  build-mac:
+    runs-on: macos-14   # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install Python dependencies + PyInstaller
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -r requirements.txt
+          .venv/bin/pip install -q pyinstaller
+
+      - name: Build Python engine (PyInstaller)
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          mkdir -p ../../apps/desktop/public/bin
+          .venv/bin/pyinstaller \
+            --clean --noconfirm --onefile --name engine \
+            --distpath ../../apps/desktop/public/bin \
+            --workpath /tmp/pyinstaller-build \
+            --specpath /tmp/pyinstaller-spec \
+            --hidden-import soundfile \
+            --hidden-import numpy \
+            --collect-all soundfile \
+            --collect-all numpy \
+            --exclude-module tkinter \
+            --exclude-module pytest \
+            --exclude-module matplotlib \
+            app/main.py
+          chmod +x ../../apps/desktop/public/bin/engine
+
+      - name: Install Node dependencies
+        working-directory: aimaster-desktop
+        run: pnpm install
+
+      - name: Copy FFmpeg binaries
+        working-directory: aimaster-desktop/apps/desktop
+        run: node scripts/prebuild.cjs
+
+      - name: Build Electron app
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm build
+
+      - name: Package DMG (arm64 + x64)
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm exec electron-builder --mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false   # 서명 없이 빌드
+
+      - name: Upload Mac artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Louver-Mastering-AI-mac
+          path: |
+            aimaster-desktop/apps/desktop/out/*.dmg
+          retention-days: 30
+
+  # ── Windows (NSIS .exe) ───────────────────────────────────────────────────────
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install Python dependencies + PyInstaller
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          python -m venv .venv
+          .venv\Scripts\pip install --upgrade pip
+          .venv\Scripts\pip install -r requirements.txt
+          .venv\Scripts\pip install pyinstaller
+        shell: cmd
+
+      - name: Build Python engine (PyInstaller)
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          mkdir -p ../../apps/desktop/public/bin
+          .venv\Scripts\pyinstaller ^
+            --clean --noconfirm --onefile --name engine ^
+            --distpath ..\..\apps\desktop\public\bin ^
+            --workpath C:\Temp\pyinstaller-build ^
+            --specpath C:\Temp\pyinstaller-spec ^
+            --hidden-import soundfile ^
+            --hidden-import numpy ^
+            --collect-all soundfile ^
+            --collect-all numpy ^
+            --exclude-module tkinter ^
+            --exclude-module pytest ^
+            --exclude-module matplotlib ^
+            app\main.py
+        shell: cmd
+
+      - name: Install Node dependencies
+        working-directory: aimaster-desktop
+        run: pnpm install
+
+      - name: Copy FFmpeg binaries
+        working-directory: aimaster-desktop/apps/desktop
+        run: node scripts/prebuild.cjs
+
+      - name: Build Electron app
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm build
+
+      - name: Package NSIS installer
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm exec electron-builder --win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Louver-Mastering-AI-windows
+          path: |
+            aimaster-desktop/apps/desktop/out/*.exe
+          retention-days: 30
