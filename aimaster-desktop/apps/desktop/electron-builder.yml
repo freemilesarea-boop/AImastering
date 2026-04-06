@@ -49,8 +49,7 @@ dmg:
 
 # ── Windows ───────────────────────────────────────────────────────────────────
 win:
-  # electron-builder converts icon.png → .ico automatically
-  icon: public/icon.png
+  icon: public/icon.ico
   target:
     - target: nsis
       arch:
