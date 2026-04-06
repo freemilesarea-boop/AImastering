@@ -31,6 +31,8 @@ export interface StructuredError {
 export function toStructuredError(err: unknown): StructuredError {
   if (err != null && typeof err === 'object') {
     const o = err as Record<string, unknown>;
+
+    // 1. Already a fully-structured AppError (same-process or future Electron versions)
     if (
       typeof o['code']        === 'string' &&
       typeof o['userMessage'] === 'string' &&
@@ -44,7 +46,26 @@ export function toStructuredError(err: unknown): StructuredError {
         recoverable: o['recoverable'] as boolean,
       };
     }
+
+    // 2. Electron IPC serializes errors as plain Error — message may be JSON-encoded AppError
     if (typeof o['message'] === 'string') {
+      try {
+        const parsed = JSON.parse(o['message']) as Record<string, unknown>;
+        if (
+          parsed['__appError'] === true &&
+          typeof parsed['code']        === 'string' &&
+          typeof parsed['userMessage'] === 'string' &&
+          typeof parsed['devDetail']   === 'string' &&
+          typeof parsed['recoverable'] === 'boolean'
+        ) {
+          return {
+            code:        parsed['code']        as AppErrorCode,
+            userMessage: parsed['userMessage'] as string,
+            devDetail:   parsed['devDetail']   as string,
+            recoverable: parsed['recoverable'] as boolean,
+          };
+        }
+      } catch { /* not JSON — fall through */ }
       return { code: 'UNKNOWN', userMessage: o['message'] as string, devDetail: o['message'] as string, recoverable: true };
     }
   }

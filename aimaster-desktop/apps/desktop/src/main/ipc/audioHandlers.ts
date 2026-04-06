@@ -126,37 +126,65 @@ function assertTmpWritable(): void {
 }
 
 /**
- * Convert any thrown value into an AppError and re-throw.
- * This is the boundary function that wraps Python bridge + FFmpeg errors.
+ * Convert any thrown value into an AppError, then re-throw as a plain Error
+ * whose message is JSON-encoded AppError fields.
+ *
+ * Electron IPC (structured-clone) only preserves standard Error.message/name.
+ * Encoding the full AppError in message lets the renderer decode it faithfully.
  */
 function toAppError(err: unknown, filePath = ''): never {
-  if (err instanceof AppError) throw err;
+  let appErr: AppError;
 
-  const msg = (err as Error).message ?? String(err);
+  if (err instanceof AppError) {
+    appErr = err;
+  } else {
+    const msg = (err as Error).message ?? String(err);
 
-  // Python / JSON-RPC bridge errors carry a 'code' field
-  const anyErr = err as Record<string, unknown>;
-  if (typeof anyErr['code'] === 'number') {
-    const rpcCode = anyErr['code'] as number;
-    const detail  = `JSON-RPC code=${rpcCode}: ${msg}`;
-    // -32700 parse / -32601 method / -32602 params are developer errors
-    // -32000 is an application-level error from the Python pipeline
-    throw pythonProcessFailed(detail, rpcCode === -32000);
+    // Spawn failure: binary not found
+    if (/ENOENT|spawn/i.test(msg)) {
+      appErr = pythonProcessFailed(
+        `Engine binary not found or failed to start: ${msg}`,
+        false,
+      );
+    }
+    // Python / JSON-RPC bridge errors
+    else {
+      const anyErr = err as Record<string, unknown>;
+      if (typeof anyErr['code'] === 'number') {
+        const rpcCode = anyErr['code'] as number;
+        appErr = pythonProcessFailed(`JSON-RPC code=${rpcCode}: ${msg}`, rpcCode === -32000);
+      }
+      // Path encoding
+      else if (/EINVAL|ENAMETOOLONG/i.test(msg) && filePath) {
+        appErr = pathEncodingError(filePath, msg);
+      }
+      // FFmpeg classification
+      else {
+        try {
+          throw classifyFFmpegError(err, false, filePath);
+        } catch (classified) {
+          if (classified instanceof AppError) {
+            appErr = classified;
+          } else {
+            appErr = unknownError(msg);
+          }
+        }
+      }
+    }
   }
 
-  // Path encoding issues
-  if (/ENOENT|EINVAL|ENAMETOOLONG/i.test(msg) && filePath) {
-    throw pathEncodingError(filePath, msg);
-  }
-
-  // Classify as FFmpeg error if it looks like one
-  try {
-    throw classifyFFmpegError(err, false, filePath);
-  } catch (classified) {
-    if (classified instanceof AppError) throw classified;
-  }
-
-  throw unknownError(msg);
+  // Encode all AppError fields in Error.message so Electron IPC preserves them
+  const serialized = new Error(
+    JSON.stringify({
+      __appError: true,
+      code:        appErr.code,
+      userMessage: appErr.userMessage,
+      devDetail:   appErr.devDetail,
+      recoverable: appErr.recoverable,
+    }),
+  );
+  serialized.name = 'AppError';
+  throw serialized;
 }
 
 export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
