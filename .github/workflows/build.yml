@@ -56,7 +56,7 @@ jobs:
 
       - name: Install Node dependencies
         working-directory: aimaster-desktop
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Copy FFmpeg binaries
         working-directory: aimaster-desktop/apps/desktop
@@ -101,35 +101,38 @@ jobs:
 
       - name: Install Python dependencies + PyInstaller
         working-directory: aimaster-desktop/services/python-audio
+        shell: pwsh
         run: |
           python -m venv .venv
           .venv\Scripts\pip install --upgrade pip
           .venv\Scripts\pip install -r requirements.txt
           .venv\Scripts\pip install pyinstaller
-        shell: cmd
 
       - name: Build Python engine (PyInstaller)
         working-directory: aimaster-desktop/services/python-audio
+        shell: pwsh
         run: |
-          mkdir -p ../../apps/desktop/public/bin
-          .venv\Scripts\pyinstaller ^
-            --clean --noconfirm --onefile --name engine ^
-            --distpath ..\..\apps\desktop\public\bin ^
-            --workpath C:\Temp\pyinstaller-build ^
-            --specpath C:\Temp\pyinstaller-spec ^
-            --hidden-import soundfile ^
-            --hidden-import numpy ^
-            --collect-all soundfile ^
-            --collect-all numpy ^
-            --exclude-module tkinter ^
-            --exclude-module pytest ^
-            --exclude-module matplotlib ^
+          New-Item -ItemType Directory -Force -Path "..\..\apps\desktop\public\bin" | Out-Null
+          # workpath/specpath must be on same drive as source (D:\ in GitHub Actions)
+          $tmpBuild = Join-Path $env:RUNNER_TEMP "pyinstaller-build"
+          $tmpSpec  = Join-Path $env:RUNNER_TEMP "pyinstaller-spec"
+          .venv\Scripts\pyinstaller `
+            --clean --noconfirm --onefile --name engine `
+            "--distpath=..\..\apps\desktop\public\bin" `
+            "--workpath=$tmpBuild" `
+            "--specpath=$tmpSpec" `
+            --hidden-import soundfile `
+            --hidden-import numpy `
+            --collect-all soundfile `
+            --collect-all numpy `
+            --exclude-module tkinter `
+            --exclude-module pytest `
+            --exclude-module matplotlib `
             app\main.py
-        shell: cmd
 
       - name: Install Node dependencies
         working-directory: aimaster-desktop
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Copy FFmpeg binaries
         working-directory: aimaster-desktop/apps/desktop
