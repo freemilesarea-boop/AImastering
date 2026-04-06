@@ -73,17 +73,17 @@ cd "$PYTHON_SVC"
 chmod +x "$BIN_DIR/engine"
 echo "  ✓ engine binary: $BIN_DIR/engine"
 
-# ── 3. FFmpeg binaries ────────────────────────────────────────────────────────
-echo ""
-echo "▶ Copying FFmpeg binaries…"
-cd "$DESKTOP"
-node scripts/prebuild.cjs
-
-# ── 4. Node.js dependencies ───────────────────────────────────────────────────
+# ── 3. Node.js dependencies ───────────────────────────────────────────────────
 echo ""
 echo "▶ Installing Node.js dependencies…"
 cd "$MONOREPO"
 pnpm install --frozen-lockfile
+
+# ── 4. FFmpeg binaries ────────────────────────────────────────────────────────
+echo ""
+echo "▶ Copying FFmpeg binaries…"
+cd "$DESKTOP"
+node scripts/prebuild.cjs
 
 # ── 5. Build Electron app ─────────────────────────────────────────────────────
 echo ""
