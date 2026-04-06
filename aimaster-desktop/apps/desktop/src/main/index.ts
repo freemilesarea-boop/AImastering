@@ -42,10 +42,29 @@ function createWindow(): void {
     mainWindow?.show();
   });
 
+  // 로드 실패 시에도 창을 표시하고 에러를 기록
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    log.error('did-fail-load', { code, desc, url });
+    mainWindow?.show();
+  });
+
+  // Cmd+Option+I (Mac) / Ctrl+Shift+I (Win) 로 DevTools 열기
+  mainWindow.webContents.on('before-input-event', (_e, input) => {
+    const isMac = process.platform === 'darwin';
+    const devtoolsShortcut = isMac
+      ? input.meta && input.alt && input.key === 'i'
+      : input.control && input.shift && input.key === 'I';
+    if (devtoolsShortcut) {
+      mainWindow?.webContents.openDevTools();
+    }
+  });
+
   if (isDev) {
     void mainWindow.loadURL('http://localhost:5173');
   } else {
-    void mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    const rendererPath = path.join(__dirname, '../renderer/index.html');
+    log.info('Loading renderer from:', rendererPath);
+    void mainWindow.loadFile(rendererPath);
   }
 }
 
