@@ -288,7 +288,12 @@ function QueueRow({
 
       {/* Error message */}
       {item.status === 'error' && item.error && (
-        <p className="mt-1.5 text-[11px] text-red-400 leading-snug">{item.error.userMessage}</p>
+        <p className="mt-1.5 text-[11px] text-red-400 leading-snug">
+          {item.error.userMessage}
+          {item.error.code === 'UNKNOWN' && item.error.devDetail !== item.error.userMessage && (
+            <span className="block mt-0.5 text-red-500/70 break-all">[{item.error.devDetail}]</span>
+          )}
+        </p>
       )}
 
       {/* Done: LUFS info + download buttons + preview */}
