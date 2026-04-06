@@ -20,8 +20,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DESKTOP="$ROOT/apps/desktop"
-PYTHON_SVC="$ROOT/services/python-audio"
+MONOREPO="$ROOT/aimaster-desktop"
+DESKTOP="$MONOREPO/apps/desktop"
+PYTHON_SVC="$MONOREPO/services/python-audio"
 BIN_DIR="$DESKTOP/public/bin"
 VENV="$PYTHON_SVC/.venv"
 
@@ -81,7 +82,7 @@ node scripts/prebuild.cjs
 # ── 4. Node.js dependencies ───────────────────────────────────────────────────
 echo ""
 echo "▶ Installing Node.js dependencies…"
-cd "$ROOT"
+cd "$MONOREPO"
 pnpm install --frozen-lockfile
 
 # ── 5. Build Electron app ─────────────────────────────────────────────────────
