@@ -77,7 +77,7 @@ echo "  ✓ engine binary: $BIN_DIR/engine"
 echo ""
 echo "▶ Installing Node.js dependencies…"
 cd "$MONOREPO"
-pnpm install --frozen-lockfile
+pnpm install
 
 # ── 4. FFmpeg binaries ────────────────────────────────────────────────────────
 echo ""
