@@ -47,26 +47,33 @@ export function toStructuredError(err: unknown): StructuredError {
       };
     }
 
-    // 2. Electron IPC serializes errors as plain Error — message may be JSON-encoded AppError
+    // 2. Electron IPC wraps errors as:
+    //    "Error invoking remote method 'audio:xxx': AppError: {json}"
+    //    Extract the JSON part and decode it.
     if (typeof o['message'] === 'string') {
-      try {
-        const parsed = JSON.parse(o['message']) as Record<string, unknown>;
-        if (
-          parsed['__appError'] === true &&
-          typeof parsed['code']        === 'string' &&
-          typeof parsed['userMessage'] === 'string' &&
-          typeof parsed['devDetail']   === 'string' &&
-          typeof parsed['recoverable'] === 'boolean'
-        ) {
-          return {
-            code:        parsed['code']        as AppErrorCode,
-            userMessage: parsed['userMessage'] as string,
-            devDetail:   parsed['devDetail']   as string,
-            recoverable: parsed['recoverable'] as boolean,
-          };
-        }
-      } catch { /* not JSON — fall through */ }
-      return { code: 'UNKNOWN', userMessage: o['message'] as string, devDetail: o['message'] as string, recoverable: true };
+      const msg = o['message'] as string;
+      // Find the first '{' to extract the JSON payload
+      const jsonStart = msg.indexOf('{');
+      if (jsonStart !== -1) {
+        try {
+          const parsed = JSON.parse(msg.slice(jsonStart)) as Record<string, unknown>;
+          if (
+            parsed['__appError'] === true &&
+            typeof parsed['code']        === 'string' &&
+            typeof parsed['userMessage'] === 'string' &&
+            typeof parsed['devDetail']   === 'string' &&
+            typeof parsed['recoverable'] === 'boolean'
+          ) {
+            return {
+              code:        parsed['code']        as AppErrorCode,
+              userMessage: parsed['userMessage'] as string,
+              devDetail:   parsed['devDetail']   as string,
+              recoverable: parsed['recoverable'] as boolean,
+            };
+          }
+        } catch { /* not valid JSON — fall through */ }
+      }
+      return { code: 'UNKNOWN', userMessage: msg, devDetail: msg, recoverable: true };
     }
   }
   return { code: 'UNKNOWN', userMessage: '알 수 없는 오류가 발생했습니다.', devDetail: String(err), recoverable: true };

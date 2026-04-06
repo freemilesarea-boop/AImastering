@@ -36,7 +36,12 @@ export class PythonBridge extends EventEmitter {
     // run the binary directly with no positional args.
     const args = this.opts.scriptPath ? [this.opts.scriptPath] : [];
     this.proc = spawn(this.opts.pythonPath, args, {
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED:  '1',
+        PYTHONUTF8:        '1',      // Python 3.7+ UTF-8 mode (fixes Windows cp949 issue)
+        PYTHONIOENCODING:  'utf-8',  // force stdin/stdout/stderr to UTF-8
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
