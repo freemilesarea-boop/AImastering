@@ -58,10 +58,9 @@ from app.utils.logger import log
 # ── I/O helpers ───────────────────────────────────────────────────────────────
 
 def _send(obj: dict) -> None:
-    """Write a JSON line to stdout as UTF-8 bytes (cp949-safe)."""
-    line = json.dumps(obj, ensure_ascii=False).encode('utf-8') + b'\n'
-    _stdout_bin.write(line)
-    _stdout_bin.flush()
+    """Write a JSON line to stdout. ensure_ascii=True keeps output pure-ASCII
+    so Windows cp949 stdout encoding never causes UnicodeEncodeError."""
+    print(json.dumps(obj, ensure_ascii=True), flush=True)
 
 
 def _send_progress(job_id: str, percent: int, stage: str) -> None:
@@ -109,8 +108,7 @@ HANDLERS = {
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    _stderr_bin.write(b"READY\n")
-    _stderr_bin.flush()
+    print("READY", file=sys.stderr, flush=True)
     log("INFO", "AIMASTER Python audio engine started")
 
     for raw_bytes in _stdin_bin:
