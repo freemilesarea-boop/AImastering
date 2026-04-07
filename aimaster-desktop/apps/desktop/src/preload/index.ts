@@ -8,7 +8,8 @@ const INVOKE_CHANNELS = [
   'license:status', 'license:activate', 'license:deactivate',
   'license:can-process', 'license:decrement-trial', 'license:get-remaining',
   // Files
-  'file:open-dialog', 'file:save-dialog', 'file:save-wav',
+  'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
+  'file:batch-save-wav',
   'file:get-info', 'file:open-in-finder', 'file:get-recent',
   // Settings
   'settings:get', 'settings:set', 'settings:choose-output-dir',

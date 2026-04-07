@@ -1,17 +1,18 @@
 """
-Stage 4: Dynamic control.
+Stage 4: Bus compression — cohesion and density, not over-processing.
 
-Principles (from spec):
-  - Over-compression is forbidden — protect the source.
-  - Conservative processing is always preferred over aggressive processing.
-  - Peak control happens here (before loudnorm), not by pushing RMS up.
-  - If input is clipped (peak ≥ 0 dBFS), reduce level first.
-  - Compressor settings are style-aware but always "bus glue" level, not
-    single-instrument limiting.
+Revised parameters provide 2-4 dB of peak gain reduction on typical programme
+material, which is enough to add perceived density and cohesion without
+squashing transients or reducing LRA below commercial norms (floor 4 LU).
 
-FFmpeg filter reference:
-  acompressor=threshold=<dBFS>:ratio=<n>:attack=<ms>:release=<ms>
-              :makeup=<dBFS>:knee=<dBFS>:level_in=<gain>
+The compressor runs BEFORE loudnorm, so its job is tonal shaping and
+transient control, not loudness.  Loudnorm handles the final LUFS target.
+
+Per-style intent:
+  Balanced — moderate glue, preserve dynamics fully
+  Warm     — slower, vintage "breathe" feel; adds body
+  Bright   — faster attack to tame the presence boosts
+  Punch    — most gain reduction; tightens the dynamic envelope for impact
 """
 from __future__ import annotations
 
@@ -21,48 +22,43 @@ from app.utils.logger import log
 
 _STYLE_COMP: dict[str, dict] = {
 
-    # Balanced: very light touch — only gentle glue, transient preserved
     "balanced": {
         "threshold": -20,
-        "ratio":     2.0,
-        "attack":    20,
-        "release":   250,
-        "makeup":    1.0,
+        "ratio":     1.8,
+        "attack":    35,
+        "release":   150,
+        "makeup":    1.5,
         "knee":      8.0,
     },
 
-    # Warm: slow attack preserves transients; forgiving release
     "warm": {
         "threshold": -18,
         "ratio":     2.0,
-        "attack":    30,
-        "release":   300,
+        "attack":    40,    # slow attack — transients breathe through
+        "release":   180,
         "makeup":    1.5,
-        "knee":      8.0,
+        "knee":      10.0,
     },
 
-    # Bright: slightly faster and more transparent; still gentle
     "bright": {
         "threshold": -20,
-        "ratio":     2.5,
-        "attack":    15,
-        "release":   200,
+        "ratio":     2.0,
+        "attack":    20,    # faster — controls harshness from presence boosts
+        "release":   100,
         "makeup":    1.5,
-        "knee":      5.0,
+        "knee":      6.0,
     },
 
-    # Punch: bus-comp feel; faster attack for density; higher ratio for weight
     "punch": {
-        "threshold": -16,
-        "ratio":     3.5,
-        "attack":     8,
-        "release":   120,
+        "threshold": -18,
+        "ratio":     2.5,
+        "attack":    15,
+        "release":   80,
         "makeup":    2.0,
         "knee":      4.0,
     },
 }
 
-# Absolute ceiling for pre-loudnorm makeup gain — prevent over-boosting RMS
 _MAX_MAKEUP_DB = 3.0
 
 
@@ -70,34 +66,24 @@ def build_dynamics_filter(
     style: str,
     input_peak_db: float = 0.0,
 ) -> str:
-    """
-    Build a compressor (and optional pre-gain) FFmpeg filter string.
-
-    input_peak_db : sample peak in dBFS of the input file.
-                    If ≥ 0 dB, a pre-gain reduction is inserted to prevent
-                    the compressor from slamming against a clipped signal.
-
-    Returns a comma-separated filter string (may be empty if no processing
-    is needed).
-    """
+    """Return comma-separated FFmpeg filter string (Stage 4)."""
     parts: list[str] = []
 
-    # ── Pre-gain for clipped input ─────────────────────────────────────────
-    # Reduce level so the peak lands at -3 dBFS before the compressor.
-    if input_peak_db >= -0.5:
+    # Pre-gain reduction only for actually clipped input (>= 0 dBFS).
+    # Previously this triggered at -0.5 dBFS, which hit almost every
+    # commercial track and silently reduced gain before the compressor,
+    # causing perceived volume loss even after loudnorm compensation.
+    if input_peak_db >= 0.0:
         target_peak = -3.0
         reduction_db = target_peak - input_peak_db
-        if reduction_db < -0.1:   # only if we actually need to reduce
+        if reduction_db < -0.1:
             parts.append(f"volume={reduction_db:.2f}dB")
             log("INFO", f"Pre-gain: {reduction_db:.2f} dB (input peak={input_peak_db:.2f} dBFS)")
 
-    # ── Compressor ────────────────────────────────────────────────────────
     c = _STYLE_COMP.get(style, _STYLE_COMP["balanced"])
-
-    # Cap makeup to prevent excessive RMS push
     makeup = min(c["makeup"], _MAX_MAKEUP_DB)
 
-    comp = (
+    parts.append(
         f"acompressor="
         f"threshold={c['threshold']}dB"
         f":ratio={c['ratio']}"
@@ -107,16 +93,38 @@ def build_dynamics_filter(
         f":knee={c['knee']}dB"
         f":level_in=1"
     )
-    parts.append(comp)
 
     return ",".join(p for p in parts if p)
 
 
+def get_comp_params(style: str) -> dict:
+    """Return compressor parameters for analysis report."""
+    return dict(_STYLE_COMP.get(style, _STYLE_COMP["balanced"]))
+
+
+def estimate_comp_gr(style: str, input_peak_db: float) -> float:
+    """
+    Rough estimate of compressor gain reduction (dB) based on input peak.
+    Uses average-level approximation: avg ≈ peak − 8 dB for typical programme.
+    Returns 0.0 when the signal is below threshold.
+    """
+    c = _STYLE_COMP.get(style, _STYLE_COMP["balanced"])
+    threshold = float(c["threshold"])
+    ratio     = float(c["ratio"])
+    avg_level = input_peak_db - 8.0   # typical peak-to-average for music
+    if avg_level <= threshold:
+        return 0.0
+    above = avg_level - threshold
+    gr    = above * (1.0 - 1.0 / ratio)
+    return round(gr, 1)
+
+
 def describe_dynamics(style: str) -> str:
-    """Human-readable description of what the compressor is doing."""
+    """Human-readable compressor summary for the appliedCorrections list."""
     c = _STYLE_COMP.get(style, _STYLE_COMP["balanced"])
     return (
-        f"{style.capitalize()} 다이내믹 — "
+        f"{style.capitalize()} 버스 컴프 — "
         f"threshold {c['threshold']} dBFS, ratio {c['ratio']}:1, "
-        f"attack {c['attack']} ms, release {c['release']} ms"
+        f"attack {c['attack']} ms, release {c['release']} ms, "
+        f"makeup {c['makeup']} dB"
     )

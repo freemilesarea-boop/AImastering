@@ -13,18 +13,18 @@ import React, { useCallback, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
-import { useLicenseStore } from '../stores/licenseStore.js';
+import type { AnalysisReport as AnalysisReportType } from '@aimaster/shared-types';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number, d = 1) { return n.toFixed(d); }
 
-/** Convert a filesystem path to a file:// URL usable in <audio src=...> */
+/** Convert a filesystem path to aimaster-local:// URL (bypasses Chromium file:// block). */
 function toFileUrl(p: string): string {
   if (!p) return '';
-  // Windows: C:\path → file:///C:/path
   const normalized = p.replace(/\\/g, '/');
-  return normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`;
+  const withSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
+  return `aimaster-local://${encodeURI(withSlash)}`;
 }
 
 // ── Arrow delta ───────────────────────────────────────────────────────────────
@@ -197,10 +197,7 @@ function PreviewPlayer({ src }: { src: string }) {
 
 function SaveButtons() {
   const masteringResult = useAudioStore((s) => s.masteringResult);
-  const licenseInfo     = useLicenseStore((s) => s.licenseInfo);
-  const setShowModal    = useLicenseStore((s) => s.setShowModal);
   const notify          = useAppStore((s) => s.notify);
-  const isPro           = licenseInfo?.tier === 'pro';
 
   const handleSaveMp3 = useCallback(async () => {
     if (!masteringResult?.previewPath) return;
@@ -222,56 +219,38 @@ function SaveButtons() {
 
   return (
     <div className="space-y-2">
-      {/* MP3 — always available */}
+      {/* WAV — always available */}
       <button
-        onClick={handleSaveMp3}
+        onClick={handleSaveWav}
+        disabled={!masteringResult?.outputPath}
         className="no-drag w-full flex items-center justify-between px-4 py-3
                    rounded-xl border border-zinc-700 bg-zinc-900/40
-                   hover:border-zinc-600 hover:bg-zinc-900/60 transition-colors group"
+                   hover:border-zinc-600 hover:bg-zinc-900/60 transition-colors group
+                   disabled:opacity-40 disabled:cursor-not-allowed"
       >
         <div className="flex items-center gap-2.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+          <span className="text-sm text-zinc-300">마스터 WAV 저장</span>
+          <span className="text-xs text-zinc-700">24-bit</span>
+        </div>
+        <span className="text-xs text-zinc-500 group-hover:text-zinc-400 transition-colors">저장</span>
+      </button>
+
+      {/* MP3 preview */}
+      <button
+        onClick={handleSaveMp3}
+        disabled={!masteringResult?.previewPath}
+        className="no-drag w-full flex items-center justify-between px-4 py-3
+                   rounded-xl border border-zinc-700 bg-zinc-900/40
+                   hover:border-zinc-600 hover:bg-zinc-900/60 transition-colors group
+                   disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <div className="flex items-center gap-2.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 shrink-0" />
           <span className="text-sm text-zinc-300">프리뷰 MP3 저장</span>
           <span className="text-xs text-zinc-700">320 kbps</span>
         </div>
-        <span className="text-xs text-zinc-500 group-hover:text-zinc-400 transition-colors">
-          저장
-        </span>
-      </button>
-
-      {/* WAV — locked for free */}
-      <button
-        onClick={isPro ? handleSaveWav : () => setShowModal(true)}
-        className={`no-drag w-full flex items-center justify-between px-4 py-3
-                    rounded-xl border transition-colors
-                    ${isPro
-                      ? 'border-zinc-700 bg-zinc-900/40 hover:border-zinc-600 hover:bg-zinc-900/60 group'
-                      : 'border-zinc-800 bg-zinc-900/20 opacity-70 cursor-default'
-                    }`}
-      >
-        <div className="flex items-center gap-2.5">
-          {isPro ? (
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-          ) : (
-            // Lock icon
-            <svg className="w-3.5 h-3.5 text-zinc-600 shrink-0" viewBox="0 0 14 14"
-                 fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
-              <rect x="2.5" y="6" width="9" height="7" rx="1.5" />
-              <path d="M4.5 6V4.5a2.5 2.5 0 0 1 5 0V6" />
-            </svg>
-          )}
-          <span className={`text-sm ${isPro ? 'text-zinc-300' : 'text-zinc-600'}`}>
-            마스터 WAV 저장
-          </span>
-          <span className="text-xs text-zinc-700">24-bit</span>
-        </div>
-        <span className={`text-xs ${
-          isPro
-            ? 'text-zinc-500 group-hover:text-zinc-400 transition-colors'
-            : 'text-zinc-700'
-        }`}>
-          {isPro ? '저장' : '유료 플랜'}
-        </span>
+        <span className="text-xs text-zinc-500 group-hover:text-zinc-400 transition-colors">저장</span>
       </button>
     </div>
   );
@@ -284,14 +263,14 @@ function QCSummary() {
   if (!result) return null;
 
   const after = result.loudnessAfter;
-  const targetLufs = -14.0;
+  const targetLufs = -14.5;
   const targetTp   = -1.0;
 
   const lufsOk = Math.abs(after.integratedLufs - targetLufs) <= 1.0;
   const tpOk   = after.truePeakDbtp <= targetTp;
 
   const items = [
-    { label: `-14 LUFS 달성`,  ok: lufsOk,
+    { label: `-14.5 LUFS 달성`,  ok: lufsOk,
       note: `${after.integratedLufs.toFixed(1)} LUFS` },
     { label: `True Peak -1 dBTP 이하`, ok: tpOk,
       note: `${after.truePeakDbtp.toFixed(1)} dBTP` },
@@ -316,6 +295,130 @@ function QCSummary() {
       <p className="mt-3 pt-3 border-t border-zinc-800 text-[11px] text-zinc-700 leading-snug">
         YouTube Music · Spotify · Apple Music 기본 타깃 −14 LUFS / −1 dBTP 기준 적용
       </p>
+    </div>
+  );
+}
+
+// ── Analysis Report card ──────────────────────────────────────────────────────
+
+function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
+  const [open, setOpen] = useState(false);
+
+  const specDelta = (before: number | undefined, after: number | undefined, label: string) => {
+    if (before == null || after == null) return null;
+    const diff = after - before;
+    const sign = diff > 0 ? '+' : '';
+    const color = diff > 0.5 ? 'text-emerald-400' : diff < -0.5 ? 'text-amber-400' : 'text-zinc-500';
+    return (
+      <div key={label} className="flex justify-between">
+        <span className="text-zinc-600">{label}</span>
+        <span className={`font-mono text-xs ${color}`}>
+          {before.toFixed(1)} → {after.toFixed(1)} ({sign}{diff.toFixed(1)} dB)
+        </span>
+      </div>
+    );
+  };
+
+  return (
+    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="no-drag w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-800/30 transition-colors"
+      >
+        <span className="text-xs text-zinc-500 uppercase tracking-wider">분석 리포트</span>
+        <span className="text-[10px] text-zinc-700">{open ? '접기 ▲' : '펼치기 ▼'}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-4 space-y-4 border-t border-zinc-800">
+
+          {/* EQ Moves */}
+          <div>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mt-3 mb-1.5">EQ 적용 밴드</p>
+            <div className="space-y-1">
+              {report.eqMoves.map((m, i) => (
+                <div key={i} className="flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-1 h-1 rounded-full shrink-0 ${m.gainDb >= 0 ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                    <span className="text-zinc-500">{m.band}</span>
+                    {m.adaptive && <span className="text-[9px] text-zinc-700 border border-zinc-800 rounded px-1">적응형</span>}
+                  </div>
+                  <div className="flex items-center gap-2 font-mono">
+                    <span className="text-zinc-700">{m.freqHz >= 1000 ? `${m.freqHz / 1000}kHz` : `${m.freqHz}Hz`}</span>
+                    <span className={m.gainDb >= 0 ? 'text-emerald-400' : 'text-amber-400'}>{m.gainStr} dB</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Compressor */}
+          <div>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">컴프레서</p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+              {[
+                ['Threshold', `${report.compressor.thresholdDb} dBFS`],
+                ['Ratio', `${report.compressor.ratio}:1`],
+                ['Attack', `${report.compressor.attackMs} ms`],
+                ['Release', `${report.compressor.releaseMs} ms`],
+                ['Makeup', `+${report.compressor.makeupDb} dB`],
+                ['Est. GR', `−${report.compressor.estimatedGrDb} dB`],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between">
+                  <span className="text-zinc-600">{k}</span>
+                  <span className="font-mono text-zinc-400">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Limiter */}
+          <div>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">리미터</p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+              {[
+                ['Ceiling', `${report.limiter.ceilingDbtp} dBTP`],
+                ['Pre-lim Peak', `${report.limiter.preGainDbtp.toFixed(1)} dBTP`],
+                ['GR Applied', report.limiter.appliedGrDb > 0 ? `−${report.limiter.appliedGrDb.toFixed(2)} dB` : '없음'],
+                ['Pre-lim LUFS', `${report.limiter.preLimLufs.toFixed(1)} LUFS`],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between">
+                  <span className="text-zinc-600">{k}</span>
+                  <span className="font-mono text-zinc-400">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Loudnorm */}
+          <div>
+            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">라우드니스 정규화</p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+              {[
+                ['Target', `${report.loudnorm.targetLufs} LUFS`],
+                ['Measured Before', `${report.loudnorm.measuredBefore.toFixed(1)} LUFS`],
+                ['Gain Applied', `${report.loudnorm.gainAppliedDb > 0 ? '+' : ''}${report.loudnorm.gainAppliedDb} dB`],
+              ].map(([k, v]) => (
+                <div key={k} className="flex justify-between">
+                  <span className="text-zinc-600">{k}</span>
+                  <span className="font-mono text-zinc-400">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Spectral before/after */}
+          {report.spectralBefore && report.spectralAfter && (
+            <div>
+              <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">스펙트럴 밸런스 변화</p>
+              <div className="space-y-1 text-[11px]">
+                {specDelta(report.spectralBefore.lowToMidDb, report.spectralAfter.lowToMidDb, 'Low / Mid 비율')}
+                {specDelta(report.spectralBefore.highToMidDb, report.spectralAfter.highToMidDb, 'High / Mid 비율')}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -357,6 +460,9 @@ export default function ResultPage() {
           {previewSrc && <PreviewPlayer src={previewSrc} />}
           <SaveButtons />
           <QCSummary />
+          {masteringResult?.analysisReport && (
+            <AnalysisReportCard report={masteringResult.analysisReport} />
+          )}
 
           <div className="h-4" />
         </div>

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
-  // ── Open file picker ──────────────────────────────────────────────────
+  // ── Open file picker (single) ─────────────────────────────────────────
   ipc.handle('file:open-dialog', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
@@ -12,6 +12,17 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       properties: ['openFile'],
     });
     return result.canceled ? null : result.filePaths[0];
+  });
+
+  // ── Open file picker (multi, up to 20) ────────────────────────────────
+  ipc.handle('file:open-dialog-multi', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [{ name: 'Audio', extensions: ['wav', 'flac', 'aiff', 'aif', 'mp3', 'm4a'] }],
+      properties: ['openFile', 'multiSelections'],
+    });
+    if (result.canceled) return null;
+    return result.filePaths.slice(0, 20);
   });
 
   // ── Generic save dialog (returns path only, no copy) ─────────────────
@@ -64,6 +75,30 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     // Ensure the directory exists before trying to reveal it
     if (!fs.existsSync(resolved)) fs.mkdirSync(resolved, { recursive: true });
     shell.showItemInFolder(resolved);
+  });
+
+  // ── Batch save: folder picker → copy all WAV/MP3 files ───────────────
+  ipc.handle('file:batch-save-wav', async (_e, srcPaths: string[]) => {
+    if (!win || !Array.isArray(srcPaths) || !srcPaths.length) return null;
+
+    const folderResult = await dialog.showOpenDialog(win, {
+      title: '저장할 폴더 선택',
+      buttonLabel: '이 폴더에 저장',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (folderResult.canceled || !folderResult.filePaths[0]) return null;
+
+    const destDir = folderResult.filePaths[0];
+    let saved = 0;
+    for (const src of srcPaths) {
+      if (!src) continue;
+      try {
+        const dest = path.join(destDir, path.basename(src));
+        fs.copyFileSync(src, dest);
+        saved++;
+      } catch { /* skip missing/inaccessible files */ }
+    }
+    return { destDir, saved };
   });
 
   // ── Recent files (v1 stub) ────────────────────────────────────────────

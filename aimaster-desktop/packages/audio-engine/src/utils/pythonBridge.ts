@@ -32,8 +32,16 @@ export class PythonBridge extends EventEmitter {
   }
 
   spawn(): void {
-    this.proc = spawn(this.opts.pythonPath, [this.opts.scriptPath], {
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+    // When scriptPath is empty (e.g. PyInstaller standalone engine),
+    // run the binary directly with no positional args.
+    const args = this.opts.scriptPath ? [this.opts.scriptPath] : [];
+    this.proc = spawn(this.opts.pythonPath, args, {
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED:  '1',
+        PYTHONUTF8:        '1',      // Python 3.7+ UTF-8 mode (fixes Windows cp949 issue)
+        PYTHONIOENCODING:  'utf-8',  // force stdin/stdout/stderr to UTF-8
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -55,9 +63,18 @@ export class PythonBridge extends EventEmitter {
       this.emit('log', line.trim());
     });
 
+    this.proc.on('error', (err) => {
+      // spawn() itself failed (e.g. ENOENT — binary not found)
+      this.emit('log', `spawn error: ${err.message}`);
+      this._rejectAll(err);
+      this._rejectQueue(err);
+    });
+
     this.proc.on('exit', (code) => {
       this.emit('exit', code);
-      this._rejectAll(new Error(`Python process exited with code ${code}`));
+      const err = new Error(`Python process exited with code ${code}`);
+      this._rejectAll(err);
+      this._rejectQueue(err);
     });
   }
 
@@ -133,6 +150,13 @@ export class PythonBridge extends EventEmitter {
       pending.reject(err);
       this.pending.delete(id);
     }
+  }
+
+  private _rejectQueue(err: Error): void {
+    for (const queued of this.readyQueue) {
+      queued.reject(err);
+    }
+    this.readyQueue = [];
   }
 
   kill(): void {

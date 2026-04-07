@@ -3,8 +3,7 @@ import { app } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { v4 as uuidv4 } from 'uuid';
-import {
+import { v4 as uuidv4 } from 'uuid';import {
   PythonBridge,
   analyzeFile,
   masterFile,
@@ -17,25 +16,99 @@ import {
   pathEncodingError,
 } from '@aimaster/audio-engine';
 import type { MasteringOptions } from '@aimaster/shared-types';
-import { licenseService } from './licenseHandlers.js';
 import { log } from '../utils/logger.js';
 
 let bridge: PythonBridge | null = null;
 
+/**
+ * Resolve the paths for the Python engine and FFmpeg binaries.
+ *
+ * DEV mode  : uses system python3 + source tree main.py
+ * PACKAGED  : uses the PyInstaller-built standalone `engine` binary
+ *             (no Python installation required on the user's machine)
+ *
+ * FFmpeg is always resolved to the bundled binary in packaged mode via
+ * AIMASTER_FFMPEG / AIMASTER_FFPROBE env vars that ffmpeg_wrapper.py reads.
+ */
+function resolvePaths(): { pythonPath: string; scriptPath: string } {
+  const isWin = process.platform === 'win32';
+  const ext   = isWin ? '.exe' : '';
+
+  if (app.isPackaged) {
+    const binDir = path.join(process.resourcesPath, 'bin');
+
+    // Point the Python engine to the bundled FFmpeg
+    process.env['AIMASTER_FFMPEG']  = path.join(binDir, `ffmpeg${ext}`);
+    process.env['AIMASTER_FFPROBE'] = path.join(binDir, `ffprobe${ext}`);
+
+    return {
+      pythonPath: path.join(binDir, `engine${ext}`),
+      scriptPath: '',   // PyInstaller binary — no script arg needed
+    };
+  }
+
+  // DEV: use system python + source tree
+  const pythonPath = process.env['AIMASTER_PYTHON'] ?? 'python3';
+  const scriptPath = path.join(__dirname, '../../../../services/python-audio/app/main.py');
+  // PYTHONPATH must point to the directory containing the `app` package
+  process.env['PYTHONPATH'] = path.dirname(path.dirname(scriptPath));
+
+  return { pythonPath, scriptPath };
+}
+
 function getBridge(): PythonBridge {
   if (bridge) return bridge;
-  const pythonPath = process.env['AIMASTER_PYTHON'] ?? 'python3';
-  const scriptPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'python-audio', 'app', 'main.py')
-    : path.join(__dirname, '../../../../services/python-audio/app/main.py');
+  const { pythonPath, scriptPath } = resolvePaths();
   bridge = new PythonBridge({ pythonPath, scriptPath });
   bridge.on('log', (line: string) => log.info('[python]', line));
   bridge.spawn();
   return bridge;
 }
 
-/** Generate a temp file path under the OS temp directory. */
-function tempPath(suffix: string): string {
+/**
+ * Remove characters that are illegal in filenames on Windows or Unix.
+ * Spaces are replaced with underscores; the result is trimmed.
+ * Falls back to 'untitled' if the result is empty.
+ */
+function sanitizeFilename(name: string): string {
+  return (
+    name
+      // eslint-disable-next-line no-control-regex
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')  // illegal on Windows/Unix
+      .replace(/\s+/g, '_')                     // spaces → underscores
+      .replace(/\.+$/, '')                      // trailing dots (Windows disallows)
+      .trim()
+  ) || 'untitled';
+}
+
+/**
+ * Build `{tmpDir}/{sanitized_basename}_master.ext`, incrementing a numeric
+ * suffix when the path already exists:
+ *   song_master.wav → song_master(1).wav → song_master(2).wav …
+ *
+ * UUID is never exposed in the output filename; it is used only as an
+ * emergency fallback if all 999 numeric slots are somehow taken.
+ */
+function resolveOutputPath(inputFilePath: string, ext: string): string {
+  const tmpDir  = os.tmpdir();
+  const rawBase = path.basename(inputFilePath, path.extname(inputFilePath));
+  const safe    = sanitizeFilename(rawBase);
+  const stem    = `${safe}_master`;
+
+  const primary = path.join(tmpDir, `${stem}${ext}`);
+  if (!fs.existsSync(primary)) return primary;
+
+  for (let i = 1; i < 1000; i++) {
+    const candidate = path.join(tmpDir, `${stem}(${i})${ext}`);
+    if (!fs.existsSync(candidate)) return candidate;
+  }
+
+  // Emergency fallback — should never be reached in normal usage
+  return path.join(tmpDir, `${stem}_${uuidv4().slice(0, 8)}${ext}`);
+}
+
+/** UUID-based temp path — for internal / ephemeral files only (not user-visible). */
+function internalTempPath(suffix: string): string {
   return path.join(os.tmpdir(), `aimaster_${uuidv4()}${suffix}`);
 }
 
@@ -53,37 +126,65 @@ function assertTmpWritable(): void {
 }
 
 /**
- * Convert any thrown value into an AppError and re-throw.
- * This is the boundary function that wraps Python bridge + FFmpeg errors.
+ * Convert any thrown value into an AppError, then re-throw as a plain Error
+ * whose message is JSON-encoded AppError fields.
+ *
+ * Electron IPC (structured-clone) only preserves standard Error.message/name.
+ * Encoding the full AppError in message lets the renderer decode it faithfully.
  */
 function toAppError(err: unknown, filePath = ''): never {
-  if (err instanceof AppError) throw err;
+  let appErr: AppError;
 
-  const msg = (err as Error).message ?? String(err);
+  if (err instanceof AppError) {
+    appErr = err;
+  } else {
+    const msg = (err as Error).message ?? String(err);
 
-  // Python / JSON-RPC bridge errors carry a 'code' field
-  const anyErr = err as Record<string, unknown>;
-  if (typeof anyErr['code'] === 'number') {
-    const rpcCode = anyErr['code'] as number;
-    const detail  = `JSON-RPC code=${rpcCode}: ${msg}`;
-    // -32700 parse / -32601 method / -32602 params are developer errors
-    // -32000 is an application-level error from the Python pipeline
-    throw pythonProcessFailed(detail, rpcCode === -32000);
+    // Spawn failure: binary not found
+    if (/ENOENT|spawn/i.test(msg)) {
+      appErr = pythonProcessFailed(
+        `Engine binary not found or failed to start: ${msg}`,
+        false,
+      );
+    }
+    // Python / JSON-RPC bridge errors
+    else {
+      const anyErr = err as Record<string, unknown>;
+      if (typeof anyErr['code'] === 'number') {
+        const rpcCode = anyErr['code'] as number;
+        appErr = pythonProcessFailed(`JSON-RPC code=${rpcCode}: ${msg}`, rpcCode === -32000);
+      }
+      // Path encoding
+      else if (/EINVAL|ENAMETOOLONG/i.test(msg) && filePath) {
+        appErr = pathEncodingError(filePath, msg);
+      }
+      // FFmpeg classification
+      else {
+        try {
+          throw classifyFFmpegError(err, false, filePath);
+        } catch (classified) {
+          if (classified instanceof AppError) {
+            appErr = classified;
+          } else {
+            appErr = unknownError(msg);
+          }
+        }
+      }
+    }
   }
 
-  // Path encoding issues
-  if (/ENOENT|EINVAL|ENAMETOOLONG/i.test(msg) && filePath) {
-    throw pathEncodingError(filePath, msg);
-  }
-
-  // Classify as FFmpeg error if it looks like one
-  try {
-    throw classifyFFmpegError(err, false, filePath);
-  } catch (classified) {
-    if (classified instanceof AppError) throw classified;
-  }
-
-  throw unknownError(msg);
+  // Encode all AppError fields in Error.message so Electron IPC preserves them
+  const serialized = new Error(
+    JSON.stringify({
+      __appError: true,
+      code:        appErr.code,
+      userMessage: appErr.userMessage,
+      devDetail:   appErr.devDetail,
+      recoverable: appErr.recoverable,
+    }),
+  );
+  serialized.name = 'AppError';
+  throw serialized;
 }
 
 export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
@@ -103,18 +204,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     _outputPath: string,   // ignored — we always generate temp paths here
     options: MasteringOptions,
   ) => {
-    // ── License gate ──────────────────────────────────────────────────────
-    const gate = licenseService.canProcess();
-    if (!gate.allowed) {
-      throw new AppError(
-        'TRIAL_COUNT_ANOMALY',
-        gate.reason ?? '처리 횟수 초과',
-        `License gate blocked: ${gate.reason}`,
-        false,
-      );
-    }
-
-    // ── Write-permission pre-check (case 6) ───────────────────────────────
+    // ── Write-permission pre-check ────────────────────────────────────────
     assertTmpWritable();
 
     const b = getBridge();
@@ -130,9 +220,12 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     const bridgeExitHandler = () => { bridgeDied = true; };
     b.once('exit', bridgeExitHandler);
 
-    // Generate temp paths — main process owns these
-    const wavTempPath = tempPath('_master.wav');
-    const mp3TempPath = tempPath('_preview.mp3');
+    // ── Output path: original-filename-based, not UUID ────────────────────
+    // Python derives the preview MP3 path as: outputPath_without_ext + "_preview.mp3"
+    // so naming the WAV correctly automatically names the preview correctly too.
+    const wavTempPath = resolveOutputPath(filePath, '.wav');
+    // Fallback MP3 path — used only if Python fails to generate the preview
+    const mp3FallbackPath = internalTempPath('_preview.mp3');
 
     try {
       const result = await masterFile(b, filePath, wavTempPath, options);
@@ -141,20 +234,10 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         throw pythonProcessFailed('Bridge process exited during masterFile()', true);
       }
 
-      if (gate.isPaid) {
-        licenseService.decrementTrialUsage();   // no-op for paid (remains TRIAL_MAX)
-      } else {
-        // Free: delete the WAV, return empty path
-        try { fs.unlinkSync(wavTempPath); } catch { /* already gone */ }
-        result.outputPath = '';
-        licenseService.decrementTrialUsage();
-        log.info(`[license] trial used — ${licenseService.getRemainingTrials()} remaining`);
-      }
-
       return {
         ...result,
         outputPath:  result.outputPath,
-        previewPath: result.previewPath || mp3TempPath,
+        previewPath: result.previewPath || mp3FallbackPath,
       };
     } catch (err) {
       // Clean up temp WAV on any error to avoid leaking disk space

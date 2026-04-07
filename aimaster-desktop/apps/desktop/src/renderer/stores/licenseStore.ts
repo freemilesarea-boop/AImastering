@@ -32,11 +32,16 @@ export const useLicenseStore = create<LicenseStore>((set, get) => ({
   setShowModal:   (v)    => set({ showModal: v, error: null }),
 
   load: async () => {
+    if (!window.electronAPI) {
+      console.warn('[licenseStore] electronAPI not available — skipping license load');
+      return;
+    }
     set({ isLoading: true, error: null });
     try {
       const info = await window.electronAPI.invoke('license:status') as LicenseInfo;
       set({ licenseInfo: info });
     } catch (err) {
+      console.error('[licenseStore] license:status error:', err);
       set({ error: (err as Error).message });
     } finally {
       set({ isLoading: false });
@@ -44,6 +49,7 @@ export const useLicenseStore = create<LicenseStore>((set, get) => ({
   },
 
   activate: async (key: string) => {
+    if (!window.electronAPI) throw new Error('electronAPI not available');
     set({ isLoading: true, error: null });
     try {
       const info = await window.electronAPI.invoke('license:activate', key) as LicenseInfo;

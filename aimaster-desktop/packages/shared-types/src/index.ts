@@ -49,13 +49,54 @@ export interface MasteringOptions {
   applyAiCorrections: boolean;
 }
 
+export interface EqMoveReport {
+  band: string;
+  freqHz: number;
+  gainDb: number;
+  gainStr: string;
+  filter: 'bell' | 'highshelf' | 'lowshelf';
+  adaptive: boolean;
+}
+
+export interface AnalysisReport {
+  eqMoves: EqMoveReport[];
+  compressor: {
+    style: string;
+    thresholdDb: number;
+    ratio: number;
+    attackMs: number;
+    releaseMs: number;
+    makeupDb: number;
+    estimatedGrDb: number;
+  };
+  limiter: {
+    ceilingDbtp: number;
+    preGainDbtp: number;
+    appliedGrDb: number;
+    preLimLufs: number;
+  };
+  loudnorm: {
+    targetLufs: number;
+    measuredBefore: number;
+    gainAppliedDb: number;
+  };
+  spectralBefore: { lowToMidDb: number; highToMidDb: number } | null;
+  spectralAfter:  { lowToMidDb: number; highToMidDb: number } | null;
+  loudnessBefore: { integratedLufs: number; truePeakDbtp: number; lra: number };
+  loudnessAfter:  { integratedLufs: number; truePeakDbtp: number; lra: number };
+}
+
 export interface MasteringResult {
-  /** Absolute path to the master WAV.  Empty string when WAV save is blocked (free tier). */
+  /** Absolute path to the master WAV. */
   outputPath: string;
-  /** Absolute path to the MP3 preview.  Always populated on success. */
+  /** Absolute path to the MP3 preview. Always populated on success. */
   previewPath: string;
   appliedCorrections: string[];
+  loudnessBefore: { integratedLufs: number; truePeakDbtp: number; lra: number };
   loudnessAfter: LoudnessStats;
+  spectralBalance: { lowToMidDb: number; highToMidDb: number } | null;
+  analysisReport: AnalysisReport | null;
+  pipelineWarnings: Array<{ code: string; level: string; userMessage: string }>;
   processingTimeSec: number;
 }
 

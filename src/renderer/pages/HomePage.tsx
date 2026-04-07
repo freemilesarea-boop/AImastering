@@ -28,12 +28,14 @@ export function HomePage() {
 
   // 최근 파일 목록 로드
   useEffect(() => {
+    if (!window.electronAPI) return
     window.electronAPI.invoke<{ success: boolean; data: string[] }>('file:get-recent')
       .then(r => { if (r.success) setRecentFiles(r.data) }).catch(() => {})
   }, [setRecentFiles])
 
   // 메뉴 파일 열기 이벤트
   useEffect(() => {
+    if (!window.electronAPI) return
     const cleanup = window.electronAPI.on('menu:open-file', () => {
       window.electronAPI.invoke<string[] | null>('file:open-dialog')
         .then(paths => { if (paths?.[0]) selectAndAnalyze(paths[0]) })

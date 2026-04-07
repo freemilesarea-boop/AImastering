@@ -16,12 +16,38 @@ Error categories:
 """
 from __future__ import annotations
 
+import io
 import json
 import sys
 import traceback
 
-# Line-buffer stdout so Electron receives each JSON object immediately
-sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+# ── Windows UTF-8 I/O ─────────────────────────────────────────────────────────
+# On Windows the default codec is cp949. Instead of reconfiguring or rewrapping
+# sys.stdin/stdout (which can raise TypeError inside PyInstaller bundles), we
+# work with the underlying binary buffers directly so encoding is always explicit.
+
+def _get_stdin_binary() -> io.RawIOBase:
+    """Return a binary-mode stdin reader."""
+    if hasattr(sys.stdin, 'buffer'):
+        return sys.stdin.buffer  # type: ignore[return-value]
+    # PyInstaller fallback: stdin is already binary
+    return sys.stdin  # type: ignore[return-value]
+
+def _get_stdout_binary() -> io.RawIOBase:
+    """Return a binary-mode stdout writer."""
+    if hasattr(sys.stdout, 'buffer'):
+        return sys.stdout.buffer  # type: ignore[return-value]
+    return sys.stdout  # type: ignore[return-value]
+
+def _get_stderr_binary() -> io.RawIOBase:
+    """Return a binary-mode stderr writer."""
+    if hasattr(sys.stderr, 'buffer'):
+        return sys.stderr.buffer  # type: ignore[return-value]
+    return sys.stderr  # type: ignore[return-value]
+
+_stdin_bin  = _get_stdin_binary()
+_stdout_bin = _get_stdout_binary()
+_stderr_bin = _get_stderr_binary()
 
 from app.analyzers.analyzer import analyze_file
 from app.mastering.mastering import master_file
@@ -32,7 +58,9 @@ from app.utils.logger import log
 # ── I/O helpers ───────────────────────────────────────────────────────────────
 
 def _send(obj: dict) -> None:
-    print(json.dumps(obj, ensure_ascii=False), flush=True)
+    """Write a JSON line to stdout. ensure_ascii=True keeps output pure-ASCII
+    so Windows cp949 stdout encoding never causes UnicodeEncodeError."""
+    print(json.dumps(obj, ensure_ascii=True), flush=True)
 
 
 def _send_progress(job_id: str, percent: int, stage: str) -> None:
@@ -83,7 +111,8 @@ def main() -> None:
     print("READY", file=sys.stderr, flush=True)
     log("INFO", "AIMASTER Python audio engine started")
 
-    for raw_line in sys.stdin:
+    for raw_bytes in _stdin_bin:
+        raw_line = raw_bytes.decode('utf-8', errors='replace') if isinstance(raw_bytes, (bytes, bytearray)) else raw_bytes
         raw = raw_line.strip()
         if not raw:
             continue
@@ -119,12 +148,12 @@ def main() -> None:
             _send_error(req_id, -32000, str(exc))
 
         except Exception as exc:
-            # Unexpected errors — log full trace, send generic Korean message
-            log("ERROR", f"Unexpected error [{req_id[:8]}]: {exc}\n{traceback.format_exc()}")
+            # Unexpected errors — log full trace, send detailed message
+            tb = traceback.format_exc()
+            log("ERROR", f"Unexpected error [{req_id[:8]}]: {exc}\n{tb}")
             _send_error(
                 req_id, -32000,
-                f"서버 내부 오류가 발생했습니다: {type(exc).__name__}. "
-                f"로그를 확인해주세요."
+                f"{type(exc).__name__}: {exc}",
             )
 
 

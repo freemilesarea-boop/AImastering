@@ -24,13 +24,82 @@ const NAV_ITEMS = [
 
 type NavId = typeof NAV_ITEMS[number]['id']
 
+// preload가 없을 때 렌더할 최소 fallback UI
+function NoApiUI() {
+  return (
+    <div className="flex h-screen bg-surface-950 text-gray-100 items-center justify-center flex-col gap-6 p-8">
+      {/* 앱 제목 */}
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 bg-gradient-to-br from-violet-600 to-indigo-600 rounded-xl flex items-center justify-center">
+          <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+          </svg>
+        </div>
+        <span className="text-xl font-bold">AImastering</span>
+      </div>
+
+      {/* 파일 업로드 영역 */}
+      <div className="w-full max-w-md h-48 border-2 border-dashed border-gray-700 rounded-2xl flex flex-col items-center justify-center gap-3 text-center">
+        <svg className="w-12 h-12 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+        </svg>
+        <p className="text-gray-400 font-medium">오디오 파일 업로드</p>
+        <p className="text-gray-600 text-sm">WAV · FLAC · AIFF · MP3</p>
+      </div>
+
+      {/* 스타일 선택 UI */}
+      <div className="flex gap-2">
+        {['Balanced', 'Warm', 'Bright', 'Punch'].map((s) => (
+          <div key={s} className="px-4 py-2 bg-surface-800 rounded-xl text-sm text-gray-500 border border-gray-800">
+            {s}
+          </div>
+        ))}
+      </div>
+
+      {/* 실행 버튼 */}
+      <button
+        disabled
+        className="px-8 py-3 bg-violet-600/50 text-violet-300 rounded-xl font-semibold text-sm cursor-not-allowed"
+      >
+        마스터링 시작
+      </button>
+
+      {/* 경고 메시지 */}
+      <div className="bg-yellow-900/20 border border-yellow-800/40 rounded-xl px-4 py-3 max-w-md w-full text-center">
+        <p className="text-yellow-400 text-sm font-medium">Electron preload 로드 실패</p>
+        <p className="text-yellow-600 text-xs mt-1">
+          window.electronAPI 가 노출되지 않았습니다.<br />
+          DevTools 콘솔(Ctrl+Shift+I)에서 오류를 확인하세요.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
+  // electronAPI 런타임 가용성 체크 — 없으면 fallback UI 표시
+  const hasAPI = Boolean(window.electronAPI)
+
+  useEffect(() => {
+    console.log('[App] mounted. electronAPI available:', hasAPI)
+    if (!hasAPI) {
+      console.warn('[App] window.electronAPI is undefined — preload did not run correctly.')
+    }
+  }, [hasAPI])
+
+  if (!hasAPI) return <NoApiUI />
+
+  return <AppInner />
+}
+
+function AppInner() {
   const { currentPage, navigateTo, pythonReady, setPythonReady } = useAppStore()
   const { processingState, masteringResult } = useAudioStore()
   const { licenseInfo, setShowModal, isTrial, trialRemaining } = useLicense()
 
   // IPC navigate 이벤트 수신 (메뉴에서 호출)
   useEffect(() => {
+    if (!window.electronAPI) return
     const cleanup = window.electronAPI.on('navigate', (path) => {
       const pageMap: Record<string, Parameters<typeof navigateTo>[0]> = {
         '/': 'home', '/settings': 'settings', '/qc': 'qc',
@@ -150,7 +219,7 @@ export default function App() {
       {/* 메인 콘텐츠 */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* macOS 트래픽 라이트 공간 */}
-        {window.electronAPI.platform === 'darwin' && (
+        {window.electronAPI?.platform === 'darwin' && (
           <div className="h-8 flex-shrink-0 [-webkit-app-region:drag]" />
         )}
 
