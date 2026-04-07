@@ -60,6 +60,8 @@ def _run(cmd: list[str], *, timeout: int = 300) -> tuple[str, str]:
             cmd,
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:

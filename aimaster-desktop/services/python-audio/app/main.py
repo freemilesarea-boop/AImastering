@@ -150,12 +150,12 @@ def main() -> None:
             _send_error(req_id, -32000, str(exc))
 
         except Exception as exc:
-            # Unexpected errors — log full trace, send generic Korean message
-            log("ERROR", f"Unexpected error [{req_id[:8]}]: {exc}\n{traceback.format_exc()}")
+            # Unexpected errors — log full trace, send detailed message
+            tb = traceback.format_exc()
+            log("ERROR", f"Unexpected error [{req_id[:8]}]: {exc}\n{tb}")
             _send_error(
                 req_id, -32000,
-                f"서버 내부 오류가 발생했습니다: {type(exc).__name__}. "
-                f"로그를 확인해주세요."
+                f"{type(exc).__name__}: {exc}",
             )
 
 
