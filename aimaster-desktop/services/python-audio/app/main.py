@@ -22,6 +22,7 @@ import traceback
 
 # Force UTF-8 on Windows where the default codec is cp949.
 # Must be done before any I/O or module-level strings are written.
+sys.stdin.reconfigure(encoding='utf-8', errors='replace')   # type: ignore[attr-defined]
 sys.stdout.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)  # type: ignore[attr-defined]
 sys.stderr.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
 
