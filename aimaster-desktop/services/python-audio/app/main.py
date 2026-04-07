@@ -20,8 +20,10 @@ import json
 import sys
 import traceback
 
-# Line-buffer stdout so Electron receives each JSON object immediately
-sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+# Force UTF-8 on Windows where the default codec is cp949.
+# Must be done before any I/O or module-level strings are written.
+sys.stdout.reconfigure(encoding='utf-8', errors='replace', line_buffering=True)  # type: ignore[attr-defined]
+sys.stderr.reconfigure(encoding='utf-8', errors='replace')  # type: ignore[attr-defined]
 
 from app.analyzers.analyzer import analyze_file
 from app.mastering.mastering import master_file
