@@ -21,15 +21,33 @@ import json
 import sys
 import traceback
 
-# Force UTF-8 on Windows (default is cp949) — works with both CPython and PyInstaller.
-# reconfigure() can raise TypeError in some PyInstaller builds; wrapping the underlying
-# binary buffer is more portable.
-if hasattr(sys.stdin, 'buffer'):
-    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8', errors='replace')
-if hasattr(sys.stdout, 'buffer'):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-if hasattr(sys.stderr, 'buffer'):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+# ── Windows UTF-8 I/O ─────────────────────────────────────────────────────────
+# On Windows the default codec is cp949. Instead of reconfiguring or rewrapping
+# sys.stdin/stdout (which can raise TypeError inside PyInstaller bundles), we
+# work with the underlying binary buffers directly so encoding is always explicit.
+
+def _get_stdin_binary() -> io.RawIOBase:
+    """Return a binary-mode stdin reader."""
+    if hasattr(sys.stdin, 'buffer'):
+        return sys.stdin.buffer  # type: ignore[return-value]
+    # PyInstaller fallback: stdin is already binary
+    return sys.stdin  # type: ignore[return-value]
+
+def _get_stdout_binary() -> io.RawIOBase:
+    """Return a binary-mode stdout writer."""
+    if hasattr(sys.stdout, 'buffer'):
+        return sys.stdout.buffer  # type: ignore[return-value]
+    return sys.stdout  # type: ignore[return-value]
+
+def _get_stderr_binary() -> io.RawIOBase:
+    """Return a binary-mode stderr writer."""
+    if hasattr(sys.stderr, 'buffer'):
+        return sys.stderr.buffer  # type: ignore[return-value]
+    return sys.stderr  # type: ignore[return-value]
+
+_stdin_bin  = _get_stdin_binary()
+_stdout_bin = _get_stdout_binary()
+_stderr_bin = _get_stderr_binary()
 
 from app.analyzers.analyzer import analyze_file
 from app.mastering.mastering import master_file
@@ -40,7 +58,10 @@ from app.utils.logger import log
 # ── I/O helpers ───────────────────────────────────────────────────────────────
 
 def _send(obj: dict) -> None:
-    print(json.dumps(obj, ensure_ascii=False), flush=True)
+    """Write a JSON line to stdout as UTF-8 bytes (cp949-safe)."""
+    line = json.dumps(obj, ensure_ascii=False).encode('utf-8') + b'\n'
+    _stdout_bin.write(line)
+    _stdout_bin.flush()
 
 
 def _send_progress(job_id: str, percent: int, stage: str) -> None:
@@ -88,10 +109,12 @@ HANDLERS = {
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    print("READY", file=sys.stderr, flush=True)
+    _stderr_bin.write(b"READY\n")
+    _stderr_bin.flush()
     log("INFO", "AIMASTER Python audio engine started")
 
-    for raw_line in sys.stdin:
+    for raw_bytes in _stdin_bin:
+        raw_line = raw_bytes.decode('utf-8', errors='replace') if isinstance(raw_bytes, (bytes, bytearray)) else raw_bytes
         raw = raw_line.strip()
         if not raw:
             continue
