@@ -54,6 +54,8 @@ def master_file(
     saturation_amount = params.get("saturation_amount")
     stereo_width      = params.get("stereo_width")
     output_gain_db    = float(params.get("output_gain_db", 0.0))
+    # Node analyze 단계가 측정해서 넘겨주는 사전 라우드니스 (선택).
+    pre_loudness      = params.get("pre_loudness") or None
 
     log("INFO", f"master_file: style={style}, target={target_lufs} LUFS / {target_tp} dBTP, "
                 f"limiter={limiter_strength}, sr={sample_rate}, bits={bit_depth}, ai={apply_ai}")
@@ -74,6 +76,7 @@ def master_file(
             saturation_amount=(float(saturation_amount) if saturation_amount is not None else None),
             stereo_width=(float(stereo_width) if stereo_width is not None else None),
             output_gain_db=output_gain_db,
+            pre_loudness=(dict(pre_loudness) if isinstance(pre_loudness, dict) else None),
             job_id=job_id,
             progress=send_progress,
         )

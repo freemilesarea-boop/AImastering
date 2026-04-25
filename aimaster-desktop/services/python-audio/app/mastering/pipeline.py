@@ -164,6 +164,10 @@ def run_pipeline(
     saturation_amount: float | None = None,
     stereo_width: float | None = None,
     output_gain_db: float = 0.0,
+    # Optional pre-measured loudness from the Node-side analyze step.
+    # When provided, the pipeline skips its own raw loudnorm pass1
+    # (saves ~20% of master time).
+    pre_loudness: dict[str, float] | None = None,
     job_id: str = "job",
     progress: ProgressCallback = _noop_progress,
 ) -> dict[str, Any]:
@@ -312,15 +316,24 @@ def run_pipeline(
         log("ERROR", f"loudnorm pass1 failed: {exc}\nstderr:\n{exc.stderr}")
         raise
 
-    # Measure raw input separately for the "before" stats in the UI
-    try:
-        pass1_raw = loudnorm_pass1(input_path, target_lufs, loudnorm_tp_internal, lra)
-    except FFmpegError:
-        pass1_raw = pass1
-
-    pre_lufs = float(pass1_raw.get("input_i", -99.0))
-    pre_tp   = float(pass1_raw.get("input_tp", 0.0))
-    pre_lra  = float(pass1_raw.get("input_lra", 0.0))
+    # "Before" 라우드니스 통계.
+    # 1) Node analyze 단계가 측정해서 pre_loudness 로 넘겨주면 그대로 사용 (가장 빠름).
+    # 2) 없으면 원본에 대해 별도로 loudnorm pass1 을 한 번 더 돌린다 (느림).
+    pass1_raw: dict[str, float] | None = None
+    if pre_loudness is not None:
+        pre_lufs = float(pre_loudness.get("integratedLufs", pre_loudness.get("input_i", -99.0)))
+        pre_tp   = float(pre_loudness.get("truePeakDbtp",  pre_loudness.get("input_tp",   0.0)))
+        pre_lra  = float(pre_loudness.get("lra",            pre_loudness.get("input_lra",  0.0)))
+        log("INFO", "[pipeline] using pre-measured loudness from analyze step "
+                    f"(saved one pass1 round-trip)")
+    else:
+        try:
+            pass1_raw = loudnorm_pass1(input_path, target_lufs, loudnorm_tp_internal, lra)
+        except FFmpegError:
+            pass1_raw = pass1
+        pre_lufs = float(pass1_raw.get("input_i", -99.0))
+        pre_tp   = float(pass1_raw.get("input_tp", 0.0))
+        pre_lra  = float(pass1_raw.get("input_lra", 0.0))
     log("INFO", f"[pipeline] pre-master (raw): LUFS={pre_lufs:.1f}, "
                 f"TP={pre_tp:.1f}, LRA={pre_lra:.1f}")
 
@@ -580,7 +593,7 @@ def run_pipeline(
     comp_params  = get_comp_params(style)
     comp_gr_est  = estimate_comp_gr(style, input_peak_db)
     lim_gr       = round(max(0.0, pre_lim_peak_db - target_tp), 2)
-    loudnorm_gain = round(target_lufs - float(pass1_raw.get("input_i", pre_lufs)), 1)
+    loudnorm_gain = round(target_lufs - pre_lufs, 1)
 
     post_spectral = None
     if post_waveform and hasattr(post_waveform, "low_to_mid_db"):

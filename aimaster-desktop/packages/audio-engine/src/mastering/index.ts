@@ -1,11 +1,23 @@
 import type { PythonBridge } from '../utils/pythonBridge.js';
-import type { MasteringOptions, MasteringResult } from '../types/index.js';
+import type {
+  LoudnessStats,
+  MasteringOptions,
+  MasteringResult,
+} from '../types/index.js';
+
+export interface MasterFileExtras {
+  /** Analyze 단계의 loudness 결과 — Python 이 별도 pass1 을 안 돌게 해 줌 */
+  preLoudness?: LoudnessStats | undefined;
+  /** RPC 타임아웃 override (ms).  미지정 시 bridge 의 method 별 기본값 사용. */
+  timeoutMs?: number | undefined;
+}
 
 export async function masterFile(
   bridge: PythonBridge,
   inputPath: string,
   outputPath: string,
-  options: MasteringOptions
+  options: MasteringOptions,
+  extras: MasterFileExtras = {},
 ): Promise<MasteringResult> {
   const params: Record<string, unknown> = {
     input_path:           inputPath,
@@ -24,5 +36,13 @@ export async function masterFile(
   if (options.stereoWidth != null)      params['stereo_width']      = options.stereoWidth;
   if (options.outputGainDb != null)     params['output_gain_db']    = options.outputGainDb;
 
-  return bridge.call<MasteringResult>('master', params);
+  if (extras.preLoudness) {
+    params['pre_loudness'] = {
+      integratedLufs: extras.preLoudness.integratedLufs,
+      truePeakDbtp:   extras.preLoudness.truePeakDbtp,
+      lra:            extras.preLoudness.lra,
+    };
+  }
+
+  return bridge.call<MasteringResult>('master', params, extras.timeoutMs);
 }

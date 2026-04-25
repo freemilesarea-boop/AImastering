@@ -765,6 +765,8 @@ export default function HomePage() {
         });
 
         // Step 3: Master
+        // analyze 단계에서 측정된 loudness 를 함께 넘긴다 — Python 이 별도
+        // pass1 을 다시 돌리지 않게 해서 master 시간을 ~20% 단축한다.
         const result = await window.electronAPI!.invoke(
           'audio:master',
           item.filePath,
@@ -781,6 +783,9 @@ export default function HomePage() {
             stereoWidth:        options.stereoWidth,
             outputGainDb:       options.outputGainDb,
             aiDetections:       analysis.aiDetection ?? {},
+          },
+          {
+            preLoudness: analysis.loudness,
           },
         ) as MasteringResult;
 

@@ -15,7 +15,7 @@ import { v4 as uuidv4 } from 'uuid';import {
   unknownError,
   pathEncodingError,
 } from '@aimaster/audio-engine';
-import type { MasteringOptions } from '@aimaster/shared-types';
+import type { MasteringOptions, LoudnessStats } from '@aimaster/shared-types';
 import { log } from '../utils/logger.js';
 
 let bridge: PythonBridge | null = null;
@@ -213,6 +213,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     filePath: string,
     _outputPath: string,   // ignored — we always generate temp paths here
     options: MasteringOptions,
+    extras?: { preLoudness?: LoudnessStats },
   ) => {
     // ── Write-permission pre-check ────────────────────────────────────────
     assertTmpWritable();
@@ -241,7 +242,9 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     const mp3FallbackPath = internalTempPath('_preview.mp3');
 
     try {
-      const result = await masterFile(b, filePath, wavTempPath, options);
+      const result = await masterFile(b, filePath, wavTempPath, options, {
+        preLoudness: extras?.preLoudness,
+      });
 
       if (bridgeDied) {
         throw pythonProcessFailed('Bridge process exited during masterFile()', true);
