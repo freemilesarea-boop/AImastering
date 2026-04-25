@@ -84,6 +84,17 @@ jobs:
   build-win:
     runs-on: windows-latest
     steps:
+      # Enable Windows long path support BEFORE checkout so git + later steps
+      # can handle paths > 260 chars.  Some packaging tools (notably NSIS via
+      # electron-builder) cannot read paths above MAX_PATH; combining this with
+      # node-linker=hoisted (set below) gives us belt-and-suspenders coverage.
+      - name: Enable Windows long paths
+        shell: pwsh
+        run: |
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force | Out-Null
+          git config --system core.longpaths true
+
       - uses: actions/checkout@v4
 
       - name: Set up Python
@@ -130,9 +141,26 @@ jobs:
             --exclude-module matplotlib `
             app\main.py
 
-      - name: Install Node dependencies
+      - name: Install Node dependencies (hoisted layout for Windows MAX_PATH)
         working-directory: aimaster-desktop
-        run: pnpm install --no-frozen-lockfile
+        shell: pwsh
+        run: |
+          # Force hoisted node_modules + short virtual-store dir name as CLI
+          # overrides in case .npmrc isn't honored.  Without this, electron-builder's
+          # NSIS step blows past Windows' 260-char path limit on
+          #   node_modules/.pnpm/app-builder-lib@<long-peers-hash>/...
+          pnpm install --no-frozen-lockfile `
+            --config.node-linker=hoisted `
+            --config.shamefully-hoist=true `
+            --config.virtual-store-dir-max-length=64
+          # Debug — confirm settings actually applied
+          Write-Host "── pnpm config (Windows) ──"
+          pnpm config get node-linker
+          pnpm config get virtual-store-dir-max-length
+          Write-Host "── app-builder-lib resolved location ──"
+          $resolved = node -e "console.log(require.resolve('app-builder-lib/package.json'))"
+          Write-Host $resolved
+          Write-Host "── path length: $($resolved.Length) chars ──"
 
       - name: Copy FFmpeg binaries
         working-directory: aimaster-desktop/apps/desktop
