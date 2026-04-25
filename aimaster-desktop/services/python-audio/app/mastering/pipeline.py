@@ -32,6 +32,7 @@ from app.utils.ffmpeg_wrapper import (
     loudnorm_pass1,
     loudnorm_pass2,
     apply_limiter,
+    apply_filter_chain,
     measure_output,
     export_preview_mp3,
     parse_audio_stream,
@@ -470,13 +471,18 @@ def run_pipeline(
                 corr_chain_parts.append(sc)
             corr_chain = ",".join(corr_chain_parts) if corr_chain_parts else ""
 
-            corr_fd, corr_tmp = tempfile.mkstemp(suffix="_corr.wav")
+            # Output 와 같은 디렉토리에 임시 파일을 만든다 (Windows: os.replace 는
+            # cross-volume 시 실패할 수 있으므로 같은 볼륨을 보장).
+            output_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+            corr_fd, corr_tmp = tempfile.mkstemp(
+                suffix="_corr.wav",
+                prefix="aimaster_",
+                dir=output_dir,
+            )
             os.close(corr_fd)
             try:
                 # output_path 를 다시 ffmpeg 으로 통과시키며 보정
                 #   volume (correction_gain_db) → soft clip → alimiter (TP ceiling)
-                from app.utils.ffmpeg_wrapper import _run, _FFMPEG_BIN
-                codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
                 lim_ls = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
                 lim_in_lin  = 10.0 ** (lim_ls["input_gain_db"] / 20.0)
                 lim_out_lin = 10.0 ** (target_tp / 20.0)
@@ -485,14 +491,13 @@ def run_pipeline(
                     + f"alimiter=level_in={lim_in_lin:.4f}:level_out=1:limit={lim_out_lin:.6f}"
                     + f":attack={lim_ls['attack_ms']}:release={lim_ls['release_ms']}:asc=1"
                 )
-                _run([
-                    _FFMPEG_BIN, "-hide_banner", "-y",
-                    "-i", output_path,
-                    "-af", af,
-                    "-ar", str(sample_rate),
-                    "-acodec", codec,
+                apply_filter_chain(
+                    output_path,
                     corr_tmp,
-                ])
+                    af,
+                    sample_rate=sample_rate,
+                    bit_depth=bit_depth,
+                )
                 os.replace(corr_tmp, output_path)
                 correction_applied = True
                 applied_corrections.append(
