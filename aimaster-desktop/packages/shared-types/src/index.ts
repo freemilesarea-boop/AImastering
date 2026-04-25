@@ -1,6 +1,99 @@
 // ── Audio ─────────────────────────────────────────────────────────────────────
 
-export type MasteringStyle = 'balanced' | 'warm' | 'bright' | 'punch';
+/**
+ * Mastering 모드.
+ * v3 추가: natural / loud / kpop_loud
+ * v2 호환: balanced / warm / bright / punch
+ */
+export type MasteringStyle =
+  | 'natural'
+  | 'balanced'
+  | 'bright'
+  | 'loud'
+  | 'kpop_loud'
+  | 'warm'
+  | 'punch';
+
+/** Brickwall limiter 입력 게인 강도. */
+export type LimiterStrength = 'low' | 'medium' | 'high';
+
+/** UI 모드 카드 데이터. */
+export interface MasteringModePreset {
+  id: MasteringStyle;
+  name: string;
+  hint: string;
+  detail: string;
+  targetLufs: number;
+  targetTp: number;
+  limiterStrength: LimiterStrength;
+  legacy?: boolean;
+}
+
+export const MASTERING_MODES: MasteringModePreset[] = [
+  {
+    id: 'natural', name: 'Natural', hint: '원본 보존',
+    detail: '약한 EQ + 약한 컴프. AI 원음을 거의 그대로 유지.',
+    targetLufs: -14, targetTp: -1.0, limiterStrength: 'low',
+  },
+  {
+    id: 'balanced', name: 'Balanced', hint: '범용',
+    detail: '적당한 EQ/comp/saturation. 일반 발매용 기본값.',
+    targetLufs: -12, targetTp: -1.0, limiterStrength: 'medium',
+  },
+  {
+    id: 'bright', name: 'Bright', hint: '선명한',
+    detail: '고역 선명도. 과압축 없음 / air band 보존.',
+    targetLufs: -12, targetTp: -1.0, limiterStrength: 'medium',
+  },
+  {
+    id: 'loud', name: 'Loud', hint: '음압 강화',
+    detail: 'soft clipping + limiter 적극. 다이나믹 손상 가능.',
+    targetLufs: -10, targetTp: -1.0, limiterStrength: 'high',
+  },
+  {
+    id: 'kpop_loud', name: 'KPOP Loud', hint: '체감 볼륨',
+    detail: 'low-end 정리 + mid/high clarity + 강한 limiter.',
+    targetLufs: -9, targetTp: -0.8, limiterStrength: 'high',
+  },
+  {
+    id: 'warm', name: 'Warm', hint: '따뜻한',
+    detail: '고역 자극 완화 (legacy).',
+    targetLufs: -14, targetTp: -1.0, limiterStrength: 'low', legacy: true,
+  },
+  {
+    id: 'punch', name: 'Punch', hint: '강한 저음',
+    detail: '저역 밀도 + 타격감 (legacy).',
+    targetLufs: -11, targetTp: -1.0, limiterStrength: 'high', legacy: true,
+  },
+];
+
+/** YouTube/Streaming/KPOP/EDM 등 빠른 프리셋. */
+export interface MasteringQuickPreset {
+  id: string;
+  name: string;
+  description: string;
+  style: MasteringStyle;
+  targetLufs: number;
+  targetTp: number;
+  limiterStrength: LimiterStrength;
+}
+
+export const MASTERING_QUICK_PRESETS: MasteringQuickPreset[] = [
+  { id: 'youtube_safe',   name: 'YouTube Safe',   description: '-14 LUFS / -1.0 dBTP',
+    style: 'balanced',  targetLufs: -14, targetTp: -1.0, limiterStrength: 'low'    },
+  { id: 'streaming_loud', name: 'Streaming Loud', description: '-11 LUFS / -1.0 dBTP',
+    style: 'balanced',  targetLufs: -11, targetTp: -1.0, limiterStrength: 'medium' },
+  { id: 'kpop_loud',      name: 'KPOP Loud',      description: '-9 LUFS / -0.8 dBTP',
+    style: 'kpop_loud', targetLufs: -9,  targetTp: -0.8, limiterStrength: 'high'   },
+  { id: 'edm_loud',       name: 'EDM Loud',       description: '-8 LUFS / -0.5 dBTP',
+    style: 'loud',      targetLufs: -8,  targetTp: -0.5, limiterStrength: 'high'   },
+];
+
+export const LIMITER_STRENGTH_LABELS: Record<LimiterStrength, string> = {
+  low:    'Low',
+  medium: 'Medium',
+  high:   'High',
+};
 
 export interface AudioFileInfo {
   path: string;
@@ -47,6 +140,14 @@ export interface MasteringOptions {
   sampleRate: number;
   bitDepth: number;
   applyAiCorrections: boolean;
+  /** v3 — limiter 강도 (low/medium/high). 누락 시 medium. */
+  limiterStrength?: LimiterStrength;
+  /** v3 — saturation 강도 (0~1). undefined = 모드 기본값. */
+  saturationAmount?: number;
+  /** v3 — stereo width (1.0 = 그대로). undefined = 모드 기본값. */
+  stereoWidth?: number;
+  /** v3 — output gain dB (-6~+6). 누락 시 0. */
+  outputGainDb?: number;
 }
 
 export interface EqMoveReport {
@@ -58,7 +159,23 @@ export interface EqMoveReport {
   adaptive: boolean;
 }
 
+/** v3 — 마스터링 메타 (목표값/적용 게인/리미터 압축 등). */
+export interface MasteringMeta {
+  mode: MasteringStyle | string;
+  targetLufs: number;
+  targetTruePeak: number;
+  limiterStrength: LimiterStrength;
+  appliedGainDb: number;
+  limiterReductionDb: number;
+  correctionApplied: boolean;
+  correctionGainDb: number;
+  useLinearLoudnorm: boolean;
+  targetReached: boolean;
+}
+
 export interface AnalysisReport {
+  /** v3 — Mastering 모드/목표/실제 결과 메타. */
+  mastering?: MasteringMeta;
   eqMoves: EqMoveReport[];
   compressor: {
     style: string;

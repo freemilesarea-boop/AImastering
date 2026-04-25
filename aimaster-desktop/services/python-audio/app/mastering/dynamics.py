@@ -22,6 +22,16 @@ from app.utils.logger import log
 
 _STYLE_COMP: dict[str, dict] = {
 
+    # Natural — 거의 무처리에 가까운 가벼운 글루
+    "natural": {
+        "threshold": -22,
+        "ratio":     1.4,
+        "attack":    50,
+        "release":   200,
+        "makeup":    1.0,
+        "knee":      10.0,
+    },
+
     "balanced": {
         "threshold": -20,
         "ratio":     1.8,
@@ -40,13 +50,20 @@ _STYLE_COMP: dict[str, dict] = {
         "knee":      10.0,
     },
 
+    # Bright — v2 (fast attack 20ms, ratio 2.0) 가 고역 transient 를 누르는 문제가
+    # 있었음. 다음과 같이 완화:
+    #   - attack 20 → 30 ms (transient 통과)
+    #   - ratio  2.0 → 1.6
+    #   - threshold -20 → -18 (덜 자주 걸림)
+    #   - makeup 1.5 → 1.0
+    #   - knee 6 → 8 (더 부드러운 진입)
     "bright": {
-        "threshold": -20,
-        "ratio":     2.0,
-        "attack":    20,    # faster — controls harshness from presence boosts
-        "release":   100,
-        "makeup":    1.5,
-        "knee":      6.0,
+        "threshold": -18,
+        "ratio":     1.6,
+        "attack":    30,
+        "release":   140,
+        "makeup":    1.0,
+        "knee":      8.0,
     },
 
     "punch": {
@@ -56,6 +73,26 @@ _STYLE_COMP: dict[str, dict] = {
         "release":   80,
         "makeup":    2.0,
         "knee":      4.0,
+    },
+
+    # Loud — 더 적극적인 글루 + 빠른 attack (transient 제어)
+    "loud": {
+        "threshold": -16,
+        "ratio":     2.5,
+        "attack":    12,
+        "release":   90,
+        "makeup":    2.0,
+        "knee":      4.0,
+    },
+
+    # KPOP Loud — 가장 강한 글루 (limiter 와 함께 체감 볼륨 극대화)
+    "kpop_loud": {
+        "threshold": -14,
+        "ratio":     2.8,
+        "attack":    10,
+        "release":   80,
+        "makeup":    2.0,
+        "knee":      3.0,
     },
 }
 

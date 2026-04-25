@@ -89,11 +89,21 @@ function sanitizeFilename(name: string): string {
  * UUID is never exposed in the output filename; it is used only as an
  * emergency fallback if all 999 numeric slots are somehow taken.
  */
-function resolveOutputPath(inputFilePath: string, ext: string): string {
+function resolveOutputPath(
+  inputFilePath: string,
+  ext: string,
+  meta?: { style?: string; targetLufs?: number },
+): string {
   const tmpDir  = os.tmpdir();
   const rawBase = path.basename(inputFilePath, path.extname(inputFilePath));
   const safe    = sanitizeFilename(rawBase);
-  const stem    = `${safe}_master`;
+
+  // v3 — 모드 + LUFS 를 파일명에 포함 (예: song_master_kpop_loud_-9LUFS.wav)
+  const styleStr = meta?.style ? `_${meta.style}` : '';
+  const lufsStr  = typeof meta?.targetLufs === 'number'
+    ? `_${Math.round(meta.targetLufs)}LUFS`
+    : '';
+  const stem    = `${safe}_master${styleStr}${lufsStr}`;
 
   const primary = path.join(tmpDir, `${stem}${ext}`);
   if (!fs.existsSync(primary)) return primary;
@@ -223,7 +233,10 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     // ── Output path: original-filename-based, not UUID ────────────────────
     // Python derives the preview MP3 path as: outputPath_without_ext + "_preview.mp3"
     // so naming the WAV correctly automatically names the preview correctly too.
-    const wavTempPath = resolveOutputPath(filePath, '.wav');
+    const wavTempPath = resolveOutputPath(filePath, '.wav', {
+      style:      options?.style,
+      targetLufs: options?.targetLufs,
+    });
     // Fallback MP3 path — used only if Python fails to generate the preview
     const mp3FallbackPath = internalTempPath('_preview.mp3');
 

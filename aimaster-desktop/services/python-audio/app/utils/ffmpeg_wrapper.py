@@ -210,19 +210,25 @@ def loudnorm_pass2(
     sample_rate: int = 44100,
     bit_depth: int = 24,
     pre_filter: str = "",
+    linear: bool = True,
 ) -> str:
     """
-    Apply loudnorm in linear mode using pass-1 measurements.
+    Apply loudnorm using pass-1 measurements.
 
-    target_tp is set to -1.5 by default to leave 0.5 dB of headroom
-    for the brickwall limiter stage that follows.
+    linear=True   — 측정값 기반 정확한 1차 게인 (기본).
+                    -14 LUFS 같은 일반 타깃에 적합.
+    linear=False  — dynamic 모드.  목표값이 -10 LUFS 처럼 매우 큰 경우
+                    (절대값이 작은 경우) 강한 압축으로 도달시킨다.
+
+    target_tp 는 기본 -1.5 로 두어 후단 brickwall limiter 에 0.5 dB 여유를 남긴다.
 
     pre_filter: comma-joined ffmpeg audio filter string applied BEFORE loudnorm
                 (EQ → compressor chain goes here).
     Returns output_path on success.
     """
+    linear_str = "true" if linear else "false"
     loudnorm = (
-        f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={lra}:linear=true"
+        f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={lra}:linear={linear_str}"
         f":measured_I={pass1['input_i']}"
         f":measured_LRA={pass1['input_lra']}"
         f":measured_TP={pass1['input_tp']}"
@@ -256,27 +262,27 @@ def apply_limiter(
     release_ms: float = 50.0,
     sample_rate: int = 44100,
     bit_depth: int = 24,
+    level_in_db: float = 0.0,
 ) -> str:
     """
     Apply a brickwall peak limiter as the final mastering stage.
-
-    This is a safety net that prevents any sample from exceeding ceiling_dbfs.
-    It runs after loudnorm (which targets TP=-1.5), so the limiter only
-    engages on genuine inter-sample peak overshoots — typically 0 to -0.5 dB
-    of gain reduction, not audible if loudnorm is working correctly.
 
     Args:
         ceiling_dbfs: output ceiling in dBFS (default -1.0)
         attack_ms:    limiter attack time in milliseconds (default 5 ms)
         release_ms:   limiter release time in milliseconds (default 50 ms)
+        level_in_db:  pre-limiter input gain in dB (limiter strength).  0 = passthrough,
+                      +2 dB ≈ medium, +4 dB ≈ high — pushes more material into
+                      gain reduction for greater perceived loudness.
 
     Returns output_path on success.
     """
-    limit_linear = 10.0 ** (ceiling_dbfs / 20.0)
+    limit_linear    = 10.0 ** (ceiling_dbfs / 20.0)
+    level_in_linear = 10.0 ** (max(-6.0, min(8.0, level_in_db)) / 20.0)
 
     limiter = (
         f"alimiter="
-        f"level_in=1"
+        f"level_in={level_in_linear:.4f}"
         f":level_out=1"
         f":limit={limit_linear:.6f}"
         f":attack={attack_ms}"
