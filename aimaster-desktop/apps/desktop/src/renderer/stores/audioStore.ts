@@ -4,6 +4,7 @@ import type {
   MasteringResult,
   QCResult,
   MasteringStyle,
+  LimiterStrength,
 } from '@aimaster/shared-types';
 
 // ── Structured error ──────────────────────────────────────────────────────────
@@ -106,15 +107,23 @@ export interface MasteringOptions {
   sampleRate: number;
   bitDepth: 16 | 24;
   applyAiCorrections: boolean;
+  // v3 신규
+  limiterStrength: LimiterStrength;
+  saturationAmount?: number | undefined;     // undefined = 모드 기본값
+  stereoWidth?: number | undefined;          // undefined = 모드 기본값
+  outputGainDb?: number | undefined;         // undefined = 0
+  /** UI 상태: 어떤 빠른 프리셋이 선택되어 있는지 */
+  quickPreset?: string | undefined;
 }
 
 const defaultOptions: MasteringOptions = {
   style:              'balanced',
-  targetLufs:         -14.5,
+  targetLufs:         -14,
   targetTp:           -1.0,
   sampleRate:         44100,
   bitDepth:           24,
   applyAiCorrections: true,
+  limiterStrength:    'medium',
 };
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -150,7 +159,13 @@ interface AudioStore {
   setProgress: (percent: number, stage: string) => void;
   setError: (err: StructuredError | null) => void;
   setStyle: (style: MasteringStyle) => void;
+  /** v3 — 임의 옵션 부분 업데이트 (sliders 용) */
+  updateOptions: (patch: Partial<MasteringOptions>) => void;
   reset: () => void;
+
+  /** Advanced Settings 패널 펼침 여부 */
+  showAdvanced: boolean;
+  setShowAdvanced: (v: boolean) => void;
 }
 
 function baseName(p: string): string {
@@ -213,6 +228,10 @@ export const useAudioStore = create<AudioStore>((set) => ({
   setIsMastering:     (v)          => set({ isMastering: v }),
   setProgress:        (pct, stage) => set({ progress: pct, progressStage: stage }),
   setError:           (err)        => set({ error: err }),
-  setStyle:           (style)      => set((s) => ({ options: { ...s.options, style } })),
+  setStyle:           (style)      => set((s) => ({ options: { ...s.options, style, quickPreset: undefined } })),
+  updateOptions:      (patch)      => set((s) => ({ options: { ...s.options, ...patch } })),
   reset:              ()           => set({ selectedFile: null, analysis: null, masteringResult: null, qcResult: null, error: null, progress: 0, progressStage: '', queue: [], isBatchRunning: false }),
+
+  showAdvanced:       false,
+  setShowAdvanced:    (v)          => set({ showAdvanced: v }),
 }));

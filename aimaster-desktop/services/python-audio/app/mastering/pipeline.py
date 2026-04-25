@@ -40,16 +40,32 @@ from app.utils.ffmpeg_wrapper import (
 from app.utils.audio_io import analyze_waveform, waveform_stats_to_dict
 from app.mastering.eq import build_eq_filter, build_eq_filter_with_report
 from app.mastering.dynamics import build_dynamics_filter, describe_dynamics, get_comp_params, estimate_comp_gr
+from app.mastering.effects import (
+    saturation_filter,
+    stereo_width_filter,
+    soft_clipper_filter,
+    deesser_filter,
+    get_mode_defaults as get_effects_defaults,
+)
 from app.utils.logger import log
 
 # ── Quality-check thresholds ──────────────────────────────────────────────────
 
-_TARGET_LUFS      = -14.0   # streaming target (one step louder than -14.5, still within platform norms)
-_TARGET_TP        = -0.5    # limiter ceiling — tighter than before so more peaks get caught
-_LOUDNORM_TP      = -2.0    # loudnorm internal TP target — wider gap → limiter engages on more material
-_LUFS_TOLERANCE   = 1.0     # dB: warn if |result - target| > this
-_MIN_LRA          = 4.0     # LU: below this = over-compressed output → warn
-_TP_MAX           = -0.5    # hard true-peak requirement after limiting
+_TARGET_LUFS      = -14.0   # streaming target
+_TARGET_TP        = -1.0    # default limiter ceiling
+_LUFS_TOLERANCE   = 0.5     # dB: tighter than before — correction pass kicks in if exceeded
+_MIN_LRA          = 4.0     # LU
+_TP_GUARD_DB      = 0.0     # dBTP: max acceptable overshoot before warning
+
+# ── Limiter strength → input gain (dB) + attack/release ──────────────────────
+LIMITER_STRENGTHS: dict[str, dict[str, float]] = {
+    "low":    {"input_gain_db": 0.5, "attack_ms": 8.0, "release_ms": 200.0},
+    "medium": {"input_gain_db": 2.0, "attack_ms": 4.0, "release_ms":  80.0},
+    "high":   {"input_gain_db": 4.0, "attack_ms": 2.0, "release_ms":  40.0},
+}
+
+# 절대값이 작은 (= 큰 라우드니스) 타깃은 loudnorm linear 모드로 도달 불가 → dynamic 사용
+_LOUDNORM_DYNAMIC_THRESHOLD = -12.0
 
 ProgressCallback = Callable[[str, int, str], None]
 
@@ -67,14 +83,20 @@ def _build_filter_chain(
     input_peak_db: float,
     low_to_mid_db: float,
     high_to_mid_db: float,
+    *,
+    saturation_amount: float | None = None,
+    stereo_width: float | None = None,
+    output_gain_db: float = 0.0,
 ) -> tuple[str, list[str], list[dict]]:
     """
-    Combine Stage-3 EQ and Stage-4 dynamics into a single ffmpeg filter chain.
+    Combine Stage-3 EQ → Stage-4 dynamics → Stage-4.5 effects (deesser /
+    saturation / stereo widening / output gain) into a single ffmpeg filter
+    chain.  Loudnorm + brickwall limiter are added by the caller.
     Returns (filter_string, applied_correction_strings, eq_move_dicts).
     """
     applied: list[str] = []
 
-    # Stage 3 — Adaptive streaming EQ (with per-band report)
+    # Stage 3 — Adaptive streaming EQ
     eq_chain, eq_moves = build_eq_filter_with_report(
         style,
         low_to_mid_db=low_to_mid_db,
@@ -89,7 +111,7 @@ def _build_filter_chain(
         if ai_detections.get("boomyLowEnd"):
             applied.append("저음역 과잉 보정 (120 Hz −4 dB)")
 
-    applied.append("스트리밍 베이스 EQ (80Hz 밀도 +, 250Hz 머드 -, 10kHz 에어 +)")
+    applied.append("스트리밍 베이스 EQ (80Hz 밀도 +, 250Hz 머드 -, 12kHz 에어 +)")
     if style != "balanced":
         applied.append(f"{style.capitalize()} 스타일 오버레이 적용")
 
@@ -97,7 +119,29 @@ def _build_filter_chain(
     dyn_chain = build_dynamics_filter(style, input_peak_db)
     applied.append(describe_dynamics(style))
 
-    parts = [p for p in (eq_chain, dyn_chain) if p]
+    # Stage 4.5 — effects
+    defaults = get_effects_defaults(style)
+    sat = saturation_amount if saturation_amount is not None else defaults["saturation"]
+    width = stereo_width if stereo_width is not None else defaults["stereo_width"]
+    use_deesser = bool(defaults.get("deesser", False))
+
+    deesser_str   = deesser_filter()        if use_deesser    else ""
+    saturation_str = saturation_filter(sat) if sat > 0.001    else ""
+    width_str     = stereo_width_filter(width)
+    gain_str      = (f"volume={max(-12.0, min(12.0, output_gain_db)):.2f}dB"
+                     if abs(output_gain_db) > 0.01 else "")
+
+    if deesser_str:
+        applied.append("De-esser 6.5kHz −1.5dB")
+    if saturation_str:
+        applied.append(f"Harmonic saturation (강도 {sat:.2f})")
+    if width_str:
+        applied.append(f"Stereo width ×{width:.2f}")
+    if gain_str:
+        applied.append(f"Output gain {output_gain_db:+.1f} dB")
+
+    parts = [p for p in (eq_chain, dyn_chain, deesser_str, saturation_str,
+                         width_str, gain_str) if p]
     return ",".join(parts), applied, eq_moves
 
 
@@ -116,6 +160,14 @@ def run_pipeline(
     apply_ai_corrections: bool = True,
     ai_detections: dict[str, bool] | None = None,
     trim_silence: bool = False,
+    limiter_strength: str = "medium",
+    saturation_amount: float | None = None,
+    stereo_width: float | None = None,
+    output_gain_db: float = 0.0,
+    # Optional pre-measured loudness from the Node-side analyze step.
+    # When provided, the pipeline skips its own raw loudnorm pass1
+    # (saves ~20% of master time).
+    pre_loudness: dict[str, float] | None = None,
     job_id: str = "job",
     progress: ProgressCallback = _noop_progress,
 ) -> dict[str, Any]:
@@ -223,8 +275,21 @@ def run_pipeline(
     pre_filter, applied_corrections, eq_moves = _build_filter_chain(
         style, ai, apply_ai_corrections, input_peak_db,
         low_to_mid_db, high_to_mid_db,
+        saturation_amount=saturation_amount,
+        stereo_width=stereo_width,
+        output_gain_db=output_gain_db,
     )
+
+    # Add soft clipper just before loudnorm (only when limiter will engage hard)
+    if limiter_strength in ("medium", "high") and style != "bright":
+        sc = soft_clipper_filter(target_tp)
+        if sc:
+            pre_filter = f"{pre_filter},{sc}" if pre_filter else sc
+            applied_corrections.append("Soft clipper (limiter 직전)")
+
     log("INFO", f"[pipeline] pre_filter: {pre_filter or '(none)'}")
+    log("INFO", f"[pipeline] limiter strength: {limiter_strength}, "
+                f"target LUFS: {target_lufs}, TP: {target_tp}")
 
     # ═══════════════════════════════════════════════════════════════════════
     # Stage 5a — loudnorm pass-1 on FILTERED signal (accurate measurement)
@@ -237,23 +302,38 @@ def run_pipeline(
     progress(job_id, 30, "라우드니스 측정 중 (1/2)")
     log("INFO", "[pipeline] stage5a — loudnorm pass1 (with pre_filter)")
 
+    # Loudnorm 내부 TP 는 후단 brickwall limiter 에 0.5 dB 여유를 남겨둔다
+    loudnorm_tp_internal = target_tp - 0.5
+
+    # 매우 큰 LUFS 타깃 (예: -10, -9, -8) 은 linear 로는 도달 불가 → dynamic
+    use_linear_loudnorm = target_lufs <= _LOUDNORM_DYNAMIC_THRESHOLD
+
     try:
         pass1 = loudnorm_pass1(
-            input_path, target_lufs, _LOUDNORM_TP, lra, pre_filter
+            input_path, target_lufs, loudnorm_tp_internal, lra, pre_filter
         )
     except FFmpegError as exc:
         log("ERROR", f"loudnorm pass1 failed: {exc}\nstderr:\n{exc.stderr}")
         raise
 
-    # Measure raw input separately for the "before" stats in the UI
-    try:
-        pass1_raw = loudnorm_pass1(input_path, target_lufs, _LOUDNORM_TP, lra)
-    except FFmpegError:
-        pass1_raw = pass1
-
-    pre_lufs = float(pass1_raw.get("input_i", -99.0))
-    pre_tp   = float(pass1_raw.get("input_tp", 0.0))
-    pre_lra  = float(pass1_raw.get("input_lra", 0.0))
+    # "Before" 라우드니스 통계.
+    # 1) Node analyze 단계가 측정해서 pre_loudness 로 넘겨주면 그대로 사용 (가장 빠름).
+    # 2) 없으면 원본에 대해 별도로 loudnorm pass1 을 한 번 더 돌린다 (느림).
+    pass1_raw: dict[str, float] | None = None
+    if pre_loudness is not None:
+        pre_lufs = float(pre_loudness.get("integratedLufs", pre_loudness.get("input_i", -99.0)))
+        pre_tp   = float(pre_loudness.get("truePeakDbtp",  pre_loudness.get("input_tp",   0.0)))
+        pre_lra  = float(pre_loudness.get("lra",            pre_loudness.get("input_lra",  0.0)))
+        log("INFO", "[pipeline] using pre-measured loudness from analyze step "
+                    f"(saved one pass1 round-trip)")
+    else:
+        try:
+            pass1_raw = loudnorm_pass1(input_path, target_lufs, loudnorm_tp_internal, lra)
+        except FFmpegError:
+            pass1_raw = pass1
+        pre_lufs = float(pass1_raw.get("input_i", -99.0))
+        pre_tp   = float(pass1_raw.get("input_tp", 0.0))
+        pre_lra  = float(pass1_raw.get("input_lra", 0.0))
     log("INFO", f"[pipeline] pre-master (raw): LUFS={pre_lufs:.1f}, "
                 f"TP={pre_tp:.1f}, LRA={pre_lra:.1f}")
 
@@ -291,11 +371,12 @@ def run_pipeline(
             tmp_wav,
             pass1,
             target_lufs=target_lufs,
-            target_tp=_LOUDNORM_TP,
+            target_tp=loudnorm_tp_internal,
             lra=lra,
             sample_rate=sample_rate,
             bit_depth=bit_depth,
             pre_filter=pre_filter,
+            linear=use_linear_loudnorm,
         )
     except FFmpegError as exc:
         log("ERROR", f"loudnorm pass2 failed: {exc}\nstderr:\n{exc.stderr}")
@@ -320,15 +401,17 @@ def run_pipeline(
         pre_lim_peak_db = 0.0
         pre_lim_lufs    = -99.0
 
+    lim_strength = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
     try:
         apply_limiter(
             tmp_wav,
             output_path,
             ceiling_dbfs=target_tp,
-            attack_ms=2.0,    # faster — catches more peaks before they exceed ceiling
-            release_ms=40.0,
+            attack_ms=lim_strength["attack_ms"],
+            release_ms=lim_strength["release_ms"],
             sample_rate=sample_rate,
             bit_depth=bit_depth,
+            level_in_db=lim_strength["input_gain_db"],
         )
     except FFmpegError as exc:
         log("ERROR", f"limiter failed: {exc}\nstderr:\n{exc.stderr}")
@@ -367,21 +450,93 @@ def run_pipeline(
     post_tp   = post_stats["truePeakDbtp"]
     post_lra  = post_stats["lra"]
 
+    # ── Correction pass (목표 LUFS / TP 미달 시 자동 보정) ──────────────
+    correction_applied = False
+    correction_gain_db = 0.0
+    if post_lufs > -90.0:
+        lufs_delta = target_lufs - post_lufs   # 양수 = 더 키워야 함
+        tp_over    = post_tp - target_tp        # 양수 = TP 초과
+        if abs(lufs_delta) > _LUFS_TOLERANCE or tp_over > _TP_GUARD_DB:
+            correction_gain_db = max(-6.0, min(6.0, lufs_delta))
+            log("INFO", f"[pipeline] correction pass: gain={correction_gain_db:+.2f} dB, "
+                        f"tp_over={tp_over:+.2f} dB")
+            progress(job_id, 84, f"보정 패스 적용 중 ({correction_gain_db:+.1f} dB)")
+
+            corr_chain_parts = []
+            if abs(correction_gain_db) > 0.05:
+                corr_chain_parts.append(f"volume={correction_gain_db:.2f}dB")
+            sc = soft_clipper_filter(target_tp)
+            if sc:
+                corr_chain_parts.append(sc)
+            corr_chain = ",".join(corr_chain_parts) if corr_chain_parts else ""
+
+            corr_fd, corr_tmp = tempfile.mkstemp(suffix="_corr.wav")
+            os.close(corr_fd)
+            try:
+                # output_path 를 다시 ffmpeg 으로 통과시키며 보정
+                #   volume (correction_gain_db) → soft clip → alimiter (TP ceiling)
+                from app.utils.ffmpeg_wrapper import _run, _FFMPEG_BIN
+                codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
+                lim_ls = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
+                lim_in_lin  = 10.0 ** (lim_ls["input_gain_db"] / 20.0)
+                lim_out_lin = 10.0 ** (target_tp / 20.0)
+                af = (
+                    (corr_chain + "," if corr_chain else "")
+                    + f"alimiter=level_in={lim_in_lin:.4f}:level_out=1:limit={lim_out_lin:.6f}"
+                    + f":attack={lim_ls['attack_ms']}:release={lim_ls['release_ms']}:asc=1"
+                )
+                _run([
+                    _FFMPEG_BIN, "-hide_banner", "-y",
+                    "-i", output_path,
+                    "-af", af,
+                    "-ar", str(sample_rate),
+                    "-acodec", codec,
+                    corr_tmp,
+                ])
+                os.replace(corr_tmp, output_path)
+                correction_applied = True
+                applied_corrections.append(
+                    f"보정 패스 ({correction_gain_db:+.2f} dB + soft clip + limiter)"
+                )
+                # 재측정
+                try:
+                    post_stats = measure_output(output_path, target_lufs, target_tp)
+                    post_lufs  = post_stats["integratedLufs"]
+                    post_tp    = post_stats["truePeakDbtp"]
+                    post_lra   = post_stats["lra"]
+                    log("INFO", f"[pipeline] post-correction: LUFS={post_lufs:.1f}, "
+                                f"TP={post_tp:.1f}, LRA={post_lra:.1f}")
+                except FFmpegError:
+                    pass
+            except Exception as exc:
+                log("ERROR", f"correction pass failed: {exc}")
+                pipeline_warnings.append({
+                    "code": "CORRECTION_FAILED",
+                    "level": "warning",
+                    "userMessage": f"자동 보정 패스가 실패했습니다: {exc}",
+                })
+            finally:
+                try:
+                    if os.path.exists(corr_tmp):
+                        os.unlink(corr_tmp)
+                except OSError:
+                    pass
+
     # ── Quality checks ────────────────────────────────────────────────────
 
     lufs_diff = abs(post_lufs - target_lufs)
     if lufs_diff > _LUFS_TOLERANCE:
         msg = (
-            f"출력 라우드니스가 목표값과 {lufs_diff:.1f} dB 차이 납니다 "
-            f"(목표 {target_lufs} LUFS, 결과 {post_lufs:.1f} LUFS). "
-            f"매우 짧거나 다이내믹 레인지가 극단적인 파일에서 발생할 수 있습니다."
+            f"출력 라우드니스가 목표값과 {lufs_diff:.1f} LU 차이 납니다 "
+            f"(목표 {target_lufs:.1f} LUFS, 결과 {post_lufs:.1f} LUFS). "
+            f"원본이 매우 작거나 dynamic range 가 극단적일 때 발생할 수 있습니다."
         )
         pipeline_warnings.append({"code": "LUFS_DEVIATION", "level": "warning", "userMessage": msg})
         log("WARN", msg)
 
-    if post_tp > _TP_MAX:
+    if post_tp - target_tp > _TP_GUARD_DB:
         msg = (
-            f"출력 트루 피크가 {post_tp:.1f} dBTP로 목표값({_TP_MAX} dBTP)을 초과합니다. "
+            f"출력 트루 피크가 {post_tp:.1f} dBTP 로 한계({target_tp:.1f} dBTP)를 초과합니다. "
             f"스트리밍 플랫폼 업로드 전 추가 리미팅을 권장합니다."
         )
         pipeline_warnings.append({"code": "TRUE_PEAK_EXCEEDED", "level": "error", "userMessage": msg})
@@ -438,7 +593,7 @@ def run_pipeline(
     comp_params  = get_comp_params(style)
     comp_gr_est  = estimate_comp_gr(style, input_peak_db)
     lim_gr       = round(max(0.0, pre_lim_peak_db - target_tp), 2)
-    loudnorm_gain = round(target_lufs - float(pass1_raw.get("input_i", pre_lufs)), 1)
+    loudnorm_gain = round(target_lufs - pre_lufs, 1)
 
     post_spectral = None
     if post_waveform and hasattr(post_waveform, "low_to_mid_db"):
@@ -447,7 +602,33 @@ def run_pipeline(
             "highToMidDb": round(post_waveform.high_to_mid_db, 1),
         }
 
+    # 적용된 게인(원본 → 출력 LUFS 차이) 및 리미터 압축량 추정
+    applied_gain_db = round(post_lufs - pre_lufs, 2) if pre_lufs > -90 else 0.0
+    pre_push_db = (
+        LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])["input_gain_db"]
+        + (correction_gain_db if correction_applied else 0.0)
+    )
+    limiter_reduction_db = round(max(0.0, pre_push_db - max(0.0, applied_gain_db)), 2)
+    target_reached = (
+        abs(post_lufs - target_lufs) <= _LUFS_TOLERANCE
+        and (post_tp - target_tp) <= _TP_GUARD_DB
+    )
+
     analysis_report = {
+        # Mastering meta (v3) — UI report panel 에서 사용
+        "mastering": {
+            "mode":                 style,
+            "targetLufs":           target_lufs,
+            "targetTruePeak":       target_tp,
+            "limiterStrength":      limiter_strength,
+            "appliedGainDb":        applied_gain_db,
+            "limiterReductionDb":   limiter_reduction_db,
+            "correctionApplied":    correction_applied,
+            "correctionGainDb":     round(correction_gain_db, 2) if correction_applied else 0.0,
+            "useLinearLoudnorm":    use_linear_loudnorm,
+            "targetReached":        target_reached,
+        },
+
         # Per-band EQ description
         "eqMoves": eq_moves,
 

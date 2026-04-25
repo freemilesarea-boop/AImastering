@@ -13,7 +13,11 @@ import React, { useCallback, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
-import type { AnalysisReport as AnalysisReportType } from '@aimaster/shared-types';
+import type {
+  AnalysisReport as AnalysisReportType,
+  MasteringMeta,
+} from '@aimaster/shared-types';
+import { LIMITER_STRENGTH_LABELS } from '@aimaster/shared-types';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -299,6 +303,81 @@ function QCSummary() {
   );
 }
 
+// ── Mastering meta card (v3) ─────────────────────────────────────────────────
+
+function MasteringMetaCard({ meta }: { meta: MasteringMeta }) {
+  const lufsOK = Math.abs(meta.appliedGainDb) >= 0
+    ? Math.abs((meta as MasteringMeta & { lufsDelta?: number }).lufsDelta ?? 0) <= 0.5
+    : true;
+
+  const cells: Array<{ label: string; value: string; ok?: boolean; hint?: string }> = [
+    { label: 'Selected Mode',     value: meta.mode },
+    { label: 'Target',            value: `${meta.targetLufs.toFixed(1)} LUFS · ${meta.targetTruePeak.toFixed(1)} dBTP` },
+    { label: 'Limiter',           value: LIMITER_STRENGTH_LABELS[meta.limiterStrength] },
+    { label: 'Loudnorm',          value: meta.useLinearLoudnorm ? 'linear' : 'dynamic' },
+    { label: 'Applied Gain',      value: `${meta.appliedGainDb >= 0 ? '+' : ''}${meta.appliedGainDb.toFixed(1)} dB` },
+    { label: 'Limiter Reduction', value: `~${meta.limiterReductionDb.toFixed(1)} dB` },
+  ];
+
+  return (
+    <div className={`rounded-xl border p-4 space-y-3
+                     ${meta.targetReached
+                       ? 'bg-emerald-950/20 border-emerald-900/40'
+                       : 'bg-amber-950/20 border-amber-900/40'
+                     }`}>
+      <div className="flex items-center justify-between">
+        <span className="text-xs uppercase tracking-wider text-zinc-400">마스터링 리포트</span>
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded
+                          ${meta.targetReached
+                            ? 'bg-emerald-900/40 text-emerald-300'
+                            : 'bg-amber-900/40 text-amber-300'
+                          }`}>
+          {meta.targetReached ? '목표 달성' : '목표 미달'}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        {cells.map((c) => (
+          <div key={c.label} className="bg-zinc-950/60 rounded-md px-2.5 py-1.5">
+            <div className="text-[10px] text-zinc-600">{c.label}</div>
+            <div className="text-xs font-mono text-zinc-200">{c.value}</div>
+          </div>
+        ))}
+      </div>
+
+      {meta.correctionApplied && (
+        <div className="text-[11px] text-violet-300 bg-violet-950/30 border border-violet-900/40 rounded-md px-2.5 py-1.5">
+          ✦ 자동 보정 패스 적용 — 게인 조정 {meta.correctionGainDb >= 0 ? '+' : ''}{meta.correctionGainDb.toFixed(2)} dB
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Warnings card ────────────────────────────────────────────────────────────
+
+function WarningsCard({
+  warnings,
+}: {
+  warnings: Array<{ code: string; level: string; userMessage: string }>;
+}) {
+  if (!warnings.length) return null;
+  return (
+    <div className="rounded-xl border border-amber-900/40 bg-amber-950/15 p-3 space-y-1.5">
+      <p className="text-[11px] text-amber-300 font-medium">⚠ 주의사항</p>
+      <ul className="text-[11px] text-amber-200/80 space-y-0.5 list-disc pl-4">
+        {warnings.map((w, i) => (
+          <li key={i}>
+            <span className={w.level === 'error' ? 'text-red-300' : ''}>
+              {w.userMessage}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ── Analysis Report card ──────────────────────────────────────────────────────
 
 function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
@@ -456,7 +535,13 @@ export default function ResultPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-lg mx-auto px-6 py-5 space-y-4 animate-in">
 
+          {masteringResult?.analysisReport?.mastering && (
+            <MasteringMetaCard meta={masteringResult.analysisReport.mastering} />
+          )}
           <BeforeAfterCard />
+          {masteringResult?.pipelineWarnings?.length ? (
+            <WarningsCard warnings={masteringResult.pipelineWarnings} />
+          ) : null}
           {previewSrc && <PreviewPlayer src={previewSrc} />}
           <SaveButtons />
           <QCSummary />

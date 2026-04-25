@@ -41,7 +41,7 @@ def master_file(
     input_path  = params["input_path"]
     output_path = params["output_path"]
     style       = str(params.get("style", "balanced"))
-    target_lufs = float(params.get("target_lufs", -14.5))
+    target_lufs = float(params.get("target_lufs", -14.0))
     target_tp   = float(params.get("target_tp", -1.0))
     lra         = float(params.get("lra", 11.0))
     sample_rate = int(params.get("sample_rate", 44100))
@@ -49,8 +49,16 @@ def master_file(
     apply_ai    = bool(params.get("apply_ai_corrections", True))
     ai_dets     = params.get("ai_detections") or {}
 
+    # v3 신규 파라미터 (모두 optional — 누락 시 모드별 기본값 사용)
+    limiter_strength  = str(params.get("limiter_strength", "medium")).lower()
+    saturation_amount = params.get("saturation_amount")
+    stereo_width      = params.get("stereo_width")
+    output_gain_db    = float(params.get("output_gain_db", 0.0))
+    # Node analyze 단계가 측정해서 넘겨주는 사전 라우드니스 (선택).
+    pre_loudness      = params.get("pre_loudness") or None
+
     log("INFO", f"master_file: style={style}, target={target_lufs} LUFS / {target_tp} dBTP, "
-                f"sr={sample_rate}, bits={bit_depth}, ai={apply_ai}")
+                f"limiter={limiter_strength}, sr={sample_rate}, bits={bit_depth}, ai={apply_ai}")
 
     try:
         result = run_pipeline(
@@ -64,6 +72,11 @@ def master_file(
             bit_depth=bit_depth,
             apply_ai_corrections=apply_ai,
             ai_detections=ai_dets,
+            limiter_strength=limiter_strength,
+            saturation_amount=(float(saturation_amount) if saturation_amount is not None else None),
+            stereo_width=(float(stereo_width) if stereo_width is not None else None),
+            output_gain_db=output_gain_db,
+            pre_loudness=(dict(pre_loudness) if isinstance(pre_loudness, dict) else None),
             job_id=job_id,
             progress=send_progress,
         )

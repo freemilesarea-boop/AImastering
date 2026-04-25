@@ -17,7 +17,18 @@ import {
   MAX_QUEUE_SIZE,
 } from '../stores/audioStore.js';
 import type { QueueItem } from '../stores/audioStore.js';
-import type { AudioAnalysisResult, MasteringResult, MasteringStyle } from '@aimaster/shared-types';
+import type {
+  AudioAnalysisResult,
+  MasteringResult,
+  MasteringStyle,
+  LimiterStrength,
+  MasteringQuickPreset,
+} from '@aimaster/shared-types';
+import {
+  MASTERING_MODES,
+  MASTERING_QUICK_PRESETS,
+  LIMITER_STRENGTH_LABELS,
+} from '@aimaster/shared-types';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -61,42 +72,266 @@ function XIcon({ className }: { className?: string }) {
   );
 }
 
-// ── Style preset selector (compact) ──────────────────────────────────────────
+// ── Mode selector (5 메인 + 2 legacy on Advanced) ────────────────────────────
 
-const STYLES: { id: MasteringStyle; label: string; hint: string }[] = [
-  { id: 'balanced', label: 'Balanced', hint: '범용' },
-  { id: 'warm',     label: 'Warm',     hint: '따뜻한' },
-  { id: 'bright',   label: 'Bright',   hint: '선명한' },
-  { id: 'punch',    label: 'Punch',    hint: '강한 저음' },
-];
-
-function StyleSelector({
+function ModeSelector({
   selected,
   disabled,
   onChange,
+  showLegacy,
 }: {
   selected: MasteringStyle;
   disabled: boolean;
   onChange: (s: MasteringStyle) => void;
+  showLegacy: boolean;
 }) {
+  const modes = showLegacy ? MASTERING_MODES : MASTERING_MODES.filter((m) => !m.legacy);
   return (
-    <div className="flex gap-2">
-      {STYLES.map((s) => (
+    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+      {modes.map((m) => (
         <button
-          key={s.id}
+          key={m.id}
           disabled={disabled}
-          onClick={() => onChange(s.id)}
-          className={`flex-1 py-2 px-1 rounded-lg text-xs font-medium transition-all
+          onClick={() => onChange(m.id)}
+          title={m.detail}
+          className={`py-2 px-2 rounded-lg text-xs font-medium transition-all text-left
                       disabled:opacity-40 disabled:cursor-not-allowed
-                      ${selected === s.id
+                      ${selected === m.id
                         ? 'bg-zinc-700 border border-zinc-500 text-zinc-100'
                         : 'bg-zinc-900/40 border border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-400'
                       }`}
         >
-          <div>{s.label}</div>
-          <div className="text-[10px] font-normal text-zinc-600 mt-0.5">{s.hint}</div>
+          <div className="flex items-center gap-1">
+            <span>{m.name}</span>
+            {m.legacy && (
+              <span className="text-[8px] text-zinc-700 border border-zinc-800 rounded px-0.5">L</span>
+            )}
+          </div>
+          <div className="text-[10px] font-normal text-zinc-600 mt-0.5">{m.hint}</div>
+          <div className="text-[9px] font-mono text-zinc-700 mt-0.5">
+            {m.targetLufs} LUFS · {m.targetTp} dBTP
+          </div>
         </button>
       ))}
+    </div>
+  );
+}
+
+// ── Quick preset bar (YouTube / Streaming / KPOP / EDM) ───────────────────────
+
+function QuickPresetBar({
+  current,
+  disabled,
+  onApply,
+}: {
+  current?: string | undefined;
+  disabled: boolean;
+  onApply: (p: MasteringQuickPreset) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+      {MASTERING_QUICK_PRESETS.map((p) => {
+        const active = current === p.id;
+        return (
+          <button
+            key={p.id}
+            disabled={disabled}
+            onClick={() => onApply(p)}
+            className={`py-2 px-2 rounded-lg text-left transition-all
+                        disabled:opacity-40 disabled:cursor-not-allowed
+                        ${active
+                          ? 'bg-zinc-200 text-zinc-900 border border-zinc-300'
+                          : 'bg-zinc-900/40 border border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-300'
+                        }`}
+          >
+            <div className="text-xs font-medium">{p.name}</div>
+            <div className={`text-[10px] font-mono mt-0.5 ${active ? 'text-zinc-600' : 'text-zinc-700'}`}>
+              {p.description}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Slider primitive ─────────────────────────────────────────────────────────
+
+function Slider({
+  label, value, min, max, step, unit, hint, disabled, onChange, format,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
+  hint?: string;
+  disabled?: boolean;
+  onChange: (v: number) => void;
+  format?: (v: number) => string;
+}) {
+  const display = format ? format(value) : value.toFixed(step >= 1 ? 0 : 1);
+  return (
+    <div className={`space-y-1 ${disabled ? 'opacity-50' : ''}`}>
+      <div className="flex justify-between text-[11px]">
+        <span className="text-zinc-500">{label}</span>
+        <span className="font-mono text-zinc-300">
+          {display}{unit ? ` ${unit}` : ''}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min} max={max} step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="no-drag w-full h-1.5 cursor-pointer accent-zinc-300"
+      />
+      {hint && <p className="text-[10px] text-zinc-700">{hint}</p>}
+    </div>
+  );
+}
+
+// ── Limiter strength segmented control ───────────────────────────────────────
+
+function LimiterStrengthCtl({
+  value, disabled, onChange,
+}: {
+  value: LimiterStrength;
+  disabled: boolean;
+  onChange: (v: LimiterStrength) => void;
+}) {
+  const opts: LimiterStrength[] = ['low', 'medium', 'high'];
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-[11px]">
+        <span className="text-zinc-500">Limiter Strength</span>
+        <span className="font-mono text-zinc-300">{LIMITER_STRENGTH_LABELS[value]}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-1">
+        {opts.map((o) => (
+          <button
+            key={o}
+            disabled={disabled}
+            onClick={() => onChange(o)}
+            className={`no-drag py-1.5 rounded-md text-[11px] font-medium transition-all
+                        disabled:opacity-40 disabled:cursor-not-allowed
+                        ${value === o
+                          ? 'bg-zinc-700 border border-zinc-500 text-zinc-100'
+                          : 'bg-zinc-900/40 border border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
+                        }`}
+          >
+            {LIMITER_STRENGTH_LABELS[o]}
+          </button>
+        ))}
+      </div>
+      <p className="text-[10px] text-zinc-700">
+        High = 음압 강함 + 다이나믹 손상 가능 / Low = 부드럽고 자연스러움
+      </p>
+    </div>
+  );
+}
+
+// ── Advanced Settings panel ──────────────────────────────────────────────────
+
+function AdvancedSettingsPanel({ disabled }: { disabled: boolean }) {
+  const showAdvanced     = useAudioStore((s) => s.showAdvanced);
+  const setShowAdvanced  = useAudioStore((s) => s.setShowAdvanced);
+  const options          = useAudioStore((s) => s.options);
+  const updateOptions    = useAudioStore((s) => s.updateOptions);
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 overflow-hidden">
+      <button
+        onClick={() => setShowAdvanced(!showAdvanced)}
+        className="no-drag w-full flex items-center justify-between px-3 py-2.5 text-left
+                   text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+      >
+        <span className="flex items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wider">고급 설정</span>
+          <span className="text-zinc-700">·</span>
+          <span className="text-zinc-600 font-mono">
+            {options.targetLufs} LUFS · {options.targetTp} dBTP · {LIMITER_STRENGTH_LABELS[options.limiterStrength]}
+          </span>
+        </span>
+        <span className="text-[10px] text-zinc-700">{showAdvanced ? '접기 ▲' : '펼치기 ▼'}</span>
+      </button>
+
+      {showAdvanced && (
+        <div className="px-3 pb-3 pt-1 space-y-3 border-t border-zinc-800">
+          <Slider
+            label="Target LUFS"
+            value={options.targetLufs}
+            min={-16} max={-7} step={0.5}
+            unit="LUFS"
+            disabled={disabled}
+            hint="-14 = YouTube/Spotify · -11 = streaming loud · -9 = KPOP · -8 = EDM"
+            onChange={(v) => updateOptions({ targetLufs: v, quickPreset: undefined })}
+          />
+          <Slider
+            label="True Peak Ceiling"
+            value={options.targetTp}
+            min={-2.0} max={-0.3} step={0.1}
+            unit="dBTP"
+            disabled={disabled}
+            hint="대부분 플랫폼은 -1.0 dBTP 이하 권장"
+            onChange={(v) => updateOptions({ targetTp: v, quickPreset: undefined })}
+          />
+          <LimiterStrengthCtl
+            value={options.limiterStrength}
+            disabled={disabled}
+            onChange={(v) => updateOptions({ limiterStrength: v, quickPreset: undefined })}
+          />
+
+          <details className="rounded-md bg-zinc-950/60 border border-zinc-800/60">
+            <summary className="px-2.5 py-1.5 text-[11px] text-zinc-500 cursor-pointer hover:text-zinc-300 select-none">
+              선택 옵션 — Output Gain · Stereo Width · Saturation
+            </summary>
+            <div className="px-2.5 pb-2.5 pt-1 space-y-2.5">
+              <Slider
+                label="Output Gain"
+                value={options.outputGainDb ?? 0}
+                min={-6} max={6} step={0.5}
+                unit="dB"
+                disabled={disabled}
+                hint="limiter 직전 출력 게인"
+                onChange={(v) => updateOptions({ outputGainDb: v })}
+              />
+              <Slider
+                label="Stereo Width"
+                value={options.stereoWidth ?? 1.0}
+                min={0.8} max={1.5} step={0.05}
+                unit="x"
+                disabled={disabled}
+                hint="1.0 = 그대로 / >1 = 더 넓게"
+                format={(v) => v.toFixed(2)}
+                onChange={(v) => updateOptions({ stereoWidth: v })}
+              />
+              <Slider
+                label="Saturation"
+                value={options.saturationAmount ?? 0.2}
+                min={0} max={1} step={0.05}
+                disabled={disabled}
+                hint="고조파 saturation 강도 (0 = off)"
+                format={(v) => v.toFixed(2)}
+                onChange={(v) => updateOptions({ saturationAmount: v })}
+              />
+              <button
+                disabled={disabled}
+                onClick={() => updateOptions({
+                  outputGainDb: undefined,
+                  stereoWidth: undefined,
+                  saturationAmount: undefined,
+                })}
+                className="no-drag text-[10px] text-zinc-600 hover:text-zinc-400 underline disabled:opacity-40"
+              >
+                선택 옵션 초기화
+              </button>
+            </div>
+          </details>
+        </div>
+      )}
     </div>
   );
 }
@@ -455,12 +690,14 @@ export default function HomePage() {
     queue,
     isBatchRunning,
     options,
+    showAdvanced,
     addFilesToQueue,
     removeFromQueue,
     clearQueue,
     updateQueueItem,
     setIsBatchRunning,
     setStyle,
+    updateOptions,
     // single-file compat (for ResultPage navigation)
     setFile,
     setAnalysis,
@@ -528,6 +765,8 @@ export default function HomePage() {
         });
 
         // Step 3: Master
+        // analyze 단계에서 측정된 loudness 를 함께 넘긴다 — Python 이 별도
+        // pass1 을 다시 돌리지 않게 해서 master 시간을 ~20% 단축한다.
         const result = await window.electronAPI!.invoke(
           'audio:master',
           item.filePath,
@@ -539,7 +778,14 @@ export default function HomePage() {
             sampleRate:         options.sampleRate,
             bitDepth:           options.bitDepth,
             applyAiCorrections: options.applyAiCorrections,
+            limiterStrength:    options.limiterStrength,
+            saturationAmount:   options.saturationAmount,
+            stereoWidth:        options.stereoWidth,
+            outputGainDb:       options.outputGainDb,
             aiDetections:       analysis.aiDetection ?? {},
+          },
+          {
+            preLoudness: analysis.loudness,
           },
         ) as MasteringResult;
 
@@ -642,15 +888,49 @@ export default function HomePage() {
                 ))}
               </div>
 
-              {/* Style selector */}
+              {/* Quick presets — YouTube / Streaming / KPOP / EDM */}
               <div>
-                <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2">스타일</p>
-                <StyleSelector
-                  selected={options.style}
+                <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2">빠른 프리셋</p>
+                <QuickPresetBar
+                  current={options.quickPreset}
                   disabled={isBatchRunning}
-                  onChange={setStyle}
+                  onApply={(p) => updateOptions({
+                    quickPreset:     p.id,
+                    style:           p.style,
+                    targetLufs:      p.targetLufs,
+                    targetTp:        p.targetTp,
+                    limiterStrength: p.limiterStrength,
+                  })}
                 />
               </div>
+
+              {/* Mode selector — 5 메인 + 2 legacy(Advanced 펼침 시) */}
+              <div>
+                <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2">마스터링 모드</p>
+                <ModeSelector
+                  selected={options.style}
+                  disabled={isBatchRunning}
+                  showLegacy={showAdvanced}
+                  onChange={(s) => {
+                    // 모드 선택 시 권장 LUFS / TP / limiter 동기화
+                    const m = MASTERING_MODES.find((x) => x.id === s);
+                    if (m) {
+                      updateOptions({
+                        style:           s,
+                        targetLufs:      m.targetLufs,
+                        targetTp:        m.targetTp,
+                        limiterStrength: m.limiterStrength,
+                        quickPreset:     undefined,
+                      });
+                    } else {
+                      setStyle(s);
+                    }
+                  }}
+                />
+              </div>
+
+              {/* Advanced sliders — LUFS / TP / Limiter / 선택 옵션 */}
+              <AdvancedSettingsPanel disabled={isBatchRunning} />
 
               {/* Start button */}
               {pendingCount > 0 && (

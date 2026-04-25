@@ -131,6 +131,17 @@ class StyleOverlay:
 
 _STYLE_OVERLAYS: dict[str, StyleOverlay] = {
 
+    # ─── Natural ──────────────────────────────────────────────────────────
+    # 가장 약한 개입. AI 원음을 거의 그대로 보존.
+    "natural": StyleOverlay(
+        filters=[
+            "equalizer=f=120:t=o:w=1.5:g=+0.5",   # mild low-mid body
+        ],
+        moves=[
+            EqMove("Subtle low-mid (natural)", 120, +0.5, "bell"),
+        ],
+    ),
+
     # Balanced: base EQ only — transparent streaming master
     "balanced": StyleOverlay(filters=[], moves=[]),
 
@@ -148,32 +159,70 @@ _STYLE_OVERLAYS: dict[str, StyleOverlay] = {
         ],
     ),
 
-    # Bright: modern clarity — open air above vocals, slight upper-mid definition
-    # 4kHz was too vocal-forward; moved definition to 5kHz (less vocal body)
-    # and kept air above 12kHz shelf (already in base)
+    # ─── Bright (v3 fix) ─────────────────────────────────────────────────
+    # 기존 +1.5 dB definition + 14kHz +1.5 dB 가 컴프/리미터 단에서 transient 를
+    # 누르는 현상이 있어 다음과 같이 완화하고 sheen 영역(8kHz)을 추가함.
+    #   - 5 kHz definition 1.5 → 1.0
+    #   - 14 kHz extended air 1.5 → 1.2
+    #   - 8 kHz sheen +0.8 신규
+    # 또한 dynamics.py / pipeline.py 에서 bright 모드는 ratio 와 attack 을 완화하고
+    # de-esser/saturation 을 비활성화한다.
     "bright": StyleOverlay(
         filters=[
-            "equalizer=f=5000:t=o:w=1.0:g=+1.5",   # definition (above vocal body)
-            "equalizer=f=14000:t=o:w=1.5:g=+1.5",  # extended air (above sibilance)
+            "equalizer=f=5000:t=o:w=1.0:g=+1.0",   # 정의감 (vocal body 위)
+            "equalizer=f=8000:t=o:w=1.2:g=+0.8",   # sheen
+            "equalizer=f=14000:t=o:w=1.5:g=+1.2",  # extended air
         ],
         moves=[
-            EqMove("Definition (bright)",     5000,  +1.5, "bell"),
-            EqMove("Extended air (bright)",   14000, +1.5, "bell"),
+            EqMove("Definition (bright)",     5000,  +1.0, "bell"),
+            EqMove("Sheen (bright)",          8000,  +0.8, "bell"),
+            EqMove("Extended air (bright)",   14000, +1.2, "bell"),
         ],
     ),
 
     # Punch: club/EDM — sub weight, tighter mid, transient snap
-    # Removed 5kHz upper-edge (was emphasising vocal air)
     "punch": StyleOverlay(
         filters=[
             "equalizer=f=60:t=o:w=0.9:g=+2.5",     # sub-kick weight
             "equalizer=f=350:t=o:w=1.0:g=-2.5",    # tight mid mud cut
-            "equalizer=f=2500:t=o:w=1.0:g=+1.5",   # snare/attack snap (reduced)
+            "equalizer=f=2500:t=o:w=1.0:g=+1.5",   # snare/attack snap
         ],
         moves=[
             EqMove("Sub-kick weight (punch)",   60,   +2.5, "bell"),
             EqMove("Mid tightness (punch)",     350,  -2.5, "bell"),
             EqMove("Attack snap (punch)",       2500, +1.5, "bell"),
+        ],
+    ),
+
+    # ─── Loud ─────────────────────────────────────────────────────────────
+    # 음압 강화 — saturation/limiter 적극 사용. EQ 는 mid/high clarity 약간 보강.
+    "loud": StyleOverlay(
+        filters=[
+            "equalizer=f=100:t=o:w=1.0:g=+1.0",    # low body
+            "equalizer=f=2500:t=o:w=1.0:g=+0.8",   # presence
+            "equalizer=f=4500:t=o:w=1.0:g=+0.8",   # clarity
+        ],
+        moves=[
+            EqMove("Low body (loud)",         100,  +1.0, "bell"),
+            EqMove("Presence (loud)",         2500, +0.8, "bell"),
+            EqMove("Clarity (loud)",          4500, +0.8, "bell"),
+        ],
+    ),
+
+    # ─── KPOP Loud ────────────────────────────────────────────────────────
+    # 체감 볼륨 우선. low-end 정리, vocal mid clarity, sheen.
+    "kpop_loud": StyleOverlay(
+        filters=[
+            "equalizer=f=80:t=o:w=1.5:g=-1.5",     # boomy cleanup (base +가 줄어듦)
+            "equalizer=f=2500:t=o:w=1.1:g=+1.5",   # vocal presence
+            "equalizer=f=5500:t=o:w=1.0:g=+1.2",   # vocal clarity
+            "equalizer=f=10000:t=o:w=1.2:g=+1.0",  # sheen
+        ],
+        moves=[
+            EqMove("Boomy cleanup (kpop)",     80,   -1.5, "bell"),
+            EqMove("Vocal presence (kpop)",    2500, +1.5, "bell"),
+            EqMove("Vocal clarity (kpop)",     5500, +1.2, "bell"),
+            EqMove("Sheen (kpop)",             10000,+1.0, "bell"),
         ],
     ),
 }
