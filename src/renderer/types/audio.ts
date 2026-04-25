@@ -1,5 +1,5 @@
 /**
- * 오디오 관련 TypeScript 타입 정의 (v2)
+ * 오디오 관련 TypeScript 타입 정의 (v3)
  */
 
 // ─────────────────────────────────────────────────────
@@ -55,56 +55,171 @@ export interface AudioAnalysisResult {
 }
 
 // ─────────────────────────────────────────────────────
-// 마스터링 스타일 프리셋
+// 마스터링 모드 (v3) — 새 5종 + 레거시 2종
 // ─────────────────────────────────────────────────────
-export type MasteringStyle = 'balanced' | 'warm' | 'bright' | 'punch'
+export type MasteringMode =
+  | 'natural'
+  | 'balanced'
+  | 'bright'
+  | 'loud'
+  | 'kpop_loud'
+  // legacy
+  | 'warm'
+  | 'punch'
 
-export interface StylePreset {
-  id:          MasteringStyle
+/** 레거시 'style' 별칭 (v2 호환) */
+export type MasteringStyle = MasteringMode
+
+export type LimiterStrength = 'low' | 'medium' | 'high'
+
+export interface ModePreset {
+  id:          MasteringMode
   name:        string
   emoji:       string
   description: string
   detail:      string
   targetLUFS:  number
   targetTP:    number
+  limiterStrength: LimiterStrength
+  legacy?:     boolean
 }
 
-export const STYLE_PRESETS: StylePreset[] = [
+/**
+ * 5개 메인 모드 (v3) + 2개 레거시 (UI 에서는 고급 옵션으로 노출)
+ */
+export const MASTERING_MODES: ModePreset[] = [
+  {
+    id: 'natural',
+    name: 'Natural',
+    emoji: '🌿',
+    description: '원본 보존',
+    detail: '약한 EQ + 약한 컴프레션. AI 원음의 톤을 거의 그대로 유지합니다.',
+    targetLUFS: -14,
+    targetTP: -1.0,
+    limiterStrength: 'low',
+  },
   {
     id: 'balanced',
     name: 'Balanced',
     emoji: '⚖️',
-    description: '기본 추천',
-    detail: '최소 개입으로 전체 밸런스를 유지합니다. AI 생성 음원의 첫 마스터링에 적합합니다.',
-    targetLUFS: -14,
+    description: '기본값',
+    detail: '적당한 EQ/comp/saturation. 일반 발매용 기본 추천.',
+    targetLUFS: -12,
     targetTP: -1.0,
-  },
-  {
-    id: 'warm',
-    name: 'Warm',
-    emoji: '🌅',
-    description: '따뜻하고 부드럽게',
-    detail: '고역 자극을 완화하고 저중역을 살짝 보강합니다. AI 음원 특유의 날카로운 고역을 부드럽게 처리합니다.',
-    targetLUFS: -14,
-    targetTP: -1.0,
+    limiterStrength: 'medium',
   },
   {
     id: 'bright',
     name: 'Bright',
     emoji: '✨',
-    description: '선명하고 존재감 있게',
-    detail: '선명도와 존재감을 강조합니다. 팝, 일렉트로닉 장르에 적합합니다.',
+    description: '고역 선명도',
+    detail: 'air band 를 살리되 harsh 하지 않게. 과압축 없음.',
+    targetLUFS: -12,
+    targetTP: -1.0,
+    limiterStrength: 'medium',
+  },
+  {
+    id: 'loud',
+    name: 'Loud',
+    emoji: '🔊',
+    description: '음압 강화',
+    detail: 'soft clipping + limiter 적극 사용. 다이나믹 손상 가능.',
+    targetLUFS: -10,
+    targetTP: -1.0,
+    limiterStrength: 'high',
+  },
+  {
+    id: 'kpop_loud',
+    name: 'KPOP Loud',
+    emoji: '🎤',
+    description: '체감 볼륨 우선',
+    detail: 'low-end 정리 + mid/high clarity + 강한 limiter.',
+    targetLUFS: -9,
+    targetTP: -0.8,
+    limiterStrength: 'high',
+  },
+  // legacy
+  {
+    id: 'warm',
+    name: 'Warm',
+    emoji: '🌅',
+    description: '고역 자극 완화',
+    detail: 'AI 음원 특유의 날카로운 고역을 부드럽게 처리합니다 (legacy).',
     targetLUFS: -14,
     targetTP: -1.0,
+    limiterStrength: 'low',
+    legacy: true,
   },
   {
     id: 'punch',
     name: 'Punch',
     emoji: '🥊',
-    description: '타격감과 에너지',
-    detail: '저역 밀도와 타격감을 강화합니다. 힙합, EDM, 록 장르에 적합합니다.',
+    description: '타격감 강화',
+    detail: '저역 밀도와 타격감을 강화 (legacy).',
+    targetLUFS: -11,
+    targetTP: -1.0,
+    limiterStrength: 'high',
+    legacy: true,
+  },
+]
+
+/** 레거시 export (v2 호환). 카드 UI 가 이 이름으로 import 함. */
+export const STYLE_PRESETS: ModePreset[] = MASTERING_MODES
+
+// ─────────────────────────────────────────────────────
+// 빠른 프리셋 (LUFS / TP / mode 일괄 적용)
+// ─────────────────────────────────────────────────────
+export interface MasteringQuickPreset {
+  id:          string
+  name:        string
+  emoji:       string
+  description: string
+  mode:        MasteringMode
+  targetLUFS:  number
+  targetTP:    number
+  limiterStrength: LimiterStrength
+}
+
+export const MASTERING_PRESETS: MasteringQuickPreset[] = [
+  {
+    id: 'youtube_safe',
+    name: 'YouTube Safe',
+    emoji: '📺',
+    description: '-14 LUFS / -1.0 dBTP',
+    mode: 'balanced',
     targetLUFS: -14,
     targetTP: -1.0,
+    limiterStrength: 'low',
+  },
+  {
+    id: 'streaming_loud',
+    name: 'Streaming Loud',
+    emoji: '🎧',
+    description: '-11 LUFS / -1.0 dBTP',
+    mode: 'balanced',
+    targetLUFS: -11,
+    targetTP: -1.0,
+    limiterStrength: 'medium',
+  },
+  {
+    id: 'kpop_loud',
+    name: 'KPOP Loud',
+    emoji: '🎤',
+    description: '-9 LUFS / -0.8 dBTP',
+    mode: 'kpop_loud',
+    targetLUFS: -9,
+    targetTP: -0.8,
+    limiterStrength: 'high',
+  },
+  {
+    id: 'edm_loud',
+    name: 'EDM Loud',
+    emoji: '⚡',
+    description: '-8 LUFS / -0.5 dBTP',
+    mode: 'loud',
+    targetLUFS: -8,
+    targetTP: -0.5,
+    limiterStrength: 'high',
   },
 ]
 
@@ -112,16 +227,48 @@ export const STYLE_PRESETS: StylePreset[] = [
 // 마스터링 옵션
 // ─────────────────────────────────────────────────────
 export interface MasteringOptions {
-  style:              MasteringStyle
-  targetLUFS:         number
-  targetTruePeak:     number
-  enableEQ:           boolean
-  enableCompression:  boolean
-  enableStereoEnhance: boolean
-  outputFormat:       'wav' | 'flac' | 'mp3'
-  outputBitDepth:     16 | 24 | 32
-  outputSampleRate:   44100 | 48000 | 96000
-  outputPath?:        string
+  /** v3 권장 키 */
+  mode:                MasteringMode
+  /** v2 호환 키 (mode 와 동일) */
+  style?:              MasteringMode
+  targetLUFS:          number
+  targetTruePeak:      number
+  limiterStrength:     LimiterStrength
+  saturationAmount?:   number          // 0.0 ~ 1.0 (undefined = mode 기본값)
+  stereoWidth?:        number          // 1.0 = passthrough, undefined = mode 기본값
+  outputGainDb?:       number          // -12 ~ +12 dB (선택)
+  enableEQ:            boolean
+  enableCompression:   boolean
+  enableStereoEnhance?: boolean        // legacy
+  outputFormat:        'wav' | 'flac' | 'mp3'
+  outputBitDepth:      16 | 24 | 32
+  outputSampleRate:    44100 | 48000 | 96000
+  outputPath?:         string
+  /** v2 호환: 어떤 빠른 프리셋을 선택했는지 (UI 상태) */
+  preset?:             string
+}
+
+// ─────────────────────────────────────────────────────
+// 마스터링 결과 리포트 (v3)
+// ─────────────────────────────────────────────────────
+export interface MasteringReport {
+  mode:                MasteringMode
+  targetLUFS:          number
+  targetTruePeak:      number
+  limiterStrength:     LimiterStrength
+  beforeLUFS:          number
+  afterLUFS:           number
+  beforeTruePeak:      number
+  afterTruePeak:       number
+  appliedGainDb:       number
+  limiterReductionDb:  number
+  correctionApplied:   boolean
+  correctionGainDb:    number
+  lufsDelta:           number
+  truePeakOverDb:      number
+  targetReached:       boolean
+  warnings:            string[]
+  useLinearLoudnorm:   boolean
 }
 
 // ─────────────────────────────────────────────────────
@@ -130,14 +277,18 @@ export interface MasteringOptions {
 export interface MasteringResult {
   success:               boolean
   outputPath:            string
-  previewPath:           string | null   // Preview MP3 경로
+  previewPath:           string | null
   jobId:                 string
-  style:                 MasteringStyle
+  /** v2 호환 */
+  style:                 MasteringMode
+  /** v3 권장 */
+  mode:                  MasteringMode
   inputAnalysis:         AudioAnalysisResult
   outputAnalysis:        AudioAnalysisResult
   processedAt:           string
   processingTimeMs:      number
-  aiCorrectionsApplied:  string[]        // 적용된 AI 자동 보정 목록
+  aiCorrectionsApplied:  string[]
+  report?:               MasteringReport
 }
 
 // ─────────────────────────────────────────────────────
@@ -206,4 +357,11 @@ export const QC_STATUS_BG: Record<QCStatus, string> = {
   pass:    'bg-green-900/20 border-green-800/50',
   warning: 'bg-yellow-900/20 border-yellow-800/50',
   fail:    'bg-red-900/20 border-red-800/50',
+}
+
+/** 리미터 강도 라벨 */
+export const LIMITER_STRENGTH_LABELS: Record<LimiterStrength, string> = {
+  low:    'Low (가벼움)',
+  medium: 'Medium (보통)',
+  high:   'High (강함)',
 }

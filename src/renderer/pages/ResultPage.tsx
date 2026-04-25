@@ -12,7 +12,11 @@ import { useAudioEngine } from '../hooks/useAudioEngine'
 import { useAppStore } from '../store/appStore'
 import { useLicense } from '../hooks/useLicense'
 import { formatDuration, formatFileSize, formatProcessingTime } from '../utils/formatters'
-import { STYLE_PRESETS, MasteringStyle } from '../types/audio'
+import {
+  MASTERING_MODES,
+  MasteringMode,
+  LIMITER_STRENGTH_LABELS,
+} from '../types/audio'
 
 // AI 자동 보정 항목 레이블
 const AI_CORRECTION_LABELS: Record<string, string> = {
@@ -32,7 +36,7 @@ export function ResultPage() {
 
   const { inputAnalysis: input, outputAnalysis: output } = masteringResult
   const isPaid = licenseInfo?.canSaveMasterWav ?? false
-  const stylePreset = STYLE_PRESETS.find(p => p.id === (masteringResult.style as MasteringStyle))
+  const stylePreset = MASTERING_MODES.find(p => p.id === ((masteringResult.mode || masteringResult.style) as MasteringMode))
 
   // LUFS 개선량
   const lfusDiff = output.lufsIntegrated - input.lufsIntegrated
@@ -77,6 +81,11 @@ export function ResultPage() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* ── 마스터링 리포트 (v3) ── */}
+        {masteringResult.report && (
+          <MasteringReportPanel report={masteringResult.report} />
         )}
 
         {/* ── 전/후 비교 ── */}
@@ -261,6 +270,141 @@ export function ResultPage() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────
+// 마스터링 리포트 패널 (v3)
+// ─────────────────────────────────────────────────────
+import type { MasteringReport } from '../types/audio'
+
+interface ReportRowProps {
+  label: string
+  value: string
+  ok?:   boolean
+  hint?: string
+}
+
+function ReportRow({ label, value, ok, hint }: ReportRowProps) {
+  const colorClass =
+    ok === undefined ? 'text-gray-200' :
+    ok                ? 'text-green-400' : 'text-yellow-400'
+  return (
+    <div className="bg-surface-900/60 rounded-lg p-2.5">
+      <div className="text-xs text-gray-500 mb-0.5">{label}</div>
+      <div className={clsx('text-sm font-mono font-semibold', colorClass)}>{value}</div>
+      {hint && <div className="text-[10px] text-gray-600 mt-0.5">{hint}</div>}
+    </div>
+  )
+}
+
+function MasteringReportPanel({ report }: { report: MasteringReport }) {
+  const lufsOK = Math.abs(report.lufsDelta) <= 0.5
+  const tpOK   = report.truePeakOverDb <= 0.05
+
+  return (
+    <div className={clsx(
+      'rounded-2xl border p-4 space-y-3',
+      report.targetReached
+        ? 'bg-emerald-900/15 border-emerald-800/40'
+        : 'bg-yellow-900/15 border-yellow-800/40'
+    )}>
+      {/* 헤더 */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className={clsx(
+            'w-7 h-7 rounded-lg flex items-center justify-center',
+            report.targetReached ? 'bg-emerald-900/40' : 'bg-yellow-900/40'
+          )}>
+            {report.targetReached ? (
+              <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0L3.16 16.25A2 2 0 005 19z" />
+              </svg>
+            )}
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-gray-100">마스터링 리포트</h3>
+            <p className="text-xs text-gray-500">
+              모드: <span className="text-gray-300 font-medium">{report.mode}</span> ·
+              리미터: <span className="text-gray-300 font-medium">{LIMITER_STRENGTH_LABELS[report.limiterStrength]}</span>
+              {report.useLinearLoudnorm ? '' : ' · dynamic loudnorm'}
+            </p>
+          </div>
+        </div>
+        <span className={clsx(
+          'text-xs font-medium px-2 py-1 rounded-full',
+          report.targetReached
+            ? 'bg-emerald-900/40 text-emerald-300'
+            : 'bg-yellow-900/40 text-yellow-300'
+        )}>
+          {report.targetReached ? '목표 달성' : '목표 미달'}
+        </span>
+      </div>
+
+      {/* 핵심 수치 */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <ReportRow
+          label="Before LUFS"
+          value={`${report.beforeLUFS.toFixed(1)} LUFS`}
+        />
+        <ReportRow
+          label="After LUFS"
+          value={`${report.afterLUFS.toFixed(1)} LUFS`}
+          ok={lufsOK}
+          hint={`목표 ${report.targetLUFS.toFixed(1)} (Δ ${report.lufsDelta >= 0 ? '+' : ''}${report.lufsDelta.toFixed(1)})`}
+        />
+        <ReportRow
+          label="Before TP"
+          value={`${report.beforeTruePeak.toFixed(1)} dBTP`}
+        />
+        <ReportRow
+          label="After TP"
+          value={`${report.afterTruePeak.toFixed(1)} dBTP`}
+          ok={tpOK}
+          hint={`한계 ${report.targetTruePeak.toFixed(1)}${report.truePeakOverDb > 0 ? ` (+${report.truePeakOverDb.toFixed(1)} 초과)` : ''}`}
+        />
+        <ReportRow
+          label="Applied Gain"
+          value={`${report.appliedGainDb >= 0 ? '+' : ''}${report.appliedGainDb.toFixed(1)} dB`}
+          hint="원본→출력 라우드니스 변화"
+        />
+        <ReportRow
+          label="Limiter Reduction"
+          value={`~${report.limiterReductionDb.toFixed(1)} dB`}
+          hint="리미터에 의한 압축 추정량"
+        />
+        <ReportRow
+          label="Selected Mode"
+          value={report.mode}
+        />
+        <ReportRow
+          label="Target"
+          value={`${report.targetLUFS.toFixed(1)} / ${report.targetTruePeak.toFixed(1)}`}
+          hint="LUFS / dBTP"
+        />
+      </div>
+
+      {/* 보정 적용 안내 */}
+      {report.correctionApplied && (
+        <div className="bg-violet-900/20 border border-violet-800/40 rounded-lg px-3 py-2 text-xs text-violet-300">
+          ✦ 자동 보정 pass 적용됨 · 게인 조정 {report.correctionGainDb >= 0 ? '+' : ''}{report.correctionGainDb.toFixed(2)} dB
+        </div>
+      )}
+
+      {/* 경고 목록 */}
+      {report.warnings.length > 0 && (
+        <div className="bg-yellow-900/15 border border-yellow-800/40 rounded-lg px-3 py-2 space-y-1">
+          <p className="text-xs text-yellow-300 font-medium">⚠ 주의사항</p>
+          <ul className="text-[11px] text-yellow-200/80 space-y-0.5 list-disc pl-4">
+            {report.warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

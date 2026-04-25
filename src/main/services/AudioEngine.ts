@@ -40,10 +40,19 @@ export interface AudioAnalysisResult {
   upsampleSuspected:boolean
 }
 
+export type LimiterStrength = 'low' | 'medium' | 'high'
+
 export interface MasteringOptions {
-  style:              string
+  /** v3 — 모드 (natural/balanced/bright/loud/kpop_loud) */
+  mode:               string
+  /** v2 호환 (mode 와 동일) */
+  style?:             string
   targetLUFS:         number
   targetTruePeak:     number
+  limiterStrength:    LimiterStrength
+  saturationAmount?:  number
+  stereoWidth?:       number
+  outputGainDb?:      number
   enableEQ:           boolean
   enableCompression:  boolean
   outputFormat:       'wav' | 'flac' | 'mp3'
@@ -52,17 +61,41 @@ export interface MasteringOptions {
   outputPath:         string
 }
 
+export interface MasteringReport {
+  mode:                string
+  targetLUFS:          number
+  targetTruePeak:      number
+  limiterStrength:     LimiterStrength
+  beforeLUFS:          number
+  afterLUFS:           number
+  beforeTruePeak:      number
+  afterTruePeak:       number
+  appliedGainDb:       number
+  limiterReductionDb:  number
+  correctionApplied:   boolean
+  correctionGainDb:    number
+  lufsDelta:           number
+  truePeakOverDb:      number
+  targetReached:       boolean
+  warnings:            string[]
+  useLinearLoudnorm:   boolean
+}
+
 export interface MasteringResult {
   success:              boolean
   outputPath:           string
   previewPath:          string | null
   jobId:                string
+  /** v2 호환 */
   style:                string
+  /** v3 권장 */
+  mode:                 string
   inputAnalysis:        AudioAnalysisResult
   outputAnalysis:       AudioAnalysisResult
   processedAt:          string
   processingTimeMs:     number
   aiCorrectionsApplied: string[]
+  report?:              MasteringReport
 }
 
 export interface QCResult {
@@ -131,23 +164,45 @@ class AudioEngine extends EventEmitter {
 
     const settings   = settingsService.getAll()
     const jobId      = uuidv4()
-    const outputFilename = settingsService.buildOutputFilename(inputPath)
+
+    // 모드 결정 (options.mode 우선 → options.style → settings.defaultPreset → balanced)
+    const resolvedMode =
+      (options?.mode as string | undefined) ||
+      (options?.style as string | undefined) ||
+      settings.defaultPreset ||
+      'balanced'
+
+    const resolvedTargetLUFS = options?.targetLUFS ?? settings.targetLUFS
+    const resolvedTargetTP   = options?.targetTruePeak ?? settings.targetTruePeak
+    const resolvedLimiter    =
+      (options?.limiterStrength as LimiterStrength | undefined) ?? 'medium'
+
+    const outputFilename = settingsService.buildOutputFilename(
+      inputPath,
+      { mode: resolvedMode, lufs: resolvedTargetLUFS },
+    )
     const outputPath = options?.outputPath || path.join(settings.outputDir, outputFilename)
 
     fs.mkdirSync(path.dirname(outputPath), { recursive: true })
 
     const mergedOptions: MasteringOptions = {
-      style:             settings.defaultPreset || 'balanced',
-      targetLUFS:        settings.targetLUFS,
-      targetTruePeak:    settings.targetTruePeak,
-      enableEQ:          true,
-      enableCompression: true,
+      mode:              resolvedMode,
+      style:             resolvedMode,                   // 레거시 호환 (Python 이 둘 다 읽음)
+      targetLUFS:        resolvedTargetLUFS,
+      targetTruePeak:    resolvedTargetTP,
+      limiterStrength:   resolvedLimiter,
+      enableEQ:          options?.enableEQ          ?? true,
+      enableCompression: options?.enableCompression ?? true,
       outputFormat:      settings.outputFormat,
       outputBitDepth:    settings.outputBitDepth,
       outputSampleRate:  settings.outputSampleRate,
       outputPath,
       ...options,
     }
+    // outputPath/mode 는 위에서 계산한 값으로 강제 (...options 로 덮어쓰기 방지)
+    mergedOptions.outputPath = outputPath
+    mergedOptions.mode       = resolvedMode
+    mergedOptions.style      = resolvedMode
 
     const job: Job = {
       id: jobId, inputPath, options: mergedOptions,

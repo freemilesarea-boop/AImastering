@@ -8,6 +8,8 @@ import clsx from 'clsx'
 import { DropZone } from '../components/upload/DropZone'
 import { LoudnessGauge } from '../components/mastering/LoudnessGauge'
 import { StylePresetCards } from '../components/mastering/StylePresetCards'
+import { MasteringPresets } from '../components/mastering/MasteringPresets'
+import { AdvancedSettings } from '../components/mastering/AdvancedSettings'
 import { AIDetectionAlert } from '../components/mastering/AIDetectionAlert'
 import { Button } from '../components/common/Button'
 import { useAudioEngine } from '../hooks/useAudioEngine'
@@ -172,10 +174,18 @@ export function HomePage() {
                 {/* AI 음원 특성 경고 */}
                 {ai && <AIDetectionAlert aiDetection={ai} compact />}
 
-                {/* 스타일 프리셋 선택 */}
+                {/* 빠른 프리셋 (YouTube/Streaming/KPOP/EDM) */}
+                <div className="bg-surface-800 rounded-2xl p-4">
+                  <MasteringPresets />
+                </div>
+
+                {/* 마스터링 모드 (5개) */}
                 <div className="bg-surface-800 rounded-2xl p-4">
                   <StylePresetCards />
                 </div>
+
+                {/* 고급 설정 (LUFS / TP / Limiter / 선택 옵션) */}
+                <AdvancedSettings />
 
                 {/* 추가 분석 정보 */}
                 <div className="grid grid-cols-2 gap-2">

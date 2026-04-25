@@ -40,8 +40,8 @@ const defaults: AppSettings = {
   outputFormat: 'wav',
   outputBitDepth: 24,
   outputSampleRate: 44100,
-  outputFilenamePattern: '{original}_mastered',
-  defaultPreset: 'youtube_music',
+  outputFilenamePattern: '{original}_master_{mode}_{lufs}',
+  defaultPreset: 'balanced',
   processingQuality: 'standard',
   language: 'ko',
   theme: 'dark',
@@ -97,12 +97,34 @@ class SettingsService {
 
   /**
    * 출력 파일명 생성
+   *
+   * 패턴 토큰:
+   *   {original} — 원본 파일명 (확장자 제외)
+   *   {mode}     — 마스터링 모드 (예: balanced, kpop_loud)
+   *   {lufs}     — 목표 LUFS (예: -14LUFS, -9LUFS)
+   *
+   * 예) 패턴 "{original}_master_{mode}_{lufs}"
+   *      input "song.wav", mode "kpop_loud", lufs -9
+   *      → "song_master_kpop_loud_-9LUFS.wav"
    */
-  buildOutputFilename(inputPath: string): string {
+  buildOutputFilename(
+    inputPath: string,
+    extra?: { mode?: string; lufs?: number },
+  ): string {
     const pattern = this.get('outputFilenamePattern')
     const ext = this.get('outputFormat')
     const original = path.basename(inputPath, path.extname(inputPath))
-    const name = pattern.replace('{original}', original)
+
+    let name = pattern.replace('{original}', original)
+    const mode = extra?.mode || ''
+    const lufs = typeof extra?.lufs === 'number' ? extra.lufs : null
+    name = name.replace('{mode}', mode)
+    name = name.replace('{lufs}', lufs !== null ? `${Math.round(lufs)}LUFS` : '')
+
+    // 사용되지 않은 토큰 자리/연속 _ 정리
+    name = name.replace(/_+/g, '_').replace(/_$/g, '')
+    if (!name || name === '_') name = `${original}_mastered`
+
     return `${name}.${ext}`
   }
 

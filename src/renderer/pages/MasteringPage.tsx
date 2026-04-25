@@ -3,6 +3,8 @@
  */
 import React from 'react'
 import { StylePresetCards } from '../components/mastering/StylePresetCards'
+import { MasteringPresets } from '../components/mastering/MasteringPresets'
+import { AdvancedSettings } from '../components/mastering/AdvancedSettings'
 import { ProcessingStatus } from '../components/mastering/ProcessingStatus'
 import { Button } from '../components/common/Button'
 import { useAudioEngine } from '../hooks/useAudioEngine'
@@ -37,9 +39,15 @@ export function MasteringPage() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          {/* 프리셋 선택 */}
-          <div className="bg-surface-800 rounded-2xl p-5">
-            <StylePresetCards />
+          {/* 프리셋 선택 + 빠른 프리셋 + 고급 설정 */}
+          <div className="space-y-4">
+            <div className="bg-surface-800 rounded-2xl p-5">
+              <MasteringPresets />
+            </div>
+            <div className="bg-surface-800 rounded-2xl p-5">
+              <StylePresetCards />
+            </div>
+            <AdvancedSettings />
           </div>
 
           {/* 진행 상태 + 시작 버튼 */}
