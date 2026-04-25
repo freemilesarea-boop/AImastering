@@ -144,23 +144,31 @@ jobs:
       - name: Install Node dependencies (hoisted layout for Windows MAX_PATH)
         working-directory: aimaster-desktop
         shell: pwsh
+        # pnpm honors npm_config_* env vars (npm/pnpm convention); these override
+        # both the project .npmrc and the user-level config.  pnpm install does
+        # NOT accept --node-linker / --virtual-store-dir-max-length as CLI flags
+        # (only --shamefully-hoist).  Env vars are the only reliable way.
+        env:
+          npm_config_node_linker:                  hoisted
+          npm_config_shamefully_hoist:             "true"
+          npm_config_virtual_store_dir_max_length: "64"
         run: |
-          # Force hoisted node_modules + short virtual-store dir name as CLI
-          # overrides in case .npmrc isn't honored.  Without this, electron-builder's
-          # NSIS step blows past Windows' 260-char path limit on
-          #   node_modules/.pnpm/app-builder-lib@<long-peers-hash>/...
-          pnpm install --no-frozen-lockfile `
-            --config.node-linker=hoisted `
-            --config.shamefully-hoist=true `
-            --config.virtual-store-dir-max-length=64
-          # Debug — confirm settings actually applied
-          Write-Host "── pnpm config (Windows) ──"
+          Write-Host "── pre-install env ──"
+          Write-Host "node_linker = $env:npm_config_node_linker"
+          Write-Host "shamefully_hoist = $env:npm_config_shamefully_hoist"
+          Write-Host "virtual_store_dir_max_length = $env:npm_config_virtual_store_dir_max_length"
+          pnpm install --no-frozen-lockfile
+          Write-Host "── pnpm config (post-install) ──"
           pnpm config get node-linker
           pnpm config get virtual-store-dir-max-length
           Write-Host "── app-builder-lib resolved location ──"
           $resolved = node -e "console.log(require.resolve('app-builder-lib/package.json'))"
           Write-Host $resolved
           Write-Host "── path length: $($resolved.Length) chars ──"
+          Write-Host "── .pnpm dir contents (should be near-empty for hoisted) ──"
+          Get-ChildItem -Path "node_modules\.pnpm" -ErrorAction SilentlyContinue | Select-Object -First 5 Name
+          Write-Host "── top-level node_modules: app-builder-lib? ──"
+          Test-Path "node_modules\app-builder-lib\templates\nsis\include\allowOnlyOneInstallerInstance.nsh"
 
       - name: Copy FFmpeg binaries
         working-directory: aimaster-desktop/apps/desktop
