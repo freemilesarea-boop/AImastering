@@ -121,13 +121,20 @@ def loudnorm_pass2(
     sample_rate: int = 44100,
     ffmpeg_path: str = 'ffmpeg',
     extra_filters: Optional[str] = None,
+    linear: bool = True,
 ) -> None:
     """
     loudnorm 2-pass: 실제 라우드니스 정규화 적용 및 출력
+
+    linear=True  : 측정값 기반 정확한 1차 게인 적용 (기본).
+                   타깃이 ≤ -12 LUFS 같은 일반 케이스에 적합.
+    linear=False : dynamic 모드. 강한 압축으로 큰 LUFS 도약을 만들 때 사용
+                   (예: -8 LUFS 같은 EDM/KPOP 라우드 타깃).
     """
     # 비트 뎁스 → 샘플 포맷 매핑
     pcm_codec = {16: 'pcm_s16le', 24: 'pcm_s24le', 32: 'pcm_s32le'}.get(bit_depth, 'pcm_s24le')
 
+    linear_str = 'true' if linear else 'false'
     # loudnorm 필터 (측정값 주입)
     loudnorm_filter = (
         f"loudnorm=I={target_lufs}:LRA={target_lra}:TP={target_tp}"
@@ -136,7 +143,7 @@ def loudnorm_pass2(
         f":measured_TP={measurements['measured_tp']}"
         f":measured_thresh={measurements['measured_thresh']}"
         f":offset={measurements['offset']}"
-        ":linear=true:print_format=summary"
+        f":linear={linear_str}:print_format=summary"
     )
 
     # 추가 필터 체인 (EQ, 컴프레서 등) 앞에 붙임

@@ -1,5 +1,5 @@
 /**
- * 오디오 처리 상태 스토어 (Zustand) — v2
+ * 오디오 처리 상태 스토어 (Zustand) — v3
  */
 import { create } from 'zustand'
 import {
@@ -8,6 +8,7 @@ import {
   MasteringOptions,
   QCResult,
   ProgressEvent,
+  MasteringMode,
   MasteringStyle,
 } from '../types/audio'
 
@@ -36,6 +37,9 @@ interface AudioState {
   // 마스터링 옵션
   masteringOptions: Partial<MasteringOptions>
 
+  // 고급 패널 노출 여부
+  showAdvanced: boolean
+
   // Actions
   setSelectedFile:       (path: string | null) => void
   setFileInfo:           (info: AudioState['fileInfo']) => void
@@ -46,14 +50,19 @@ interface AudioState {
   setMasteringResult:    (result: MasteringResult | null) => void
   setQCResult:           (result: QCResult | null) => void
   updateMasteringOptions:(opts: Partial<MasteringOptions>) => void
+  setMode:               (mode: MasteringMode) => void
+  /** v2 호환 별칭 */
   setStyle:              (style: MasteringStyle) => void
+  setShowAdvanced:       (show: boolean) => void
   reset:                 () => void
 }
 
 const initialOptions: Partial<MasteringOptions> = {
+  mode:                'balanced',
   style:               'balanced',
   targetLUFS:          -14,
   targetTruePeak:      -1.0,
+  limiterStrength:     'medium',
   enableEQ:            true,
   enableCompression:   true,
   enableStereoEnhance: false,
@@ -73,6 +82,7 @@ const initialState = {
   masteringResult:  null,
   qcResult:         null,
   masteringOptions: initialOptions,
+  showAdvanced:     false,
 }
 
 export const useAudioStore = create<AudioState>((set) => ({
@@ -95,8 +105,13 @@ export const useAudioStore = create<AudioState>((set) => ({
   updateMasteringOptions: (opts) =>
     set((state) => ({ masteringOptions: { ...state.masteringOptions, ...opts } })),
 
+  setMode: (mode) =>
+    set((state) => ({ masteringOptions: { ...state.masteringOptions, mode, style: mode } })),
+
   setStyle: (style) =>
-    set((state) => ({ masteringOptions: { ...state.masteringOptions, style } })),
+    set((state) => ({ masteringOptions: { ...state.masteringOptions, style, mode: style } })),
+
+  setShowAdvanced: (show) => set({ showAdvanced: show }),
 
   reset: () => set(initialState),
 }))
