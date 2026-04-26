@@ -12,7 +12,7 @@
 ::
 :: Output:
 ::   apps\desktop\out\
-::     Louver Mastering AI Setup <version>.exe   (NSIS installer)
+::     Louver Mastering AI Portable <version>.exe   (portable, no install)
 :: =============================================================================
 
 setlocal enabledelayedexpansion
@@ -83,7 +83,9 @@ echo [5/5] Building and packaging...
 cd /d "%DESKTOP%"
 pnpm build
 if errorlevel 1 ( echo ERROR: pnpm build failed & exit /b 1 )
-pnpm exec electron-builder --win
+:: Portable-only target — see electron-builder.yml.  NSIS is intentionally
+:: disabled because of Windows MAX_PATH issues with pnpm peer-dep paths.
+pnpm exec electron-builder --win portable --x64 --publish never
 if errorlevel 1 ( echo ERROR: electron-builder failed & exit /b 1 )
 
 echo.

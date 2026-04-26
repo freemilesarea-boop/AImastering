@@ -8,7 +8,9 @@ on:
   workflow_dispatch:   # 수동 실행 버튼
 
 jobs:
-  # ── macOS (arm64 + x64 DMG) ──────────────────────────────────────────────────
+  # ── macOS (arm64 + x64 zip) ──────────────────────────────────────────────────
+  # DMG is intentionally disabled on this branch — the macOS runner has been
+  # failing on `hdiutil attach` during DMG packaging.  zip is reliable.
   build-mac:
     runs-on: macos-14   # Apple Silicon runner
     steps:
@@ -66,25 +68,115 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm build
 
-      - name: Package DMG (arm64 + x64)
+      - name: Clean previous out/ + dist/ before packaging
         working-directory: aimaster-desktop/apps/desktop
-        run: pnpm exec electron-builder --mac
+        run: |
+          rm -rf out dist
+
+      # ── Diagnostic dump — prove which config drives the next step ──────────
+      - name: Diagnose electron-builder config (pre-package)
+        run: |
+          echo "=== root package.json ==="
+          cat package.json
+          echo ""
+          echo "=== aimaster-desktop/package.json ==="
+          cat aimaster-desktop/package.json
+          echo ""
+          echo "=== aimaster-desktop/apps/desktop/package.json ==="
+          cat aimaster-desktop/apps/desktop/package.json
+          echo ""
+          echo "=== electron-builder config files (non-vendored) ==="
+          find . -maxdepth 6 -type f \( -iname "electron-builder*" -o -iname "builder*.yml" -o -iname "builder*.yaml" -o -iname "builder*.json" \) \
+            ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null
+          echo ""
+          echo "=== grep 'nsis|dmg|target' in build/scripts/config files ==="
+          grep -rn -E "nsis|dmg|target" \
+            package.json \
+            aimaster-desktop/package.json \
+            aimaster-desktop/apps/desktop \
+            .github/workflows \
+            2>/dev/null | grep -v "/node_modules/" | grep -v "/out/" | grep -v "/dist/" || true
+
+      # Try arm64 + x64 in one electron-builder invocation; fall back to
+      # two separate single-arch zip builds if that fails.
+      # Use --filter form so config resolution is unambiguous.
+      - name: Package macOS .zip (arm64 + x64)
+        id: pack_mac
+        working-directory: aimaster-desktop
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false   # 서명 없이 빌드
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        continue-on-error: true
+        run: pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64 --arm64 --publish never
+
+      - name: Fallback — package macOS .zip (split per-arch)
+        if: steps.pack_mac.outcome == 'failure'
+        working-directory: aimaster-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
+          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --arm64 --publish never
+          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64   --publish never
+
+      - name: List build outputs
+        working-directory: aimaster-desktop/apps/desktop
+        run: |
+          ls -lah out/ || true
 
       - name: Upload Mac artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Louver-Mastering-AI-mac
           path: |
-            aimaster-desktop/apps/desktop/out/*.dmg
+            aimaster-desktop/apps/desktop/out/*.zip
+          if-no-files-found: error
           retention-days: 30
 
-  # ── Windows (NSIS .exe) ───────────────────────────────────────────────────────
+  # ── Windows (portable .exe) ───────────────────────────────────────────────────
+  # NSIS is intentionally disabled on this branch — see electron-builder.yml.
   build-win:
     runs-on: windows-latest
+    # All build steps run inside the short-path workspace `D:\w` so that the
+    # full path of any file created during build (notably the deeply-nested
+    # node_modules\.pnpm\<peers-hash>\node_modules\<pkg>\templates\nsis\...
+    # NSH headers electron-builder reads) stays under Windows' 260-char
+    # MAX_PATH.  GitHub's default $GITHUB_WORKSPACE on Windows runners is
+    # D:\a\<repo>\<repo>\ (~25 chars) which alone consumes too much budget;
+    # D:\w\ (3 chars) saves enough margin for the build to succeed even with
+    # default pnpm peers-hash truncation at 120 chars.
+    defaults:
+      run:
+        shell: pwsh
     steps:
+      - name: Enable Windows long paths
+        shell: pwsh
+        run: |
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force | Out-Null
+          git config --system core.longpaths true
+
       - uses: actions/checkout@v4
+
+      - name: Mount workspace at short path D:\w (junction)
+        shell: pwsh
+        run: |
+          # Junction (mklink /J) is transparent at the filesystem level and
+          # does not require admin privileges.  Paths entered through D:\w
+          # stay on the D:\w prefix in subsequent path operations (Node
+          # require.resolve preserves the junction prefix).
+          if (Test-Path D:\w) {
+            cmd /c rmdir D:\w 2>$null
+            if (Test-Path D:\w) { Remove-Item D:\w -Recurse -Force }
+          }
+          cmd /c mklink /J D:\w "$env:GITHUB_WORKSPACE"
+          Write-Host "── junction created ──"
+          Write-Host "D:\w → $env:GITHUB_WORKSPACE"
+          # Sanity: verify we can read a known file via D:\w
+          if (Test-Path "D:\w\aimaster-desktop\package.json") {
+            Write-Host "junction works: D:\w\aimaster-desktop\package.json visible"
+          } else {
+            Write-Error "junction created but workspace files not visible at D:\w"
+            exit 1
+          }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -100,20 +192,18 @@ jobs:
         run: npm install -g pnpm@9
 
       - name: Install Python dependencies + PyInstaller
-        working-directory: aimaster-desktop/services/python-audio
-        shell: pwsh
         run: |
+          cd D:\w\aimaster-desktop\services\python-audio
           python -m venv .venv
           .venv\Scripts\pip install --upgrade pip
           .venv\Scripts\pip install -r requirements.txt
           .venv\Scripts\pip install pyinstaller
 
       - name: Build Python engine (PyInstaller)
-        working-directory: aimaster-desktop/services/python-audio
-        shell: pwsh
         run: |
+          cd D:\w\aimaster-desktop\services\python-audio
           New-Item -ItemType Directory -Force -Path "..\..\apps\desktop\public\bin" | Out-Null
-          # workpath/specpath must be on same drive as source (D:\ in GitHub Actions)
+          # workpath/specpath must be on same drive (D:\)
           $tmpBuild = Join-Path $env:RUNNER_TEMP "pyinstaller-build"
           $tmpSpec  = Join-Path $env:RUNNER_TEMP "pyinstaller-spec"
           .venv\Scripts\pyinstaller `
@@ -130,28 +220,110 @@ jobs:
             --exclude-module matplotlib `
             app\main.py
 
-      - name: Install Node dependencies
-        working-directory: aimaster-desktop
-        run: pnpm install --no-frozen-lockfile
+      - name: Clean pnpm store + node_modules (no stale electron-builder peers)
+        run: |
+          cd D:\w\aimaster-desktop
+          # Clear any cached pnpm content store from previous runs.  GitHub
+          # Actions Windows runners are ephemeral but pnpm caches in
+          # ~\.local\share\pnpm so be explicit.
+          pnpm store prune 2>$null
+          if (Test-Path "node_modules") {
+            Write-Host "removing stale node_modules"
+            Remove-Item -Recurse -Force "node_modules"
+          }
+          if (Test-Path "apps\desktop\node_modules") {
+            Remove-Item -Recurse -Force "apps\desktop\node_modules"
+          }
+          if (Test-Path "packages\audio-engine\node_modules") {
+            Remove-Item -Recurse -Force "packages\audio-engine\node_modules"
+          }
+
+      - name: Install Node dependencies (run from D:\w short-path workspace)
+        env:
+          npm_config_node_linker:                  hoisted
+          npm_config_shamefully_hoist:             "true"
+          npm_config_virtual_store_dir_max_length: "60"
+        run: |
+          cd D:\w\aimaster-desktop
+          pnpm install --no-frozen-lockfile
+          Write-Host "electron-builder version:"
+          pnpm --filter @aimaster/desktop exec electron-builder --version
 
       - name: Copy FFmpeg binaries
-        working-directory: aimaster-desktop/apps/desktop
-        run: node scripts/prebuild.cjs
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          node scripts/prebuild.cjs
 
       - name: Build Electron app
-        working-directory: aimaster-desktop/apps/desktop
-        run: pnpm build
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          pnpm build
 
-      - name: Package NSIS installer
-        working-directory: aimaster-desktop/apps/desktop
-        run: pnpm exec electron-builder --win
+      - name: Clean previous out/ before packaging
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          if (Test-Path "out") { Remove-Item -Recurse -Force "out" }
+          if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
+
+      # ── Diagnostic dump — prove which config drives the next step ──────────
+      # Before invoking electron-builder, dump every config that could possibly
+      # influence its behavior so a future failure is immediately diagnosable
+      # from the workflow log.  Specifically:
+      #   - root/desktop package.json (any "build" field would override .yml)
+      #   - any electron-builder.{yml,yaml,json} files anywhere in the repo
+      #   - grep "nsis|dmg|target" across these
+      - name: Diagnose electron-builder config (pre-package)
+        run: |
+          cd D:\w
+          Write-Host "=== root package.json ==="
+          Get-Content package.json
+          Write-Host ""
+          Write-Host "=== aimaster-desktop\package.json ==="
+          Get-Content aimaster-desktop\package.json
+          Write-Host ""
+          Write-Host "=== aimaster-desktop\apps\desktop\package.json ==="
+          Get-Content aimaster-desktop\apps\desktop\package.json
+          Write-Host ""
+          Write-Host "=== electron-builder config files (anywhere in repo, non-vendored) ==="
+          Get-ChildItem -Recurse -File -Include "electron-builder*","builder*.yml","builder*.yaml","builder*.json" `
+            -Exclude "node_modules" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\node_modules\\' } |
+            Select-Object FullName, Length
+          Write-Host ""
+          Write-Host "=== grep 'nsis|dmg|target' in build/scripts/config files ==="
+          Get-ChildItem -Recurse -File -Include "*.json","*.yml","*.yaml","*.bat","*.sh" `
+            -Path "package.json","aimaster-desktop\package.json","aimaster-desktop\apps\desktop","aimaster-desktop\apps\desktop\electron-builder.yml",".github\workflows" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\node_modules\\' -and $_.FullName -notmatch '\\out\\' -and $_.FullName -notmatch '\\dist\\' } |
+            Select-String -Pattern 'nsis|dmg|target' -List | Select-Object Path, Line | Format-Table -AutoSize -Wrap
+
+      # Portable .exe ONLY.  NSIS is intentionally NOT invoked on this branch
+      # — it cannot package on the GitHub Actions Windows runner because
+      # pnpm + electron-builder peer-deps produce node_modules paths > 260
+      # chars (Windows MAX_PATH), which makensis cannot read.
+      # NSIS will be revisited on a separate branch.
+      #
+      # Use --filter form so electron-builder is invoked from the desktop
+      # package's exact context regardless of CWD; this guarantees the
+      # apps/desktop/electron-builder.yml is the config it loads.
+      - name: Package portable .exe (no NSIS)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
+          cd D:\w\aimaster-desktop
+          pnpm --filter @aimaster/desktop exec electron-builder --win portable --x64 --publish never
 
-      - name: Upload Windows artifacts
+      - name: List build outputs
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop\out
+          Get-ChildItem -File | ForEach-Object { Write-Host "  $($_.Name)  ($([math]::Round($_.Length/1MB, 2)) MB)" }
+
+      - name: Upload Windows portable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Louver-Mastering-AI-windows
+          name: Louver-Mastering-AI-windows-portable
+          # Junction is transparent — files written under D:\w\... are also
+          # visible under $GITHUB_WORKSPACE\... so the relative path works.
           path: |
             aimaster-desktop/apps/desktop/out/*.exe
+          if-no-files-found: error
           retention-days: 30

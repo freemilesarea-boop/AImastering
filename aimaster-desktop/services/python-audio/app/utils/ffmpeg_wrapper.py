@@ -337,3 +337,30 @@ def export_preview_mp3(wav_path: str, mp3_path: str, bitrate: str = "320k") -> s
         mp3_path,
     ])
     return mp3_path
+
+
+# ── Generic filter chain re-render ────────────────────────────────────────────
+
+def apply_filter_chain(
+    input_path: str,
+    output_path: str,
+    af_chain: str,
+    *,
+    sample_rate: int = 44100,
+    bit_depth: int = 24,
+) -> str:
+    """
+    Re-render `input_path` to `output_path` through an arbitrary `-af` chain.
+    Used by the v3 correction pass.  No loudnorm involved here — just a single
+    ffmpeg pass with the provided filter graph and a PCM WAV codec.
+    """
+    codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
+    _run([
+        _FFMPEG_BIN, "-hide_banner", "-y",
+        "-i", input_path,
+        "-af", af_chain,
+        "-ar", str(sample_rate),
+        "-acodec", codec,
+        output_path,
+    ])
+    return output_path
