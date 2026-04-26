@@ -22,12 +22,17 @@ extraResources:
       - "**/*"
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
+# zip target only.  DMG is intentionally disabled — the GitHub Actions macOS
+# runner has been failing on `hdiutil attach` ("no mountable file systems")
+# during DMG packaging.  zip ships an unsigned .app archive that Mac users
+# can run directly after right-click → Open the first time.
+# DMG will be revisited on a separate branch.
 mac:
   category: public.app-category.music
   # electron-builder converts icon.png → .icns automatically on macOS
   icon: public/icon.png
   target:
-    - target: dmg
+    - target: zip
       arch:
         - arm64   # Apple Silicon (M1/M2/M3)
         - x64     # Intel Mac
@@ -36,16 +41,6 @@ mac:
   entitlementsInherit: public/entitlements.mac.plist
   # PyInstaller engine binary must be executable — electron-builder signs it
   extraFiles: []
-
-dmg:
-  title: "Louver Mastering AI"
-  contents:
-    - x: 130
-      y: 220
-    - x: 410
-      y: 220
-      type: link
-      path: /Applications
 
 # ── Windows ───────────────────────────────────────────────────────────────────
 # Portable target only.  NSIS is intentionally disabled because the GitHub

@@ -13,8 +13,12 @@
 #
 # Output:
 #   apps/desktop/out/
-#     Louver Mastering AI-<version>-arm64.dmg   (Apple Silicon)
-#     Louver Mastering AI-<version>-x64.dmg     (Intel Mac)
+#     Louver Mastering AI-<version>-arm64-mac.zip   (Apple Silicon)
+#     Louver Mastering AI-<version>-mac.zip         (Intel Mac)
+#
+# DMG packaging is intentionally disabled on this branch (hdiutil attach has
+# been failing on CI macOS runners).  zip ships an unsigned .app archive
+# directly; users right-click → Open the first time.
 # =============================================================================
 
 set -euo pipefail
@@ -93,13 +97,17 @@ pnpm build
 
 # ── 6. Package with electron-builder ─────────────────────────────────────────
 echo ""
-echo "▶ Packaging DMG (arm64 + x64)…"
-pnpm exec electron-builder --mac
+echo "▶ Cleaning previous out/ + dist/…"
+rm -rf "$DESKTOP/out" "$DESKTOP/dist"
+
+echo ""
+echo "▶ Packaging .zip (arm64 + x64)…"
+pnpm exec electron-builder --mac zip --x64 --arm64 --publish never
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════════════════"
 echo "  Build complete!"
 echo "  Output: $DESKTOP/out/"
-ls "$DESKTOP/out/"*.dmg 2>/dev/null && echo "" || true
+ls "$DESKTOP/out/"*.zip 2>/dev/null && echo "" || true
 echo "════════════════════════════════════════════════════"
