@@ -145,30 +145,35 @@ jobs:
         working-directory: aimaster-desktop
         shell: pwsh
         # pnpm's default node_modules/.pnpm/<peers-hash>/node_modules/<pkg>/
-        # produces paths > 260 chars on Windows when peer-deps are deep
-        # (electron-builder's NSIS step blows up on
-        # allowOnlyOneInstallerInstance.nsh).  We relocate the entire virtual
-        # store to a short C:\ path via --virtual-store-dir, which IS a real
-        # pnpm CLI flag.  Result paths become ~210 chars, well under MAX_PATH.
-        # Env vars for node-linker/shamefully-hoist are also set as a fallback,
-        # though previous runs show pnpm 9 on Windows runner doesn't always
-        # honor them — that's why --virtual-store-dir is the primary fix.
+        # produces paths > 260 chars on Windows when peer-deps are deep.
+        # Fix: relocate the virtual store to a SHORT path on the SAME drive
+        # as the project (cross-drive virtual-store-dir doesn't work on Windows
+        # — pnpm silently falls back to default .pnpm/ inside node_modules,
+        # which is what happened on the previous attempt with C:\v on a D:\ project).
         env:
           npm_config_node_linker:                  hoisted
           npm_config_shamefully_hoist:             "true"
           npm_config_virtual_store_dir_max_length: "60"
         run: |
-          Write-Host "── pre-install env ──"
-          Write-Host "node_linker = $env:npm_config_node_linker"
-          Write-Host "shamefully_hoist = $env:npm_config_shamefully_hoist"
-          Write-Host "virtual_store_dir_max_length = $env:npm_config_virtual_store_dir_max_length"
+          # Compute store dir on same drive letter as the workspace
+          $wsDriveLetter = $env:GITHUB_WORKSPACE.Substring(0, 1)
+          $storeDir      = "${wsDriveLetter}:\v"
+          Write-Host "── workspace drive: $wsDriveLetter, store dir: $storeDir ──"
 
-          # Primary fix: virtual store on a short path.
-          # If hoisted layout works, the store is empty and this dir won't matter.
-          # If hoisted is not applied (as observed), the long peers-hash dir
-          # lives at C:\v\<hash> instead of $WORKSPACE\...\.pnpm\<hash>, which
-          # alone keeps the total path under 260 chars.
-          pnpm install --no-frozen-lockfile --virtual-store-dir=C:\v
+          # Wipe any leftover store from a re-run on the same machine
+          if (Test-Path $storeDir) {
+            Write-Host "removing existing $storeDir"
+            Remove-Item -Recurse -Force $storeDir
+          }
+          # Also wipe any stale node_modules so a previous failed install
+          # doesn't bleed through
+          if (Test-Path "node_modules") {
+            Write-Host "removing existing node_modules"
+            Remove-Item -Recurse -Force "node_modules"
+          }
+
+          Write-Host "── pnpm install --virtual-store-dir=$storeDir ──"
+          pnpm install --no-frozen-lockfile --virtual-store-dir="$storeDir"
 
           Write-Host "── pnpm config (post-install) ──"
           pnpm config get node-linker
@@ -179,21 +184,19 @@ jobs:
           Write-Host "$resolved"
           Write-Host "── path length: $($resolved.Length) chars (must be < 260) ──"
 
-          Write-Host "── virtual store at C:\v ──"
-          if (Test-Path "C:\v") {
-            Write-Host "exists; first 3 entries:"
-            Get-ChildItem C:\v -Force | Select-Object -First 3 Name
+          Write-Host "── store dir contents ──"
+          if (Test-Path $storeDir) {
+            Write-Host "$storeDir exists; first 3 entries:"
+            Get-ChildItem $storeDir -Force | Select-Object -First 3 Name
           } else {
-            Write-Host "C:\v does not exist (good if node-linker=hoisted took effect)"
+            Write-Host "$storeDir does NOT exist"
           }
 
-          Write-Host "── nsis include header reachable? ──"
-          $rootMod = Resolve-Path "node_modules"
-          $nsh = Join-Path $rootMod "app-builder-lib\templates\nsis\include\allowOnlyOneInstallerInstance.nsh"
-          if (Test-Path $nsh) {
-            Write-Host "OK: $nsh"
+          Write-Host "── node_modules/.pnpm contents (should be near-empty) ──"
+          if (Test-Path "node_modules\.pnpm") {
+            Get-ChildItem "node_modules\.pnpm" -Force | Select-Object -First 5 Name
           } else {
-            Write-Host "MISSING at top-level (will be reached via .pnpm symlink)"
+            Write-Host "node_modules\.pnpm does not exist"
           }
 
       - name: Copy FFmpeg binaries
