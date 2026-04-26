@@ -97,8 +97,12 @@ pnpm build
 
 # ── 6. Package with electron-builder ─────────────────────────────────────────
 echo ""
-echo "▶ Cleaning previous out/ + dist/…"
-rm -rf "$DESKTOP/out" "$DESKTOP/dist"
+echo "▶ Cleaning previous out/…"
+# NOTE: do NOT delete dist/ here.  electron-builder.yml's `files: dist/**/*`
+# glob means dist/ is the *input* to packaging; wiping it makes app.asar
+# omit the main + preload entry points and packaging fails with
+# "Application entry file dist/main/index.js does not exist".
+rm -rf "$DESKTOP/out"
 
 echo ""
 echo "▶ Packaging .zip (arm64 + x64)…"
