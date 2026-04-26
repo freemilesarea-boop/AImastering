@@ -73,25 +73,49 @@ jobs:
         run: |
           rm -rf out dist
 
-      # Try arm64 + x64 in one electron-builder invocation.  If that fails
-      # (some runner environments have flaky lipo / universal handling),
-      # fall back to two separate single-arch zip builds.
+      # ── Diagnostic dump — prove which config drives the next step ──────────
+      - name: Diagnose electron-builder config (pre-package)
+        run: |
+          echo "=== root package.json ==="
+          cat package.json
+          echo ""
+          echo "=== aimaster-desktop/package.json ==="
+          cat aimaster-desktop/package.json
+          echo ""
+          echo "=== aimaster-desktop/apps/desktop/package.json ==="
+          cat aimaster-desktop/apps/desktop/package.json
+          echo ""
+          echo "=== electron-builder config files (non-vendored) ==="
+          find . -maxdepth 6 -type f \( -iname "electron-builder*" -o -iname "builder*.yml" -o -iname "builder*.yaml" -o -iname "builder*.json" \) \
+            ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null
+          echo ""
+          echo "=== grep 'nsis|dmg|target' in build/scripts/config files ==="
+          grep -rn -E "nsis|dmg|target" \
+            package.json \
+            aimaster-desktop/package.json \
+            aimaster-desktop/apps/desktop \
+            .github/workflows \
+            2>/dev/null | grep -v "/node_modules/" | grep -v "/out/" | grep -v "/dist/" || true
+
+      # Try arm64 + x64 in one electron-builder invocation; fall back to
+      # two separate single-arch zip builds if that fails.
+      # Use --filter form so config resolution is unambiguous.
       - name: Package macOS .zip (arm64 + x64)
         id: pack_mac
-        working-directory: aimaster-desktop/apps/desktop
+        working-directory: aimaster-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
         continue-on-error: true
-        run: pnpm exec electron-builder --mac zip --x64 --arm64 --publish never
+        run: pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64 --arm64 --publish never
 
       - name: Fallback — package macOS .zip (split per-arch)
         if: steps.pack_mac.outcome == 'failure'
-        working-directory: aimaster-desktop/apps/desktop
+        working-directory: aimaster-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: |
-          pnpm exec electron-builder --mac zip --arm64 --publish never
-          pnpm exec electron-builder --mac zip --x64   --publish never
+          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --arm64 --publish never
+          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64   --publish never
 
       - name: List build outputs
         working-directory: aimaster-desktop/apps/desktop
@@ -239,18 +263,54 @@ jobs:
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
           if (Test-Path "out") { Remove-Item -Recurse -Force "out" }
+          if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
+
+      # ── Diagnostic dump — prove which config drives the next step ──────────
+      # Before invoking electron-builder, dump every config that could possibly
+      # influence its behavior so a future failure is immediately diagnosable
+      # from the workflow log.  Specifically:
+      #   - root/desktop package.json (any "build" field would override .yml)
+      #   - any electron-builder.{yml,yaml,json} files anywhere in the repo
+      #   - grep "nsis|dmg|target" across these
+      - name: Diagnose electron-builder config (pre-package)
+        run: |
+          cd D:\w
+          Write-Host "=== root package.json ==="
+          Get-Content package.json
+          Write-Host ""
+          Write-Host "=== aimaster-desktop\package.json ==="
+          Get-Content aimaster-desktop\package.json
+          Write-Host ""
+          Write-Host "=== aimaster-desktop\apps\desktop\package.json ==="
+          Get-Content aimaster-desktop\apps\desktop\package.json
+          Write-Host ""
+          Write-Host "=== electron-builder config files (anywhere in repo, non-vendored) ==="
+          Get-ChildItem -Recurse -File -Include "electron-builder*","builder*.yml","builder*.yaml","builder*.json" `
+            -Exclude "node_modules" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\node_modules\\' } |
+            Select-Object FullName, Length
+          Write-Host ""
+          Write-Host "=== grep 'nsis|dmg|target' in build/scripts/config files ==="
+          Get-ChildItem -Recurse -File -Include "*.json","*.yml","*.yaml","*.bat","*.sh" `
+            -Path "package.json","aimaster-desktop\package.json","aimaster-desktop\apps\desktop","aimaster-desktop\apps\desktop\electron-builder.yml",".github\workflows" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\node_modules\\' -and $_.FullName -notmatch '\\out\\' -and $_.FullName -notmatch '\\dist\\' } |
+            Select-String -Pattern 'nsis|dmg|target' -List | Select-Object Path, Line | Format-Table -AutoSize -Wrap
 
       # Portable .exe ONLY.  NSIS is intentionally NOT invoked on this branch
       # — it cannot package on the GitHub Actions Windows runner because
       # pnpm + electron-builder peer-deps produce node_modules paths > 260
       # chars (Windows MAX_PATH), which makensis cannot read.
       # NSIS will be revisited on a separate branch.
+      #
+      # Use --filter form so electron-builder is invoked from the desktop
+      # package's exact context regardless of CWD; this guarantees the
+      # apps/desktop/electron-builder.yml is the config it loads.
       - name: Package portable .exe (no NSIS)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: |
-          cd D:\w\aimaster-desktop\apps\desktop
-          pnpm exec electron-builder --win portable --x64 --publish never
+          cd D:\w\aimaster-desktop
+          pnpm --filter @aimaster/desktop exec electron-builder --win portable --x64 --publish never
 
       - name: List build outputs
         run: |
