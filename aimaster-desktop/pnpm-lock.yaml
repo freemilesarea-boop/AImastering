@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  electron: 28.3.3
   electron-builder: 24.13.3
   app-builder-lib: 24.13.3
   builder-util: 24.13.1
@@ -79,7 +80,7 @@ importers:
         specifier: ^8.2.0
         version: 8.2.2
       electron:
-        specifier: ^28.0.0
+        specifier: 28.3.3
         version: 28.3.3
       electron-builder:
         specifier: 24.13.3

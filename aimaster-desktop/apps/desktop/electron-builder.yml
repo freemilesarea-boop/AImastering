@@ -2,6 +2,12 @@ appId: com.louver.mastering
 productName: Louver Mastering AI
 copyright: Copyright © 2025 루베르
 
+# Pin electron version explicitly so electron-builder doesn't fall back to
+# inferring from node_modules (which fails when ranges + monorepo hoisting
+# leave the resolution ambiguous).  Must match apps/desktop/package.json
+# devDependencies.electron and the root pnpm.overrides entry.
+electronVersion: 28.3.3
+
 directories:
   output: out
   buildResources: public
