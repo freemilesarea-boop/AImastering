@@ -1,5 +1,9 @@
-soundfile>=0.12.1
-numpy>=1.24.0
+# numpy is pinned < 2.0 because PyInstaller 6.x's numpy hook still relies on
+# the legacy `numpy.core` module path — numpy 2.0 renamed it to `numpy._core`,
+# which makes `--collect-all numpy` fail silently on CI runners and aborts
+# the macOS/Windows packaging job before reaching electron-builder.
+soundfile>=0.12.1,<0.14
+numpy>=1.24.0,<2.0
 
 # Dev / test
 pytest>=7.4.0

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - claude/fix-electron-black-screen-uh3ll
+      - claude/fix-bugs-5ewYC
       - main
   workflow_dispatch:   # 수동 실행 버튼
 
@@ -32,17 +33,24 @@ jobs:
       - name: Install Python dependencies + PyInstaller
         working-directory: aimaster-desktop/services/python-audio
         run: |
+          set -e
+          python3 -V
           python3 -m venv .venv
-          .venv/bin/pip install -q --upgrade pip
-          .venv/bin/pip install -q -r requirements.txt
-          .venv/bin/pip install -q pyinstaller
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          # Pin PyInstaller to 6.11.x — last release tested against the
+          # numpy<2 / soundfile 0.13 combination this engine ships with.
+          .venv/bin/pip install "pyinstaller==6.11.1"
+          .venv/bin/pip list
 
       - name: Build Python engine (PyInstaller)
         working-directory: aimaster-desktop/services/python-audio
         run: |
+          set -e
           mkdir -p ../../apps/desktop/public/bin
           .venv/bin/pyinstaller \
             --clean --noconfirm --onefile --name engine \
+            --log-level INFO \
             --distpath ../../apps/desktop/public/bin \
             --workpath /tmp/pyinstaller-build \
             --specpath /tmp/pyinstaller-spec \
@@ -55,6 +63,7 @@ jobs:
             --exclude-module matplotlib \
             app/main.py
           chmod +x ../../apps/desktop/public/bin/engine
+          ls -la ../../apps/desktop/public/bin/
 
       - name: Install Node dependencies (clean)
         working-directory: aimaster-desktop
@@ -214,10 +223,14 @@ jobs:
       - name: Install Python dependencies + PyInstaller
         run: |
           cd D:\w\aimaster-desktop\services\python-audio
+          python --version
           python -m venv .venv
           .venv\Scripts\pip install --upgrade pip
           .venv\Scripts\pip install -r requirements.txt
-          .venv\Scripts\pip install pyinstaller
+          # Pin PyInstaller to 6.11.x — last release tested against the
+          # numpy<2 / soundfile 0.13 combination this engine ships with.
+          .venv\Scripts\pip install "pyinstaller==6.11.1"
+          .venv\Scripts\pip list
 
       - name: Build Python engine (PyInstaller)
         run: |
@@ -228,6 +241,7 @@ jobs:
           $tmpSpec  = Join-Path $env:RUNNER_TEMP "pyinstaller-spec"
           .venv\Scripts\pyinstaller `
             --clean --noconfirm --onefile --name engine `
+            --log-level INFO `
             "--distpath=..\..\apps\desktop\public\bin" `
             "--workpath=$tmpBuild" `
             "--specpath=$tmpSpec" `
@@ -239,6 +253,7 @@ jobs:
             --exclude-module pytest `
             --exclude-module matplotlib `
             app\main.py
+          Get-ChildItem ..\..\apps\desktop\public\bin\
 
       - name: Clean pnpm store + node_modules (no stale electron-builder peers)
         run: |
