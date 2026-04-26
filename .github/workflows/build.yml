@@ -101,10 +101,15 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm build
 
-      - name: Clean previous out/ + dist/ before packaging
+      # Clean only the previous packaging output (out/).  Do NOT delete dist/
+      # — that is the input electron-builder reads (electron-builder.yml's
+      # `files: dist/**/*` glob), so wiping it makes app.asar omit
+      # dist/main/index.js and packaging fails with "Application entry file
+      # does not exist".
+      - name: Clean previous out/ before packaging
         working-directory: aimaster-desktop/apps/desktop
         run: |
-          rm -rf out dist
+          rm -rf out
 
       # ── Diagnostic dump — prove which config drives the next step ──────────
       - name: Diagnose electron-builder config (pre-package)
@@ -317,11 +322,15 @@ jobs:
           cd D:\w\aimaster-desktop\apps\desktop
           pnpm build
 
+      # Clean only the previous packaging output (out/).  Do NOT delete dist/
+      # — that is the input electron-builder reads (electron-builder.yml's
+      # `files: dist/**/*` glob), so wiping it makes app.asar omit
+      # dist/main/index.js and packaging fails with "Application entry file
+      # does not exist".
       - name: Clean previous out/ before packaging
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
           if (Test-Path "out") { Remove-Item -Recurse -Force "out" }
-          if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
 
       # ── Diagnostic dump — prove which config drives the next step ──────────
       - name: Diagnose electron-builder config (pre-package)
