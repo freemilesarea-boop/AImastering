@@ -26,7 +26,6 @@
   },
   "pnpm": {
     "overrides": {
-      "electron": "28.3.3",
       "electron-builder": "24.13.3",
       "app-builder-lib": "24.13.3",
       "builder-util": "24.13.1",

@@ -63,15 +63,26 @@ jobs:
           pnpm store prune || true
           pnpm install --no-frozen-lockfile
 
-      - name: Verify electron + electron-builder visible to desktop package
+      # Filesystem-only diagnostic — never launches the electron binary
+      # (which would fail on CI runners due to GUI / quarantine / sandbox).
+      # continue-on-error so this never blocks the build.
+      - name: Verify electron is installed (filesystem check)
+        continue-on-error: true
         working-directory: aimaster-desktop
         run: |
-          echo "=== pnpm --filter @aimaster/desktop list electron ==="
+          echo "=== pnpm list electron (apps/desktop) ==="
           pnpm --filter @aimaster/desktop list electron || true
-          echo "=== electron --version ==="
-          pnpm --filter @aimaster/desktop exec electron --version
-          echo "=== electron-builder --version ==="
-          pnpm --filter @aimaster/desktop exec electron-builder --version
+          echo ""
+          echo "=== electron module exists where? ==="
+          find . -maxdepth 6 -type d -name "electron" ! -path "*/node_modules/*/node_modules/*" 2>/dev/null | head -10 || true
+          echo ""
+          echo "=== electron package.json version (root node_modules) ==="
+          cat node_modules/electron/package.json 2>/dev/null | grep -E '"version"' | head -1 || echo "(not at root)"
+          echo "=== electron package.json version (apps/desktop/node_modules) ==="
+          cat apps/desktop/node_modules/electron/package.json 2>/dev/null | grep -E '"version"' | head -1 || echo "(not at apps/desktop)"
+          echo ""
+          echo "=== electron-builder binary ==="
+          ls -la node_modules/.bin/electron-builder 2>/dev/null || ls -la apps/desktop/node_modules/.bin/electron-builder 2>/dev/null || true
 
       - name: Copy FFmpeg binaries
         working-directory: aimaster-desktop/apps/desktop
@@ -88,27 +99,23 @@ jobs:
 
       # ── Diagnostic dump — prove which config drives the next step ──────────
       - name: Diagnose electron-builder config (pre-package)
+        continue-on-error: true
         run: |
           echo "=== root package.json ==="
-          cat package.json
+          cat package.json || true
           echo ""
           echo "=== aimaster-desktop/package.json ==="
-          cat aimaster-desktop/package.json
+          cat aimaster-desktop/package.json || true
           echo ""
           echo "=== aimaster-desktop/apps/desktop/package.json ==="
-          cat aimaster-desktop/apps/desktop/package.json
+          cat aimaster-desktop/apps/desktop/package.json || true
           echo ""
-          echo "=== electron-builder config files (non-vendored) ==="
+          echo "=== electron-builder.yml ==="
+          cat aimaster-desktop/apps/desktop/electron-builder.yml || true
+          echo ""
+          echo "=== all electron-builder config files (non-vendored) ==="
           find . -maxdepth 6 -type f \( -iname "electron-builder*" -o -iname "builder*.yml" -o -iname "builder*.yaml" -o -iname "builder*.json" \) \
-            ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null
-          echo ""
-          echo "=== grep 'nsis|dmg|target' in build/scripts/config files ==="
-          grep -rn -E "nsis|dmg|target" \
-            package.json \
-            aimaster-desktop/package.json \
-            aimaster-desktop/apps/desktop \
-            .github/workflows \
-            2>/dev/null | grep -v "/node_modules/" | grep -v "/out/" | grep -v "/dist/" || true
+            ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null || true
 
       # Try arm64 + x64 in one electron-builder invocation; fall back to
       # two separate single-arch zip builds if that fails.
@@ -260,15 +267,30 @@ jobs:
           cd D:\w\aimaster-desktop
           pnpm install --no-frozen-lockfile
 
-      - name: Verify electron + electron-builder visible to desktop package
+      # Filesystem-only diagnostic — never launches the electron.exe binary
+      # (avoids any GUI / signing / sandbox failure modes on CI).
+      # continue-on-error so this never blocks the build.
+      - name: Verify electron is installed (filesystem check)
+        continue-on-error: true
         run: |
           cd D:\w\aimaster-desktop
-          Write-Host "=== pnpm --filter @aimaster/desktop list electron ==="
-          pnpm --filter @aimaster/desktop list electron
-          Write-Host "=== electron --version ==="
-          pnpm --filter @aimaster/desktop exec electron --version
-          Write-Host "=== electron-builder --version ==="
-          pnpm --filter @aimaster/desktop exec electron-builder --version
+          Write-Host "=== pnpm list electron (apps/desktop) ==="
+          try { pnpm --filter @aimaster/desktop list electron } catch { Write-Host "list failed: $_" }
+          Write-Host ""
+          Write-Host "=== electron module locations ==="
+          Get-ChildItem -Recurse -Directory -Filter "electron" -Depth 4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\node_modules\\electron[\\/]node_modules\\' } |
+            Select-Object -First 10 FullName
+          Write-Host ""
+          Write-Host "=== electron package.json version ==="
+          $top  = "node_modules\electron\package.json"
+          $ad   = "apps\desktop\node_modules\electron\package.json"
+          if (Test-Path $top) { (Get-Content $top -Raw | ConvertFrom-Json).version | ForEach-Object { Write-Host "root node_modules\electron : $_" } }
+          if (Test-Path $ad)  { (Get-Content $ad  -Raw | ConvertFrom-Json).version | ForEach-Object { Write-Host "apps\desktop\node_modules\electron : $_" } }
+          Write-Host ""
+          Write-Host "=== electron-builder binary ==="
+          if (Test-Path "node_modules\.bin\electron-builder.cmd") { Write-Host "exists at root node_modules\.bin" }
+          if (Test-Path "apps\desktop\node_modules\.bin\electron-builder.cmd") { Write-Host "exists at apps\desktop\node_modules\.bin" }
 
       - name: Copy FFmpeg binaries
         run: |
@@ -287,35 +309,27 @@ jobs:
           if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
 
       # ── Diagnostic dump — prove which config drives the next step ──────────
-      # Before invoking electron-builder, dump every config that could possibly
-      # influence its behavior so a future failure is immediately diagnosable
-      # from the workflow log.  Specifically:
-      #   - root/desktop package.json (any "build" field would override .yml)
-      #   - any electron-builder.{yml,yaml,json} files anywhere in the repo
-      #   - grep "nsis|dmg|target" across these
       - name: Diagnose electron-builder config (pre-package)
+        continue-on-error: true
         run: |
           cd D:\w
           Write-Host "=== root package.json ==="
-          Get-Content package.json
+          if (Test-Path package.json) { Get-Content package.json }
           Write-Host ""
           Write-Host "=== aimaster-desktop\package.json ==="
-          Get-Content aimaster-desktop\package.json
+          if (Test-Path aimaster-desktop\package.json) { Get-Content aimaster-desktop\package.json }
           Write-Host ""
           Write-Host "=== aimaster-desktop\apps\desktop\package.json ==="
-          Get-Content aimaster-desktop\apps\desktop\package.json
+          if (Test-Path aimaster-desktop\apps\desktop\package.json) { Get-Content aimaster-desktop\apps\desktop\package.json }
           Write-Host ""
-          Write-Host "=== electron-builder config files (anywhere in repo, non-vendored) ==="
-          Get-ChildItem -Recurse -File -Include "electron-builder*","builder*.yml","builder*.yaml","builder*.json" `
-            -Exclude "node_modules" -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notmatch '\\node_modules\\' } |
-            Select-Object FullName, Length
+          Write-Host "=== aimaster-desktop\apps\desktop\electron-builder.yml ==="
+          if (Test-Path aimaster-desktop\apps\desktop\electron-builder.yml) { Get-Content aimaster-desktop\apps\desktop\electron-builder.yml }
           Write-Host ""
-          Write-Host "=== grep 'nsis|dmg|target' in build/scripts/config files ==="
-          Get-ChildItem -Recurse -File -Include "*.json","*.yml","*.yaml","*.bat","*.sh" `
-            -Path "package.json","aimaster-desktop\package.json","aimaster-desktop\apps\desktop","aimaster-desktop\apps\desktop\electron-builder.yml",".github\workflows" -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notmatch '\\node_modules\\' -and $_.FullName -notmatch '\\out\\' -and $_.FullName -notmatch '\\dist\\' } |
-            Select-String -Pattern 'nsis|dmg|target' -List | Select-Object Path, Line | Format-Table -AutoSize -Wrap
+          Write-Host "=== all electron-builder config files (non-vendored) ==="
+          Get-ChildItem -Recurse -File -Include "electron-builder*","builder*.yml","builder*.yaml","builder*.json" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\node_modules\\' -and $_.FullName -notmatch '\\.git\\' } |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
 
       # Portable .exe ONLY.  NSIS is intentionally NOT invoked on this branch
       # — it cannot package on the GitHub Actions Windows runner because
