@@ -56,9 +56,22 @@ jobs:
             app/main.py
           chmod +x ../../apps/desktop/public/bin/engine
 
-      - name: Install Node dependencies
+      - name: Install Node dependencies (clean)
         working-directory: aimaster-desktop
-        run: pnpm install --no-frozen-lockfile
+        run: |
+          rm -rf node_modules apps/desktop/node_modules packages/*/node_modules
+          pnpm store prune || true
+          pnpm install --no-frozen-lockfile
+
+      - name: Verify electron + electron-builder visible to desktop package
+        working-directory: aimaster-desktop
+        run: |
+          echo "=== pnpm --filter @aimaster/desktop list electron ==="
+          pnpm --filter @aimaster/desktop list electron || true
+          echo "=== electron --version ==="
+          pnpm --filter @aimaster/desktop exec electron --version
+          echo "=== electron-builder --version ==="
+          pnpm --filter @aimaster/desktop exec electron-builder --version
 
       - name: Copy FFmpeg binaries
         working-directory: aimaster-desktop/apps/desktop
@@ -246,7 +259,15 @@ jobs:
         run: |
           cd D:\w\aimaster-desktop
           pnpm install --no-frozen-lockfile
-          Write-Host "electron-builder version:"
+
+      - name: Verify electron + electron-builder visible to desktop package
+        run: |
+          cd D:\w\aimaster-desktop
+          Write-Host "=== pnpm --filter @aimaster/desktop list electron ==="
+          pnpm --filter @aimaster/desktop list electron
+          Write-Host "=== electron --version ==="
+          pnpm --filter @aimaster/desktop exec electron --version
+          Write-Host "=== electron-builder --version ==="
           pnpm --filter @aimaster/desktop exec electron-builder --version
 
       - name: Copy FFmpeg binaries
