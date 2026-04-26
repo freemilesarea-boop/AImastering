@@ -4,6 +4,15 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  electron-builder: 24.13.3
+  app-builder-lib: 24.13.3
+  builder-util: 24.13.1
+  builder-util-runtime: 9.2.4
+  dmg-builder: 24.13.3
+  electron-builder-squirrel-windows: 24.13.3
+  electron-publish: 24.13.1
+
 importers:
 
   .:
@@ -73,7 +82,7 @@ importers:
         specifier: ^28.0.0
         version: 28.3.3
       electron-builder:
-        specifier: ^24.0.0
+        specifier: 24.13.3
         version: 24.13.3(electron-builder-squirrel-windows@24.13.3(dmg-builder@24.13.3))
       esbuild:
         specifier: ^0.21.0
@@ -883,6 +892,7 @@ packages:
   '@xmldom/xmldom@0.8.11':
     resolution: {integrity: sha512-cQzWCtO6C8TQiYl1ruKNn2U6Ao4o4WBBcbL61yJl84x+j5sOWWFU9X7DpND8XZG3daDppSsigMdfAIl2upQBRw==}
     engines: {node: '>=10.0.0'}
+    deprecated: this version has critical issues, please update to the latest version
 
   acorn-jsx@5.3.2:
     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}

@@ -168,6 +168,24 @@ jobs:
             --exclude-module matplotlib `
             app\main.py
 
+      - name: Clean pnpm store + node_modules (no stale electron-builder peers)
+        run: |
+          cd D:\w\aimaster-desktop
+          # Clear any cached pnpm content store from previous runs.  GitHub
+          # Actions Windows runners are ephemeral but pnpm caches in
+          # ~\.local\share\pnpm so be explicit.
+          pnpm store prune 2>$null
+          if (Test-Path "node_modules") {
+            Write-Host "removing stale node_modules"
+            Remove-Item -Recurse -Force "node_modules"
+          }
+          if (Test-Path "apps\desktop\node_modules") {
+            Remove-Item -Recurse -Force "apps\desktop\node_modules"
+          }
+          if (Test-Path "packages\audio-engine\node_modules") {
+            Remove-Item -Recurse -Force "packages\audio-engine\node_modules"
+          }
+
       - name: Install Node dependencies (run from D:\w short-path workspace)
         env:
           npm_config_node_linker:                  hoisted
@@ -175,8 +193,6 @@ jobs:
           npm_config_virtual_store_dir_max_length: "60"
         run: |
           cd D:\w\aimaster-desktop
-          # Wipe any stale install
-          if (Test-Path "node_modules") { Remove-Item -Recurse -Force "node_modules" }
           pnpm install --no-frozen-lockfile
 
           Write-Host "── post-install diagnostics ──"
@@ -187,7 +203,9 @@ jobs:
             Write-Error "RESOLVED PATH STILL > 260 chars — NSIS will fail"
             exit 1
           }
-          Write-Host "── ok, NSIS will be able to read this ──"
+          Write-Host "electron-builder version:"
+          pnpm --filter @aimaster/desktop exec electron-builder --version
+          Write-Host "── ok ──"
 
       - name: Copy FFmpeg binaries
         run: |
@@ -199,12 +217,32 @@ jobs:
           cd D:\w\aimaster-desktop\apps\desktop
           pnpm build
 
-      - name: Package NSIS installer
+      # Build portable .exe FIRST so we always have an artifact to upload,
+      # even if the NSIS step fails (NSIS has historically been the fragile
+      # one due to peer-dep-induced long paths in app-builder-lib).
+      - name: Package portable .exe (guaranteed artifact)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
-          pnpm exec electron-builder --win
+          pnpm exec electron-builder --win portable --publish never
+
+      - name: Package NSIS installer (best-effort)
+        id: build_nsis
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        # Don't fail the whole job if NSIS fails — the portable build above
+        # already produced a usable artifact.  The job's overall outcome is
+        # still PASS as long as the upload step finds something to upload.
+        continue-on-error: true
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          pnpm exec electron-builder --win nsis --publish never
+
+      - name: List build outputs
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop\out
+          Get-ChildItem -File | ForEach-Object { Write-Host "  $($_.Name)  ($([math]::Round($_.Length/1MB, 2)) MB)" }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -212,6 +250,10 @@ jobs:
           name: Louver-Mastering-AI-windows
           # Junction is transparent — files written under D:\w\... are also
           # visible under $GITHUB_WORKSPACE\... so the relative path works.
+          # Glob both the portable .exe (always present) and the NSIS Setup
+          # .exe (best-effort).  if-no-files-found=error so a regression
+          # surfaces here instead of silently producing an empty artifact.
           path: |
             aimaster-desktop/apps/desktop/out/*.exe
+          if-no-files-found: error
           retention-days: 30

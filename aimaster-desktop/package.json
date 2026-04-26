@@ -23,5 +23,21 @@
   "engines": {
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "electron-builder": "24.13.3",
+      "app-builder-lib": "24.13.3",
+      "builder-util": "24.13.1",
+      "builder-util-runtime": "9.2.4",
+      "dmg-builder": "24.13.3",
+      "electron-builder-squirrel-windows": "24.13.3",
+      "electron-publish": "24.13.1"
+    },
+    "peerDependencyRules": {
+      "ignoreMissing": [
+        "electron-builder-squirrel-windows"
+      ]
+    }
   }
 }

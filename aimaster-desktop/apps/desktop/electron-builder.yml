@@ -54,16 +54,27 @@ win:
     - target: nsis
       arch:
         - x64
+    # Portable .exe — fallback artifact in case NSIS packaging fails on the
+    # GitHub Actions Windows runner (its node_modules pathing has historically
+    # blown past 260-char MAX_PATH on pnpm + electron-builder).  Portable
+    # builds skip the makensis step entirely, so they're a guaranteed deliverable.
+    - target: portable
+      arch:
+        - x64
 
 nsis:
   oneClick: false
   perMachine: false
+  allowElevation: true
   allowToChangeInstallationDirectory: true
   installerIcon: public/icon.ico
   uninstallerIcon: public/icon.ico
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: "Louver Mastering AI"
+
+portable:
+  artifactName: "Louver Mastering AI Portable ${version}.${ext}"
 
 # ── Linux (optional AppImage) ─────────────────────────────────────────────────
 linux:
