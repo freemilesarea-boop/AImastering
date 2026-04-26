@@ -80,7 +80,8 @@ jobs:
             aimaster-desktop/apps/desktop/out/*.dmg
           retention-days: 30
 
-  # ── Windows (NSIS .exe) ───────────────────────────────────────────────────────
+  # ── Windows (portable .exe) ───────────────────────────────────────────────────
+  # NSIS is intentionally disabled on this branch — see electron-builder.yml.
   build-win:
     runs-on: windows-latest
     # All build steps run inside the short-path workspace `D:\w` so that the
@@ -194,18 +195,8 @@ jobs:
         run: |
           cd D:\w\aimaster-desktop
           pnpm install --no-frozen-lockfile
-
-          Write-Host "── post-install diagnostics ──"
-          $resolved = node -e "console.log(require.resolve('app-builder-lib/package.json'))"
-          Write-Host "app-builder-lib resolved at: $resolved"
-          Write-Host "path length: $($resolved.Length) chars"
-          if ($resolved.Length -ge 260) {
-            Write-Error "RESOLVED PATH STILL > 260 chars — NSIS will fail"
-            exit 1
-          }
           Write-Host "electron-builder version:"
           pnpm --filter @aimaster/desktop exec electron-builder --version
-          Write-Host "── ok ──"
 
       - name: Copy FFmpeg binaries
         run: |
@@ -217,42 +208,34 @@ jobs:
           cd D:\w\aimaster-desktop\apps\desktop
           pnpm build
 
-      # Build portable .exe FIRST so we always have an artifact to upload,
-      # even if the NSIS step fails (NSIS has historically been the fragile
-      # one due to peer-dep-induced long paths in app-builder-lib).
-      - name: Package portable .exe (guaranteed artifact)
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Clean previous out/ before packaging
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
-          pnpm exec electron-builder --win portable --publish never
+          if (Test-Path "out") { Remove-Item -Recurse -Force "out" }
 
-      - name: Package NSIS installer (best-effort)
-        id: build_nsis
+      # Portable .exe ONLY.  NSIS is intentionally NOT invoked on this branch
+      # — it cannot package on the GitHub Actions Windows runner because
+      # pnpm + electron-builder peer-deps produce node_modules paths > 260
+      # chars (Windows MAX_PATH), which makensis cannot read.
+      # NSIS will be revisited on a separate branch.
+      - name: Package portable .exe (no NSIS)
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-        # Don't fail the whole job if NSIS fails — the portable build above
-        # already produced a usable artifact.  The job's overall outcome is
-        # still PASS as long as the upload step finds something to upload.
-        continue-on-error: true
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
-          pnpm exec electron-builder --win nsis --publish never
+          pnpm exec electron-builder --win portable --x64 --publish never
 
       - name: List build outputs
         run: |
           cd D:\w\aimaster-desktop\apps\desktop\out
           Get-ChildItem -File | ForEach-Object { Write-Host "  $($_.Name)  ($([math]::Round($_.Length/1MB, 2)) MB)" }
 
-      - name: Upload Windows artifacts
+      - name: Upload Windows portable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Louver-Mastering-AI-windows
+          name: Louver-Mastering-AI-windows-portable
           # Junction is transparent — files written under D:\w\... are also
           # visible under $GITHUB_WORKSPACE\... so the relative path works.
-          # Glob both the portable .exe (always present) and the NSIS Setup
-          # .exe (best-effort).  if-no-files-found=error so a regression
-          # surfaces here instead of silently producing an empty artifact.
           path: |
             aimaster-desktop/apps/desktop/out/*.exe
           if-no-files-found: error

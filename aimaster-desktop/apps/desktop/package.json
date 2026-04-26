@@ -13,7 +13,7 @@
     "prebuild:ffmpeg": "node scripts/prebuild.cjs",
     "dist": "node scripts/prebuild.cjs && pnpm build && electron-builder",
     "dist:mac": "bash ../../scripts/build-mac.sh",
-    "dist:win": "cmd /c ..\\..\\scripts\\build-win.bat",
+    "dist:win": "node scripts/prebuild.cjs && pnpm build && electron-builder --win portable --x64 --publish never",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
     "clean": "rm -rf dist out public/bin"
