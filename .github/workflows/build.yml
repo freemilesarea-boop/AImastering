@@ -83,11 +83,18 @@ jobs:
   # ── Windows (NSIS .exe) ───────────────────────────────────────────────────────
   build-win:
     runs-on: windows-latest
+    # All build steps run inside the short-path workspace `D:\w` so that the
+    # full path of any file created during build (notably the deeply-nested
+    # node_modules\.pnpm\<peers-hash>\node_modules\<pkg>\templates\nsis\...
+    # NSH headers electron-builder reads) stays under Windows' 260-char
+    # MAX_PATH.  GitHub's default $GITHUB_WORKSPACE on Windows runners is
+    # D:\a\<repo>\<repo>\ (~25 chars) which alone consumes too much budget;
+    # D:\w\ (3 chars) saves enough margin for the build to succeed even with
+    # default pnpm peers-hash truncation at 120 chars.
+    defaults:
+      run:
+        shell: pwsh
     steps:
-      # Enable Windows long path support BEFORE checkout so git + later steps
-      # can handle paths > 260 chars.  Some packaging tools (notably NSIS via
-      # electron-builder) cannot read paths above MAX_PATH; combining this with
-      # node-linker=hoisted (set below) gives us belt-and-suspenders coverage.
       - name: Enable Windows long paths
         shell: pwsh
         run: |
@@ -96,6 +103,28 @@ jobs:
           git config --system core.longpaths true
 
       - uses: actions/checkout@v4
+
+      - name: Mount workspace at short path D:\w (junction)
+        shell: pwsh
+        run: |
+          # Junction (mklink /J) is transparent at the filesystem level and
+          # does not require admin privileges.  Paths entered through D:\w
+          # stay on the D:\w prefix in subsequent path operations (Node
+          # require.resolve preserves the junction prefix).
+          if (Test-Path D:\w) {
+            cmd /c rmdir D:\w 2>$null
+            if (Test-Path D:\w) { Remove-Item D:\w -Recurse -Force }
+          }
+          cmd /c mklink /J D:\w "$env:GITHUB_WORKSPACE"
+          Write-Host "── junction created ──"
+          Write-Host "D:\w → $env:GITHUB_WORKSPACE"
+          # Sanity: verify we can read a known file via D:\w
+          if (Test-Path "D:\w\aimaster-desktop\package.json") {
+            Write-Host "junction works: D:\w\aimaster-desktop\package.json visible"
+          } else {
+            Write-Error "junction created but workspace files not visible at D:\w"
+            exit 1
+          }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -111,20 +140,18 @@ jobs:
         run: npm install -g pnpm@9
 
       - name: Install Python dependencies + PyInstaller
-        working-directory: aimaster-desktop/services/python-audio
-        shell: pwsh
         run: |
+          cd D:\w\aimaster-desktop\services\python-audio
           python -m venv .venv
           .venv\Scripts\pip install --upgrade pip
           .venv\Scripts\pip install -r requirements.txt
           .venv\Scripts\pip install pyinstaller
 
       - name: Build Python engine (PyInstaller)
-        working-directory: aimaster-desktop/services/python-audio
-        shell: pwsh
         run: |
+          cd D:\w\aimaster-desktop\services\python-audio
           New-Item -ItemType Directory -Force -Path "..\..\apps\desktop\public\bin" | Out-Null
-          # workpath/specpath must be on same drive as source (D:\ in GitHub Actions)
+          # workpath/specpath must be on same drive (D:\)
           $tmpBuild = Join-Path $env:RUNNER_TEMP "pyinstaller-build"
           $tmpSpec  = Join-Path $env:RUNNER_TEMP "pyinstaller-spec"
           .venv\Scripts\pyinstaller `
@@ -141,82 +168,50 @@ jobs:
             --exclude-module matplotlib `
             app\main.py
 
-      - name: Install Node dependencies (short virtual store for Windows MAX_PATH)
-        working-directory: aimaster-desktop
-        shell: pwsh
-        # pnpm's default node_modules/.pnpm/<peers-hash>/node_modules/<pkg>/
-        # produces paths > 260 chars on Windows when peer-deps are deep.
-        # Fix: relocate the virtual store to a SHORT path on the SAME drive
-        # as the project (cross-drive virtual-store-dir doesn't work on Windows
-        # — pnpm silently falls back to default .pnpm/ inside node_modules,
-        # which is what happened on the previous attempt with C:\v on a D:\ project).
+      - name: Install Node dependencies (run from D:\w short-path workspace)
         env:
           npm_config_node_linker:                  hoisted
           npm_config_shamefully_hoist:             "true"
           npm_config_virtual_store_dir_max_length: "60"
         run: |
-          # Compute store dir on same drive letter as the workspace
-          $wsDriveLetter = $env:GITHUB_WORKSPACE.Substring(0, 1)
-          $storeDir      = "${wsDriveLetter}:\v"
-          Write-Host "── workspace drive: $wsDriveLetter, store dir: $storeDir ──"
+          cd D:\w\aimaster-desktop
+          # Wipe any stale install
+          if (Test-Path "node_modules") { Remove-Item -Recurse -Force "node_modules" }
+          pnpm install --no-frozen-lockfile
 
-          # Wipe any leftover store from a re-run on the same machine
-          if (Test-Path $storeDir) {
-            Write-Host "removing existing $storeDir"
-            Remove-Item -Recurse -Force $storeDir
-          }
-          # Also wipe any stale node_modules so a previous failed install
-          # doesn't bleed through
-          if (Test-Path "node_modules") {
-            Write-Host "removing existing node_modules"
-            Remove-Item -Recurse -Force "node_modules"
-          }
-
-          Write-Host "── pnpm install --virtual-store-dir=$storeDir ──"
-          pnpm install --no-frozen-lockfile --virtual-store-dir="$storeDir"
-
-          Write-Host "── pnpm config (post-install) ──"
-          pnpm config get node-linker
-          pnpm config get virtual-store-dir-max-length
-
-          Write-Host "── app-builder-lib resolved location ──"
+          Write-Host "── post-install diagnostics ──"
           $resolved = node -e "console.log(require.resolve('app-builder-lib/package.json'))"
-          Write-Host "$resolved"
-          Write-Host "── path length: $($resolved.Length) chars (must be < 260) ──"
-
-          Write-Host "── store dir contents ──"
-          if (Test-Path $storeDir) {
-            Write-Host "$storeDir exists; first 3 entries:"
-            Get-ChildItem $storeDir -Force | Select-Object -First 3 Name
-          } else {
-            Write-Host "$storeDir does NOT exist"
+          Write-Host "app-builder-lib resolved at: $resolved"
+          Write-Host "path length: $($resolved.Length) chars"
+          if ($resolved.Length -ge 260) {
+            Write-Error "RESOLVED PATH STILL > 260 chars — NSIS will fail"
+            exit 1
           }
-
-          Write-Host "── node_modules/.pnpm contents (should be near-empty) ──"
-          if (Test-Path "node_modules\.pnpm") {
-            Get-ChildItem "node_modules\.pnpm" -Force | Select-Object -First 5 Name
-          } else {
-            Write-Host "node_modules\.pnpm does not exist"
-          }
+          Write-Host "── ok, NSIS will be able to read this ──"
 
       - name: Copy FFmpeg binaries
-        working-directory: aimaster-desktop/apps/desktop
-        run: node scripts/prebuild.cjs
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          node scripts/prebuild.cjs
 
       - name: Build Electron app
-        working-directory: aimaster-desktop/apps/desktop
-        run: pnpm build
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          pnpm build
 
       - name: Package NSIS installer
-        working-directory: aimaster-desktop/apps/desktop
-        run: pnpm exec electron-builder --win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          pnpm exec electron-builder --win
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Louver-Mastering-AI-windows
+          # Junction is transparent — files written under D:\w\... are also
+          # visible under $GITHUB_WORKSPACE\... so the relative path works.
           path: |
             aimaster-desktop/apps/desktop/out/*.exe
           retention-days: 30
