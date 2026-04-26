@@ -141,34 +141,60 @@ jobs:
             --exclude-module matplotlib `
             app\main.py
 
-      - name: Install Node dependencies (hoisted layout for Windows MAX_PATH)
+      - name: Install Node dependencies (short virtual store for Windows MAX_PATH)
         working-directory: aimaster-desktop
         shell: pwsh
-        # pnpm honors npm_config_* env vars (npm/pnpm convention); these override
-        # both the project .npmrc and the user-level config.  pnpm install does
-        # NOT accept --node-linker / --virtual-store-dir-max-length as CLI flags
-        # (only --shamefully-hoist).  Env vars are the only reliable way.
+        # pnpm's default node_modules/.pnpm/<peers-hash>/node_modules/<pkg>/
+        # produces paths > 260 chars on Windows when peer-deps are deep
+        # (electron-builder's NSIS step blows up on
+        # allowOnlyOneInstallerInstance.nsh).  We relocate the entire virtual
+        # store to a short C:\ path via --virtual-store-dir, which IS a real
+        # pnpm CLI flag.  Result paths become ~210 chars, well under MAX_PATH.
+        # Env vars for node-linker/shamefully-hoist are also set as a fallback,
+        # though previous runs show pnpm 9 on Windows runner doesn't always
+        # honor them — that's why --virtual-store-dir is the primary fix.
         env:
           npm_config_node_linker:                  hoisted
           npm_config_shamefully_hoist:             "true"
-          npm_config_virtual_store_dir_max_length: "64"
+          npm_config_virtual_store_dir_max_length: "60"
         run: |
           Write-Host "── pre-install env ──"
           Write-Host "node_linker = $env:npm_config_node_linker"
           Write-Host "shamefully_hoist = $env:npm_config_shamefully_hoist"
           Write-Host "virtual_store_dir_max_length = $env:npm_config_virtual_store_dir_max_length"
-          pnpm install --no-frozen-lockfile
+
+          # Primary fix: virtual store on a short path.
+          # If hoisted layout works, the store is empty and this dir won't matter.
+          # If hoisted is not applied (as observed), the long peers-hash dir
+          # lives at C:\v\<hash> instead of $WORKSPACE\...\.pnpm\<hash>, which
+          # alone keeps the total path under 260 chars.
+          pnpm install --no-frozen-lockfile --virtual-store-dir=C:\v
+
           Write-Host "── pnpm config (post-install) ──"
           pnpm config get node-linker
           pnpm config get virtual-store-dir-max-length
+
           Write-Host "── app-builder-lib resolved location ──"
           $resolved = node -e "console.log(require.resolve('app-builder-lib/package.json'))"
-          Write-Host $resolved
-          Write-Host "── path length: $($resolved.Length) chars ──"
-          Write-Host "── .pnpm dir contents (should be near-empty for hoisted) ──"
-          Get-ChildItem -Path "node_modules\.pnpm" -ErrorAction SilentlyContinue | Select-Object -First 5 Name
-          Write-Host "── top-level node_modules: app-builder-lib? ──"
-          Test-Path "node_modules\app-builder-lib\templates\nsis\include\allowOnlyOneInstallerInstance.nsh"
+          Write-Host "$resolved"
+          Write-Host "── path length: $($resolved.Length) chars (must be < 260) ──"
+
+          Write-Host "── virtual store at C:\v ──"
+          if (Test-Path "C:\v") {
+            Write-Host "exists; first 3 entries:"
+            Get-ChildItem C:\v -Force | Select-Object -First 3 Name
+          } else {
+            Write-Host "C:\v does not exist (good if node-linker=hoisted took effect)"
+          }
+
+          Write-Host "── nsis include header reachable? ──"
+          $rootMod = Resolve-Path "node_modules"
+          $nsh = Join-Path $rootMod "app-builder-lib\templates\nsis\include\allowOnlyOneInstallerInstance.nsh"
+          if (Test-Path $nsh) {
+            Write-Host "OK: $nsh"
+          } else {
+            Write-Host "MISSING at top-level (will be reached via .pnpm symlink)"
+          }
 
       - name: Copy FFmpeg binaries
         working-directory: aimaster-desktop/apps/desktop
