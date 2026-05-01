@@ -40,8 +40,14 @@ from app.utils.ffmpeg_wrapper import (
 )
 from app.utils.audio_io import analyze_waveform, waveform_stats_to_dict
 from app.utils.isp_safety import apply_isp_safety
+from app.utils.waveform_image import (
+    generate_waveform_png,
+    generate_waveform_dual_png,
+    WaveformImageError,
+)
 from app.mastering.eq import build_eq_filter, build_eq_filter_with_report
 from app.mastering.dynamics import build_dynamics_filter, describe_dynamics, get_comp_params, estimate_comp_gr
+from app.mastering.dynamic_eq import build_dynamic_eq_chain
 from app.mastering.effects import (
     saturation_filter,
     stereo_width_filter,
@@ -49,6 +55,8 @@ from app.mastering.effects import (
     deesser_filter,
     get_mode_defaults as get_effects_defaults,
 )
+from app.analysis.metrics import compute_metrics, build_metric_comparison
+from app.qc.quality_check import run_quality_check
 from app.utils.logger import log
 
 # ── Quality-check thresholds ──────────────────────────────────────────────────
@@ -125,12 +133,16 @@ def _build_filter_chain(
     saturation_amount: float | None = None,
     stereo_width: float | None = None,
     output_gain_db: float = 0.0,
-) -> tuple[str, list[str], list[dict]]:
+    dynamic_eq_intensity: float = 1.0,
+) -> tuple[str, list[str], list[dict], dict]:
     """
-    Combine Stage-3 EQ → Stage-4 dynamics → Stage-4.5 effects (deesser /
-    saturation / stereo widening / output gain) into a single ffmpeg filter
-    chain.  Loudnorm + brickwall limiter are added by the caller.
-    Returns (filter_string, applied_correction_strings, eq_move_dicts).
+    Combine Stage-3 EQ → Stage-3.5 Dynamic EQ → Stage-4 dynamics → Stage-4.5
+    effects (deesser / saturation / stereo widening / output gain) into a
+    single ffmpeg filter chain.  Loudnorm + brickwall limiter are added by
+    the caller.
+
+    Returns:
+        (filter_string, applied_correction_strings, eq_move_dicts, dyn_eq_report)
     """
     applied: list[str] = []
 
@@ -152,6 +164,17 @@ def _build_filter_chain(
     applied.append("스트리밍 베이스 EQ (80Hz 밀도 +, 250Hz 머드 -, 12kHz 에어 +)")
     if style != "balanced":
         applied.append(f"{style.capitalize()} 스타일 오버레이 적용")
+
+    # Stage 3.5 — Dynamic EQ (모드 프리셋, ffmpeg adynamicequalizer 우선)
+    dyn_eq_report = build_dynamic_eq_chain(style, intensity=dynamic_eq_intensity)
+    dyn_eq_chain = dyn_eq_report.get("chain", "")
+    if dyn_eq_chain and dyn_eq_report.get("bands"):
+        engine = dyn_eq_report.get("engine", "fallback")
+        n_bands = len(dyn_eq_report.get("bands", []))
+        applied.append(
+            f"Dynamic EQ ({n_bands} 밴드, "
+            f"{'동적' if engine == 'adynamicequalizer' else '정적 fallback'})"
+        )
 
     # Stage 4 — Bus compression
     dyn_chain = build_dynamics_filter(style, input_peak_db)
@@ -178,9 +201,9 @@ def _build_filter_chain(
     if gain_str:
         applied.append(f"Output gain {output_gain_db:+.1f} dB")
 
-    parts = [p for p in (eq_chain, dyn_chain, deesser_str, saturation_str,
-                         width_str, gain_str) if p]
-    return ",".join(parts), applied, eq_moves
+    parts = [p for p in (eq_chain, dyn_eq_chain, dyn_chain, deesser_str,
+                         saturation_str, width_str, gain_str) if p]
+    return ",".join(parts), applied, eq_moves, dyn_eq_report
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -202,6 +225,10 @@ def run_pipeline(
     saturation_amount: float | None = None,
     stereo_width: float | None = None,
     output_gain_db: float = 0.0,
+    # v3.2 P3 — Dynamic EQ 강도 (0.0 ~ 2.0).  0 = 비활성, 1.0 = 모드 기본.
+    dynamic_eq_intensity: float = 1.0,
+    # v3.2 P2 — 출력 waveform PNG 생성 여부.  False 일 때는 path 키 누락.
+    generate_waveforms: bool = True,
     # Optional pre-measured loudness from the Node-side analyze step.
     # When provided, the pipeline skips its own raw loudnorm pass1
     # (saves ~20% of master time).
@@ -310,12 +337,13 @@ def run_pipeline(
                 f"low_to_mid={low_to_mid_db:.1f}, high_to_mid={high_to_mid_db:.1f})")
 
     ai = ai_detections or {}
-    pre_filter, applied_corrections, eq_moves = _build_filter_chain(
+    pre_filter, applied_corrections, eq_moves, dyn_eq_report = _build_filter_chain(
         style, ai, apply_ai_corrections, input_peak_db,
         low_to_mid_db, high_to_mid_db,
         saturation_amount=saturation_amount,
         stereo_width=stereo_width,
         output_gain_db=output_gain_db,
+        dynamic_eq_intensity=dynamic_eq_intensity,
     )
 
     # Add soft clipper just before loudnorm (only when limiter will engage hard)
@@ -692,7 +720,7 @@ def run_pipeline(
                 f"TP={post_tp:.1f}, LRA={post_lra:.1f}")
 
     # ── MP3 preview ───────────────────────────────────────────────────────
-    progress(job_id, 90, "프리뷰 MP3 생성 중")
+    progress(job_id, 88, "프리뷰 MP3 생성 중")
     preview_path = os.path.splitext(output_path)[0] + "_preview.mp3"
     try:
         export_preview_mp3(output_path, preview_path)
@@ -704,6 +732,87 @@ def run_pipeline(
             "code": "PREVIEW_EXPORT_FAILED",
             "level": "warning",
             "userMessage": "MP3 프리뷰 생성에 실패했습니다. WAV 파일은 정상적으로 저장되었습니다.",
+        })
+
+    # ── v3.2 P2 — Waveform PNG 생성 (before / after / compare) ─────────────
+    before_wave_path: str = ""
+    after_wave_path:  str = ""
+    compare_wave_path: str = ""
+    if generate_waveforms:
+        progress(job_id, 92, "waveform 이미지 생성 중")
+        out_root = os.path.splitext(output_path)[0]
+        before_wave_path  = f"{out_root}_before.png"
+        after_wave_path   = f"{out_root}_after.png"
+        compare_wave_path = f"{out_root}_compare.png"
+        try:
+            generate_waveform_png(input_path, before_wave_path)
+        except WaveformImageError as exc:
+            log("WARN", f"[pipeline] before waveform 실패: {exc}")
+            before_wave_path = ""
+            pipeline_warnings.append({
+                "code": "WAVEFORM_BEFORE_FAILED", "level": "warning",
+                "userMessage": "before waveform 이미지 생성에 실패했습니다. 마스터링 결과는 정상입니다.",
+            })
+        try:
+            generate_waveform_png(output_path, after_wave_path)
+        except WaveformImageError as exc:
+            log("WARN", f"[pipeline] after waveform 실패: {exc}")
+            after_wave_path = ""
+            pipeline_warnings.append({
+                "code": "WAVEFORM_AFTER_FAILED", "level": "warning",
+                "userMessage": "after waveform 이미지 생성에 실패했습니다.",
+            })
+        if before_wave_path and after_wave_path:
+            try:
+                generate_waveform_dual_png(input_path, output_path, compare_wave_path)
+            except WaveformImageError as exc:
+                log("WARN", f"[pipeline] compare waveform 실패: {exc}")
+                compare_wave_path = ""
+
+    # ── v3.2 P2 — Metrics + before/after 비교 ──────────────────────────────
+    progress(job_id, 95, "전/후 비교 metrics 계산 중")
+    metric_comparison: list[dict] = []
+    quality_check_report: dict | None = None
+    output_metrics: dict = {}
+    input_metrics:  dict = {}
+    try:
+        before_loudness = {
+            "integratedLufs": pre_lufs,
+            "truePeakDbtp":   pre_tp,
+            "lra":            pre_lra,
+        }
+        after_loudness = {
+            "integratedLufs": post_lufs,
+            "truePeakDbtp":   post_tp,
+            "lra":            post_lra,
+        }
+        input_metrics  = compute_metrics(input_path,  before_loudness)
+        output_metrics = compute_metrics(output_path, after_loudness)
+        metric_comparison = build_metric_comparison(
+            input_metrics, output_metrics, target_true_peak=target_tp
+        )
+    except Exception as exc:
+        log("WARN", f"[pipeline] metric_comparison 실패: {exc}")
+        pipeline_warnings.append({
+            "code": "METRICS_FAILED", "level": "warning",
+            "userMessage": "전/후 비교 지표 계산에 실패했습니다. 기본 라우드니스 정보만 제공됩니다.",
+        })
+
+    # ── v3.2 P2 — Quality check (마스터링 결과 자동 검사) ──────────────────
+    progress(job_id, 98, "품질 자동 검사 중")
+    try:
+        quality_check_report = run_quality_check(
+            output_path,
+            output_metrics,
+            target_true_peak=target_tp,
+            target_lufs=target_lufs,
+            input_metrics=input_metrics,
+        )
+    except Exception as exc:
+        log("WARN", f"[pipeline] quality_check 실패: {exc}")
+        pipeline_warnings.append({
+            "code": "QC_FAILED", "level": "warning",
+            "userMessage": "품질 자동 검사에 실패했습니다.",
         })
 
     progress(job_id, 100, "완료")
@@ -801,7 +910,7 @@ def run_pipeline(
         },
     }
 
-    return {
+    result: dict[str, Any] = {
         # Output files
         "outputPath":  output_path,
         "previewPath": preview_path,
@@ -835,9 +944,30 @@ def run_pipeline(
         # Full analysis report (EQ moves, compressor, limiter, spectral before/after)
         "analysisReport": analysis_report,
 
+        # v3.2 P2 — before/after metric 비교 + 자동 품질 검사
+        "metricComparison": metric_comparison,
+        "qualityCheck":     quality_check_report,
+
+        # v3.2 P3 — Dynamic EQ 리포트 (적용 밴드, 엔진 종류)
+        "dynamicEq": {
+            "preset": dyn_eq_report.get("preset"),
+            "engine": dyn_eq_report.get("engine"),
+            "bands":  dyn_eq_report.get("bands", []),
+        },
+
         # Warnings
         "pipelineWarnings": pipeline_warnings,
 
         # Timing
         "processingTimeSec": elapsed,
     }
+
+    # v3.2 P2 — waveform PNG 경로 (생성 성공한 것만 포함)
+    if before_wave_path:
+        result["beforeWaveformPath"]  = before_wave_path
+    if after_wave_path:
+        result["afterWaveformPath"]   = after_wave_path
+    if compare_wave_path:
+        result["compareWaveformPath"] = compare_wave_path
+
+    return result

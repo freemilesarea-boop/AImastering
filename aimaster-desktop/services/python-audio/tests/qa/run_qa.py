@@ -114,6 +114,16 @@ def _master(sample_name: str, sample_path: str, mode: str, ai_corrections: bool 
     spread = _ebur128_short_term_spread(out_path)
     meta = (result.get("analysisReport") or {}).get("mastering", {})
 
+    # v3.2 P2/P3 — 신규 필드
+    qc        = result.get("qualityCheck") or {}
+    dyn_eq    = result.get("dynamicEq")     or {}
+    metrics   = result.get("metricComparison") or []
+    waveforms = {
+        "before":  bool(result.get("beforeWaveformPath")  and os.path.exists(result.get("beforeWaveformPath",  ""))),
+        "after":   bool(result.get("afterWaveformPath")   and os.path.exists(result.get("afterWaveformPath",   ""))),
+        "compare": bool(result.get("compareWaveformPath") and os.path.exists(result.get("compareWaveformPath", ""))),
+    }
+
     return {
         "sample":            sample_name,
         "mode":              mode,
@@ -129,6 +139,13 @@ def _master(sample_name: str, sample_path: str, mode: str, ai_corrections: bool 
         "applied_corrections": result.get("appliedCorrections", []),
         "warnings_count":    len(result.get("pipelineWarnings") or []),
         "ebur128_spread":    spread.get("spread"),
+        # P2 / P3 추가 측정
+        "waveforms_present": waveforms,
+        "metric_rows":       len(metrics),
+        "qc_overall":        qc.get("overall"),
+        "qc_items":          len(qc.get("items") or []),
+        "dyn_eq_engine":     dyn_eq.get("engine"),
+        "dyn_eq_bands":      len(dyn_eq.get("bands") or []),
         "elapsed_s":         round(time.time() - t0, 2),
     }
 
@@ -205,6 +222,29 @@ def main():
     print(f"  TP failures (>ceiling): {len(tp_failures)}")
     print(f"  pumping suspects (>2.5 LU): {len(pumping)}")
     print(f"  static chain used  : {len(static_chain_used)}")
+
+    # P2 / P3 신규 측정 요약
+    waves_ok = [
+        r for r in all_results
+        if r.get("waveforms_present", {}).get("before")
+        and r.get("waveforms_present", {}).get("after")
+        and r.get("waveforms_present", {}).get("compare")
+    ]
+    qc_ok    = [r for r in all_results if r.get("qc_overall") == "ok"]
+    qc_warn  = [r for r in all_results if r.get("qc_overall") == "warn"]
+    qc_danger= [r for r in all_results if r.get("qc_overall") == "danger"]
+    dyn_eng  = {}
+    for r in all_results:
+        e = r.get("dyn_eq_engine") or "none"
+        dyn_eng[e] = dyn_eng.get(e, 0) + 1
+    metric_avg = (
+        sum(r.get("metric_rows", 0) for r in all_results)
+        / max(1, len(all_results))
+    )
+    print(f"  waveforms (before+after+compare): {len(waves_ok)}/{len(all_results)}")
+    print(f"  metric_comparison avg rows: {metric_avg:.1f}")
+    print(f"  quality_check : ok={len(qc_ok)} warn={len(qc_warn)} danger={len(qc_danger)}")
+    print(f"  dynamic_eq engine breakdown: {dyn_eng}")
 
 
 if __name__ == "__main__":

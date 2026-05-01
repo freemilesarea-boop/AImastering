@@ -215,6 +215,55 @@ export interface AnalysisReport {
   loudnessAfter:  { integratedLufs: number; truePeakDbtp: number; lra: number };
 }
 
+/**
+ * v3.2 P2 — before/after metric 비교 row.  UI 가 표 형태로 표시.
+ * status: ok = 안전 / warn = 주의 / danger = 재마스터링 권장
+ */
+export interface MetricComparisonRow {
+  key: string;
+  label: string;
+  unit: string;
+  before: number | string | null;
+  after:  number | string | null;
+  delta:  number | null;
+  status: 'ok' | 'warn' | 'danger';
+  hint:   string;
+}
+
+/** v3.2 P2 — 마스터링 결과 자동 품질 검사 한 항목. */
+export interface QualityCheckItem {
+  name:    string;
+  status:  'ok' | 'warn' | 'danger';
+  message: string;
+  value?:  number | string | Record<string, unknown> | null;
+}
+
+/** v3.2 P2 — 마스터링 결과 자동 품질 검사 리포트. */
+export interface QualityCheckReport {
+  overall: 'ok' | 'warn' | 'danger';
+  summary: string;
+  items:   QualityCheckItem[];
+}
+
+/** v3.2 P3 — 적용된 Dynamic EQ 한 밴드. */
+export interface DynamicEqBand {
+  name:      string;
+  label:     string;
+  freq:      number;
+  q:         number;
+  threshold: number;
+  reduction: number;
+  mode:      'cut' | 'boost';
+  engine:    'adynamicequalizer' | 'fallback';
+}
+
+/** v3.2 P3 — Dynamic EQ 리포트. */
+export interface DynamicEqReport {
+  preset: string | null;
+  engine: 'adynamicequalizer' | 'fallback' | 'none';
+  bands:  DynamicEqBand[];
+}
+
 export interface MasteringResult {
   /** Absolute path to the master WAV. */
   outputPath: string;
@@ -228,12 +277,24 @@ export interface MasteringResult {
   pipelineWarnings: Array<{ code: string; level: string; userMessage: string }>;
   processingTimeSec: number;
   /**
-   * v3.2 — 선택. Before/After waveform PNG 가 생성되면 절대 경로 제공.
-   * 활성 엔진은 P2 작업에서 추가 예정.
+   * v3.2 P2 — before/after waveform PNG 절대 경로.
+   * 생성 실패 / generate_waveforms=false 일 때는 누락.
    */
-  beforeWaveformPath?: string;
-  afterWaveformPath?: string;
+  beforeWaveformPath?:  string;
+  afterWaveformPath?:   string;
   compareWaveformPath?: string;
+  /**
+   * v3.2 P2 — before/after metric 비교 (UI 표 직접 렌더링).
+   */
+  metricComparison?: MetricComparisonRow[];
+  /**
+   * v3.2 P2 — 마스터링 결과 자동 품질 검사 (TP / pumping / clipping / 과압축 / drop).
+   */
+  qualityCheck?: QualityCheckReport;
+  /**
+   * v3.2 P3 — 적용된 Dynamic EQ 리포트.
+   */
+  dynamicEq?: DynamicEqReport;
 }
 
 // ── QC ────────────────────────────────────────────────────────────────────────
