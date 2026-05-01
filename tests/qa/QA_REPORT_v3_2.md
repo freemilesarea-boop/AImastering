@@ -257,4 +257,34 @@ ffmpeg `ebur128=metadata=1` 으로 momentary loudness `S` 시계열 추출 → P
 
 ---
 
-**서명**: QA round 6 통과. v3.2 전체 검증 완료.
+## 13. 후속 작업 — 활성 코드(`aimaster-desktop/services/python-audio/`) 패치
+
+### 발견
+루트 `package.json` description: **"legacy root, see aimaster-desktop/"**
+즉 `python/` 은 legacy. 실제 활성 코드는 `aimaster-desktop/services/python-audio/`.
+
+### 활성 코드 vs legacy
+- 활성 엔진: **loudnorm 2-pass linear/dynamic**, 스타일 4종 (`balanced/warm/bright/punch`)
+- legacy v3.2: **fully static chain**, 모드 5+종 (KPOP, Loud, Natural, Bright, Warm)
+- 두 엔진은 설계 자체가 다름. v3.2 의 정적 체인 + KPOP 모드는 활성 코드에 그대로 포팅 불가.
+
+### 적용된 변경
+1. **활성 코드에 ISP safety 포팅** — `app/utils/isp_safety.py` 신규.
+   pipeline.py 에서 correction pass 직후 + quality_check 직전 호출. 결과 재측정 포함.
+2. **활성 코드 analysis_report.mastering 에 `ispCorrectionDb` 필드 노출**.
+3. **legacy report.py 에도 `ispCorrectionDb` 필드 추가** (R4 완료).
+
+### 활성 코드 sanity 테스트 결과 (sibilant fixture)
+- input: 5kHz burst + 200Hz tone
+- output LUFS = -10.17, **TP = -1.08 dBTP (한도 -1.0 이내 안전)**, LRA = 0.0
+- ISP safety 적용량 = **-1.12 dB**
+- ISP safety 없었으면 TP 0 dBTP 근처 — 활성 코드도 동일 안전 패치가 필요했음을 검증.
+
+### 활성 코드의 잠재 추가 이슈 (별도 QA 필요)
+- KPOP/-10 LUFS 모드 미존재 — 사용자 설계 결정 사항
+- silence 입력 처리는 activate code 의 measure_output / loudnorm pass1 로 자연 처리
+- Windows 패키징 (R8) 동일
+
+---
+
+**서명**: QA round 6 통과. v3.2 전체 검증 완료. 활성 코드 ISP safety 포팅 완료.

@@ -491,6 +491,7 @@ def run_mastering(
         limiter_reduction_db=limiter_reduction_db,
         correction_applied=correction_applied,
         correction_gain_db=correction_gain,
+        isp_correction_db=isp_correction_db,
         target_reached=target_reached,
         warnings=warnings,
         stages=stages,

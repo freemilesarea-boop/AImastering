@@ -39,6 +39,7 @@ from app.utils.ffmpeg_wrapper import (
     parse_bit_depth,
 )
 from app.utils.audio_io import analyze_waveform, waveform_stats_to_dict
+from app.utils.isp_safety import apply_isp_safety
 from app.mastering.eq import build_eq_filter, build_eq_filter_with_report
 from app.mastering.dynamics import build_dynamics_filter, describe_dynamics, get_comp_params, estimate_comp_gr
 from app.mastering.effects import (
@@ -428,6 +429,7 @@ def run_pipeline(
     # ═══════════════════════════════════════════════════════════════════════
     progress(job_id, 78, "출력 파일 검증 중")
     log("INFO", "[pipeline] post-verification")
+    isp_correction_db = 0.0  # populated below if ISP safety triggers
 
     try:
         post_stats = measure_output(output_path, target_lufs, target_tp)
@@ -526,6 +528,29 @@ def run_pipeline(
                         os.unlink(corr_tmp)
                 except OSError:
                     pass
+
+    # ── ISP safety (numpy 4× FFT oversample, static down-gain) ───────────
+    # ffmpeg alimiter is not oversampled, so inter-sample peaks can overshoot
+    # the ceiling even when sample peak is inside.  Apply a static gain
+    # reduction (envelope-free) when ISP exceeds the ceiling.
+    try:
+        isp_gain = apply_isp_safety(output_path, ceiling_dbtp=target_tp, headroom_db=0.1)
+        if isp_gain is not None and abs(isp_gain) > 0.01:
+            isp_correction_db = isp_gain
+            applied_corrections.append(f"ISP safety ({isp_gain:+.2f} dB)")
+            log("INFO", f"[pipeline] ISP safety applied: {isp_gain:+.2f} dB")
+            # 재측정
+            try:
+                post_stats = measure_output(output_path, target_lufs, target_tp)
+                post_lufs  = post_stats["integratedLufs"]
+                post_tp    = post_stats["truePeakDbtp"]
+                post_lra   = post_stats["lra"]
+                log("INFO", f"[pipeline] post-ISP: LUFS={post_lufs:.1f}, "
+                            f"TP={post_tp:.1f}, LRA={post_lra:.1f}")
+            except FFmpegError:
+                pass
+    except Exception as exc:
+        log("WARN", f"[pipeline] ISP safety skipped: {exc}")
 
     # ── Quality checks ────────────────────────────────────────────────────
 
@@ -630,6 +655,7 @@ def run_pipeline(
             "limiterReductionDb":   limiter_reduction_db,
             "correctionApplied":    correction_applied,
             "correctionGainDb":     round(correction_gain_db, 2) if correction_applied else 0.0,
+            "ispCorrectionDb":      round(isp_correction_db, 3),
             "useLinearLoudnorm":    use_linear_loudnorm,
             "targetReached":        target_reached,
         },
