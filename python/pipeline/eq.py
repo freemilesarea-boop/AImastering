@@ -153,12 +153,16 @@ STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
 
 
 # 모드 → 권장 LUFS / TP / 리미터 강도 (UI 추천 값으로 사용)
+# v3.1 — 안정화 업데이트
+#   · True Peak 한도를 -1.0 dBTP 로 통일 (Spotify/YT 기준 정합)
+#   · KPOP Loud 타깃 LUFS -9.0 → -10.0 (출렁임 + 스트리밍 자동 감쇠 회피)
+#   · Loud 타깃은 -10.0 그대로 유지하되 limiter를 medium 으로 완화
 MODE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "natural":   {"targetLUFS": -14.0, "targetTruePeak": -1.0, "limiterStrength": "low"},
     "balanced":  {"targetLUFS": -12.0, "targetTruePeak": -1.0, "limiterStrength": "medium"},
     "bright":    {"targetLUFS": -12.0, "targetTruePeak": -1.0, "limiterStrength": "medium"},
-    "loud":      {"targetLUFS": -10.0, "targetTruePeak": -1.0, "limiterStrength": "high"},
-    "kpop_loud": {"targetLUFS":  -9.0, "targetTruePeak": -0.8, "limiterStrength": "high"},
+    "loud":      {"targetLUFS": -10.0, "targetTruePeak": -1.0, "limiterStrength": "medium"},
+    "kpop_loud": {"targetLUFS": -10.0, "targetTruePeak": -1.0, "limiterStrength": "high"},
     "warm":      {"targetLUFS": -14.0, "targetTruePeak": -1.0, "limiterStrength": "low"},
     "punch":     {"targetLUFS": -11.0, "targetTruePeak": -1.0, "limiterStrength": "high"},
 }

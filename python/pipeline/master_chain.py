@@ -16,35 +16,41 @@ v3 — Ozone 스타일 마스터링 체인을 ffmpeg 필터로 근사
 본 모듈은 (loudnorm 외) 추가 필터 체인 문자열을 만들어 반환한다.
 loudnorm 자체는 mastering.py 의 ffmpeg_wrapper.loudnorm_pass2 에서 처리한다.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from .eq import build_eq_filter, MODE_DEFAULTS
+from .dynamic_eq import build_dynamic_eq_chain, DYNAMIC_EQ_PRESETS
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 # ─────────────────────────────────────────────────────
 # 모드별 컴프레서 파라미터 (Bright 의 high-band 과압축 방지 포함)
+# v3.1 — release 시간을 늘려 limiter envelope 와의 chasing 방지
 # ─────────────────────────────────────────────────────
 COMP_PARAMS: Dict[str, Dict[str, Any]] = {
-    "natural":   {"threshold": -22, "ratio": 1.5, "attack": 25, "release": 250, "makeup": 0, "knee": 4},
-    "balanced":  {"threshold": -18, "ratio": 2.0, "attack": 20, "release": 200, "makeup": 1, "knee": 3},
+    "natural":   {"threshold": -22, "ratio": 1.5, "attack": 30, "release": 350, "makeup": 0, "knee": 4},
+    "balanced":  {"threshold": -18, "ratio": 2.0, "attack": 25, "release": 300, "makeup": 1, "knee": 3},
     # Bright: ratio 와 makeup 을 낮춤 → 고역 transient 가 압축으로 눌리는 현상 방지
-    "bright":    {"threshold": -16, "ratio": 1.6, "attack": 25, "release": 220, "makeup": 0, "knee": 3},
-    "loud":      {"threshold": -16, "ratio": 2.5, "attack": 12, "release": 130, "makeup": 1, "knee": 2},
-    "kpop_loud": {"threshold": -14, "ratio": 2.8, "attack": 10, "release": 110, "makeup": 1, "knee": 2},
+    "bright":    {"threshold": -16, "ratio": 1.6, "attack": 25, "release": 280, "makeup": 0, "knee": 3},
+    "loud":      {"threshold": -16, "ratio": 2.2, "attack": 18, "release": 220, "makeup": 1, "knee": 2},
+    # KPOP: ratio 완화 + release 연장 (envelope chasing 차단)
+    "kpop_loud": {"threshold": -14, "ratio": 2.4, "attack": 15, "release": 200, "makeup": 1, "knee": 2},
     # legacy
-    "warm":      {"threshold": -20, "ratio": 2.5, "attack": 30, "release": 250, "makeup": 1, "knee": 4},
-    "punch":     {"threshold": -14, "ratio": 3.0, "attack": 10, "release": 120, "makeup": 2, "knee": 2},
+    "warm":      {"threshold": -20, "ratio": 2.5, "attack": 30, "release": 280, "makeup": 1, "knee": 4},
+    "punch":     {"threshold": -14, "ratio": 3.0, "attack": 12, "release": 200, "makeup": 2, "knee": 2},
 }
 
 
 # ─────────────────────────────────────────────────────
 # 리미터 강도 매핑 (input gain dB, attack ms, release ms)
+# v3.1 — release 시간 안정화. envelope chasing/breathing 방지.
+#       compressor release 와 황금비 (limiter < comp) 유지하되
+#       2배 이상 차이 두지 않음.
 # ─────────────────────────────────────────────────────
 LIMITER_STRENGTHS: Dict[str, Dict[str, float]] = {
-    "low":    {"input_gain_db": 0.5, "attack_ms": 8.0, "release_ms": 200.0},
-    "medium": {"input_gain_db": 2.0, "attack_ms": 5.0, "release_ms": 100.0},
-    "high":   {"input_gain_db": 4.0, "attack_ms": 3.0, "release_ms": 60.0},
+    "low":    {"input_gain_db": 0.5, "attack_ms": 10.0, "release_ms": 220.0},
+    "medium": {"input_gain_db": 1.5, "attack_ms": 7.0,  "release_ms": 160.0},
+    "high":   {"input_gain_db": 3.0, "attack_ms": 5.0,  "release_ms": 130.0},
 }
 
 
@@ -165,13 +171,14 @@ def _alimiter_filter(
     input_gain_db = sp["input_gain_db"] + extra_input_gain_db
     level_in  = max(0.5, min(8.0, _db_to_linear(input_gain_db)))
     limit_lin = max(0.0625, min(1.0, _db_to_linear(ceiling_db)))
+    # v3.1: asc=0 — auto soft clip 의 평균 레벨 적응 동작이 음압 출렁임을 만들 수 있어 비활성화.
     return (
         f"alimiter=level_in={level_in:.4f}"
         f":level_out=1.0"
         f":limit={limit_lin:.4f}"
         f":attack={sp['attack_ms']:.1f}"
         f":release={sp['release_ms']:.1f}"
-        f":asc=1:asc_level=0.5:level=0"
+        f":asc=0:level=0"
     )
 
 
@@ -184,25 +191,50 @@ def build_master_chain(
     output_gain_db: float = 0.0,
     enable_eq: bool = True,
     enable_comp: bool = True,
+    enable_dynamic_eq: bool = True,
+    dynamic_eq_intensity: float = 1.0,
+    ffmpeg_supports_adynamic_eq: bool = False,
     ai_corrections: Optional[Dict[str, bool]] = None,
-) -> str:
+) -> Dict[str, Any]:
     """
-    EQ → comp → deesser → saturation → widener → soft clipper → limiter → output gain
-    필터 체인 문자열을 반환.
-    loudnorm 은 mastering.py 에서 별도 단계로 적용된다.
+    EQ → Dynamic EQ → comp → deesser → saturation → widener → output gain
+       → soft clipper → limiter
+    체인 문자열과 적용된 처리 단계 목록을 함께 반환.
+
+    Returns:
+        {
+          "chain":        ffmpeg -af 문자열,
+          "stages":       사람이 읽는 단계 목록 (UI 표시용),
+          "dynamic_eq":   적용된 dynamic EQ 모드 ('disabled' 가능),
+        }
     """
     # 모드별 기본값
     sat_default = MODE_SAT_WIDTH.get(mode, MODE_SAT_WIDTH["balanced"])
     sat = saturation_amount if saturation_amount is not None else sat_default["saturation"]
     width = stereo_width if stereo_width is not None else sat_default["stereoWidth"]
 
-    parts = []
+    parts: List[str] = []
+    stages: List[str] = []
 
-    # 1. EQ
+    # 1. EQ (정적)
     if enable_eq:
         eq = build_eq_filter(style=mode, ai_corrections=ai_corrections)
         if eq:
             parts.append(eq)
+            stages.append("EQ")
+
+    # 1.5. Dynamic EQ (모드 프리셋 기반, 강도 파라미터로 조절)
+    dyn_mode_used = "disabled"
+    if enable_dynamic_eq:
+        dyn = build_dynamic_eq_chain(
+            mode=mode,
+            intensity=dynamic_eq_intensity,
+            use_adynamic_eq=ffmpeg_supports_adynamic_eq,
+        )
+        if dyn["chain"]:
+            parts.append(dyn["chain"])
+            stages.append(f"Dynamic EQ ({dyn['preset']})")
+            dyn_mode_used = dyn["preset"]
 
     # 2. Glue compressor
     if enable_comp:
@@ -215,28 +247,34 @@ def build_master_chain(
             f":makeup={c['makeup']}"
             f":knee={c['knee']}"
         )
+        stages.append("Compressor")
 
     # 3. De-esser (Bright 모드에서는 비활성)
     if MODE_DEESSER.get(mode, False) and mode != "bright":
         parts.append(_deesser_filter())
+        stages.append("De-esser")
 
     # 4. Harmonic saturation
     sat_f = _saturation_filter(sat)
     if sat_f:
         parts.append(sat_f)
+        stages.append("Saturation")
 
     # 5. Stereo widening
     sw = _stereo_widener_filter(width)
     if sw:
         parts.append(sw)
+        stages.append("Stereo Widener")
 
     # 6. Output gain (선택, soft clipper 입력 레벨 보정)
     if abs(output_gain_db) > 0.01:
         og = max(-12.0, min(12.0, output_gain_db))
         parts.append(f"volume={og:.2f}dB")
+        stages.append(f"Output Gain ({og:+.1f} dB)")
 
     # 7. Soft clipper (ceiling 직전 단계)
     parts.append(_soft_clipper_filter(target_true_peak))
+    stages.append("Soft Clipper")
 
     # 8. True peak limiter
     parts.append(
@@ -245,10 +283,15 @@ def build_master_chain(
             limiter_strength=limiter_strength,
         )
     )
+    stages.append(f"Limiter ({limiter_strength})")
 
     chain = ",".join(parts)
-    logger.debug(f"Master chain [{mode}, lim={limiter_strength}, sat={sat}]: {chain}")
-    return chain
+    logger.debug(f"Master chain [{mode}, lim={limiter_strength}, sat={sat}, dyn_eq={dyn_mode_used}]")
+    return {
+        "chain":      chain,
+        "stages":     stages,
+        "dynamic_eq": dyn_mode_used,
+    }
 
 
 def get_mode_defaults(mode: str) -> Dict[str, Any]:
@@ -259,22 +302,22 @@ def get_mode_defaults(mode: str) -> Dict[str, Any]:
 def get_correction_chain(
     gain_db: float,
     target_true_peak: float,
-    limiter_strength: str = "medium",
+    limiter_strength: str = "medium",  # 호환성용 — 더 이상 사용하지 않음
 ) -> str:
     """
     LUFS 목표 미달 시 추가 보정용 필터 체인.
-    추가 gain → soft clipper → alimiter (TP ceiling).
+
+    v3.1 — 두 번째 limiter envelope 충돌 제거
+      이전:  volume → soft clipper → alimiter (envelope 이중 작용)
+      이후:  volume → soft clipper(고정 transfer) 만 적용
+            (이미 1차에서 alimiter 가 ceiling 을 보장. 추가 limiter envelope 불필요)
+
+    soft clipper 는 정적 transfer curve 라 envelope 이 없어 음압 출렁임을 만들지 않음.
     """
-    parts = []
-    g = max(-6.0, min(6.0, gain_db))
+    parts: List[str] = []
+    g = max(-3.0, min(3.0, gain_db))   # 보정 한도를 ±3dB 로 강화 (이전 ±6dB)
     if abs(g) > 0.05:
         parts.append(f"volume={g:.2f}dB")
+    # ceiling 안전망: soft clipper 만 (envelope-less)
     parts.append(_soft_clipper_filter(target_true_peak))
-    parts.append(
-        _alimiter_filter(
-            ceiling_db=target_true_peak,
-            limiter_strength=limiter_strength,
-            extra_input_gain_db=0.5,
-        )
-    )
-    return ",".join(parts)
+    return ",".join(parts) if parts else f"volume=0dB"

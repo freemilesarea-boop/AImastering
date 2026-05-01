@@ -146,7 +146,9 @@ def loudnorm_pass2(
         f":linear={linear_str}:print_format=summary"
     )
 
-    # 추가 필터 체인 (EQ, 컴프레서 등) 앞에 붙임
+    # 추가 필터 체인 (EQ, 컴프레서, limiter 등) 은 loudnorm 앞 단계에 배치.
+    # v3.1: linear=True 가 강제되므로 loudnorm 은 정적 게인만 적용.
+    #        체인이 ceiling 을 이미 보장한 뒤 loudnorm 이 LUFS 만 맞추는 구조.
     af_chain = loudnorm_filter
     if extra_filters:
         af_chain = f"{extra_filters},{loudnorm_filter}"
@@ -203,6 +205,34 @@ def measure_true_peak(file_path: str, ffmpeg_path: str = 'ffmpeg') -> float:
     # 폴백: loudnorm pass1으로 측정
     measurements = loudnorm_pass1(file_path, ffmpeg_path=ffmpeg_path)
     return measurements['measured_tp']
+
+
+_ADYNAMIC_EQ_CACHE: Optional[bool] = None
+
+
+def detect_adynamicequalizer_support(ffmpeg_path: str = 'ffmpeg') -> bool:
+    """
+    ffmpeg 빌드가 adynamicequalizer 필터를 포함하는지 확인.
+    한 번 감지한 결과를 프로세스 수명 동안 캐싱.
+    실패 시 False (fallback 으로 정적 EQ + compand 조합 사용).
+    """
+    global _ADYNAMIC_EQ_CACHE
+    if _ADYNAMIC_EQ_CACHE is not None:
+        return _ADYNAMIC_EQ_CACHE
+    try:
+        cmd = [ffmpeg_path, '-hide_banner', '-filters']
+        code, stdout, stderr = run_command(cmd, timeout=10)
+        if code != 0:
+            _ADYNAMIC_EQ_CACHE = False
+            return False
+        haystack = (stdout + "\n" + stderr).lower()
+        _ADYNAMIC_EQ_CACHE = 'adynamicequalizer' in haystack
+        logger.info(f"adynamicequalizer 지원: {_ADYNAMIC_EQ_CACHE}")
+        return _ADYNAMIC_EQ_CACHE
+    except Exception as exc:
+        logger.warning(f"adynamicequalizer 감지 실패: {exc}")
+        _ADYNAMIC_EQ_CACHE = False
+        return False
 
 
 def _parse_bit_depth(sample_fmt: str) -> int:
