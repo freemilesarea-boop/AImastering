@@ -169,6 +169,18 @@ export interface MasteringMeta {
   limiterReductionDb: number;
   correctionApplied: boolean;
   correctionGainDb: number;
+  /**
+   * v3.2 — Inter-Sample Peak safety post-processor 가 적용한 정적 down-gain (dB).
+   * 0 = 적용 없음. 음수 값 = ceiling 초과 ISP 를 잡기 위해 적용된 게인 감소.
+   */
+  ispCorrectionDb?: number;
+  /**
+   * v3.2 — high-LUFS 모드 (loud, kpop_loud) 에서 dynamic loudnorm 의 envelope
+   * 출렁임을 막기 위해 사용한 정적 체인 (volume= 정적 게인 매칭) 여부.
+   * true 이면 loudnorm pass2 가 사용되지 않고, pre_lufs 측정값 + volume 노드로
+   * 정적 매칭이 적용됨. false 이면 기존 loudnorm 2-pass.
+   */
+  staticChain?: boolean;
   useLinearLoudnorm: boolean;
   targetReached: boolean;
 }
@@ -215,6 +227,13 @@ export interface MasteringResult {
   analysisReport: AnalysisReport | null;
   pipelineWarnings: Array<{ code: string; level: string; userMessage: string }>;
   processingTimeSec: number;
+  /**
+   * v3.2 — 선택. Before/After waveform PNG 가 생성되면 절대 경로 제공.
+   * 활성 엔진은 P2 작업에서 추가 예정.
+   */
+  beforeWaveformPath?: string;
+  afterWaveformPath?: string;
+  compareWaveformPath?: string;
 }
 
 // ── QC ────────────────────────────────────────────────────────────────────────

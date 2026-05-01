@@ -69,6 +69,42 @@ LIMITER_STRENGTHS: dict[str, dict[str, float]] = {
 # 절대값이 작은 (= 큰 라우드니스) 타깃은 loudnorm linear 모드로 도달 불가 → dynamic 사용
 _LOUDNORM_DYNAMIC_THRESHOLD = -12.0
 
+# v3.2 — high-LUFS 모드 식별. dynamic loudnorm 의 short-term envelope 가 만드는
+# 출렁임/펌핑을 막기 위해 정적 체인 (volume 노드 + alimiter) 으로 우회한다.
+_STATIC_CHAIN_STYLES = {"loud", "kpop_loud"}
+# 정적 체인 진입점. clamp 한계.
+_STATIC_ENTRY_GAIN_MAX = 24.0   # dB
+_STATIC_ENTRY_GAIN_MIN = -24.0  # dB
+
+
+def _should_use_static_chain(target_lufs: float, style: str) -> bool:
+    """
+    high-LUFS 모드 (loud, kpop_loud) 또는 target_lufs > -12 → 정적 체인 사용.
+    정적 체인은 loudnorm pass2 대신 단일 volume 노드로 라우드니스 매칭하므로
+    dynamic loudnorm 의 시간 가변 게인이 만드는 short-term spread (= 출렁임)
+    가 발생하지 않는다.
+    """
+    if style in _STATIC_CHAIN_STYLES:
+        return True
+    return target_lufs > _LOUDNORM_DYNAMIC_THRESHOLD
+
+
+def _static_entry_gain_db(target_lufs: float, pre_lufs: float) -> tuple[float, str | None]:
+    """
+    정적 체인의 loudness match 게인 (target_lufs - pre_lufs) + clamp.
+    Returns (gain_db, warning_message_or_None).
+    """
+    # silence / -inf / NaN 가드
+    if pre_lufs is None or pre_lufs != pre_lufs or pre_lufs <= -90.0:
+        return 0.0, "입력이 거의 무음입니다 — loudness match 게인을 적용할 수 없습니다."
+    desired = target_lufs - pre_lufs
+    clamped = max(_STATIC_ENTRY_GAIN_MIN, min(_STATIC_ENTRY_GAIN_MAX, desired))
+    if abs(desired - clamped) > 0.01:
+        return clamped, (f"입력이 너무 작아 {desired:+.1f} dB 푸시가 필요합니다. "
+                         f"{clamped:+.1f} dB 로 제한합니다.")
+    return clamped, None
+
+
 ProgressCallback = Callable[[str, int, str], None]
 
 
@@ -358,71 +394,126 @@ def run_pipeline(
                     f"— reducing gain, not limiting harder")
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Stage 5b — loudnorm pass-2 (EQ+comp → normalize to -14.5 LUFS, TP=-1.5)
+    # Stage 5b/6 — Loudness 매칭 + Limiter
     # ═══════════════════════════════════════════════════════════════════════
-    progress(job_id, 45, "라우드니스 정규화 중 (2/2)")
-    log("INFO", f"[pipeline] stage5b — loudnorm pass2 → intermediate WAV")
+    use_static_chain = _should_use_static_chain(target_lufs, style)
+    static_entry_gain_db = 0.0  # populated below in static branch
+    pre_lim_peak_db = 0.0
+    pre_lim_lufs    = -99.0
 
-    # Use a temp file for the loudnorm output so the limiter gets a clean input
-    tmp_fd, tmp_wav = tempfile.mkstemp(suffix="_loudnorm.wav")
-    os.close(tmp_fd)
+    if use_static_chain:
+        # ── 정적 체인: volume= 노드로 라우드니스 매칭 후 단일 ffmpeg pass ──
+        # 흐름: pre_filter (EQ+comp+sat+width+softclip) → volume → alimiter → output
+        # loudnorm pass2 의 dynamic gain envelope 가 만드는 short-term 출렁임 제거.
+        progress(job_id, 45, "정적 체인 마스터링 중")
+        log("INFO", "[pipeline] stage5/6 (static chain) — single ffmpeg pass")
 
-    try:
-        loudnorm_pass2(
-            input_path,
-            tmp_wav,
-            pass1,
-            target_lufs=target_lufs,
-            target_tp=loudnorm_tp_internal,
-            lra=lra,
-            sample_rate=sample_rate,
-            bit_depth=bit_depth,
-            pre_filter=pre_filter,
-            linear=use_linear_loudnorm,
+        entry_gain, gain_warning = _static_entry_gain_db(target_lufs, pre_lufs)
+        static_entry_gain_db = entry_gain
+        if gain_warning:
+            pipeline_warnings.append({
+                "code": "STATIC_GAIN_CLAMPED",
+                "level": "warning",
+                "userMessage": gain_warning,
+            })
+            log("WARN", f"[pipeline] static chain: {gain_warning}")
+
+        # 안전 마진을 위해 alimiter limit 을 ceiling - 0.3 dB 로 (ISP oversample 부재 보완)
+        lim_strength = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
+        lim_in_lin  = 10.0 ** (lim_strength["input_gain_db"] / 20.0)
+        safe_ceiling = target_tp - 0.3
+        lim_out_lin = 10.0 ** (safe_ceiling / 20.0)
+
+        chain_parts: list[str] = []
+        # 1. EQ + comp + saturation + width + soft clip 등 (pre_filter)
+        if pre_filter:
+            chain_parts.append(pre_filter)
+        # 2. 정적 loudness match 게인 — pre_filter 후에 적용해 EQ-induced loudness 변화 반영
+        if abs(entry_gain) > 0.05:
+            chain_parts.append(f"volume={entry_gain:.2f}dB")
+        # 3. Brickwall alimiter (asc=0 — auto soft clip 의 평균 적응 동작 비활성)
+        chain_parts.append(
+            f"alimiter=level_in={lim_in_lin:.4f}:level_out=1:limit={lim_out_lin:.6f}"
+            f":attack={lim_strength['attack_ms']}:release={lim_strength['release_ms']}:asc=0"
         )
-    except FFmpegError as exc:
-        log("ERROR", f"loudnorm pass2 failed: {exc}\nstderr:\n{exc.stderr}")
+        static_chain_filter = ",".join(chain_parts)
+        log("INFO", f"[pipeline] static chain filter: {static_chain_filter[:200]}…")
+
         try:
-            os.unlink(tmp_wav)
-        except OSError:
-            pass
-        raise
+            apply_filter_chain(
+                input_path,
+                output_path,
+                static_chain_filter,
+                sample_rate=sample_rate,
+                bit_depth=bit_depth,
+            )
+        except FFmpegError as exc:
+            log("ERROR", f"static chain failed: {exc}\nstderr:\n{exc.stderr}")
+            raise
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # Stage 6 — Brickwall true-peak limiter (ceiling -1.0 dBTP)
-    # ═══════════════════════════════════════════════════════════════════════
-    progress(job_id, 65, "트루 피크 리미터 적용 중")
-    log("INFO", f"[pipeline] stage6 — brickwall limiter → {output_path}")
-
-    # Measure pre-limiter peak so we can report actual limiter gain reduction
-    try:
-        pre_lim_stats   = measure_output(tmp_wav, target_lufs, target_tp)
-        pre_lim_peak_db = pre_lim_stats.get("truePeakDbtp", 0.0)
-        pre_lim_lufs    = pre_lim_stats.get("integratedLufs", -99.0)
-    except FFmpegError:
-        pre_lim_peak_db = 0.0
-        pre_lim_lufs    = -99.0
-
-    lim_strength = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
-    try:
-        apply_limiter(
-            tmp_wav,
-            output_path,
-            ceiling_dbfs=target_tp,
-            attack_ms=lim_strength["attack_ms"],
-            release_ms=lim_strength["release_ms"],
-            sample_rate=sample_rate,
-            bit_depth=bit_depth,
-            level_in_db=lim_strength["input_gain_db"],
+        applied_corrections.append(
+            f"정적 체인 (entry gain {entry_gain:+.2f} dB + limiter)"
         )
-    except FFmpegError as exc:
-        log("ERROR", f"limiter failed: {exc}\nstderr:\n{exc.stderr}")
-        raise
-    finally:
+    else:
+        # ── 기존 loudnorm 2-pass 흐름 (target_lufs ≤ -12 의 ‘natural / balanced /
+        # bright / warm / punch’ 같은 streaming 타깃) ──
+        progress(job_id, 45, "라우드니스 정규화 중 (2/2)")
+        log("INFO", f"[pipeline] stage5b — loudnorm pass2 → intermediate WAV")
+
+        tmp_fd, tmp_wav = tempfile.mkstemp(suffix="_loudnorm.wav")
+        os.close(tmp_fd)
+
         try:
-            os.unlink(tmp_wav)
-        except OSError:
+            loudnorm_pass2(
+                input_path,
+                tmp_wav,
+                pass1,
+                target_lufs=target_lufs,
+                target_tp=loudnorm_tp_internal,
+                lra=lra,
+                sample_rate=sample_rate,
+                bit_depth=bit_depth,
+                pre_filter=pre_filter,
+                linear=use_linear_loudnorm,
+            )
+        except FFmpegError as exc:
+            log("ERROR", f"loudnorm pass2 failed: {exc}\nstderr:\n{exc.stderr}")
+            try:
+                os.unlink(tmp_wav)
+            except OSError:
+                pass
+            raise
+
+        progress(job_id, 65, "트루 피크 리미터 적용 중")
+        log("INFO", f"[pipeline] stage6 — brickwall limiter → {output_path}")
+
+        try:
+            pre_lim_stats   = measure_output(tmp_wav, target_lufs, target_tp)
+            pre_lim_peak_db = pre_lim_stats.get("truePeakDbtp", 0.0)
+            pre_lim_lufs    = pre_lim_stats.get("integratedLufs", -99.0)
+        except FFmpegError:
             pass
+
+        lim_strength = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
+        try:
+            apply_limiter(
+                tmp_wav,
+                output_path,
+                ceiling_dbfs=target_tp,
+                attack_ms=lim_strength["attack_ms"],
+                release_ms=lim_strength["release_ms"],
+                sample_rate=sample_rate,
+                bit_depth=bit_depth,
+                level_in_db=lim_strength["input_gain_db"],
+            )
+        except FFmpegError as exc:
+            log("ERROR", f"limiter failed: {exc}\nstderr:\n{exc.stderr}")
+            raise
+        finally:
+            try:
+                os.unlink(tmp_wav)
+            except OSError:
+                pass
 
     # ═══════════════════════════════════════════════════════════════════════
     # Post-verification — re-measure output
@@ -656,7 +747,8 @@ def run_pipeline(
             "correctionApplied":    correction_applied,
             "correctionGainDb":     round(correction_gain_db, 2) if correction_applied else 0.0,
             "ispCorrectionDb":      round(isp_correction_db, 3),
-            "useLinearLoudnorm":    use_linear_loudnorm,
+            "staticChain":          bool(use_static_chain),
+            "useLinearLoudnorm":    bool(use_linear_loudnorm and not use_static_chain),
             "targetReached":        target_reached,
         },
 
