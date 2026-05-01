@@ -143,18 +143,33 @@ def build_dynamic_eq_chain(
 
 def _adynamic_band(band: Dict[str, Any], reduction: float) -> Optional[str]:
     """
-    ffmpeg 6.0+ adynamicequalizer 한 밴드 표현
-        adynamicequalizer=dfrequency=...:dqfactor=...:tfrequency=...:tqfactor=...
-                         :threshold=...:ratio=...:attack=...:release=...:mode=cut|boost
+    ffmpeg adynamicequalizer 한 밴드 표현.
+
+    중요: ffmpeg 의 threshold 옵션은 dBFS 가 아니라 amplitude percentage (0~100).
+    프리셋의 threshold(dBFS, 음수) 를 percentage 로 변환해야 한다.
+        threshold_pct = 10^(threshold_db / 20) * 100
+    예) -20 dBFS → 10.0 %, -16 dBFS → 15.85 %, -22 dBFS → 7.94 %.
+
+    파라미터 범위:
+        threshold: 0 ~ 100        (amplitude percentage)
+        ratio:     0 ~ 30
+        makeup:    0 ~ 100 dB
+        range:     1 ~ 200 dB
+        mode:      cut / boost / listen
     """
+    threshold_db = float(band["threshold"])
+    pct = (10.0 ** (threshold_db / 20.0)) * 100.0
+    threshold_pct = max(0.1, min(99.9, pct))
+
     mode_str = "cut" if band["mode"] == "cut" else "boost"
-    # ratio 는 reduction 을 직접 넣지 못하므로 단순 비율로 변환
-    # adynamicequalizer 의 ratio = output_db / input_db
-    ratio = max(1.5, min(8.0, 1.0 + reduction / 2.0))
+    # ratio: reduction 양에 비례. 1=무처리, 더 클수록 강한 처리. 0~30 한도.
+    ratio = max(1.0, min(8.0, 1.0 + reduction / 2.0))
+    # range: 최대 게인 변화량 (dB). reduction 의 1.5x 정도로 안전 마진.
+    rng = max(2.0, min(24.0, reduction * 1.5))
     return (
         f"adynamicequalizer=dfrequency={band['freq']}:dqfactor={band['q']}"
         f":tfrequency={band['freq']}:tqfactor={band['q']}"
-        f":threshold={band['threshold']}:ratio={ratio:.2f}"
+        f":threshold={threshold_pct:.2f}:ratio={ratio:.2f}:range={rng:.2f}"
         f":attack=20:release=200:mode={mode_str}"
     )
 

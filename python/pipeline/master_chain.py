@@ -117,13 +117,15 @@ def _soft_clipper_filter(ceiling_db: float) -> str:
     """
     Soft clipper: ceiling_db 근처에서 부드럽게 휘어지는 transfer curve.
     True peak limiter 직전에 배치해 limiter 입력을 미리 제어.
+
+    v3.2: 0 dBFS 입력에서 출력이 ceiling 보다 0.3 dB 아래에서 멈추도록 마진 강화
+          (sibilant/percussive 입력의 ISP 누수 방지).
     """
     c = max(-3.0, min(-0.1, ceiling_db))
-    # ceiling - 3 dB 이하는 그대로, 그 위로 점진적으로 압착
     p_low  = round(c - 3.0, 2)
     p_mid  = round(c - 1.5, 2)
-    p_near = round(c - 0.4, 2)
-    p_top  = round(c - 0.05, 2)
+    p_near = round(c - 0.6, 2)   # 마진 강화 (이전 -0.4)
+    p_top  = round(c - 0.3, 2)   # 마진 강화 (이전 -0.05)
     points = (
         f"-90/-90"
         f"|-12/-12"
@@ -170,7 +172,10 @@ def _alimiter_filter(
     sp = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
     input_gain_db = sp["input_gain_db"] + extra_input_gain_db
     level_in  = max(0.5, min(8.0, _db_to_linear(input_gain_db)))
-    limit_lin = max(0.0625, min(1.0, _db_to_linear(ceiling_db)))
+    # v3.2 안전 마진: alimiter 의 limit 을 ceiling 보다 0.3dB 더 빡빡하게 설정.
+    # ffmpeg alimiter 는 ISP oversampling 미지원이라 ceiling 정확 도달 시 ISP 누수 가능.
+    safe_ceiling = ceiling_db - 0.3
+    limit_lin = max(0.0625, min(1.0, _db_to_linear(safe_ceiling)))
     # v3.1: asc=0 — auto soft clip 의 평균 레벨 적응 동작이 음압 출렁임을 만들 수 있어 비활성화.
     return (
         f"alimiter=level_in={level_in:.4f}"
@@ -255,15 +260,27 @@ def build_master_chain(
     # 2. Glue compressor
     if enable_comp:
         c = COMP_PARAMS.get(mode, COMP_PARAMS["balanced"])
-        parts.append(
-            f"acompressor=threshold={c['threshold']}dB"
-            f":ratio={c['ratio']}"
-            f":attack={c['attack']}"
-            f":release={c['release']}"
-            f":makeup={c['makeup']}"
-            f":knee={c['knee']}"
-        )
-        stages.append("Compressor")
+        # ffmpeg acompressor 의 makeup 범위 [1, 64] — 0 이하는 옵션 자체를 생략한다 (기본=1).
+        # threshold 도 entry_gain 가 클 경우 자동으로 올려 push-then-crush 방지.
+        comp_threshold = float(c["threshold"])
+        if eg > 12.0:
+            # 큰 entry gain 에서는 compressor 가 너무 일찍 작동 → 결과 LUFS 미달.
+            # entry gain 의 초과분만큼 threshold 를 위로 옮긴다 (덜 압축).
+            comp_threshold = min(-2.0, comp_threshold + (eg - 12.0))
+        comp_parts = [
+            f"acompressor=threshold={comp_threshold:.1f}dB",
+            f"ratio={c['ratio']}",
+            f"attack={c['attack']}",
+            f"release={c['release']}",
+            f"knee={c['knee']}",
+        ]
+        if float(c.get("makeup", 0)) >= 1.0:
+            comp_parts.append(f"makeup={c['makeup']}")
+        parts.append(":".join(comp_parts))
+        stage_label = "Compressor"
+        if comp_threshold != float(c["threshold"]):
+            stage_label += f" (thr {comp_threshold:.1f} dB, auto)"
+        stages.append(stage_label)
 
     # 3. De-esser (Bright 모드에서는 비활성)
     if MODE_DEESSER.get(mode, False) and mode != "bright":
@@ -325,17 +342,22 @@ def get_correction_chain(
     """
     LUFS 목표 미달 시 추가 보정용 필터 체인.
 
-    v3.1 — 두 번째 limiter envelope 충돌 제거
-      이전:  volume → soft clipper → alimiter (envelope 이중 작용)
-      이후:  volume → soft clipper(고정 transfer) 만 적용
-            (이미 1차에서 alimiter 가 ceiling 을 보장. 추가 limiter envelope 불필요)
-
-    soft clipper 는 정적 transfer curve 라 envelope 이 없어 음압 출렁임을 만들지 않음.
+    v3.2 — 정적 보정 + ISP safety net.
+      구조: volume → soft clipper → alimiter (gentle, asc=0)
+      기존 1차 alimiter envelope 위에 다시 강한 envelope 을 얹는 것은 출렁임의 원인이라
+      여기 alimiter 는 attack/release 둘 다 길게(20/300ms) 두어 ISP 게이트 역할만 한다.
+      평균 레벨에는 거의 영향 없음.
     """
     parts: List[str] = []
-    g = max(-3.0, min(3.0, gain_db))   # 보정 한도를 ±3dB 로 강화 (이전 ±6dB)
+    g = max(-5.0, min(5.0, gain_db))
     if abs(g) > 0.05:
         parts.append(f"volume={g:.2f}dB")
-    # ceiling 안전망: soft clipper 만 (envelope-less)
     parts.append(_soft_clipper_filter(target_true_peak))
-    return ",".join(parts) if parts else f"volume=0dB"
+    # ISP safety net — envelope 거의 작동 안 하는 매우 부드러운 limiter
+    safe_ceiling = target_true_peak - 0.3
+    limit_lin = max(0.0625, min(1.0, _db_to_linear(safe_ceiling)))
+    parts.append(
+        f"alimiter=level_in=1.0:level_out=1.0:limit={limit_lin:.4f}"
+        f":attack=20.0:release=300.0:asc=0:level=0"
+    )
+    return ",".join(parts)

@@ -1,0 +1,339 @@
+{
+  "ffmpeg_version": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+  "adynamic_eq_supported": true,
+  "test1_kpop_regression": [
+    {
+      "sample": "low_lufs",
+      "input_lufs": -28.15,
+      "output_lufs": -12.29,
+      "true_peak": -2.74,
+      "rms_db": -16.4,
+      "crest": 13.36,
+      "lra": 0.1,
+      "short_term_var": 0.06,
+      "ebur128_st_spread": 0.05,
+      "clipping_samples": 0,
+      "pumping_risk": false,
+      "qc_overall": "danger",
+      "target_reached": false,
+      "entry_gain_db": 18.15,
+      "correction_applied": true,
+      "elapsed_s": 12.31,
+      "warnings": [
+        "원본이 매우 작습니다 (-28.1 LUFS). 목표 -10.0 LUFS 도달 시 dynamics 손상 가능.",
+        "목표 LUFS 도달 한계: 목표 -10.0 / 결과 -12.3 (차이 +2.3 LU, 보정 2회 시도)"
+      ]
+    },
+    {
+      "sample": "wide_dynamic",
+      "input_lufs": -12.59,
+      "output_lufs": -13.94,
+      "true_peak": -1.45,
+      "rms_db": -17.67,
+      "crest": 14.42,
+      "lra": 12.0,
+      "short_term_var": 12.06,
+      "ebur128_st_spread": 12.04,
+      "clipping_samples": 0,
+      "pumping_risk": true,
+      "qc_overall": "danger",
+      "target_reached": false,
+      "entry_gain_db": 2.59,
+      "correction_applied": true,
+      "elapsed_s": 14.14,
+      "warnings": [
+        "목표 LUFS 도달 한계: 목표 -10.0 / 결과 -13.9 (차이 +3.9 LU, 보정 2회 시도)"
+      ]
+    },
+    {
+      "sample": "bass_heavy",
+      "input_lufs": -10.99,
+      "output_lufs": -12.11,
+      "true_peak": -4.0,
+      "rms_db": -13.36,
+      "crest": 9.25,
+      "lra": 0.0,
+      "short_term_var": 0.0,
+      "ebur128_st_spread": 0.0,
+      "clipping_samples": 0,
+      "pumping_risk": false,
+      "qc_overall": "danger",
+      "target_reached": false,
+      "entry_gain_db": 0.99,
+      "correction_applied": true,
+      "elapsed_s": 12.2,
+      "warnings": [
+        "목표 LUFS 도달 한계: 목표 -10.0 / 결과 -12.1 (차이 +2.1 LU, 보정 2회 시도)"
+      ]
+    },
+    {
+      "sample": "sibilant",
+      "input_lufs": -14.74,
+      "output_lufs": -13.53,
+      "true_peak": -1.96,
+      "rms_db": -19.13,
+      "crest": 14.09,
+      "lra": 1.0,
+      "short_term_var": 2.44,
+      "ebur128_st_spread": 1.07,
+      "clipping_samples": 0,
+      "pumping_risk": false,
+      "qc_overall": "danger",
+      "target_reached": false,
+      "entry_gain_db": 4.74,
+      "correction_applied": true,
+      "elapsed_s": 14.04,
+      "warnings": [
+        "목표 LUFS 도달 한계: 목표 -10.0 / 결과 -13.5 (차이 +3.5 LU, 보정 2회 시도)"
+      ]
+    },
+    {
+      "sample": "already_loud",
+      "input_lufs": -2.05,
+      "output_lufs": -10.01,
+      "true_peak": -1.91,
+      "rms_db": -13.34,
+      "crest": 11.18,
+      "lra": 0.1,
+      "short_term_var": 0.04,
+      "ebur128_st_spread": 0.03,
+      "clipping_samples": 0,
+      "pumping_risk": false,
+      "qc_overall": "danger",
+      "target_reached": true,
+      "entry_gain_db": -7.95,
+      "correction_applied": true,
+      "elapsed_s": 10.6,
+      "warnings": []
+    }
+  ],
+  "test2_v31_vs_v32": [
+    {
+      "sample": "wide_dynamic",
+      "v31_lufs": -10.09,
+      "v32_lufs": -13.94,
+      "v31_tp": -0.91,
+      "v32_tp": -1.45,
+      "v31_lra": 7.5,
+      "v32_lra": 12.0,
+      "v31_crest": 10.92,
+      "v32_crest": 14.42,
+      "v31_st_spread": 7.7,
+      "v32_st_spread": 12.04,
+      "delta_st_spread": 4.34
+    },
+    {
+      "sample": "bass_heavy",
+      "v31_lufs": -9.97,
+      "v32_lufs": -12.11,
+      "v31_tp": -1.37,
+      "v32_tp": -4.0,
+      "v31_lra": 0.0,
+      "v32_lra": 0.0,
+      "v31_crest": 9.19,
+      "v32_crest": 9.25,
+      "v31_st_spread": 0.0,
+      "v32_st_spread": 0.0,
+      "delta_st_spread": 0.0
+    },
+    {
+      "sample": "sibilant",
+      "v31_lufs": -11.31,
+      "v32_lufs": -13.53,
+      "v31_tp": 0.02,
+      "v32_tp": -1.96,
+      "v31_lra": 0.7,
+      "v32_lra": 1.0,
+      "v31_crest": 15.53,
+      "v32_crest": 14.09,
+      "v31_st_spread": 0.73,
+      "v32_st_spread": 1.07,
+      "delta_st_spread": 0.34
+    }
+  ],
+  "test3_entry_gain_clamp": [
+    {
+      "case": "silence → KPOP -10",
+      "entry_gain_db": 24.0,
+      "warnings": [
+        "원본이 매우 작습니다 (-inf LUFS). 목표 -10.0 LUFS 도달 시 dynamics 손상 가능.",
+        "입력이 거의 무음입니다 — loudness match 게인을 추정값으로 적용합니다.",
+        "입력이 너무 작아 +60.0 dB 푸시가 필요합니다. +24 dB 로 제한합니다.",
+        "목표 LUFS 도달 한계: 목표 -10.0 / 결과 -61.8 (차이 +51.8 LU, 보정 2회 시도)"
+      ],
+      "target_reached": false,
+      "expected": "entry_gain_db == 24.0 (clamped) + clamp 경고 발생"
+    },
+    {
+      "case": "already_loud → Natural -14",
+      "entry_gain_db": -11.95,
+      "warnings": [],
+      "target_reached": true,
+      "expected": "entry_gain_db < 0 (down-leveling)"
+    },
+    {
+      "case": "low_lufs → KPOP -10 (normal)",
+      "entry_gain_db": 18.15,
+      "warnings": [
+        "원본이 매우 작습니다 (-28.1 LUFS). 목표 -10.0 LUFS 도달 시 dynamics 손상 가능.",
+        "목표 LUFS 도달 한계: 목표 -10.0 / 결과 -12.3 (차이 +2.3 LU, 보정 2회 시도)"
+      ],
+      "target_reached": false,
+      "expected": "entry_gain_db ~ 16 dB (clamp 없이 통과)"
+    }
+  ],
+  "test4_quality_check": [
+    {
+      "case": "clipped_input",
+      "qc_overall": "danger",
+      "qc_items_total": 5,
+      "warn_or_danger": [
+        {
+          "name": "과압축",
+          "status": "danger",
+          "message": "다이나믹 손실 (crest 5.3 dB, LRA 0.0 LU)"
+        }
+      ],
+      "expected_keywords": [
+        "클리핑"
+      ]
+    },
+    {
+      "case": "wide_dynamic_kpop",
+      "qc_overall": "danger",
+      "qc_items_total": 5,
+      "warn_or_danger": [
+        {
+          "name": "음압 안정성",
+          "status": "danger",
+          "message": "short-term 변동 ±12.1 LU — 출렁임 / 펌핑 의심"
+        },
+        {
+          "name": "Amplitude Drop",
+          "status": "danger",
+          "message": "RMS spread 12.1 dB — 구간별 큰 음량 차이. 출렁임 가능"
+        }
+      ],
+      "expected_keywords": [
+        "음압 안정성",
+        "Amplitude Drop"
+      ]
+    },
+    {
+      "case": "already_loud_kpop",
+      "qc_overall": "danger",
+      "qc_items_total": 5,
+      "warn_or_danger": [
+        {
+          "name": "과압축",
+          "status": "danger",
+          "message": "다이나믹 손실 (LRA 0.1 LU)"
+        }
+      ],
+      "expected_keywords": [
+        "과압축"
+      ]
+    },
+    {
+      "case": "low_lufs_kpop",
+      "qc_overall": "danger",
+      "qc_items_total": 5,
+      "warn_or_danger": [
+        {
+          "name": "과압축",
+          "status": "danger",
+          "message": "다이나믹 손실 (LRA 0.1 LU)"
+        }
+      ],
+      "expected_keywords": []
+    }
+  ],
+  "test5_dynamic_eq": [
+    {
+      "path": "adynamicequalizer",
+      "success": true,
+      "stages": [
+        "Loudness Match (+10.00 dB)",
+        "EQ",
+        "Dynamic EQ (kpop_loud)",
+        "Compressor",
+        "De-esser",
+        "Saturation",
+        "Stereo Widener",
+        "Soft Clipper",
+        "Limiter (high)"
+      ],
+      "dyn_eq": "kpop_loud",
+      "st_spread": 0.67
+    },
+    {
+      "path": "fallback",
+      "success": true,
+      "stages": [
+        "Loudness Match (+10.00 dB)",
+        "EQ",
+        "Dynamic EQ (kpop_loud)",
+        "Compressor",
+        "De-esser",
+        "Saturation",
+        "Stereo Widener",
+        "Soft Clipper",
+        "Limiter (high)"
+      ],
+      "dyn_eq": "kpop_loud",
+      "st_spread": 0.54
+    }
+  ],
+  "test6_path_safety": [
+    {
+      "case": "ascii",
+      "filename": "track_001.wav",
+      "filename_len": 13,
+      "input_exists": true,
+      "output_exists": true,
+      "preview_exists": true,
+      "target_reached": false,
+      "warnings_count": 2
+    },
+    {
+      "case": "with_space",
+      "filename": "my track.wav",
+      "filename_len": 12,
+      "input_exists": true,
+      "output_exists": true,
+      "preview_exists": true,
+      "target_reached": false,
+      "warnings_count": 2
+    },
+    {
+      "case": "hangul",
+      "filename": "한국어 곡명.wav",
+      "filename_len": 10,
+      "input_exists": true,
+      "output_exists": true,
+      "preview_exists": true,
+      "target_reached": false,
+      "warnings_count": 2
+    },
+    {
+      "case": "special_chars",
+      "filename": "track [v3.2] - test (#1).wav",
+      "filename_len": 28,
+      "input_exists": true,
+      "output_exists": true,
+      "preview_exists": true,
+      "target_reached": false,
+      "warnings_count": 2
+    },
+    {
+      "case": "very_long",
+      "filename": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.wav",
+      "filename_len": 124,
+      "input_exists": true,
+      "output_exists": true,
+      "preview_exists": true,
+      "target_reached": false,
+      "warnings_count": 2
+    }
+  ]
+}

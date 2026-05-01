@@ -55,6 +55,7 @@ from .waveform import (
 from ..analysis.metrics import compute_metrics, build_metric_comparison
 from ..analysis.quality_check import run_quality_check
 from ..analysis.report import build_mastering_report
+from ..analysis.isp_safety import apply_isp_safety
 from ..utils.ffmpeg_wrapper import (
     loudnorm_pass1,
     apply_chain_static,
@@ -190,15 +191,27 @@ def run_mastering(
     # ── 3. Loudness match 계산 ────────────────────────
     # 체인 맨 앞의 정적 volume 노드 게인 = 목표 LUFS - 측정 LUFS.
     # 이 값이 limiter 입력 푸시(level_in) 와 합쳐져 최종 라우드니스를 결정.
-    measured_i_for_gain = float(measurements.get("measured_i", src_lufs))
-    if measured_i_for_gain <= -70:   # 거의 무음 — 의미 없는 값 회피
-        measured_i_for_gain = src_lufs
+    import math as _math
+    raw_measured = measurements.get("measured_i")
+    try:
+        measured_i_for_gain = float(raw_measured) if raw_measured is not None else float(src_lufs)
+    except (TypeError, ValueError):
+        measured_i_for_gain = float(src_lufs)
+    # -inf / NaN / 너무 작은 무음 → -70 으로 cap (그 이상이면 측정 신뢰 부족)
+    if not _math.isfinite(measured_i_for_gain) or measured_i_for_gain <= -70.0:
+        measured_i_for_gain = -70.0
+        warnings.append("입력이 거의 무음입니다 — loudness match 게인을 추정값으로 적용합니다.")
     raw_match_gain = target_lufs - measured_i_for_gain
     # 너무 작은 입력 + 매우 큰 타깃 조합에서 24dB 이상 푸시되는 경우 경고 후 클램프
     if raw_match_gain > 24.0:
         warnings.append(
             f"입력이 너무 작아 +{raw_match_gain:.1f} dB 푸시가 필요합니다. "
             f"+24 dB 로 제한합니다."
+        )
+    if raw_match_gain < -24.0:
+        warnings.append(
+            f"입력이 매우 커서 {raw_match_gain:.1f} dB 다운레벨이 필요합니다. "
+            f"-24 dB 로 제한합니다."
         )
     entry_gain_db = max(-24.0, min(24.0, raw_match_gain))
     logger.info(
@@ -268,18 +281,29 @@ def run_mastering(
     correction_applied = False
     correction_gain    = 0.0
 
-    # ── 6. 정적 보정 pass (목표 미달 시) ──────────────
-    # v3.1 — limiter envelope 없는 정적 보정.
-    if abs(lufs_delta) > LUFS_TOLERANCE or tp_over > TP_GUARD_DB:
+    # ── 6. 정적 보정 pass (목표 미달 시, 최대 2회 반복) ──
+    # v3.2 — limiter envelope 없는 정적 보정.
+    #         첫 패스 후에도 |Δ| > tolerance 이면 한 번 더 (cumulative gain 추적).
+    MAX_CORRECTION_ITERATIONS = 2
+    iteration = 0
+    cumulative_correction_gain = 0.0
+    while (abs(lufs_delta) > LUFS_TOLERANCE or tp_over > TP_GUARD_DB) \
+            and iteration < MAX_CORRECTION_ITERATIONS:
+        iteration += 1
         logger.info(
-            f"Correction needed: lufs_delta={lufs_delta:.2f}, tp_over={tp_over:.2f}"
+            f"Correction iter {iteration}: lufs_delta={lufs_delta:.2f}, tp_over={tp_over:.2f}"
         )
-        progress(85, f"보정 적용 중 ({lufs_delta:+.1f} LU 조정)...")
+        progress(85 + iteration, f"보정 {iteration}회차 ({lufs_delta:+.1f} LU 조정)...")
 
-        # gain 보정 한도: ±3dB. 그 이상은 dynamic 손상 위험.
-        correction_gain = max(-3.0, min(3.0, lufs_delta))
+        # gain 보정 한도: 한 번에 ±5dB. 누적 한도 ±8dB.
+        step_gain = max(-5.0, min(5.0, lufs_delta))
+        if abs(cumulative_correction_gain + step_gain) > 8.0:
+            step_gain = 8.0 * (1 if step_gain > 0 else -1) - cumulative_correction_gain
+        if abs(step_gain) < 0.05:
+            break
+
         correction_chain = get_correction_chain(
-            gain_db=correction_gain,
+            gain_db=step_gain,
             target_true_peak=target_tp,
         )
 
@@ -296,7 +320,9 @@ def run_mastering(
             )
             os.replace(corrected_tmp, output_path)
             correction_applied = True
-            stages.append(f"Static Correction ({correction_gain:+.1f} dB)")
+            cumulative_correction_gain += step_gain
+            stages.append(f"Static Correction #{iteration} ({step_gain:+.1f} dB)")
+            _log_stage(f"correction_pass_{iteration}", True, f"step_gain={step_gain:+.2f}")
 
             # 최종 재분석
             output_analysis = analyze_file(output_path, ffmpeg_path, ffprobe_path)
@@ -304,24 +330,49 @@ def run_mastering(
             final_tp   = float(output_analysis.get("truePeak", -99) or -99)
             lufs_delta = target_lufs - final_lufs
             tp_over    = final_tp - target_tp
-
-            if abs(lufs_delta) > LUFS_TOLERANCE:
-                warnings.append(
-                    f"목표 LUFS 도달 한계: 목표 {target_lufs:.1f} / 결과 {final_lufs:.1f} "
-                    f"(차이 {lufs_delta:+.1f} LU)"
-                )
-            if tp_over > TP_GUARD_DB:
-                warnings.append(
-                    f"True Peak 한계 초과: 한계 {target_tp:.1f} / 결과 {final_tp:.1f} dBTP"
-                )
-            _log_stage("correction_pass", True, f"gain={correction_gain:+.2f}")
         except Exception as exc:
-            logger.warning(f"Correction pass failed: {exc}")
-            warnings.append(f"보정 단계 실패: {exc}")
-            _log_stage("correction_pass", False, str(exc))
+            logger.warning(f"Correction pass {iteration} failed: {exc}")
+            warnings.append(f"보정 단계 {iteration}회차 실패: {exc}")
+            _log_stage(f"correction_pass_{iteration}", False, str(exc))
             if os.path.exists(corrected_tmp):
                 try: os.remove(corrected_tmp)
                 except OSError: pass
+            break
+
+    correction_gain = cumulative_correction_gain
+
+    # ── 6.5 ISP safety post-processor ──────────────────
+    # ffmpeg alimiter 는 oversampling 미지원이라 sample peak 가 ceiling 을 살짝 넘는
+    # 경우가 있다. numpy 로 직접 측정해 정적 down-gain (envelope 없음).
+    isp_correction_db = 0.0
+    try:
+        gain = apply_isp_safety(output_path, ceiling_db=target_tp, headroom_db=0.1)
+        if gain is not None and abs(gain) > 0.01:
+            isp_correction_db = gain
+            stages.append(f"ISP Safety ({gain:+.2f} dB)")
+            _log_stage("isp_safety", True, f"applied={gain:+.3f} dB")
+            # 재분석
+            output_analysis = analyze_file(output_path, ffmpeg_path, ffprobe_path)
+            final_lufs = float(output_analysis.get("lufsIntegrated", -23) or -23)
+            final_tp   = float(output_analysis.get("truePeak", -99) or -99)
+            lufs_delta = target_lufs - final_lufs
+            tp_over    = final_tp - target_tp
+        else:
+            _log_stage("isp_safety", True, "no action needed")
+    except Exception as exc:
+        logger.warning(f"ISP safety failed (무시): {exc}")
+        _log_stage("isp_safety", False, str(exc))
+
+    # 최종 도달 평가 + 경고
+    if abs(lufs_delta) > LUFS_TOLERANCE:
+        warnings.append(
+            f"목표 LUFS 도달 한계: 목표 {target_lufs:.1f} / 결과 {final_lufs:.1f} "
+            f"(차이 {lufs_delta:+.1f} LU, 보정 {iteration}회 시도)"
+        )
+    if tp_over > TP_GUARD_DB:
+        warnings.append(
+            f"True Peak 한계 초과: 한계 {target_tp:.1f} / 결과 {final_tp:.1f} dBTP"
+        )
 
     # ── 7. Limiter reduction estimate (계산) ─────────
     # v3.2: 입력 매치 게인(entry_gain_db) + 리미터 input gain 푸시 합산이
