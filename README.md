@@ -2,6 +2,15 @@
 
 음악 파일을 업로드하면 AI가 자동으로 마스터링하여 스트리밍 플랫폼에 최적화된 음원을 생성합니다.
 
+## ⚠️ 코드 위치 (v3.2 부터)
+
+| 디렉토리 | 상태 | 용도 |
+|---|---|---|
+| `aimaster-desktop/` | **활성** | Electron 앱 + 활성 Python 엔진 (`services/python-audio/`) |
+| `python/`           | **legacy** | v3.1 이하 모듈, **신규 변경 금지**.  자세한 내용 → `python/LEGACY.md` |
+
+신기능 / 버그 수정은 모두 `aimaster-desktop/services/python-audio/` 에서.
+
 ## 주요 기능
 
 | 기능 | 설명 |

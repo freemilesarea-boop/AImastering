@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Python 오디오 처리 엔진 진입점
-Node.js ↔ Python JSON-RPC over stdin/stdout
+Python 오디오 처리 엔진 진입점 — ⚠️ LEGACY (v3.1 이하)
+
+이 모듈은 v3.2 부터 deprecated 입니다.
+신규 활성 엔진: `aimaster-desktop/services/python-audio/app/main.py`
+참조 가이드:    `/python/LEGACY.md`
 
 프로토콜:
   입력 (stdin): {"id": "uuid", "method": "...", "params": {...}}\n
@@ -15,6 +18,16 @@ import os
 import json
 import traceback
 from typing import Dict, Any
+
+# v3.2 — legacy 진입점 사용 시 stderr 로 경고.
+# AIM_SUPPRESS_LEGACY_WARNING=1 로 비활성화 가능.
+if os.environ.get("AIM_SUPPRESS_LEGACY_WARNING") != "1":
+    sys.stderr.write(
+        "[DEPRECATED] python/main.py 는 LEGACY 엔진입니다. "
+        "활성 엔진 (aimaster-desktop/services/python-audio/) 사용을 권장합니다. "
+        "참조: python/LEGACY.md\n"
+    )
+    sys.stderr.flush()
 
 # 패키지 경로 설정
 script_dir = os.path.dirname(os.path.abspath(__file__))
