@@ -1,18 +1,15 @@
 """
-마스터링 리포트 생성기 (v3.1)
+마스터링 리포트 생성기 (v3.2)
 
 run_mastering 의 결과를 UI 가 그대로 표시할 수 있도록
 일관된 스키마로 정리한다.
 
-기존 v3 스키마 + v3.1 추가 필드:
-  · processingChain     : 적용된 처리 단계 목록
-  · dynamicEqMode       : 적용된 dynamic EQ 프리셋
-  · adynamicEqSupported : ffmpeg 빌드의 adynamicequalizer 지원 여부
-  · metricComparison    : 전/후 metrics 비교 row 리스트
-  · qualityCheck        : 품질 체크 결과
-  · useLinearLoudnorm   : 항상 True (v3.1)
+v3.1 → v3.2 추가/변경:
+  · entryGainDb         : 체인 시작부 정적 loudness match 게인 (loudnorm 대체)
+  · loudnormUsed        : 항상 False (v3.2: pass1 측정 전용, pass2 미사용)
+  · useLinearLoudnorm   : 호환성 유지 — loudnormUsed 와 동의어 (false)
 """
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 
 def build_mastering_report(
@@ -37,6 +34,8 @@ def build_mastering_report(
     adynamic_eq_supported: bool,
     metric_comparison: List[Dict[str, Any]],
     quality_check: Dict[str, Any],
+    entry_gain_db: float = 0.0,
+    loudnorm_used: bool = False,
 ) -> Dict[str, Any]:
     lufs_delta = round(target_lufs - after_lufs, 2)
     tp_over    = round(max(0.0, after_tp - target_tp), 2)
@@ -65,6 +64,9 @@ def build_mastering_report(
         "adynamicEqSupported":   bool(adynamic_eq_supported),
         "metricComparison":      list(metric_comparison or []),
         "qualityCheck":          dict(quality_check or {}),
-        # v3.1: linear loudnorm 강제
-        "useLinearLoudnorm":     True,
+        # v3.2 — fully static chain
+        "entryGainDb":           round(float(entry_gain_db), 2),
+        "loudnormUsed":          bool(loudnorm_used),
+        # 호환성: useLinearLoudnorm 는 v3.1 UI 가 사용. v3.2 는 loudnorm 미사용이므로 False.
+        "useLinearLoudnorm":     bool(loudnorm_used),
     }

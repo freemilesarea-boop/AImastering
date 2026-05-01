@@ -189,6 +189,7 @@ def build_master_chain(
     saturation_amount: Optional[float] = None,
     stereo_width: Optional[float] = None,
     output_gain_db: float = 0.0,
+    entry_gain_db: float = 0.0,
     enable_eq: bool = True,
     enable_comp: bool = True,
     enable_dynamic_eq: bool = True,
@@ -197,15 +198,22 @@ def build_master_chain(
     ai_corrections: Optional[Dict[str, bool]] = None,
 ) -> Dict[str, Any]:
     """
-    EQ → Dynamic EQ → comp → deesser → saturation → widener → output gain
-       → soft clipper → limiter
+    Loudness Match → EQ → Dynamic EQ → Compressor → De-esser → Saturation
+                  → Widener → Output Gain → Soft Clipper → Limiter
+
     체인 문자열과 적용된 처리 단계 목록을 함께 반환.
+
+    v3.2 — Fully Static Chain
+      · entry_gain_db: 체인 맨 앞의 정적 loudness match 게인 (volume= 노드).
+        loudnorm pass2 를 대체. 시간 기반 게인 변화 없음.
+      · output_gain_db: 사용자 추가 트림 (선택, 기존 동작 유지).
 
     Returns:
         {
           "chain":        ffmpeg -af 문자열,
           "stages":       사람이 읽는 단계 목록 (UI 표시용),
           "dynamic_eq":   적용된 dynamic EQ 모드 ('disabled' 가능),
+          "entry_gain_db": 실제 적용된 entry gain (clip 후 값),
         }
     """
     # 모드별 기본값
@@ -215,6 +223,14 @@ def build_master_chain(
 
     parts: List[str] = []
     stages: List[str] = []
+
+    # 0. Loudness match (정적 입력 게인) — loudnorm pass2 대체
+    #    매우 작은 입력(-30 LUFS 이하)에서 큰 push 가 필요할 수 있어 ±24dB 까지 허용.
+    #    음수 게인도 가능 (큰 마스터를 작은 타깃으로 다운레벨).
+    eg = max(-24.0, min(24.0, float(entry_gain_db)))
+    if abs(eg) > 0.01:
+        parts.append(f"volume={eg:.2f}dB")
+        stages.append(f"Loudness Match ({eg:+.2f} dB)")
 
     # 1. EQ (정적)
     if enable_eq:
@@ -266,7 +282,7 @@ def build_master_chain(
         parts.append(sw)
         stages.append("Stereo Widener")
 
-    # 6. Output gain (선택, soft clipper 입력 레벨 보정)
+    # 6. Output gain (사용자 추가 트림, 선택)
     if abs(output_gain_db) > 0.01:
         og = max(-12.0, min(12.0, output_gain_db))
         parts.append(f"volume={og:.2f}dB")
@@ -286,11 +302,13 @@ def build_master_chain(
     stages.append(f"Limiter ({limiter_strength})")
 
     chain = ",".join(parts)
-    logger.debug(f"Master chain [{mode}, lim={limiter_strength}, sat={sat}, dyn_eq={dyn_mode_used}]")
+    logger.debug(f"Master chain [{mode}, lim={limiter_strength}, entry={eg:+.2f}dB, "
+                 f"sat={sat}, dyn_eq={dyn_mode_used}]")
     return {
-        "chain":      chain,
-        "stages":     stages,
-        "dynamic_eq": dyn_mode_used,
+        "chain":         chain,
+        "stages":        stages,
+        "dynamic_eq":    dyn_mode_used,
+        "entry_gain_db": eg,
     }
 
 

@@ -181,6 +181,56 @@ def loudnorm_pass2(
     logger.info(f"loudnorm pass2 complete: {output_path}")
 
 
+def apply_chain_static(
+    input_path: str,
+    output_path: str,
+    af_chain: str,
+    output_format: str = 'wav',
+    bit_depth: int = 24,
+    sample_rate: int = 44100,
+    ffmpeg_path: str = 'ffmpeg',
+) -> None:
+    """
+    완전한 정적 마스터 체인 적용 (v3.2).
+
+    loudnorm 을 사용하지 않고 -af 체인만 적용한다.
+    체인 안에서 entry volume(loudness match) → EQ → comp → ... → soft clip
+    → limiter 모두 정적으로 처리되므로 시간 가변 게인이 발생하지 않는다.
+
+    호출 측은 build_master_chain() 의 'chain' 을 그대로 넘기면 된다.
+    """
+    if not af_chain:
+        raise ValueError("af_chain 이 비어 있습니다")
+
+    pcm_codec = {16: 'pcm_s16le', 24: 'pcm_s24le', 32: 'pcm_s32le'}.get(bit_depth, 'pcm_s24le')
+
+    if output_format == 'wav':
+        codec_args = ['-c:a', pcm_codec]
+    elif output_format == 'flac':
+        codec_args = ['-c:a', 'flac']
+    elif output_format == 'mp3':
+        codec_args = ['-c:a', 'libmp3lame', '-b:a', '320k']
+    else:
+        codec_args = ['-c:a', pcm_codec]
+
+    cmd = [
+        ffmpeg_path,
+        '-nostdin',
+        '-y',
+        '-i', input_path,
+        '-af', af_chain,
+        '-ar', str(sample_rate),
+        *codec_args,
+        output_path,
+    ]
+    code, _stdout, stderr = run_command(cmd, timeout=300)
+    if code != 0:
+        raise RuntimeError(
+            f"static chain 적용 실패 (code={code}):\n{stderr[-500:]}"
+        )
+    logger.info(f"static master chain applied: {output_path}")
+
+
 def measure_true_peak(file_path: str, ffmpeg_path: str = 'ffmpeg') -> float:
     """True Peak 측정 (dBTP)"""
     cmd = [

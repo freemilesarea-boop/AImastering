@@ -1,5 +1,5 @@
 """
-마스터링 파이프라인 메인 모듈 (v3.1 — Stabilization update)
+마스터링 파이프라인 메인 모듈 (v3.2 — Fully Static Chain)
 
 출력:
   - Master WAV (유료 라이센스)
@@ -10,22 +10,29 @@
 처리 단계:
   1. Pre-analysis (AI 특화 감지 포함)
   2. AI 자동 보정 플래그 결정
-  3. loudnorm pass1 (라우드니스 측정)
-  4. master chain 구성 (EQ → Dynamic EQ → comp → saturation → widening
+  3. loudnorm pass1 (라우드니스 측정 전용 — pass2 미사용)
+  4. Loudness match gain 계산 (target_lufs - measured_i)
+  5. Master chain 구성 (volume(match) → EQ → Dynamic EQ → comp → ...
                           → soft clip → limiter)
-  5. loudnorm pass2 (★ linear=True 강제) + master chain → Master 출력
-  6. Post-analysis
-  7. 정적 보정 pass (필요 시 — volume + soft clipper, 두 번째 limiter 없음)
-  8. Final analysis + before/after metrics + quality check
-  9. Preview MP3 + waveform 이미지 생성 (실패 fallback 보장)
- 10. Mastering report 작성
+  6. Static chain 적용 (★ loudnorm 사용 안 함) → Master 출력
+  7. Post-analysis
+  8. 정적 보정 pass (필요 시 — volume + soft clipper, limiter 없음)
+  9. Final analysis + before/after metrics + quality check
+ 10. Preview MP3 + waveform 이미지 생성 (실패 fallback 보장)
+ 11. Mastering report 작성
 
-v3.1 핵심 변경
-  · loudnorm linear=True 강제. dynamic mode 가 만들던 음압 출렁임 제거.
-  · correction pass 의 두 번째 limiter 제거 (envelope 충돌 차단).
-  · alimiter asc=0 으로 ASC 적응 동작 비활성화.
-  · compressor / limiter release 시간 정렬 (envelope chasing 방지).
-  · Dynamic EQ, waveform, before/after metrics, quality check 통합.
+v3.2 핵심 변경
+  · loudnorm pass2 완전 제거. loudnorm 은 pass1 측정 전용.
+  · 최종 loudness 는 체인 시작부의 volume= 노드(정적 게인)로 매칭.
+  · 시간 기반 게인 변화 0 — 모든 처리가 정적 transfer / 정적 게인.
+  · short-term LUFS 변동의 외부 변동 요인 제거.
+  · 보정 패스도 그대로 정적 (volume + soft clipper).
+
+v3.1 에서 유지되는 변경
+  · alimiter asc=0 (ASC 적응 동작 비활성)
+  · correction pass 에 limiter envelope 없음
+  · compressor / limiter release 시간 정렬
+  · Dynamic EQ, waveform, before/after metrics, quality check 통합
 """
 import os
 import re
@@ -50,7 +57,7 @@ from ..analysis.quality_check import run_quality_check
 from ..analysis.report import build_mastering_report
 from ..utils.ffmpeg_wrapper import (
     loudnorm_pass1,
-    loudnorm_pass2,
+    apply_chain_static,
     detect_adynamicequalizer_support,
     run_command,
 )
@@ -163,7 +170,8 @@ def run_mastering(
             f"마스터링 후에도 흔적이 남을 수 있습니다."
         )
 
-    # ── 2. loudnorm Pass 1 (측정) ─────────────────────
+    # ── 2. loudnorm Pass 1 (측정 전용) ────────────────
+    # v3.2: loudnorm 은 입력 LUFS 측정용으로만 사용. pass2 는 호출하지 않는다.
     progress(20, "LUFS 측정 중 (Pass 1)...")
     try:
         measurements = loudnorm_pass1(
@@ -177,9 +185,28 @@ def run_mastering(
     except Exception as exc:
         _log_stage("loudnorm_pass1", False, str(exc))
         raise
-    logger.info(f"Pass1: {measurements}")
+    logger.info(f"Pass1 (measurement-only): {measurements}")
 
-    # ── 3. Master chain 구성 ──────────────────────────
+    # ── 3. Loudness match 계산 ────────────────────────
+    # 체인 맨 앞의 정적 volume 노드 게인 = 목표 LUFS - 측정 LUFS.
+    # 이 값이 limiter 입력 푸시(level_in) 와 합쳐져 최종 라우드니스를 결정.
+    measured_i_for_gain = float(measurements.get("measured_i", src_lufs))
+    if measured_i_for_gain <= -70:   # 거의 무음 — 의미 없는 값 회피
+        measured_i_for_gain = src_lufs
+    raw_match_gain = target_lufs - measured_i_for_gain
+    # 너무 작은 입력 + 매우 큰 타깃 조합에서 24dB 이상 푸시되는 경우 경고 후 클램프
+    if raw_match_gain > 24.0:
+        warnings.append(
+            f"입력이 너무 작아 +{raw_match_gain:.1f} dB 푸시가 필요합니다. "
+            f"+24 dB 로 제한합니다."
+        )
+    entry_gain_db = max(-24.0, min(24.0, raw_match_gain))
+    logger.info(
+        f"Loudness match: measured={measured_i_for_gain:.2f} LUFS, "
+        f"target={target_lufs:.2f}, entry_gain={entry_gain_db:+.2f} dB"
+    )
+
+    # ── 4. Master chain 구성 (정적) ──────────────────
     progress(35, "마스터링 체인 구성 중...")
     chain_info = build_master_chain(
         mode=mode,
@@ -188,6 +215,7 @@ def run_mastering(
         saturation_amount=saturation_amount,
         stereo_width=stereo_width,
         output_gain_db=output_gain_db,
+        entry_gain_db=entry_gain_db,
         enable_eq=enable_eq,
         enable_comp=enable_comp,
         enable_dynamic_eq=enable_dynamic_eq,
@@ -198,33 +226,26 @@ def run_mastering(
     chain     = chain_info["chain"]
     stages    = list(chain_info["stages"])
     dyn_mode  = chain_info["dynamic_eq"]
-    _log_stage("build_master_chain", True, f"stages={stages}")
+    _log_stage("build_master_chain", True, f"entry={entry_gain_db:+.2f}dB stages={stages}")
 
-    # ── 4. loudnorm Pass 2 (정규화 + 체인) → Master ────
-    # ★ v3.1: linear=True 강제. dynamic loudnorm 모드는 더 이상 사용하지 않음.
-    progress(50, "라우드니스 정규화 중 (Pass 2)...")
+    # ── 5. Static chain 적용 → Master ────────────────
+    # ★ v3.2: loudnorm 사용 안 함. 완전한 정적 처리.
+    progress(50, "정적 마스터 체인 적용 중...")
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
     try:
-        loudnorm_pass2(
+        apply_chain_static(
             input_path=input_path,
             output_path=output_path,
-            measurements=measurements,
-            target_lufs=target_lufs,
-            target_lra=target_lra,
-            target_tp=target_tp,
+            af_chain=chain,
             output_format=output_fmt,
             bit_depth=bit_depth,
             sample_rate=sample_rate,
             ffmpeg_path=ffmpeg_path,
-            extra_filters=chain,
-            linear=True,                  # ★ 강제
         )
-        # loudnorm 단계도 처리 체인의 일부로 표시
-        stages.append("Loudnorm (linear)")
-        _log_stage("loudnorm_pass2", True, "linear=True")
+        _log_stage("static_chain", True, f"entry_gain={entry_gain_db:+.2f}dB")
     except Exception as exc:
-        _log_stage("loudnorm_pass2", False, str(exc))
+        _log_stage("static_chain", False, str(exc))
         raise
 
     progress(70, "마스터 출력 완료")
@@ -303,9 +324,12 @@ def run_mastering(
                 except OSError: pass
 
     # ── 7. Limiter reduction estimate (계산) ─────────
+    # v3.2: 입력 매치 게인(entry_gain_db) + 리미터 input gain 푸시 합산이
+    #       실제 적용 게인(applied_gain_db) 보다 큰 만큼이 limiter 가 깎은 양.
     applied_gain_db = final_lufs - src_lufs
     pre_push_db = (
-        LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])["input_gain_db"]
+        entry_gain_db
+        + LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])["input_gain_db"]
         + (correction_gain if correction_applied else 0.0)
     )
     limiter_reduction_db = max(0.0, pre_push_db - max(0.0, applied_gain_db))
@@ -423,6 +447,8 @@ def run_mastering(
         adynamic_eq_supported=adyn_supported,
         metric_comparison=metric_comparison,
         quality_check=quality_check,
+        entry_gain_db=entry_gain_db,
+        loudnorm_used=False,
     )
 
     result = {

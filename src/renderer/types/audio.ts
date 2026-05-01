@@ -324,6 +324,9 @@ export interface MasteringReport {
   adynamicEqSupported?:  boolean
   metricComparison?:     MetricComparisonRow[]
   qualityCheck?:         QualityCheckResult
+  // v3.2 — fully static chain
+  entryGainDb?:          number
+  loudnormUsed?:         boolean
 }
 
 // ─────────────────────────────────────────────────────

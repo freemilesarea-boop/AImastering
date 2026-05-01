@@ -415,6 +415,13 @@ function MasteringReportPanel({ report }: { report: MasteringReport }) {
           value={`${report.appliedGainDb >= 0 ? '+' : ''}${report.appliedGainDb.toFixed(1)} dB`}
           hint="원본→출력 라우드니스 변화"
         />
+        {typeof report.entryGainDb === 'number' && (
+          <ReportRow
+            label="Loudness Match"
+            value={`${report.entryGainDb >= 0 ? '+' : ''}${report.entryGainDb.toFixed(2)} dB`}
+            hint="체인 시작부 정적 게인 (loudnorm 대체)"
+          />
+        )}
         <ReportRow
           label="Limiter Reduction"
           value={`~${report.limiterReductionDb.toFixed(1)} dB`}
