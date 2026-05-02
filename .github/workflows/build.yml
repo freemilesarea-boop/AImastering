@@ -7,7 +7,16 @@ on:
       - 'claude/**'
     tags:
       - 'v*'           # v3.2.0-rc, v3.2.0 등 — release 빌드 트리거
-  workflow_dispatch:   # 수동 실행 버튼
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: |
+          GitHub Release 를 만들 tag 이름 (예: v3.2.0-rc).
+          비워두면 release-draft job 은 실행되지 않고 build artifact 만 남음.
+          softprops/action-gh-release 가 tag 가 없으면 자동 생성.
+        required: false
+        type: string
+        default: ''
 
 jobs:
   # ── Linux (AppImage) ─────────────────────────────────────────────────────────
@@ -472,7 +481,14 @@ jobs:
   # 본 release-draft job 이 실패해도 build artifact 자체는 그대로 보존됨
   # (Actions UI 의 "Artifacts" 탭에서 다운로드 가능).
   release-draft:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Trigger paths:
+    #   1. tag push (refs/tags/v*)              → tag_name = github.ref_name
+    #   2. workflow_dispatch + release_tag 입력 → tag_name = inputs.release_tag
+    # workflow_dispatch 인데 release_tag 가 비어 있으면 release 단계는 skip
+    # 되고 build artifact 만 남는다 (build-* job 에서 이미 업로드 완료).
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
     needs: [build-linux, build-mac, build-win]
     runs-on: ubuntu-latest
     permissions:
@@ -507,15 +523,27 @@ jobs:
       # body_path 가 가리키는 RELEASE_DRAFT 파일은 tag 시점의 repo 상태에서
       # 읽힌다.  draft=true / prerelease=true 로 만들어 manual sign-off 전까지
       # publish 되지 않음.
+      - name: Resolve release tag
+        id: resolve_tag
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release (draft + prerelease)
         uses: softprops/action-gh-release@v2
         with:
-          tag_name:               ${{ github.ref_name }}
-          name:                   ${{ github.ref_name }}
+          tag_name:               ${{ steps.resolve_tag.outputs.tag }}
+          name:                   ${{ steps.resolve_tag.outputs.tag }}
           body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.2.0-rc.md
           draft:                  true
           prerelease:             true
           fail_on_unmatched_files: true
+          # workflow_dispatch 트리거 시 tag 가 아직 없으면 softprops 가
+          # 현재 commit (workflow run 의 SHA) 에서 자동으로 tag 를 생성한다.
+          target_commitish:       ${{ github.sha }}
           files: |
             artifacts/linux/*.AppImage
             artifacts/mac/*.zip
