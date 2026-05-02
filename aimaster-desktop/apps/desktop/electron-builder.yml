@@ -63,9 +63,6 @@ win:
     - target: portable
       arch:
         - x64
-  # Windows file metadata (PE VERSIONINFO) 도 numeric `A.B.C.D` 만
-  # 허용한다 - prerelease 가 있으면 일부 환경에서 거부.
-  legalCopyright: "Copyright (c) 2025 Louver"
 
 portable:
   artifactName: "Louver-Mastering-AI-${version}-portable-${arch}.${ext}"
