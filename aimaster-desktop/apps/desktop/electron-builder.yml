@@ -1,6 +1,6 @@
 appId: com.louver.mastering
 productName: Louver Mastering AI
-copyright: Copyright © 2025 루베르
+copyright: "Copyright (c) 2025 Louver"
 
 # Pin electron version explicitly so electron-builder doesn't fall back to
 # inferring from node_modules (which fails when ranges + monorepo hoisting
@@ -28,14 +28,12 @@ extraResources:
       - "**/*"
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
-# zip target only.  DMG is intentionally disabled — the GitHub Actions macOS
+# zip target only.  DMG is intentionally disabled - the GitHub Actions macOS
 # runner has been failing on `hdiutil attach` ("no mountable file systems")
 # during DMG packaging.  zip ships an unsigned .app archive that Mac users
-# can run directly after right-click → Open the first time.
-# DMG will be revisited on a separate branch.
+# can run directly after right-click - Open the first time.
 mac:
   category: public.app-category.music
-  # electron-builder converts icon.png → .icns automatically on macOS
   icon: public/icon.png
   target:
     - target: zip
@@ -45,32 +43,37 @@ mac:
   hardenedRuntime: true
   entitlements: public/entitlements.mac.plist
   entitlementsInherit: public/entitlements.mac.plist
-  # PyInstaller engine binary must be executable — electron-builder signs it
   extraFiles: []
+  # macOS Info.plist 의 CFBundleShortVersionString / CFBundleVersion 은
+  # numeric `X.Y.Z` 형식만 허용한다 (prerelease tag '-rc' 가 들어가면
+  # plutil 검증 실패).  package.json 의 '3.2.0-rc' 와 별도로 numeric
+  # bundle version 을 명시.
+  bundleShortVersion: "3.2.0"
+  bundleVersion:      "3.2.0"
+  artifactName: "Louver-Mastering-AI-${version}-mac-${arch}.${ext}"
 
 # ── Windows ───────────────────────────────────────────────────────────────────
 # Portable target only.  NSIS is intentionally disabled because the GitHub
 # Actions Windows runner cannot package it (pnpm + electron-builder peer-deps
 # produce node_modules\.pnpm\<peers-hash>\... paths that exceed Windows' 260-char
-# MAX_PATH).  NSIS will be revisited on a separate branch; this branch ships
-# the portable .exe so the Windows app is usable now.
+# MAX_PATH).  This branch ships the portable .exe so the Windows app is usable now.
 win:
   icon: public/icon.ico
   target:
     - target: portable
       arch:
         - x64
+  # Windows file metadata (PE VERSIONINFO) 도 numeric `A.B.C.D` 만
+  # 허용한다 - prerelease 가 있으면 일부 환경에서 거부.
+  legalCopyright: "Copyright (c) 2025 Louver"
 
 portable:
   artifactName: "Louver-Mastering-AI-${version}-portable-${arch}.${ext}"
 
-# ── Filename templates (all targets) ──────────────────────────────────────────
-# Embed version + arch so multi-platform release artifacts don't collide.
-artifactName: "Louver-Mastering-AI-${version}-${os}-${arch}.${ext}"
-
-# ── Linux (optional AppImage) ─────────────────────────────────────────────────
+# ── Linux (AppImage) ──────────────────────────────────────────────────────────
 linux:
   category: Audio
   icon: public/icon.png
   target:
     - AppImage
+  artifactName: "Louver-Mastering-AI-${version}-linux-${arch}.${ext}"

@@ -18,6 +18,17 @@ on:
         type: string
         default: ''
 
+# 기본 권한은 read-only.  release-draft job 에서만 contents: write 로 override.
+permissions:
+  contents: read
+  actions:  read
+
+# 같은 ref 에 빠른 연속 push 시 진행중인 run 취소.  release tag 빌드는
+# 절대 취소하지 않음 (cancel-in-progress: false 적용을 위해 ref 분기).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   # ── Linux (AppImage) ─────────────────────────────────────────────────────────
   # No codesign required.  ffmpeg-static 7.0.2 binary is bundled — verifies
