@@ -25,6 +25,7 @@ from app.utils.logger import log
 
 # ── adynamicequalizer 가용성 검사 (1회 cached) ──────────────────────────────
 _ADYN_EQ_AVAILABLE: bool | None = None
+_ADYN_EQ_MODE_ENUM: dict[str, str] | None = None
 
 
 def has_adynamic_equalizer() -> bool:
@@ -44,6 +45,32 @@ def has_adynamic_equalizer() -> bool:
         _ADYN_EQ_AVAILABLE = False
     log("INFO", f"adynamicequalizer available: {_ADYN_EQ_AVAILABLE}")
     return _ADYN_EQ_AVAILABLE
+
+
+def _resolve_adyn_eq_mode_enum() -> dict[str, str]:
+    """
+    `adynamicequalizer` 의 mode enum 은 ffmpeg 6.x 와 7.x 에서 다르다.
+      · 6.x : `cut` / `boost`
+      · 7.x : `cutbelow` / `cutabove` / `boostbelow` / `boostabove`
+    `ffmpeg -h filter=adynamicequalizer` 출력을 1회 파싱해 호환되는
+    이름을 캐시한다.  enum 검출 실패 시 7.x 기본값을 가정.
+    """
+    global _ADYN_EQ_MODE_ENUM
+    if _ADYN_EQ_MODE_ENUM is not None:
+        return _ADYN_EQ_MODE_ENUM
+    try:
+        proc = subprocess.run(
+            [_FFMPEG_BIN, "-hide_banner", "-h", "filter=adynamicequalizer"],
+            capture_output=True, text=True, timeout=10,
+        )
+        text = (proc.stdout or "") + (proc.stderr or "")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        text = ""
+    cut_name   = "cutbelow"   if "cutbelow"   in text else "cut"
+    boost_name = "boostbelow" if "boostbelow" in text else "boost"
+    _ADYN_EQ_MODE_ENUM = {"cut": cut_name, "boost": boost_name}
+    log("INFO", f"adynamicequalizer mode enum: {_ADYN_EQ_MODE_ENUM}")
+    return _ADYN_EQ_MODE_ENUM
 
 
 # ── 모드별 밴드 프리셋 ─────────────────────────────────────────────────────
@@ -106,7 +133,7 @@ def _adynamic_band(band: dict[str, Any], reduction: float) -> str | None:
     pct = (10.0 ** (threshold_db / 20.0)) * 100.0
     threshold_pct = max(0.1, min(99.9, pct))
 
-    mode_str = "cut" if band["mode"] == "cut" else "boost"
+    mode_str = _resolve_adyn_eq_mode_enum()["cut" if band["mode"] == "cut" else "boost"]
     ratio = max(1.0, min(8.0, 1.0 + reduction / 2.0))
     rng   = max(2.0, min(24.0, reduction * 1.5))
     return (
