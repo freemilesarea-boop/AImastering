@@ -3,12 +3,100 @@ name: Build Louver Mastering AI
 on:
   push:
     branches:
-      - claude/fix-electron-black-screen-uh3ll
-      - claude/fix-bugs-5ewYC
       - main
+      - 'claude/**'
+    tags:
+      - 'v*'           # v3.2.0-rc, v3.2.0 등 — release 빌드 트리거
   workflow_dispatch:   # 수동 실행 버튼
 
 jobs:
+  # ── Linux (AppImage) ─────────────────────────────────────────────────────────
+  # No codesign required.  ffmpeg-static 7.0.2 binary is bundled — verifies
+  # the active engine works against the same ffmpeg version that the macOS /
+  # Windows runners use, preventing version-skew regressions like the
+  # adynamicequalizer mode enum issue (R2).
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install Python dependencies + PyInstaller
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          set -e
+          python3 -V
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install "pyinstaller==6.11.1"
+
+      - name: Build Python engine (PyInstaller)
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          set -e
+          mkdir -p ../../apps/desktop/public/bin
+          .venv/bin/pyinstaller \
+            --clean --noconfirm --onefile --name engine \
+            --log-level INFO \
+            --distpath ../../apps/desktop/public/bin \
+            --workpath /tmp/pyinstaller-build \
+            --specpath /tmp/pyinstaller-spec \
+            --hidden-import soundfile --hidden-import numpy \
+            --collect-all soundfile --collect-all numpy \
+            --exclude-module tkinter --exclude-module pytest --exclude-module matplotlib \
+            app/main.py
+          chmod +x ../../apps/desktop/public/bin/engine
+          ls -la ../../apps/desktop/public/bin/
+
+      - name: Install Node dependencies
+        working-directory: aimaster-desktop
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Copy FFmpeg binaries
+        working-directory: aimaster-desktop/apps/desktop
+        run: node scripts/prebuild.cjs
+
+      - name: Typecheck (strict + exactOptionalPropertyTypes)
+        working-directory: aimaster-desktop
+        run: pnpm -s typecheck
+
+      - name: Build Electron app (renderer + main)
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm build
+
+      - name: Package AppImage
+        working-directory: aimaster-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage --x64 --publish never
+
+      - name: List build outputs
+        working-directory: aimaster-desktop/apps/desktop
+        run: ls -lah out/
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: Louver-Mastering-AI-linux
+          path: |
+            aimaster-desktop/apps/desktop/out/*.AppImage
+          if-no-files-found: error
+          retention-days: 30
+
+
   # ── macOS (arm64 + x64 zip) ──────────────────────────────────────────────────
   # DMG is intentionally disabled on this branch — the macOS runner has been
   # failing on `hdiutil attach` during DMG packaging.  zip is reliable.

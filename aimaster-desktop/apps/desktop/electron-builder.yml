@@ -62,7 +62,11 @@ win:
         - x64
 
 portable:
-  artifactName: "Louver Mastering AI Portable ${version}.${ext}"
+  artifactName: "Louver-Mastering-AI-${version}-portable-${arch}.${ext}"
+
+# ── Filename templates (all targets) ──────────────────────────────────────────
+# Embed version + arch so multi-platform release artifacts don't collide.
+artifactName: "Louver-Mastering-AI-${version}-${os}-${arch}.${ext}"
 
 # ── Linux (optional AppImage) ─────────────────────────────────────────────────
 linux:
