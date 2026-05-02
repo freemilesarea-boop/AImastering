@@ -296,7 +296,7 @@ function InfoSection() {
       <Row label="버전">
         <span className="font-mono text-xs text-zinc-500">
           {/* Vite injects VITE_APP_VERSION from package.json at build time */}
-          {(import.meta as Record<string, unknown> & { env: Record<string, string> }).env['VITE_APP_VERSION'] ?? '1.0.0'}
+          {import.meta.env.VITE_APP_VERSION ?? '1.0.0'}
         </span>
       </Row>
       <Row label="로그">

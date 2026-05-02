@@ -38,9 +38,10 @@ export function checkFFmpeg(opts: ResolveBinOptions = {}): FFmpegStatus {
   const ffmpegVersion  = runVersion(ffmpegPath);
   const ffprobeVersion = runVersion(ffprobePath);
 
+  const parsedVersion = ffmpegVersion?.match(/version\s+(\S+)/)?.[1];
   return {
     available:        ffmpegVersion !== undefined,
-    version:          ffmpegVersion?.match(/version\s+(\S+)/)?.[1],
+    ...(parsedVersion ? { version: parsedVersion } : {}),
     path:             ffmpegPath,
     ffprobeAvailable: ffprobeVersion !== undefined,
   };

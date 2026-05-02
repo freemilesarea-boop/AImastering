@@ -179,7 +179,7 @@ export function validateKeyFormat(key: string): boolean {
 }
 
 export function getMachineId(): string {
-  return machineIdSync({ original: true });
+  return machineIdSync(true);
 }
 
 // ── LicenseService ────────────────────────────────────────────────────────────
@@ -289,7 +289,7 @@ export class LicenseService {
       trialMax:      TRIAL_MAX,
       key:           stored.key,
       activatedAt:   stored.activatedAt,
-      expiresAt:     stored.expiresAt,
+      ...(stored.expiresAt ? { expiresAt: stored.expiresAt } : {}),
       canSaveMasterWav: stored.tier === 'pro',
       canExportReport:  stored.tier === 'pro',
       canUseAllPresets: stored.tier === 'pro',
@@ -328,7 +328,7 @@ export class LicenseService {
       key:         normalized,
       tier:        result.tier,
       activatedAt,
-      expiresAt:   result.expiresAt,
+      ...(result.expiresAt ? { expiresAt: result.expiresAt } : {}),
       machineId,
       hmac:        signLicense(normalized, result.tier, activatedAt, machineId),
     };
