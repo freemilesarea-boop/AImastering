@@ -16,6 +16,10 @@ import { useAudioStore } from '../stores/audioStore.js';
 import type {
   AnalysisReport as AnalysisReportType,
   MasteringMeta,
+  MasteringResult,
+  MetricComparisonRow,
+  QualityCheckReport,
+  DynamicEqReport,
 } from '@aimaster/shared-types';
 import { LIMITER_STRENGTH_LABELS } from '@aimaster/shared-types';
 
@@ -354,6 +358,246 @@ function MasteringMetaCard({ meta }: { meta: MasteringMeta }) {
   );
 }
 
+// ── v3.2 P2 — Waveform compare card ───────────────────────────────────────────
+
+function WaveformCompareCard({ result }: { result: MasteringResult }) {
+  const [imgError, setImgError] = useState<{ before?: boolean; after?: boolean; compare?: boolean }>({});
+  const compare = result.compareWaveformPath ? toFileUrl(result.compareWaveformPath) : '';
+  const before  = result.beforeWaveformPath  ? toFileUrl(result.beforeWaveformPath)  : '';
+  const after   = result.afterWaveformPath   ? toFileUrl(result.afterWaveformPath)   : '';
+
+  // 이미지가 하나도 없거나 모두 로드 실패 → null (전체 카드 숨김)
+  const anyImage = (compare && !imgError.compare)
+                || (before  && !imgError.before)
+                || (after   && !imgError.after);
+  if (!compare && !before && !after) return null;
+
+  return (
+    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-zinc-600 uppercase tracking-wider">파형 비교</p>
+        <span className="text-[10px] text-zinc-700">
+          {compare && !imgError.compare ? '상: 원본 · 하: 마스터' : '원본 / 마스터'}
+        </span>
+      </div>
+
+      {!anyImage ? (
+        <div className="bg-zinc-950/60 border border-dashed border-zinc-800 rounded-md py-8
+                        text-center text-[11px] text-zinc-600">
+          파형 이미지를 불러올 수 없습니다
+        </div>
+      ) : compare && !imgError.compare ? (
+        <img
+          src={compare}
+          alt="원본/마스터 비교 파형"
+          className="w-full rounded-md bg-zinc-950"
+          onError={() => setImgError((e) => ({ ...e, compare: true }))}
+        />
+      ) : (
+        <div className="space-y-2">
+          {before && !imgError.before && (
+            <div>
+              <p className="text-[10px] text-zinc-700 mb-1">원본</p>
+              <img
+                src={before} alt="원본 파형"
+                className="w-full rounded-md bg-zinc-950"
+                onError={() => setImgError((e) => ({ ...e, before: true }))}
+              />
+            </div>
+          )}
+          {after && !imgError.after && (
+            <div>
+              <p className="text-[10px] text-zinc-500 mb-1">마스터</p>
+              <img
+                src={after} alt="마스터 파형"
+                className="w-full rounded-md bg-zinc-950"
+                onError={() => setImgError((e) => ({ ...e, after: true }))}
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── v3.2 P2 — Metric comparison table ────────────────────────────────────────
+
+type Severity = 'ok' | 'warn' | 'danger';
+
+function severity(s: unknown): Severity {
+  return s === 'ok' || s === 'warn' || s === 'danger' ? s : 'warn';
+}
+
+const STATUS_DOT: Record<Severity, string> = {
+  ok:     'bg-emerald-400',
+  warn:   'bg-amber-400',
+  danger: 'bg-red-400',
+};
+
+const STATUS_TEXT: Record<Severity, string> = {
+  ok:     'text-emerald-400',
+  warn:   'text-amber-400',
+  danger: 'text-red-400',
+};
+
+function fmtCell(v: number | string | null | undefined): string {
+  if (v === null || v === undefined) return '–';
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v)) return '–';
+    return Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1);
+  }
+  return String(v);
+}
+
+function MetricComparisonTable({ rows }: { rows: MetricComparisonRow[] }) {
+  if (!rows.length) return null;
+
+  return (
+    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-zinc-800 flex items-center justify-between">
+        <p className="text-xs text-zinc-600 uppercase tracking-wider">상세 비교</p>
+        <span className="text-[10px] text-zinc-700">{rows.length}개 지표</span>
+      </div>
+      <div className="divide-y divide-zinc-800/60">
+        {rows.map((r) => {
+          const sev = severity(r.status);
+          return (
+            <div key={r.key} className="px-4 py-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[sev]}`} />
+                  <span className="text-xs text-zinc-300 truncate">{r.label}</span>
+                </div>
+                <div className="flex items-center gap-1.5 font-mono text-[11px] shrink-0 whitespace-nowrap">
+                  <span className="text-zinc-600">{fmtCell(r.before)}</span>
+                  <span className="text-zinc-700">→</span>
+                  <span className="text-zinc-200">{fmtCell(r.after)}</span>
+                  {r.unit && <span className="text-zinc-700">{r.unit}</span>}
+                  {r.delta !== null && r.delta !== undefined && Number.isFinite(r.delta) && (
+                    <span className={STATUS_TEXT[sev]}>
+                      ({r.delta >= 0 ? '+' : ''}{r.delta.toFixed(1)})
+                    </span>
+                  )}
+                </div>
+              </div>
+              {r.hint && (
+                <p className="text-[10px] text-zinc-700 mt-1 ml-3.5 leading-snug">{r.hint}</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── v3.2 P2 — Quality check card ─────────────────────────────────────────────
+
+const QC_BG: Record<Severity, string> = {
+  ok:     'bg-emerald-950/20 border-emerald-900/40',
+  warn:   'bg-amber-950/20 border-amber-900/40',
+  danger: 'bg-red-950/20 border-red-900/40',
+};
+
+const QC_BADGE: Record<Severity, string> = {
+  ok:     'bg-emerald-900/40 text-emerald-300',
+  warn:   'bg-amber-900/40 text-amber-300',
+  danger: 'bg-red-900/40 text-red-300',
+};
+
+const QC_LABEL: Record<Severity, string> = {
+  ok:     '통과',
+  warn:   '주의',
+  danger: '재검토',
+};
+
+function QualityCheckCard({ report }: { report: QualityCheckReport }) {
+  if (!report || !report.items?.length) return null;
+  const overall = severity(report.overall);
+
+  return (
+    <div className={`rounded-xl border p-4 space-y-3 ${QC_BG[overall]}`}>
+      <div className="flex items-center justify-between">
+        <span className="text-xs uppercase tracking-wider text-zinc-400">자동 품질 검사</span>
+        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${QC_BADGE[overall]}`}>
+          {QC_LABEL[overall]}
+        </span>
+      </div>
+      <p className="text-[11px] text-zinc-300 leading-snug">{report.summary}</p>
+      <div className="space-y-2 pt-1 border-t border-zinc-800/60">
+        {report.items.map((it, i) => {
+          const sev = severity(it.status);
+          return (
+            <div key={i} className="flex items-start gap-2">
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${STATUS_DOT[sev]}`} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-zinc-300">{it.name}</p>
+                  <span className={`text-[10px] font-mono uppercase ${STATUS_TEXT[sev]}`}>
+                    {sev}
+                  </span>
+                </div>
+                <p className="text-[10px] text-zinc-600 leading-snug">{it.message}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── v3.2 P3 — Dynamic EQ card ────────────────────────────────────────────────
+
+function fmtFreq(hz: number): string {
+  if (!Number.isFinite(hz)) return '–';
+  return hz >= 1000 ? `${(hz / 1000).toFixed(1)} kHz` : `${Math.round(hz)} Hz`;
+}
+
+function DynamicEqCard({ report }: { report: DynamicEqReport }) {
+  if (!report?.bands?.length) return null;
+  const engineLabel = report.engine === 'adynamicequalizer'
+    ? '동적'
+    : report.engine === 'fallback'
+      ? '정적 fallback'
+      : '비활성';
+
+  return (
+    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <p className="text-xs text-zinc-600 uppercase tracking-wider">Dynamic EQ</p>
+          {report.preset && (
+            <span className="text-[9px] text-zinc-700 border border-zinc-800 rounded px-1">
+              {report.preset}
+            </span>
+          )}
+        </div>
+        <span className="text-[10px] text-zinc-700">{engineLabel} · {report.bands.length}밴드</span>
+      </div>
+      <div className="space-y-1.5">
+        {report.bands.map((b, i) => (
+          <div key={`${b.name}-${i}`} className="flex items-center justify-between text-[11px] gap-2">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <span className={`w-1 h-1 rounded-full shrink-0 ${
+                b.mode === 'cut' ? 'bg-amber-500' : 'bg-emerald-500'
+              }`} />
+              <span className="text-zinc-400 truncate">{b.label || b.name}</span>
+            </div>
+            <div className="flex items-center gap-2 font-mono shrink-0 whitespace-nowrap">
+              <span className="text-zinc-700">{fmtFreq(b.freq)}</span>
+              <span className={b.mode === 'cut' ? 'text-amber-400' : 'text-emerald-400'}>
+                {b.mode === 'cut' ? '−' : '+'}{Number.isFinite(b.reduction) ? b.reduction.toFixed(1) : '0'} dB
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Warnings card ────────────────────────────────────────────────────────────
 
 function WarningsCard({
@@ -539,12 +783,39 @@ export default function ResultPage() {
             <MasteringMetaCard meta={masteringResult.analysisReport.mastering} />
           )}
           <BeforeAfterCard />
+
+          {/* v3.2 P2 — 시각적 비교 (전후 파형) */}
+          {masteringResult && (
+              masteringResult.compareWaveformPath
+              || masteringResult.beforeWaveformPath
+              || masteringResult.afterWaveformPath
+            ) && (
+            <WaveformCompareCard result={masteringResult} />
+          )}
+
+          {/* v3.2 P2 — 8 row 상세 비교 */}
+          {masteringResult?.metricComparison?.length ? (
+            <MetricComparisonTable rows={masteringResult.metricComparison} />
+          ) : null}
+
           {masteringResult?.pipelineWarnings?.length ? (
             <WarningsCard warnings={masteringResult.pipelineWarnings} />
           ) : null}
           {previewSrc && <PreviewPlayer src={previewSrc} />}
           <SaveButtons />
-          <QCSummary />
+
+          {/* v3.2 P2 — 새 자동 품질 검사가 있으면 그걸 사용, 없으면 legacy QCSummary */}
+          {masteringResult?.qualityCheck ? (
+            <QualityCheckCard report={masteringResult.qualityCheck} />
+          ) : (
+            <QCSummary />
+          )}
+
+          {/* v3.2 P3 — 적용된 Dynamic EQ 밴드 */}
+          {masteringResult?.dynamicEq && (
+            <DynamicEqCard report={masteringResult.dynamicEq} />
+          )}
+
           {masteringResult?.analysisReport && (
             <AnalysisReportCard report={masteringResult.analysisReport} />
           )}
