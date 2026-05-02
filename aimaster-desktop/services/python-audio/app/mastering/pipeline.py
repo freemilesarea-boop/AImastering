@@ -100,9 +100,9 @@ def _should_use_static_chain(target_lufs: float, style: str) -> bool:
 def _static_entry_gain_db(target_lufs: float, pre_lufs: float) -> tuple[float, str | None]:
     """
     정적 체인의 loudness match 게인 (target_lufs - pre_lufs) + clamp.
+    한도 초과 시 correction pass 가 잡아주므로 push 부족은 자동 보정된다.
     Returns (gain_db, warning_message_or_None).
     """
-    # silence / -inf / NaN 가드
     if pre_lufs is None or pre_lufs != pre_lufs or pre_lufs <= -90.0:
         return 0.0, "입력이 거의 무음입니다 — loudness match 게인을 적용할 수 없습니다."
     desired = target_lufs - pre_lufs
@@ -579,7 +579,10 @@ def run_pipeline(
         lufs_delta = target_lufs - post_lufs   # 양수 = 더 키워야 함
         tp_over    = post_tp - target_tp        # 양수 = TP 초과
         if abs(lufs_delta) > _LUFS_TOLERANCE or tp_over > _TP_GUARD_DB:
-            correction_gain_db = max(-6.0, min(6.0, lufs_delta))
+            # v3.2 R1: ±12 dB 까지 허용 — push 부족 / 과다 양방향 안전.
+            # alimiter level_in=1.0 (보정 단계에서 추가 push 없음) 과 결합되어
+            # 정확한 LUFS 도달을 보장.
+            correction_gain_db = max(-12.0, min(12.0, lufs_delta))
             log("INFO", f"[pipeline] correction pass: gain={correction_gain_db:+.2f} dB, "
                         f"tp_over={tp_over:+.2f} dB")
             progress(job_id, 84, f"보정 패스 적용 중 ({correction_gain_db:+.1f} dB)")
@@ -602,14 +605,15 @@ def run_pipeline(
             )
             os.close(corr_fd)
             try:
-                # output_path 를 다시 ffmpeg 으로 통과시키며 보정
-                #   volume (correction_gain_db) → soft clip → alimiter (TP ceiling)
+                # 보정 패스의 alimiter 는 ceiling 가드 only.
+                # v3.2 R1 fix: input gain (+4 dB high) 을 더하면 -4 dB 보정이
+                # 상쇄되어 LUFS 가 target 에 도달하지 못한다.  이미 1차에서
+                # limiter 가 적용된 신호이므로 보정 단계에는 input gain 불필요.
                 lim_ls = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
-                lim_in_lin  = 10.0 ** (lim_ls["input_gain_db"] / 20.0)
                 lim_out_lin = 10.0 ** (target_tp / 20.0)
                 af = (
                     (corr_chain + "," if corr_chain else "")
-                    + f"alimiter=level_in={lim_in_lin:.4f}:level_out=1:limit={lim_out_lin:.6f}"
+                    + f"alimiter=level_in=1.0:level_out=1:limit={lim_out_lin:.6f}"
                     + f":attack={lim_ls['attack_ms']}:release={lim_ls['release_ms']}:asc=1"
                 )
                 apply_filter_chain(
