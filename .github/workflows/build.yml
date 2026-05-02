@@ -209,34 +209,24 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm build
 
-      - name: Clean previous out/ + dist/ before packaging
+      # IMPORTANT: 절대 dist/ 를 지우지 말 것 — Build Electron app step 이 방금
+      # apps/desktop/dist/{renderer, main, preload} 를 생성했고 electron-builder
+      # 가 이 결과물을 entry 로 사용한다.  out/ (electron-builder 산출물) 만 삭제.
+      - name: Clean previous out/ before packaging
+        working-directory: aimaster-desktop/apps/desktop
+        run: rm -rf out
+
+      - name: Verify Electron build artifacts exist (fail-fast)
         working-directory: aimaster-desktop/apps/desktop
         run: |
-          rm -rf out dist
-
-      # ── Diagnostic dump — prove which config drives the next step ──────────
-      - name: Diagnose electron-builder config (pre-package)
-        continue-on-error: true
-        run: |
-          echo "=== root package.json ==="
-          cat package.json || true
-          echo ""
-          echo "=== aimaster-desktop/package.json ==="
-          cat aimaster-desktop/package.json || true
-          echo ""
-          echo "=== aimaster-desktop/apps/desktop/package.json ==="
-          cat aimaster-desktop/apps/desktop/package.json || true
-          echo ""
-          echo "=== electron-builder.yml ==="
-          cat aimaster-desktop/apps/desktop/electron-builder.yml || true
-          echo ""
-          echo "=== all electron-builder config files (non-vendored) ==="
-          find . -maxdepth 6 -type f \( -iname "electron-builder*" -o -iname "builder*.yml" -o -iname "builder*.yaml" -o -iname "builder*.json" \) \
-            ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null || true
+          ls -la dist || true
+          ls -la dist/main || true
+          test -f dist/main/index.js
+          test -f dist/preload/index.js
+          test -f dist/renderer/index.html
 
       # Try arm64 + x64 in one electron-builder invocation; fall back to
       # two separate single-arch zip builds if that fails.
-      # Use --filter form so config resolution is unambiguous.
       - name: Package macOS .zip (arm64 + x64)
         id: pack_mac
         working-directory: aimaster-desktop
@@ -425,11 +415,20 @@ jobs:
           cd D:\w\aimaster-desktop\apps\desktop
           pnpm build
 
+      # IMPORTANT: dist/ 는 절대 삭제하지 않는다 — Build Electron app 결과물이
+      # electron-builder 의 entry.  out/ (electron-builder 산출물) 만 정리.
       - name: Clean previous out/ before packaging
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
           if (Test-Path "out") { Remove-Item -Recurse -Force "out" }
-          if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
+
+      - name: Verify Electron build artifacts exist (fail-fast)
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          if (Test-Path "dist") { Get-ChildItem -Recurse -Depth 2 dist | Select-Object FullName }
+          if (-Not (Test-Path "dist\main\index.js"))     { Write-Error "missing dist\main\index.js";     exit 1 }
+          if (-Not (Test-Path "dist\preload\index.js"))  { Write-Error "missing dist\preload\index.js";  exit 1 }
+          if (-Not (Test-Path "dist\renderer\index.html")){ Write-Error "missing dist\renderer\index.html"; exit 1 }
 
       # ── Diagnostic dump — prove which config drives the next step ──────────
       - name: Diagnose electron-builder config (pre-package)
