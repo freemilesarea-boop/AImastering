@@ -84,7 +84,11 @@ class WaveformStats:
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
 SILENCE_THRESHOLD_DB: float = -60.0
-DC_WARN_THRESHOLD_DB: float = -80.0
+# DC 오프셋 경고 한계.  -50 dB 이상이면 실제 영향이 있고 그 이하 (특히
+# -60 dB 이하) 는 디지털 잔여 dc 라 사실상 무시해도 무방.
+# 기존 -80 dB 는 거의 모든 파일에서 trigger 되어 사용자가 "겁먹는" 경고를
+# 만들었음 (v3.2.0-rc 사용자 피드백).
+DC_WARN_THRESHOLD_DB: float = -50.0
 LR_WARN_THRESHOLD_DB: float = 3.0
 CLIP_THRESHOLD: float = 0.9999
 

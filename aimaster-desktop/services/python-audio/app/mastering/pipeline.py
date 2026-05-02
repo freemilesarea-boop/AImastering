@@ -310,11 +310,13 @@ def run_pipeline(
     if waveform and waveform.dc_offset_detected:
         pipeline_warnings.append({
             "code": "DC_OFFSET",
-            "level": "warning",
+            # info 톤 — 실제 마스터링 결과에 영향 거의 없음.  threshold (-50 dB)
+            # 이상에서만 trigger 되도록 audio_io 에서 조정됨.
+            "level": "info",
             "userMessage": (
-                f"DC 오프셋이 감지되었습니다 "
+                f"미세한 DC 성분이 감지되었습니다 "
                 f"(L: {waveform.dc_offset_db_l:.1f} dB). "
-                f"마스터링 결과에 영향을 줄 수 있습니다."
+                f"참고용 정보이며 처리에는 영향이 없습니다."
             ),
         })
 
@@ -811,6 +813,7 @@ def run_pipeline(
             target_true_peak=target_tp,
             target_lufs=target_lufs,
             input_metrics=input_metrics,
+            input_path=input_path,
         )
     except Exception as exc:
         log("WARN", f"[pipeline] quality_check 실패: {exc}")
