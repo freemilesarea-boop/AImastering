@@ -3,12 +3,109 @@ name: Build Louver Mastering AI
 on:
   push:
     branches:
-      - claude/fix-electron-black-screen-uh3ll
-      - claude/fix-bugs-5ewYC
       - main
-  workflow_dispatch:   # 수동 실행 버튼
+      - 'claude/**'
+    tags:
+      - 'v*'           # v3.2.0-rc, v3.2.0 등 — release 빌드 트리거
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: |
+          GitHub Release 를 만들 tag 이름 (예: v3.2.0-rc).
+          비워두면 release-draft job 은 실행되지 않고 build artifact 만 남음.
+          softprops/action-gh-release 가 tag 가 없으면 자동 생성.
+        required: false
+        type: string
+        default: ''
 
 jobs:
+  # ── Linux (AppImage) ─────────────────────────────────────────────────────────
+  # No codesign required.  ffmpeg-static 7.0.2 binary is bundled — verifies
+  # the active engine works against the same ffmpeg version that the macOS /
+  # Windows runners use, preventing version-skew regressions like the
+  # adynamicequalizer mode enum issue (R2).
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install Python dependencies + PyInstaller
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          set -e
+          python3 -V
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install "pyinstaller==6.11.1"
+
+      - name: Build Python engine (PyInstaller)
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          set -e
+          mkdir -p ../../apps/desktop/public/bin
+          .venv/bin/pyinstaller \
+            --clean --noconfirm --onefile --name engine \
+            --log-level INFO \
+            --distpath ../../apps/desktop/public/bin \
+            --workpath /tmp/pyinstaller-build \
+            --specpath /tmp/pyinstaller-spec \
+            --hidden-import soundfile --hidden-import numpy \
+            --collect-all soundfile --collect-all numpy \
+            --exclude-module tkinter --exclude-module pytest --exclude-module matplotlib \
+            app/main.py
+          chmod +x ../../apps/desktop/public/bin/engine
+          ls -la ../../apps/desktop/public/bin/
+
+      - name: Install Node dependencies
+        working-directory: aimaster-desktop
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Copy FFmpeg binaries
+        working-directory: aimaster-desktop/apps/desktop
+        run: node scripts/prebuild.cjs
+
+      - name: Typecheck (strict + exactOptionalPropertyTypes)
+        working-directory: aimaster-desktop
+        run: pnpm -s typecheck
+
+      - name: Build Electron app (renderer + main)
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm build
+
+      - name: Package AppImage
+        working-directory: aimaster-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage --x64 --publish never
+
+      - name: List build outputs
+        working-directory: aimaster-desktop/apps/desktop
+        run: ls -lah out/
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: Louver-Mastering-AI-linux
+          path: |
+            aimaster-desktop/apps/desktop/out/*.AppImage
+          if-no-files-found: error
+          retention-days: 30
+
+
   # ── macOS (arm64 + x64 zip) ──────────────────────────────────────────────────
   # DMG is intentionally disabled on this branch — the macOS runner has been
   # failing on `hdiutil attach` during DMG packaging.  zip is reliable.
@@ -377,3 +474,77 @@ jobs:
             aimaster-desktop/apps/desktop/out/*.exe
           if-no-files-found: error
           retention-days: 30
+
+  # ── Release draft + artifact attach ─────────────────────────────────────────
+  # Tag (v*) push 시에만 실행.  3 개 platform job 이 모두 성공해야 트리거.
+  # build-* job 의 actions/upload-artifact 단계는 build job 안에서 끝나므로
+  # 본 release-draft job 이 실패해도 build artifact 자체는 그대로 보존됨
+  # (Actions UI 의 "Artifacts" 탭에서 다운로드 가능).
+  release-draft:
+    # Trigger paths:
+    #   1. tag push (refs/tags/v*)              → tag_name = github.ref_name
+    #   2. workflow_dispatch + release_tag 입력 → tag_name = inputs.release_tag
+    # workflow_dispatch 인데 release_tag 가 비어 있으면 release 단계는 skip
+    # 되고 build artifact 만 남는다 (build-* job 에서 이미 업로드 완료).
+    if: |
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
+    needs: [build-linux, build-mac, build-win]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # softprops/action-gh-release 가 release 생성에 필요
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: Louver-Mastering-AI-linux
+          path: artifacts/linux
+
+      - name: Download macOS zips (arm64 + x64)
+        uses: actions/download-artifact@v4
+        with:
+          name: Louver-Mastering-AI-mac
+          path: artifacts/mac
+
+      - name: Download Windows portable
+        uses: actions/download-artifact@v4
+        with:
+          name: Louver-Mastering-AI-windows-portable
+          path: artifacts/win
+
+      - name: Inspect downloaded artifacts
+        run: |
+          echo "── linux ──"; ls -lah artifacts/linux/ || true
+          echo "── mac ──";   ls -lah artifacts/mac/   || true
+          echo "── win ──";   ls -lah artifacts/win/   || true
+
+      # body_path 가 가리키는 RELEASE_DRAFT 파일은 tag 시점의 repo 상태에서
+      # 읽힌다.  draft=true / prerelease=true 로 만들어 manual sign-off 전까지
+      # publish 되지 않음.
+      - name: Resolve release tag
+        id: resolve_tag
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release (draft + prerelease)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:               ${{ steps.resolve_tag.outputs.tag }}
+          name:                   ${{ steps.resolve_tag.outputs.tag }}
+          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.2.0-rc.md
+          draft:                  true
+          prerelease:             true
+          fail_on_unmatched_files: true
+          # workflow_dispatch 트리거 시 tag 가 아직 없으면 softprops 가
+          # 현재 commit (workflow run 의 SHA) 에서 자동으로 tag 를 생성한다.
+          target_commitish:       ${{ github.sha }}
+          files: |
+            artifacts/linux/*.AppImage
+            artifacts/mac/*.zip
+            artifacts/win/*.exe

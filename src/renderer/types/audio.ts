@@ -133,9 +133,9 @@ export const MASTERING_MODES: ModePreset[] = [
     name: 'KPOP Loud',
     emoji: '🎤',
     description: '체감 볼륨 우선',
-    detail: 'low-end 정리 + mid/high clarity + 강한 limiter.',
-    targetLUFS: -9,
-    targetTP: -0.8,
+    detail: 'low-end 정리 + mid/high clarity + 강한 limiter (v3.1: -10 LUFS / -1 dBTP 안정화).',
+    targetLUFS: -10,
+    targetTP: -1.0,
     limiterStrength: 'high',
   },
   // legacy
@@ -205,10 +205,10 @@ export const MASTERING_PRESETS: MasteringQuickPreset[] = [
     id: 'kpop_loud',
     name: 'KPOP Loud',
     emoji: '🎤',
-    description: '-9 LUFS / -0.8 dBTP',
+    description: '-10 LUFS / -1.0 dBTP',
     mode: 'kpop_loud',
-    targetLUFS: -9,
-    targetTP: -0.8,
+    targetLUFS: -10,
+    targetTP: -1.0,
     limiterStrength: 'high',
   },
   {
@@ -249,12 +249,61 @@ export interface MasteringOptions {
 }
 
 // ─────────────────────────────────────────────────────
-// 마스터링 결과 리포트 (v3)
+// 오디오 metrics (v3.1) — 전/후 비교용
+// ─────────────────────────────────────────────────────
+export type MetricStatus = 'ok' | 'warn' | 'danger'
+
+export interface MetricComparisonRow {
+  key:    string
+  label:  string
+  unit:   string
+  before: number | string | null
+  after:  number | string | null
+  delta:  number | null
+  status: MetricStatus
+  hint:   string
+}
+
+export interface AudioMetrics {
+  lufsIntegrated:   number | null
+  truePeak:         number | null
+  lra:              number | null
+  dynamicRange:     number | null
+  peakDb:           number | null
+  rmsDb:            number | null
+  crestFactor:      number | null
+  shortTermVarLU:   number | null
+  pumpingRisk:      boolean
+  clippingDetected: boolean
+  clippingSamples:  number
+}
+
+// ─────────────────────────────────────────────────────
+// 품질 체크 (v3.1)
+// ─────────────────────────────────────────────────────
+export type QualityStatus = 'ok' | 'warn' | 'danger'
+
+export interface QualityCheckItem {
+  name:    string
+  status:  QualityStatus
+  message: string
+  value:   unknown
+}
+
+export interface QualityCheckResult {
+  overall: QualityStatus
+  summary: string
+  items:   QualityCheckItem[]
+}
+
+// ─────────────────────────────────────────────────────
+// 마스터링 결과 리포트 (v3.1)
 // ─────────────────────────────────────────────────────
 export interface MasteringReport {
   mode:                MasteringMode
   targetLUFS:          number
   targetTruePeak:      number
+  targetLRA?:          number
   limiterStrength:     LimiterStrength
   beforeLUFS:          number
   afterLUFS:           number
@@ -269,10 +318,19 @@ export interface MasteringReport {
   targetReached:       boolean
   warnings:            string[]
   useLinearLoudnorm:   boolean
+  // v3.1
+  processingChain?:      string[]
+  dynamicEqMode?:        string
+  adynamicEqSupported?:  boolean
+  metricComparison?:     MetricComparisonRow[]
+  qualityCheck?:         QualityCheckResult
+  // v3.2 — fully static chain
+  entryGainDb?:          number
+  loudnormUsed?:         boolean
 }
 
 // ─────────────────────────────────────────────────────
-// 마스터링 결과
+// 마스터링 결과 (v3.1)
 // ─────────────────────────────────────────────────────
 export interface MasteringResult {
   success:               boolean
@@ -289,6 +347,17 @@ export interface MasteringResult {
   processingTimeMs:      number
   aiCorrectionsApplied:  string[]
   report?:               MasteringReport
+  // v3.1
+  originalPath?:          string         // A/B 미리듣기용 원본 경로
+  beforeWaveformPath?:    string | null
+  afterWaveformPath?:     string | null
+  compareWaveformPath?:   string | null
+  inputMetrics?:          AudioMetrics
+  outputMetrics?:         AudioMetrics
+  metricComparison?:      MetricComparisonRow[]
+  qualityCheck?:          QualityCheckResult
+  processingChain?:       string[]
+  stageLog?:              Array<{ name: string; ok: boolean; detail: string }>
 }
 
 // ─────────────────────────────────────────────────────

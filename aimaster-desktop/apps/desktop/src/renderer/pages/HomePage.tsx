@@ -754,7 +754,7 @@ export default function HomePage() {
     for (const item of pending) {
       try {
         // Step 1: Analyze
-        updateQueueItem(item.id, { status: 'analyzing', error: undefined });
+        updateQueueItem(item.id, { status: 'analyzing' });
         const analysis = await window.electronAPI!.invoke('audio:analyze', item.filePath) as AudioAnalysisResult;
         updateQueueItem(item.id, { analysis, status: 'mastering', progress: 0 });
 

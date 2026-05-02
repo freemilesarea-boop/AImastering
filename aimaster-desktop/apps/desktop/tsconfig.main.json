@@ -1,11 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "module": "CommonJS",
-    "moduleResolution": "node",
     "outDir": "dist/main",
-    "rootDir": "src",
     "noEmit": true,
+    "composite": false,
     "paths": {
       "@aimaster/audio-engine": ["../../packages/audio-engine/src/index.ts"],
       "@aimaster/audio-engine/*": ["../../packages/audio-engine/src/*"],
@@ -13,11 +11,5 @@
       "@aimaster/shared-types": ["../../packages/shared-types/src/index.ts"]
     }
   },
-  "include": [
-    "src/main",
-    "src/preload",
-    "../../packages/audio-engine/src/**/*",
-    "../../packages/license-core/src/**/*",
-    "../../packages/shared-types/src/**/*"
-  ]
+  "include": ["src/main", "src/preload"]
 }

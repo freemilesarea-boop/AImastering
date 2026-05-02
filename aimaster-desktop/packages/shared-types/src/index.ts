@@ -169,6 +169,18 @@ export interface MasteringMeta {
   limiterReductionDb: number;
   correctionApplied: boolean;
   correctionGainDb: number;
+  /**
+   * v3.2 — Inter-Sample Peak safety post-processor 가 적용한 정적 down-gain (dB).
+   * 0 = 적용 없음. 음수 값 = ceiling 초과 ISP 를 잡기 위해 적용된 게인 감소.
+   */
+  ispCorrectionDb?: number;
+  /**
+   * v3.2 — high-LUFS 모드 (loud, kpop_loud) 에서 dynamic loudnorm 의 envelope
+   * 출렁임을 막기 위해 사용한 정적 체인 (volume= 정적 게인 매칭) 여부.
+   * true 이면 loudnorm pass2 가 사용되지 않고, pre_lufs 측정값 + volume 노드로
+   * 정적 매칭이 적용됨. false 이면 기존 loudnorm 2-pass.
+   */
+  staticChain?: boolean;
   useLinearLoudnorm: boolean;
   targetReached: boolean;
 }
@@ -203,6 +215,55 @@ export interface AnalysisReport {
   loudnessAfter:  { integratedLufs: number; truePeakDbtp: number; lra: number };
 }
 
+/**
+ * v3.2 P2 — before/after metric 비교 row.  UI 가 표 형태로 표시.
+ * status: ok = 안전 / warn = 주의 / danger = 재마스터링 권장
+ */
+export interface MetricComparisonRow {
+  key: string;
+  label: string;
+  unit: string;
+  before: number | string | null;
+  after:  number | string | null;
+  delta:  number | null;
+  status: 'ok' | 'warn' | 'danger';
+  hint:   string;
+}
+
+/** v3.2 P2 — 마스터링 결과 자동 품질 검사 한 항목. */
+export interface QualityCheckItem {
+  name:    string;
+  status:  'ok' | 'warn' | 'danger';
+  message: string;
+  value?:  number | string | Record<string, unknown> | null;
+}
+
+/** v3.2 P2 — 마스터링 결과 자동 품질 검사 리포트. */
+export interface QualityCheckReport {
+  overall: 'ok' | 'warn' | 'danger';
+  summary: string;
+  items:   QualityCheckItem[];
+}
+
+/** v3.2 P3 — 적용된 Dynamic EQ 한 밴드. */
+export interface DynamicEqBand {
+  name:      string;
+  label:     string;
+  freq:      number;
+  q:         number;
+  threshold: number;
+  reduction: number;
+  mode:      'cut' | 'boost';
+  engine:    'adynamicequalizer' | 'fallback';
+}
+
+/** v3.2 P3 — Dynamic EQ 리포트. */
+export interface DynamicEqReport {
+  preset: string | null;
+  engine: 'adynamicequalizer' | 'fallback' | 'none';
+  bands:  DynamicEqBand[];
+}
+
 export interface MasteringResult {
   /** Absolute path to the master WAV. */
   outputPath: string;
@@ -215,6 +276,25 @@ export interface MasteringResult {
   analysisReport: AnalysisReport | null;
   pipelineWarnings: Array<{ code: string; level: string; userMessage: string }>;
   processingTimeSec: number;
+  /**
+   * v3.2 P2 — before/after waveform PNG 절대 경로.
+   * 생성 실패 / generate_waveforms=false 일 때는 누락.
+   */
+  beforeWaveformPath?:  string;
+  afterWaveformPath?:   string;
+  compareWaveformPath?: string;
+  /**
+   * v3.2 P2 — before/after metric 비교 (UI 표 직접 렌더링).
+   */
+  metricComparison?: MetricComparisonRow[];
+  /**
+   * v3.2 P2 — 마스터링 결과 자동 품질 검사 (TP / pumping / clipping / 과압축 / drop).
+   */
+  qualityCheck?: QualityCheckReport;
+  /**
+   * v3.2 P3 — 적용된 Dynamic EQ 리포트.
+   */
+  dynamicEq?: DynamicEqReport;
 }
 
 // ── QC ────────────────────────────────────────────────────────────────────────

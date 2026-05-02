@@ -146,7 +146,9 @@ def loudnorm_pass2(
         f":linear={linear_str}:print_format=summary"
     )
 
-    # 추가 필터 체인 (EQ, 컴프레서 등) 앞에 붙임
+    # 추가 필터 체인 (EQ, 컴프레서, limiter 등) 은 loudnorm 앞 단계에 배치.
+    # v3.1: linear=True 가 강제되므로 loudnorm 은 정적 게인만 적용.
+    #        체인이 ceiling 을 이미 보장한 뒤 loudnorm 이 LUFS 만 맞추는 구조.
     af_chain = loudnorm_filter
     if extra_filters:
         af_chain = f"{extra_filters},{loudnorm_filter}"
@@ -179,6 +181,56 @@ def loudnorm_pass2(
     logger.info(f"loudnorm pass2 complete: {output_path}")
 
 
+def apply_chain_static(
+    input_path: str,
+    output_path: str,
+    af_chain: str,
+    output_format: str = 'wav',
+    bit_depth: int = 24,
+    sample_rate: int = 44100,
+    ffmpeg_path: str = 'ffmpeg',
+) -> None:
+    """
+    완전한 정적 마스터 체인 적용 (v3.2).
+
+    loudnorm 을 사용하지 않고 -af 체인만 적용한다.
+    체인 안에서 entry volume(loudness match) → EQ → comp → ... → soft clip
+    → limiter 모두 정적으로 처리되므로 시간 가변 게인이 발생하지 않는다.
+
+    호출 측은 build_master_chain() 의 'chain' 을 그대로 넘기면 된다.
+    """
+    if not af_chain:
+        raise ValueError("af_chain 이 비어 있습니다")
+
+    pcm_codec = {16: 'pcm_s16le', 24: 'pcm_s24le', 32: 'pcm_s32le'}.get(bit_depth, 'pcm_s24le')
+
+    if output_format == 'wav':
+        codec_args = ['-c:a', pcm_codec]
+    elif output_format == 'flac':
+        codec_args = ['-c:a', 'flac']
+    elif output_format == 'mp3':
+        codec_args = ['-c:a', 'libmp3lame', '-b:a', '320k']
+    else:
+        codec_args = ['-c:a', pcm_codec]
+
+    cmd = [
+        ffmpeg_path,
+        '-nostdin',
+        '-y',
+        '-i', input_path,
+        '-af', af_chain,
+        '-ar', str(sample_rate),
+        *codec_args,
+        output_path,
+    ]
+    code, _stdout, stderr = run_command(cmd, timeout=300)
+    if code != 0:
+        raise RuntimeError(
+            f"static chain 적용 실패 (code={code}):\n{stderr[-500:]}"
+        )
+    logger.info(f"static master chain applied: {output_path}")
+
+
 def measure_true_peak(file_path: str, ffmpeg_path: str = 'ffmpeg') -> float:
     """True Peak 측정 (dBTP)"""
     cmd = [
@@ -203,6 +255,34 @@ def measure_true_peak(file_path: str, ffmpeg_path: str = 'ffmpeg') -> float:
     # 폴백: loudnorm pass1으로 측정
     measurements = loudnorm_pass1(file_path, ffmpeg_path=ffmpeg_path)
     return measurements['measured_tp']
+
+
+_ADYNAMIC_EQ_CACHE: Optional[bool] = None
+
+
+def detect_adynamicequalizer_support(ffmpeg_path: str = 'ffmpeg') -> bool:
+    """
+    ffmpeg 빌드가 adynamicequalizer 필터를 포함하는지 확인.
+    한 번 감지한 결과를 프로세스 수명 동안 캐싱.
+    실패 시 False (fallback 으로 정적 EQ + compand 조합 사용).
+    """
+    global _ADYNAMIC_EQ_CACHE
+    if _ADYNAMIC_EQ_CACHE is not None:
+        return _ADYNAMIC_EQ_CACHE
+    try:
+        cmd = [ffmpeg_path, '-hide_banner', '-filters']
+        code, stdout, stderr = run_command(cmd, timeout=10)
+        if code != 0:
+            _ADYNAMIC_EQ_CACHE = False
+            return False
+        haystack = (stdout + "\n" + stderr).lower()
+        _ADYNAMIC_EQ_CACHE = 'adynamicequalizer' in haystack
+        logger.info(f"adynamicequalizer 지원: {_ADYNAMIC_EQ_CACHE}")
+        return _ADYNAMIC_EQ_CACHE
+    except Exception as exc:
+        logger.warning(f"adynamicequalizer 감지 실패: {exc}")
+        _ADYNAMIC_EQ_CACHE = False
+        return False
 
 
 def _parse_bit_depth(sample_fmt: str) -> int:

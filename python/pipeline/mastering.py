@@ -1,21 +1,38 @@
 """
-마스터링 파이프라인 메인 모듈 (v3)
+마스터링 파이프라인 메인 모듈 (v3.2 — Fully Static Chain)
 
 출력:
   - Master WAV (유료 라이센스)
   - Preview MP3 320kbps (무료 체험 포함 전체 제공)
-  - 분석 리포트 JSON
+  - Before/After waveform PNG (선택, 실패해도 마스터링은 성공 처리)
+  - 분석 리포트 JSON (전/후 metrics, quality check)
 
 처리 단계:
   1. Pre-analysis (AI 특화 감지 포함)
   2. AI 자동 보정 플래그 결정
-  3. loudnorm pass1 (라우드니스 측정)
-  4. master chain 구성 (EQ → comp → saturation → widening → soft clip → limiter)
-  5. loudnorm pass2 + master chain → Master 출력
-  6. Post-analysis
-  7. 목표 미달 시 보정 pass (gain + soft clip + limiter)
-  8. Final analysis
-  9. Preview MP3 생성
+  3. loudnorm pass1 (라우드니스 측정 전용 — pass2 미사용)
+  4. Loudness match gain 계산 (target_lufs - measured_i)
+  5. Master chain 구성 (volume(match) → EQ → Dynamic EQ → comp → ...
+                          → soft clip → limiter)
+  6. Static chain 적용 (★ loudnorm 사용 안 함) → Master 출력
+  7. Post-analysis
+  8. 정적 보정 pass (필요 시 — volume + soft clipper, limiter 없음)
+  9. Final analysis + before/after metrics + quality check
+ 10. Preview MP3 + waveform 이미지 생성 (실패 fallback 보장)
+ 11. Mastering report 작성
+
+v3.2 핵심 변경
+  · loudnorm pass2 완전 제거. loudnorm 은 pass1 측정 전용.
+  · 최종 loudness 는 체인 시작부의 volume= 노드(정적 게인)로 매칭.
+  · 시간 기반 게인 변화 0 — 모든 처리가 정적 transfer / 정적 게인.
+  · short-term LUFS 변동의 외부 변동 요인 제거.
+  · 보정 패스도 그대로 정적 (volume + soft clipper).
+
+v3.1 에서 유지되는 변경
+  · alimiter asc=0 (ASC 적응 동작 비활성)
+  · correction pass 에 limiter envelope 없음
+  · compressor / limiter release 시간 정렬
+  · Dynamic EQ, waveform, before/after metrics, quality check 통합
 """
 import os
 import re
@@ -30,9 +47,19 @@ from .master_chain import (
     MODE_DEFAULTS,
 )
 from .eq import STYLE_PRESETS
+from .waveform import (
+    generate_waveform_png,
+    generate_waveform_dual_png,
+    WaveformGenerationError,
+)
+from ..analysis.metrics import compute_metrics, build_metric_comparison
+from ..analysis.quality_check import run_quality_check
+from ..analysis.report import build_mastering_report
+from ..analysis.isp_safety import apply_isp_safety
 from ..utils.ffmpeg_wrapper import (
     loudnorm_pass1,
-    loudnorm_pass2,
+    apply_chain_static,
+    detect_adynamicequalizer_support,
     run_command,
 )
 from ..utils.logger import get_logger
@@ -44,9 +71,6 @@ ProgressCallback = Callable[[str, int, str], None]
 # 마스터링 결과 허용 오차
 LUFS_TOLERANCE = 0.5            # ±0.5 LU
 TP_GUARD_DB    = 0.0            # 0.0 = ceiling 정확히 준수, +값은 여유
-
-# Loud 모드용 LUFS 임계값 — 이 이하 (절대값으로 큰) 타깃은 linear=false 모드 사용
-LOUDNESS_LINEAR_THRESHOLD = -12.0
 
 
 def run_mastering(
@@ -69,6 +93,11 @@ def run_mastering(
 
     start_time = time.time()
     warnings: List[str] = []
+    stage_log: List[Dict[str, Any]] = []
+
+    def _log_stage(name: str, ok: bool, detail: str = "") -> None:
+        stage_log.append({"name": name, "ok": ok, "detail": detail})
+        logger.info(f"[stage] {name} | {'OK' if ok else 'FAIL'} | {detail}")
 
     # ── 옵션 파싱 ─────────────────────────────────────
     # 'style' 은 v2 호환 키. v3 에서는 'mode' 사용.
@@ -92,17 +121,33 @@ def run_mastering(
     stereo_width      = options.get("stereoWidth")          # None 이면 모드 기본값
     output_gain_db    = float(options.get("outputGainDb",    0.0))
 
-    enable_eq    = bool(options.get("enableEQ",          True))
-    enable_comp  = bool(options.get("enableCompression", True))
+    enable_eq          = bool(options.get("enableEQ",            True))
+    enable_comp        = bool(options.get("enableCompression",   True))
+    enable_dynamic_eq  = bool(options.get("enableDynamicEQ",     True))
+    dynamic_eq_intensity = float(options.get("dynamicEQIntensity", 1.0))
+    enable_waveform    = bool(options.get("enableWaveform",      True))
     output_fmt   = str(options.get("outputFormat",       "wav"))
     bit_depth    = int(options.get("outputBitDepth",     24))
     sample_rate  = int(options.get("outputSampleRate",   44100))
 
+    # ffmpeg adynamicequalizer 지원 여부 (자동 감지, 실패 시 fallback)
+    try:
+        adyn_supported = detect_adynamicequalizer_support(ffmpeg_path)
+    except Exception as exc:
+        logger.warning(f"adynamicequalizer 감지 실패: {exc}")
+        adyn_supported = False
+
     # ── 1. Pre-analysis ────────────────────────────────
     progress(5, "파일 분석 중...")
-    input_analysis = analyze_file(input_path, ffmpeg_path, ffprobe_path)
-    ai_det = input_analysis.get("aiDetection", {})
+    try:
+        input_analysis = analyze_file(input_path, ffmpeg_path, ffprobe_path)
+        _log_stage("pre_analysis", True,
+                   f"LUFS={input_analysis.get('lufsIntegrated')}, TP={input_analysis.get('truePeak')}")
+    except Exception as exc:
+        _log_stage("pre_analysis", False, str(exc))
+        raise
 
+    ai_det = input_analysis.get("aiDetection", {}) or {}
     ai_corrections = {
         "harsh_highmid": ai_det.get("harshHighmid", False),
         "boomy_low":     ai_det.get("boomyLow",     False),
@@ -113,7 +158,7 @@ def run_mastering(
         progress(10, f"AI 자동 보정: {', '.join(applied_corrections)}")
 
     # 소스 LUFS 가 매우 낮을 경우 강한 모드는 도달 불가능할 수 있음 — 경고 큐
-    src_lufs = float(input_analysis.get("lufsIntegrated", -23))
+    src_lufs = float(input_analysis.get("lufsIntegrated", -23) or -23)
     required_gain = target_lufs - src_lufs
     if required_gain > 14.0 and mode in ("loud", "kpop_loud"):
         warnings.append(
@@ -126,79 +171,140 @@ def run_mastering(
             f"마스터링 후에도 흔적이 남을 수 있습니다."
         )
 
-    # ── 2. loudnorm Pass 1 (측정) ─────────────────────
+    # ── 2. loudnorm Pass 1 (측정 전용) ────────────────
+    # v3.2: loudnorm 은 입력 LUFS 측정용으로만 사용. pass2 는 호출하지 않는다.
     progress(20, "LUFS 측정 중 (Pass 1)...")
-    measurements = loudnorm_pass1(
-        input_path,
-        target_lufs=target_lufs,
-        target_lra=target_lra,
-        target_tp=target_tp,
-        ffmpeg_path=ffmpeg_path,
-    )
-    logger.info(f"Pass1: {measurements}")
+    try:
+        measurements = loudnorm_pass1(
+            input_path,
+            target_lufs=target_lufs,
+            target_lra=target_lra,
+            target_tp=target_tp,
+            ffmpeg_path=ffmpeg_path,
+        )
+        _log_stage("loudnorm_pass1", True, str(measurements))
+    except Exception as exc:
+        _log_stage("loudnorm_pass1", False, str(exc))
+        raise
+    logger.info(f"Pass1 (measurement-only): {measurements}")
 
-    # ── 3. Master chain 구성 ──────────────────────────
+    # ── 3. Loudness match 계산 ────────────────────────
+    # 체인 맨 앞의 정적 volume 노드 게인 = 목표 LUFS - 측정 LUFS.
+    # 이 값이 limiter 입력 푸시(level_in) 와 합쳐져 최종 라우드니스를 결정.
+    import math as _math
+    raw_measured = measurements.get("measured_i")
+    try:
+        measured_i_for_gain = float(raw_measured) if raw_measured is not None else float(src_lufs)
+    except (TypeError, ValueError):
+        measured_i_for_gain = float(src_lufs)
+    # -inf / NaN / 너무 작은 무음 → -70 으로 cap (그 이상이면 측정 신뢰 부족)
+    if not _math.isfinite(measured_i_for_gain) or measured_i_for_gain <= -70.0:
+        measured_i_for_gain = -70.0
+        warnings.append("입력이 거의 무음입니다 — loudness match 게인을 추정값으로 적용합니다.")
+    raw_match_gain = target_lufs - measured_i_for_gain
+    # 너무 작은 입력 + 매우 큰 타깃 조합에서 24dB 이상 푸시되는 경우 경고 후 클램프
+    if raw_match_gain > 24.0:
+        warnings.append(
+            f"입력이 너무 작아 +{raw_match_gain:.1f} dB 푸시가 필요합니다. "
+            f"+24 dB 로 제한합니다."
+        )
+    if raw_match_gain < -24.0:
+        warnings.append(
+            f"입력이 매우 커서 {raw_match_gain:.1f} dB 다운레벨이 필요합니다. "
+            f"-24 dB 로 제한합니다."
+        )
+    entry_gain_db = max(-24.0, min(24.0, raw_match_gain))
+    logger.info(
+        f"Loudness match: measured={measured_i_for_gain:.2f} LUFS, "
+        f"target={target_lufs:.2f}, entry_gain={entry_gain_db:+.2f} dB"
+    )
+
+    # ── 4. Master chain 구성 (정적) ──────────────────
     progress(35, "마스터링 체인 구성 중...")
-    chain = build_master_chain(
+    chain_info = build_master_chain(
         mode=mode,
         target_true_peak=target_tp,
         limiter_strength=limiter_strength,
         saturation_amount=saturation_amount,
         stereo_width=stereo_width,
         output_gain_db=output_gain_db,
+        entry_gain_db=entry_gain_db,
         enable_eq=enable_eq,
         enable_comp=enable_comp,
+        enable_dynamic_eq=enable_dynamic_eq,
+        dynamic_eq_intensity=dynamic_eq_intensity,
+        ffmpeg_supports_adynamic_eq=adyn_supported,
         ai_corrections=ai_corrections,
     )
+    chain     = chain_info["chain"]
+    stages    = list(chain_info["stages"])
+    dyn_mode  = chain_info["dynamic_eq"]
+    _log_stage("build_master_chain", True, f"entry={entry_gain_db:+.2f}dB stages={stages}")
 
-    # ── 4. loudnorm Pass 2 (정규화 + 체인) → Master ────
-    progress(50, "라우드니스 정규화 중 (Pass 2)...")
+    # ── 5. Static chain 적용 → Master ────────────────
+    # ★ v3.2: loudnorm 사용 안 함. 완전한 정적 처리.
+    progress(50, "정적 마스터 체인 적용 중...")
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    # 매우 큰 타깃 LUFS (절대값이 작음, 예: -9, -8) 의 경우 linear 모드는 적절치 않음
-    use_linear = target_lufs <= LOUDNESS_LINEAR_THRESHOLD
+    try:
+        apply_chain_static(
+            input_path=input_path,
+            output_path=output_path,
+            af_chain=chain,
+            output_format=output_fmt,
+            bit_depth=bit_depth,
+            sample_rate=sample_rate,
+            ffmpeg_path=ffmpeg_path,
+        )
+        _log_stage("static_chain", True, f"entry_gain={entry_gain_db:+.2f}dB")
+    except Exception as exc:
+        _log_stage("static_chain", False, str(exc))
+        raise
 
-    loudnorm_pass2(
-        input_path=input_path,
-        output_path=output_path,
-        measurements=measurements,
-        target_lufs=target_lufs,
-        target_lra=target_lra,
-        target_tp=target_tp,
-        output_format=output_fmt,
-        bit_depth=bit_depth,
-        sample_rate=sample_rate,
-        ffmpeg_path=ffmpeg_path,
-        extra_filters=chain,
-        linear=use_linear,
-    )
     progress(70, "마스터 출력 완료")
 
     # ── 5. Post-analysis ──────────────────────────────
     progress(78, "출력 검증 중...")
-    output_analysis = analyze_file(output_path, ffmpeg_path, ffprobe_path)
+    try:
+        output_analysis = analyze_file(output_path, ffmpeg_path, ffprobe_path)
+        _log_stage("post_analysis", True,
+                   f"LUFS={output_analysis.get('lufsIntegrated')}, TP={output_analysis.get('truePeak')}")
+    except Exception as exc:
+        _log_stage("post_analysis", False, str(exc))
+        raise
 
-    final_lufs   = float(output_analysis.get("lufsIntegrated", -23))
-    final_tp     = float(output_analysis.get("truePeak", -99))
+    final_lufs   = float(output_analysis.get("lufsIntegrated", -23) or -23)
+    final_tp     = float(output_analysis.get("truePeak", -99) or -99)
     lufs_delta   = target_lufs - final_lufs
     tp_over      = final_tp - target_tp
 
     correction_applied = False
     correction_gain    = 0.0
 
-    # ── 6. 보정 pass (목표 미달 시) ──────────────────
-    if abs(lufs_delta) > LUFS_TOLERANCE or tp_over > TP_GUARD_DB:
+    # ── 6. 정적 보정 pass (목표 미달 시, 최대 2회 반복) ──
+    # v3.2 — limiter envelope 없는 정적 보정.
+    #         첫 패스 후에도 |Δ| > tolerance 이면 한 번 더 (cumulative gain 추적).
+    MAX_CORRECTION_ITERATIONS = 2
+    iteration = 0
+    cumulative_correction_gain = 0.0
+    while (abs(lufs_delta) > LUFS_TOLERANCE or tp_over > TP_GUARD_DB) \
+            and iteration < MAX_CORRECTION_ITERATIONS:
+        iteration += 1
         logger.info(
-            f"Correction needed: lufs_delta={lufs_delta:.2f}, tp_over={tp_over:.2f}"
+            f"Correction iter {iteration}: lufs_delta={lufs_delta:.2f}, tp_over={tp_over:.2f}"
         )
-        progress(85, f"보정 적용 중 ({lufs_delta:+.1f} LU 조정)...")
+        progress(85 + iteration, f"보정 {iteration}회차 ({lufs_delta:+.1f} LU 조정)...")
 
-        # gain 은 LUFS 차이를 그대로 적용. 단, 너무 큰 차이는 dynamic 손상 위험.
-        correction_gain = max(-6.0, min(6.0, lufs_delta))
+        # gain 보정 한도: 한 번에 ±5dB. 누적 한도 ±8dB.
+        step_gain = max(-5.0, min(5.0, lufs_delta))
+        if abs(cumulative_correction_gain + step_gain) > 8.0:
+            step_gain = 8.0 * (1 if step_gain > 0 else -1) - cumulative_correction_gain
+        if abs(step_gain) < 0.05:
+            break
+
         correction_chain = get_correction_chain(
-            gain_db=correction_gain,
+            gain_db=step_gain,
             target_true_peak=target_tp,
-            limiter_strength=limiter_strength,
         )
 
         corrected_tmp = _correction_tmp_path(output_path, temp_dir)
@@ -214,86 +320,208 @@ def run_mastering(
             )
             os.replace(corrected_tmp, output_path)
             correction_applied = True
+            cumulative_correction_gain += step_gain
+            stages.append(f"Static Correction #{iteration} ({step_gain:+.1f} dB)")
+            _log_stage(f"correction_pass_{iteration}", True, f"step_gain={step_gain:+.2f}")
 
             # 최종 재분석
             output_analysis = analyze_file(output_path, ffmpeg_path, ffprobe_path)
-            final_lufs = float(output_analysis.get("lufsIntegrated", -23))
-            final_tp   = float(output_analysis.get("truePeak", -99))
+            final_lufs = float(output_analysis.get("lufsIntegrated", -23) or -23)
+            final_tp   = float(output_analysis.get("truePeak", -99) or -99)
             lufs_delta = target_lufs - final_lufs
             tp_over    = final_tp - target_tp
-
-            if abs(lufs_delta) > LUFS_TOLERANCE:
-                warnings.append(
-                    f"목표 LUFS 도달 한계: 목표 {target_lufs:.1f} / 결과 {final_lufs:.1f} "
-                    f"(차이 {lufs_delta:+.1f} LU)"
-                )
-            if tp_over > TP_GUARD_DB:
-                warnings.append(
-                    f"True Peak 한계 초과: 한계 {target_tp:.1f} / 결과 {final_tp:.1f} dBTP"
-                )
         except Exception as exc:
-            logger.warning(f"Correction pass failed: {exc}")
-            warnings.append(f"보정 단계 실패: {exc}")
+            logger.warning(f"Correction pass {iteration} failed: {exc}")
+            warnings.append(f"보정 단계 {iteration}회차 실패: {exc}")
+            _log_stage(f"correction_pass_{iteration}", False, str(exc))
             if os.path.exists(corrected_tmp):
                 try: os.remove(corrected_tmp)
                 except OSError: pass
+            break
+
+    correction_gain = cumulative_correction_gain
+
+    # ── 6.5 ISP safety post-processor ──────────────────
+    # ffmpeg alimiter 는 oversampling 미지원이라 sample peak 가 ceiling 을 살짝 넘는
+    # 경우가 있다. numpy 로 직접 측정해 정적 down-gain (envelope 없음).
+    isp_correction_db = 0.0
+    try:
+        gain = apply_isp_safety(output_path, ceiling_db=target_tp, headroom_db=0.1)
+        if gain is not None and abs(gain) > 0.01:
+            isp_correction_db = gain
+            stages.append(f"ISP Safety ({gain:+.2f} dB)")
+            _log_stage("isp_safety", True, f"applied={gain:+.3f} dB")
+            # 재분석
+            output_analysis = analyze_file(output_path, ffmpeg_path, ffprobe_path)
+            final_lufs = float(output_analysis.get("lufsIntegrated", -23) or -23)
+            final_tp   = float(output_analysis.get("truePeak", -99) or -99)
+            lufs_delta = target_lufs - final_lufs
+            tp_over    = final_tp - target_tp
+        else:
+            _log_stage("isp_safety", True, "no action needed")
+    except Exception as exc:
+        logger.warning(f"ISP safety failed (무시): {exc}")
+        _log_stage("isp_safety", False, str(exc))
+
+    # 최종 도달 평가 + 경고
+    if abs(lufs_delta) > LUFS_TOLERANCE:
+        warnings.append(
+            f"목표 LUFS 도달 한계: 목표 {target_lufs:.1f} / 결과 {final_lufs:.1f} "
+            f"(차이 {lufs_delta:+.1f} LU, 보정 {iteration}회 시도)"
+        )
+    if tp_over > TP_GUARD_DB:
+        warnings.append(
+            f"True Peak 한계 초과: 한계 {target_tp:.1f} / 결과 {final_tp:.1f} dBTP"
+        )
 
     # ── 7. Limiter reduction estimate (계산) ─────────
+    # v3.2: 입력 매치 게인(entry_gain_db) + 리미터 input gain 푸시 합산이
+    #       실제 적용 게인(applied_gain_db) 보다 큰 만큼이 limiter 가 깎은 양.
     applied_gain_db = final_lufs - src_lufs
-    # 리미터에 의한 압축 추정 = 입력 푸시 게인 - 실제 LUFS 변화
     pre_push_db = (
-        LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])["input_gain_db"]
+        entry_gain_db
+        + LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])["input_gain_db"]
         + (correction_gain if correction_applied else 0.0)
     )
     limiter_reduction_db = max(0.0, pre_push_db - max(0.0, applied_gain_db))
 
-    # ── 8. Preview MP3 생성 ──────────────────────────
+    # ── 8. Before/After metrics + quality check ──────
+    progress(88, "분석 데이터 계산 중...")
+    try:
+        input_metrics  = compute_metrics(input_path,  input_analysis)
+        output_metrics = compute_metrics(output_path, output_analysis)
+        metric_comparison = build_metric_comparison(input_metrics, output_metrics, target_tp)
+        _log_stage("metrics", True, f"in={input_metrics.get('rms')}/out={output_metrics.get('rms')}")
+    except Exception as exc:
+        logger.warning(f"Metrics computation failed: {exc}")
+        input_metrics = output_metrics = {}
+        metric_comparison = []
+        _log_stage("metrics", False, str(exc))
+
+    try:
+        quality_check = run_quality_check(
+            output_path=output_path,
+            output_analysis=output_analysis,
+            output_metrics=output_metrics,
+            target_true_peak=target_tp,
+            ffmpeg_path=ffmpeg_path,
+        )
+        _log_stage("quality_check", True,
+                   f"overall={quality_check.get('overall')}, items={len(quality_check.get('items', []))}")
+    except Exception as exc:
+        logger.warning(f"Quality check failed: {exc}")
+        quality_check = {
+            "overall": "warning",
+            "summary": f"품질 검사 실패: {exc}",
+            "items":   [],
+        }
+        _log_stage("quality_check", False, str(exc))
+
+    # ── 9. Preview MP3 + waveform 이미지 ─────────────
     preview_path = _make_preview_path(output_path, temp_dir)
     progress(92, "Preview MP3 생성 중...")
     try:
         _export_preview_mp3(output_path, preview_path, ffmpeg_path)
+        _log_stage("preview_mp3", True, preview_path)
     except Exception as exc:
         logger.warning(f"Preview MP3 generation failed: {exc}")
         preview_path = None
+        _log_stage("preview_mp3", False, str(exc))
+
+    # waveform 이미지 (실패해도 마스터링 성공)
+    before_wave_path = None
+    after_wave_path  = None
+    dual_wave_path   = None
+    if enable_waveform:
+        progress(95, "Waveform 이미지 생성 중...")
+        before_wave_path = _wave_path(output_path, temp_dir, "_before")
+        after_wave_path  = _wave_path(output_path, temp_dir, "_after")
+        dual_wave_path   = _wave_path(output_path, temp_dir, "_compare")
+        try:
+            generate_waveform_png(input_path, before_wave_path, color="#9ca3af")
+            _log_stage("waveform_before", True, before_wave_path)
+        except WaveformGenerationError as exc:
+            logger.warning(f"Before waveform 생성 실패 (무시): {exc}")
+            before_wave_path = None
+            _log_stage("waveform_before", False, str(exc))
+
+        try:
+            generate_waveform_png(output_path, after_wave_path, color="#a78bfa")
+            _log_stage("waveform_after", True, after_wave_path)
+        except WaveformGenerationError as exc:
+            logger.warning(f"After waveform 생성 실패 (무시): {exc}")
+            after_wave_path = None
+            _log_stage("waveform_after", False, str(exc))
+
+        if before_wave_path and after_wave_path:
+            try:
+                generate_waveform_dual_png(
+                    input_path=input_path,
+                    output_path_audio=output_path,
+                    image_path=dual_wave_path,
+                )
+                _log_stage("waveform_dual", True, dual_wave_path)
+            except WaveformGenerationError as exc:
+                logger.warning(f"Dual waveform 생성 실패 (무시): {exc}")
+                dual_wave_path = None
+                _log_stage("waveform_dual", False, str(exc))
+        else:
+            dual_wave_path = None
 
     processing_time_ms = int((time.time() - start_time) * 1000)
     progress(100, "완료")
 
-    # ── 9. 결과 빌드 ──────────────────────────────────
+    # ── 10. 결과 빌드 ─────────────────────────────────
     target_reached = (
         abs(target_lufs - final_lufs) <= LUFS_TOLERANCE
         and (final_tp - target_tp) <= TP_GUARD_DB
     )
 
-    report = {
-        "mode":                  mode,
-        "targetLUFS":            target_lufs,
-        "targetTruePeak":        target_tp,
-        "limiterStrength":       limiter_strength,
-        "beforeLUFS":            src_lufs,
-        "afterLUFS":             final_lufs,
-        "beforeTruePeak":        float(input_analysis.get("truePeak", -99)),
-        "afterTruePeak":         final_tp,
-        "appliedGainDb":         round(applied_gain_db, 2),
-        "limiterReductionDb":    round(limiter_reduction_db, 2),
-        "correctionApplied":     correction_applied,
-        "correctionGainDb":      round(correction_gain, 2) if correction_applied else 0.0,
-        "lufsDelta":             round(lufs_delta, 2),
-        "truePeakOverDb":        round(max(0.0, tp_over), 2),
-        "targetReached":         target_reached,
-        "warnings":              warnings,
-        "useLinearLoudnorm":     use_linear,
-    }
+    report = build_mastering_report(
+        mode=mode,
+        target_lufs=target_lufs,
+        target_tp=target_tp,
+        target_lra=target_lra,
+        limiter_strength=limiter_strength,
+        before_lufs=src_lufs,
+        after_lufs=final_lufs,
+        before_tp=float(input_analysis.get("truePeak", -99) or -99),
+        after_tp=final_tp,
+        applied_gain_db=applied_gain_db,
+        limiter_reduction_db=limiter_reduction_db,
+        correction_applied=correction_applied,
+        correction_gain_db=correction_gain,
+        isp_correction_db=isp_correction_db,
+        target_reached=target_reached,
+        warnings=warnings,
+        stages=stages,
+        dynamic_eq_mode=dyn_mode,
+        adynamic_eq_supported=adyn_supported,
+        metric_comparison=metric_comparison,
+        quality_check=quality_check,
+        entry_gain_db=entry_gain_db,
+        loudnorm_used=False,
+    )
 
     result = {
         "success":              True,
         "outputPath":           output_path,
         "previewPath":          preview_path,
+        "originalPath":         input_path,            # UI 비교 플레이어용
+        "beforeWaveformPath":   before_wave_path,
+        "afterWaveformPath":    after_wave_path,
+        "compareWaveformPath":  dual_wave_path,
         "jobId":                job_id,
-        "style":                mode,        # 레거시 호환 (UI 가 'style' 로 읽을 수 있도록)
+        "style":                mode,        # 레거시 호환
         "mode":                 mode,
         "inputAnalysis":        input_analysis,
         "outputAnalysis":       output_analysis,
+        "inputMetrics":         input_metrics,
+        "outputMetrics":        output_metrics,
+        "metricComparison":     metric_comparison,
+        "qualityCheck":         quality_check,
+        "processingChain":      stages,
+        "stageLog":             stage_log,
         "processedAt":          _now_iso(),
         "processingTimeMs":     processing_time_ms,
         "aiCorrectionsApplied": applied_corrections,
@@ -304,7 +532,8 @@ def run_mastering(
         f"Mastering complete: {job_id} | mode={mode} | "
         f"LUFS {src_lufs:.1f}→{final_lufs:.1f} (target {target_lufs:.1f}) | "
         f"TP={final_tp:.1f} (limit {target_tp:.1f}) | "
-        f"correction={correction_applied} | {processing_time_ms}ms"
+        f"correction={correction_applied} | dyn_eq={dyn_mode} | "
+        f"qc={quality_check.get('overall')} | {processing_time_ms}ms"
     )
     return result
 
@@ -319,6 +548,13 @@ def _correction_tmp_path(output_path: str, temp_dir: str) -> str:
     ext  = os.path.splitext(output_path)[1] or ".wav"
     safe_base = re.sub(r"[^A-Za-z0-9가-힣_\-]+", "_", base)
     return os.path.join(temp_dir, f"{safe_base}_correction{ext}")
+
+
+def _wave_path(master_path: str, temp_dir: str, suffix: str) -> str:
+    """waveform PNG 출력 경로 (Windows/macOS 양쪽 안전)"""
+    base = os.path.splitext(os.path.basename(master_path))[0]
+    safe_base = re.sub(r"[^A-Za-z0-9가-힣_\-]+", "_", base)
+    return os.path.join(temp_dir, f"{safe_base}{suffix}.png")
 
 
 def _apply_filter_in_place(

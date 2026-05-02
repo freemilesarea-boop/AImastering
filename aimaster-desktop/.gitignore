@@ -10,6 +10,8 @@ dist/
 # Electron build outputs
 apps/desktop/out/
 apps/desktop/release/
+# prebuild.cjs writes ffmpeg/ffprobe binaries here (~80 MB each)
+apps/desktop/public/bin/
 
 # Python
 __pycache__/

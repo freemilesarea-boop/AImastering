@@ -7,6 +7,10 @@
 import React from 'react'
 import clsx from 'clsx'
 import { LoudnessGauge } from '../components/mastering/LoudnessGauge'
+import { BeforeAfterCompare } from '../components/mastering/BeforeAfterCompare'
+import { MetricComparison } from '../components/mastering/MetricComparison'
+import { QualityCheckReport } from '../components/mastering/QualityCheckReport'
+import { ProcessingChainBadge } from '../components/mastering/ProcessingChainBadge'
 import { Button } from '../components/common/Button'
 import { useAudioEngine } from '../hooks/useAudioEngine'
 import { useAppStore } from '../store/appStore'
@@ -88,7 +92,43 @@ export function ResultPage() {
           <MasteringReportPanel report={masteringResult.report} />
         )}
 
-        {/* ── 전/후 비교 ── */}
+        {/* ── 적용된 처리 체인 (v3.1) ── */}
+        <ProcessingChainBadge
+          stages={
+            masteringResult.processingChain ??
+            masteringResult.report?.processingChain
+          }
+        />
+
+        {/* ── 전/후 waveform + A/B 미리듣기 (v3.1) ── */}
+        <BeforeAfterCompare
+          beforeAudioPath={masteringResult.originalPath ?? null}
+          afterAudioPath={masteringResult.previewPath ?? masteringResult.outputPath}
+          beforeWaveformPath={masteringResult.beforeWaveformPath}
+          afterWaveformPath={masteringResult.afterWaveformPath}
+        />
+
+        {/* ── 분석 값 비교 (v3.1) ── */}
+        {(masteringResult.metricComparison ?? masteringResult.report?.metricComparison) && (
+          <MetricComparison
+            rows={
+              masteringResult.metricComparison ??
+              masteringResult.report?.metricComparison ??
+              []
+            }
+          />
+        )}
+
+        {/* ── 품질 체크 리포트 (v3.1) ── */}
+        <QualityCheckReport
+          result={
+            masteringResult.qualityCheck ??
+            masteringResult.report?.qualityCheck ??
+            null
+          }
+        />
+
+        {/* ── LUFS 게이지 전/후 비교 ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div>
             <p className="text-xs text-gray-600 uppercase tracking-wide font-medium mb-2 px-0.5">원본</p>
@@ -332,7 +372,9 @@ function MasteringReportPanel({ report }: { report: MasteringReport }) {
             <p className="text-xs text-gray-500">
               모드: <span className="text-gray-300 font-medium">{report.mode}</span> ·
               리미터: <span className="text-gray-300 font-medium">{LIMITER_STRENGTH_LABELS[report.limiterStrength]}</span>
-              {report.useLinearLoudnorm ? '' : ' · dynamic loudnorm'}
+              {report.dynamicEqMode && report.dynamicEqMode !== 'disabled' && (
+                <> · Dynamic EQ: <span className="text-gray-300 font-medium">{report.dynamicEqMode}</span></>
+              )}
             </p>
           </div>
         </div>
@@ -373,6 +415,13 @@ function MasteringReportPanel({ report }: { report: MasteringReport }) {
           value={`${report.appliedGainDb >= 0 ? '+' : ''}${report.appliedGainDb.toFixed(1)} dB`}
           hint="원본→출력 라우드니스 변화"
         />
+        {typeof report.entryGainDb === 'number' && (
+          <ReportRow
+            label="Loudness Match"
+            value={`${report.entryGainDb >= 0 ? '+' : ''}${report.entryGainDb.toFixed(2)} dB`}
+            hint="체인 시작부 정적 게인 (loudnorm 대체)"
+          />
+        )}
         <ReportRow
           label="Limiter Reduction"
           value={`~${report.limiterReductionDb.toFixed(1)} dB`}

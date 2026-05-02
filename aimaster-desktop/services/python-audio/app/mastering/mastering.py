@@ -54,6 +54,9 @@ def master_file(
     saturation_amount = params.get("saturation_amount")
     stereo_width      = params.get("stereo_width")
     output_gain_db    = float(params.get("output_gain_db", 0.0))
+    # v3.2 신규
+    dyn_eq_intensity  = float(params.get("dynamic_eq_intensity", 1.0))
+    gen_waveforms     = bool(params.get("generate_waveforms", True))
     # Node analyze 단계가 측정해서 넘겨주는 사전 라우드니스 (선택).
     pre_loudness      = params.get("pre_loudness") or None
 
@@ -76,6 +79,8 @@ def master_file(
             saturation_amount=(float(saturation_amount) if saturation_amount is not None else None),
             stereo_width=(float(stereo_width) if stereo_width is not None else None),
             output_gain_db=output_gain_db,
+            dynamic_eq_intensity=dyn_eq_intensity,
+            generate_waveforms=gen_waveforms,
             pre_loudness=(dict(pre_loudness) if isinstance(pre_loudness, dict) else None),
             job_id=job_id,
             progress=send_progress,

@@ -1,6 +1,7 @@
 export type {
   AudioFileInfo,
   AudioAnalysisResult,
+  LoudnessStats,
   MasteringOptions,
   MasteringResult,
   QCResult,
