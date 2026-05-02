@@ -465,3 +465,58 @@ jobs:
             aimaster-desktop/apps/desktop/out/*.exe
           if-no-files-found: error
           retention-days: 30
+
+  # ── Release draft + artifact attach ─────────────────────────────────────────
+  # Tag (v*) push 시에만 실행.  3 개 platform job 이 모두 성공해야 트리거.
+  # build-* job 의 actions/upload-artifact 단계는 build job 안에서 끝나므로
+  # 본 release-draft job 이 실패해도 build artifact 자체는 그대로 보존됨
+  # (Actions UI 의 "Artifacts" 탭에서 다운로드 가능).
+  release-draft:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-mac, build-win]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # softprops/action-gh-release 가 release 생성에 필요
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: Louver-Mastering-AI-linux
+          path: artifacts/linux
+
+      - name: Download macOS zips (arm64 + x64)
+        uses: actions/download-artifact@v4
+        with:
+          name: Louver-Mastering-AI-mac
+          path: artifacts/mac
+
+      - name: Download Windows portable
+        uses: actions/download-artifact@v4
+        with:
+          name: Louver-Mastering-AI-windows-portable
+          path: artifacts/win
+
+      - name: Inspect downloaded artifacts
+        run: |
+          echo "── linux ──"; ls -lah artifacts/linux/ || true
+          echo "── mac ──";   ls -lah artifacts/mac/   || true
+          echo "── win ──";   ls -lah artifacts/win/   || true
+
+      # body_path 가 가리키는 RELEASE_DRAFT 파일은 tag 시점의 repo 상태에서
+      # 읽힌다.  draft=true / prerelease=true 로 만들어 manual sign-off 전까지
+      # publish 되지 않음.
+      - name: Create GitHub Release (draft + prerelease)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:               ${{ github.ref_name }}
+          name:                   ${{ github.ref_name }}
+          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.2.0-rc.md
+          draft:                  true
+          prerelease:             true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/linux/*.AppImage
+            artifacts/mac/*.zip
+            artifacts/win/*.exe
