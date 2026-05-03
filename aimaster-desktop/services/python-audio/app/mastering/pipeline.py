@@ -292,6 +292,12 @@ def run_pipeline(
     safe_mode_overrides: dict[str, Any] | None = None,
     # Force-enable structured debug recorder (else env AIMASTER_DEBUG decides).
     debug_logging: bool | None = None,
+    # v3.4 — Reference matching: pre-built ffmpeg filter string applying
+    # per-band EQ corrections (from multiband.build_multiband_eq_chain()).
+    # Inserted BEFORE the adaptive EQ so reference-driven shaping happens
+    # before the style preset's own moves.
+    reference_eq_correction: str = "",
+    reference_eq_applied:    list | None = None,
     job_id: str = "job",
     progress: ProgressCallback = _noop_progress,
 ) -> dict[str, Any]:
@@ -477,6 +483,16 @@ def run_pipeline(
         if soft_clip_filter_str:
             applied_corrections.append("Soft clipper (entry-gain → limiter 사이)")
 
+    # v3.4 — prepend reference-derived multi-band EQ correction so it shapes
+    # the input toward the reference BEFORE the style preset's adaptive EQ
+    # adds its own moves on top.  This is the single insertion point for
+    # iterative reference matching.
+    if reference_eq_correction:
+        pre_filter = (f"{reference_eq_correction},{pre_filter}"
+                       if pre_filter else reference_eq_correction)
+        applied_corrections.insert(0,
+            f"Reference 매칭 EQ ({len(reference_eq_applied or [])} 밴드)")
+
     log("INFO", f"[pipeline] pre_filter: {pre_filter or '(none)'}")
     log("INFO", f"[pipeline] limiter strength: {limiter_strength}, "
                 f"target LUFS: {target_lufs}, TP: {target_tp}")
@@ -491,6 +507,8 @@ def run_pipeline(
         appliedCorrections=list(applied_corrections),
         eqMoves=list(eq_moves),
         dynamicEq=dyn_eq_report,
+        referenceEqCorrection=reference_eq_correction,
+        referenceEqApplied=list(reference_eq_applied or []),
         limiterStrength=limiter_strength,
     )
     recorder.stage("stage3_filter_chain_built",
@@ -507,8 +525,10 @@ def run_pipeline(
     progress(job_id, 30, "라우드니스 측정 중 (1/2)")
     log("INFO", "[pipeline] stage5a — loudnorm pass1 (with pre_filter)")
 
-    # Loudnorm 내부 TP 는 후단 brickwall limiter 에 0.5 dB 여유를 남겨둔다
-    loudnorm_tp_internal = target_tp - 0.5
+    # Loudnorm 내부 TP 는 후단 brickwall limiter 에 0.5 dB 여유를 남겨둔다.
+    # Defensively clamp to loudnorm's accepted range [-9.0, 0.0] so an
+    # unusually low caller-supplied target_tp doesn't crash the filter graph.
+    loudnorm_tp_internal = max(-9.0, min(0.0, target_tp - 0.5))
 
     # 매우 큰 LUFS 타깃 (예: -10, -9, -8) 은 linear 로는 도달 불가 → dynamic
     use_linear_loudnorm = target_lufs <= _LOUDNORM_DYNAMIC_THRESHOLD

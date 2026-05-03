@@ -50,7 +50,10 @@ _stdout_bin = _get_stdout_binary()
 _stderr_bin = _get_stderr_binary()
 
 from app.analyzers.analyzer import analyze_file
-from app.mastering.mastering import master_file
+from app.mastering.mastering import master_file, master_with_reference
+from app.mastering.reference_matching import (
+    analyze_reference, compute_target_profile,
+)
 from app.mastering.safe_modes import list_safe_modes
 from app.qc.qc_checker import run_qc
 from app.utils.debug_bundle import export_debug_bundle
@@ -88,6 +91,42 @@ def _handle_master(params: dict, job_id: str) -> dict:
         if not params.get(key):
             raise ValueError(f"params.{key} is required")
     return master_file(params, job_id, _send_progress)
+
+
+def _handle_master_with_reference(params: dict, job_id: str) -> dict:
+    for key in ("input_path", "output_path"):
+        if not params.get(key):
+            raise ValueError(f"params.{key} is required")
+    if not params.get("reference_path") and not params.get("target_profile"):
+        raise ValueError("params.reference_path or params.target_profile is required")
+    return master_with_reference(params, job_id, _send_progress)
+
+
+def _handle_analyze_reference(params: dict, _job_id: str) -> dict:
+    """Analyze a reference track without mastering — used by the UI to
+    preview a reference's profile before kicking off iterative mastering."""
+    file_path = params.get("file_path")
+    if not file_path:
+        raise ValueError("params.file_path is required")
+    profile = analyze_reference(file_path)
+    target  = compute_target_profile(profile)
+    return {
+        "profile": {
+            "path":           profile.path,
+            "durationSec":    profile.durationSec,
+            "integratedLufs": profile.integratedLufs,
+            "truePeakDbtp":   profile.truePeakDbtp,
+            "lra":            profile.lra,
+            "samplePeakDb":   profile.samplePeakDb,
+            "rmsDb":          profile.rmsDb,
+            "crestDb":        profile.crestDb,
+            "bands":          profile.bands,
+            "stereoWidth":    profile.stereoWidth,
+            "lrCorrelation":  profile.lrCorrelation,
+            "available":      profile.available,
+        },
+        "targetProfile": target,
+    }
 
 
 def _handle_qc(params: dict, _job_id: str) -> dict:
@@ -158,11 +197,13 @@ def _handle_export_debug_bundle(params: dict, _job_id: str) -> dict:
 
 
 HANDLERS = {
-    "analyze":             _handle_analyze,
-    "master":              _handle_master,
-    "qc_check":            _handle_qc,
-    "env_info":            _handle_env_info,
-    "export_debug_bundle": _handle_export_debug_bundle,
+    "analyze":               _handle_analyze,
+    "master":                _handle_master,
+    "master_with_reference": _handle_master_with_reference,
+    "analyze_reference":     _handle_analyze_reference,
+    "qc_check":              _handle_qc,
+    "env_info":              _handle_env_info,
+    "export_debug_bundle":   _handle_export_debug_bundle,
 }
 
 

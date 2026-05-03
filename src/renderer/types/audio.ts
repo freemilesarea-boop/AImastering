@@ -377,6 +377,78 @@ export interface MasteringResult {
   gainStaging?:         GainStagingReport
   /** v3.3.1 — vocal-protection 엔진 가드 결과 (항상 활성). */
   vocalProtection?:     VocalProtectionReport
+  /** v3.4 — Ozone-style reference matching */
+  referenceMatch?:      ReferenceMatchReport
+  referenceProfile?:    ReferenceProfile
+  targetProfile?:       TargetProfile
+  appliedBandCorrections?: AppliedBandCorrection[]
+}
+
+// ── v3.4 reference matching types ─────────────────────────────────────
+
+export interface BandEnergies {
+  low:   number
+  mid:   number
+  vocal: number
+  high:  number
+}
+
+export interface ReferenceProfile {
+  path:           string
+  durationSec:    number
+  integratedLufs: number
+  truePeakDbtp:   number
+  lra:            number
+  samplePeakDb:   number
+  rmsDb:          number
+  crestDb:        number
+  bands:          BandEnergies
+  stereoWidth:    number | null
+  lrCorrelation:  number | null
+  available:      boolean
+}
+
+export interface TargetProfile {
+  targetLufs:        number
+  targetTruePeak:    number
+  targetLra:         number
+  targetBands:       BandEnergies
+  targetStereoWidth: number | null
+  targetCrestDb:     number
+  sourceReferencePath: string
+}
+
+export interface AppliedBandCorrection {
+  band:        'low' | 'mid' | 'vocal' | 'high'
+  rangeHz:     [number, number]
+  centreHz:    number
+  q:           number
+  requestedDb: number
+  appliedDb:   number
+}
+
+export interface ReferenceMatchReport {
+  overall: number | null
+  perAxis: {
+    lufs:     number | null
+    lra:      number | null
+    truePeak: number | null
+    bands:    BandEnergies & { [k: string]: number | null }
+    stereoWidth: number | null
+    weakestAxis: string | null
+  }
+  weakestAxis:     string | null
+  iterations:      number
+  maxIterations:   number
+  perIteration: Array<{
+    iteration:    number
+    scoreOverall: number | null
+    outputLufs:   number
+    outputLra:    number
+    elapsedSec:   number
+  }>
+  acceptThreshold: number
+  stoppedReason:   'accept_threshold_met' | 'no_significant_improvement' | 'max_iterations_reached' | 'no_iterations'
 }
 
 export interface VocalProtectionClamp {
