@@ -49,6 +49,12 @@ from app.utils.waveform_image import (
 )
 from app.utils.debug_logger import DebugRecorder
 from app.utils.env_info import is_debug_mode
+from app.utils.vocal_protection import (
+    VocalProtectionReport,
+    clamp_entry_gain_db,
+    clamp_limiter_input_gain_db,
+    classify_vocal_loss,
+)
 from app.mastering.eq import build_eq_filter, build_eq_filter_with_report
 from app.mastering.dynamics import build_dynamics_filter, describe_dynamics, get_comp_params, estimate_comp_gr
 from app.mastering.dynamic_eq import build_dynamic_eq_chain
@@ -153,6 +159,7 @@ def _build_filter_chain(
     output_gain_db: float = 0.0,
     dynamic_eq_intensity: float = 1.0,
     safe_mode_overrides: dict[str, Any] | None = None,
+    protection_log: list[dict] | None = None,
 ) -> tuple[str, list[str], list[dict], dict]:
     """
     Combine Stage-3 EQ → Stage-3.5 Dynamic EQ → Stage-4 dynamics → Stage-4.5
@@ -185,7 +192,9 @@ def _build_filter_chain(
         applied.append(f"{style.capitalize()} 스타일 오버레이 적용")
 
     # Stage 3.5 — Dynamic EQ (모드 프리셋, ffmpeg adynamicequalizer 우선)
-    dyn_eq_report = build_dynamic_eq_chain(style, intensity=dynamic_eq_intensity)
+    dyn_eq_report = build_dynamic_eq_chain(
+        style, intensity=dynamic_eq_intensity, protection_log=protection_log,
+    )
 
     # Vocal Safe Mode: drop bands whose centre frequency lies in the 2-6 kHz
     # vocal range so heavy cuts can't crush vocal presence.
@@ -216,8 +225,10 @@ def _build_filter_chain(
             f"{'동적' if engine == 'adynamicequalizer' else '정적 fallback'})"
         )
 
-    # Stage 4 — Bus compression
-    dyn_chain = build_dynamics_filter(style, input_peak_db)
+    # Stage 4 — Bus compression (vocal-protected)
+    dyn_chain = build_dynamics_filter(
+        style, input_peak_db, protection_log=protection_log,
+    )
     applied.append(describe_dynamics(style))
 
     # Stage 4.5 — effects
@@ -292,6 +303,10 @@ def run_pipeline(
     """
     t_start = time.time()
     pipeline_warnings: list[dict[str, str]] = []
+
+    # ── v3.3.1 — Vocal protection (always-on engine guard).  Records every
+    # clamp the engine had to apply so the UI can render "보컬 보호 모드 적용됨".
+    vocal_protection = VocalProtectionReport()
 
     # ── v3.3 — gain-staging tracker.  Every dB the pipeline adds (compressor
     # makeup, entry gain, limiter input gain, correction gain, ISP gain) is
@@ -449,6 +464,7 @@ def run_pipeline(
         output_gain_db=output_gain_db,
         dynamic_eq_intensity=dynamic_eq_intensity,
         safe_mode_overrides=overrides,
+        protection_log=vocal_protection.appliedClamps,
     )
 
     # v3.3 — Soft clipper is now applied AFTER the loudness-match gain push
@@ -560,6 +576,16 @@ def run_pipeline(
         log("INFO", "[pipeline] stage5/6 (static chain) — single ffmpeg pass")
 
         entry_gain, gain_warning = _static_entry_gain_db(target_lufs, pre_lufs)
+        # Vocal-protection clamp: entry gain cannot exceed +6 dB (engine guard,
+        # always-on regardless of mode).  Excess loudness is recovered by the
+        # post-verify correction pass in a separate stage.
+        if entry_gain > 0:
+            clamped_eg, vp_clamp = clamp_entry_gain_db(entry_gain)
+            if vp_clamp is not None:
+                vocal_protection.record_clamp(**vp_clamp)
+                recorder.event("INFO", "entry gain clamped by vocal protection",
+                               original=vp_clamp["original"], clamped=clamped_eg)
+                entry_gain = clamped_eg
         # Safe-mode tighter clamp on entry gain (low_limit / safe modes)
         if static_entry_gain_max < _STATIC_ENTRY_GAIN_MAX:
             clamped = max(-static_entry_gain_max, min(static_entry_gain_max, entry_gain))
@@ -580,6 +606,14 @@ def run_pipeline(
         lim_strength = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
         # Safe-mode clamp on limiter input gain (low_limit / safe modes)
         lim_input_gain_db = lim_strength["input_gain_db"]
+        # Vocal-protection clamp: limiter level_in ≤ +0.5 dB (peak-safety only)
+        clamped_lin, vp_clamp = clamp_limiter_input_gain_db(lim_input_gain_db)
+        if vp_clamp is not None:
+            vocal_protection.record_clamp(**vp_clamp)
+            recorder.event("INFO", "limiter input gain clamped by vocal protection",
+                           original=vp_clamp["original"], clamped=clamped_lin)
+            lim_input_gain_db = clamped_lin
+        # Safe-mode tighter clamp (low_limit / safe modes)
         if limiter_input_gain_clamp is not None and lim_input_gain_db > limiter_input_gain_clamp:
             recorder.event("INFO", "limiter input gain clamped by safe mode",
                            original=lim_input_gain_db, clamped=limiter_input_gain_clamp)
@@ -672,6 +706,14 @@ def run_pipeline(
 
         lim_strength = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
         lim_input_gain_db = lim_strength["input_gain_db"]
+        # Vocal-protection clamp: limiter level_in ≤ +0.5 dB (peak-safety only)
+        clamped_lin, vp_clamp = clamp_limiter_input_gain_db(lim_input_gain_db)
+        if vp_clamp is not None:
+            vocal_protection.record_clamp(**vp_clamp)
+            recorder.event("INFO", "limiter input gain clamped by vocal protection",
+                           original=vp_clamp["original"], clamped=clamped_lin)
+            lim_input_gain_db = clamped_lin
+        # Safe-mode tighter clamp (low_limit / safe modes)
         if limiter_input_gain_clamp is not None and lim_input_gain_db > limiter_input_gain_clamp:
             recorder.event("INFO", "limiter input gain clamped by safe mode",
                            original=lim_input_gain_db, clamped=limiter_input_gain_clamp)
@@ -1044,6 +1086,29 @@ def run_pipeline(
                     "level": "warning" if gain_staging_report["verdict"] == "warn" else "error",
                     "userMessage": issue,
                 })
+
+        # ── v3.3.1 — Vocal-protection auto-fallback ────────────────────────
+        # The gain-staging report measures input vs output 1.5–5 kHz band RMS
+        # via build_gain_staging_report().  If vocal loss exceeds the warn
+        # threshold, surface that into the vocal_protection report and tell
+        # the user to re-master with Vocal Safe Mode + Low Limiting Mode.
+        vocal_loss_db = (gain_staging_report or {}).get("vocalLossDb")
+        if vocal_loss_db is not None:
+            vocal_protection.vocalLossDb = round(float(vocal_loss_db), 2)
+            severity = classify_vocal_loss(float(vocal_loss_db))
+            vocal_protection.vocalLossSeverity = severity
+            if severity in ("warn", "danger"):
+                vocal_protection.autoFallbackTriggered = True
+                vocal_protection.autoFallbackReason = (
+                    f"보컬 대역(1.5–5 kHz) 이 {vocal_loss_db:+.1f} dB 손실되었습니다. "
+                    f"Vocal Safe Mode + Low Limiting Mode 재마스터링을 권장합니다."
+                )
+                # Add a high-priority recommendation so the UI banner shows it
+                pipeline_warnings.append({
+                    "code":   "VOCAL_LOSS_DETECTED",
+                    "level":  "warning" if severity == "warn" else "error",
+                    "userMessage": vocal_protection.autoFallbackReason,
+                })
     except Exception as exc:
         log("WARN", f"[pipeline] gain_staging report 실패: {exc}")
 
@@ -1055,6 +1120,25 @@ def run_pipeline(
             suspect_segments = segment_report.get("suspectSegments"),
             input_info       = rich_input_info,
         )
+        # Vocal-protection auto-fallback: if the engine detected vocal loss,
+        # promote vocal_safe + low_limit to the top of the recommendation list.
+        if vocal_protection.autoFallbackTriggered:
+            existing = {r["mode"] for r in mode_recs}
+            if "vocal_safe" not in existing:
+                mode_recs.insert(0, {
+                    "mode":     "vocal_safe",
+                    "reason":   vocal_protection.autoFallbackReason,
+                    "severity": "danger" if vocal_protection.vocalLossSeverity == "danger" else "warn",
+                    "evidence": ["vocal_protection.auto_fallback"],
+                })
+            if "low_limit" not in existing:
+                mode_recs.insert(1, {
+                    "mode":     "low_limit",
+                    "reason":   "보컬 손실은 보통 limiter 과다 적용에서 비롯됩니다.",
+                    "severity": "warn",
+                    "evidence": ["vocal_protection.auto_fallback"],
+                })
+
         # Fold gain-staging recommendations into the main rec list so users
         # see "Vocal Safe Mode 추천" when the band-balance check trips.
         gs_recs = (gain_staging_report or {}).get("recommendations") or []
@@ -1228,6 +1312,7 @@ def run_pipeline(
             "windowCount": len(segment_report.get("windows", [])),
         },
         "gainStaging":      gain_staging_report,
+        "vocalProtection":  vocal_protection.to_dict(),
         "modeRecommendations": mode_recs,
         "debugSummary":     recorder.to_summary(),
         "inputFileInfo":    rich_input_info,

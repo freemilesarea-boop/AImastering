@@ -318,6 +318,38 @@ export interface MasteringResult {
    * band 변화를 추적해 "메인 멜로디 눌리고 배경 커진" 문제를 자동 진단.
    */
   gainStaging?: GainStagingReport;
+  /**
+   * v3.3.1 — vocal-protection 엔진 가드 결과.
+   * 항상 활성이며, 모드 무관 보컬 명료도 우선.
+   */
+  vocalProtection?: VocalProtectionReport;
+}
+
+export interface VocalProtectionClamp {
+  where:    string;
+  original: unknown;
+  clamped:  unknown;
+  reason:   string;
+}
+
+export interface VocalProtectionReport {
+  enabled:               boolean;
+  active:                boolean;     // true if any clamp was applied
+  appliedClamps:         VocalProtectionClamp[];
+  vocalLossDb:           number | null;
+  vocalLossSeverity:     'ok' | 'warn' | 'danger';
+  autoFallbackTriggered: boolean;
+  autoFallbackReason:    string;
+  userMessage:           string;
+  config: {
+    vocalBandHz:           [number, number];
+    maxVocalBandCutDb:     number;
+    maxRatio:              number;
+    minAttackMs:           number;
+    maxMakeupDb:           number;
+    maxEntryGainDb:        number;
+    maxLimiterInputGainDb: number;
+  };
 }
 
 export interface GainStagingReport {

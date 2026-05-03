@@ -375,6 +375,35 @@ export interface MasteringResult {
   appliedSafeModes?:    string[]
   /** v3.3 — gain-staging report (vocal/background balance + per-stage dB push) */
   gainStaging?:         GainStagingReport
+  /** v3.3.1 — vocal-protection 엔진 가드 결과 (항상 활성). */
+  vocalProtection?:     VocalProtectionReport
+}
+
+export interface VocalProtectionClamp {
+  where:    string
+  original: unknown
+  clamped:  unknown
+  reason:   string
+}
+
+export interface VocalProtectionReport {
+  enabled:               boolean
+  active:                boolean
+  appliedClamps:         VocalProtectionClamp[]
+  vocalLossDb:           number | null
+  vocalLossSeverity:     'ok' | 'warn' | 'danger'
+  autoFallbackTriggered: boolean
+  autoFallbackReason:    string
+  userMessage:           string
+  config: {
+    vocalBandHz:           [number, number]
+    maxVocalBandCutDb:     number
+    maxRatio:              number
+    minAttackMs:           number
+    maxMakeupDb:           number
+    maxEntryGainDb:        number
+    maxLimiterInputGainDb: number
+  }
 }
 
 export interface GainStagingReport {

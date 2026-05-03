@@ -17,6 +17,7 @@ Per-style intent:
 from __future__ import annotations
 
 from app.utils.logger import log
+from app.utils.vocal_protection import clamp_compressor_params
 
 # ── Per-style compressor parameters ───────────────────────────────────────────
 
@@ -104,14 +105,20 @@ _MAX_MAKEUP_DB = 1.0  # was 3.0
 def build_dynamics_filter(
     style: str,
     input_peak_db: float = 0.0,
+    *,
+    protection_log: list[dict] | None = None,
 ) -> str:
-    """Return comma-separated FFmpeg filter string (Stage 4)."""
+    """
+    Return comma-separated FFmpeg filter string (Stage 4).
+
+    Vocal-protection clamps (ratio ≤ 2.0, attack ≥ 25 ms, makeup ≤ 0.7 dB)
+    are applied unconditionally.  When `protection_log` is provided, every
+    clamp the engine had to make is appended so the pipeline can surface
+    "보컬 보호 모드 적용됨" to the user.
+    """
     parts: list[str] = []
 
     # Pre-gain reduction only for actually clipped input (>= 0 dBFS).
-    # Previously this triggered at -0.5 dBFS, which hit almost every
-    # commercial track and silently reduced gain before the compressor,
-    # causing perceived volume loss even after loudnorm compensation.
     if input_peak_db >= 0.0:
         target_peak = -3.0
         reduction_db = target_peak - input_peak_db
@@ -120,16 +127,20 @@ def build_dynamics_filter(
             log("INFO", f"Pre-gain: {reduction_db:.2f} dB (input peak={input_peak_db:.2f} dBFS)")
 
     c = _STYLE_COMP.get(style, _STYLE_COMP["balanced"])
-    makeup = min(c["makeup"], _MAX_MAKEUP_DB)
+    # Vocal-protection clamp: ratio ≤ 2.0, attack ≥ 25 ms, makeup ≤ 0.7 dB
+    c_protected, applied_clamps = clamp_compressor_params(c)
+    if protection_log is not None:
+        protection_log.extend(applied_clamps)
+    makeup = min(float(c_protected["makeup"]), _MAX_MAKEUP_DB)
 
     parts.append(
         f"acompressor="
-        f"threshold={c['threshold']}dB"
-        f":ratio={c['ratio']}"
-        f":attack={c['attack']}"
-        f":release={c['release']}"
+        f"threshold={c_protected['threshold']}dB"
+        f":ratio={c_protected['ratio']}"
+        f":attack={c_protected['attack']}"
+        f":release={c_protected['release']}"
         f":makeup={makeup}dB"
-        f":knee={c['knee']}dB"
+        f":knee={c_protected['knee']}dB"
         f":level_in=1"
     )
 
@@ -137,8 +148,10 @@ def build_dynamics_filter(
 
 
 def get_comp_params(style: str) -> dict:
-    """Return compressor parameters for analysis report."""
-    return dict(_STYLE_COMP.get(style, _STYLE_COMP["balanced"]))
+    """Return compressor parameters for analysis report (vocal-protected)."""
+    raw = dict(_STYLE_COMP.get(style, _STYLE_COMP["balanced"]))
+    protected, _ = clamp_compressor_params(raw)
+    return protected
 
 
 def estimate_comp_gr(style: str, input_peak_db: float) -> float:
