@@ -373,6 +373,30 @@ export interface MasteringResult {
   inputFileInfo?:       InputFileInfo
   debugSummary?:        DebugSummary
   appliedSafeModes?:    string[]
+  /** v3.3 — gain-staging report (vocal/background balance + per-stage dB push) */
+  gainStaging?:         GainStagingReport
+}
+
+export interface GainStagingReport {
+  stages: {
+    compressorMakeupDb: number
+    preGainDb:          number
+    limiterInputGainDb: number
+    correctionGainDb:   number
+    ispCorrectionDb:    number
+    totalAppliedGainDb: number
+  }
+  bandsBefore:        Record<string, number>
+  bandsAfter:         Record<string, number>
+  bandDeltaDb:        Record<string, number>
+  vocalLossDb:        number | null
+  backgroundRiseDb:   number | null
+  crestFactorDropPct: number | null
+  lraDropPct:         number | null
+  verdict:            'ok' | 'warn' | 'danger'
+  issues:             string[]
+  recommendations:    string[]
+  available:          boolean
 }
 
 // ─────────────────────────────────────────────────────

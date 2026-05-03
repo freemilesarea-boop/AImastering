@@ -20,83 +20,85 @@ from app.utils.logger import log
 
 # ── Per-style compressor parameters ───────────────────────────────────────────
 
+# v3.3 — 컴프레서는 "글루 / 음색" 역할로만 사용한다.  메이크업 게인 / ratio 를
+# 낮춰 메인 멜로디 transient 가 살아남도록 함.  loudness push 는 final loudness
+# matching 단계에서만 처리한다.  과거 makeup 1.5~2.0 dB 가 entry gain 과
+# 합쳐져 보컬 뭉개짐의 주 원인이었다.
 _STYLE_COMP: dict[str, dict] = {
 
     # Natural — 거의 무처리에 가까운 가벼운 글루
     "natural": {
         "threshold": -22,
-        "ratio":     1.4,
+        "ratio":     1.3,    # was 1.4
         "attack":    50,
         "release":   200,
-        "makeup":    1.0,
+        "makeup":    0.5,    # was 1.0
         "knee":      10.0,
     },
 
     "balanced": {
         "threshold": -20,
-        "ratio":     1.8,
-        "attack":    35,
-        "release":   150,
-        "makeup":    1.5,
-        "knee":      8.0,
+        "ratio":     1.6,    # was 1.8 — 보컬 transient 통과
+        "attack":    40,     # was 35 — 살짝 느리게
+        "release":   180,    # was 150 — 자연스럽게 풀어줌
+        "makeup":    0.5,    # was 1.5 — push 거의 없음
+        "knee":      10.0,   # was 8.0 — 더 부드러운 진입
     },
 
     "warm": {
         "threshold": -18,
-        "ratio":     2.0,
-        "attack":    40,    # slow attack — transients breathe through
-        "release":   180,
-        "makeup":    1.5,
-        "knee":      10.0,
+        "ratio":     1.8,    # was 2.0
+        "attack":    45,     # was 40 — transient breathe
+        "release":   200,    # was 180
+        "makeup":    0.7,    # was 1.5
+        "knee":      12.0,   # was 10.0
     },
 
-    # Bright — v2 (fast attack 20ms, ratio 2.0) 가 고역 transient 를 누르는 문제가
-    # 있었음. 다음과 같이 완화:
-    #   - attack 20 → 30 ms (transient 통과)
-    #   - ratio  2.0 → 1.6
-    #   - threshold -20 → -18 (덜 자주 걸림)
-    #   - makeup 1.5 → 1.0
-    #   - knee 6 → 8 (더 부드러운 진입)
+    # Bright — 고역 transient 를 누르지 말 것
     "bright": {
         "threshold": -18,
-        "ratio":     1.6,
-        "attack":    30,
-        "release":   140,
-        "makeup":    1.0,
-        "knee":      8.0,
+        "ratio":     1.5,    # was 1.6
+        "attack":    35,     # was 30
+        "release":   160,    # was 140
+        "makeup":    0.5,    # was 1.0
+        "knee":      10.0,   # was 8.0
     },
 
     "punch": {
         "threshold": -18,
-        "ratio":     2.5,
-        "attack":    15,
-        "release":   80,
-        "makeup":    2.0,
-        "knee":      4.0,
+        "ratio":     2.0,    # was 2.5 — punch 도 transient 보존 우선
+        "attack":    20,     # was 15
+        "release":   100,    # was 80
+        "makeup":    0.8,    # was 2.0
+        "knee":      6.0,    # was 4.0
     },
 
-    # Loud — 더 적극적인 글루 + 빠른 attack (transient 제어)
+    # Loud — 글루는 유지하되 makeup 은 거의 없음.
+    # final loudness match 단계에서 push 하므로 컴프 단계에서 미리 키울 필요 없다.
     "loud": {
         "threshold": -16,
-        "ratio":     2.5,
-        "attack":    12,
-        "release":   90,
-        "makeup":    2.0,
-        "knee":      4.0,
+        "ratio":     2.0,    # was 2.5
+        "attack":    18,     # was 12 — transient 보존
+        "release":   110,    # was 90
+        "makeup":    0.5,    # was 2.0 — 보컬 뭉개짐 직격 원인
+        "knee":      6.0,    # was 4.0
     },
 
-    # KPOP Loud — 가장 강한 글루 (limiter 와 함께 체감 볼륨 극대화)
+    # KPOP Loud — 가장 강한 글루 + 빠른 attack 이었으나, 메인 멜로디 보존을
+    # 우선하도록 ratio / attack 완화.  Loudness 는 final 단계에서.
     "kpop_loud": {
         "threshold": -14,
-        "ratio":     2.8,
-        "attack":    10,
-        "release":   80,
-        "makeup":    2.0,
-        "knee":      3.0,
+        "ratio":     2.2,    # was 2.8 — main melody transient 보존
+        "attack":    15,     # was 10 — vocal pick 통과
+        "release":   100,    # was 80
+        "makeup":    0.7,    # was 2.0
+        "knee":      5.0,    # was 3.0 — soft knee
     },
 }
 
-_MAX_MAKEUP_DB = 3.0
+# v3.3 — 자동 makeup 의 절대 한도.  2.0 dB 초과 push 는 metadata 에만 기록되고
+# 실제 적용은 1.0 dB 까지만 (loudness push 는 final stage 의 책임).
+_MAX_MAKEUP_DB = 1.0  # was 3.0
 
 
 def build_dynamics_filter(

@@ -313,6 +313,33 @@ export interface MasteringResult {
   debugSummary?: DebugSummary;
   /** Safe-mode 가 적용된 경우 사용자가 선택한 모드 키 echo. */
   appliedSafeModes?: string[];
+  /**
+   * v3.3 — gain-staging report.  매 단계 적용된 dB 와 vocal/background
+   * band 변화를 추적해 "메인 멜로디 눌리고 배경 커진" 문제를 자동 진단.
+   */
+  gainStaging?: GainStagingReport;
+}
+
+export interface GainStagingReport {
+  stages: {
+    compressorMakeupDb: number;
+    preGainDb:          number;     // entry-gain push in static chain
+    limiterInputGainDb: number;
+    correctionGainDb:   number;
+    ispCorrectionDb:    number;
+    totalAppliedGainDb: number;
+  };
+  bandsBefore:        Record<string, number>;
+  bandsAfter:         Record<string, number>;
+  bandDeltaDb:        Record<string, number>;
+  vocalLossDb:        number | null;
+  backgroundRiseDb:   number | null;
+  crestFactorDropPct: number | null;
+  lraDropPct:         number | null;
+  verdict:            'ok' | 'warn' | 'danger';
+  issues:             string[];
+  recommendations:    string[];
+  available:          boolean;
 }
 
 // ── Debug-quality system shared types ────────────────────────────────────────

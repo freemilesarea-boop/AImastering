@@ -64,6 +64,7 @@ from app.analysis.metrics import compute_metrics, build_metric_comparison
 from app.analysis.segment_analysis import compute_segment_timeseries
 from app.qc.quality_check import run_quality_check
 from app.qc.limiter_check import run_limiter_check
+from app.qc.gain_staging import build_gain_staging_report
 from app.utils.logger import log
 
 # ── Quality-check thresholds ──────────────────────────────────────────────────
@@ -75,10 +76,15 @@ _MIN_LRA          = 4.0     # LU
 _TP_GUARD_DB      = 0.0     # dBTP: max acceptable overshoot before warning
 
 # ── Limiter strength → input gain (dB) + attack/release ──────────────────────
+# v3.3 — limiter is now a peak-safety device, not a loudness-pushing device.
+# input_gain_db only adds *small* push to compensate for measurement error;
+# loudness matching is done by the explicit volume= node BEFORE this stage.
+# Values were previously {0.5, 2.0, 4.0} which combined with entry_gain (up to
+# +24 dB) caused brickwalling on vocals.  See "급긴급 엔진 구조 개선" (v3.3).
 LIMITER_STRENGTHS: dict[str, dict[str, float]] = {
-    "low":    {"input_gain_db": 0.5, "attack_ms": 8.0, "release_ms": 200.0},
-    "medium": {"input_gain_db": 2.0, "attack_ms": 4.0, "release_ms":  80.0},
-    "high":   {"input_gain_db": 4.0, "attack_ms": 2.0, "release_ms":  40.0},
+    "low":    {"input_gain_db": 0.0, "attack_ms": 8.0, "release_ms": 200.0},
+    "medium": {"input_gain_db": 0.5, "attack_ms": 5.0, "release_ms": 120.0},
+    "high":   {"input_gain_db": 1.5, "attack_ms": 3.0, "release_ms":  60.0},
 }
 
 # 절대값이 작은 (= 큰 라우드니스) 타깃은 loudnorm linear 모드로 도달 불가 → dynamic 사용
@@ -87,9 +93,14 @@ _LOUDNORM_DYNAMIC_THRESHOLD = -12.0
 # v3.2 — high-LUFS 모드 식별. dynamic loudnorm 의 short-term envelope 가 만드는
 # 출렁임/펌핑을 막기 위해 정적 체인 (volume 노드 + alimiter) 으로 우회한다.
 _STATIC_CHAIN_STYLES = {"loud", "kpop_loud"}
-# 정적 체인 진입점. clamp 한계.
-_STATIC_ENTRY_GAIN_MAX = 24.0   # dB
-_STATIC_ENTRY_GAIN_MIN = -24.0  # dB
+# v3.3 — 정적 체인 entry gain 한도.  과거 +24 dB 까지 허용했으나 그 결과
+# 메인 멜로디 transient 가 limiter 에서 brickwall 되고 background 가
+# 상대적으로 올라오는 문제 발생.  +6 dB 로 제한하고 부족분은 correction
+# pass 가 단계적으로 채운다 (각 단계마다 safety limiter 가 더 부드럽게 작동).
+_STATIC_ENTRY_GAIN_MAX = 6.0    # dB  (was 24.0)
+_STATIC_ENTRY_GAIN_MIN = -12.0  # dB  (was -24.0)
+# 정적 체인이 단일 패스로 도달 못한 양만큼 correction pass 가 메꾸므로
+# 두 단계의 push 가 각자 더 적고 limiter GR 도 분산된다.
 
 
 def _should_use_static_chain(target_lufs: float, style: str) -> bool:
@@ -282,6 +293,17 @@ def run_pipeline(
     t_start = time.time()
     pipeline_warnings: list[dict[str, str]] = []
 
+    # ── v3.3 — gain-staging tracker.  Every dB the pipeline adds (compressor
+    # makeup, entry gain, limiter input gain, correction gain, ISP gain) is
+    # recorded here for the gain_staging QC + UI gain-staging panel.
+    gain_stages: dict[str, float] = {
+        "compressorMakeupDb":  0.0,
+        "preGainDb":           0.0,
+        "limiterInputGainDb":  0.0,
+        "correctionGainDb":    0.0,
+        "ispCorrectionDb":     0.0,
+    }
+
     # ── Debug recorder (P0: input/env/ffmpeg/filter chain logging) ────────
     debug_enabled = bool(debug_logging) if debug_logging is not None else is_debug_mode()
     recorder = DebugRecorder(job_id=job_id, debug_mode=debug_enabled)
@@ -429,18 +451,27 @@ def run_pipeline(
         safe_mode_overrides=overrides,
     )
 
-    # Add soft clipper just before loudnorm (only when limiter will engage hard)
+    # v3.3 — Soft clipper is now applied AFTER the loudness-match gain push
+    # (in the static chain) so it actually rounds the post-push peaks before
+    # the brickwall limiter sees them.  Previously it was inside pre_filter,
+    # i.e. BEFORE entry_gain, which made it ineffective at high LUFS targets.
+    soft_clip_filter_str = ""
     if limiter_strength in ("medium", "high") and style != "bright":
-        sc = soft_clipper_filter(target_tp)
-        if sc:
-            pre_filter = f"{pre_filter},{sc}" if pre_filter else sc
-            applied_corrections.append("Soft clipper (limiter 직전)")
+        soft_clip_filter_str = soft_clipper_filter(target_tp) or ""
+        if soft_clip_filter_str:
+            applied_corrections.append("Soft clipper (entry-gain → limiter 사이)")
 
     log("INFO", f"[pipeline] pre_filter: {pre_filter or '(none)'}")
     log("INFO", f"[pipeline] limiter strength: {limiter_strength}, "
                 f"target LUFS: {target_lufs}, TP: {target_tp}")
+
+    # Record compressor makeup gain (capped) into the gain-staging tracker
+    _comp_params = get_comp_params(style)
+    gain_stages["compressorMakeupDb"] = round(min(float(_comp_params.get("makeup", 0.0)), 1.0), 2)
+
     recorder.set_filter_chain(
         preFilter=pre_filter,
+        softClip=soft_clip_filter_str,
         appliedCorrections=list(applied_corrections),
         eqMoves=list(eq_moves),
         dynamicEq=dyn_eq_report,
@@ -557,20 +588,32 @@ def run_pipeline(
         safe_ceiling = target_tp - 0.3
         lim_out_lin = 10.0 ** (safe_ceiling / 20.0)
 
+        # v3.3 — corrected gain staging order:
+        #   1. pre_filter   : EQ → Dynamic EQ → glue compressor → saturation → width
+        #   2. entry_gain   : SINGLE static gain to match target LUFS (clamped ±6 dB)
+        #   3. soft_clip    : gentle peak rounding for the new push (was upstream, ineffective)
+        #   4. alimiter     : peak-safety only (level_in ≈ 1.0 — no extra push)
         chain_parts: list[str] = []
-        # 1. EQ + comp + saturation + width + soft clip 등 (pre_filter)
         if pre_filter:
             chain_parts.append(pre_filter)
-        # 2. 정적 loudness match 게인 — pre_filter 후에 적용해 EQ-induced loudness 변화 반영
         if abs(entry_gain) > 0.05:
             chain_parts.append(f"volume={entry_gain:.2f}dB")
-        # 3. Brickwall alimiter (asc=0 — auto soft clip 의 평균 적응 동작 비활성)
+        if soft_clip_filter_str:
+            chain_parts.append(soft_clip_filter_str)
         chain_parts.append(
             f"alimiter=level_in={lim_in_lin:.4f}:level_out=1:limit={lim_out_lin:.6f}"
             f":attack={lim_strength['attack_ms']}:release={lim_strength['release_ms']}:asc=0"
         )
         static_chain_filter = ",".join(chain_parts)
         log("INFO", f"[pipeline] static chain filter: {static_chain_filter[:200]}…")
+        gain_stages["preGainDb"]          = round(float(entry_gain), 2)
+        gain_stages["limiterInputGainDb"] = round(float(lim_input_gain_db), 2)
+        recorder.event(
+            "INFO", "static chain composed",
+            entryGainDb=round(entry_gain, 2),
+            limiterInputGainDb=round(lim_input_gain_db, 2),
+            ceilingDbtp=safe_ceiling,
+        )
 
         try:
             apply_filter_chain(
@@ -633,6 +676,7 @@ def run_pipeline(
             recorder.event("INFO", "limiter input gain clamped by safe mode",
                            original=lim_input_gain_db, clamped=limiter_input_gain_clamp)
             lim_input_gain_db = float(limiter_input_gain_clamp)
+        gain_stages["limiterInputGainDb"] = round(float(lim_input_gain_db), 2)
         try:
             apply_limiter(
                 tmp_wav,
@@ -736,6 +780,7 @@ def run_pipeline(
                 )
                 os.replace(corr_tmp, output_path)
                 correction_applied = True
+                gain_stages["correctionGainDb"] = round(float(correction_gain_db), 2)
                 applied_corrections.append(
                     f"보정 패스 ({correction_gain_db:+.2f} dB + soft clip + limiter)"
                 )
@@ -771,6 +816,7 @@ def run_pipeline(
         isp_gain = apply_isp_safety(output_path, ceiling_dbtp=target_tp, headroom_db=0.1)
         if isp_gain is not None and abs(isp_gain) > 0.01:
             isp_correction_db = isp_gain
+            gain_stages["ispCorrectionDb"] = round(float(isp_gain), 3)
             applied_corrections.append(f"ISP safety ({isp_gain:+.2f} dB)")
             log("INFO", f"[pipeline] ISP safety applied: {isp_gain:+.2f} dB")
             # 재측정
@@ -977,6 +1023,30 @@ def run_pipeline(
     except Exception as exc:
         log("WARN", f"[pipeline] segment analysis 실패: {exc}")
 
+    # ── v3.3 — gain-staging report (vocal/background band balance, crest/LRA) ──
+    gain_staging_report: dict[str, Any] | None = None
+    try:
+        recorder.stage("gain_staging_report")
+        gain_staging_report = build_gain_staging_report(
+            input_metrics  = input_metrics,
+            output_metrics = output_metrics,
+            input_path     = input_path,
+            output_path    = output_path,
+            pipeline_stages = gain_stages,
+        )
+        # Promote vocal/background issues to pipeline_warnings so the UI
+        # banner reflects the user-reported "main melody pressed / background
+        # boosted" symptom directly.
+        if gain_staging_report.get("verdict") in ("warn", "danger"):
+            for issue in gain_staging_report.get("issues", []):
+                pipeline_warnings.append({
+                    "code":  "GAIN_STAGING_IMBALANCE",
+                    "level": "warning" if gain_staging_report["verdict"] == "warn" else "error",
+                    "userMessage": issue,
+                })
+    except Exception as exc:
+        log("WARN", f"[pipeline] gain_staging report 실패: {exc}")
+
     # ── v3.3 P5 — Mode recommendations ─────────────────────────────────────
     try:
         mode_recs = recommend_modes(
@@ -985,6 +1055,22 @@ def run_pipeline(
             suspect_segments = segment_report.get("suspectSegments"),
             input_info       = rich_input_info,
         )
+        # Fold gain-staging recommendations into the main rec list so users
+        # see "Vocal Safe Mode 추천" when the band-balance check trips.
+        gs_recs = (gain_staging_report or {}).get("recommendations") or []
+        existing_modes = {r["mode"] for r in mode_recs}
+        for r in gs_recs:
+            if r in existing_modes:
+                continue
+            reason = {
+                "vocal_safe": "보컬/메인 멜로디가 눌리고 배경 대역이 상대적으로 커졌습니다.",
+                "low_limit":  "Limiter 가 transient 를 강하게 눌렀습니다 (crest factor 손실).",
+                "safe":       "다이내믹 손실이 큽니다 (LRA 가 입력 대비 크게 줄었습니다).",
+            }.get(r, f"{r} 모드 권장")
+            mode_recs.append({
+                "mode": r, "reason": reason, "severity": "warn",
+                "evidence": ["gain_staging_report"],
+            })
         for rec in mode_recs:
             recorder.add_recommendation(rec["mode"], rec["reason"], rec["severity"])
     except Exception as exc:
@@ -1141,6 +1227,7 @@ def run_pipeline(
             "summary":    segment_report.get("summary"),
             "windowCount": len(segment_report.get("windows", [])),
         },
+        "gainStaging":      gain_staging_report,
         "modeRecommendations": mode_recs,
         "debugSummary":     recorder.to_summary(),
         "inputFileInfo":    rich_input_info,
