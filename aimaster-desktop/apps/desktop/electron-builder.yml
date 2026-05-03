@@ -13,9 +13,22 @@ directories:
   buildResources: public
 
 # ── App files ─────────────────────────────────────────────────────────────────
+# Layout (v3.4.2):
+#   dist/renderer/        — Vite output (index.html + JS bundles)
+#   dist-electron/main/   — esbuild output (Electron main process)
+#   dist-electron/preload/ — esbuild output (Electron preload)
+# Renderer's dist/ and main's dist-electron/ are kept separate so that
+# CI cleanup steps that wipe one don't accidentally wipe the other.
 files:
   - dist/**/*
+  - dist-electron/**/*
   - "!dist/renderer/**/*.map"   # strip source maps from production build
+
+# Force the asar's main entry to the new location regardless of any other
+# package.json that might leak through monorepo hoisting.  electron-builder
+# overwrites package.json's `main` field inside the asar with this value.
+extraMetadata:
+  main: dist-electron/main/index.js
 
 # ── Bundled native binaries ───────────────────────────────────────────────────
 # public/bin/ is populated by scripts/prebuild.cjs (FFmpeg) and

@@ -194,14 +194,36 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: node scripts/prebuild.cjs
 
+      # ── Clean stale outputs BEFORE build (must NOT run after build —
+      # doing so wipes the freshly-built dist/main JS that electron-builder
+      # needs to package into app.asar).  v3.4.2 split renderer (dist/) and
+      # main (dist-electron/) into separate dirs so accidents like that
+      # cause an obvious build failure instead of silently destroying main.
+      - name: Clean previous out/ + dist*/ before build
+        working-directory: aimaster-desktop/apps/desktop
+        run: |
+          rm -rf out dist dist-electron
+
       - name: Build Electron app
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm build
 
-      - name: Clean previous out/ + dist/ before packaging
+      # ── Sanity: verify the artefacts electron-builder will package exist ──
+      - name: Verify build outputs (renderer + main + preload)
         working-directory: aimaster-desktop/apps/desktop
         run: |
-          rm -rf out dist
+          set -e
+          echo "=== dist/renderer/index.html (from vite) ==="
+          test -f dist/renderer/index.html || (echo "FAIL: missing"; exit 1)
+          ls -la dist/renderer/ | head -10
+          echo ""
+          echo "=== dist-electron/main/index.js (from esbuild) ==="
+          test -f dist-electron/main/index.js || (echo "FAIL: missing"; exit 1)
+          ls -la dist-electron/main/
+          echo ""
+          echo "=== dist-electron/preload/index.js (from esbuild) ==="
+          test -f dist-electron/preload/index.js || (echo "FAIL: missing"; exit 1)
+          ls -la dist-electron/preload/
 
       # ── Diagnostic dump — prove which config drives the next step ──────────
       - name: Diagnose electron-builder config (pre-package)
@@ -409,16 +431,29 @@ jobs:
           cd D:\w\aimaster-desktop\apps\desktop
           node scripts/prebuild.cjs
 
+      # ── Clean stale outputs BEFORE build (must NOT run after build —
+      # doing so wipes the freshly-built main JS that electron-builder needs).
+      - name: Clean previous out/ + dist*/ before build
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          if (Test-Path "out")           { Remove-Item -Recurse -Force "out" }
+          if (Test-Path "dist")          { Remove-Item -Recurse -Force "dist" }
+          if (Test-Path "dist-electron") { Remove-Item -Recurse -Force "dist-electron" }
+
       - name: Build Electron app
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
           pnpm build
 
-      - name: Clean previous out/ before packaging
+      # ── Sanity: verify the artefacts electron-builder will package exist ──
+      - name: Verify build outputs (renderer + main + preload)
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
-          if (Test-Path "out") { Remove-Item -Recurse -Force "out" }
-          if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
+          if (-not (Test-Path "dist\renderer\index.html"))     { Write-Error "missing dist/renderer/index.html"; exit 1 }
+          if (-not (Test-Path "dist-electron\main\index.js"))  { Write-Error "missing dist-electron/main/index.js"; exit 1 }
+          if (-not (Test-Path "dist-electron\preload\index.js")) { Write-Error "missing dist-electron/preload/index.js"; exit 1 }
+          Write-Host "── all build outputs present ──"
+          Get-ChildItem -Recurse -File dist, dist-electron | Select-Object FullName, Length | Format-Table -AutoSize
 
       # ── Diagnostic dump — prove which config drives the next step ──────────
       - name: Diagnose electron-builder config (pre-package)

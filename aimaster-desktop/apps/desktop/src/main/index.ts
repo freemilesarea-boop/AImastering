@@ -62,7 +62,10 @@ function createWindow(): void {
   if (isDev) {
     void mainWindow.loadURL('http://localhost:5173');
   } else {
-    const rendererPath = path.join(__dirname, '../renderer/index.html');
+    // Main process is at dist-electron/main/index.js; renderer is at
+    // dist/renderer/index.html.  Both live inside app.asar at runtime, so
+    // the relative path from main → renderer is up-two-levels then into dist/.
+    const rendererPath = path.join(__dirname, '../..', 'dist', 'renderer', 'index.html');
     log.info('Loading renderer from:', rendererPath);
     void mainWindow.loadFile(rendererPath);
   }
