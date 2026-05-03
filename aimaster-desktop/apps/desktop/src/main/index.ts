@@ -5,6 +5,7 @@ import { registerAudioHandlers } from './ipc/audioHandlers.js';
 import { registerLicenseHandlers } from './ipc/licenseHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
+import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
 
 const isDev = !app.isPackaged;
@@ -105,6 +106,16 @@ app.whenReady().then(() => {
     registerSettingsHandlers(ipcMain, mainWindow);
   } catch (err) {
     log.error('IPC handler registration failed:', err);
+  }
+
+  // ── 4. Auto-updater (프로덕션 빌드에서만 실제로 체크) ─────────────────────
+  // dev 빌드에선 IPC 핸들러는 등록되지만 checkForUpdates() 호출이 no-op.
+  if (mainWindow) {
+    try {
+      initUpdater(mainWindow, ipcMain);
+    } catch (err) {
+      log.error('Updater init failed (app continues):', err);
+    }
   }
 
   app.on('activate', () => {

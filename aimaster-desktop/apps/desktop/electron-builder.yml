@@ -12,76 +12,118 @@ directories:
   output: out
   buildResources: public
 
-# ── App files ─────────────────────────────────────────────────────────────────
-# Layout (v3.4.2):
-#   dist/renderer/        — Vite output (index.html + JS bundles)
-#   dist-electron/main/   — esbuild output (Electron main process)
-#   dist-electron/preload/ — esbuild output (Electron preload)
-# Renderer's dist/ and main's dist-electron/ are kept separate so that
-# CI cleanup steps that wipe one don't accidentally wipe the other.
+# ── Update server (v3.4.3 — electron-updater) ─────────────────────────────────
+# GitHub Releases is the update channel.  electron-builder generates and
+# uploads the metadata files (latest.yml / latest-mac.yml / latest-linux.yml)
+# alongside the platform installers.  electron-updater on the client reads
+# those YAMLs to discover new versions.
+#
+# The client only sends an HTTPS GET to the public release endpoint, so as
+# long as the repo is PUBLIC no token is required at runtime.  If the repo
+# becomes private, every client must set GH_TOKEN with a personal access
+# token that has `repo` scope — see src/main/updater.ts for the TODO.
+#
+# The CI workflow controls whether `--publish always` actually uploads
+# artefacts (only on tag pushes).  This block just tells the client which
+# server to query.
+publish:
+  provider: github
+  owner:    freemilesarea-boop
+  repo:     AImastering
+  # 'draft' so the existing release-draft workflow job (which also targets
+  # this tag with the human-readable release notes) doesn't collide with a
+  # finalized release that electron-builder created.  After both jobs run,
+  # a maintainer reviews the draft and clicks Publish.  Once published,
+  # electron-updater clients see the new version on their next check.
+  releaseType: draft
+
+# ── App files (v3.4.2 layout) ────────────────────────────────────────────────
 files:
   - dist/**/*
   - dist-electron/**/*
-  - "!dist/renderer/**/*.map"   # strip source maps from production build
+  - "!dist/renderer/**/*.map"
 
-# Force the asar's main entry to the new location regardless of any other
-# package.json that might leak through monorepo hoisting.  electron-builder
-# overwrites package.json's `main` field inside the asar with this value.
 extraMetadata:
   main: dist-electron/main/index.js
 
 # ── Bundled native binaries ───────────────────────────────────────────────────
-# public/bin/ is populated by scripts/prebuild.cjs (FFmpeg) and
-# the build scripts (PyInstaller engine).  All three binaries land in
-# Resources/bin/ inside the final app bundle.
 extraResources:
   - from: "public/bin"
-    to: "bin"
+    to:   "bin"
     filter:
       - "**/*"
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
-# zip target only.  DMG is intentionally disabled — the GitHub Actions macOS
-# runner has been failing on `hdiutil attach` ("no mountable file systems")
-# during DMG packaging.  zip ships an unsigned .app archive that Mac users
-# can run directly after right-click → Open the first time.
-# DMG will be revisited on a separate branch.
+# v3.4.3 — DMG + ZIP both built.  electron-updater on macOS reads the .zip
+# delta from latest-mac.yml; the .dmg is the user-friendly first-install
+# format (drag-to-Applications).
+#
+# !! IMPORTANT: macOS auto-update REQUIRES a code-signed AND notarized .app
+# inside the .zip.  Without notarization, the OS Gatekeeper refuses to launch
+# the replacement process and electron-updater reports
+# "Could not get code signature for running application".
+#
+# TODO (v3.5): wire CSC_LINK / CSC_KEY_PASSWORD + Apple notarization
+# (notarytool) to enable macOS auto-update.  Until that lands, mac auto-
+# update will fail gracefully with an error event the renderer surfaces.
 mac:
   category: public.app-category.music
-  # electron-builder converts icon.png → .icns automatically on macOS
   icon: public/icon.png
   target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
     - target: zip
       arch:
-        - arm64   # Apple Silicon (M1/M2/M3)
-        - x64     # Intel Mac
+        - arm64
+        - x64
   hardenedRuntime: true
-  entitlements: public/entitlements.mac.plist
+  entitlements:        public/entitlements.mac.plist
   entitlementsInherit: public/entitlements.mac.plist
-  # PyInstaller engine binary must be executable — electron-builder signs it
+  # identity: "Developer ID Application: <NAME> (<TEAM_ID>)"   # ← TODO v3.5
   extraFiles: []
 
+dmg:
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
 # ── Windows ───────────────────────────────────────────────────────────────────
-# Portable target only.  NSIS is intentionally disabled because the GitHub
-# Actions Windows runner cannot package it (pnpm + electron-builder peer-deps
-# produce node_modules\.pnpm\<peers-hash>\... paths that exceed Windows' 260-char
-# MAX_PATH).  NSIS will be revisited on a separate branch; this branch ships
-# the portable .exe so the Windows app is usable now.
+# v3.4.3 — Switched from `portable` to `nsis` as the primary target so
+# auto-update works (portable .exe cannot self-update — it has no installer
+# directory to write into).  `portable` is kept as a SECONDARY artefact for
+# users on locked-down systems that disallow installers.
+#
+# NSIS settings:
+#   oneClick: false                       — let user pick install location
+#   perMachine: false                     — install per-user, no admin needed
+#   allowToChangeInstallationDirectory:   — ditto
+#   createDesktopShortcut / Start Menu:   — convenience
 win:
   icon: public/icon.ico
   target:
+    - target: nsis
+      arch:
+        - x64
     - target: portable
       arch:
         - x64
 
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "${productName}"
+  artifactName: "${productName}-Setup-${version}.${ext}"
+
 portable:
-  artifactName: "Louver-Mastering-AI-${version}-portable-${arch}.${ext}"
+  artifactName: "${productName}-${version}-portable-${arch}.${ext}"
 
 # ── Filename templates (all targets) ──────────────────────────────────────────
-# Embed version + arch so multi-platform release artifacts don't collide.
-artifactName: "Louver-Mastering-AI-${version}-${os}-${arch}.${ext}"
+artifactName: "${productName}-${version}-${os}-${arch}.${ext}"
 
-# ── Linux (optional AppImage) ─────────────────────────────────────────────────
+# ── Linux (AppImage — also auto-updateable via electron-updater) ─────────────
 linux:
   category: Audio
   icon: public/icon.png

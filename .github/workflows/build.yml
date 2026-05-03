@@ -86,11 +86,25 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm build
 
+      # v3.4.3 — auto-update.  On tag push (refs/tags/v*) electron-builder
+      # publishes artefacts + the latest-linux.yml metadata to GitHub Releases
+      # so electron-updater clients can discover the new version.
+      # On regular branch pushes we just build the artefact for CI sanity.
+      - name: Compute publish flag
+        id: pub
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "flag=always" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=never" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Package AppImage
         working-directory: aimaster-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage --x64 --publish never
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage --x64 --publish ${{ steps.pub.outputs.flag }}
 
       - name: List build outputs
         working-directory: aimaster-desktop/apps/desktop
@@ -245,25 +259,40 @@ jobs:
           find . -maxdepth 6 -type f \( -iname "electron-builder*" -o -iname "builder*.yml" -o -iname "builder*.yaml" -o -iname "builder*.json" \) \
             ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null || true
 
-      # Try arm64 + x64 in one electron-builder invocation; fall back to
-      # two separate single-arch zip builds if that fails.
-      # Use --filter form so config resolution is unambiguous.
-      - name: Package macOS .zip (arm64 + x64)
+      # v3.4.3 — auto-update.  Build dmg + zip both: dmg is the user-friendly
+      # first-install format, zip is what electron-updater consumes for
+      # delta updates.  Tag push uploads the metadata YAML alongside.
+      #
+      # !! Auto-update on macOS still requires code-signing + notarization.
+      # Without them the OS Gatekeeper blocks the replacement process.
+      # See electron-builder.yml `mac.identity` TODO for v3.5.
+      - name: Compute publish flag
+        id: pub
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "flag=always" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=never" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package macOS .dmg + .zip (arm64 + x64)
         id: pack_mac
         working-directory: aimaster-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
-        run: pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64 --arm64 --publish never
+        run: pnpm --filter @aimaster/desktop exec electron-builder --mac dmg zip --x64 --arm64 --publish ${{ steps.pub.outputs.flag }}
 
-      - name: Fallback — package macOS .zip (split per-arch)
+      - name: Fallback — package macOS .zip (split per-arch, no dmg)
         if: steps.pack_mac.outcome == 'failure'
         working-directory: aimaster-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --arm64 --publish never
-          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64   --publish never
+          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --arm64 --publish ${{ steps.pub.outputs.flag }}
+          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64   --publish ${{ steps.pub.outputs.flag }}
 
       - name: List build outputs
         working-directory: aimaster-desktop/apps/desktop
@@ -275,7 +304,9 @@ jobs:
         with:
           name: Louver-Mastering-AI-mac
           path: |
+            aimaster-desktop/apps/desktop/out/*.dmg
             aimaster-desktop/apps/desktop/out/*.zip
+            aimaster-desktop/apps/desktop/out/latest-mac.yml
           if-no-files-found: error
           retention-days: 30
 
@@ -478,35 +509,48 @@ jobs:
             Select-Object FullName, Length |
             Format-Table -AutoSize
 
-      # Portable .exe ONLY.  NSIS is intentionally NOT invoked on this branch
-      # — it cannot package on the GitHub Actions Windows runner because
-      # pnpm + electron-builder peer-deps produce node_modules paths > 260
-      # chars (Windows MAX_PATH), which makensis cannot read.
-      # NSIS will be revisited on a separate branch.
+      # v3.4.3 — Build NSIS installer (primary auto-update target) AND
+      # the portable .exe (secondary, for locked-down systems).
       #
-      # Use --filter form so electron-builder is invoked from the desktop
-      # package's exact context regardless of CWD; this guarantees the
-      # apps/desktop/electron-builder.yml is the config it loads.
-      - name: Package portable .exe (no NSIS)
+      # Tag push uploads to GitHub Releases + the latest.yml metadata used
+      # by electron-updater on the client.
+      #
+      # NSIS dependency on Windows MAX_PATH was previously the blocker;
+      # with the D:\w\ junction the workspace path is short enough to keep
+      # nested node_modules paths under 260 chars.  If NSIS still fails
+      # the portable target keeps shipping unconditionally.
+      - name: Compute publish flag
+        id: pub
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            "flag=always" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "flag=never" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Package NSIS installer + portable .exe
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd D:\w\aimaster-desktop
-          pnpm --filter @aimaster/desktop exec electron-builder --win portable --x64 --publish never
+          pnpm --filter @aimaster/desktop exec electron-builder --win nsis portable --x64 --publish ${{ steps.pub.outputs.flag }}
 
       - name: List build outputs
         run: |
           cd D:\w\aimaster-desktop\apps\desktop\out
           Get-ChildItem -File | ForEach-Object { Write-Host "  $($_.Name)  ($([math]::Round($_.Length/1MB, 2)) MB)" }
 
-      - name: Upload Windows portable artifact
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Louver-Mastering-AI-windows-portable
+          name: Louver-Mastering-AI-windows
           # Junction is transparent — files written under D:\w\... are also
           # visible under $GITHUB_WORKSPACE\... so the relative path works.
           path: |
             aimaster-desktop/apps/desktop/out/*.exe
+            aimaster-desktop/apps/desktop/out/latest.yml
           if-no-files-found: error
           retention-days: 30
 
@@ -543,10 +587,10 @@ jobs:
           name: Louver-Mastering-AI-mac
           path: artifacts/mac
 
-      - name: Download Windows portable
+      - name: Download Windows installer + portable
         uses: actions/download-artifact@v4
         with:
-          name: Louver-Mastering-AI-windows-portable
+          name: Louver-Mastering-AI-windows
           path: artifacts/win
 
       - name: Inspect downloaded artifacts

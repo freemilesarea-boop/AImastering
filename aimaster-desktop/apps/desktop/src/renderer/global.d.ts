@@ -15,4 +15,24 @@ declare interface Window {
     platform: 'darwin' | 'win32' | 'linux';
     version: string;
   };
+  updater: {
+    checkForUpdates(): Promise<{ ok: boolean; reason?: string }>;
+    downloadUpdate():  Promise<{ ok: boolean; reason?: string }>;
+    quitAndInstall():  Promise<{ ok: boolean; reason?: string }>;
+    getStatus():       Promise<UpdaterStatus>;
+    onStatus(listener: (status: UpdaterStatus) => void): () => void;
+  };
 }
+
+/** v3.4.3 — Auto-update status events, mirrored from src/main/updater.ts */
+type UpdaterStatus =
+  | { type: 'idle' }
+  | { type: 'checking' }
+  | { type: 'available';         info: { version: string; releaseNotes?: string | null } }
+  | { type: 'not-available';     info: { version: string } }
+  | { type: 'download-progress'; progress: {
+      percent: number; bytesPerSecond: number;
+      transferred: number; total: number;
+    } }
+  | { type: 'downloaded';        info: { version: string } }
+  | { type: 'error';             message: string; code?: string };

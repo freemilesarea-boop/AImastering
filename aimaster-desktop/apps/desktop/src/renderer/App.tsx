@@ -10,6 +10,7 @@ import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
+import { UpdateToast } from './components/UpdateToast.js';
 
 // ── Toast notification ────────────────────────────────────────────────────────
 
@@ -240,6 +241,9 @@ function AppInner() {
 
       {/* Toast notifications */}
       <Toast />
+
+      {/* v3.4.3 — auto-update bottom-right card */}
+      <UpdateToast />
 
       {/* Global drag overlay — captures drops from external apps (Finder/Explorer)
           even when TopBar has -webkit-app-region: drag */}

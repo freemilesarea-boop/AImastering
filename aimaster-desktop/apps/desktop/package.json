@@ -24,7 +24,9 @@
     "@aimaster/audio-engine": "workspace:*",
     "@aimaster/license-core": "workspace:*",
     "@aimaster/shared-types": "workspace:*",
+    "electron-log": "^5.2.0",
     "electron-store": "^10.0.0",
+    "electron-updater": "^6.3.9",
     "node-machine-id": "^1.1.12",
     "uuid": "^9.0.0"
   },
