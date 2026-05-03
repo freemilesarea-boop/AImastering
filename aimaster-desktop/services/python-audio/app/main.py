@@ -50,8 +50,18 @@ _stdout_bin = _get_stdout_binary()
 _stderr_bin = _get_stderr_binary()
 
 from app.analyzers.analyzer import analyze_file
-from app.mastering.mastering import master_file
+from app.mastering.mastering import master_file, master_with_reference
+from app.mastering.reference_matching import (
+    analyze_reference, compute_target_profile, validate_reference,
+    compare_input_vs_reference,
+)
+from app.mastering.reference_presets import (
+    list_reference_presets, get_reference_preset, recommend_preset_for_input,
+)
+from app.mastering.safe_modes import list_safe_modes
 from app.qc.qc_checker import run_qc
+from app.utils.debug_bundle import export_debug_bundle
+from app.utils.env_info import collect_env_info
 from app.utils.logger import log
 
 
@@ -87,6 +97,95 @@ def _handle_master(params: dict, job_id: str) -> dict:
     return master_file(params, job_id, _send_progress)
 
 
+def _handle_master_with_reference(params: dict, job_id: str) -> dict:
+    for key in ("input_path", "output_path"):
+        if not params.get(key):
+            raise ValueError(f"params.{key} is required")
+
+    # Accept `reference_preset` as a built-in alternative to a reference file.
+    # The preset is expanded into a full target_profile dict before delegating.
+    preset_key = params.get("reference_preset")
+    if preset_key and not params.get("target_profile"):
+        preset_target = get_reference_preset(preset_key)
+        if preset_target is None:
+            raise ValueError(
+                f"Unknown reference_preset: {preset_key!r}. "
+                f"Use list_reference_presets to see available keys."
+            )
+        params = dict(params)  # don't mutate caller's dict
+        params["target_profile"] = preset_target
+
+    if not params.get("reference_path") and not params.get("target_profile"):
+        raise ValueError(
+            "params.reference_path, params.target_profile, "
+            "or params.reference_preset is required"
+        )
+    return master_with_reference(params, job_id, _send_progress)
+
+
+def _handle_analyze_reference(params: dict, _job_id: str) -> dict:
+    """Analyze a reference track without mastering — used by the UI to
+    preview a reference's profile before kicking off iterative mastering.
+
+    Optionally accepts an `input_path` so the UI can show a compatibility
+    check (e.g. "이 reference 는 입력 곡과 잘 안 맞습니다") in real time.
+    """
+    file_path  = params.get("file_path")
+    input_path = params.get("input_path")
+    if not file_path:
+        raise ValueError("params.file_path is required")
+    profile = analyze_reference(file_path)
+    target  = compute_target_profile(profile)
+    warnings = validate_reference(profile)
+    if input_path:
+        from app.mastering.reference_matching import analyze_reference as _ar
+        in_profile = _ar(input_path)
+        warnings.extend(compare_input_vs_reference(in_profile, profile))
+    return {
+        "profile": {
+            "path":           profile.path,
+            "durationSec":    profile.durationSec,
+            "integratedLufs": profile.integratedLufs,
+            "truePeakDbtp":   profile.truePeakDbtp,
+            "lra":            profile.lra,
+            "samplePeakDb":   profile.samplePeakDb,
+            "rmsDb":          profile.rmsDb,
+            "crestDb":        profile.crestDb,
+            "bands":          profile.bands,
+            "stereoWidth":    profile.stereoWidth,
+            "lrCorrelation":  profile.lrCorrelation,
+            "available":      profile.available,
+        },
+        "targetProfile": target,
+        "warnings":      warnings,
+    }
+
+
+def _handle_list_reference_presets(_params: dict, _job_id: str) -> dict:
+    """Return all built-in reference presets (no audio analysis required)."""
+    return {"presets": list_reference_presets()}
+
+
+def _handle_recommend_reference_preset(params: dict, _job_id: str) -> dict:
+    """
+    Auto-recommend a preset for a given input file.  Used by the UI to
+    show "이 곡엔 ___ 프리셋이 어울려요" when no reference is selected.
+    """
+    file_path = params.get("file_path")
+    if not file_path:
+        raise ValueError("params.file_path is required")
+    profile = analyze_reference(file_path)
+    if not profile.available:
+        return {"recommendation": None, "reason": "input file unanalyzable"}
+    rec = recommend_preset_for_input(profile)
+    return {"recommendation": rec, "inputProfile": {
+        "integratedLufs": profile.integratedLufs,
+        "lra":            profile.lra,
+        "crestDb":        profile.crestDb,
+        "bands":          profile.bands,
+    }}
+
+
 def _handle_qc(params: dict, _job_id: str) -> dict:
     file_path = params.get("file_path")
     if not file_path:
@@ -98,10 +197,72 @@ def _handle_qc(params: dict, _job_id: str) -> dict:
     )
 
 
+def _handle_env_info(_params: dict, _job_id: str) -> dict:
+    """Return host / runtime info — used by the UI's debug panel."""
+    return {
+        "environment": collect_env_info(),
+        "safeModes":   list_safe_modes(),
+    }
+
+
+def _handle_export_debug_bundle(params: dict, _job_id: str) -> dict:
+    """
+    Export a debug bundle zip from a previous mastering result.
+
+    Expected params:
+      output_path             — where to write the .zip
+      debug_summary           — value of result.debugSummary (recorder summary)
+      mastering_result        — full result dict (used for inputFileInfo, etc.)
+      include_audio           — bool (default False)
+      user_consent_audio      — bool (default False) — must be true to bundle audio
+    """
+    output_zip = params.get("output_path")
+    if not output_zip:
+        raise ValueError("params.output_path is required")
+    summary = params.get("debug_summary") or {}
+    full    = params.get("mastering_result") or {}
+
+    # Build a recorder-equivalent dict from the result (for callers who only
+    # have the JSON-RPC response, not the in-process recorder).
+    recorder_dict = {
+        "jobId":             summary.get("jobId") or full.get("jobId") or "unknown",
+        "environment":       (summary.get("environment") or {}) or collect_env_info(),
+        "input":             full.get("inputFileInfo") or {},
+        "masteringSettings": full.get("analysisReport", {}).get("mastering") or {},
+        "filterChain":       summary.get("filterChain") or {},
+        "stages":            summary.get("stages") or [],
+        "events":            (summary.get("warnings") or []) + (summary.get("errors") or []),
+        "ffmpegInvocations": [],
+        "metricsBefore":     full.get("metricComparison") and {} or {},
+        "metricsAfter":      {},
+        "limiterQc":         full.get("limiterCheck") or {},
+        "suspectSegments":   full.get("suspectSegments") or [],
+        "recommendations":   full.get("modeRecommendations") or [],
+        "outputPath":        full.get("outputPath", ""),
+        "artifactDir":       summary.get("artifactDir"),
+    }
+    return export_debug_bundle(
+        recorder_dict,
+        output_zip,
+        quality_check         = full.get("qualityCheck"),
+        limiter_check         = full.get("limiterCheck"),
+        waveform_after_path   = full.get("afterWaveformPath", ""),
+        waveform_before_path  = full.get("beforeWaveformPath", ""),
+        include_audio         = bool(params.get("include_audio", False)),
+        user_consent_audio    = bool(params.get("user_consent_audio", False)),
+    )
+
+
 HANDLERS = {
-    "analyze":  _handle_analyze,
-    "master":   _handle_master,
-    "qc_check": _handle_qc,
+    "analyze":                   _handle_analyze,
+    "master":                    _handle_master,
+    "master_with_reference":     _handle_master_with_reference,
+    "analyze_reference":         _handle_analyze_reference,
+    "list_reference_presets":    _handle_list_reference_presets,
+    "recommend_reference_preset": _handle_recommend_reference_preset,
+    "qc_check":                  _handle_qc,
+    "env_info":                  _handle_env_info,
+    "export_debug_bundle":       _handle_export_debug_bundle,
 }
 
 

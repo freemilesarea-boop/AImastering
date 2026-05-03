@@ -295,6 +295,272 @@ export interface MasteringResult {
    * v3.2 P3 — 적용된 Dynamic EQ 리포트.
    */
   dynamicEq?: DynamicEqReport;
+
+  // ────────────────────────────────────────────────────────────────────────
+  // v3.3 — Debug-quality system (vocal-mush / radio-quality / over-limiting).
+  // ────────────────────────────────────────────────────────────────────────
+  /** Limiter 과다 적용 자동 검사 결과. */
+  limiterCheck?: LimiterCheckReport;
+  /** 시간대별 의심 구간 (excessive_limiter_reduction / brickwall_flat / sudden_rms_drop). */
+  suspectSegments?: SuspectSegment[];
+  /** 시간 시리즈 분석 요약 (per-window 데이터는 debug bundle 에만). */
+  segmentAnalysis?: { windowSec: number; summary: SegmentSummary | null; windowCount: number };
+  /** 위험 신호에 따른 모드 추천 — UI banner / chip 으로 노출. */
+  modeRecommendations?: ModeRecommendation[];
+  /** 입력 파일 메타데이터 (codec / sampleRate / VBR-CBR 등). */
+  inputFileInfo?: InputFileInfo;
+  /** DebugRecorder summary — debug bundle export 시 그대로 전달. */
+  debugSummary?: DebugSummary;
+  /** Safe-mode 가 적용된 경우 사용자가 선택한 모드 키 echo. */
+  appliedSafeModes?: string[];
+  /**
+   * v3.3 — gain-staging report.  매 단계 적용된 dB 와 vocal/background
+   * band 변화를 추적해 "메인 멜로디 눌리고 배경 커진" 문제를 자동 진단.
+   */
+  gainStaging?: GainStagingReport;
+  /**
+   * v3.3.1 — vocal-protection 엔진 가드 결과.
+   * 항상 활성이며, 모드 무관 보컬 명료도 우선.
+   */
+  vocalProtection?: VocalProtectionReport;
+
+  /** v3.4 — Ozone-style reference matching result */
+  referenceMatch?:    ReferenceMatchReport;
+  referenceProfile?:  ReferenceProfile;
+  targetProfile?:     TargetProfile;
+  appliedBandCorrections?: AppliedBandCorrection[];
+  /** v3.4.1 — reference validation + genre-mismatch warnings */
+  referenceWarnings?: ReferenceWarning[];
+}
+
+export interface ReferenceWarning {
+  code: string;
+  severity: 'info' | 'warn' | 'danger';
+  userMessage: string;
+}
+
+export interface ReferencePreset {
+  key: string;
+  label: string;
+  description: string;
+  bestFor: string;
+  targetLufs: number;
+  targetLra: number;
+}
+
+export interface ReferencePresetRecommendation {
+  key: string;
+  label: string;
+  reason: string;
+  targetLufs: number;
+}
+
+// ── v3.4 Reference matching shared types ────────────────────────────────────
+
+export interface BandEnergies {
+  low:   number;
+  mid:   number;
+  vocal: number;
+  high:  number;
+}
+
+export interface ReferenceProfile {
+  path:           string;
+  durationSec:    number;
+  integratedLufs: number;
+  truePeakDbtp:   number;
+  lra:            number;
+  samplePeakDb:   number;
+  rmsDb:          number;
+  crestDb:        number;
+  bands:          BandEnergies;
+  stereoWidth:    number | null;
+  lrCorrelation:  number | null;
+  available:      boolean;
+}
+
+export interface TargetProfile {
+  targetLufs:        number;
+  targetTruePeak:    number;
+  targetLra:         number;
+  targetBands:       BandEnergies;
+  targetStereoWidth: number | null;
+  targetCrestDb:     number;
+  sourceReferencePath: string;
+}
+
+export interface AppliedBandCorrection {
+  band:        'low' | 'mid' | 'vocal' | 'high';
+  rangeHz:     [number, number];
+  centreHz:    number;
+  q:           number;
+  requestedDb: number;
+  appliedDb:   number;
+}
+
+export interface ReferenceMatchReport {
+  /** 0–100 weighted overall match score */
+  overall: number | null;
+  perAxis: {
+    lufs:     number | null;
+    lra:      number | null;
+    truePeak: number | null;
+    bands: {
+      low:   number | null;
+      mid:   number | null;
+      vocal: number | null;
+      high:  number | null;
+    };
+    stereoWidth: number | null;
+    weakestAxis: string | null;
+  };
+  weakestAxis:     string | null;
+  iterations:      number;
+  maxIterations:   number;
+  perIteration: Array<{
+    iteration:    number;
+    scoreOverall: number | null;
+    outputLufs:   number;
+    outputLra:    number;
+    elapsedSec:   number;
+  }>;
+  acceptThreshold: number;
+  stoppedReason:   'accept_threshold_met' | 'no_significant_improvement' | 'max_iterations_reached' | 'no_iterations';
+}
+
+export interface VocalProtectionClamp {
+  where:    string;
+  original: unknown;
+  clamped:  unknown;
+  reason:   string;
+}
+
+export interface VocalProtectionReport {
+  enabled:               boolean;
+  active:                boolean;     // true if any clamp was applied
+  appliedClamps:         VocalProtectionClamp[];
+  vocalLossDb:           number | null;
+  vocalLossSeverity:     'ok' | 'warn' | 'danger';
+  autoFallbackTriggered: boolean;
+  autoFallbackReason:    string;
+  userMessage:           string;
+  config: {
+    vocalBandHz:           [number, number];
+    maxVocalBandCutDb:     number;
+    maxRatio:              number;
+    minAttackMs:           number;
+    maxMakeupDb:           number;
+    maxEntryGainDb:        number;
+    maxLimiterInputGainDb: number;
+  };
+}
+
+export interface GainStagingReport {
+  stages: {
+    compressorMakeupDb: number;
+    preGainDb:          number;     // entry-gain push in static chain
+    limiterInputGainDb: number;
+    correctionGainDb:   number;
+    ispCorrectionDb:    number;
+    totalAppliedGainDb: number;
+  };
+  bandsBefore:        Record<string, number>;
+  bandsAfter:         Record<string, number>;
+  bandDeltaDb:        Record<string, number>;
+  vocalLossDb:        number | null;
+  backgroundRiseDb:   number | null;
+  crestFactorDropPct: number | null;
+  lraDropPct:         number | null;
+  verdict:            'ok' | 'warn' | 'danger';
+  issues:             string[];
+  recommendations:    string[];
+  available:          boolean;
+}
+
+// ── Debug-quality system shared types ────────────────────────────────────────
+
+export interface InputFileInfo {
+  path: string | null;
+  name: string | null;
+  codec: string;
+  codecLongName?: string | null;
+  sampleRate: number;
+  channels: number;
+  channelLayout?: string | null;
+  bitDepth: number;
+  sampleFmt?: string | null;
+  bitRateBps: number | null;
+  sizeBytes: number | null;
+  durationSec: number;
+  containerFormat: string;
+  containerLongName?: string;
+  vbrCbr: 'CBR' | 'VBR' | 'VBR-suspected' | 'unknown' | null;
+  encoderTag?: string | null;
+}
+
+export interface SuspectSegment {
+  start: number;
+  end: number;
+  reason:
+    | 'excessive_limiter_reduction'
+    | 'brickwall_flat'
+    | 'sudden_rms_drop'
+    | 'tight_crest'
+    | string;
+  severity: 'info' | 'warn' | 'danger';
+  details: string;
+}
+
+export interface SegmentSummary {
+  rmsP05: number;
+  rmsP50: number;
+  rmsP95: number;
+  rmsSpread: number;
+  minCrestDb: number;
+  ceilingAttachedFrac: number;
+}
+
+export interface LimiterCheckItem {
+  name: string;
+  status: 'ok' | 'warn' | 'danger';
+  message: string;
+  value: number | string | null;
+}
+
+export interface LimiterCheckReport {
+  overall: 'ok' | 'warn' | 'danger';
+  items: LimiterCheckItem[];
+  metrics: {
+    crestDelta?: number | null;
+    lraReductionRatio?: number;
+    ceilingAttachedFrac?: number;
+    brickwallSampleRatio?: number;
+    lufsOvershoot?: number;
+    ispCorrectionDb?: number;
+  };
+  recommendations: string[];
+}
+
+export interface ModeRecommendation {
+  mode: 'safe' | 'vocal_safe' | 'low_limit' | 'convert_to_wav' | string;
+  reason: string;
+  severity: 'info' | 'warn' | 'danger';
+  evidence: string[];
+}
+
+export interface DebugSummary {
+  jobId: string;
+  debugMode: boolean;
+  elapsedSec: number;
+  ffmpegInvocations: number;
+  stages: string[];
+  warnings: Array<{ t: number; level: string; msg: string; data?: unknown }>;
+  errors:   Array<{ t: number; level: string; msg: string; data?: unknown }>;
+  filterChain: Record<string, unknown>;
+  limiterQc:   Record<string, unknown>;
+  suspectSegments: SuspectSegment[];
+  recommendations: ModeRecommendation[];
+  artifactDir: string | null;
 }
 
 // ── QC ────────────────────────────────────────────────────────────────────────

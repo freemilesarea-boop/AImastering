@@ -21,6 +21,7 @@ from typing import Any
 
 from app.utils.ffmpeg_wrapper import _FFMPEG_BIN
 from app.utils.logger import log
+from app.utils.vocal_protection import clamp_vocal_band_cut, VOCAL_PROTECTION
 
 
 # ── adynamicequalizer 가용성 검사 (1회 cached) ──────────────────────────────
@@ -156,6 +157,8 @@ def build_dynamic_eq_chain(
     mode: str,
     intensity: float = 1.0,
     use_adynamic_eq: bool | None = None,
+    *,
+    protection_log: list[dict] | None = None,
 ) -> dict[str, Any]:
     """
     모드 프리셋 기반 Dynamic EQ ffmpeg 필터 체인 생성.
@@ -192,6 +195,19 @@ def build_dynamic_eq_chain(
         scaled = round(band["reduction"] * intensity, 2)
         if scaled < 0.05:
             continue
+        # Vocal-protection clamp: 1.5–5 kHz cut amount ≤ 2.5 dB
+        clamped = clamp_vocal_band_cut(float(band["freq"]), scaled, str(band["mode"]))
+        if clamped < scaled - 0.005:
+            if protection_log is not None:
+                protection_log.append({
+                    "where":    f"dynamic_eq.{band['name']}@{band['freq']}Hz",
+                    "original": scaled,
+                    "clamped":  round(clamped, 2),
+                    "reason":   "vocal protection: 1.5-5 kHz cut limited to 2.5 dB",
+                })
+            scaled = round(clamped, 2)
+            if scaled < 0.05:
+                continue
         f = _adynamic_band(band, scaled) if use_adynamic_eq else _fallback_band(band, scaled)
         if not f:
             continue

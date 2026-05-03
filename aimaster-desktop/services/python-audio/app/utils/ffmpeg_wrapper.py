@@ -16,9 +16,43 @@ import json
 import os
 import re
 import subprocess
+import time
 from typing import Any
 
 from app.utils.logger import log
+
+# ── Optional debug recorder hook ─────────────────────────────────────────────
+# A pipeline-level DebugRecorder can be installed here and every _run() call
+# will mirror its (kind, cmd, stderr, ok, duration) into it.  None disables.
+
+_RECORDER: Any = None  # type: ignore[assignment]
+
+
+def set_debug_recorder(recorder: Any) -> None:
+    """Install (or clear with None) a DebugRecorder for the next ffmpeg calls."""
+    global _RECORDER
+    _RECORDER = recorder
+
+
+def _record_invocation(
+    kind: str, cmd: list[str], stderr: str,
+    ok: bool, duration_sec: float, filter_str: str = "",
+) -> None:
+    """Best-effort mirror of an ffmpeg/ffprobe invocation into the recorder."""
+    rec = _RECORDER
+    if rec is None:
+        return
+    try:
+        rec.record_ffmpeg(
+            kind=kind,
+            cmd=cmd,
+            filter_str=filter_str,
+            stderr=stderr,
+            ok=ok,
+            duration_sec=duration_sec,
+        )
+    except Exception as exc:
+        log("DEBUG", f"recorder hook failed: {exc}")
 
 
 # ── Binary paths ──────────────────────────────────────────────────────────────
@@ -49,12 +83,22 @@ class FFmpegError(RuntimeError):
 
 # ── Internal runner ───────────────────────────────────────────────────────────
 
-def _run(cmd: list[str], *, timeout: int = 300) -> tuple[str, str]:
+def _run(
+    cmd: list[str],
+    *,
+    timeout: int = 300,
+    kind: str = "ffmpeg",
+    filter_str: str = "",
+) -> tuple[str, str]:
     """
     Execute a command and return (stdout, stderr).
     Raises FFmpegError on non-zero exit or missing binary.
+
+    `kind` and `filter_str` are forwarded to the optional DebugRecorder so
+    a debug bundle can later identify which ffmpeg call produced which log.
     """
-    log("DEBUG", f"exec: {' '.join(cmd[:8])}" + (" ..." if len(cmd) > 8 else ""))
+    log("DEBUG", f"exec[{kind}]: {' '.join(cmd[:8])}" + (" ..." if len(cmd) > 8 else ""))
+    t0 = time.time()
     try:
         proc = subprocess.run(
             cmd,
@@ -65,18 +109,22 @@ def _run(cmd: list[str], *, timeout: int = 300) -> tuple[str, str]:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
+        _record_invocation(kind, cmd, "<timeout>", False, time.time() - t0, filter_str)
         raise FFmpegError(
             f"처리 시간이 초과되었습니다 ({timeout}초). 파일이 너무 크거나 시스템이 느릴 수 있습니다."
         )
     except FileNotFoundError:
         bin_name = cmd[0]
+        _record_invocation(kind, cmd, "<not found>", False, time.time() - t0, filter_str)
         raise FFmpegError(
             f"'{bin_name}'을 찾을 수 없습니다. FFmpeg가 올바르게 설치되어 있는지 확인해주세요.\n"
             f"설치 방법: brew install ffmpeg (macOS) / apt install ffmpeg (Linux)"
         )
 
+    elapsed = time.time() - t0
     if proc.returncode != 0:
         log("ERROR", f"{cmd[0]} exited {proc.returncode}:\n{proc.stderr[-3000:]}")
+        _record_invocation(kind, cmd, proc.stderr or "", False, elapsed, filter_str)
         stderr_lower = proc.stderr.lower()
         if "no such file" in stderr_lower or "does not exist" in stderr_lower:
             user_msg = "파일을 찾을 수 없습니다. 파일이 이동되거나 삭제되었는지 확인해주세요."
@@ -88,6 +136,7 @@ def _run(cmd: list[str], *, timeout: int = 300) -> tuple[str, str]:
             user_msg = "오디오 처리 중 오류가 발생했습니다. 파일 형식이나 내용을 확인해주세요."
         raise FFmpegError(user_msg, proc.stderr)
 
+    _record_invocation(kind, cmd, proc.stderr or "", True, elapsed, filter_str)
     return proc.stdout, proc.stderr
 
 
@@ -100,7 +149,7 @@ def ffprobe_info(file_path: str) -> dict[str, Any]:
         "-print_format", "json",
         "-show_streams", "-show_format",
         file_path,
-    ])
+    ], kind="ffprobe")
     try:
         return json.loads(stdout)
     except json.JSONDecodeError as exc:
@@ -115,6 +164,89 @@ def parse_audio_stream(probe: dict[str, Any]) -> dict[str, Any]:
         (s for s in probe.get("streams", []) if s.get("codec_type") == "audio"),
         {},
     )
+
+
+def extract_file_info(probe: dict[str, Any], file_path: str = "") -> dict[str, Any]:
+    """
+    Build a rich input-file metadata dict from an ffprobe result.
+
+    Captures everything the debug bundle needs to reproduce a user-specific
+    quality issue: codec, sample rate, bit depth, channels, duration, file
+    size, container, bitrate (declared vs. nominal), and a best-effort
+    VBR / CBR classification for compressed inputs.
+    """
+    audio = parse_audio_stream(probe)
+    fmt = probe.get("format", {})
+    codec = audio.get("codec_name", "unknown")
+    fmt_name = str(fmt.get("format_name", "")).lower()
+    long_name = str(fmt.get("format_long_name", ""))
+
+    bit_rate = None
+    try:
+        if audio.get("bit_rate"):
+            bit_rate = int(audio["bit_rate"])
+        elif fmt.get("bit_rate"):
+            bit_rate = int(fmt["bit_rate"])
+    except (TypeError, ValueError):
+        bit_rate = None
+
+    size_bytes = None
+    try:
+        if fmt.get("size"):
+            size_bytes = int(fmt["size"])
+        elif file_path and os.path.exists(file_path):
+            size_bytes = os.path.getsize(file_path)
+    except (TypeError, ValueError, OSError):
+        size_bytes = None
+
+    duration = 0.0
+    try:
+        duration = float(fmt.get("duration") or audio.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+
+    # ── VBR / CBR detection (best-effort) ──
+    # · MP3 with Xing/Info VBR header → ffprobe sets tags.encoder_info or
+    #   format reports a varying frame size; we fall back to checking whether
+    #   computed bitrate (size * 8 / duration) matches declared bitrate.
+    vbr: str | None = None
+    if codec in ("mp3", "aac", "opus", "vorbis", "ac3", "wma"):
+        tags: dict[str, Any] = {}
+        tags.update(audio.get("tags") or {})
+        tags.update(fmt.get("tags") or {})
+        encoder = str(tags.get("encoder", "")).lower()
+        if "vbr" in encoder or "lavc" in encoder and "vbr" in encoder:
+            vbr = "VBR"
+        elif "cbr" in encoder:
+            vbr = "CBR"
+        elif duration > 0 and size_bytes and bit_rate:
+            computed_kbps = (size_bytes * 8.0) / duration / 1000.0
+            declared_kbps = bit_rate / 1000.0
+            # Ratio close to 1.0 → CBR; > 1.05 difference is typical of VBR
+            ratio = abs(computed_kbps - declared_kbps) / max(1.0, declared_kbps)
+            vbr = "CBR" if ratio < 0.05 else "VBR-suspected"
+        else:
+            vbr = "unknown"
+
+    return {
+        "path":          file_path,
+        "name":          os.path.basename(file_path) if file_path else None,
+        "codec":         codec,
+        "codecLongName": audio.get("codec_long_name"),
+        "sampleRate":    int(audio.get("sample_rate", 0) or 0),
+        "channels":      int(audio.get("channels", 0) or 0),
+        "channelLayout": audio.get("channel_layout"),
+        "bitDepth":      parse_bit_depth(audio),
+        "sampleFmt":     audio.get("sample_fmt"),
+        "bitRateBps":    bit_rate,
+        "sizeBytes":     size_bytes,
+        "durationSec":   round(duration, 3),
+        "containerFormat": fmt_name,
+        "containerLongName": long_name,
+        "vbrCbr":        vbr,
+        "encoderTag":    (audio.get("tags") or {}).get("encoder")
+                         or (fmt.get("tags") or {}).get("encoder"),
+    }
 
 
 def parse_bit_depth(audio_stream: dict[str, Any]) -> int:
@@ -160,7 +292,7 @@ def loudnorm_pass1(
         "-i", file_path,
         "-af", filter_str,
         "-f", "null", "-",
-    ])
+    ], kind="loudnorm_pass1", filter_str=filter_str)
 
     # loudnorm JSON is embedded in stderr — find the LAST complete {...} block
     last_close = stderr.rfind("}")
@@ -246,7 +378,7 @@ def loudnorm_pass2(
         "-ar", str(sample_rate),
         "-acodec", codec,
         output_path,
-    ])
+    ], kind="loudnorm_pass2", filter_str=af)
     log("DEBUG", f"pass2 stderr tail:\n{stderr[-400:]}")
     return output_path
 
@@ -298,7 +430,7 @@ def apply_limiter(
         "-ar", str(sample_rate),
         "-acodec", codec,
         output_path,
-    ])
+    ], kind="limiter", filter_str=limiter)
     log("DEBUG", f"limiter stderr tail:\n{stderr[-200:]}")
     return output_path
 
@@ -335,7 +467,7 @@ def export_preview_mp3(wav_path: str, mp3_path: str, bitrate: str = "320k") -> s
         "-acodec", "libmp3lame",
         "-b:a", bitrate,
         mp3_path,
-    ])
+    ], kind="preview_mp3")
     return mp3_path
 
 
@@ -362,5 +494,5 @@ def apply_filter_chain(
         "-ar", str(sample_rate),
         "-acodec", codec,
         output_path,
-    ])
+    ], kind="filter_chain", filter_str=af_chain)
     return output_path

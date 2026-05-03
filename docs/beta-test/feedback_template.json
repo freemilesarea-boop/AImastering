@@ -1,0 +1,88 @@
+{
+  "$schema":  "Use this JSON to submit a structured beta-test report. All fields are optional except 'tester' and 'tracks[*].title'.",
+  "version":  "v3.4.1",
+  "submittedAt": "2026-MM-DDTHH:MM:SSZ",
+
+  "tester": {
+    "nickname":   "(your name)",
+    "appVersion": "v3.4.1",
+    "os":         "macOS / Windows / Linux",
+    "ffmpegBundled": null,
+    "previousVersion": "v3.3 / v3.2 / 없음"
+  },
+
+  "tracks": [
+    {
+      "title":       "(track title)",
+      "artist":      "(artist)",
+      "genre":       "(K-Pop / EDM / Ballad / Rock / Hip-Hop / ...)",
+      "inputFormat": "WAV",
+      "durationSec": 0,
+
+      "scenarioA_kpop_loud": {
+        "ran":              true,
+        "score1to5":        null,
+        "vocalClarity":     "good / ok / bad",
+        "loudnessStability": "good / ok / bad",
+        "balance":          "good / ok / bad",
+        "radioFeel":        "none / slight / strong",
+        "compareToPrev": {
+          "vocal":         "better / same / worse / na",
+          "loudness":      "better / same / worse / na",
+          "background":    "better / same / worse / na",
+          "naturalness":   "better / same / worse / na"
+        },
+        "biggestImprovement": "",
+        "biggestIssue":       "",
+        "freeNotes":          ""
+      },
+
+      "scenarioB_preset": {
+        "ran":               true,
+        "score1to5":         null,
+        "recommendedPresetKey": "(e.g. pop_ballad)",
+        "recommendationFit": "perfect / ok / off",
+        "vocalClarity":      "good / ok / bad",
+        "balance":           "good / ok / bad",
+        "freeNotes":         ""
+      },
+
+      "scenarioC_reference": {
+        "ran":           true,
+        "score1to5":     null,
+        "referenceTitle": "(track used as reference)",
+        "warningsShown": [],
+        "warningsAppropriate": "yes / over_sensitive / under_sensitive",
+        "similarityToReference": "very_close / close / different",
+        "matchScore":   null,
+        "freeNotes":    ""
+      },
+
+      "engineMetrics_optional": {
+        "_comment": "Paste these straight from the result JSON if available — the analyzer script will cross-check them with your subjective ratings.",
+        "vocalLossDb":        null,
+        "crestFactorDropPct": null,
+        "lraDropPct":         null,
+        "limiterCheckOverall": null,
+        "qualityCheckOverall": null,
+        "referenceMatchOverall": null,
+        "vocalProtectionActive": null,
+        "appliedSafeModes":   []
+      }
+    }
+  ],
+
+  "overall": {
+    "biggestImprovement":  "",
+    "biggestRegression":   "",
+    "favouriteFeature":    "",
+    "missingFeature":      "",
+    "freeNotes":           ""
+  },
+
+  "attachments": {
+    "debugBundles":  [],
+    "outputFiles":   [],
+    "referenceFiles": []
+  }
+}
