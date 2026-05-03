@@ -47,6 +47,8 @@ from app.mastering.reference_matching import (
     compute_target_profile,
     compute_match_score,
     derive_eq_correction,
+    validate_reference,
+    compare_input_vs_reference,
     ReferenceProfile,
 )
 from app.mastering.multiband import build_multiband_eq_chain, BAND_KEYS
@@ -153,6 +155,18 @@ def run_iterative_mastering(
     # ── 2. Analyze input (used for initial EQ correction derivation) ──
     progress(job_id, 8, "입력 파일 분석 중")
     input_profile = analyze_reference(input_path)
+
+    # ── 2.5. Validate reference + compare input/reference compatibility ──
+    # These warnings catch the "user picked a bad reference" case BEFORE
+    # the iterative loop wastes time on it.
+    reference_warnings: list[dict[str, str]] = []
+    if reference_path:
+        reference_warnings = validate_reference(ref_profile)
+        compat_warnings   = compare_input_vs_reference(input_profile, ref_profile)
+        reference_warnings.extend(compat_warnings)
+        for w in reference_warnings:
+            log("WARN" if w["severity"] in ("warn", "danger") else "INFO",
+                f"[iterative] reference: [{w['code']}] {w['userMessage']}")
 
     # Initial band corrections derived from input vs target
     band_corrections = derive_eq_correction(input_profile, target)
@@ -304,6 +318,21 @@ def run_iterative_mastering(
     }
     out["targetProfile"] = target
     out["appliedBandCorrections"] = final_iter.get("appliedBands", [])
+
+    # ── 4.5. Reference-quality guidance — surface to the UI ──
+    out["referenceWarnings"] = reference_warnings
+    # Also fold danger/warn-level reference issues into the standard
+    # pipelineWarnings list so existing UI banners pick them up.
+    if reference_warnings:
+        existing = list(out.get("pipelineWarnings") or [])
+        for w in reference_warnings:
+            if w["severity"] in ("warn", "danger"):
+                existing.append({
+                    "code":  w["code"],
+                    "level": "error" if w["severity"] == "danger" else "warning",
+                    "userMessage": w["userMessage"],
+                })
+        out["pipelineWarnings"] = existing
 
     # Recommendations specific to the iterative loop
     recs = list(out.get("modeRecommendations") or [])

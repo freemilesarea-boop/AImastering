@@ -329,6 +329,30 @@ export interface MasteringResult {
   referenceProfile?:  ReferenceProfile;
   targetProfile?:     TargetProfile;
   appliedBandCorrections?: AppliedBandCorrection[];
+  /** v3.4.1 — reference validation + genre-mismatch warnings */
+  referenceWarnings?: ReferenceWarning[];
+}
+
+export interface ReferenceWarning {
+  code: string;
+  severity: 'info' | 'warn' | 'danger';
+  userMessage: string;
+}
+
+export interface ReferencePreset {
+  key: string;
+  label: string;
+  description: string;
+  bestFor: string;
+  targetLufs: number;
+  targetLra: number;
+}
+
+export interface ReferencePresetRecommendation {
+  key: string;
+  label: string;
+  reason: string;
+  targetLufs: number;
 }
 
 // ── v3.4 Reference matching shared types ────────────────────────────────────

@@ -313,6 +313,202 @@ def compute_match_score(
 
 # ── EQ correction derivation ────────────────────────────────────────────────
 
+# ── Reference validation (catch bad references before mastering) ────────────
+
+# Loudness sanity — anything below this looks like an unmastered demo;
+# anything above points at clipping / mis-encoded MP3.
+_REF_LUFS_TOO_QUIET = -25.0
+_REF_LUFS_TOO_LOUD  = -6.0
+_REF_TP_DANGEROUS   = -0.3
+_REF_LRA_BRICKWALL  = 1.0
+_REF_LRA_TOO_OPEN   = 16.0   # a finished master rarely exceeds 15 LU
+
+
+def validate_reference(profile: ReferenceProfile) -> list[dict[str, str]]:
+    """
+    Inspect a `ReferenceProfile` and surface anything that looks wrong.
+    Used by the iterative orchestrator to warn the user BEFORE mastering
+    starts, so they can swap a bad reference instead of running the loop
+    and getting unpredictable results.
+
+    Returns: [{code, severity, userMessage}, ...]
+    """
+    warnings: list[dict[str, str]] = []
+    if not profile.available:
+        warnings.append({
+            "code":     "REFERENCE_UNAVAILABLE",
+            "severity": "danger",
+            "userMessage": "레퍼런스 파일을 분석할 수 없습니다. 파일이 손상되었거나 지원되지 않는 형식일 수 있습니다.",
+        })
+        return warnings
+
+    # ── LUFS sanity ──
+    lufs = profile.integratedLufs
+    if lufs <= _REF_LUFS_TOO_QUIET:
+        warnings.append({
+            "code":     "REFERENCE_TOO_QUIET",
+            "severity": "warn",
+            "userMessage": (
+                f"레퍼런스가 {lufs:.1f} LUFS로 너무 작습니다. "
+                f"마스터링되지 않은 데모일 수 있습니다 — 발매된 곡을 권장합니다."
+            ),
+        })
+    elif lufs >= _REF_LUFS_TOO_LOUD:
+        warnings.append({
+            "code":     "REFERENCE_TOO_LOUD",
+            "severity": "warn",
+            "userMessage": (
+                f"레퍼런스가 {lufs:.1f} LUFS로 너무 큽니다. "
+                f"클리핑되었거나 잘못된 인코딩일 수 있습니다."
+            ),
+        })
+
+    # ── True peak ──
+    if profile.truePeakDbtp >= _REF_TP_DANGEROUS:
+        warnings.append({
+            "code":     "REFERENCE_TP_OVER",
+            "severity": "warn",
+            "userMessage": (
+                f"레퍼런스 true peak 가 {profile.truePeakDbtp:+.2f} dBTP — "
+                f"인터샘플 피크 위험. 발매되지 않은 mix 일 수 있습니다."
+            ),
+        })
+
+    # ── LRA sanity ──
+    lra = profile.lra
+    if lra < _REF_LRA_BRICKWALL:
+        warnings.append({
+            "code":     "REFERENCE_BRICKWALL",
+            "severity": "info",
+            "userMessage": (
+                f"레퍼런스 LRA가 {lra:.1f} LU로 매우 낮습니다 — 이미 brickwall "
+                f"마스터링된 곡입니다. 결과도 비슷한 압축감을 가질 수 있습니다."
+            ),
+        })
+    elif lra > _REF_LRA_TOO_OPEN:
+        warnings.append({
+            "code":     "REFERENCE_VERY_DYNAMIC",
+            "severity": "warn",
+            "userMessage": (
+                f"레퍼런스 LRA가 {lra:.1f} LU로 매우 큽니다. 마스터링되지 "
+                f"않은 mix 또는 클래식/재즈 라이브 녹음일 수 있습니다."
+            ),
+        })
+
+    # ── Format / duration sanity ──
+    if profile.durationSec > 0 and profile.durationSec < 10.0:
+        warnings.append({
+            "code":     "REFERENCE_TOO_SHORT",
+            "severity": "warn",
+            "userMessage": (
+                f"레퍼런스가 {profile.durationSec:.0f}초로 짧습니다. "
+                f"30초 이상 길이의 곡을 권장합니다 (정확한 측정을 위해)."
+            ),
+        })
+
+    return warnings
+
+
+# ── Input vs Reference compatibility (genre / spectrum mismatch) ─────────────
+
+# Per-band tolerance (dB) — spectrum is "compatible" if every band is within ±X.
+_BAND_MISMATCH_WARN_DB   = 8.0    # any single band off by this much → warn
+_BAND_MISMATCH_DANGER_DB = 14.0   # any single band off by this much → danger
+# LRA delta — input far more dynamic than reference suggests genre mismatch
+_LRA_GAP_WARN_LU = 6.0
+
+
+def compare_input_vs_reference(
+    input_profile: ReferenceProfile,
+    reference: ReferenceProfile,
+) -> list[dict[str, str]]:
+    """
+    Compare the input file to the chosen reference and flag genre / spectral
+    mismatches.  This is the "장르가 너무 다르면 경고" check.
+
+    We can't actually identify *genre* from audio alone, but we can detect
+    the SHAPE of the difference and surface it in plain language.
+    """
+    warnings: list[dict[str, str]] = []
+    if not (input_profile.available and reference.available):
+        return warnings
+
+    # ── Per-band shape compare ──
+    # Normalise each profile so they're compared on relative balance, not
+    # absolute level (the iterative loop matches absolute levels separately).
+    in_bands  = input_profile.bands  or {}
+    ref_bands = reference.bands or {}
+
+    def _normalise(d: dict[str, float]) -> dict[str, float]:
+        if not d:
+            return {}
+        avg = sum(d.values()) / len(d)
+        return {k: v - avg for k, v in d.items()}
+
+    in_norm  = _normalise(in_bands)
+    ref_norm = _normalise(ref_bands)
+
+    biggest_offender: tuple[str, float] | None = None
+    for k in ("low", "mid", "vocal", "high"):
+        if k in in_norm and k in ref_norm:
+            diff = abs(in_norm[k] - ref_norm[k])
+            if biggest_offender is None or diff > biggest_offender[1]:
+                biggest_offender = (k, diff)
+
+    if biggest_offender:
+        band, diff_db = biggest_offender
+        if diff_db >= _BAND_MISMATCH_DANGER_DB:
+            warnings.append({
+                "code":     "GENRE_MISMATCH_DANGER",
+                "severity": "danger",
+                "userMessage": (
+                    f"입력 파일과 레퍼런스의 {band} 대역 모양이 {diff_db:.1f} dB "
+                    f"차이 — 장르가 매우 다른 것 같습니다. 결과가 부자연스러울 수 있습니다."
+                ),
+            })
+        elif diff_db >= _BAND_MISMATCH_WARN_DB:
+            warnings.append({
+                "code":     "GENRE_MISMATCH_WARN",
+                "severity": "warn",
+                "userMessage": (
+                    f"입력과 레퍼런스의 {band} 대역이 {diff_db:.1f} dB 다릅니다 — "
+                    f"비슷한 장르의 곡을 선택하면 더 좋은 결과가 나옵니다."
+                ),
+            })
+
+    # ── LRA gap (input hugely more dynamic than reference) ──
+    in_lra  = input_profile.lra
+    ref_lra = reference.lra
+    if in_lra is not None and ref_lra is not None:
+        gap = in_lra - ref_lra
+        if gap >= _LRA_GAP_WARN_LU:
+            warnings.append({
+                "code":     "INPUT_FAR_MORE_DYNAMIC",
+                "severity": "warn",
+                "userMessage": (
+                    f"입력 LRA {in_lra:.1f} LU 가 레퍼런스 ({ref_lra:.1f} LU) "
+                    f"보다 훨씬 큽니다. 입력이 mastered 되지 않은 mix 같은데 "
+                    f"reference 는 이미 마스터링된 곡입니다."
+                ),
+            })
+
+    # ── Stereo width gross mismatch ──
+    if (input_profile.stereoWidth is not None
+        and reference.stereoWidth is not None):
+        sw_diff = abs(input_profile.stereoWidth - reference.stereoWidth)
+        if sw_diff >= 0.4:
+            warnings.append({
+                "code":     "STEREO_WIDTH_MISMATCH",
+                "severity": "info",
+                "userMessage": (
+                    f"입력의 스테레오 폭({input_profile.stereoWidth:.2f}) 과 "
+                    f"레퍼런스({reference.stereoWidth:.2f}) 가 크게 다릅니다."
+                ),
+            })
+
+    return warnings
+
+
 def derive_eq_correction(
     input_profile: ReferenceProfile,
     target: dict[str, Any],
