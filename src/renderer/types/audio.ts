@@ -358,6 +358,105 @@ export interface MasteringResult {
   qualityCheck?:          QualityCheckResult
   processingChain?:       string[]
   stageLog?:              Array<{ name: string; ok: boolean; detail: string }>
+
+  // ───────────────────────────────────────────────────────────
+  // v3.3 — Debug-quality system (vocal-mush / radio-quality / over-limiting)
+  // ───────────────────────────────────────────────────────────
+  limiterCheck?:        LimiterCheckReport
+  suspectSegments?:     SuspectSegment[]
+  segmentAnalysis?:     {
+    windowSec: number
+    summary:   SegmentSummary | null
+    windowCount: number
+  }
+  modeRecommendations?: ModeRecommendation[]
+  inputFileInfo?:       InputFileInfo
+  debugSummary?:        DebugSummary
+  appliedSafeModes?:    string[]
+}
+
+// ─────────────────────────────────────────────────────
+// Debug-quality system types
+// ─────────────────────────────────────────────────────
+export interface InputFileInfo {
+  path:           string | null
+  name:           string | null
+  codec:          string
+  codecLongName?: string | null
+  sampleRate:     number
+  channels:       number
+  channelLayout?: string | null
+  bitDepth:       number
+  sampleFmt?:     string | null
+  bitRateBps:     number | null
+  sizeBytes:      number | null
+  durationSec:    number
+  containerFormat: string
+  vbrCbr:         'CBR' | 'VBR' | 'VBR-suspected' | 'unknown' | null
+  encoderTag?:    string | null
+}
+
+export interface SuspectSegment {
+  start:    number
+  end:      number
+  reason:   'excessive_limiter_reduction' | 'brickwall_flat' |
+            'sudden_rms_drop' | 'tight_crest' | string
+  severity: 'info' | 'warn' | 'danger'
+  details:  string
+}
+
+export interface SegmentSummary {
+  rmsP05:               number
+  rmsP50:               number
+  rmsP95:               number
+  rmsSpread:            number
+  minCrestDb:           number
+  ceilingAttachedFrac:  number
+}
+
+export interface LimiterCheckItem {
+  name:    string
+  status:  'ok' | 'warn' | 'danger'
+  message: string
+  value:   number | string | null
+}
+
+export interface LimiterCheckReport {
+  overall:  'ok' | 'warn' | 'danger'
+  items:    LimiterCheckItem[]
+  metrics:  {
+    crestDelta?:           number | null
+    lraReductionRatio?:    number
+    ceilingAttachedFrac?:  number
+    brickwallSampleRatio?: number
+    lufsOvershoot?:        number
+    ispCorrectionDb?:      number
+  }
+  recommendations: string[]
+}
+
+export type SafeModeKey = 'safe' | 'vocal_safe' | 'low_limit' | 'convert_to_wav'
+
+export interface ModeRecommendation {
+  mode:     SafeModeKey | string
+  reason:   string
+  severity: 'info' | 'warn' | 'danger'
+  evidence: string[]
+}
+
+export interface DebugSummary {
+  jobId:             string
+  debugMode:         boolean
+  elapsedSec:        number
+  ffmpegInvocations: number
+  stages:            string[]
+  warnings:          Array<{ t: number; level: string; msg: string; data?: unknown }>
+  errors:            Array<{ t: number; level: string; msg: string; data?: unknown }>
+  filterChain:       Record<string, unknown>
+  limiterQc:         Record<string, unknown>
+  suspectSegments:   SuspectSegment[]
+  recommendations:   ModeRecommendation[]
+  artifactDir:       string | null
 }
 
 // ─────────────────────────────────────────────────────

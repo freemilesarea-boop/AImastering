@@ -14,6 +14,10 @@ import traceback
 from typing import Any, Callable
 
 from app.mastering.pipeline import run_pipeline
+from app.mastering.safe_modes import (
+    apply_overrides_to_pipeline_args,
+    build_safe_mode_overrides,
+)
 from app.utils.ffmpeg_wrapper import FFmpegError
 from app.utils.logger import log
 
@@ -60,31 +64,51 @@ def master_file(
     # Node analyze 단계가 측정해서 넘겨주는 사전 라우드니스 (선택).
     pre_loudness      = params.get("pre_loudness") or None
 
-    log("INFO", f"master_file: style={style}, target={target_lufs} LUFS / {target_tp} dBTP, "
-                f"limiter={limiter_strength}, sr={sample_rate}, bits={bit_depth}, ai={apply_ai}")
+    # v3.3 — debug-quality system params
+    safe_modes_raw  = params.get("safe_modes") or []
+    if isinstance(safe_modes_raw, str):
+        safe_modes_raw = [safe_modes_raw]
+    debug_logging   = params.get("debug_logging")  # None = use env
+
+    pipeline_kwargs: dict[str, Any] = {
+        "style": style,
+        "target_lufs": target_lufs,
+        "target_tp": target_tp,
+        "lra": lra,
+        "sample_rate": sample_rate,
+        "bit_depth": bit_depth,
+        "apply_ai_corrections": apply_ai,
+        "ai_detections": ai_dets,
+        "limiter_strength": limiter_strength,
+        "saturation_amount": (float(saturation_amount) if saturation_amount is not None else None),
+        "stereo_width": (float(stereo_width) if stereo_width is not None else None),
+        "output_gain_db": output_gain_db,
+        "dynamic_eq_intensity": dyn_eq_intensity,
+        "generate_waveforms": gen_waveforms,
+        "pre_loudness": (dict(pre_loudness) if isinstance(pre_loudness, dict) else None),
+        "debug_logging": (None if debug_logging is None else bool(debug_logging)),
+    }
+
+    overrides = build_safe_mode_overrides(list(safe_modes_raw))
+    apply_overrides_to_pipeline_args(pipeline_kwargs, overrides)
+
+    log("INFO", f"master_file: style={style}, target={pipeline_kwargs['target_lufs']} LUFS / "
+                f"{target_tp} dBTP, limiter={pipeline_kwargs['limiter_strength']}, "
+                f"sr={sample_rate}, bits={bit_depth}, ai={apply_ai}, "
+                f"safe_modes={safe_modes_raw}")
 
     try:
         result = run_pipeline(
             input_path,
             output_path,
-            style=style,
-            target_lufs=target_lufs,
-            target_tp=target_tp,
-            lra=lra,
-            sample_rate=sample_rate,
-            bit_depth=bit_depth,
-            apply_ai_corrections=apply_ai,
-            ai_detections=ai_dets,
-            limiter_strength=limiter_strength,
-            saturation_amount=(float(saturation_amount) if saturation_amount is not None else None),
-            stereo_width=(float(stereo_width) if stereo_width is not None else None),
-            output_gain_db=output_gain_db,
-            dynamic_eq_intensity=dyn_eq_intensity,
-            generate_waveforms=gen_waveforms,
-            pre_loudness=(dict(pre_loudness) if isinstance(pre_loudness, dict) else None),
             job_id=job_id,
             progress=send_progress,
+            **pipeline_kwargs,
         )
+        # Echo back the exact safe-mode set that was applied so the UI can
+        # display the resulting chip / banner.
+        if safe_modes_raw:
+            result["appliedSafeModes"] = list(safe_modes_raw)
         return result
 
     except FFmpegError as exc:

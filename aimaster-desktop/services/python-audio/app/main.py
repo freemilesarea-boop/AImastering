@@ -51,7 +51,10 @@ _stderr_bin = _get_stderr_binary()
 
 from app.analyzers.analyzer import analyze_file
 from app.mastering.mastering import master_file
+from app.mastering.safe_modes import list_safe_modes
 from app.qc.qc_checker import run_qc
+from app.utils.debug_bundle import export_debug_bundle
+from app.utils.env_info import collect_env_info
 from app.utils.logger import log
 
 
@@ -98,10 +101,68 @@ def _handle_qc(params: dict, _job_id: str) -> dict:
     )
 
 
+def _handle_env_info(_params: dict, _job_id: str) -> dict:
+    """Return host / runtime info — used by the UI's debug panel."""
+    return {
+        "environment": collect_env_info(),
+        "safeModes":   list_safe_modes(),
+    }
+
+
+def _handle_export_debug_bundle(params: dict, _job_id: str) -> dict:
+    """
+    Export a debug bundle zip from a previous mastering result.
+
+    Expected params:
+      output_path             — where to write the .zip
+      debug_summary           — value of result.debugSummary (recorder summary)
+      mastering_result        — full result dict (used for inputFileInfo, etc.)
+      include_audio           — bool (default False)
+      user_consent_audio      — bool (default False) — must be true to bundle audio
+    """
+    output_zip = params.get("output_path")
+    if not output_zip:
+        raise ValueError("params.output_path is required")
+    summary = params.get("debug_summary") or {}
+    full    = params.get("mastering_result") or {}
+
+    # Build a recorder-equivalent dict from the result (for callers who only
+    # have the JSON-RPC response, not the in-process recorder).
+    recorder_dict = {
+        "jobId":             summary.get("jobId") or full.get("jobId") or "unknown",
+        "environment":       (summary.get("environment") or {}) or collect_env_info(),
+        "input":             full.get("inputFileInfo") or {},
+        "masteringSettings": full.get("analysisReport", {}).get("mastering") or {},
+        "filterChain":       summary.get("filterChain") or {},
+        "stages":            summary.get("stages") or [],
+        "events":            (summary.get("warnings") or []) + (summary.get("errors") or []),
+        "ffmpegInvocations": [],
+        "metricsBefore":     full.get("metricComparison") and {} or {},
+        "metricsAfter":      {},
+        "limiterQc":         full.get("limiterCheck") or {},
+        "suspectSegments":   full.get("suspectSegments") or [],
+        "recommendations":   full.get("modeRecommendations") or [],
+        "outputPath":        full.get("outputPath", ""),
+        "artifactDir":       summary.get("artifactDir"),
+    }
+    return export_debug_bundle(
+        recorder_dict,
+        output_zip,
+        quality_check         = full.get("qualityCheck"),
+        limiter_check         = full.get("limiterCheck"),
+        waveform_after_path   = full.get("afterWaveformPath", ""),
+        waveform_before_path  = full.get("beforeWaveformPath", ""),
+        include_audio         = bool(params.get("include_audio", False)),
+        user_consent_audio    = bool(params.get("user_consent_audio", False)),
+    )
+
+
 HANDLERS = {
-    "analyze":  _handle_analyze,
-    "master":   _handle_master,
-    "qc_check": _handle_qc,
+    "analyze":             _handle_analyze,
+    "master":              _handle_master,
+    "qc_check":            _handle_qc,
+    "env_info":            _handle_env_info,
+    "export_debug_bundle": _handle_export_debug_bundle,
 }
 
 

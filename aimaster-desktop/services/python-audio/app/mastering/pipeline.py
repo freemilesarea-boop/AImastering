@@ -37,6 +37,8 @@ from app.utils.ffmpeg_wrapper import (
     export_preview_mp3,
     parse_audio_stream,
     parse_bit_depth,
+    extract_file_info,
+    set_debug_recorder,
 )
 from app.utils.audio_io import analyze_waveform, waveform_stats_to_dict
 from app.utils.isp_safety import apply_isp_safety
@@ -45,6 +47,8 @@ from app.utils.waveform_image import (
     generate_waveform_dual_png,
     WaveformImageError,
 )
+from app.utils.debug_logger import DebugRecorder
+from app.utils.env_info import is_debug_mode
 from app.mastering.eq import build_eq_filter, build_eq_filter_with_report
 from app.mastering.dynamics import build_dynamics_filter, describe_dynamics, get_comp_params, estimate_comp_gr
 from app.mastering.dynamic_eq import build_dynamic_eq_chain
@@ -55,8 +59,11 @@ from app.mastering.effects import (
     deesser_filter,
     get_mode_defaults as get_effects_defaults,
 )
+from app.mastering.safe_modes import recommend_modes
 from app.analysis.metrics import compute_metrics, build_metric_comparison
+from app.analysis.segment_analysis import compute_segment_timeseries
 from app.qc.quality_check import run_quality_check
+from app.qc.limiter_check import run_limiter_check
 from app.utils.logger import log
 
 # ── Quality-check thresholds ──────────────────────────────────────────────────
@@ -134,6 +141,7 @@ def _build_filter_chain(
     stereo_width: float | None = None,
     output_gain_db: float = 0.0,
     dynamic_eq_intensity: float = 1.0,
+    safe_mode_overrides: dict[str, Any] | None = None,
 ) -> tuple[str, list[str], list[dict], dict]:
     """
     Combine Stage-3 EQ → Stage-3.5 Dynamic EQ → Stage-4 dynamics → Stage-4.5
@@ -167,6 +175,27 @@ def _build_filter_chain(
 
     # Stage 3.5 — Dynamic EQ (모드 프리셋, ffmpeg adynamicequalizer 우선)
     dyn_eq_report = build_dynamic_eq_chain(style, intensity=dynamic_eq_intensity)
+
+    # Vocal Safe Mode: drop bands whose centre frequency lies in the 2-6 kHz
+    # vocal range so heavy cuts can't crush vocal presence.
+    so = safe_mode_overrides or {}
+    if so.get("vocal_band_protection"):
+        kept_bands = []
+        kept_parts = []
+        for band, part in zip(dyn_eq_report.get("bands", []),
+                              (dyn_eq_report.get("chain") or "").split(",")):
+            f = float(band.get("freq", 0))
+            if 2000.0 <= f <= 6000.0 and band.get("mode") == "cut":
+                continue  # skip this cut
+            kept_bands.append(band)
+            if part:
+                kept_parts.append(part)
+        dyn_eq_report = {
+            **dyn_eq_report,
+            "bands": kept_bands,
+            "chain": ",".join(kept_parts),
+        }
+
     dyn_eq_chain = dyn_eq_report.get("chain", "")
     if dyn_eq_chain and dyn_eq_report.get("bands"):
         engine = dyn_eq_report.get("engine", "fallback")
@@ -185,6 +214,8 @@ def _build_filter_chain(
     sat = saturation_amount if saturation_amount is not None else defaults["saturation"]
     width = stereo_width if stereo_width is not None else defaults["stereo_width"]
     use_deesser = bool(defaults.get("deesser", False))
+    if so.get("deesser_disabled"):
+        use_deesser = False
 
     deesser_str   = deesser_filter()        if use_deesser    else ""
     saturation_str = saturation_filter(sat) if sat > 0.001    else ""
@@ -233,6 +264,12 @@ def run_pipeline(
     # When provided, the pipeline skips its own raw loudnorm pass1
     # (saves ~20% of master time).
     pre_loudness: dict[str, float] | None = None,
+    # debug-quality system (v3.3): override settings produced by safe_modes
+    # build_safe_mode_overrides().  When present, the pipeline clamps a
+    # subset of parameters before running.
+    safe_mode_overrides: dict[str, Any] | None = None,
+    # Force-enable structured debug recorder (else env AIMASTER_DEBUG decides).
+    debug_logging: bool | None = None,
     job_id: str = "job",
     progress: ProgressCallback = _noop_progress,
 ) -> dict[str, Any]:
@@ -245,11 +282,48 @@ def run_pipeline(
     t_start = time.time()
     pipeline_warnings: list[dict[str, str]] = []
 
+    # ── Debug recorder (P0: input/env/ffmpeg/filter chain logging) ────────
+    debug_enabled = bool(debug_logging) if debug_logging is not None else is_debug_mode()
+    recorder = DebugRecorder(job_id=job_id, debug_mode=debug_enabled)
+    set_debug_recorder(recorder)
+    recorder.event("INFO", "pipeline started", style=style, debug=debug_enabled)
+    recorder.set_mastering_settings({
+        "style":            style,
+        "targetLufs":       target_lufs,
+        "targetTruePeak":   target_tp,
+        "lra":              lra,
+        "sampleRate":       sample_rate,
+        "bitDepth":         bit_depth,
+        "limiterStrength":  limiter_strength,
+        "saturationAmount": saturation_amount,
+        "stereoWidth":      stereo_width,
+        "outputGainDb":     output_gain_db,
+        "dynamicEqIntensity": dynamic_eq_intensity,
+        "applyAiCorrections": apply_ai_corrections,
+        "safeModeOverrides": safe_mode_overrides or {},
+    })
+
+    # ── Apply safe-mode overrides to local clamps ────────────────────────
+    overrides = safe_mode_overrides or {}
+    static_entry_gain_max = float(overrides.get("static_entry_gain_max", _STATIC_ENTRY_GAIN_MAX))
+    correction_gain_clamp = float(overrides.get("correction_gain_clamp", 12.0))
+    limiter_input_gain_clamp = (
+        float(overrides["limiter_input_gain_clamp"])
+        if "limiter_input_gain_clamp" in overrides else None
+    )
+    if overrides:
+        recorder.event("INFO", "safe-mode overrides active",
+                       modes=overrides.get("_appliedModes"),
+                       limiterInputGainClamp=limiter_input_gain_clamp,
+                       staticEntryGainMax=static_entry_gain_max,
+                       correctionGainClamp=correction_gain_clamp)
+
     # ═══════════════════════════════════════════════════════════════════════
     # Stage 1 — Input validation + spectral analysis
     # ═══════════════════════════════════════════════════════════════════════
     progress(job_id, 5, "입력 파일 확인 중")
     log("INFO", f"[pipeline] stage1 — validating + spectral analysis: {input_path}")
+    recorder.stage("stage1_input_validation", inputPath=input_path)
 
     if not os.path.exists(input_path):
         raise FFmpegError(f"파일을 찾을 수 없습니다: {os.path.basename(input_path)}")
@@ -265,6 +339,14 @@ def run_pipeline(
     input_channels    = int(audio.get("channels", 2))
     input_bit_depth   = parse_bit_depth(audio)
     input_duration    = float(fmt.get("duration") or audio.get("duration") or 0.0)
+
+    # Rich input metadata for debug bundle (codec, bitrate, VBR/CBR, container)
+    rich_input_info = extract_file_info(probe, input_path)
+    recorder.set_input_info(rich_input_info)
+    log("INFO", f"[pipeline] input: codec={rich_input_info['codec']} "
+                f"sr={rich_input_info['sampleRate']} ch={rich_input_info['channels']} "
+                f"bits={rich_input_info['bitDepth']} bitrate={rich_input_info['bitRateBps']} "
+                f"vbr={rich_input_info['vbrCbr']} container={rich_input_info['containerFormat']}")
 
     # Waveform + spectral balance analysis (soundfile/numpy)
     progress(job_id, 10, "스펙트럴 분석 중")
@@ -344,6 +426,7 @@ def run_pipeline(
         stereo_width=stereo_width,
         output_gain_db=output_gain_db,
         dynamic_eq_intensity=dynamic_eq_intensity,
+        safe_mode_overrides=overrides,
     )
 
     # Add soft clipper just before loudnorm (only when limiter will engage hard)
@@ -356,6 +439,15 @@ def run_pipeline(
     log("INFO", f"[pipeline] pre_filter: {pre_filter or '(none)'}")
     log("INFO", f"[pipeline] limiter strength: {limiter_strength}, "
                 f"target LUFS: {target_lufs}, TP: {target_tp}")
+    recorder.set_filter_chain(
+        preFilter=pre_filter,
+        appliedCorrections=list(applied_corrections),
+        eqMoves=list(eq_moves),
+        dynamicEq=dyn_eq_report,
+        limiterStrength=limiter_strength,
+    )
+    recorder.stage("stage3_filter_chain_built",
+                   length=len(pre_filter), parts=len(applied_corrections))
 
     # ═══════════════════════════════════════════════════════════════════════
     # Stage 5a — loudnorm pass-1 on FILTERED signal (accurate measurement)
@@ -437,6 +529,13 @@ def run_pipeline(
         log("INFO", "[pipeline] stage5/6 (static chain) — single ffmpeg pass")
 
         entry_gain, gain_warning = _static_entry_gain_db(target_lufs, pre_lufs)
+        # Safe-mode tighter clamp on entry gain (low_limit / safe modes)
+        if static_entry_gain_max < _STATIC_ENTRY_GAIN_MAX:
+            clamped = max(-static_entry_gain_max, min(static_entry_gain_max, entry_gain))
+            if abs(clamped - entry_gain) > 0.01:
+                recorder.event("INFO", "entry gain clamped by safe mode",
+                               original=entry_gain, clamped=clamped, max=static_entry_gain_max)
+                entry_gain = clamped
         static_entry_gain_db = entry_gain
         if gain_warning:
             pipeline_warnings.append({
@@ -448,7 +547,13 @@ def run_pipeline(
 
         # 안전 마진을 위해 alimiter limit 을 ceiling - 0.3 dB 로 (ISP oversample 부재 보완)
         lim_strength = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
-        lim_in_lin  = 10.0 ** (lim_strength["input_gain_db"] / 20.0)
+        # Safe-mode clamp on limiter input gain (low_limit / safe modes)
+        lim_input_gain_db = lim_strength["input_gain_db"]
+        if limiter_input_gain_clamp is not None and lim_input_gain_db > limiter_input_gain_clamp:
+            recorder.event("INFO", "limiter input gain clamped by safe mode",
+                           original=lim_input_gain_db, clamped=limiter_input_gain_clamp)
+            lim_input_gain_db = float(limiter_input_gain_clamp)
+        lim_in_lin  = 10.0 ** (lim_input_gain_db / 20.0)
         safe_ceiling = target_tp - 0.3
         lim_out_lin = 10.0 ** (safe_ceiling / 20.0)
 
@@ -523,6 +628,11 @@ def run_pipeline(
             pass
 
         lim_strength = LIMITER_STRENGTHS.get(limiter_strength, LIMITER_STRENGTHS["medium"])
+        lim_input_gain_db = lim_strength["input_gain_db"]
+        if limiter_input_gain_clamp is not None and lim_input_gain_db > limiter_input_gain_clamp:
+            recorder.event("INFO", "limiter input gain clamped by safe mode",
+                           original=lim_input_gain_db, clamped=limiter_input_gain_clamp)
+            lim_input_gain_db = float(limiter_input_gain_clamp)
         try:
             apply_limiter(
                 tmp_wav,
@@ -532,7 +642,7 @@ def run_pipeline(
                 release_ms=lim_strength["release_ms"],
                 sample_rate=sample_rate,
                 bit_depth=bit_depth,
-                level_in_db=lim_strength["input_gain_db"],
+                level_in_db=lim_input_gain_db,
             )
         except FFmpegError as exc:
             log("ERROR", f"limiter failed: {exc}\nstderr:\n{exc.stderr}")
@@ -581,8 +691,9 @@ def run_pipeline(
         if abs(lufs_delta) > _LUFS_TOLERANCE or tp_over > _TP_GUARD_DB:
             # v3.2 R1: ±12 dB 까지 허용 — push 부족 / 과다 양방향 안전.
             # alimiter level_in=1.0 (보정 단계에서 추가 push 없음) 과 결합되어
-            # 정확한 LUFS 도달을 보장.
-            correction_gain_db = max(-12.0, min(12.0, lufs_delta))
+            # 정확한 LUFS 도달을 보장.  Safe-mode 가 활성이면 clamp 더 좁힘.
+            corr_clamp = float(correction_gain_clamp)
+            correction_gain_db = max(-corr_clamp, min(corr_clamp, lufs_delta))
             log("INFO", f"[pipeline] correction pass: gain={correction_gain_db:+.2f} dB, "
                         f"tp_over={tp_over:+.2f} dB")
             progress(job_id, 84, f"보정 패스 적용 중 ({correction_gain_db:+.1f} dB)")
@@ -803,7 +914,7 @@ def run_pipeline(
         })
 
     # ── v3.2 P2 — Quality check (마스터링 결과 자동 검사) ──────────────────
-    progress(job_id, 98, "품질 자동 검사 중")
+    progress(job_id, 96, "품질 자동 검사 중")
     try:
         quality_check_report = run_quality_check(
             output_path,
@@ -818,6 +929,76 @@ def run_pipeline(
             "code": "QC_FAILED", "level": "warning",
             "userMessage": "품질 자동 검사에 실패했습니다.",
         })
+
+    # ── v3.3 P1 — Limiter excess check ─────────────────────────────────────
+    limiter_check_report: dict[str, Any] | None = None
+    try:
+        recorder.stage("limiter_check")
+        limiter_check_report = run_limiter_check(
+            output_path,
+            target_lufs=target_lufs,
+            target_tp=target_tp,
+            input_metrics=input_metrics,
+            output_metrics=output_metrics,
+            isp_correction_db=isp_correction_db,
+            limiter_strength=limiter_strength,
+        )
+        recorder.set_limiter_qc(limiter_check_report)
+    except Exception as exc:
+        log("WARN", f"[pipeline] limiter_check 실패: {exc}")
+        pipeline_warnings.append({
+            "code": "LIMITER_QC_FAILED", "level": "warning",
+            "userMessage": "리미터 과다 검사에 실패했습니다.",
+        })
+
+    # ── v3.3 P2 — Time-series suspect segment detection ────────────────────
+    segment_report: dict[str, Any] = {"windowSec": 0.5, "windows": [], "suspectSegments": [], "summary": None}
+    try:
+        recorder.stage("segment_analysis")
+        segment_report = compute_segment_timeseries(
+            output_path,
+            window_sec=0.5,
+            ceiling_dbtp=target_tp,
+        )
+        for seg in segment_report.get("suspectSegments", []):
+            recorder.add_suspect_segment(**seg)
+        # When debug mode is on, dump the per-window time series to disk so
+        # the bundle includes it; it's too large to ship through JSON-RPC.
+        if debug_enabled and segment_report.get("windows"):
+            try:
+                import json as _json
+                import os as _os
+                d = recorder._ensure_artifact_dir()  # noqa: SLF001 — internal helper
+                with open(_os.path.join(d, "segment_timeseries.json"), "w",
+                          encoding="utf-8") as f:
+                    _json.dump(segment_report, f, ensure_ascii=False)
+            except Exception as exc2:
+                log("WARN", f"[pipeline] segment dump 실패: {exc2}")
+    except Exception as exc:
+        log("WARN", f"[pipeline] segment analysis 실패: {exc}")
+
+    # ── v3.3 P5 — Mode recommendations ─────────────────────────────────────
+    try:
+        mode_recs = recommend_modes(
+            quality_check    = quality_check_report,
+            limiter_check    = limiter_check_report,
+            suspect_segments = segment_report.get("suspectSegments"),
+            input_info       = rich_input_info,
+        )
+        for rec in mode_recs:
+            recorder.add_recommendation(rec["mode"], rec["reason"], rec["severity"])
+    except Exception as exc:
+        log("WARN", f"[pipeline] mode recommendation 실패: {exc}")
+        mode_recs = []
+
+    # Capture before/after metrics into recorder for the debug bundle
+    recorder.set_metrics(input_metrics, output_metrics)
+    recorder.output_path = output_path
+
+    # In debug mode, persist debug.json + dispose the recorder hook
+    if debug_enabled:
+        recorder.persist()
+    set_debug_recorder(None)
 
     progress(job_id, 100, "완료")
     elapsed = round(time.time() - t_start, 2)
@@ -951,6 +1132,18 @@ def run_pipeline(
         # v3.2 P2 — before/after metric 비교 + 자동 품질 검사
         "metricComparison": metric_comparison,
         "qualityCheck":     quality_check_report,
+
+        # v3.3 — debug-quality system
+        "limiterCheck":     limiter_check_report,
+        "suspectSegments":  segment_report.get("suspectSegments", []),
+        "segmentAnalysis":  {
+            "windowSec":  segment_report.get("windowSec"),
+            "summary":    segment_report.get("summary"),
+            "windowCount": len(segment_report.get("windows", [])),
+        },
+        "modeRecommendations": mode_recs,
+        "debugSummary":     recorder.to_summary(),
+        "inputFileInfo":    rich_input_info,
 
         # v3.2 P3 — Dynamic EQ 리포트 (적용 밴드, 엔진 종류)
         "dynamicEq": {
