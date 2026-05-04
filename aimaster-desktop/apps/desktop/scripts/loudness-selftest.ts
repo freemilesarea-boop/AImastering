@@ -18,6 +18,7 @@
 
 import { getLoudnessMetrics, AudioBufferLike } from '../src/renderer/audio/loudnessCore.js';
 import { processLimiter } from '../src/renderer/audio/limiterChain.js';
+import { applyGainStaging } from '../src/renderer/audio/gainStaging.js';
 
 interface TestResult {
   name: string;
@@ -253,6 +254,123 @@ function runTests(): TestResult[] {
       name: 'Case L3: stereo image preserved (balance drift < 0.05 dB)',
       pass,
       detail: `Δbalance=${drift.toFixed(3)} dB (in ${balanceIn.toFixed(2)} → out ${balanceOut.toFixed(2)}), `
+            + `TP=${r.truePeakDbtp.toFixed(2)} dBTP`,
+    });
+  }
+
+  // ── Gain staging tests ─────────────────────────────────────────────────────
+  //
+  // The default policy targets peak ≤ -6 dBFS, RMS ≤ -18 dBFS, LUFS ≤ -18.
+  // The chosen gain is the most conservative across all four constraints
+  // (peak / true-peak / RMS / LUFS).
+
+  // Case G1: HOT input — peaks brushing -1 dBFS, RMS hot.  The gain
+  // stager must attenuate, and EVERY target metric must end up at or
+  // below its threshold (peak ≤ -6, RMS ≤ -18, LUFS ≤ -18).  Whichever
+  // metric was the binding constraint should land essentially AT its
+  // target (within ±0.3 dB).
+  {
+    const sr  = 48000;
+    const len = sr * 4;
+    const buf = makeBuffer(sr, 2, len);
+    const raw = new Float32Array(len);
+    let max = 0;
+    for (let i = 0; i < len; i++) {
+      const v = Math.random() * 2 - 1;
+      raw[i] = v;
+      if (Math.abs(v) > max) max = Math.abs(v);
+    }
+    const targetPk = Math.pow(10, -1 / 20);
+    const g = targetPk / max;
+    for (let i = 0; i < len; i++) raw[i] *= g;
+    buf.setChannel(0, raw);
+    buf.setChannel(1, raw.slice());
+
+    const r = applyGainStaging(buf);
+    const peakOk = r.outputPeakDb <= -6 + 0.3;
+    const rmsOk  = r.outputRmsDb  <= -18 + 0.3;
+    const lufsOk = !isFinite(r.outputLufs) || r.outputLufs <= -18 + 0.3;
+    const decisionOk = r.decision === 'attenuate';
+    results.push({
+      name: 'Case G1: HOT input attenuated, all targets respected',
+      pass: peakOk && rmsOk && lufsOk && decisionOk,
+      detail: `gain=${r.appliedGainDb.toFixed(2)} dB, by=${r.limitedBy}, `
+            + `out peak=${r.outputPeakDb.toFixed(1)} RMS=${r.outputRmsDb.toFixed(1)} `
+            + `LUFS=${r.outputLufs.toFixed(1)}`,
+    });
+  }
+
+  // Case G2: QUIET input — peaks at -30 dBFS.  Should be boosted by
+  // maxBoostDb (default +12) and never overshoot it.
+  {
+    const sr  = 48000;
+    const len = sr * 4;
+    const buf = makeBuffer(sr, 2, len);
+    const sig = noiseRmsDbfs(-36, len);   // RMS -36 → peaks ≈ -27/-30 dBFS
+    buf.setChannel(0, sig);
+    buf.setChannel(1, noiseRmsDbfs(-36, len));
+
+    const r = applyGainStaging(buf);
+    // Should boost — but capped at maxBoostDb (12).  Decision = boost OR pass
+    // if it's already in range (unlikely for a -36 dBFS RMS input).
+    const inBoostCap = r.appliedGainDb <= 12 + 0.001 && r.appliedGainDb > 0;
+    results.push({
+      name: 'Case G2: QUIET input boosted up to maxBoostDb cap',
+      pass: inBoostCap && r.decision === 'boost',
+      detail: `gain=${r.appliedGainDb.toFixed(2)} dB, RMS ${r.inputRmsDb.toFixed(1)} → `
+            + `${r.outputRmsDb.toFixed(1)} dBFS, decision=${r.decision}, by=${r.limitedBy}`,
+    });
+  }
+
+  // Case G3: IN-RANGE input — calibrated so integrated LUFS sits exactly
+  // at the LUFS target (-18).  The implementation should leave the
+  // buffer essentially untouched (|gain| < 0.5 dB) since LUFS is the
+  // binding constraint and there's zero headroom on it.
+  {
+    const sr  = 48000;
+    const len = sr * 4;
+    const tmp = makeBuffer(sr, 2, len);
+    tmp.setChannel(0, noiseRmsDbfs(-22, len));
+    tmp.setChannel(1, noiseRmsDbfs(-22, len));
+    // Pre-scale so integrated LUFS lands exactly at -18.
+    const m = getLoudnessMetrics(tmp);
+    const trim = isFinite(m.integratedLufs) ? Math.pow(10, (-18 - m.integratedLufs) / 20) : 1;
+    const ch0 = tmp.getChannelData(0);
+    const ch1 = tmp.getChannelData(1);
+    for (let i = 0; i < len; i++) { ch0[i] *= trim; ch1[i] *= trim; }
+
+    const r = applyGainStaging(tmp);
+    const pass = Math.abs(r.appliedGainDb) <= 0.5;
+    results.push({
+      name: 'Case G3: input at LUFS target → pass-through',
+      pass,
+      detail: `gain=${r.appliedGainDb.toFixed(2)} dB, peak=${r.outputPeakDb.toFixed(1)} dBFS, `
+            + `RMS=${r.outputRmsDb.toFixed(1)} dBFS, LUFS=${r.outputLufs.toFixed(1)}, `
+            + `by=${r.limitedBy}, decision=${r.decision}`,
+    });
+  }
+
+  // Case G4: HOT input → gain-stage → limiter chain converges with very
+  // little GR (< 3 dB).  This is the headline benefit: pre-staging means
+  // the limiter does light work and transients survive.
+  {
+    const sr  = 48000;
+    const len = sr * 6;
+    const buf = makeBuffer(sr, 2, len);
+    const raw = noiseRmsDbfs(-9, len);      // hot RMS, peaks near 0 dBFS
+    buf.setChannel(0, raw);
+    buf.setChannel(1, noiseRmsDbfs(-9, len));
+
+    const staged = applyGainStaging(buf);
+    const r = processLimiter(staged.buffer, -10);
+    const tpOk    = r.truePeakDbtp <= -1.0 + 1e-3;
+    const lightGr = r.maxGrDb < 3.0;
+    const lufsOk  = Math.abs(r.measuredLufs - (-10)) <= 0.5;
+    results.push({
+      name: 'Case G4: gain-stage → limiter does < 3 dB GR',
+      pass: tpOk && lightGr && lufsOk,
+      detail: `staged gain ${staged.appliedGainDb.toFixed(1)} dB, `
+            + `limiter GR=${r.maxGrDb.toFixed(2)} dB, I=${r.measuredLufs.toFixed(2)} LUFS, `
             + `TP=${r.truePeakDbtp.toFixed(2)} dBTP`,
     });
   }
