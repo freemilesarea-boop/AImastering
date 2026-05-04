@@ -181,11 +181,13 @@ def _build_tonal_correction_chain(
 
     Returns (filter_string, applied_moves).  Empty filter = no correction needed.
 
-    Decision logic (linear ratios, NOT dB):
-      lowEnergyRatio < 0.75   → +0.5~1.0 dB warmth bell at 90 Hz
-      lowEnergyRatio > 1.30   → -0.5~1.2 dB shelf cut at 80–120 Hz
-      highLowTiltDb  > +4 dB  → -0.5~1.5 dB high-shelf at 10 kHz
-      highLowTiltDb  < -4 dB  → +0.5~1.0 dB high-shelf at 8 kHz
+    Decision logic (linear ratios, NOT dB) — v3.5 Phase 1: limits raised
+    from ±1.5 dB → ±2.5 dB to handle larger imbalances surfaced by the
+    architecture analysis (worst-case −10 dB LOW loss in fallback path).
+      lowEnergyRatio < 0.75   → +0.5~+2.5 dB warmth bell at 90 Hz
+      lowEnergyRatio > 1.30   → -0.5~-2.5 dB shelf cut at 80–120 Hz
+      highLowTiltDb  > +4 dB  → -0.5~-2.5 dB high-shelf at 10 kHz
+      highLowTiltDb  < -4 dB  → +0.5~+2.0 dB high-shelf at 8 kHz
 
     Final safety limiter (level_in=1.0) is appended so any peaks the EQ
     introduces don't slip past the ceiling.
@@ -196,61 +198,74 @@ def _build_tonal_correction_chain(
     low_ratio = pre_report.get("lowEnergyRatio")
     tilt_db   = pre_report.get("highLowTiltDb")
 
-    # ── Low-band correction ──
+    # ── Low-band correction (v3.5 Phase 1: math-based, max ±2.5 dB) ──
+    # Request the dB shift needed to bring ratio toward target (0.85-1.15
+    # ideal range), divided by 0.75 to account for FFT-band averaging vs
+    # single-frequency EQ effectiveness.
+    import math as _m
     warmth_db: float = 0.0
     low_trim_db: float = 0.0
     if low_ratio is not None:
         if low_ratio < 0.75:
-            # Bass-light master — apply warmth (max +1.0 dB even at very low ratio)
-            deficit = 0.75 - float(low_ratio)
-            warmth_db = round(min(1.0, max(0.5, deficit * 4.0)), 2)
+            # bass-light → +warmth bell.  Target ratio ≈ 0.95 (centre of ideal)
+            # needed_db = how much LOW must rise to reach 0.95
+            needed_db = 10.0 * _m.log10(0.95 / float(low_ratio))
+            warmth_db = round(min(2.5, max(0.5, needed_db / 0.75)), 2)
             parts.append(f"equalizer=f=90:t=q:w=0.7:g={warmth_db:+.2f}")
             applied.append({
                 "where": "final_guard.warmth_bell", "freq": 90,
                 "gainDb": warmth_db,
-                "reason": f"lowEnergyRatio={low_ratio} < 0.75",
+                "reason": f"lowEnergyRatio={low_ratio} < 0.75 → +{needed_db:.2f} dB needed",
             })
         elif low_ratio > 1.30:
-            # Bass-heavy — gentle 100 Hz trim (max -1.2 dB)
-            excess = float(low_ratio) - 1.30
-            low_trim_db = round(-min(1.2, max(0.5, excess * 2.0)), 2)
+            # bass-heavy → -low trim.  Target ratio ≈ 1.15 (centre upper)
+            needed_db = 10.0 * _m.log10(float(low_ratio) / 1.15)
+            low_trim_db = round(-min(2.5, max(0.5, needed_db / 0.75)), 2)
             parts.append(f"equalizer=f=100:t=q:w=0.9:g={low_trim_db:+.2f}")
             applied.append({
                 "where": "final_guard.low_trim", "freq": 100,
                 "gainDb": low_trim_db,
-                "reason": f"lowEnergyRatio={low_ratio} > 1.30",
+                "reason": f"lowEnergyRatio={low_ratio} > 1.30 → -{needed_db:.2f} dB needed",
             })
 
-    # ── High-band correction ──
+    # ── High-band correction (v3.5 Phase 1: math-based, max ±2.5 dB) ──
     high_shelf_db: float = 0.0
     if tilt_db is not None:
         if tilt_db > 4.0:
-            # Bright tilt — shelf at 10 kHz down (max -1.5 dB)
-            excess = float(tilt_db) - 4.0
-            high_shelf_db = round(-min(1.5, max(0.5, excess * 0.4)), 2)
+            # Bright tilt — shelf at 10 kHz.  Aim for tilt ≈ +2 dB after correction.
+            needed_db = float(tilt_db) - 2.0
+            high_shelf_db = round(-min(2.5, max(0.5, needed_db * 0.7)), 2)
             parts.append(f"highshelf=f=10000:g={high_shelf_db:+.2f}")
             applied.append({
                 "where": "final_guard.high_shelf_trim", "freq": 10000,
                 "gainDb": high_shelf_db,
-                "reason": f"highLowTiltDb={tilt_db} > +4",
+                "reason": f"highLowTiltDb={tilt_db} > +4 → -{needed_db:.2f} dB needed",
             })
         elif tilt_db < -4.0:
-            # Dark tilt — modest air lift at 8 kHz (max +1.0 dB)
-            deficit = -float(tilt_db) - 4.0
-            high_shelf_db = round(min(1.0, max(0.5, deficit * 0.3)), 2)
+            # Dark tilt — shelf at 8 kHz lift.  Aim for tilt ≈ -2 dB after.
+            needed_db = -float(tilt_db) - 2.0
+            high_shelf_db = round(min(2.0, max(0.5, needed_db * 0.5)), 2)
             parts.append(f"highshelf=f=8000:g={high_shelf_db:+.2f}")
             applied.append({
                 "where": "final_guard.high_shelf_lift", "freq": 8000,
                 "gainDb": high_shelf_db,
-                "reason": f"highLowTiltDb={tilt_db} < -4",
+                "reason": f"highLowTiltDb={tilt_db} < -4 → +{needed_db:.2f} dB needed",
             })
 
-    # Append safety limiter so the EQ adjustments stay under the ceiling.
-    if parts:
+    # v3.5 Phase 1 BUGFIX — only attach safety limiter when ANY applied
+    # move is a BOOST.  Pure cuts can never push peaks above the existing
+    # ceiling, so a limiter (even with asc=0 level=disabled) only makes
+    # things worse — it broadband-reduces and neutralizes the EQ's
+    # relative-ratio effect.  Empirical:
+    #   cut + limiter(asc=0, level=disabled): both LOW and MID dropped
+    #     equally by the limiter → relative ratio unchanged
+    #   cut, no limiter: LOW dropped only at the EQ centre band → ratio fixes
+    has_boost = any(float(a.get("gainDb", 0.0)) > 0 for a in applied)
+    if parts and has_boost:
         lim_out = 10.0 ** (target_tp / 20.0)
         parts.append(
             f"alimiter=level_in=1.0:level_out=1:limit={lim_out:.6f}"
-            f":attack=5.0:release=80.0:asc=1"
+            f":attack=5.0:release=80.0:asc=0:level=disabled"
         )
 
     return ",".join(parts), applied
@@ -851,11 +866,81 @@ def run_pipeline(
         #   2. entry_gain   : SINGLE static gain to match target LUFS (clamped ±6 dB)
         #   3. soft_clip    : gentle peak rounding for the new push (was upstream, ineffective)
         #   4. alimiter     : peak-safety only (level_in ≈ 1.0 — no extra push)
+        # v3.5 Phase 1 — split the static chain into TWO passes so we can
+        # measure pre-limiter band balance and apply a pre-correction shelf
+        # if tilt > ±3 dB (architecture-analysis problem #4).
+        #
+        #   Pass 1: pre_filter → tmp WAV         (no entry gain, no limiter)
+        #   measure 4 bands of tmp WAV vs input
+        #   build optional pre-correction shelf
+        #   Pass 2: tmp WAV → entry_gain + (pre-correction) + soft-clip + alimiter
+
+        # ── Pass 1: pre_filter alone ──
+        prelim_fd, prelim_wav = tempfile.mkstemp(
+            suffix="_prelim.wav", prefix="aimaster_",
+            dir=os.path.dirname(os.path.abspath(output_path)) or ".",
+        )
+        os.close(prelim_fd)
+        try:
+            apply_filter_chain(
+                input_path, prelim_wav,
+                pre_filter or "anull",
+                sample_rate=sample_rate, bit_depth=bit_depth,
+            )
+        except FFmpegError as exc:
+            log("ERROR", f"static chain pass 1 (pre-filter) failed: {exc}\n"
+                         f"stderr:\n{exc.stderr}")
+            try:
+                if os.path.exists(prelim_wav): os.unlink(prelim_wav)
+            except OSError: pass
+            raise
+
+        # ── Pre-limiter band measurement + tilt pre-correction ──
+        prelim_correction_filter = ""
+        prelim_correction_meta: dict[str, float] = {}
+        try:
+            from app.qc.gain_staging import _measure_bands
+            input_bands  = _measure_bands(input_path)  or {}
+            prelim_bands = _measure_bands(prelim_wav)  or {}
+            if input_bands and prelim_bands:
+                # Tilt at this point = highAir Δ − low Δ, not yet limiter-skewed
+                low_d  = (prelim_bands.get("low",     -120.0)
+                          - input_bands.get("low",    -120.0))
+                high_d = (prelim_bands.get("highAir", -120.0)
+                          - input_bands.get("highAir",-120.0))
+                tilt_pre = round(float(high_d) - float(low_d), 2)
+                prelim_correction_meta = {
+                    "preLimitLowDelta":   round(low_d, 2),
+                    "preLimitHighDelta":  round(high_d, 2),
+                    "preLimitTiltDb":     tilt_pre,
+                }
+                log("INFO", f"[prelim] low Δ={low_d:+.2f} / high Δ={high_d:+.2f} / "
+                            f"tilt={tilt_pre:+.2f} dB")
+                # If tilt > +3 dB → shelf trim BEFORE entry gain to stop limiter
+                # from amplifying the imbalance.  Max ±2 dB single shelf.
+                if tilt_pre > 3.0:
+                    excess = tilt_pre - 3.0
+                    shelf_db = round(-min(2.0, max(0.5, excess * 0.5)), 2)
+                    prelim_correction_filter = f"highshelf=f=10000:g={shelf_db:+.2f}"
+                    prelim_correction_meta["preLimitShelfDb"] = shelf_db
+                    log("INFO", f"[prelim] applying tilt pre-correction: {prelim_correction_filter}")
+                elif tilt_pre < -3.0:
+                    deficit = -tilt_pre - 3.0
+                    shelf_db = round(min(1.5, max(0.5, deficit * 0.4)), 2)
+                    prelim_correction_filter = f"highshelf=f=8000:g={shelf_db:+.2f}"
+                    prelim_correction_meta["preLimitShelfDb"] = shelf_db
+                    log("INFO", f"[prelim] applying tilt pre-correction: {prelim_correction_filter}")
+        except Exception as exc:
+            log("WARN", f"[prelim] measurement failed (skipping pre-correction): {exc}")
+
+        recorder.event("INFO", "pre-limiter measured", **prelim_correction_meta)
+
+        # ── Pass 2: tmp WAV → entry_gain + pre-correction + soft-clip + alimiter ──
         chain_parts: list[str] = []
-        if pre_filter:
-            chain_parts.append(pre_filter)
         if abs(entry_gain) > 0.05:
             chain_parts.append(f"volume={entry_gain:.2f}dB")
+        if prelim_correction_filter:
+            chain_parts.append(prelim_correction_filter)
         if soft_clip_filter_str:
             chain_parts.append(soft_clip_filter_str)
         chain_parts.append(
@@ -863,27 +948,34 @@ def run_pipeline(
             f":attack={lim_strength['attack_ms']}:release={lim_strength['release_ms']}:asc=0"
         )
         static_chain_filter = ",".join(chain_parts)
-        log("INFO", f"[pipeline] static chain filter: {static_chain_filter[:200]}…")
+        log("INFO", f"[pipeline] static chain pass 2: {static_chain_filter[:180]}…")
         gain_stages["preGainDb"]          = round(float(entry_gain), 2)
         gain_stages["limiterInputGainDb"] = round(float(lim_input_gain_db), 2)
+        if prelim_correction_meta.get("preLimitShelfDb") is not None:
+            gain_stages["preLimitShelfDb"] = round(
+                float(prelim_correction_meta["preLimitShelfDb"]), 2,
+            )
         recorder.event(
-            "INFO", "static chain composed",
+            "INFO", "static chain composed (2-pass v3.5)",
             entryGainDb=round(entry_gain, 2),
             limiterInputGainDb=round(lim_input_gain_db, 2),
             ceilingDbtp=safe_ceiling,
+            preLimitTiltDb=prelim_correction_meta.get("preLimitTiltDb"),
+            preLimitShelfDb=prelim_correction_meta.get("preLimitShelfDb"),
         )
 
         try:
             apply_filter_chain(
-                input_path,
-                output_path,
-                static_chain_filter,
-                sample_rate=sample_rate,
-                bit_depth=bit_depth,
+                prelim_wav, output_path, static_chain_filter,
+                sample_rate=sample_rate, bit_depth=bit_depth,
             )
         except FFmpegError as exc:
-            log("ERROR", f"static chain failed: {exc}\nstderr:\n{exc.stderr}")
+            log("ERROR", f"static chain pass 2 failed: {exc}\nstderr:\n{exc.stderr}")
             raise
+        finally:
+            try:
+                if os.path.exists(prelim_wav): os.unlink(prelim_wav)
+            except OSError: pass
 
         applied_corrections.append(
             f"정적 체인 (entry gain {entry_gain:+.2f} dB + limiter)"

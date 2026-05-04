@@ -130,17 +130,17 @@ def build_kpop_loud_stages(input_wav: str, target_tp: float = -1.0) -> list[Stag
     # 6. Stereo width (extrastereo)
     stereo_chain = stereo_width_filter(eff["stereo_width"]) or "anull"
 
-    # 7. Soft clipper (only if limiter strength medium/high — we test 'high')
-    soft_chain   = soft_clipper_filter(target_tp) or "anull"
-
-    # 8. Entry-gain push (capped at +6 dB; we use +6 as worst-case)
+    # 7. Entry-gain push (capped at +6 dB; we use +6 as worst-case)
     # Real value depends on pre_lufs vs target_lufs — for analysis we test the cap.
     entry_chain  = "volume=+6.00dB"
 
-    # 9. Soft clipper (same compand, applied after entry gain in static chain)
+    # 8. Soft clipper (single instance — applied AFTER entry gain in static chain).
+    #    The 2026-05-04 architecture analysis confirmed the pipeline only has
+    #    ONE soft-clip instance, post-entry-gain.  Earlier versions of this
+    #    analyzer split it into PRE/POST stages erroneously — fixed v3.5.
     soft_post_chain = soft_clipper_filter(target_tp) or "anull"
 
-    # 10. Limiter (alimiter, level_in clamped to +0.5 dB by vocal protection)
+    # 9. Limiter (alimiter, level_in clamped to +0.5 dB by vocal protection)
     lim_in  = 10.0 ** (0.5 / 20.0)
     lim_out = 10.0 ** ((target_tp - 0.3) / 20.0)
     lim_chain = (f"alimiter=level_in={lim_in:.4f}:level_out=1:limit={lim_out:.6f}"
@@ -167,16 +167,13 @@ def build_kpop_loud_stages(input_wav: str, target_tp: float = -1.0) -> list[Stag
         Stage("06_STEREO_WIDTH",  stereo_chain,
               f"extrastereo m={eff['stereo_width']}",
               {"width": eff["stereo_width"], "filter": stereo_chain}),
-        Stage("07_SOFTCLIP_PRE",  soft_chain,
-              "Soft clipper (compand) — applied before entry gain (kpop_loud_high)",
-              {"filter": soft_chain}),
-        Stage("08_ENTRY_GAIN",    entry_chain,
+        Stage("07_ENTRY_GAIN",    entry_chain,
               "Static loudness push (capped at +6 dB by vocal protection)",
               {"filter": entry_chain}),
-        Stage("09_SOFTCLIP_POST", soft_post_chain,
-              "Soft clipper applied AFTER entry-gain push (post-v3.4 reorder)",
+        Stage("08_SOFTCLIP",      soft_post_chain,
+              "Soft clipper applied AFTER entry-gain push (single instance)",
               {"filter": soft_post_chain}),
-        Stage("10_LIMITER",       lim_chain,
+        Stage("09_LIMITER",       lim_chain,
               "alimiter (vocal-protection clamped: level_in ≤ +0.5 dB)",
               {"level_in_db": 0.5, "ceiling_dbtp": target_tp - 0.3,
                "filter": lim_chain}),
