@@ -209,23 +209,180 @@ _STYLE_OVERLAYS: dict[str, StyleOverlay] = {
         ],
     ),
 
-    # ─── KPOP Loud ────────────────────────────────────────────────────────
-    # 체감 볼륨 우선. low-end 정리, vocal mid clarity, sheen.
+    # v3.4.7 — kpop_loud 는 정적 overlay 가 아니라 입력 spectrum 에 따라
+    # 동적으로 빌드 (`_kpop_loud_overlay()` 참조).  여기엔 fallback 용
+    # 저자극 기본값만 두어 spectrum 정보가 없을 때도 안전하게 작동.
     "kpop_loud": StyleOverlay(
         filters=[
-            "equalizer=f=80:t=o:w=1.5:g=-1.5",     # boomy cleanup (base +가 줄어듦)
-            "equalizer=f=2500:t=o:w=1.1:g=+1.5",   # vocal presence
-            "equalizer=f=5500:t=o:w=1.0:g=+1.2",   # vocal clarity
-            "equalizer=f=10000:t=o:w=1.2:g=+1.0",  # sheen
+            "equalizer=f=2500:t=o:w=1.1:g=+1.0",
+            "equalizer=f=5500:t=o:w=1.0:g=+0.8",
+            "equalizer=f=10000:t=o:w=1.2:g=+0.5",
         ],
         moves=[
-            EqMove("Boomy cleanup (kpop)",     80,   -1.5, "bell"),
-            EqMove("Vocal presence (kpop)",    2500, +1.5, "bell"),
-            EqMove("Vocal clarity (kpop)",     5500, +1.2, "bell"),
-            EqMove("Sheen (kpop)",             10000,+1.0, "bell"),
+            EqMove("Vocal presence (kpop)",    2500, +1.0, "bell"),
+            EqMove("Vocal clarity (kpop)",     5500, +0.8, "bell"),
+            EqMove("Sheen (kpop)",             10000,+0.5, "bell"),
         ],
     ),
 }
+
+
+# ── v3.4.7 — adaptive kpop_loud overlay ────────────────────────────────────
+#
+# 입력 톤 균형 (low_to_mid_db / high_to_mid_db) 에 따라 4 가지 변수를 동적 결정:
+#
+#   90 Hz warmth bell     (저역 부족할 때만, 0 ~ +0.7 dB)
+#   2.5k vocal presence   (입력 명료도에 따라 +0.7 ~ +1.2)
+#   5.5k vocal clarity    (입력 고역에 따라 +0.5 ~ +0.9)
+#   10k  sheen            (입력 air 가 적을 때만, 0 ~ +0.6)
+#
+# v3.4.6 의 +1.0 dB 고정 warmth 가 베이스가 이미 강한 입력에서 베이스 과다를
+# 일으켰던 것을 해결.
+
+def _kpop_loud_warmth_db(low_to_mid_db: float) -> float:
+    """입력 저역 균형에 따른 90 Hz warmth bell 강도 (dB)."""
+    if low_to_mid_db < -10.0:   # bass-light
+        return 0.7
+    if low_to_mid_db < -3.0:    # neutral-light
+        return 0.5
+    if low_to_mid_db < 3.0:     # neutral
+        return 0.3
+    if low_to_mid_db < 8.0:     # neutral-heavy
+        return 0.0
+    return -0.3                 # bass-heavy → 살짝 빼주기
+
+
+def _kpop_loud_sheen_db(high_to_mid_db: float) -> float:
+    """입력 air 영역에 따른 10 kHz sheen bell 강도 (dB)."""
+    if high_to_mid_db < -25.0:  # very dark — needs sheen
+        return 0.6
+    if high_to_mid_db < -18.0:
+        return 0.4
+    if high_to_mid_db < -10.0:
+        return 0.2
+    return 0.0                  # already bright — no sheen
+
+
+def build_kpop_loud_corrective_eq(
+    low_to_mid_db: float,
+    high_to_mid_db: float,
+) -> tuple[str, list[EqMove], dict[str, float]]:
+    """v3.5 Phase 2 — T1 ADAPTIVE CORRECTIVE EQ.
+
+    Merges the base streaming EQ + kpop_loud overlay into a SINGLE
+    spectrum-driven filter chain — one EQ move per band, no duplicates.
+
+    Bands targeted (one filter per band):
+      LOW       : 90 Hz peaking bell  (warmth + density combined)
+      LOW-MID   : 200 Hz peaking bell (mud control, replaces 250+320 cuts)
+      VOCAL     : 2.5 kHz peaking bell (presence)
+      CLARITY   : 5.5 kHz peaking bell
+      AIR       : 12 kHz high-shelf  (combined sheen + air)
+
+    The decisions are derived from input spectral balance:
+      · Bass-light input (low_to_mid_db < -10) → +1.0~1.5 dB warmth
+      · Bass-heavy input (low_to_mid_db > +5)  → 0 dB warmth + small low-mid trim
+      · Dark input (high_to_mid_db < -25)      → +2.5 dB air shelf
+      · Bright input (high_to_mid_db > -15)    → +0.5 dB air shelf only
+
+    Returns: (filter_string, eq_moves, applied_gains_per_band_dict)
+    """
+    # ── Decide gains per band (all dB, for the EQ gain itself, NOT band Δ) ──
+
+    # LOW (~90 Hz) — combined warmth + density
+    if   low_to_mid_db < -10.0: low_gain = 2.0
+    elif low_to_mid_db <  -3.0: low_gain = 1.5
+    elif low_to_mid_db <  +3.0: low_gain = 1.0
+    elif low_to_mid_db <  +8.0: low_gain = 0.5
+    else:                       low_gain = 0.0   # already bass-heavy
+
+    # LOW-MID (~250 Hz) — combined mud removal (was -3.0 base + -1.0 320 = -4)
+    # Single -2.0 dB cut at 250 Hz Q=1.0 has comparable subjective effect.
+    low_mid_cut = -2.0
+
+    # VOCAL (2.5 kHz) — presence boost
+    if   high_to_mid_db < -25.0: vocal_gain = +1.2
+    elif high_to_mid_db < -15.0: vocal_gain = +1.0
+    else:                        vocal_gain = +0.7   # bright input — gentle
+
+    # CLARITY (5.5 kHz)
+    if   high_to_mid_db < -25.0: clarity_gain = +0.9
+    else:                         clarity_gain = +0.7
+
+    # AIR (12 kHz high-shelf) — combined sheen + air, replaces base 12 kHz +
+    # overlay 10 kHz sheen.
+    if   high_to_mid_db < -25.0: air_gain = +2.5
+    elif high_to_mid_db < -18.0: air_gain = +1.8
+    elif high_to_mid_db < -10.0: air_gain = +1.2
+    else:                         air_gain = +0.5
+
+    # ── Build filter chain (5 nodes, single move per band) ──
+    filters: list[str] = []
+    moves:   list[EqMove] = []
+    gains:   dict[str, float] = {}
+
+    if abs(low_gain) >= 0.05:
+        filters.append(f"equalizer=f=90:t=q:w=0.7:g={low_gain:+.2f}")
+        moves.append(EqMove("Low warmth (T1)", 90, low_gain, "bell", adaptive=True))
+    gains["low_90"] = low_gain
+
+    filters.append(f"equalizer=f=250:t=o:w=1.0:g={low_mid_cut:+.2f}")
+    moves.append(EqMove("Mud control (T1)", 250, low_mid_cut, "bell"))
+    gains["low_mid_250"] = low_mid_cut
+
+    if abs(vocal_gain) >= 0.05:
+        filters.append(f"equalizer=f=2500:t=o:w=1.1:g={vocal_gain:+.2f}")
+        moves.append(EqMove("Vocal presence (T1)", 2500, vocal_gain, "bell", adaptive=True))
+    gains["vocal_2500"] = vocal_gain
+
+    if abs(clarity_gain) >= 0.05:
+        filters.append(f"equalizer=f=5500:t=o:w=1.0:g={clarity_gain:+.2f}")
+        moves.append(EqMove("Vocal clarity (T1)", 5500, clarity_gain, "bell", adaptive=True))
+    gains["clarity_5500"] = clarity_gain
+
+    if abs(air_gain) >= 0.05:
+        filters.append(f"highshelf=f=12000:g={air_gain:+.2f}")
+        moves.append(EqMove("Air shelf (T1)", 12000, air_gain, "highshelf", adaptive=True))
+    gains["air_12000"] = air_gain
+
+    return ",".join(filters), moves, gains
+
+
+def build_kpop_loud_overlay(
+    low_to_mid_db: float,
+    high_to_mid_db: float,
+) -> StyleOverlay:
+    """LEGACY (pre-Phase 2) — kept for backward compatibility.
+
+    The new T1 corrective EQ replaces this for kpop_loud.  Other code paths
+    that still call build_kpop_loud_overlay (tests, fallback) continue to
+    work.
+    """
+    warmth = _kpop_loud_warmth_db(low_to_mid_db)
+    sheen  = _kpop_loud_sheen_db(high_to_mid_db)
+
+    filters: list[str] = []
+    moves:   list[EqMove] = []
+
+    if abs(warmth) >= 0.05:
+        filters.append(f"equalizer=f=90:t=q:w=0.7:g={warmth:+.2f}")
+        moves.append(EqMove(f"Low warmth (kpop, adaptive)", 90, warmth, "bell", adaptive=True))
+
+    # 2.5 kHz vocal presence — modest scale based on input darkness
+    presence = 1.2 if high_to_mid_db < -20.0 else 1.0
+    filters.append(f"equalizer=f=2500:t=o:w=1.1:g={presence:+.2f}")
+    moves.append(EqMove("Vocal presence (kpop, adaptive)", 2500, presence, "bell", adaptive=True))
+
+    # 5.5 kHz clarity — keep modest
+    clarity = 0.9 if high_to_mid_db < -20.0 else 0.8
+    filters.append(f"equalizer=f=5500:t=o:w=1.0:g={clarity:+.2f}")
+    moves.append(EqMove("Vocal clarity (kpop, adaptive)", 5500, clarity, "bell", adaptive=True))
+
+    if abs(sheen) >= 0.05:
+        filters.append(f"equalizer=f=10000:t=o:w=1.2:g={sheen:+.2f}")
+        moves.append(EqMove("Sheen (kpop, adaptive)", 10000, sheen, "bell", adaptive=True))
+
+    return StyleOverlay(filters=filters, moves=moves)
 
 # ── AI artifact corrections ───────────────────────────────────────────────────
 
@@ -286,14 +443,24 @@ def build_eq_filter_with_report(
                 filter_parts.append(filt)
                 all_moves.append(move)
 
-    # 2. Base EQ
-    base_filters, base_moves = _build_base_eq(low_to_mid_db, high_to_mid_db)
-    filter_parts.extend(base_filters)
-    all_moves.extend(base_moves)
-
-    # 3. Style overlay
-    overlay = _STYLE_OVERLAYS.get(style, _STYLE_OVERLAYS["balanced"])
-    filter_parts.extend(overlay.filters)
-    all_moves.extend(overlay.moves)
+    # 2. Base EQ + style overlay
+    # v3.5 Phase 2 — kpop_loud uses the new T1 ADAPTIVE CORRECTIVE EQ which
+    # replaces base + overlay with a single spectrum-driven filter chain
+    # (one EQ move per band, no duplicates).  Other styles continue to use
+    # the legacy base + overlay for backward compatibility.
+    if style == "kpop_loud":
+        t1_filter, t1_moves, _t1_gains = build_kpop_loud_corrective_eq(
+            low_to_mid_db, high_to_mid_db,
+        )
+        if t1_filter:
+            filter_parts.append(t1_filter)
+        all_moves.extend(t1_moves)
+    else:
+        base_filters, base_moves = _build_base_eq(low_to_mid_db, high_to_mid_db)
+        filter_parts.extend(base_filters)
+        all_moves.extend(base_moves)
+        overlay = _STYLE_OVERLAYS.get(style, _STYLE_OVERLAYS["balanced"])
+        filter_parts.extend(overlay.filters)
+        all_moves.extend(overlay.moves)
 
     return ",".join(p for p in filter_parts if p), [m.to_dict() for m in all_moves]

@@ -75,25 +75,26 @@ _STYLE_COMP: dict[str, dict] = {
     },
 
     # Loud — 글루는 유지하되 makeup 은 거의 없음.
-    # final loudness match 단계에서 push 하므로 컴프 단계에서 미리 키울 필요 없다.
+    # v3.5 Phase 1: knee 6.0 → 9.0 (saturation 단계 흡수 — 더 부드러운
+    # 임계 진입으로 even-harmonic 효과 발생).
     "loud": {
         "threshold": -16,
-        "ratio":     2.0,    # was 2.5
-        "attack":    18,     # was 12 — transient 보존
-        "release":   110,    # was 90
-        "makeup":    0.5,    # was 2.0 — 보컬 뭉개짐 직격 원인
-        "knee":      6.0,    # was 4.0
+        "ratio":     2.0,
+        "attack":    18,
+        "release":   110,
+        "makeup":    0.5,
+        "knee":      9.0,    # was 6.0 (saturation 흡수)
     },
 
-    # KPOP Loud — 가장 강한 글루 + 빠른 attack 이었으나, 메인 멜로디 보존을
-    # 우선하도록 ratio / attack 완화.  Loudness 는 final 단계에서.
+    # KPOP Loud — 메인 멜로디 보존 + 글루
+    # v3.5 Phase 1: knee 5.0 → 10.0 (saturation 단계 흡수)
     "kpop_loud": {
         "threshold": -14,
-        "ratio":     2.2,    # was 2.8 — main melody transient 보존
-        "attack":    15,     # was 10 — vocal pick 통과
-        "release":   100,    # was 80
-        "makeup":    0.7,    # was 2.0
-        "knee":      5.0,    # was 3.0 — soft knee
+        "ratio":     2.2,    # vocal protection 이 어차피 2.0 으로 clamp
+        "attack":    15,     # vocal protection 이 25 ms 로 clamp
+        "release":   100,
+        "makeup":    0.7,
+        "knee":      10.0,   # was 5.0 (saturation 흡수, very soft knee)
     },
 }
 

@@ -23,8 +23,12 @@ _MODE_DEFAULTS: dict[str, dict] = {
     "bright":    {"saturation": 0.0,  "stereo_width": 1.10, "deesser": False},
     "warm":      {"saturation": 0.15, "stereo_width": 1.0,  "deesser": True},
     "punch":     {"saturation": 0.30, "stereo_width": 1.05, "deesser": False},
-    "loud":      {"saturation": 0.40, "stereo_width": 1.10, "deesser": True},
-    "kpop_loud": {"saturation": 0.50, "stereo_width": 1.15, "deesser": True},
+    # v3.5 Phase 1 — saturation 단계가 측정상 no-op 이었으므로 (compand
+    # transfer curve 가 RMS 에 거의 영향 없음) loud / kpop_loud 의
+    # saturation 을 0 으로 두고 그 효과 (warm even-harmonics) 를 compressor
+    # knee 확장으로 대체.  chain 한 단계 단축 + 고역 가속 위험 제거.
+    "loud":      {"saturation": 0.0, "stereo_width": 1.10, "deesser": False},
+    "kpop_loud": {"saturation": 0.0, "stereo_width": 1.10, "deesser": False},
 }
 
 
