@@ -198,59 +198,90 @@ def _build_tonal_correction_chain(
     low_ratio = pre_report.get("lowEnergyRatio")
     tilt_db   = pre_report.get("highLowTiltDb")
 
-    # ── Low-band correction (v3.5 Phase 1: math-based, max ±2.5 dB) ──
-    # Request the dB shift needed to bring ratio toward target (0.85-1.15
-    # ideal range), divided by 0.75 to account for FFT-band averaging vs
-    # single-frequency EQ effectiveness.
+    # ── v3.5 Phase 2: TARGET-CONVERGENCE 1-PASS solver ──
+    # Converge BOTH lowEnergyRatio AND highLowTilt to ideal (0.85-1.15 / ±2)
+    # simultaneously in a single corrective ffmpeg pass.  Math-based — uses
+    # the empirical effectiveness lookup from tonal_budget.py.
     import math as _m
-    warmth_db: float = 0.0
-    low_trim_db: float = 0.0
-    if low_ratio is not None:
-        if low_ratio < 0.75:
-            # bass-light → +warmth bell.  Target ratio ≈ 0.95 (centre of ideal)
-            # needed_db = how much LOW must rise to reach 0.95
-            needed_db = 10.0 * _m.log10(0.95 / float(low_ratio))
-            warmth_db = round(min(2.5, max(0.5, needed_db / 0.75)), 2)
-            parts.append(f"equalizer=f=90:t=q:w=0.7:g={warmth_db:+.2f}")
-            applied.append({
-                "where": "final_guard.warmth_bell", "freq": 90,
-                "gainDb": warmth_db,
-                "reason": f"lowEnergyRatio={low_ratio} < 0.75 → +{needed_db:.2f} dB needed",
-            })
-        elif low_ratio > 1.30:
-            # bass-heavy → -low trim.  Target ratio ≈ 1.15 (centre upper)
-            needed_db = 10.0 * _m.log10(float(low_ratio) / 1.15)
-            low_trim_db = round(-min(2.5, max(0.5, needed_db / 0.75)), 2)
-            parts.append(f"equalizer=f=100:t=q:w=0.9:g={low_trim_db:+.2f}")
-            applied.append({
-                "where": "final_guard.low_trim", "freq": 100,
-                "gainDb": low_trim_db,
-                "reason": f"lowEnergyRatio={low_ratio} > 1.30 → -{needed_db:.2f} dB needed",
-            })
+    from app.mastering.tonal_budget import (
+        KPOP_LOUD_TARGETS, gain_for_band_change,
+    )
 
-    # ── High-band correction (v3.5 Phase 1: math-based, max ±2.5 dB) ──
+    target_low_lo, target_low_hi = KPOP_LOUD_TARGETS.low_relative_db_ideal
+    target_tilt_lo, target_tilt_hi = KPOP_LOUD_TARGETS.high_low_tilt_ideal
+
+    warmth_db:    float = 0.0
+    low_trim_db:  float = 0.0
     high_shelf_db: float = 0.0
+
+    # ── LOW band convergence ──
+    # lowEnergyRatio is computed as 10^(lowRelativeDb / 10) where
+    # lowRelativeDb = lowΔ - midΔ.  Target = ratio 0.85–1.15, i.e.
+    # lowRelativeDb in (-0.7, +0.6).  Compute residual band-change needed.
+    if low_ratio is not None:
+        cur_low_rel_db = 10.0 * _m.log10(max(low_ratio, 1e-6))
+        if cur_low_rel_db < target_low_lo:
+            # bass-light: need to RAISE LOW band by Δ = target_low_lo - cur
+            needed_band_change = target_low_lo - cur_low_rel_db
+            warmth_db = gain_for_band_change(
+                "low_warmth_bell_90", needed_band_change, max_gain_db=2.5,
+            )
+            if warmth_db >= 0.05:
+                parts.append(f"equalizer=f=90:t=q:w=0.7:g={warmth_db:+.2f}")
+                applied.append({
+                    "where": "final_guard.warmth_bell", "freq": 90,
+                    "gainDb": warmth_db,
+                    "reason": (f"lowRelativeDb={cur_low_rel_db:+.2f} < "
+                               f"{target_low_lo:+.2f} → need +{needed_band_change:.2f}"),
+                })
+        elif cur_low_rel_db > target_low_hi:
+            # bass-heavy: need to LOWER LOW band by Δ = cur - target_low_hi
+            needed_band_change = -(cur_low_rel_db - target_low_hi)  # negative
+            low_trim_db = gain_for_band_change(
+                "low_trim_bell_100", needed_band_change, max_gain_db=2.5,
+            )
+            if low_trim_db <= -0.05:
+                parts.append(f"equalizer=f=100:t=q:w=0.9:g={low_trim_db:+.2f}")
+                applied.append({
+                    "where": "final_guard.low_trim", "freq": 100,
+                    "gainDb": low_trim_db,
+                    "reason": (f"lowRelativeDb={cur_low_rel_db:+.2f} > "
+                               f"{target_low_hi:+.2f} → need {needed_band_change:+.2f}"),
+                })
+
+    # ── HIGH-band tilt convergence ──
+    # NOTE: a high-shelf trim ALSO reduces the LOW relative — but only
+    # because it reduces highs, not lows.  Tilt = highΔ − lowΔ.  Trimming
+    # high shelf reduces highΔ → reduces tilt.  Doesn't affect lowΔ.
     if tilt_db is not None:
-        if tilt_db > 4.0:
-            # Bright tilt — shelf at 10 kHz.  Aim for tilt ≈ +2 dB after correction.
-            needed_db = float(tilt_db) - 2.0
-            high_shelf_db = round(-min(2.5, max(0.5, needed_db * 0.7)), 2)
-            parts.append(f"highshelf=f=10000:g={high_shelf_db:+.2f}")
-            applied.append({
-                "where": "final_guard.high_shelf_trim", "freq": 10000,
-                "gainDb": high_shelf_db,
-                "reason": f"highLowTiltDb={tilt_db} > +4 → -{needed_db:.2f} dB needed",
-            })
-        elif tilt_db < -4.0:
-            # Dark tilt — shelf at 8 kHz lift.  Aim for tilt ≈ -2 dB after.
-            needed_db = -float(tilt_db) - 2.0
-            high_shelf_db = round(min(2.0, max(0.5, needed_db * 0.5)), 2)
-            parts.append(f"highshelf=f=8000:g={high_shelf_db:+.2f}")
-            applied.append({
-                "where": "final_guard.high_shelf_lift", "freq": 8000,
-                "gainDb": high_shelf_db,
-                "reason": f"highLowTiltDb={tilt_db} < -4 → +{needed_db:.2f} dB needed",
-            })
+        if tilt_db > target_tilt_hi:
+            # Bright tilt — shelf at 10 kHz down.  Reduce tilt to target_tilt_hi.
+            needed_high_change = -(tilt_db - target_tilt_hi)
+            high_shelf_db = gain_for_band_change(
+                "high_shelf_10000", needed_high_change, max_gain_db=2.5,
+            )
+            if high_shelf_db <= -0.05:
+                parts.append(f"highshelf=f=10000:g={high_shelf_db:+.2f}")
+                applied.append({
+                    "where": "final_guard.high_shelf_trim", "freq": 10000,
+                    "gainDb": high_shelf_db,
+                    "reason": (f"tilt={tilt_db:+.2f} > {target_tilt_hi:+.1f} → "
+                               f"need {needed_high_change:+.2f}"),
+                })
+        elif tilt_db < target_tilt_lo:
+            # Dark tilt — shelf at 8 kHz up.
+            needed_high_change = target_tilt_lo - tilt_db
+            high_shelf_db = gain_for_band_change(
+                "high_shelf_8000", needed_high_change, max_gain_db=2.0,
+            )
+            if high_shelf_db >= 0.05:
+                parts.append(f"highshelf=f=8000:g={high_shelf_db:+.2f}")
+                applied.append({
+                    "where": "final_guard.high_shelf_lift", "freq": 8000,
+                    "gainDb": high_shelf_db,
+                    "reason": (f"tilt={tilt_db:+.2f} < {target_tilt_lo:+.1f} → "
+                               f"need {needed_high_change:+.2f}"),
+                })
 
     # v3.5 Phase 1 BUGFIX — only attach safety limiter when ANY applied
     # move is a BOOST.  Pure cuts can never push peaks above the existing
@@ -895,41 +926,76 @@ def run_pipeline(
             except OSError: pass
             raise
 
-        # ── Pre-limiter band measurement + tilt pre-correction ──
+        # ── Pre-limiter 4-BAND measurement + target-convergence shelf ──
+        # v3.5 Phase 2: full LOW/MID/HIGH/AIR measurement instead of just
+        # LOW + AIR.  Pre-correction shelf is computed via target-convergence
+        # (math) instead of a fixed multiplier.
         prelim_correction_filter = ""
         prelim_correction_meta: dict[str, float] = {}
         try:
             from app.qc.gain_staging import _measure_bands
+            from app.mastering.tonal_budget import (
+                KPOP_LOUD_TARGETS, gain_for_band_change,
+            )
             input_bands  = _measure_bands(input_path)  or {}
             prelim_bands = _measure_bands(prelim_wav)  or {}
             if input_bands and prelim_bands:
-                # Tilt at this point = highAir Δ − low Δ, not yet limiter-skewed
-                low_d  = (prelim_bands.get("low",     -120.0)
-                          - input_bands.get("low",    -120.0))
-                high_d = (prelim_bands.get("highAir", -120.0)
-                          - input_bands.get("highAir",-120.0))
-                tilt_pre = round(float(high_d) - float(low_d), 2)
+                low_d  = float(prelim_bands.get("low", -120.0)
+                               - input_bands.get("low", -120.0))
+                mid_d  = float(prelim_bands.get("backgroundLowMid", -120.0)
+                               - input_bands.get("backgroundLowMid", -120.0))
+                high_d = float(prelim_bands.get("backgroundHigh", -120.0)
+                               - input_bands.get("backgroundHigh", -120.0))
+                air_d  = float(prelim_bands.get("highAir", -120.0)
+                               - input_bands.get("highAir", -120.0))
+                tilt_pre = round(air_d - low_d, 2)
+                low_rel  = round(low_d - mid_d, 2)  # ratio expressed in dB
                 prelim_correction_meta = {
-                    "preLimitLowDelta":   round(low_d, 2),
-                    "preLimitHighDelta":  round(high_d, 2),
-                    "preLimitTiltDb":     tilt_pre,
+                    "preLimitLowDelta":  round(low_d, 2),
+                    "preLimitMidDelta":  round(mid_d, 2),
+                    "preLimitHighDelta": round(high_d, 2),
+                    "preLimitAirDelta":  round(air_d, 2),
+                    "preLimitTiltDb":    tilt_pre,
+                    "preLimitLowRelDb":  low_rel,
                 }
-                log("INFO", f"[prelim] low Δ={low_d:+.2f} / high Δ={high_d:+.2f} / "
-                            f"tilt={tilt_pre:+.2f} dB")
-                # If tilt > +3 dB → shelf trim BEFORE entry gain to stop limiter
-                # from amplifying the imbalance.  Max ±2 dB single shelf.
-                if tilt_pre > 3.0:
-                    excess = tilt_pre - 3.0
-                    shelf_db = round(-min(2.0, max(0.5, excess * 0.5)), 2)
-                    prelim_correction_filter = f"highshelf=f=10000:g={shelf_db:+.2f}"
-                    prelim_correction_meta["preLimitShelfDb"] = shelf_db
-                    log("INFO", f"[prelim] applying tilt pre-correction: {prelim_correction_filter}")
-                elif tilt_pre < -3.0:
-                    deficit = -tilt_pre - 3.0
-                    shelf_db = round(min(1.5, max(0.5, deficit * 0.4)), 2)
-                    prelim_correction_filter = f"highshelf=f=8000:g={shelf_db:+.2f}"
-                    prelim_correction_meta["preLimitShelfDb"] = shelf_db
-                    log("INFO", f"[prelim] applying tilt pre-correction: {prelim_correction_filter}")
+                log("INFO", f"[prelim] LOW Δ={low_d:+.2f} MID Δ={mid_d:+.2f} "
+                            f"HIGH Δ={high_d:+.2f} AIR Δ={air_d:+.2f} | "
+                            f"tilt={tilt_pre:+.2f} lowRel={low_rel:+.2f}")
+
+                # Target convergence: aim for tilt within target range
+                # (KPOP_LOUD_TARGETS.high_low_tilt_ideal = ±2.0 dB).  If
+                # outside ideal, compute the shelf gain needed to hit
+                # +2.0 (or -2.0) using the empirical effectiveness lookup.
+                tilt_lo, tilt_hi = KPOP_LOUD_TARGETS.high_low_tilt_ideal
+                if tilt_pre > tilt_hi:
+                    # Excess tilt — high-shelf at 10 kHz down.
+                    needed_band_change = -(tilt_pre - tilt_hi)  # negative → reduce highs
+                    shelf_db = gain_for_band_change(
+                        "high_shelf_10000", needed_band_change, max_gain_db=2.5,
+                    )
+                    if abs(shelf_db) >= 0.05:
+                        prelim_correction_filter = (
+                            f"highshelf=f=10000:g={shelf_db:+.2f}"
+                        )
+                        prelim_correction_meta["preLimitShelfDb"] = shelf_db
+                        prelim_correction_meta["preLimitShelfTarget"] = tilt_hi
+                        log("INFO", f"[prelim] tilt {tilt_pre:+.2f} > {tilt_hi:+.1f} "
+                                    f"→ shelf {shelf_db:+.2f} dB at 10 kHz "
+                                    f"(target convergence)")
+                elif tilt_pre < tilt_lo:
+                    needed_band_change = tilt_lo - tilt_pre  # positive
+                    shelf_db = gain_for_band_change(
+                        "high_shelf_8000", needed_band_change, max_gain_db=2.0,
+                    )
+                    if abs(shelf_db) >= 0.05:
+                        prelim_correction_filter = (
+                            f"highshelf=f=8000:g={shelf_db:+.2f}"
+                        )
+                        prelim_correction_meta["preLimitShelfDb"] = shelf_db
+                        prelim_correction_meta["preLimitShelfTarget"] = tilt_lo
+                        log("INFO", f"[prelim] tilt {tilt_pre:+.2f} < {tilt_lo:+.1f} "
+                                    f"→ shelf {shelf_db:+.2f} dB at 8 kHz "
+                                    f"(target convergence)")
         except Exception as exc:
             log("WARN", f"[prelim] measurement failed (skipping pre-correction): {exc}")
 

@@ -538,26 +538,47 @@ Input → [Phase A: analyze] → [Phase B: T1 single corrective EQ]
 
 ---
 
-## 8. 다음 단계
+## 8. 진행 상황 (2026-05-04 기준)
 
-본 분석을 기반으로 다음 commit 에서 구현 들어갑니다:
+### ✅ Phase 1 완료 — commit b9b824e
 
-### Phase 1 (낮은 위험, 즉시 구현)
-1. `dynamic_eq.py` — static fallback strength 60% → 25% (또는 비활성화)
-2. `dynamic_eq.py` — `boomy_low`, `muddy_lowmid` threshold 를 -16 → -10 으로
-   (실제 boomy 한 구간에서만 작동하도록)
-3. `effects.py` — saturation 을 compressor knee 에 흡수, 별도 stage 제거
-4. `pipeline.py` — pre soft-clip 제거 (post 만 유지)
-5. `pipeline.py` — final tonal guard 한도 ±1.5 → ±2.5 dB
+1. ✓ Dynamic EQ fallback 60 → 25, 단일-band ±1.5 dB cap
+2. ✓ `range` ffmpeg unit 버그 수정 (linear factor)
+3. ✓ Saturation → compressor knee 흡수
+4. ✓ Pre soft-clip 정리 (single instance)
+5. ✓ Final tonal guard ±1.5 → ±2.5 dB
+6. ✓ alimiter `level=disabled` + `asc=0` 버그 수정
 
-### Phase 2 (중간 위험, 별도 design)
-6. T1 Adaptive Corrective EQ — base + overlay 통합 함수로 리팩터
-7. Pre-limiter measurement point 추가 (T4 stage)
-8. Pre-correction shelf logic
+### ✅ Phase 2 완료 — commit (current)
 
-### Phase 3 (큰 변경, 충분한 테스트 후)
-9. Stage 흐름 재배치 (stereo → post-limiter)
-10. Target-based delta-budget 시스템
+1. ✓ **T1 Adaptive Corrective EQ** — `build_kpop_loud_corrective_eq()`
+   base EQ + overlay 를 단일 spectrum-driven 함수로 통합 (5 EQ moves max)
+2. ✓ **Pre-limiter 4-band measurement** — LOW/MID/HIGH/AIR 각각 분리 추적
+3. ✓ **Pre-correction shelf 정밀화** — 고정 multiplier → math 기반 target
+   convergence (`gain_for_band_change()` 로 effectiveness 보정)
+4. ✓ **Tonal budget 시스템** — `app/mastering/tonal_budget.py` —
+   per-stage 허용 변화량 + target spec
+5. ✓ **Final guard 1-pass 수렴** — low + high 동시 해 (math)
+
+### 측정 결과 — Phase 1 → Phase 2 비교
+
+| 입력 | 메트릭 | v3.4.7 | Phase 1 | **Phase 2** |
+|------|-------|------:|--------:|------------:|
+| bass-heavy | lowEnergyRatio | 0.70 | 1.183 | **0.942** ✓ |
+| bass-heavy | tilt | +1.05 | +3.79 | **+1.46** ✓ |
+| bass-light | lowEnergyRatio | 0.853 | 1.225 | **1.138** ✓ |
+| bass-light | tilt | +9.25 | +3.23 | **+1.98** ✓ |
+| realistic  | lowEnergyRatio | 0.815 | 1.172 | **1.081** ✓ |
+| realistic  | tilt | +10.19 | +3.58 | **+1.60** ✓ |
+
+**Phase 2 결과: 모든 입력에서 ratio 및 tilt 가 IDEAL 범위 내에 들어옴.**
+- ratio: target 0.85–1.15 → 모든 입력 0.94–1.14 ✓
+- tilt: target ±2 dB → 모든 입력 ±1.5–2.0 dB ✓
+
+### Phase 3 (큰 변경, 추후 진행 시)
+- Stereo width → post-limiter 재배치
+- Multi-band parallel processing (acrossover)
+- Real-time spectrum monitoring
 
 ---
 
