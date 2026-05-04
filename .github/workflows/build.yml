@@ -6,12 +6,12 @@ on:
       - main
       - 'claude/**'
     tags:
-      - 'v*'           # v3.2.0-rc, v3.2.0 등 — release 빌드 트리거
+      - 'v*'           # v3.5.0, v3.5.1 등 — release 빌드 트리거
   workflow_dispatch:
     inputs:
       release_tag:
         description: |
-          GitHub Release 를 만들 tag 이름 (예: v3.2.0-rc).
+          GitHub Release 를 만들 tag 이름 (예: v3.5.0).
           비워두면 release-draft job 은 실행되지 않고 build artifact 만 남음.
           softprops/action-gh-release 가 tag 가 없으면 자동 생성.
         required: false
@@ -319,7 +319,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # ── Windows (portable .exe) ───────────────────────────────────────────────────
+  # ── Windows (NSIS installer) ─────────────────────────────────────────────────
   # NSIS is intentionally disabled on this branch — see electron-builder.yml.
   build-win:
     runs-on: windows-latest
@@ -592,7 +592,7 @@ jobs:
           name: Louver-Mastering-AI-mac
           path: artifacts/mac
 
-      - name: Download Windows installer + portable
+      - name: Download Windows NSIS installer
         uses: actions/download-artifact@v4
         with:
           name: Louver-Mastering-AI-windows
@@ -621,9 +621,12 @@ jobs:
         with:
           tag_name:               ${{ steps.resolve_tag.outputs.tag }}
           name:                   ${{ steps.resolve_tag.outputs.tag }}
-          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.2.0-rc.md
+          # v3.5.0 — body_path uses the current major.minor's release notes.
+          # When bumping versions, copy/update RELEASE_DRAFT_v<NEW>.md and
+          # change this line to match the new tag.
+          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.5.0.md
           draft:                  true
-          prerelease:             true
+          prerelease:             false   # v3.5.0 is a regular beta release
           fail_on_unmatched_files: true
           # workflow_dispatch 트리거 시 tag 가 아직 없으면 softprops 가
           # 현재 commit (workflow run 의 SHA) 에서 자동으로 tag 를 생성한다.

@@ -1,6 +1,6 @@
 {
   "name": "@aimaster/desktop",
-  "version": "3.2.0-rc",
+  "version": "3.5.0",
   "description": "Louver Mastering AI — local commercial-grade mastering for desktop",
   "author": "Louver",
   "private": true,

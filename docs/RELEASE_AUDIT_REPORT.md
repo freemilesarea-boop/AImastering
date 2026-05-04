@@ -22,7 +22,11 @@
 | 테스트 커버리지 | ⚠️ Python 엔진 120/120 ✓ / TS renderer 테스트 부재 |
 | 배포 안전성 | ⚠️ **P1 이슈 5건** + **P0 이슈 2건** (아래 §10 참조) |
 
-### 🚨 배포 가능 여부 — **결론: NO (조건부)**
+### 🚨 배포 가능 여부 — **결론: 조건부 YES (Option A 선택, Win+Linux 베타)**
+
+> **2026-05-04 업데이트**: 사용자가 Option A (Windows+Linux 우선 베타,
+> macOS 보류) 를 선택.  P0-2 (version bump) 해결됨.  P0-1 (mac signing) 은
+> macOS 정식 배포 보류로 회피 — `RELEASE_DRAFT_v3.5.0.md` 에 명시됨.
 
 **P0 이슈 2건** 이 해결 전엔 **유료 수강생 배포 불가**:
 
@@ -543,10 +547,10 @@ function _autoUpdateEnabled(): boolean {
 
 ### 🚨 P0 (배포 불가 — 즉시 수정)
 
-| # | 제목 | 영향 | 위치 | 수정 제안 | 작업량 |
-|---|------|------|------|----------|:-----:|
-| **P0-1** | macOS 코드 서명 + Notarization 미완 | Gatekeeper 차단, mac auto-update 불가, 첫 실행 시 우클릭 우회 필요 | `electron-builder.yml` `mac.identity` 주석 / CI secrets 미설정 | 1) Apple Developer 인증서 발급 2) `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` GH secrets 등록 3) electron-builder.yml `mac.identity` 활성화 | 4-8 시간 (인증서 발급 포함) |
-| **P0-2** | `package.json.version = "3.2.0-rc"` 정식 배포 부적합 | electron-updater semver 비교 시 RC 가 정식보다 낮게 처리될 수 있음, 사용자 향한 버전 표시 혼란 | `aimaster-desktop/apps/desktop/package.json` | `"version": "3.5.0"` 으로 bump + git tag `v3.5.0` push | 30 분 |
+| # | 제목 | 영향 | 위치 | 수정 제안 | 상태 |
+|---|------|------|------|----------|:----:|
+| **P0-1** | macOS 코드 서명 + Notarization 미완 | Gatekeeper 차단, mac auto-update 불가, 첫 실행 시 우클릭 우회 필요 | `electron-builder.yml` `mac.identity` 주석 / CI secrets 미설정 | **Option A 선택으로 우회** — macOS 를 v3.5.0 정식 배포 대상에서 제외, unsigned beta 로만 첨부.  v3.6.x 에서 인증서 도입 예정 | 🟡 v3.5 deferred |
+| **P0-2** | `package.json.version = "3.2.0-rc"` 정식 배포 부적합 | electron-updater semver 비교 시 RC 가 정식보다 낮게 처리될 수 있음, 사용자 향한 버전 표시 혼란 | `aimaster-desktop/apps/desktop/package.json` + `aimaster-desktop/package.json` | `"version": "3.5.0"` 으로 bump | ✅ **해결됨 (commit 후)** |
 
 ### ⚠️ P1 (배포 전 강력 권장)
 
@@ -610,26 +614,42 @@ Sprint 3 (다음 마이너 릴리스)
 
 ---
 
-## 13. 배포 전 체크리스트
+## 13. 배포 전 체크리스트 (Option A — Win+Linux 우선)
+
+### v3.5.0 배포 전 (필수)
 
 ```
-[ ] P0-1 해결: macOS 인증서 발급 + CI secrets 설정 + 빌드 검증
-[ ] P0-2 해결: package.json version → 3.5.0 + git tag v3.5.0
-[ ] P1-1 해결: Windows 코드 서명 인증서
-[ ] P1-2 해결: legacy renderer 트리 통합 / 삭제
-[ ] P1-4 해결: tempfile cleanup
+[x] P0-2 해결: package.json version → 3.5.0
+[ ] git tag v3.5.0 + push (사용자가 직접 실행해야 함)
 [ ] CI workflow 실제 tag push 시 release artifact 생성 검증
+    [ ] Linux AppImage 업로드 + latest-linux.yml 확인
+    [ ] Windows NSIS Setup-3.5.0.exe 업로드 + latest.yml 확인
+    [ ] macOS dmg/zip 업로드 (unsigned beta 명시)
 [ ] electron-updater 가 새 release 인식 검증 (이전 버전 → 새 버전 업그레이드 시뮬레이션)
-[ ] 4 가지 사용자 시나리오 수동 검증:
-    [ ] mac arm64 첫 실행 (Gatekeeper 통과)
-    [ ] mac x64 첫 실행
-    [ ] Windows NSIS 설치 + 실행
+[ ] 사용자 시나리오 수동 검증:
+    [ ] Windows NSIS 설치 + 실행 + SmartScreen 우회 안내 확인
     [ ] Linux AppImage chmod +x 후 실행
-[ ] 자동 업데이트 end-to-end 검증 (3.5.0 → 3.5.1 mock)
+    [ ] mac unsigned beta 우클릭 우회 (참고용 검증, 정식 배포 X)
+```
+
+### v3.5.0 배포 후 (P1 패치, ~1주)
+
+```
+[ ] P1-2 해결: legacy renderer 트리 통합 / 삭제
+[ ] P1-3 해결: TS / renderer 단위 테스트 추가
+[ ] P1-4 해결: tempfile cleanup helper
+[ ] P1-6 해결: tonal_budget enforcement
+[ ] P1-7 해결: cumulative_chain_analysis Phase 2 호환
 [ ] 한글 파일명 입력 → 마스터링 → 출력 검증
 [ ] 백신 (Defender / Avast / Norton) 스캔 통과 검증
-[ ] 모든 P1 이슈 commit log 에 명시
-[ ] 사용자 매뉴얼 / FAQ / 첫 실행 가이드 확보
+```
+
+### v3.6.x (mac 정식 배포)
+
+```
+[ ] P0-1 해결: macOS Apple Developer 인증서 발급 + Notarization
+[ ] P1-1 해결: Windows EV Code Signing 인증서
+[ ] mac arm64 / x64 정식 빌드 + 자동 업데이트 검증
 ```
 
 ---
@@ -653,7 +673,22 @@ Sprint 3 (다음 마이너 릴리스)
 
 ## 15. 최종 결론
 
-### 🚨 **지금 바로 실제 유료 수강생에게 배포해도 되는가? → NO**
+> **2026-05-04 update**: 사용자가 **Option A** 선택 — Win+Linux 우선
+> 베타 배포, macOS 보류.  P0-2 해결됨 (version 3.5.0).  P0-1 은
+> macOS 정식 배포 보류로 회피.  자세한 내용 §11 P0 표 참조.
+
+### Option A 시나리오 — 결론: **YES (조건부)**
+
+`v3.5.0` tag push 시 다음 환경에서 즉시 정식 배포 가능:
+
+- ✅ **Windows** — NSIS Setup-3.5.0.exe (자동 업데이트 정상)
+  - 사용자 안내: 첫 실행 시 SmartScreen "추가 정보" → "실행"
+- ✅ **Linux** — AppImage (자동 업데이트 정상)
+  - 사용자 안내: `chmod +x` 후 실행
+- ⚠️ **macOS** — unsigned beta 로 첨부, 정식 배포 X (자동 업데이트 X)
+  - `RELEASE_DRAFT_v3.5.0.md` 의 §Troubleshooting 으로 안내
+
+### 사전 (전체 플랫폼 정식 배포) 결론: **NO**
 
 #### 이유
 
