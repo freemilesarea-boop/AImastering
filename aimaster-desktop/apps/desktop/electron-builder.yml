@@ -88,23 +88,15 @@ dmg:
   artifactName: "${productName}-${version}-${arch}.${ext}"
 
 # ── Windows ───────────────────────────────────────────────────────────────────
-# v3.4.3 — Switched from `portable` to `nsis` as the primary target so
-# auto-update works (portable .exe cannot self-update — it has no installer
-# directory to write into).  `portable` is kept as a SECONDARY artefact for
-# users on locked-down systems that disallow installers.
-#
-# NSIS settings:
-#   oneClick: false                       — let user pick install location
-#   perMachine: false                     — install per-user, no admin needed
-#   allowToChangeInstallationDirectory:   — ditto
-#   createDesktopShortcut / Start Menu:   — convenience
+# v3.4.4 — NSIS only.  Portable target removed: portable .exe cannot self-
+# update (electron-updater requires an installer that knows where to write
+# the new binary), and shipping both confused users about which one was
+# the "official" download.  Users on locked-down systems can fall back to
+# Linux AppImage or extract the NSIS installer manually.
 win:
   icon: public/icon.ico
   target:
     - target: nsis
-      arch:
-        - x64
-    - target: portable
       arch:
         - x64
 
@@ -116,9 +108,6 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: "${productName}"
   artifactName: "${productName}-Setup-${version}.${ext}"
-
-portable:
-  artifactName: "${productName}-${version}-portable-${arch}.${ext}"
 
 # ── Filename templates (all targets) ──────────────────────────────────────────
 artifactName: "${productName}-${version}-${os}-${arch}.${ext}"

@@ -200,7 +200,7 @@ export default function App() {
   useEffect(() => {
     console.log('[App] mounted. window.electronAPI available:', hasAPI);
     if (!hasAPI) {
-      console.warn('[App] electronAPI is undefined. Preload did not run. Check: 1) dist/preload/index.js 존재 여부 2) CSP 3) sandbox 설정');
+      console.warn('[App] electronAPI is undefined. Preload did not run. Check: 1) dist-electron/preload/index.js 존재 여부 2) CSP 3) sandbox 설정');
     }
   }, [hasAPI]);
 

@@ -209,10 +209,11 @@ jobs:
         run: node scripts/prebuild.cjs
 
       # ── Clean stale outputs BEFORE build (must NOT run after build —
-      # doing so wipes the freshly-built dist/main JS that electron-builder
-      # needs to package into app.asar).  v3.4.2 split renderer (dist/) and
-      # main (dist-electron/) into separate dirs so accidents like that
-      # cause an obvious build failure instead of silently destroying main.
+      # doing so wipes the freshly-built dist-electron/main JS that
+      # electron-builder needs to package into app.asar).  v3.4.2 split
+      # renderer (dist/) and main (dist-electron/) into separate dirs so
+      # accidents like that cause an obvious build failure instead of
+      # silently destroying main.
       - name: Clean previous out/ + dist*/ before build
         working-directory: aimaster-desktop/apps/desktop
         run: |
@@ -509,16 +510,9 @@ jobs:
             Select-Object FullName, Length |
             Format-Table -AutoSize
 
-      # v3.4.3 — Build NSIS installer (primary auto-update target) AND
-      # the portable .exe (secondary, for locked-down systems).
-      #
-      # Tag push uploads to GitHub Releases + the latest.yml metadata used
-      # by electron-updater on the client.
-      #
-      # NSIS dependency on Windows MAX_PATH was previously the blocker;
-      # with the D:\w\ junction the workspace path is short enough to keep
-      # nested node_modules paths under 260 chars.  If NSIS still fails
-      # the portable target keeps shipping unconditionally.
+      # v3.4.4 — NSIS installer only (portable target dropped — see
+      # electron-builder.yml comment).  Tag push uploads to GitHub Releases
+      # + the latest.yml metadata used by electron-updater clients.
       - name: Compute publish flag
         id: pub
         shell: pwsh
@@ -529,13 +523,13 @@ jobs:
             "flag=never" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
 
-      - name: Package NSIS installer + portable .exe
+      - name: Package NSIS installer
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd D:\w\aimaster-desktop
-          pnpm --filter @aimaster/desktop exec electron-builder --win nsis portable --x64 --publish ${{ steps.pub.outputs.flag }}
+          pnpm --filter @aimaster/desktop exec electron-builder --win nsis --x64 --publish ${{ steps.pub.outputs.flag }}
 
       - name: List build outputs
         run: |
