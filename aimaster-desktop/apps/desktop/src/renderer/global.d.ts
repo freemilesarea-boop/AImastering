@@ -24,12 +24,15 @@ declare interface Window {
   };
 }
 
-/** v3.4.3 — Auto-update status events, mirrored from src/main/updater.ts */
+/** v3.4.3+ — Auto-update status events, mirrored from src/main/updater.ts */
 type UpdaterStatus =
   | { type: 'idle' }
   | { type: 'checking' }
   | { type: 'available';         info: { version: string; releaseNotes?: string | null } }
   | { type: 'not-available';     info: { version: string } }
+  /** v3.4.5 — release server reachable but no published version yet.
+      Renderer should treat this as silent (no toast). */
+  | { type: 'no-release' }
   | { type: 'download-progress'; progress: {
       percent: number; bytesPerSecond: number;
       transferred: number; total: number;

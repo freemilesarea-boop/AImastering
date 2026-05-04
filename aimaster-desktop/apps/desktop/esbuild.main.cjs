@@ -16,6 +16,14 @@ const path    = require('path');
 
 const isDev = process.argv.includes('--dev');
 
+// v3.4.5 — Auto-update gate baked at build time.
+// CI sets AUTO_UPDATE_ENABLED=true ONLY for tag pushes (production
+// installer that ships to a published GitHub Release).  Branch / workflow_
+// dispatch / dev builds default to false so the autoUpdater never queries
+// GitHub for a release that doesn't exist (avoids the misleading
+// "No published versions on GitHub" toast).  See src/main/updater.ts.
+const AUTO_UPDATE_ENABLED = process.env.AUTO_UPDATE_ENABLED === 'true';
+
 const shared = {
   bundle:    true,
   platform:  'node',
@@ -24,6 +32,9 @@ const shared = {
   sourcemap: isDev ? 'inline' : false,
   minify:    !isDev,
   external:  ['electron', 'node-machine-id'],
+  define: {
+    '__AUTO_UPDATE_ENABLED__': JSON.stringify(AUTO_UPDATE_ENABLED),
+  },
 };
 
 const workspaceAlias = {
