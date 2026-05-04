@@ -209,20 +209,32 @@ _STYLE_OVERLAYS: dict[str, StyleOverlay] = {
         ],
     ),
 
-    # ─── KPOP Loud ────────────────────────────────────────────────────────
-    # 체감 볼륨 우선. low-end 정리, vocal mid clarity, sheen.
+    # ─── KPOP Loud (v3.4.6 — telephone-sound fix) ─────────────────────────
+    # 기존 overlay 의 누적 문제:
+    #   · 80 Hz −1.5 dB (overlay) + 100 Hz −2.5 dB (dynamic boomy_low) +
+    #     250 Hz −3 dB (base) + 300 Hz −2 dB (dynamic muddy_lowmid)
+    #     → 저역 ~5 dB 손실 = "전화기 소리"
+    #   · 2.5k +1.5 + 5.5k +1.2 + 10k +1.0 + 12k +adaptive(~2)
+    #     → 고역 +5 dB 누적 부스트 → 더욱 텔레폰화
+    #
+    # 수정 방침:
+    #   1. 80 Hz CUT 제거 → 대신 90 Hz +1 dB 따뜻함 보존 bell
+    #   2. high boosts 대폭 축소: 2.5k +1.5 → +1.0 / 5.5k +1.2 → +0.8 /
+    #      10k +1.0 → +0.5 (총 +2.3 dB, 가이드 기준 +2.5 dB 이하)
+    #   3. dynamic_eq.py / effects.py 에서 동시에 저역/고역 제어 완화
+    #   4. pipeline 에 telephone-sound guard 추가
     "kpop_loud": StyleOverlay(
         filters=[
-            "equalizer=f=80:t=o:w=1.5:g=-1.5",     # boomy cleanup (base +가 줄어듦)
-            "equalizer=f=2500:t=o:w=1.1:g=+1.5",   # vocal presence
-            "equalizer=f=5500:t=o:w=1.0:g=+1.2",   # vocal clarity
-            "equalizer=f=10000:t=o:w=1.2:g=+1.0",  # sheen
+            "equalizer=f=90:t=q:w=0.7:g=+1.0",     # low warmth (저역 보존)
+            "equalizer=f=2500:t=o:w=1.1:g=+1.0",   # vocal presence (was +1.5)
+            "equalizer=f=5500:t=o:w=1.0:g=+0.8",   # vocal clarity  (was +1.2)
+            "equalizer=f=10000:t=o:w=1.2:g=+0.5",  # sheen          (was +1.0)
         ],
         moves=[
-            EqMove("Boomy cleanup (kpop)",     80,   -1.5, "bell"),
-            EqMove("Vocal presence (kpop)",    2500, +1.5, "bell"),
-            EqMove("Vocal clarity (kpop)",     5500, +1.2, "bell"),
-            EqMove("Sheen (kpop)",             10000,+1.0, "bell"),
+            EqMove("Low warmth (kpop)",        90,   +1.0, "bell"),
+            EqMove("Vocal presence (kpop)",    2500, +1.0, "bell"),
+            EqMove("Vocal clarity (kpop)",     5500, +0.8, "bell"),
+            EqMove("Sheen (kpop)",             10000,+0.5, "bell"),
         ],
     ),
 }

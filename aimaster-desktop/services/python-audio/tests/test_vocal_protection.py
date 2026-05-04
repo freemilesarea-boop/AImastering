@@ -95,16 +95,23 @@ def test_classify_vocal_loss():
 # ── Integration with dynamic_eq.build_dynamic_eq_chain ─────────────────────
 
 def test_build_dynamic_eq_chain_clamps_vocal_band_cut():
-    """A kpop_loud band that asks for −3 dB at 3.8 kHz must be clamped to −2.5."""
+    """A kpop_loud band that asks for > −2.5 dB at 3.8 kHz must be clamped.
+
+    v3.4.6 — the kpop_loud `harsh_highmid` preset reduction was lowered from
+    2.0 to 1.5 dB as part of the telephone-sound fix.  At default intensity
+    the vocal-band clamp no longer fires (1.5 dB < 2.5 dB cap).  We bump
+    intensity to 2.0 in this test so the requested 3.0 dB cut still trips
+    the engine guard.
+    """
     from app.mastering.dynamic_eq import build_dynamic_eq_chain
     log: list[dict] = []
-    rep = build_dynamic_eq_chain("kpop_loud", intensity=1.5, protection_log=log)
+    rep = build_dynamic_eq_chain("kpop_loud", intensity=2.0, protection_log=log)
     # Find the harsh_highmid band (3.8 kHz, in vocal range)
     harsh = next((b for b in rep["bands"] if b["name"] == "harsh_highmid"), None)
     if harsh is None:
         pytest.skip("kpop_loud preset changed — band not present")
     assert harsh["reduction"] <= 2.5
-    # The clamp must have been logged
+    # The clamp must have been logged at intensity=2.0
     assert any("dynamic_eq.harsh_highmid" in c["where"] for c in log)
 
 

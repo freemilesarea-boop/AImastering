@@ -56,6 +56,19 @@ _CREST_DROP_DANG    = 0.55
 _LRA_DROP_WARN      = 0.50
 _LRA_DROP_DANG      = 0.70
 
+# v3.4.6 — telephone-sound detection thresholds.
+# A "telephone" master keeps vocals + presence but loses sub/bass and over-
+# brightens the top, leaving a thin, narrow-band spectrum.  Triggered when
+# either:
+#   · low band (20–200 Hz) energy drops by ≥ 25 % vs input            (warn)
+#   · low band drops ≥ 40 %                                           (danger)
+#   · high-band rise minus low-band drop ≥ 4 dB (tonal tilt)          (warn)
+#   · high-band rise minus low-band drop ≥ 7 dB                       (danger)
+_LOW_LOSS_WARN_FRAC   = 0.25
+_LOW_LOSS_DANG_FRAC   = 0.40
+_TILT_WARN_DB         = 4.0
+_TILT_DANG_DB         = 7.0
+
 
 def _db(linear: float) -> float:
     return 20.0 * math.log10(max(linear, 1e-12))
@@ -136,6 +149,23 @@ def build_gain_staging_report(
     for key in bands_before:
         if key in bands_after:
             band_delta[key] = round(bands_after[key] - bands_before[key], 2)
+
+    # v3.4.6 — telephone-sound detection.
+    # Compares 20–200 Hz (low) vs 10k–18k (highAir) movement.  Negative low
+    # delta combined with positive high delta = "전화기 소리".
+    low_delta_db   = band_delta.get("low")
+    high_delta_db  = band_delta.get("highAir")
+    low_loss_frac: float | None = None
+    high_low_tilt_db: float | None = None
+    if low_delta_db is not None:
+        # Convert dB delta to fractional energy ratio: 10^(delta/10).
+        # We report (1 - ratio) as "fraction of low band energy lost".
+        # Positive delta_db → ratio>1 → loss<0 (gained energy) — clamp to 0.
+        ratio = 10.0 ** (float(low_delta_db) / 10.0)
+        low_loss_frac = round(max(0.0, 1.0 - ratio), 3)
+    if low_delta_db is not None and high_delta_db is not None:
+        # Tilt = how much more the highs rose than the lows.  Positive = thin/bright.
+        high_low_tilt_db = round(float(high_delta_db) - float(low_delta_db), 2)
 
     # ── Vocal presence loss vs background rise ──
     vocal_loss = None
@@ -225,6 +255,37 @@ def build_gain_staging_report(
             recs.append("low_limit")
             _bump("warn")
 
+    # v3.4.6 — telephone-sound check (저역 손실 + 고역 부각 = 전화기/라디오 소리)
+    if low_loss_frac is not None:
+        if low_loss_frac >= _LOW_LOSS_DANG_FRAC:
+            issues.append(
+                f"저역(20–200 Hz) 에너지가 {low_loss_frac*100:.0f}% 감소 — "
+                f"전화기/라디오 사운드.  HPF/저역 cut 완화 필요."
+            )
+            recs.append("low_limit")
+            recs.append("vocal_safe")
+            _bump("danger")
+        elif low_loss_frac >= _LOW_LOSS_WARN_FRAC:
+            issues.append(
+                f"저역(20–200 Hz) 에너지가 {low_loss_frac*100:.0f}% 감소 — "
+                f"저역 손실 의심."
+            )
+            recs.append("low_limit")
+            _bump("warn")
+    if high_low_tilt_db is not None and high_low_tilt_db >= _TILT_WARN_DB:
+        if high_low_tilt_db >= _TILT_DANG_DB:
+            issues.append(
+                f"고역이 저역 대비 {high_low_tilt_db:.1f} dB 더 상승 — "
+                f"얇은 사운드/텔레폰 필터 의심."
+            )
+            recs.append("low_limit")
+            _bump("danger")
+        else:
+            issues.append(
+                f"고역-저역 기울기 {high_low_tilt_db:+.1f} dB — 다소 밝은 쪽으로 치우침."
+            )
+            _bump("warn")
+
     # Pre-limiter push warning (if entry_gain > 6 dB or correction > 6 dB)
     pre_push = float(pipeline_stages.get("preGainDb", 0.0))
     if pre_push > 6.0:
@@ -263,6 +324,9 @@ def build_gain_staging_report(
         "backgroundRiseDb":   bg_rise,
         "crestFactorDropPct": crest_drop_pct,
         "lraDropPct":         lra_drop_pct,
+        # v3.4.6 — telephone-sound diagnostics
+        "lowLossFrac":        low_loss_frac,
+        "highLowTiltDb":      high_low_tilt_db,
         "verdict":            verdict,
         "issues":             issues,
         "recommendations":    deduped_recs,

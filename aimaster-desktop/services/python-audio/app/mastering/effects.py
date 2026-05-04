@@ -23,8 +23,12 @@ _MODE_DEFAULTS: dict[str, dict] = {
     "bright":    {"saturation": 0.0,  "stereo_width": 1.10, "deesser": False},
     "warm":      {"saturation": 0.15, "stereo_width": 1.0,  "deesser": True},
     "punch":     {"saturation": 0.30, "stereo_width": 1.05, "deesser": False},
-    "loud":      {"saturation": 0.40, "stereo_width": 1.10, "deesser": True},
-    "kpop_loud": {"saturation": 0.50, "stereo_width": 1.15, "deesser": True},
+    "loud":      {"saturation": 0.30, "stereo_width": 1.10, "deesser": False},  # v3.4.6: was 0.40 + deesser
+    # v3.4.6 — kpop_loud 텔레폰 사운드 방지:
+    #   saturation 0.50 → 0.25 (고역 가속 방지)
+    #   deesser True → False  (sibilance dynamic 이 이미 처리하므로 중복)
+    #   stereo_width 1.15 → 1.10 (사이드 에너지 과다로 모노 호환성 보호)
+    "kpop_loud": {"saturation": 0.25, "stereo_width": 1.10, "deesser": False},
 }
 
 

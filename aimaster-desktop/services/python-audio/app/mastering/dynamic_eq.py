@@ -99,11 +99,14 @@ DYNAMIC_EQ_PRESETS: dict[str, list[dict[str, Any]]] = {
         {"name": "muddy_lowmid",  "freq":  280, "q": 1.0, "threshold": -16, "reduction": 2.0, "mode": "cut"},
         {"name": "sibilance",     "freq": 7000, "q": 1.6, "threshold": -20, "reduction": 2.0, "mode": "cut"},
     ],
+    # v3.4.6 — kpop_loud 텔레폰 사운드 방지: 저역 동적 cut 폭 대폭 축소.
+    # boomy_low / muddy_lowmid 가 EQ overlay 의 (구) -1.5 dB 80Hz cut 과
+    # 누적되어 저역을 5 dB 이상 깎던 패턴을 제거.
     "kpop_loud": [
-        {"name": "boomy_low",     "freq":  100, "q": 1.2, "threshold": -16, "reduction": 2.5, "mode": "cut"},
-        {"name": "muddy_lowmid",  "freq":  300, "q": 1.0, "threshold": -16, "reduction": 2.0, "mode": "cut"},
-        {"name": "harsh_highmid", "freq": 3800, "q": 1.4, "threshold": -18, "reduction": 2.0, "mode": "cut"},
-        {"name": "sibilance",     "freq": 7500, "q": 1.8, "threshold": -20, "reduction": 2.5, "mode": "cut"},
+        {"name": "boomy_low",     "freq":  100, "q": 1.2, "threshold": -14, "reduction": 1.2, "mode": "cut"},   # was thr=-16, red=2.5
+        {"name": "muddy_lowmid",  "freq":  300, "q": 1.0, "threshold": -15, "reduction": 1.5, "mode": "cut"},   # was thr=-16, red=2.0
+        {"name": "harsh_highmid", "freq": 3800, "q": 1.4, "threshold": -18, "reduction": 1.5, "mode": "cut"},   # was red=2.0
+        {"name": "sibilance",     "freq": 7500, "q": 1.8, "threshold": -20, "reduction": 2.0, "mode": "cut"},   # was red=2.5
         {"name": "vocal_presence","freq": 2500, "q": 1.0, "threshold": -26, "reduction": 1.0, "mode": "boost"},
     ],
     "warm": [

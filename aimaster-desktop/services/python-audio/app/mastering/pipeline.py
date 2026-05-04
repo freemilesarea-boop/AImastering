@@ -1096,13 +1096,35 @@ def run_pipeline(
             output_path    = output_path,
             pipeline_stages = gain_stages,
         )
+        # v3.4.6 — diagnostic spectral table (kpop_loud telephone-sound debug).
+        # Logs per-band before/after RMS so we can correlate user complaints
+        # ("저역이 사라짐", "전화기 소리") with measured energy ratios.
+        bands_before = gain_staging_report.get("bandsBefore") or {}
+        bands_after  = gain_staging_report.get("bandsAfter")  or {}
+        log("INFO", f"[spectral][{style}] band energy table (dBFS):")
+        for key in ("low", "backgroundLowMid", "vocalPresence", "backgroundHigh", "highAir"):
+            b = bands_before.get(key)
+            a = bands_after.get(key)
+            d = round(a - b, 2) if (a is not None and b is not None) else None
+            log("INFO", f"  {key:18}: {b!r} → {a!r}  Δ={d}")
+        log("INFO",
+            f"[spectral][{style}] lowLossFrac={gain_staging_report.get('lowLossFrac')} "
+            f"highLowTiltDb={gain_staging_report.get('highLowTiltDb')} "
+            f"verdict={gain_staging_report.get('verdict')}")
+
         # Promote vocal/background issues to pipeline_warnings so the UI
         # banner reflects the user-reported "main melody pressed / background
         # boosted" symptom directly.
         if gain_staging_report.get("verdict") in ("warn", "danger"):
+            # Telephone-sound issues get a dedicated code so the renderer can
+            # show a "thin/bright master" hint instead of the generic banner.
+            tel_codes = ("저역", "고역", "전화기", "텔레폰")
             for issue in gain_staging_report.get("issues", []):
+                code = ("TELEPHONE_SOUND"
+                        if any(t in issue for t in tel_codes)
+                        else "GAIN_STAGING_IMBALANCE")
                 pipeline_warnings.append({
-                    "code":  "GAIN_STAGING_IMBALANCE",
+                    "code":  code,
                     "level": "warning" if gain_staging_report["verdict"] == "warn" else "error",
                     "userMessage": issue,
                 })
