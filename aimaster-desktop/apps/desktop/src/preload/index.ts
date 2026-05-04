@@ -15,10 +15,14 @@ const INVOKE_CHANNELS = [
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // System
   'system:ffmpeg-status',
+  // Updater (v3.4.3)
+  'updater:check', 'updater:download', 'updater:quit-and-install',
+  'updater:get-status',
 ] as const;
 
 const LISTEN_CHANNELS = [
   'audio:progress',
+  'updater:status',
 ] as const;
 
 type InvokeChannel = typeof INVOKE_CHANNELS[number];
@@ -41,4 +45,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   platform: process.platform,
   version:  process.env['npm_package_version'] ?? '1.0.0',
+});
+
+// ── Dedicated `window.updater` namespace (v3.4.3) ─────────────────────────────
+// Keeps the auto-update API ergonomic for the renderer instead of forcing
+// callers through the generic invoke() bridge.  All channels are still routed
+// through the validated INVOKE_CHANNELS list above.
+contextBridge.exposeInMainWorld('updater', {
+  checkForUpdates: () => ipcRenderer.invoke('updater:check'),
+  downloadUpdate:  () => ipcRenderer.invoke('updater:download'),
+  quitAndInstall:  () => ipcRenderer.invoke('updater:quit-and-install'),
+  getStatus:       () => ipcRenderer.invoke('updater:get-status'),
+  onStatus: (listener: (status: unknown) => void) => {
+    const wrapped = (_e: IpcRendererEvent, status: unknown) => listener(status);
+    ipcRenderer.on('updater:status', wrapped);
+    return () => ipcRenderer.removeListener('updater:status', wrapped);
+  },
 });

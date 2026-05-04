@@ -86,11 +86,25 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm build
 
+      # v3.4.3 — auto-update.  On tag push (refs/tags/v*) electron-builder
+      # publishes artefacts + the latest-linux.yml metadata to GitHub Releases
+      # so electron-updater clients can discover the new version.
+      # On regular branch pushes we just build the artefact for CI sanity.
+      - name: Compute publish flag
+        id: pub
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "flag=always" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=never" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Package AppImage
         working-directory: aimaster-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage --x64 --publish never
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage --x64 --publish ${{ steps.pub.outputs.flag }}
 
       - name: List build outputs
         working-directory: aimaster-desktop/apps/desktop
@@ -194,14 +208,37 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: node scripts/prebuild.cjs
 
+      # ── Clean stale outputs BEFORE build (must NOT run after build —
+      # doing so wipes the freshly-built dist-electron/main JS that
+      # electron-builder needs to package into app.asar).  v3.4.2 split
+      # renderer (dist/) and main (dist-electron/) into separate dirs so
+      # accidents like that cause an obvious build failure instead of
+      # silently destroying main.
+      - name: Clean previous out/ + dist*/ before build
+        working-directory: aimaster-desktop/apps/desktop
+        run: |
+          rm -rf out dist dist-electron
+
       - name: Build Electron app
         working-directory: aimaster-desktop/apps/desktop
         run: pnpm build
 
-      - name: Clean previous out/ + dist/ before packaging
+      # ── Sanity: verify the artefacts electron-builder will package exist ──
+      - name: Verify build outputs (renderer + main + preload)
         working-directory: aimaster-desktop/apps/desktop
         run: |
-          rm -rf out dist
+          set -e
+          echo "=== dist/renderer/index.html (from vite) ==="
+          test -f dist/renderer/index.html || (echo "FAIL: missing"; exit 1)
+          ls -la dist/renderer/ | head -10
+          echo ""
+          echo "=== dist-electron/main/index.js (from esbuild) ==="
+          test -f dist-electron/main/index.js || (echo "FAIL: missing"; exit 1)
+          ls -la dist-electron/main/
+          echo ""
+          echo "=== dist-electron/preload/index.js (from esbuild) ==="
+          test -f dist-electron/preload/index.js || (echo "FAIL: missing"; exit 1)
+          ls -la dist-electron/preload/
 
       # ── Diagnostic dump — prove which config drives the next step ──────────
       - name: Diagnose electron-builder config (pre-package)
@@ -223,25 +260,40 @@ jobs:
           find . -maxdepth 6 -type f \( -iname "electron-builder*" -o -iname "builder*.yml" -o -iname "builder*.yaml" -o -iname "builder*.json" \) \
             ! -path "*/node_modules/*" ! -path "*/.git/*" 2>/dev/null || true
 
-      # Try arm64 + x64 in one electron-builder invocation; fall back to
-      # two separate single-arch zip builds if that fails.
-      # Use --filter form so config resolution is unambiguous.
-      - name: Package macOS .zip (arm64 + x64)
+      # v3.4.3 — auto-update.  Build dmg + zip both: dmg is the user-friendly
+      # first-install format, zip is what electron-updater consumes for
+      # delta updates.  Tag push uploads the metadata YAML alongside.
+      #
+      # !! Auto-update on macOS still requires code-signing + notarization.
+      # Without them the OS Gatekeeper blocks the replacement process.
+      # See electron-builder.yml `mac.identity` TODO for v3.5.
+      - name: Compute publish flag
+        id: pub
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "flag=always" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=never" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package macOS .dmg + .zip (arm64 + x64)
         id: pack_mac
         working-directory: aimaster-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true
-        run: pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64 --arm64 --publish never
+        run: pnpm --filter @aimaster/desktop exec electron-builder --mac dmg zip --x64 --arm64 --publish ${{ steps.pub.outputs.flag }}
 
-      - name: Fallback — package macOS .zip (split per-arch)
+      - name: Fallback — package macOS .zip (split per-arch, no dmg)
         if: steps.pack_mac.outcome == 'failure'
         working-directory: aimaster-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --arm64 --publish never
-          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64   --publish never
+          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --arm64 --publish ${{ steps.pub.outputs.flag }}
+          pnpm --filter @aimaster/desktop exec electron-builder --mac zip --x64   --publish ${{ steps.pub.outputs.flag }}
 
       - name: List build outputs
         working-directory: aimaster-desktop/apps/desktop
@@ -253,7 +305,9 @@ jobs:
         with:
           name: Louver-Mastering-AI-mac
           path: |
+            aimaster-desktop/apps/desktop/out/*.dmg
             aimaster-desktop/apps/desktop/out/*.zip
+            aimaster-desktop/apps/desktop/out/latest-mac.yml
           if-no-files-found: error
           retention-days: 30
 
@@ -409,16 +463,29 @@ jobs:
           cd D:\w\aimaster-desktop\apps\desktop
           node scripts/prebuild.cjs
 
+      # ── Clean stale outputs BEFORE build (must NOT run after build —
+      # doing so wipes the freshly-built main JS that electron-builder needs).
+      - name: Clean previous out/ + dist*/ before build
+        run: |
+          cd D:\w\aimaster-desktop\apps\desktop
+          if (Test-Path "out")           { Remove-Item -Recurse -Force "out" }
+          if (Test-Path "dist")          { Remove-Item -Recurse -Force "dist" }
+          if (Test-Path "dist-electron") { Remove-Item -Recurse -Force "dist-electron" }
+
       - name: Build Electron app
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
           pnpm build
 
-      - name: Clean previous out/ before packaging
+      # ── Sanity: verify the artefacts electron-builder will package exist ──
+      - name: Verify build outputs (renderer + main + preload)
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
-          if (Test-Path "out") { Remove-Item -Recurse -Force "out" }
-          if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
+          if (-not (Test-Path "dist\renderer\index.html"))     { Write-Error "missing dist/renderer/index.html"; exit 1 }
+          if (-not (Test-Path "dist-electron\main\index.js"))  { Write-Error "missing dist-electron/main/index.js"; exit 1 }
+          if (-not (Test-Path "dist-electron\preload\index.js")) { Write-Error "missing dist-electron/preload/index.js"; exit 1 }
+          Write-Host "── all build outputs present ──"
+          Get-ChildItem -Recurse -File dist, dist-electron | Select-Object FullName, Length | Format-Table -AutoSize
 
       # ── Diagnostic dump — prove which config drives the next step ──────────
       - name: Diagnose electron-builder config (pre-package)
@@ -443,35 +510,41 @@ jobs:
             Select-Object FullName, Length |
             Format-Table -AutoSize
 
-      # Portable .exe ONLY.  NSIS is intentionally NOT invoked on this branch
-      # — it cannot package on the GitHub Actions Windows runner because
-      # pnpm + electron-builder peer-deps produce node_modules paths > 260
-      # chars (Windows MAX_PATH), which makensis cannot read.
-      # NSIS will be revisited on a separate branch.
-      #
-      # Use --filter form so electron-builder is invoked from the desktop
-      # package's exact context regardless of CWD; this guarantees the
-      # apps/desktop/electron-builder.yml is the config it loads.
-      - name: Package portable .exe (no NSIS)
+      # v3.4.4 — NSIS installer only (portable target dropped — see
+      # electron-builder.yml comment).  Tag push uploads to GitHub Releases
+      # + the latest.yml metadata used by electron-updater clients.
+      - name: Compute publish flag
+        id: pub
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            "flag=always" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "flag=never" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Package NSIS installer
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd D:\w\aimaster-desktop
-          pnpm --filter @aimaster/desktop exec electron-builder --win portable --x64 --publish never
+          pnpm --filter @aimaster/desktop exec electron-builder --win nsis --x64 --publish ${{ steps.pub.outputs.flag }}
 
       - name: List build outputs
         run: |
           cd D:\w\aimaster-desktop\apps\desktop\out
           Get-ChildItem -File | ForEach-Object { Write-Host "  $($_.Name)  ($([math]::Round($_.Length/1MB, 2)) MB)" }
 
-      - name: Upload Windows portable artifact
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Louver-Mastering-AI-windows-portable
+          name: Louver-Mastering-AI-windows
           # Junction is transparent — files written under D:\w\... are also
           # visible under $GITHUB_WORKSPACE\... so the relative path works.
           path: |
             aimaster-desktop/apps/desktop/out/*.exe
+            aimaster-desktop/apps/desktop/out/latest.yml
           if-no-files-found: error
           retention-days: 30
 
@@ -508,10 +581,10 @@ jobs:
           name: Louver-Mastering-AI-mac
           path: artifacts/mac
 
-      - name: Download Windows portable
+      - name: Download Windows installer + portable
         uses: actions/download-artifact@v4
         with:
-          name: Louver-Mastering-AI-windows-portable
+          name: Louver-Mastering-AI-windows
           path: artifacts/win
 
       - name: Inspect downloaded artifacts

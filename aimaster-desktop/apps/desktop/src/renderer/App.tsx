@@ -10,6 +10,7 @@ import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
+import { UpdateToast } from './components/UpdateToast.js';
 
 // ── Toast notification ────────────────────────────────────────────────────────
 
@@ -199,7 +200,7 @@ export default function App() {
   useEffect(() => {
     console.log('[App] mounted. window.electronAPI available:', hasAPI);
     if (!hasAPI) {
-      console.warn('[App] electronAPI is undefined. Preload did not run. Check: 1) dist/preload/index.js 존재 여부 2) CSP 3) sandbox 설정');
+      console.warn('[App] electronAPI is undefined. Preload did not run. Check: 1) dist-electron/preload/index.js 존재 여부 2) CSP 3) sandbox 설정');
     }
   }, [hasAPI]);
 
@@ -240,6 +241,9 @@ function AppInner() {
 
       {/* Toast notifications */}
       <Toast />
+
+      {/* v3.4.3 — auto-update bottom-right card */}
+      <UpdateToast />
 
       {/* Global drag overlay — captures drops from external apps (Finder/Explorer)
           even when TopBar has -webkit-app-region: drag */}

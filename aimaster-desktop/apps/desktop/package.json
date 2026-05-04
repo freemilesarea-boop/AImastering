@@ -4,11 +4,11 @@
   "description": "Louver Mastering AI — local commercial-grade mastering for desktop",
   "author": "Louver",
   "private": true,
-  "main": "dist/main/index.js",
+  "main": "dist-electron/main/index.js",
   "scripts": {
     "dev": "concurrently --names RENDERER,MAIN --prefix-colors cyan,yellow \"pnpm dev:renderer\" \"pnpm dev:main\"",
     "dev:renderer": "vite",
-    "dev:main": "node esbuild.main.cjs --dev && wait-on http://localhost:5173 && electron dist/main/index.js",
+    "dev:main": "node esbuild.main.cjs --dev && wait-on http://localhost:5173 && electron dist-electron/main/index.js",
     "build": "pnpm build:renderer && pnpm build:main",
     "build:renderer": "vite build",
     "build:main": "node esbuild.main.cjs",
@@ -18,13 +18,15 @@
     "dist:win": "node scripts/prebuild.cjs && pnpm build && electron-builder --win portable --x64 --publish never",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
-    "clean": "rm -rf dist out public/bin"
+    "clean": "rm -rf dist dist-electron out public/bin"
   },
   "dependencies": {
     "@aimaster/audio-engine": "workspace:*",
     "@aimaster/license-core": "workspace:*",
     "@aimaster/shared-types": "workspace:*",
+    "electron-log": "^5.2.0",
     "electron-store": "^10.0.0",
+    "electron-updater": "^6.3.9",
     "node-machine-id": "^1.1.12",
     "uuid": "^9.0.0"
   },

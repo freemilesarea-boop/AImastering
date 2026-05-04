@@ -1,11 +1,14 @@
 /**
  * esbuild bundler for Electron main + preload processes.
  *
- * Bundles two entry points:
- *   src/main/index.ts    → dist/main/index.js     (Node.js CJS, all @aimaster/* inlined)
- *   src/preload/index.ts → dist/preload/index.js  (Node.js CJS, electron stays external)
+ * Output layout (v3.4.2 — separated from renderer's dist/ to avoid the CI
+ * cleanup-step bug where `rm -rf dist` between build and packaging wiped
+ * the freshly-built main process):
  *
- * `electron` stays external in both — it's provided by the Electron runtime.
+ *   src/main/index.ts    → dist-electron/main/index.js     (Node.js CJS)
+ *   src/preload/index.ts → dist-electron/preload/index.js  (Node.js CJS)
+ *
+ * `electron` stays external in both — provided by the Electron runtime.
  * `node-machine-id` stays external — native module with .node bindings.
  */
 const esbuild = require('esbuild');
@@ -34,7 +37,7 @@ Promise.all([
   esbuild.build({
     ...shared,
     entryPoints: ['src/main/index.ts'],
-    outfile:     'dist/main/index.js',
+    outfile:     'dist-electron/main/index.js',
     alias:       workspaceAlias,
   }),
 
@@ -45,7 +48,7 @@ Promise.all([
   esbuild.build({
     ...shared,
     entryPoints: ['src/preload/index.ts'],
-    outfile:     'dist/preload/index.js',
+    outfile:     'dist-electron/preload/index.js',
   }),
 ]).catch((err) => {
   console.error(err);
