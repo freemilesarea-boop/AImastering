@@ -58,16 +58,22 @@ _LRA_DROP_DANG      = 0.70
 
 # v3.4.6 — telephone-sound detection thresholds.
 # A "telephone" master keeps vocals + presence but loses sub/bass and over-
-# brightens the top, leaving a thin, narrow-band spectrum.  Triggered when
-# either:
-#   · low band (20–200 Hz) energy drops by ≥ 25 % vs input            (warn)
-#   · low band drops ≥ 40 %                                           (danger)
-#   · high-band rise minus low-band drop ≥ 4 dB (tonal tilt)          (warn)
-#   · high-band rise minus low-band drop ≥ 7 dB                       (danger)
+# brightens the top, leaving a thin, narrow-band spectrum.
 _LOW_LOSS_WARN_FRAC   = 0.25
 _LOW_LOSS_DANG_FRAC   = 0.40
 _TILT_WARN_DB         = 4.0
 _TILT_DANG_DB         = 7.0
+
+# v3.4.7 — tonal-balance detection thresholds (KPOP Loud bass-heavy fix).
+# Acceptable lowEnergyRatio = energy_after / energy_before (linear, NOT dB).
+#   ideal:  0.80–1.20
+#   ok   :  0.75–1.30
+#   warn :  0.65–0.75 / 1.30–1.50
+#   danger : < 0.65   / > 1.50
+_LOW_RATIO_OK_LO      = 0.75
+_LOW_RATIO_OK_HI      = 1.30
+_LOW_RATIO_WARN_LO    = 0.65
+_LOW_RATIO_WARN_HI    = 1.50
 
 
 def _db(linear: float) -> float:
@@ -151,20 +157,35 @@ def build_gain_staging_report(
             band_delta[key] = round(bands_after[key] - bands_before[key], 2)
 
     # v3.4.6 — telephone-sound detection.
-    # Compares 20–200 Hz (low) vs 10k–18k (highAir) movement.  Negative low
-    # delta combined with positive high delta = "전화기 소리".
-    low_delta_db   = band_delta.get("low")
-    high_delta_db  = band_delta.get("highAir")
-    low_loss_frac: float | None = None
+    # v3.4.7 — LOUDNESS-NORMALIZED ratios.  A +10 dB master makes every
+    # band's absolute ratio > 1, so we instead measure each band's change
+    # *relative to the mid (200–800 Hz) reference band*.  This way:
+    #   ratio = 1.0   → band moved in step with the rest of the signal
+    #   ratio < 0.75  → band moved ≥ 1.25 dB LESS than mid (lost)
+    #   ratio > 1.30  → band moved ≥ 1.14 dB MORE than mid (gained)
+    low_delta_db    = band_delta.get("low")
+    high_delta_db   = band_delta.get("highAir")
+    mid_delta_db    = band_delta.get("backgroundLowMid")  # reference band
+
+    low_loss_frac:    float | None = None
     high_low_tilt_db: float | None = None
-    if low_delta_db is not None:
-        # Convert dB delta to fractional energy ratio: 10^(delta/10).
-        # We report (1 - ratio) as "fraction of low band energy lost".
-        # Positive delta_db → ratio>1 → loss<0 (gained energy) — clamp to 0.
-        ratio = 10.0 ** (float(low_delta_db) / 10.0)
-        low_loss_frac = round(max(0.0, 1.0 - ratio), 3)
+    low_energy_ratio:  float | None = None
+    high_energy_ratio: float | None = None
+    low_relative_db:   float | None = None
+    high_relative_db:  float | None = None
+
+    if low_delta_db is not None and mid_delta_db is not None:
+        # Loudness-normalized: low band change minus mid band change.
+        low_relative_db  = round(float(low_delta_db) - float(mid_delta_db), 2)
+        low_energy_ratio = round(10.0 ** (low_relative_db / 10.0), 3)
+        low_loss_frac    = round(max(0.0, 1.0 - low_energy_ratio), 3)
+
+    if high_delta_db is not None and mid_delta_db is not None:
+        high_relative_db  = round(float(high_delta_db) - float(mid_delta_db), 2)
+        high_energy_ratio = round(10.0 ** (high_relative_db / 10.0), 3)
+
     if low_delta_db is not None and high_delta_db is not None:
-        # Tilt = how much more the highs rose than the lows.  Positive = thin/bright.
+        # Tilt is symmetric — highs vs lows directly (not via mid).
         high_low_tilt_db = round(float(high_delta_db) - float(low_delta_db), 2)
 
     # ── Vocal presence loss vs background rise ──
@@ -255,34 +276,60 @@ def build_gain_staging_report(
             recs.append("low_limit")
             _bump("warn")
 
-    # v3.4.6 — telephone-sound check (저역 손실 + 고역 부각 = 전화기/라디오 소리)
-    if low_loss_frac is not None:
-        if low_loss_frac >= _LOW_LOSS_DANG_FRAC:
+    # v3.4.7 — full tonal-balance classifier (telephone / bass-heavy /
+    # high-heavy / overall imbalance).  Drives both the user-facing warning
+    # codes AND the post-master final tonal guard in pipeline.py.
+    if low_energy_ratio is not None:
+        if low_energy_ratio < _LOW_RATIO_WARN_LO:
+            # < 0.65 — severe low loss (TELEPHONE)
             issues.append(
-                f"저역(20–200 Hz) 에너지가 {low_loss_frac*100:.0f}% 감소 — "
-                f"전화기/라디오 사운드.  HPF/저역 cut 완화 필요."
+                f"저역(20–200 Hz) 에너지 비율 {low_energy_ratio:.2f} — "
+                f"심각한 저역 손실 (텔레폰 사운드)."
             )
             recs.append("low_limit")
             recs.append("vocal_safe")
             _bump("danger")
-        elif low_loss_frac >= _LOW_LOSS_WARN_FRAC:
+        elif low_energy_ratio < _LOW_RATIO_OK_LO:
+            # 0.65–0.75 — moderate low loss
             issues.append(
-                f"저역(20–200 Hz) 에너지가 {low_loss_frac*100:.0f}% 감소 — "
-                f"저역 손실 의심."
+                f"저역 비율 {low_energy_ratio:.2f} — 저역 손실 의심 (이상 0.80–1.20)."
             )
             recs.append("low_limit")
             _bump("warn")
-    if high_low_tilt_db is not None and high_low_tilt_db >= _TILT_WARN_DB:
+        elif low_energy_ratio > _LOW_RATIO_WARN_HI:
+            # > 1.50 — bass overload (BASS_HEAVY danger)
+            issues.append(
+                f"저역 비율 {low_energy_ratio:.2f} — 베이스 과다 (이상 0.80–1.20)."
+            )
+            _bump("danger")
+        elif low_energy_ratio > _LOW_RATIO_OK_HI:
+            # 1.30–1.50 — bass-heavy warn
+            issues.append(
+                f"저역 비율 {low_energy_ratio:.2f} — 베이스 다소 과다."
+            )
+            _bump("warn")
+
+    # high-low tilt — telephone vs muffled
+    if high_low_tilt_db is not None:
         if high_low_tilt_db >= _TILT_DANG_DB:
             issues.append(
-                f"고역이 저역 대비 {high_low_tilt_db:.1f} dB 더 상승 — "
-                f"얇은 사운드/텔레폰 필터 의심."
+                f"고역이 저역 대비 {high_low_tilt_db:+.1f} dB — 얇은 사운드 (텔레폰 의심)."
             )
             recs.append("low_limit")
             _bump("danger")
-        else:
+        elif high_low_tilt_db >= _TILT_WARN_DB:
             issues.append(
-                f"고역-저역 기울기 {high_low_tilt_db:+.1f} dB — 다소 밝은 쪽으로 치우침."
+                f"고역-저역 기울기 {high_low_tilt_db:+.1f} dB — 밝은 쪽 치우침."
+            )
+            _bump("warn")
+        elif high_low_tilt_db <= -_TILT_DANG_DB:
+            issues.append(
+                f"저역이 고역 대비 {-high_low_tilt_db:+.1f} dB — 답답한 사운드."
+            )
+            _bump("danger")
+        elif high_low_tilt_db <= -_TILT_WARN_DB:
+            issues.append(
+                f"고역-저역 기울기 {high_low_tilt_db:+.1f} dB — 어두운 쪽 치우침."
             )
             _bump("warn")
 
@@ -325,7 +372,12 @@ def build_gain_staging_report(
         "crestFactorDropPct": crest_drop_pct,
         "lraDropPct":         lra_drop_pct,
         # v3.4.6 — telephone-sound diagnostics
+        # v3.4.7 — adaptive tonal-balance ratios + tilt (loudness-normalized)
         "lowLossFrac":        low_loss_frac,
+        "lowEnergyRatio":     low_energy_ratio,
+        "highEnergyRatio":    high_energy_ratio,
+        "lowRelativeDb":      low_relative_db,
+        "highRelativeDb":     high_relative_db,
         "highLowTiltDb":      high_low_tilt_db,
         "verdict":            verdict,
         "issues":             issues,

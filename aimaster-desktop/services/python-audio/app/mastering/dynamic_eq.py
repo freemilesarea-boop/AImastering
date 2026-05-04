@@ -156,12 +156,35 @@ def _fallback_band(band: dict[str, Any], reduction: float) -> str | None:
     return f"equalizer=f={band['freq']}:t=q:g={static_gain:.2f}:w={band['q']}"
 
 
+def _adaptive_boomy_scale(low_to_mid_db: float | None) -> float:
+    """v3.4.7 — return a multiplier for kpop_loud's boomy_low/muddy_lowmid
+    reduction values based on input low/mid balance.
+
+    Bass-light input → reduce the cut (don't kill what little bass there is).
+    Bass-heavy input → keep or slightly increase the cut.
+    None / unknown   → multiplier 1.0 (use preset value as-is).
+    """
+    if low_to_mid_db is None:
+        return 1.0
+    if low_to_mid_db < -10.0:
+        return 0.3   # bass-light — very gentle
+    if low_to_mid_db < -3.0:
+        return 0.6   # neutral-light
+    if low_to_mid_db < 3.0:
+        return 1.0   # neutral — preset value
+    if low_to_mid_db < 8.0:
+        return 1.2   # neutral-heavy
+    return 1.5       # bass-heavy — slightly more aggressive cut
+
+
 def build_dynamic_eq_chain(
     mode: str,
     intensity: float = 1.0,
     use_adynamic_eq: bool | None = None,
     *,
     protection_log: list[dict] | None = None,
+    low_to_mid_db: float | None = None,
+    high_to_mid_db: float | None = None,
 ) -> dict[str, Any]:
     """
     모드 프리셋 기반 Dynamic EQ ffmpeg 필터 체인 생성.
@@ -194,8 +217,18 @@ def build_dynamic_eq_chain(
     band_meta: list[dict[str, Any]] = []
     engine = "adynamicequalizer" if use_adynamic_eq else "fallback"
 
+    # v3.4.7 — adaptive scaling for kpop_loud's low-band cuts (boomy_low,
+    # muddy_lowmid).  When the input is already bass-light, soften the cut;
+    # when bass-heavy, keep or slightly increase it.  Other modes / bands
+    # use the preset value unchanged (multiplier 1.0).
+    boomy_scale = (_adaptive_boomy_scale(low_to_mid_db)
+                    if mode == "kpop_loud" else 1.0)
+
     for band in bands:
-        scaled = round(band["reduction"] * intensity, 2)
+        per_band_scale = (boomy_scale
+                          if band.get("name") in ("boomy_low", "muddy_lowmid")
+                          else 1.0)
+        scaled = round(band["reduction"] * intensity * per_band_scale, 2)
         if scaled < 0.05:
             continue
         # Vocal-protection clamp: 1.5–5 kHz cut amount ≤ 2.5 dB

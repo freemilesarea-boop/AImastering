@@ -209,35 +209,93 @@ _STYLE_OVERLAYS: dict[str, StyleOverlay] = {
         ],
     ),
 
-    # ─── KPOP Loud (v3.4.6 — telephone-sound fix) ─────────────────────────
-    # 기존 overlay 의 누적 문제:
-    #   · 80 Hz −1.5 dB (overlay) + 100 Hz −2.5 dB (dynamic boomy_low) +
-    #     250 Hz −3 dB (base) + 300 Hz −2 dB (dynamic muddy_lowmid)
-    #     → 저역 ~5 dB 손실 = "전화기 소리"
-    #   · 2.5k +1.5 + 5.5k +1.2 + 10k +1.0 + 12k +adaptive(~2)
-    #     → 고역 +5 dB 누적 부스트 → 더욱 텔레폰화
-    #
-    # 수정 방침:
-    #   1. 80 Hz CUT 제거 → 대신 90 Hz +1 dB 따뜻함 보존 bell
-    #   2. high boosts 대폭 축소: 2.5k +1.5 → +1.0 / 5.5k +1.2 → +0.8 /
-    #      10k +1.0 → +0.5 (총 +2.3 dB, 가이드 기준 +2.5 dB 이하)
-    #   3. dynamic_eq.py / effects.py 에서 동시에 저역/고역 제어 완화
-    #   4. pipeline 에 telephone-sound guard 추가
+    # v3.4.7 — kpop_loud 는 정적 overlay 가 아니라 입력 spectrum 에 따라
+    # 동적으로 빌드 (`_kpop_loud_overlay()` 참조).  여기엔 fallback 용
+    # 저자극 기본값만 두어 spectrum 정보가 없을 때도 안전하게 작동.
     "kpop_loud": StyleOverlay(
         filters=[
-            "equalizer=f=90:t=q:w=0.7:g=+1.0",     # low warmth (저역 보존)
-            "equalizer=f=2500:t=o:w=1.1:g=+1.0",   # vocal presence (was +1.5)
-            "equalizer=f=5500:t=o:w=1.0:g=+0.8",   # vocal clarity  (was +1.2)
-            "equalizer=f=10000:t=o:w=1.2:g=+0.5",  # sheen          (was +1.0)
+            "equalizer=f=2500:t=o:w=1.1:g=+1.0",
+            "equalizer=f=5500:t=o:w=1.0:g=+0.8",
+            "equalizer=f=10000:t=o:w=1.2:g=+0.5",
         ],
         moves=[
-            EqMove("Low warmth (kpop)",        90,   +1.0, "bell"),
             EqMove("Vocal presence (kpop)",    2500, +1.0, "bell"),
             EqMove("Vocal clarity (kpop)",     5500, +0.8, "bell"),
             EqMove("Sheen (kpop)",             10000,+0.5, "bell"),
         ],
     ),
 }
+
+
+# ── v3.4.7 — adaptive kpop_loud overlay ────────────────────────────────────
+#
+# 입력 톤 균형 (low_to_mid_db / high_to_mid_db) 에 따라 4 가지 변수를 동적 결정:
+#
+#   90 Hz warmth bell     (저역 부족할 때만, 0 ~ +0.7 dB)
+#   2.5k vocal presence   (입력 명료도에 따라 +0.7 ~ +1.2)
+#   5.5k vocal clarity    (입력 고역에 따라 +0.5 ~ +0.9)
+#   10k  sheen            (입력 air 가 적을 때만, 0 ~ +0.6)
+#
+# v3.4.6 의 +1.0 dB 고정 warmth 가 베이스가 이미 강한 입력에서 베이스 과다를
+# 일으켰던 것을 해결.
+
+def _kpop_loud_warmth_db(low_to_mid_db: float) -> float:
+    """입력 저역 균형에 따른 90 Hz warmth bell 강도 (dB)."""
+    if low_to_mid_db < -10.0:   # bass-light
+        return 0.7
+    if low_to_mid_db < -3.0:    # neutral-light
+        return 0.5
+    if low_to_mid_db < 3.0:     # neutral
+        return 0.3
+    if low_to_mid_db < 8.0:     # neutral-heavy
+        return 0.0
+    return -0.3                 # bass-heavy → 살짝 빼주기
+
+
+def _kpop_loud_sheen_db(high_to_mid_db: float) -> float:
+    """입력 air 영역에 따른 10 kHz sheen bell 강도 (dB)."""
+    if high_to_mid_db < -25.0:  # very dark — needs sheen
+        return 0.6
+    if high_to_mid_db < -18.0:
+        return 0.4
+    if high_to_mid_db < -10.0:
+        return 0.2
+    return 0.0                  # already bright — no sheen
+
+
+def build_kpop_loud_overlay(
+    low_to_mid_db: float,
+    high_to_mid_db: float,
+) -> StyleOverlay:
+    """Return a kpop_loud overlay computed from the input spectrum.
+
+    Replaces the static dict entry when caller has spectral analysis.
+    """
+    warmth = _kpop_loud_warmth_db(low_to_mid_db)
+    sheen  = _kpop_loud_sheen_db(high_to_mid_db)
+
+    filters: list[str] = []
+    moves:   list[EqMove] = []
+
+    if abs(warmth) >= 0.05:
+        filters.append(f"equalizer=f=90:t=q:w=0.7:g={warmth:+.2f}")
+        moves.append(EqMove(f"Low warmth (kpop, adaptive)", 90, warmth, "bell", adaptive=True))
+
+    # 2.5 kHz vocal presence — modest scale based on input darkness
+    presence = 1.2 if high_to_mid_db < -20.0 else 1.0
+    filters.append(f"equalizer=f=2500:t=o:w=1.1:g={presence:+.2f}")
+    moves.append(EqMove("Vocal presence (kpop, adaptive)", 2500, presence, "bell", adaptive=True))
+
+    # 5.5 kHz clarity — keep modest
+    clarity = 0.9 if high_to_mid_db < -20.0 else 0.8
+    filters.append(f"equalizer=f=5500:t=o:w=1.0:g={clarity:+.2f}")
+    moves.append(EqMove("Vocal clarity (kpop, adaptive)", 5500, clarity, "bell", adaptive=True))
+
+    if abs(sheen) >= 0.05:
+        filters.append(f"equalizer=f=10000:t=o:w=1.2:g={sheen:+.2f}")
+        moves.append(EqMove("Sheen (kpop, adaptive)", 10000, sheen, "bell", adaptive=True))
+
+    return StyleOverlay(filters=filters, moves=moves)
 
 # ── AI artifact corrections ───────────────────────────────────────────────────
 
@@ -303,8 +361,11 @@ def build_eq_filter_with_report(
     filter_parts.extend(base_filters)
     all_moves.extend(base_moves)
 
-    # 3. Style overlay
-    overlay = _STYLE_OVERLAYS.get(style, _STYLE_OVERLAYS["balanced"])
+    # 3. Style overlay (v3.4.7 — kpop_loud is adaptive based on input spectrum)
+    if style == "kpop_loud":
+        overlay = build_kpop_loud_overlay(low_to_mid_db, high_to_mid_db)
+    else:
+        overlay = _STYLE_OVERLAYS.get(style, _STYLE_OVERLAYS["balanced"])
     filter_parts.extend(overlay.filters)
     all_moves.extend(overlay.moves)
 

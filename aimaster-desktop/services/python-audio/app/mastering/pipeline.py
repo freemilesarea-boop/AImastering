@@ -144,6 +144,208 @@ def _noop_progress(_job_id: str, _pct: int, _stage: str) -> None:
     pass
 
 
+# ── v3.4.7 — Tonal-balance issue classifier + final guard ───────────────────
+
+def _classify_tonal_issue(issue: str) -> str:
+    """Map a Korean issue string from gain_staging into a UI warning code.
+
+    Codes (priority — most specific first):
+      TELEPHONE_SOUND  — bass loss + bright tilt (low_loss + tilt > +4)
+      BASS_HEAVY       — bass overload (lowEnergyRatio > 1.30)
+      HIGH_HEAVY       — bright tilt without bass loss
+      MUFFLED          — dark tilt (tilt < -4 dB)
+      TONAL_IMBALANCE  — generic catch-all
+      GAIN_STAGING_IMBALANCE — non-tonal (vocal/limiter/etc.)
+    """
+    txt = issue
+    if "텔레폰" in txt or "전화기" in txt:
+        return "TELEPHONE_SOUND"
+    if "베이스 과다" in txt or "베이스 다소 과다" in txt:
+        return "BASS_HEAVY"
+    if "답답" in txt or "어두운" in txt:
+        return "MUFFLED"
+    if "얇은" in txt or "밝은 쪽" in txt:
+        return "HIGH_HEAVY"
+    if "저역 손실" in txt or "저역" in txt and "감소" in txt:
+        return "TELEPHONE_SOUND"
+    if "고역" in txt or "고역-저역" in txt:
+        return "HIGH_HEAVY"
+    return "GAIN_STAGING_IMBALANCE"
+
+
+def _build_tonal_correction_chain(
+    pre_report: dict[str, Any],
+    target_tp: float,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Inspect the gain_staging report and build a corrective filter chain.
+
+    Returns (filter_string, applied_moves).  Empty filter = no correction needed.
+
+    Decision logic (linear ratios, NOT dB):
+      lowEnergyRatio < 0.75   → +0.5~1.0 dB warmth bell at 90 Hz
+      lowEnergyRatio > 1.30   → -0.5~1.2 dB shelf cut at 80–120 Hz
+      highLowTiltDb  > +4 dB  → -0.5~1.5 dB high-shelf at 10 kHz
+      highLowTiltDb  < -4 dB  → +0.5~1.0 dB high-shelf at 8 kHz
+
+    Final safety limiter (level_in=1.0) is appended so any peaks the EQ
+    introduces don't slip past the ceiling.
+    """
+    parts:   list[str] = []
+    applied: list[dict[str, Any]] = []
+
+    low_ratio = pre_report.get("lowEnergyRatio")
+    tilt_db   = pre_report.get("highLowTiltDb")
+
+    # ── Low-band correction ──
+    warmth_db: float = 0.0
+    low_trim_db: float = 0.0
+    if low_ratio is not None:
+        if low_ratio < 0.75:
+            # Bass-light master — apply warmth (max +1.0 dB even at very low ratio)
+            deficit = 0.75 - float(low_ratio)
+            warmth_db = round(min(1.0, max(0.5, deficit * 4.0)), 2)
+            parts.append(f"equalizer=f=90:t=q:w=0.7:g={warmth_db:+.2f}")
+            applied.append({
+                "where": "final_guard.warmth_bell", "freq": 90,
+                "gainDb": warmth_db,
+                "reason": f"lowEnergyRatio={low_ratio} < 0.75",
+            })
+        elif low_ratio > 1.30:
+            # Bass-heavy — gentle 100 Hz trim (max -1.2 dB)
+            excess = float(low_ratio) - 1.30
+            low_trim_db = round(-min(1.2, max(0.5, excess * 2.0)), 2)
+            parts.append(f"equalizer=f=100:t=q:w=0.9:g={low_trim_db:+.2f}")
+            applied.append({
+                "where": "final_guard.low_trim", "freq": 100,
+                "gainDb": low_trim_db,
+                "reason": f"lowEnergyRatio={low_ratio} > 1.30",
+            })
+
+    # ── High-band correction ──
+    high_shelf_db: float = 0.0
+    if tilt_db is not None:
+        if tilt_db > 4.0:
+            # Bright tilt — shelf at 10 kHz down (max -1.5 dB)
+            excess = float(tilt_db) - 4.0
+            high_shelf_db = round(-min(1.5, max(0.5, excess * 0.4)), 2)
+            parts.append(f"highshelf=f=10000:g={high_shelf_db:+.2f}")
+            applied.append({
+                "where": "final_guard.high_shelf_trim", "freq": 10000,
+                "gainDb": high_shelf_db,
+                "reason": f"highLowTiltDb={tilt_db} > +4",
+            })
+        elif tilt_db < -4.0:
+            # Dark tilt — modest air lift at 8 kHz (max +1.0 dB)
+            deficit = -float(tilt_db) - 4.0
+            high_shelf_db = round(min(1.0, max(0.5, deficit * 0.3)), 2)
+            parts.append(f"highshelf=f=8000:g={high_shelf_db:+.2f}")
+            applied.append({
+                "where": "final_guard.high_shelf_lift", "freq": 8000,
+                "gainDb": high_shelf_db,
+                "reason": f"highLowTiltDb={tilt_db} < -4",
+            })
+
+    # Append safety limiter so the EQ adjustments stay under the ceiling.
+    if parts:
+        lim_out = 10.0 ** (target_tp / 20.0)
+        parts.append(
+            f"alimiter=level_in=1.0:level_out=1:limit={lim_out:.6f}"
+            f":attack=5.0:release=80.0:asc=1"
+        )
+
+    return ",".join(parts), applied
+
+
+def _apply_final_tonal_guard(
+    output_path: str,
+    *,
+    sample_rate: int,
+    bit_depth: int,
+    target_tp: float,
+    input_metrics: dict[str, Any],
+    output_metrics: dict[str, Any],
+    input_path: str,
+    pipeline_stages: dict[str, float],
+    recorder: Any,
+    applied_corrections: list[str],
+    pipeline_warnings: list[dict[str, str]],
+    pre_report: dict[str, Any],
+) -> dict[str, Any]:
+    """Run the final tonal-balance correction pass if needed.
+
+    No-op when pre_report is already balanced.  Otherwise renders one
+    additional ffmpeg pass through the corrective EQ chain and re-measures
+    the gain-staging report so callers see the corrected numbers.
+
+    Returns the (possibly fresh) gain_staging report.
+    """
+    chain, applied = _build_tonal_correction_chain(pre_report, target_tp)
+    if not chain or not applied:
+        return pre_report
+
+    log("INFO", f"[final-guard] applying tonal correction: {chain}")
+    recorder.event("INFO", "final tonal guard triggered",
+                   lowEnergyRatio=pre_report.get("lowEnergyRatio"),
+                   highLowTiltDb=pre_report.get("highLowTiltDb"),
+                   appliedMoves=applied)
+
+    output_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+    fd, tmp = tempfile.mkstemp(suffix="_tonal.wav", prefix="aimaster_",
+                               dir=output_dir)
+    os.close(fd)
+    try:
+        apply_filter_chain(output_path, tmp, chain,
+                           sample_rate=sample_rate, bit_depth=bit_depth)
+        os.replace(tmp, output_path)
+    except Exception as exc:
+        log("ERROR", f"[final-guard] correction render failed: {exc}")
+        try:
+            if os.path.exists(tmp): os.unlink(tmp)
+        except OSError: pass
+        return pre_report
+
+    # Append a human-readable correction line (UI shows it in the chain badge)
+    summary_bits = []
+    for a in applied:
+        summary_bits.append(f"{a['where'].split('.')[-1]} {a['gainDb']:+.1f} dB")
+    applied_corrections.append(f"Final tonal guard ({', '.join(summary_bits)})")
+
+    # Stash the applied moves in pipeline_stages for the gain-staging report
+    pipeline_stages["finalTonalCorrectionDb"] = round(
+        sum(float(a.get("gainDb", 0.0)) for a in applied), 2,
+    )
+
+    # Surface a TONAL_GUARD_APPLIED info-level note so the UI can show it.
+    pipeline_warnings.append({
+        "code":   "TONAL_GUARD_APPLIED",
+        "level":  "info",
+        "userMessage": (
+            f"톤 밸런스 자동 보정 적용: "
+            + ", ".join(f"{a['where'].split('.')[-1]} {a['gainDb']:+.2f} dB"
+                        for a in applied)
+        ),
+    })
+
+    # Re-measure gain-staging
+    try:
+        new_report = build_gain_staging_report(
+            input_metrics  = input_metrics,
+            output_metrics = output_metrics,
+            input_path     = input_path,
+            output_path    = output_path,
+            pipeline_stages = pipeline_stages,
+        )
+        log("INFO",
+            f"[final-guard] post-correction lowEnergyRatio="
+            f"{new_report.get('lowEnergyRatio')}, "
+            f"highLowTiltDb={new_report.get('highLowTiltDb')}, "
+            f"verdict={new_report.get('verdict')}")
+        return new_report
+    except Exception as exc:
+        log("WARN", f"[final-guard] re-measure failed: {exc}")
+        return pre_report
+
+
 # ── Filter chain builder ──────────────────────────────────────────────────────
 
 def _build_filter_chain(
@@ -191,9 +393,11 @@ def _build_filter_chain(
     if style != "balanced":
         applied.append(f"{style.capitalize()} 스타일 오버레이 적용")
 
-    # Stage 3.5 — Dynamic EQ (모드 프리셋, ffmpeg adynamicequalizer 우선)
+    # Stage 3.5 — Dynamic EQ (v3.4.7: kpop_loud boomy/muddy 가 입력 spectrum
+    # 에 따라 adaptive 하게 강도 조절됨)
     dyn_eq_report = build_dynamic_eq_chain(
         style, intensity=dynamic_eq_intensity, protection_log=protection_log,
+        low_to_mid_db=low_to_mid_db, high_to_mid_db=high_to_mid_db,
     )
 
     # Vocal Safe Mode: drop bands whose centre frequency lies in the 2-6 kHz
@@ -1112,17 +1316,33 @@ def run_pipeline(
             f"highLowTiltDb={gain_staging_report.get('highLowTiltDb')} "
             f"verdict={gain_staging_report.get('verdict')}")
 
-        # Promote vocal/background issues to pipeline_warnings so the UI
-        # banner reflects the user-reported "main melody pressed / background
-        # boosted" symptom directly.
+        # v3.4.7 — final tonal-balance guard.  Apply ONE corrective EQ pass
+        # if the post-master spectrum is outside the acceptable envelope.
+        # Returns the same gain_staging_report (re-measured if applied).
+        if gain_staging_report and style == "kpop_loud":
+            try:
+                gain_staging_report = _apply_final_tonal_guard(
+                    output_path,
+                    sample_rate=sample_rate, bit_depth=bit_depth,
+                    target_tp=target_tp,
+                    input_metrics=input_metrics,
+                    output_metrics=output_metrics,
+                    input_path=input_path,
+                    pipeline_stages=gain_stages,
+                    recorder=recorder,
+                    applied_corrections=applied_corrections,
+                    pipeline_warnings=pipeline_warnings,
+                    pre_report=gain_staging_report,
+                )
+            except Exception as exc:
+                log("WARN", f"[pipeline] final tonal guard failed: {exc}")
+
+        # Promote vocal/background issues to pipeline_warnings.  Each issue
+        # gets the most specific warning code so the UI can show targeted
+        # hints (telephone vs bass-heavy vs vocal-mush vs generic).
         if gain_staging_report.get("verdict") in ("warn", "danger"):
-            # Telephone-sound issues get a dedicated code so the renderer can
-            # show a "thin/bright master" hint instead of the generic banner.
-            tel_codes = ("저역", "고역", "전화기", "텔레폰")
             for issue in gain_staging_report.get("issues", []):
-                code = ("TELEPHONE_SOUND"
-                        if any(t in issue for t in tel_codes)
-                        else "GAIN_STAGING_IMBALANCE")
+                code = _classify_tonal_issue(issue)
                 pipeline_warnings.append({
                     "code":  code,
                     "level": "warning" if gain_staging_report["verdict"] == "warn" else "error",
