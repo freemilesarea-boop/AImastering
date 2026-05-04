@@ -56,6 +56,10 @@ export function UpdateToast(): React.ReactElement | null {
 
   if (typeof window === 'undefined' || !window.updater) return null;
   if (status.type === 'idle') return null;
+  // v3.4.5 — branch / workflow_dispatch artefact builds report no-release
+  // when the GitHub server has nothing to offer.  This is not an error —
+  // the user just isn't on a release channel yet.  Render silently.
+  if (status.type === 'no-release') return null;
   if (dismissed) return null;
   // Hide checking after 1s if nothing else happened — avoids a stuck toast
   // when the user has perfect connectivity and the request returns instantly.

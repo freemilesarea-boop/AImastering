@@ -1,7 +1,30 @@
-# Auto-update — release & version policy (v3.4.3)
+# Auto-update — release & version policy (v3.4.5)
 
 이 문서는 `electron-updater` 기반 자동 업데이트가 어떻게 동작하는지,
 그리고 새 버전을 release 할 때 무엇을 해야 하는지 정리합니다.
+
+## ⚠️ 가장 자주 묻는 질문
+
+**Q. GitHub Actions 의 "Artifacts" 탭에서 받은 빌드인데 "업데이트 실패: No published versions on GitHub" 토스트가 떴어요.**
+
+A. **Actions artifact 는 자동 업데이트 대상이 아닙니다.** `electron-updater`
+는 GitHub Releases 에 **publish 된** release 의 `latest.yml` 을 봐야
+하는데, branch / workflow_dispatch 로 만든 artefact 는 그런 release 가
+없습니다.
+
+v3.4.5 부터는 **artefact 빌드는 아예 자동 업데이트 자체가 비활성화**
+되어 있어 토스트가 뜨지 않습니다.  내부 동작:
+
+  · CI `build.yml` 의 build step 에서
+    `AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}`
+  · esbuild 가 이 값을 main 번들에 baked-in 상수로 inject
+  · `tag push` (production release) 만 `AUTO_UPDATE_ENABLED=true`
+    → 진짜 자동 업데이트 동작
+  · `branch push` / `workflow_dispatch` / dev 빌드 → `false`
+    → autoUpdater 가 절대 GitHub 를 query 하지 않음 → 토스트 없음
+
+**소비자용 정식 빌드는 반드시 git tag (`v*`) push 로 만들어야
+auto-update 가 켜집니다.**
 
 ## 동작 흐름
 
@@ -110,14 +133,45 @@ repo 가 private 이 되면:
 
 해당 시점에 `src/main/updater.ts` 의 TODO 참고.
 
-## Dev 빌드는 자동 업데이트 안 됨
+## 자동 업데이트가 비활성화되는 경우 (v3.4.5)
 
-`!app.isPackaged` 인 환경 (즉 `pnpm dev`) 에서는 `initUpdater()` 가
-이벤트 핸들러를 등록하지 않고, IPC 핸들러도 모두 `{ ok: false, reason:
-'dev_build' }` 를 반환합니다.
+다음 중 **하나라도** 해당되면 `autoUpdater` 는 절대 GitHub 를 query
+하지 않으며, IPC 도 `{ ok: false, reason: ... }` 만 반환합니다:
 
-devtools 에서 `await window.updater.checkForUpdates()` 를 호출해도
-"dev_build" 가 돌아오므로 안전합니다.
+| 조건 | reason | 비고 |
+|------|--------|------|
+| `!app.isPackaged` | `dev_build` | `pnpm dev` 또는 unpackaged 실행 |
+| `__AUTO_UPDATE_ENABLED__ === false` | `no_release_channel` | branch / workflow_dispatch artefact, 로컬 `pnpm dist` 테스트 빌드 |
+
+`__AUTO_UPDATE_ENABLED__` 는 esbuild `define` 으로 main 번들에 baked-in
+되는 boolean 상수입니다.  CI workflow 가 build step 에서
+`AUTO_UPDATE_ENABLED=true` env 를 설정하는 경우에만 true 가 됩니다.
+
+> "No published versions on GitHub" — 사용자에게 보이지 않게 처리
+>
+> 만약 어떤 이유로 auto-update 가 켜진 빌드인데 GitHub Releases 가
+> 비어있다면, electron-updater 는 위 메시지로 error 이벤트를 발생시킵니다.
+> v3.4.5 부터는 이 메시지를 `no-release` 상태로 reclassify 해서 토스트가
+> 뜨지 않게 처리합니다 (renderer 의 `UpdateToast` 가 silent 렌더).
+
+## Dev 빌드 / artefact 빌드 디버깅
+
+devtools 에서:
+
+```js
+await window.updater.checkForUpdates()
+// → { ok: false, reason: 'dev_build' }    (pnpm dev)
+// → { ok: false, reason: 'no_release_channel' }  (artefact 빌드)
+// → { ok: true }                          (정상 release 빌드)
+```
+
+main.log 에는 다음이 기록됩니다:
+
+```
+[updater] auto-update disabled (packaged=true, buildEnabled=false)
+```
+
+→ 이 로그가 보이면 정상.  artefact 빌드는 의도적으로 비활성화 상태입니다.
 
 ## 디버깅
 
