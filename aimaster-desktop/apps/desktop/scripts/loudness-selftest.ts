@@ -21,6 +21,7 @@ import { processLimiter } from '../src/renderer/audio/limiterChain.js';
 import { applyGainStaging } from '../src/renderer/audio/gainStaging.js';
 import { enhanceVocal, analyzeVocalPresence } from '../src/renderer/audio/vocalEnhancer.js';
 import { protectTransients } from '../src/renderer/audio/transientProtection.js';
+import { generateMasteringReport } from '../src/renderer/audio/report.js';
 
 interface TestResult {
   name: string;
@@ -631,6 +632,110 @@ function runTests(): TestResult[] {
       pass: lufsAOk && lufsBOk && lessFlattening,
       detail: `direct GR=${directLim.maxGrDb.toFixed(2)} dB → protected GR=${protLim.maxGrDb.toFixed(2)} dB `
             + `(${(grRatio * 100).toFixed(0)} %), I=${protLim.measuredLufs.toFixed(2)} LUFS`,
+    });
+  }
+
+  // ── Report generation tests ───────────────────────────────────────────────
+
+  // R1: empty snapshot → empty report (sane default).
+  {
+    const r = generateMasteringReport();
+    const pass = r.bullets.length === 0
+              && r.totalActions === 0
+              && r.summary.length > 0;
+    results.push({
+      name: 'R1: empty snapshot → empty report',
+      pass,
+      detail: `bullets=${r.bullets.length}, actions=${r.totalActions}, summary="${r.summary}"`,
+    });
+  }
+
+  // R2: full pipeline snapshot — chain real modules and confirm the
+  // report mentions vocal boost, peak limiting, loudness target, and TP.
+  {
+    const sr  = 48000;
+    const len = sr * 4;
+    const buf = makeBuffer(sr, 2, len);
+    // HOT noise so gain staging attenuates and limiter does work.
+    buf.setChannel(0, noiseRmsDbfs(-9, len));
+    buf.setChannel(1, noiseRmsDbfs(-9, len));
+
+    const gs = applyGainStaging(buf);
+    const tp = protectTransients(gs.buffer);
+    const lim = processLimiter(tp.buffer, -10);
+    const inMetrics  = getLoudnessMetrics(buf);
+    const outMetrics = getLoudnessMetrics(lim.buffer);
+
+    const r = generateMasteringReport({
+      inputMetrics:     inMetrics,
+      outputMetrics:    outMetrics,
+      gainStaging:      gs,
+      transientProtect: tp,
+      limiter:          lim,
+      adhocEq: [
+        { description: 'Reduced low-end mud below 80Hz' },
+      ],
+    });
+
+    const text = r.bullets.map((b) => b.text).join(' | ');
+    const hasGain     = /Reduced input level by/i.test(text);
+    const hasMud      = /low-end mud/i.test(text);
+    const hasLoudness = /Adjusted loudness to .* LUFS/i.test(text);
+    const hasTp       = /True peak|True-peak/i.test(text);
+    const hasSummary  = /-?\d+\.\d LUFS/.test(r.summary);
+
+    results.push({
+      name: 'R2: full pipeline → bullets cover gain/EQ/loudness/TP',
+      pass: hasGain && hasMud && hasLoudness && hasTp && hasSummary,
+      detail: `${r.bullets.length} bullets, summary="${r.summary}"`,
+    });
+  }
+
+  // R3: vocal boost bullet — the headline example from the spec
+  // ("Boosted vocal presence by +2.1dB").  Build a snapshot with a
+  // hand-crafted vocal-enhance result and verify the formatting matches.
+  {
+    const fakeVocalResult = {
+      buffer: makeBuffer(48000, 2, 100),
+      bypassed: false,
+      appliedEq: [{ freqHz: 2500, gainDb: 2.1, q: 0.9 }],
+      analysis: {
+        vocalScore: 0.85, centralityScore: 1, modulationScore: 0.9, presenceScore: 0.8,
+        vocalBandDb: -15, harshBandDb: -18, lowMidBandDb: -12, airBandDb: -20,
+        midSideRatioDb: 12, envelopeCv: 0.9,
+        diagnosis: 'buried' as const,
+        correction: [{ freqHz: 2500, gainDb: 2.1, q: 0.9 }],
+      },
+    };
+    const r = generateMasteringReport({ vocalEnhance: fakeVocalResult });
+    const found = r.bullets.find((b) => /Boosted vocal presence by \+2\.1dB at 2\.5kHz/.test(b.text));
+    results.push({
+      name: 'R3: vocal-enhance boost formatted as "Boosted vocal presence by +2.1dB at 2.5kHz"',
+      pass: !!found,
+      detail: found ? `"${found.text}"` : `not found in ${r.bullets.map((b) => b.text).join(' | ')}`,
+    });
+  }
+
+  // R4: vocal cut bullet — harshness reduction.
+  {
+    const fakeVocalResult = {
+      buffer: makeBuffer(48000, 2, 100),
+      bypassed: false,
+      appliedEq: [{ freqHz: 3500, gainDb: -1.8, q: 2.5 }],
+      analysis: {
+        vocalScore: 0.85, centralityScore: 1, modulationScore: 0.9, presenceScore: 0.8,
+        vocalBandDb: -10, harshBandDb: -5, lowMidBandDb: -12, airBandDb: -20,
+        midSideRatioDb: 12, envelopeCv: 0.9,
+        diagnosis: 'harsh' as const,
+        correction: [{ freqHz: 3500, gainDb: -1.8, q: 2.5 }],
+      },
+    };
+    const r = generateMasteringReport({ vocalEnhance: fakeVocalResult });
+    const found = r.bullets.find((b) => /Reduced vocal harshness by -1\.8dB at 3\.5kHz/.test(b.text));
+    results.push({
+      name: 'R4: vocal-enhance cut formatted as "Reduced vocal harshness by -1.8dB at 3.5kHz"',
+      pass: !!found,
+      detail: found ? `"${found.text}"` : `not found`,
     });
   }
 
