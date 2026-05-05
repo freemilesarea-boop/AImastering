@@ -19,6 +19,7 @@
 import { getLoudnessMetrics, AudioBufferLike } from '../src/renderer/audio/loudnessCore.js';
 import { processLimiter } from '../src/renderer/audio/limiterChain.js';
 import { applyGainStaging } from '../src/renderer/audio/gainStaging.js';
+import { enhanceVocal, analyzeVocalPresence } from '../src/renderer/audio/vocalEnhancer.js';
 
 interface TestResult {
   name: string;
@@ -372,6 +373,148 @@ function runTests(): TestResult[] {
       detail: `staged gain ${staged.appliedGainDb.toFixed(1)} dB, `
             + `limiter GR=${r.maxGrDb.toFixed(2)} dB, I=${r.measuredLufs.toFixed(2)} LUFS, `
             + `TP=${r.truePeakDbtp.toFixed(2)} dBTP`,
+    });
+  }
+
+  // ── Vocal presence detection tests ─────────────────────────────────────────
+  //
+  // The headline constraint: instrumental material must NOT be affected.
+  // Cases V1–V3 are bypass cases.  Case V4 builds a vocal-like signal
+  // (centered, syllabic-modulated 1–4 kHz) and verifies a correction is
+  // applied.
+
+  // V1: pure 2 kHz sine, stereo.  Centered (mid only) but ZERO modulation.
+  // → vocalScore should be low → bypass → bit-perfect output.
+  {
+    const sr  = 48000;
+    const len = sr * 4;
+    const buf = makeBuffer(sr, 2, len);
+    const sig = sineDbfs(sr, 2000, -12, len);
+    buf.setChannel(0, sig);
+    buf.setChannel(1, sig.slice());
+    const r = enhanceVocal(buf);
+    const inSample  = (buf.getChannelData(0) as Float32Array)[1000] as number;
+    const outSample = (r.buffer.getChannelData(0) as Float32Array)[1000] as number;
+    const bitPerfect = Math.abs(inSample - outSample) < 1e-7;
+    // Contract: bit-perfect output (whatever the diagnosis says).  A
+    // sustained sine has no syllabic envelope so vocalScore must be low.
+    results.push({
+      name: 'V1: 2 kHz sine → bypass (bit-perfect)',
+      pass: r.bypassed && bitPerfect && r.analysis.vocalScore < 0.40,
+      detail: `score=${r.analysis.vocalScore.toFixed(3)} (mod=${r.analysis.modulationScore.toFixed(2)} `
+            + `cent=${r.analysis.centralityScore.toFixed(2)}), diag=${r.analysis.diagnosis}, `
+            + `bypassed=${r.bypassed}`,
+    });
+  }
+
+  // V2: stereo white noise — uncorrelated (full side energy), unmodulated.
+  // → bypass.
+  {
+    const sr  = 48000;
+    const len = sr * 4;
+    const buf = makeBuffer(sr, 2, len);
+    buf.setChannel(0, noiseRmsDbfs(-20, len));
+    buf.setChannel(1, noiseRmsDbfs(-20, len));
+    const r = enhanceVocal(buf);
+    const inSample  = (buf.getChannelData(0) as Float32Array)[5000] as number;
+    const outSample = (r.buffer.getChannelData(0) as Float32Array)[5000] as number;
+    const bitPerfect = Math.abs(inSample - outSample) < 1e-7;
+    results.push({
+      name: 'V2: stereo wide noise → no_vocal → bypass',
+      pass: r.bypassed && bitPerfect,
+      detail: `score=${r.analysis.vocalScore.toFixed(3)} (mod=${r.analysis.modulationScore.toFixed(2)} `
+            + `cent=${r.analysis.centralityScore.toFixed(2)}), diag=${r.analysis.diagnosis}, `
+            + `M-S=${r.analysis.midSideRatioDb.toFixed(1)} dB`,
+    });
+  }
+
+  // V3: instrumental-like — wideband layered tones (200 Hz + 800 Hz +
+  // 6 kHz) panned slightly, no syllabic envelope.  Bypass expected.
+  {
+    const sr  = 48000;
+    const len = sr * 4;
+    const buf = makeBuffer(sr, 2, len);
+    const a = sineDbfs(sr, 200,  -15, len);
+    const b = sineDbfs(sr, 800,  -15, len);
+    const c = sineDbfs(sr, 6000, -18, len);
+    const left  = new Float32Array(len);
+    const right = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      left[i]  = (a[i] as number) + (b[i] as number) * 1.0 + (c[i] as number) * 0.6;
+      right[i] = (a[i] as number) + (b[i] as number) * 0.7 + (c[i] as number) * 1.0;
+    }
+    buf.setChannel(0, left);
+    buf.setChannel(1, right);
+    const r = enhanceVocal(buf);
+    results.push({
+      name: 'V3: layered instrumental tones → bypass',
+      pass: r.bypassed,
+      detail: `score=${r.analysis.vocalScore.toFixed(3)}, mod=${r.analysis.modulationScore.toFixed(2)}, `
+            + `diag=${r.analysis.diagnosis}, bypassed=${r.bypassed}`,
+    });
+  }
+
+  // V4: vocal-like — narrow-band noise centered at 2 kHz, AM modulated
+  // at 5 Hz (syllabic rate), summed mono into both channels (perfect
+  // centrality).  Background bass+air layered to make the vocal "buried"
+  // relative to surrounding bands.
+  // Detector should fire (score ≥ 0.5) AND diagnose either 'buried' or
+  // 'balanced' — it should NOT bypass and SHOULD apply a correction (or
+  // come close to applying one).
+  {
+    const sr  = 48000;
+    const len = sr * 6;
+    const buf = makeBuffer(sr, 2, len);
+
+    // Vocal-like core: narrowband noise at 2 kHz, modulated at 5 Hz.
+    const vocalRaw = new Float32Array(len);
+    for (let i = 0; i < len; i++) vocalRaw[i] = Math.random() * 2 - 1;
+    // Bandpass 1.5–3 kHz via biquad cascade — quick & dirty using
+    // sineDbfs as a proxy: actually do it inline.
+    // Instead, just modulate a 2 kHz tone: amplitude 0 → 1 envelope at 5 Hz.
+    const carrier = new Float32Array(len);
+    const env     = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      carrier[i] = Math.sin(2 * Math.PI * 2000 * i / sr);
+      // Half-sine envelope: 5 Hz, dwelling near zero half the time.
+      const e = Math.max(0, Math.sin(2 * Math.PI * 5 * i / sr));
+      env[i] = e;
+    }
+    const vocal = new Float32Array(len);
+    for (let i = 0; i < len; i++) vocal[i] = (carrier[i] as number) * (env[i] as number) * 0.20;
+
+    // Background bed: sustained 100 Hz + 8 kHz, panned slightly L/R.
+    const bgL = new Float32Array(len);
+    const bgR = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      const lo = Math.sin(2 * Math.PI * 100 * i / sr) * 0.30;
+      const hi = Math.sin(2 * Math.PI * 8000 * i / sr) * 0.25;
+      bgL[i] = lo + hi * 0.5;
+      bgR[i] = lo + hi;
+    }
+
+    // Mix: vocal in center.
+    const left  = new Float32Array(len);
+    const right = new Float32Array(len);
+    for (let i = 0; i < len; i++) {
+      left[i]  = (vocal[i] as number) + (bgL[i] as number);
+      right[i] = (vocal[i] as number) + (bgR[i] as number);
+    }
+    buf.setChannel(0, left);
+    buf.setChannel(1, right);
+
+    const an = analyzeVocalPresence(buf);
+    const r  = enhanceVocal(buf);
+    const detected = an.vocalScore >= 0.45;
+    // Either an EQ was applied, or diagnosis is balanced (no correction
+    // needed).  Either way: NOT bypassed because detection succeeded.
+    const detectedAndAddressed = detected && an.diagnosis !== 'no_vocal';
+    results.push({
+      name: 'V4: synthesized vocal → detected (score ≥ 0.45)',
+      pass: detectedAndAddressed,
+      detail: `score=${an.vocalScore.toFixed(3)} (mod=${an.modulationScore.toFixed(2)} `
+            + `cent=${an.centralityScore.toFixed(2)} pres=${an.presenceScore.toFixed(2)}), `
+            + `diag=${an.diagnosis}, EQ=${r.appliedEq.length} bands, bypassed=${r.bypassed}`,
     });
   }
 

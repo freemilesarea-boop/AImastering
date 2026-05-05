@@ -73,3 +73,52 @@ export function rbjHighShelf(
   const a2 =          (A + 1) - (A - 1) * cosw0 - 2 * sqrtA * alpha;
   return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
 }
+
+// Peaking EQ (RBJ cookbook).  +gainDb at f0, ±gainDb shape outside the band.
+export function rbjPeakingEq(
+  fs: number, f0: number, q: number, gainDb: number,
+): BiquadCoefficients {
+  const A = Math.pow(10, gainDb / 40);
+  const w0 = 2 * Math.PI * f0 / fs;
+  const cosw0 = Math.cos(w0);
+  const sinw0 = Math.sin(w0);
+  const alpha = sinw0 / (2 * q);
+  const b0 = 1 + alpha * A;
+  const b1 = -2 * cosw0;
+  const b2 = 1 - alpha * A;
+  const a0 = 1 + alpha / A;
+  const a1 = -2 * cosw0;
+  const a2 = 1 - alpha / A;
+  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
+}
+
+// 2-pole Butterworth-style low-pass (RBJ cookbook).  Q=0.707 for maximally
+// flat magnitude.
+export function rbjLowPass(fs: number, f0: number, q: number = 0.7071067811865476): BiquadCoefficients {
+  const w0 = 2 * Math.PI * f0 / fs;
+  const cosw0 = Math.cos(w0);
+  const sinw0 = Math.sin(w0);
+  const alpha = sinw0 / (2 * q);
+  const b0 = (1 - cosw0) / 2;
+  const b1 = 1 - cosw0;
+  const b2 = (1 - cosw0) / 2;
+  const a0 = 1 + alpha;
+  const a1 = -2 * cosw0;
+  const a2 = 1 - alpha;
+  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
+}
+
+// 2-pole Butterworth-style high-pass.
+export function rbjHighPass(fs: number, f0: number, q: number = 0.7071067811865476): BiquadCoefficients {
+  const w0 = 2 * Math.PI * f0 / fs;
+  const cosw0 = Math.cos(w0);
+  const sinw0 = Math.sin(w0);
+  const alpha = sinw0 / (2 * q);
+  const b0 = (1 + cosw0) / 2;
+  const b1 = -(1 + cosw0);
+  const b2 = (1 + cosw0) / 2;
+  const a0 = 1 + alpha;
+  const a1 = -2 * cosw0;
+  const a2 = 1 - alpha;
+  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
+}
