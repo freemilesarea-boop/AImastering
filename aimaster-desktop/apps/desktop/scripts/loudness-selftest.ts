@@ -23,6 +23,7 @@ import { enhanceVocal, analyzeVocalPresence } from '../src/renderer/audio/vocalE
 import { protectTransients } from '../src/renderer/audio/transientProtection.js';
 import { generateMasteringReport } from '../src/renderer/audio/report.js';
 import { processMasteringWithMode, MODE_CONFIGS } from '../src/renderer/audio/masteringModes.js';
+import { previewSegment } from '../src/renderer/audio/previewPlayer.js';
 
 interface TestResult {
   name: string;
@@ -821,6 +822,95 @@ function runTests(): TestResult[] {
       name: 'M3: report carries preset name for the chosen mode',
       pass: !!note && out.report.bullets.length >= 2,
       detail: `bullets=${out.report.bullets.length}, preset note "${note?.text ?? '(missing)'}"`,
+    });
+  }
+
+  // ── Preview rendering tests ───────────────────────────────────────────────
+
+  // P1: slice correctness — duration matches request, channel count
+  // preserved, sample-accurate copy at the requested offset.
+  {
+    const sr  = 48000;
+    const len = sr * 60;     // 60-s source
+    const buf = makeBuffer(sr, 2, len);
+    // Encode the sample index in the data so we can verify the slice
+    // starts where we asked (use a slow ramp normalized to fit float32).
+    const a = new Float32Array(len);
+    const b = new Float32Array(len);
+    for (let i = 0; i < len; i++) { a[i] = i / len; b[i] = -i / len; }
+    buf.setChannel(0, a);
+    buf.setChannel(1, b);
+
+    const slice = previewSegment(buf, 30, { durationSec: 5 });
+    const startSamp = 30 * sr;
+    const expectedFirstA = startSamp / len;
+    const actualFirstA   = (slice.getChannelData(0) as Float32Array)[0] as number;
+    const expectedLastA  = (startSamp + 5 * sr - 1) / len;
+    const actualLastA    = (slice.getChannelData(0) as Float32Array)[5 * sr - 1] as number;
+    const lengthOk = (slice.getChannelData(0) as Float32Array).length === 5 * sr;
+    const offsetOk = Math.abs(actualFirstA - expectedFirstA) < 1e-6
+                  && Math.abs(actualLastA  - expectedLastA)  < 1e-6;
+    const channelsOk = slice.numberOfChannels === 2 && slice.sampleRate === sr;
+    results.push({
+      name: 'P1: previewSegment slices a sample-accurate 5 s window',
+      pass: lengthOk && offsetOk && channelsOk,
+      detail: `len=${(slice.getChannelData(0) as Float32Array).length} `
+            + `(expect ${5 * sr}), first=${actualFirstA.toFixed(6)} `
+            + `(expect ${expectedFirstA.toFixed(6)})`,
+    });
+  }
+
+  // P2: processing callback runs.  Pass a process function that runs the
+  // BALANCED mode pipeline on the slice and verify the output integrated
+  // LUFS lands at -12 ± 0.7 LU.
+  {
+    const sr  = 48000;
+    const len = sr * 30;
+    const buf = makeBuffer(sr, 2, len);
+    buf.setChannel(0, noiseRmsDbfs(-22, len));
+    buf.setChannel(1, noiseRmsDbfs(-22, len));
+
+    const t0 = Date.now();
+    const out = previewSegment(buf, 10, {
+      durationSec: 5,
+      process: (slice) => processMasteringWithMode(slice, 'BALANCED').buffer,
+    });
+    const elapsedMs = Date.now() - t0;
+
+    const m = getLoudnessMetrics(out);
+    const lufsOk    = Math.abs(m.integratedLufs - MODE_CONFIGS.BALANCED.targetLufs) <= 0.7;
+    const fastEnough = elapsedMs < 1000;     // < 1 s perceived-instant budget
+
+    results.push({
+      name: 'P2: 5 s preview through BALANCED pipeline → -12 LUFS in < 1 s',
+      pass: lufsOk && fastEnough,
+      detail: `I=${m.integratedLufs.toFixed(2)} LUFS, render took ${elapsedMs} ms`,
+    });
+  }
+
+  // P3: edge cases — start past end of buffer clamps, durationSec longer
+  // than remaining audio shrinks safely.
+  {
+    const sr  = 48000;
+    const len = sr * 4;     // only 4 s of source
+    const buf = makeBuffer(sr, 1, len);
+    buf.setChannel(0, sineDbfs(sr, 1000, -10, len));
+
+    // Ask for 5 s starting at 2 s — should give 2 s back.
+    const out1 = previewSegment(buf, 2, { durationSec: 5 });
+    const got1 = (out1.getChannelData(0) as Float32Array).length;
+    const expected1 = 2 * sr;
+    const okShrink = got1 === expected1;
+
+    // Ask for 5 s starting past end — should give 1 sample back (min clamp).
+    const out2 = previewSegment(buf, 100, { durationSec: 5 });
+    const got2 = (out2.getChannelData(0) as Float32Array).length;
+    const okPastEnd = got2 >= 1 && got2 <= sr;
+
+    results.push({
+      name: 'P3: edge cases — overrun clamps, no errors',
+      pass: okShrink && okPastEnd,
+      detail: `overrun: requested 5s got ${got1 / sr}s; past-end: got ${got2} samples`,
     });
   }
 
