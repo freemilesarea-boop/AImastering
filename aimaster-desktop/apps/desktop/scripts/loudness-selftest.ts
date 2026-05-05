@@ -741,6 +741,55 @@ function runTests(): TestResult[] {
     });
   }
 
+  // ── Robustness regression tests ───────────────────────────────────────────
+  //
+  // Bugs found during the v3.5 audit pass that broke pipeline outputs on
+  // edge-case inputs.  These tests guard against regression.
+
+  // R-bug-1: TRUE SILENCE through the full pipeline must not produce NaN
+  // or Infinity samples.  Previously the loudness maximizer's iteration
+  // loop would multiply silence by 10^(Infinity/20) → NaN cascade.
+  {
+    const sr  = 48000;
+    const len = sr * 2;
+    const buf = makeBuffer(sr, 2, len);    // all-zero input
+    const out = processLimiter(buf, -10);
+    const ch0 = out.buffer.getChannelData(0);
+    let nan = 0, inf = 0;
+    for (let i = 0; i < ch0.length; i++) {
+      const v = ch0[i] as number;
+      if (isNaN(v)) nan++;
+      if (!isFinite(v)) inf++;
+    }
+    const finiteGain = isFinite(out.appliedGainDb);
+    results.push({
+      name: 'BUG-1 regression: silent input through processLimiter → no NaN/Inf',
+      pass: nan === 0 && inf === 0 && finiteGain,
+      detail: `NaN=${nan}, Inf=${inf}, gain=${out.appliedGainDb}, lufs=${out.measuredLufs}`,
+    });
+  }
+
+  // R-bug-2: VERY-QUIET input (-90 dBFS) is below the BS.1770 -70 LUFS
+  // gate, so integratedLufs returns -Infinity.  Maximizer must not
+  // produce Infinity gain — capped at PRE_GAIN_CAP_DB (60 dB).
+  {
+    const sr  = 48000;
+    const len = sr * 2;
+    const buf = makeBuffer(sr, 2, len);
+    const sig = sineDbfs(sr, 1000, -90, len);
+    buf.setChannel(0, sig);
+    buf.setChannel(1, sig.slice());
+    const out = processLimiter(buf, -10);
+    const ch0 = out.buffer.getChannelData(0);
+    let nan = 0;
+    for (let i = 0; i < ch0.length; i++) if (isNaN(ch0[i] as number)) nan++;
+    results.push({
+      name: 'BUG-2 regression: -90 dBFS input → finite gain, no NaN',
+      pass: nan === 0 && isFinite(out.appliedGainDb) && Math.abs(out.appliedGainDb) <= 60 + 1e-3,
+      detail: `NaN=${nan}, gain=${out.appliedGainDb.toFixed(1)} dB, TP=${out.truePeakDbtp.toFixed(2)} dBTP`,
+    });
+  }
+
   // ── Mode system tests ─────────────────────────────────────────────────────
 
   // M1: each mode hits its own target LUFS within ±0.7 LU on a stereo

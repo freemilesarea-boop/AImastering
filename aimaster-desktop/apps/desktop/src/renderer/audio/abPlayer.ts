@@ -134,18 +134,27 @@ export class ABPlayer {
     }
 
     // (Re)build the static graph nodes.  Sources are created per-start.
+    // Cancel any previously-scheduled gain ramps before writing fresh
+    // values — otherwise pending toggleAB / setMasterGain ramps would
+    // override the values we just set.
+    const t = ctx.currentTime;
+    const setValue = (g: AudioParam, v: number): void => {
+      g.cancelScheduledValues(t);
+      g.setValueAtTime(v, t);
+    };
+
     if (!this.master) this.master = ctx.createGain();
-    this.master.gain.value = 1;
+    setValue(this.master.gain, 1);
 
     if (!this.trimA) this.trimA = ctx.createGain();
     if (!this.trimB) this.trimB = ctx.createGain();
-    this.trimA.gain.value = Math.pow(10, this.trimAdb / 20);
-    this.trimB.gain.value = Math.pow(10, this.trimBdb / 20);
+    setValue(this.trimA.gain, Math.pow(10, this.trimAdb / 20));
+    setValue(this.trimB.gain, Math.pow(10, this.trimBdb / 20));
 
     if (!this.toggleGainA) this.toggleGainA = ctx.createGain();
     if (!this.toggleGainB) this.toggleGainB = ctx.createGain();
-    this.toggleGainA.gain.value = this.active === 'A' ? 1 : 0;
-    this.toggleGainB.gain.value = this.active === 'B' ? 1 : 0;
+    setValue(this.toggleGainA.gain, this.active === 'A' ? 1 : 0);
+    setValue(this.toggleGainB.gain, this.active === 'B' ? 1 : 0);
 
     // Wire: trim → toggle → master → destination
     this.trimA.disconnect();        this.trimA.connect(this.toggleGainA);
