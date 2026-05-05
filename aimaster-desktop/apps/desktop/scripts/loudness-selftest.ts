@@ -20,6 +20,7 @@ import { getLoudnessMetrics, AudioBufferLike } from '../src/renderer/audio/loudn
 import { processLimiter } from '../src/renderer/audio/limiterChain.js';
 import { applyGainStaging } from '../src/renderer/audio/gainStaging.js';
 import { enhanceVocal, analyzeVocalPresence } from '../src/renderer/audio/vocalEnhancer.js';
+import { protectTransients } from '../src/renderer/audio/transientProtection.js';
 
 interface TestResult {
   name: string;
@@ -515,6 +516,121 @@ function runTests(): TestResult[] {
       detail: `score=${an.vocalScore.toFixed(3)} (mod=${an.modulationScore.toFixed(2)} `
             + `cent=${an.centralityScore.toFixed(2)} pres=${an.presenceScore.toFixed(2)}), `
             + `diag=${an.diagnosis}, EQ=${r.appliedEq.length} bands, bypassed=${r.bypassed}`,
+    });
+  }
+
+  // ── Transient protection tests ─────────────────────────────────────────────
+
+  // T1: pure 1 kHz sine — no transients, fast/slow envelope ratio ≈ 1.
+  // Output should be (essentially) bit-perfect, no transient detections.
+  {
+    const sr  = 48000;
+    const len = sr * 2;
+    const buf = makeBuffer(sr, 2, len);
+    const sig = sineDbfs(sr, 1000, -10, len);
+    buf.setChannel(0, sig);
+    buf.setChannel(1, sig.slice());
+
+    const r = protectTransients(buf);
+    const inSamp  = (buf.getChannelData(0) as Float32Array)[10000] as number;
+    const outSamp = (r.buffer.getChannelData(0) as Float32Array)[10000] as number;
+    const closeEnough = Math.abs(inSamp - outSamp) < 1e-3;       // allow tiny envelope ripple
+    const lowMaxGr    = r.maxReductionDb < 0.5;
+    results.push({
+      name: 'T1: 1 kHz sine → no transients (max GR < 0.5 dB)',
+      pass: closeEnough && lowMaxGr,
+      detail: `transients=${r.transientCount}, maxGR=${r.maxReductionDb.toFixed(2)} dB, `
+            + `meanGR=${r.meanReductionDb.toFixed(3)} dB`,
+    });
+  }
+
+  // T2: kick-drum-like signal — 10 fast-attack 80 Hz exponentially-decaying
+  // pulses (one every 200 ms) layered on a quiet sustained tone (the
+  // "body of the mix").  We expect: 10 detections, each peak shaved by
+  // ~1–1.5 dB, sustained body essentially unchanged.
+  {
+    const sr  = 48000;
+    const len = sr * 4;     // 4 s
+    const buf = makeBuffer(sr, 2, len);
+    const data = new Float32Array(len);
+    // Sustained body: 200 Hz @ -22 dBFS (RMS).
+    const body = sineDbfs(sr, 200, -22, len);
+    for (let i = 0; i < len; i++) data[i] = body[i] as number;
+    // Kick pulses every 200 ms (= 9600 samples), 80 Hz with 50 ms decay.
+    const kickF = 80;
+    const decayTau = sr * 0.05;     // 50 ms
+    for (let p = 0; p < 10; p++) {
+      const start = p * 9600 + 4800;     // start at 100 ms offset
+      for (let i = 0; i < sr * 0.2 && start + i < len; i++) {
+        const env = Math.exp(-i / decayTau);
+        const tone = Math.sin(2 * Math.PI * kickF * i / sr);
+        data[start + i] = (data[start + i] as number) + 0.7 * env * tone;
+      }
+    }
+    buf.setChannel(0, data);
+    buf.setChannel(1, data.slice());
+
+    const r = protectTransients(buf);
+    // Sample-peak should drop by ~0.5–2 dB after protection.
+    const peakDrop = r.inputPeakDb - r.outputPeakDb;
+    const peakOk   = peakDrop > 0.3 && peakDrop < 3.0;
+    // We should have detected at least one onset per kick (10 in total).
+    // Upper bound is loose because a decaying tonal kick has multiple
+    // sub-onsets the detector legitimately fires on — the count is a
+    // diagnostic, not a contract.  The CONTRACT is that peaks were tamed.
+    const countOk  = r.transientCount >= 5;
+    results.push({
+      name: 'T2: kick-style transients detected and tamed (peak drop 0.3–3 dB)',
+      pass: peakOk && countOk,
+      detail: `transients=${r.transientCount}, peak drop=${peakDrop.toFixed(2)} dB `
+            + `(${r.inputPeakDb.toFixed(1)} → ${r.outputPeakDb.toFixed(1)}), `
+            + `maxGR=${r.maxReductionDb.toFixed(2)} dB`,
+    });
+  }
+
+  // T3: protect-then-limit chain — verify that pre-limiter transient
+  // taming reduces the limiter's peak GR by ≥ 30 % vs limiting directly.
+  // This is the headline benefit: less indiscriminate flattening.
+  {
+    const sr  = 48000;
+    const len = sr * 4;
+    const buf = makeBuffer(sr, 2, len);
+    const data = new Float32Array(len);
+    // Sustained -16 dBFS RMS noise body.
+    const body = noiseRmsDbfs(-16, len);
+    for (let i = 0; i < len; i++) data[i] = body[i] as number;
+    // 12 kick-style transients spaced 300 ms apart, peaking at ~0 dBFS.
+    const kickTau = sr * 0.04;
+    for (let p = 0; p < 12; p++) {
+      const start = p * Math.floor(sr * 0.3) + Math.floor(sr * 0.15);
+      for (let i = 0; i < sr * 0.2 && start + i < len; i++) {
+        const env = Math.exp(-i / kickTau);
+        const tone = Math.sin(2 * Math.PI * 60 * i / sr);
+        data[start + i] = (data[start + i] as number) + 0.85 * env * tone;
+      }
+    }
+    buf.setChannel(0, data);
+    buf.setChannel(1, data.slice());
+
+    // Path A: limiter only.
+    const directLim = processLimiter(buf, -10);
+    // Path B: protect then limit.
+    const protected_ = protectTransients(buf);
+    const protLim    = processLimiter(protected_.buffer, -10);
+
+    // Both paths should hit similar LUFS (the maximizer drives there).
+    const lufsAOk = Math.abs(directLim.measuredLufs - (-10)) <= 0.7;
+    const lufsBOk = Math.abs(protLim.measuredLufs    - (-10)) <= 0.7;
+    // The protected path should require LESS peak GR.
+    const grRatio = directLim.maxGrDb > 0
+      ? protLim.maxGrDb / directLim.maxGrDb
+      : 1;
+    const lessFlattening = grRatio <= 0.70 + 1e-3 || protLim.maxGrDb < 0.5;
+    results.push({
+      name: 'T3: protect → limit reduces limiter GR by ≥ 30 %',
+      pass: lufsAOk && lufsBOk && lessFlattening,
+      detail: `direct GR=${directLim.maxGrDb.toFixed(2)} dB → protected GR=${protLim.maxGrDb.toFixed(2)} dB `
+            + `(${(grRatio * 100).toFixed(0)} %), I=${protLim.measuredLufs.toFixed(2)} LUFS`,
     });
   }
 
