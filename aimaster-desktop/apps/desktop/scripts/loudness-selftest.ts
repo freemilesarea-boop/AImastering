@@ -22,6 +22,7 @@ import { applyGainStaging } from '../src/renderer/audio/gainStaging.js';
 import { enhanceVocal, analyzeVocalPresence } from '../src/renderer/audio/vocalEnhancer.js';
 import { protectTransients } from '../src/renderer/audio/transientProtection.js';
 import { generateMasteringReport } from '../src/renderer/audio/report.js';
+import { processMasteringWithMode, MODE_CONFIGS } from '../src/renderer/audio/masteringModes.js';
 
 interface TestResult {
   name: string;
@@ -736,6 +737,90 @@ function runTests(): TestResult[] {
       name: 'R4: vocal-enhance cut formatted as "Reduced vocal harshness by -1.8dB at 3.5kHz"',
       pass: !!found,
       detail: found ? `"${found.text}"` : `not found`,
+    });
+  }
+
+  // ── Mode system tests ─────────────────────────────────────────────────────
+
+  // M1: each mode hits its own target LUFS within ±0.7 LU on a stereo
+  // noise input.  Different modes must produce different output loudness.
+  {
+    const sr  = 48000;
+    const len = sr * 6;
+    const buf = makeBuffer(sr, 2, len);
+    buf.setChannel(0, noiseRmsDbfs(-22, len));
+    buf.setChannel(1, noiseRmsDbfs(-22, len));
+
+    const clean    = processMasteringWithMode(buf, 'CLEAN');
+    const balanced = processMasteringWithMode(buf, 'BALANCED');
+    const loud     = processMasteringWithMode(buf, 'LOUD');
+
+    const cleanOk    = Math.abs(clean.outputMetrics.integratedLufs    - MODE_CONFIGS.CLEAN.targetLufs)    <= 0.7;
+    const balancedOk = Math.abs(balanced.outputMetrics.integratedLufs - MODE_CONFIGS.BALANCED.targetLufs) <= 0.7;
+    const loudOk     = Math.abs(loud.outputMetrics.integratedLufs     - MODE_CONFIGS.LOUD.targetLufs)     <= 0.7;
+    // CLEAN should be quieter than BALANCED, BALANCED quieter than LOUD.
+    const ordered =
+      clean.outputMetrics.integratedLufs    < balanced.outputMetrics.integratedLufs - 1 &&
+      balanced.outputMetrics.integratedLufs < loud.outputMetrics.integratedLufs     - 1;
+
+    results.push({
+      name: 'M1: CLEAN/BALANCED/LOUD each hit their target LUFS',
+      pass: cleanOk && balancedOk && loudOk && ordered,
+      detail: `CLEAN=${clean.outputMetrics.integratedLufs.toFixed(2)} `
+            + `(target ${MODE_CONFIGS.CLEAN.targetLufs}), `
+            + `BALANCED=${balanced.outputMetrics.integratedLufs.toFixed(2)} `
+            + `(target ${MODE_CONFIGS.BALANCED.targetLufs}), `
+            + `LOUD=${loud.outputMetrics.integratedLufs.toFixed(2)} `
+            + `(target ${MODE_CONFIGS.LOUD.targetLufs})`,
+    });
+  }
+
+  // M2: every mode keeps true-peak under -1 dBTP (the contract from the
+  // limiter chain — no mode is allowed to break this even at LOUD).
+  {
+    const sr  = 48000;
+    const len = sr * 4;
+    const buf = makeBuffer(sr, 2, len);
+    // Hot input with transients to stress all stages.
+    const data = new Float32Array(len);
+    const body = noiseRmsDbfs(-12, len);
+    for (let i = 0; i < len; i++) data[i] = body[i] as number;
+    for (let p = 0; p < 8; p++) {
+      const start = p * Math.floor(sr * 0.5) + Math.floor(sr * 0.1);
+      for (let i = 0; i < sr * 0.15 && start + i < len; i++) {
+        const env = Math.exp(-i / (sr * 0.04));
+        data[start + i] = (data[start + i] as number) + 0.6 * env * Math.sin(2 * Math.PI * 60 * i / sr);
+      }
+    }
+    buf.setChannel(0, data);
+    buf.setChannel(1, data.slice());
+
+    const r = (['CLEAN', 'BALANCED', 'LOUD'] as const).map((m) => {
+      const out = processMasteringWithMode(buf, m);
+      return { mode: m, tp: out.stages.limiter.truePeakDbtp, lufs: out.outputMetrics.integratedLufs };
+    });
+    const allTpOk = r.every((x) => x.tp <= -1.0 + 1e-3);
+    results.push({
+      name: 'M2: every mode keeps true-peak ≤ -1 dBTP',
+      pass: allTpOk,
+      detail: r.map((x) => `${x.mode}: TP=${x.tp.toFixed(2)} dBTP I=${x.lufs.toFixed(1)}`).join(' · '),
+    });
+  }
+
+  // M3: report is generated for each mode and references the preset name.
+  {
+    const sr  = 48000;
+    const len = sr * 3;
+    const buf = makeBuffer(sr, 2, len);
+    buf.setChannel(0, noiseRmsDbfs(-20, len));
+    buf.setChannel(1, noiseRmsDbfs(-20, len));
+    const out = processMasteringWithMode(buf, 'BALANCED');
+    const note = out.report.bullets.find((b) =>
+      /Preset:\s*Balanced/.test(b.text));
+    results.push({
+      name: 'M3: report carries preset name for the chosen mode',
+      pass: !!note && out.report.bullets.length >= 2,
+      detail: `bullets=${out.report.bullets.length}, preset note "${note?.text ?? '(missing)'}"`,
     });
   }
 
