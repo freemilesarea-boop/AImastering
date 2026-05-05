@@ -168,7 +168,10 @@ export const MODE_CONFIGS: Record<MasteringMode, ModeConfig> = {
       // Soft-clip engages earlier + small drive for harmonic glue.
       softClip:          { thresholdDb: -6, driveDb: 1 },
       peakLimiter: {
-        ceilingDb:    -0.5,
+        // -1.0 dBFS sample-peak ceiling gives the inter-sample peaks
+        // ~0.5 dB of headroom so the TP guard almost never has to
+        // engage — it stays a true safety net, not the primary control.
+        ceilingDb:    -1.0,
         lookAheadMs:  3,
         releaseMs:    40,
         fastRatio:    4,

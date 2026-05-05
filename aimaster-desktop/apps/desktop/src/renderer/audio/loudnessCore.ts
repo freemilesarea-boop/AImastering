@@ -218,6 +218,17 @@ export class LoudnessAnalyzer {
   getMomentaryLufs(): number { return this.lastMomentaryLufs; }
   getShortTermLufs(): number { return this.lastShortTermLufs; }
 
+  /** Per-100 ms short-term LUFS time series (3 s window, 100 ms hop).
+   *  Useful for pumping detection — compare input vs output dynamic
+   *  variation over time. */
+  getShortTermLufsSeries(): number[] {
+    return this.shortTermBlockMs.map(meanSquareToLufs);
+  }
+  /** Per-100 ms momentary LUFS time series (400 ms window, 100 ms hop). */
+  getMomentaryLufsSeries(): number[] {
+    return this.momentaryBlockMs.map(meanSquareToLufs);
+  }
+
   // Two-pass gated integrated loudness per BS.1770-4 §5.6 + EBU R128.
   //   1. Drop momentary blocks below the absolute -70 LUFS gate.
   //   2. Compute mean of the survivors → relative threshold = mean - 10 LU.
