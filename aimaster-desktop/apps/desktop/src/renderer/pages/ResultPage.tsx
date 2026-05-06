@@ -26,6 +26,7 @@ import SectionAnalysisPanel from '../components/SectionAnalysisPanel.js';
 import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
 import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
 import ExportReportPanel from '../components/ExportReportPanel.js';
+import { LoudnessMeterPanel } from '../components/LoudnessMeterPanel.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -110,11 +111,16 @@ function BeforeAfterCard() {
 
 // ── Audio preview player ──────────────────────────────────────────────────────
 
-function PreviewPlayer({ src }: { src: string }) {
+function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number | undefined }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying]   = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+  // Live loudness meter is mounted once the audio element has loaded its
+  // metadata — without it `createMediaElementSource` rejects on some
+  // platforms.  We also gate on `playing` so the worklet only runs while
+  // the user is actually listening.
+  const [meterReady, setMeterReady] = useState(false);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -155,6 +161,7 @@ function PreviewPlayer({ src }: { src: string }) {
         onLoadedMetadata={() => {
           const a = audioRef.current;
           if (a) setDuration(a.duration);
+          setMeterReady(true);
         }}
       />
 
@@ -201,6 +208,19 @@ function PreviewPlayer({ src }: { src: string }) {
           </div>
         </div>
       </div>
+
+      {/* Live BS.1770-4 LUFS / TP meter — mounts once metadata loads, runs
+          only while playback is active.  Worklet is loaded on first play
+          via Vite's `new URL(..., import.meta.url)` resolution. */}
+      {meterReady && audioRef.current && (
+        <div className="mt-3">
+          <LoudnessMeterPanel
+            mediaElement={audioRef.current}
+            active={playing}
+            {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -837,7 +857,14 @@ export default function ResultPage() {
           {/* Phase-E — AI artifact findings (only renders if any are present). */}
           <AIArtifactWarningPanel check={masteringResult?.aiArtifactCheck ?? null} />
 
-          {previewSrc && <PreviewPlayer src={previewSrc} />}
+          {previewSrc && (
+            <PreviewPlayer
+              src={previewSrc}
+              {...(typeof masteringResult?.analysisReport?.mastering?.targetLufs === 'number'
+                ? { targetLufs: masteringResult.analysisReport.mastering.targetLufs }
+                : {})}
+            />
+          )}
           <SaveButtons />
 
           {/* Phase-E — Single-snapshot exportable report (TXT / JSON). */}

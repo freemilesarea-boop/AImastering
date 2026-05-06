@@ -102,9 +102,34 @@ function checkPreloadBuild(): void {
 // ── 4. Worklet asset reachable from source ─────────────────────────────────
 
 function checkWorklet(): void {
-  const rel = 'aimaster-desktop/apps/desktop/src/renderer/audio/loudnessProcessor.worklet.ts';
-  if (exists(rel)) pass('worklet source present', rel);
-  else              fail('worklet source present', `missing ${rel}`);
+  // The worklet source MUST be plain JS — Vite emits static `new URL(…)`
+  // assets verbatim (no TS transform), so a `.ts` worklet would be
+  // delivered to the AudioWorklet loader as raw TypeScript and fail at
+  // runtime.  This check fails fast if anyone reverts the conversion.
+  const src = 'aimaster-desktop/apps/desktop/src/renderer/audio/loudnessProcessor.worklet.js';
+  const tsLeftover = 'aimaster-desktop/apps/desktop/src/renderer/audio/loudnessProcessor.worklet.ts';
+  if (!exists(src)) {
+    fail('worklet source present', `missing ${src} (must be plain JS, not TS)`);
+    return;
+  }
+  if (exists(tsLeftover)) {
+    fail('worklet source present',
+         `both .js and .ts worklet sources exist — Vite would emit the .ts asset; ` +
+         `delete ${tsLeftover}`);
+    return;
+  }
+  // After a build, verify Vite emitted the worklet asset alongside index*.js.
+  const distAssetsRel = 'aimaster-desktop/apps/desktop/dist/renderer/assets';
+  if (exists(distAssetsRel)) {
+    const dir = path.join(REPO_ROOT, distAssetsRel);
+    const emitted = fs.readdirSync(dir).find((f) => /^loudnessProcessor\.worklet-.*\.js$/.test(f));
+    if (!emitted) {
+      warn('worklet source present',
+           `${src} exists but no worklet asset found in ${distAssetsRel} — re-run \`pnpm build\``);
+      return;
+    }
+  }
+  pass('worklet source present', src);
 }
 
 // ── 5. Python engine source ────────────────────────────────────────────────

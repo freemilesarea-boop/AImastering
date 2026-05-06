@@ -17,23 +17,31 @@ QA 진행 체크리스트:
 
 ## Highlights
 
-- Phase-A 보안 하드닝 — `LICENSE_HMAC_SECRET` 환경변수화, release smoke
-  script 가 production 빌드에서 시크릿 누락을 감지.
-- v3.5 결과 페이지 UI wiring 안정화 — null-safe 렌더링, 7-mode 동기화.
-- mono-safe stereo enhancement — 1ch 입력에서 NaN / inf 발생 안 함.
-- Phase-D 분석 → Phase-E UI 의 첫 end-to-end 노출:
-  - Section Analysis (verse/chorus 타임라인 + DR + 대비 점수)
-  - AI Artifact Check (위상 / 금속성 / 서브 럼블 가능성)
-  - Vocal Intelligence (보컬 명료도 / mood / sibilance)
-  - Translation Check (폰 / 노트북 / 클럽 예측)
-  - Smart Recommendation (3–5 권장 사항, danger → warn → info)
-  - Exportable Mastering Report (TXT + JSON, schema `phase-e/1`)
+- 🔒 **Phase-A 보안 하드닝** — `LICENSE_HMAC_SECRET` 가 dev fallback 일
+  때 패키징된 빌드를 **시작 시점에 거부** (메인 프로세스의 production
+  gate). dev / unpackaged 빌드는 영향 없음.
+- 🎚 **라이브 LUFS / TP 미터 정식 연결** — 결과 페이지 PreviewPlayer 가
+  `LoudnessMeterPanel` 을 mount, 재생 중 BS.1770-4 측정값을 실시간 표시.
+- 🛠 **Vite worklet emit 수정** — worklet 소스를 plain JS 로 변환하고
+  release-smoke 가 .ts 회귀를 자동 차단.
+- 🎛 **v3.5 결과 페이지 안정화** — 누락 필드 안전 폴백, 7-mode 동기화.
+- 🎧 **Mono-safe stereo enhancement** — 1ch 입력에서 NaN/Inf 발생 안 함.
+- 🧠 **Phase-E UI 패널 4종** — sectionAnalysis / aiArtifactCheck /
+  vocalIntelligence / translationCheck / modeSuggestion 가 emit 되면
+  자동으로 활성화.  현재 빌드에서는 UI 인프라만 준비된 상태이며 Python
+  analyzer emit 은 v3.6.x 패치에서 추가됩니다.
+- 📤 **Exportable Mastering Report** — TXT + JSON 단일 스냅샷, 파일
+  경로 / 디버그 필드 누설 없음.
 
 ## ⚠️ 알려진 한계
 
 - macOS 코드 서명 / Notarization 미적용 (v3.6.x 예정).
-- LoudnessMeterPanel (live meter) 은 컴포넌트만 존재하고 페이지에 미연결.
-- Phase-D Python emit 일부는 v3.6.x 패치에서 마무리 (UI fallback-safe).
+- Phase-D analyzer Python emit 미구현 — Phase-E UI 패널은 데이터가
+  없으면 무해하게 폴백 (false-positive 표시 안 함).
+- Reference matching UI 진입점 부재 (RPC 는 v3.4 부터 존재).
+- 강제 종료 시 OS temp dir 의 `aimaster_*.wav` 잔존 가능성.
+- production 빌드는 강한 `LICENSE_HMAC_SECRET` 환경변수 주입이 **필수**
+  (없으면 시작 시 모달 에러 후 종료).
 
 ## 자동 업데이트 정상 조건
 

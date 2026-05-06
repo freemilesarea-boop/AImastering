@@ -8,21 +8,19 @@
 
 ## 한눈에 보기
 
-v3.5.0 이후의 안정화·보안·UX 작업을 한 번에 묶은 RC 입니다. 새 DSP 는
-추가하지 않았으며, 곡 수준 분석 → UI 노출 → 사용자가 받아갈 수 있는
-리포트까지의 흐름을 처음으로 끝까지 잇는 데 집중했습니다.
+v3.5.0 이후의 안정화·보안·UX 작업을 묶은 RC 입니다. 새 DSP 는 추가하지
+않았으며, 결과 화면의 **사용자 경험 안정화** 와 **프로덕션 빌드 보안** 이
+이 RC 의 핵심입니다.
 
 | 영역 | 핵심 변화 |
 |---|---|
-| 보안 | License HMAC 시크릿 환경변수화 / 빌드시 secret 누락 경고 (RC 빌드 한정) |
-| UI 안정화 | v3.5 결과 페이지에 Phase-E 패널 4종 통합 / null-safe 렌더링 |
-| 스테레오 | mono-safe stereo enhancement (1ch 입력에서도 충돌하지 않음) |
-| Translation Check | 폰 / 노트북 / 클럽 환경 예측 점수 + 한국어 노트 |
-| Vocal Intelligence | 보컬 존재 여부 + 명료도 + sibilance Hz 노출 |
-| Section Analysis | 벌스/코러스 타임라인 + DR(LU) + 대비 점수 + 모드 힌트 |
-| AI Artifact Check | 위상 / 금속성 / 서브 럼블 가능성 패턴 표시 (자동 보정 X) |
-| Smart Recommendation | 모든 분석 결과를 묶어 3–5개 한국어 권장 사항 |
-| Exportable Report | TXT + JSON 단일 스냅샷, 파일 경로 / 디버그 필드 누설 없음 |
+| 보안 | License HMAC 시크릿 환경변수화 + 패키징된 프로덕션 빌드 시작 시 dev fallback 거부 (하드 페일) |
+| 결과 페이지 | 라이브 LUFS / TP 미터를 프리뷰 플레이어에 정식 연결 |
+| Phase-E UI | section / artifact / smart-rec / export 패널 4종 — 분석 필드 누락 시 안전 폴백 (테스트 보장) |
+| Phase-D 인프라 | 분석 결과 노출용 타입 (sectionAnalysis / aiArtifactCheck / vocalIntelligence / translationCheck / modeSuggestion) — UI 만 준비, Python emit 은 v3.6.x 패치에서 추가 예정 |
+| 빌드 | Vite worklet 자산이 plain-JS 로 emit 되도록 정리 (TS 가 그대로 emit 되던 문제 수정) |
+| Windows | NSIS 단일 타깃 (legacy portable 제거 — v3.4.4 이후) |
+| 테스트 | release smoke + Phase-E UI safety + Phase-E render safety + loudness selftest 모두 `pnpm test`/`test:release-smoke` 로 묶임 |
 
 ---
 
@@ -35,7 +33,7 @@ v3.5.0 이후의 안정화·보안·UX 작업을 한 번에 묶은 RC 입니다.
 | macOS — Apple Silicon | arm64 | `Louver Mastering AI-3.6.0-rc.1-arm64-mac.zip` ⚠️ unsigned |
 | macOS — Intel | x64 | `Louver Mastering AI-3.6.0-rc.1-x64-mac.zip` ⚠️ unsigned |
 
-> Windows portable 타겟은 v3.4.4 이후 더 이상 빌드하지 않습니다 (NSIS 만 정식).
+> Windows portable 타깃은 v3.4.4 이후 더 이상 빌드하지 않습니다 (NSIS 만 정식).
 
 ---
 
@@ -43,17 +41,36 @@ v3.5.0 이후의 안정화·보안·UX 작업을 한 번에 묶은 RC 입니다.
 
 ### 🔒 1. 보안 하드닝 (Phase-A)
 
-- `@aimaster/license-core` 의 HMAC 시크릿이 `LICENSE_HMAC_SECRET` 환경
-  변수에서 읽히도록 정리되었습니다. 기본값 (`aimaster-local-secret-v1`)
-  은 dev 전용이며, RC / 정식 빌드에서는 빌드 시 환경변수 설정이
-  필요합니다.
-- **Release smoke script (`pnpm test:release-smoke`)** 가 빌드 산출물에
-  더해 `LICENSE_HMAC_SECRET` 가 정의되어 있지 않을 때 명시적으로 경고를
-  띄우도록 추가되었습니다 (production-only warning).
-- License record / trial record 양쪽 모두 `crypto.timingSafeEqual` 로
-  HMAC 검증.
+- `@aimaster/license-core` 가 새 export 두 개를 추가:
+  - `isLicenseSecretProductionReady()` — 활성 HMAC 시크릿이 dev fallback /
+    빈 값이 아닌지 검사 (≥ 16 char).
+  - `assertLicenseSecretReady()` — 위 검사가 실패하면 명시적 메시지로 throw.
+- 데스크톱 main 프로세스 (`apps/desktop/src/main/index.ts`) 가
+  `app.isPackaged === true` 인 경우 **앱 시작 직전** 위 assert 를 호출.
+  실패 시 모달 에러 다이얼로그를 표시하고 `app.exit(1)`.  → 누군가 시크릿
+  주입을 잊고 production 빌드를 만들어도 **첫 실행에서 즉시 멈춥니다**;
+  dev fallback 으로 모든 머신이 같은 키로 검증되는 사고를 차단합니다.
+- dev / unpackaged 빌드는 게이트를 통과하지 않으므로 로컬 개발 흐름은
+  변하지 않습니다.
+- `pnpm test:release-smoke` 도 `PRODUCTION=true` 환경에서 시크릿 누락 /
+  dev fallback 사용을 fail 로 표시 (빌드 시점 가드).
 
-### 🎚 2. v3.5 UI wiring (안정화)
+### 🎚 2. 라이브 LUFS / TP 미터 정식 연결
+
+- 결과 페이지 PreviewPlayer 가 `<audio>` 엘리먼트가 metadata 를 로드한
+  뒤 `LoudnessMeterPanel` 을 mount.  재생 중에만 (`active === isPlaying`)
+  AudioWorklet 이 동작합니다.
+- BS.1770-4 K-weighting + 4× 폴리페이즈 true-peak 가 Worklet 안에서
+  실행되며, Momentary / Short-term / Integrated LUFS + dBTP 가 100 ms
+  주기로 갱신됩니다.
+- 모드별 target LUFS 가 있으면 Integrated 막대가 ±0.5 / ±1.0 LU 허용
+  범위에 따라 색이 변합니다.
+- **Vite worklet emit 이슈 수정** — 이전에는 `loudnessProcessor.worklet.ts`
+  를 raw TS 로 emit 해서 브라우저가 모듈 로드에 실패할 수 있었습니다.
+  worklet 소스를 plain JS (`*.worklet.js`) 로 변환하고 release-smoke 가
+  `.ts` 가 다시 들어오는지 자동 차단합니다.
+
+### 🎛 3. v3.5 결과 페이지 안정화
 
 - v3.5 단계에서 정의된 `MasteringMeta` / `MetricComparisonRow` /
   `QualityCheckReport` / `DynamicEqReport` 가 결과 페이지에서 모두 렌더
@@ -62,63 +79,64 @@ v3.5.0 이후의 안정화·보안·UX 작업을 한 번에 묶은 RC 입니다.
   Warm-legacy / Punch-legacy) 의 ID·라벨이 shared-types ↔ UI 카드 ↔
   Python 엔진과 1:1 동기화되었습니다.
 
-### 🎧 3. mono-safe stereo enhancement
+### 🎧 4. Mono-safe stereo enhancement
 
-- 단일 채널 / true-mono 입력에 대해서도 stereo enhancer 가 down-mix /
-  energy-balance 에서 NaN 을 만들지 않도록 수정 (v3.5 audit 의 BUG-1
-  regression test 가 이 케이스를 커버).
+- 단일 채널 / true-mono 입력에서 stereo enhancer 가 NaN / Infinity 를
+  만들지 않도록 v3.5 audit 에서 수정 (BUG-1 regression test 가 이
+  케이스를 영구히 가드).
 
-### 🛰 4. Translation Check (Phase-D 노출용 타입)
+### 🧠 5. Phase-E Intelligence UX 패널 (이번 RC 의 사용자 가시 변경)
 
-- `TranslationCheck` 타입이 `@aimaster/shared-types` 에 추가되었고,
-  결과 페이지의 SmartRecommendationPanel 이 phone / laptop / club 점수가
-  ≤ 0.5 일 때 한국어 경고를 표시합니다.
-- 분석 결과 자체는 Python 엔진 측 emit 이 v3.6.x 패치에서 추가될
-  예정입니다 (UI는 fallback-safe).
+- **`SectionAnalysisPanel`** — `sectionAnalysis` 필드가 emit 되면
+  vocal/instrumental 구간 타임라인 + DR(LU) + 대비 점수 + 강·중·약
+  카운트 + 모드 힌트 (현재 모드와 다를 때만) 를 표시.
+- **`AIArtifactWarningPanel`** — `aiArtifactCheck` 의 phase / metallic-
+  high-freq / sub-rumble finding 중 `present === true` 인 항목만 노출.
+  자동 보정은 절대 수행하지 않습니다.
+- **`SmartRecommendationPanel`** — 위 + vocalIntelligence / translation
+  Check / modeSuggestion 까지 결합, 한국어로 최대 5개 권장 사항 (danger
+  → warn → info).  분석 결과가 비어 있으면 “특별히 권장 사항이 없습니다”
+  안내만 출력 (false-positive green tick 안 만듦).
+- **`ExportReportPanel`** — TXT + JSON 단일 스냅샷 다운로드.  스키마 태그
+  `phase-e/1`, app name + version 포함.  `outputPath` / `previewPath` /
+  waveform paths / `debugSummary` / `jobId` / `artifactDir` 등 파일
+  경로 / 디버그 전용 필드는 의도적으로 제외 (smoke 가 매 빌드마다 검증).
 
-### 🗣 5. Vocal Intelligence (Phase-D 노출용 타입)
+### 🧪 6. Phase-D 분석 emit — **상태: UI 인프라만, analyzer 미작동**
 
-- `VocalIntelligence { vocalPresent, clarityScore, mood, sibilanceHz,
-  note }` 타입을 정의.
-- `clarityScore <= 0.5` 또는 `>= 0.8` 일 때 SmartRecommendationPanel 에
-  보컬 보호 권장 사항 노출.
+위 4개 Phase-E 패널은 Phase-D analyzer 의 출력을 받기 위해 만들어졌지만
+**v3.6.0-rc.1 의 Python 파이프라인은 아직 다음 5개 필드를 emit 하지
+않습니다**:
 
-### 🎼 6. Section Analysis (Phase-D 노출용 타입 + UI)
+- `sectionAnalysis` (verse/chorus 구조 분석)
+- `aiArtifactCheck` (phase / metallic / sub-rumble)
+- `vocalIntelligence` (mood / clarity / sibilance)
+- `translationCheck` (phone / laptop / club 예측 점수)
+- `modeSuggestion`
 
-- `SectionAnalysis { sections[], dynamicRangeLu, alternationScore,
-  sectionCounts, modeSuggestion }`.
-- 새 패널 `SectionAnalysisPanel` 이 verse/chorus 타임라인 (high/mid/low
-  에너지별 색), DR(LU), 대비 점수, 강·중·약 카운트, 그리고 사용자가
-  현재 선택한 모드와 다른 추천 모드가 있을 때만 힌트를 표시합니다.
+따라서 RC 빌드에서는:
+- 위 패널들이 **렌더되지 않거나** SmartRecommendation 의 “권장 사항 없음”
+  카피가 보이는 것이 **정상 동작**입니다.
+- 데이터를 안전하게 처리하기 위한 타입 정의 + null-safe 렌더 + 14 + 15 =
+  29 개의 안전성 테스트는 모두 통과합니다.
+- Python emit 은 v3.6.x 패치에서 추가될 예정이며, 그 때는 별도 UI 변경
+  없이 자동으로 패널들이 활성화됩니다.
 
-### ⚠️ 7. AI Artifact Check
+기존 시스템에서 이미 emit 되는 다음 필드는 v3.5 / v3.6 모두에서 정상
+동작합니다 (Phase-D 와 별개):
+- `aiDetection` (legacy harshHighmid / boomyLow / brickwall — Python
+  analyzer 가 emit, QC 페이지가 사용)
+- `segmentAnalysis` / `suspectSegments` (per-window RMS 분석)
+- `vocalProtection` (engine guard 리포트, mood/clarity 가 아님)
+- `referenceMatch` / `referenceProfile` (Ozone-style reference matching)
 
-- `AIArtifactCheck { phaseAnomaly?, metallicHighFreq?, subRumble?,
-  analyzerVersion? }` (각 finding 은 `AIArtifactFinding`).
-- 새 패널 `AIArtifactWarningPanel` — `present === true` 인 finding 만
-  렌더, 자동 보정은 절대 수행하지 않습니다.
-- 한국어 카피는 모두 보수적 (`가능성`, `감지된 패턴`, `확인 필요`).
+### 📤 7. Exportable Mastering Report
 
-### 🧠 8. Smart Recommendation UI
-
-- 새 패널 `SmartRecommendationPanel` + 순수 헬퍼 `smartRecommendations.ts`.
-- sectionAnalysis / modeSuggestion / aiArtifactCheck / vocalIntelligence
-  / translationCheck 5종을 결합해 최대 5개의 권장 사항을 표시.
-- 우선순위: danger → warn → info.
-- 빈 입력 → "특별히 권장 사항이 없습니다" fallback (false-positive
-  green-tick 은 절대 만들지 않음).
-
-### 📤 9. Exportable Mastering Report (TXT + JSON)
-
-- 새 패널 `ExportReportPanel` + 순수 헬퍼 `masteringReportExport.ts`.
-- 스키마 태그 `phase-e/1`, app name + version 이 payload 에 포함.
-- before/after loudness, true peak, LRA, selected mode, applied
-  corrections, sectionAnalysis, modeSuggestion, aiArtifactCheck,
-  vocalIntelligence, translationCheck, pipelineWarnings 모두 한 번에
-  스냅샷.
-- **누설 방지** — outputPath / previewPath / waveformPath / debugSummary
-  / artifactDir / jobId 등 파일 시스템 경로와 디버그 전용 필드는
-  payload 에서 의도적으로 제외 (smoke test 가 매 빌드마다 검증).
+- 한 번의 클릭으로 TXT 또는 JSON 다운로드.
+- 포함: app name + version / before-after loudness / true peak / LRA /
+  selected mode / applied corrections / Phase-D 필드 (있을 때만) /
+  pipelineWarnings.
+- 누락 필드는 단순히 섹션을 생략 — TXT 가 거짓 정보를 표시하지 않습니다.
 
 ---
 
@@ -131,15 +149,16 @@ cd aimaster-desktop && pnpm install
 # 1. 타입 체크 (4 packages)
 pnpm typecheck
 
-# 2. 데스크톱 빌드 (renderer + main)
+# 2. 데스크톱 빌드 (renderer + main + preload)
 pnpm --filter @aimaster/desktop build
 
 # 3. UI / 분석 안전성 테스트 (60 cases)
 pnpm --filter @aimaster/desktop test
 #   → test:phase-e-ui (14)  + test:phase-e-render (15) + test:loudness (30+)
 
-# 4. 릴리스 산출물 smoke check (이번 RC 신규 추가)
+# 4. 릴리스 산출물 smoke check (production gate 검증 포함)
 pnpm --filter @aimaster/desktop test:release-smoke
+#   PRODUCTION=true 환경에서 LICENSE_HMAC_SECRET 미설정 시 exit 1
 
 # 5. Python audio 엔진 테스트
 cd services/python-audio && pytest -q
@@ -156,22 +175,15 @@ CI 는 `tag push refs/tags/v*` 일 때만 `AUTO_UPDATE_ENABLED=true` 로
 1. **macOS 코드 서명 / Notarization 미적용** — v3.5 와 동일.  Gatekeeper
    첫 실행 차단, electron-updater self-replace 작동 안 함.  v3.6.x
    패치에서 인증서 도입 예정.
-2. **LoudnessMeterPanel (live meter) 페이지 미연결** — 컴포넌트와
-   AudioWorklet 코드는 빌드되지만 어떤 페이지에서도 import 하지 않아
-   사용자 시나리오에서 노출되지 않습니다.  QA 체크리스트의 "live
-   loudness meter" 항목은 이번 RC 에서 N/A.
-3. **Phase-D Python 엔진 emit 아직 부분 구현** — sectionAnalysis /
-   aiArtifactCheck / vocalIntelligence / translationCheck /
-   modeSuggestion 5종은 UI 가 받을 준비는 끝났지만, Python 측 emit 은
-   v3.6.x 패치에서 마무리됩니다.  필드가 비어 있어도 패널은 모두
-   안전하게 비워서 렌더 (Phase-E safety test 가 보장).
-4. **Reference matching UI 진입점 부재** — RPC method 는 v3.4 부터
+2. **Phase-D analyzer Python emit 미구현** — 위 §6 참조.  UI 패널은
+   필드 부재 시 무해하게 폴백.
+3. **Reference matching UI 진입점 부재** — RPC method 는 v3.4 부터
    존재하지만 결과 페이지 외 진입 버튼이 없습니다 (v3.6.x 예정).
-5. **임시 파일 잔존 가능성** — 강제 종료 시 `aimaster_*.wav` 가
+4. **임시 파일 잔존 가능성** — 강제 종료 시 `aimaster_*.wav` 가
    OS temp dir 에 남을 수 있음 (v3.5 와 동일).
-6. **`LICENSE_HMAC_SECRET` 환경변수 미설정 시** — license-core 가
-   `aimaster-local-secret-v1` 기본값으로 폴백.  RC 외 정식 빌드에는
-   배포 인프라에서 강한 시크릿 주입이 필요합니다.
+5. **`LICENSE_HMAC_SECRET` 환경변수 필수** — production 빌드 (`app.is
+   Packaged === true`) 시 시작 시점에 dev fallback 을 거부합니다.
+   배포 인프라가 강한 시크릿을 주입해야 정식 빌드가 시작됩니다.
 
 ---
 
@@ -181,11 +193,14 @@ CI 는 `tag push refs/tags/v*` 일 때만 `AUTO_UPDATE_ENABLED=true` 로
   타입 추가는 모두 옵셔널이므로 호환 깨짐 없음).
 - `MasteringResult` 에 다음 옵셔널 필드가 추가됨:
   `sectionAnalysis`, `aiArtifactCheck`, `vocalIntelligence`,
-  `translationCheck`, `modeSuggestion`.  분석 엔진 출력 일부가
-  null/undefined 여도 UI 는 변하지 않습니다.
+  `translationCheck`, `modeSuggestion`.  분석 엔진이 emit 하지 않으면
+  UI 는 변하지 않습니다.
 - `AIArtifactCheck` 의 `phaseAnomaly` / `metallicHighFreq` /
-  `subRumble` 는 모두 옵셔널 (`AIArtifactFinding | undefined`) 로 변경
-  되었습니다 — 기존에 항상 emit 했던 코드는 그대로 작동합니다.
+  `subRumble` 는 모두 옵셔널 (`AIArtifactFinding | undefined`) 로 변경.
+- `@aimaster/license-core` 가 `assertLicenseSecretReady()` /
+  `isLicenseSecretProductionReady()` / `DEV_FALLBACK_HMAC_SECRET` 를
+  추가 export.  embedder 는 production 시작 시 assert 를 반드시
+  호출해야 합니다.
 
 ---
 
@@ -194,4 +209,3 @@ CI 는 `tag push refs/tags/v*` 일 때만 `AUTO_UPDATE_ENABLED=true` 로
 전체 체크리스트는 `aimaster-desktop/docs/QA_v3.6_RC.md` 를 참고하세요.
 QA 통과 후 production tag (`v3.6.0`) 로 다시 빌드해 정식 릴리스를
 승격합니다.
-

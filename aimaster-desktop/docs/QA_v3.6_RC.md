@@ -15,11 +15,12 @@ Platform / arch / OS version:
 
 Each row has columns:
 - **Severity** — P0 (release-blocker) / P1 (must-fix before next RC) / P2 (track for follow-up)
-- **Status** — `PASS` / `FAIL` / `N/A` / `BLOCKED`
+- **Status** — `PASS` / `FAIL` / `N/A` / `BLOCKED` / `DEFERRED`
 - **Notes** — paste the exact error message or screenshot link if FAIL.
 
-If a row is N/A on the current platform, write the reason (e.g. "macOS
-only").  Do not leave rows blank.
+Rows tagged `DEFERRED` are intentionally not exercised in this RC and do
+not block release.  They are listed so the next RC inherits a complete
+view.
 
 ---
 
@@ -35,6 +36,8 @@ only").  Do not leave rows blank.
 | A6 | P1 (Win) | **Windows clean machine without ffmpeg in PATH** — install on a VM without ffmpeg installed system-wide.  App must use the bundled binary in `bin/`, not error out. |  |  |
 | A7 | P0 (mac) | **macOS Gatekeeper** — first launch shows the unsigned-app warning.  Verify the documented `xattr -dr com.apple.quarantine` workaround works.  Document the user-facing copy. |  |  |
 | A8 | P1 (Linux) | **Linux AppImage** — `chmod +x` then run; appears in app menu (when the user enables FUSE/AppImage integration). |  |  |
+| A9 | P0 | **Production license-secret gate** — install a CI build packaged WITHOUT `LICENSE_HMAC_SECRET`.  App must show a blocking error dialog on first launch and quit (exit 1).  Do NOT ship this build. |  |  |
+| A10 | P0 | **Production license-secret gate (positive case)** — install a CI build packaged WITH a strong `LICENSE_HMAC_SECRET` env baked in.  App launches normally. |  |  |
 
 ## B · License / trial
 
@@ -45,7 +48,7 @@ only").  Do not leave rows blank.
 | B3 | P0 | Activating a valid Pro key: trial counter disappears, WAV save unlocks. |  |  |
 | B4 | P1 | Tampering with `electron-store` license file (manually editing tier) → app rejects the record (HMAC mismatch) and reverts to free. |  |  |
 | B5 | P1 | Deactivating Pro returns the user to free tier; trial count not reset to 0 (cannot bypass quota). |  |  |
-| B6 | P2 | If `LICENSE_HMAC_SECRET` is missing in a production build, `pnpm test:release-smoke` warns *before* packaging (not at runtime). |  |  |
+| B6 | P1 | Cross-machine HMAC binding — copy the license file from machine A to machine B → app rejects on B (machineId mismatch). |  |  |
 
 ## C · File import
 
@@ -76,37 +79,43 @@ processing completes, (b) the result page renders, (c) `LUFS` /
 | D6 | Warm (legacy) | -14 / -1.0 |  |  |  |
 | D7 | Punch (legacy) | -11 / -1.0 |  |  |  |
 
-## E · Result page (Phase-E intelligence UX)
+## E · Result page
 
 | # | Severity | Case | Status | Notes |
 |---|---|---|---|---|
 | E1 | P0 | **Preview MP3 playback** — play / pause / seek work; UI clock matches audio position. |  |  |
 | E2 | P0 | **A/B compare** — toggling between original and master is loudness-matched and click-free. |  |  |
-| E3 | P1 | **Live loudness meter** — N/A for v3.6.0-rc.1 (LoudnessMeterPanel exists but is not wired to a page). | N/A |  |
+| E3 | P1 | **Live loudness meter** — start playing the preview; LoudnessMeterPanel mounts, M / S / I bars update at ~10 Hz, TP bar reads ≤ -1 dBTP for healthy modes; meter freezes when paused, resumes on play. |  |  |
 | E4 | P0 | **Export WAV** — Pro-tier user clicks "마스터 WAV 저장" → save dialog → file written, sample rate / bit depth match the requested settings. |  |  |
-| E5 | P0 | **Export TXT report** — `pnpm test:phase-e-ui` heading set is present in the downloaded file (App, Generated, Schema, Mode, Loudness, Section Analysis, Mode Suggestion, AI Artifact Check, Vocal Intelligence, Translation Check). |  |  |
+| E5 | P0 | **Export TXT report** — downloaded file contains: `=== AI Mastering Report ===`, `App         : @aimaster/desktop v3.6.0-rc.1`, `Schema      : phase-e/1`, and at minimum the `-- Loudness --` section.  Other Phase-D sections appear only if the analyzer emitted those fields. |  |  |
 | E6 | P0 | **Export JSON report** — opens in any JSON viewer; `schemaVersion === "phase-e/1"`; `app.version === "3.6.0-rc.1"`. |  |  |
 | E7 | P1 | TXT / JSON do **not** contain absolute file paths (`outputPath`, `previewPath`, waveform paths) or debug-only fields (`debugSummary`, `jobId`, `artifactDir`). |  |  |
-| E8 | P0 | Result page renders even when Phase-D analyzer fields are entirely absent (run with the Python engine that does not yet emit them — only the Smart Recommendation panel + Export panel are visible, fallback Korean copy is shown). |  |  |
+| E8 | P0 | Result page renders even when Phase-D analyzer fields are entirely absent (current Python pipeline state) — only the Smart Recommendation panel (with "특별히 권장 사항이 없습니다" fallback) + Export panel are visible; SectionAnalysisPanel and AIArtifactWarningPanel emit no DOM. |  |  |
 
-## F · Phase-D analyzer presence (when emitted)
+## F · Phase-D analyzer (DEFERRED — Python emit not yet shipped in this RC)
+
+These cases **stay DEFERRED for v3.6.0-rc.1** because the Python pipeline
+does not yet emit the corresponding fields.  They will become P0/P1 in
+the v3.6.x patch that wires the analyzer.  Do not fail the RC because of
+them; verify only that the UI does not crash when the fields are absent
+(see E8).
 
 | # | Severity | Case | Status | Notes |
 |---|---|---|---|---|
-| F1 | P1 | When `sectionAnalysis` is emitted, the timeline renders with high/mid/low energy colours; tooltip shows section start/end. |  |  |
-| F2 | P1 | When `aiArtifactCheck` has `present === true` findings, AIArtifactWarningPanel renders only those findings — never an "all clear" badge. |  |  |
-| F3 | P1 | When `modeSuggestion.suggestedMode === currentMode`, no mode hint banner is shown. |  |  |
-| F4 | P2 | When `vocalIntelligence.clarityScore <= 0.5`, SmartRecommendationPanel surfaces the "보컬 명료도가 낮은 패턴" rec. |  |  |
-| F5 | P2 | When `translationCheck.phone <= 0.5`, the "전화기 스피커" rec is shown (warn severity). |  |  |
+| F1 | DEFERRED | When `sectionAnalysis` is emitted, the timeline renders with high/mid/low energy colours; tooltip shows section start/end. | DEFERRED |  |
+| F2 | DEFERRED | When `aiArtifactCheck` has `present === true` findings, AIArtifactWarningPanel renders only those findings — never an "all clear" badge. | DEFERRED |  |
+| F3 | DEFERRED | When `modeSuggestion.suggestedMode === currentMode`, no mode hint banner is shown. | DEFERRED |  |
+| F4 | DEFERRED | When `vocalIntelligence.clarityScore <= 0.5`, SmartRecommendationPanel surfaces the "보컬 명료도가 낮은 패턴" rec. | DEFERRED |  |
+| F5 | DEFERRED | When `translationCheck.phone <= 0.5`, the "전화기 스피커" rec is shown (warn severity). | DEFERRED |  |
 
 ## G · Edge cases
 
 | # | Severity | Case | Status | Notes |
 |---|---|---|---|---|
 | G1 | P0 | **Large file 10 min+** — 10 minute WAV master completes; UI shows progress; no OOM on 16 GB RAM. |  |  |
-| G2 | P1 | **AI-generated track with artifact warning** — supply a Suno/Udio export with metallic 4–7 kHz; AIArtifactWarningPanel surfaces the metallic finding. |  |  |
-| G3 | P1 | **Vocal-heavy KPOP track** — vocal protection report shows `vocalLossSeverity: ok`; smart recs include vocal-aware suggestion. |  |  |
-| G4 | P1 | **Instrumental / lofi track** — vocal enhancer bypasses (no false-positive vocal recs); smart recs are coherent. |  |  |
+| G2 | P1 | **Vocal-heavy KPOP track** — vocal protection report shows `vocalLossSeverity: ok`; result page renders without errors. |  |  |
+| G3 | P1 | **Instrumental / lofi track** — vocal enhancer bypasses (no false-positive vocal recs from the legacy `vocalProtection` system); result page renders cleanly. |  |  |
+| G4 | P2 | **AI-generated track (legacy `aiDetection`)** — supply a Suno/Udio export.  QC page surfaces the existing `harshHighmid` / `boomyLow` / `brickwall` flags (these are the v3.5 detectors that ARE wired; Phase-D `aiArtifactCheck` is deferred). |  |  |
 | G5 | P2 | Cancelling mid-mastering returns to home cleanly; no orphan worker process. |  |  |
 | G6 | P2 | After mastering, OS temp dir is reasonably clean (no >100 MB residue from a single run). |  |  |
 
@@ -115,14 +124,17 @@ processing completes, (b) the result page renders, (c) `LUFS` /
 | # | Severity | Case | Status | Notes |
 |---|---|---|---|---|
 | H1 | P0 | `pnpm typecheck` is clean across all 4 workspaces. |  |  |
-| H2 | P0 | `pnpm --filter @aimaster/desktop build` produces `dist/renderer/index.html`, `dist-electron/main/index.js`, `dist-electron/preload/index.js`. |  |  |
+| H2 | P0 | `pnpm --filter @aimaster/desktop build` produces `dist/renderer/index.html`, `dist-electron/main/index.js`, `dist-electron/preload/index.js`, AND a `loudnessProcessor.worklet-*.js` asset under `dist/renderer/assets/`. |  |  |
 | H3 | P0 | `pnpm --filter @aimaster/desktop test` runs phase-e-ui (14) + phase-e-render (15) + loudness selftest (30+) with 0 failures. |  |  |
-| H4 | P0 | `pnpm --filter @aimaster/desktop test:release-smoke` exits 0 (or only emits documented production warnings). |  |  |
-| H5 | P0 | `pytest -q` in `services/python-audio` is green (`79 passed, 41 skipped` baseline). |  |  |
-| H6 | P1 | `node scripts/prebuild.cjs` copies `ffmpeg` and `ffprobe` into `apps/desktop/public/bin/` (size > 0, executable bit set on POSIX). |  |  |
-| H7 | P1 | `electron-builder.yml` win target list contains **only** `nsis`, no legacy `portable` target. |  |  |
-| H8 | P0 | All `package.json` files report version `3.6.0-rc.1` (or `0.2.0` for `@aimaster/shared-types`). |  |  |
-| H9 | P1 | CI workflow `build.yml` — `body_path` references `RELEASE_DRAFT_v3.6.0.md`, `prerelease: true`. |  |  |
+| H4 | P0 | `pnpm --filter @aimaster/desktop test:release-smoke` exits 0 (or only emits the documented `LICENSE_HMAC_SECRET` advisory warn). |  |  |
+| H5 | P0 | `PRODUCTION=true pnpm test:release-smoke` (no secret) exits **1** with the documented refusal — proves the production gate is wired. |  |  |
+| H6 | P0 | `PRODUCTION=true LICENSE_HMAC_SECRET=<32-char>` smoke exits 0 — proves the gate accepts a real secret. |  |  |
+| H7 | P0 | `pytest -q` in `services/python-audio` is green (`79 passed, 41 skipped` baseline). |  |  |
+| H8 | P1 | `node scripts/prebuild.cjs` copies `ffmpeg` and `ffprobe` into `apps/desktop/public/bin/` (size > 0, executable bit set on POSIX). |  |  |
+| H9 | P1 | `electron-builder.yml` win target list contains **only** `nsis`, no legacy `portable` target. |  |  |
+| H10 | P0 | All `package.json` files report version `3.6.0-rc.1` (or `0.2.0` for `@aimaster/shared-types`). |  |  |
+| H11 | P1 | CI workflow `build.yml` — `body_path` references `RELEASE_DRAFT_v3.6.0.md`, `prerelease: true`. |  |  |
+| H12 | P0 | The `loudnessProcessor.worklet.js` source file is **plain JavaScript** (no `declare`, no `: type` annotations).  No `.ts` worklet variant exists alongside it.  Smoke fails fast otherwise. |  |  |
 
 ---
 

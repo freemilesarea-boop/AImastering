@@ -33,12 +33,13 @@ export class LoudnessStream {
 
   constructor(private workletUrl?: string) {}
 
-  // Resolve the worklet URL.  Vite + bundlers route this through:
-  //   new URL('./loudnessProcessor.worklet.ts', import.meta.url).
+  // Resolve the worklet URL.  We point at the **plain-JS** worklet file —
+  // Vite passes static assets referenced via `new URL` through verbatim
+  // (no TS transform), so the worklet itself must be valid JavaScript.
   // Callers can override via the constructor.
   private resolveWorkletUrl(): string {
     if (this.workletUrl) return this.workletUrl;
-    return new URL('./loudnessProcessor.worklet.ts', import.meta.url).toString();
+    return new URL('./loudnessProcessor.worklet.js', import.meta.url).toString();
   }
 
   private async ensureContext(): Promise<AudioContext> {
