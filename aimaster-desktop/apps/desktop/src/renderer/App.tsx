@@ -8,14 +8,13 @@ import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
-import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
 
 // ── Toast notification ────────────────────────────────────────────────────────
 
 function Toast() {
-  const notif = useAppStoreNotification((s) => s.notification);
+  const notif = useAppStore((s) => s.notification);
   if (!notif) return null;
 
   const colors: Record<string, string> = {

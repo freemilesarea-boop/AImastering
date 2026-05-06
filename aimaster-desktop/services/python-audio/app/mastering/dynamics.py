@@ -108,6 +108,8 @@ def build_dynamics_filter(
     input_peak_db: float = 0.0,
     *,
     protection_log: list[dict] | None = None,
+    compressor_ratio_scale: float | None = None,
+    compressor_attack_scale: float | None = None,
 ) -> str:
     """
     Return comma-separated FFmpeg filter string (Stage 4).
@@ -116,6 +118,13 @@ def build_dynamics_filter(
     are applied unconditionally.  When `protection_log` is provided, every
     clamp the engine had to make is appended so the pipeline can surface
     "보컬 보호 모드 적용됨" to the user.
+
+    H-38 fix (audit 2026-05): the safe-mode `compressor_ratio_scale` and
+    `compressor_attack_scale` parameters were previously stuffed into the
+    `safe_mode_overrides` dict and recorded by the recorder, but never
+    actually consumed here — so safe modes silently did NOTHING to the
+    compressor.  They are now applied to `ratio` / `attack` BEFORE the
+    vocal-protection clamps so the clamps still cap the result.
     """
     parts: list[str] = []
 
@@ -127,7 +136,14 @@ def build_dynamics_filter(
             parts.append(f"volume={reduction_db:.2f}dB")
             log("INFO", f"Pre-gain: {reduction_db:.2f} dB (input peak={input_peak_db:.2f} dBFS)")
 
-    c = _STYLE_COMP.get(style, _STYLE_COMP["balanced"])
+    c = dict(_STYLE_COMP.get(style, _STYLE_COMP["balanced"]))
+    # H-38: apply safe-mode scales BEFORE the vocal-protection clamp so the
+    # clamp still caps the final values.
+    if compressor_ratio_scale is not None and compressor_ratio_scale > 0:
+        c["ratio"] = float(c["ratio"]) * float(compressor_ratio_scale)
+    if compressor_attack_scale is not None and compressor_attack_scale > 0:
+        c["attack"] = float(c["attack"]) * float(compressor_attack_scale)
+
     # Vocal-protection clamp: ratio ≤ 2.0, attack ≥ 25 ms, makeup ≤ 0.7 dB
     c_protected, applied_clamps = clamp_compressor_params(c)
     if protection_log is not None:

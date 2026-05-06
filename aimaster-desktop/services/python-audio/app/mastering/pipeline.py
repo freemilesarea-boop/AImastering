@@ -55,7 +55,7 @@ from app.utils.vocal_protection import (
     clamp_limiter_input_gain_db,
     classify_vocal_loss,
 )
-from app.mastering.eq import build_eq_filter, build_eq_filter_with_report
+from app.mastering.eq import build_eq_filter_with_report
 from app.mastering.dynamics import build_dynamics_filter, describe_dynamics, get_comp_params, estimate_comp_gr
 from app.mastering.dynamic_eq import build_dynamic_eq_chain
 from app.mastering.effects import (
@@ -87,10 +87,17 @@ _TP_GUARD_DB      = 0.0     # dBTP: max acceptable overshoot before warning
 # loudness matching is done by the explicit volume= node BEFORE this stage.
 # Values were previously {0.5, 2.0, 4.0} which combined with entry_gain (up to
 # +24 dB) caused brickwalling on vocals.  See "급긴급 엔진 구조 개선" (v3.3).
+#
+# H-39 fix (audit 2026-05): the previous {0.0, 0.5, 1.5} table sat the "high"
+# value (1.5) ABOVE the always-on vocal_protection clamp of 0.5 dB.  Result:
+# `clamp_limiter_input_gain_db` silently dropped "high" to 0.5 — making it
+# indistinguishable from "medium" for the input-gain dimension.  All three
+# values now respect the clamp so the user-facing differentiation (timing
+# constants of attack/release) is honest end-to-end.
 LIMITER_STRENGTHS: dict[str, dict[str, float]] = {
-    "low":    {"input_gain_db": 0.0, "attack_ms": 8.0, "release_ms": 200.0},
-    "medium": {"input_gain_db": 0.5, "attack_ms": 5.0, "release_ms": 120.0},
-    "high":   {"input_gain_db": 1.5, "attack_ms": 3.0, "release_ms":  60.0},
+    "low":    {"input_gain_db": 0.0,  "attack_ms": 8.0, "release_ms": 200.0},
+    "medium": {"input_gain_db": 0.25, "attack_ms": 5.0, "release_ms": 120.0},
+    "high":   {"input_gain_db": 0.5,  "attack_ms": 3.0, "release_ms":  60.0},
 }
 
 # 절대값이 작은 (= 큰 라우드니스) 타깃은 loudnorm linear 모드로 도달 불가 → dynamic 사용
@@ -329,6 +336,34 @@ def _apply_final_tonal_guard(
     if not chain or not applied:
         return pre_report
 
+    # H-37 fix (audit 2026-05): activate tonal_budget.check_budget for the
+    # final-guard stage.  Each "applied" move targets a specific filter that
+    # primarily affects one band (warmth_bell→low, low_trim→low,
+    # high_shelf_trim/lift→high).  We compare the EQ gain against the
+    # TG_FINAL_GUARD per-band budget and emit a TONAL_BUDGET_EXCEEDED warning
+    # if exceeded.  This is non-clamping (the move still applies) so the
+    # downstream re-measurement / gain_staging report can still capture the
+    # actual band change — but the user is told the budget was exceeded.
+    from app.mastering.tonal_budget import check_budget as _check_budget
+    _GUARD_FILTER_TO_BAND = {
+        "final_guard.warmth_bell":      "low",
+        "final_guard.low_trim":         "low",
+        "final_guard.high_shelf_trim":  "high",
+        "final_guard.high_shelf_lift":  "high",
+    }
+    for _move in applied:
+        _band = _GUARD_FILTER_TO_BAND.get(str(_move.get("where", "")))
+        if _band is None:
+            continue
+        _violation = _check_budget("TG_FINAL_GUARD", _band, float(_move.get("gainDb", 0.0)))
+        if _violation:
+            log("WARN", f"[final-guard] {_violation}")
+            pipeline_warnings.append({
+                "code": "TONAL_BUDGET_EXCEEDED",
+                "level": "warning",
+                "userMessage": _violation,
+            })
+
     log("INFO", f"[final-guard] applying tonal correction: {chain}")
     recorder.event("INFO", "final tonal guard triggered",
                    lowEnergyRatio=pre_report.get("lowEnergyRatio"),
@@ -475,9 +510,13 @@ def _build_filter_chain(
             f"{'동적' if engine == 'adynamicequalizer' else '정적 fallback'})"
         )
 
-    # Stage 4 — Bus compression (vocal-protected)
+    # Stage 4 — Bus compression (vocal-protected, safe-mode aware)
     dyn_chain = build_dynamics_filter(
-        style, input_peak_db, protection_log=protection_log,
+        style, input_peak_db,
+        protection_log=protection_log,
+        # H-38 fix: forward safe-mode scales into the actual compressor build
+        compressor_ratio_scale  = so.get("compressor_ratio_scale"),
+        compressor_attack_scale = so.get("compressor_attack_scale"),
     )
     applied.append(describe_dynamics(style))
 
@@ -523,7 +562,6 @@ def run_pipeline(
     bit_depth: int = 24,
     apply_ai_corrections: bool = True,
     ai_detections: dict[str, bool] | None = None,
-    trim_silence: bool = False,
     limiter_strength: str = "medium",
     saturation_amount: float | None = None,
     stereo_width: float | None = None,
@@ -1474,7 +1512,7 @@ def run_pipeline(
             f"highLowTiltDb={gain_staging_report.get('highLowTiltDb')} "
             f"verdict={gain_staging_report.get('verdict')}")
 
-        # v3.4.7 — final tonal-balance guard.  Apply ONE corrective EQ pass
+        # ── v3.4.7 — final tonal-balance guard.  Apply ONE corrective EQ pass
         # if the post-master spectrum is outside the acceptable envelope.
         # Returns the same gain_staging_report (re-measured if applied).
         if gain_staging_report and style == "kpop_loud":
@@ -1494,6 +1532,56 @@ def run_pipeline(
                 )
             except Exception as exc:
                 log("WARN", f"[pipeline] final tonal guard failed: {exc}")
+
+            # ── C-09 fix (audit 2026-05): the guard mutates output_path AFTER
+            # preview MP3, after-PNG, compare-PNG, output_metrics, and
+            # metric_comparison were already generated from the pre-guard WAV.
+            # If the guard actually fired (recorded by `finalTonalCorrectionDb`
+            # in pipeline_stages), re-measure post stats and regenerate the
+            # downstream artifacts so reported metrics match the WAV on disk.
+            if "finalTonalCorrectionDb" in gain_stages:
+                try:
+                    log("INFO", "[pipeline] re-measuring after final tonal guard")
+                    post_stats_new = measure_output(output_path, target_lufs, target_tp)
+                    post_lufs = post_stats_new["integratedLufs"]
+                    post_tp   = post_stats_new["truePeakDbtp"]
+                    post_lra  = post_stats_new["lra"]
+                    post_stats = post_stats_new
+                    # Rebuild output_metrics + metric_comparison
+                    after_loudness_new = {
+                        "integratedLufs": post_lufs,
+                        "truePeakDbtp":   post_tp,
+                        "lra":            post_lra,
+                    }
+                    output_metrics = compute_metrics(output_path, after_loudness_new)
+                    metric_comparison = build_metric_comparison(
+                        input_metrics, output_metrics, target_true_peak=target_tp,
+                    )
+                    # Re-export preview MP3 from corrected WAV
+                    if preview_path:
+                        try:
+                            export_preview_mp3(output_path, preview_path)
+                        except FFmpegError as exc:
+                            log("WARN", f"[pipeline] preview re-export after guard failed: {exc}")
+                    # Re-render after / compare PNGs
+                    if generate_waveforms:
+                        if after_wave_path:
+                            try:
+                                generate_waveform_png(output_path, after_wave_path)
+                            except WaveformImageError as exc:
+                                log("WARN", f"[pipeline] after-PNG re-render failed: {exc}")
+                        if before_wave_path and after_wave_path and compare_wave_path:
+                            try:
+                                generate_waveform_dual_png(input_path, output_path, compare_wave_path)
+                            except WaveformImageError as exc:
+                                log("WARN", f"[pipeline] compare-PNG re-render failed: {exc}")
+                    # Re-measure post_waveform too (used in spectralAfter etc.)
+                    try:
+                        post_waveform = analyze_waveform(output_path)
+                    except Exception as exc:
+                        log("WARN", f"[pipeline] post_waveform re-measure failed: {exc}")
+                except Exception as exc:
+                    log("WARN", f"[pipeline] post-guard re-measurement failed: {exc}")
 
         # Promote vocal/background issues to pipeline_warnings.  Each issue
         # gets the most specific warning code so the UI can show targeted

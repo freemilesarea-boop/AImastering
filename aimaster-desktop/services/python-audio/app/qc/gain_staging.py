@@ -59,8 +59,8 @@ _LRA_DROP_DANG      = 0.70
 # v3.4.6 — telephone-sound detection thresholds.
 # A "telephone" master keeps vocals + presence but loses sub/bass and over-
 # brightens the top, leaving a thin, narrow-band spectrum.
-_LOW_LOSS_WARN_FRAC   = 0.25
-_LOW_LOSS_DANG_FRAC   = 0.40
+# (Removed _LOW_LOSS_*_FRAC dead constants in 2026-05; the actual gating
+# uses the _LOW_RATIO_* thresholds defined below.)
 _TILT_WARN_DB         = 4.0
 _TILT_DANG_DB         = 7.0
 

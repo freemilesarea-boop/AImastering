@@ -51,29 +51,6 @@ export class Biquad {
   }
 }
 
-// Build a peaking-EQ (high-shelf at f0 with given gain) using RBJ cookbook.
-// Used as Stage-1 of K-weighting.  We DO NOT use this — K-weighting uses
-// pre-defined coefficients computed via libebur128's pre-warped bilinear
-// transform — but kept here in case a future feature needs it.
-export function rbjHighShelf(
-  fs: number, f0: number, q: number, gainDb: number,
-): BiquadCoefficients {
-  const A = Math.pow(10, gainDb / 40);
-  const w0 = 2 * Math.PI * f0 / fs;
-  const cosw0 = Math.cos(w0);
-  const sinw0 = Math.sin(w0);
-  const alpha = sinw0 / (2 * q);
-  const sqrtA = Math.sqrt(A);
-
-  const b0 =     A * ((A + 1) + (A - 1) * cosw0 + 2 * sqrtA * alpha);
-  const b1 = -2 * A * ((A - 1) + (A + 1) * cosw0);
-  const b2 =     A * ((A + 1) + (A - 1) * cosw0 - 2 * sqrtA * alpha);
-  const a0 =          (A + 1) - (A - 1) * cosw0 + 2 * sqrtA * alpha;
-  const a1 =     2 * ((A - 1) - (A + 1) * cosw0);
-  const a2 =          (A + 1) - (A - 1) * cosw0 - 2 * sqrtA * alpha;
-  return { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 };
-}
-
 // Peaking EQ (RBJ cookbook).  +gainDb at f0, ±gainDb shape outside the band.
 export function rbjPeakingEq(
   fs: number, f0: number, q: number, gainDb: number,

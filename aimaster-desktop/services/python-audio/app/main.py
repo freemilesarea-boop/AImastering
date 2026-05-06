@@ -33,21 +33,11 @@ def _get_stdin_binary() -> io.RawIOBase:
     # PyInstaller fallback: stdin is already binary
     return sys.stdin  # type: ignore[return-value]
 
-def _get_stdout_binary() -> io.RawIOBase:
-    """Return a binary-mode stdout writer."""
-    if hasattr(sys.stdout, 'buffer'):
-        return sys.stdout.buffer  # type: ignore[return-value]
-    return sys.stdout  # type: ignore[return-value]
-
-def _get_stderr_binary() -> io.RawIOBase:
-    """Return a binary-mode stderr writer."""
-    if hasattr(sys.stderr, 'buffer'):
-        return sys.stderr.buffer  # type: ignore[return-value]
-    return sys.stderr  # type: ignore[return-value]
-
+# Stdin only — stdout/stderr go through `print()` with explicit flush;
+# the previous _get_stdout_binary / _get_stderr_binary helpers were
+# defined but never read after assignment, so they were removed in the
+# 2026-05 stabilization pass.
 _stdin_bin  = _get_stdin_binary()
-_stdout_bin = _get_stdout_binary()
-_stderr_bin = _get_stderr_binary()
 
 from app.analyzers.analyzer import analyze_file
 from app.mastering.mastering import master_file, master_with_reference

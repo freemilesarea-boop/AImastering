@@ -348,42 +348,6 @@ def build_kpop_loud_corrective_eq(
     return ",".join(filters), moves, gains
 
 
-def build_kpop_loud_overlay(
-    low_to_mid_db: float,
-    high_to_mid_db: float,
-) -> StyleOverlay:
-    """LEGACY (pre-Phase 2) — kept for backward compatibility.
-
-    The new T1 corrective EQ replaces this for kpop_loud.  Other code paths
-    that still call build_kpop_loud_overlay (tests, fallback) continue to
-    work.
-    """
-    warmth = _kpop_loud_warmth_db(low_to_mid_db)
-    sheen  = _kpop_loud_sheen_db(high_to_mid_db)
-
-    filters: list[str] = []
-    moves:   list[EqMove] = []
-
-    if abs(warmth) >= 0.05:
-        filters.append(f"equalizer=f=90:t=q:w=0.7:g={warmth:+.2f}")
-        moves.append(EqMove(f"Low warmth (kpop, adaptive)", 90, warmth, "bell", adaptive=True))
-
-    # 2.5 kHz vocal presence — modest scale based on input darkness
-    presence = 1.2 if high_to_mid_db < -20.0 else 1.0
-    filters.append(f"equalizer=f=2500:t=o:w=1.1:g={presence:+.2f}")
-    moves.append(EqMove("Vocal presence (kpop, adaptive)", 2500, presence, "bell", adaptive=True))
-
-    # 5.5 kHz clarity — keep modest
-    clarity = 0.9 if high_to_mid_db < -20.0 else 0.8
-    filters.append(f"equalizer=f=5500:t=o:w=1.0:g={clarity:+.2f}")
-    moves.append(EqMove("Vocal clarity (kpop, adaptive)", 5500, clarity, "bell", adaptive=True))
-
-    if abs(sheen) >= 0.05:
-        filters.append(f"equalizer=f=10000:t=o:w=1.2:g={sheen:+.2f}")
-        moves.append(EqMove("Sheen (kpop, adaptive)", 10000, sheen, "bell", adaptive=True))
-
-    return StyleOverlay(filters=filters, moves=moves)
-
 # ── AI artifact corrections ───────────────────────────────────────────────────
 
 _AI_CORRECTIONS: dict[str, tuple[str, EqMove]] = {
@@ -399,24 +363,8 @@ _AI_CORRECTIONS: dict[str, tuple[str, EqMove]] = {
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
-
-def build_eq_filter(
-    style: str,
-    *,
-    low_to_mid_db: float = -15.0,
-    high_to_mid_db: float = -22.0,
-    ai_detections: dict[str, bool] | None = None,
-    apply_ai_corrections: bool = True,
-) -> str:
-    """Return comma-separated FFmpeg filter string (Stage 3)."""
-    filter_str, _ = build_eq_filter_with_report(
-        style,
-        low_to_mid_db=low_to_mid_db,
-        high_to_mid_db=high_to_mid_db,
-        ai_detections=ai_detections,
-        apply_ai_corrections=apply_ai_corrections,
-    )
-    return filter_str
+# (Legacy `build_eq_filter` thin-wrapper removed in 2026-05 stabilization
+# pass; all callers use `build_eq_filter_with_report` directly.)
 
 
 def build_eq_filter_with_report(

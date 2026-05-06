@@ -62,6 +62,66 @@ def _noop_progress(_a: str, _b: int, _c: str) -> None:
     pass
 
 
+# ── Iterative early-stop output relocation ─────────────────────────────────
+#
+# H-33 fix (audit 2026-05): when an iterative job early-stops on iteration
+# N (accept_threshold or MIN_IMPROVEMENT), only the WAV at `iter_out` was
+# being copied to `output_path`.  The accompanying preview MP3 + waveform
+# PNGs lived inside the temp work_dir and were deleted by the `finally`
+# `shutil.rmtree(work_dir)` — leaving `last_result["previewPath"]`,
+# `["afterWaveformPath"]`, etc., pointing to non-existent files.
+#
+# This helper copies every side-product the run_pipeline produced and
+# patches `last_result` so the returned paths point to files that actually
+# exist alongside `output_path`.
+_SIDE_PRODUCT_KEYS = (
+    "previewPath",
+    "beforeWaveformPath",
+    "afterWaveformPath",
+    "compareWaveformPath",
+)
+
+def _relocate_iter_outputs(iter_out: str, output_path: str,
+                            last_result: dict[str, Any]) -> None:
+    # 1. WAV
+    try:
+        if iter_out != output_path:
+            shutil.copyfile(iter_out, output_path)
+    except OSError as exc:
+        log("ERROR", f"[iterative] WAV copy failed ({iter_out} → {output_path}): {exc}")
+        return
+
+    # 2. Side products — copy each one whose path lives inside iter_out's
+    #    base name to the output_path's base name + same suffix.
+    iter_root   = os.path.splitext(iter_out)[0]
+    output_root = os.path.splitext(output_path)[0]
+
+    for key in _SIDE_PRODUCT_KEYS:
+        src = last_result.get(key)
+        if not src or not isinstance(src, str):
+            continue
+        if not os.path.isfile(src):
+            log("WARN", f"[iterative] side product missing for {key}: {src}")
+            last_result[key] = ""
+            continue
+        # Compute the suffix relative to iter_root, e.g. "_preview.mp3", "_after.png".
+        if src.startswith(iter_root):
+            suffix = src[len(iter_root):]
+            dst = output_root + suffix
+        else:
+            # Fallback: keep the basename only.
+            dst = os.path.join(os.path.dirname(output_path), os.path.basename(src))
+        try:
+            shutil.copyfile(src, dst)
+            last_result[key] = dst
+        except OSError as exc:
+            log("WARN", f"[iterative] side-product copy failed ({src} → {dst}): {exc}")
+            last_result[key] = ""
+
+    # Also patch outputPath in case the caller reads it.
+    last_result["outputPath"] = output_path
+
+
 # ── Refinement strategy ────────────────────────────────────────────────────
 
 # Stop iterating when overall match score crosses this threshold.
@@ -176,7 +236,6 @@ def run_iterative_mastering(
     iterations: list[dict[str, Any]] = []
     last_score: float | None = None
     last_result: dict[str, Any] = {}
-    last_protection_log: list[dict] = []
 
     # Working file for intermediate outputs (only the FINAL one becomes output_path)
     work_dir = tempfile.mkdtemp(prefix="aimaster_iter_")
@@ -241,7 +300,6 @@ def run_iterative_mastering(
                 ),
             })
             last_result = result
-            last_protection_log = iter_protection_log
             log("INFO", f"[iterative] iter {i} score={scores.get('overall'):.1f} "
                         f"(weakest={scores.get('weakestAxis')}, elapsed={elapsed}s)")
 
@@ -249,9 +307,9 @@ def run_iterative_mastering(
             if scores.get("overall", 0) >= accept_threshold:
                 log("INFO", f"[iterative] accepted at iter {i} "
                             f"(score {scores['overall']} ≥ {accept_threshold})")
-                # Make sure final output is at output_path
+                # Make sure final output (WAV + side products) is at output_path
                 if iter_out != output_path:
-                    shutil.copyfile(iter_out, output_path)
+                    _relocate_iter_outputs(iter_out, output_path, last_result)
                 break
             if last_score is not None:
                 improvement = scores.get("overall", 0) - last_score
@@ -259,7 +317,7 @@ def run_iterative_mastering(
                     log("INFO", f"[iterative] stopping — improvement "
                                 f"{improvement:+.1f} < {MIN_IMPROVEMENT}")
                     if iter_out != output_path:
-                        shutil.copyfile(iter_out, output_path)
+                        _relocate_iter_outputs(iter_out, output_path, last_result)
                     break
             last_score = scores.get("overall", 0)
 
