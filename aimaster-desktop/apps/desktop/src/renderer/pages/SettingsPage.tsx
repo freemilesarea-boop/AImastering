@@ -12,6 +12,7 @@ import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { useLicenseStore } from '../stores/licenseStore.js';
+import { MASTERING_MODES } from '@aimaster/shared-types';
 
 // ── Section wrapper ────────────────────────────────────────────────────────────
 
@@ -229,9 +230,10 @@ function OutputDirSection() {
 // ── Audio defaults section ─────────────────────────────────────────────────────
 
 function AudioDefaultsSection() {
-  const options   = useAudioStore((s) => s.options);
-  const setStyle  = useAudioStore((s) => s.setStyle);
-  const notify    = useAppStore((s) => s.notify);
+  const options       = useAudioStore((s) => s.options);
+  const setStyle      = useAudioStore((s) => s.setStyle);
+  const updateOptions = useAudioStore((s) => s.updateOptions);
+  const notify        = useAppStore((s) => s.notify);
 
   // We persist via settings:set so choices survive relaunch
   const save = useCallback(async (key: string, value: unknown) => {
@@ -241,6 +243,9 @@ function AudioDefaultsSection() {
 
   return (
     <Section title="오디오 기본값">
+      {/* H-14 fix (audit 2026-05): use the shared MASTERING_MODES list so
+          users can pick every v3 mode (natural / loud / kpop_loud / …) here,
+          not just the four legacy hardcoded styles. */}
       <Row label="스타일 프리셋">
         <select
           value={options.style}
@@ -252,12 +257,17 @@ function AudioDefaultsSection() {
           className="no-drag bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1
                      text-xs text-zinc-300 focus:outline-none focus:border-zinc-500"
         >
-          {['balanced', 'warm', 'bright', 'punch'].map((s) => (
-            <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>
+          {MASTERING_MODES.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}{m.legacy ? ' (legacy)' : ''}
+            </option>
           ))}
         </select>
       </Row>
 
+      {/* H-13 fix (audit 2026-05): also push the value into the audio store
+          so the Home/Mastering page reflects the new value immediately
+          (was persisting to electron-store only → UI snap-back on next render). */}
       <Row label="샘플레이트">
         <NumSelect
           value={options.sampleRate}
@@ -266,7 +276,10 @@ function AudioDefaultsSection() {
             { v: 48000, label: '48 kHz' },
             { v: 96000, label: '96 kHz' },
           ]}
-          onChange={(v) => void save('defaultSampleRate', v)}
+          onChange={(v) => {
+            updateOptions({ sampleRate: v });
+            void save('defaultSampleRate', v);
+          }}
         />
       </Row>
 
@@ -277,7 +290,10 @@ function AudioDefaultsSection() {
             { v: 16, label: '16-bit' },
             { v: 24, label: '24-bit' },
           ]}
-          onChange={(v) => void save('defaultBitDepth', v)}
+          onChange={(v) => {
+            updateOptions({ bitDepth: v as 16 | 24 });
+            void save('defaultBitDepth', v);
+          }}
         />
       </Row>
     </Section>

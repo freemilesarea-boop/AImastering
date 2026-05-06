@@ -22,17 +22,27 @@ import type {
   DynamicEqReport,
 } from '@aimaster/shared-types';
 import { LIMITER_STRENGTH_LABELS } from '@aimaster/shared-types';
+// v3.5 stabilization wiring — show the human-readable mastering report
+// (gain-staging / vocal / transient / limiter / TP-guard actions taken).
+import { MasteringReportPanel } from '../components/MasteringReportPanel.js';
+import {
+  generateMasteringReport,
+  type AdhocEqAdjustment,
+} from '../audio/report.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number, d = 1) { return n.toFixed(d); }
 
-/** Convert a filesystem path to aimaster-local:// URL (bypasses Chromium file:// block). */
+/** Convert a filesystem path to aimaster-local:// URL (bypasses Chromium file:// block).
+ *  H-16 fix (audit 2026-05): segment-by-segment encodeURIComponent so `#` / `?` / `&`
+ *  in filenames are escaped (encodeURI alone doesn't escape them → fragment parse 404). */
 function toFileUrl(p: string): string {
   if (!p) return '';
   const normalized = p.replace(/\\/g, '/');
   const withSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
-  return `aimaster-local://${encodeURI(withSlash)}`;
+  const encoded = withSlash.split('/').map(encodeURIComponent).join('/');
+  return `aimaster-local://${encoded}`;
 }
 
 // ── Arrow delta ───────────────────────────────────────────────────────────────
@@ -782,6 +792,25 @@ export default function ResultPage() {
           {masteringResult?.analysisReport?.mastering && (
             <MasteringMetaCard meta={masteringResult.analysisReport.mastering} />
           )}
+
+          {/* v3.5 — bullet summary of what the chain actually did.  Pure
+              projection from the Python pipeline result; no extra DSP.
+              Each appliedCorrections string is fed verbatim to the report
+              as an "adhoc EQ" description.  The loudness "Adjusted to X
+              LUFS" bullet is synthesized from the measured loudnessAfter. */}
+          {masteringResult && masteringResult.loudnessAfter && (
+            <MasteringReportPanel
+              report={generateMasteringReport({
+                customNotes: [
+                  `Adjusted loudness to ${masteringResult.loudnessAfter.integratedLufs.toFixed(1)} LUFS`,
+                  `True peak ${masteringResult.loudnessAfter.truePeakDbtp.toFixed(1)} dBTP`,
+                ],
+                adhocEq: (masteringResult.appliedCorrections ?? [])
+                  .map<AdhocEqAdjustment>((s) => ({ description: s })),
+              })}
+            />
+          )}
+
           <BeforeAfterCard />
 
           {/* v3.2 P2 — 시각적 비교 (전후 파형) */}

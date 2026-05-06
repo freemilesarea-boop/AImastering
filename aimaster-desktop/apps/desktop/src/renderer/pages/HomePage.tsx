@@ -44,11 +44,18 @@ const ACCEPT = {
 
 // Use aimaster-local:// custom protocol so Chromium doesn't block file:// from
 // the http://localhost:5173 dev origin (and avoids CSP issues in prod too).
+//
+// H-16 fix (audit 2026-05): encodeURI() does NOT escape `#`, `?`, `&`, or `+`,
+// so a filename like "song#1.mp3" became "aimaster-local:///path/song#1.mp3"
+// where `#1.mp3` parsed as a fragment → 404.  Encode each path segment
+// individually with encodeURIComponent (which escapes those characters)
+// then re-join with literal `/`.
 function toFileUrl(p: string): string {
   if (!p) return '';
   const normalized = p.replace(/\\/g, '/');
   const withSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
-  return `aimaster-local://${encodeURI(withSlash)}`;
+  const encoded = withSlash.split('/').map(encodeURIComponent).join('/');
+  return `aimaster-local://${encoded}`;
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
