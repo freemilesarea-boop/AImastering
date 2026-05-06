@@ -33,6 +33,7 @@ from app.utils.ffmpeg_wrapper import (
     loudnorm_pass2,
     apply_limiter,
     apply_filter_chain,
+    apply_filter_complex,
     measure_output,
     export_preview_mp3,
     parse_audio_stream,
@@ -66,10 +67,15 @@ from app.mastering.effects import (
     get_mode_defaults as get_effects_defaults,
 )
 from app.mastering.safe_modes import recommend_modes
+from app.mastering.stereo_enhance import (
+    build_stereo_enhance_chain, DEFAULT_CROSSOVER_HZ as _STEREO_XO_DEFAULT,
+)
 from app.analysis.metrics import compute_metrics, build_metric_comparison
 from app.analysis.segment_analysis import compute_segment_timeseries
 from app.qc.quality_check import run_quality_check
 from app.qc.limiter_check import run_limiter_check
+from app.qc.translation_check import run_translation_check
+from app.qc.vocal_intelligence import run_vocal_intelligence
 from app.qc.gain_staging import build_gain_staging_report
 from app.utils.logger import log
 
@@ -565,6 +571,11 @@ def run_pipeline(
     limiter_strength: str = "medium",
     saturation_amount: float | None = None,
     stereo_width: float | None = None,
+    # Phase-C (audit 2026-05) — mono-safe stereo widening overrides.
+    # When None, the per-mode default from effects._MODE_DEFAULTS is used.
+    # When provided (RPC / CLI), overrides the mode default.
+    stereo_enhance_amount: float | None = None,
+    stereo_enhance_crossover_hz: float | None = None,
     output_gain_db: float = 0.0,
     # v3.2 P3 — Dynamic EQ 강도 (0.0 ~ 2.0).  0 = 비활성, 1.0 = 모드 기본.
     dynamic_eq_intensity: float = 1.0,
@@ -1294,6 +1305,67 @@ def run_pipeline(
     except Exception as exc:
         log("WARN", f"[pipeline] ISP safety skipped: {exc}")
 
+    # ── Phase-C — Mono-safe stereo enhancement ────────────────────────────
+    # Final stereo-image pass.  Replaces the legacy `extrastereo` (which
+    # is now permanently neutralized in effects._MODE_DEFAULTS — every
+    # mode's stereo_width = 1.0).  Uses M/S decode + side-band HPF so
+    # the LOW band stays in pure mono (translates cleanly to phone /
+    # BT mono / car sub).  Per-mode default amount, overridable via
+    # the kwargs above.
+    _se_mode_def    = get_effects_defaults(style)
+    _se_amount      = (stereo_enhance_amount
+                       if stereo_enhance_amount is not None
+                       else _se_mode_def.get("stereo_enhance_amount", 1.0))
+    _se_crossover   = (stereo_enhance_crossover_hz
+                       if stereo_enhance_crossover_hz is not None
+                       else _STEREO_XO_DEFAULT)
+    if abs(_se_amount - 1.0) >= 0.02:
+        _se_log: list[dict[str, Any]] = []
+        _se_chain = build_stereo_enhance_chain(
+            width=_se_amount,
+            crossover_hz=_se_crossover,
+            applied_log=_se_log,
+        )
+        if _se_chain:
+            try:
+                _se_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+                _se_fd, _se_tmp = tempfile.mkstemp(
+                    suffix="_stereo.wav", prefix="aimaster_", dir=_se_dir,
+                )
+                os.close(_se_fd)
+                try:
+                    apply_filter_complex(
+                        output_path, _se_tmp, _se_chain,
+                        sample_rate=sample_rate, bit_depth=bit_depth,
+                    )
+                    os.replace(_se_tmp, output_path)
+                    gain_stages["stereoEnhanceAmount"] = round(float(_se_amount), 3)
+                    gain_stages["stereoEnhanceCrossoverHz"] = round(float(_se_crossover), 1)
+                    applied_corrections.append(
+                        f"Stereo 확장 (M/S, low {_se_crossover:.0f} Hz 이하 모노 보호, "
+                        f"side level {_se_amount:.2f}×)"
+                    )
+                    log("INFO",
+                        f"[stereo_enhance] applied amount={_se_amount:.3f}, "
+                        f"xo={_se_crossover:.1f} Hz")
+                    # Re-measure post stats — amix can shift levels by < 0.5 LU.
+                    try:
+                        post_stats = measure_output(output_path, target_lufs, target_tp)
+                        post_lufs  = post_stats["integratedLufs"]
+                        post_tp    = post_stats["truePeakDbtp"]
+                        post_lra   = post_stats["lra"]
+                        log("INFO", f"[pipeline] post-stereo-enhance: LUFS={post_lufs:.1f}, "
+                                    f"TP={post_tp:.1f}, LRA={post_lra:.1f}")
+                    except FFmpegError:
+                        pass
+                except Exception as exc:
+                    log("WARN", f"[stereo_enhance] render failed: {exc}")
+                    try:
+                        if os.path.exists(_se_tmp): os.unlink(_se_tmp)
+                    except OSError: pass
+            except Exception as exc:
+                log("WARN", f"[stereo_enhance] tmp setup failed: {exc}")
+
     # ── Quality checks ────────────────────────────────────────────────────
 
     lufs_diff = abs(post_lufs - target_lufs)
@@ -1458,6 +1530,44 @@ def run_pipeline(
             "code": "LIMITER_QC_FAILED", "level": "warning",
             "userMessage": "리미터 과다 검사에 실패했습니다.",
         })
+
+    # ── Phase-C — Translation-aware QC ─────────────────────────────────────
+    # Render the master through phone / car / mono-fold / YT-normalize
+    # simulations and surface warnings if the master fails to translate.
+    # Non-corrective — the user may decide to re-master in a different
+    # mode based on these findings.
+    translation_check_report: dict[str, Any] | None = None
+    try:
+        recorder.stage("translation_check")
+        translation_check_report = run_translation_check(
+            output_path, target_lufs=target_lufs,
+        )
+        for finding in translation_check_report.get("findings", []):
+            if finding.get("verdict") in ("warn", "danger"):
+                pipeline_warnings.append({
+                    "code":  finding.get("code", "TRANSLATION_WARNING"),
+                    "level": "warning" if finding["verdict"] == "warn" else "error",
+                    "userMessage": finding.get("message", ""),
+                })
+    except Exception as exc:
+        log("WARN", f"[pipeline] translation_check 실패: {exc}")
+
+    # ── Phase-C — Vocal-intelligence QC (analysis-only) ────────────────────
+    # Surface "buried vocal" / "harsh vocal" warnings using the same
+    # centrality + spectral-band detection logic as the renderer's
+    # vocalEnhancer.ts.  Skips on instrumental tracks (low centrality).
+    vocal_intel_report: dict[str, Any] | None = None
+    try:
+        recorder.stage("vocal_intelligence")
+        vocal_intel_report = run_vocal_intelligence(output_path)
+        for finding in vocal_intel_report.get("findings", []):
+            pipeline_warnings.append({
+                "code":  finding.get("code", "VOCAL_INTEL_WARNING"),
+                "level": finding.get("level", "warning"),
+                "userMessage": finding.get("userMessage", ""),
+            })
+    except Exception as exc:
+        log("WARN", f"[pipeline] vocal_intelligence 실패: {exc}")
 
     # ── v3.3 P2 — Time-series suspect segment detection ────────────────────
     segment_report: dict[str, Any] = {"windowSec": 0.5, "windows": [], "suspectSegments": [], "summary": None}
@@ -1813,6 +1923,10 @@ def run_pipeline(
 
         # v3.3 — debug-quality system
         "limiterCheck":     limiter_check_report,
+        # Phase-C — translation-aware QC findings
+        "translationCheck": translation_check_report,
+        # Phase-C — vocal intelligence (buried/harsh detection, analysis-only)
+        "vocalIntelligence": vocal_intel_report,
         "suspectSegments":  segment_report.get("suspectSegments", []),
         "segmentAnalysis":  {
             "windowSec":  segment_report.get("windowSec"),

@@ -17,18 +17,22 @@ from __future__ import annotations
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MODE_DEFAULTS: dict[str, dict] = {
-    "natural":   {"saturation": 0.0,  "stereo_width": 1.0,  "deesser": False},
-    "balanced":  {"saturation": 0.20, "stereo_width": 1.05, "deesser": False},
+    # Phase-C (audit 2026-05): `stereo_width` (legacy, mono-unsafe
+    # extrastereo) is now neutralized to 1.0 across all modes.  All
+    # stereo widening flows through `stereo_enhance_amount` which uses
+    # the new M/S decode + low-end mono protection (always-on when > 1.0).
+    "natural":   {"saturation": 0.0,  "stereo_width": 1.0, "deesser": False, "stereo_enhance_amount": 1.0},
+    "balanced":  {"saturation": 0.20, "stereo_width": 1.0, "deesser": False, "stereo_enhance_amount": 1.05},
     # Bright: saturation 과 deesser 를 모두 비활성 → 고역 보존
-    "bright":    {"saturation": 0.0,  "stereo_width": 1.10, "deesser": False},
-    "warm":      {"saturation": 0.15, "stereo_width": 1.0,  "deesser": True},
-    "punch":     {"saturation": 0.30, "stereo_width": 1.05, "deesser": False},
+    "bright":    {"saturation": 0.0,  "stereo_width": 1.0, "deesser": False, "stereo_enhance_amount": 1.10},
+    "warm":      {"saturation": 0.15, "stereo_width": 1.0, "deesser": True,  "stereo_enhance_amount": 1.0},
+    "punch":     {"saturation": 0.30, "stereo_width": 1.0, "deesser": False, "stereo_enhance_amount": 1.05},
     # v3.5 Phase 1 — saturation 단계가 측정상 no-op 이었으므로 (compand
     # transfer curve 가 RMS 에 거의 영향 없음) loud / kpop_loud 의
     # saturation 을 0 으로 두고 그 효과 (warm even-harmonics) 를 compressor
     # knee 확장으로 대체.  chain 한 단계 단축 + 고역 가속 위험 제거.
-    "loud":      {"saturation": 0.0, "stereo_width": 1.10, "deesser": False},
-    "kpop_loud": {"saturation": 0.0, "stereo_width": 1.10, "deesser": False},
+    "loud":      {"saturation": 0.0, "stereo_width": 1.0, "deesser": False, "stereo_enhance_amount": 1.10},
+    "kpop_loud": {"saturation": 0.0, "stereo_width": 1.0, "deesser": False, "stereo_enhance_amount": 1.15},
 }
 
 

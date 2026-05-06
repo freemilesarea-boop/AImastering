@@ -496,3 +496,32 @@ def apply_filter_chain(
         output_path,
     ], kind="filter_chain", filter_str=af_chain)
     return output_path
+
+
+def apply_filter_complex(
+    input_path: str,
+    output_path: str,
+    fc_graph: str,
+    *,
+    sample_rate: int = 44100,
+    bit_depth: int = 24,
+) -> str:
+    """
+    Re-render `input_path` to `output_path` through a `-filter_complex`
+    graph.  Use when the graph needs asplit / amerge / multi-pad routing
+    that the simple `-af` chain syntax can't express (e.g. M/S decode
+    in stereo_enhance.py).
+
+    The graph's final node's output stream is auto-mapped (no `[out]`
+    label needed) — ffmpeg picks the last unlabelled output by default.
+    """
+    codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
+    _run([
+        _FFMPEG_BIN, "-hide_banner", "-y",
+        "-i", input_path,
+        "-filter_complex", fc_graph,
+        "-ar", str(sample_rate),
+        "-acodec", codec,
+        output_path,
+    ], kind="filter_complex", filter_str=fc_graph)
+    return output_path
