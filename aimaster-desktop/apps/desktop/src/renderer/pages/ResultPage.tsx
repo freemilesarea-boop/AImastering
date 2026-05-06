@@ -22,6 +22,10 @@ import type {
   DynamicEqReport,
 } from '@aimaster/shared-types';
 import { LIMITER_STRENGTH_LABELS } from '@aimaster/shared-types';
+import SectionAnalysisPanel from '../components/SectionAnalysisPanel.js';
+import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
+import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
+import ExportReportPanel from '../components/ExportReportPanel.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -752,6 +756,7 @@ export default function ResultPage() {
   const setPage         = useAppStore((s) => s.setPage);
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const reset           = useAudioStore((s) => s.reset);
+  const options         = useAudioStore((s) => s.options);
 
   const handleNewFile = useCallback(() => {
     reset();
@@ -761,6 +766,13 @@ export default function ResultPage() {
   const previewSrc = masteringResult?.previewPath
     ? toFileUrl(masteringResult.previewPath)
     : '';
+
+  // Phase-E: surface a stable mode label for the section analyzer
+  // (which may suggest a different mode than the user chose).
+  const currentMode =
+    masteringResult?.analysisReport?.mastering?.mode
+    ?? options?.style
+    ?? null;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -801,8 +813,38 @@ export default function ResultPage() {
           {masteringResult?.pipelineWarnings?.length ? (
             <WarningsCard warnings={masteringResult.pipelineWarnings} />
           ) : null}
+
+          {/* Phase-E — Smart song-level recommendations (combines all Phase-D signals). */}
+          <SmartRecommendationPanel
+            sectionAnalysis={masteringResult?.sectionAnalysis ?? null}
+            modeSuggestion={
+              masteringResult?.modeSuggestion
+              ?? masteringResult?.sectionAnalysis?.modeSuggestion
+              ?? null
+            }
+            aiArtifactCheck={masteringResult?.aiArtifactCheck   ?? null}
+            vocalIntelligence={masteringResult?.vocalIntelligence ?? null}
+            translationCheck={masteringResult?.translationCheck   ?? null}
+            currentMode={currentMode ?? undefined}
+          />
+
+          {/* Phase-E — Section timeline + DR / alternation / mode hint. */}
+          <SectionAnalysisPanel
+            analysis={masteringResult?.sectionAnalysis ?? null}
+            currentMode={currentMode ?? undefined}
+          />
+
+          {/* Phase-E — AI artifact findings (only renders if any are present). */}
+          <AIArtifactWarningPanel check={masteringResult?.aiArtifactCheck ?? null} />
+
           {previewSrc && <PreviewPlayer src={previewSrc} />}
           <SaveButtons />
+
+          {/* Phase-E — Single-snapshot exportable report (TXT / JSON). */}
+          <ExportReportPanel
+            result={masteringResult ?? null}
+            selectedMode={currentMode ?? undefined}
+          />
 
           {/* v3.2 P2 — 새 자동 품질 검사가 있으면 그걸 사용, 없으면 legacy QCSummary */}
           {masteringResult?.qualityCheck ? (
