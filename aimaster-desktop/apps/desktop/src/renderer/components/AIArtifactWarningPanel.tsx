@@ -50,17 +50,17 @@ const DESCRIPTORS: Record<keyof AIArtifactCheck & string, FindingDescriptor> = {
   phaseAnomaly: {
     key:      'phaseAnomaly',
     title:    '위상 이상 가능성',
-    fallback: '모노로 재생할 때 일부 음원이 작아질 수 있는 패턴이 감지되었습니다.',
+    fallback: '모노로 재생할 때 일부 음원이 작아질 수 있는 감지된 패턴입니다.',
   },
   metallicHighFreq: {
     key:      'metallicHighFreq',
     title:    '금속성 고역 가능성',
-    fallback: '4–7 kHz 부근에서 AI 음원 특유의 금속성 패턴이 감지될 수 있습니다.',
+    fallback: '4–7 kHz 부근에서 AI 음원 특유의 금속성 패턴이 감지되었습니다.',
   },
   subRumble: {
     key:      'subRumble',
     title:    '서브 럼블 가능성',
-    fallback: '약 30 Hz 이하의 저역 럼블이 감지될 수 있습니다.',
+    fallback: '약 30 Hz 이하 저역 럼블의 감지된 패턴이 있습니다.',
   },
   // analyzerVersion is metadata, not a finding — handled separately.
   analyzerVersion: { key: 'analyzerVersion', title: '', fallback: '' },
@@ -105,7 +105,7 @@ export function AIArtifactWarningPanel({ check }: Props) {
 
   const items: Array<{ descriptor: FindingDescriptor; finding: AIArtifactFinding }> = [];
   for (const key of ['phaseAnomaly', 'metallicHighFreq', 'subRumble'] as const) {
-    const f = (check as Record<string, unknown>)[key];
+    const f = check[key];
     if (isFinding(f) && f.present) {
       items.push({ descriptor: DESCRIPTORS[key], finding: f });
     }

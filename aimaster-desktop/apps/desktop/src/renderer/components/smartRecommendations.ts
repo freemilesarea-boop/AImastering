@@ -76,8 +76,8 @@ function fromSection(
       category: 'section',
       severity: 'info',
       text:
-        '벌스/코러스 대비가 강한 곡입니다. ' +
-        'Natural 모드가 감정선을 더 잘 살릴 수 있습니다.',
+        '벌스/코러스 대비가 강한 패턴이 감지되었습니다. ' +
+        'Natural 모드가 감정선을 더 잘 살릴 가능성이 있습니다.',
     });
   } else if (isFiniteNumber(alt) && alt <= 0.2 && (sa.sections?.length ?? 0) > 0) {
     pushSafe(out, {
@@ -85,8 +85,8 @@ function fromSection(
       category: 'section',
       severity: 'info',
       text:
-        '구간 간 대비가 약하게 감지되었습니다. ' +
-        'Loud 또는 KPOP Loud 모드에서 무난할 수 있습니다.',
+        '구간 간 대비가 약한 패턴이 감지되었습니다. ' +
+        'Loud 또는 KPOP Loud 모드가 무난할 가능성이 있습니다.',
     });
   }
 
@@ -97,8 +97,8 @@ function fromSection(
       category: 'section',
       severity: 'info',
       text:
-        `다이내믹 레인지가 약 ${dr.toFixed(1)} LU 로 넓습니다. ` +
-        '강한 리미팅을 사용하면 감정 표현이 줄어들 수 있습니다.',
+        `다이내믹 레인지가 약 ${dr.toFixed(1)} LU 로 넓게 감지되었습니다. ` +
+        '강한 리미팅 시 감정 표현이 줄어들 가능성이 있습니다.',
     });
   }
 }
@@ -112,7 +112,7 @@ function fromMode(
   if (!suggested) return;
   // Only surface when the suggestion differs from the current selection.
   if (currentMode && suggested === currentMode) return;
-  const reason = ms.reason && ms.reason.trim() ? ms.reason.trim() : '곡의 특성과 더 잘 맞을 수 있습니다.';
+  const reason = ms.reason && ms.reason.trim() ? ms.reason.trim() : '곡의 특성과 더 잘 맞을 가능성이 있습니다.';
   pushSafe(out, {
     id:       'mode-suggestion',
     category: 'mode',
@@ -135,30 +135,30 @@ function fromArtifact(
   out: SmartRecommendation[],
   ac: AIArtifactCheck,
 ): void {
-  const phase = (ac as Record<string, unknown>).phaseAnomaly;
+  const phase = ac.phaseAnomaly;
   if (isFinding(phase) && phase.present) {
     pushSafe(out, {
       id:       'artifact-phase',
       category: 'artifact',
       severity: severityFromArtifact(phase.severity),
       text:
-        '좌/우 위상 이상이 감지된 패턴이 있습니다. ' +
-        '모노 재생 시 일부 음원이 작아질 수 있어 확인을 권장합니다.',
+        '좌/우 위상 이상의 감지된 패턴이 있습니다. ' +
+        '모노 재생 시 일부 음원이 작아질 가능성이 있어 확인을 권장합니다.',
     });
   }
 
-  const metallic = (ac as Record<string, unknown>).metallicHighFreq;
+  const metallic = ac.metallicHighFreq;
   if (isFinding(metallic) && metallic.present) {
     pushSafe(out, {
       id:       'artifact-metallic',
       category: 'artifact',
       severity: severityFromArtifact(metallic.severity),
       text:
-        '4–7 kHz 부근에서 금속성 AI 아티팩트 가능성이 감지되었습니다.',
+        '4–7 kHz 부근에서 금속성 AI 아티팩트의 감지된 패턴이 있습니다.',
     });
   }
 
-  const sub = (ac as Record<string, unknown>).subRumble;
+  const sub = ac.subRumble;
   if (isFinding(sub) && sub.present) {
     pushSafe(out, {
       id:       'artifact-subrumble',
@@ -166,7 +166,7 @@ function fromArtifact(
       severity: severityFromArtifact(sub.severity),
       text:
         '약 30 Hz 이하의 저역 럼블이 감지된 패턴이 있습니다. ' +
-        '작은 스피커에서는 들리지 않을 수 있습니다.',
+        '작은 스피커에서는 들리지 않을 가능성이 있습니다.',
     });
   }
 }
@@ -182,8 +182,8 @@ function fromVocal(
         category: 'vocal',
         severity: 'warn',
         text:
-          '보컬 명료도가 낮게 감지되었습니다. Natural 또는 Bright 모드가 ' +
-          '가사 전달에 더 유리할 수 있습니다.',
+          '보컬 명료도가 낮은 패턴이 감지되었습니다. ' +
+          'Natural 또는 Bright 모드가 가사 전달에 더 유리할 가능성이 있습니다.',
       });
     } else if (isFiniteNumber(vi.clarityScore) && vi.clarityScore >= 0.8) {
       pushSafe(out, {
@@ -191,8 +191,8 @@ function fromVocal(
         category: 'vocal',
         severity: 'info',
         text:
-          '보컬이 또렷하게 감지됩니다. 강한 압축은 보컬 자연스러움을 ' +
-          '해칠 수 있어 주의가 필요합니다.',
+          '보컬이 또렷하게 감지되었습니다. ' +
+          '강한 압축 시 보컬 자연스러움이 줄어들 가능성이 있습니다.',
       });
     }
     if (typeof vi.note === 'string' && vi.note.trim()) {
@@ -225,7 +225,7 @@ function fromTranslation(
       category: 'translation',
       severity: 'warn',
       text:
-        '클럽/대형 시스템에서는 저역 부족 가능성이 감지되었습니다.',
+        '클럽/대형 시스템에서 저역이 부족하게 들릴 가능성이 있습니다.',
     });
   }
   if (isFiniteNumber(tc.laptop) && tc.laptop <= 0.5) {

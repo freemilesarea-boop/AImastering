@@ -200,8 +200,13 @@ check('rec: mode suggestion suppressed when same as currentMode', () => {
 // ── 4. Export report includes all new fields ─────────────────────────────────
 
 check('export: full payload contains every Phase-D field', () => {
-  const payload = buildExportPayload(FULL_RESULT, 'loud');
+  const payload = buildExportPayload(FULL_RESULT, 'loud', {
+    appName: '@aimaster/desktop', appVersion: '3.5.0', now: '2024-01-01T00:00:00.000Z',
+  });
   assert(payload.schemaVersion === 'phase-e/1', 'schema version');
+  assert(payload.app.name === '@aimaster/desktop', 'app.name');
+  assert(payload.app.version === '3.5.0', 'app.version');
+  assert(payload.generatedAt === '2024-01-01T00:00:00.000Z', 'generatedAt override');
   assert(payload.selectedMode === 'loud', 'selectedMode');
   assert(payload.sectionAnalysis !== null, 'sectionAnalysis present');
   assert(payload.aiArtifactCheck !== null, 'aiArtifactCheck present');
@@ -216,10 +221,13 @@ check('export: full payload contains every Phase-D field', () => {
 });
 
 check('export: TXT contains the major Phase-D headings', () => {
-  const payload = buildExportPayload(FULL_RESULT, 'loud');
+  const payload = buildExportPayload(FULL_RESULT, 'loud', {
+    appName: '@aimaster/desktop', appVersion: '3.5.0',
+  });
   const txt     = exportAsTxt(payload);
   for (const heading of [
     'AI Mastering Report',
+    'App         : @aimaster/desktop v3.5.0',
     '-- Loudness --',
     '-- Section Analysis --',
     '-- Mode Suggestion --',
@@ -230,6 +238,50 @@ check('export: TXT contains the major Phase-D headings', () => {
   ]) {
     assert(txt.includes(heading), `TXT missing section: ${heading}`);
   }
+});
+
+check('export: TXT does not leak local paths or debug-only fields', () => {
+  // Build a result that DOES have local paths set, and verify they
+  // never appear in the TXT/JSON export.
+  const dirty: Partial<MasteringResult> = {
+    ...FULL_RESULT,
+    outputPath:  '/Users/secret/Music/Out.wav',
+    previewPath: '/Users/secret/Music/Out.mp3',
+    beforeWaveformPath:  '/tmp/internal/before.png',
+    afterWaveformPath:   '/tmp/internal/after.png',
+    compareWaveformPath: '/tmp/internal/compare.png',
+    debugSummary: {
+      jobId: 'should-not-leak', debugMode: true, elapsedSec: 1, ffmpegInvocations: 1,
+      stages: [], warnings: [], errors: [], filterChain: {}, limiterQc: {},
+      suspectSegments: [], recommendations: [], artifactDir: '/internal/dump',
+    },
+  };
+  const payload = buildExportPayload(dirty, 'loud');
+  const txt = exportAsTxt(payload);
+  const json = exportAsJson(payload);
+  for (const leaked of [
+    '/Users/secret/Music/Out.wav',
+    '/Users/secret/Music/Out.mp3',
+    '/tmp/internal/before.png',
+    '/internal/dump',
+    'should-not-leak',
+    'jobId',
+    'debugSummary',
+  ]) {
+    assert(!txt.includes(leaked),  `TXT leaks: ${leaked}`);
+    assert(!json.includes(leaked), `JSON leaks: ${leaked}`);
+  }
+});
+
+check('export: JSON includes app version + schema for support tooling', () => {
+  const payload = buildExportPayload(null, null, {
+    appName: 'aimaster-desktop', appVersion: '9.9.9', now: '2099-01-01T00:00:00.000Z',
+  });
+  const parsed = JSON.parse(exportAsJson(payload));
+  assert(parsed.schemaVersion === 'phase-e/1', 'schemaVersion');
+  assert(parsed.app.name      === 'aimaster-desktop', 'app.name');
+  assert(parsed.app.version   === '9.9.9', 'app.version');
+  assert(parsed.generatedAt   === '2099-01-01T00:00:00.000Z', 'generatedAt');
 });
 
 check('export: JSON parses and round-trips', () => {

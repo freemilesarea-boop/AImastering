@@ -753,11 +753,11 @@ export interface AIArtifactFinding {
 
 export interface AIArtifactCheck {
   /** L/R phase anomaly (collapse on mono playback, mirrored content, …). */
-  phaseAnomaly:        AIArtifactFinding;
+  phaseAnomaly?:       AIArtifactFinding;
   /** Metallic high-frequency artifact (typical 4–7 kHz AI signature). */
-  metallicHighFreq:    AIArtifactFinding;
+  metallicHighFreq?:   AIArtifactFinding;
   /** Sub-bass rumble below ~30 Hz that translates poorly. */
-  subRumble:           AIArtifactFinding;
+  subRumble?:          AIArtifactFinding;
   /** Optional analyzer build / version tag, useful for the export report. */
   analyzerVersion?:    string;
 }

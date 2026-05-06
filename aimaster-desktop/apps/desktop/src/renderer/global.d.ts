@@ -1,5 +1,9 @@
 /// <reference types="vite/client" />
 
+/** Vite-injected build-time constants (see vite.config.ts `define`). */
+declare const __APP_VERSION__: string;
+declare const __APP_NAME__:    string;
+
 /**
  * Electron preload API exposed via contextBridge.
  * Kept intentionally narrow — only channels explicitly listed in preload/index.ts.

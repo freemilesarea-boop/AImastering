@@ -164,7 +164,7 @@ export function SectionAnalysisPanel({ analysis, currentMode }: Props) {
       {showModeHint && mode && (
         <div className="rounded-md border border-violet-900/40 bg-violet-950/20 px-3 py-2">
           <p className="text-[11px] text-violet-300 font-medium">
-            🎚 추천 모드: <span className="font-mono">{mode.suggestedMode}</span>
+            권장 모드 가능성: <span className="font-mono">{mode.suggestedMode}</span>
             {currentMode && (
               <span className="text-zinc-600">
                 {' '}· 현재 <span className="font-mono">{currentMode}</span>
@@ -174,6 +174,9 @@ export function SectionAnalysisPanel({ analysis, currentMode }: Props) {
           {mode.reason && (
             <p className="text-[10px] text-violet-200/80 leading-snug mt-0.5">{mode.reason}</p>
           )}
+          <p className="text-[9px] text-violet-300/50 mt-1">
+            ※ 곡 분석에서 감지된 패턴이며, 자동 변경되지 않습니다.
+          </p>
         </div>
       )}
     </div>
