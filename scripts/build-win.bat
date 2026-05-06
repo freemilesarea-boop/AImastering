@@ -12,7 +12,12 @@
 ::
 :: Output:
 ::   apps\desktop\out\
-::     Louver Mastering AI Portable <version>.exe   (portable, no install)
+::     Louver-Mastering-AI-Setup-<version>.exe   (NSIS installer)
+::     latest.yml                                (electron-updater metadata)
+::
+:: C-08 fix (audit 2026-05): portable target was dropped in v3.4.4 because
+:: portable .exe can't self-update.  This script now builds the NSIS
+:: installer to match the production CI pipeline + dist:win npm script.
 :: =============================================================================
 
 setlocal enabledelayedexpansion
@@ -85,7 +90,7 @@ pnpm build
 if errorlevel 1 ( echo ERROR: pnpm build failed & exit /b 1 )
 :: Portable-only target — see electron-builder.yml.  NSIS is intentionally
 :: disabled because of Windows MAX_PATH issues with pnpm peer-dep paths.
-pnpm exec electron-builder --win portable --x64 --publish never
+pnpm exec electron-builder --win nsis --x64 --publish never
 if errorlevel 1 ( echo ERROR: electron-builder failed & exit /b 1 )
 
 echo.

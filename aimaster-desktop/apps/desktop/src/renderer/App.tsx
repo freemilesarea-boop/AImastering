@@ -155,6 +155,11 @@ function GlobalDropOverlay() {
         .slice(0, MAX_QUEUE_SIZE);
 
       if (paths.length) {
+        // C-02 / C-03: register every dropped path's directory with the
+        // main-process allowlist BEFORE any aimaster-local:// preview
+        // request fires.  Fire-and-forget — even if it fails the audio
+        // pipeline will still work, just preview URL would be 403'd.
+        void window.electronAPI.invoke('file:register-paths', paths);
         addFilesToQueue(paths);
         setPage('home');
       }

@@ -2,8 +2,17 @@ import type { IpcMain } from 'electron';
 import Store from 'electron-store';
 import { LicenseService } from '@aimaster/license-core';
 
-// Encrypted electron-store (AES-256-CBC via safeStorage or password-based)
-const store = new Store({ name: 'license', encryptionKey: 'aimaster-enc-v1' });
+// Encrypted electron-store (AES-256-CBC via safeStorage or password-based).
+// C-04 fix (audit 2026-05): the encryption key is now build-time injected
+// by esbuild's `define` so production binaries don't expose the literal
+// in source.  CI sets LICENSE_STORE_KEY at release-build time; dev
+// builds fall back to a clearly-labelled DEV-ONLY value.
+declare const __LICENSE_STORE_KEY__: string | undefined;
+const STORE_KEY =
+  (typeof __LICENSE_STORE_KEY__ !== 'undefined' && __LICENSE_STORE_KEY__)
+  || process.env['LICENSE_STORE_KEY']
+  || 'aimaster-enc-v1-DEV-ONLY';
+const store = new Store({ name: 'license', encryptionKey: STORE_KEY });
 
 /**
  * Shared service singleton.

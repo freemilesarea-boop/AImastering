@@ -17,6 +17,8 @@ import { v4 as uuidv4 } from 'uuid';import {
 } from '@aimaster/audio-engine';
 import type { MasteringOptions, LoudnessStats } from '@aimaster/shared-types';
 import { log } from '../utils/logger.js';
+import { registerAllowedFile } from '../utils/pathAllowlist.js';
+import { licenseService } from './licenseHandlers.js';
 
 let bridge: PythonBridge | null = null;
 
@@ -200,6 +202,10 @@ function toAppError(err: unknown, filePath = ''): never {
 export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   ipc.handle('audio:analyze', async (_e, filePath: string) => {
     try {
+      // C-02 fix: register the input's directory so the renderer can
+      // request the file (or the soon-to-be-generated waveform PNG)
+      // through the aimaster-local: protocol.
+      if (filePath) registerAllowedFile(filePath);
       const b = getBridge();
       return await analyzeFile(b, filePath);
     } catch (err) {
@@ -215,6 +221,25 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     options: MasteringOptions,
     extras?: { preLoudness?: LoudnessStats },
   ) => {
+    // ── License gate (C-05 fix, audit 2026-05) ────────────────────────────
+    // Previously the renderer was the only enforcement point for the free-
+    // tier counter.  Any DevTools-savvy user could call
+    // electronAPI.invoke('audio:master', ...) to bypass.  Now main ALWAYS
+    // validates against the license store before processing.
+    const licenseGate = licenseService.canProcess();
+    if (!licenseGate.allowed) {
+      log.warn('[audio:master] BLOCKED by license gate:', licenseGate.reason);
+      const err: Error & { code?: string; recoverable?: boolean } =
+        new Error(licenseGate.reason ?? '라이선스 제한입니다.');
+      err.code = 'ELICENSE';
+      err.recoverable = true;
+      throw err;
+    }
+
+    // C-02 fix: register the input file so renderer can request its
+    // waveform PNG / preview from the protocol handler.
+    if (filePath) registerAllowedFile(filePath);
+
     // ── Write-permission pre-check ────────────────────────────────────────
     assertTmpWritable();
 
@@ -249,6 +274,21 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       if (bridgeDied) {
         throw pythonProcessFailed('Bridge process exited during masterFile()', true);
       }
+
+      // C-05: decrement free-tier counter ONLY on successful processing.
+      // The license module is a no-op for Pro tier so this is safe to call
+      // unconditionally.
+      try { licenseService.decrementTrialUsage(); }
+      catch (e) { log.warn('[audio:master] decrementTrialUsage failed:', e); }
+
+      // C-02: register every output path so renderer can fetch them
+      // through aimaster-local: (preview MP3, waveform PNGs, WAV).
+      const outPaths: string[] = [
+        result.outputPath, result.previewPath || mp3FallbackPath,
+        result.beforeWaveformPath ?? '', result.afterWaveformPath ?? '',
+        result.compareWaveformPath ?? '',
+      ].filter(Boolean) as string[];
+      for (const p of outPaths) registerAllowedFile(p);
 
       return {
         ...result,

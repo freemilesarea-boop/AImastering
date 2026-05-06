@@ -95,14 +95,16 @@ jobs:
       # publishes artefacts + the latest-linux.yml metadata to GitHub Releases
       # so electron-updater clients can discover the new version.
       # On regular branch pushes we just build the artefact for CI sanity.
+      # C-07 fix (audit 2026-05): platform jobs always use --publish never;
+      # the dedicated release-draft job (softprops/action-gh-release) is the
+      # SINGLE owner of the GitHub Release.  Previously --publish always made
+      # electron-builder ALSO create a draft release, causing two competing
+      # drafts on the same tag (or silent latest*.yml overwrite).  Now each
+      # platform's `latest*.yml` is uploaded as a regular artefact and
+      # softprops attaches them all in one place.
       - name: Compute publish flag
         id: pub
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "flag=always" >> "$GITHUB_OUTPUT"
-          else
-            echo "flag=never" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "flag=never" >> "$GITHUB_OUTPUT"
 
       - name: Package AppImage
         working-directory: aimaster-desktop
@@ -119,8 +121,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Louver-Mastering-AI-linux
+          # C-06 fix (audit 2026-05): also upload `latest-linux.yml` so the
+          # release-draft job can attach it.  Without this, electron-updater
+          # on Linux clients can't discover new versions from the GitHub
+          # release (mac/win already include their `latest*.yml` here).
           path: |
             aimaster-desktop/apps/desktop/out/*.AppImage
+            aimaster-desktop/apps/desktop/out/latest-linux.yml
           if-no-files-found: error
           retention-days: 30
 
@@ -275,14 +282,16 @@ jobs:
       # !! Auto-update on macOS still requires code-signing + notarization.
       # Without them the OS Gatekeeper blocks the replacement process.
       # See electron-builder.yml `mac.identity` TODO for v3.5.
+      # C-07 fix (audit 2026-05): platform jobs always use --publish never;
+      # the dedicated release-draft job (softprops/action-gh-release) is the
+      # SINGLE owner of the GitHub Release.  Previously --publish always made
+      # electron-builder ALSO create a draft release, causing two competing
+      # drafts on the same tag (or silent latest*.yml overwrite).  Now each
+      # platform's `latest*.yml` is uploaded as a regular artefact and
+      # softprops attaches them all in one place.
       - name: Compute publish flag
         id: pub
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "flag=always" >> "$GITHUB_OUTPUT"
-          else
-            echo "flag=never" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "flag=never" >> "$GITHUB_OUTPUT"
 
       - name: Package macOS .dmg + .zip (arm64 + x64)
         id: pack_mac
@@ -631,7 +640,15 @@ jobs:
           # workflow_dispatch 트리거 시 tag 가 아직 없으면 softprops 가
           # 현재 commit (workflow run 의 SHA) 에서 자동으로 tag 를 생성한다.
           target_commitish:       ${{ github.sha }}
+          # C-06 / C-07 fix (audit 2026-05): include each platform's
+          # `latest*.yml` so electron-updater clients can discover the new
+          # version on every OS — Linux was missing previously, breaking
+          # AppImage auto-update.
           files: |
             artifacts/linux/*.AppImage
+            artifacts/linux/latest-linux.yml
             artifacts/mac/*.zip
+            artifacts/mac/*.dmg
+            artifacts/mac/latest-mac.yml
             artifacts/win/*.exe
+            artifacts/win/latest.yml

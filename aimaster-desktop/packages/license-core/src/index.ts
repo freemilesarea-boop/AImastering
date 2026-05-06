@@ -42,7 +42,16 @@ function devLog(level: 'warn' | 'error', msg: string, extra?: unknown): void {
 
 const KEY_REGEX   = /^AIMASTER-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 const TRIAL_MAX   = 3;
-const HMAC_SECRET = process.env['LICENSE_HMAC_SECRET'] ?? 'aimaster-local-secret-v1';
+// C-04 fix (audit 2026-05): the HMAC secret is now a build-time constant
+// injected by esbuild's `define` (see apps/desktop/esbuild.main.cjs).  CI
+// sets LICENSE_HMAC_SECRET from the repo secret store at release-build
+// time; local + dev builds fall back to the dev-only literal.  This makes
+// production binaries fundamentally unforge-able from the public source.
+declare const __LICENSE_HMAC_SECRET__: string | undefined;
+const HMAC_SECRET =
+  (typeof __LICENSE_HMAC_SECRET__ !== 'undefined' && __LICENSE_HMAC_SECRET__)
+  || process.env['LICENSE_HMAC_SECRET']
+  || 'aimaster-local-secret-v1-DEV-ONLY';
 
 // ── Storage types ─────────────────────────────────────────────────────────────
 

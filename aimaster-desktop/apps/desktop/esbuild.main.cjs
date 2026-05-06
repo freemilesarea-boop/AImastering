@@ -24,6 +24,19 @@ const isDev = process.argv.includes('--dev');
 // "No published versions on GitHub" toast).  See src/main/updater.ts.
 const AUTO_UPDATE_ENABLED = process.env.AUTO_UPDATE_ENABLED === 'true';
 
+// C-04 fix (audit 2026-05) — License HMAC secret baked at build time.
+// CI sets LICENSE_HMAC_SECRET to a long random string from the repo's
+// secret store.  Local + dev builds fall back to the literal "dev-only"
+// constant; license files signed with the dev secret will fail the
+// production HMAC check, which is the intended migration boundary.
+const LICENSE_HMAC_SECRET =
+  process.env.LICENSE_HMAC_SECRET || 'aimaster-local-secret-v1-DEV-ONLY';
+
+// Same idea for the electron-store encryption key — baked-in build-time
+// constant, CI override at release-build time.
+const LICENSE_STORE_KEY =
+  process.env.LICENSE_STORE_KEY || 'aimaster-enc-v1-DEV-ONLY';
+
 const shared = {
   bundle:    true,
   platform:  'node',
@@ -34,6 +47,8 @@ const shared = {
   external:  ['electron', 'node-machine-id'],
   define: {
     '__AUTO_UPDATE_ENABLED__': JSON.stringify(AUTO_UPDATE_ENABLED),
+    '__LICENSE_HMAC_SECRET__': JSON.stringify(LICENSE_HMAC_SECRET),
+    '__LICENSE_STORE_KEY__':   JSON.stringify(LICENSE_STORE_KEY),
   },
 };
 

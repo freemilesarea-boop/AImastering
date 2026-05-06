@@ -11,6 +11,8 @@ const INVOKE_CHANNELS = [
   'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
   'file:batch-save-wav',
   'file:get-info', 'file:open-in-finder', 'file:get-recent',
+  // C-02 / C-03 fix: drag-drop registers paths into main's allowlist
+  'file:register-paths',
   // Settings
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // System

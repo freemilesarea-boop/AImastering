@@ -7,6 +7,7 @@ import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
+import { initAllowlist, isPathAllowed } from './utils/pathAllowlist.js';
 
 const isDev = !app.isPackaged;
 
@@ -73,10 +74,25 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
-  // ── 0. 로컬 파일 프로토콜 핸들러 ─────────────────────────────────────────
-  // aimaster-local:///<absolute-path> → reads from local filesystem
+  // ── 0a. Path allowlist — bootstrap built-in safe roots ────────────────────
+  // Must run BEFORE the protocol handler because the handler enforces it.
+  initAllowlist();
+
+  // ── 0b. 로컬 파일 프로토콜 핸들러 (C-02 fix, audit 2026-05) ──────────────
+  // aimaster-local:///<absolute-path> → reads from local filesystem.
+  //
+  // The handler now consults the path allowlist (`initAllowlist()` + the
+  // per-import expansions in fileHandlers.ts).  Any renderer-supplied path
+  // that doesn't resolve under one of those directories is rejected with
+  // 403.  Defends against `aimaster-local:///etc/shadow` etc. when the
+  // renderer is compromised, and against `..` traversal because the
+  // allowlist normalizes paths before the membership check.
   protocol.handle('aimaster-local', (request) => {
     const filePath = decodeURIComponent(request.url.slice('aimaster-local://'.length));
+    if (!isPathAllowed(filePath)) {
+      log.warn('[protocol] BLOCKED path-allowlist violation:', filePath);
+      return new Response('Forbidden — path not in allowlist', { status: 403 });
+    }
     return net.fetch(`file://${filePath}`);
   });
 

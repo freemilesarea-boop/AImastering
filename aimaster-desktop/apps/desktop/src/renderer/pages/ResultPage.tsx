@@ -24,11 +24,20 @@ import type {
 import { LIMITER_STRENGTH_LABELS } from '@aimaster/shared-types';
 // v3.5 stabilization wiring — show the human-readable mastering report
 // (gain-staging / vocal / transient / limiter / TP-guard actions taken).
-import { MasteringReportPanel } from '../components/MasteringReportPanel.js';
+import { MasteringReportPanel }   from '../components/MasteringReportPanel.js';
+// v3.5 phase A2: live LUFS / TP meter + before-after audio audition + 5-sec
+// quick preview using the renderer-side mastering pipeline.
+import { LoudnessMeterPanel }     from '../components/LoudnessMeterPanel.js';
+import { ABComparePanel }         from '../components/ABComparePanel.js';
+import { PreviewPanel }           from '../components/PreviewPanel.js';
+import { MasteringModeSelector }  from '../components/MasteringModeSelector.js';
 import {
   generateMasteringReport,
   type AdhocEqAdjustment,
 } from '../audio/report.js';
+import { loadAudioBufferFromPath } from '../audio/loadAudioBuffer.js';
+import type { AudioBufferLike }    from '../audio/loudnessCore.js';
+import type { MasteringMode }      from '../audio/masteringModes.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -116,11 +125,28 @@ function BeforeAfterCard() {
 
 // ── Audio preview player ──────────────────────────────────────────────────────
 
-function PreviewPlayer({ src }: { src: string }) {
+function PreviewPlayer({
+  src,
+  onAudioRef,
+  onPlayingChange,
+}: {
+  src: string;
+  /** v3.5 wiring: lift the <audio> element ref so siblings (LoudnessMeterPanel)
+   *  can attach via Web-Audio createMediaElementSource. */
+  onAudioRef?: (el: HTMLAudioElement | null) => void;
+  onPlayingChange?: (playing: boolean) => void;
+}) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying]   = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  // Notify parent of <audio> ref + playing state on every relevant change.
+  React.useEffect(() => {
+    onAudioRef?.(audioRef.current);
+    return () => onAudioRef?.(null);
+  }, [onAudioRef]);
+  React.useEffect(() => { onPlayingChange?.(playing); }, [onPlayingChange, playing]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -762,7 +788,8 @@ export default function ResultPage() {
   const setPage         = useAppStore((s) => s.setPage);
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const reset           = useAudioStore((s) => s.reset);
-
+  // Pull the original input file path from the queue so we can A/B compare.
+  const queue           = useAudioStore((s) => s.queue);
   const handleNewFile = useCallback(() => {
     reset();
     setPage('home');
@@ -771,6 +798,48 @@ export default function ResultPage() {
   const previewSrc = masteringResult?.previewPath
     ? toFileUrl(masteringResult.previewPath)
     : '';
+
+  // ── v3.5 phase A2 — live preview <audio> ref + decoded buffers for A/B ──
+  const [audioEl, setAudioEl]       = useState<HTMLAudioElement | null>(null);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [bufA, setBufA] = useState<AudioBufferLike | null>(null);
+  const [bufB, setBufB] = useState<AudioBufferLike | null>(null);
+  const [decoding, setDecoding] = useState(false);
+  // v3.5 Quick Preview state — renderer-side mastering pipeline at one of
+  // the simplified CLEAN/BALANCED/LOUD modes, scrubbable.  Defaults to
+  // BALANCED matching the typical streaming target.
+  const [quickMode,  setQuickMode]  = useState<MasteringMode>('BALANCED');
+  const [quickStart, setQuickStart] = useState<number>(0);
+
+  // The original input is the source we mastered.  In single-file mode
+  // it's the first (and only) queued item; in batch mode it's the one
+  // whose result matches `masteringResult.outputPath`.
+  const inputItem = React.useMemo(() => {
+    if (!masteringResult) return null;
+    return queue.find((q) => q.masteringResult?.outputPath === masteringResult.outputPath)
+        ?? queue[0]
+        ?? null;
+  }, [queue, masteringResult]);
+  const inputPath  = inputItem?.filePath ?? '';
+  const outputPath = masteringResult?.outputPath ?? '';
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!inputPath || !outputPath) {
+      setBufA(null); setBufB(null);
+      return undefined;
+    }
+    setDecoding(true);
+    void Promise.all([
+      loadAudioBufferFromPath(inputPath),
+      loadAudioBufferFromPath(outputPath),
+    ]).then(([a, b]) => {
+      if (cancelled) return;
+      setBufA(a); setBufB(b);
+      setDecoding(false);
+    });
+    return () => { cancelled = true; };
+  }, [inputPath, outputPath]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -830,7 +899,63 @@ export default function ResultPage() {
           {masteringResult?.pipelineWarnings?.length ? (
             <WarningsCard warnings={masteringResult.pipelineWarnings} />
           ) : null}
-          {previewSrc && <PreviewPlayer src={previewSrc} />}
+          {previewSrc && (
+            <PreviewPlayer
+              src={previewSrc}
+              onAudioRef={setAudioEl}
+              onPlayingChange={setAudioPlaying}
+            />
+          )}
+
+          {/* v3.5 — Live LUFS / TP meter that taps the preview <audio>.
+              Shows momentary / short-term / integrated + true-peak in real
+              time during playback.  Only attaches when audio is actually
+              playing so we don't hold an idle AudioContext open. */}
+          {previewSrc && audioEl && (
+            <LoudnessMeterPanel
+              mediaElement={audioEl}
+              active={audioPlaying}
+              {...(masteringResult?.loudnessAfter?.integratedLufs !== undefined
+                && { targetLufs: masteringResult.loudnessAfter.integratedLufs })}
+            />
+          )}
+
+          {/* v3.5 — Loudness-matched A/B between the original input and
+              the mastered output.  Spacebar to switch instantly. */}
+          {bufA && bufB && (
+            <ABComparePanel
+              bufferA={bufA}
+              bufferB={bufB}
+              labelA="원본"
+              labelB="마스터링"
+              spacebarToggle
+            />
+          )}
+          {decoding && (
+            <p className="text-[10px] text-zinc-500 px-1">
+              A/B 비교용 오디오 디코딩 중…
+            </p>
+          )}
+
+          {/* v3.5 — Quick preview using the in-browser mastering pipeline.
+              Loops a 5-second slice through CLEAN / BALANCED / LOUD mode
+              with click-free hot-swap so the user can audition tone before
+              committing to a full Python re-render. */}
+          {bufA && (
+            <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-300">
+                v3.5 Quick Preview · 원본을 in-browser pipeline으로
+              </h3>
+              <MasteringModeSelector value={quickMode} onChange={setQuickMode} />
+              <PreviewPanel
+                buffer={bufA}
+                mode={quickMode}
+                startTime={quickStart}
+                onStartTimeChange={setQuickStart}
+              />
+            </div>
+          )}
+
           <SaveButtons />
 
           {/* v3.2 P2 — 새 자동 품질 검사가 있으면 그걸 사용, 없으면 legacy QCSummary */}
