@@ -76,6 +76,10 @@ from app.qc.quality_check import run_quality_check
 from app.qc.limiter_check import run_limiter_check
 from app.qc.translation_check import run_translation_check
 from app.qc.vocal_intelligence import run_vocal_intelligence
+from app.qc.ai_artifact_check import run_ai_artifact_check
+from app.analysis.section_analyzer import (
+    analyze_sections, suggest_mode_from_sections,
+)
 from app.qc.gain_staging import build_gain_staging_report
 from app.utils.logger import log
 
@@ -1569,6 +1573,29 @@ def run_pipeline(
     except Exception as exc:
         log("WARN", f"[pipeline] vocal_intelligence 실패: {exc}")
 
+    # ── Phase-D — AI artifact check (analysis-only) ─────────────────────────
+    # Detects three signatures of AI-generated music: phase anomaly
+    # (artificial wide stereo that collapses on mono fold), metallic
+    # 4–7 kHz ringing (vocoder artifact), 20–40 Hz sub-rumble (DC
+    # handling errors).  All warnings are non-corrective.
+    ai_artifact_report: dict[str, Any] | None = None
+    try:
+        recorder.stage("ai_artifact_check")
+        ai_artifact_report = run_ai_artifact_check(output_path)
+        for finding in ai_artifact_report.get("findings", []):
+            pipeline_warnings.append({
+                "code":  finding.get("code", "AI_ARTIFACT_WARNING"),
+                "level": finding.get("level", "warning"),
+                "userMessage": finding.get("userMessage", ""),
+            })
+    except Exception as exc:
+        log("WARN", f"[pipeline] ai_artifact_check 실패: {exc}")
+
+    # NOTE: section_analyzer block runs AFTER segment_analysis below
+    # because it consumes segment_report's per-window time series.
+    section_report:  dict[str, Any] | None = None
+    mode_suggestion: dict[str, Any] | None = None
+
     # ── v3.3 P2 — Time-series suspect segment detection ────────────────────
     segment_report: dict[str, Any] = {"windowSec": 0.5, "windows": [], "suspectSegments": [], "summary": None}
     try:
@@ -1594,6 +1621,29 @@ def run_pipeline(
                 log("WARN", f"[pipeline] segment dump 실패: {exc2}")
     except Exception as exc:
         log("WARN", f"[pipeline] segment analysis 실패: {exc}")
+
+    # ── Phase-D — Section-aware analysis + mode suggestion ──────────────────
+    # Builds verse/chorus-style section labels from the segment time-series
+    # built immediately above, then suggests a mastering mode based on the
+    # song's structure.  Both analysis-only — does NOT switch modes; the
+    # user remains in control.
+    try:
+        recorder.stage("section_analyzer")
+        section_report = analyze_sections(segment_report)
+        mode_suggestion = suggest_mode_from_sections(
+            section_report, current_style=style,
+        )
+        # Surface the suggestion as an INFO warning (low priority) only
+        # when it differs from the current style.
+        if mode_suggestion and mode_suggestion.get("wouldChange"):
+            pipeline_warnings.append({
+                "code":  "MODE_SUGGESTION",
+                "level": "info",
+                "userMessage": (f"섹션 분석 결과: {mode_suggestion['suggestedMode']} "
+                                f"모드 권장 — {mode_suggestion['reason']}"),
+            })
+    except Exception as exc:
+        log("WARN", f"[pipeline] section_analyzer 실패: {exc}")
 
     # ── v3.3 — gain-staging report (vocal/background band balance, crest/LRA) ──
     gain_staging_report: dict[str, Any] | None = None
@@ -1927,6 +1977,11 @@ def run_pipeline(
         "translationCheck": translation_check_report,
         # Phase-C — vocal intelligence (buried/harsh detection, analysis-only)
         "vocalIntelligence": vocal_intel_report,
+        # Phase-D — AI artifact detection (phase / metallic / sub-rumble)
+        "aiArtifactCheck":   ai_artifact_report,
+        # Phase-D — section-aware structure + mode suggestion
+        "sectionAnalysis":   section_report,
+        "modeSuggestion":    mode_suggestion,
         "suspectSegments":  segment_report.get("suspectSegments", []),
         "segmentAnalysis":  {
             "windowSec":  segment_report.get("windowSec"),
