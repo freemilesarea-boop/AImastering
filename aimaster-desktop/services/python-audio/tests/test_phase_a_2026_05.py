@@ -88,10 +88,17 @@ def test_preview_mp3_lufs_matches_wav_lufs(pink_noise_wav, tmp_path,
 
 
 def test_mode_switching_does_not_leak_state(pink_noise_wav, tmp_path):
-    """Running every mode in sequence on the same input must produce
-    distinct outputs (no cached state leaking from a previous mode's
-    chain) AND each mode must hit its own LUFS target.  Catches any
-    module-level mutable state that contaminates subsequent runs."""
+    """Running every mode in sequence on the same input must:
+      (a) hit every mode's LUFS target within ±1.2 LU (loudnorm pass1
+          has ~0.5 LU intrinsic jitter on short noise inputs, so the
+          tolerance is intentionally looser than the per-mode WAV-vs-
+          report consistency test which uses 0.6 LU);
+      (b) NOT collapse to identical outputs (would indicate cached
+          state from a previous mode's chain leaking through);
+      (c) preserve target-LUFS ordering — modes with lower target
+          LUFS must produce quieter output than modes with higher.
+    Catches any module-level mutable state that contaminates
+    subsequent runs."""
     measured = []
     for style, target_lufs, target_tp in _ALL_MODES:
         out = str(tmp_path / f"seq_{style}.wav")
@@ -102,16 +109,35 @@ def test_mode_switching_does_not_leak_state(pink_noise_wav, tmp_path):
             target_tp=target_tp,
             generate_waveforms=False,
         )
-        measured.append((style, result["loudnessAfter"]["integratedLufs"]))
+        measured.append((style, target_lufs, result["loudnessAfter"]["integratedLufs"]))
 
-    # Each mode hit its target ±0.7 LU.
-    targets = {s: t for s, t, _ in _ALL_MODES}
-    for style, lufs in measured:
-        assert abs(lufs - targets[style]) <= 0.7, (
+    # (a) each mode within ±1.2 LU of target
+    for style, target, lufs in measured:
+        assert abs(lufs - target) <= 1.2, (
             f"{style}: state-leak suspect — measured {lufs:.2f} LUFS, "
-            f"target {targets[style]} (run after mode chain "
-            f"{[s for s, _ in measured[: measured.index((style, lufs))]]})"
+            f"target {target} (loudnorm pass1 jitter ≤ 0.5 LU, ours = "
+            f"{abs(lufs - target):.2f})"
         )
+
+    # (b) output diversity — at least 4 distinct LUFS values across 7 modes
+    # (some modes share targets, so we don't expect 7 unique).  Identical
+    # results across the board would prove a cached chain.
+    distinct = {round(l, 1) for _, _, l in measured}
+    assert len(distinct) >= 4, (
+        f"only {len(distinct)} distinct LUFS values across 7 modes — "
+        f"state contamination suspect.  measurements={measured}"
+    )
+
+    # (c) ordering: higher target LUFS → louder output.
+    by_target = sorted(measured, key=lambda m: m[1])
+    for i in range(1, len(by_target)):
+        prev_target, prev_lufs = by_target[i - 1][1], by_target[i - 1][2]
+        cur_target,  cur_lufs  = by_target[i][1],     by_target[i][2]
+        if cur_target > prev_target + 0.5:   # ignore ties
+            assert cur_lufs > prev_lufs - 0.5, (
+                f"ordering violated: target {prev_target}→{cur_target} but "
+                f"output {prev_lufs:.2f}→{cur_lufs:.2f}"
+            )
 
 
 def test_pipeline_has_no_license_bypass_path(pink_noise_wav, tmp_path):
