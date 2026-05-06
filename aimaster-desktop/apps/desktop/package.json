@@ -1,6 +1,6 @@
 {
   "name": "@aimaster/desktop",
-  "version": "3.5.0",
+  "version": "3.6.0-rc.1",
   "description": "Louver Mastering AI — local commercial-grade mastering for desktop",
   "author": "Louver",
   "private": true,
@@ -22,6 +22,7 @@
     "test:phase-e-ui": "tsx scripts/phase-e-ui-safety.ts",
     "test:phase-e-render": "tsx scripts/phase-e-render-safety.tsx",
     "test:loudness": "tsx scripts/loudness-selftest.ts",
+    "test:release-smoke": "tsx scripts/release-smoke.ts",
     "clean": "rm -rf dist dist-electron out public/bin"
   },
   "dependencies": {
