@@ -118,6 +118,19 @@ them; verify only that the UI does not crash when the fields are absent
 | G4 | P2 | **AI-generated track (legacy `aiDetection`)** — supply a Suno/Udio export.  QC page surfaces the existing `harshHighmid` / `boomyLow` / `brickwall` flags (these are the v3.5 detectors that ARE wired; Phase-D `aiArtifactCheck` is deferred). |  |  |
 | G5 | P2 | Cancelling mid-mastering returns to home cleanly; no orphan worker process. |  |  |
 | G6 | P2 | After mastering, OS temp dir is reasonably clean (no >100 MB residue from a single run). |  |  |
+| G7 | P1 | **Low-memory system** — 8 GB RAM machine masters a 5 min WAV without UI freezes; check with `top` / Task Manager that resident set stays < 2 GB. |  |  |
+| G8 | P1 | **No system ffmpeg** — tested under A6 (Win) and on a clean macOS / Linux user with `which ffmpeg` returning nothing.  App must use the bundled `bin/ffmpeg` and complete an analyze + master cycle. |  |  |
+
+## I · Runtime failure logging + support bundle (v3.6 QA infrastructure)
+
+| # | Severity | Case | Status | Notes |
+|---|---|---|---|---|
+| I1 | P0 | Trigger an artificial preview failure (e.g. open the app, paste a corrupted .mp3 path into the audio src via devtools).  In a separate window, invoke `await window.electronAPI.invoke('support:bundle')` and confirm `recentFailures` includes a `preview` category entry. |  |  |
+| I2 | P0 | Trigger an artificial worklet failure (e.g. block AudioContext via devtools); confirm a `worklet` category entry appears with the LoudnessMeterPanel error message. |  |  |
+| I3 | P0 | Master a track that emits `pipelineWarnings`; confirm `recentPipelineWarnings` in the support bundle contains those warnings (code, level, userMessage). |  |  |
+| I4 | P0 | Save a support bundle via `support:bundle-export` and grep the resulting JSON for `/Users/`, `/home/`, `outputPath`, `previewPath`, `debugSummary`, `artifactDir`, `jobId`.  None of those tokens may appear; the user's home dir must show as `~`. |  |  |
+| I5 | P1 | Bundle includes `app.version === "3.6.0-rc.1"`, non-empty `runtime.electronVersion` / `runtime.chromeVersion`, and `failureCounts` matching the visible counts. |  |  |
+| I6 | P1 | After 60 forced failures of the same category, `recentFailures` for that category caps at 50 entries (oldest dropped). |  |  |
 
 ## H · Build / smoke
 
@@ -125,7 +138,7 @@ them; verify only that the UI does not crash when the fields are absent
 |---|---|---|---|---|
 | H1 | P0 | `pnpm typecheck` is clean across all 4 workspaces. |  |  |
 | H2 | P0 | `pnpm --filter @aimaster/desktop build` produces `dist/renderer/index.html`, `dist-electron/main/index.js`, `dist-electron/preload/index.js`, AND a `loudnessProcessor.worklet-*.js` asset under `dist/renderer/assets/`. |  |  |
-| H3 | P0 | `pnpm --filter @aimaster/desktop test` runs phase-e-ui (14) + phase-e-render (15) + loudness selftest (30+) with 0 failures. |  |  |
+| H3 | P0 | `pnpm --filter @aimaster/desktop test` runs phase-e-ui (14) + phase-e-render (15) + phase-e-paths (22) + loudness selftest (30+) with 0 failures. |  |  |
 | H4 | P0 | `pnpm --filter @aimaster/desktop test:release-smoke` exits 0 (or only emits the documented `LICENSE_HMAC_SECRET` advisory warn). |  |  |
 | H5 | P0 | `PRODUCTION=true pnpm test:release-smoke` (no secret) exits **1** with the documented refusal — proves the production gate is wired. |  |  |
 | H6 | P0 | `PRODUCTION=true LICENSE_HMAC_SECRET=<32-char>` smoke exits 0 — proves the gate accepts a real secret. |  |  |
@@ -135,6 +148,9 @@ them; verify only that the UI does not crash when the fields are absent
 | H10 | P0 | All `package.json` files report version `3.6.0-rc.1` (or `0.2.0` for `@aimaster/shared-types`). |  |  |
 | H11 | P1 | CI workflow `build.yml` — `body_path` references `RELEASE_DRAFT_v3.6.0.md`, `prerelease: true`. |  |  |
 | H12 | P0 | The `loudnessProcessor.worklet.js` source file is **plain JavaScript** (no `declare`, no `: type` annotations).  No `.ts` worklet variant exists alongside it.  Smoke fails fast otherwise. |  |  |
+| H13 | P0 | **Linux RC build artefact integrity** — `pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage --x64 --publish never` produces an AppImage in `out/`; `latest-linux.yml` reads `version: 3.6.0-rc.1`; the unpacked `resources/bin/{ffmpeg,ffprobe}` are present and executable; `app.asar` contains `dist/renderer/assets/loudnessProcessor.worklet-*.js`. |  |  |
+| H14 | P0 | **Windows NSIS RC build** — produced via CI (`.github/workflows/build.yml` win runner) on a tag push or manual `workflow_dispatch` with `release_tag` empty; verify the resulting `Louver Mastering AI-Setup-3.6.0-rc.1.exe` installs on a clean Win VM (A5 / A6). |  |  |
+| H15 | P0 | **macOS ZIP RC build** — produced via CI mac runner; install the unsigned ZIP on an Apple Silicon test machine and follow A7 (Gatekeeper workaround).  Verify the bundled `bin/ffmpeg` is executable (Gatekeeper sometimes quarantines bundled binaries). |  |  |
 
 ---
 

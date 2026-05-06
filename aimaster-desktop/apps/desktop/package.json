@@ -18,9 +18,10 @@
     "dist:win": "node scripts/prebuild.cjs && pnpm build && electron-builder --win portable --x64 --publish never",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
-    "test": "pnpm test:phase-e-ui && pnpm test:phase-e-render && pnpm test:loudness",
+    "test": "pnpm test:phase-e-ui && pnpm test:phase-e-render && pnpm test:phase-e-paths && pnpm test:loudness",
     "test:phase-e-ui": "tsx scripts/phase-e-ui-safety.ts",
     "test:phase-e-render": "tsx scripts/phase-e-render-safety.tsx",
+    "test:phase-e-paths": "tsx scripts/phase-e-paths-safety.ts",
     "test:loudness": "tsx scripts/loudness-selftest.ts",
     "test:release-smoke": "tsx scripts/release-smoke.ts",
     "clean": "rm -rf dist dist-electron out public/bin"

@@ -8,6 +8,7 @@ import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
+import { recordFailure } from './utils/failureLog.js';
 
 const isDev = !app.isPackaged;
 
@@ -113,8 +114,14 @@ app.whenReady().then(() => {
   try {
     ffmpeg = checkFFmpeg();
     log.info('FFmpeg status', ffmpeg);
+    if (!ffmpeg?.available) {
+      recordFailure('ffmpeg', 'checkFFmpeg() returned available=false', { ffmpeg });
+    } else if (!ffmpeg?.ffprobeAvailable) {
+      recordFailure('ffmpeg', 'checkFFmpeg() returned ffprobeAvailable=false', { ffmpeg });
+    }
   } catch (err) {
     log.error('checkFFmpeg failed (app continues):', err);
+    recordFailure('ffmpeg', `checkFFmpeg threw: ${(err as Error).message}`);
     ffmpeg = { available: false, ffprobeAvailable: false };
   }
 

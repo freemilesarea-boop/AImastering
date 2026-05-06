@@ -15,6 +15,8 @@ const INVOKE_CHANNELS = [
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // System
   'system:ffmpeg-status',
+  // Support bundle (v3.6 QA)
+  'support:bundle', 'support:bundle-export', 'support:record-failure',
   // Updater (v3.4.3)
   'updater:check', 'updater:download', 'updater:quit-and-install',
   'updater:get-status',

@@ -27,18 +27,12 @@ import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
 import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
 import ExportReportPanel from '../components/ExportReportPanel.js';
 import { LoudnessMeterPanel } from '../components/LoudnessMeterPanel.js';
+import { reportFailure } from '../utils/reportFailure.js';
+import { toFileUrl } from '../utils/fileUrl.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number, d = 1) { return n.toFixed(d); }
-
-/** Convert a filesystem path to aimaster-local:// URL (bypasses Chromium file:// block). */
-function toFileUrl(p: string): string {
-  if (!p) return '';
-  const normalized = p.replace(/\\/g, '/');
-  const withSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
-  return `aimaster-local://${encodeURI(withSlash)}`;
-}
 
 // ── Arrow delta ───────────────────────────────────────────────────────────────
 
@@ -162,6 +156,18 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
           const a = audioRef.current;
           if (a) setDuration(a.duration);
           setMeterReady(true);
+        }}
+        onError={() => {
+          // Codec / file-protocol / quarantined-resource failures land here.
+          // We log a category-tight failure but keep the UI responsive —
+          // the user can still try to export the MP3 file via "Save".
+          const a = audioRef.current;
+          const code = a?.error?.code;
+          reportFailure({
+            category: 'preview',
+            message:  `<audio> error code=${code ?? 'unknown'}`,
+            data:     { srcLength: src.length, code },
+          });
         }}
       />
 

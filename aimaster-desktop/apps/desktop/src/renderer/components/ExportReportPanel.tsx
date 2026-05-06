@@ -17,6 +17,7 @@ import {
   exportAsJson,
   exportAsTxt,
 } from './masteringReportExport.js';
+import { reportFailure } from '../utils/reportFailure.js';
 
 interface Props {
   result?:       MasteringResult | null | undefined;
@@ -28,16 +29,24 @@ interface Props {
 function downloadBlob(filename: string, mime: string, text: string): void {
   // In a non-DOM test harness the helper is bypassed; guard accordingly.
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
-  const blob = new Blob([text], { type: mime });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  // Defer revoke so the navigation has a chance to read the URL.
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  try {
+    const blob = new Blob([text], { type: mime });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Defer revoke so the navigation has a chance to read the URL.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (err) {
+    reportFailure({
+      category: 'export',
+      message:  `download blob failed: ${err instanceof Error ? err.message : String(err)}`,
+      data:     { filename, mime, sizeBytes: text.length },
+    });
+  }
 }
 
 function timestamp(): string {

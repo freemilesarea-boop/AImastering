@@ -2,6 +2,11 @@ import type { IpcMain, BrowserWindow } from 'electron';
 import { app, dialog, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import { recordFailure } from '../utils/failureLog.js';
+import {
+  buildSupportBundle,
+  supportBundleToJson,
+} from '../utils/supportBundle.js';
 
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   // ── Open file picker (single) ─────────────────────────────────────────
@@ -46,14 +51,69 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       ? [{ name: 'WAV Audio', extensions: ['wav'] }]
       : [{ name: 'MP3 Audio', extensions: ['mp3'] }];
 
-    const result = await dialog.showSaveDialog(win, {
-      defaultPath: path.basename(srcPath),
-      filters,
-    });
-    if (result.canceled || !result.filePath) return null;
+    try {
+      const result = await dialog.showSaveDialog(win, {
+        defaultPath: path.basename(srcPath),
+        filters,
+      });
+      if (result.canceled || !result.filePath) return null;
 
-    fs.copyFileSync(srcPath, result.filePath);
-    return result.filePath;
+      fs.copyFileSync(srcPath, result.filePath);
+      return result.filePath;
+    } catch (err) {
+      recordFailure('export', `file:save-wav failed: ${(err as Error).message}`, {
+        ext, srcPath,
+      });
+      throw err;
+    }
+  });
+
+  // ── Support bundle (v3.6 QA) ─────────────────────────────────────────
+  // Returns the JSON snapshot in-memory.  No filesystem write — the
+  // renderer can copy to clipboard or hand off to the export helper.
+  ipc.handle('support:bundle', () => {
+    return buildSupportBundle();
+  });
+
+  // Renderer-side failure ingest.  Renderer hooks (preview <audio>,
+  // AudioWorklet, export download) call this so a single support bundle
+  // surfaces both main- and renderer-side errors.
+  ipc.handle('support:record-failure', (
+    _e,
+    payload: { category?: string; message?: string; data?: Record<string, unknown> },
+  ) => {
+    const allowed = new Set([
+      'preview', 'worklet', 'ffmpeg', 'engine',
+      'export', 'pipeline', 'license', 'unknown',
+    ]);
+    const cat = allowed.has(String(payload?.category)) ? payload!.category as
+      'preview' | 'worklet' | 'ffmpeg' | 'engine' | 'export' | 'pipeline' | 'license' | 'unknown'
+      : 'unknown';
+    const msg = typeof payload?.message === 'string' ? payload.message : 'unknown failure';
+    recordFailure(cat, msg, payload?.data);
+    return { ok: true };
+  });
+
+  // Save the support bundle to a path the user picks.  Mirrors the
+  // export-report flow used by Phase-E so users can do "Help → Export
+  // diagnostic bundle" from anywhere in the app.
+  ipc.handle('support:bundle-export', async () => {
+    if (!win) return null;
+    const bundle = buildSupportBundle();
+    const json   = supportBundleToJson(bundle);
+    try {
+      const stamp  = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const result = await dialog.showSaveDialog(win, {
+        defaultPath: `aimaster-support-${stamp}.json`,
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (result.canceled || !result.filePath) return null;
+      fs.writeFileSync(result.filePath, json, 'utf8');
+      return { savedTo: result.filePath, sizeBytes: Buffer.byteLength(json, 'utf8') };
+    } catch (err) {
+      recordFailure('export', `support:bundle-export failed: ${(err as Error).message}`);
+      throw err;
+    }
   });
 
   // ── File info ─────────────────────────────────────────────────────────
