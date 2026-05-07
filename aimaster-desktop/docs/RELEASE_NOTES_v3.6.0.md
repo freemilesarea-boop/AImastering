@@ -209,3 +209,11 @@ CI 는 `tag push refs/tags/v*` 일 때만 `AUTO_UPDATE_ENABLED=true` 로
 전체 체크리스트는 `aimaster-desktop/docs/QA_v3.6_RC.md` 를 참고하세요.
 QA 통과 후 production tag (`v3.6.0`) 로 다시 빌드해 정식 릴리스를
 승격합니다.
+
+### 필드 테스트 (5 명 내부)
+
+- 빌드 산출 절차: `aimaster-desktop/docs/RC_BUILD_RUNBOOK_v3.6.md`
+- 테스터 가이드 (한국어): `aimaster-desktop/docs/TESTER_GUIDE_v3.6_RC.md`
+- 테스터 트래킹 시트: `aimaster-desktop/docs/FIELD_TEST_LOG_v3.6_RC.md`
+- 진단 리포트 집계: `pnpm --filter @aimaster/desktop aggregate-bundles -- <dir>`
+- 테스터용 진단 export 버튼이 TopBar 우측에 노출됩니다 (지원 진단).
