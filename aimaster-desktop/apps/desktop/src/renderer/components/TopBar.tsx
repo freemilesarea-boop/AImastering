@@ -1,5 +1,6 @@
 import React from 'react';
 import { useLicenseStore, selectRemainingTrials } from '../stores/licenseStore.js';
+import SupportBundleButton from './SupportBundleButton.js';
 
 // ── License badge ─────────────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ export default function TopBar({ subtitle, actions }: TopBarProps) {
       {/* Action area — must be no-drag so buttons are clickable */}
       {actions && <div className="no-drag">{actions}</div>}
 
+      <SupportBundleButton />
       <LicenseBadge />
     </div>
   );

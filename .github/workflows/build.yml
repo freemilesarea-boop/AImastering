@@ -621,12 +621,14 @@ jobs:
         with:
           tag_name:               ${{ steps.resolve_tag.outputs.tag }}
           name:                   ${{ steps.resolve_tag.outputs.tag }}
-          # v3.5.0 — body_path uses the current major.minor's release notes.
-          # When bumping versions, copy/update RELEASE_DRAFT_v<NEW>.md and
-          # change this line to match the new tag.
-          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.5.0.md
+          # v3.6.0-rc.1 — body_path uses the current major.minor's release
+          # notes.  When bumping versions, copy/update RELEASE_DRAFT_v<NEW>.md
+          # and change this line to match the new tag.
+          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.6.0.md
           draft:                  true
-          prerelease:             false   # v3.5.0 is a regular beta release
+          # RC builds are pre-releases.  Flip to false once v3.6.0 final
+          # is signed off (and bump body_path / tag accordingly).
+          prerelease:             true
           fail_on_unmatched_files: true
           # workflow_dispatch 트리거 시 tag 가 아직 없으면 softprops 가
           # 현재 commit (workflow run 의 SHA) 에서 자동으로 tag 를 생성한다.

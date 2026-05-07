@@ -331,6 +331,21 @@ export interface MasteringResult {
   appliedBandCorrections?: AppliedBandCorrection[];
   /** v3.4.1 — reference validation + genre-mismatch warnings */
   referenceWarnings?: ReferenceWarning[];
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Phase-D — Song-level intelligence (read-only metadata for the UI).
+  // All fields are OPTIONAL: the UI must render even when none are present.
+  // ────────────────────────────────────────────────────────────────────────
+  /** Verse / chorus / bridge timeline + dynamic-range / alternation metrics. */
+  sectionAnalysis?:   SectionAnalysis;
+  /** Heuristic AI-artifact findings (phase / metallic / sub-rumble). */
+  aiArtifactCheck?:   AIArtifactCheck;
+  /** Vocal mood + clarity intelligence. */
+  vocalIntelligence?: VocalIntelligence;
+  /** Predicted translation across phone / laptop / club. */
+  translationCheck?:  TranslationCheck;
+  /** Best-fit mastering mode suggestion based on the song itself. */
+  modeSuggestion?:    ModeSuggestion;
 }
 
 export interface ReferenceWarning {
@@ -667,4 +682,118 @@ export interface RPCProgress {
   jobId: string;
   percent: number;
   stage: string;
+}
+
+// ── Phase-D — Song-level intelligence ────────────────────────────────────────
+//
+// These types describe *analysis* results, not DSP actions.  They are
+// produced by Phase-D analyzers (no new DSP) and consumed by the Phase-E
+// UI layer.  Every field is optional so a partially-populated result still
+// renders cleanly.  Severities use a conservative vocabulary
+// ('possible', 'detected pattern', 'may') — the UI layer must not promise
+// detection it has not actually performed.
+
+export type SectionKind = 'verse' | 'chorus' | 'bridge' | 'intro' | 'outro' | 'drop' | 'breakdown' | 'unknown';
+
+/** Energy bucket assigned by the section analyzer. */
+export type SectionEnergy = 'low' | 'mid' | 'high';
+
+export interface SectionSegment {
+  /** Section start in seconds from the beginning of the track. */
+  start:  number;
+  /** Section end in seconds. */
+  end:    number;
+  /** Detected role (verse / chorus / bridge…). */
+  kind:   SectionKind;
+  /** Coarse energy bucket relative to the track. */
+  energy: SectionEnergy;
+  /** Optional human label, e.g. "Chorus 2". */
+  label?: string;
+}
+
+export interface SectionAnalysis {
+  /** Detected sections in chronological order.  Empty = analysis ran but found nothing. */
+  sections:        SectionSegment[];
+  /** Track-level dynamic range across sections, in LU. */
+  dynamicRangeLu:  number | null;
+  /**
+   * 0–1 score for verse/chorus alternation.
+   * Higher = stronger contrast between sections.
+   */
+  alternationScore: number | null;
+  /** Counts derived from `sections`, exposed for cheap UI rendering. */
+  sectionCounts: {
+    high: number;
+    mid:  number;
+    low:  number;
+  };
+  /**
+   * If the analyzer believes a different mastering mode would suit the song
+   * better than the user's current selection, this is populated.  The UI
+   * shows it ONLY when it differs from `currentMode`.
+   */
+  modeSuggestion?: ModeSuggestion;
+}
+
+export type AIArtifactSeverity = 'info' | 'warn' | 'danger';
+
+/**
+ * One artifact finding.  `present === false` means the analyzer ran and
+ * found no anomaly — the UI should hide such entries instead of showing
+ * an "all good" check (we only surface possible issues).
+ */
+export interface AIArtifactFinding {
+  present:    boolean;
+  severity:   AIArtifactSeverity;
+  /** Human-readable Korean explanation, conservative wording. */
+  message:    string;
+  /** Optional confidence 0–1.  UI must NOT fabricate this. */
+  confidence?: number;
+}
+
+export interface AIArtifactCheck {
+  /** L/R phase anomaly (collapse on mono playback, mirrored content, …). */
+  phaseAnomaly?:       AIArtifactFinding;
+  /** Metallic high-frequency artifact (typical 4–7 kHz AI signature). */
+  metallicHighFreq?:   AIArtifactFinding;
+  /** Sub-bass rumble below ~30 Hz that translates poorly. */
+  subRumble?:          AIArtifactFinding;
+  /** Optional analyzer build / version tag, useful for the export report. */
+  analyzerVersion?:    string;
+}
+
+/** Vocal-track intelligence (instrument-aware; safe-no-op for instrumentals). */
+export interface VocalIntelligence {
+  /** True if the analyzer is confident a vocal is present. */
+  vocalPresent:    boolean;
+  /** 0–1 clarity / intelligibility estimate. */
+  clarityScore:    number | null;
+  /** Mood label, e.g. 'warm', 'aggressive', 'breathy'. */
+  mood?:           string;
+  /** Sibilance hot-spot frequency (Hz) if detected. */
+  sibilanceHz?:    number | null;
+  /** Conservative Korean note shown beneath the score. */
+  note?:           string;
+}
+
+/** Predicted translation across reference playback systems. */
+export interface TranslationCheck {
+  /** 0–1 score per device.  null = not analyzed. */
+  phone:    number | null;
+  laptop:   number | null;
+  club:     number | null;
+  /** Korean note, e.g. "전화기 스피커에서 저역이 약하게 들릴 수 있습니다." */
+  notes?:   string[];
+}
+
+/** Best-fit mastering-mode suggestion produced by the song-intelligence layer. */
+export interface ModeSuggestion {
+  /** Mode the analyzer thinks fits the song best. */
+  suggestedMode: MasteringStyle | string;
+  /** Mode the user is currently mastering with (echoed for UI comparison). */
+  currentMode:   MasteringStyle | string;
+  /** Conservative Korean reason. */
+  reason:        string;
+  /** 0–1 confidence (optional). */
+  confidence?:   number;
 }

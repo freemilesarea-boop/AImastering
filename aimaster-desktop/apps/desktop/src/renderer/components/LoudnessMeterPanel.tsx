@@ -14,6 +14,7 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { LoudnessStream, LiveLoudnessMetrics } from '../audio/loudnessStream.js';
+import { reportFailure } from '../utils/reportFailure.js';
 
 interface Props {
   mediaElement?: HTMLMediaElement | null;
@@ -96,7 +97,17 @@ export function LoudnessMeterPanel(props: Props) {
         if (mediaElement)     await s.attachMediaElement(mediaElement);
         else if (mediaStream) await s.attachMediaStream(mediaStream);
       } catch (e: unknown) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        if (!cancelled) setError(msg);
+        // Worklet load / AudioContext / addModule failures land here.
+        // Surface to the support-bundle ring with a tight category so a
+        // diagnostic export tells us the meter — not the mastering
+        // pipeline — was the failure point.
+        reportFailure({
+          category: 'worklet',
+          message:  `LoudnessMeterPanel attach failed: ${msg}`,
+          data:     { hasMediaElement: !!mediaElement, hasMediaStream: !!mediaStream },
+        });
       }
     })();
 

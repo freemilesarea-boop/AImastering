@@ -1,14 +1,37 @@
-import { app, BrowserWindow, ipcMain, protocol, net } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, net } from 'electron';
 import path from 'node:path';
 import { checkFFmpeg } from '@aimaster/audio-engine';
+import { assertLicenseSecretReady } from '@aimaster/license-core';
 import { registerAudioHandlers } from './ipc/audioHandlers.js';
 import { registerLicenseHandlers } from './ipc/licenseHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
+import { recordFailure } from './utils/failureLog.js';
 
 const isDev = !app.isPackaged;
+
+// ── Production-only license-secret gate ──────────────────────────────────────
+// In a packaged build LICENSE_HMAC_SECRET MUST be set to a real (non-dev,
+// >=16 char) value before license-core is loaded — otherwise an attacker
+// could forge "Pro" license records since every machine would validate
+// against the same dev secret.
+//
+// We refuse to start in that state.  Dev / unpackaged builds skip the gate
+// so local development still works without the env var.
+if (!isDev) {
+  try {
+    assertLicenseSecretReady();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error('[fatal] license secret gate failed:', msg);
+    // Show a blocking dialog if we can — otherwise just exit.  app.whenReady
+    // hasn't fired yet so dialog.showErrorBox is the only safe API here.
+    try { dialog.showErrorBox('AIMaster — startup blocked', msg); } catch { /* no display */ }
+    app.exit(1);
+  }
+}
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -91,8 +114,14 @@ app.whenReady().then(() => {
   try {
     ffmpeg = checkFFmpeg();
     log.info('FFmpeg status', ffmpeg);
+    if (!ffmpeg?.available) {
+      recordFailure('ffmpeg', 'checkFFmpeg() returned available=false', { ffmpeg });
+    } else if (!ffmpeg?.ffprobeAvailable) {
+      recordFailure('ffmpeg', 'checkFFmpeg() returned ffprobeAvailable=false', { ffmpeg });
+    }
   } catch (err) {
     log.error('checkFFmpeg failed (app continues):', err);
+    recordFailure('ffmpeg', `checkFFmpeg threw: ${(err as Error).message}`);
     ffmpeg = { available: false, ffprobeAvailable: false };
   }
 

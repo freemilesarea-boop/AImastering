@@ -22,18 +22,17 @@ import type {
   DynamicEqReport,
 } from '@aimaster/shared-types';
 import { LIMITER_STRENGTH_LABELS } from '@aimaster/shared-types';
+import SectionAnalysisPanel from '../components/SectionAnalysisPanel.js';
+import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
+import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
+import ExportReportPanel from '../components/ExportReportPanel.js';
+import { LoudnessMeterPanel } from '../components/LoudnessMeterPanel.js';
+import { reportFailure } from '../utils/reportFailure.js';
+import { toFileUrl } from '../utils/fileUrl.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number, d = 1) { return n.toFixed(d); }
-
-/** Convert a filesystem path to aimaster-local:// URL (bypasses Chromium file:// block). */
-function toFileUrl(p: string): string {
-  if (!p) return '';
-  const normalized = p.replace(/\\/g, '/');
-  const withSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
-  return `aimaster-local://${encodeURI(withSlash)}`;
-}
 
 // ── Arrow delta ───────────────────────────────────────────────────────────────
 
@@ -106,11 +105,16 @@ function BeforeAfterCard() {
 
 // ── Audio preview player ──────────────────────────────────────────────────────
 
-function PreviewPlayer({ src }: { src: string }) {
+function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number | undefined }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying]   = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+  // Live loudness meter is mounted once the audio element has loaded its
+  // metadata — without it `createMediaElementSource` rejects on some
+  // platforms.  We also gate on `playing` so the worklet only runs while
+  // the user is actually listening.
+  const [meterReady, setMeterReady] = useState(false);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -151,6 +155,19 @@ function PreviewPlayer({ src }: { src: string }) {
         onLoadedMetadata={() => {
           const a = audioRef.current;
           if (a) setDuration(a.duration);
+          setMeterReady(true);
+        }}
+        onError={() => {
+          // Codec / file-protocol / quarantined-resource failures land here.
+          // We log a category-tight failure but keep the UI responsive —
+          // the user can still try to export the MP3 file via "Save".
+          const a = audioRef.current;
+          const code = a?.error?.code;
+          reportFailure({
+            category: 'preview',
+            message:  `<audio> error code=${code ?? 'unknown'}`,
+            data:     { srcLength: src.length, code },
+          });
         }}
       />
 
@@ -197,6 +214,19 @@ function PreviewPlayer({ src }: { src: string }) {
           </div>
         </div>
       </div>
+
+      {/* Live BS.1770-4 LUFS / TP meter — mounts once metadata loads, runs
+          only while playback is active.  Worklet is loaded on first play
+          via Vite's `new URL(..., import.meta.url)` resolution. */}
+      {meterReady && audioRef.current && (
+        <div className="mt-3">
+          <LoudnessMeterPanel
+            mediaElement={audioRef.current}
+            active={playing}
+            {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -752,6 +782,7 @@ export default function ResultPage() {
   const setPage         = useAppStore((s) => s.setPage);
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const reset           = useAudioStore((s) => s.reset);
+  const options         = useAudioStore((s) => s.options);
 
   const handleNewFile = useCallback(() => {
     reset();
@@ -761,6 +792,13 @@ export default function ResultPage() {
   const previewSrc = masteringResult?.previewPath
     ? toFileUrl(masteringResult.previewPath)
     : '';
+
+  // Phase-E: surface a stable mode label for the section analyzer
+  // (which may suggest a different mode than the user chose).
+  const currentMode =
+    masteringResult?.analysisReport?.mastering?.mode
+    ?? options?.style
+    ?? null;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -801,8 +839,45 @@ export default function ResultPage() {
           {masteringResult?.pipelineWarnings?.length ? (
             <WarningsCard warnings={masteringResult.pipelineWarnings} />
           ) : null}
-          {previewSrc && <PreviewPlayer src={previewSrc} />}
+
+          {/* Phase-E — Smart song-level recommendations (combines all Phase-D signals). */}
+          <SmartRecommendationPanel
+            sectionAnalysis={masteringResult?.sectionAnalysis ?? null}
+            modeSuggestion={
+              masteringResult?.modeSuggestion
+              ?? masteringResult?.sectionAnalysis?.modeSuggestion
+              ?? null
+            }
+            aiArtifactCheck={masteringResult?.aiArtifactCheck   ?? null}
+            vocalIntelligence={masteringResult?.vocalIntelligence ?? null}
+            translationCheck={masteringResult?.translationCheck   ?? null}
+            currentMode={currentMode ?? undefined}
+          />
+
+          {/* Phase-E — Section timeline + DR / alternation / mode hint. */}
+          <SectionAnalysisPanel
+            analysis={masteringResult?.sectionAnalysis ?? null}
+            currentMode={currentMode ?? undefined}
+          />
+
+          {/* Phase-E — AI artifact findings (only renders if any are present). */}
+          <AIArtifactWarningPanel check={masteringResult?.aiArtifactCheck ?? null} />
+
+          {previewSrc && (
+            <PreviewPlayer
+              src={previewSrc}
+              {...(typeof masteringResult?.analysisReport?.mastering?.targetLufs === 'number'
+                ? { targetLufs: masteringResult.analysisReport.mastering.targetLufs }
+                : {})}
+            />
+          )}
           <SaveButtons />
+
+          {/* Phase-E — Single-snapshot exportable report (TXT / JSON). */}
+          <ExportReportPanel
+            result={masteringResult ?? null}
+            selectedMode={currentMode ?? undefined}
+          />
 
           {/* v3.2 P2 — 새 자동 품질 검사가 있으면 그걸 사용, 없으면 legacy QCSummary */}
           {masteringResult?.qualityCheck ? (

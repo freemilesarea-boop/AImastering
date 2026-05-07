@@ -17,6 +17,8 @@ import { v4 as uuidv4 } from 'uuid';import {
 } from '@aimaster/audio-engine';
 import type { MasteringOptions, LoudnessStats } from '@aimaster/shared-types';
 import { log } from '../utils/logger.js';
+import { recordFailure } from '../utils/failureLog.js';
+import { recordPipelineWarning } from '../utils/supportBundle.js';
 
 let bridge: PythonBridge | null = null;
 
@@ -61,7 +63,33 @@ function getBridge(): PythonBridge {
   const { pythonPath, scriptPath } = resolvePaths();
   bridge = new PythonBridge({ pythonPath, scriptPath });
   bridge.on('log', (line: string) => log.info('[python]', line));
-  bridge.spawn();
+  // Engine startup / mid-flight death is one of the highest-impact failure
+  // categories — surface it in the support bundle so a user QA report
+  // includes it without us needing to grep daily log files.
+  bridge.on('error', (err: Error) => {
+    recordFailure('engine', `Python bridge error: ${err.message}`, {
+      pythonPath, scriptPath,
+    });
+  });
+  bridge.on('exit', (code: number | null, signal: string | null) => {
+    if (code !== 0 && code !== null) {
+      recordFailure('engine', `Python bridge exited with code=${code}`, {
+        pythonPath, scriptPath, signal,
+      });
+    } else if (signal) {
+      recordFailure('engine', `Python bridge killed by signal=${signal}`, {
+        pythonPath, scriptPath,
+      });
+    }
+  });
+  try {
+    bridge.spawn();
+  } catch (err) {
+    recordFailure('engine', 'Python bridge spawn() failed', {
+      pythonPath, error: (err as Error).message,
+    });
+    throw err;
+  }
   return bridge;
 }
 
@@ -204,6 +232,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       return await analyzeFile(b, filePath);
     } catch (err) {
       log.error('[audio:analyze] error', { filePath, err: (err as Error).message });
+      recordFailure('engine', `analyzeFile failed: ${(err as Error).message}`, { filePath });
       toAppError(err, filePath);
     }
   });
@@ -250,6 +279,12 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         throw pythonProcessFailed('Bridge process exited during masterFile()', true);
       }
 
+      // Mirror any pipeline warnings into the support bundle ring so the
+      // user can include them in a diagnostic report later.
+      if (Array.isArray(result?.pipelineWarnings)) {
+        for (const w of result.pipelineWarnings) recordPipelineWarning(w);
+      }
+
       return {
         ...result,
         outputPath:  result.outputPath,
@@ -263,6 +298,9 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         filePath,
         err: (err as Error).message,
         bridgeDied,
+      });
+      recordFailure('pipeline', `masterFile failed: ${(err as Error).message}`, {
+        filePath, bridgeDied,
       });
 
       // If bridge died, reset so next call spawns a fresh process
@@ -283,6 +321,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       return await runQC(b, filePath, targetLufs, targetTp);
     } catch (err) {
       log.error('[audio:qc] error', { filePath, err: (err as Error).message });
+      recordFailure('engine', `runQC failed: ${(err as Error).message}`, { filePath });
       toAppError(err, filePath);
     }
   });

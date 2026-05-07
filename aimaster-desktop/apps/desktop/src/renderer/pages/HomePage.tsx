@@ -29,6 +29,10 @@ import {
   MASTERING_QUICK_PRESETS,
   LIMITER_STRENGTH_LABELS,
 } from '@aimaster/shared-types';
+// Hardened URL helper — escapes Korean, spaces, `#`, `?` per-segment so the
+// main-side decoder receives the original path unmangled.
+// Covered by `pnpm test:phase-e-paths`.
+import { toFileUrl } from '../utils/fileUrl.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -39,17 +43,6 @@ const ACCEPT = {
   'audio/mpeg': ['.mp3'],
   'audio/mp4':  ['.m4a'],
 };
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-// Use aimaster-local:// custom protocol so Chromium doesn't block file:// from
-// the http://localhost:5173 dev origin (and avoids CSP issues in prod too).
-function toFileUrl(p: string): string {
-  if (!p) return '';
-  const normalized = p.replace(/\\/g, '/');
-  const withSlash = normalized.startsWith('/') ? normalized : `/${normalized}`;
-  return `aimaster-local://${encodeURI(withSlash)}`;
-}
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 

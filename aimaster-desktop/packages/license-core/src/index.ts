@@ -42,7 +42,51 @@ function devLog(level: 'warn' | 'error', msg: string, extra?: unknown): void {
 
 const KEY_REGEX   = /^AIMASTER-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 const TRIAL_MAX   = 3;
-const HMAC_SECRET = process.env['LICENSE_HMAC_SECRET'] ?? 'aimaster-local-secret-v1';
+
+/**
+ * Dev-only fallback HMAC secret.  NEVER usable from a packaged production
+ * build — `assertLicenseSecretReady()` (called by the host on app start
+ * when `app.isPackaged === true`) refuses this value.
+ *
+ * In a production build the host MUST set `LICENSE_HMAC_SECRET` to a
+ * sufficiently-long random secret BEFORE importing license-core, e.g. via
+ * the installer environment, a build-time inject, or an env-baked entry
+ * point.  Without it `assertLicenseSecretReady()` throws and the host is
+ * expected to surface a fatal error and quit.
+ */
+export const DEV_FALLBACK_HMAC_SECRET = 'aimaster-local-secret-v1';
+
+const HMAC_SECRET = process.env['LICENSE_HMAC_SECRET'] ?? DEV_FALLBACK_HMAC_SECRET;
+
+/**
+ * Returns true iff the active HMAC secret is a real production secret —
+ * i.e. neither the dev fallback nor empty.  Production builds must call
+ * `assertLicenseSecretReady()` at startup to refuse to run otherwise.
+ */
+export function isLicenseSecretProductionReady(): boolean {
+  return typeof HMAC_SECRET === 'string'
+      && HMAC_SECRET.length >= 16
+      && HMAC_SECRET !== DEV_FALLBACK_HMAC_SECRET;
+}
+
+/**
+ * Throw if the active HMAC secret is not safe for production.  Hosts call
+ * this from the main process on startup when `app.isPackaged === true`
+ * (or another reliable production signal).  Dev / unpackaged builds skip
+ * this check and the dev fallback is used.
+ *
+ * The error message is intentionally explicit so a packager who forgot to
+ * inject the secret can self-diagnose.
+ */
+export function assertLicenseSecretReady(): void {
+  if (isLicenseSecretProductionReady()) return;
+  throw new Error(
+    '[license-core] LICENSE_HMAC_SECRET missing or set to the dev fallback. ' +
+    'Production builds must inject a strong (>= 16 char) secret via the ' +
+    'LICENSE_HMAC_SECRET environment variable BEFORE the main process imports ' +
+    'license-core.  Refusing to run with the dev secret in production.',
+  );
+}
 
 // ── Storage types ─────────────────────────────────────────────────────────────
 
