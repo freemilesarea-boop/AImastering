@@ -14,7 +14,7 @@ v3.5.0 이후의 안정화·보안·UX 작업을 묶은 RC 입니다. 새 DSP �
 
 | 영역 | 핵심 변화 |
 |---|---|
-| 보안 | License HMAC 시크릿 환경변수화 + 패키징된 프로덕션 빌드 시작 시 dev fallback 거부 (하드 페일) |
+| 라이선스 | **이번 RC 부터 라이선스 게이트 비활성화** — 키 입력 / 검증 / 차단 / 시크릿 환경변수 모두 사용하지 않습니다.  마스터링은 항상 실행 가능. |
 | 결과 페이지 | 라이브 LUFS / TP 미터를 프리뷰 플레이어에 정식 연결 |
 | Phase-E UI | section / artifact / smart-rec / export 패널 4종 — 분석 필드 누락 시 안전 폴백 (테스트 보장) |
 | Phase-D 인프라 | 분석 결과 노출용 타입 (sectionAnalysis / aiArtifactCheck / vocalIntelligence / translationCheck / modeSuggestion) — UI 만 준비, Python emit 은 v3.6.x 패치에서 추가 예정 |
@@ -39,21 +39,38 @@ v3.5.0 이후의 안정화·보안·UX 작업을 묶은 RC 입니다. 새 DSP �
 
 ## 변경 사항 상세
 
-### 🔒 1. 보안 하드닝 (Phase-A)
+### 🔓 1. 라이선스 게이트 비활성화 (v3.6.0-rc.1+1)
 
-- `@aimaster/license-core` 가 새 export 두 개를 추가:
-  - `isLicenseSecretProductionReady()` — 활성 HMAC 시크릿이 dev fallback /
-    빈 값이 아닌지 검사 (≥ 16 char).
-  - `assertLicenseSecretReady()` — 위 검사가 실패하면 명시적 메시지로 throw.
-- 데스크톱 main 프로세스 (`apps/desktop/src/main/index.ts`) 가
-  `app.isPackaged === true` 인 경우 **앱 시작 직전** 위 assert 를 호출.
-  실패 시 모달 에러 다이얼로그를 표시하고 `app.exit(1)`.  → 누군가 시크릿
-  주입을 잊고 production 빌드를 만들어도 **첫 실행에서 즉시 멈춥니다**;
-  dev fallback 으로 모든 머신이 같은 키로 검증되는 사고를 차단합니다.
-- dev / unpackaged 빌드는 게이트를 통과하지 않으므로 로컬 개발 흐름은
-  변하지 않습니다.
-- `pnpm test:release-smoke` 도 `PRODUCTION=true` 환경에서 시크릿 누락 /
-  dev fallback 사용을 fail 로 표시 (빌드 시점 가드).
+이번 RC 부터 라이선스 키 / HMAC 시크릿 시스템 전체가 **앱 실행 경로에서
+빠졌습니다**.  필드 테스트에서 `LICENSE_HMAC_SECRET` 누락으로 앱이 첫
+실행에서 `app.exit(1)` 되어 테스터들이 막힌 문제를 해결하기 위함입니다.
+
+제거된 것:
+- 메인 프로세스 시작 시 호출되던 `assertLicenseSecretReady()` 게이트
+- `app.exit(1)` + "AIMaster — startup blocked" 다이얼로그
+- License IPC 핸들러 등록 (`license:status` / `license:activate` /
+  `license:deactivate` / `license:can-process` / `license:decrement-trial` /
+  `license:get-remaining`) — preload allowlist 에서도 함께 제거
+- TopBar 의 LicenseBadge, App.tsx 의 `<LicenseModal />`, SettingsPage 의
+  LicenseSection
+- `release-smoke` 의 `LICENSE_HMAC_SECRET` 강제 검증 (PRODUCTION 환경에서도
+  더 이상 fail 하지 않음)
+
+영향:
+- **마스터링은 라이선스 키 없이 항상 실행 가능합니다.**
+- 트라이얼 카운트 / "Pro" 표시 / 키 입력 화면이 모두 사라집니다.
+- DSP 알고리즘, Python 엔진, support 진단 / preview / A/B / loudness
+  meter / 리포트 export 는 영향 없음.
+
+남아있는 것 (dead code, 활성 코드 경로 미사용):
+- `packages/license-core/` 패키지 자체
+- `apps/desktop/src/main/ipc/licenseHandlers.ts`
+- `apps/desktop/src/renderer/components/LicenseModal.tsx`
+- `apps/desktop/src/renderer/stores/licenseStore.ts`
+
+향후 라이선스 시스템을 다시 켤 때는 이 dead-code 를 다시 import 하고
+preload allowlist + main 등록 + TopBar / SettingsPage 마운트 4 곳을
+복구하면 됩니다.
 
 ### 🎚 2. 라이브 LUFS / TP 미터 정식 연결
 
@@ -156,9 +173,9 @@ pnpm --filter @aimaster/desktop build
 pnpm --filter @aimaster/desktop test
 #   → test:phase-e-ui (14)  + test:phase-e-render (15) + test:loudness (30+)
 
-# 4. 릴리스 산출물 smoke check (production gate 검증 포함)
+# 4. 릴리스 산출물 smoke check
 pnpm --filter @aimaster/desktop test:release-smoke
-#   PRODUCTION=true 환경에서 LICENSE_HMAC_SECRET 미설정 시 exit 1
+#   라이선스 게이트 비활성화로 LICENSE_HMAC_SECRET 환경변수는 더 이상 필요 없음.
 
 # 5. Python audio 엔진 테스트
 cd services/python-audio && pytest -q
@@ -181,9 +198,9 @@ CI 는 `tag push refs/tags/v*` 일 때만 `AUTO_UPDATE_ENABLED=true` 로
    존재하지만 결과 페이지 외 진입 버튼이 없습니다 (v3.6.x 예정).
 4. **임시 파일 잔존 가능성** — 강제 종료 시 `aimaster_*.wav` 가
    OS temp dir 에 남을 수 있음 (v3.5 와 동일).
-5. **`LICENSE_HMAC_SECRET` 환경변수 필수** — production 빌드 (`app.is
-   Packaged === true`) 시 시작 시점에 dev fallback 을 거부합니다.
-   배포 인프라가 강한 시크릿을 주입해야 정식 빌드가 시작됩니다.
+5. **라이선스 / 트라이얼 카운트 없음** — 이번 RC 부터 라이선스 게이트
+   비활성화 (위 §1).  모든 기능이 항상 사용 가능합니다.  유료 / 무료
+   구분 / 트라이얼 카운트는 다시 켜질 때까지 표시되지 않습니다.
 
 ---
 
@@ -197,10 +214,9 @@ CI 는 `tag push refs/tags/v*` 일 때만 `AUTO_UPDATE_ENABLED=true` 로
   UI 는 변하지 않습니다.
 - `AIArtifactCheck` 의 `phaseAnomaly` / `metallicHighFreq` /
   `subRumble` 는 모두 옵셔널 (`AIArtifactFinding | undefined`) 로 변경.
-- `@aimaster/license-core` 가 `assertLicenseSecretReady()` /
-  `isLicenseSecretProductionReady()` / `DEV_FALLBACK_HMAC_SECRET` 를
-  추가 export.  embedder 는 production 시작 시 assert 를 반드시
-  호출해야 합니다.
+- `@aimaster/license-core` 는 패키지 자체는 워크스페이스에 남아 있지만
+  메인 프로세스의 active 코드 경로에서 import 되지 않습니다.  embedder
+  는 어떤 시크릿 / 환경변수 / assert 호출도 필요하지 않습니다.
 
 ---
 

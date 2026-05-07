@@ -1,37 +1,21 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, net } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, net } from 'electron';
 import path from 'node:path';
 import { checkFFmpeg } from '@aimaster/audio-engine';
-import { assertLicenseSecretReady } from '@aimaster/license-core';
 import { registerAudioHandlers } from './ipc/audioHandlers.js';
-import { registerLicenseHandlers } from './ipc/licenseHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
 import { recordFailure } from './utils/failureLog.js';
 
-const isDev = !app.isPackaged;
+// ── License gate REMOVED (v3.6.0-rc.1+1) ─────────────────────────────────────
+// The previous LICENSE_HMAC_SECRET startup gate has been removed for the
+// internal RC test cycle.  License-key activation is not used in this build,
+// so requiring a production secret was blocking testers without giving the
+// app any real protection.  License IPC handlers / UI are also disabled —
+// see preload/index.ts and renderer/App.tsx.
 
-// ── Production-only license-secret gate ──────────────────────────────────────
-// In a packaged build LICENSE_HMAC_SECRET MUST be set to a real (non-dev,
-// >=16 char) value before license-core is loaded — otherwise an attacker
-// could forge "Pro" license records since every machine would validate
-// against the same dev secret.
-//
-// We refuse to start in that state.  Dev / unpackaged builds skip the gate
-// so local development still works without the env var.
-if (!isDev) {
-  try {
-    assertLicenseSecretReady();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error('[fatal] license secret gate failed:', msg);
-    // Show a blocking dialog if we can — otherwise just exit.  app.whenReady
-    // hasn't fired yet so dialog.showErrorBox is the only safe API here.
-    try { dialog.showErrorBox('AIMaster — startup blocked', msg); } catch { /* no display */ }
-    app.exit(1);
-  }
-}
+const isDev = !app.isPackaged;
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -128,9 +112,12 @@ app.whenReady().then(() => {
   ipcMain.handle('system:ffmpeg-status', () => ffmpeg);
 
   // ── 3. IPC 핸들러 등록 (mainWindow가 이미 생성된 뒤) ─────────────────────
+  // License IPC handlers intentionally NOT registered — license gate
+  // disabled for the internal RC test cycle.  See main/index.ts header
+  // comment.  licenseHandlers.ts is left in the tree as dead code so a
+  // future re-enable doesn't require fishing it out of git history.
   try {
     registerAudioHandlers(ipcMain, mainWindow);
-    registerLicenseHandlers(ipcMain);
     registerFileHandlers(ipcMain, mainWindow);
     registerSettingsHandlers(ipcMain, mainWindow);
   } catch (err) {

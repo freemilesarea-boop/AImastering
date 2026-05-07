@@ -36,19 +36,17 @@ view.
 | A6 | P1 (Win) | **Windows clean machine without ffmpeg in PATH** — install on a VM without ffmpeg installed system-wide.  App must use the bundled binary in `bin/`, not error out. |  |  |
 | A7 | P0 (mac) | **macOS Gatekeeper** — first launch shows the unsigned-app warning.  Verify the documented `xattr -dr com.apple.quarantine` workaround works.  Document the user-facing copy. |  |  |
 | A8 | P1 (Linux) | **Linux AppImage** — `chmod +x` then run; appears in app menu (when the user enables FUSE/AppImage integration). |  |  |
-| A9 | P0 | **Production license-secret gate** — install a CI build packaged WITHOUT `LICENSE_HMAC_SECRET`.  App must show a blocking error dialog on first launch and quit (exit 1).  Do NOT ship this build. |  |  |
-| A10 | P0 | **Production license-secret gate (positive case)** — install a CI build packaged WITH a strong `LICENSE_HMAC_SECRET` env baked in.  App launches normally. |  |  |
+| A9 | P0 | **Packaged build launches without LICENSE_HMAC_SECRET** — install a CI build with NO secret env baked in.  App must launch normally to the home page; no "AIMaster — startup blocked" dialog ever appears.  (License gate disabled in v3.6.0-rc.1+1.) |  |  |
 
-## B · License / trial
+## B · License / trial — REMOVED (gate disabled in v3.6.0-rc.1+1)
 
-| # | Severity | Case | Status | Notes |
-|---|---|---|---|---|
-| B1 | P0 | Free tier: trial counter shows correct remaining count after each mastering. |  |  |
-| B2 | P0 | After exhausting trial, mastering is blocked with the documented Korean message; license modal opens. |  |  |
-| B3 | P0 | Activating a valid Pro key: trial counter disappears, WAV save unlocks. |  |  |
-| B4 | P1 | Tampering with `electron-store` license file (manually editing tier) → app rejects the record (HMAC mismatch) and reverts to free. |  |  |
-| B5 | P1 | Deactivating Pro returns the user to free tier; trial count not reset to 0 (cannot bypass quota). |  |  |
-| B6 | P1 | Cross-machine HMAC binding — copy the license file from machine A to machine B → app rejects on B (machineId mismatch). |  |  |
+The license-key activation path is no longer exercised in this build:
+LicenseModal isn't mounted, the TopBar badge is gone, the SettingsPage
+LicenseSection is removed, license IPC channels are stripped from the
+preload allowlist, and `audio:master` has no license check.  All
+trial-counter and Pro-activation cases are therefore **N/A** for this
+RC and do not block release.  When the gate is re-enabled in a future
+build, restore B1–B6 from git history.
 
 ## C · File import
 
@@ -139,9 +137,9 @@ them; verify only that the UI does not crash when the fields are absent
 | H1 | P0 | `pnpm typecheck` is clean across all 4 workspaces. |  |  |
 | H2 | P0 | `pnpm --filter @aimaster/desktop build` produces `dist/renderer/index.html`, `dist-electron/main/index.js`, `dist-electron/preload/index.js`, AND a `loudnessProcessor.worklet-*.js` asset under `dist/renderer/assets/`. |  |  |
 | H3 | P0 | `pnpm --filter @aimaster/desktop test` runs phase-e-ui (14) + phase-e-render (15) + phase-e-paths (22) + loudness selftest (30+) with 0 failures. |  |  |
-| H4 | P0 | `pnpm --filter @aimaster/desktop test:release-smoke` exits 0 (or only emits the documented `LICENSE_HMAC_SECRET` advisory warn). |  |  |
-| H5 | P0 | `PRODUCTION=true pnpm test:release-smoke` (no secret) exits **1** with the documented refusal — proves the production gate is wired. |  |  |
-| H6 | P0 | `PRODUCTION=true LICENSE_HMAC_SECRET=<32-char>` smoke exits 0 — proves the gate accepts a real secret. |  |  |
+| H4 | P0 | `pnpm --filter @aimaster/desktop test:release-smoke` exits 0; "license gate" check is informational PASS only (gate disabled in v3.6.0-rc.1+1). |  |  |
+| H5 | P0 | `PRODUCTION=true pnpm --filter @aimaster/desktop test:release-smoke` (NO `LICENSE_HMAC_SECRET` set) **also exits 0** — proves the gate is no longer enforced. |  |  |
+| H6 | — | (removed) The previous "PRODUCTION=true + LICENSE_HMAC_SECRET=<32-char> exits 0" case is no longer applicable; the secret is not consumed by anything. | N/A |  |
 | H7 | P0 | `pytest -q` in `services/python-audio` is green (`79 passed, 41 skipped` baseline). |  |  |
 | H8 | P1 | `node scripts/prebuild.cjs` copies `ffmpeg` and `ffprobe` into `apps/desktop/public/bin/` (size > 0, executable bit set on POSIX). |  |  |
 | H9 | P1 | `electron-builder.yml` win target list contains **only** `nsis`, no legacy `portable` target. |  |  |

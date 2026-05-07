@@ -4,9 +4,9 @@ import type { IpcRendererEvent } from 'electron';
 const INVOKE_CHANNELS = [
   // Audio
   'audio:analyze', 'audio:master', 'audio:qc',
-  // License
-  'license:status', 'license:activate', 'license:deactivate',
-  'license:can-process', 'license:decrement-trial', 'license:get-remaining',
+  // License IPC channels REMOVED (v3.6.0-rc.1+1) — license gate disabled
+  // for the internal RC test cycle; the renderer no longer invokes these
+  // and the main process no longer registers them.
   // Files
   'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
   'file:batch-save-wav',
