@@ -15,7 +15,7 @@
 | Branch `claude/add-section-analysis-ui-kFBNW` (or whatever the RC branch is) up-to-date |  |
 | `services/python-audio` ready for PyInstaller (handled by CI) |  |
 | FFmpeg static binaries available via `pnpm install` (`ffmpeg-static`, `@ffprobe-installer/ffprobe`) | Both already in `apps/desktop/devDependencies`. |
-| `LICENSE_HMAC_SECRET` injected into the CI runner secrets BEFORE build (≥ 16 chars, not the dev fallback) | GitHub repo settings → Secrets → Actions. |
+| ~~`LICENSE_HMAC_SECRET`~~ — **REMOVED in v3.6.0-rc.1+1.**  License gate is disabled; no secret is required for the build to run or for the packaged app to launch. |  |
 
 ---
 

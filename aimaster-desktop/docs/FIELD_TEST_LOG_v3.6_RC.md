@@ -122,6 +122,6 @@ Acceptance bar (from `QA_v3.6_RC.md`):
 - [ ] All P0 cases PASS on at least 2 testers per platform
 - [ ] No `recentFailures` entry of severity > advisory in any bundle
 - [ ] No leak of `/Users/`, `/home/`, `outputPath` etc. in any bundle
-- [ ] License-secret production gate verified (A9 / A10)
+- [ ] Packaged build launches WITHOUT `LICENSE_HMAC_SECRET` (A9) — license gate disabled in v3.6.0-rc.1+1
 - [ ] Live loudness meter (E3) confirmed by at least 1 tester
 - [ ] Phase-D analyzer cases (F1–F5) remain DEFERRED — not a blocker

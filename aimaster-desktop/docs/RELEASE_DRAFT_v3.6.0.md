@@ -17,9 +17,10 @@ QA 진행 체크리스트:
 
 ## Highlights
 
-- 🔒 **Phase-A 보안 하드닝** — `LICENSE_HMAC_SECRET` 가 dev fallback 일
-  때 패키징된 빌드를 **시작 시점에 거부** (메인 프로세스의 production
-  gate). dev / unpackaged 빌드는 영향 없음.
+- 🔓 **라이선스 게이트 비활성화** — 라이선스 키 / HMAC 시크릿 / 트라이얼
+  카운트 / production 차단 다이얼로그 전부 제거.  `LICENSE_HMAC_SECRET`
+  환경변수가 없어도 packaged 빌드가 정상 실행됩니다.  관련 IPC / UI /
+  store 는 dead-code 로 남아 있어 추후 재활성화 가능.
 - 🎚 **라이브 LUFS / TP 미터 정식 연결** — 결과 페이지 PreviewPlayer 가
   `LoudnessMeterPanel` 을 mount, 재생 중 BS.1770-4 측정값을 실시간 표시.
 - 🛠 **Vite worklet emit 수정** — worklet 소스를 plain JS 로 변환하고
@@ -40,8 +41,8 @@ QA 진행 체크리스트:
   없으면 무해하게 폴백 (false-positive 표시 안 함).
 - Reference matching UI 진입점 부재 (RPC 는 v3.4 부터 존재).
 - 강제 종료 시 OS temp dir 의 `aimaster_*.wav` 잔존 가능성.
-- production 빌드는 강한 `LICENSE_HMAC_SECRET` 환경변수 주입이 **필수**
-  (없으면 시작 시 모달 에러 후 종료).
+- 라이선스 / 트라이얼 카운트 표시 없음 — 게이트 비활성화로 인해
+  사용자에게 "Free" / "Pro" 구분이 보이지 않습니다.
 
 ## 자동 업데이트 정상 조건
 

@@ -1,41 +1,8 @@
 import React from 'react';
-import { useLicenseStore, selectRemainingTrials } from '../stores/licenseStore.js';
+// License badge / store / modal removed for the internal RC test cycle.
+// See main/index.ts header for the rationale.  TopBar layout remains the
+// same — SupportBundleButton stays as the only right-aligned chip.
 import SupportBundleButton from './SupportBundleButton.js';
-
-// ── License badge ─────────────────────────────────────────────────────────────
-
-function LicenseBadge() {
-  const info           = useLicenseStore((s) => s.licenseInfo);
-  const setShowModal   = useLicenseStore((s) => s.setShowModal);
-  const remaining      = useLicenseStore(selectRemainingTrials);
-  const isPro          = info?.tier === 'pro';
-
-  return (
-    <button
-      onClick={() => setShowModal(true)}
-      className={`no-drag flex items-center gap-1.5 px-2.5 py-1 rounded-md
-                  text-xs font-medium transition-colors
-                  ${isPro
-                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/15'
-                    : 'bg-zinc-800 text-zinc-500 border border-zinc-700 hover:text-zinc-300 hover:border-zinc-600'
-                  }`}
-    >
-      {isPro ? (
-        <>
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-          Licensed
-        </>
-      ) : (
-        <>
-          Free
-          {remaining !== Infinity && (
-            <span className="text-zinc-600">· {remaining}회 남음</span>
-          )}
-        </>
-      )}
-    </button>
-  );
-}
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
 
@@ -68,7 +35,6 @@ export default function TopBar({ subtitle, actions }: TopBarProps) {
       {actions && <div className="no-drag">{actions}</div>}
 
       <SupportBundleButton />
-      <LicenseBadge />
     </div>
   );
 }

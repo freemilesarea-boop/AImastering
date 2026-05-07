@@ -24,28 +24,15 @@
 
 ---
 
-## 1 · GitHub Actions Secret 설정 (1회만)
+## 1 · GitHub Actions Secret 설정 (변경됨 — 별도 secret 불필요)
 
-빌드를 시작하기 전에 **반드시** 한 가지 secret 을 설정해야 합니다.
-설정하지 않으면 production 게이트가 앱을 막아서 테스터들이 첫 실행을
-하지 못합니다.
+> **v3.6.0-rc.1+1 패치 이후, 이 단계는 사실상 비어 있습니다.**  이전 RC
+> 에서는 `LICENSE_HMAC_SECRET` 을 secret 으로 설정해야 했지만, 라이선스
+> 게이트가 비활성화되어 더 이상 필요하지 않습니다.  앱은 어떤 환경변수도
+> 없이 packaged 빌드에서 정상 실행됩니다.
 
-1. 브라우저에서 repo 열기 →
-   `https://github.com/freemilesarea-boop/AImastering`
-2. 우상단 **Settings** 탭
-3. 왼쪽 사이드바 **Secrets and variables → Actions**
-4. **New repository secret** 클릭
-5. 입력:
-   - **Name**: `LICENSE_HMAC_SECRET`
-   - **Value**: 32자 이상의 무작위 문자열 (예: 1Password / Bitwarden 으로
-     생성).  `aimaster-local-secret-v1` 처럼 알려진 값은 **절대 금지**.
-6. **Add secret** 클릭
-
-> 이 값은 라이선스 검증용 HMAC 키입니다.  공유 금지 / 외부에 붙여넣기
-> 금지 / 노출되면 즉시 회전.
-
-추가 secret 은 필요 없습니다.  `GITHUB_TOKEN` 은 Actions 가 자동으로
-주입합니다.
+`GITHUB_TOKEN` 은 Actions 가 자동으로 주입하므로 **추가 secret 등록은
+필요 없습니다**.  바로 §2 로 넘어가세요.
 
 ---
 
@@ -170,7 +157,7 @@ win) 이 모두 초록색으로 끝나야 합니다.
 5. 생성된 `aimaster-support-<timestamp>.json` 을 회신
 
 만약 테스터가 어디 있는지 못 찾으면 (예: "지원 진단" 버튼이 안 보임 —
-초기 화면에서는 버튼이 license badge 옆에 있어야 함):
+모든 페이지의 TopBar 우측 끝에 있어야 합니다):
 
 - DevTools 열기: `Ctrl + Shift + I` (Win) 또는 `Cmd + Option + I` (mac)
 - Console 탭에 다음 한 줄 붙여넣기:
@@ -241,9 +228,8 @@ rollup"** 섹션에 붙여넣으세요.
 - [ ] **G3** — 진단 JSON grep 결과 `/Users/`, `/home/<name>/`, `outputPath`,
       `previewPath`, `debugSummary`, `artifactDir`, `jobId` 어느 것도
       등장하지 않음.  사용자 홈은 모두 `~` 로 마스킹됨.
-- [ ] **G4** — License-secret production gate 검증 (`A9` / `A10`):
-      secret 미주입 빌드는 첫 실행 시 모달 + 종료, secret 주입 빌드는
-      정상 시작.
+- [ ] **G4** — packaged 빌드가 `LICENSE_HMAC_SECRET` 없이 정상 실행됨
+      (`A9`).  더 이상 startup blocked 다이얼로그가 뜨면 안 됩니다.
 - [ ] **G5** — Live LUFS / TP 미터 (`E3`) 가 macOS 1명 + Windows 1명에서
       재생 중 갱신됨이 확인됨.
 
@@ -297,8 +283,7 @@ rollup"** 섹션에 붙여넣으세요.
 - ❌ shared-types 의 기존 필드 시그니처 변경 (옵셔널 추가는 OK 였지만
     이번 필드 테스트 기간에는 보류)
 - ❌ electron-builder.yml 의 target / signing 설정 변경
-- ❌ License HMAC 시크릿 회전 (테스트 중에 키가 바뀌면 같은 빌드의
-    라이선스 동작이 달라집니다)
+- ❌ 라이선스 게이트 재활성화 (이번 RC 기간에는 비활성화 상태로 유지)
 
 허용되는 것 (오직 critical 한 경우만):
 - ✅ 문서 (docs/) 수정
@@ -311,8 +296,8 @@ rollup"** 섹션에 붙여넣으세요.
 ## 11 · 운영자 한 줄 요약
 
 ```
-Settings → Secrets → LICENSE_HMAC_SECRET 저장
-→ Actions → Run workflow (release_tag 비움)
+(Secrets 등록 단계는 이번 RC 부터 생략 — 라이선스 게이트 비활성화)
+Actions → Run workflow (release_tag 비움)
 → 30분 기다림
 → 3개 Artifacts 다운로드
 → Tester 5명에게 본인 분류 빌드 + 가이드 + 메시지 전달

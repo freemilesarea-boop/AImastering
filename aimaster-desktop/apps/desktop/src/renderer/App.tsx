@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from './stores/appStore.js';
-import { useLicenseStore } from './stores/licenseStore.js';
-import LicenseModal from './components/LicenseModal.js';
+// License gate disabled for the internal RC (v3.6.0-rc.1+1) — license
+// store / modal imports removed.  See main/index.ts header.
 import HomePage     from './pages/HomePage.js';
 import AnalysisPage from './pages/AnalysisPage.js';
 import MasteringPage from './pages/MasteringPage.js';
@@ -211,10 +211,6 @@ export default function App() {
 
 function AppInner() {
   const page = useAppStore((s) => s.currentPage);
-  const load = useLicenseStore((s) => s.load);
-
-  // Load license state once on startup
-  useEffect(() => { void load(); }, [load]);
 
   const pages: Record<string, React.ReactNode> = {
     home:      <HomePage />,
@@ -236,8 +232,7 @@ function AppInner() {
         </span>
       </div>
 
-      {/* License modal — overlays any page */}
-      <LicenseModal />
+      {/* License modal removed — license gate disabled for internal RC. */}
 
       {/* Toast notifications */}
       <Toast />

@@ -3,15 +3,17 @@
  *
  * Sections:
  *   1. 출력 디렉토리 — choose where master WAV files are saved by default
- *   2. 라이선스 — show tier/key, activate / deactivate
- *   3. 오디오 기본값 — default target LUFS / TP / sample rate / bit depth
- *   4. 정보 — app version, open log folder
+ *   2. 오디오 기본값 — default target LUFS / TP / sample rate / bit depth
+ *   3. 정보 — app version, open log folder
+ *
+ * (라이선스 섹션은 v3.6.0-rc.1+1 부터 제거 — 라이선스 게이트 비활성화.
+ *  관련 컴포넌트 / 스토어는 트리에 dead-code 로 남아 있지만 활성 코드
+ *  경로에서는 사용되지 않습니다.)
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
-import { useLicenseStore } from '../stores/licenseStore.js';
 
 // ── Section wrapper ────────────────────────────────────────────────────────────
 
@@ -60,128 +62,8 @@ function NumSelect({
   );
 }
 
-// ── License section ────────────────────────────────────────────────────────────
-
-function LicenseSection() {
-  const licenseInfo  = useLicenseStore((s) => s.licenseInfo);
-  const activate     = useLicenseStore((s) => s.activate);
-  const load         = useLicenseStore((s) => s.load);
-  const error        = useLicenseStore((s) => s.error);
-  const isLoading    = useLicenseStore((s) => s.isLoading);
-  const notify       = useAppStore((s) => s.notify);
-
-  const [key, setKey] = useState('');
-  const [mode, setMode] = useState<'view' | 'activate'>('view');
-
-  const isPro = licenseInfo?.tier === 'pro';
-
-  const handleActivate = useCallback(async () => {
-    if (!key.trim()) return;
-    try {
-      await activate(key.trim());
-      notify('라이선스가 활성화되었습니다.', 'success');
-      setMode('view');
-      setKey('');
-    } catch {
-      // error is set in licenseStore
-    }
-  }, [key, activate, notify]);
-
-  const handleDeactivate = useCallback(async () => {
-    await window.electronAPI.invoke('license:deactivate');
-    await load();
-    notify('라이선스가 해제되었습니다.', 'info');
-  }, [load, notify]);
-
-  return (
-    <Section title="라이선스">
-      {/* Tier badge */}
-      <Row label="플랜">
-        <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium border ${
-          isPro
-            ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
-            : 'bg-zinc-800 border-zinc-700 text-zinc-500'
-        }`}>
-          {isPro ? 'Pro' : '무료'}
-        </span>
-      </Row>
-
-      {/* Trial count for free tier */}
-      {!isPro && licenseInfo && (
-        <Row label="남은 체험 횟수">
-          <span className="font-mono text-sm text-zinc-300">
-            {licenseInfo.trialMax - licenseInfo.trialUsed} / {licenseInfo.trialMax}
-          </span>
-        </Row>
-      )}
-
-      {/* License key for pro */}
-      {isPro && licenseInfo?.key && (
-        <Row label="키">
-          <span className="font-mono text-xs text-zinc-500">{licenseInfo.key}</span>
-        </Row>
-      )}
-
-      {/* Actions */}
-      {mode === 'view' ? (
-        <div className="flex gap-2 pt-1">
-          {!isPro && (
-            <button
-              onClick={() => setMode('activate')}
-              className="no-drag px-3 py-1.5 rounded-lg text-xs font-medium
-                         bg-zinc-100 text-zinc-900 hover:bg-white transition-colors"
-            >
-              라이선스 키 입력
-            </button>
-          )}
-          {isPro && (
-            <button
-              onClick={handleDeactivate}
-              className="no-drag px-3 py-1.5 rounded-lg text-xs font-medium
-                         border border-zinc-700 text-zinc-500 hover:text-zinc-300
-                         hover:border-zinc-600 transition-colors"
-            >
-              해제
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-2 pt-1">
-          <input
-            type="text"
-            value={key}
-            onChange={(e) => setKey(e.target.value.toUpperCase())}
-            placeholder="AIMASTER-XXXX-XXXX-XXXX"
-            className="no-drag w-full bg-zinc-800 border border-zinc-700 rounded-lg
-                       px-3 py-2 text-sm text-zinc-200 font-mono placeholder:text-zinc-700
-                       focus:outline-none focus:border-zinc-500"
-            onKeyDown={(e) => { if (e.key === 'Enter') void handleActivate(); }}
-          />
-          {error && <p className="text-xs text-red-400">{error}</p>}
-          <div className="flex gap-2">
-            <button
-              onClick={() => void handleActivate()}
-              disabled={isLoading || !key.trim()}
-              className="no-drag px-3 py-1.5 rounded-lg text-xs font-medium
-                         bg-zinc-100 text-zinc-900 hover:bg-white
-                         disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              {isLoading ? '확인 중…' : '활성화'}
-            </button>
-            <button
-              onClick={() => { setMode('view'); setKey(''); }}
-              className="no-drag px-3 py-1.5 rounded-lg text-xs font-medium
-                         border border-zinc-700 text-zinc-500 hover:text-zinc-300
-                         hover:border-zinc-600 transition-colors"
-            >
-              취소
-            </button>
-          </div>
-        </div>
-      )}
-    </Section>
-  );
-}
+// (License section removed — see file header.  Settings page now starts
+//  at the output-directory section.)
 
 // ── Output directory section ───────────────────────────────────────────────────
 
@@ -333,7 +215,6 @@ export default function SettingsPage() {
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-lg mx-auto px-6 py-5 space-y-4 animate-in">
-          <LicenseSection />
           <OutputDirSection />
           <AudioDefaultsSection />
           <InfoSection />
