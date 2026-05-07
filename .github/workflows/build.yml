@@ -119,8 +119,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Louver-Mastering-AI-linux
+          # `latest-linux.yml` is the auto-update metadata file
+          # electron-updater fetches at runtime — must travel with the
+          # AppImage so the release-draft job can attach it to the
+          # GitHub Release (parity with mac / windows uploads).
           path: |
             aimaster-desktop/apps/desktop/out/*.AppImage
+            aimaster-desktop/apps/desktop/out/latest-linux.yml
           if-no-files-found: error
           retention-days: 30
 
@@ -633,7 +638,14 @@ jobs:
           # workflow_dispatch 트리거 시 tag 가 아직 없으면 softprops 가
           # 현재 commit (workflow run 의 SHA) 에서 자동으로 tag 를 생성한다.
           target_commitish:       ${{ github.sha }}
+          # IMPORTANT: each platform's `latest*.yml` MUST be attached so
+          # electron-updater clients can discover the new version.
+          # Without these the auto-update path is silently broken — the
+          # client gets a 404 on the metadata HEAD request.
           files: |
             artifacts/linux/*.AppImage
+            artifacts/linux/latest-linux.yml
             artifacts/mac/*.zip
+            artifacts/mac/latest-mac.yml
             artifacts/win/*.exe
+            artifacts/win/latest.yml

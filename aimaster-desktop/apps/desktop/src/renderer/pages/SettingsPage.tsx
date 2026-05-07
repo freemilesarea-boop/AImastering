@@ -177,8 +177,11 @@ function InfoSection() {
     <Section title="정보">
       <Row label="버전">
         <span className="font-mono text-xs text-zinc-500">
-          {/* Vite injects VITE_APP_VERSION from package.json at build time */}
-          {import.meta.env.VITE_APP_VERSION ?? '1.0.0'}
+          {/* Vite injects __APP_VERSION__ as a `define` constant from
+              package.json at build time — see vite.config.ts.  The
+              previous `import.meta.env.VITE_APP_VERSION` reference fell
+              back to '1.0.0' on every build. */}
+          {typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '1.0.0'}
         </span>
       </Row>
       <Row label="로그">
