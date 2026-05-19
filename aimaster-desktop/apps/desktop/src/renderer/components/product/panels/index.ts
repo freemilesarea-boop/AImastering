@@ -10,3 +10,6 @@ export { ImagerParameterPanel }    from './ImagerParameterPanel.js';
 export { LimiterParameterPanel }   from './LimiterParameterPanel.js';
 export { ExportParameterPanel }    from './ExportParameterPanel.js';
 export type { ExportParameterPanelProps } from './ExportParameterPanel.js';
+
+export { usePanelStateBridge } from './usePanelStateBridge.js';
+export type { ControlledPanelProps, PanelStateBridge, ParamRecord } from './usePanelStateBridge.js';

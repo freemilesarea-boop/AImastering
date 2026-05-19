@@ -1,16 +1,4 @@
 // LimiterParameterPanel — true-peak limiter UI shell.
-//
-// Sections:
-//   1. Target LUFS / True-peak ceiling
-//   2. Lookahead · Character / Style preset
-//   3. Live gain-reduction meter shell
-//
-// TODO(M3-P-NEXT-5 binding):
-//   • targetLufs    → engine.limiter.targetLufs (also feeds preset header)
-//   • ceilingDbtp   → engine.limiter.ceiling
-//   • lookaheadMs   → engine.limiter.lookahead
-//   • character     → engine.limiter.character
-//   • grDb          ← engine.limiter.grDb (read-only meter)
 
 import React from 'react';
 import {
@@ -21,6 +9,8 @@ import {
   LouiTogglePill,
 } from '../controls/index.js';
 import { surface, text, typography, meter, space } from '../../../theme/loui-theme.js';
+import { ALL_MODULE_PARAMETER_DEFS } from '../../../audio/parameters/index.js';
+import { usePanelStateBridge, type ControlledPanelProps } from './usePanelStateBridge.js';
 
 type LimiterCharacter = 'transparent' | 'glue' | 'aggressive' | 'classic';
 
@@ -29,16 +19,17 @@ interface LimState {
   ceilingDbtp:   number;
   lookaheadMs:   number;
   character:     LimiterCharacter;
-  /** Inter-sample (ISP / true-peak) detection. */
   isp:           boolean;
 }
 
+const findLim = (id: string) =>
+  ALL_MODULE_PARAMETER_DEFS.limiter.parameters.find((p) => p.id === id)!.default;
 const DEFAULTS: LimState = {
-  targetLufs:   -14,
-  ceilingDbtp:  -1.0,
-  lookaheadMs:   2.5,
-  character:    'glue',
-  isp:           true,
+  targetLufs:   findLim('targetLufs')   as number,
+  ceilingDbtp:  findLim('ceilingDbtp')  as number,
+  lookaheadMs:  findLim('lookaheadMs')  as number,
+  character:    findLim('character')    as LimiterCharacter,
+  isp:          findLim('isp')          as boolean,
 };
 
 const CHARACTERS: { id: LimiterCharacter; label: string; desc: string }[] = [
@@ -48,11 +39,10 @@ const CHARACTERS: { id: LimiterCharacter; label: string; desc: string }[] = [
   { id: 'classic',     label: 'Classic',     desc: 'Vintage, soft saturation' },
 ];
 
-export function LimiterParameterPanel() {
-  const [s, setS] = React.useState<LimState>(DEFAULTS);
-
-  // Live mock GR — derived from current ceiling pressure.
+export function LimiterParameterPanel(props: ControlledPanelProps = {}) {
+  const { state: s, setParam } = usePanelStateBridge<LimState>(DEFAULTS, props);
   const [grNorm, setGrNorm] = React.useState(0.4);
+
   React.useEffect(() => {
     const id = setInterval(() => {
       setGrNorm((prev) => {
@@ -64,9 +54,7 @@ export function LimiterParameterPanel() {
     return () => clearInterval(id);
   }, [s.targetLufs]);
 
-  const update = <K extends keyof LimState>(k: K) => (v: LimState[K]) => {
-    setS((prev) => ({ ...prev, [k]: v }));
-  };
+  const update = <K extends keyof LimState>(k: K) => (v: LimState[K]) => setParam(k, v);
 
   const grDb = -grNorm * 6;
   const grStatus: 'ok' | 'warn' | 'danger' = grNorm > 0.8 ? 'danger' : grNorm > 0.5 ? 'warn' : 'ok';

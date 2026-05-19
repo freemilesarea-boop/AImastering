@@ -1,15 +1,4 @@
 // ImagerParameterPanel — stereo width / mono / per-band imager UI shell.
-//
-// Sections:
-//   1. Correlation warning bar (live)
-//   2. Width · Low Mono · Stereoize
-//   3. Width-by-band shells (4 bands, UI-only)
-//
-// TODO(M3-P-NEXT-5 binding):
-//   • widthPct     → engine.imager.width
-//   • lowMonoHz    → engine.imager.lowMonoFrequency
-//   • stereoize    → engine.imager.stereoize
-//   • per-band     → engine.imager.bands[i].width
 
 import React from 'react';
 import {
@@ -20,27 +9,36 @@ import {
   LouiValueBadge,
 } from '../controls/index.js';
 import { surface, text, typography, space } from '../../../theme/loui-theme.js';
+import { ALL_MODULE_PARAMETER_DEFS } from '../../../audio/parameters/index.js';
+import { usePanelStateBridge, type ControlledPanelProps } from './usePanelStateBridge.js';
 
 interface ImgState {
-  widthPct:   number;
-  lowMonoHz:  number;
-  stereoize:  boolean;
-  bandWidth:  [number, number, number, number];
+  widthPct:        number;
+  lowMonoHz:       number;
+  stereoize:       boolean;
+  bandLowPct:      number;
+  bandMidLowPct:   number;
+  bandMidHighPct:  number;
+  bandHighPct:     number;
 }
 
+const findImg = (id: string) =>
+  ALL_MODULE_PARAMETER_DEFS.imager.parameters.find((p) => p.id === id)!.default;
 const DEFAULTS: ImgState = {
-  widthPct:   100,
-  lowMonoHz:  120,
-  stereoize:  false,
-  bandWidth:  [40, 100, 110, 90],
+  widthPct:       findImg('widthPct')       as number,
+  lowMonoHz:      findImg('lowMonoHz')      as number,
+  stereoize:      findImg('stereoize')      as boolean,
+  bandLowPct:     findImg('bandLowPct')     as number,
+  bandMidLowPct:  findImg('bandMidLowPct')  as number,
+  bandMidHighPct: findImg('bandMidHighPct') as number,
+  bandHighPct:    findImg('bandHighPct')    as number,
 };
 
+const BAND_KEYS = ['bandLowPct', 'bandMidLowPct', 'bandMidHighPct', 'bandHighPct'] as const;
 const BAND_LABELS = ['Low', 'Mid-Low', 'Mid-High', 'High'];
 
-export function ImagerParameterPanel() {
-  const [s, setS] = React.useState<ImgState>(DEFAULTS);
-  // Driven mock — correlation drifts within ± 0.1 of a base value derived
-  // from the width slider.  UI-only.
+export function ImagerParameterPanel(props: ControlledPanelProps = {}) {
+  const { state: s, setParam } = usePanelStateBridge<ImgState>(DEFAULTS, props);
   const [correlation, setCorrelation] = React.useState(0.78);
   React.useEffect(() => {
     const id = setInterval(() => {
@@ -53,9 +51,7 @@ export function ImagerParameterPanel() {
     return () => clearInterval(id);
   }, [s.widthPct]);
 
-  const update = <K extends keyof ImgState>(k: K) => (v: ImgState[K]) => {
-    setS((prev) => ({ ...prev, [k]: v }));
-  };
+  const update = <K extends keyof ImgState>(k: K) => (v: ImgState[K]) => setParam(k, v);
 
   const correlationStatus: 'ok' | 'warn' | 'danger' =
     correlation < -0.1 ? 'danger' : correlation < 0.2 ? 'warn' : 'ok';
@@ -118,14 +114,13 @@ export function ImagerParameterPanel() {
           gap: space['2'],
           paddingBlock: space['2'],
         }}>
-          {s.bandWidth.map((w, i) => (
-            <BandBar key={i}
-                     label={BAND_LABELS[i]!}
-                     value={w}
-                     onChange={(v) => setS((p) => ({
-                       ...p,
-                       bandWidth: p.bandWidth.map((x, j) => j === i ? v : x) as ImgState['bandWidth'],
-                     }))} />
+          {BAND_KEYS.map((key, i) => (
+            <BandBar
+              key={key}
+              label={BAND_LABELS[i]!}
+              value={s[key]}
+              onChange={(v) => setParam(key, v)}
+            />
           ))}
         </div>
       </LouiSectionCard>
@@ -142,7 +137,7 @@ function BandBar({
   value: number;
   onChange: (v: number) => void;
 }) {
-  const fillPct = Math.max(0, Math.min(200, value)) / 2; // 0..200 → 0..100 px
+  const fillPct = Math.max(0, Math.min(200, value)) / 2;
   return (
     <label style={{
       flex: 1,
@@ -161,7 +156,6 @@ function BandBar({
         position: 'relative',
         overflow: 'hidden',
       }}>
-        {/* Centre line — 100% mark */}
         <div style={{
           position: 'absolute',
           left: 0, right: 0,

@@ -1,22 +1,4 @@
 // ExportParameterPanel — output format + dither + normalisation summary.
-//
-// Sections:
-//   1. Format (WAV / FLAC / MP3 / AIFF / OGG)
-//   2. Sample Rate · Bit Depth
-//   3. Dither (on / off + algorithm)
-//   4. Normalize target summary (read-only echo of LimiterParameterPanel
-//      target LUFS + ceiling for confidence before export)
-//
-// NOTE: this panel is editorial — the actual file-render is driven by
-// the Electron main process today.  When wired in M3-P-NEXT-5 it will
-// build an export descriptor object that `file:save-wav` consumes.
-//
-// TODO(M3-P-NEXT-5 binding):
-//   • format       → export.format
-//   • sampleRate   → export.sampleRate
-//   • bitDepth     → export.bitDepth
-//   • ditherMode   → export.dither
-//   • exportButton.onClick → existing `file:save-wav` IPC
 
 import React from 'react';
 import {
@@ -25,26 +7,28 @@ import {
   LouiValueBadge,
 } from '../controls/index.js';
 import { surface, text, typography, meter, space, radius } from '../../../theme/loui-theme.js';
+import { ALL_MODULE_PARAMETER_DEFS } from '../../../audio/parameters/index.js';
+import { usePanelStateBridge, type ControlledPanelProps } from './usePanelStateBridge.js';
 
 type ExportFormat = 'wav' | 'flac' | 'mp3' | 'aiff' | 'ogg';
-type SampleRate   = 44100 | 48000 | 88200 | 96000 | 192000;
-type BitDepth     = 16 | 24 | 32;
-type DitherMode   = 'none' | 'tpdf' | 'shaped';
+type SampleRateStr = '44100' | '48000' | '88200' | '96000' | '192000';
+type BitDepthStr   = '16' | '24' | '32';
+type DitherMode    = 'none' | 'tpdf' | 'shaped';
 
 interface ExportState {
   format:     ExportFormat;
-  sampleRate: SampleRate;
-  bitDepth:   BitDepth;
+  sampleRate: SampleRateStr;
+  bitDepth:   BitDepthStr;
   dither:     DitherMode;
-  comingSoon: boolean;
 }
 
+const findExp = (id: string) =>
+  ALL_MODULE_PARAMETER_DEFS.export.parameters.find((p) => p.id === id)!.default;
 const DEFAULTS: ExportState = {
-  format:     'wav',
-  sampleRate:  48000,
-  bitDepth:    24,
-  dither:     'tpdf',
-  comingSoon:  true,
+  format:     findExp('format')     as ExportFormat,
+  sampleRate: findExp('sampleRate') as SampleRateStr,
+  bitDepth:   findExp('bitDepth')   as BitDepthStr,
+  dither:     findExp('dither')     as DitherMode,
 };
 
 const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
@@ -55,15 +39,27 @@ const FORMATS: { id: ExportFormat; label: string; hint: string }[] = [
   { id: 'ogg',  label: 'OGG',  hint: 'Vorbis · open' },
 ];
 
-const SAMPLE_RATES: SampleRate[] = [44100, 48000, 88200, 96000, 192000];
-const BIT_DEPTHS:   BitDepth[]   = [16, 24, 32];
+const SAMPLE_RATES: { id: SampleRateStr; label: string; hint?: string }[] = [
+  { id: '44100',  label: '44.1 kHz' },
+  { id: '48000',  label: '48 kHz', hint: 'Default' },
+  { id: '88200',  label: '88.2 kHz', hint: 'Hi-res' },
+  { id: '96000',  label: '96 kHz', hint: 'Hi-res' },
+  { id: '192000', label: '192 kHz', hint: 'Hi-res' },
+];
+
+const BIT_DEPTHS: { id: BitDepthStr; label: string; hint: string }[] = [
+  { id: '16', label: '16-bit', hint: 'CD / streaming' },
+  { id: '24', label: '24-bit', hint: 'Default' },
+  { id: '32', label: '32-bit Float', hint: 'Float (no clipping)' },
+];
+
 const DITHER_MODES: { id: DitherMode; label: string; hint: string }[] = [
   { id: 'none',   label: 'None',   hint: 'No noise added' },
   { id: 'tpdf',   label: 'TPDF',   hint: 'Standard noise dither' },
   { id: 'shaped', label: 'Shaped', hint: 'Noise-shaped (recommended)' },
 ];
 
-function ChipRow<T extends string | number>({
+function ChipRow<T extends string>({
   options,
   active,
   onChange,
@@ -133,20 +129,18 @@ function ChipRow<T extends string | number>({
   );
 }
 
-export interface ExportParameterPanelProps {
+export interface ExportParameterPanelProps extends ControlledPanelProps {
   /** Optional — show the target summary from external state. */
   targetLufs?: number;
   targetTp?:   number;
-  /** Click → export.  No-op in the shell. */
+  /** Hide the "coming soon" notice and reveal an Export CTA. */
+  showExportButton?: boolean;
+  /** Click → export action.  Pure UI today. */
   onExport?:   () => void;
 }
 
 export function ExportParameterPanel(props: ExportParameterPanelProps = {}) {
-  const [s, setS] = React.useState<ExportState>(DEFAULTS);
-  const update = <K extends keyof ExportState>(k: K) => (v: ExportState[K]) => {
-    setS((prev) => ({ ...prev, [k]: v }));
-  };
-
+  const { state: s, setParam } = usePanelStateBridge<ExportState>(DEFAULTS, props);
   const tLufs = props.targetLufs ?? -14;
   const tTp   = props.targetTp ?? -1;
 
@@ -156,33 +150,25 @@ export function ExportParameterPanel(props: ExportParameterPanelProps = {}) {
         <ChipRow
           options={FORMATS}
           active={s.format}
-          onChange={update('format')}
+          onChange={(v) => setParam('format', v)}
           ariaLabel="Export format"
         />
       </LouiSectionCard>
 
       <LouiSectionCard title="Sample Rate">
         <ChipRow
-          options={SAMPLE_RATES.map((r) => ({
-            id: r,
-            label: `${(r / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} kHz`,
-            hint: r === 48000 ? 'Default' : r >= 88200 ? 'Hi-res' : '',
-          }))}
+          options={SAMPLE_RATES}
           active={s.sampleRate}
-          onChange={update('sampleRate')}
+          onChange={(v) => setParam('sampleRate', v)}
           ariaLabel="Sample rate"
         />
       </LouiSectionCard>
 
       <LouiSectionCard title="Bit Depth">
         <ChipRow
-          options={BIT_DEPTHS.map((d) => ({
-            id: d,
-            label: `${d}-bit`,
-            hint: d === 16 ? 'CD / streaming' : d === 24 ? 'Default' : 'Float (no clipping)',
-          }))}
+          options={BIT_DEPTHS}
           active={s.bitDepth}
-          onChange={update('bitDepth')}
+          onChange={(v) => setParam('bitDepth', v)}
           ariaLabel="Bit depth"
         />
       </LouiSectionCard>
@@ -193,17 +179,17 @@ export function ExportParameterPanel(props: ExportParameterPanelProps = {}) {
           <LouiTogglePill
             label=""
             value={s.dither !== 'none'}
-            onChange={(v) => update('dither')(v ? 'tpdf' : 'none')}
+            onChange={(v) => setParam('dither', v ? 'tpdf' : 'none')}
           />
         }
       >
         <ChipRow
           options={DITHER_MODES}
           active={s.dither}
-          onChange={update('dither')}
+          onChange={(v) => setParam('dither', v)}
           ariaLabel="Dither mode"
         />
-        {s.bitDepth === 32 && s.dither !== 'none' && (
+        {s.bitDepth === '32' && s.dither !== 'none' && (
           <span style={{
             fontFamily: typography.family.sans,
             fontSize: typography.size.xs,
@@ -246,22 +232,7 @@ export function ExportParameterPanel(props: ExportParameterPanelProps = {}) {
         </span>
       </LouiSectionCard>
 
-      {s.comingSoon ? (
-        <span style={{
-          fontFamily: typography.family.sans,
-          fontSize: typography.size.xs,
-          color: meter.accent.foreground,
-          background: 'rgba(167,139,250,0.10)',
-          border: `1px solid rgba(167,139,250,0.45)`,
-          borderRadius: radius.chip,
-          padding: `${space['2']} ${space['3']}`,
-          lineHeight: 1.4,
-        }}>
-          ✦ Format / sample-rate / dither selection is a UI shell — actual
-          export still routes through the existing WAV / MP3 save buttons.
-          Live binding lands in M3-P-NEXT-5.
-        </span>
-      ) : (
+      {props.showExportButton ? (
         <button
           type="button"
           onClick={props.onExport}
@@ -280,6 +251,21 @@ export function ExportParameterPanel(props: ExportParameterPanelProps = {}) {
         >
           Export
         </button>
+      ) : (
+        <span style={{
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          color: meter.accent.foreground,
+          background: 'rgba(167,139,250,0.10)',
+          border: `1px solid rgba(167,139,250,0.45)`,
+          borderRadius: radius.chip,
+          padding: `${space['2']} ${space['3']}`,
+          lineHeight: 1.4,
+        }}>
+          ✦ Format / sample-rate / dither selection is a UI shell — actual
+          export still routes through the existing WAV / MP3 save buttons.
+          Live binding lands in M3-P-NEXT-5B.
+        </span>
       )}
     </>
   );

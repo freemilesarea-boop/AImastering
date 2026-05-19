@@ -24,12 +24,18 @@ import React, { useCallback, useRef, useState } from 'react';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { toFileUrl } from '../utils/fileUrl.js';
-import { surface, text, typography, space } from '../theme/loui-theme.js';
+import { surface, text, typography, meter, space, radius } from '../theme/loui-theme.js';
 import { analyzerFactoryLabel } from '../audio/analyzer-factory-resolver.js';
 import {
   WasmAnalyzerProvider,
   useWasmAnalyzerSession,
 } from '../audio/wasm-analyzer-context.js';
+import {
+  ModuleParameterStateProvider,
+  useModuleParameters,
+  type ModuleId,
+  type ParameterValue,
+} from '../audio/parameters/index.js';
 import {
   LouiTopBar,
   LouiPresetHeader,
@@ -257,8 +263,6 @@ function ProductLayoutInner({
       <ModuleSlideOverHost
         selected={selectedModule ?? null}
         onClose={() => { if (selectedModule) onSelectModule?.(selectedModule); }}
-        {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
-        {...(typeof targetTp   === 'number' ? { targetTp }   : {})}
       />
     </div>
   );
@@ -269,8 +273,6 @@ function ProductLayoutInner({
 function ModuleSlideOverHost(props: {
   selected: ModuleCardDef['id'] | null;
   onClose: () => void;
-  targetLufs?: number;
-  targetTp?: number;
 }) {
   const isOpen = Boolean(props.selected);
   // Keep the previous selection visible during the close transition so
@@ -290,21 +292,6 @@ function ModuleSlideOverHost(props: {
     }
   };
 
-  const renderPanel = (id: ModuleCardDef['id']) => {
-    switch (id) {
-      case 'eq':       return <EqParameterPanel />;
-      case 'dynamics': return <DynamicsParameterPanel />;
-      case 'imager':   return <ImagerParameterPanel />;
-      case 'limiter':  return <LimiterParameterPanel />;
-      case 'export':   return (
-        <ExportParameterPanel
-          {...(typeof props.targetLufs === 'number' ? { targetLufs: props.targetLufs } : {})}
-          {...(typeof props.targetTp   === 'number' ? { targetTp: props.targetTp }     : {})}
-        />
-      );
-    }
-  };
-
   const id = renderedId ?? 'eq';
   const meta = titleFor(id);
   return (
@@ -313,10 +300,119 @@ function ModuleSlideOverHost(props: {
       subtitle={meta.subtitle}
       open={isOpen}
       onClose={props.onClose}
+      headerActions={renderedId ? <SlideOverActions moduleId={renderedId as ModuleId} /> : null}
     >
-      {renderedId ? renderPanel(renderedId) : null}
+      {renderedId ? <ControlledPanelHost moduleId={renderedId as ModuleId} /> : null}
     </LouiModuleSlideOver>
   );
+}
+
+// Renders the inline header actions: modified badge + bypass toggle + reset.
+function SlideOverActions({ moduleId }: { moduleId: ModuleId }) {
+  const { isModified, bypass, setBypass, reset } = useModuleParameters(moduleId);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: space['2'] }}>
+      {isModified && (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          height: 22,
+          paddingInline: 8,
+          borderRadius: radius.chip,
+          border: `1px solid rgba(167,139,250,0.45)`,
+          background: 'rgba(167,139,250,0.16)',
+          color: meter.accent.foreground,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          fontWeight: typography.weight.medium,
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+        }}>
+          Modified
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => setBypass(!bypass)}
+        aria-pressed={bypass}
+        title={bypass ? 'Bypassed — click to enable' : 'Enabled — click to bypass'}
+        style={{
+          height: 22,
+          paddingInline: 10,
+          borderRadius: radius.chip,
+          border: `1px solid ${bypass ? meter.warn.foreground : surface.border}`,
+          background: bypass ? meter.warn.background : 'transparent',
+          color: bypass ? meter.warn.foreground : text.tertiary,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          fontWeight: typography.weight.medium,
+          letterSpacing: '0.02em',
+          cursor: 'pointer',
+        }}
+      >
+        {bypass ? 'Bypassed' : 'On'}
+      </button>
+      <button
+        type="button"
+        onClick={() => reset()}
+        title="Reset module parameters to defaults"
+        style={{
+          height: 22,
+          paddingInline: 8,
+          borderRadius: radius.chip,
+          border: `1px solid ${surface.border}`,
+          background: 'transparent',
+          color: text.tertiary,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          cursor: 'pointer',
+        }}
+      >
+        Reset
+      </button>
+    </div>
+  );
+}
+
+// Pulls the module slice from the central state and feeds it to the
+// appropriate panel as controlled props.  Every onChange becomes a
+// SET_MODULE_PARAM command in the log.
+function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
+  const api = useModuleParameters(moduleId);
+  const stateRecord = api.state.parameters;
+  const onParamChange = (parameterId: string, value: ParameterValue) =>
+    api.setParam(parameterId, value);
+  const onBypassChange = (b: boolean) => api.setBypass(b);
+  const onReset = () => api.reset();
+
+  // Read limiter targets when rendering the export panel so the
+  // "Normalize Target" echo reflects the live state.
+  const limiterApi = useModuleParameters('limiter');
+  const tLufs = limiterApi.get('targetLufs');
+  const tTp   = limiterApi.get('ceilingDbtp');
+
+  const common = {
+    state: stateRecord,
+    bypass: api.bypass,
+    isModified: api.isModified,
+    onParamChange,
+    onBypassChange,
+    onReset,
+  };
+
+  switch (moduleId) {
+    case 'eq':       return <EqParameterPanel       {...common} />;
+    case 'dynamics': return <DynamicsParameterPanel {...common} />;
+    case 'imager':   return <ImagerParameterPanel   {...common} />;
+    case 'limiter':  return <LimiterParameterPanel  {...common} />;
+    case 'export':   return (
+      <ExportParameterPanel
+        {...common}
+        targetLufs={typeof tLufs === 'number' ? tLufs : -14}
+        targetTp={typeof tTp   === 'number' ? tTp   : -1}
+      />
+    );
+  }
 }
 
 // ── Storybook / test path — session bypasses provider ────────────────────
@@ -334,18 +430,20 @@ function ProductLayoutWithOverride({
   const onSelectModule = (id: ModuleCardDef['id']) =>
     setSelectedModule((prev) => (prev === id ? undefined : id));
   return (
-    <ProductLayoutInner
-      session={session}
-      active={active}
-      sampleRate={48000}
-      channels={2}
-      targetLufs={-14}
-      targetTp={-1}
-      {...(presetId ? { presetId } : {})}
-      onPresetChange={setPresetId}
-      {...(selectedModule ? { selectedModule } : {})}
-      onSelectModule={onSelectModule}
-    />
+    <ModuleParameterStateProvider>
+      <ProductLayoutInner
+        session={session}
+        active={active}
+        sampleRate={48000}
+        channels={2}
+        targetLufs={-14}
+        targetTp={-1}
+        {...(presetId ? { presetId } : {})}
+        onPresetChange={setPresetId}
+        {...(selectedModule ? { selectedModule } : {})}
+        onSelectModule={onSelectModule}
+      />
+    </ModuleParameterStateProvider>
   );
 }
 
@@ -424,6 +522,7 @@ function ProductPageProduction() {
         mediaElement={meterReady ? audioRef.current : null}
         active={playing}
       >
+      <ModuleParameterStateProvider>
         <ProductPageProductionInner
           isPlaying={playing}
           onPlayPause={togglePlay}
@@ -441,6 +540,7 @@ function ProductPageProduction() {
           onExport={onExport}
           onSettings={onSettings}
         />
+      </ModuleParameterStateProvider>
       </WasmAnalyzerProvider>
     </>
   );

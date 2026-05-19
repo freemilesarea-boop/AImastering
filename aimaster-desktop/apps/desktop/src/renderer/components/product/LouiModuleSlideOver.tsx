@@ -31,6 +31,12 @@ export interface LouiModuleSlideOverProps {
   onClose: () => void;
   /** Width in px.  Default 480. */
   width?: number;
+  /**
+   * Optional header content slotted to the left of the close button —
+   * used by ProductPage for the "(modified)" badge / Reset / Bypass
+   * actions surfaced from the central parameter state.
+   */
+  headerActions?: React.ReactNode;
   children: React.ReactNode;
 }
 
@@ -172,7 +178,9 @@ export function LouiModuleSlideOver(props: LouiModuleSlideOverProps) {
             )}
           </div>
 
-          <button
+          <div style={{ display: 'flex', alignItems: 'center', gap: space['2'] }}>
+            {props.headerActions}
+            <button
             type="button"
             aria-label="Close"
             onClick={props.onClose}
@@ -202,6 +210,7 @@ export function LouiModuleSlideOver(props: LouiModuleSlideOverProps) {
               <path d="M4 4l8 8M12 4l-8 8" />
             </svg>
           </button>
+          </div>
         </header>
 
         {/* Body — scroll inside the panel */}

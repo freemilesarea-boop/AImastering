@@ -1,17 +1,4 @@
 // DynamicsParameterPanel — Glue compressor UI shell.
-//
-// Sections:
-//   1. Live gain-reduction mini-meter (top, headline)
-//   2. Threshold · Ratio · Attack · Release knobs
-//   3. Mix slider (parallel comp)
-//
-// TODO(M3-P-NEXT-5 binding):
-//   • thresholdDb  → engine.glueComp.threshold
-//   • ratio        → engine.glueComp.ratio
-//   • attackMs     → engine.glueComp.attack
-//   • releaseMs    → engine.glueComp.release
-//   • mixPct       → engine.glueComp.mix
-//   • gainReduction (read) → engine.glueComp.grDb
 
 import React from 'react';
 import {
@@ -21,6 +8,8 @@ import {
   LouiMiniMeter,
 } from '../controls/index.js';
 import { space } from '../../../theme/loui-theme.js';
+import { ALL_MODULE_PARAMETER_DEFS } from '../../../audio/parameters/index.js';
+import { usePanelStateBridge, type ControlledPanelProps } from './usePanelStateBridge.js';
 
 interface DynState {
   thresholdDb: number;
@@ -31,23 +20,19 @@ interface DynState {
 }
 
 const DEFAULTS: DynState = {
-  thresholdDb: -14,
-  ratio:        2.0,
-  attackMs:    10,
-  releaseMs:   120,
-  mixPct:      100,
+  thresholdDb: ALL_MODULE_PARAMETER_DEFS.dynamics.parameters.find((p) => p.id === 'thresholdDb')!.default as number,
+  ratio:       ALL_MODULE_PARAMETER_DEFS.dynamics.parameters.find((p) => p.id === 'ratio')!.default       as number,
+  attackMs:    ALL_MODULE_PARAMETER_DEFS.dynamics.parameters.find((p) => p.id === 'attackMs')!.default    as number,
+  releaseMs:   ALL_MODULE_PARAMETER_DEFS.dynamics.parameters.find((p) => p.id === 'releaseMs')!.default   as number,
+  mixPct:      ALL_MODULE_PARAMETER_DEFS.dynamics.parameters.find((p) => p.id === 'mixPct')!.default      as number,
 };
 
-export function DynamicsParameterPanel() {
-  const [s, setS] = React.useState<DynState>(DEFAULTS);
-  // UI-shell-only — drives the mini meter so the demo feels alive without
-  // a real gain-reduction stream.  Fake-value oscillates between 0 and a
-  // value derived from threshold + ratio.
+export function DynamicsParameterPanel(props: ControlledPanelProps = {}) {
+  const { state: s, setParam } = usePanelStateBridge<DynState>(DEFAULTS, props);
   const [grNorm, setGrNorm] = React.useState(0.3);
+
   React.useEffect(() => {
     const id = setInterval(() => {
-      // Pseudo-random walk bounded to a sensible range so the value moves
-      // organically without crossing UI bounds.
       setGrNorm((prev) => {
         const target = Math.min(1, Math.max(0, (Math.abs(s.thresholdDb) / 24) * (s.ratio / 4)));
         const drift = (Math.random() - 0.5) * 0.12;
@@ -57,11 +42,7 @@ export function DynamicsParameterPanel() {
     return () => clearInterval(id);
   }, [s.thresholdDb, s.ratio]);
 
-  const update = <K extends keyof DynState>(k: K) => (v: DynState[K]) => {
-    setS((prev) => ({ ...prev, [k]: v }));
-  };
-
-  // Map normalised meter value 0..1 → dB readout (0 dB to -12 dB).
+  const update = <K extends keyof DynState>(k: K) => (v: DynState[K]) => setParam(k, v);
   const grDb = -grNorm * 12;
 
   return (

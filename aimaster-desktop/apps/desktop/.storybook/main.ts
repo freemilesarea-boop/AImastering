@@ -49,6 +49,10 @@ const config: StorybookConfig = {
             __dirname, '..', '..', '..',
             'packages', 'shared-types', 'src', 'streaming', 'index.ts',
           ),
+          '@aimaster/shared-types/engine': path.resolve(
+            __dirname, '..', '..', '..',
+            'packages', 'shared-types', 'src', 'engine', 'index.ts',
+          ),
           '@aimaster/shared-types': path.resolve(
             __dirname, '..', '..', '..',
             'packages', 'shared-types', 'src', 'index.ts',
