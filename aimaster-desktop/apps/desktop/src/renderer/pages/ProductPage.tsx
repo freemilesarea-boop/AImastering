@@ -37,6 +37,12 @@ import {
   LouiMeterColumn,
   LouiModuleStrip,
   LouiStatusBar,
+  LouiModuleSlideOver,
+  EqParameterPanel,
+  DynamicsParameterPanel,
+  ImagerParameterPanel,
+  LimiterParameterPanel,
+  ExportParameterPanel,
   type ModuleCardDef,
 } from '../components/product/index.js';
 import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
@@ -243,7 +249,73 @@ function ProductLayoutInner({
         engineLabel={analyzerFactoryLabel()}
         running={active}
       />
+
+      {/* Module parameter slide-over.  Mounts behind a backdrop when a
+          module is selected; closes via ESC / backdrop / close button.
+          Re-clicking the same card from LouiModuleStrip also closes
+          (handled by the caller's `onSelectModule` toggle logic). */}
+      <ModuleSlideOverHost
+        selected={selectedModule ?? null}
+        onClose={() => { if (selectedModule) onSelectModule?.(selectedModule); }}
+        {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
+        {...(typeof targetTp   === 'number' ? { targetTp }   : {})}
+      />
     </div>
+  );
+}
+
+// ── Slide-over host — maps `selectedModule` id to the right panel ──────
+
+function ModuleSlideOverHost(props: {
+  selected: ModuleCardDef['id'] | null;
+  onClose: () => void;
+  targetLufs?: number;
+  targetTp?: number;
+}) {
+  const isOpen = Boolean(props.selected);
+  // Keep the previous selection visible during the close transition so
+  // the content doesn't blank out before the panel finishes sliding.
+  const [renderedId, setRenderedId] = React.useState<ModuleCardDef['id'] | null>(props.selected);
+  React.useEffect(() => {
+    if (props.selected) setRenderedId(props.selected);
+  }, [props.selected]);
+
+  const titleFor = (id: ModuleCardDef['id']): { title: string; subtitle: string } => {
+    switch (id) {
+      case 'eq':       return { title: 'EQ',       subtitle: 'Adaptive 7-band' };
+      case 'dynamics': return { title: 'Dynamics', subtitle: 'Glue Comp' };
+      case 'imager':   return { title: 'Imager',   subtitle: 'Stereo width · Mono fold-down' };
+      case 'limiter':  return { title: 'Limiter',  subtitle: 'True-peak guard' };
+      case 'export':   return { title: 'Export',   subtitle: 'Format · Sample rate · Dither' };
+    }
+  };
+
+  const renderPanel = (id: ModuleCardDef['id']) => {
+    switch (id) {
+      case 'eq':       return <EqParameterPanel />;
+      case 'dynamics': return <DynamicsParameterPanel />;
+      case 'imager':   return <ImagerParameterPanel />;
+      case 'limiter':  return <LimiterParameterPanel />;
+      case 'export':   return (
+        <ExportParameterPanel
+          {...(typeof props.targetLufs === 'number' ? { targetLufs: props.targetLufs } : {})}
+          {...(typeof props.targetTp   === 'number' ? { targetTp: props.targetTp }     : {})}
+        />
+      );
+    }
+  };
+
+  const id = renderedId ?? 'eq';
+  const meta = titleFor(id);
+  return (
+    <LouiModuleSlideOver
+      title={meta.title}
+      subtitle={meta.subtitle}
+      open={isOpen}
+      onClose={props.onClose}
+    >
+      {renderedId ? renderPanel(renderedId) : null}
+    </LouiModuleSlideOver>
   );
 }
 
@@ -258,6 +330,9 @@ function ProductLayoutWithOverride({
 }) {
   const [presetId, setPresetId] = useState<string | undefined>(undefined);
   const [selectedModule, setSelectedModule] = useState<ModuleCardDef['id'] | undefined>(undefined);
+  // Toggle: click the same card → close.
+  const onSelectModule = (id: ModuleCardDef['id']) =>
+    setSelectedModule((prev) => (prev === id ? undefined : id));
   return (
     <ProductLayoutInner
       session={session}
@@ -269,7 +344,7 @@ function ProductLayoutWithOverride({
       {...(presetId ? { presetId } : {})}
       onPresetChange={setPresetId}
       {...(selectedModule ? { selectedModule } : {})}
-      onSelectModule={setSelectedModule}
+      onSelectModule={onSelectModule}
     />
   );
 }
@@ -318,6 +393,11 @@ function ProductPageProduction() {
   }, [masteringResult]);
   const onSettings = useCallback(() => { setPage('settings'); }, [setPage]);
 
+  // Toggle behaviour: re-clicking the active card closes the slide-over.
+  const onSelectModule = useCallback((id: ModuleCardDef['id']) => {
+    setSelectedModule((prev) => (prev === id ? undefined : id));
+  }, []);
+
   return (
     <>
       {/* Hidden audio element — required for WasmAnalyzerProvider to attach
@@ -356,7 +436,7 @@ function ProductPageProduction() {
           {...(presetId ? { presetId } : {})}
           onPresetChange={setPresetId}
           {...(selectedModule ? { selectedModule } : {})}
-          onSelectModule={setSelectedModule}
+          onSelectModule={onSelectModule}
           onImport={onImport}
           onExport={onExport}
           onSettings={onSettings}

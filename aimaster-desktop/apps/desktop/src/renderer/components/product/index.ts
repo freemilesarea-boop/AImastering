@@ -22,3 +22,16 @@ export type { LouiModuleStripProps, ModuleCardDef, ModuleState } from './LouiMod
 
 export { LouiStatusBar } from './LouiStatusBar.js';
 export type { LouiStatusBarProps } from './LouiStatusBar.js';
+
+export { LouiModuleSlideOver } from './LouiModuleSlideOver.js';
+export type { LouiModuleSlideOverProps } from './LouiModuleSlideOver.js';
+
+// Parameter panels — re-exported from `panels/` for one-stop import.
+export {
+  EqParameterPanel,
+  DynamicsParameterPanel,
+  ImagerParameterPanel,
+  LimiterParameterPanel,
+  ExportParameterPanel,
+} from './panels/index.js';
+export type { ExportParameterPanelProps } from './panels/index.js';
