@@ -1,0 +1,68 @@
+{
+  "$schema": "https://schemas.loui.studio/engine-preset/v1",
+  "id": "builtin-loud",
+  "name": "Loud",
+  "version": "1.0.0",
+  "compatibility": { "engineApiMin": "1.0.0" },
+  "meta": {
+    "author": "Loui Mastering (built-in)",
+    "tags": ["loud", "streaming", "modern"],
+    "description": "Modern streaming-loud target (-10 LUFS). Static loudness chain, suppression-only dynamic EQ, strong limiter.",
+    "legacyStyleId": "loud"
+  },
+  "policies": {
+    "vocalProtection": "safe",
+    "safeMode": "none",
+    "aiCorrections": true,
+    "limiterStrength": "high"
+  },
+  "output": { "sampleRate": 44100, "bitDepth": 24, "format": "wav" },
+  "chain": {
+    "nodes": [
+      { "type": "source", "id": "src" },
+
+      { "type": "adaptive-eq", "id": "eq",
+        "bands": [
+          { "id": "low_shelf", "filterType": "low_shelf",  "freqHz": 80,    "widthOctaves": 2.0, "gainDb": 3.0, "adaptive": true },
+          { "id": "lo_supp",   "filterType": "peak",       "freqHz": 120,   "widthOctaves": 1.2, "gainDb": 1.2, "adaptive": true },
+          { "id": "mud_cut",   "filterType": "peak",       "freqHz": 250,   "widthOctaves": 1.2, "gainDb": -3.0 },
+          { "id": "muddy",     "filterType": "peak",       "freqHz": 320,   "widthOctaves": 0.8, "gainDb": -1.0 },
+          { "id": "presence",  "filterType": "peak",       "freqHz": 2500,  "widthOctaves": 1.0, "gainDb": 0.6 },
+          { "id": "air",       "filterType": "high_shelf", "freqHz": 12000, "widthOctaves": 1.0, "gainDb": 3.0, "adaptive": true }
+        ]
+      },
+
+      { "type": "dynamic-eq", "id": "dyneq", "intensity": 1.0,
+        "bands": [
+          { "id": "boomy_low",     "freqHz":  100, "q": 1.2, "thresholdDb": -10, "reductionDb": 1.0, "mode": "cut"   },
+          { "id": "muddy_lowmid",  "freqHz":  300, "q": 1.0, "thresholdDb": -10, "reductionDb": 1.2, "mode": "cut"   },
+          { "id": "harsh_highmid", "freqHz": 3800, "q": 1.4, "thresholdDb": -10, "reductionDb": 1.2, "mode": "cut"   },
+          { "id": "sibilance",     "freqHz": 7500, "q": 1.8, "thresholdDb": -14, "reductionDb": 1.5, "mode": "cut"   },
+          { "id": "vocal_presence","freqHz": 2500, "q": 1.0, "thresholdDb": -22, "reductionDb": 0.8, "mode": "boost" }
+        ]
+      },
+
+      { "type": "bus-comp", "id": "comp",
+        "thresholdDb": -16, "ratio": 2.0, "attackMs": 18, "releaseMs": 110, "makeupDb": 0.5, "kneeDb": 9.0,
+        "vocalProtection": { "maxRatio": 2.0, "minAttackMs": 25, "maxMakeupDb": 0.7 }
+      },
+
+      { "type": "saturator",     "id": "sat",   "amount": 0.0,  "model": "compand-curve" },
+      { "type": "stereo-imager", "id": "width", "width":  1.10 },
+
+      { "type": "loudness-norm", "id": "lnorm",
+        "targetLufs": -10.0, "targetTpDb": -1.0, "targetLra": 11.0, "algorithm": "static",
+        "toleranceLu": 0.3, "maxIters": 4
+      },
+
+      { "type": "limiter", "id": "lim",
+        "ceilingDb": -1.0, "inputGainDb": 1.5, "attackMs": 3.0, "releaseMs": 60.0,
+        "lookAheadMs": 5, "oversample": 4
+      },
+
+      { "type": "isp-safety", "id": "isp", "ceilingDbtp": -1.0, "headroomDb": 0.1, "oversample": 4 },
+
+      { "type": "sink", "id": "out" }
+    ]
+  }
+}

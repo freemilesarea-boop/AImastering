@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schemas.loui.studio/engine-preset/v1",
+  "id": "builtin-kpop-loud",
+  "name": "K-Pop Loud",
+  "version": "1.0.0",
+  "compatibility": { "engineApiMin": "1.0.0" },
+  "meta": {
+    "author": "Loui Mastering (built-in)",
+    "tags": ["k-pop", "loud", "modern", "vocal-forward"],
+    "description": "K-Pop streaming-loud target (-9 LUFS). Static chain, vocal-forward EQ, -0.8 dBTP ceiling.",
+    "legacyStyleId": "kpop_loud"
+  },
+  "policies": {
+    "vocalProtection": "safe",
+    "safeMode": "none",
+    "aiCorrections": true,
+    "limiterStrength": "high"
+  },
+  "output": { "sampleRate": 44100, "bitDepth": 24, "format": "wav" },
+  "chain": {
+    "nodes": [
+      { "type": "source", "id": "src" },
+
+      { "type": "adaptive-eq", "id": "eq",
+        "bands": [
+          { "id": "low_shelf", "filterType": "low_shelf",  "freqHz": 80,    "widthOctaves": 2.0, "gainDb": 3.0, "adaptive": true },
+          { "id": "lo_supp",   "filterType": "peak",       "freqHz": 120,   "widthOctaves": 1.2, "gainDb": 1.2, "adaptive": true },
+          { "id": "mud_cut",   "filterType": "peak",       "freqHz": 250,   "widthOctaves": 1.2, "gainDb": -3.0 },
+          { "id": "muddy",     "filterType": "peak",       "freqHz": 320,   "widthOctaves": 0.8, "gainDb": -1.0 },
+          { "id": "presence",  "filterType": "peak",       "freqHz": 2500,  "widthOctaves": 1.0, "gainDb": 0.8 },
+          { "id": "air",       "filterType": "high_shelf", "freqHz": 12000, "widthOctaves": 1.0, "gainDb": 3.5, "adaptive": true }
+        ]
+      },
+
+      { "type": "dynamic-eq", "id": "dyneq", "intensity": 1.0,
+        "bands": [
+          { "id": "boomy_low",     "freqHz":  100, "q": 1.2, "thresholdDb": -16, "reductionDb": 2.0, "mode": "cut" },
+          { "id": "harsh_highmid", "freqHz": 3500, "q": 1.4, "thresholdDb": -18, "reductionDb": 1.5, "mode": "cut" }
+        ]
+      },
+
+      { "type": "bus-comp", "id": "comp",
+        "thresholdDb": -14, "ratio": 2.2, "attackMs": 15, "releaseMs": 100, "makeupDb": 0.7, "kneeDb": 10.0,
+        "vocalProtection": { "maxRatio": 2.0, "minAttackMs": 25, "maxMakeupDb": 0.7 }
+      },
+
+      { "type": "saturator",     "id": "sat",   "amount": 0.0,  "model": "compand-curve" },
+      { "type": "stereo-imager", "id": "width", "width":  1.10 },
+
+      { "type": "loudness-norm", "id": "lnorm",
+        "targetLufs": -9.0, "targetTpDb": -0.8, "targetLra": 8.0, "algorithm": "static",
+        "toleranceLu": 0.3, "maxIters": 4
+      },
+
+      { "type": "limiter", "id": "lim",
+        "ceilingDb": -0.8, "inputGainDb": 1.5, "attackMs": 3.0, "releaseMs": 60.0,
+        "lookAheadMs": 5, "oversample": 4
+      },
+
+      { "type": "isp-safety", "id": "isp", "ceilingDbtp": -0.8, "headroomDb": 0.1, "oversample": 4 },
+
+      { "type": "sink", "id": "out" }
+    ]
+  }
+}
