@@ -1,0 +1,58 @@
+// Resolve which AnalyzerSessionFactory to use at runtime.
+//
+// Decision order:
+//   1. The caller passed an explicit factory → use it.
+//   2. Build-time env var `VITE_LOUI_WASM_ANALYZER` is `'true'` → WASM factory.
+//   3. Runtime override on `window.__LOUI_WASM_ANALYZER__` → WASM factory.
+//   4. Default → SyntheticAnalyzerSessionFactory (dev-only).
+//
+// This single switch is the production-safety net: production builds set
+// the env var, dev / smoke tests stick to synthetic, and a power-user
+// can force one or the other via the window override.
+
+import type { AnalyzerSessionFactory } from '@aimaster/shared-types/streaming';
+
+import { SyntheticAnalyzerSessionFactory } from './analyzer-session-synthetic.js';
+import { WasmAnalyzerSessionFactory } from './wasm-analyzer-session.js';
+
+declare global {
+  interface Window {
+    __LOUI_WASM_ANALYZER__?: boolean;
+  }
+  interface ImportMetaEnv {
+    readonly VITE_LOUI_WASM_ANALYZER?: string;
+  }
+}
+
+// Both factories are constructed eagerly so Vite's tree-shaker keeps the
+// WasmAnalyzerSessionFactory + analyzer-tap.worklet.js asset reference
+// in the bundle even when the build-time env var is unset.  The runtime
+// switch is purely an instance handoff — no construction cost beyond
+// what an idle factory holds (zero — both factories are stateless until
+// `create()`).
+const wasmFactory: WasmAnalyzerSessionFactory = new WasmAnalyzerSessionFactory();
+const syntheticFactory: SyntheticAnalyzerSessionFactory = new SyntheticAnalyzerSessionFactory();
+
+/** Whether the WASM factory has been requested (env or runtime). */
+export function isWasmAnalyzerEnabled(): boolean {
+  // Build-time env var.
+  const envFlag = (import.meta.env?.VITE_LOUI_WASM_ANALYZER ?? '').toString().toLowerCase();
+  if (envFlag === 'true' || envFlag === '1') return true;
+  // Runtime override.
+  if (typeof window !== 'undefined' && window.__LOUI_WASM_ANALYZER__ === true) return true;
+  return false;
+}
+
+/** Return the active factory. */
+export function resolveAnalyzerFactory(): AnalyzerSessionFactory {
+  return isWasmAnalyzerEnabled() ? wasmFactory : syntheticFactory;
+}
+
+/**
+ * Diagnostic — returns a human-readable label for the active factory.
+ * Used by the dev panel header so testers can confirm at a glance which
+ * path their UI is consuming.
+ */
+export function analyzerFactoryLabel(): string {
+  return isWasmAnalyzerEnabled() ? 'WASM (loui-dsp)' : 'Synthetic (dev only)';
+}

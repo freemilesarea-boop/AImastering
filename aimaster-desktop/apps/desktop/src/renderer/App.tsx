@@ -8,6 +8,9 @@ import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
+// Dev-only: analyzer streaming smoke route.  Mounted when URL contains
+// `?dev=analyzer-stream`.  No production navigation entry.
+import { DevAnalyzerStreamPage } from './pages/DevAnalyzerStreamPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
@@ -212,6 +215,13 @@ export default function App() {
 function AppInner() {
   const page = useAppStore((s) => s.currentPage);
 
+  // Dev-only: route via URL query so the analyzer-stream smoke page can
+  // be reached without touching the appStore page enum.  Production
+  // navigation never lands here.
+  const isDevRoute =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('dev') === 'analyzer-stream';
+
   const pages: Record<string, React.ReactNode> = {
     home:      <HomePage />,
     analysis:  <AnalysisPage />,
@@ -223,7 +233,7 @@ function AppInner() {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      {pages[page] ?? <HomePage />}
+      {isDevRoute ? <DevAnalyzerStreamPage /> : (pages[page] ?? <HomePage />)}
 
       {/* Creator watermark — fixed bottom-left */}
       <div className="fixed bottom-3 left-4 pointer-events-none select-none z-10">

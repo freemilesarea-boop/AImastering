@@ -47,6 +47,9 @@ importers:
       '@aimaster/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
+      '@loui/dsp-wasm':
+        specifier: workspace:*
+        version: link:../../packages/dsp-wasm
       electron-log:
         specifier: ^5.2.0
         version: 5.4.3
@@ -145,6 +148,8 @@ importers:
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
+
+  packages/dsp-wasm: {}
 
   packages/license-core:
     dependencies:
