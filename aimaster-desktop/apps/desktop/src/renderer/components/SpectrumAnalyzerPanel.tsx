@@ -10,14 +10,18 @@
 
 import { useEffect, useRef } from 'react';
 import { useAnalyzerStream } from '../hooks/useAnalyzerStream.js';
+import { useAnalyzerSubscriptions } from '../hooks/useAnalyzerSubscriptions.js';
 import { SyntheticAnalyzerSessionFactory } from '../audio/analyzer-session-synthetic.js';
 import type {
+  AnalyzerSession,
   AnalyzerSessionFactory,
   AnalyzerSessionOptions,
   FftFrame,
 } from '@aimaster/shared-types/streaming';
 
 export interface SpectrumAnalyzerPanelProps {
+  /** Externally-managed session.  Takes precedence over `factory`. */
+  session?: AnalyzerSession | null;
   factory?: AnalyzerSessionFactory;
   sessionOptions?: AnalyzerSessionOptions;
   /** Min/max dB rendered on the Y axis. */
@@ -30,6 +34,40 @@ export interface SpectrumAnalyzerPanelProps {
 
 const DEFAULT_FACTORY = new SyntheticAnalyzerSessionFactory();
 const DEFAULT_OPTIONS: AnalyzerSessionOptions = { sampleRate: 48_000, channels: 2 };
+
+// Stub factory for the case where an external session is provided —
+// avoids hook-rule violations.  See LoudnessMeterPanelV2 for rationale.
+const STUB_FACTORY: AnalyzerSessionFactory = {
+  create() {
+    return {
+      options: { sampleRate: 48_000, channels: 2 },
+      isRunning: false,
+      async start() {},
+      async stop() {},
+      onTickSnapshot() { return () => {}; },
+      onFullSnapshot() { return () => {}; },
+      onFftFrame() { return () => {}; },
+      onStereoFrame() { return () => {}; },
+      async requestSnapshot() {
+        return {
+          schema: 'loui.streaming.meter-snapshot.v1' as const,
+          sampleRate: 48_000, channels: 2, samplesProcessed: 0,
+          integratedLufs: Number.NEGATIVE_INFINITY,
+          shortTermLufs: Number.NEGATIVE_INFINITY,
+          momentaryLufs: Number.NEGATIVE_INFINITY,
+          loudnessRange: 0,
+          truePeakDbtp: Number.NEGATIVE_INFINITY,
+          samplePeakDb: Number.NEGATIVE_INFINITY,
+          rmsDb: Number.NEGATIVE_INFINITY,
+          correlation: 1,
+          msRatioDb: Number.POSITIVE_INFINITY,
+          gatedBlocks: 0,
+        };
+      },
+      async reset() {},
+    };
+  },
+};
 
 /** Log10-X interpolation: convert frequency to a 0..1 X coordinate. */
 function freqToX(freq: number, minHz: number, maxHz: number): number {
@@ -47,6 +85,8 @@ function dbToY(db: number, minDb: number, maxDb: number): number {
 }
 
 export function SpectrumAnalyzerPanel(props: SpectrumAnalyzerPanelProps = {}) {
+  const externalSession = props.session;
+  const useExternal = externalSession !== undefined;
   const factory = props.factory ?? DEFAULT_FACTORY;
   const sessionOptions = props.sessionOptions ?? DEFAULT_OPTIONS;
   const dbRange = props.dbRange ?? { min: -90, max: 0 };
@@ -60,11 +100,15 @@ export function SpectrumAnalyzerPanel(props: SpectrumAnalyzerPanelProps = {}) {
   // forcing React re-renders on every frame.
   const frameRef = useRef<FftFrame | null>(null);
 
-  const { fft } = useAnalyzerStream({
-    factory,
+  const ownedStream = useAnalyzerStream({
+    factory: useExternal ? STUB_FACTORY : factory,
     sessionOptions,
-    enableFft: true,
+    enableFft: !useExternal,
   });
+  const externalSubs = useAnalyzerSubscriptions(externalSession ?? null, {
+    enableFft: useExternal,
+  });
+  const fft: FftFrame | null = useExternal ? externalSubs.fft : ownedStream.fft;
 
   // Stash the frame for the RAF loop.
   useEffect(() => { frameRef.current = fft; }, [fft]);

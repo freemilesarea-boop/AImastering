@@ -15,22 +15,32 @@
 
 import { useMemo } from 'react';
 import { useAnalyzerStream } from '../hooks/useAnalyzerStream.js';
+import { useAnalyzerSubscriptions } from '../hooks/useAnalyzerSubscriptions.js';
 import { SyntheticAnalyzerSessionFactory } from '../audio/analyzer-session-synthetic.js';
 import type {
+  AnalyzerSession,
   AnalyzerSessionFactory,
   AnalyzerSessionOptions,
 } from '@aimaster/shared-types/streaming';
 
 export interface LoudnessMeterPanelV2Props {
   /**
+   * Externally-managed session (e.g. from `WasmAnalyzerProvider`).
+   * When provided, takes precedence over `factory`.  Pass `null` to
+   * render the panel in its "not connected" state.
+   */
+  session?: AnalyzerSession | null;
+  /**
    * Factory to source the analyzer from.  Default = synthetic (dev).
-   * Production wiring passes the WASM/N-API factory.
+   * Used only when `session` is undefined.
    */
   factory?: AnalyzerSessionFactory;
   /** Analyzer session options.  Defaults to stereo 48 k. */
   sessionOptions?: AnalyzerSessionOptions;
   /** Subscription rate for tick snapshots (UI refresh). */
   tickRate?: '60Hz' | '30Hz' | '10Hz';
+  /** Optional target LUFS — colour-codes integrated within ±tolerance. */
+  targetLufs?: number;
 }
 
 /** Helper: format a dB value to 1 decimal place, or '−∞' for silence. */
@@ -58,17 +68,68 @@ function lufsColour(v: number): string {
 const DEFAULT_FACTORY = new SyntheticAnalyzerSessionFactory();
 const DEFAULT_OPTIONS: AnalyzerSessionOptions = { sampleRate: 48_000, channels: 2 };
 
+// No-op factory used when the consumer supplies an external session —
+// `useAnalyzerStream` still runs but with `tickRate: null` so it does no
+// real work.  Avoids the "conditional hook" rule violation.
+const STUB_FACTORY: AnalyzerSessionFactory = {
+  create() {
+    return {
+      options: { sampleRate: 48_000, channels: 2 },
+      isRunning: false,
+      async start() {},
+      async stop() {},
+      onTickSnapshot() { return () => {}; },
+      onFullSnapshot() { return () => {}; },
+      onFftFrame() { return () => {}; },
+      onStereoFrame() { return () => {}; },
+      async requestSnapshot() {
+        return {
+          schema: 'loui.streaming.meter-snapshot.v1' as const,
+          sampleRate: 48_000,
+          channels: 2,
+          samplesProcessed: 0,
+          integratedLufs: Number.NEGATIVE_INFINITY,
+          shortTermLufs: Number.NEGATIVE_INFINITY,
+          momentaryLufs: Number.NEGATIVE_INFINITY,
+          loudnessRange: 0,
+          truePeakDbtp: Number.NEGATIVE_INFINITY,
+          samplePeakDb: Number.NEGATIVE_INFINITY,
+          rmsDb: Number.NEGATIVE_INFINITY,
+          correlation: 1,
+          msRatioDb: Number.POSITIVE_INFINITY,
+          gatedBlocks: 0,
+        };
+      },
+      async reset() {},
+    };
+  },
+};
+
 /** Live LUFS / TP / RMS meter driven by an AnalyzerSession stream. */
 export function LoudnessMeterPanelV2(props: LoudnessMeterPanelV2Props = {}) {
+  const tickRate = props.tickRate ?? '30Hz';
+  // Either an externally-managed session takes precedence, or the hook
+  // owns one from the configured factory.
+  const externalSession = props.session;
+  const useExternal = externalSession !== undefined;
+
   const factory = props.factory ?? DEFAULT_FACTORY;
   const sessionOptions = props.sessionOptions ?? DEFAULT_OPTIONS;
-  const tickRate = props.tickRate ?? '30Hz';
 
-  const { tick, isRunning } = useAnalyzerStream({
-    factory,
+  // When external session is in use we still call useAnalyzerStream but
+  // with a no-op factory; React rule-of-hooks requires consistent calls.
+  // Implementation: branch the hook calls inside one branch each.
+  const ownedStream = useAnalyzerStream({
+    factory: useExternal ? STUB_FACTORY : factory,
     sessionOptions,
-    tickRate,
+    tickRate: useExternal ? null : tickRate,
   });
+  const externalSubs = useAnalyzerSubscriptions(externalSession ?? null, {
+    tickRate: useExternal ? tickRate : null,
+  });
+
+  const tick = useExternal ? externalSubs.tick : ownedStream.tick;
+  const isRunning = useExternal ? externalSession != null : ownedStream.isRunning;
 
   const rows = useMemo(() => {
     if (!tick) return null;

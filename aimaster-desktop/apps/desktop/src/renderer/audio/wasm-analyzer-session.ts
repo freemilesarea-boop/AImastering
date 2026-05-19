@@ -208,6 +208,47 @@ class WasmAnalyzerSession implements AnalyzerSession {
     this.tapNode.connect(this.ctx.destination);
   }
 
+  /**
+   * Convenience: wrap an `HTMLMediaElement` in a `MediaElementSource`
+   * and attach.  Idempotent in spirit — re-attaching the same element
+   * silently replaces the previous routing.
+   *
+   * Caveat: `createMediaElementSource` can only be called **once per
+   * element per AudioContext**.  We cache the source node so callers
+   * can re-call attachMediaElement safely.
+   */
+  attachMediaElement(media: HTMLMediaElement): void {
+    if (!this.ctx || !this.tapNode) {
+      throw new Error('analyzer session not started');
+    }
+    let src = WasmAnalyzerSession.mediaSourceCache.get(media);
+    if (!src || src.context !== this.ctx) {
+      src = this.ctx.createMediaElementSource(media);
+      WasmAnalyzerSession.mediaSourceCache.set(media, src);
+    }
+    this.attach(src);
+  }
+
+  /**
+   * AudioContext owned by this session.  Useful for callers that need
+   * to wire additional nodes (e.g. user-side analyser nodes).  Returns
+   * null when the session has not started or has been stopped.
+   */
+  audioContext(): AudioContext | null {
+    return this.ctx;
+  }
+
+  /**
+   * Browser-imposed constraint: `createMediaElementSource` may only be
+   * called once per (element, context) pair.  We cache the result so
+   * the gate component can call `attachMediaElement` on every render
+   * without crashing.
+   */
+  private static mediaSourceCache = new WeakMap<
+    HTMLMediaElement,
+    MediaElementAudioSourceNode
+  >();
+
   // ── Subscriptions ────────────────────────────────────────────────────────
 
   onTickSnapshot(rate: SubscriptionRate, cb: (snap: MeterTickSnapshot) => void): AnalyzerUnsubscribe {

@@ -26,7 +26,7 @@ import SectionAnalysisPanel from '../components/SectionAnalysisPanel.js';
 import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
 import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
 import ExportReportPanel from '../components/ExportReportPanel.js';
-import { LoudnessMeterPanel } from '../components/LoudnessMeterPanel.js';
+import { AnalyzerPanelStack } from '../components/AnalyzerPanelStack.js';
 import { reportFailure } from '../utils/reportFailure.js';
 import { toFileUrl } from '../utils/fileUrl.js';
 
@@ -215,12 +215,15 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
         </div>
       </div>
 
-      {/* Live BS.1770-4 LUFS / TP meter — mounts once metadata loads, runs
-          only while playback is active.  Worklet is loaded on first play
-          via Vite's `new URL(..., import.meta.url)` resolution. */}
+      {/* Live BS.1770-4 LUFS / TP meter — V1 by default, swaps to V2
+          (Rust dsp-core via WASM + Spectrum + StereoScope) when the
+          feature flag `VITE_LOUI_WASM_ANALYZER=true` is set at build
+          time or `window.__LOUI_WASM_ANALYZER__ = true` at runtime.
+          Rollback = unset the flag → V1 path reappears with zero
+          functional difference. */}
       {meterReady && audioRef.current && (
         <div className="mt-3">
-          <LoudnessMeterPanel
+          <AnalyzerPanelStack
             mediaElement={audioRef.current}
             active={playing}
             {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
