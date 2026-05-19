@@ -66,8 +66,6 @@ pub struct LufsAnalyzer {
     block_samples_seen: usize,
     /// History of (weighted) mean-squares per 100-ms block.
     block_ms_history: Vec<f64>,
-    /// Scratch buffer for per-frame weighted samples (no realtime alloc).
-    scratch_weighted: Vec<f64>,
 }
 
 impl LufsAnalyzer {
@@ -85,7 +83,6 @@ impl LufsAnalyzer {
             block_sum_sq: vec![0.0; channels],
             block_samples_seen: 0,
             block_ms_history: Vec::with_capacity(MAX_HISTORY_BLOCKS),
-            scratch_weighted: vec![0.0; channels],
         }
     }
 

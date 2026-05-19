@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/loui-dsp"]
+members = [
+    "crates/loui-dsp",
+    "crates/loui-dsp-wasm",
+    "crates/loui-dsp-node",
+]
 resolver = "2"
 
 # Profile settings shared across the workspace.  Realtime DSP needs

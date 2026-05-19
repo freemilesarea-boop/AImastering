@@ -1,0 +1,18 @@
+[package]
+name = "loui-dsp-node"
+version = "0.1.0"
+edition = "2021"
+description = "Node.js / Electron native binding for loui-dsp via napi-rs (M2-lite-NEXT)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+loui-dsp = { path = "../loui-dsp" }
+napi = { version = "2", default-features = false, features = ["napi9"] }
+napi-derive = "2"
+
+[build-dependencies]
+napi-build = "2"

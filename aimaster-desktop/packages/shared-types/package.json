@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./engine": "./src/engine/index.ts",
     "./fixtures": "./src/fixtures/index.ts",
-    "./profile": "./src/profile/index.ts"
+    "./profile": "./src/profile/index.ts",
+    "./streaming": "./src/streaming/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
