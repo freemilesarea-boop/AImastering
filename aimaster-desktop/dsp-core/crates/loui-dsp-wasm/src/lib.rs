@@ -23,6 +23,7 @@ use wasm_bindgen::prelude::*;
 
 use loui_dsp::{
     analyzer::{AnalyzerGraph, AnalyzerOptions},
+    spectrum::{SpectrumAnalyzer, SpectrumBinning, SpectrumOptions},
     MeterSnapshot,
 };
 
@@ -223,4 +224,203 @@ impl LouiAnalyzer {
 #[wasm_bindgen(js_name = crateVersion)]
 pub fn crate_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+// ── Spectrum analyzer (M3-prep) ─────────────────────────────────────────────
+
+/// Bin-layout enumeration mirrored on the JS side.
+/// Construct via `WasmSpectrumOptions.binning*` factory methods to avoid
+/// having to pass a tagged union across the FFI boundary.
+#[derive(Clone, Copy)]
+enum WasmBinning {
+    ThirdOctave,
+    Log { bins: usize, min_hz: f32, max_hz: f32 },
+    Linear { bins: usize, min_hz: f32, max_hz: f32 },
+}
+
+/// JS-side construction options for `LouiSpectrumAnalyzer`.  Use the
+/// builder methods (`thirdOctave`, `log`, `linear`) to set the binning.
+#[wasm_bindgen]
+pub struct WasmSpectrumOptions {
+    fft_size: usize,
+    hop_size: Option<usize>,
+    binning: WasmBinning,
+    smoothing: f32,
+    peak_hold_decay_db: f32,
+}
+
+#[wasm_bindgen]
+impl WasmSpectrumOptions {
+    /// Construct with defaults (fft 2048 / log 128 bins / 50 % smoothing).
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            fft_size: 2048,
+            hop_size: None,
+            binning: WasmBinning::Log { bins: 128, min_hz: 20.0, max_hz: 20_000.0 },
+            smoothing: 0.5,
+            peak_hold_decay_db: 1.5,
+        }
+    }
+
+    #[wasm_bindgen(js_name = setFftSize)]
+    pub fn set_fft_size(mut self, n: usize) -> Self { self.fft_size = n; self }
+
+    #[wasm_bindgen(js_name = setHopSize)]
+    pub fn set_hop_size(mut self, n: usize) -> Self { self.hop_size = Some(n); self }
+
+    #[wasm_bindgen(js_name = setSmoothing)]
+    pub fn set_smoothing(mut self, s: f32) -> Self { self.smoothing = s; self }
+
+    #[wasm_bindgen(js_name = setPeakHoldDecayDb)]
+    pub fn set_peak_hold_decay_db(mut self, d: f32) -> Self { self.peak_hold_decay_db = d; self }
+
+    /// Use ANSI 1/3-octave centres.
+    #[wasm_bindgen(js_name = useThirdOctave)]
+    pub fn use_third_octave(mut self) -> Self {
+        self.binning = WasmBinning::ThirdOctave;
+        self
+    }
+
+    /// Use log-spaced centres between min/max Hz.
+    #[wasm_bindgen(js_name = useLog)]
+    pub fn use_log(mut self, bins: usize, min_hz: f32, max_hz: f32) -> Self {
+        self.binning = WasmBinning::Log { bins, min_hz, max_hz };
+        self
+    }
+
+    /// Use linear-spaced centres between min/max Hz.
+    #[wasm_bindgen(js_name = useLinear)]
+    pub fn use_linear(mut self, bins: usize, min_hz: f32, max_hz: f32) -> Self {
+        self.binning = WasmBinning::Linear { bins, min_hz, max_hz };
+        self
+    }
+}
+
+impl WasmSpectrumOptions {
+    fn into_core(self) -> SpectrumOptions {
+        SpectrumOptions {
+            fft_size: self.fft_size,
+            hop_size: self.hop_size,
+            binning: match self.binning {
+                WasmBinning::ThirdOctave => SpectrumBinning::ThirdOctave,
+                WasmBinning::Log { bins, min_hz, max_hz } => {
+                    SpectrumBinning::Log { bins, min_hz, max_hz }
+                }
+                WasmBinning::Linear { bins, min_hz, max_hz } => {
+                    SpectrumBinning::Linear { bins, min_hz, max_hz }
+                }
+            },
+            smoothing: self.smoothing,
+            peak_hold_decay_db: self.peak_hold_decay_db,
+        }
+    }
+}
+
+/// Streaming FFT spectrum analyzer exposed to JS.
+///
+/// One per session.  Feed audio via `processMono` / `processStereo`,
+/// poll `tryFrame()` to see whether new magnitudes are ready, then read
+/// `magnitudeDb` / `peakHoldDb`.  The `binCentresHz` array is fixed for
+/// the analyzer's lifetime.
+#[wasm_bindgen]
+pub struct LouiSpectrumAnalyzer {
+    inner: SpectrumAnalyzer,
+}
+
+#[wasm_bindgen]
+impl LouiSpectrumAnalyzer {
+    /// Construct an analyzer.
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        sample_rate: f64,
+        options: WasmSpectrumOptions,
+    ) -> Result<LouiSpectrumAnalyzer, JsError> {
+        if sample_rate <= 0.0 {
+            return Err(JsError::new("sample_rate must be > 0"));
+        }
+        if ![1024usize, 2048, 4096, 8192].contains(&options.fft_size) {
+            return Err(JsError::new("fft_size must be 1024 / 2048 / 4096 / 8192"));
+        }
+        Ok(Self { inner: SpectrumAnalyzer::new(sample_rate, options.into_core()) })
+    }
+
+    /// Process a mono block — zero-copy from `Float32Array`.
+    #[wasm_bindgen(js_name = processMono)]
+    pub fn process_mono(&mut self, samples: &[f32]) {
+        self.inner.process_planar(&[samples]);
+    }
+
+    /// Process a stereo block — channels are averaged to mono internally
+    /// for spectrum analysis (perceptual visualisers want one curve).
+    #[wasm_bindgen(js_name = processStereo)]
+    pub fn process_stereo(&mut self, left: &[f32], right: &[f32]) -> Result<(), JsError> {
+        if left.len() != right.len() {
+            return Err(JsError::new("L and R channel lengths must match"));
+        }
+        self.inner.process_planar(&[left, right]);
+        Ok(())
+    }
+
+    /// Try to compute an FFT frame.  Returns `true` iff a new frame is
+    /// available — read magnitudes via `magnitudeDb` / `peakHoldDb`.
+    #[wasm_bindgen(js_name = tryFrame)]
+    pub fn try_frame(&mut self) -> bool {
+        self.inner.try_frame()
+    }
+
+    /// Number of output bins.
+    #[wasm_bindgen(getter, js_name = binCount)]
+    pub fn bin_count(&self) -> usize {
+        self.inner.bin_count()
+    }
+
+    /// Bin centre frequencies in Hz.  Fixed for the analyzer's lifetime
+    /// — caller should cache this on first call.
+    ///
+    /// Returns a `Float32Array` view directly into WASM linear memory
+    /// (zero-copy).  The view is valid until the analyzer is mutated;
+    /// for safety, copy into a JS Float32Array if storing across calls.
+    #[wasm_bindgen(getter, js_name = binCentresHz)]
+    pub fn bin_centres_hz(&self) -> Vec<f32> {
+        self.inner.bin_centres().to_vec()
+    }
+
+    /// Smoothed magnitude per bin in dB.  Same length as `binCount`.
+    /// Returned as a copy — the underlying buffer is mutated by every
+    /// `tryFrame` call.
+    #[wasm_bindgen(getter, js_name = magnitudeDb)]
+    pub fn magnitude_db(&self) -> Vec<f32> {
+        self.inner.magnitude_db().to_vec()
+    }
+
+    /// Peak-hold magnitude per bin in dB.
+    #[wasm_bindgen(getter, js_name = peakHoldDb)]
+    pub fn peak_hold_db(&self) -> Vec<f32> {
+        self.inner.peak_hold_db().to_vec()
+    }
+
+    /// Sample rate.
+    #[wasm_bindgen(getter, js_name = sampleRate)]
+    pub fn sample_rate(&self) -> f64 {
+        self.inner.sample_rate()
+    }
+
+    /// FFT size in samples.
+    #[wasm_bindgen(getter, js_name = fftSize)]
+    pub fn fft_size(&self) -> usize {
+        self.inner.fft_size()
+    }
+
+    /// Number of audio samples processed so far.
+    #[wasm_bindgen(getter, js_name = samplesProcessed)]
+    pub fn samples_processed(&self) -> f64 {
+        self.inner.samples_processed() as f64
+    }
+
+    /// Reset analyzer state.
+    #[wasm_bindgen(js_name = reset)]
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
 }

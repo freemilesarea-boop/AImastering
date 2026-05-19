@@ -40,6 +40,9 @@ impl Window {
     /// Sum of window coefficients.  Used as `magnitude / (sum/2)` normalisation.
     pub fn coefficient_sum(&self) -> f32 { self.sum }
 
+    /// Borrowed view over the coefficient array.
+    pub fn coeffs(&self) -> &[f32] { &self.coeffs }
+
     /// Apply window to `out` (overwrites).  `src.len() == self.len() == out.len()`.
     pub fn apply(&self, src: &[f32], out: &mut [f32]) {
         assert_eq!(src.len(), self.coeffs.len());

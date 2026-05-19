@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use loui_dsp::analyzer::{AnalyzerGraph, AnalyzerOptions};
 use loui_dsp::fft::Fft;
+use loui_dsp::spectrum::{SpectrumAnalyzer, SpectrumBinning, SpectrumOptions};
 
 fn main() {
     println!("loui-dsp benchmark suite (M2-lite)\n");
@@ -18,6 +19,88 @@ fn main() {
     bench_analyzer_60s_stereo_44100();
     bench_analyzer_60s_stereo_48000();
     bench_analyzer_realtime_blocks();
+    bench_spectrum_2048();
+    bench_spectrum_4096();
+    bench_spectrum_realtime_block();
+}
+
+// ── Spectrum benches ───────────────────────────────────────────────────────
+
+fn bench_spectrum_2048() { bench_spectrum_fft_size(2048); }
+fn bench_spectrum_4096() { bench_spectrum_fft_size(4096); }
+
+fn bench_spectrum_fft_size(fft_size: usize) {
+    let sr = 48_000.0;
+    let opts = SpectrumOptions {
+        fft_size,
+        hop_size: Some(fft_size / 2),
+        binning: SpectrumBinning::Log { bins: 128, min_hz: 20.0, max_hz: 20_000.0 },
+        smoothing: 0.5,
+        peak_hold_decay_db: 1.5,
+    };
+    let mut sa = SpectrumAnalyzer::new(sr, opts);
+    let buf = synth_signal(fft_size, 48_000, 1000.0, -12.0);
+
+    // Warm-up.
+    for _ in 0..10 {
+        sa.process_planar(&[&buf]);
+        sa.try_frame();
+    }
+
+    let iters = 1000;
+    let t0 = Instant::now();
+    for _ in 0..iters {
+        sa.process_planar(&[&buf]);
+        let _ = sa.try_frame();
+    }
+    let elapsed = t0.elapsed();
+    report(
+        &format!("spectrum_fft_{}", fft_size),
+        iters,
+        elapsed,
+        format!("{} pts + binning + smoothing + peak-hold", fft_size),
+    );
+}
+
+fn bench_spectrum_realtime_block() {
+    // 256-sample blocks at 48 k feeding into a 2048-point FFT (50 % overlap).
+    let sr = 48_000u32;
+    let opts = SpectrumOptions {
+        fft_size: 2048,
+        hop_size: Some(1024),
+        binning: SpectrumBinning::Log { bins: 128, min_hz: 20.0, max_hz: 20_000.0 },
+        smoothing: 0.5,
+        peak_hold_decay_db: 1.5,
+    };
+    let mut sa = SpectrumAnalyzer::new(sr as f64, opts);
+    let block = 256;
+    let buf = synth_signal(block, sr, 1000.0, -12.0);
+
+    let iters: usize = (sr as usize / block) * 30; // 30 s
+    for _ in 0..100 {
+        sa.process_planar(&[&buf]);
+        sa.try_frame();
+    }
+    let t0 = Instant::now();
+    for _ in 0..iters {
+        sa.process_planar(&[&buf]);
+        sa.try_frame();
+    }
+    let elapsed = t0.elapsed();
+    let per_block = elapsed / iters as u32;
+    let block_period_us = block as f64 * 1e6 / sr as f64;
+    let load_pct = (per_block.as_nanos() as f64 / 1e3) / block_period_us * 100.0;
+    report(
+        "spectrum_realtime_256_block_2048fft",
+        iters,
+        elapsed,
+        format!(
+            "per-block {:.2} µs (block-period {:.2} µs, CPU load {:.2}%)",
+            per_block.as_nanos() as f64 / 1e3,
+            block_period_us,
+            load_pct,
+        ),
+    );
 }
 
 fn bench_fft_4096() {

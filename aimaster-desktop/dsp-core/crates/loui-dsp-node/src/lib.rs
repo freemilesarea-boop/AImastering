@@ -30,6 +30,7 @@ use napi::bindgen_prelude::*;
 
 use loui_dsp::{
     analyzer::{AnalyzerGraph, AnalyzerOptions},
+    spectrum::{SpectrumAnalyzer, SpectrumBinning, SpectrumOptions},
     MeterSnapshot,
 };
 
@@ -180,4 +181,150 @@ impl LouiAnalyzer {
 #[napi]
 pub fn crate_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+// ── Spectrum analyzer (M3-prep) ─────────────────────────────────────────────
+
+/// Frame returned by the spectrum analyzer.  All arrays have the same
+/// length (= bin count), determined once at construction.
+///
+/// Arrays are `Vec<f64>` because napi-rs auto-serialises `Vec<f64>` to JS
+/// Number arrays.  For zero-copy `Float32Array` transfer, callers may
+/// invoke `tryFrameTyped` (M3-follow-up) which copies into a caller-
+/// supplied buffer.
+#[napi(object)]
+pub struct JsFftFrame {
+    pub bin_centres_hz: Vec<f64>,
+    pub magnitude_db: Vec<f64>,
+    pub peak_hold_db: Vec<f64>,
+    pub samples_processed: f64,
+    pub sample_rate: f64,
+    pub fft_size: u32,
+}
+
+/// Bin-layout enumeration for N-API constructor.
+///
+/// Use one of:
+///   - `{ kind: 'thirdOctave' }`
+///   - `{ kind: 'log',    bins: 128, minHz: 20, maxHz: 20000 }`
+///   - `{ kind: 'linear', bins: 256, minHz: 0,  maxHz: 24000 }`
+#[napi(object)]
+pub struct JsSpectrumBinning {
+    pub kind: String,
+    pub bins: Option<u32>,
+    pub min_hz: Option<f64>,
+    pub max_hz: Option<f64>,
+}
+
+/// Construction-time options for the spectrum analyzer.
+#[napi(object)]
+pub struct JsSpectrumOptions {
+    pub fft_size: u32,
+    pub hop_size: Option<u32>,
+    pub binning: JsSpectrumBinning,
+    pub smoothing: f64,
+    pub peak_hold_decay_db: f64,
+}
+
+fn binning_from_js(b: &JsSpectrumBinning) -> Result<SpectrumBinning> {
+    match b.kind.as_str() {
+        "thirdOctave" => Ok(SpectrumBinning::ThirdOctave),
+        "log" => Ok(SpectrumBinning::Log {
+            bins: b.bins.unwrap_or(128) as usize,
+            min_hz: b.min_hz.unwrap_or(20.0) as f32,
+            max_hz: b.max_hz.unwrap_or(20_000.0) as f32,
+        }),
+        "linear" => Ok(SpectrumBinning::Linear {
+            bins: b.bins.unwrap_or(256) as usize,
+            min_hz: b.min_hz.unwrap_or(0.0) as f32,
+            max_hz: b.max_hz.unwrap_or(20_000.0) as f32,
+        }),
+        other => Err(Error::new(
+            Status::InvalidArg,
+            format!("unknown binning kind: {other:?}"),
+        )),
+    }
+}
+
+/// Streaming FFT spectrum analyzer.
+#[napi]
+pub struct LouiSpectrumAnalyzer {
+    inner: SpectrumAnalyzer,
+}
+
+#[napi]
+impl LouiSpectrumAnalyzer {
+    #[napi(constructor)]
+    pub fn new(sample_rate: f64, options: JsSpectrumOptions) -> Result<LouiSpectrumAnalyzer> {
+        if sample_rate <= 0.0 {
+            return Err(Error::new(Status::InvalidArg, "sampleRate must be > 0".to_string()));
+        }
+        let fft_size = options.fft_size as usize;
+        if ![1024usize, 2048, 4096, 8192].contains(&fft_size) {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "fftSize must be one of 1024 / 2048 / 4096 / 8192".to_string(),
+            ));
+        }
+        let core_opts = SpectrumOptions {
+            fft_size,
+            hop_size: options.hop_size.map(|h| h as usize),
+            binning: binning_from_js(&options.binning)?,
+            smoothing: options.smoothing as f32,
+            peak_hold_decay_db: options.peak_hold_decay_db as f32,
+        };
+        Ok(Self { inner: SpectrumAnalyzer::new(sample_rate, core_opts) })
+    }
+
+    #[napi]
+    pub fn process_mono(&mut self, samples: Float32Array) {
+        self.inner.process_planar(&[samples.as_ref()]);
+    }
+
+    #[napi]
+    pub fn process_stereo(
+        &mut self,
+        left: Float32Array,
+        right: Float32Array,
+    ) -> Result<()> {
+        if left.len() != right.len() {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "L and R lengths must match".to_string(),
+            ));
+        }
+        self.inner.process_planar(&[left.as_ref(), right.as_ref()]);
+        Ok(())
+    }
+
+    /// Try to compute an FFT frame.  Returns the frame if one was produced,
+    /// or `null` if not enough samples have accumulated yet.
+    #[napi]
+    pub fn try_frame(&mut self) -> Option<JsFftFrame> {
+        if !self.inner.try_frame() {
+            return None;
+        }
+        Some(JsFftFrame {
+            bin_centres_hz: self.inner.bin_centres().iter().map(|&v| v as f64).collect(),
+            magnitude_db:   self.inner.magnitude_db().iter().map(|&v| v as f64).collect(),
+            peak_hold_db:   self.inner.peak_hold_db().iter().map(|&v| v as f64).collect(),
+            samples_processed: self.inner.samples_processed() as f64,
+            sample_rate:    self.inner.sample_rate(),
+            fft_size:       self.inner.fft_size() as u32,
+        })
+    }
+
+    #[napi]
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+
+    #[napi(getter)]
+    pub fn sample_rate(&self) -> f64 { self.inner.sample_rate() }
+
+    #[napi(getter)]
+    pub fn fft_size(&self) -> u32 { self.inner.fft_size() as u32 }
+
+    #[napi(getter)]
+    pub fn bin_count(&self) -> u32 { self.inner.bin_count() as u32 }
 }

@@ -28,12 +28,15 @@ export interface FftFrame {
   /** Number of frames analyzed when this frame was emitted (per-channel). */
   samplesProcessed: number;
   /**
-   * FFT window size used (power of two ≥ 256).  Informational — the
+   * FFT window size used (power of two ≥ 1024).  Informational — the
    * binned `magnitudeDb` is independent of this.
    */
   fftSize: number;
-  /** Bin layout the magnitudes are in. */
-  binning: FftBinning;
+  /**
+   * Bin layout the magnitudes are in.  Optional — bindings that always
+   * use a single layout per session may omit.
+   */
+  binning?: FftBinning;
   /**
    * Bin centre frequencies in Hz, length matches `magnitudeDb`.
    * Pre-computed once on construction; same array reused frame to frame
