@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schemas.loui.studio/fixture/v1",
+  "id": "male-vocal-01",
+  "category": "male-vocal",
+  "name": "Male Lead Vocal — pop-rock",
+  "version": "1.0.0",
+  "description": "Male lead vocal centered around 200-400 Hz with chest-resonance peaks, light band backing.",
+  "source": {
+    "type": "synthetic-recipe",
+    "recipe": "multitrack-mix",
+    "params": {
+      "durationSec": 25,
+      "tracks": [
+        { "kind": "lead-vocal", "centerHz": 280, "vibratoHz": 4.5, "phraseHz": [165, 196, 220, 247, 220, 196], "gainDb": -8 },
+        { "kind": "chest-resonance", "centerHz": 160, "gainDb": -18 },
+        { "kind": "guitar-pluck","phraseHz": [82, 110, 147], "gainDb": -16, "decay": 0.4 },
+        { "kind": "soft-snare", "centerHz": 220, "rateHz": 1.0, "gainDb": -16 },
+        { "kind": "kick",       "freqHz": 60, "rateHz": 1.0, "decay": 0.3, "gainDb": -14 }
+      ],
+      "preMasterTrimDb": -4.0
+    }
+  },
+  "characteristics": {
+    "durationSec": 25,
+    "sampleRate": 44100,
+    "bitDepth": 24,
+    "channels": 2,
+    "preMasterLufsI": -20,
+    "tags": ["male-vocal", "pop-rock", "chest-resonance", "low-mid"]
+  },
+  "referenceMaster": {
+    "available": false,
+    "targetMetrics": {
+      "lufsI": -14.0,
+      "tpMaxDb": -1.0,
+      "lraMinLu": 6.0,
+      "lraMaxLu": 10.0,
+      "crestDb": 9.0,
+      "rationale": "Male vocal pop-rock — preserve chest warmth, control low-mid mud."
+    }
+  },
+  "recommendedPresetId": "builtin-balanced",
+  "policy": {
+    "lufsToleranceLu": 0.8,
+    "tpHardCeiling": true,
+    "spectrumMaxDeltaMaxDb": 8.0
+  }
+}

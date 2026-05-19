@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schemas.loui.studio/fixture/v1",
+  "id": "acoustic-fingerpick-01",
+  "category": "acoustic",
+  "name": "Acoustic Fingerpicking",
+  "version": "1.0.0",
+  "description": "Solo acoustic guitar — fingerpicking pattern with simulated body resonance. Very wide dynamic range.",
+  "source": {
+    "type": "synthetic-recipe",
+    "recipe": "multitrack-mix",
+    "params": {
+      "durationSec": 30,
+      "tracks": [
+        { "kind": "guitar-pluck", "phraseHz": [82, 110, 147, 165, 196, 247], "gainDb": -8, "decay": 0.45 },
+        { "kind": "guitar-body",  "centerHz": 140, "gainDb": -22, "noteFollow": true }
+      ],
+      "preMasterTrimDb": -8.0,
+      "naturalReverbMs": 250
+    }
+  },
+  "characteristics": {
+    "durationSec": 30,
+    "sampleRate": 44100,
+    "bitDepth": 24,
+    "channels": 2,
+    "preMasterLufsI": -26,
+    "tags": ["acoustic", "guitar", "solo", "very-wide-lra"]
+  },
+  "referenceMaster": {
+    "available": false,
+    "targetMetrics": {
+      "lufsI": -16.0,
+      "tpMaxDb": -1.0,
+      "lraMinLu": 10.0,
+      "lraMaxLu": 14.0,
+      "crestDb": 12.0,
+      "rationale": "Acoustic master — must not crush transients or pluck attacks."
+    }
+  },
+  "recommendedPresetId": "builtin-natural",
+  "policy": {
+    "lufsToleranceLu": 1.0,
+    "tpHardCeiling": true,
+    "spectrumMaxDeltaMaxDb": 8.0
+  }
+}

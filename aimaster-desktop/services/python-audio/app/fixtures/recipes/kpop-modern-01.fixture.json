@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schemas.loui.studio/fixture/v1",
+  "id": "kpop-modern-01",
+  "category": "kpop",
+  "name": "K-Pop Modern Female Vocal",
+  "version": "1.0.0",
+  "description": "Synthesized K-pop modern mix — strong sub bass, female-pitched lead, glassy air, hi-hat pattern.",
+  "source": {
+    "type": "synthetic-recipe",
+    "recipe": "multitrack-mix",
+    "params": {
+      "durationSec": 25,
+      "tracks": [
+        { "kind": "kick",      "freqHz": 55,   "rateHz": 1.8,  "decay": 0.25, "gainDb": -10 },
+        { "kind": "sub-bass",  "freqHz": 55,   "noteHz": [55, 73, 65, 49], "gainDb": -12 },
+        { "kind": "lead-vocal","centerHz": 850, "vibratoHz": 5, "phraseHz": [440, 523, 587, 494], "gainDb": -14 },
+        { "kind": "synth-pad", "chordHz": [220, 277, 330], "gainDb": -20 },
+        { "kind": "hi-hat",    "hpfHz": 6000, "rateHz": 3.6, "gainDb": -22 },
+        { "kind": "air-shimmer","centerHz": 11000, "gainDb": -28 }
+      ],
+      "preMasterTrimDb": -3.0,
+      "stereoOffsetMs": 4
+    }
+  },
+  "characteristics": {
+    "durationSec": 25,
+    "sampleRate": 44100,
+    "bitDepth": 24,
+    "channels": 2,
+    "preMasterLufsI": -20,
+    "tags": ["kpop", "modern", "female-vocal", "strong-sub", "vocal-forward"]
+  },
+  "referenceMaster": {
+    "available": false,
+    "targetMetrics": {
+      "lufsI": -9.0,
+      "tpMaxDb": -0.8,
+      "lraMinLu": 3.0,
+      "lraMaxLu": 6.0,
+      "crestDb": 7.5,
+      "rationale": "Korean streaming charts (Melon, Spotify KR) industry average."
+    }
+  },
+  "recommendedPresetId": "builtin-kpop-loud",
+  "policy": {
+    "lufsToleranceLu": 0.7,
+    "tpHardCeiling": true,
+    "spectrumMaxDeltaMaxDb": 8.0
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schemas.loui.studio/fixture/v1",
+  "id": "ai-harsh-mix-01",
+  "category": "ai-harsh-mix",
+  "name": "AI Generation Defect Pattern",
+  "version": "1.0.0",
+  "description": "Simulates a typical defective AI-generated mix: 3-5 kHz harshness peak, sub-50 Hz rumble, phasey stereo, narrow LRA, clipping. Tests whether the mastering chain RESCUES this input.",
+  "source": {
+    "type": "synthetic-recipe",
+    "recipe": "ai-harsh-mix",
+    "params": {
+      "durationSec": 25,
+      "harshPeak": { "centerHz": 3500, "gainDb": 8.0, "q": 0.8 },
+      "subRumble": { "centerHz": 40, "gainDb": 6.0, "q": 0.5 },
+      "phaseyStereo": { "leftDelayMs": 8.0, "phaseFlipBandHz": [2500, 3500] },
+      "prePackedDynamics": { "compressorRatio": 8.0, "thresholdDb": -12, "makeupDb": 6 },
+      "clippingDb": -0.2
+    }
+  },
+  "characteristics": {
+    "durationSec": 25,
+    "sampleRate": 44100,
+    "bitDepth": 24,
+    "channels": 2,
+    "preMasterLufsI": -10,
+    "tags": ["ai-defect", "harsh", "phasey", "rumble", "rescue-test"]
+  },
+  "referenceMaster": {
+    "available": false,
+    "targetMetrics": {
+      "lufsI": -14.0,
+      "tpMaxDb": -1.0,
+      "lraMinLu": 4.0,
+      "lraMaxLu": 11.0,
+      "crestDb": 7.0,
+      "rationale": "After mastering rescues the harsh AI input, the result should be streaming-safe (-14 LUFS) with acceptable LRA."
+    }
+  },
+  "recommendedPresetId": "builtin-balanced",
+  "policy": {
+    "lufsToleranceLu": 1.2,
+    "tpHardCeiling": true,
+    "spectrumMaxDeltaMaxDb": 10.0
+  }
+}
