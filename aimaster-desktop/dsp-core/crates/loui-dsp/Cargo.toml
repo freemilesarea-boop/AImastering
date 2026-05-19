@@ -1,0 +1,29 @@
+[package]
+name = "loui-dsp"
+version = "0.1.0"
+edition = "2021"
+description = "Loui Mastering DSP core — realtime analyzers (M2-lite scope: FFT, LUFS, true peak, oversample, stereo, peak/RMS)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+# ── Zero external runtime dependencies — by design.
+# ── Realtime audio code must not pull in transitive code we don't audit.
+[dependencies]
+
+# Dev-dependencies: WAV I/O for the cross-language parity example, and
+# we do NOT depend on `criterion` (heavy + many transitive deps).  We
+# ship a hand-rolled timing harness in benches/ so the suite has zero
+# external runtime cost.
+[dev-dependencies]
+
+[[example]]
+name = "analyze_wav"
+path = "examples/analyze_wav.rs"
+
+[[bench]]
+name = "analyzer_bench"
+harness = false
+path = "benches/analyzer_bench.rs"
