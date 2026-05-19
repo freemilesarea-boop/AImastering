@@ -6,8 +6,10 @@ import HomePage     from './pages/HomePage.js';
 import AnalysisPage from './pages/AnalysisPage.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
+import ProductPage  from './pages/ProductPage.js';
 import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
+import { isProductLayoutEnabled } from './audio/product-layout-flag.js';
 // Dev-only: analyzer streaming smoke route.  Mounted when URL contains
 // `?dev=analyzer-stream`.  No production navigation entry.
 import { DevAnalyzerStreamPage } from './pages/DevAnalyzerStreamPage.js';
@@ -222,11 +224,16 @@ function AppInner() {
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('dev') === 'analyzer-stream';
 
+  // Product-layout feature flag: when on, the `result` slot renders the
+  // new Ozone-style ProductPage instead of the legacy ResultPage.  Flag
+  // off (default) keeps existing behaviour byte-for-byte.
+  const productLayout = isProductLayoutEnabled();
+
   const pages: Record<string, React.ReactNode> = {
     home:      <HomePage />,
     analysis:  <AnalysisPage />,
     mastering: <MasteringPage />,
-    result:    <ResultPage />,
+    result:    productLayout ? <ProductPage /> : <ResultPage />,
     qc:        <QCPage />,
     settings:  <SettingsPage />,
   };
