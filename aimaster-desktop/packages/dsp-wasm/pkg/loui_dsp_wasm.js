@@ -134,6 +134,91 @@ export class LouiAnalyzer {
 if (Symbol.dispose) LouiAnalyzer.prototype[Symbol.dispose] = LouiAnalyzer.prototype.free;
 
 /**
+ * WASM handle for the preview mastering chain.
+ */
+export class LouiMasteringChain {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        LouiMasteringChainFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_louimasteringchain_free(ptr, 0);
+    }
+    /**
+     * Limiter gain reduction (dB, ≥ 0) from the last block.
+     * @returns {number}
+     */
+    limiterGrDb() {
+        const ret = wasm.louimasteringchain_limiterGrDb(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Construct the chain for a sample rate.  Starts at unity (default
+     * config = transparent pass-through until the UI sets parameters).
+     * @param {number} sample_rate
+     */
+    constructor(sample_rate) {
+        const ret = wasm.louimasteringchain_new(sample_rate);
+        this.__wbg_ptr = ret;
+        LouiMasteringChainFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * Process one block of planar stereo audio in place.  The mutations
+     * are reflected back into the JS-side Float32Arrays.
+     * @param {Float32Array} left
+     * @param {Float32Array} right
+     */
+    processStereo(left, right) {
+        var ptr0 = passArrayF32ToWasm0(left, wasm.__wbindgen_malloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = passArrayF32ToWasm0(right, wasm.__wbindgen_malloc);
+        var len1 = WASM_VECTOR_LEN;
+        wasm.louimasteringchain_processStereo(this.__wbg_ptr, ptr0, len0, left, ptr1, len1, right);
+    }
+    /**
+     * Clear all module state (transport seek / source swap).
+     */
+    reset() {
+        wasm.louimasteringchain_reset(this.__wbg_ptr);
+    }
+    /**
+     * Update the full configuration from the UI parameters.  Flat
+     * argument list keeps the JS binding simple + zero-alloc.  Units are
+     * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
+     * @param {number} input_gain_db
+     * @param {number} eq_low_cut_hz
+     * @param {number} eq_low_shelf_db
+     * @param {number} eq_presence_db
+     * @param {number} eq_air_db
+     * @param {boolean} eq_adaptive
+     * @param {boolean} eq_bypass
+     * @param {number} dyn_threshold_db
+     * @param {number} dyn_ratio
+     * @param {number} dyn_attack_ms
+     * @param {number} dyn_release_ms
+     * @param {number} dyn_mix_pct
+     * @param {boolean} dyn_bypass
+     * @param {number} img_width_pct
+     * @param {number} img_low_mono_hz
+     * @param {boolean} img_bypass
+     * @param {number} lim_ceiling_dbtp
+     * @param {number} lim_lookahead_ms
+     * @param {boolean} lim_isp
+     * @param {boolean} lim_bypass
+     * @param {number} output_gain_db
+     * @param {boolean} master_bypass
+     */
+    setConfig(input_gain_db, eq_low_cut_hz, eq_low_shelf_db, eq_presence_db, eq_air_db, eq_adaptive, eq_bypass, dyn_threshold_db, dyn_ratio, dyn_attack_ms, dyn_release_ms, dyn_mix_pct, dyn_bypass, img_width_pct, img_low_mono_hz, img_bypass, lim_ceiling_dbtp, lim_lookahead_ms, lim_isp, lim_bypass, output_gain_db, master_bypass) {
+        wasm.louimasteringchain_setConfig(this.__wbg_ptr, input_gain_db, eq_low_cut_hz, eq_low_shelf_db, eq_presence_db, eq_air_db, eq_adaptive, eq_bypass, dyn_threshold_db, dyn_ratio, dyn_attack_ms, dyn_release_ms, dyn_mix_pct, dyn_bypass, img_width_pct, img_low_mono_hz, img_bypass, lim_ceiling_dbtp, lim_lookahead_ms, lim_isp, lim_bypass, output_gain_db, master_bypass);
+    }
+}
+if (Symbol.dispose) LouiMasteringChain.prototype[Symbol.dispose] = LouiMasteringChain.prototype.free;
+
+/**
  * Streaming FFT spectrum analyzer exposed to JS.
  *
  * One per session.  Feed audio via `processMono` / `processStereo`,
@@ -529,6 +614,9 @@ function __wbg_get_imports() {
             const ret = Error(getStringFromWasm0(arg0, arg1));
             return ret;
         },
+        __wbg___wbindgen_copy_to_typed_array_787746aeb47818bc: function(arg0, arg1, arg2) {
+            new Uint8Array(arg2.buffer, arg2.byteOffset, arg2.byteLength).set(getArrayU8FromWasm0(arg0, arg1));
+        },
         __wbg___wbindgen_throw_9c31b086c2b26051: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
@@ -573,6 +661,9 @@ function __wbg_get_imports() {
 const LouiAnalyzerFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_louianalyzer_free(ptr, 1));
+const LouiMasteringChainFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_louimasteringchain_free(ptr, 1));
 const LouiSpectrumAnalyzerFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_louispectrumanalyzer_free(ptr, 1));
@@ -592,6 +683,11 @@ function _assertClass(instance, klass) {
 function getArrayF32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
 }
 
 let cachedDataViewMemory0 = null;

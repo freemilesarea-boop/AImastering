@@ -38,6 +38,7 @@ pub mod buffer;
 pub mod fft;
 pub mod k_weighting;
 pub mod lufs;
+pub mod mastering;
 pub mod oversample;
 pub mod peak_rms;
 pub mod spectrum;
@@ -101,3 +102,7 @@ impl Default for MeterSnapshot {
 // Re-exports of the most commonly used types.
 pub use analyzer::{AnalyzerGraph, AnalyzerOptions};
 pub use buffer::{AudioBlockMut, AudioBlockRef, AudioBuffer};
+pub use mastering::{
+    MasteringChain, MasteringChainConfig, GainReduction,
+    EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
+};

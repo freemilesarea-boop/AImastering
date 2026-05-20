@@ -424,3 +424,98 @@ impl LouiSpectrumAnalyzer {
         self.inner.reset();
     }
 }
+
+// ── Mastering chain (M2-full) ───────────────────────────────────────────────
+//
+// Realtime-safe preview mastering chain exposed to the AudioWorklet tap.
+// Configured from the product UI's renderable parameters; processes planar
+// stereo in place.  The preview is a low-latency APPROXIMATION — the final
+// export remains the Python/Rust offline render (see
+// docs/.../m2-full/PREVIEW_EXPORT_CONSISTENCY.md).
+
+use loui_dsp::{
+    MasteringChain, MasteringChainConfig,
+    EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
+};
+
+/// WASM handle for the preview mastering chain.
+#[wasm_bindgen]
+pub struct LouiMasteringChain {
+    inner: MasteringChain,
+}
+
+#[wasm_bindgen]
+impl LouiMasteringChain {
+    /// Construct the chain for a sample rate.  Starts at unity (default
+    /// config = transparent pass-through until the UI sets parameters).
+    #[wasm_bindgen(constructor)]
+    pub fn new(sample_rate: f64) -> LouiMasteringChain {
+        LouiMasteringChain {
+            inner: MasteringChain::new(sample_rate, MasteringChainConfig::default()),
+        }
+    }
+
+    /// Update the full configuration from the UI parameters.  Flat
+    /// argument list keeps the JS binding simple + zero-alloc.  Units are
+    /// UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = setConfig)]
+    pub fn set_config(
+        &mut self,
+        input_gain_db: f64,
+        // EQ
+        eq_low_cut_hz: f64, eq_low_shelf_db: f64, eq_presence_db: f64, eq_air_db: f64,
+        eq_adaptive: bool, eq_bypass: bool,
+        // Dynamics
+        dyn_threshold_db: f64, dyn_ratio: f64, dyn_attack_ms: f64, dyn_release_ms: f64,
+        dyn_mix_pct: f64, dyn_bypass: bool,
+        // Imager
+        img_width_pct: f64, img_low_mono_hz: f64, img_bypass: bool,
+        // Limiter
+        lim_ceiling_dbtp: f64, lim_lookahead_ms: f64, lim_isp: bool, lim_bypass: bool,
+        // Output
+        output_gain_db: f64,
+        master_bypass: bool,
+    ) {
+        self.inner.set_config(MasteringChainConfig {
+            input_gain_db,
+            eq: EqConfig {
+                low_cut_hz: eq_low_cut_hz, low_shelf_db: eq_low_shelf_db,
+                presence_db: eq_presence_db, air_db: eq_air_db,
+                adaptive: eq_adaptive, bypass: eq_bypass,
+            },
+            dynamics: DynamicsConfig {
+                threshold_db: dyn_threshold_db, ratio: dyn_ratio,
+                attack_ms: dyn_attack_ms, release_ms: dyn_release_ms,
+                mix_pct: dyn_mix_pct, bypass: dyn_bypass,
+            },
+            imager: ImagerConfig {
+                width_pct: img_width_pct, low_mono_hz: img_low_mono_hz, bypass: img_bypass,
+            },
+            limiter: LimiterConfig {
+                ceiling_dbtp: lim_ceiling_dbtp, lookahead_ms: lim_lookahead_ms,
+                isp: lim_isp, bypass: lim_bypass,
+            },
+            output_gain_db,
+            bypass: master_bypass,
+        });
+    }
+
+    /// Process one block of planar stereo audio in place.  The mutations
+    /// are reflected back into the JS-side Float32Arrays.
+    #[wasm_bindgen(js_name = processStereo)]
+    pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
+        self.inner.process_stereo_block(left, right);
+    }
+
+    /// Limiter gain reduction (dB, ≥ 0) from the last block.
+    #[wasm_bindgen(js_name = limiterGrDb)]
+    pub fn limiter_gr_db(&self) -> f64 {
+        self.inner.gain_reduction().limiter_db
+    }
+
+    /// Clear all module state (transport seek / source swap).
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+}

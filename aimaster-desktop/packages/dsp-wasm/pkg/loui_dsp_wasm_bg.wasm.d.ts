@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_louianalyzer_free: (a: number, b: number) => void;
+export const __wbg_louimasteringchain_free: (a: number, b: number) => void;
 export const __wbg_louispectrumanalyzer_free: (a: number, b: number) => void;
 export const __wbg_wasmmetersnapshot_free: (a: number, b: number) => void;
 export const __wbg_wasmspectrumoptions_free: (a: number, b: number) => void;
@@ -16,6 +17,11 @@ export const louianalyzer_reset: (a: number) => void;
 export const louianalyzer_sampleRate: (a: number) => number;
 export const louianalyzer_snapshot: (a: number) => number;
 export const louianalyzer_tickSnapshot: (a: number) => number;
+export const louimasteringchain_limiterGrDb: (a: number) => number;
+export const louimasteringchain_new: (a: number) => number;
+export const louimasteringchain_processStereo: (a: number, b: number, c: number, d: any, e: number, f: number, g: any) => void;
+export const louimasteringchain_reset: (a: number) => void;
+export const louimasteringchain_setConfig: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number) => void;
 export const louispectrumanalyzer_binCentresHz: (a: number) => [number, number];
 export const louispectrumanalyzer_binCount: (a: number) => number;
 export const louispectrumanalyzer_fftSize: (a: number) => number;

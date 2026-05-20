@@ -69,6 +69,23 @@ impl BiquadCoeffs {
         let a2 = 1.0 - alpha;
         Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }
     }
+
+    /// RBJ low-shelf (cookbook).
+    pub fn low_shelf(sample_rate: f64, freq_hz: f64, q: f64, gain_db: f64) -> Self {
+        let a = 10f64.powf(gain_db / 40.0);
+        let omega = 2.0 * std::f64::consts::PI * freq_hz / sample_rate;
+        let cos_w = omega.cos();
+        let sin_w = omega.sin();
+        let alpha = sin_w / (2.0 * q);
+        let sqrt_a = a.sqrt();
+        let b0 =       a * ((a + 1.0) - (a - 1.0) * cos_w + 2.0 * sqrt_a * alpha);
+        let b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cos_w);
+        let b2 =       a * ((a + 1.0) - (a - 1.0) * cos_w - 2.0 * sqrt_a * alpha);
+        let a0 =             (a + 1.0) + (a - 1.0) * cos_w + 2.0 * sqrt_a * alpha;
+        let a1 = -2.0 *     ((a - 1.0) + (a + 1.0) * cos_w);
+        let a2 =             (a + 1.0) + (a - 1.0) * cos_w - 2.0 * sqrt_a * alpha;
+        Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }
+    }
 }
 
 /// Single-channel biquad with persistent state.

@@ -66,6 +66,38 @@ export class LouiAnalyzer {
 }
 
 /**
+ * WASM handle for the preview mastering chain.
+ */
+export class LouiMasteringChain {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Limiter gain reduction (dB, ≥ 0) from the last block.
+     */
+    limiterGrDb(): number;
+    /**
+     * Construct the chain for a sample rate.  Starts at unity (default
+     * config = transparent pass-through until the UI sets parameters).
+     */
+    constructor(sample_rate: number);
+    /**
+     * Process one block of planar stereo audio in place.  The mutations
+     * are reflected back into the JS-side Float32Arrays.
+     */
+    processStereo(left: Float32Array, right: Float32Array): void;
+    /**
+     * Clear all module state (transport seek / source swap).
+     */
+    reset(): void;
+    /**
+     * Update the full configuration from the UI parameters.  Flat
+     * argument list keeps the JS binding simple + zero-alloc.  Units are
+     * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
+     */
+    setConfig(input_gain_db: number, eq_low_cut_hz: number, eq_low_shelf_db: number, eq_presence_db: number, eq_air_db: number, eq_adaptive: boolean, eq_bypass: boolean, dyn_threshold_db: number, dyn_ratio: number, dyn_attack_ms: number, dyn_release_ms: number, dyn_mix_pct: number, dyn_bypass: boolean, img_width_pct: number, img_low_mono_hz: number, img_bypass: boolean, lim_ceiling_dbtp: number, lim_lookahead_ms: number, lim_isp: boolean, lim_bypass: boolean, output_gain_db: number, master_bypass: boolean): void;
+}
+
+/**
  * Streaming FFT spectrum analyzer exposed to JS.
  *
  * One per session.  Feed audio via `processMono` / `processStereo`,
@@ -238,6 +270,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_louianalyzer_free: (a: number, b: number) => void;
+    readonly __wbg_louimasteringchain_free: (a: number, b: number) => void;
     readonly __wbg_louispectrumanalyzer_free: (a: number, b: number) => void;
     readonly __wbg_wasmmetersnapshot_free: (a: number, b: number) => void;
     readonly __wbg_wasmspectrumoptions_free: (a: number, b: number) => void;
@@ -252,6 +285,11 @@ export interface InitOutput {
     readonly louianalyzer_sampleRate: (a: number) => number;
     readonly louianalyzer_snapshot: (a: number) => number;
     readonly louianalyzer_tickSnapshot: (a: number) => number;
+    readonly louimasteringchain_limiterGrDb: (a: number) => number;
+    readonly louimasteringchain_new: (a: number) => number;
+    readonly louimasteringchain_processStereo: (a: number, b: number, c: number, d: any, e: number, f: number, g: any) => void;
+    readonly louimasteringchain_reset: (a: number) => void;
+    readonly louimasteringchain_setConfig: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number) => void;
     readonly louispectrumanalyzer_binCentresHz: (a: number) => [number, number];
     readonly louispectrumanalyzer_binCount: (a: number) => number;
     readonly louispectrumanalyzer_fftSize: (a: number) => number;
