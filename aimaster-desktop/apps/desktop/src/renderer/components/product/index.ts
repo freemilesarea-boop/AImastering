@@ -14,6 +14,9 @@ export type { LouiPresetHeaderProps, PresetTarget } from './LouiPresetHeader.js'
 export { LouiPresetBrowser } from './LouiPresetBrowser.js';
 export type { LouiPresetBrowserProps } from './LouiPresetBrowser.js';
 
+export { LouiPresetSlideOver } from './LouiPresetSlideOver.js';
+export type { LouiPresetSlideOverProps } from './LouiPresetSlideOver.js';
+
 export { LouiAnalyzerCanvas } from './LouiAnalyzerCanvas.js';
 export type { LouiAnalyzerCanvasProps } from './LouiAnalyzerCanvas.js';
 

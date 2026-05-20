@@ -66,6 +66,9 @@ export interface LouiPresetHeaderProps {
   onTargetChange?: (id: string) => void;
   /** Override the preset list (e.g. for tests / storybook). */
   presets?: PresetTarget[];
+  /** When provided, renders a "Browse Presets" button that opens the
+   *  full category-grouped preset browser. */
+  onBrowse?: () => void;
 }
 
 function Badge({ label, color }: { label: string; color: string }) {
@@ -215,6 +218,40 @@ export function LouiPresetHeader(props: LouiPresetHeaderProps) {
       }}>
         Target
       </div>
+
+      {props.onBrowse && (
+        <button
+          type="button"
+          onClick={props.onBrowse}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            height: 56,
+            paddingInline: space['3'],
+            borderRadius: radius.chip,
+            border: `1px solid ${surface.border}`,
+            background: surface.well,
+            color: text.secondary,
+            cursor: 'pointer',
+            fontFamily: typography.family.sans,
+            fontSize: typography.size.sm,
+            fontWeight: typography.weight.medium,
+            flexShrink: 0,
+            transition: 'background 120ms ease-out, color 120ms ease-out',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = surface.overlay; e.currentTarget.style.color = text.primary; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = surface.well; e.currentTarget.style.color = text.secondary; }}
+        >
+          <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="2.5" width="5" height="5" rx="1" />
+            <rect x="9" y="2.5" width="5" height="5" rx="1" />
+            <rect x="2" y="8.5" width="5" height="5" rx="1" />
+            <rect x="9" y="8.5" width="5" height="5" rx="1" />
+          </svg>
+          Browse Presets
+        </button>
+      )}
       <div style={{
         display: 'flex',
         alignItems: 'stretch',

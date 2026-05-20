@@ -41,9 +41,10 @@ import {
   type ModuleId,
   type ParameterValue,
 } from '../audio/parameters/index.js';
-import { getPreset } from '../audio/presets/loui-presets.js';
+import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
 import { presetApplyPlan } from '../audio/presets/preset-to-state.js';
-import { setLastUsedPreset } from '../audio/presets/preset-storage.js';
+import { setLastUsedPreset, getLastUsedPreset } from '../audio/presets/preset-storage.js';
+import { LouiPresetSlideOver } from '../components/product/LouiPresetSlideOver.js';
 import {
   PresetPatchDispatcher,
   PreviewRenderController,
@@ -110,6 +111,7 @@ function ProductLayoutInner({
   targetTp,
   presetId,
   onPresetChange,
+  onBrowsePresets,
   selectedModule,
   onSelectModule,
   onPlayPause,
@@ -133,6 +135,8 @@ function ProductLayoutInner({
   targetTp?: number;
   presetId?: string;
   onPresetChange?: (id: string) => void;
+  /** Opens the full preset browser slide-over. */
+  onBrowsePresets?: () => void;
   selectedModule?: ModuleCardDef['id'];
   onSelectModule?: (id: ModuleCardDef['id']) => void;
   onPlayPause?: () => void;
@@ -177,6 +181,7 @@ function ProductLayoutInner({
       <LouiPresetHeader
         {...(presetId ? { activeId: presetId } : {})}
         {...(onPresetChange ? { onTargetChange: onPresetChange } : {})}
+        {...(onBrowsePresets ? { onBrowse: onBrowsePresets } : {})}
       />
 
       {/* Preview-control strip — staged-change → re-render loop (production). */}
@@ -1088,7 +1093,14 @@ function ProductPageProductionInner(props: {
   // rebuild — the same worklet node receives a new config) and stages the
   // renderable params for export, keeping preview/export consistent.
   const applyPreset = useApplyPreset();
+  const [presetBrowserOpen, setPresetBrowserOpen] = useState(false);
+  const [previousPresetId, setPreviousPresetId] = useState<string | undefined>(undefined);
+  // Last-used is a badge hint only — it does NOT auto-apply on load (the
+  // master is already rendered); the user re-applies by selecting.
+  const [lastUsedId] = useState<string | undefined>(() => getLastUsedPreset() ?? undefined);
+
   const handlePreset = useCallback((id: string) => {
+    setPreviousPresetId(props.presetId);
     props.onPresetChange(id);
     const preset = getPreset(id);
     if (!preset) return;
@@ -1106,6 +1118,7 @@ function ProductPageProductionInner(props: {
       targetTp={props.targetTp}
       {...(props.presetId ? { presetId: props.presetId } : {})}
       onPresetChange={handlePreset}
+      onBrowsePresets={() => setPresetBrowserOpen(true)}
       {...(props.selectedModule ? { selectedModule: props.selectedModule } : {})}
       onSelectModule={props.onSelectModule}
       isPlaying={props.isPlaying}
@@ -1136,7 +1149,19 @@ function ProductPageProductionInner(props: {
     </div>
   ) : null;
 
-  if (!props.preview) return <>{layout}{debugOverlay}</>;
+  const presetBrowser = (
+    <LouiPresetSlideOver
+      open={presetBrowserOpen}
+      onClose={() => setPresetBrowserOpen(false)}
+      recommendedId={DEFAULT_PRESET_ID}
+      {...(props.presetId ? { activeId: props.presetId } : {})}
+      {...(previousPresetId ? { previousId: previousPresetId } : {})}
+      {...(lastUsedId ? { lastUsedId } : {})}
+      onSelect={handlePreset}
+    />
+  );
+
+  if (!props.preview) return <>{layout}{debugOverlay}{presetBrowser}</>;
   return (
     <ProductionPreviewProvider
       sourceAudioPath={props.preview.sourceAudioPath}
@@ -1146,6 +1171,7 @@ function ProductPageProductionInner(props: {
     >
       {layout}
       {debugOverlay}
+      {presetBrowser}
     </ProductionPreviewProvider>
   );
 }
