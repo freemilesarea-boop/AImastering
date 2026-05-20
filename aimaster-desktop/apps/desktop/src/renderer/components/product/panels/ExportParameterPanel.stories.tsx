@@ -19,7 +19,11 @@ interface HostArgs {
     | 'asis-no-output'
     | 'asis-success'
     | 'asis-failure'
-    | 'asis-saving';
+    | 'asis-saving'
+    | 'quality-441-16'
+    | 'quality-48-24'
+    | 'quality-32-float'
+    | 'quality-asis-ignores';
 }
 
 function infoFor(
@@ -39,6 +43,7 @@ function infoFor(
     lastExportPath: null,
     onReMasterExport: onReMaster,
     asIs,
+    quality: { label: '48 kHz · 24-bit', willApply: false },
   };
   switch (scenario) {
     case 'no-changes':
@@ -63,6 +68,19 @@ function infoFor(
       return { ...base, appliedKeys: [], asIs: { ...asIs, phase: 'error', error: 'copy failed: EACCES' } };
     case 'asis-saving':
       return { ...base, appliedKeys: [], asIs: { ...asIs, phase: 'exporting' } };
+    case 'quality-441-16':
+      return { ...base, appliedKeys: ['sampleRate', 'bitDepth'],
+        quality: { label: '44.1 kHz · 16-bit', willApply: true } };
+    case 'quality-48-24':
+      return { ...base, appliedKeys: [],
+        quality: { label: '48 kHz · 24-bit', willApply: false } };
+    case 'quality-32-float':
+      return { ...base, appliedKeys: ['bitDepth'],
+        quality: { label: '96 kHz · 32-bit', willApply: true } };
+    case 'quality-asis-ignores':
+      // Quality change present; Export As-is keeps current format.
+      return { ...base, appliedKeys: ['sampleRate'],
+        quality: { label: '192 kHz · 24-bit', willApply: true } };
   }
 }
 
@@ -114,6 +132,7 @@ const meta: Meta<typeof Host> = {
         'no-changes', 'previewed', 'unpreviewed-warning', 'staged-only-skipped',
         'success', 'failure', 'exporting',
         'asis-no-output', 'asis-success', 'asis-failure', 'asis-saving',
+        'quality-441-16', 'quality-48-24', 'quality-32-float', 'quality-asis-ignores',
       ],
     },
   },
@@ -135,3 +154,9 @@ export const ExportAsIsDisabledNoOutput: Story = { args: { scenario: 'asis-no-ou
 export const ExportAsIsSuccess:         Story = { args: { scenario: 'asis-success' } };
 export const ExportAsIsFailure:         Story = { args: { scenario: 'asis-failure' } };
 export const ExportAsIsSaving:          Story = { args: { scenario: 'asis-saving' } };
+
+// Export quality (M3-P-NEXT-5D-2-c)
+export const Quality441k16bit:    Story = { args: { scenario: 'quality-441-16' } };
+export const Quality48k24bit:     Story = { args: { scenario: 'quality-48-24' } };
+export const Quality32BitFloat:   Story = { args: { scenario: 'quality-32-float' } };
+export const QualityAsIsIgnores:  Story = { args: { scenario: 'quality-asis-ignores' } };

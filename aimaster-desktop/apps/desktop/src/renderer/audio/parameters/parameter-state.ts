@@ -58,6 +58,14 @@ export interface EngineBindingTarget {
   status: 'wired' | 'pending' | 'unavailable';
   /** Optional adapter-specific note for diagnostics. */
   note?: string;
+  /**
+   * Export-renderable mapping (M3-P-NEXT-5D-2-c).  When set, this param
+   * maps to a `MasteringOptions` field that the Re-master & Export path
+   * applies — even when `status` is `'unavailable'` (render-stage, no
+   * DSP module).  Example: `'sampleRate'`, `'bitDepth'`.  These do NOT
+   * affect the preview (preview is always a 320 kbps MP3).
+   */
+  exportField?: string;
 }
 
 // ── Parameter definitions ────────────────────────────────────────────────

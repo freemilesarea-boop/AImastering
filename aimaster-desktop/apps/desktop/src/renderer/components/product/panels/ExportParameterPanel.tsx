@@ -155,6 +155,13 @@ export interface ReMasterExportInfo {
   onReMasterExport: () => void;
   /** Export As-is path (5D-2-b) — save the current master unchanged. */
   asIs: ExportAsIsInfo;
+  /** Export quality (5D-2-c) — sampleRate / bitDepth applied on re-master. */
+  quality?: {
+    /** Human label, e.g. "48 kHz · 24-bit". */
+    label: string;
+    /** Whether SR/bitDepth differ from base → applied on re-master. */
+    willApply: boolean;
+  };
 }
 
 export interface ExportParameterPanelProps extends ControlledPanelProps {
@@ -371,15 +378,28 @@ function ReMasterExportSection({ info }: { info: ReMasterExportInfo }) {
     <LouiSectionCard title="Export">
       {/* Summary badges */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: space['2'] }}>
-        <LouiValueBadge label="Changes" status={hasChanges ? 'accent' : 'neutral'}>
-          {appliedCount} renderable
+        <LouiValueBadge label="Apply" status={hasChanges ? 'accent' : 'neutral'}>
+          {appliedCount} change{appliedCount === 1 ? '' : 's'}
         </LouiValueBadge>
+        {info.quality && (
+          <LouiValueBadge label="Quality" status={info.quality.willApply ? 'accent' : 'neutral'}>
+            {info.quality.label}
+          </LouiValueBadge>
+        )}
         {skippedCount > 0 && (
           <LouiValueBadge label="Skip" status="neutral">
             {skippedCount} staged-only
           </LouiValueBadge>
         )}
       </div>
+
+      {/* Quality change note */}
+      {info.quality?.willApply && (
+        <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: text.tertiary, lineHeight: 1.4 }}>
+          Export quality change ({info.quality.label}) will apply on Re-master &amp; Export.
+          Export As-is keeps the current file format.
+        </span>
+      )}
 
       {hasChanges && (
         <span style={{ fontFamily: typography.family.mono, fontSize: typography.size.xs, color: text.tertiary, lineHeight: 1.5 }}>

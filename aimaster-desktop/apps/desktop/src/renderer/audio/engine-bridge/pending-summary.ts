@@ -24,6 +24,7 @@ import {
   type AllModulesDefinitions,
   type AllModulesParameterState,
   type ModuleId,
+  type ParameterValue,
 } from '../parameters/index.js';
 import { toEngineValue } from './engine-dispatcher.js';
 import { hashOverride } from './engine-preset-builder.js';
@@ -152,29 +153,75 @@ export function summarizePending(
 export interface ExportOverrideResult {
   /** MasteringOptions override to merge before re-mastering for export. */
   optionsOverride: Partial<MasteringOptions>;
-  /** MasteringOptions keys applied (mirrors the preview render). */
+  /** MasteringOptions keys applied (renderable audio params + export quality). */
   appliedOverrideKeys: string[];
   /** UI parameter ids staged but NOT applied to the export (no mapping). */
   skippedParameterIds: string[];
-  /** Deterministic hash of the override (shared with the preview path). */
+  /** Deterministic hash of the override. */
   patchHash: string;
   /** Whether there's anything to apply (else "Export As-is" is equivalent). */
   hasOverride: boolean;
+  /** Export-quality keys applied (sampleRate / bitDepth) — for UI labelling. */
+  qualityAppliedKeys: string[];
 }
 
 /**
- * Build the export override from a pending summary.  Reuses the SAME
- * `renderOverride` the preview render uses — so "what you preview is what
- * you export" holds by construction.
+ * Build the export override from a preview pending summary + the export
+ * module's quality state (sampleRate / bitDepth).
+ *
+ * Renderable AUDIO params (targetLufs / targetTp / stereoWidth /
+ * outputGainDb) come from `summary.renderOverride` — the SAME override the
+ * preview uses, so audio content stays consistent.  Export-only QUALITY
+ * params come from `exportState`, validated against their enum `values`
+ * and converted to numbers.  Quality is applied on Re-master & Export
+ * only — it never affects the preview MP3.
  */
-export function buildExportOverride(summary: PendingSummary): ExportOverrideResult {
-  const optionsOverride = summary.renderOverride;
+export function buildExportOverride(
+  summary: PendingSummary,
+  exportState?: Record<string, ParameterValue>,
+  baseOptions?: MasteringOptions,
+  defs: AllModulesDefinitions = ALL_MODULE_PARAMETER_DEFS,
+): ExportOverrideResult {
+  const optionsOverride: Partial<MasteringOptions> = { ...summary.renderOverride };
+  const appliedOverrideKeys = Object.keys(optionsOverride);
+  const qualityAppliedKeys: string[] = [];
+
+  // Export-quality param defs (those with an `exportField`).
+  const exportFieldDefs = defs.export.parameters.filter((d) => d.binding.exportField);
+  const exportFieldParamIds = new Set(exportFieldDefs.map((d) => `export.${d.id}`));
+
+  // Staged-only list — exclude export-quality params (handled below).
+  const skippedParameterIds = summary.unsupportedPending
+    .map((u) => `${u.moduleId}.${u.parameterId}`)
+    .filter((id) => !exportFieldParamIds.has(id));
+
+  if (exportState) {
+    for (const def of exportFieldDefs) {
+      const field = def.binding.exportField!;
+      const raw = exportState[def.id];
+      if (raw === undefined) continue;
+      const validEnum = def.kind === 'enum' && typeof raw === 'string' && def.values.includes(raw);
+      const num = typeof raw === 'string' ? Number(raw) : (typeof raw === 'number' ? raw : Number.NaN);
+      if (validEnum && Number.isFinite(num)) {
+        const baseVal = baseOptions ? (baseOptions as unknown as Record<string, unknown>)[field] : undefined;
+        if (num !== baseVal) {
+          (optionsOverride as Record<string, unknown>)[field] = num;
+          appliedOverrideKeys.push(field);
+          qualityAppliedKeys.push(field);
+        }
+      } else if (raw !== def.default) {
+        skippedParameterIds.push(`export.${def.id}`);
+      }
+    }
+  }
+
   return {
     optionsOverride,
-    appliedOverrideKeys: Object.keys(optionsOverride),
-    skippedParameterIds: summary.unsupportedPending.map((u) => `${u.moduleId}.${u.parameterId}`),
-    patchHash: summary.patchHash,
-    hasOverride: Object.keys(optionsOverride).length > 0,
+    appliedOverrideKeys,
+    skippedParameterIds,
+    patchHash: hashOverride(optionsOverride),
+    hasOverride: appliedOverrideKeys.length > 0,
+    qualityAppliedKeys,
   };
 }
 
@@ -194,5 +241,14 @@ export function initialStateFromBaseOptions(
     (typeof baseOptions.stereoWidth === 'number' ? baseOptions.stereoWidth : 1.0) * 100;
   state.eq.parameters['outputGainDb'] =
     typeof baseOptions.outputGainDb === 'number' ? baseOptions.outputGainDb : 0;
+  // Export quality (M3-P-NEXT-5D-2-c) — seed from base so the export panel
+  // matches the master's actual quality at load (only set if the value is
+  // a recognised enum option, else keep the canonical default).
+  const srDef = defs.export.parameters.find((d) => d.id === 'sampleRate');
+  const bdDef = defs.export.parameters.find((d) => d.id === 'bitDepth');
+  const srStr = String(baseOptions.sampleRate);
+  const bdStr = String(baseOptions.bitDepth);
+  if (srDef?.kind === 'enum' && srDef.values.includes(srStr)) state.export.parameters['sampleRate'] = srStr;
+  if (bdDef?.kind === 'enum' && bdDef.values.includes(bdStr)) state.export.parameters['bitDepth'] = bdStr;
   return state;
 }

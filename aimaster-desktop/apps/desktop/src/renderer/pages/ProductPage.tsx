@@ -49,6 +49,7 @@ import {
   hashOverride,
   type PreviewRenderState,
   type PendingSummary,
+  type ExportOverrideResult,
 } from '../audio/engine-bridge/index.js';
 import { LouiPreviewControl, type PreviewControlPhase } from '../components/product/LouiPreviewControl.js';
 import type { MasteringOptions } from '@aimaster/shared-types';
@@ -446,7 +447,7 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
 
   // Re-master & Export wiring (production path only).
   const bridge = usePreviewBridge();
-  const exportInfo = bridge ? buildExportOverride(bridge.summary) : null;
+  const exportInfo: ExportOverrideResult | null = bridge ? bridge.exportOverride : null;
 
   const common = {
     state: stateRecord,
@@ -482,6 +483,10 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
               error: bridge.exportAsIsError,
               lastExportPath: bridge.lastExportAsIsPath,
               onExportAsIs: bridge.onExportAsIs,
+            },
+            quality: {
+              label: bridge.qualityLabel,
+              willApply: bridge.exportOverride.qualityAppliedKeys.length > 0,
             },
           },
         } : {})}
@@ -520,6 +525,10 @@ interface PreviewBridge {
   lastExportAsIsPath: string | null;
   /** Save the current master WAV unchanged (no re-render). */
   onExportAsIs: () => void;
+  // Export quality (M3-P-NEXT-5D-2-c)
+  exportOverride: ExportOverrideResult;
+  /** Human label of the export quality, e.g. "48 kHz · 24-bit". */
+  qualityLabel: string;
 }
 
 const PreviewBridgeContext = React.createContext<PreviewBridge | null>(null);
@@ -559,6 +568,20 @@ function ProductionPreviewProvider({
     () => summarizePending(state, lastRenderedOverride, baseOptions),
     [state, lastRenderedOverride, baseOptions],
   );
+
+  // Export override = renderable audio params + export quality (SR/bitDepth).
+  const exportOverride = useMemo(
+    () => buildExportOverride(summary, state.export.parameters, baseOptions),
+    [summary, state, baseOptions],
+  );
+
+  // Quality label for the export panel (e.g. "48 kHz · 24-bit").
+  const qualityLabel = useMemo(() => {
+    const sr = Number(state.export.parameters['sampleRate'] ?? baseOptions.sampleRate);
+    const bd = state.export.parameters['bitDepth'] ?? String(baseOptions.bitDepth);
+    const srLabel = Number.isFinite(sr) ? `${(sr / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} kHz` : '—';
+    return `${srLabel} · ${bd}-bit`;
+  }, [state, baseOptions]);
 
   // Renderable changes the user hasn't previewed yet (export-includes warning).
   const hasUnpreviewedChanges = summary.patchHash !== hashOverride(lastRenderedOverride);
@@ -612,8 +635,7 @@ function ProductionPreviewProvider({
   // SAME `summary.renderOverride` the preview uses (consistency by
   // construction).
   const onReMasterExport = useCallback(() => {
-    const { optionsOverride } = buildExportOverride(summary);
-    const options = mergeOptions(baseOptions, optionsOverride);
+    const options = mergeOptions(baseOptions, exportOverride.optionsOverride);
     const api = window.electronAPI;
     if (!api) { setExportPhase('error'); setExportError('electronAPI unavailable'); return; }
     setExportPhase('exporting');
@@ -637,7 +659,7 @@ function ProductionPreviewProvider({
         setExportError(err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [summary, baseOptions, sourceAudioPath]);
+  }, [exportOverride, baseOptions, sourceAudioPath]);
 
   // Export As-is — saves the current master WAV unchanged.  Reuses
   // file:save-wav; no re-render.
@@ -664,6 +686,7 @@ function ProductionPreviewProvider({
     exportPhase, exportError, lastExportPath, hasUnpreviewedChanges, onReMasterExport,
     exportAsIsAvailable: Boolean(masterOutputPath),
     exportAsIsPhase, exportAsIsError, lastExportAsIsPath, onExportAsIs,
+    exportOverride, qualityLabel,
   };
   return (
     <PreviewBridgeContext.Provider value={bridge}>

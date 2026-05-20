@@ -359,6 +359,8 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
         moduleType: null,
         path: 'export.sampleRate',
         status: 'unavailable',
+        exportField: 'sampleRate',
+        note: 'Export-renderable (M3-P-NEXT-5D-2-c) — applied on Re-master & Export, not preview.',
       },
     },
     {
@@ -376,6 +378,8 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
         moduleType: null,
         path: 'export.bitDepth',
         status: 'unavailable',
+        exportField: 'bitDepth',
+        note: 'Export-renderable (M3-P-NEXT-5D-2-c) — applied on Re-master & Export, not preview.',
       },
     },
     {
