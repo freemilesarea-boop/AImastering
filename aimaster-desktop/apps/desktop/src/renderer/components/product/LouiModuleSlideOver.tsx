@@ -19,6 +19,7 @@
 
 import React, { useEffect, useRef } from 'react';
 import { surface, text, typography, space, radius } from '../../theme/loui-theme.js';
+import { useReducedMotion } from '../../hooks/useReducedMotion.js';
 
 export interface LouiModuleSlideOverProps {
   /** Display title — "EQ", "Dynamics", etc. */
@@ -52,6 +53,7 @@ function focusableWithin(root: HTMLElement): HTMLElement[] {
 }
 
 export function LouiModuleSlideOver(props: LouiModuleSlideOverProps) {
+  const reducedMotion = useReducedMotion();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const lastFocusRef = useRef<HTMLElement | null>(null);
 
@@ -117,7 +119,7 @@ export function LouiModuleSlideOver(props: LouiModuleSlideOverProps) {
           backdropFilter: 'blur(2px)',
           opacity: props.open ? 1 : 0,
           pointerEvents: props.open ? 'auto' : 'none',
-          transition: 'opacity 200ms ease-out',
+          transition: reducedMotion ? 'none' : 'opacity 200ms ease-out',
           zIndex: 90,
         }}
       />
@@ -138,7 +140,7 @@ export function LouiModuleSlideOver(props: LouiModuleSlideOverProps) {
           background: surface.background,
           borderLeft: `1px solid ${surface.border}`,
           transform: props.open ? 'translateX(0)' : `translateX(${width}px)`,
-          transition: 'transform 280ms ease-out',
+          transition: reducedMotion ? 'none' : 'transform 280ms ease-out',
           zIndex: 91,
           display: 'flex',
           flexDirection: 'column',

@@ -70,8 +70,8 @@ export interface PreviewRenderControllerOptions {
   debounceMs?: number;
   /** Called whenever the controller's state changes. */
   onState?: (state: PreviewRenderState) => void;
-  /** Called on a non-stale successful render. */
-  onSuccess?: (previewPath: string, durationMs: number) => void;
+  /** Called on a non-stale successful render.  `metrics` from the response. */
+  onSuccess?: (previewPath: string, durationMs: number, metrics?: { integratedLufs?: number; truePeakDbtp?: number }) => void;
   /** Called on a non-stale failure. */
   onError?: (error: string) => void;
   /** Called when a request is a no-op (same patch already rendered). */
@@ -171,7 +171,7 @@ export class PreviewRenderController {
           at: Date.now(),
           durationMs: response.durationMs,
         });
-        this.opts.onSuccess?.(response.previewPath, response.durationMs);
+        this.opts.onSuccess?.(response.previewPath, response.durationMs, response.metrics);
       } else {
         this.setState({ phase: 'error', error: response.error, at: Date.now() });
         this.opts.onError?.(response.error);

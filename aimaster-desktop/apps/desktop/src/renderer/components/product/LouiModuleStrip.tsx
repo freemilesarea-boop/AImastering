@@ -158,6 +158,29 @@ function visualForModule(id: ModuleCardDef['id']): React.ReactNode {
   }
 }
 
+// ── Signal-flow connector (M3-O-NEXT-7) ──────────────────────────────────
+
+/** Thin chevron between module cards — visualises the signal chain order. */
+function SignalFlowConnector() {
+  return (
+    <div
+      aria-hidden
+      style={{
+        flexShrink: 0,
+        width: 20,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        color: surface.overlay,
+      }}
+    >
+      <svg width={10} height={12} viewBox="0 0 10 12" fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 2l4 4-4 4" />
+      </svg>
+    </div>
+  );
+}
+
 // ── Card ─────────────────────────────────────────────────────────────────
 
 function ModuleCard({
@@ -194,9 +217,13 @@ function ModuleCard({
         border: `1px solid ${v.cardBorder}`,
         borderRadius: radius.panel,
         opacity: v.cardOpacity,
+        // Active modules glow softly; bypassed stay flat (signal-flow cue).
+        boxShadow: def.state === 'active'
+          ? `0 0 0 1px rgba(16,185,129,0.10), 0 4px 18px -10px rgba(16,185,129,0.35)`
+          : 'none',
         cursor: 'pointer',
         textAlign: 'left',
-        transition: 'background 120ms ease-out, border-color 120ms ease-out, opacity 120ms ease-out',
+        transition: 'background 120ms ease-out, border-color 120ms ease-out, opacity 120ms ease-out, box-shadow 160ms ease-out',
       }}
     >
       {/* Top row: title + state pill */}
@@ -313,16 +340,21 @@ export function LouiModuleStrip(props: LouiModuleStripProps) {
       </div>
       <div style={{
         display: 'flex',
-        gap: space['3'],
+        alignItems: 'stretch',
+        gap: 0,
       }}>
-        {modules.map((m) => (
-          <ModuleCard
-            key={m.id}
-            def={m}
-            selected={m.id === props.selectedId}
-            {...(props.pendingByModule?.[m.id] ? { pending: props.pendingByModule[m.id] } : {})}
-            {...(props.onSelect ? { onClick: () => props.onSelect!(m.id) } : {})}
-          />
+        {modules.map((m, i) => (
+          <React.Fragment key={m.id}>
+            {i > 0 && <SignalFlowConnector />}
+            <div style={{ flex: 1, minWidth: 168, display: 'flex' }}>
+              <ModuleCard
+                def={m}
+                selected={m.id === props.selectedId}
+                {...(props.pendingByModule?.[m.id] ? { pending: props.pendingByModule[m.id] } : {})}
+                {...(props.onSelect ? { onClick: () => props.onSelect!(m.id) } : {})}
+              />
+            </div>
+          </React.Fragment>
         ))}
       </div>
     </div>

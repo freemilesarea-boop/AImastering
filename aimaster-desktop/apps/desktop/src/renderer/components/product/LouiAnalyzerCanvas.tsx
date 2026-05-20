@@ -98,14 +98,21 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
       </div>
 
       {/* Canvas body — spectrum fills the remaining space.  The panel sets
-          its own height via the canvas; we frame it with consistent padding. */}
+          its own height via the canvas; we frame it with consistent padding.
+          A subtle radial depth wash behind the trace gives the analyzer a
+          centre-stage, product-grade feel (CSS only — no CPU cost). */}
       <div
         style={{
+          position: 'relative',
           flex: 1,
           minHeight: 0,
           padding: space['3'],
           display: 'flex',
           flexDirection: 'column',
+          background: active
+            ? 'radial-gradient(120% 90% at 50% 100%, rgba(167,139,250,0.06), transparent 70%)'
+            : 'transparent',
+          transition: 'background 200ms ease-out',
         }}
       >
         <SpectrumAnalyzerPanel session={props.session ?? null} showPeakHold />

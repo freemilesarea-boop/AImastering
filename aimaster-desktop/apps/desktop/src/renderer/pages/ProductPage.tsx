@@ -67,6 +67,9 @@ import {
   LouiModuleStrip,
   LouiStatusBar,
   LouiModuleSlideOver,
+  LouiABCompare,
+  useABShortcut,
+  type ABMode,
   EqParameterPanel,
   DynamicsParameterPanel,
   ImagerParameterPanel,
@@ -114,6 +117,7 @@ function ProductLayoutInner({
   onExport,
   onSettings,
   previewSlot,
+  abControl,
 }: {
   session: AnalyzerSession | null;
   active: boolean;
@@ -137,6 +141,8 @@ function ProductLayoutInner({
   onSettings?: () => void;
   /** Optional preview-control strip (production path only). */
   previewSlot?: React.ReactNode;
+  /** Optional A/B compare control (production path only). */
+  abControl?: React.ReactNode;
 }) {
   // Pending summary (production path only; null in storybook).
   const previewBridge = usePreviewBridge();
@@ -251,6 +257,7 @@ function ProductLayoutInner({
           >
             {currentTimeLabel ?? '0:00'} / {durationLabel ?? '0:00'}
           </span>
+          {abControl}
         </div>
       )}
 
@@ -562,7 +569,7 @@ function ProductionPreviewProvider({
   baseOptions: MasteringOptions;   // already normalised
   /** The current master WAV path — saved unchanged by "Export As-is". */
   masterOutputPath: string | null;
-  onRendered: (previewPath: string) => void;
+  onRendered: (previewPath: string, integratedLufs?: number) => void;
   children: React.ReactNode;
 }) {
   const { state } = useAllModuleParameters();
@@ -633,8 +640,8 @@ function ProductionPreviewProvider({
           case 'error':     setPhase('error'); setError(s.error); break;
         }
       },
-      onSuccess: (previewPath) => {
-        onRenderedRef.current(previewPath);
+      onSuccess: (previewPath, _durationMs, metrics) => {
+        onRenderedRef.current(previewPath, metrics?.integratedLufs);
         setLastRenderedOverride(requestedOverrideRef.current);
       },
       onError: () => { /* state set via onState */ },
@@ -771,6 +778,32 @@ function PreviewSlotFromBridge() {
   );
 }
 
+// ── A/B compare slot (M3-O-NEXT-7) ─────────────────────────────────────
+
+interface ABSlotProps {
+  mode: ABMode;
+  available: boolean;
+  onToggle: (mode: ABMode) => void;
+  compensated: boolean;
+  onToggleCompensation: (on: boolean) => void;
+  loudnessDeltaLu: number | null;
+}
+
+/** Wires the global "B" shortcut + renders the A/B toggle. */
+function ABCompareSlot(props: ABSlotProps) {
+  useABShortcut(props.mode, props.available, props.onToggle);
+  return (
+    <LouiABCompare
+      mode={props.mode}
+      available={props.available}
+      onToggle={props.onToggle}
+      compensated={props.compensated}
+      onToggleCompensation={props.onToggleCompensation}
+      loudnessDeltaLu={props.loudnessDeltaLu}
+    />
+  );
+}
+
 /** Normalise store-shaped options into a shared-types MasteringOptions. */
 function normaliseOptions(o: {
   style: MasteringOptions['style'];
@@ -847,6 +880,10 @@ function ProductPageProduction() {
   const [selectedModule, setSelectedModule] = useState<ModuleCardDef['id'] | undefined>(undefined);
   // Preview source override — set when a re-render swaps the preview file.
   const [previewSrcOverride, setPreviewSrcOverride] = useState<string | null>(null);
+  // Before/After compare (M3-O-NEXT-7) — real preview source swap.
+  const [abMode, setAbMode] = useState<ABMode>('after');
+  const [reRenderedLufs, setReRenderedLufs] = useState<number | null>(null);
+  const [compensated, setCompensated] = useState(true);
   const dispatcher = useMemo(() => new PresetPatchDispatcher(ALL_MODULE_PARAMETER_DEFS), []);
 
   // Normalise the store options + seed the parameter state from the base
@@ -859,21 +896,27 @@ function ProductPageProduction() {
   );
 
   const basePreviewSrc = masteringResult?.previewPath ? toFileUrl(masteringResult.previewPath) : '';
-  const previewSrc = previewSrcOverride ?? basePreviewSrc;
+  const reRenderedSrc = previewSrcOverride;
+  // Effective audio source — Before plays the original master preview,
+  // After plays the latest re-render (or master if none).  REAL source
+  // swap (no fake bypass).
+  const effectiveSrc = abMode === 'before' ? basePreviewSrc : (reRenderedSrc ?? basePreviewSrc);
+  const abAvailable = Boolean(reRenderedSrc);
+  const baseLufs = typeof masteringResult?.loudnessAfter?.integratedLufs === 'number'
+    ? masteringResult.loudnessAfter.integratedLufs : null;
+  const loudnessDeltaLu = (reRenderedLufs !== null && baseLufs !== null)
+    ? reRenderedLufs - baseLufs : null;
   const meta = masteringResult?.analysisReport?.mastering;
   const targetLufs = typeof meta?.targetLufs === 'number' ? meta.targetLufs : -14;
   const targetTp   = typeof meta?.targetTruePeak === 'number' ? meta.targetTruePeak : -1;
 
-  // Swap the preview audio source to a freshly-rendered file, preserving
-  // playback position + play/pause state.  If the swap source fails to
-  // load, the previous preview keeps playing (browser retains the old
-  // buffer until the new one is ready).
-  const onPreviewRendered = useCallback((newPreviewPath: string) => {
+  // Capture playback position + play state, restore after the next
+  // `loadedmetadata` (used after every src change so swaps are seamless).
+  const restorePositionOnLoad = useCallback(() => {
     const a = audioRef.current;
-    const wasPlaying = a ? !a.paused : false;
-    const t = a ? a.currentTime : 0;
-    setPreviewSrcOverride(toFileUrl(newPreviewPath));
     if (!a) return;
+    const t = a.currentTime;
+    const wasPlaying = !a.paused;
     const restore = () => {
       try { a.currentTime = t; } catch { /* duration may differ slightly */ }
       if (wasPlaying) void a.play();
@@ -881,6 +924,33 @@ function ProductPageProduction() {
     };
     a.addEventListener('loadedmetadata', restore);
   }, []);
+
+  // A re-render produced a new preview — swap to it (After) + capture its
+  // measured loudness for A/B compensation.
+  const onPreviewRendered = useCallback((newPreviewPath: string, integratedLufs?: number) => {
+    restorePositionOnLoad();
+    if (typeof integratedLufs === 'number') setReRenderedLufs(integratedLufs);
+    setPreviewSrcOverride(toFileUrl(newPreviewPath));
+    setAbMode('after');
+  }, [restorePositionOnLoad]);
+
+  // Before/After toggle — flips the effective source (real swap).
+  const onABToggle = useCallback((mode: ABMode) => {
+    restorePositionOnLoad();
+    setAbMode(mode);
+  }, [restorePositionOnLoad]);
+
+  // Loudness-compensated comparison — trim the louder side down to the
+  // quieter reference so A/B reflects TONE, not loudness.
+  React.useEffect(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (!compensated || reRenderedLufs === null || baseLufs === null) { a.volume = 1; return; }
+    const ref = Math.min(baseLufs, reRenderedLufs);
+    const cur = abMode === 'before' ? baseLufs : reRenderedLufs;
+    const trimDb = Math.max(0, cur - ref);
+    a.volume = Math.pow(10, -trimDb / 20);
+  }, [compensated, abMode, reRenderedLufs, baseLufs]);
 
   const togglePlay = useCallback(() => {
     const a = audioRef.current;
@@ -918,7 +988,7 @@ function ProductPageProduction() {
           a MediaElementAudioSourceNode.  We control it via React state. */}
       <audio
         ref={audioRef}
-        src={previewSrc || undefined}
+        src={effectiveSrc || undefined}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => { setPlaying(false); setTime(0); }}
@@ -955,6 +1025,14 @@ function ProductPageProduction() {
           onImport={onImport}
           onExport={onExport}
           onSettings={onSettings}
+          ab={{
+            mode: abMode,
+            available: abAvailable,
+            onToggle: onABToggle,
+            compensated,
+            onToggleCompensation: setCompensated,
+            loudnessDeltaLu,
+          }}
           {...(sourceAudioPath ? {
             preview: {
               sourceAudioPath,
@@ -986,11 +1064,12 @@ function ProductPageProductionInner(props: {
   onImport: () => void;
   onExport: () => void;
   onSettings: () => void;
+  ab: ABSlotProps;
   preview?: {
     sourceAudioPath: string;
     baseOptions: MasteringOptions;
     masterOutputPath: string | null;
-    onRendered: (previewPath: string) => void;
+    onRendered: (previewPath: string, integratedLufs?: number) => void;
   };
 }) {
   const session = useWasmAnalyzerSession();
@@ -1015,6 +1094,7 @@ function ProductPageProductionInner(props: {
       onImport={props.onImport}
       onExport={props.onExport}
       onSettings={props.onSettings}
+      abControl={<ABCompareSlot {...props.ab} />}
       {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
     />
   );

@@ -130,6 +130,7 @@ export function LouiPresetHeader(props: LouiPresetHeaderProps) {
   return (
     <div
       style={{
+        position: 'relative',
         display: 'flex',
         alignItems: 'center',
         gap: space['3'],
@@ -142,6 +143,15 @@ export function LouiPresetHeader(props: LouiPresetHeaderProps) {
         overflowX: 'auto',
       }}
     >
+      {/* Loudness spectrum cue — safe (green) → loud (amber) → aggressive
+          (red).  A subtle bottom strip framing the streaming targets. */}
+      <div aria-hidden style={{
+        position: 'absolute',
+        left: 0, right: 0, bottom: 0,
+        height: 2,
+        background: 'linear-gradient(90deg, rgba(16,185,129,0.55) 0%, rgba(245,158,11,0.55) 55%, rgba(239,68,68,0.55) 100%)',
+        opacity: 0.7,
+      }} />
       <div style={{
         fontFamily: typography.family.sans,
         fontSize: typography.size.xs,

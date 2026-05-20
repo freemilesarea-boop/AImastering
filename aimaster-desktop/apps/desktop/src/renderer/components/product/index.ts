@@ -29,6 +29,9 @@ export type { LouiModuleSlideOverProps } from './LouiModuleSlideOver.js';
 export { LouiPreviewControl } from './LouiPreviewControl.js';
 export type { LouiPreviewControlProps, PreviewControlPhase } from './LouiPreviewControl.js';
 
+export { LouiABCompare, useABShortcut } from './LouiABCompare.js';
+export type { LouiABCompareProps, ABMode } from './LouiABCompare.js';
+
 // Parameter panels — re-exported from `panels/` for one-stop import.
 export {
   EqParameterPanel,
