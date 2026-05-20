@@ -45,6 +45,10 @@ import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
 import { presetApplyPlan } from '../audio/presets/preset-to-state.js';
 import { setLastUsedPreset, getLastUsedPreset } from '../audio/presets/preset-storage.js';
 import { LouiPresetSlideOver } from '../components/product/LouiPresetSlideOver.js';
+import { LouiRevisionStack } from '../components/product/LouiRevisionStack.js';
+import type { RevisionInput } from '../audio/revisions/revision-types.js';
+import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioStore.js';
+import { getActiveRevision, getBaselineRevision, findDuplicate } from '../audio/revisions/revision-logic.js';
 import {
   PresetPatchDispatcher,
   PreviewRenderController,
@@ -125,6 +129,7 @@ function ProductLayoutInner({
   onExport,
   onSettings,
   previewSlot,
+  revisionSlot,
   abControl,
 }: {
   session: AnalyzerSession | null;
@@ -151,6 +156,8 @@ function ProductLayoutInner({
   onSettings?: () => void;
   /** Optional preview-control strip (production path only). */
   previewSlot?: React.ReactNode;
+  /** Optional revision (version) stack (production path only). */
+  revisionSlot?: React.ReactNode;
   /** Optional A/B compare control (production path only). */
   abControl?: React.ReactNode;
 }) {
@@ -186,6 +193,13 @@ function ProductLayoutInner({
 
       {/* Preview-control strip — staged-change → re-render loop (production). */}
       {previewSlot}
+
+      {/* Revision (version) stack — multiple masters of the same source. */}
+      {revisionSlot && (
+        <div style={{ paddingInline: space['4'], paddingBlock: space['3'], borderBottom: `1px solid ${surface.border}` }}>
+          {revisionSlot}
+        </div>
+      )}
 
       {/* Optional transport strip — visible only when a play handler is wired
           (production path).  Storybook stories without media skip this. */}
@@ -562,6 +576,13 @@ interface PreviewBridge {
   transcodeRequired: boolean;
   /** True when dither doesn't apply (lossy format or 32-bit float). */
   ditherIgnored: boolean;
+  // Revision workflow (M3-REVISION-WORKFLOW)
+  /** A new revision is currently rendering. */
+  creatingRevision: boolean;
+  /** Error from the last create-revision attempt. */
+  createRevisionError: string | null;
+  /** Render the current edit settings into a NEW revision (reuses audio:master). */
+  onCreateRevision: () => void;
 }
 
 const PreviewBridgeContext = React.createContext<PreviewBridge | null>(null);
@@ -574,6 +595,8 @@ function ProductionPreviewProvider({
   baseOptions,
   masterOutputPath,
   onRendered,
+  presetId,
+  onRevisionCreated,
   children,
 }: {
   sourceAudioPath: string;
@@ -581,6 +604,10 @@ function ProductionPreviewProvider({
   /** The current master WAV path — saved unchanged by "Export As-is". */
   masterOutputPath: string | null;
   onRendered: (previewPath: string, integratedLufs?: number) => void;
+  /** Preset id stamped onto a created revision. */
+  presetId?: string;
+  /** A new full master (revision) finished — append it to the group. */
+  onRevisionCreated: (input: RevisionInput) => void;
   children: React.ReactNode;
 }) {
   const { state } = useAllModuleParameters();
@@ -596,6 +623,11 @@ function ProductionPreviewProvider({
   const [exportAsIsPhase, setExportAsIsPhase] = useState<ExportPhase>('idle');
   const [exportAsIsError, setExportAsIsError] = useState<string | null>(null);
   const [lastExportAsIsPath, setLastExportAsIsPath] = useState<string | null>(null);
+  // Revision creation state (M3-REVISION-WORKFLOW)
+  const [creatingRevision, setCreatingRevision] = useState(false);
+  const [createRevisionError, setCreateRevisionError] = useState<string | null>(null);
+  const onRevisionCreatedRef = useRef(onRevisionCreated);
+  onRevisionCreatedRef.current = onRevisionCreated;
 
   const summary = useMemo(
     () => summarizePending(state, lastRenderedOverride, baseOptions),
@@ -758,6 +790,49 @@ function ProductionPreviewProvider({
     })();
   }, [masterOutputPath, exportFormat, baseOptions, suggestedName]);
 
+  // Create a new revision — full master with the current edit settings,
+  // reusing the EXISTING audio:master channel (no new IPC / Python change).
+  const onCreateRevision = useCallback(() => {
+    const api = window.electronAPI;
+    if (!api) { setCreateRevisionError('electronAPI unavailable'); return; }
+    const options = mergeOptions(baseOptions, exportOverride.optionsOverride);
+    const sourceFileName = sourceAudioPath.split(/[\\/]/).pop() ?? 'master';
+    setCreatingRevision(true);
+    setCreateRevisionError(null);
+    const t0 = Date.now();
+    void (async () => {
+      try {
+        const result = await api.invoke('audio:master', sourceAudioPath, '', options) as {
+          outputPath?: string; previewPath?: string;
+          loudnessAfter?: { integratedLufs?: number; truePeakDbtp?: number; lra?: number };
+        } | undefined;
+        const outputPath = result?.outputPath;
+        const previewPath = result?.previewPath;
+        if (!outputPath || !previewPath) { setCreateRevisionError('master produced no output'); return; }
+        const after = result?.loudnessAfter ?? {};
+        onRevisionCreatedRef.current({
+          sourceFilePath: sourceAudioPath,
+          sourceFileName,
+          optionsSnapshot: options as unknown as StoreMasteringOptions,
+          ...(presetId ? { presetId } : {}),
+          outputPath,
+          previewPath,
+          metrics: {
+            integratedLufs: Number(after.integratedLufs ?? options.targetLufs),
+            truePeakDbtp: Number(after.truePeakDbtp ?? options.targetTp),
+            ...(typeof after.lra === 'number' ? { lra: after.lra } : {}),
+          },
+          formatSummary: `${(options.sampleRate / 1000)} kHz · ${options.bitDepth}-bit`,
+          renderDurationMs: Date.now() - t0,
+        });
+      } catch (err) {
+        setCreateRevisionError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setCreatingRevision(false);
+      }
+    })();
+  }, [baseOptions, exportOverride, sourceAudioPath, presetId]);
+
   const bridge: PreviewBridge = {
     summary, phase, lastRenderedAt, error, onUpdate,
     exportPhase, exportError, lastExportPath, hasUnpreviewedChanges, onReMasterExport,
@@ -765,6 +840,7 @@ function ProductionPreviewProvider({
     exportAsIsPhase, exportAsIsError, lastExportAsIsPath, onExportAsIs,
     exportOverride, qualityLabel,
     exportFormat, transcodeRequired, ditherIgnored,
+    creatingRevision, createRevisionError, onCreateRevision,
   };
   return (
     <PreviewBridgeContext.Provider value={bridge}>
@@ -785,6 +861,44 @@ function PreviewSlotFromBridge() {
       lastRenderedAt={bridge.lastRenderedAt}
       error={bridge.error}
       onUpdate={bridge.onUpdate}
+    />
+  );
+}
+
+// ── Revision (version) stack slot (M3-REVISION-WORKFLOW) ───────────────
+//
+// Reads the bridge (create) + store (group + actions).  Rendered inside
+// the preview provider so it can trigger a full re-master.
+function RevisionStackHost(props: {
+  presetId?: string;
+  onLoadSettings: (revisionId: string) => void;
+}) {
+  const bridge = usePreviewBridge();
+  const group = useAudioStore((s) => s.revisionGroup);
+  const setActive = useAudioStore((s) => s.setActiveRevision);
+  const remove = useAudioStore((s) => s.removeRevision);
+  const rename = useAudioStore((s) => s.renameRevision);
+  const toggleFav = useAudioStore((s) => s.toggleRevisionFavorite);
+  if (!bridge || !group) return null;
+
+  const saveCopy = (srcPath: string) => { void window.electronAPI?.invoke('file:save-wav', srcPath); };
+  const revFor = (id: string) => group.revisions.find((r) => r.id === id);
+
+  return (
+    <LouiRevisionStack
+      revisions={group.revisions}
+      activeId={group.activeRevisionId}
+      creating={bridge.creatingRevision}
+      createError={bridge.createRevisionError}
+      presetNameFor={(id) => getPreset(id)?.displayName ?? id}
+      onCreateRevision={bridge.onCreateRevision}
+      onSelect={setActive}
+      onSaveWav={(id) => { const r = revFor(id); if (r) saveCopy(r.outputPath); }}
+      onSaveFormat={(id) => { const r = revFor(id); if (r) saveCopy(r.previewPath); }}
+      onRename={rename}
+      onDelete={remove}
+      onToggleFavorite={toggleFav}
+      onLoadSettings={props.onLoadSettings}
     />
   );
 }
@@ -881,6 +995,10 @@ function ProductPageProduction() {
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const sourceAudioPath = useAudioStore((s) => s.selectedFile);
   const baseOptions     = useAudioStore((s) => s.options);
+  // Revision workflow (M3-REVISION-WORKFLOW)
+  const revisionGroup   = useAudioStore((s) => s.revisionGroup);
+  const addRevision     = useAudioStore((s) => s.addRevision);
+  const setActiveRevision = useAudioStore((s) => s.setActiveRevision);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -906,17 +1024,80 @@ function ProductPageProduction() {
     [normalisedBase],
   );
 
-  const basePreviewSrc = masteringResult?.previewPath ? toFileUrl(masteringResult.previewPath) : '';
-  const reRenderedSrc = previewSrcOverride;
-  // Effective audio source — Before plays the original master preview,
-  // After plays the latest re-render (or master if none).  REAL source
-  // swap (no fake bypass).
+  // ── Revision-aware preview sources ───────────────────────────────────
+  // Revision 1 (baseline) is "A"; the active revision is "B".  When the
+  // user runs a quick "Update Preview", that override transiently becomes
+  // "B" for the edited settings.  Falls back to the single masteringResult
+  // when no revision group exists yet (pre-seed / storybook).
+  const activeRevision   = getActiveRevision(revisionGroup);
+  const baselineRevision = getBaselineRevision(revisionGroup);
+  const baselinePreview = baselineRevision?.previewPath ?? masteringResult?.previewPath ?? '';
+  const activePreview   = activeRevision?.previewPath ?? masteringResult?.previewPath ?? '';
+
+  const basePreviewSrc = baselinePreview ? toFileUrl(baselinePreview) : '';
+  const activeIsNotBaseline = Boolean(activeRevision && baselineRevision && activeRevision.id !== baselineRevision.id);
+  // "B" = a fresh quick-render override if present, else the active
+  // revision's preview when it differs from the baseline.
+  const reRenderedSrc = previewSrcOverride
+    ?? (activeIsNotBaseline ? toFileUrl(activePreview) : null);
   const effectiveSrc = abMode === 'before' ? basePreviewSrc : (reRenderedSrc ?? basePreviewSrc);
   const abAvailable = Boolean(reRenderedSrc);
-  const baseLufs = typeof masteringResult?.loudnessAfter?.integratedLufs === 'number'
-    ? masteringResult.loudnessAfter.integratedLufs : null;
-  const loudnessDeltaLu = (reRenderedLufs !== null && baseLufs !== null)
-    ? reRenderedLufs - baseLufs : null;
+
+  const baseLufs = baselineRevision?.metrics.integratedLufs
+    ?? (typeof masteringResult?.loudnessAfter?.integratedLufs === 'number' ? masteringResult.loudnessAfter.integratedLufs : null);
+  // "After" loudness: the quick-render value when overriding, else the
+  // active revision's measured loudness.
+  const afterLufs = previewSrcOverride !== null
+    ? reRenderedLufs
+    : (activeIsNotBaseline ? activeRevision!.metrics.integratedLufs : null);
+  const loudnessDeltaLu = (afterLufs !== null && baseLufs !== null) ? afterLufs - baseLufs : null;
+
+  // Export As-is target — the active revision's master WAV.
+  const activeOutputPath = activeRevision?.outputPath ?? masteringResult?.outputPath ?? null;
+
+  // Seed Revision 1 from the initial master once it's available for this
+  // source (migrates the legacy single masteringResult into the group).
+  const seededRef = useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!masteringResult?.outputPath || !masteringResult.previewPath || !sourceAudioPath) return;
+    const key = `${sourceAudioPath}::${masteringResult.outputPath}`;
+    if (seededRef.current === key) return;
+    const alreadyInGroup = revisionGroup
+      && revisionGroup.sourceFilePath === sourceAudioPath
+      && revisionGroup.revisions.some((r) => r.outputPath === masteringResult.outputPath);
+    if (alreadyInGroup) { seededRef.current = key; return; }
+    if (revisionGroup && revisionGroup.sourceFilePath === sourceAudioPath) { seededRef.current = key; return; }
+    seededRef.current = key;
+    const after = masteringResult.loudnessAfter;
+    addRevision({
+      sourceFilePath: sourceAudioPath,
+      sourceFileName: sourceAudioPath.split(/[\\/]/).pop() ?? 'master',
+      optionsSnapshot: normalisedBase as unknown as StoreMasteringOptions,
+      ...(presetId ? { presetId } : {}),
+      outputPath: masteringResult.outputPath,
+      previewPath: masteringResult.previewPath,
+      metrics: {
+        integratedLufs: Number(after?.integratedLufs ?? normalisedBase.targetLufs),
+        truePeakDbtp: Number(after?.truePeakDbtp ?? normalisedBase.targetTp),
+        ...(typeof after?.lra === 'number' ? { lra: after.lra } : {}),
+      },
+      formatSummary: `${normalisedBase.sampleRate / 1000} kHz · ${normalisedBase.bitDepth}-bit`,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [masteringResult, sourceAudioPath]);
+
+  // When the active revision changes, hear it cleanly: drop any stale
+  // quick-preview override and show it as "After".
+  const activeRevId = activeRevision?.id;
+  const prevActiveRef = useRef<string | undefined>(activeRevId);
+  React.useEffect(() => {
+    if (prevActiveRef.current === activeRevId) return;
+    prevActiveRef.current = activeRevId;
+    restorePositionOnLoad();
+    setPreviewSrcOverride(null);
+    setAbMode('after');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRevId]);
   const meta = masteringResult?.analysisReport?.mastering;
   const targetLufs = typeof meta?.targetLufs === 'number' ? meta.targetLufs : -14;
   const targetTp   = typeof meta?.targetTruePeak === 'number' ? meta.targetTruePeak : -1;
@@ -956,12 +1137,12 @@ function ProductPageProduction() {
   React.useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
-    if (!compensated || reRenderedLufs === null || baseLufs === null) { a.volume = 1; return; }
-    const ref = Math.min(baseLufs, reRenderedLufs);
-    const cur = abMode === 'before' ? baseLufs : reRenderedLufs;
+    if (!compensated || afterLufs === null || baseLufs === null) { a.volume = 1; return; }
+    const ref = Math.min(baseLufs, afterLufs);
+    const cur = abMode === 'before' ? baseLufs : afterLufs;
     const trimDb = Math.max(0, cur - ref);
     a.volume = Math.pow(10, -trimDb / 20);
-  }, [compensated, abMode, reRenderedLufs, baseLufs]);
+  }, [compensated, abMode, afterLufs, baseLufs]);
 
   const togglePlay = useCallback(() => {
     const a = audioRef.current;
@@ -983,9 +1164,9 @@ function ProductPageProduction() {
 
   const onImport = useCallback(() => { setPage('home'); }, [setPage]);
   const onExport = useCallback(async () => {
-    if (!masteringResult?.outputPath) return;
-    await window.electronAPI?.invoke('file:save-wav', masteringResult.outputPath);
-  }, [masteringResult]);
+    if (!activeOutputPath) return;
+    await window.electronAPI?.invoke('file:save-wav', activeOutputPath);
+  }, [activeOutputPath]);
   const onSettings = useCallback(() => { setPage('settings'); }, [setPage]);
 
   // Toggle behaviour: re-clicking the active card closes the slide-over.
@@ -1048,8 +1229,10 @@ function ProductPageProduction() {
             preview: {
               sourceAudioPath,
               baseOptions: normalisedBase,
-              masterOutputPath: masteringResult?.outputPath ?? null,
+              masterOutputPath: activeOutputPath,
               onRendered: onPreviewRendered,
+              ...(presetId ? { presetId } : {}),
+              onRevisionCreated: addRevision,
             },
           } : {})}
         />
@@ -1081,6 +1264,8 @@ function ProductPageProductionInner(props: {
     baseOptions: MasteringOptions;
     masterOutputPath: string | null;
     onRendered: (previewPath: string, integratedLufs?: number) => void;
+    presetId?: string;
+    onRevisionCreated: (input: RevisionInput) => void;
   };
 }) {
   const session = useWasmAnalyzerSession();
@@ -1108,6 +1293,24 @@ function ProductPageProductionInner(props: {
     setLastUsedPreset(id);
   }, [applyPreset, props]);
 
+  // Load a revision's settings back into the editor (then the user can
+  // tweak + make a new version).  Restores the master options; if the
+  // revision carried a preset, re-applies it to the parameter state.
+  const updateOptions = useAudioStore((s) => s.updateOptions);
+  const revisionGroup = useAudioStore((s) => s.revisionGroup);
+  const onLoadRevisionSettings = useCallback((revisionId: string) => {
+    const rev = revisionGroup?.revisions.find((r) => r.id === revisionId);
+    if (!rev) return;
+    updateOptions(rev.optionsSnapshot);
+    if (rev.presetId) {
+      const preset = getPreset(rev.presetId);
+      if (preset) {
+        props.onPresetChange(rev.presetId);
+        applyPreset(presetApplyPlan(preset), { presetId: rev.presetId, presetName: preset.displayName });
+      }
+    }
+  }, [revisionGroup, updateOptions, applyPreset, props]);
+
   const layout = (
     <ProductLayoutInner
       session={session}
@@ -1132,6 +1335,7 @@ function ProductPageProductionInner(props: {
       onSettings={props.onSettings}
       abControl={<ABCompareSlot {...props.ab} />}
       {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
+      {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
     />
   );
   // Dev/QA realtime-preview health overlay — only when the flag is ON.
@@ -1168,6 +1372,8 @@ function ProductPageProductionInner(props: {
       baseOptions={props.preview.baseOptions}
       masterOutputPath={props.preview.masterOutputPath}
       onRendered={props.preview.onRendered}
+      {...(props.preview.presetId ? { presetId: props.preview.presetId } : {})}
+      onRevisionCreated={props.preview.onRevisionCreated}
     >
       {layout}
       {debugOverlay}

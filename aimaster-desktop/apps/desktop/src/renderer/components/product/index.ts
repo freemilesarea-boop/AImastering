@@ -17,6 +17,9 @@ export type { LouiPresetBrowserProps } from './LouiPresetBrowser.js';
 export { LouiPresetSlideOver } from './LouiPresetSlideOver.js';
 export type { LouiPresetSlideOverProps } from './LouiPresetSlideOver.js';
 
+export { LouiRevisionStack } from './LouiRevisionStack.js';
+export type { LouiRevisionStackProps } from './LouiRevisionStack.js';
+
 export { LouiAnalyzerCanvas } from './LouiAnalyzerCanvas.js';
 export type { LouiAnalyzerCanvasProps } from './LouiAnalyzerCanvas.js';
 

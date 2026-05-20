@@ -28,6 +28,7 @@
     "test:realtime-graph": "tsx scripts/realtime-graph-selftest.ts",
     "test:preset-tuning": "tsx scripts/preset-tuning-selftest.ts",
     "test:preset-differentiation": "tsx scripts/preset-differentiation-selftest.ts",
+    "test:revision": "tsx scripts/revision-selftest.ts",
     "test:release-smoke": "tsx scripts/release-smoke.ts",
     "aggregate-bundles": "tsx scripts/aggregate-support-bundles.ts",
     "clean": "rm -rf dist dist-electron out public/bin"
