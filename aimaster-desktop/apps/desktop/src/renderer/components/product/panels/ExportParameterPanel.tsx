@@ -155,12 +155,18 @@ export interface ReMasterExportInfo {
   onReMasterExport: () => void;
   /** Export As-is path (5D-2-b) — save the current master unchanged. */
   asIs: ExportAsIsInfo;
-  /** Export quality (5D-2-c) — sampleRate / bitDepth applied on re-master. */
+  /** Export quality (5D-2-c) + format/dither (5D-2-d). */
   quality?: {
-    /** Human label, e.g. "48 kHz · 24-bit". */
+    /** Human label, e.g. "FLAC · 48 kHz · 24-bit". */
     label: string;
     /** Whether SR/bitDepth differ from base → applied on re-master. */
     willApply: boolean;
+    /** Target container format (5D-2-d). */
+    format?: string;
+    /** True when a non-WAV format requires an ffmpeg transcode. */
+    transcodeRequired?: boolean;
+    /** True when dither doesn't apply (lossy or 32-bit float). */
+    ditherIgnored?: boolean;
   };
 }
 
@@ -397,7 +403,21 @@ function ReMasterExportSection({ info }: { info: ReMasterExportInfo }) {
       {info.quality?.willApply && (
         <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: text.tertiary, lineHeight: 1.4 }}>
           Export quality change ({info.quality.label}) will apply on Re-master &amp; Export.
-          Export As-is keeps the current file format.
+        </span>
+      )}
+
+      {/* Transcode note (non-WAV format) */}
+      {info.quality?.transcodeRequired && (
+        <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: text.tertiary, lineHeight: 1.4 }}>
+          Transcoding to {info.quality.format?.toUpperCase()} required.
+          {' '}Export As-is transcodes the current master to {info.quality.format?.toUpperCase()} (quality unchanged).
+        </span>
+      )}
+
+      {/* Dither-ignored warning */}
+      {info.quality?.ditherIgnored && (
+        <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: meter.warn.foreground, lineHeight: 1.4 }}>
+          ⚠ Dither ignored for {info.quality.format?.toUpperCase()} (lossy or 32-bit float).
         </span>
       )}
 

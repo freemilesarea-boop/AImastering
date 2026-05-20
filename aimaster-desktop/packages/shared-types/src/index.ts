@@ -857,3 +857,43 @@ export interface PreviewRenderFailure {
 }
 
 export type PreviewRenderResponse = PreviewRenderSuccess | PreviewRenderFailure;
+
+// ── Save-audio IPC contract (M3-P-NEXT-5D-2-d) ────────────────────────────
+//
+// A NEW channel separate from `file:save-wav` (which is unchanged).  It
+// saves a source WAV to a user-chosen location, transcoding to the target
+// format / quality / dither via ffmpeg when needed.  WAV-with-no-transcode
+// falls back to a plain copy.
+
+export type ExportFormat = 'wav' | 'flac' | 'mp3' | 'aiff' | 'ogg';
+export type ExportDither = 'none' | 'tpdf' | 'shaped';
+
+export interface SaveAudioRequest {
+  /** Source audio file (a rendered master WAV). */
+  sourcePath: string;
+  /** Target container format. */
+  format: ExportFormat;
+  /** Optional target sample rate (Hz).  Omit to keep the source rate. */
+  sampleRate?: number;
+  /** Optional target bit depth (16/24/32).  Omit to keep the source depth. */
+  bitDepth?: number;
+  /** Dither applied on integer bit-depth reduction.  Default 'none'. */
+  dither?: ExportDither;
+  /** Suggested filename (without path) for the save dialog. */
+  suggestedName?: string;
+}
+
+export interface SaveAudioResponse {
+  /** Saved file path, or null if the user cancelled the dialog. */
+  savedPath: string | null;
+  /** Echo of the format actually written. */
+  format?: ExportFormat;
+  /** Wall-clock duration (ms). */
+  durationMs?: number;
+  /** Whether ffmpeg transcoding ran (false = plain WAV copy). */
+  transcoded?: boolean;
+  /** Non-fatal note (e.g. "Dither ignored for MP3"). */
+  warning?: string;
+  /** Fatal error message (when the save failed). */
+  error?: string;
+}

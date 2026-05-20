@@ -7,6 +7,16 @@ import {
   buildSupportBundle,
   supportBundleToJson,
 } from '../utils/supportBundle.js';
+import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
+import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
+
+const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
+  wav:  { name: 'WAV Audio',  extensions: ['wav'] },
+  flac: { name: 'FLAC Audio', extensions: ['flac'] },
+  mp3:  { name: 'MP3 Audio',  extensions: ['mp3'] },
+  aiff: { name: 'AIFF Audio', extensions: ['aiff', 'aif'] },
+  ogg:  { name: 'OGG Audio',  extensions: ['ogg'] },
+};
 
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   // ── Open file picker (single) ─────────────────────────────────────────
@@ -65,6 +75,65 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
         ext, srcPath,
       });
       throw err;
+    }
+  });
+
+  // ── Save audio with optional transcode (M3-P-NEXT-5D-2-d) ────────────
+  // NEW channel — file:save-wav above is untouched.  Saves a source WAV
+  // to a user location, transcoding to the chosen format / quality /
+  // dither via ffmpeg when needed.  Returns a typed response (never
+  // throws) so the renderer handles cancel / warning / error uniformly.
+  ipc.handle('file:save-audio', async (_e, req: SaveAudioRequest): Promise<SaveAudioResponse> => {
+    const t0 = Date.now();
+    if (!win || !req?.sourcePath || !req?.format) {
+      return { savedPath: null, error: 'invalid request' };
+    }
+    const filter = FORMAT_FILTERS[req.format];
+    if (!filter) return { savedPath: null, error: `unsupported format: ${req.format}` };
+
+    const sourceExt = path.extname(req.sourcePath).replace('.', '');
+    const spec = {
+      format: req.format,
+      sampleRate: req.sampleRate,
+      bitDepth: req.bitDepth,
+      dither: req.dither,
+    };
+
+    try {
+      // Save dialog with a default name in the target extension.
+      const defaultBase = (req.suggestedName ?? path.basename(req.sourcePath, path.extname(req.sourcePath)))
+        .replace(/\.[^.]+$/, '');
+      const result = await dialog.showSaveDialog(win, {
+        defaultPath: `${defaultBase}.${filter.extensions[0]}`,
+        filters: [filter],
+      });
+      if (result.canceled || !result.filePath) {
+        return { savedPath: null };   // user cancelled
+      }
+      const dest = result.filePath;
+
+      if (!needsTranscode(sourceExt, spec)) {
+        // WAV passthrough — plain copy (no ffmpeg).
+        fs.copyFileSync(req.sourcePath, dest);
+        return { savedPath: dest, format: req.format, transcoded: false, durationMs: Date.now() - t0 };
+      }
+
+      // Transcode to a temp file, then copy to the chosen destination.
+      const { outputPath: tmp, warning } = await transcodeToTemp(req.sourcePath, spec);
+      try {
+        fs.copyFileSync(tmp, dest);
+      } finally {
+        try { fs.unlinkSync(tmp); } catch { /* temp already gone */ }
+      }
+      return {
+        savedPath: dest, format: req.format, transcoded: true,
+        durationMs: Date.now() - t0,
+        ...(warning ? { warning } : {}),
+      };
+    } catch (err) {
+      const msg = (err as Error).message;
+      recordFailure('export', `file:save-audio failed: ${msg}`, { format: req.format, sourcePath: req.sourcePath });
+      return { savedPath: null, error: msg };   // dest never written; source intact
     }
   });
 

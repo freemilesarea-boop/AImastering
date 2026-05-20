@@ -23,7 +23,13 @@ interface HostArgs {
     | 'quality-441-16'
     | 'quality-48-24'
     | 'quality-32-float'
-    | 'quality-asis-ignores';
+    | 'quality-asis-ignores'
+    | 'wav-24-no-dither'
+    | 'wav-16-triangular'
+    | 'mp3-dither-ignored'
+    | 'flac-export'
+    | 'transcode-failure'
+    | 'asis-transcode';
 }
 
 function infoFor(
@@ -81,6 +87,25 @@ function infoFor(
       // Quality change present; Export As-is keeps current format.
       return { ...base, appliedKeys: ['sampleRate'],
         quality: { label: '192 kHz · 24-bit', willApply: true } };
+    // ── Format / dither (5D-2-d) ──
+    case 'wav-24-no-dither':
+      return { ...base, appliedKeys: [],
+        quality: { label: 'WAV · 48 kHz · 24-bit', willApply: false, format: 'wav', transcodeRequired: false, ditherIgnored: false } };
+    case 'wav-16-triangular':
+      return { ...base, appliedKeys: ['bitDepth'],
+        quality: { label: 'WAV · 44.1 kHz · 16-bit', willApply: true, format: 'wav', transcodeRequired: false, ditherIgnored: false } };
+    case 'mp3-dither-ignored':
+      return { ...base, appliedKeys: [],
+        quality: { label: 'MP3 · 48 kHz', willApply: false, format: 'mp3', transcodeRequired: true, ditherIgnored: true } };
+    case 'flac-export':
+      return { ...base, appliedKeys: [],
+        quality: { label: 'FLAC · 48 kHz · 24-bit', willApply: false, format: 'flac', transcodeRequired: true, ditherIgnored: false } };
+    case 'transcode-failure':
+      return { ...base, appliedKeys: [], phase: 'error', error: 'ffmpeg exited 1: Unknown encoder',
+        quality: { label: 'OGG · 48 kHz', willApply: false, format: 'ogg', transcodeRequired: true, ditherIgnored: true } };
+    case 'asis-transcode':
+      return { ...base, appliedKeys: [],
+        quality: { label: 'FLAC · 48 kHz · 24-bit', willApply: false, format: 'flac', transcodeRequired: true, ditherIgnored: false } };
   }
 }
 
@@ -133,6 +158,8 @@ const meta: Meta<typeof Host> = {
         'success', 'failure', 'exporting',
         'asis-no-output', 'asis-success', 'asis-failure', 'asis-saving',
         'quality-441-16', 'quality-48-24', 'quality-32-float', 'quality-asis-ignores',
+        'wav-24-no-dither', 'wav-16-triangular', 'mp3-dither-ignored', 'flac-export',
+        'transcode-failure', 'asis-transcode',
       ],
     },
   },
@@ -160,3 +187,11 @@ export const Quality441k16bit:    Story = { args: { scenario: 'quality-441-16' }
 export const Quality48k24bit:     Story = { args: { scenario: 'quality-48-24' } };
 export const Quality32BitFloat:   Story = { args: { scenario: 'quality-32-float' } };
 export const QualityAsIsIgnores:  Story = { args: { scenario: 'quality-asis-ignores' } };
+
+// Format / dither (M3-P-NEXT-5D-2-d)
+export const Wav24NoDither:       Story = { args: { scenario: 'wav-24-no-dither' } };
+export const Wav16Triangular:     Story = { args: { scenario: 'wav-16-triangular' } };
+export const Mp3DitherIgnored:    Story = { args: { scenario: 'mp3-dither-ignored' } };
+export const FlacExport:          Story = { args: { scenario: 'flac-export' } };
+export const TranscodeFailure:    Story = { args: { scenario: 'transcode-failure' } };
+export const AsIsTranscode:       Story = { args: { scenario: 'asis-transcode' } };

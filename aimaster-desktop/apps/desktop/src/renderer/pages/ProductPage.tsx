@@ -52,7 +52,13 @@ import {
   type ExportOverrideResult,
 } from '../audio/engine-bridge/index.js';
 import { LouiPreviewControl, type PreviewControlPhase } from '../components/product/LouiPreviewControl.js';
-import type { MasteringOptions } from '@aimaster/shared-types';
+import type {
+  MasteringOptions,
+  ExportFormat,
+  ExportDither,
+  SaveAudioRequest,
+  SaveAudioResponse,
+} from '@aimaster/shared-types';
 import {
   LouiTopBar,
   LouiPresetHeader,
@@ -487,6 +493,9 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
             quality: {
               label: bridge.qualityLabel,
               willApply: bridge.exportOverride.qualityAppliedKeys.length > 0,
+              format: bridge.exportFormat,
+              transcodeRequired: bridge.transcodeRequired,
+              ditherIgnored: bridge.ditherIgnored,
             },
           },
         } : {})}
@@ -527,8 +536,14 @@ interface PreviewBridge {
   onExportAsIs: () => void;
   // Export quality (M3-P-NEXT-5D-2-c)
   exportOverride: ExportOverrideResult;
-  /** Human label of the export quality, e.g. "48 kHz · 24-bit". */
+  /** Human label of the export quality, e.g. "FLAC · 48 kHz · 24-bit". */
   qualityLabel: string;
+  // Export format / dither (M3-P-NEXT-5D-2-d)
+  exportFormat: string;
+  /** True when the format requires an ffmpeg transcode (non-WAV). */
+  transcodeRequired: boolean;
+  /** True when dither doesn't apply (lossy format or 32-bit float). */
+  ditherIgnored: boolean;
 }
 
 const PreviewBridgeContext = React.createContext<PreviewBridge | null>(null);
@@ -575,13 +590,28 @@ function ProductionPreviewProvider({
     [summary, state, baseOptions],
   );
 
-  // Quality label for the export panel (e.g. "48 kHz · 24-bit").
+  // Export container + quality (M3-P-NEXT-5D-2-d).
+  const exportFormat   = (state.export.parameters['format'] as ExportFormat | undefined) ?? 'wav';
+  const exportDither   = (state.export.parameters['dither'] as ExportDither | undefined) ?? 'none';
+  const exportSampleRate = Number(state.export.parameters['sampleRate'] ?? baseOptions.sampleRate);
+  const exportBitDepth   = Number(state.export.parameters['bitDepth']   ?? baseOptions.bitDepth);
+  const isLossy = exportFormat === 'mp3' || exportFormat === 'ogg';
+  const ditherIgnored = isLossy || exportBitDepth === 32;
+  const transcodeRequired = exportFormat !== 'wav';
+
+  // Quality label for the export panel (e.g. "FLAC · 48 kHz · 24-bit").
   const qualityLabel = useMemo(() => {
-    const sr = Number(state.export.parameters['sampleRate'] ?? baseOptions.sampleRate);
-    const bd = state.export.parameters['bitDepth'] ?? String(baseOptions.bitDepth);
-    const srLabel = Number.isFinite(sr) ? `${(sr / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} kHz` : '—';
-    return `${srLabel} · ${bd}-bit`;
-  }, [state, baseOptions]);
+    const fmt = exportFormat.toUpperCase();
+    const srLabel = Number.isFinite(exportSampleRate)
+      ? `${(exportSampleRate / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} kHz` : '—';
+    return isLossy ? `${fmt} · ${srLabel}` : `${fmt} · ${srLabel} · ${exportBitDepth}-bit`;
+  }, [exportFormat, exportSampleRate, exportBitDepth, isLossy]);
+
+  // Suggested export filename base from the source.
+  const suggestedName = useMemo(() => {
+    const base = sourceAudioPath.split(/[\\/]/).pop() ?? 'master';
+    return base.replace(/\.[^.]+$/, '');
+  }, [sourceAudioPath]);
 
   // Renderable changes the user hasn't previewed yet (export-includes warning).
   const hasUnpreviewedChanges = summary.patchHash !== hashOverride(lastRenderedOverride);
@@ -646,23 +676,36 @@ function ProductionPreviewProvider({
           { outputPath?: string } | undefined;
         const outputPath = result?.outputPath;
         if (!outputPath) { setExportPhase('error'); setExportError('master produced no output'); return; }
-        const saved = await api.invoke('file:save-wav', outputPath) as string | null;
-        if (saved) {
-          setLastExportPath(saved);
-          setExportPhase('done');
+        // WAV → proven file:save-wav.  Other formats → file:save-audio
+        // (transcode).  The re-mastered WAV is already at target SR/bitDepth.
+        if (exportFormat === 'wav') {
+          const saved = await api.invoke('file:save-wav', outputPath) as string | null;
+          if (saved) { setLastExportPath(saved); setExportPhase('done'); }
+          else setExportPhase('idle');
         } else {
-          // User cancelled the save dialog — return to idle, keep prior state.
-          setExportPhase('idle');
+          const req: SaveAudioRequest = {
+            sourcePath: outputPath,
+            format: exportFormat,
+            sampleRate: exportSampleRate,
+            bitDepth: exportBitDepth,
+            dither: exportDither,
+            suggestedName,
+          };
+          const resp = await api.invoke('file:save-audio', req) as SaveAudioResponse;
+          if (resp.error) { setExportPhase('error'); setExportError(resp.error); return; }
+          if (resp.savedPath) { setLastExportPath(resp.savedPath); setExportPhase('done'); }
+          else setExportPhase('idle');
         }
       } catch (err) {
         setExportPhase('error');
         setExportError(err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [exportOverride, baseOptions, sourceAudioPath]);
+  }, [exportOverride, baseOptions, sourceAudioPath, exportFormat, exportSampleRate, exportBitDepth, exportDither, suggestedName]);
 
-  // Export As-is — saves the current master WAV unchanged.  Reuses
-  // file:save-wav; no re-render.
+  // Export As-is — saves the current master WAV.  WAV keeps the proven
+  // file:save-wav path; a non-WAV format transcodes the current master
+  // (container change only — quality stays at the master's SR/bitDepth).
   const onExportAsIs = useCallback(() => {
     const api = window.electronAPI;
     if (!api) { setExportAsIsPhase('error'); setExportAsIsError('electronAPI unavailable'); return; }
@@ -671,15 +714,31 @@ function ProductionPreviewProvider({
     setExportAsIsError(null);
     void (async () => {
       try {
-        const saved = await api.invoke('file:save-wav', masterOutputPath) as string | null;
-        if (saved) { setLastExportAsIsPath(saved); setExportAsIsPhase('done'); }
-        else setExportAsIsPhase('idle');   // user cancelled
+        if (exportFormat === 'wav') {
+          const saved = await api.invoke('file:save-wav', masterOutputPath) as string | null;
+          if (saved) { setLastExportAsIsPath(saved); setExportAsIsPhase('done'); }
+          else setExportAsIsPhase('idle');
+        } else {
+          // Container change only — preserve the master's quality.
+          const req: SaveAudioRequest = {
+            sourcePath: masterOutputPath,
+            format: exportFormat,
+            sampleRate: baseOptions.sampleRate,
+            bitDepth: baseOptions.bitDepth,
+            dither: 'none',
+            suggestedName,
+          };
+          const resp = await api.invoke('file:save-audio', req) as SaveAudioResponse;
+          if (resp.error) { setExportAsIsPhase('error'); setExportAsIsError(resp.error); return; }
+          if (resp.savedPath) { setLastExportAsIsPath(resp.savedPath); setExportAsIsPhase('done'); }
+          else setExportAsIsPhase('idle');
+        }
       } catch (err) {
         setExportAsIsPhase('error');
         setExportAsIsError(err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [masterOutputPath]);
+  }, [masterOutputPath, exportFormat, baseOptions, suggestedName]);
 
   const bridge: PreviewBridge = {
     summary, phase, lastRenderedAt, error, onUpdate,
@@ -687,6 +746,7 @@ function ProductionPreviewProvider({
     exportAsIsAvailable: Boolean(masterOutputPath),
     exportAsIsPhase, exportAsIsError, lastExportAsIsPath, onExportAsIs,
     exportOverride, qualityLabel,
+    exportFormat, transcodeRequired, ditherIgnored,
   };
   return (
     <PreviewBridgeContext.Provider value={bridge}>
