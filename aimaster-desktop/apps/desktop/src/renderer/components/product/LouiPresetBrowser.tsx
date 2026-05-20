@@ -38,7 +38,7 @@ export interface LouiPresetBrowserProps {
   presets?: readonly LouiPreset[];
 }
 
-function Badge({ label, color }: { label: string; color: string }) {
+function Badge({ label, color, filled }: { label: string; color: string; filled?: boolean }) {
   return (
     <span style={{
       fontFamily: typography.family.sans,
@@ -48,7 +48,8 @@ function Badge({ label, color }: { label: string; color: string }) {
       lineHeight: 1,
       padding: '3px 5px',
       borderRadius: 4,
-      color,
+      color: filled ? surface.background : color,
+      background: filled ? color : 'transparent',
       border: `1px solid ${color}`,
     }}>
       {label}
@@ -82,8 +83,11 @@ function PresetCard({
         borderRadius: radius.panel,
         border: `1px solid ${active ? preset.accent : surface.border}`,
         background: active ? 'rgba(255,255,255,0.04)' : hover ? surface.well : surface.panel,
+        // Active card gets a subtle accent glow so the current preset is
+        // unmistakable at a glance.
+        boxShadow: active ? `0 0 0 1px ${preset.accent}55, 0 0 14px -2px ${preset.accent}66` : 'none',
         cursor: 'pointer',
-        transition: 'background 120ms ease-out, border-color 120ms ease-out',
+        transition: 'background 120ms ease-out, border-color 120ms ease-out, box-shadow 120ms ease-out',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: space['2'] }}>
@@ -109,7 +113,7 @@ function PresetCard({
       </span>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
         {recommended && <Badge label="Recommended" color={meter.accent.foreground} />}
-        {lastUsed && <Badge label="Last used" color={text.tertiary} />}
+        {lastUsed && <Badge label="Last used" color={meter.accent.foreground} filled />}
         {preset.aiOptimized && <Badge label="AI optimized" color={preset.accent} />}
         {isStreamingSafe(preset) && <Badge label="Streaming-safe" color={meter.safe.foreground} />}
         {preset.monoSafe && <Badge label="Mono-safe" color={text.muted} />}
@@ -133,12 +137,30 @@ export function LouiPresetBrowser(props: LouiPresetBrowserProps) {
         if (list.length === 0) return null;
         return (
           <div key={cat} style={{ display: 'flex', flexDirection: 'column', gap: space['2'] }}>
-            <div style={{
-              fontFamily: typography.family.sans, fontSize: typography.size.xs,
-              fontWeight: typography.weight.medium, letterSpacing: '0.16em',
-              textTransform: 'uppercase', color: text.muted,
-            }}>
-              {PRESET_CATEGORY_LABEL[cat]}
+            <div style={{ display: 'flex', alignItems: 'center', gap: space['2'] }}>
+              {cat === 'ai-special' && (
+                <span aria-hidden style={{
+                  width: 6, height: 6, borderRadius: 999,
+                  background: meter.accent.foreground,
+                  boxShadow: `0 0 6px ${meter.accent.foreground}`,
+                }} />
+              )}
+              <div style={{
+                fontFamily: typography.family.sans, fontSize: typography.size.xs,
+                fontWeight: typography.weight.medium, letterSpacing: '0.16em',
+                textTransform: 'uppercase',
+                color: cat === 'ai-special' ? meter.accent.foreground : text.muted,
+              }}>
+                {PRESET_CATEGORY_LABEL[cat]}
+              </div>
+              {cat === 'ai-special' && (
+                <span style={{
+                  fontFamily: typography.family.sans, fontSize: 9, color: text.muted,
+                  letterSpacing: '0.04em', textTransform: 'none',
+                }}>
+                  · fixes AI-music artefacts
+                </span>
+              )}
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: space['3'] }}>
               {list.map((p) => (

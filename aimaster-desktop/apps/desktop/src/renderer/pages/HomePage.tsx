@@ -33,6 +33,10 @@ import {
 // main-side decoder receives the original path unmangled.
 // Covered by `pnpm test:phase-e-paths`.
 import { toFileUrl } from '../utils/fileUrl.js';
+import { LouiPresetSlideOver } from '../components/product/LouiPresetSlideOver.js';
+import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
+import { louiPresetToMasteringOptions } from '../audio/presets/preset-to-options.js';
+import { getLastUsedPreset, setLastUsedPreset } from '../audio/presets/preset-storage.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -699,6 +703,32 @@ export default function HomePage() {
 
   const [activePlayerId, setActivePlayerId] = useState<string | null>(null);
 
+  // Official Loui preset browser (quick style selection before mastering).
+  const [presetBrowserOpen, setPresetBrowserOpen] = useState(false);
+  const [activePresetId, setActivePresetId] = useState<string | undefined>(undefined);
+  const [previousPresetId, setPreviousPresetId] = useState<string | undefined>(undefined);
+  const [lastUsedPresetId] = useState<string | undefined>(() => getLastUsedPreset() ?? undefined);
+
+  // Selecting a Loui preset maps its renderable params into the master
+  // options (style / loudness / ceiling / width / limiter strength).  No
+  // master is triggered — the user still presses Master to apply.
+  const handlePresetSelect = useCallback((id: string) => {
+    const preset = getPreset(id);
+    if (!preset) return;
+    setPreviousPresetId(activePresetId);
+    setActivePresetId(id);
+    setLastUsedPreset(id);
+    const o = louiPresetToMasteringOptions(preset);
+    updateOptions({
+      style:           o.style,
+      targetLufs:      o.targetLufs,
+      targetTp:        o.targetTp,
+      stereoWidth:     o.stereoWidth,
+      limiterStrength: o.limiterStrength,
+      quickPreset:     undefined,
+    });
+  }, [activePresetId, updateOptions]);
+
   // ── Add files ─────────────────────────────────────────────────────────
   const handleFiles = useCallback((paths: string[]) => {
     addFilesToQueue(paths);
@@ -805,6 +835,17 @@ export default function HomePage() {
     <div className="flex-1 flex flex-col overflow-hidden">
       <TopBar />
 
+      {/* Official Loui preset browser — quick style selection (pre-master). */}
+      <LouiPresetSlideOver
+        open={presetBrowserOpen}
+        onClose={() => setPresetBrowserOpen(false)}
+        recommendedId={DEFAULT_PRESET_ID}
+        {...(activePresetId ? { activeId: activePresetId } : {})}
+        {...(previousPresetId ? { previousId: previousPresetId } : {})}
+        {...(lastUsedPresetId ? { lastUsedId: lastUsedPresetId } : {})}
+        onSelect={handlePresetSelect}
+      />
+
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-lg mx-auto px-6 py-5 space-y-4 animate-in">
 
@@ -883,7 +924,22 @@ export default function HomePage() {
 
               {/* Quick presets — YouTube / Streaming / KPOP / EDM */}
               <div>
-                <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2">빠른 프리셋</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] text-zinc-600 uppercase tracking-wider">빠른 프리셋</p>
+                  <button
+                    type="button"
+                    onClick={() => setPresetBrowserOpen(true)}
+                    className="flex items-center gap-1.5 text-[11px] text-zinc-400 hover:text-zinc-100 border border-zinc-700 hover:border-zinc-500 rounded-md px-2 py-1 transition-colors"
+                  >
+                    <svg width={11} height={11} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="2.5" width="5" height="5" rx="1" />
+                      <rect x="9" y="2.5" width="5" height="5" rx="1" />
+                      <rect x="2" y="8.5" width="5" height="5" rx="1" />
+                      <rect x="9" y="8.5" width="5" height="5" rx="1" />
+                    </svg>
+                    전체 프리셋 둘러보기
+                  </button>
+                </div>
                 <QuickPresetBar
                   current={options.quickPreset}
                   disabled={isBatchRunning}
