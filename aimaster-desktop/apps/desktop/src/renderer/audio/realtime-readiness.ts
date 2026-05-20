@@ -57,3 +57,73 @@ export function describeReadiness(r: RealtimeReadiness): string {
   if (r.ready) return 'realtime-ready';
   return `realtime-unavailable: ${r.reasons.join('; ')}`;
 }
+
+// ── Worklet-WASM asset readiness (M2-full-NEXT) ───────────────────────
+//
+// Feature detection (above) tells us the ENVIRONMENT can host the path.
+// This second probe tells us the BUILD shipped the no-modules WASM assets
+// the worklet needs — without instantiating an AudioContext or touching
+// the audio thread.  Both must pass before the realtime flag can be
+// flipped on.
+
+import {
+  MASTERING_WASM_GLUE_URL,
+  MASTERING_WASM_BINARY_URL,
+  MASTERING_WORKLET_URL,
+} from './mastering-worklet-loader.js';
+
+/** Coded reasons the worklet WASM assets are not loadable. */
+export type WorkletAssetReason =
+  | 'glue-missing'
+  | 'wasm-missing'
+  | 'processor-missing'
+  | 'fetch-error'
+  | 'timeout';
+
+export interface WorkletAssetReadiness {
+  /** True only if all three worklet assets are fetchable. */
+  ready: boolean;
+  glue: boolean;
+  wasm: boolean;
+  processor: boolean;
+  reasons: WorkletAssetReason[];
+}
+
+async function probeUrl(url: string, timeoutMs: number): Promise<boolean> {
+  if (typeof fetch !== 'function') return false;
+  const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+  try {
+    // GET (not HEAD) — Vite's dev server / file:// don't always answer HEAD.
+    const resp = await fetch(url, ctrl ? { signal: ctrl.signal } : {});
+    return resp.ok;
+  } catch {
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Probe whether the no-modules worklet WASM assets shipped with the
+ * build.  Network/file IO only — no AudioContext, no audio thread.
+ * Times out per asset so a hung dev server can't block readiness.
+ */
+export async function detectWorkletAssetReadiness(timeoutMs = 3000): Promise<WorkletAssetReadiness> {
+  const [glue, wasm, processor] = await Promise.all([
+    probeUrl(MASTERING_WASM_GLUE_URL, timeoutMs),
+    probeUrl(MASTERING_WASM_BINARY_URL, timeoutMs),
+    probeUrl(MASTERING_WORKLET_URL, timeoutMs),
+  ]);
+  const reasons: WorkletAssetReason[] = [];
+  if (!glue) reasons.push('glue-missing');
+  if (!wasm) reasons.push('wasm-missing');
+  if (!processor) reasons.push('processor-missing');
+  return { ready: glue && wasm && processor, glue, wasm, processor, reasons };
+}
+
+/** Single-line summary of asset readiness for logs / the debug panel. */
+export function describeWorkletAssetReadiness(r: WorkletAssetReadiness): string {
+  if (r.ready) return 'worklet-assets-ready';
+  return `worklet-assets-missing: ${r.reasons.join('; ')}`;
+}

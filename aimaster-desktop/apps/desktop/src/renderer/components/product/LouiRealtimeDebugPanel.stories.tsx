@@ -72,3 +72,40 @@ export const Unavailable: Story = {
     metrics: metrics({ cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, samples: 0, limiterGrDb: 0 }),
   },
 };
+
+export const WasmReady: Story = {
+  args: {
+    active: true, readiness: 'realtime-ready',
+    contextState: 'running', sampleRate: 48000, bufferSize: 128,
+    metrics: metrics(),
+    wasmLoad: {
+      phase: 'ready', wasmCompiled: true, glueLoaded: true,
+      processorRegistered: true, nodeConstructed: true,
+    },
+  },
+};
+
+export const WasmLoading: Story = {
+  args: {
+    active: false, readiness: 'realtime-ready',
+    contextState: 'suspended', sampleRate: 48000,
+    metrics: metrics({ cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, samples: 0, limiterGrDb: 0 }),
+    wasmLoad: {
+      phase: 'loading-glue', wasmCompiled: true, glueLoaded: false,
+      processorRegistered: false, nodeConstructed: false,
+    },
+  },
+};
+
+export const WasmLoadFailed: Story = {
+  args: {
+    active: false, readiness: 'realtime-ready',
+    contextState: 'running', sampleRate: 48000,
+    metrics: metrics({ cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, samples: 0, limiterGrDb: 0 }),
+    wasmLoad: {
+      phase: 'failed', wasmCompiled: false, glueLoaded: false,
+      processorRegistered: false, nodeConstructed: false,
+      failureReason: 'wasm-fetch-failed', lastError: 'failed to fetch ./loui-mastering-wasm.nomodules.wasm',
+    },
+  },
+};

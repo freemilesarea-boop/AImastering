@@ -8,6 +8,7 @@
 import React from 'react';
 import { surface, text, typography, meter, space, radius } from '../../theme/loui-theme.js';
 import type { RealtimeMetricsSnapshot } from '../../audio/realtime-metrics.js';
+import type { MasteringWorkletLoadState } from '../../audio/mastering-worklet-loader.js';
 
 export interface LouiRealtimeDebugPanelProps {
   /** Realtime path active (flag on + worklet attached). */
@@ -21,6 +22,8 @@ export interface LouiRealtimeDebugPanelProps {
   /** Active buffer / quantum size (samples). */
   bufferSize?: number;
   sampleRate?: number;
+  /** no-modules WASM worklet load progress (M2-full-NEXT). */
+  wasmLoad?: MasteringWorkletLoadState | undefined;
 }
 
 function Row({ label, value, status }: { label: string; value: string; status?: 'ok' | 'warn' | 'danger' | undefined }) {
@@ -86,6 +89,27 @@ export function LouiRealtimeDebugPanel(props: LouiRealtimeDebugPanelProps) {
       <Row label="block period" value={`${m.blockPeriodMs.toFixed(3)} ms`} />
       <Row label="xruns" value={`${m.totalXruns}`} status={xrunStatus} />
       <Row label="limiter GR" value={`${m.limiterGrDb.toFixed(1)} dB`} />
+      {props.wasmLoad && <WasmLoadRows load={props.wasmLoad} />}
     </div>
+  );
+}
+
+function flag(b: boolean): { value: string; status: 'ok' | 'warn' } {
+  return b ? { value: 'yes', status: 'ok' } : { value: 'no', status: 'warn' };
+}
+
+function WasmLoadRows({ load }: { load: MasteringWorkletLoadState }) {
+  const failed = load.phase === 'failed';
+  return (
+    <>
+      <div style={{ height: 1, background: surface.border, marginBlock: 4 }} />
+      <Row label="wasm phase" value={load.phase} status={failed ? 'danger' : load.phase === 'ready' ? 'ok' : 'warn'} />
+      <Row label="wasm compiled" {...flag(load.wasmCompiled)} />
+      <Row label="glue loaded" {...flag(load.glueLoaded)} />
+      <Row label="processor reg" {...flag(load.processorRegistered)} />
+      <Row label="node ready" {...flag(load.nodeConstructed)} />
+      {load.failureReason && <Row label="fallback" value={load.failureReason} status="danger" />}
+      {load.lastError && <Row label="last error" value={load.lastError} status="danger" />}
+    </>
   );
 }
