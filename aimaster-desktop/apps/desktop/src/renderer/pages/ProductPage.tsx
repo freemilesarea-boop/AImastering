@@ -30,6 +30,8 @@ import {
   WasmAnalyzerProvider,
   useWasmAnalyzerSession,
 } from '../audio/wasm-analyzer-context.js';
+import { useRealtimeMasteringGraph } from '../hooks/useRealtimeMasteringGraph.js';
+import { LouiRealtimeDebugPanel } from '../components/product/LouiRealtimeDebugPanel.js';
 import {
   ModuleParameterStateProvider,
   useModuleParameters,
@@ -1073,6 +1075,9 @@ function ProductPageProductionInner(props: {
   };
 }) {
   const session = useWasmAnalyzerSession();
+  // Realtime mastering preview — flag-gated + readiness-gated.  No-op
+  // (and renders nothing) when the flag is OFF, which is the default.
+  const realtime = useRealtimeMasteringGraph(session, { sampleRate: 48000, channels: 2 });
   const layout = (
     <ProductLayoutInner
       session={session}
@@ -1098,7 +1103,22 @@ function ProductPageProductionInner(props: {
       {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
     />
   );
-  if (!props.preview) return layout;
+  // Dev/QA realtime-preview health overlay — only when the flag is ON.
+  const debugOverlay = realtime.enabled ? (
+    <div style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 9999 }}>
+      <LouiRealtimeDebugPanel
+        active={realtime.active}
+        readiness={realtime.readinessLabel}
+        metrics={realtime.metrics}
+        {...(session?.audioContext()?.state ? { contextState: session.audioContext()!.state } : {})}
+        sampleRate={48000}
+        bufferSize={128}
+        wasmLoad={realtime.graphState?.load}
+      />
+    </div>
+  ) : null;
+
+  if (!props.preview) return <>{layout}{debugOverlay}</>;
   return (
     <ProductionPreviewProvider
       sourceAudioPath={props.preview.sourceAudioPath}
@@ -1107,6 +1127,7 @@ function ProductPageProductionInner(props: {
       onRendered={props.preview.onRendered}
     >
       {layout}
+      {debugOverlay}
     </ProductionPreviewProvider>
   );
 }

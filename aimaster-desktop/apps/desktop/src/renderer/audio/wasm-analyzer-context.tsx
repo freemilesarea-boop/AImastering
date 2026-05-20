@@ -42,6 +42,12 @@ export interface AttachableAnalyzerSession extends AnalyzerSession {
   attach(source: AudioSourceNode): void;
   attachMediaElement(media: HTMLMediaElement): void;
   audioContext(): AudioContext | null;
+  /**
+   * Splice a processing node (realtime mastering preview) between the
+   * source and the analyzer tap, or `null` to remove it.  Optional — not
+   * every session impl supports it.
+   */
+  setInsertNode?(node: AudioNode | null): void;
 }
 
 const WasmAnalyzerContext = createContext<AttachableAnalyzerSession | null>(null);

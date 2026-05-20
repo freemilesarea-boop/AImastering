@@ -106,6 +106,14 @@ class WasmAnalyzerSession implements AnalyzerSession {
 
   private ctx: AudioContext | null = null;
   private tapNode: AudioWorkletNode | null = null;
+  // The current source node attached to the graph (kept so the optional
+  // realtime-mastering insert node can be spliced in/out without a
+  // re-attach).  Null until attach() runs.
+  private currentSource: AudioSourceNode | null = null;
+  // Optional processing node spliced between source and tap (realtime
+  // mastering preview, M2-full-NEXT-2).  Null = analyzer-only graph
+  // (the default; flag OFF behaviour is byte-identical).
+  private insertNode: AudioNode | null = null;
   private analyzer: LouiAnalyzer | null = null;
   private spectrum: LouiSpectrumAnalyzer | null = null;
   private samplesProcessed = 0;
@@ -170,6 +178,14 @@ class WasmAnalyzerSession implements AnalyzerSession {
   }
 
   async stop(): Promise<void> {
+    if (this.insertNode) {
+      try { this.insertNode.disconnect(); } catch { /* ignore */ }
+      this.insertNode = null;
+    }
+    if (this.currentSource) {
+      try { this.currentSource.disconnect(); } catch { /* ignore */ }
+      this.currentSource = null;
+    }
     if (this.tapNode) {
       try { this.tapNode.port.onmessage = null; } catch { /* ignore */ }
       try { this.tapNode.disconnect(); } catch { /* ignore */ }
@@ -203,9 +219,46 @@ class WasmAnalyzerSession implements AnalyzerSession {
     if (!this.ctx || !this.tapNode) {
       throw new Error('analyzer session not started');
     }
-    try { this.tapNode.disconnect(); } catch { /* ignore */ }
-    source.connect(this.tapNode);
-    this.tapNode.connect(this.ctx.destination);
+    this.currentSource = source;
+    this.wireGraph();
+  }
+
+  /**
+   * (Re)build the playback graph from the current source.  The optional
+   * insert node (realtime mastering preview) is spliced between source
+   * and tap when present:
+   *
+   *   insertNode == null →  source → tap → destination   (analyzer-only)
+   *   insertNode != null →  source → insertNode → tap → destination
+   *
+   * Fully tears down + rebuilds the connections so it is safe to call
+   * repeatedly (no duplicate edges).  No-op if not started/attached.
+   */
+  private wireGraph(): void {
+    if (!this.ctx || !this.tapNode || !this.currentSource) return;
+    const src = this.currentSource;
+    const tap = this.tapNode;
+    try { src.disconnect(); } catch { /* ignore */ }
+    try { tap.disconnect(); } catch { /* ignore */ }
+    if (this.insertNode) { try { this.insertNode.disconnect(); } catch { /* ignore */ } }
+    if (this.insertNode) {
+      src.connect(this.insertNode);
+      this.insertNode.connect(tap);
+    } else {
+      src.connect(tap);
+    }
+    tap.connect(this.ctx.destination);
+  }
+
+  /**
+   * Splice a processing node between the source and the analyzer tap
+   * (realtime mastering preview).  Pass `null` to remove it and restore
+   * the analyzer-only graph.  Safe to call before/after attach — the
+   * graph is rebuilt whenever a source is present.
+   */
+  setInsertNode(node: AudioNode | null): void {
+    this.insertNode = node;
+    this.wireGraph();
   }
 
   /**
