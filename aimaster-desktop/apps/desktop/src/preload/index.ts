@@ -4,6 +4,10 @@ import type { IpcRendererEvent } from 'electron';
 const INVOKE_CHANNELS = [
   // Audio
   'audio:analyze', 'audio:master', 'audio:qc',
+  // Preview re-render (M3-P-NEXT-5C) — reuses the existing master path
+  // with an options override.  Product-layout flag gates the renderer
+  // caller; the channel itself is always registered.
+  'audio:re-render-preview',
   // License IPC channels REMOVED (v3.6.0-rc.1+1) — license gate disabled
   // for the internal RC test cycle; the renderer no longer invokes these
   // and the main process no longer registers them.

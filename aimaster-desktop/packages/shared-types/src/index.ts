@@ -797,3 +797,51 @@ export interface ModeSuggestion {
   /** 0–1 confidence (optional). */
   confidence?:   number;
 }
+
+// ── Preview re-render IPC contract (M3-P-NEXT-5C) ─────────────────────────
+//
+// The product layout stages UI parameter changes into a render override.
+// When the user clicks "Update Preview", the renderer sends a
+// PreviewRenderRequest; the main process re-runs the EXISTING Python
+// preview render with the merged options and returns a new preview path.
+// No Python pipeline change — this reuses the same `masterFile` path the
+// initial master uses.
+
+/** Request to re-render the preview with an options override. */
+export interface PreviewRenderRequest {
+  /** Monotonic id for latest-wins / stale-response rejection. */
+  requestId: number;
+  /** Original source audio path (the file the master was made from). */
+  sourceAudioPath: string;
+  /** Full mastering options to render with (base merged with the override). */
+  options: MasteringOptions;
+  /**
+   * The subset of `options` that changed vs the last render — informational,
+   * surfaced in logs so the handler / dev UI can see what drove the render.
+   */
+  changedKeys: string[];
+}
+
+/** Successful preview re-render. */
+export interface PreviewRenderSuccess {
+  requestId: number;
+  ok: true;
+  /** Path to the freshly-rendered preview audio (MP3). */
+  previewPath: string;
+  /** Optional post-render loudness metrics. */
+  metrics?: {
+    integratedLufs?: number;
+    truePeakDbtp?: number;
+  };
+  /** Wall-clock render duration (ms). */
+  durationMs: number;
+}
+
+/** Failed preview re-render. */
+export interface PreviewRenderFailure {
+  requestId: number;
+  ok: false;
+  error: string;
+}
+
+export type PreviewRenderResponse = PreviewRenderSuccess | PreviewRenderFailure;

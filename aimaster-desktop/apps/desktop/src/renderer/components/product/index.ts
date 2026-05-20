@@ -26,6 +26,9 @@ export type { LouiStatusBarProps } from './LouiStatusBar.js';
 export { LouiModuleSlideOver } from './LouiModuleSlideOver.js';
 export type { LouiModuleSlideOverProps } from './LouiModuleSlideOver.js';
 
+export { LouiPreviewControl } from './LouiPreviewControl.js';
+export type { LouiPreviewControlProps, PreviewControlPhase } from './LouiPreviewControl.js';
+
 // Parameter panels — re-exported from `panels/` for one-stop import.
 export {
   EqParameterPanel,

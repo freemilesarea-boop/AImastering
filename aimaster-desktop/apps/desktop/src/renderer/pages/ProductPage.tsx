@@ -37,7 +37,16 @@ import {
   type ModuleId,
   type ParameterValue,
 } from '../audio/parameters/index.js';
-import { PresetPatchDispatcher } from '../audio/engine-bridge/index.js';
+import {
+  PresetPatchDispatcher,
+  PreviewRenderController,
+  IpcPreviewRenderTransport,
+  buildPreviewOverride,
+  mergeOptions,
+  type PreviewRenderState,
+} from '../audio/engine-bridge/index.js';
+import { LouiPreviewControl, type PreviewControlPhase } from '../components/product/LouiPreviewControl.js';
+import type { MasteringOptions } from '@aimaster/shared-types';
 import {
   LouiTopBar,
   LouiPresetHeader,
@@ -92,6 +101,7 @@ function ProductLayoutInner({
   onImport,
   onExport,
   onSettings,
+  previewSlot,
 }: {
   session: AnalyzerSession | null;
   active: boolean;
@@ -113,6 +123,8 @@ function ProductLayoutInner({
   onImport?: () => void;
   onExport?: () => void;
   onSettings?: () => void;
+  /** Optional preview-control strip (production path only). */
+  previewSlot?: React.ReactNode;
 }) {
   return (
     <div
@@ -139,6 +151,9 @@ function ProductLayoutInner({
         {...(presetId ? { activeId: presetId } : {})}
         {...(onPresetChange ? { onTargetChange: onPresetChange } : {})}
       />
+
+      {/* Preview-control strip — staged-change → re-render loop (production). */}
+      {previewSlot}
 
       {/* Optional transport strip — visible only when a play handler is wired
           (production path).  Storybook stories without media skip this. */}
@@ -417,6 +432,108 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
   }
 }
 
+// ── Production preview-control — staged patch → re-render preview ───────
+//
+// 5C renderable set = `limiter.targetLufs` only.  This component
+// subscribes to the limiter slice (so it re-renders when targetLufs
+// changes), reads the dispatcher's staged patch, builds a MasteringOptions
+// override, and drives the re-render controller on an explicit click.
+
+function ProductionPreviewControl({
+  dispatcher,
+  sourceAudioPath,
+  baseOptions: storeOptions,
+  onRendered,
+}: {
+  dispatcher: PresetPatchDispatcher;
+  sourceAudioPath: string;
+  /** Store-shaped mastering options (optionals may be `undefined`). */
+  baseOptions: {
+    style: MasteringOptions['style'];
+    targetLufs: number; targetTp: number; sampleRate: number; bitDepth: number;
+    applyAiCorrections: boolean;
+    limiterStrength?: MasteringOptions['limiterStrength'];
+    saturationAmount?: number | undefined;
+    stereoWidth?: number | undefined;
+    outputGainDb?: number | undefined;
+  };
+  onRendered: (previewPath: string) => void;
+}) {
+  // Normalise the store options into a shared-types MasteringOptions —
+  // drop `undefined` optionals so exactOptionalPropertyTypes is satisfied.
+  const baseOptions: MasteringOptions = {
+    style: storeOptions.style,
+    targetLufs: storeOptions.targetLufs,
+    targetTp: storeOptions.targetTp,
+    sampleRate: storeOptions.sampleRate,
+    bitDepth: storeOptions.bitDepth,
+    applyAiCorrections: storeOptions.applyAiCorrections,
+    ...(storeOptions.limiterStrength !== undefined ? { limiterStrength: storeOptions.limiterStrength } : {}),
+    ...(storeOptions.saturationAmount !== undefined ? { saturationAmount: storeOptions.saturationAmount } : {}),
+    ...(storeOptions.stereoWidth !== undefined ? { stereoWidth: storeOptions.stereoWidth } : {}),
+    ...(storeOptions.outputGainDb !== undefined ? { outputGainDb: storeOptions.outputGainDb } : {}),
+  };
+  // Subscribe to the limiter slice — re-renders this component when the
+  // renderable parameter (targetLufs) changes.
+  useModuleParameters('limiter');
+
+  const [phase, setPhase] = useState<PreviewControlPhase>('idle');
+  const [lastRenderedAt, setLastRenderedAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [renderedOverride, setRenderedOverride] = useState<Partial<MasteringOptions>>({});
+
+  const onRenderedRef = useRef(onRendered);
+  onRenderedRef.current = onRendered;
+  const requestedOverrideRef = useRef<Partial<MasteringOptions>>({});
+
+  const controllerRef = useRef<PreviewRenderController | null>(null);
+  if (!controllerRef.current) {
+    controllerRef.current = new PreviewRenderController(new IpcPreviewRenderTransport(), {
+      debounceMs: 600,
+      onState: (s: PreviewRenderState) => {
+        switch (s.phase) {
+          case 'idle':      setPhase('idle'); break;
+          case 'pending':   setPhase('pending'); break;
+          case 'rendering': setPhase('rendering'); break;
+          case 'updated':   setPhase('updated'); setLastRenderedAt(s.at); break;
+          case 'error':     setPhase('error'); setError(s.error); break;
+        }
+      },
+      onSuccess: (previewPath) => {
+        onRenderedRef.current(previewPath);
+        setRenderedOverride(requestedOverrideRef.current);
+      },
+      onError: () => { /* state already set via onState */ },
+    });
+  }
+  React.useEffect(() => () => controllerRef.current?.dispose(), []);
+
+  // Pending renderable changes vs the override that produced the current preview.
+  const build = buildPreviewOverride(dispatcher.getStagedPatch());
+  const current = build.optionsOverride;
+  const pendingKeys = Object.keys(current).filter(
+    (k) => (current as Record<string, unknown>)[k] !== (renderedOverride as Record<string, unknown>)[k],
+  );
+
+  const onUpdate = () => {
+    if (pendingKeys.length === 0) return;
+    requestedOverrideRef.current = current;
+    const options = mergeOptions(baseOptions, current);
+    controllerRef.current!.request({ sourceAudioPath, options, changedKeys: pendingKeys });
+    controllerRef.current!.flush();   // explicit click → render now
+  };
+
+  return (
+    <LouiPreviewControl
+      pendingCount={pendingKeys.length}
+      phase={phase}
+      lastRenderedAt={lastRenderedAt}
+      error={error}
+      onUpdate={onUpdate}
+    />
+  );
+}
+
 // ── Storybook / test path — session bypasses provider ────────────────────
 
 function ProductLayoutWithOverride({
@@ -457,6 +574,8 @@ function ProductLayoutWithOverride({
 function ProductPageProduction() {
   const setPage         = useAppStore((s) => s.setPage);
   const masteringResult = useAudioStore((s) => s.masteringResult);
+  const sourceAudioPath = useAudioStore((s) => s.selectedFile);
+  const baseOptions     = useAudioStore((s) => s.options);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -465,12 +584,33 @@ function ProductPageProduction() {
   const [meterReady, setMeterReady] = useState(false);
   const [presetId, setPresetId] = useState<string | undefined>(undefined);
   const [selectedModule, setSelectedModule] = useState<ModuleCardDef['id'] | undefined>(undefined);
+  // Preview source override — set when a re-render swaps the preview file.
+  const [previewSrcOverride, setPreviewSrcOverride] = useState<string | null>(null);
   const dispatcher = useMemo(() => new PresetPatchDispatcher(ALL_MODULE_PARAMETER_DEFS), []);
 
-  const previewSrc = masteringResult?.previewPath ? toFileUrl(masteringResult.previewPath) : '';
+  const basePreviewSrc = masteringResult?.previewPath ? toFileUrl(masteringResult.previewPath) : '';
+  const previewSrc = previewSrcOverride ?? basePreviewSrc;
   const meta = masteringResult?.analysisReport?.mastering;
   const targetLufs = typeof meta?.targetLufs === 'number' ? meta.targetLufs : -14;
   const targetTp   = typeof meta?.targetTruePeak === 'number' ? meta.targetTruePeak : -1;
+
+  // Swap the preview audio source to a freshly-rendered file, preserving
+  // playback position + play/pause state.  If the swap source fails to
+  // load, the previous preview keeps playing (browser retains the old
+  // buffer until the new one is ready).
+  const onPreviewRendered = useCallback((newPreviewPath: string) => {
+    const a = audioRef.current;
+    const wasPlaying = a ? !a.paused : false;
+    const t = a ? a.currentTime : 0;
+    setPreviewSrcOverride(toFileUrl(newPreviewPath));
+    if (!a) return;
+    const restore = () => {
+      try { a.currentTime = t; } catch { /* duration may differ slightly */ }
+      if (wasPlaying) void a.play();
+      a.removeEventListener('loadedmetadata', restore);
+    };
+    a.addEventListener('loadedmetadata', restore);
+  }, []);
 
   const togglePlay = useCallback(() => {
     const a = audioRef.current;
@@ -545,6 +685,16 @@ function ProductPageProduction() {
           onImport={onImport}
           onExport={onExport}
           onSettings={onSettings}
+          previewControl={
+            sourceAudioPath ? (
+              <ProductionPreviewControl
+                dispatcher={dispatcher}
+                sourceAudioPath={sourceAudioPath}
+                baseOptions={baseOptions}
+                onRendered={onPreviewRendered}
+              />
+            ) : null
+          }
         />
       </ModuleParameterStateProvider>
       </WasmAnalyzerProvider>
@@ -568,6 +718,7 @@ function ProductPageProductionInner(props: {
   onImport: () => void;
   onExport: () => void;
   onSettings: () => void;
+  previewControl?: React.ReactNode;
 }) {
   const session = useWasmAnalyzerSession();
   return (
@@ -591,6 +742,7 @@ function ProductPageProductionInner(props: {
       onImport={props.onImport}
       onExport={props.onExport}
       onSettings={props.onSettings}
+      {...(props.previewControl ? { previewSlot: props.previewControl } : {})}
     />
   );
 }

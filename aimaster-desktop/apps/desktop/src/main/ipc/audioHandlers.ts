@@ -15,7 +15,12 @@ import { v4 as uuidv4 } from 'uuid';import {
   unknownError,
   pathEncodingError,
 } from '@aimaster/audio-engine';
-import type { MasteringOptions, LoudnessStats } from '@aimaster/shared-types';
+import type {
+  MasteringOptions,
+  LoudnessStats,
+  PreviewRenderRequest,
+  PreviewRenderResponse,
+} from '@aimaster/shared-types';
 import { log } from '../utils/logger.js';
 import { recordFailure } from '../utils/failureLog.js';
 import { recordPipelineWarning } from '../utils/supportBundle.js';
@@ -323,6 +328,57 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       log.error('[audio:qc] error', { filePath, err: (err as Error).message });
       recordFailure('engine', `runQC failed: ${(err as Error).message}`, { filePath });
       toAppError(err, filePath);
+    }
+  });
+
+  // ── Preview re-render (M3-P-NEXT-5C) ────────────────────────────────────
+  // Re-runs the EXISTING Python master path with overridden options and
+  // returns a fresh preview MP3.  No pipeline change — this is a thin
+  // wrapper around `masterFile`, the same function `audio:master` calls.
+  //
+  // Returns a typed PreviewRenderResponse (ok/error) rather than throwing,
+  // so the renderer's latest-wins controller can handle stale / failed
+  // responses uniformly.
+  ipc.handle('audio:re-render-preview', async (
+    _e,
+    request: PreviewRenderRequest,
+  ): Promise<PreviewRenderResponse> => {
+    const { requestId, sourceAudioPath, options } = request ?? {};
+    if (!sourceAudioPath || !options) {
+      return { requestId: requestId ?? 0, ok: false, error: 'invalid request payload' };
+    }
+    const t0 = Date.now();
+    try {
+      assertTmpWritable();
+      const b = getBridge();
+
+      const wavTempPath = resolveOutputPath(sourceAudioPath, '.wav', {
+        style:      options.style,
+        targetLufs: options.targetLufs,
+      });
+      const mp3FallbackPath = internalTempPath('_preview.mp3');
+
+      const result = await masterFile(b, sourceAudioPath, wavTempPath, options, {});
+      const durationMs = Date.now() - t0;
+
+      const after = (result as { loudnessAfter?: { integratedLufs?: number; truePeakDbtp?: number } })?.loudnessAfter;
+      return {
+        requestId,
+        ok: true,
+        previewPath: result.previewPath || mp3FallbackPath,
+        ...(after ? {
+          metrics: {
+            ...(typeof after.integratedLufs === 'number' ? { integratedLufs: after.integratedLufs } : {}),
+            ...(typeof after.truePeakDbtp === 'number' ? { truePeakDbtp: after.truePeakDbtp } : {}),
+          },
+        } : {}),
+        durationMs,
+      };
+    } catch (err) {
+      const msg = (err as Error).message;
+      log.error('[audio:re-render-preview] error', { sourceAudioPath, err: msg });
+      recordFailure('pipeline', `re-render-preview failed: ${msg}`, { sourceAudioPath });
+      return { requestId: requestId ?? 0, ok: false, error: msg };
     }
   });
 }
