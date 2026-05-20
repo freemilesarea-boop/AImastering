@@ -17,6 +17,8 @@ export type PreviewControlPhase = 'idle' | 'pending' | 'rendering' | 'updated' |
 export interface LouiPreviewControlProps {
   /** Number of renderable staged changes awaiting a preview update. */
   pendingCount: number;
+  /** Number of changed-but-not-renderable params (staged only). */
+  stagedOnlyCount?: number;
   /** Current render phase. */
   phase: PreviewControlPhase;
   /** Last successful render timestamp (epoch ms), or null. */
@@ -99,7 +101,24 @@ export function LouiPreviewControl(props: LouiPreviewControlProps) {
           fontSize: typography.size.xs,
           fontVariantNumeric: 'tabular-nums',
         }}>
-          {props.pendingCount} pending
+          {props.pendingCount} renderable
+        </span>
+      )}
+      {(props.stagedOnlyCount ?? 0) > 0 && (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          height: 20,
+          paddingInline: 8,
+          borderRadius: 999,
+          background: surface.well,
+          border: `1px solid ${surface.border}`,
+          color: text.muted,
+          fontFamily: typography.family.mono,
+          fontSize: typography.size.xs,
+          fontVariantNumeric: 'tabular-nums',
+        }}>
+          {props.stagedOnlyCount} staged-only
         </span>
       )}
 

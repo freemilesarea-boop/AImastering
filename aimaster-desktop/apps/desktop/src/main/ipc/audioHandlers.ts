@@ -343,7 +343,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     _e,
     request: PreviewRenderRequest,
   ): Promise<PreviewRenderResponse> => {
-    const { requestId, sourceAudioPath, options } = request ?? {};
+    const { requestId, sourceAudioPath, options, appliedOverrideKeys, patchHash } = request ?? {};
     if (!sourceAudioPath || !options) {
       return { requestId: requestId ?? 0, ok: false, error: 'invalid request payload' };
     }
@@ -373,6 +373,8 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
           },
         } : {}),
         durationMs,
+        ...(appliedOverrideKeys ? { appliedOverrideKeys } : {}),
+        ...(patchHash ? { patchHash } : {}),
       };
     } catch (err) {
       const msg = (err as Error).message;

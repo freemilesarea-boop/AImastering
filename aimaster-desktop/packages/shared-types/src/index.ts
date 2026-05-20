@@ -820,6 +820,14 @@ export interface PreviewRenderRequest {
    * surfaced in logs so the handler / dev UI can see what drove the render.
    */
   changedKeys: string[];
+  /** Deterministic hash of the renderable override (dedup / stale checks). */
+  patchHash?: string;
+  /** MasteringOptions keys actually applied as overrides this render. */
+  appliedOverrideKeys?: string[];
+  /** UI parameter ids staged but NOT applied (no renderable mapping). */
+  skippedParameterIds?: string[];
+  /** Short human summary of the target (e.g. "−10 LUFS · −1.0 dBTP"). */
+  targetSummary?: string;
 }
 
 /** Successful preview re-render. */
@@ -835,6 +843,10 @@ export interface PreviewRenderSuccess {
   };
   /** Wall-clock render duration (ms). */
   durationMs: number;
+  /** Echo of the override keys applied (mirrors the request). */
+  appliedOverrideKeys?: string[];
+  /** Echo of the patch hash (for stale matching alongside requestId). */
+  patchHash?: string;
 }
 
 /** Failed preview re-render. */

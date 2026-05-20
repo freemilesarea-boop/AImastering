@@ -47,6 +47,13 @@ export interface LouiModuleStripProps {
   selectedId?: string;
   /** Click handler — surfaces the card id; no DSP side effects in this milestone. */
   onSelect?: (id: ModuleCardDef['id']) => void;
+  /**
+   * Per-module pending indicator (M3-P-NEXT-5D-1):
+   *   'renderable' — has changes that will reflect on the next preview update
+   *   'staged'     — has changes that can't reach the preview yet
+   *   null/absent  — no pending changes
+   */
+  pendingByModule?: Partial<Record<ModuleCardDef['id'], 'renderable' | 'staged' | null>>;
 }
 
 // ── State styling ────────────────────────────────────────────────────────
@@ -157,13 +164,18 @@ function ModuleCard({
   def,
   selected,
   onClick,
+  pending,
 }: {
   def: ModuleCardDef;
   selected: boolean;
   onClick?: () => void;
+  pending?: 'renderable' | 'staged' | null;
 }) {
   const [hover, setHover] = React.useState(false);
   const v = visualForState(def.state, selected);
+  const pendingColour = pending === 'renderable'
+    ? meter.accent.foreground
+    : pending === 'staged' ? text.muted : null;
   return (
     <button
       type="button"
@@ -190,12 +202,25 @@ function ModuleCard({
       {/* Top row: title + state pill */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
           fontFamily: typography.family.sans,
           fontSize: typography.size.md,
           fontWeight: typography.weight.semi,
           color: text.primary,
           letterSpacing: '-0.005em',
         }}>
+          {pendingColour && (
+            <span
+              title={pending === 'renderable' ? 'Pending — will reflect on next preview update' : 'Changed — staged only (not in preview yet)'}
+              style={{
+                width: 7, height: 7, borderRadius: 999,
+                background: pendingColour,
+                boxShadow: pending === 'renderable' ? `0 0 5px ${pendingColour}` : 'none',
+              }}
+            />
+          )}
           {def.label}
         </span>
         <span style={{
@@ -295,6 +320,7 @@ export function LouiModuleStrip(props: LouiModuleStripProps) {
             key={m.id}
             def={m}
             selected={m.id === props.selectedId}
+            {...(props.pendingByModule?.[m.id] ? { pending: props.pendingByModule[m.id] } : {})}
             {...(props.onSelect ? { onClick: () => props.onSelect!(m.id) } : {})}
           />
         ))}

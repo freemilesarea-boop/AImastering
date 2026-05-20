@@ -30,8 +30,20 @@ export { describeDispatchResult } from './describe.js';
 export {
   buildPreviewOverride,
   mergeOptions,
+  hashOverride,
+  RENDERABLE_MAP_LOOKUP,
+  RENDERABLE_ENGINE_KEYS,
+  isRenderableEngineKey,
 } from './engine-preset-builder.js';
-export type { PreviewBuildResult } from './engine-preset-builder.js';
+export type { PreviewBuildResult, RenderableFragment } from './engine-preset-builder.js';
+
+// Pending summary (M3-P-NEXT-5D-1)
+export { summarizePending, initialStateFromBaseOptions } from './pending-summary.js';
+export type {
+  PendingSummary,
+  PendingItem,
+  RenderablePendingItem,
+} from './pending-summary.js';
 
 export {
   PreviewRenderController,
@@ -41,6 +53,7 @@ export type {
   PreviewRenderTransport,
   PreviewRenderState,
   PreviewRenderControllerOptions,
+  RenderPayload,
 } from './preview-render-client.js';
 
 export { MockPreviewRenderTransport } from './mock-preview-render-transport.js';

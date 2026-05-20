@@ -298,5 +298,18 @@ export function useEngineDispatchLog(): {
   return { dispatchLog: ctx.dispatchLog, dispatcherName: ctx.dispatcherName, clear: ctx.clearLog };
 }
 
+/**
+ * Read the full all-modules parameter state + defs.  Re-renders on any
+ * parameter change.  Used by the pending-summary computation, which spans
+ * multiple modules.
+ */
+export function useAllModuleParameters(): {
+  state: AllModulesParameterState;
+  defs: AllModulesDefinitions;
+} {
+  const ctx = useParameterStateContext();
+  return { state: ctx.state, defs: ctx.defs };
+}
+
 /** Render a command as a single-line string.  Re-exported for ergonomics. */
 export { describeCommand };

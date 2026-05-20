@@ -53,6 +53,18 @@ export type PreviewRenderState =
   | { phase: 'updated'; previewPath: string; at: number; durationMs: number }
   | { phase: 'error'; error: string; at: number };
 
+/** Payload for a render request. */
+export interface RenderPayload {
+  sourceAudioPath: string;
+  options: MasteringOptions;
+  changedKeys: string[];
+  /** Deterministic hash of the renderable override (dedup / stale checks). */
+  patchHash?: string;
+  appliedOverrideKeys?: string[];
+  skippedParameterIds?: string[];
+  targetSummary?: string;
+}
+
 export interface PreviewRenderControllerOptions {
   /** Debounce window (ms) before a queued render fires.  Default 600. */
   debounceMs?: number;
@@ -62,6 +74,8 @@ export interface PreviewRenderControllerOptions {
   onSuccess?: (previewPath: string, durationMs: number) => void;
   /** Called on a non-stale failure. */
   onError?: (error: string) => void;
+  /** Called when a request is a no-op (same patch already rendered). */
+  onNoop?: () => void;
 }
 
 // ── Controller ───────────────────────────────────────────────────────────
@@ -75,7 +89,9 @@ export class PreviewRenderController {
   private nextRequestId = 1;
   /** The id of the most recent request the controller cares about. */
   private latestRequestId = 0;
-  private queued: { sourceAudioPath: string; options: MasteringOptions; changedKeys: string[] } | null = null;
+  /** Hash of the last successfully-rendered patch — dedups identical re-renders. */
+  private lastRenderedHash: string | null = null;
+  private queued: RenderPayload | null = null;
 
   constructor(transport: PreviewRenderTransport, opts: PreviewRenderControllerOptions = {}) {
     this.transport = transport;
@@ -90,8 +106,16 @@ export class PreviewRenderController {
   /**
    * Queue a render.  Repeated calls within the debounce window collapse
    * into one render using the LAST queued payload.
+   *
+   * If `patchHash` matches the last successfully-rendered hash, the
+   * request is a no-op (same patch already in the preview).
    */
-  request(payload: { sourceAudioPath: string; options: MasteringOptions; changedKeys: string[] }): void {
+  request(payload: RenderPayload): void {
+    if (payload.patchHash && payload.patchHash === this.lastRenderedHash) {
+      // Same patch as the current preview — nothing to render.
+      this.opts.onNoop?.();
+      return;
+    }
     this.queued = payload;
     this.setState({ phase: 'pending' });
     if (this.timer) clearTimeout(this.timer);
@@ -126,12 +150,21 @@ export class PreviewRenderController {
       sourceAudioPath: payload.sourceAudioPath,
       options: payload.options,
       changedKeys: payload.changedKeys,
+      ...(payload.patchHash ? { patchHash: payload.patchHash } : {}),
+      ...(payload.appliedOverrideKeys ? { appliedOverrideKeys: payload.appliedOverrideKeys } : {}),
+      ...(payload.skippedParameterIds ? { skippedParameterIds: payload.skippedParameterIds } : {}),
+      ...(payload.targetSummary ? { targetSummary: payload.targetSummary } : {}),
     };
+    const firedHash = payload.patchHash;
 
     void this.transport.render(request).then((response) => {
       // Latest-wins: drop responses from superseded requests.
       if (response.requestId !== this.latestRequestId) return;
       if (response.ok) {
+        // Defence in depth: if the response echoes a patch hash, it must
+        // match the request we fired.
+        if (response.patchHash && firedHash && response.patchHash !== firedHash) return;
+        if (firedHash) this.lastRenderedHash = firedHash;
         this.setState({
           phase: 'updated',
           previewPath: response.previewPath,

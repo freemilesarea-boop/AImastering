@@ -15,26 +15,25 @@
 
 import type { MasteringOptions } from '@aimaster/shared-types';
 import type { StagedPatchEntry } from './engine-dispatcher.js';
+import { RENDERABLE_MAP_LOOKUP } from './renderable-map.js';
 
-// ── Renderable mapping ───────────────────────────────────────────────────
+// Re-export the renderable-map surface for convenience.
+export { RENDERABLE_MAP_LOOKUP, RENDERABLE_ENGINE_KEYS, isRenderableEngineKey } from './renderable-map.js';
 
-/**
- * EngineSchema paths the current Python preview render can apply, mapped
- * to the MasteringOptions field they drive.
- *
- * 5C deliberately ships ONE entry — `loudness-norm.targetLufs`.  Adding
- * a row here (e.g. `limiter:ceilingDb` → `targetTp`) extends the
- * renderable set with no other code change — that is M3-P-NEXT-5D work.
- */
-const RENDERABLE_MAP: Record<string, keyof MasteringOptions> = {
-  'loudness-norm:targetLufs': 'targetLufs',
-  // M3-P-NEXT-5D candidates (MasteringOptions already supports these):
-  //   'limiter:ceilingDb'        → 'targetTp'
-  //   'stereo-imager:width'      → 'stereoWidth'
-  //   'gain-staging:targetPeakDb' → 'outputGainDb'
-};
+const RENDERABLE_MAP = RENDERABLE_MAP_LOOKUP;
 
 // ── Result type ──────────────────────────────────────────────────────────
+
+/** One renderable fragment, with provenance back to the UI parameter. */
+export interface RenderableFragment {
+  moduleId: string;
+  parameterId: string;
+  enginePath: string;
+  /** MasteringOptions field this drives. */
+  optionKey: keyof MasteringOptions;
+  /** Engine-space value (already converted by the dispatcher). */
+  value: number;
+}
 
 export interface PreviewBuildResult {
   /**
@@ -42,6 +41,11 @@ export interface PreviewBuildResult {
    * honours.  Merge over the base options before invoking the render.
    */
   optionsOverride: Partial<MasteringOptions>;
+  /**
+   * The renderable fragments, with provenance — used by the pending
+   * summary to report per-module renderable changes.
+   */
+  renderableFragments: RenderableFragment[];
   /**
    * Canonical EngineSchema patch fragments — the full wired set, in
    * engine space.  Reused unchanged by the future export path.
@@ -59,6 +63,8 @@ export interface PreviewBuildResult {
   }>;
   /** Whether the override contains at least one renderable change. */
   hasRenderableChange: boolean;
+  /** Deterministic hash of the renderable override (for dedup / stale checks). */
+  patchHash: string;
 }
 
 // ── Builder ──────────────────────────────────────────────────────────────
@@ -71,6 +77,7 @@ export interface PreviewBuildResult {
  */
 export function buildPreviewOverride(patch: readonly StagedPatchEntry[]): PreviewBuildResult {
   const optionsOverride: Partial<MasteringOptions> = {};
+  const renderableFragments: RenderableFragment[] = [];
   const unsupportedForRender: PreviewBuildResult['unsupportedForRender'] = [];
 
   // Sort for deterministic output regardless of insertion order.
@@ -82,6 +89,13 @@ export function buildPreviewOverride(patch: readonly StagedPatchEntry[]): Previe
     const optionKey = RENDERABLE_MAP[key];
     if (optionKey && typeof frag.value === 'number') {
       (optionsOverride[optionKey] as number) = frag.value;
+      renderableFragments.push({
+        moduleId: frag.sourceModuleId,
+        parameterId: frag.sourceParameterId,
+        enginePath: key,
+        optionKey,
+        value: frag.value,
+      });
     } else {
       unsupportedForRender.push({
         moduleId: frag.sourceModuleId,
@@ -96,10 +110,23 @@ export function buildPreviewOverride(patch: readonly StagedPatchEntry[]): Previe
 
   return {
     optionsOverride,
+    renderableFragments,
     enginePatch: sorted,
     unsupportedForRender,
     hasRenderableChange: Object.keys(optionsOverride).length > 0,
+    patchHash: hashOverride(optionsOverride),
   };
+}
+
+/**
+ * Deterministic hash of a MasteringOptions override.  Stable across
+ * key-insertion order (keys are sorted).  Used to dedup identical
+ * re-renders + reject stale responses.
+ */
+export function hashOverride(override: Partial<MasteringOptions>): string {
+  const keys = Object.keys(override).sort();
+  if (keys.length === 0) return 'base';
+  return keys.map((k) => `${k}=${(override as Record<string, unknown>)[k]}`).join('|');
 }
 
 /**

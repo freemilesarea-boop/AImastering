@@ -33,6 +33,7 @@ import {
 import {
   ModuleParameterStateProvider,
   useModuleParameters,
+  useAllModuleParameters,
   ALL_MODULE_PARAMETER_DEFS,
   type ModuleId,
   type ParameterValue,
@@ -41,9 +42,11 @@ import {
   PresetPatchDispatcher,
   PreviewRenderController,
   IpcPreviewRenderTransport,
-  buildPreviewOverride,
   mergeOptions,
+  summarizePending,
+  initialStateFromBaseOptions,
   type PreviewRenderState,
+  type PendingSummary,
 } from '../audio/engine-bridge/index.js';
 import { LouiPreviewControl, type PreviewControlPhase } from '../components/product/LouiPreviewControl.js';
 import type { MasteringOptions } from '@aimaster/shared-types';
@@ -126,6 +129,9 @@ function ProductLayoutInner({
   /** Optional preview-control strip (production path only). */
   previewSlot?: React.ReactNode;
 }) {
+  // Pending summary (production path only; null in storybook).
+  const previewBridge = usePreviewBridge();
+  const pendingByModule = previewBridge?.summary.pendingByModule;
   return (
     <div
       style={{
@@ -261,6 +267,7 @@ function ProductLayoutInner({
         {...(selectedModule ? { selectedId: selectedModule } : {})}
         {...(onSelectModule ? { onSelect: onSelectModule } : {})}
         {...(modules ? { modules } : {})}
+        {...(pendingByModule ? { pendingByModule } : {})}
       />
 
       <LouiStatusBar
@@ -324,11 +331,38 @@ function ModuleSlideOverHost(props: {
   );
 }
 
-// Renders the inline header actions: modified badge + bypass toggle + reset.
+// Renders the inline header actions: preview-ready tag + modified badge +
+// bypass toggle + reset.
 function SlideOverActions({ moduleId }: { moduleId: ModuleId }) {
   const { isModified, bypass, setBypass, reset } = useModuleParameters(moduleId);
+  const bridge = usePreviewBridge();
+  const previewState = bridge?.summary.pendingByModule[moduleId] ?? null;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: space['2'] }}>
+      {previewState && (
+        <span
+          title={previewState === 'renderable'
+            ? 'This module has changes that will reflect on the next preview update'
+            : 'This module has changes that are staged only (not in the preview)'}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            height: 22,
+            paddingInline: 8,
+            borderRadius: radius.chip,
+            border: `1px solid ${previewState === 'renderable' ? 'rgba(16,185,129,0.45)' : surface.border}`,
+            background: previewState === 'renderable' ? meter.safe.background : surface.well,
+            color: previewState === 'renderable' ? meter.safe.foreground : text.muted,
+            fontFamily: typography.family.sans,
+            fontSize: typography.size.xs,
+            fontWeight: typography.weight.medium,
+            letterSpacing: '0.02em',
+          }}
+        >
+          {previewState === 'renderable' ? 'Preview-ready' : 'Staged only'}
+        </span>
+      )}
       {isModified && (
         <span style={{
           display: 'inline-flex',
@@ -432,55 +466,47 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
   }
 }
 
-// ── Production preview-control — staged patch → re-render preview ───────
+// ── Preview bridge — shared pending summary + render controls ──────────
 //
-// 5C renderable set = `limiter.targetLufs` only.  This component
-// subscribes to the limiter slice (so it re-renders when targetLufs
-// changes), reads the dispatcher's staged patch, builds a MasteringOptions
-// override, and drives the re-render controller on an explicit click.
+// M3-P-NEXT-5D-1: multiple consumers (preview strip, module strip pending
+// dots, slide-over "Preview-ready" tag) need the same pending summary +
+// render state.  A small context provides it.  Mounted only in the
+// production path; storybook consumers see `null` and show no pending.
 
-function ProductionPreviewControl({
-  dispatcher,
+interface PreviewBridge {
+  summary: PendingSummary;
+  phase: PreviewControlPhase;
+  lastRenderedAt: number | null;
+  error: string | null;
+  onUpdate: () => void;
+}
+
+const PreviewBridgeContext = React.createContext<PreviewBridge | null>(null);
+function usePreviewBridge(): PreviewBridge | null {
+  return React.useContext(PreviewBridgeContext);
+}
+
+function ProductionPreviewProvider({
   sourceAudioPath,
-  baseOptions: storeOptions,
+  baseOptions,
   onRendered,
+  children,
 }: {
-  dispatcher: PresetPatchDispatcher;
   sourceAudioPath: string;
-  /** Store-shaped mastering options (optionals may be `undefined`). */
-  baseOptions: {
-    style: MasteringOptions['style'];
-    targetLufs: number; targetTp: number; sampleRate: number; bitDepth: number;
-    applyAiCorrections: boolean;
-    limiterStrength?: MasteringOptions['limiterStrength'];
-    saturationAmount?: number | undefined;
-    stereoWidth?: number | undefined;
-    outputGainDb?: number | undefined;
-  };
+  baseOptions: MasteringOptions;   // already normalised
   onRendered: (previewPath: string) => void;
+  children: React.ReactNode;
 }) {
-  // Normalise the store options into a shared-types MasteringOptions —
-  // drop `undefined` optionals so exactOptionalPropertyTypes is satisfied.
-  const baseOptions: MasteringOptions = {
-    style: storeOptions.style,
-    targetLufs: storeOptions.targetLufs,
-    targetTp: storeOptions.targetTp,
-    sampleRate: storeOptions.sampleRate,
-    bitDepth: storeOptions.bitDepth,
-    applyAiCorrections: storeOptions.applyAiCorrections,
-    ...(storeOptions.limiterStrength !== undefined ? { limiterStrength: storeOptions.limiterStrength } : {}),
-    ...(storeOptions.saturationAmount !== undefined ? { saturationAmount: storeOptions.saturationAmount } : {}),
-    ...(storeOptions.stereoWidth !== undefined ? { stereoWidth: storeOptions.stereoWidth } : {}),
-    ...(storeOptions.outputGainDb !== undefined ? { outputGainDb: storeOptions.outputGainDb } : {}),
-  };
-  // Subscribe to the limiter slice — re-renders this component when the
-  // renderable parameter (targetLufs) changes.
-  useModuleParameters('limiter');
-
+  const { state } = useAllModuleParameters();
+  const [lastRenderedOverride, setLastRenderedOverride] = useState<Partial<MasteringOptions>>({});
   const [phase, setPhase] = useState<PreviewControlPhase>('idle');
   const [lastRenderedAt, setLastRenderedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [renderedOverride, setRenderedOverride] = useState<Partial<MasteringOptions>>({});
+
+  const summary = useMemo(
+    () => summarizePending(state, lastRenderedOverride, baseOptions),
+    [state, lastRenderedOverride, baseOptions],
+  );
 
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
@@ -501,37 +527,77 @@ function ProductionPreviewControl({
       },
       onSuccess: (previewPath) => {
         onRenderedRef.current(previewPath);
-        setRenderedOverride(requestedOverrideRef.current);
+        setLastRenderedOverride(requestedOverrideRef.current);
       },
-      onError: () => { /* state already set via onState */ },
+      onError: () => { /* state set via onState */ },
+      onNoop: () => setPhase('idle'),
     });
   }
   React.useEffect(() => () => controllerRef.current?.dispose(), []);
 
-  // Pending renderable changes vs the override that produced the current preview.
-  const build = buildPreviewOverride(dispatcher.getStagedPatch());
-  const current = build.optionsOverride;
-  const pendingKeys = Object.keys(current).filter(
-    (k) => (current as Record<string, unknown>)[k] !== (renderedOverride as Record<string, unknown>)[k],
-  );
-
-  const onUpdate = () => {
-    if (pendingKeys.length === 0) return;
-    requestedOverrideRef.current = current;
-    const options = mergeOptions(baseOptions, current);
-    controllerRef.current!.request({ sourceAudioPath, options, changedKeys: pendingKeys });
+  const onUpdate = useCallback(() => {
+    if (!summary.hasUnrenderedChanges) return;
+    const override = summary.renderOverride;
+    requestedOverrideRef.current = override;
+    const options = mergeOptions(baseOptions, override);
+    controllerRef.current!.request({
+      sourceAudioPath,
+      options,
+      changedKeys: Object.keys(override),
+      patchHash: summary.patchHash,
+      appliedOverrideKeys: Object.keys(override),
+      skippedParameterIds: summary.unsupportedPending.map((u) => `${u.moduleId}.${u.parameterId}`),
+      targetSummary: `${options.targetLufs.toFixed(1)} LUFS · ${options.targetTp.toFixed(1)} dBTP`,
+    });
     controllerRef.current!.flush();   // explicit click → render now
-  };
+  }, [summary, baseOptions, sourceAudioPath]);
 
+  const bridge: PreviewBridge = { summary, phase, lastRenderedAt, error, onUpdate };
+  return (
+    <PreviewBridgeContext.Provider value={bridge}>
+      {children}
+    </PreviewBridgeContext.Provider>
+  );
+}
+
+/** Preview strip — reads the bridge.  Rendered as ProductLayoutInner's slot. */
+function PreviewSlotFromBridge() {
+  const bridge = usePreviewBridge();
+  if (!bridge) return null;
   return (
     <LouiPreviewControl
-      pendingCount={pendingKeys.length}
-      phase={phase}
-      lastRenderedAt={lastRenderedAt}
-      error={error}
-      onUpdate={onUpdate}
+      pendingCount={bridge.summary.renderablePendingCount}
+      stagedOnlyCount={bridge.summary.unsupportedPendingCount}
+      phase={bridge.phase}
+      lastRenderedAt={bridge.lastRenderedAt}
+      error={bridge.error}
+      onUpdate={bridge.onUpdate}
     />
   );
+}
+
+/** Normalise store-shaped options into a shared-types MasteringOptions. */
+function normaliseOptions(o: {
+  style: MasteringOptions['style'];
+  targetLufs: number; targetTp: number; sampleRate: number; bitDepth: number;
+  applyAiCorrections: boolean;
+  limiterStrength?: MasteringOptions['limiterStrength'];
+  saturationAmount?: number | undefined;
+  stereoWidth?: number | undefined;
+  outputGainDb?: number | undefined;
+}): MasteringOptions {
+  return {
+    style: o.style,
+    targetLufs: o.targetLufs,
+    targetTp: o.targetTp,
+    sampleRate: o.sampleRate,
+    bitDepth: o.bitDepth,
+    applyAiCorrections: o.applyAiCorrections,
+    ...(o.limiterStrength !== undefined ? { limiterStrength: o.limiterStrength } : {}),
+    ...(o.saturationAmount !== undefined ? { saturationAmount: o.saturationAmount } : {}),
+    ...(o.stereoWidth !== undefined ? { stereoWidth: o.stereoWidth } : {}),
+    ...(o.outputGainDb !== undefined ? { outputGainDb: o.outputGainDb } : {}),
+  };
 }
 
 // ── Storybook / test path — session bypasses provider ────────────────────
@@ -587,6 +653,15 @@ function ProductPageProduction() {
   // Preview source override — set when a re-render swaps the preview file.
   const [previewSrcOverride, setPreviewSrcOverride] = useState<string | null>(null);
   const dispatcher = useMemo(() => new PresetPatchDispatcher(ALL_MODULE_PARAMETER_DEFS), []);
+
+  // Normalise the store options + seed the parameter state from the base
+  // master so renderable params start matching the preview (no false
+  // pending at load).
+  const normalisedBase = useMemo(() => normaliseOptions(baseOptions), [baseOptions]);
+  const initialParamState = useMemo(
+    () => initialStateFromBaseOptions(normalisedBase),
+    [normalisedBase],
+  );
 
   const basePreviewSrc = masteringResult?.previewPath ? toFileUrl(masteringResult.previewPath) : '';
   const previewSrc = previewSrcOverride ?? basePreviewSrc;
@@ -668,7 +743,7 @@ function ProductPageProduction() {
         mediaElement={meterReady ? audioRef.current : null}
         active={playing}
       >
-      <ModuleParameterStateProvider dispatcher={dispatcher}>
+      <ModuleParameterStateProvider dispatcher={dispatcher} initialState={initialParamState}>
         <ProductPageProductionInner
           isPlaying={playing}
           onPlayPause={togglePlay}
@@ -685,16 +760,9 @@ function ProductPageProduction() {
           onImport={onImport}
           onExport={onExport}
           onSettings={onSettings}
-          previewControl={
-            sourceAudioPath ? (
-              <ProductionPreviewControl
-                dispatcher={dispatcher}
-                sourceAudioPath={sourceAudioPath}
-                baseOptions={baseOptions}
-                onRendered={onPreviewRendered}
-              />
-            ) : null
-          }
+          {...(sourceAudioPath ? {
+            preview: { sourceAudioPath, baseOptions: normalisedBase, onRendered: onPreviewRendered },
+          } : {})}
         />
       </ModuleParameterStateProvider>
       </WasmAnalyzerProvider>
@@ -718,10 +786,14 @@ function ProductPageProductionInner(props: {
   onImport: () => void;
   onExport: () => void;
   onSettings: () => void;
-  previewControl?: React.ReactNode;
+  preview?: {
+    sourceAudioPath: string;
+    baseOptions: MasteringOptions;
+    onRendered: (previewPath: string) => void;
+  };
 }) {
   const session = useWasmAnalyzerSession();
-  return (
+  const layout = (
     <ProductLayoutInner
       session={session}
       active={props.isPlaying}
@@ -742,8 +814,18 @@ function ProductPageProductionInner(props: {
       onImport={props.onImport}
       onExport={props.onExport}
       onSettings={props.onSettings}
-      {...(props.previewControl ? { previewSlot: props.previewControl } : {})}
+      {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
     />
+  );
+  if (!props.preview) return layout;
+  return (
+    <ProductionPreviewProvider
+      sourceAudioPath={props.preview.sourceAudioPath}
+      baseOptions={props.preview.baseOptions}
+      onRendered={props.preview.onRendered}
+    >
+      {layout}
+    </ProductionPreviewProvider>
   );
 }
 

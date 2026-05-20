@@ -44,13 +44,16 @@ interface PreviewBuildResult {
 
 ## 3. Renderable mapping
 
+> **Updated in M3-P-NEXT-5D-1**: expanded 1 → 4 entries.  Now lives in
+> `engine-bridge/renderable-map.ts` (single source shared with the
+> pending-summary helper).
+
 ```ts
-const RENDERABLE_MAP: Record<string, keyof MasteringOptions> = {
-  'loudness-norm:targetLufs': 'targetLufs',
-  // 5D candidates (MasteringOptions already supports these):
-  //   'limiter:ceilingDb'         → 'targetTp'
-  //   'stereo-imager:width'       → 'stereoWidth'
-  //   'gain-staging:targetPeakDb' → 'outputGainDb'
+const RENDERABLE_MAP_LOOKUP: Record<string, keyof MasteringOptions> = {
+  'loudness-norm:targetLufs':  'targetLufs',
+  'limiter:ceilingDb':         'targetTp',      // 5D-1
+  'stereo-imager:width':       'stereoWidth',   // 5D-1 (value already /100)
+  'gain-staging:targetPeakDb': 'outputGainDb',  // 5D-1
 };
 ```
 

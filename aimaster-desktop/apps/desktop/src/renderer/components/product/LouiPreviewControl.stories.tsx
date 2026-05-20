@@ -26,14 +26,17 @@ const BASE_OPTIONS: MasteringOptions = {
 };
 
 interface HostArgs {
-  scenario: 'no-changes' | 'pending' | 'render-success' | 'render-fail' | 'stale' | 'rapid';
+  scenario: 'no-changes' | 'pending' | 'render-success' | 'render-fail' | 'stale' | 'rapid' | 'mixed';
 }
 
 function Host({ scenario }: HostArgs) {
   const [phase, setPhase] = React.useState<PreviewControlPhase>('idle');
   const [lastRenderedAt, setLastRenderedAt] = React.useState<number | null>(null);
   const [error, setError] = React.useState<string | null>(null);
-  const [pendingCount, setPendingCount] = React.useState(scenario === 'no-changes' ? 0 : 1);
+  const [pendingCount, setPendingCount] = React.useState(
+    scenario === 'no-changes' ? 0 : scenario === 'mixed' ? 3 : 1,
+  );
+  const stagedOnlyCount = scenario === 'mixed' ? 2 : 0;
   const [renderedPath, setRenderedPath] = React.useState<string | null>(null);
   const [log, setLog] = React.useState<string[]>([]);
 
@@ -78,6 +81,11 @@ function Host({ scenario }: HostArgs) {
       case 'no-changes':
         // nothing to render
         break;
+      case 'mixed':
+        // 3 renderable + 2 staged-only changes; render applies the 3.
+        fire({ targetLufs: -10, targetTp: -0.8, stereoWidth: 1.3 }, ['targetLufs', 'targetTp', 'stereoWidth']);
+        setLog((l) => [...l, 'fired 3 renderable (targetLufs/targetTp/stereoWidth); 2 staged-only skipped']);
+        break;
       case 'stale':
         // Fire two requests rapidly — only the 2nd response should win.
         fire({ targetLufs: -10 }, ['targetLufs']);
@@ -108,6 +116,7 @@ function Host({ scenario }: HostArgs) {
     }}>
       <LouiPreviewControl
         pendingCount={pendingCount}
+        stagedOnlyCount={stagedOnlyCount}
         phase={phase}
         lastRenderedAt={lastRenderedAt}
         error={error}
@@ -167,7 +176,7 @@ const meta: Meta<typeof Host> = {
   argTypes: {
     scenario: {
       control: { type: 'select' },
-      options: ['no-changes', 'pending', 'render-success', 'render-fail', 'stale', 'rapid'],
+      options: ['no-changes', 'pending', 'render-success', 'render-fail', 'stale', 'rapid', 'mixed'],
     },
   },
   args: { scenario: 'pending' },
@@ -181,3 +190,4 @@ export const RenderingSuccess: Story = { args: { scenario: 'render-success' } };
 export const RenderFailed:     Story = { args: { scenario: 'render-fail' } };
 export const StaleResponseIgnored: Story = { args: { scenario: 'stale' } };
 export const RapidDebounced:   Story = { args: { scenario: 'rapid' } };
+export const MixedRenderableAndStaged: Story = { args: { scenario: 'mixed' } };

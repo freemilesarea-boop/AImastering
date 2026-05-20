@@ -60,6 +60,7 @@ export {
 export {
   ModuleParameterStateProvider,
   useModuleParameters,
+  useAllModuleParameters,
   useEngineCommandLog,
   useEngineDispatchLog,
   hasParameterStateProvider,
