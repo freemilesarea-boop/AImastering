@@ -36,10 +36,14 @@ import {
   ModuleParameterStateProvider,
   useModuleParameters,
   useAllModuleParameters,
+  useApplyPreset,
   ALL_MODULE_PARAMETER_DEFS,
   type ModuleId,
   type ParameterValue,
 } from '../audio/parameters/index.js';
+import { getPreset } from '../audio/presets/loui-presets.js';
+import { presetApplyPlan } from '../audio/presets/preset-to-state.js';
+import { setLastUsedPreset } from '../audio/presets/preset-storage.js';
 import {
   PresetPatchDispatcher,
   PreviewRenderController,
@@ -1078,6 +1082,20 @@ function ProductPageProductionInner(props: {
   // Realtime mastering preview — flag-gated + readiness-gated.  No-op
   // (and renders nothing) when the flag is OFF, which is the default.
   const realtime = useRealtimeMasteringGraph(session, { sampleRate: 48000, channels: 2 });
+
+  // Preset selection → apply the preset's full DSP tuning to the central
+  // parameter state.  This updates the realtime preview config (no graph
+  // rebuild — the same worklet node receives a new config) and stages the
+  // renderable params for export, keeping preview/export consistent.
+  const applyPreset = useApplyPreset();
+  const handlePreset = useCallback((id: string) => {
+    props.onPresetChange(id);
+    const preset = getPreset(id);
+    if (!preset) return;
+    applyPreset(presetApplyPlan(preset), { presetId: id, presetName: preset.displayName });
+    setLastUsedPreset(id);
+  }, [applyPreset, props]);
+
   const layout = (
     <ProductLayoutInner
       session={session}
@@ -1087,7 +1105,7 @@ function ProductPageProductionInner(props: {
       targetLufs={props.targetLufs}
       targetTp={props.targetTp}
       {...(props.presetId ? { presetId: props.presetId } : {})}
-      onPresetChange={props.onPresetChange}
+      onPresetChange={handlePreset}
       {...(props.selectedModule ? { selectedModule: props.selectedModule } : {})}
       onSelectModule={props.onSelectModule}
       isPlaying={props.isPlaying}

@@ -61,6 +61,7 @@ export {
   ModuleParameterStateProvider,
   useModuleParameters,
   useAllModuleParameters,
+  useApplyPreset,
   useEngineCommandLog,
   useEngineDispatchLog,
   hasParameterStateProvider,

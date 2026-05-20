@@ -11,6 +11,14 @@
 
 import React from 'react';
 import { surface, text, typography, radius, space, meter } from '../../theme/loui-theme.js';
+import { LOUI_PRESETS, isStreamingSafe, type LouiPreset } from '../../audio/presets/loui-presets.js';
+
+const MINUS = '−';
+function lufsLabel(v: number): string { return `${MINUS}${Math.abs(v).toFixed(0)} LUFS`; }
+function tpLabel(v: number): string { return `${MINUS}${Math.abs(v).toFixed(1)} dBTP`; }
+const TONE_LABEL: Record<LouiPreset['tonalBalance'], string> = {
+  neutral: 'Neutral', warm: 'Warm', bright: 'Bright', punchy: 'Punchy',
+};
 
 export interface PresetTarget {
   id: string;
@@ -21,18 +29,35 @@ export interface PresetTarget {
   truePeak: string;
   /** Optional tone hint (e.g. "Bright" / "Warm") shown under the label. */
   tone?: string;
+  /** Tuned for AI-generated music — shows an "AI" badge. */
+  aiOptimized?: boolean;
+  /** Loudness won't be heavily turned down by platform normalization. */
+  streamingSafe?: boolean;
+  /** One-line description (chip title / tooltip). */
+  description?: string;
 }
 
-/** Built-in target list — copy is editorial, UI-only. */
-export const LOUI_PRESET_TARGETS: PresetTarget[] = [
-  { id: 'streaming-loud',  label: 'Streaming Loud',  lufs: '−14 LUFS', truePeak: '−1.0 dBTP', tone: 'Balanced' },
-  { id: 'streaming-warm',  label: 'Streaming Warm',  lufs: '−16 LUFS', truePeak: '−1.0 dBTP', tone: 'Warm' },
-  { id: 'youtube-music',   label: 'YouTube Music',   lufs: '−14 LUFS', truePeak: '−1.0 dBTP' },
-  { id: 'spotify',         label: 'Spotify',         lufs: '−14 LUFS', truePeak: '−1.0 dBTP' },
-  { id: 'apple-music',     label: 'Apple Music',     lufs: '−16 LUFS', truePeak: '−1.0 dBTP' },
-  { id: 'club',            label: 'Club / Loud',     lufs: '−9 LUFS',  truePeak: '−0.8 dBTP', tone: 'Pumped' },
-  { id: 'ai-clean',        label: 'AI Clean',        lufs: '−14 LUFS', truePeak: '−1.5 dBTP', tone: 'Stable' },
-];
+/** Map the official Loui preset lineup → compact header targets. */
+export function presetTargetsFromLineup(presets: readonly LouiPreset[] = LOUI_PRESETS): PresetTarget[] {
+  return presets.map((p) => {
+    const lim = p.tuning.limiter?.parameters ?? {};
+    const lufs = typeof lim['targetLufs'] === 'number' ? (lim['targetLufs'] as number) : -14;
+    const tp = typeof lim['ceilingDbtp'] === 'number' ? (lim['ceilingDbtp'] as number) : -1;
+    return {
+      id: p.id,
+      label: p.displayName,
+      lufs: lufsLabel(lufs),
+      truePeak: tpLabel(tp),
+      tone: TONE_LABEL[p.tonalBalance],
+      aiOptimized: p.aiOptimized,
+      streamingSafe: isStreamingSafe(p),
+      description: p.description,
+    };
+  });
+}
+
+/** Built-in target list — sourced from the official preset lineup. */
+export const LOUI_PRESET_TARGETS: PresetTarget[] = presetTargetsFromLineup();
 
 export interface LouiPresetHeaderProps {
   /** Active preset id. */
@@ -41,6 +66,25 @@ export interface LouiPresetHeaderProps {
   onTargetChange?: (id: string) => void;
   /** Override the preset list (e.g. for tests / storybook). */
   presets?: PresetTarget[];
+}
+
+function Badge({ label, color }: { label: string; color: string }) {
+  return (
+    <span style={{
+      fontFamily: typography.family.sans,
+      fontSize: 8,
+      fontWeight: typography.weight.semi,
+      letterSpacing: '0.08em',
+      lineHeight: 1,
+      padding: '2px 4px',
+      borderRadius: 4,
+      color,
+      border: `1px solid ${color}`,
+      opacity: 0.85,
+    }}>
+      {label}
+    </span>
+  );
 }
 
 function PresetChip({
@@ -58,6 +102,7 @@ function PresetChip({
     <button
       type="button"
       onClick={onClick}
+      title={preset.description ?? preset.label}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -111,6 +156,12 @@ function PresetChip({
         }}>
           {preset.tone}
         </span>
+      )}
+      {(preset.aiOptimized || preset.streamingSafe) && (
+        <div style={{ position: 'absolute', bottom: 6, right: 6, display: 'flex', gap: 4 }}>
+          {preset.aiOptimized && <Badge label="AI" color={accent} />}
+          {preset.streamingSafe && <Badge label="SAFE" color={meter.safe.foreground} />}
+        </div>
       )}
     </button>
   );

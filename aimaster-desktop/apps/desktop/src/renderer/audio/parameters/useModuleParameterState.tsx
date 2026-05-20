@@ -41,7 +41,9 @@ import {
   makeSetParamCommand,
   type CommandSource,
   type EngineCommand,
+  type LoadPresetCommand,
 } from './engine-command.js';
+import type { PresetApplyPlan } from '../presets/preset-to-state.js';
 
 // ── Context shape ────────────────────────────────────────────────────────
 
@@ -57,6 +59,12 @@ interface ParameterStateContextValue {
   setParam: (moduleId: ModuleId, parameterId: string, candidate: unknown, source?: CommandSource) => void;
   setBypass: (moduleId: ModuleId, bypass: boolean, source?: CommandSource) => void;
   resetModule: (moduleId: ModuleId, source?: CommandSource) => void;
+  /**
+   * Apply a whole preset's tuning in one batch: validates + clamps every
+   * parameter, merges state in a single update, and dispatches the wired
+   * commands so the export path stays consistent with the preview.
+   */
+  applyPreset: (plan: PresetApplyPlan, meta?: { presetId?: string; presetName?: string; source?: CommandSource }) => void;
   clearLog: () => void;
 }
 
@@ -170,14 +178,67 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
     dispatch(cmd);
   }, [appendLog, defs, dispatch]);
 
+  const applyPreset = useCallback((
+    plan: PresetApplyPlan,
+    meta: { presetId?: string; presetName?: string; source?: CommandSource } = {},
+  ) => {
+    const source: CommandSource = meta.source ?? 'preset';
+
+    // Log a LOAD_PRESET marker so the command log shows the ripple origin.
+    if (meta.presetId) {
+      const loadCmd: LoadPresetCommand = {
+        kind: 'LOAD_PRESET',
+        timestamp: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+        source,
+        presetId: meta.presetId,
+        ...(meta.presetName ? { presetName: meta.presetName } : {}),
+      };
+      appendLog(loadCmd);
+    }
+
+    // Pre-build + validate every command (pure — no state writes yet).
+    const paramCmds = plan.parameters.map((e) => ({
+      e,
+      cmd: makeSetParamCommand({ defs, moduleId: e.moduleId, parameterId: e.parameterId, candidate: e.value, source }),
+    }));
+    const bypassCmds = plan.bypasses.map((b) =>
+      makeSetBypassCommand({ moduleId: b.moduleId, bypass: b.bypass, source }),
+    );
+
+    for (const { cmd } of paramCmds) appendLog(cmd);
+    for (const cmd of bypassCmds) appendLog(cmd);
+
+    // Single merged state update — accepted (ok/clamped) params + bypasses.
+    setState((s) => {
+      const next: AllModulesParameterState = { ...s };
+      for (const { e, cmd } of paramCmds) {
+        if (cmd.validation.status === 'rejected') continue;
+        next[e.moduleId] = {
+          ...next[e.moduleId],
+          parameters: { ...next[e.moduleId].parameters, [e.parameterId]: cmd.value as ParameterValue },
+        };
+      }
+      for (const cmd of bypassCmds) {
+        next[cmd.moduleId] = { ...next[cmd.moduleId], bypass: cmd.bypass };
+      }
+      return next;
+    });
+
+    // Dispatch accepted commands to the engine (export staging).
+    for (const { cmd } of paramCmds) {
+      if (cmd.validation.status !== 'rejected') dispatch(cmd);
+    }
+    for (const cmd of bypassCmds) dispatch(cmd);
+  }, [appendLog, defs, dispatch]);
+
   const clearLog = useCallback(() => { setLog([]); setDispatchLog([]); }, []);
 
   const dispatcherName = dispatcherRef.current.name;
 
   const value: ParameterStateContextValue = useMemo(() => ({
     state, defs, log, dispatchLog, dispatcherName,
-    setParam, setBypass, resetModule, clearLog,
-  }), [state, defs, log, dispatchLog, dispatcherName, setParam, setBypass, resetModule, clearLog]);
+    setParam, setBypass, resetModule, applyPreset, clearLog,
+  }), [state, defs, log, dispatchLog, dispatcherName, setParam, setBypass, resetModule, applyPreset, clearLog]);
 
   return (
     <ParameterStateContext.Provider value={value}>
@@ -309,6 +370,15 @@ export function useAllModuleParameters(): {
 } {
   const ctx = useParameterStateContext();
   return { state: ctx.state, defs: ctx.defs };
+}
+
+/**
+ * Apply a Loui preset's tuning to the parameter state in one batch.
+ * Returns a stable callback; pass the preset's apply plan + metadata.
+ * Throws if used outside `<ModuleParameterStateProvider>`.
+ */
+export function useApplyPreset(): ParameterStateContextValue['applyPreset'] {
+  return useParameterStateContext().applyPreset;
 }
 
 /** Render a command as a single-line string.  Re-exported for ergonomics. */

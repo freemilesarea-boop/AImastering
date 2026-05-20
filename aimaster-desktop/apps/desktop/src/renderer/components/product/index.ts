@@ -8,8 +8,11 @@
 export { LouiTopBar } from './LouiTopBar.js';
 export type { LouiTopBarProps } from './LouiTopBar.js';
 
-export { LouiPresetHeader, LOUI_PRESET_TARGETS } from './LouiPresetHeader.js';
+export { LouiPresetHeader, LOUI_PRESET_TARGETS, presetTargetsFromLineup } from './LouiPresetHeader.js';
 export type { LouiPresetHeaderProps, PresetTarget } from './LouiPresetHeader.js';
+
+export { LouiPresetBrowser } from './LouiPresetBrowser.js';
+export type { LouiPresetBrowserProps } from './LouiPresetBrowser.js';
 
 export { LouiAnalyzerCanvas } from './LouiAnalyzerCanvas.js';
 export type { LouiAnalyzerCanvasProps } from './LouiAnalyzerCanvas.js';
