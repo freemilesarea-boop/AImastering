@@ -10,6 +10,7 @@ import ProductPage  from './pages/ProductPage.js';
 import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { isProductLayoutEnabled } from './audio/product-layout-flag.js';
+import { ProductPageErrorBoundary } from './components/ProductPageErrorBoundary.js';
 // Dev-only: analyzer streaming smoke route.  Mounted when URL contains
 // `?dev=analyzer-stream`.  No production navigation entry.
 import { DevAnalyzerStreamPage } from './pages/DevAnalyzerStreamPage.js';
@@ -224,16 +225,25 @@ function AppInner() {
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('dev') === 'analyzer-stream';
 
-  // Product-layout feature flag: when on, the `result` slot renders the
-  // new Ozone-style ProductPage instead of the legacy ResultPage.  Flag
-  // off (default) keeps existing behaviour byte-for-byte.
+  // Product-layout feature flag (M3-P-NEXT-6): ProductPage is the DEFAULT
+  // result screen.  The legacy ResultPage is the fallback — restored via
+  // the runtime / env flag, or automatically when ProductPage crashes
+  // (the error boundary renders ResultPage in its place).
   const productLayout = isProductLayoutEnabled();
+
+  const resultSlot = productLayout
+    ? (
+        <ProductPageErrorBoundary fallback={<ResultPage />}>
+          <ProductPage />
+        </ProductPageErrorBoundary>
+      )
+    : <ResultPage />;
 
   const pages: Record<string, React.ReactNode> = {
     home:      <HomePage />,
     analysis:  <AnalysisPage />,
     mastering: <MasteringPage />,
-    result:    productLayout ? <ProductPage /> : <ResultPage />,
+    result:    resultSlot,
     qc:        <QCPage />,
     settings:  <SettingsPage />,
   };
