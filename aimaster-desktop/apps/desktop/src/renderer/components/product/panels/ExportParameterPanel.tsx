@@ -129,6 +129,20 @@ function ChipRow<T extends string>({
   );
 }
 
+/** Re-master & Export descriptor (M3-P-NEXT-5D-2-a). */
+export interface ReMasterExportInfo {
+  /** Renderable changes that WILL be applied to the export. */
+  appliedKeys: string[];
+  /** UI parameter ids staged but NOT applied (no MasteringOptions mapping). */
+  skippedParameterIds: string[];
+  /** Renderable changes not yet heard in the preview (warning). */
+  hasUnpreviewedChanges: boolean;
+  phase: 'idle' | 'exporting' | 'done' | 'error';
+  error?: string | null;
+  lastExportPath?: string | null;
+  onReMasterExport: () => void;
+}
+
 export interface ExportParameterPanelProps extends ControlledPanelProps {
   /** Optional — show the target summary from external state. */
   targetLufs?: number;
@@ -137,6 +151,8 @@ export interface ExportParameterPanelProps extends ControlledPanelProps {
   showExportButton?: boolean;
   /** Click → export action.  Pure UI today. */
   onExport?:   () => void;
+  /** Re-master & Export wiring (production path only). */
+  reMasterExport?: ReMasterExportInfo;
 }
 
 export function ExportParameterPanel(props: ExportParameterPanelProps = {}) {
@@ -232,7 +248,9 @@ export function ExportParameterPanel(props: ExportParameterPanelProps = {}) {
         </span>
       </LouiSectionCard>
 
-      {props.showExportButton ? (
+      {props.reMasterExport ? (
+        <ReMasterExportSection info={props.reMasterExport} />
+      ) : props.showExportButton ? (
         <button
           type="button"
           onClick={props.onExport}
@@ -268,5 +286,110 @@ export function ExportParameterPanel(props: ExportParameterPanelProps = {}) {
         </span>
       )}
     </>
+  );
+}
+
+// ── Re-master & Export section (M3-P-NEXT-5D-2-a) ─────────────────────────
+
+function ReMasterExportSection({ info }: { info: ReMasterExportInfo }) {
+  const exporting = info.phase === 'exporting';
+  const appliedCount = info.appliedKeys.length;
+  const skippedCount = info.skippedParameterIds.length;
+  const hasChanges = appliedCount > 0;
+
+  return (
+    <LouiSectionCard title="Re-master & Export">
+      {/* Summary line */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: space['2'] }}>
+        <LouiValueBadge label="Apply" status={hasChanges ? 'accent' : 'neutral'}>
+          {appliedCount} change{appliedCount === 1 ? '' : 's'}
+        </LouiValueBadge>
+        {skippedCount > 0 && (
+          <LouiValueBadge label="Skip" status="neutral">
+            {skippedCount} staged-only
+          </LouiValueBadge>
+        )}
+      </div>
+
+      {/* Applied keys */}
+      {hasChanges && (
+        <span style={{
+          fontFamily: typography.family.mono,
+          fontSize: typography.size.xs,
+          color: text.tertiary,
+          lineHeight: 1.5,
+        }}>
+          Applies: {info.appliedKeys.join(', ')}
+        </span>
+      )}
+
+      {/* Staged-only notice */}
+      {skippedCount > 0 && (
+        <span style={{
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          color: text.muted,
+          lineHeight: 1.4,
+        }}>
+          {skippedCount} staged-only change{skippedCount === 1 ? '' : 's'} not applied to this export
+          (no render mapping yet).
+        </span>
+      )}
+
+      {/* Unpreviewed warning */}
+      {info.hasUnpreviewedChanges && hasChanges && (
+        <span style={{
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          color: meter.warn.foreground,
+          lineHeight: 1.4,
+        }}>
+          ⚠ This export includes changes not previewed yet.
+        </span>
+      )}
+
+      {/* Status */}
+      {info.phase === 'done' && (
+        <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: meter.safe.foreground }}>
+          ✓ Exported{info.lastExportPath ? ` → ${info.lastExportPath}` : ''}
+        </span>
+      )}
+      {info.phase === 'error' && (
+        <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: meter.danger.foreground }}>
+          ✗ Export failed{info.error ? ` · ${info.error}` : ''}
+        </span>
+      )}
+
+      {/* Action */}
+      <button
+        type="button"
+        onClick={info.onReMasterExport}
+        disabled={exporting || !hasChanges}
+        style={{
+          height: 36,
+          paddingInline: space['4'],
+          background: (exporting || !hasChanges) ? 'transparent' : meter.accent.foreground,
+          color: (exporting || !hasChanges) ? text.disabled : surface.background,
+          border: (exporting || !hasChanges) ? `1px solid ${surface.border}` : 'none',
+          borderRadius: radius.chip,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.sm,
+          fontWeight: typography.weight.semi,
+          cursor: (exporting || !hasChanges) ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {exporting ? 'Re-mastering…' : hasChanges ? 'Re-master & Export' : 'No changes to export'}
+      </button>
+      <span style={{
+        fontFamily: typography.family.sans,
+        fontSize: typography.size.xs,
+        color: text.muted,
+        lineHeight: 1.4,
+      }}>
+        Re-renders the master with your changes via the existing pipeline,
+        then saves a WAV.  "Export As-is" (unchanged master) lands in
+        M3-P-NEXT-5D-2-b.
+      </span>
+    </LouiSectionCard>
   );
 }

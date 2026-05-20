@@ -147,6 +147,37 @@ export function summarizePending(
   };
 }
 
+// ── Export override (M3-P-NEXT-5D-2-a) ────────────────────────────────────
+
+export interface ExportOverrideResult {
+  /** MasteringOptions override to merge before re-mastering for export. */
+  optionsOverride: Partial<MasteringOptions>;
+  /** MasteringOptions keys applied (mirrors the preview render). */
+  appliedOverrideKeys: string[];
+  /** UI parameter ids staged but NOT applied to the export (no mapping). */
+  skippedParameterIds: string[];
+  /** Deterministic hash of the override (shared with the preview path). */
+  patchHash: string;
+  /** Whether there's anything to apply (else "Export As-is" is equivalent). */
+  hasOverride: boolean;
+}
+
+/**
+ * Build the export override from a pending summary.  Reuses the SAME
+ * `renderOverride` the preview render uses — so "what you preview is what
+ * you export" holds by construction.
+ */
+export function buildExportOverride(summary: PendingSummary): ExportOverrideResult {
+  const optionsOverride = summary.renderOverride;
+  return {
+    optionsOverride,
+    appliedOverrideKeys: Object.keys(optionsOverride),
+    skippedParameterIds: summary.unsupportedPending.map((u) => `${u.moduleId}.${u.parameterId}`),
+    patchHash: summary.patchHash,
+    hasOverride: Object.keys(optionsOverride).length > 0,
+  };
+}
+
 /**
  * Seed an all-modules parameter state from the base master options, so
  * the renderable params start matching the preview (no false pending at

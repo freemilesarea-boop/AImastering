@@ -45,6 +45,8 @@ import {
   mergeOptions,
   summarizePending,
   initialStateFromBaseOptions,
+  buildExportOverride,
+  hashOverride,
   type PreviewRenderState,
   type PendingSummary,
 } from '../audio/engine-bridge/index.js';
@@ -442,6 +444,10 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
   const tLufs = limiterApi.get('targetLufs');
   const tTp   = limiterApi.get('ceilingDbtp');
 
+  // Re-master & Export wiring (production path only).
+  const bridge = usePreviewBridge();
+  const exportInfo = bridge ? buildExportOverride(bridge.summary) : null;
+
   const common = {
     state: stateRecord,
     bypass: api.bypass,
@@ -461,6 +467,17 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
         {...common}
         targetLufs={typeof tLufs === 'number' ? tLufs : -14}
         targetTp={typeof tTp   === 'number' ? tTp   : -1}
+        {...(bridge && exportInfo ? {
+          reMasterExport: {
+            appliedKeys: exportInfo.appliedOverrideKeys,
+            skippedParameterIds: exportInfo.skippedParameterIds,
+            hasUnpreviewedChanges: bridge.hasUnpreviewedChanges,
+            phase: bridge.exportPhase,
+            error: bridge.exportError,
+            lastExportPath: bridge.lastExportPath,
+            onReMasterExport: bridge.onReMasterExport,
+          },
+        } : {})}
       />
     );
   }
@@ -473,12 +490,22 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
 // render state.  A small context provides it.  Mounted only in the
 // production path; storybook consumers see `null` and show no pending.
 
+type ExportPhase = 'idle' | 'exporting' | 'done' | 'error';
+
 interface PreviewBridge {
   summary: PendingSummary;
   phase: PreviewControlPhase;
   lastRenderedAt: number | null;
   error: string | null;
   onUpdate: () => void;
+  // Export (M3-P-NEXT-5D-2-a)
+  exportPhase: ExportPhase;
+  exportError: string | null;
+  lastExportPath: string | null;
+  /** Renderable changes not yet reflected in the preview (export-includes warning). */
+  hasUnpreviewedChanges: boolean;
+  /** Re-master with the current render override, then save via dialog. */
+  onReMasterExport: () => void;
 }
 
 const PreviewBridgeContext = React.createContext<PreviewBridge | null>(null);
@@ -502,11 +529,18 @@ function ProductionPreviewProvider({
   const [phase, setPhase] = useState<PreviewControlPhase>('idle');
   const [lastRenderedAt, setLastRenderedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Export state (M3-P-NEXT-5D-2-a)
+  const [exportPhase, setExportPhase] = useState<ExportPhase>('idle');
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [lastExportPath, setLastExportPath] = useState<string | null>(null);
 
   const summary = useMemo(
     () => summarizePending(state, lastRenderedOverride, baseOptions),
     [state, lastRenderedOverride, baseOptions],
   );
+
+  // Renderable changes the user hasn't previewed yet (export-includes warning).
+  const hasUnpreviewedChanges = summary.patchHash !== hashOverride(lastRenderedOverride);
 
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
@@ -552,7 +586,42 @@ function ProductionPreviewProvider({
     controllerRef.current!.flush();   // explicit click → render now
   }, [summary, baseOptions, sourceAudioPath]);
 
-  const bridge: PreviewBridge = { summary, phase, lastRenderedAt, error, onUpdate };
+  // Re-master & Export — reuses the EXISTING audio:master + file:save-wav
+  // channels.  No new IPC, no Python change.  The export override is the
+  // SAME `summary.renderOverride` the preview uses (consistency by
+  // construction).
+  const onReMasterExport = useCallback(() => {
+    const { optionsOverride } = buildExportOverride(summary);
+    const options = mergeOptions(baseOptions, optionsOverride);
+    const api = window.electronAPI;
+    if (!api) { setExportPhase('error'); setExportError('electronAPI unavailable'); return; }
+    setExportPhase('exporting');
+    setExportError(null);
+    void (async () => {
+      try {
+        const result = await api.invoke('audio:master', sourceAudioPath, '', options) as
+          { outputPath?: string } | undefined;
+        const outputPath = result?.outputPath;
+        if (!outputPath) { setExportPhase('error'); setExportError('master produced no output'); return; }
+        const saved = await api.invoke('file:save-wav', outputPath) as string | null;
+        if (saved) {
+          setLastExportPath(saved);
+          setExportPhase('done');
+        } else {
+          // User cancelled the save dialog — return to idle, keep prior state.
+          setExportPhase('idle');
+        }
+      } catch (err) {
+        setExportPhase('error');
+        setExportError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+  }, [summary, baseOptions, sourceAudioPath]);
+
+  const bridge: PreviewBridge = {
+    summary, phase, lastRenderedAt, error, onUpdate,
+    exportPhase, exportError, lastExportPath, hasUnpreviewedChanges, onReMasterExport,
+  };
   return (
     <PreviewBridgeContext.Provider value={bridge}>
       {children}

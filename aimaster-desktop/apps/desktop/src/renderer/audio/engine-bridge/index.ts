@@ -37,12 +37,13 @@ export {
 } from './engine-preset-builder.js';
 export type { PreviewBuildResult, RenderableFragment } from './engine-preset-builder.js';
 
-// Pending summary (M3-P-NEXT-5D-1)
-export { summarizePending, initialStateFromBaseOptions } from './pending-summary.js';
+// Pending summary (M3-P-NEXT-5D-1) + export override (M3-P-NEXT-5D-2-a)
+export { summarizePending, initialStateFromBaseOptions, buildExportOverride } from './pending-summary.js';
 export type {
   PendingSummary,
   PendingItem,
   RenderablePendingItem,
+  ExportOverrideResult,
 } from './pending-summary.js';
 
 export {
