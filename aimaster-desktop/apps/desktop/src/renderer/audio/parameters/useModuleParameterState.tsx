@@ -21,8 +21,10 @@
 // arrives, the provider gains an `engineDispatcher` prop that
 // forwards each command to the real engine bridge.
 
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import { ALL_MODULE_PARAMETER_DEFS } from './module-parameter-definitions.js';
+import type { DispatchResult, EngineDispatcher } from '../engine-bridge/engine-dispatcher.js';
+import { NOOP_DISPATCHER } from '../engine-bridge/noop-engine-dispatcher.js';
 import {
   defaultAllModulesState,
   defaultStateForModule,
@@ -48,6 +50,10 @@ interface ParameterStateContextValue {
   defs: AllModulesDefinitions;
   /** Full append-only command log.  Capped at `logCapacity` entries. */
   log: readonly EngineCommand[];
+  /** Append-only dispatch-result log.  Capped at `logCapacity` entries. */
+  dispatchLog: readonly DispatchResult[];
+  /** Name of the active engine dispatcher (for dev UI). */
+  dispatcherName: string;
   setParam: (moduleId: ModuleId, parameterId: string, candidate: unknown, source?: CommandSource) => void;
   setBypass: (moduleId: ModuleId, bypass: boolean, source?: CommandSource) => void;
   resetModule: (moduleId: ModuleId, source?: CommandSource) => void;
@@ -67,6 +73,13 @@ export interface ModuleParameterStateProviderProps {
   logCapacity?: number;
   /** Optional sink the provider mirrors every command into (dev tooling). */
   onCommand?: (cmd: EngineCommand) => void;
+  /**
+   * Engine dispatcher — receives every accepted (ok / clamped) command.
+   * Defaults to the no-op dispatcher (no engine connected).  Rejected
+   * commands are NEVER dispatched.  The result of each dispatch is
+   * appended to `dispatchLog`.
+   */
+  dispatcher?: EngineDispatcher;
   children: React.ReactNode;
 }
 
@@ -76,7 +89,13 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
     () => props.initialState ?? defaultAllModulesState(defs),
   );
   const [log, setLog] = useState<EngineCommand[]>([]);
+  const [dispatchLog, setDispatchLog] = useState<DispatchResult[]>([]);
   const capacity = props.logCapacity ?? 256;
+
+  // Keep the dispatcher in a ref so callbacks stay stable even if the
+  // caller passes a freshly-constructed dispatcher each render.
+  const dispatcherRef = useRef<EngineDispatcher>(props.dispatcher ?? NOOP_DISPATCHER);
+  dispatcherRef.current = props.dispatcher ?? NOOP_DISPATCHER;
 
   const appendLog = useCallback((cmd: EngineCommand) => {
     setLog((prev) => {
@@ -87,6 +106,31 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
     props.onCommand?.(cmd);
   }, [capacity, props]);
 
+  const appendDispatch = useCallback((result: DispatchResult) => {
+    setDispatchLog((prev) => {
+      const next = prev.length >= capacity ? prev.slice(prev.length - capacity + 1) : prev.slice();
+      next.push(result);
+      return next;
+    });
+  }, [capacity]);
+
+  // Dispatch an accepted command and record the result.  Never throws —
+  // a dispatcher that misbehaves is caught and logged as `failed`.
+  const dispatch = useCallback((cmd: EngineCommand) => {
+    let result: DispatchResult;
+    try {
+      result = dispatcherRef.current.dispatch(cmd);
+    } catch (err) {
+      result = {
+        status: 'failed',
+        command: cmd,
+        timestamp: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+        note: `dispatcher threw: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    appendDispatch(result);
+  }, [appendDispatch]);
+
   const setParam = useCallback((
     moduleId: ModuleId,
     parameterId: string,
@@ -95,8 +139,9 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
   ) => {
     const cmd = makeSetParamCommand({ defs, moduleId, parameterId, candidate, source });
     appendLog(cmd);
-    // Skip state mutation when the validator rejected the value.
+    // Rejected commands: keep UI state, never dispatch.
     if (cmd.validation.status === 'rejected') return;
+    // Optimistic UI update (no rollback on engine failure in this phase).
     setState((s) => ({
       ...s,
       [moduleId]: {
@@ -104,26 +149,35 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
         parameters: { ...s[moduleId].parameters, [parameterId]: cmd.value as ParameterValue },
       },
     }));
-  }, [appendLog, defs]);
+    // Dispatch ok / clamped commands to the engine.
+    dispatch(cmd);
+  }, [appendLog, defs, dispatch]);
 
   const setBypass = useCallback((moduleId: ModuleId, bypass: boolean, source: CommandSource = 'user') => {
-    appendLog(makeSetBypassCommand({ moduleId, bypass, source }));
+    const cmd = makeSetBypassCommand({ moduleId, bypass, source });
+    appendLog(cmd);
     setState((s) => ({
       ...s,
       [moduleId]: { ...s[moduleId], bypass },
     }));
-  }, [appendLog]);
+    dispatch(cmd);
+  }, [appendLog, dispatch]);
 
   const resetModule = useCallback((moduleId: ModuleId, source: CommandSource = 'reset') => {
-    appendLog(makeResetModuleCommand({ moduleId, source }));
+    const cmd = makeResetModuleCommand({ moduleId, source });
+    appendLog(cmd);
     setState((s) => ({ ...s, [moduleId]: defaultStateForModule(defs[moduleId]) }));
-  }, [appendLog, defs]);
+    dispatch(cmd);
+  }, [appendLog, defs, dispatch]);
 
-  const clearLog = useCallback(() => setLog([]), []);
+  const clearLog = useCallback(() => { setLog([]); setDispatchLog([]); }, []);
+
+  const dispatcherName = dispatcherRef.current.name;
 
   const value: ParameterStateContextValue = useMemo(() => ({
-    state, defs, log, setParam, setBypass, resetModule, clearLog,
-  }), [state, defs, log, setParam, setBypass, resetModule, clearLog]);
+    state, defs, log, dispatchLog, dispatcherName,
+    setParam, setBypass, resetModule, clearLog,
+  }), [state, defs, log, dispatchLog, dispatcherName, setParam, setBypass, resetModule, clearLog]);
 
   return (
     <ParameterStateContext.Provider value={value}>
@@ -232,6 +286,16 @@ export function useEngineCommandLog(): {
 } {
   const ctx = useParameterStateContext();
   return { log: ctx.log, clear: ctx.clearLog };
+}
+
+/** Subscribe to the engine dispatch-result log + active dispatcher name. */
+export function useEngineDispatchLog(): {
+  dispatchLog: readonly DispatchResult[];
+  dispatcherName: string;
+  clear: () => void;
+} {
+  const ctx = useParameterStateContext();
+  return { dispatchLog: ctx.dispatchLog, dispatcherName: ctx.dispatcherName, clear: ctx.clearLog };
 }
 
 /** Render a command as a single-line string.  Re-exported for ergonomics. */

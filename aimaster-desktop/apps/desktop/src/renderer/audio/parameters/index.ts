@@ -61,6 +61,7 @@ export {
   ModuleParameterStateProvider,
   useModuleParameters,
   useEngineCommandLog,
+  useEngineDispatchLog,
   hasParameterStateProvider,
 } from './useModuleParameterState.js';
 

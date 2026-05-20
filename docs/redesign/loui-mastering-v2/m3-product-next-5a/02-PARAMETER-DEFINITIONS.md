@@ -120,11 +120,16 @@ Status notes:
 
 | Status        | Count | Meaning |
 |---|---:|---|
-| `wired`       | 7 | Ready today — adapter writes / reads this binding |
+| `wired`       | 11 | Ready today — adapter writes / reads this binding |
 | `pending`     | 13 | M2-full or M3-P-NEXT-5B will wire it |
-| `unavailable` | 4 | Not on any roadmap (export-only) |
-| **Total**     | **24** parameters across 5 modules |
+| `unavailable` | 3 | Not on any roadmap (export format/SR/depth) |
+| **Total**     | **27** parameters across 5 modules |
 |               | + 5 module-bypass bindings (4 pending, 1 unavailable) |
+
+> Correction: earlier drafts of this table said "wired: 7 / total: 24".
+> The authoritative count from `module-parameter-definitions.ts` is
+> **11 wired / 13 pending / 3 unavailable = 27 parameters**.  See
+> `m3-product-next-5b/WIRED_PARAMETER_AUDIT.md` §0 for the reconciliation.
 
 The `wired` parameters are the **first wire-up candidates** for
 M3-P-NEXT-5B — they have an adapter ready to receive writes.

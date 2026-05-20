@@ -20,7 +20,7 @@
 // `sessionOverride` — a pre-built AnalyzerSession that bypasses the
 // WasmAnalyzerProvider entirely.
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { toFileUrl } from '../utils/fileUrl.js';
@@ -33,9 +33,11 @@ import {
 import {
   ModuleParameterStateProvider,
   useModuleParameters,
+  ALL_MODULE_PARAMETER_DEFS,
   type ModuleId,
   type ParameterValue,
 } from '../audio/parameters/index.js';
+import { PresetPatchDispatcher } from '../audio/engine-bridge/index.js';
 import {
   LouiTopBar,
   LouiPresetHeader,
@@ -429,8 +431,11 @@ function ProductLayoutWithOverride({
   // Toggle: click the same card → close.
   const onSelectModule = (id: ModuleCardDef['id']) =>
     setSelectedModule((prev) => (prev === id ? undefined : id));
+  // Stage wired parameters into an EngineSchema preset patch.  No live
+  // DSP write — see audio/engine-bridge/engine-dispatcher.ts.
+  const dispatcher = useMemo(() => new PresetPatchDispatcher(ALL_MODULE_PARAMETER_DEFS), []);
   return (
-    <ModuleParameterStateProvider>
+    <ModuleParameterStateProvider dispatcher={dispatcher}>
       <ProductLayoutInner
         session={session}
         active={active}
@@ -460,6 +465,7 @@ function ProductPageProduction() {
   const [meterReady, setMeterReady] = useState(false);
   const [presetId, setPresetId] = useState<string | undefined>(undefined);
   const [selectedModule, setSelectedModule] = useState<ModuleCardDef['id'] | undefined>(undefined);
+  const dispatcher = useMemo(() => new PresetPatchDispatcher(ALL_MODULE_PARAMETER_DEFS), []);
 
   const previewSrc = masteringResult?.previewPath ? toFileUrl(masteringResult.previewPath) : '';
   const meta = masteringResult?.analysisReport?.mastering;
@@ -522,7 +528,7 @@ function ProductPageProduction() {
         mediaElement={meterReady ? audioRef.current : null}
         active={playing}
       >
-      <ModuleParameterStateProvider>
+      <ModuleParameterStateProvider dispatcher={dispatcher}>
         <ProductPageProductionInner
           isPlaying={playing}
           onPlayPause={togglePlay}
