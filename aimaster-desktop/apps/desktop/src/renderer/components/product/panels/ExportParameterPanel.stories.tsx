@@ -15,10 +15,21 @@ interface HostArgs {
     | 'staged-only-skipped'
     | 'success'
     | 'failure'
-    | 'exporting';
+    | 'exporting'
+    | 'asis-no-output'
+    | 'asis-success'
+    | 'asis-failure'
+    | 'asis-saving';
 }
 
-function infoFor(scenario: HostArgs['scenario'], onExport: () => void): ReMasterExportInfo {
+function infoFor(
+  scenario: HostArgs['scenario'],
+  onReMaster: () => void,
+  onAsIs: () => void,
+): ReMasterExportInfo {
+  const asIs: ReMasterExportInfo['asIs'] = {
+    available: true, phase: 'idle', error: null, lastExportPath: null, onExportAsIs: onAsIs,
+  };
   const base: ReMasterExportInfo = {
     appliedKeys: ['targetLufs', 'targetTp'],
     skippedParameterIds: [],
@@ -26,7 +37,8 @@ function infoFor(scenario: HostArgs['scenario'], onExport: () => void): ReMaster
     phase: 'idle',
     error: null,
     lastExportPath: null,
-    onReMasterExport: onExport,
+    onReMasterExport: onReMaster,
+    asIs,
   };
   switch (scenario) {
     case 'no-changes':
@@ -43,12 +55,24 @@ function infoFor(scenario: HostArgs['scenario'], onExport: () => void): ReMaster
       return { ...base, phase: 'error', error: 'bridge process exited' };
     case 'exporting':
       return { ...base, phase: 'exporting' };
+    case 'asis-no-output':
+      return { ...base, appliedKeys: [], asIs: { ...asIs, available: false } };
+    case 'asis-success':
+      return { ...base, appliedKeys: [], asIs: { ...asIs, phase: 'done', lastExportPath: '/Users/me/Music/song_master.wav' } };
+    case 'asis-failure':
+      return { ...base, appliedKeys: [], asIs: { ...asIs, phase: 'error', error: 'copy failed: EACCES' } };
+    case 'asis-saving':
+      return { ...base, appliedKeys: [], asIs: { ...asIs, phase: 'exporting' } };
   }
 }
 
 function Host({ scenario }: HostArgs) {
   const [log, setLog] = React.useState<string | null>(null);
-  const info = infoFor(scenario, () => setLog('onReMasterExport() fired'));
+  const info = infoFor(
+    scenario,
+    () => setLog('onReMasterExport() fired'),
+    () => setLog('onExportAsIs() fired'),
+  );
   return (
     <div style={{
       background: surface.background,
@@ -86,7 +110,11 @@ const meta: Meta<typeof Host> = {
   argTypes: {
     scenario: {
       control: { type: 'select' },
-      options: ['no-changes', 'previewed', 'unpreviewed-warning', 'staged-only-skipped', 'success', 'failure', 'exporting'],
+      options: [
+        'no-changes', 'previewed', 'unpreviewed-warning', 'staged-only-skipped',
+        'success', 'failure', 'exporting',
+        'asis-no-output', 'asis-success', 'asis-failure', 'asis-saving',
+      ],
     },
   },
   args: { scenario: 'previewed' },
@@ -101,3 +129,9 @@ export const ExportStagedOnlySkipped:  Story = { args: { scenario: 'staged-only-
 export const ExportSuccess:            Story = { args: { scenario: 'success' } };
 export const ExportFailure:            Story = { args: { scenario: 'failure' } };
 export const ExportDisabledWhileExporting: Story = { args: { scenario: 'exporting' } };
+
+// Export As-is (M3-P-NEXT-5D-2-b)
+export const ExportAsIsDisabledNoOutput: Story = { args: { scenario: 'asis-no-output' } };
+export const ExportAsIsSuccess:         Story = { args: { scenario: 'asis-success' } };
+export const ExportAsIsFailure:         Story = { args: { scenario: 'asis-failure' } };
+export const ExportAsIsSaving:          Story = { args: { scenario: 'asis-saving' } };

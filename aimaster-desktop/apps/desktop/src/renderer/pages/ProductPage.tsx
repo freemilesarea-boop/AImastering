@@ -476,6 +476,13 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
             error: bridge.exportError,
             lastExportPath: bridge.lastExportPath,
             onReMasterExport: bridge.onReMasterExport,
+            asIs: {
+              available: bridge.exportAsIsAvailable,
+              phase: bridge.exportAsIsPhase,
+              error: bridge.exportAsIsError,
+              lastExportPath: bridge.lastExportAsIsPath,
+              onExportAsIs: bridge.onExportAsIs,
+            },
           },
         } : {})}
       />
@@ -506,6 +513,13 @@ interface PreviewBridge {
   hasUnpreviewedChanges: boolean;
   /** Re-master with the current render override, then save via dialog. */
   onReMasterExport: () => void;
+  // Export As-is (M3-P-NEXT-5D-2-b)
+  exportAsIsAvailable: boolean;
+  exportAsIsPhase: ExportPhase;
+  exportAsIsError: string | null;
+  lastExportAsIsPath: string | null;
+  /** Save the current master WAV unchanged (no re-render). */
+  onExportAsIs: () => void;
 }
 
 const PreviewBridgeContext = React.createContext<PreviewBridge | null>(null);
@@ -516,11 +530,14 @@ function usePreviewBridge(): PreviewBridge | null {
 function ProductionPreviewProvider({
   sourceAudioPath,
   baseOptions,
+  masterOutputPath,
   onRendered,
   children,
 }: {
   sourceAudioPath: string;
   baseOptions: MasteringOptions;   // already normalised
+  /** The current master WAV path — saved unchanged by "Export As-is". */
+  masterOutputPath: string | null;
   onRendered: (previewPath: string) => void;
   children: React.ReactNode;
 }) {
@@ -533,6 +550,10 @@ function ProductionPreviewProvider({
   const [exportPhase, setExportPhase] = useState<ExportPhase>('idle');
   const [exportError, setExportError] = useState<string | null>(null);
   const [lastExportPath, setLastExportPath] = useState<string | null>(null);
+  // Export As-is state (M3-P-NEXT-5D-2-b)
+  const [exportAsIsPhase, setExportAsIsPhase] = useState<ExportPhase>('idle');
+  const [exportAsIsError, setExportAsIsError] = useState<string | null>(null);
+  const [lastExportAsIsPath, setLastExportAsIsPath] = useState<string | null>(null);
 
   const summary = useMemo(
     () => summarizePending(state, lastRenderedOverride, baseOptions),
@@ -618,9 +639,31 @@ function ProductionPreviewProvider({
     })();
   }, [summary, baseOptions, sourceAudioPath]);
 
+  // Export As-is — saves the current master WAV unchanged.  Reuses
+  // file:save-wav; no re-render.
+  const onExportAsIs = useCallback(() => {
+    const api = window.electronAPI;
+    if (!api) { setExportAsIsPhase('error'); setExportAsIsError('electronAPI unavailable'); return; }
+    if (!masterOutputPath) { setExportAsIsPhase('error'); setExportAsIsError('no master to export'); return; }
+    setExportAsIsPhase('exporting');
+    setExportAsIsError(null);
+    void (async () => {
+      try {
+        const saved = await api.invoke('file:save-wav', masterOutputPath) as string | null;
+        if (saved) { setLastExportAsIsPath(saved); setExportAsIsPhase('done'); }
+        else setExportAsIsPhase('idle');   // user cancelled
+      } catch (err) {
+        setExportAsIsPhase('error');
+        setExportAsIsError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+  }, [masterOutputPath]);
+
   const bridge: PreviewBridge = {
     summary, phase, lastRenderedAt, error, onUpdate,
     exportPhase, exportError, lastExportPath, hasUnpreviewedChanges, onReMasterExport,
+    exportAsIsAvailable: Boolean(masterOutputPath),
+    exportAsIsPhase, exportAsIsError, lastExportAsIsPath, onExportAsIs,
   };
   return (
     <PreviewBridgeContext.Provider value={bridge}>
@@ -830,7 +873,12 @@ function ProductPageProduction() {
           onExport={onExport}
           onSettings={onSettings}
           {...(sourceAudioPath ? {
-            preview: { sourceAudioPath, baseOptions: normalisedBase, onRendered: onPreviewRendered },
+            preview: {
+              sourceAudioPath,
+              baseOptions: normalisedBase,
+              masterOutputPath: masteringResult?.outputPath ?? null,
+              onRendered: onPreviewRendered,
+            },
           } : {})}
         />
       </ModuleParameterStateProvider>
@@ -858,6 +906,7 @@ function ProductPageProductionInner(props: {
   preview?: {
     sourceAudioPath: string;
     baseOptions: MasteringOptions;
+    masterOutputPath: string | null;
     onRendered: (previewPath: string) => void;
   };
 }) {
@@ -891,6 +940,7 @@ function ProductPageProductionInner(props: {
     <ProductionPreviewProvider
       sourceAudioPath={props.preview.sourceAudioPath}
       baseOptions={props.preview.baseOptions}
+      masterOutputPath={props.preview.masterOutputPath}
       onRendered={props.preview.onRendered}
     >
       {layout}

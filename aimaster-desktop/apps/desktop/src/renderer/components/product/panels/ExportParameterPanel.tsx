@@ -129,6 +129,18 @@ function ChipRow<T extends string>({
   );
 }
 
+export type ExportActionPhase = 'idle' | 'exporting' | 'done' | 'error';
+
+/** Export As-is descriptor (M3-P-NEXT-5D-2-b). */
+export interface ExportAsIsInfo {
+  /** Whether a master WAV exists to save. */
+  available: boolean;
+  phase: ExportActionPhase;
+  error?: string | null;
+  lastExportPath?: string | null;
+  onExportAsIs: () => void;
+}
+
 /** Re-master & Export descriptor (M3-P-NEXT-5D-2-a). */
 export interface ReMasterExportInfo {
   /** Renderable changes that WILL be applied to the export. */
@@ -137,10 +149,12 @@ export interface ReMasterExportInfo {
   skippedParameterIds: string[];
   /** Renderable changes not yet heard in the preview (warning). */
   hasUnpreviewedChanges: boolean;
-  phase: 'idle' | 'exporting' | 'done' | 'error';
+  phase: ExportActionPhase;
   error?: string | null;
   lastExportPath?: string | null;
   onReMasterExport: () => void;
+  /** Export As-is path (5D-2-b) — save the current master unchanged. */
+  asIs: ExportAsIsInfo;
 }
 
 export interface ExportParameterPanelProps extends ControlledPanelProps {
@@ -289,20 +303,76 @@ export function ExportParameterPanel(props: ExportParameterPanelProps = {}) {
   );
 }
 
-// ── Re-master & Export section (M3-P-NEXT-5D-2-a) ─────────────────────────
+// ── Export section — two paths (M3-P-NEXT-5D-2-a + 5D-2-b) ───────────────
+
+function StatusLine({ phase, error, path, verb }: {
+  phase: ExportActionPhase; error?: string | null | undefined; path?: string | null | undefined; verb: string;
+}) {
+  if (phase === 'done') {
+    return (
+      <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: meter.safe.foreground }}>
+        ✓ {verb}{path ? ` → ${path}` : ''}
+      </span>
+    );
+  }
+  if (phase === 'error') {
+    return (
+      <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: meter.danger.foreground }}>
+        ✗ {verb} failed{error ? ` · ${error}` : ''}
+      </span>
+    );
+  }
+  return null;
+}
+
+function ExportButton({ label, primary, disabled, onClick }: {
+  label: string; primary: boolean; disabled: boolean; onClick: () => void;
+}) {
+  const dim = disabled;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        flex: 1,
+        height: 36,
+        paddingInline: space['3'],
+        background: dim ? 'transparent' : primary ? meter.accent.foreground : surface.well,
+        color: dim ? text.disabled : primary ? surface.background : text.primary,
+        border: dim ? `1px solid ${surface.border}`
+          : primary ? 'none' : `1px solid ${surface.border}`,
+        borderRadius: radius.chip,
+        fontFamily: typography.family.sans,
+        fontSize: typography.size.sm,
+        fontWeight: typography.weight.semi,
+        cursor: dim ? 'not-allowed' : 'pointer',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {label}
+    </button>
+  );
+}
 
 function ReMasterExportSection({ info }: { info: ReMasterExportInfo }) {
-  const exporting = info.phase === 'exporting';
+  const reExporting = info.phase === 'exporting';
+  const asIsExporting = info.asIs.phase === 'exporting';
+  const anyExporting = reExporting || asIsExporting;
   const appliedCount = info.appliedKeys.length;
   const skippedCount = info.skippedParameterIds.length;
   const hasChanges = appliedCount > 0;
 
+  // Export As-is is the primary action when there are no changes; otherwise
+  // Re-master & Export is primary (the user changed something).
+  const asIsPrimary = !hasChanges;
+
   return (
-    <LouiSectionCard title="Re-master & Export">
-      {/* Summary line */}
+    <LouiSectionCard title="Export">
+      {/* Summary badges */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: space['2'] }}>
-        <LouiValueBadge label="Apply" status={hasChanges ? 'accent' : 'neutral'}>
-          {appliedCount} change{appliedCount === 1 ? '' : 's'}
+        <LouiValueBadge label="Changes" status={hasChanges ? 'accent' : 'neutral'}>
+          {appliedCount} renderable
         </LouiValueBadge>
         {skippedCount > 0 && (
           <LouiValueBadge label="Skip" status="neutral">
@@ -311,84 +381,53 @@ function ReMasterExportSection({ info }: { info: ReMasterExportInfo }) {
         )}
       </div>
 
-      {/* Applied keys */}
       {hasChanges && (
-        <span style={{
-          fontFamily: typography.family.mono,
-          fontSize: typography.size.xs,
-          color: text.tertiary,
-          lineHeight: 1.5,
-        }}>
+        <span style={{ fontFamily: typography.family.mono, fontSize: typography.size.xs, color: text.tertiary, lineHeight: 1.5 }}>
           Applies: {info.appliedKeys.join(', ')}
         </span>
       )}
 
-      {/* Staged-only notice */}
       {skippedCount > 0 && (
-        <span style={{
-          fontFamily: typography.family.sans,
-          fontSize: typography.size.xs,
-          color: text.muted,
-          lineHeight: 1.4,
-        }}>
-          {skippedCount} staged-only change{skippedCount === 1 ? '' : 's'} not applied to this export
+        <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: text.muted, lineHeight: 1.4 }}>
+          {skippedCount} staged-only change{skippedCount === 1 ? '' : 's'} not applied to either export
           (no render mapping yet).
         </span>
       )}
 
-      {/* Unpreviewed warning */}
+      {/* Unpreviewed warning — only relevant to Re-master */}
       {info.hasUnpreviewedChanges && hasChanges && (
-        <span style={{
-          fontFamily: typography.family.sans,
-          fontSize: typography.size.xs,
-          color: meter.warn.foreground,
-          lineHeight: 1.4,
-        }}>
-          ⚠ This export includes changes not previewed yet.
+        <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: meter.warn.foreground, lineHeight: 1.4 }}>
+          ⚠ You have unrendered changes.  "Export As-is" will not include them;
+          "Re-master & Export" applies the latest changes first.
         </span>
       )}
 
-      {/* Status */}
-      {info.phase === 'done' && (
-        <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: meter.safe.foreground }}>
-          ✓ Exported{info.lastExportPath ? ` → ${info.lastExportPath}` : ''}
-        </span>
-      )}
-      {info.phase === 'error' && (
-        <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: meter.danger.foreground }}>
-          ✗ Export failed{info.error ? ` · ${info.error}` : ''}
-        </span>
-      )}
+      {/* Two-path buttons */}
+      <div style={{ display: 'flex', gap: space['2'] }}>
+        <ExportButton
+          label={info.asIs.available
+            ? (asIsExporting ? 'Saving…' : 'Export As-is')
+            : 'No master yet'}
+          primary={asIsPrimary}
+          disabled={anyExporting || !info.asIs.available}
+          onClick={info.asIs.onExportAsIs}
+        />
+        <ExportButton
+          label={reExporting ? 'Re-mastering…' : hasChanges ? 'Re-master & Export' : 'No changes'}
+          primary={!asIsPrimary}
+          disabled={anyExporting || !hasChanges}
+          onClick={info.onReMasterExport}
+        />
+      </div>
 
-      {/* Action */}
-      <button
-        type="button"
-        onClick={info.onReMasterExport}
-        disabled={exporting || !hasChanges}
-        style={{
-          height: 36,
-          paddingInline: space['4'],
-          background: (exporting || !hasChanges) ? 'transparent' : meter.accent.foreground,
-          color: (exporting || !hasChanges) ? text.disabled : surface.background,
-          border: (exporting || !hasChanges) ? `1px solid ${surface.border}` : 'none',
-          borderRadius: radius.chip,
-          fontFamily: typography.family.sans,
-          fontSize: typography.size.sm,
-          fontWeight: typography.weight.semi,
-          cursor: (exporting || !hasChanges) ? 'not-allowed' : 'pointer',
-        }}
-      >
-        {exporting ? 'Re-mastering…' : hasChanges ? 'Re-master & Export' : 'No changes to export'}
-      </button>
-      <span style={{
-        fontFamily: typography.family.sans,
-        fontSize: typography.size.xs,
-        color: text.muted,
-        lineHeight: 1.4,
-      }}>
-        Re-renders the master with your changes via the existing pipeline,
-        then saves a WAV.  "Export As-is" (unchanged master) lands in
-        M3-P-NEXT-5D-2-b.
+      {/* Per-action status */}
+      <StatusLine phase={info.asIs.phase} error={info.asIs.error} path={info.asIs.lastExportPath} verb="Saved (as-is)" />
+      <StatusLine phase={info.phase} error={info.error} path={info.lastExportPath} verb="Re-mastered & exported" />
+
+      {/* Help copy */}
+      <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: text.muted, lineHeight: 1.5 }}>
+        Export As-is saves the current rendered master.  Re-master &amp; Export
+        applies the latest parameter changes first (slower).
       </span>
     </LouiSectionCard>
   );
