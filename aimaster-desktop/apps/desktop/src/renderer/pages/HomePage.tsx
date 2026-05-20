@@ -37,6 +37,8 @@ import { LouiPresetSlideOver } from '../components/product/LouiPresetSlideOver.j
 import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
 import { louiPresetToMasteringOptions } from '../audio/presets/preset-to-options.js';
 import { getLastUsedPreset, setLastUsedPreset } from '../audio/presets/preset-storage.js';
+import { LouiHomeHero } from '../components/home/LouiHomeHero.js';
+import { loui, louiAlpha } from '../theme/loui-home.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -84,32 +86,39 @@ function ModeSelector({
 }) {
   const modes = showLegacy ? MASTERING_MODES : MASTERING_MODES.filter((m) => !m.legacy);
   return (
-    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
-      {modes.map((m) => (
-        <button
-          key={m.id}
-          disabled={disabled}
-          onClick={() => onChange(m.id)}
-          title={m.detail}
-          className={`py-2 px-2 rounded-lg text-xs font-medium transition-all text-left
-                      disabled:opacity-40 disabled:cursor-not-allowed
-                      ${selected === m.id
-                        ? 'bg-zinc-700 border border-zinc-500 text-zinc-100'
-                        : 'bg-zinc-900/40 border border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-400'
-                      }`}
-        >
-          <div className="flex items-center gap-1">
-            <span>{m.name}</span>
-            {m.legacy && (
-              <span className="text-[8px] text-zinc-700 border border-zinc-800 rounded px-0.5">L</span>
-            )}
-          </div>
-          <div className="text-[10px] font-normal text-zinc-600 mt-0.5">{m.hint}</div>
-          <div className="text-[9px] font-mono text-zinc-700 mt-0.5">
-            {m.targetLufs} LUFS · {m.targetTp} dBTP
-          </div>
-        </button>
-      ))}
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      {modes.map((m) => {
+        const active = selected === m.id;
+        return (
+          <button
+            key={m.id}
+            disabled={disabled}
+            onClick={() => onChange(m.id)}
+            title={m.detail}
+            className="no-drag py-2.5 px-2.5 rounded-xl text-xs font-medium transition-all text-left
+                       disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{
+              border: `1px solid ${active ? louiAlpha.lav(0.5) : loui.borderSubtle}`,
+              background: active ? `linear-gradient(160deg, ${louiAlpha.lav(0.14)}, ${loui.panelElevated})` : loui.panelElevated,
+              boxShadow: active ? `0 0 14px -3px ${loui.glowLavender}` : 'none',
+              color: active ? '#fff' : '#a1a1aa',
+            }}
+            onMouseEnter={(e) => { if (!active) e.currentTarget.style.borderColor = louiAlpha.lav(0.28); }}
+            onMouseLeave={(e) => { if (!active) e.currentTarget.style.borderColor = loui.borderSubtle; }}
+          >
+            <div className="flex items-center gap-1.5">
+              <span>{m.name}</span>
+              {m.legacy && (
+                <span className="text-[8px] text-zinc-600 border border-zinc-700 rounded px-0.5">L</span>
+              )}
+            </div>
+            <div className="text-[10px] font-normal mt-0.5" style={{ color: active ? loui.softLavender : '#71717a' }}>{m.hint}</div>
+            <div className="text-[9px] font-mono mt-0.5" style={{ color: active ? '#c4b5fd99' : '#52525b' }}>
+              {m.targetLufs} LUFS · {m.targetTp} dBTP
+            </div>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -126,25 +135,44 @@ function QuickPresetBar({
   onApply: (p: MasteringQuickPreset) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
       {MASTERING_QUICK_PRESETS.map((p) => {
         const active = current === p.id;
+        const streamingSafe = p.targetLufs <= -13;
         return (
           <button
             key={p.id}
             disabled={disabled}
             onClick={() => onApply(p)}
-            className={`py-2 px-2 rounded-lg text-left transition-all
-                        disabled:opacity-40 disabled:cursor-not-allowed
-                        ${active
-                          ? 'bg-zinc-200 text-zinc-900 border border-zinc-300'
-                          : 'bg-zinc-900/40 border border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-300'
-                        }`}
+            className="no-drag py-2.5 px-2.5 rounded-xl text-left transition-all
+                       disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{
+              border: `1px solid ${active ? louiAlpha.lav(0.55) : loui.borderSubtle}`,
+              background: active
+                ? `linear-gradient(160deg, ${louiAlpha.lav(0.16)}, ${loui.panelElevated})`
+                : loui.panelElevated,
+              boxShadow: active ? `0 0 16px -3px ${loui.glowLavender}` : 'none',
+            }}
+            onMouseEnter={(e) => { if (!active) e.currentTarget.style.borderColor = louiAlpha.lav(0.3); }}
+            onMouseLeave={(e) => { if (!active) e.currentTarget.style.borderColor = loui.borderSubtle; }}
           >
-            <div className="text-xs font-medium">{p.name}</div>
-            <div className={`text-[10px] font-mono mt-0.5 ${active ? 'text-zinc-600' : 'text-zinc-700'}`}>
-              {p.description}
+            <div className="flex items-center gap-1.5">
+              <span style={{
+                width: 6, height: 6, borderRadius: 999, flexShrink: 0,
+                background: active ? loui.primaryLavender : '#3f3f46',
+                boxShadow: active ? `0 0 6px ${loui.primaryLavender}` : 'none',
+              }} />
+              <span className="text-xs font-semibold" style={{ color: active ? '#fff' : '#d4d4d8' }}>{p.name}</span>
             </div>
+            <div className="text-[10px] font-mono mt-1" style={{ color: active ? loui.softLavender : '#71717a' }}>
+              {p.targetLufs} LUFS · {p.targetTp} dBTP
+            </div>
+            {streamingSafe && (
+              <div className="mt-1 inline-flex text-[8px] font-semibold tracking-wide px-1 py-0.5 rounded"
+                   style={{ color: loui.successMint, border: `1px solid ${loui.successMint}55` }}>
+                STREAMING-SAFE
+              </div>
+            )}
           </button>
         );
       })}
@@ -170,11 +198,11 @@ function Slider({
 }) {
   const display = format ? format(value) : value.toFixed(step >= 1 ? 0 : 1);
   return (
-    <div className={`space-y-1 ${disabled ? 'opacity-50' : ''}`}>
-      <div className="flex justify-between text-[11px]">
-        <span className="text-zinc-500">{label}</span>
-        <span className="font-mono text-zinc-300">
-          {display}{unit ? ` ${unit}` : ''}
+    <div className={`space-y-1.5 ${disabled ? 'opacity-50' : ''}`}>
+      <div className="flex justify-between items-baseline text-[11px]">
+        <span className="text-zinc-400">{label}</span>
+        <span className="font-mono text-sm tabular-nums" style={{ color: loui.softLavender }}>
+          {display}<span className="text-[10px] text-zinc-500">{unit ? ` ${unit}` : ''}</span>
         </span>
       </div>
       <input
@@ -183,9 +211,10 @@ function Slider({
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="no-drag w-full h-1.5 cursor-pointer accent-zinc-300"
+        className="no-drag w-full h-1.5 cursor-pointer"
+        style={{ accentColor: loui.primaryLavender }}
       />
-      {hint && <p className="text-[10px] text-zinc-700">{hint}</p>}
+      {hint && <p className="text-[10px] text-zinc-600">{hint}</p>}
     </div>
   );
 }
@@ -201,29 +230,34 @@ function LimiterStrengthCtl({
 }) {
   const opts: LimiterStrength[] = ['low', 'medium', 'high'];
   return (
-    <div className="space-y-1">
+    <div className="space-y-1.5">
       <div className="flex justify-between text-[11px]">
-        <span className="text-zinc-500">Limiter Strength</span>
-        <span className="font-mono text-zinc-300">{LIMITER_STRENGTH_LABELS[value]}</span>
+        <span className="text-zinc-400">Limiter Strength</span>
+        <span className="font-mono" style={{ color: loui.softLavender }}>{LIMITER_STRENGTH_LABELS[value]}</span>
       </div>
-      <div className="grid grid-cols-3 gap-1">
-        {opts.map((o) => (
-          <button
-            key={o}
-            disabled={disabled}
-            onClick={() => onChange(o)}
-            className={`no-drag py-1.5 rounded-md text-[11px] font-medium transition-all
-                        disabled:opacity-40 disabled:cursor-not-allowed
-                        ${value === o
-                          ? 'bg-zinc-700 border border-zinc-500 text-zinc-100'
-                          : 'bg-zinc-900/40 border border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
-                        }`}
-          >
-            {LIMITER_STRENGTH_LABELS[o]}
-          </button>
-        ))}
+      <div className="grid grid-cols-3 gap-1.5">
+        {opts.map((o) => {
+          const active = value === o;
+          return (
+            <button
+              key={o}
+              disabled={disabled}
+              onClick={() => onChange(o)}
+              className="no-drag py-1.5 rounded-lg text-[11px] font-medium transition-all
+                         disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{
+                border: `1px solid ${active ? louiAlpha.lav(0.5) : loui.borderSubtle}`,
+                background: active ? louiAlpha.lav(0.16) : loui.panelElevated,
+                color: active ? '#fff' : '#a1a1aa',
+                boxShadow: active ? `0 0 12px -4px ${loui.glowLavender}` : 'none',
+              }}
+            >
+              {LIMITER_STRENGTH_LABELS[o]}
+            </button>
+          );
+        })}
       </div>
-      <p className="text-[10px] text-zinc-700">
+      <p className="text-[10px] text-zinc-600">
         High = 음압 강함 + 다이나믹 손상 가능 / Low = 부드럽고 자연스러움
       </p>
     </div>
@@ -239,24 +273,24 @@ function AdvancedSettingsPanel({ disabled }: { disabled: boolean }) {
   const updateOptions    = useAudioStore((s) => s.updateOptions);
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 overflow-hidden">
+    <div className="rounded-2xl overflow-hidden" style={{ border: `1px solid ${loui.borderSubtle}`, background: loui.panelElevated }}>
       <button
         onClick={() => setShowAdvanced(!showAdvanced)}
-        className="no-drag w-full flex items-center justify-between px-3 py-2.5 text-left
-                   text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+        className="no-drag w-full flex items-center justify-between px-3.5 py-3 text-left
+                   text-xs text-zinc-300 hover:text-white transition-colors"
       >
-        <span className="flex items-center gap-1.5">
-          <span className="text-[10px] uppercase tracking-wider">고급 설정</span>
+        <span className="flex items-center gap-2 min-w-0">
+          <span className="text-[10px] uppercase tracking-[0.14em] font-medium" style={{ color: loui.softLavender }}>고급 설정</span>
           <span className="text-zinc-700">·</span>
-          <span className="text-zinc-600 font-mono">
+          <span className="text-zinc-500 font-mono truncate">
             {options.targetLufs} LUFS · {options.targetTp} dBTP · {LIMITER_STRENGTH_LABELS[options.limiterStrength]}
           </span>
         </span>
-        <span className="text-[10px] text-zinc-700">{showAdvanced ? '접기 ▲' : '펼치기 ▼'}</span>
+        <span className="text-[10px] text-zinc-500 shrink-0">{showAdvanced ? '접기 ▲' : '펼치기 ▼'}</span>
       </button>
 
       {showAdvanced && (
-        <div className="px-3 pb-3 pt-1 space-y-3 border-t border-zinc-800">
+        <div className="px-3.5 pb-3.5 pt-1 space-y-3.5" style={{ borderTop: `1px solid ${loui.borderSubtle}` }}>
           <Slider
             label="Target LUFS"
             value={options.targetLufs}
@@ -618,18 +652,18 @@ function DropZone({
     return (
       <div
         {...getRootProps()}
-        className={`no-drag flex items-center justify-center gap-2 w-full py-3
-                    rounded-xl border border-dashed cursor-pointer transition-all
-                    ${isDisabled
-                      ? 'border-zinc-800 opacity-40 cursor-not-allowed'
-                      : isDragActive
-                        ? 'border-zinc-400 bg-zinc-800/40'
-                        : 'border-zinc-800 hover:border-zinc-600 hover:bg-zinc-900/30'
-                    }`}
+        className="no-drag flex items-center justify-center gap-2 w-full py-3
+                   rounded-xl border border-dashed cursor-pointer transition-all"
+        style={{
+          borderColor: isDragActive ? louiAlpha.lav(0.6) : loui.borderSubtle,
+          background: isDragActive ? louiAlpha.lav(0.08) : 'transparent',
+          opacity: isDisabled ? 0.4 : 1,
+          cursor: isDisabled ? 'not-allowed' : 'pointer',
+        }}
       >
         <input {...getInputProps()} />
-        <UploadIcon className="w-4 h-4 text-zinc-600" />
-        <span className="text-xs text-zinc-600">
+        <UploadIcon className="w-4 h-4" />
+        <span className="text-xs text-zinc-500">
           {isDragActive ? '파일을 놓으세요' : '파일 추가 (드래그 또는 클릭)'}
         </span>
       </div>
@@ -639,35 +673,51 @@ function DropZone({
   return (
     <div
       {...getRootProps()}
-      className={`no-drag relative flex flex-col items-center justify-center
-                  w-full rounded-2xl border-2 border-dashed transition-all duration-200
-                  cursor-pointer select-none
-                  ${isDisabled
-                    ? 'border-zinc-700 bg-zinc-900/30 cursor-not-allowed'
-                    : isDragActive
-                      ? 'border-zinc-400 bg-zinc-800/50 scale-[1.01]'
-                      : 'border-zinc-700 bg-zinc-900/30 hover:border-zinc-500 hover:bg-zinc-900/50'
-                  }`}
-      style={{ minHeight: 220 }}
+      className="no-drag relative flex flex-col items-center justify-center
+                 w-full rounded-2xl border-2 border-dashed transition-all duration-200
+                 cursor-pointer select-none overflow-hidden"
+      style={{
+        minHeight: 230,
+        borderColor: isDisabled ? loui.borderSubtle : isDragActive ? louiAlpha.lav(0.7) : louiAlpha.lav(0.25),
+        background: isDragActive
+          ? `radial-gradient(120% 120% at 50% 0%, ${louiAlpha.lav(0.16)}, ${loui.panelElevated})`
+          : loui.panelElevated,
+        transform: isDragActive ? 'scale(1.005)' : 'none',
+        cursor: isDisabled ? 'not-allowed' : 'pointer',
+        boxShadow: isDragActive ? `0 0 36px -8px ${loui.glowLavender}` : 'none',
+      }}
     >
       <input {...getInputProps()} />
+      {/* Ambient lavender glow */}
+      <div aria-hidden style={{
+        position: 'absolute', bottom: -50, left: '50%', transform: 'translateX(-50%)',
+        width: 260, height: 120, background: loui.glowLavender, filter: 'blur(56px)',
+        opacity: isDragActive ? 0.7 : 0.35, pointerEvents: 'none', transition: 'opacity 200ms',
+      }} />
       {isDragActive ? (
-        <div className="flex flex-col items-center gap-3">
-          <svg className="w-10 h-10 text-zinc-300" viewBox="0 0 24 24" fill="none"
+        <div className="relative flex flex-col items-center gap-3">
+          <svg className="w-10 h-10" style={{ color: loui.primaryLavender }} viewBox="0 0 24 24" fill="none"
                stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
             <path d="M2 12h2M20 12h2M6 8v8M18 8v8M10 5v14M14 5v14" />
           </svg>
-          <p className="text-sm text-zinc-300">파일을 놓으세요</p>
+          <p className="text-sm" style={{ color: loui.softLavender }}>파일을 놓으세요</p>
         </div>
       ) : (
-        <div className="flex flex-col items-center gap-3 pointer-events-none">
-          <UploadIcon className="w-9 h-9 text-zinc-600" />
+        <div className="relative flex flex-col items-center gap-3 pointer-events-none">
+          <span style={{
+            width: 56, height: 56, borderRadius: 16,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            background: louiAlpha.lav(0.12), border: `1px solid ${louiAlpha.lav(0.28)}`,
+            color: loui.primaryLavender,
+          }}>
+            <UploadIcon className="w-7 h-7" />
+          </span>
           <div className="text-center">
-            <p className="text-sm text-zinc-300">
-              파일을 끌어다 놓거나&nbsp;
-              <span className="text-zinc-100 underline underline-offset-2">클릭해서 선택</span>
+            <p className="text-sm text-zinc-200">
+              오디오 파일을 끌어다 놓거나&nbsp;
+              <span style={{ color: loui.softLavender }} className="underline underline-offset-2">클릭해서 선택</span>
             </p>
-            <p className="mt-1 text-xs text-zinc-600">
+            <p className="mt-1.5 text-xs text-zinc-500">
               WAV · FLAC · AIFF · MP3 · M4A &nbsp;·&nbsp; 최대 {MAX_QUEUE_SIZE}곡
             </p>
           </div>
@@ -847,22 +897,57 @@ export default function HomePage() {
       />
 
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-lg mx-auto px-6 py-5 space-y-4 animate-in">
+        <div className="max-w-2xl mx-auto px-6 py-6 space-y-5 animate-in">
+
+          {/* ── Hero — always visible brand + engine status ───── */}
+          <LouiHomeHero engineReady />
 
           {/* ── Empty state ───────────────────────────────────── */}
           {!hasQueue && (
             <>
               <DropZone onFiles={handleFiles} isDisabled={false} compact={false} />
               <div className="flex items-center gap-3">
-                <div className="flex-1 h-px bg-zinc-800" />
+                <div className="flex-1 h-px bg-white/5" />
                 <button
                   onClick={handleOpenMulti}
-                  className="no-drag text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+                  className="no-drag text-xs text-zinc-500 hover:text-zinc-200 transition-colors"
                 >
                   파일 탐색기로 열기
                 </button>
-                <div className="flex-1 h-px bg-zinc-800" />
+                <div className="flex-1 h-px bg-white/5" />
               </div>
+
+              {/* Capability teaser — hints at the AI preset library before upload */}
+              <button
+                type="button"
+                onClick={() => setPresetBrowserOpen(true)}
+                className="no-drag w-full flex items-center justify-between gap-3 rounded-2xl px-4 py-3.5 text-left transition-all"
+                style={{
+                  border: `1px solid ${loui.borderSubtle}`,
+                  background: `radial-gradient(120% 140% at 100% 0%, ${louiAlpha.lav(0.10)} 0%, ${loui.panelElevated} 60%)`,
+                }}
+              >
+                <span className="flex items-center gap-3 min-w-0">
+                  <span aria-hidden style={{
+                    width: 34, height: 34, borderRadius: 10, flexShrink: 0,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    background: louiAlpha.lav(0.14), border: `1px solid ${louiAlpha.lav(0.3)}`,
+                    color: loui.primaryLavender,
+                  }}>
+                    <svg width={16} height={16} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="2.5" width="5" height="5" rx="1" /><rect x="9" y="2.5" width="5" height="5" rx="1" />
+                      <rect x="2" y="8.5" width="5" height="5" rx="1" /><rect x="9" y="8.5" width="5" height="5" rx="1" />
+                    </svg>
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-zinc-100">전체 프리셋 둘러보기</span>
+                    <span className="block text-[11px] text-zinc-500 truncate">
+                      AI Pop · KPOP Loud · AI Vocal Cleaner 등 13개 공식 프리셋 · AI Special 포함
+                    </span>
+                  </span>
+                </span>
+                <span style={{ color: loui.softLavender }} className="text-lg shrink-0">›</span>
+              </button>
             </>
           )}
 
@@ -924,12 +1009,17 @@ export default function HomePage() {
 
               {/* Quick presets — YouTube / Streaming / KPOP / EDM */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] text-zinc-600 uppercase tracking-wider">빠른 프리셋</p>
+                <div className="flex items-center justify-between mb-2.5">
+                  <p className="text-[10px] uppercase tracking-[0.16em] font-medium" style={{ color: loui.softLavender }}>
+                    빠른 프리셋
+                  </p>
                   <button
                     type="button"
                     onClick={() => setPresetBrowserOpen(true)}
-                    className="flex items-center gap-1.5 text-[11px] text-zinc-400 hover:text-zinc-100 border border-zinc-700 hover:border-zinc-500 rounded-md px-2 py-1 transition-colors"
+                    className="no-drag flex items-center gap-1.5 text-[11px] font-medium rounded-lg px-2.5 py-1.5 transition-all"
+                    style={{ color: loui.softLavender, border: `1px solid ${louiAlpha.lav(0.3)}`, background: louiAlpha.lav(0.08) }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = louiAlpha.lav(0.16); e.currentTarget.style.color = '#fff'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = louiAlpha.lav(0.08); e.currentTarget.style.color = loui.softLavender; }}
                   >
                     <svg width={11} height={11} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
                       <rect x="2" y="2.5" width="5" height="5" rx="1" />
@@ -937,7 +1027,7 @@ export default function HomePage() {
                       <rect x="2" y="8.5" width="5" height="5" rx="1" />
                       <rect x="9" y="8.5" width="5" height="5" rx="1" />
                     </svg>
-                    전체 프리셋 둘러보기
+                    전체 프리셋 · AI Special
                   </button>
                 </div>
                 <QuickPresetBar
@@ -955,7 +1045,9 @@ export default function HomePage() {
 
               {/* Mode selector — 5 메인 + 2 legacy(Advanced 펼침 시) */}
               <div>
-                <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-2">마스터링 모드</p>
+                <p className="text-[10px] uppercase tracking-[0.16em] font-medium mb-2.5" style={{ color: loui.softLavender }}>
+                  빠른 모드
+                </p>
                 <ModeSelector
                   selected={options.style}
                   disabled={isBatchRunning}
@@ -981,19 +1073,41 @@ export default function HomePage() {
               {/* Advanced sliders — LUFS / TP / Limiter / 선택 옵션 */}
               <AdvancedSettingsPanel disabled={isBatchRunning} />
 
-              {/* Start button */}
+              {/* Start button — primary lavender CTA */}
               {pendingCount > 0 && (
                 <button
                   onClick={handleStartBatch}
                   disabled={isBatchRunning}
-                  className="no-drag w-full py-3 rounded-xl text-sm font-medium transition-colors
-                             bg-zinc-100 text-zinc-900
-                             hover:bg-white active:bg-zinc-200
-                             disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="no-drag w-full py-3.5 rounded-2xl text-sm font-semibold transition-all
+                             flex items-center justify-center gap-2
+                             disabled:cursor-not-allowed"
+                  style={isBatchRunning ? {
+                    background: loui.panelElevated,
+                    color: loui.softLavender,
+                    border: `1px solid ${louiAlpha.lav(0.3)}`,
+                  } : {
+                    background: `linear-gradient(135deg, ${loui.activeViolet}, ${loui.primaryLavender})`,
+                    color: '#0E0E14',
+                    boxShadow: `0 6px 20px -6px ${loui.glowLavender}, 0 0 0 1px ${louiAlpha.lav(0.4)}`,
+                  }}
+                  onMouseEnter={(e) => { if (!isBatchRunning) e.currentTarget.style.filter = 'brightness(1.08)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.filter = 'none'; }}
                 >
-                  {isBatchRunning
-                    ? '처리 중…'
-                    : `마스터링 시작 (${pendingCount}곡)`}
+                  {isBatchRunning ? (
+                    <>
+                      <span aria-hidden className="animate-spin" style={{
+                        width: 13, height: 13, borderRadius: 999,
+                        border: `2px solid ${louiAlpha.lav(0.3)}`, borderTopColor: loui.primaryLavender,
+                        display: 'inline-block',
+                      }} />
+                      마스터링 처리 중…
+                    </>
+                  ) : (
+                    <>
+                      <svg width={15} height={15} viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5l9 5.5-9 5.5V2.5z" /></svg>
+                      마스터링 시작 ({pendingCount}곡)
+                    </>
+                  )}
                 </button>
               )}
 
