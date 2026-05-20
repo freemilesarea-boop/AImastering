@@ -161,14 +161,15 @@ export function SpectrumAnalyzerPanel(props: SpectrumAnalyzerPanelProps = {}) {
       const w = c.width;
       const h = c.height;
 
-      ctx.fillStyle = '#09090b';
+      // Charcoal analyzer backdrop (DESIGN-POLISH-2) — not pure black.
+      ctx.fillStyle = '#1A1A24';
       ctx.fillRect(0, 0, w, h);
 
-      // Grid (log-frequency).
-      ctx.strokeStyle = '#27272a';
+      // Grid (log-frequency) — subtle hairlines.
+      ctx.strokeStyle = 'rgba(255,255,255,0.07)';
       ctx.lineWidth = 1;
       ctx.font = '10px ui-monospace';
-      ctx.fillStyle = '#52525b';
+      ctx.fillStyle = 'rgba(255,255,255,0.42)';
       const gridFreqs = [50, 100, 200, 500, 1000, 2000, 5000, 10_000, 20_000];
       for (const f of gridFreqs) {
         const x = freqToX(f, hzRange.min, hzRange.max) * w;
@@ -243,7 +244,7 @@ export function SpectrumAnalyzerPanel(props: SpectrumAnalyzerPanelProps = {}) {
           {fft ? `${fft.fftSize} pts · ${fft.binCentresHz.length} bins` : 'awaiting frames…'}
         </div>
       </div>
-      <div ref={containerRef} className="relative h-48 w-full overflow-hidden rounded-md bg-black">
+      <div ref={containerRef} className="relative h-48 w-full overflow-hidden rounded-md bg-surface-900">
         <canvas
           ref={canvasRef}
           className="absolute inset-0 h-full w-full"

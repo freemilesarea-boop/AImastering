@@ -49,7 +49,7 @@ function NoApiUI() {
     <div style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       justifyContent: 'center', height: '100vh',
-      background: '#09090b', color: '#e4e4e7',
+      background: '#13131A', color: '#e4e4e7',
       fontFamily: 'ui-sans-serif, system-ui, sans-serif',
       gap: '1.5rem', padding: '2rem',
     }}>

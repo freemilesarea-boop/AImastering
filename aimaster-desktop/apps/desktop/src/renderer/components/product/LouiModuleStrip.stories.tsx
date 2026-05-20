@@ -13,7 +13,7 @@ function StripHost(props: { modules?: ModuleCardDef[] }) {
   const [selected, setSelected] = useState<ModuleCardDef['id'] | undefined>(undefined);
   return (
     <div style={{
-      background: '#09090b',
+      background: '#13131A',
       paddingBlock: 16,
       width: '100%',
       minHeight: 180,

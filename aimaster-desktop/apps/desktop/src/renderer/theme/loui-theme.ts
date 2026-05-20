@@ -16,33 +16,37 @@
 // ── Colour scale ─────────────────────────────────────────────────────────
 
 /**
- * Neutral backdrop scale.  Inspired by Apple Pro Apps + Ableton:
- * near-black backgrounds with subtle 1-step elevation contrast.
+ * Neutral backdrop scale.  Inspired by Logic Pro / Ableton Live 12 /
+ * Apple Pro Apps: a charcoal (NOT pure-black) base with clear surface
+ * elevation steps so panels read as layered, not flat.
  *
- * NOT a full grey ramp — only the values that appear on screen.
+ * Elevation ladder:  background < panel < well < overlay
  */
 export const surface = {
-  /** Page background. */
-  background: '#09090b',
-  /** Card / panel background. */
-  panel:      '#0f0f12',
+  /** Page background — charcoal, never pure black. */
+  background: '#13131A',
+  /** Card / panel background (main panel). */
+  panel:      '#1A1A24',
   /** Panel border (hairline). */
-  border:     '#27272a',
-  /** Inset wells, secondary surfaces. */
-  well:       '#18181b',
-  /** Tooltip / hover overlay. */
-  overlay:    '#3f3f46',
+  border:     'rgba(255,255,255,0.08)',
+  /** Stronger border for elevated / focused surfaces. */
+  borderElevated: 'rgba(255,255,255,0.14)',
+  /** Inset wells / raised secondary surfaces. */
+  well:       '#222230',
+  /** Tooltip / hover overlay — the lightest surface step. */
+  overlay:    '#2A2A36',
 } as const;
 
 /**
- * Text scale.  Three weights of emphasis on the dark surface.
+ * Text scale.  Alpha-on-charcoal so emphasis reads as hierarchy, not as
+ * harsh pure-white — comfortable for long late-night sessions.
  */
 export const text = {
-  primary:   '#fafafa',
-  secondary: '#e4e4e7',
-  tertiary:  '#a1a1aa',
-  muted:     '#71717a',
-  disabled:  '#52525b',
+  primary:   'rgba(255,255,255,0.92)',
+  secondary: 'rgba(255,255,255,0.70)',
+  tertiary:  'rgba(255,255,255,0.55)',
+  muted:     'rgba(255,255,255,0.42)',
+  disabled:  'rgba(255,255,255,0.30)',
 } as const;
 
 /**

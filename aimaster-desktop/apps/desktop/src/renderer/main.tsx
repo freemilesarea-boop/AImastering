@@ -36,7 +36,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, EBSta
       <div style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center',
         justifyContent: 'center', height: '100vh',
-        background: '#09090b', color: '#e4e4e7',
+        background: '#13131A', color: '#e4e4e7',
         fontFamily: 'ui-monospace, "SF Mono", monospace',
         padding: '2rem', gap: '1rem',
       }}>

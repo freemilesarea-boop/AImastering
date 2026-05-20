@@ -315,7 +315,7 @@ function AdvancedSettingsPanel({ disabled }: { disabled: boolean }) {
             onChange={(v) => updateOptions({ limiterStrength: v, quickPreset: undefined })}
           />
 
-          <details className="rounded-md bg-zinc-950/60 border border-zinc-800/60">
+          <details className="rounded-lg bg-[#13131A] border border-white/[0.06]">
             <summary className="px-2.5 py-1.5 text-[11px] text-zinc-500 cursor-pointer hover:text-zinc-300 select-none">
               선택 옵션 — Output Gain · Stereo Width · Saturation
             </summary>
@@ -519,10 +519,10 @@ function QueueRow({
   return (
     <div className={`rounded-xl border p-3 transition-colors
                      ${item.status === 'done'
-                       ? 'border-zinc-700/60 bg-zinc-900/40'
+                       ? 'border-white/[0.12] bg-surface-800/70'
                        : item.status === 'error'
                          ? 'border-red-900/40 bg-red-950/10'
-                         : 'border-zinc-800 bg-zinc-900/20'
+                         : 'border-white/[0.08] bg-surface-800/50'
                      }`}
     >
       {/* Row 1: file name + status + remove */}

@@ -34,7 +34,7 @@ function Showcase() {
   return (
     <div style={{
       width: 600,
-      background: '#09090b',
+      background: '#13131A',
       color: '#e4e4e7',
       padding: 24,
       display: 'flex',
