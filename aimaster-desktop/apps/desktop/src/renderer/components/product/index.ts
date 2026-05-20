@@ -32,6 +32,9 @@ export type { LouiPreviewControlProps, PreviewControlPhase } from './LouiPreview
 export { LouiABCompare, useABShortcut } from './LouiABCompare.js';
 export type { LouiABCompareProps, ABMode } from './LouiABCompare.js';
 
+export { LouiRealtimeDebugPanel } from './LouiRealtimeDebugPanel.js';
+export type { LouiRealtimeDebugPanelProps } from './LouiRealtimeDebugPanel.js';
+
 // Parameter panels — re-exported from `panels/` for one-stop import.
 export {
   EqParameterPanel,
