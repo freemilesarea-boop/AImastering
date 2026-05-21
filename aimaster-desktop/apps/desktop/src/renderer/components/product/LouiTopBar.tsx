@@ -18,6 +18,8 @@ export interface LouiTopBarProps {
   subtitle?: string;
   /** Optional active preset name displayed in the right side dropdown. */
   presetLabel?: string;
+  /** Click → go back to the start screen (queue + versions are kept). */
+  onBack?: () => void;
   /** Click → open import dialog (drag-and-drop fallback remains in App). */
   onImport?: () => void;
   /** Click → trigger the export flow (WAV save / report). */
@@ -134,6 +136,23 @@ export function LouiTopBar(props: LouiTopBarProps) {
         flexShrink: 0,
       }}
     >
+      {/* Back to the start screen — keeps queue + versions. */}
+      {props.onBack && (
+        <button
+          className="no-drag"
+          type="button"
+          onClick={props.onBack}
+          title="파일과 버전은 유지됩니다"
+          aria-label="돌아가기"
+          style={{ ...buttonBase, paddingInline: space['2'] }}
+        >
+          <svg width={13} height={13} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10 3L5 8l5 5" />
+          </svg>
+          <span>돌아가기</span>
+        </button>
+      )}
+
       {/* Brand */}
       <div style={{ display: 'flex', alignItems: 'center', gap: space['2'], userSelect: 'none' }}>
         <span

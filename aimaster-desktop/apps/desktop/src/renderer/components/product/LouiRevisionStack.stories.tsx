@@ -38,6 +38,19 @@ type Story = StoryObj<typeof LouiRevisionStack>;
 
 const single = initGroup(input({ presetId: 'streaming-pro' }));
 
+export const NoVersionSourcePreview: Story = {
+  name: 'No version (source preview)',
+  args: { revisions: [], activeId: '' },
+};
+
+export const FirstRevisionCreating: Story = {
+  args: { revisions: [], activeId: '', creating: true },
+};
+
+export const FirstRevisionFailed: Story = {
+  args: { revisions: [], activeId: '', createError: 'master produced no output' },
+};
+
 export const OneRevision: Story = {
   args: { revisions: single.revisions, activeId: single.activeRevisionId },
 };

@@ -473,6 +473,7 @@ function QueueRow({
   onSetActivePlayer,
   onRemove,
   onViewResult,
+  onTweak,
   notify,
 }: {
   item: QueueItem;
@@ -480,6 +481,7 @@ function QueueRow({
   onSetActivePlayer: (id: string) => void;
   onRemove: (id: string) => void;
   onViewResult: (item: QueueItem) => void;
+  onTweak: (item: QueueItem) => void;
   notify: (msg: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }) {
   const previewSrc = item.masteringResult?.previewPath
@@ -525,11 +527,21 @@ function QueueRow({
                          : 'border-white/[0.08] bg-surface-800/50'
                      }`}
     >
-      {/* Row 1: file name + status + remove */}
+      {/* Row 1: file name + status + tweak + remove */}
       <div className="flex items-center gap-2.5">
         <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
         <span className="flex-1 text-xs text-zinc-300 truncate">{item.fileName}</span>
         <span className="text-[10px] text-zinc-600 shrink-0">{statusLabel}</span>
+        {(item.status === 'pending' || item.status === 'error') && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onTweak(item); }}
+            className="no-drag shrink-0 text-[11px] font-medium rounded-md px-2 py-1 transition-colors"
+            style={{ color: loui.softLavender, border: `1px solid ${louiAlpha.lav(0.3)}`, background: louiAlpha.lav(0.08) }}
+            title="원본을 들으며 설정을 조절하고 버전을 만듭니다"
+          >
+            조절하며 듣기
+          </button>
+        )}
         {(item.status === 'pending' || item.status === 'error') && (
           <button
             onClick={(e) => { e.stopPropagation(); onRemove(item.id); }}
@@ -817,6 +829,16 @@ export default function HomePage() {
     setPage('result');
   }, [setFile, setAnalysis, setMasteringResult, setPage]);
 
+  // ── Tweak & Listen — open the workspace BEFORE mastering (source preview).
+  // No master result required; ProductPage plays the source + lets the user
+  // tweak and create the first version.  Queue is untouched.
+  const handleTweakListen = useCallback((item: QueueItem) => {
+    setFile(item.filePath);
+    setAnalysis(item.analysis ?? null);
+    setMasteringResult(item.masteringResult ?? null);
+    setPage('result');
+  }, [setFile, setAnalysis, setMasteringResult, setPage]);
+
   // ── Batch processing ──────────────────────────────────────────────────
   const handleStartBatch = useCallback(async () => {
     const pending = queue.filter((i) => i.status === 'pending' || i.status === 'error');
@@ -1002,6 +1024,7 @@ export default function HomePage() {
                     onSetActivePlayer={setActivePlayerId}
                     onRemove={removeFromQueue}
                     onViewResult={handleViewResult}
+                    onTweak={handleTweakListen}
                     notify={notify}
                   />
                 ))}

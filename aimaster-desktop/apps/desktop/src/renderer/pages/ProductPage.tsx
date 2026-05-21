@@ -133,6 +133,7 @@ function ProductLayoutInner({
   onSeek,
   progress,
   modules,
+  onBack,
   onImport,
   onExport,
   onSettings,
@@ -160,6 +161,7 @@ function ProductLayoutInner({
   onSeek?: (ratio: number) => void;
   progress?: number;
   modules?: ModuleCardDef[];
+  onBack?: () => void;
   onImport?: () => void;
   onExport?: () => void;
   onSettings?: () => void;
@@ -191,6 +193,7 @@ function ProductLayoutInner({
       <LouiTopBar
         subtitle="Result"
         engineLabel={analyzerFactoryLabel()}
+        {...(onBack ? { onBack } : {})}
         {...(onImport ? { onImport } : {})}
         {...(onExport ? { onExport } : {})}
         {...(onSettings ? { onSettings } : {})}
@@ -947,15 +950,16 @@ function RevisionStackHost(props: {
   const remove = useAudioStore((s) => s.removeRevision);
   const rename = useAudioStore((s) => s.renameRevision);
   const toggleFav = useAudioStore((s) => s.toggleRevisionFavorite);
-  if (!bridge || !group) return null;
+  if (!bridge) return null;
 
   const saveCopy = (srcPath: string) => { void window.electronAPI?.invoke('file:save-wav', srcPath); };
-  const revFor = (id: string) => group.revisions.find((r) => r.id === id);
+  const revFor = (id: string) => group?.revisions.find((r) => r.id === id);
 
+  // No group yet = source-preview mode → empty stack with the create CTA.
   return (
     <LouiRevisionStack
-      revisions={group.revisions}
-      activeId={group.activeRevisionId}
+      revisions={group?.revisions ?? []}
+      activeId={group?.activeRevisionId ?? ''}
       creating={bridge.creatingRevision}
       createError={bridge.createRevisionError}
       experimental={isRustOfflineRenderEnabled()}
@@ -1068,6 +1072,15 @@ function ProductPageProduction() {
   const revisionGroup   = useAudioStore((s) => s.revisionGroup);
   const addRevision     = useAudioStore((s) => s.addRevision);
   const setActiveRevision = useAudioStore((s) => s.setActiveRevision);
+  const clearRevisions = useAudioStore((s) => s.clearRevisions);
+
+  // Keep the revision group bound to the CURRENT source — clear stale
+  // revisions when the user opens a different file (source-preview / tweak).
+  React.useEffect(() => {
+    const g = useAudioStore.getState().revisionGroup;
+    if (g && sourceAudioPath && g.sourceFilePath !== sourceAudioPath) clearRevisions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceAudioPath]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -1103,7 +1116,12 @@ function ProductPageProduction() {
   const baselinePreview = baselineRevision?.previewPath ?? masteringResult?.previewPath ?? '';
   const activePreview   = activeRevision?.previewPath ?? masteringResult?.previewPath ?? '';
 
-  const basePreviewSrc = baselinePreview ? toFileUrl(baselinePreview) : '';
+  // Source-preview mode (UX-FLOW-NEXT-1): with no master result yet, play
+  // the ORIGINAL file so the user can listen + tweak before rendering.
+  const sourcePreviewSrc = sourceAudioPath ? toFileUrl(sourceAudioPath) : '';
+  const hasResult = Boolean(baselineRevision) || Boolean(masteringResult?.outputPath);
+
+  const basePreviewSrc = baselinePreview ? toFileUrl(baselinePreview) : sourcePreviewSrc;
   const activeIsNotBaseline = Boolean(activeRevision && baselineRevision && activeRevision.id !== baselineRevision.id);
   // "B" = a fresh quick-render override if present, else the active
   // revision's preview when it differs from the baseline.
@@ -1232,6 +1250,8 @@ function ProductPageProduction() {
   };
 
   const onImport = useCallback(() => { setPage('home'); }, [setPage]);
+  // Back to the start screen — keeps queue + revisions (no clear).
+  const onBack = useCallback(() => { setPage('home'); }, [setPage]);
   const onExport = useCallback(async () => {
     if (!activeOutputPath) return;
     await window.electronAPI?.invoke('file:save-wav', activeOutputPath);
@@ -1283,6 +1303,7 @@ function ProductPageProduction() {
           onPresetChange={setPresetId}
           {...(selectedModule ? { selectedModule } : {})}
           onSelectModule={onSelectModule}
+          onBack={onBack}
           onImport={onImport}
           onExport={onExport}
           onSettings={onSettings}
@@ -1324,6 +1345,7 @@ function ProductPageProductionInner(props: {
   onPresetChange: (id: string) => void;
   selectedModule?: ModuleCardDef['id'];
   onSelectModule: (id: ModuleCardDef['id']) => void;
+  onBack?: () => void;
   onImport: () => void;
   onExport: () => void;
   onSettings: () => void;
@@ -1415,6 +1437,7 @@ function ProductPageProductionInner(props: {
       currentTimeLabel={props.currentTimeLabel}
       durationLabel={props.durationLabel}
       onSeek={props.onSeek}
+      {...(props.onBack ? { onBack: props.onBack } : {})}
       onImport={props.onImport}
       onExport={props.onExport}
       onSettings={props.onSettings}

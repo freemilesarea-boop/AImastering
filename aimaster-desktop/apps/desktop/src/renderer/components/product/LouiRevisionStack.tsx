@@ -196,7 +196,11 @@ export function LouiRevisionStack(props: LouiRevisionStackProps) {
         <div style={{ fontSize: 11, color: meter.danger.foreground }}>새 버전 생성 실패: {props.createError}</div>
       )}
 
-      {revisions.map((rev) => (
+      {revisions.length === 0 ? (
+        <div style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: text.muted, lineHeight: 1.5 }}>
+          아직 마스터링 버전이 없습니다 — 원본을 들으며 설정을 조정한 뒤 “새 버전 만들기”로 결과를 확인하세요.
+        </div>
+      ) : revisions.map((rev) => (
         <RevisionCard
           key={rev.id}
           rev={rev}
