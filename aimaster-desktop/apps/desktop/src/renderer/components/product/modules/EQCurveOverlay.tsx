@@ -1,14 +1,19 @@
-// EQCurveOverlay — approximate EQ response curve over the spectrum
-// (OZONE-STYLE-MODULE-SUITE).
+// EQCurveOverlay — precise EQ response curve + active band dots
+// (OZONE-MODULE-NEXT-2).
 //
-// Draws a *visual approximation* of the Loui EQ bands (low cut / low shelf
-// / presence / air + output gain) as an SVG path on a log-frequency axis.
-// It mirrors the preview EQ's direction (not a sample-accurate biquad
-// plot) — labelled "approximate" in the UI so it is never mistaken for a
-// measured curve.
+// Uses `eq-curve-model.ts` (RBJ-cookbook magnitudes matching the real Rust
+// preview EQ band layout) to draw the tone curve over the spectrum, plus a
+// FabFilter/Ozone-style point per band (Low Cut / Low Shelf / Presence /
+// Air / Output) with value labels.  Still a *visualization* (overlays a
+// dBFS spectrum, omits the adaptive harshness dip) — labelled "approximate"
+// in the UI.  No DSP / audio change.
 
 import React from 'react';
 import { loui, louiAlpha } from '../../../theme/loui-home.js';
+import {
+  buildEqCurveModel, eqCurveDb, bandPointDb,
+  type BandModel,
+} from '../../../audio/modules/eq-curve-model.js';
 
 export interface EqBands {
   lowCutHz: number;
@@ -22,52 +27,114 @@ export interface EQCurveOverlayProps {
   width: number;
   height: number;
   bands: EqBands;
-  /** Frequency axis range. */
+  sampleRate?: number;
   minHz?: number;
   maxHz?: number;
-  /** dB range for the vertical axis. */
   dbRange?: number;
-  /** Dim the curve when the EQ module is bypassed. */
   bypassed?: boolean;
+  /** Highlight a band (e.g. the open EQ panel band). */
+  selectedBandId?: string;
+  /** Click a band dot. */
+  onSelectBand?: (id: string) => void;
+  /** Force value labels on/off (default: shown when width ≥ 460). */
+  showLabels?: boolean;
 }
 
 const logF = (f: number, min: number, max: number) =>
   (Math.log10(f) - Math.log10(min)) / (Math.log10(max) - Math.log10(min));
 
-/** Rough magnitude (dB) approximation — visual direction, not exact. */
-function responseDb(f: number, b: EqBands): number {
-  let db = b.outputGainDb;
-  // High-pass: ~12 dB/oct rolloff below the corner.
-  if (f < b.lowCutHz) db -= Math.min(24, 12 * Math.log2(b.lowCutHz / Math.max(1, f)));
-  // Low shelf at 120 Hz.
-  db += b.lowShelfDb / (1 + Math.pow(f / 120, 2));
-  // Presence bell at 3 kHz (Q≈1.1).
-  db += b.presenceDb * Math.exp(-Math.pow(Math.log2(f / 3000) * 1.1, 2));
-  // Air shelf at 12 kHz.
-  db += b.airDb / (1 + Math.pow(12000 / Math.max(1, f), 2));
-  return db;
+const WARN_GAIN_DB = 4;
+
+function fmtBandLabel(b: BandModel): string {
+  if (b.id === 'lowCut') return `${Math.round(b.frequency)} Hz`;
+  const g = b.gainDb >= 0 ? `+${b.gainDb.toFixed(1)}` : b.gainDb.toFixed(1);
+  return `${b.label} ${g}`;
 }
 
 export function EQCurveOverlay({
-  width, height, bands, minHz = 20, maxHz = 20000, dbRange = 12, bypassed = false,
+  width, height, bands, sampleRate = 48000,
+  minHz = 20, maxHz = 20000, dbRange = 12, bypassed = false,
+  selectedBandId, onSelectBand, showLabels,
 }: EQCurveOverlayProps) {
   if (width <= 0 || height <= 0) return null;
-  const steps = 96;
-  const dbToY = (db: number) => height / 2 - (db / dbRange) * (height / 2);
+  const model = buildEqCurveModel(bands, bypassed, sampleRate);
+  const labelsOn = showLabels ?? width >= 460;
+  const dbToY = (db: number) => Math.max(3, Math.min(height - 3, height / 2 - (db / dbRange) * (height / 2)));
+
+  // Curve path.
+  const steps = 110;
   let d = '';
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
     const f = Math.pow(10, Math.log10(minHz) + t * (Math.log10(maxHz) - Math.log10(minHz)));
     const x = logF(f, minHz, maxHz) * width;
-    const y = Math.max(2, Math.min(height - 2, dbToY(responseDb(f, bands))));
+    const y = dbToY(eqCurveDb(f, model));
     d += `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)} `;
   }
-  const stroke = bypassed ? louiAlpha.lav(0.25) : loui.primaryLavender;
+
+  const hot = !bypassed && model.outputGainDb >= WARN_GAIN_DB;
+  const curveStroke = bypassed ? louiAlpha.lav(0.22) : hot ? loui.warningAmber : loui.primaryLavender;
+
+  // Curve fill (subtle, only when active).
+  const fillD = bypassed ? '' : `${d}L${width},${dbToY(0)} L0,${dbToY(0)} Z`;
+
+  const freqBands = model.bands.filter((b) => b.type !== 'output');
+  const outputBand = model.bands.find((b) => b.id === 'output');
+
   return (
     <svg width={width} height={height} style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }} aria-hidden>
-      {/* 0 dB reference line */}
+      {/* 0 dB reference */}
       <line x1={0} y1={height / 2} x2={width} y2={height / 2} stroke="rgba(255,255,255,0.10)" strokeWidth={1} strokeDasharray="3 4" />
-      <path d={d} fill="none" stroke={stroke} strokeWidth={2} strokeLinejoin="round" />
+
+      {!bypassed && (
+        <path d={fillD} fill={louiAlpha.lav(0.06)} stroke="none" />
+      )}
+      <path d={d} fill="none" stroke={curveStroke} strokeWidth={2} strokeLinejoin="round" />
+
+      {/* Output gain indicator — a tick + label on the right edge. */}
+      {outputBand && outputBand.enabled && !bypassed && (
+        <g>
+          <line x1={width - 10} y1={dbToY(model.outputGainDb)} x2={width} y2={dbToY(model.outputGainDb)} stroke={outputBand.color} strokeWidth={2} />
+          {labelsOn && (
+            <text x={width - 12} y={dbToY(model.outputGainDb) - 4} textAnchor="end"
+                  fill={outputBand.color} fontSize={10} fontFamily="ui-monospace">
+              {fmtBandLabel(outputBand)}
+            </text>
+          )}
+        </g>
+      )}
+
+      {/* Band dots. */}
+      {freqBands.map((b) => {
+        const x = logF(Math.max(minHz, Math.min(maxHz, b.frequency)), minHz, maxHz) * width;
+        const y = dbToY(bandPointDb(b, model));
+        const selected = b.id === selectedBandId;
+        const dim = bypassed || !b.enabled;
+        const r = selected ? 6 : 4.5;
+        return (
+          <g key={b.id} style={{ pointerEvents: onSelectBand ? 'auto' : 'none', cursor: onSelectBand ? 'pointer' : 'default' }}
+             onClick={onSelectBand ? () => onSelectBand(b.id) : undefined}>
+            {selected && !dim && <circle cx={x} cy={y} r={r + 4} fill="none" stroke={b.color} strokeWidth={1} opacity={0.5} />}
+            <circle
+              cx={x} cy={y} r={r}
+              fill={dim ? 'rgba(255,255,255,0.10)' : b.color}
+              stroke={dim ? 'rgba(255,255,255,0.20)' : '#0E0E14'}
+              strokeWidth={1}
+              style={dim ? {} : { filter: `drop-shadow(0 0 5px ${b.color})` }}
+            />
+            {labelsOn && b.enabled && !bypassed && (
+              <text x={x} y={y - 9} textAnchor="middle" fill={b.color} fontSize={10} fontFamily="ui-monospace">
+                {fmtBandLabel(b)}
+              </text>
+            )}
+          </g>
+        );
+      })}
+
+      {/* Approximate / bypass note */}
+      <text x={8} y={14} fill={bypassed ? 'rgba(255,255,255,0.30)' : 'rgba(255,255,255,0.34)'} fontSize={9} fontFamily="ui-monospace">
+        {bypassed ? 'EQ bypassed' : 'EQ curve · approximate'}
+      </text>
     </svg>
   );
 }
