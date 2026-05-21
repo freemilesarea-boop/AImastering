@@ -15,9 +15,15 @@ const meta: Meta<typeof LouiRealtimeStatus> = {
 export default meta;
 type Story = StoryObj<typeof LouiRealtimeStatus>;
 
-export const LiveActive: Story = { args: { enabled: true, active: true, readinessLabel: 'realtime-ready' } };
-export const Starting: Story = { args: { enabled: true, active: false, readinessLabel: 'realtime-ready' } };
+export const LiveActive: Story = { args: { status: 'active', readinessLabel: 'realtime-ready' } };
+export const Waiting: Story = { args: { status: 'waiting', readinessLabel: 'realtime-ready' } };
+export const Passthrough: Story = { args: { status: 'passthrough', readinessLabel: 'realtime-ready' } };
+export const Starting: Story = { args: { status: 'starting', readinessLabel: 'realtime-ready' } };
+export const Failed: Story = { args: { status: 'failed', readinessLabel: 'realtime-ready' } };
 export const Unavailable: Story = {
-  args: { enabled: true, active: false, readinessLabel: 'realtime-unavailable: AudioWorklet unavailable' },
+  args: { status: 'unavailable', readinessLabel: 'realtime-unavailable: AudioWorklet unavailable' },
 };
-export const Off: Story = { args: { enabled: false, active: false } };
+export const Off: Story = { args: { status: 'off' } };
+
+// Legacy enabled/active props still derive a status (storybook back-compat).
+export const LegacyEnabledActive: Story = { args: { enabled: true, active: true, readinessLabel: 'realtime-ready' } };

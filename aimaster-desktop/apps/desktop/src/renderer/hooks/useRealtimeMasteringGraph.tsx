@@ -25,6 +25,12 @@ import {
   type RealtimeMasteringGraphState,
 } from '../audio/realtime-mastering-graph.js';
 import { stateToChainConfig, type RealtimeChainConfig } from '../audio/realtime-mastering-chain.js';
+import {
+  deriveRealtimeUiStatus,
+  type RealtimePreviewUiStatus,
+} from '../audio/realtime-ui-status.js';
+
+export type { RealtimePreviewUiStatus };
 import type { RealtimeMetricsSnapshot } from '../audio/realtime-metrics.js';
 import { useAllModuleParameters } from '../audio/parameters/useModuleParameterState.js';
 import type { AttachableAnalyzerSession } from '../audio/wasm-analyzer-context.js';
@@ -45,24 +51,12 @@ const EMPTY_METRICS: RealtimeMetricsSnapshot = {
   totalXruns: 0, limiterGrDb: 0, safetyEvents: 0, samples: 0,
 };
 
-/**
- * Coarse status for UI:
- *   off         — flag off (hook is a no-op)
- *   unavailable — flag on but the environment can't run realtime
- *   starting    — flag on, ready, graph loading/attaching
- *   active      — node spliced in and processing
- *   bypassed    — node in graph but bypassed (audio passes through)
- *   failed      — load/attach failed → fell back to native playback
- */
-export type RealtimePreviewUiStatus =
-  | 'off' | 'unavailable' | 'starting' | 'active' | 'bypassed' | 'failed';
-
 export interface RealtimeMasteringPreviewStatus {
   /** The realtime flag is on. */
   enabled: boolean;
-  /** Node spliced in and processing (not bypassed). */
+  /** The worklet is genuinely processing audio (edits are heard live). */
   active: boolean;
-  /** Coarse UI status (off/unavailable/starting/active/bypassed/failed). */
+  /** Coarse, honest UI status (off/unavailable/waiting/starting/passthrough/active/bypassed/failed). */
   uiStatus: RealtimePreviewUiStatus;
   /** Current graph/load state (null until attach starts). */
   graphState: RealtimeMasteringGraphState | null;
@@ -104,6 +98,11 @@ export function useRealtimeMasteringGraph(
   const [configUpdates, setConfigUpdates] = useState(0);
   const [lastConfigAt, setLastConfigAt] = useState<number | null>(null);
 
+  // Latest parameter state, readable from async callbacks without re-running
+  // the attach effect.
+  const pendingState = useRef(paramState);
+  pendingState.current = paramState;
+
   // ── Lifecycle: attach when flag on + ready + session present ──────────
   useEffect(() => {
     if (!enabled || !readiness.ready || !session || typeof session.setInsertNode !== 'function') {
@@ -118,8 +117,18 @@ export function useRealtimeMasteringGraph(
     });
     graphRef.current = graph;
     // Seed the chain with the current parameter state before splicing in.
-    try { graph.updateConfig(stateToChainConfig(paramState)); } catch { /* ignore */ }
-    void graph.attach();
+    try { graph.updateConfig(stateToChainConfig(pendingState.current)); } catch { /* ignore */ }
+    void graph.attach().then((ok) => {
+      if (!ok || graphRef.current !== graph) return;
+      // Force-push the current config the moment the node exists so the
+      // worklet always has a config (configUpdates leaves 0 only when the
+      // graph never attached) and the debug panel reflects it.
+      try {
+        graph.updateConfig(stateToChainConfig(pendingState.current));
+        setConfigUpdates((n) => n + 1);
+        setLastConfigAt(Date.now());
+      } catch { /* ignore */ }
+    });
 
     return () => {
       graphRef.current = null;
@@ -134,8 +143,6 @@ export function useRealtimeMasteringGraph(
 
   // ── Parameter live-update (rAF-batched) ──────────────────────────────
   const rafRef = useRef<number | null>(null);
-  const pendingState = useRef(paramState);
-  pendingState.current = paramState;
   useEffect(() => {
     if (!enabled) return;
     if (rafRef.current !== null) return; // already scheduled
@@ -190,19 +197,18 @@ export function useRealtimeMasteringGraph(
     };
   }, [enabled, readiness]);
 
-  const status = graphState?.status;
-  const active = status === 'active';
-  const uiStatus: RealtimePreviewUiStatus = !enabled
-    ? 'off'
-    : !readiness.ready
-      ? 'unavailable'
-      : status === 'active'
-        ? 'active'
-        : status === 'bypassed'
-          ? 'bypassed'
-          : status === 'failed'
-            ? 'failed'
-            : 'starting';
+  // Honest status: "active" requires the worklet to be genuinely
+  // processing (it only posts metrics from its non-passthrough branch), so
+  // a spliced-but-passing-through node reads "passthrough", and no session
+  // yet reads "waiting" — never a false "Live".
+  const uiStatus: RealtimePreviewUiStatus = deriveRealtimeUiStatus({
+    enabled,
+    ready: readiness.ready,
+    hasSession: !!session,
+    graphStatus: graphState?.status,
+    processing: metrics.samples > 0,
+  });
+  const active = uiStatus === 'active';
   return {
     enabled,
     active,

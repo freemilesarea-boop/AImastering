@@ -7,8 +7,16 @@
 
 1. Open a track → enter the workspace (ProductPage) and press play.
 2. In the module-suite header click **Enable Realtime Preview** (persists to
-   `localStorage` and reloads). After reload the status chip should read
-   **"Realtime on · module edits are heard live"**.
+   `localStorage` and reloads).
+   - The status chip is honest about each phase:
+     `off` → `waiting` (start playback on a loaded track) → `starting`
+     (worklet attaching) → `passthrough` (spliced but not pulling yet) →
+     **`active`** ("Realtime on · module edits are heard live"). It only
+     shows the green active state when the worklet is genuinely processing
+     (config pushes > 0 AND avg process > 0).
+   - If it stays **waiting** with playback `0:00 / 0:00`, the track has no
+     playable source — the realtime graph cannot attach until the audio
+     loads metadata. Re-import / pick a valid file.
    - If it reads *unavailable*, the toggle tooltip / debug panel shows why
      (AudioWorklet / WASM / asset readiness). Fix that before continuing.
 3. The bottom-right **Realtime Preview** debug panel should show:

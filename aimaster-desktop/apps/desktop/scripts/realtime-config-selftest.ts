@@ -13,6 +13,7 @@
 
 import { stateToChainConfig, type RealtimeChainConfig } from '../src/renderer/audio/realtime-mastering-chain.js';
 import { sanitiseConfig } from '../src/renderer/audio/realtime-mastering-graph.js';
+import { deriveRealtimeUiStatus } from '../src/renderer/audio/realtime-ui-status.js';
 import { defaultAllModulesState } from '../src/renderer/audio/parameters/parameter-state.js';
 import { ALL_MODULE_PARAMETER_DEFS } from '../src/renderer/audio/parameters/module-parameter-definitions.js';
 
@@ -113,6 +114,27 @@ check('config payload round-trips through JSON (postMessage-safe)', () => {
   for (const k of Object.keys(c) as (keyof RealtimeChainConfig)[]) {
     assert(round[k] === c[k], `field ${k} survived round-trip`);
   }
+});
+
+// 7. UI status derivation — never "active" without real processing.
+check('deriveRealtimeUiStatus: off / unavailable / waiting / passthrough / active', () => {
+  const base = { enabled: true, ready: true, hasSession: true, graphStatus: 'active' as const, processing: true };
+  assert(deriveRealtimeUiStatus({ ...base, enabled: false }) === 'off', 'flag off → off');
+  assert(deriveRealtimeUiStatus({ ...base, ready: false }) === 'unavailable', 'env not ready → unavailable');
+  assert(deriveRealtimeUiStatus({ ...base, hasSession: false }) === 'waiting', 'no session → waiting');
+  assert(deriveRealtimeUiStatus({ ...base, processing: false }) === 'passthrough', 'spliced, no process → passthrough');
+  assert(deriveRealtimeUiStatus(base) === 'active', 'processing → active');
+  assert(deriveRealtimeUiStatus({ ...base, graphStatus: 'failed' }) === 'failed', 'failed → failed');
+  assert(deriveRealtimeUiStatus({ ...base, graphStatus: 'loading' }) === 'starting', 'loading → starting');
+});
+
+// 8. "active" is the ONLY status that claims edits are heard live.
+check('only "active" reports heard-live (no false Live)', () => {
+  const heardLive = (s: Parameters<typeof deriveRealtimeUiStatus>[0]) =>
+    deriveRealtimeUiStatus(s) === 'active';
+  assert(!heardLive({ enabled: true, ready: true, hasSession: true, graphStatus: 'active', processing: false }), 'passthrough must not be heard-live');
+  assert(!heardLive({ enabled: true, ready: true, hasSession: false, graphStatus: undefined, processing: false }), 'waiting must not be heard-live');
+  assert(heardLive({ enabled: true, ready: true, hasSession: true, graphStatus: 'active', processing: true }), 'processing IS heard-live');
 });
 
 const passed = results.filter((r) => r.pass).length;

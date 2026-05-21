@@ -1470,6 +1470,7 @@ function ProductPageProductionInner(props: {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <LouiRealtimeStatus
+              status={realtime.uiStatus}
               enabled={realtime.enabled}
               active={realtime.active}
               readinessLabel={realtime.readinessLabel}

@@ -149,6 +149,11 @@ export function createRealtimeMasteringGraph(
       emit({ status: 'failed', fallbackReason: 'no-audio-context' });
       return false;
     }
+    // A gesture-suspended context never pulls the worklet — resume it so
+    // process() actually runs (best-effort; playback gesture usually has).
+    if (ctx.state === 'suspended') {
+      try { void ctx.resume(); } catch { /* ignore */ }
+    }
 
     emit({ status: 'loading' });
     try {

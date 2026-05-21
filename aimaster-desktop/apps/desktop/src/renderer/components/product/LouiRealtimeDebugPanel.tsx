@@ -97,7 +97,11 @@ export function LouiRealtimeDebugPanel(props: LouiRealtimeDebugPanelProps) {
       </div>
       <Row label="status" value={props.uiStatus ?? (props.active ? 'active' : 'off')}
            status={props.active ? 'ok' : props.uiStatus === 'failed' ? 'danger' : props.uiStatus === 'off' ? undefined : 'warn'} />
-      <Row label="worklet" value={props.active ? 'processing' : 'passthrough'} status={props.active ? 'ok' : 'warn'} />
+      <Row
+        label="worklet"
+        value={props.active ? 'processing' : props.uiStatus === 'waiting' ? 'waiting for audio' : 'passthrough'}
+        status={props.active ? 'ok' : 'warn'}
+      />
       <Row label="readiness" value={props.readiness} status={props.readiness === 'realtime-ready' ? 'ok' : 'warn'} />
       {props.fallbackReason && <Row label="fallback" value={props.fallbackReason} status="danger" />}
       {typeof props.configUpdates === 'number' && (

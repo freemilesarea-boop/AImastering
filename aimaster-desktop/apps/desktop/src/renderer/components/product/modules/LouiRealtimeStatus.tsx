@@ -1,33 +1,45 @@
 // LouiRealtimeStatus — is the user hearing edits live? (OZONE-MODULE-NEXT-5)
 //
-// Honest indicator: separates "heard live in the preview" from "reaches the
-// exported file".  When realtime is OFF, edits still apply — but only on
-// the next Update Preview / Re-master, not instantly.
+// Honest indicator: separates "heard live in the preview" from "staged".
+// Only the genuine `active` status (worklet actually processing) shows the
+// green "heard live" state — waiting / passthrough / starting / failed all
+// read "changes are staged", never a false "Live".
 
 import React from 'react';
 import { surface, text, typography, radius, meter } from '../../../theme/loui-theme.js';
 import { loui } from '../../../theme/loui-home.js';
+import {
+  realtimeStatusLabel,
+  isRealtimeHeardLive,
+  type RealtimePreviewUiStatus,
+} from '../../../audio/realtime-ui-status.js';
 
 export interface LouiRealtimeStatusProps {
-  /** Realtime preview flag is on. */
-  enabled: boolean;
-  /** The realtime graph is attached + processing. */
-  active: boolean;
+  /** Honest coarse status from the hook (preferred). */
+  status?: RealtimePreviewUiStatus;
+  /** Realtime preview flag is on (fallback when `status` absent). */
+  enabled?: boolean;
+  /** The realtime graph is attached + processing (fallback). */
+  active?: boolean;
   /** Readiness label (e.g. "realtime-ready" / "...unavailable: ..."). */
   readinessLabel?: string;
 }
 
+/** Derive a status from the legacy enabled/active props (storybook etc.). */
+function legacyStatus(props: LouiRealtimeStatusProps): RealtimePreviewUiStatus {
+  if (!props.enabled) return 'off';
+  if (props.active) return 'active';
+  if (props.readinessLabel && props.readinessLabel !== 'realtime-ready') return 'unavailable';
+  return 'starting';
+}
+
 export function LouiRealtimeStatus(props: LouiRealtimeStatusProps) {
-  const live = props.enabled && props.active;
-  const color = live ? meter.safe.foreground : props.enabled ? loui.warningAmber : text.muted;
-  const dot = live ? meter.safe.foreground : props.enabled ? loui.warningAmber : surface.overlay;
-  const label = live
-    ? 'Realtime on · module edits are heard live'
-    : props.enabled
-      ? (props.readinessLabel && props.readinessLabel !== 'realtime-ready'
-          ? `Realtime unavailable — changes are staged (${props.readinessLabel})`
-          : 'Realtime starting… — changes are staged until it is active')
-      : 'Realtime off — changes are staged. Click Update Preview or Create Revision to hear supported changes.';
+  const status = props.status ?? legacyStatus(props);
+  const live = isRealtimeHeardLive(status);
+  const off = status === 'off';
+  const color = live ? meter.safe.foreground : off ? text.muted : loui.warningAmber;
+  const dot = live ? meter.safe.foreground : off ? surface.overlay : loui.warningAmber;
+  const label = realtimeStatusLabel(status, props.readinessLabel);
 
   return (
     <div style={{
