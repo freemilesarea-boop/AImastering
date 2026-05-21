@@ -48,7 +48,8 @@ declare global {
 
 const EMPTY_METRICS: RealtimeMetricsSnapshot = {
   cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, blockPeriodMs: 0,
-  totalXruns: 0, limiterGrDb: 0, safetyEvents: 0, samples: 0,
+  totalXruns: 0, limiterGrDb: 0, safetyEvents: 0,
+  processCalls: 0, audioBlocks: 0, nonSilentBlocks: 0, samples: 0,
 };
 
 export interface RealtimeMasteringPreviewStatus {
@@ -204,9 +205,12 @@ export function useRealtimeMasteringGraph(
   const uiStatus: RealtimePreviewUiStatus = deriveRealtimeUiStatus({
     enabled,
     ready: readiness.ready,
-    hasSession: !!session,
+    hasSession: !!session && typeof session.setInsertNode === 'function',
     graphStatus: graphState?.status,
-    processing: metrics.samples > 0,
+    // The worklet now posts metrics even while passing through, so "samples"
+    // alone is not proof of DSP.  Real chain processing accrues process
+    // TIME — avgProcessMs > 0 ⟺ the chain actually ran this window.
+    processing: metrics.avgProcessMs > 0,
   });
   const active = uiStatus === 'active';
   return {

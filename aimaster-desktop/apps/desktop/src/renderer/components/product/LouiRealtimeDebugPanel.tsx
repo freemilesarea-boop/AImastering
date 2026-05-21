@@ -109,6 +109,12 @@ export function LouiRealtimeDebugPanel(props: LouiRealtimeDebugPanelProps) {
         status={props.active ? 'ok' : 'warn'}
       />
       <Row label="readiness" value={props.readiness} status={props.readiness === 'realtime-ready' ? 'ok' : 'warn'} />
+      {(props.uiStatus === 'active' || props.uiStatus === 'passthrough' || props.uiStatus === 'bypassed') && (
+        <Row label="route" value="src → master → tap → dest" status="ok" />
+      )}
+      <Row label="process calls" value={`${m.processCalls}`} status={m.processCalls > 0 ? 'ok' : 'warn'} />
+      <Row label="audio blocks" value={`${m.audioBlocks}`} status={m.audioBlocks > 0 ? 'ok' : 'warn'} />
+      <Row label="non-silent" value={`${m.nonSilentBlocks}`} status={m.nonSilentBlocks > 0 ? 'ok' : undefined} />
       {props.fallbackReason && <Row label="fallback" value={props.fallbackReason} status="danger" />}
       {props.audioDiag && (
         <>

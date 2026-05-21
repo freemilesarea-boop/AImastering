@@ -51,6 +51,9 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     this._blockPeriodMs = (128 / sampleRate) * 1000;
     this._grDb = 0;
     this._safetyEvents = 0;   // chain output-safety bypasses (non-finite/absurd)
+    this._processCalls = 0;   // total process() invocations
+    this._audioBlocks = 0;    // process() calls with a non-empty input
+    this._nonSilentBlocks = 0; // input blocks that carried real signal
 
     // Attempt to instantiate the WASM chain from processorOptions.
     // If the no-modules glue / module isn't provided, we stay in safe
@@ -107,8 +110,24 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       return true;
     }
 
+    // Honest telemetry: count every process() call + whether real audio is
+    // arriving, so the debug panel can tell "not attached" (no calls) from
+    // "playing but silent" from "processing".
+    this._processCalls++;
     const outChans = output.length;
     const inChans = input.length;
+    const in0 = inChans > 0 ? input[0] : null;
+    if (in0 && in0.length > 0) {
+      this._audioBlocks++;
+      // Cheap non-silence probe (sample a few points; avoids a full scan).
+      let nonSilent = false;
+      const step = Math.max(1, (in0.length / 8) | 0);
+      for (let i = 0; i < in0.length; i += step) {
+        if (in0[i] !== 0) { nonSilent = true; break; }
+      }
+      if (nonSilent) this._nonSilentBlocks++;
+    }
+
     // Always start by copying input → output (safe passthrough).  A MONO
     // input is duplicated to every output channel so the stereo chain (esp.
     // the imager's M/S maths) never sees an uninitialised/foreign buffer.
@@ -118,62 +137,69 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       if (inCh && outCh && inCh.length === outCh.length) outCh.set(inCh);
     }
 
-    // Passthrough when not ready or bypassed.
-    if (!this._ready || this._bypass || !this._chain) {
-      return true;
-    }
+    const processing = this._ready && !this._bypass && this._chain;
+    if (processing) {
+      this._applyPendingConfig();
 
-    this._applyPendingConfig();
-
-    // Process stereo in place on the OUTPUT buffers (already a copy of input).
-    // For a single-channel output we hand the chain a scratch right channel
-    // so it never aliases left (the writeback would otherwise clobber it).
-    const left = output[0];
-    let right;
-    if (outChans > 1) {
-      right = output[1];
-    } else {
-      if (!this._monoScratch || this._monoScratch.length !== left.length) {
-        this._monoScratch = new Float32Array(left.length);
+      // Process stereo in place on the OUTPUT buffers (already a copy of
+      // input).  For a single-channel output we hand the chain a scratch
+      // right channel so it never aliases left (the writeback would
+      // otherwise clobber it).
+      const left = output[0];
+      let right;
+      if (outChans > 1) {
+        right = output[1];
+      } else {
+        if (!this._monoScratch || this._monoScratch.length !== left.length) {
+          this._monoScratch = new Float32Array(left.length);
+        }
+        this._monoScratch.set(left);
+        right = this._monoScratch;
       }
-      this._monoScratch.set(left);
-      right = this._monoScratch;
-    }
-    const t0 = currentTime;
-    try {
-      this._chain.processStereo(left, right);
-      if (this._chain.limiterGrDb) this._grDb = this._chain.limiterGrDb();
-      if (this._chain.safetyEvents) this._safetyEvents = this._chain.safetyEvents();
-    } catch (e) {
-      // On any process error: restore passthrough for this block + bypass.
-      for (let c = 0; c < outChans; c++) {
-        const inCh = inChans > 0 ? (input[c] || input[0]) : null;
-        if (inCh && output[c]) output[c].set(inCh);
+      const t0 = currentTime;
+      try {
+        this._chain.processStereo(left, right);
+        if (this._chain.limiterGrDb) this._grDb = this._chain.limiterGrDb();
+        if (this._chain.safetyEvents) this._safetyEvents = this._chain.safetyEvents();
+      } catch (e) {
+        // On any process error: restore passthrough for this block + bypass.
+        for (let c = 0; c < outChans; c++) {
+          const inCh = inChans > 0 ? (input[c] || input[0]) : null;
+          if (inCh && output[c]) output[c].set(inCh);
+        }
+        this._bypass = true;
+        this._postMetrics();
+        return true;
       }
-      this._bypass = true;
-      return true;
+      const dtMs = (currentTime - t0) * 1000;
+      this._sumMs += dtMs;
+      if (dtMs > this._peakMs) this._peakMs = dtMs;
+      if (dtMs > this._blockPeriodMs) this._xruns++;
     }
-    const dtMs = (currentTime - t0) * 1000;
 
-    // Metrics.
-    this._sumMs += dtMs;
-    if (dtMs > this._peakMs) this._peakMs = dtMs;
-    if (dtMs > this._blockPeriodMs) this._xruns++;
+    // Post telemetry every window REGARDLESS of passthrough, so the panel
+    // sees process activity even before/without the chain processing.
     this._blockCount++;
-    if (this._blockCount >= METRIC_INTERVAL) {
-      this.port.postMessage({
-        type: 'metrics',
-        avgProcessMs: this._sumMs / this._blockCount,
-        peakProcessMs: this._peakMs,
-        blockPeriodMs: this._blockPeriodMs,
-        xruns: this._xruns,
-        limiterGrDb: this._grDb,
-        safetyEvents: this._safetyEvents,
-      });
-      this._sumMs = 0; this._peakMs = 0; this._xruns = 0; this._blockCount = 0;
-    }
+    if (this._blockCount >= METRIC_INTERVAL) this._postMetrics();
 
     return true;
+  }
+
+  _postMetrics() {
+    if (this._blockCount === 0) return;
+    this.port.postMessage({
+      type: 'metrics',
+      avgProcessMs: this._sumMs / this._blockCount,
+      peakProcessMs: this._peakMs,
+      blockPeriodMs: this._blockPeriodMs,
+      xruns: this._xruns,
+      limiterGrDb: this._grDb,
+      safetyEvents: this._safetyEvents,
+      processCalls: this._processCalls,
+      audioBlocks: this._audioBlocks,
+      nonSilentBlocks: this._nonSilentBlocks,
+    });
+    this._sumMs = 0; this._peakMs = 0; this._xruns = 0; this._blockCount = 0;
   }
 }
 

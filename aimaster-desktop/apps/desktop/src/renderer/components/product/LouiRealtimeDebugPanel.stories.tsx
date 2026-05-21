@@ -9,7 +9,8 @@ import { surface } from '../../theme/loui-theme';
 function metrics(p: Partial<RealtimeMetricsSnapshot> = {}): RealtimeMetricsSnapshot {
   return {
     cpuLoad: 0.08, avgProcessMs: 0.21, peakProcessMs: 0.55, blockPeriodMs: 2.67,
-    totalXruns: 0, limiterGrDb: 2.3, safetyEvents: 0, samples: 64, ...p,
+    totalXruns: 0, limiterGrDb: 2.3, safetyEvents: 0,
+    processCalls: 1920, audioBlocks: 1920, nonSilentBlocks: 1880, samples: 64, ...p,
   };
 }
 

@@ -20,6 +20,12 @@ export interface RealtimeMetricSample {
   limiterGrDb: number;
   /** Cumulative output-safety bypasses (non-finite/absurd) from the chain. */
   safetyEvents?: number;
+  /** Cumulative process() calls (proves the worklet is pulled). */
+  processCalls?: number;
+  /** Cumulative process() calls that received a non-empty input. */
+  audioBlocks?: number;
+  /** Cumulative input blocks that carried real (non-silent) signal. */
+  nonSilentBlocks?: number;
 }
 
 /** Aggregated, display-ready metrics. */
@@ -34,13 +40,20 @@ export interface RealtimeMetricsSnapshot {
   limiterGrDb: number;
   /** Latest cumulative output-safety bypass count from the chain. */
   safetyEvents: number;
+  /** Latest cumulative process() call count (0 = worklet never pulled). */
+  processCalls: number;
+  /** Latest cumulative non-empty input block count. */
+  audioBlocks: number;
+  /** Latest cumulative non-silent input block count. */
+  nonSilentBlocks: number;
   /** Number of samples aggregated. */
   samples: number;
 }
 
 const EMPTY: RealtimeMetricsSnapshot = {
   cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, blockPeriodMs: 0,
-  totalXruns: 0, limiterGrDb: 0, safetyEvents: 0, samples: 0,
+  totalXruns: 0, limiterGrDb: 0, safetyEvents: 0,
+  processCalls: 0, audioBlocks: 0, nonSilentBlocks: 0, samples: 0,
 };
 
 /**
@@ -54,6 +67,9 @@ export class RealtimeMetrics {
   private totalXruns = 0;
   private gr = 0;
   private safety = 0;
+  private processCalls = 0;
+  private audioBlocks = 0;
+  private nonSilentBlocks = 0;
   private count = 0;
   private readonly emaAlpha: number;
 
@@ -72,6 +88,9 @@ export class RealtimeMetrics {
       // Cumulative counter from the chain — keep the latest (highest) value.
       this.safety = Math.max(this.safety, s.safetyEvents);
     }
+    if (typeof s.processCalls === 'number') this.processCalls = Math.max(this.processCalls, s.processCalls);
+    if (typeof s.audioBlocks === 'number') this.audioBlocks = Math.max(this.audioBlocks, s.audioBlocks);
+    if (typeof s.nonSilentBlocks === 'number') this.nonSilentBlocks = Math.max(this.nonSilentBlocks, s.nonSilentBlocks);
     this.count += 1;
   }
 
@@ -86,6 +105,9 @@ export class RealtimeMetrics {
       totalXruns: this.totalXruns,
       limiterGrDb: this.gr,
       safetyEvents: this.safety,
+      processCalls: this.processCalls,
+      audioBlocks: this.audioBlocks,
+      nonSilentBlocks: this.nonSilentBlocks,
       samples: this.count,
     };
   }
@@ -93,7 +115,9 @@ export class RealtimeMetrics {
   /** Reset all counters. */
   reset(): void {
     this.avgMs = 0; this.peakMs = 0; this.blockMs = 0;
-    this.totalXruns = 0; this.gr = 0; this.safety = 0; this.count = 0;
+    this.totalXruns = 0; this.gr = 0; this.safety = 0;
+    this.processCalls = 0; this.audioBlocks = 0; this.nonSilentBlocks = 0;
+    this.count = 0;
   }
 }
 

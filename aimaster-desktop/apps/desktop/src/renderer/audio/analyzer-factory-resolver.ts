@@ -14,6 +14,7 @@ import type { AnalyzerSessionFactory } from '@aimaster/shared-types/streaming';
 
 import { SyntheticAnalyzerSessionFactory } from './analyzer-session-synthetic.js';
 import { WasmAnalyzerSessionFactory } from './wasm-analyzer-session.js';
+import { isRealtimePreviewEnabled } from './realtime-preview-flag.js';
 
 declare global {
   interface Window {
@@ -24,6 +25,9 @@ declare global {
   }
 }
 
+/** localStorage key for the persisted WASM-analyzer toggle. */
+export const WASM_ANALYZER_LS_KEY = 'loui.wasmAnalyzer';
+
 // Both factories are constructed eagerly so Vite's tree-shaker keeps the
 // WasmAnalyzerSessionFactory + analyzer-tap.worklet.js asset reference
 // in the bundle even when the build-time env var is unset.  The runtime
@@ -33,13 +37,31 @@ declare global {
 const wasmFactory: WasmAnalyzerSessionFactory = new WasmAnalyzerSessionFactory();
 const syntheticFactory: SyntheticAnalyzerSessionFactory = new SyntheticAnalyzerSessionFactory();
 
-/** Whether the WASM factory has been requested (env or runtime). */
+/**
+ * Whether the WASM analyzer session is active.
+ *
+ * Decision order:
+ *   1. env `VITE_LOUI_WASM_ANALYZER`
+ *   2. runtime `window.__LOUI_WASM_ANALYZER__`
+ *   3. persisted `localStorage['loui.wasmAnalyzer']`
+ *   4. **realtime-preview dependency** — the realtime mastering graph
+ *      rides on this session (via `setInsertNode`), so enabling realtime
+ *      preview implies the analyzer session must run.
+ *   5. default → OFF.
+ */
 export function isWasmAnalyzerEnabled(): boolean {
-  // Build-time env var.
   const envFlag = (import.meta.env?.VITE_LOUI_WASM_ANALYZER ?? '').toString().toLowerCase();
   if (envFlag === 'true' || envFlag === '1') return true;
-  // Runtime override.
   if (typeof window !== 'undefined' && window.__LOUI_WASM_ANALYZER__ === true) return true;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const v = localStorage.getItem(WASM_ANALYZER_LS_KEY);
+      if (v === 'true' || v === '1') return true;
+      if (v === 'false' || v === '0') return false;
+    }
+  } catch { /* ignore */ }
+  // Realtime preview requires the WASM analyzer session it splices into.
+  if (isRealtimePreviewEnabled()) return true;
   return false;
 }
 

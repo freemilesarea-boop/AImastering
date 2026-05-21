@@ -178,6 +178,9 @@ export function createRealtimeMasteringGraph(
           xruns: Math.max(0, Math.trunc(finite(msg.xruns ?? 0, 0))),
           limiterGrDb: finite(msg.limiterGrDb ?? 0, 0),
           safetyEvents: Math.max(0, Math.trunc(finite(msg.safetyEvents ?? 0, 0))),
+          processCalls: Math.max(0, Math.trunc(finite(msg.processCalls ?? 0, 0))),
+          audioBlocks: Math.max(0, Math.trunc(finite(msg.audioBlocks ?? 0, 0))),
+          nonSilentBlocks: Math.max(0, Math.trunc(finite(msg.nonSilentBlocks ?? 0, 0))),
         });
         opts.onMetrics?.(metrics.snapshot());
       };
