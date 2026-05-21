@@ -9,6 +9,7 @@ import {
 import { surface, text, typography, meter, space, radius } from '../../../theme/loui-theme.js';
 import { ALL_MODULE_PARAMETER_DEFS } from '../../../audio/parameters/index.js';
 import { usePanelStateBridge, type ControlledPanelProps } from './usePanelStateBridge.js';
+import { ExportSupportSummary } from '../modules/ExportSupportBadge.js';
 
 type ExportFormat = 'wav' | 'flac' | 'mp3' | 'aiff' | 'ogg';
 type SampleRateStr = '44100' | '48000' | '88200' | '96000' | '192000';
@@ -375,6 +376,11 @@ function ReMasterExportSection({ info }: { info: ReMasterExportInfo }) {
   const appliedCount = info.appliedKeys.length;
   const skippedCount = info.skippedParameterIds.length;
   const hasChanges = appliedCount > 0;
+  // Honest export-support split (OZONE-MODULE-NEXT-4): exact audio params
+  // vs export-only quality vs preview-only edits.
+  const EXACT_KEYS = ['targetLufs', 'targetTp', 'stereoWidth', 'outputGainDb'];
+  const exactCount = info.appliedKeys.filter((k) => EXACT_KEYS.includes(k)).length;
+  const exportOnlyCount = appliedCount - exactCount;
 
   // Export As-is is the primary action when there are no changes; otherwise
   // Re-master & Export is primary (the user changed something).
@@ -419,6 +425,10 @@ function ReMasterExportSection({ info }: { info: ReMasterExportInfo }) {
         <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: meter.warn.foreground, lineHeight: 1.4 }}>
           ⚠ Dither ignored for {info.quality.format?.toUpperCase()} (lossy or 32-bit float).
         </span>
+      )}
+
+      {(hasChanges || skippedCount > 0) && (
+        <ExportSupportSummary exact={exactCount} exportOnly={exportOnlyCount} previewOnly={skippedCount} />
       )}
 
       {hasChanges && (
