@@ -35,6 +35,7 @@
     "test:export-support": "tsx scripts/export-support-selftest.ts",
     "test:rust-offline": "tsx scripts/rust-offline-parity-selftest.ts",
     "test:rust-loudness": "tsx scripts/rust-loudness-selftest.ts",
+    "test:eq-drag": "tsx scripts/eq-drag-selftest.ts",
     "test:release-smoke": "tsx scripts/release-smoke.ts",
     "aggregate-bundles": "tsx scripts/aggregate-support-bundles.ts",
     "clean": "rm -rf dist dist-electron out public/bin"

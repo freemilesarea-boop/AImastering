@@ -16,7 +16,8 @@ import { isLiveVisualizerEnabled } from '../../audio/live-visualizer-flag.js';
 import { useAnalyzerSubscriptions } from '../../hooks/useAnalyzerSubscriptions.js';
 import { fftFrameToSpectrum } from '../../audio/modules/analyzer-to-visualizer-adapter.js';
 import { SpectrumWaveformCanvas } from './modules/SpectrumWaveformCanvas.js';
-import { EQCurveOverlay, type EqBands } from './modules/EQCurveOverlay.js';
+import { type EqBands } from './modules/EQCurveOverlay.js';
+import { DraggableEQCurveEditor } from './modules/DraggableEQCurveEditor.js';
 import { hasParameterStateProvider, useModuleParameters } from '../../audio/parameters/useModuleParameterState.js';
 
 export interface LouiAnalyzerCanvasProps {
@@ -186,7 +187,17 @@ function EqOverlayFromState({ width, height }: { width: number; height: number }
     airDb: n('airDb', 0),
     outputGainDb: n('outputGainDb', 0),
   };
-  return <EQCurveOverlay width={width} height={height} bands={bands} {...(eq.bypass ? { bypassed: true } : {})} />;
+  // Draggable: writes go to the parameter state (clamped/quantised/logged),
+  // which flows LIVE to the Rust chain via the rAF → updateConfig path.
+  return (
+    <DraggableEQCurveEditor
+      width={width}
+      height={height}
+      bands={bands}
+      {...(eq.bypass ? { bypassed: true } : {})}
+      onChange={(paramId, value) => eq.setParam(paramId, value)}
+    />
+  );
 }
 
 function IdleOverlay() {

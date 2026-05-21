@@ -50,6 +50,7 @@ import type { RevisionInput } from '../audio/revisions/revision-types.js';
 import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioStore.js';
 import { getActiveRevision, getBaselineRevision, findDuplicate } from '../audio/revisions/revision-logic.js';
 import { LouiModuleChain } from '../components/product/modules/LouiModuleChain.js';
+import { LouiRealtimeStatus } from '../components/product/modules/LouiRealtimeStatus.js';
 import { CHAIN_MODULE_IDS, getModule } from '../audio/modules/loui-module-suite.js';
 import { RealtimeGrProvider, useRealtimeGr } from '../audio/modules/realtime-gr-context.js';
 import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
@@ -1421,15 +1422,22 @@ function ProductPageProductionInner(props: {
       {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
       {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
       moduleSuiteSlot={
-        <LouiModuleChain
-          moduleIds={CHAIN_MODULE_IDS as string[]}
-          {...(props.selectedModule ? { activeId: props.selectedModule } : {})}
-          onSelect={(id) => {
-            const mod = getModule(id);
-            // Live/preview modules with a real panel open it; planned are inert.
-            if (mod?.paramModuleId && mod.status !== 'planned') props.onSelectModule(mod.paramModuleId);
-          }}
-        />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <LouiRealtimeStatus
+            enabled={realtime.enabled}
+            active={realtime.active}
+            readinessLabel={realtime.readinessLabel}
+          />
+          <LouiModuleChain
+            moduleIds={CHAIN_MODULE_IDS as string[]}
+            {...(props.selectedModule ? { activeId: props.selectedModule } : {})}
+            onSelect={(id) => {
+              const mod = getModule(id);
+              // Live/preview modules with a real panel open it; planned are inert.
+              if (mod?.paramModuleId && mod.status !== 'planned') props.onSelectModule(mod.paramModuleId);
+            }}
+          />
+        </div>
       }
     />
   );
