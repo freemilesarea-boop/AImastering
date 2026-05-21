@@ -49,6 +49,8 @@ import { LouiRevisionStack } from '../components/product/LouiRevisionStack.js';
 import type { RevisionInput } from '../audio/revisions/revision-types.js';
 import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioStore.js';
 import { getActiveRevision, getBaselineRevision, findDuplicate } from '../audio/revisions/revision-logic.js';
+import { LouiModuleChain } from '../components/product/modules/LouiModuleChain.js';
+import { CHAIN_MODULE_IDS, getModule } from '../audio/modules/loui-module-suite.js';
 import {
   PresetPatchDispatcher,
   PreviewRenderController,
@@ -130,6 +132,7 @@ function ProductLayoutInner({
   onSettings,
   previewSlot,
   revisionSlot,
+  moduleSuiteSlot,
   abControl,
 }: {
   session: AnalyzerSession | null;
@@ -158,6 +161,8 @@ function ProductLayoutInner({
   previewSlot?: React.ReactNode;
   /** Optional revision (version) stack (production path only). */
   revisionSlot?: React.ReactNode;
+  /** Optional module-suite chain overview (production path only). */
+  moduleSuiteSlot?: React.ReactNode;
   /** Optional A/B compare control (production path only). */
   abControl?: React.ReactNode;
 }) {
@@ -198,6 +203,13 @@ function ProductLayoutInner({
       {revisionSlot && (
         <div style={{ paddingInline: space['4'], paddingBlock: space['3'], borderBottom: `1px solid ${surface.border}` }}>
           {revisionSlot}
+        </div>
+      )}
+
+      {/* Module suite — honest chain overview (Live / Preview / Planned). */}
+      {moduleSuiteSlot && (
+        <div style={{ paddingInline: space['4'], paddingBlock: space['3'], borderBottom: `1px solid ${surface.border}` }}>
+          {moduleSuiteSlot}
         </div>
       )}
 
@@ -1336,6 +1348,17 @@ function ProductPageProductionInner(props: {
       abControl={<ABCompareSlot {...props.ab} />}
       {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
       {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
+      moduleSuiteSlot={
+        <LouiModuleChain
+          moduleIds={CHAIN_MODULE_IDS as string[]}
+          {...(props.selectedModule ? { activeId: props.selectedModule } : {})}
+          onSelect={(id) => {
+            const mod = getModule(id);
+            // Live/preview modules with a real panel open it; planned are inert.
+            if (mod?.paramModuleId && mod.status !== 'planned') props.onSelectModule(mod.paramModuleId);
+          }}
+        />
+      }
     />
   );
   // Dev/QA realtime-preview health overlay — only when the flag is ON.
