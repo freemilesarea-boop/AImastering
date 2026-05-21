@@ -11,7 +11,8 @@
 import { spawn } from 'node:child_process';
 import { resolveFFmpegPath } from '@aimaster/audio-engine';
 import {
-  renderStereoBuffer, deinterleave, interleave, type RenderMetrics,
+  renderStereoBuffer, renderStereoBufferNormalized, deinterleave, interleave,
+  type RenderMetrics, type NormalizedRenderMetrics,
 } from './rust-offline-render-core.js';
 import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-node.js';
 
@@ -19,13 +20,20 @@ export interface RustRenderOptions {
   sampleRate: number;
   bitDepth: 16 | 24;
   outputPath: string;
+  /** When set, two-pass loudness-normalize toward this target (LUFS). */
+  targetLufs?: number;
+  /** True-peak ceiling (dBTP) — enforced by the chain limiter. */
+  targetTp?: number;
+  /** Max upward loudness gain (dB).  Default +12. */
+  maxBoostDb?: number;
   onProgress?: (frac: number) => void;
 }
 
 export interface RustRenderFileResult {
   outputPath: string;
-  metrics: RenderMetrics;
+  metrics: RenderMetrics | NormalizedRenderMetrics;
   backend: 'rust';
+  loudnessNormalized: boolean;
 }
 
 /** Whether the Rust offline backend is usable (node WASM present). */
@@ -94,8 +102,23 @@ export async function processAudioFileRust(
   if (!isRustOfflineAvailable()) throw new Error('rust offline backend unavailable (node WASM not built)');
   const interleavedIn = await decodeToFloatStereo(inputPath, options.sampleRate);
   const { left, right } = deinterleave(interleavedIn, 2);
-  const rendered = renderStereoBuffer(left, right, config, options.sampleRate, 512, options.onProgress);
-  const interleavedOut = interleave(rendered.left, rendered.right);
+
+  const normalized = typeof options.targetLufs === 'number';
+  let outL: Float32Array, outR: Float32Array;
+  let metrics: RenderMetrics | NormalizedRenderMetrics;
+  if (normalized) {
+    const r = renderStereoBufferNormalized(left, right, config, options.sampleRate, {
+      targetLufs: options.targetLufs!,
+      targetTp: options.targetTp ?? -1,
+      ...(options.maxBoostDb !== undefined ? { maxBoostDb: options.maxBoostDb } : {}),
+    }, 512, options.onProgress);
+    outL = r.left; outR = r.right; metrics = r.metrics;
+  } else {
+    const r = renderStereoBuffer(left, right, config, options.sampleRate, 512, options.onProgress);
+    outL = r.left; outR = r.right; metrics = r.metrics;
+  }
+
+  const interleavedOut = interleave(outL, outR);
   await encodeWav(interleavedOut, options.sampleRate, options.bitDepth, options.outputPath);
-  return { outputPath: options.outputPath, metrics: rendered.metrics, backend: 'rust' };
+  return { outputPath: options.outputPath, metrics, backend: 'rust', loudnessNormalized: normalized };
 }

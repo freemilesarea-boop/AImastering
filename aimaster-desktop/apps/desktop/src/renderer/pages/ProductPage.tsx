@@ -853,7 +853,10 @@ function ProductionPreviewProvider({
           }) as {
             ok: boolean; backend?: 'rust' | 'python'; fallbackUsed?: boolean;
             outputPath?: string; previewPath?: string; error?: string;
-            metrics?: { integratedLufs?: number; truePeakDbtp?: number; samplePeakDb?: number };
+            metrics?: {
+              integratedLufs?: number; truePeakDbtp?: number; samplePeakDb?: number;
+              finalLufs?: number; finalTruePeakDb?: number;
+            };
           } | undefined;
           if (!resp?.ok || !resp.outputPath || !resp.previewPath) {
             setCreateRevisionError(resp?.error ?? 'rust render produced no output');
@@ -862,10 +865,10 @@ function ProductionPreviewProvider({
           outputPath = resp.outputPath; previewPath = resp.previewPath;
           backend = resp.backend ?? 'rust';
           fallbackUsed = Boolean(resp.fallbackUsed);
-          // Rust core measures sample peak (not LUFS); use the target as a
-          // loudness estimate (documented in the parity report).
-          integratedLufs = Number(resp.metrics?.integratedLufs ?? options.targetLufs);
-          truePeakDbtp = Number(resp.metrics?.truePeakDbtp ?? resp.metrics?.samplePeakDb ?? options.targetTp);
+          // Two-pass render measures real integrated LUFS + true peak.
+          const m = resp.metrics ?? {};
+          integratedLufs = Number(m.finalLufs ?? m.integratedLufs ?? options.targetLufs);
+          truePeakDbtp = Number(m.finalTruePeakDb ?? m.truePeakDbtp ?? m.samplePeakDb ?? options.targetTp);
         } else {
           const result = await api.invoke('audio:master', sourceAudioPath, '', options) as {
             outputPath?: string; previewPath?: string;

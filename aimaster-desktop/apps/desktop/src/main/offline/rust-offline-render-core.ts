@@ -9,6 +9,7 @@ import {
   createOfflineChain, applyOfflineConfig,
   type OfflineChainConfig, type WasmMasteringChain,
 } from './load-mastering-chain-node.js';
+import { measureStereoLoudness, solveLoudnessGain, type LoudnessGainPolicy } from './offline-loudness.js';
 
 export interface RenderMetrics {
   /** Linear sample peak (max |x|) of the output. */
@@ -94,6 +95,78 @@ export function renderStereoBuffer(
   } finally {
     try { chain?.free?.(); } catch { /* ignore */ }
   }
+}
+
+export interface NormalizedRenderMetrics extends RenderMetrics {
+  /** Integrated LUFS of the chain output BEFORE the loudness gain (pass 1). */
+  measuredProcessedLufs: number;
+  /** Integrated LUFS of the FINAL output (pass 2). */
+  finalLufs: number;
+  targetLufs: number;
+  appliedLoudnessGainDb: number;
+  finalTruePeakDb: number;
+}
+
+export interface NormalizedRenderResult {
+  left: Float32Array;
+  right: Float32Array;
+  metrics: NormalizedRenderMetrics;
+}
+
+export interface NormalizeOptions extends LoudnessGainPolicy {
+  targetLufs: number;
+  targetTp: number;
+}
+
+/**
+ * Two-pass loudness-aware render (RUST-OFFLINE-RENDER-2):
+ *   Pass 1 — run the chain, measure integrated LUFS.
+ *   Solve  — input-gain to push toward targetLufs (bounded; silence skipped).
+ *   Pass 2 — re-run the chain with that input gain; the chain limiter holds
+ *            the true-peak ceiling, so loudness rises without clipping.
+ *
+ * The ceiling is enforced by the chain's own limiter (config.limCeilingDbtp),
+ * NOT by re-limiting here — so finalTruePeak ≤ ceiling by construction.
+ */
+export function renderStereoBufferNormalized(
+  inLeft: Float32Array,
+  inRight: Float32Array,
+  config: OfflineChainConfig,
+  sampleRate: number,
+  norm: NormalizeOptions,
+  blockSize: number = DEFAULT_BLOCK,
+  onProgress?: (frac: number) => void,
+): NormalizedRenderResult {
+  const t0 = Date.now();
+  // Pass 1.
+  const p1 = renderStereoBuffer(inLeft, inRight, config, sampleRate, blockSize, (f) => onProgress?.(f * 0.45));
+  const m1 = measureStereoLoudness(p1.left, p1.right, sampleRate);
+  // Solve loudness gain (applied as the chain's INPUT gain on pass 2).
+  const sol = solveLoudnessGain(m1.integratedLufs, norm.targetLufs, norm);
+
+  // If no gain needed (silence or ≈target), keep pass 1.
+  let final = p1;
+  let finalMeas = m1;
+  if (Math.abs(sol.appliedGainDb) > 0.05) {
+    const cfg2: OfflineChainConfig = { ...config, inputGainDb: config.inputGainDb + sol.appliedGainDb };
+    final = renderStereoBuffer(inLeft, inRight, cfg2, sampleRate, blockSize, (f) => onProgress?.(0.45 + f * 0.45));
+    finalMeas = measureStereoLoudness(final.left, final.right, sampleRate);
+  }
+  onProgress?.(1);
+
+  return {
+    left: final.left,
+    right: final.right,
+    metrics: {
+      ...final.metrics,
+      renderMs: Date.now() - t0,
+      measuredProcessedLufs: m1.integratedLufs,
+      finalLufs: finalMeas.integratedLufs,
+      targetLufs: norm.targetLufs,
+      appliedLoudnessGainDb: sol.appliedGainDb,
+      finalTruePeakDb: finalMeas.truePeakDbtp,
+    },
+  };
 }
 
 /** Interleave L/R → a single Float32Array (LRLR…). */

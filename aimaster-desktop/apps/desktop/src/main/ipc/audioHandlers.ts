@@ -351,10 +351,14 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       const bd = (options?.bitDepth === 16 ? 16 : 24) as 16 | 24;
       const rendered = await processAudioFileRust(sourcePath, chainConfig, {
         sampleRate: sr, bitDepth: bd, outputPath: wavTempPath,
+        // Two-pass loudness-normalize toward the same target the UI requests.
+        ...(typeof options?.targetLufs === 'number' ? { targetLufs: options.targetLufs } : {}),
+        ...(typeof options?.targetTp === 'number' ? { targetTp: options.targetTp } : {}),
       });
       await encodePreviewMp3(wavTempPath, mp3Path);
       return {
         requestId, ok: true, backend: 'rust' as const, fallbackUsed: false,
+        loudnessNormalized: rendered.loudnessNormalized,
         outputPath: rendered.outputPath, previewPath: mp3Path,
         metrics: rendered.metrics, renderMs: Date.now() - t0,
       };

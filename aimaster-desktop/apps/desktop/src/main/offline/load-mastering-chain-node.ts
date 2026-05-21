@@ -43,6 +43,16 @@ export interface WasmMasteringChain {
 
 interface WasmModule {
   LouiMasteringChain: new (sampleRate: number) => WasmMasteringChain;
+  LouiAnalyzer: new (sampleRate: number, channels: number) => WasmAnalyzer;
+}
+
+/** Minimal analyzer surface for offline loudness measurement. */
+export interface WasmAnalyzer {
+  processStereo(left: Float32Array, right: Float32Array): void;
+  /** Full snapshot (gated integrated LUFS + true peak). */
+  snapshot(): { integratedLufs: number; truePeakDbtp: number; samplePeakDb: number };
+  reset(): void;
+  free?(): void;
 }
 
 const require_ = createRequire(__filename);
@@ -82,6 +92,13 @@ export function createOfflineChain(sampleRate: number): WasmMasteringChain {
   const mod = loadWasmModule();
   if (!mod) throw new Error('node-target WASM MasteringChain unavailable (build: pnpm --filter @loui/dsp-wasm run build:node)');
   return new mod.LouiMasteringChain(sampleRate);
+}
+
+/** Construct an analyzer for offline loudness measurement.  Throws if unavailable. */
+export function createOfflineAnalyzer(sampleRate: number, channels = 2): WasmAnalyzer {
+  const mod = loadWasmModule();
+  if (!mod) throw new Error('node-target WASM analyzer unavailable (build: pnpm --filter @loui/dsp-wasm run build:node)');
+  return new mod.LouiAnalyzer(sampleRate, channels);
 }
 
 /** Apply a flat config to a chain (spreads the 22 args in setConfig order). */
