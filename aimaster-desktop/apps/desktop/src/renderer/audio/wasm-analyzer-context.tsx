@@ -85,13 +85,18 @@ export function WasmAnalyzerProvider({
   const [session, setSession] = useState<AttachableAnalyzerSession | null>(null);
   const factoryRef = useRef<WasmAnalyzerSessionFactory | null>(null);
 
-  // Lifecycle: create session when active && enabled; tear down otherwise.
+  // Lifecycle: create the session ONCE per media element and keep it alive
+  // across play/pause + src swaps.  `createMediaElementSource` may be called
+  // only once per element for its lifetime — tearing the session down on
+  // pause and rebuilding on the next play throws on the 2nd attach and
+  // leaves the element captured by a dead context → permanent silence.
+  // So creation is keyed on `mediaElement` only; `active` just resumes.
   useEffect(() => {
     if (!isWasmAnalyzerEnabled()) {
       setSession(null);
       return;
     }
-    if (!active || !mediaElement) {
+    if (!mediaElement) {
       setSession(null);
       return;
     }
@@ -134,7 +139,17 @@ export function WasmAnalyzerProvider({
       void s.stop();
       setSession((prev) => (prev === s ? null : prev));
     };
-  }, [mediaElement, active, sampleRate, channels]);
+  }, [mediaElement, sampleRate, channels]);
+
+  // Resume the AudioContext when playback starts — a gesture-suspended
+  // context never pulls the graph (silence).  Never tears the session down.
+  useEffect(() => {
+    if (!active || !session) return;
+    const ctx = session.audioContext?.();
+    if (ctx && ctx.state === 'suspended') {
+      void ctx.resume().catch(() => { /* ignore */ });
+    }
+  }, [active, session]);
 
   return (
     <WasmAnalyzerContext.Provider value={session}>

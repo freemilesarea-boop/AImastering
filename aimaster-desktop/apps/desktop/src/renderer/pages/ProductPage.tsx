@@ -32,6 +32,7 @@ import {
 } from '../audio/wasm-analyzer-context.js';
 import { useRealtimeMasteringGraph } from '../hooks/useRealtimeMasteringGraph.js';
 import { LouiRealtimeDebugPanel } from '../components/product/LouiRealtimeDebugPanel.js';
+import { LouiRealtimeDebugDrawer } from '../components/product/LouiRealtimeDebugDrawer.js';
 import {
   ModuleParameterStateProvider,
   useModuleParameters,
@@ -1536,9 +1537,11 @@ function ProductPageProductionInner(props: {
       }
     />
   );
-  // Dev/QA realtime-preview health overlay — only when the flag is ON.
+  // Dev/QA realtime-preview health — collapsed by default into a corner
+  // drawer (a small status chip).  Opened on demand; never covers the
+  // Loudness / Limiter / module UI unless the user expands it.
   const debugOverlay = realtime.enabled ? (
-    <div style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 9999 }}>
+    <LouiRealtimeDebugDrawer status={realtime.uiStatus}>
       <LouiRealtimeDebugPanel
         active={realtime.active}
         uiStatus={realtime.uiStatus}
@@ -1560,7 +1563,7 @@ function ProductPageProductionInner(props: {
         bufferSize={128}
         wasmLoad={realtime.graphState?.load}
       />
-    </div>
+    </LouiRealtimeDebugDrawer>
   ) : null;
 
   const presetBrowser = (
