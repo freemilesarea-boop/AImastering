@@ -17,10 +17,24 @@ pub struct GainReduction {
     pub limiter_db: f64,
 }
 
+/// Maximum block size the dry-backup scratch is pre-allocated for.  Audio
+/// worklet quanta are 128; offline render blocks are ≤ 512.  Anything
+/// larger still gets the per-sample sanitiser (just without dry restore).
+const SAFETY_SCRATCH: usize = 8192;
+/// Absurd-output guard (linear).  ~+12 dBFS — well past any musical peak;
+/// only a runaway/instability reaches this.
+const SAFETY_PEAK_LIN: f32 = 4.0;
+
 /// Realtime-safe preview mastering chain.
 ///
 /// Order: input gain → EQ → dynamics → imager → limiter → output gain.
 /// `process_stereo_block` runs the whole chain in place on planar stereo.
+///
+/// A last-line **output-safety layer** guards every block: if processing
+/// produces a non-finite sample or an absurd peak (from any cause), the
+/// block is replaced with the dry input and `safety_events` is bumped.
+/// This guarantees the realtime preview can never emit ear-splitting noise
+/// or NaN, no matter what parameters are thrown at it.
 pub struct MasteringChain {
     cfg: MasteringChainConfig,
     input_gain: Gain,
@@ -30,6 +44,10 @@ pub struct MasteringChain {
     limiter: Limiter,
     output_gain: Gain,
     gr: GainReduction,
+    // Dry-signal backup so a bad block can be replaced (no alloc in process).
+    dry_l: Vec<f32>,
+    dry_r: Vec<f32>,
+    safety_events: u32,
 }
 
 impl MasteringChain {
@@ -44,7 +62,16 @@ impl MasteringChain {
             limiter: Limiter::new(sample_rate, cfg.limiter),
             output_gain: Gain::from_db(cfg.output_gain_db),
             gr: GainReduction::default(),
+            dry_l: vec![0.0; SAFETY_SCRATCH],
+            dry_r: vec![0.0; SAFETY_SCRATCH],
+            safety_events: 0,
         }
+    }
+
+    /// Number of blocks the output-safety layer had to replace with the
+    /// dry signal (non-finite or absurd peak).  ≥ 0; resets with `reset`.
+    pub fn safety_events(&self) -> u32 {
+        self.safety_events
     }
 
     /// Update the entire chain configuration.  Recomputes coefficients;
@@ -78,12 +105,58 @@ impl MasteringChain {
             self.gr = GainReduction::default();
             return;
         }
+        let n = left.len().min(right.len());
+        // Keep a dry copy so a bad block can be replaced bit-for-bit.
+        let backed_up = n <= self.dry_l.len();
+        if backed_up {
+            self.dry_l[..n].copy_from_slice(&left[..n]);
+            self.dry_r[..n].copy_from_slice(&right[..n]);
+        }
+
         self.input_gain.process_stereo(left, right);
         self.eq.process_stereo(left, right);
         self.dynamics.process_stereo(left, right);
         self.imager.process_stereo(left, right);
         self.limiter.process_stereo(left, right);
         self.output_gain.process_stereo(left, right);
+
+        // ── Output-safety layer ──────────────────────────────────────────
+        // Scan the processed block for non-finite or absurd output.  If the
+        // chain misbehaved for ANY reason, restore the dry signal (or, when
+        // the block is larger than the scratch, sanitise per-sample) so the
+        // device never hears NaN or a noise blow-up.
+        let mut bad = false;
+        let mut peak = 0.0f32;
+        for i in 0..n {
+            let a = left[i];
+            let b = right[i];
+            if !a.is_finite() || !b.is_finite() {
+                bad = true;
+                break;
+            }
+            let m = a.abs().max(b.abs());
+            if m > peak {
+                peak = m;
+            }
+        }
+        if bad || peak > SAFETY_PEAK_LIN {
+            self.safety_events = self.safety_events.saturating_add(1);
+            // Restore the dry signal (or sanitise per-sample for oversized
+            // blocks).  A non-finite dry sample is itself replaced with 0 so
+            // the output is ALWAYS finite, even if the input was poisoned.
+            for i in 0..n {
+                let (a, b) = if backed_up {
+                    (self.dry_l[i], self.dry_r[i])
+                } else {
+                    (left[i], right[i])
+                };
+                left[i] = if a.is_finite() { a.clamp(-1.0, 1.0) } else { 0.0 };
+                right[i] = if b.is_finite() { b.clamp(-1.0, 1.0) } else { 0.0 };
+            }
+            self.gr = GainReduction::default();
+            return;
+        }
+
         self.gr = GainReduction {
             dynamics_db: 0.0, // dynamics GR is implicit in its envelope; metered separately if needed
             limiter_db: self.limiter.gain_reduction_db(),
@@ -96,6 +169,7 @@ impl MasteringChain {
         self.dynamics.reset();
         self.imager.reset();
         self.limiter.reset();
+        self.safety_events = 0;
     }
 }
 
@@ -172,6 +246,53 @@ mod tests {
         chain.process_stereo_block(&mut l2, &mut r2);
         assert!(l2.iter().all(|x| x.is_finite()));
         assert!(r2.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn safety_layer_replaces_non_finite_block_with_dry() {
+        // Feed a block that already contains a NaN; the safety layer must
+        // restore the dry signal and count the event (never emit NaN).
+        let mut chain = MasteringChain::new(48_000.0, MasteringChainConfig::default());
+        let mut l = sine(256, 1000.0, 48_000.0, 0.3);
+        let mut r = l.clone();
+        l[10] = f32::NAN;
+        let dry = l.clone();
+        chain.process_stereo_block(&mut l, &mut r);
+        assert!(l.iter().all(|x| x.is_finite()), "output must be finite");
+        assert_eq!(chain.safety_events(), 1, "one bad block should be counted");
+        // The poisoned sample is sanitised to 0; the rest is the dry signal.
+        assert_eq!(l[10], 0.0);
+        for i in 0..256 {
+            if i == 10 { continue; }
+            assert_eq!(l[i], dry[i]);
+        }
+    }
+
+    #[test]
+    fn safety_events_reset_with_chain() {
+        let mut chain = MasteringChain::new(48_000.0, MasteringChainConfig::default());
+        let mut l = vec![f32::INFINITY; 128];
+        let mut r = vec![f32::INFINITY; 128];
+        chain.process_stereo_block(&mut l, &mut r);
+        assert!(chain.safety_events() >= 1);
+        chain.reset();
+        assert_eq!(chain.safety_events(), 0);
+    }
+
+    #[test]
+    fn extreme_imager_width_stays_finite_and_bounded() {
+        // Wide width + hot input → must stay finite and under the safety peak.
+        let cfg = MasteringChainConfig {
+            imager: ImagerConfig { width_pct: 200.0, low_mono_hz: 120.0, bypass: false },
+            ..MasteringChainConfig::default()
+        };
+        let mut chain = MasteringChain::new(48_000.0, cfg);
+        let mut l = sine(4096, 220.0, 48_000.0, 0.9);
+        let mut r = sine(4096, 221.0, 48_000.0, 0.9); // decorrelated → big side
+        chain.process_stereo_block(&mut l, &mut r);
+        let peak = l.iter().chain(r.iter()).fold(0.0f32, |m, &x| m.max(x.abs()));
+        assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
+        assert!(peak <= 4.0, "peak {peak} exceeded safety guard");
     }
 
     #[test]

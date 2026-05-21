@@ -90,6 +90,11 @@ export class LouiMasteringChain {
      */
     reset(): void;
     /**
+     * Count of blocks the output-safety layer had to replace with the dry
+     * signal (non-finite or absurd peak).  0 in healthy operation.
+     */
+    safetyEvents(): number;
+    /**
      * Update the full configuration from the UI parameters.  Flat
      * argument list keeps the JS binding simple + zero-alloc.  Units are
      * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
@@ -289,6 +294,7 @@ export interface InitOutput {
     readonly louimasteringchain_new: (a: number) => number;
     readonly louimasteringchain_processStereo: (a: number, b: number, c: number, d: any, e: number, f: number, g: any) => void;
     readonly louimasteringchain_reset: (a: number) => void;
+    readonly louimasteringchain_safetyEvents: (a: number) => number;
     readonly louimasteringchain_setConfig: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number) => void;
     readonly louispectrumanalyzer_binCentresHz: (a: number) => [number, number];
     readonly louispectrumanalyzer_binCount: (a: number) => number;

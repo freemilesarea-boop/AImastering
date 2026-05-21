@@ -9,7 +9,7 @@ import { surface } from '../../theme/loui-theme';
 function metrics(p: Partial<RealtimeMetricsSnapshot> = {}): RealtimeMetricsSnapshot {
   return {
     cpuLoad: 0.08, avgProcessMs: 0.21, peakProcessMs: 0.55, blockPeriodMs: 2.67,
-    totalXruns: 0, limiterGrDb: 2.3, samples: 64, ...p,
+    totalXruns: 0, limiterGrDb: 2.3, safetyEvents: 0, samples: 64, ...p,
   };
 }
 
@@ -38,7 +38,18 @@ export const ActiveHealthy: Story = {
     active: true, uiStatus: 'active', readiness: 'realtime-ready',
     contextState: 'running', sampleRate: 48000, bufferSize: 128,
     configUpdates: 42, lastConfigAt: Date.now(),
+    config: { imgWidthPct: 130, eqPresenceDb: 1.4, eqAirDb: 2.0, dynThresholdDb: -14, dynRatio: 2.0 },
     metrics: metrics(),
+  },
+};
+
+export const SafetyBypassTriggered: Story = {
+  args: {
+    active: true, uiStatus: 'active', readiness: 'realtime-ready',
+    contextState: 'running', sampleRate: 48000, bufferSize: 128,
+    configUpdates: 99, lastConfigAt: Date.now(),
+    config: { imgWidthPct: 200, eqPresenceDb: 6, eqAirDb: 6, dynThresholdDb: -30, dynRatio: 10 },
+    metrics: metrics({ safetyEvents: 3 }),
   },
 };
 

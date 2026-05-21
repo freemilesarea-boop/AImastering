@@ -84,6 +84,7 @@ interface WasmChain {
   ): void;
   processStereo(left: Float32Array, right: Float32Array): void;
   limiterGrDb(): number;
+  safetyEvents?(): number;
   reset(): void;
   free?(): void;
 }

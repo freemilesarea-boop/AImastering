@@ -90,6 +90,11 @@ export class LouiMasteringChain {
      */
     reset(): void;
     /**
+     * Count of blocks the output-safety layer had to replace with the dry
+     * signal (non-finite or absurd peak).  0 in healthy operation.
+     */
+    safetyEvents(): number;
+    /**
      * Update the full configuration from the UI parameters.  Flat
      * argument list keeps the JS binding simple + zero-alloc.  Units are
      * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).

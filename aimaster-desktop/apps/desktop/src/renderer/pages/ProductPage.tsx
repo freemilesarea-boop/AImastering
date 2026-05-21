@@ -1507,6 +1507,13 @@ function ProductPageProductionInner(props: {
         metrics={realtime.metrics}
         configUpdates={realtime.configUpdates}
         lastConfigAt={realtime.lastConfigAt}
+        {...(realtime.config ? { config: {
+          imgWidthPct: realtime.config.imgWidthPct,
+          eqPresenceDb: realtime.config.eqPresenceDb,
+          eqAirDb: realtime.config.eqAirDb,
+          dynThresholdDb: realtime.config.dynThresholdDb,
+          dynRatio: realtime.config.dynRatio,
+        } } : {})}
         {...(realtime.graphState?.fallbackReason ? { fallbackReason: realtime.graphState.fallbackReason } : {})}
         {...(session?.audioContext()?.state ? { contextState: session.audioContext()!.state } : {})}
         sampleRate={48000}

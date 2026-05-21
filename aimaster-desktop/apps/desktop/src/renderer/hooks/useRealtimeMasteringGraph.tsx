@@ -24,7 +24,7 @@ import {
   type RealtimeMasteringGraph,
   type RealtimeMasteringGraphState,
 } from '../audio/realtime-mastering-graph.js';
-import { stateToChainConfig } from '../audio/realtime-mastering-chain.js';
+import { stateToChainConfig, type RealtimeChainConfig } from '../audio/realtime-mastering-chain.js';
 import type { RealtimeMetricsSnapshot } from '../audio/realtime-metrics.js';
 import { useAllModuleParameters } from '../audio/parameters/useModuleParameterState.js';
 import type { AttachableAnalyzerSession } from '../audio/wasm-analyzer-context.js';
@@ -42,7 +42,7 @@ declare global {
 
 const EMPTY_METRICS: RealtimeMetricsSnapshot = {
   cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, blockPeriodMs: 0,
-  totalXruns: 0, limiterGrDb: 0, samples: 0,
+  totalXruns: 0, limiterGrDb: 0, safetyEvents: 0, samples: 0,
 };
 
 /**
@@ -72,6 +72,8 @@ export interface RealtimeMasteringPreviewStatus {
   configUpdates: number;
   /** Epoch ms of the last config push, or null. */
   lastConfigAt: number | null;
+  /** The live chain config the UI is sending (null when flag off). */
+  config: RealtimeChainConfig | null;
   /** Environment readiness probe. */
   readiness: RealtimeReadiness;
   readinessLabel: string;
@@ -209,6 +211,7 @@ export function useRealtimeMasteringGraph(
     metrics,
     configUpdates,
     lastConfigAt,
+    config: enabled ? stateToChainConfig(paramState) : null,
     readiness,
     readinessLabel: describeReadiness(readiness),
   };

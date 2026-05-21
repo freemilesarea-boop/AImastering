@@ -18,6 +18,8 @@ export interface RealtimeMetricSample {
   xruns: number;
   /** Limiter gain reduction (dB) at the time of the sample. */
   limiterGrDb: number;
+  /** Cumulative output-safety bypasses (non-finite/absurd) from the chain. */
+  safetyEvents?: number;
 }
 
 /** Aggregated, display-ready metrics. */
@@ -30,13 +32,15 @@ export interface RealtimeMetricsSnapshot {
   /** Cumulative xrun count since reset. */
   totalXruns: number;
   limiterGrDb: number;
+  /** Latest cumulative output-safety bypass count from the chain. */
+  safetyEvents: number;
   /** Number of samples aggregated. */
   samples: number;
 }
 
 const EMPTY: RealtimeMetricsSnapshot = {
   cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, blockPeriodMs: 0,
-  totalXruns: 0, limiterGrDb: 0, samples: 0,
+  totalXruns: 0, limiterGrDb: 0, safetyEvents: 0, samples: 0,
 };
 
 /**
@@ -49,6 +53,7 @@ export class RealtimeMetrics {
   private blockMs = 0;
   private totalXruns = 0;
   private gr = 0;
+  private safety = 0;
   private count = 0;
   private readonly emaAlpha: number;
 
@@ -63,6 +68,10 @@ export class RealtimeMetrics {
     this.blockMs = s.blockPeriodMs;
     this.totalXruns += s.xruns;
     this.gr = s.limiterGrDb;
+    if (typeof s.safetyEvents === 'number' && Number.isFinite(s.safetyEvents)) {
+      // Cumulative counter from the chain — keep the latest (highest) value.
+      this.safety = Math.max(this.safety, s.safetyEvents);
+    }
     this.count += 1;
   }
 
@@ -76,6 +85,7 @@ export class RealtimeMetrics {
       blockPeriodMs: this.blockMs,
       totalXruns: this.totalXruns,
       limiterGrDb: this.gr,
+      safetyEvents: this.safety,
       samples: this.count,
     };
   }
@@ -83,7 +93,7 @@ export class RealtimeMetrics {
   /** Reset all counters. */
   reset(): void {
     this.avgMs = 0; this.peakMs = 0; this.blockMs = 0;
-    this.totalXruns = 0; this.gr = 0; this.count = 0;
+    this.totalXruns = 0; this.gr = 0; this.safety = 0; this.count = 0;
   }
 }
 

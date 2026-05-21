@@ -514,6 +514,13 @@ impl LouiMasteringChain {
         self.inner.gain_reduction().limiter_db
     }
 
+    /// Count of blocks the output-safety layer had to replace with the dry
+    /// signal (non-finite or absurd peak).  0 in healthy operation.
+    #[wasm_bindgen(js_name = safetyEvents)]
+    pub fn safety_events(&self) -> u32 {
+        self.inner.safety_events()
+    }
+
     /// Clear all module state (transport seek / source swap).
     pub fn reset(&mut self) {
         self.inner.reset();

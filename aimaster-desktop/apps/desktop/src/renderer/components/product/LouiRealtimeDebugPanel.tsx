@@ -26,6 +26,11 @@ export interface LouiRealtimeDebugPanelProps {
   lastConfigAt?: number | null;
   /** Coded fallback reason when the graph failed. */
   fallbackReason?: string;
+  /** Live chain config the UI is sending (actual numeric values). */
+  config?: {
+    imgWidthPct: number; eqPresenceDb: number; eqAirDb: number;
+    dynThresholdDb: number; dynRatio: number;
+  } | null;
   /** AudioContext state ('running' / 'suspended' / 'closed'). */
   contextState?: string;
   /** Active buffer / quantum size (samples). */
@@ -108,9 +113,20 @@ export function LouiRealtimeDebugPanel(props: LouiRealtimeDebugPanelProps) {
       <Row label="peak process" value={`${m.peakProcessMs.toFixed(3)} ms`} />
       <Row label="block period" value={`${m.blockPeriodMs.toFixed(3)} ms`} />
       <Row label="xruns" value={`${m.totalXruns}`} status={xrunStatus} />
+      <Row label="safety bypass" value={`${m.safetyEvents}`} status={m.safetyEvents > 0 ? 'danger' : 'ok'} />
       <div style={{ marginBlock: 4 }}>
         <LouiGainReductionMeter grDb={m.limiterGrDb} available={props.active} compact label="limiter GR" />
       </div>
+      {props.config && (
+        <>
+          <div style={{ height: 1, background: surface.border, marginBlock: 4 }} />
+          <Row label="img width" value={`${props.config.imgWidthPct.toFixed(0)}%`} />
+          <Row label="eq presence" value={`${props.config.eqPresenceDb >= 0 ? '+' : ''}${props.config.eqPresenceDb.toFixed(1)} dB`} />
+          <Row label="eq air" value={`${props.config.eqAirDb >= 0 ? '+' : ''}${props.config.eqAirDb.toFixed(1)} dB`} />
+          <Row label="dyn thresh" value={`${props.config.dynThresholdDb.toFixed(1)} dB`} />
+          <Row label="dyn ratio" value={`${props.config.dynRatio.toFixed(1)}:1`} />
+        </>
+      )}
       {props.wasmLoad && <WasmLoadRows load={props.wasmLoad} />}
     </div>
   );

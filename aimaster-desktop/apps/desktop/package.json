@@ -26,6 +26,7 @@
     "test:phase-e-paths": "tsx scripts/phase-e-paths-safety.ts",
     "test:loudness": "tsx scripts/loudness-selftest.ts",
     "test:realtime-graph": "tsx scripts/realtime-graph-selftest.ts",
+    "test:realtime-config": "tsx scripts/realtime-config-selftest.ts",
     "test:preset-tuning": "tsx scripts/preset-tuning-selftest.ts",
     "test:preset-differentiation": "tsx scripts/preset-differentiation-selftest.ts",
     "test:revision": "tsx scripts/revision-selftest.ts",

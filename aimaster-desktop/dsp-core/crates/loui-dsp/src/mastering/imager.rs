@@ -26,19 +26,34 @@ impl Imager {
         Self {
             sr: sample_rate,
             cfg,
-            side_hp: Biquad::new(BiquadCoeffs::high_pass(sample_rate, cfg.low_mono_hz.max(20.0), 0.707)),
+            side_hp: Biquad::new(BiquadCoeffs::high_pass(sample_rate, Self::safe_low_mono(cfg.low_mono_hz, sample_rate), 0.707)),
         }
     }
 
     /// Update parameters.
     pub fn set_config(&mut self, cfg: ImagerConfig) {
         self.cfg = cfg;
-        self.side_hp.set_coeffs(BiquadCoeffs::high_pass(self.sr, cfg.low_mono_hz.max(20.0), 0.707));
+        self.side_hp.set_coeffs(BiquadCoeffs::high_pass(self.sr, Self::safe_low_mono(cfg.low_mono_hz, self.sr), 0.707));
     }
 
-    /// Effective width factor, phase-guarded to [0, 2.0].
+    /// Clamp the low-mono crossover to a numerically safe range so a bad
+    /// (or out-of-range) value can never make the high-pass unstable.
+    fn safe_low_mono(hz: f64, sr: f64) -> f64 {
+        if hz.is_finite() {
+            hz.clamp(20.0, sr * 0.45)
+        } else {
+            20.0
+        }
+    }
+
+    /// Effective width factor, phase-guarded to [0, 2.0] (non-finite → 1.0).
     fn width_factor(&self) -> f64 {
-        (self.cfg.width_pct / 100.0).clamp(0.0, 2.0)
+        let w = self.cfg.width_pct / 100.0;
+        if w.is_finite() {
+            w.clamp(0.0, 2.0)
+        } else {
+            1.0
+        }
     }
 }
 
@@ -63,8 +78,12 @@ impl StereoModule for Imager {
                 let _ = self.side_hp.process(side);
             }
             side *= width;
-            left[i] = (mid + side) as f32;
-            right[i] = (mid - side) as f32;
+            let out_l = mid + side;
+            let out_r = mid - side;
+            // Per-sample finite guard — a non-finite (e.g. a poisoned filter
+            // state) must fall back to the dry sample, never emit garbage.
+            left[i] = if out_l.is_finite() { out_l as f32 } else { l as f32 };
+            right[i] = if out_r.is_finite() { out_r as f32 } else { r as f32 };
         }
     }
 
@@ -127,5 +146,38 @@ mod tests {
         im.process_stereo(&mut l, &mut r);
         assert_eq!(l, lc);
         assert_eq!(r, rc);
+    }
+
+    #[test]
+    fn mono_input_stays_finite_and_centred() {
+        // Mono = L == R → side 0 → width has no effect, output stays == input.
+        let mut im = Imager::new(48_000.0, cfg(150.0, 120.0));
+        let mut l = [0.5f32, -0.4, 0.3, -0.2];
+        let mut r = l;
+        im.process_stereo(&mut l, &mut r);
+        for i in 0..4 {
+            assert!(l[i].is_finite() && r[i].is_finite());
+            assert!((l[i] - r[i]).abs() < 1e-5, "mono should stay centred at {i}");
+        }
+    }
+
+    #[test]
+    fn non_finite_width_falls_back_to_unity() {
+        // A NaN width must not poison the output.
+        let mut im = Imager::new(48_000.0, cfg(f64::NAN, 20.0));
+        let mut l = [0.5f32, -0.3];
+        let mut r = [0.1f32, 0.4];
+        im.process_stereo(&mut l, &mut r);
+        assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn extreme_low_mono_is_clamped_stable() {
+        // An absurd / non-finite crossover must clamp, not blow up.
+        let mut im = Imager::new(48_000.0, cfg(130.0, 1.0e9));
+        let mut l: Vec<f32> = (0..2048).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
+        let mut r: Vec<f32> = (0..2048).map(|i| (i as f32 * 0.013).sin() * 0.5).collect();
+        im.process_stereo(&mut l, &mut r);
+        assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
     }
 }

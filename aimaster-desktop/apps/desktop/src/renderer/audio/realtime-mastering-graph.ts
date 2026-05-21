@@ -71,31 +71,41 @@ export interface RealtimeMasteringGraph {
 function finite(v: number, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
+/** Finite + clamped to [lo, hi]. */
+function clamp(v: number, fallback: number, lo: number, hi: number): number {
+  const x = finite(v, fallback);
+  return Math.min(hi, Math.max(lo, x));
+}
 
-/** Guard every numeric field so a NaN can never reach the audio thread. */
-function sanitiseConfig(c: RealtimeChainConfig): RealtimeChainConfig {
+/**
+ * Guard every numeric field so a NaN — or an out-of-range UI/preset value —
+ * can never reach the audio thread or push the DSP into instability.  The
+ * Rust chain has its own clamps too (defence in depth); this keeps the
+ * payload sane before it crosses the worklet boundary.
+ */
+export function sanitiseConfig(c: RealtimeChainConfig): RealtimeChainConfig {
   return {
-    inputGainDb: finite(c.inputGainDb, 0),
-    eqLowCutHz: finite(c.eqLowCutHz, 20),
-    eqLowShelfDb: finite(c.eqLowShelfDb, 0),
-    eqPresenceDb: finite(c.eqPresenceDb, 0),
-    eqAirDb: finite(c.eqAirDb, 0),
+    inputGainDb: clamp(c.inputGainDb, 0, -24, 24),
+    eqLowCutHz: clamp(c.eqLowCutHz, 20, 10, 1000),
+    eqLowShelfDb: clamp(c.eqLowShelfDb, 0, -24, 24),
+    eqPresenceDb: clamp(c.eqPresenceDb, 0, -24, 24),
+    eqAirDb: clamp(c.eqAirDb, 0, -24, 24),
     eqAdaptive: !!c.eqAdaptive,
     eqBypass: !!c.eqBypass,
-    dynThresholdDb: finite(c.dynThresholdDb, 0),
-    dynRatio: finite(c.dynRatio, 1),
-    dynAttackMs: finite(c.dynAttackMs, 10),
-    dynReleaseMs: finite(c.dynReleaseMs, 120),
-    dynMixPct: finite(c.dynMixPct, 100),
+    dynThresholdDb: clamp(c.dynThresholdDb, 0, -60, 0),
+    dynRatio: clamp(c.dynRatio, 1, 1, 20),
+    dynAttackMs: clamp(c.dynAttackMs, 10, 0.1, 200),
+    dynReleaseMs: clamp(c.dynReleaseMs, 120, 5, 2000),
+    dynMixPct: clamp(c.dynMixPct, 100, 0, 100),
     dynBypass: !!c.dynBypass,
-    imgWidthPct: finite(c.imgWidthPct, 100),
-    imgLowMonoHz: finite(c.imgLowMonoHz, 20),
+    imgWidthPct: clamp(c.imgWidthPct, 100, 0, 200),
+    imgLowMonoHz: clamp(c.imgLowMonoHz, 20, 20, 2000),
     imgBypass: !!c.imgBypass,
-    limCeilingDbtp: finite(c.limCeilingDbtp, -1),
-    limLookaheadMs: finite(c.limLookaheadMs, 2.5),
+    limCeilingDbtp: clamp(c.limCeilingDbtp, -1, -24, 0),
+    limLookaheadMs: clamp(c.limLookaheadMs, 2.5, 0, 20),
     limIsp: !!c.limIsp,
     limBypass: !!c.limBypass,
-    outputGainDb: finite(c.outputGainDb, 0),
+    outputGainDb: clamp(c.outputGainDb, 0, -24, 24),
     masterBypass: !!c.masterBypass,
   };
 }
@@ -162,6 +172,7 @@ export function createRealtimeMasteringGraph(
           blockPeriodMs: finite(msg.blockPeriodMs ?? 0, 0),
           xruns: Math.max(0, Math.trunc(finite(msg.xruns ?? 0, 0))),
           limiterGrDb: finite(msg.limiterGrDb ?? 0, 0),
+          safetyEvents: Math.max(0, Math.trunc(finite(msg.safetyEvents ?? 0, 0))),
         });
         opts.onMetrics?.(metrics.snapshot());
       };

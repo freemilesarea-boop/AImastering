@@ -50,6 +50,7 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     this._blockCount = 0;
     this._blockPeriodMs = (128 / sampleRate) * 1000;
     this._grDb = 0;
+    this._safetyEvents = 0;   // chain output-safety bypasses (non-finite/absurd)
 
     // Attempt to instantiate the WASM chain from processorOptions.
     // If the no-modules glue / module isn't provided, we stay in safe
@@ -106,10 +107,13 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       return true;
     }
 
-    const chans = Math.min(input.length, output.length);
-    // Always start by copying input → output (safe passthrough).
-    for (let c = 0; c < chans; c++) {
-      const inCh = input[c];
+    const outChans = output.length;
+    const inChans = input.length;
+    // Always start by copying input → output (safe passthrough).  A MONO
+    // input is duplicated to every output channel so the stereo chain (esp.
+    // the imager's M/S maths) never sees an uninitialised/foreign buffer.
+    for (let c = 0; c < outChans; c++) {
+      const inCh = inChans > 0 ? (input[c] || input[0]) : null;
       const outCh = output[c];
       if (inCh && outCh && inCh.length === outCh.length) outCh.set(inCh);
     }
@@ -122,16 +126,29 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     this._applyPendingConfig();
 
     // Process stereo in place on the OUTPUT buffers (already a copy of input).
+    // For a single-channel output we hand the chain a scratch right channel
+    // so it never aliases left (the writeback would otherwise clobber it).
     const left = output[0];
-    const right = output.length > 1 ? output[1] : output[0];
+    let right;
+    if (outChans > 1) {
+      right = output[1];
+    } else {
+      if (!this._monoScratch || this._monoScratch.length !== left.length) {
+        this._monoScratch = new Float32Array(left.length);
+      }
+      this._monoScratch.set(left);
+      right = this._monoScratch;
+    }
     const t0 = currentTime;
     try {
       this._chain.processStereo(left, right);
       if (this._chain.limiterGrDb) this._grDb = this._chain.limiterGrDb();
+      if (this._chain.safetyEvents) this._safetyEvents = this._chain.safetyEvents();
     } catch (e) {
       // On any process error: restore passthrough for this block + bypass.
-      for (let c = 0; c < chans; c++) {
-        if (input[c] && output[c]) output[c].set(input[c]);
+      for (let c = 0; c < outChans; c++) {
+        const inCh = inChans > 0 ? (input[c] || input[0]) : null;
+        if (inCh && output[c]) output[c].set(inCh);
       }
       this._bypass = true;
       return true;
@@ -151,6 +168,7 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
         blockPeriodMs: this._blockPeriodMs,
         xruns: this._xruns,
         limiterGrDb: this._grDb,
+        safetyEvents: this._safetyEvents,
       });
       this._sumMs = 0; this._peakMs = 0; this._xruns = 0; this._blockCount = 0;
     }
