@@ -7,6 +7,7 @@ import { LouiModuleChain } from './LouiModuleChain';
 import { LouiMasteringVisualizer } from './LouiMasteringVisualizer';
 import { LouiModuleStatusBadge } from './LouiModuleStatusBadge';
 import { CHAIN_MODULE_IDS, LOUI_MODULES } from '../../../audio/modules/loui-module-suite';
+import { SpectrumAnalyzerPanel } from '../../SpectrumAnalyzerPanel';
 import { surface, text } from '../../../theme/loui-theme';
 import { loui } from '../../../theme/loui-home';
 
@@ -87,6 +88,25 @@ export const VisualizerNoSignal: Story = {
   render: () => <LouiMasteringVisualizer eqBands={eqBands} />,
 };
 
+export const VisualizerHighGain: Story = {
+  name: 'Visualizer / clipping-risk (hot signal + +6 dB)',
+  render: () => {
+    const hot = synthSpectrum(10);
+    // Push the whole spectrum up toward 0 dBFS to read as a hot master.
+    const magnitudeDb = hot.magnitudeDb.map((d) => Math.min(-1, d + 22));
+    const peakHoldDb = magnitudeDb.map((d) => Math.min(0, d + 3));
+    return (
+      <LouiMasteringVisualizer
+        binCentresHz={hot.binCentresHz}
+        magnitudeDb={magnitudeDb}
+        peakHoldDb={peakHoldDb}
+        eqBands={{ ...eqBands, outputGainDb: 6, presenceDb: 3, airDb: 4 }}
+        playhead={0.6}
+      />
+    );
+  },
+};
+
 // Full module hub — chain + central visualizer + active module summary.
 function Hub({ narrow }: { narrow?: boolean }) {
   const [active, setActive] = React.useState('eq');
@@ -118,3 +138,14 @@ function Hub({ narrow }: { narrow?: boolean }) {
 
 export const FullModuleHub: Story = { render: () => <Hub /> };
 export const NarrowLayout: Story = { render: () => <Hub narrow /> };
+
+// Fallback: the proven SpectrumAnalyzerPanel (rendered when the live
+// visualizer flag is off or its error-boundary trips). Uses the built-in
+// synthetic analyzer session for review.
+export const FallbackSpectrumPanel: Story = {
+  render: () => (
+    <div style={{ height: 240, border: `1px solid ${surface.border}`, borderRadius: 12, padding: 12, background: surface.panel }}>
+      <SpectrumAnalyzerPanel showPeakHold />
+    </div>
+  ),
+};

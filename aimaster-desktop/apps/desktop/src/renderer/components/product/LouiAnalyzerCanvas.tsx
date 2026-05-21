@@ -8,10 +8,16 @@
 // The wrapped panel still owns the canvas + RAF loop — we only style
 // the chrome around it.
 
-import React from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { surface, text, typography, radius, space, meter } from '../../theme/loui-theme.js';
 import { SpectrumAnalyzerPanel } from '../SpectrumAnalyzerPanel.js';
 import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
+import { isLiveVisualizerEnabled } from '../../audio/live-visualizer-flag.js';
+import { useAnalyzerSubscriptions } from '../../hooks/useAnalyzerSubscriptions.js';
+import { fftFrameToSpectrum } from '../../audio/modules/analyzer-to-visualizer-adapter.js';
+import { SpectrumWaveformCanvas } from './modules/SpectrumWaveformCanvas.js';
+import { EQCurveOverlay, type EqBands } from './modules/EQCurveOverlay.js';
+import { hasParameterStateProvider, useModuleParameters } from '../../audio/parameters/useModuleParameterState.js';
 
 export interface LouiAnalyzerCanvasProps {
   /** Live analyzer session — passed through to SpectrumAnalyzerPanel. */
@@ -115,7 +121,13 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           transition: 'background 200ms ease-out',
         }}
       >
-        <SpectrumAnalyzerPanel session={props.session ?? null} showPeakHold />
+        {isLiveVisualizerEnabled() ? (
+          <VisualizerBoundary fallback={<SpectrumAnalyzerPanel session={props.session ?? null} showPeakHold />}>
+            <LiveSpectrumBody session={props.session ?? null} />
+          </VisualizerBoundary>
+        ) : (
+          <SpectrumAnalyzerPanel session={props.session ?? null} showPeakHold />
+        )}
       </div>
 
       {/* Footer legend */}
@@ -139,4 +151,95 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
       </div>
     </div>
   );
+}
+
+// ── Live FFT visualizer body (OZONE-MODULE-NEXT-1) ─────────────────────
+
+function useSize(): [React.RefObject<HTMLDivElement>, { w: number; h: number }] {
+  const ref = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => setSize({ w: el.clientWidth, h: el.clientHeight });
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, size];
+}
+
+/** Reads EQ parameter state → an approximate curve overlay.  Only rendered
+ *  when a parameter-state provider is present (guards storybook usage). */
+function EqOverlayFromState({ width, height }: { width: number; height: number }) {
+  const eq = useModuleParameters('eq');
+  const n = (id: string, d: number): number => {
+    const v = eq.get(id);
+    return typeof v === 'number' ? v : d;
+  };
+  const bands: EqBands = {
+    lowCutHz: n('lowCutHz', 20),
+    lowShelfDb: n('lowShelfDb', 0),
+    presenceDb: n('presenceDb', 0),
+    airDb: n('airDb', 0),
+    outputGainDb: n('outputGainDb', 0),
+  };
+  return <EQCurveOverlay width={width} height={height} bands={bands} {...(eq.bypass ? { bypassed: true } : {})} />;
+}
+
+function IdleOverlay() {
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      color: text.muted, fontFamily: typography.family.sans, fontSize: typography.size.sm, pointerEvents: 'none',
+    }}>
+      재생을 시작하면 실시간 스펙트럼이 표시됩니다
+    </div>
+  );
+}
+
+function LiveSpectrumBody({ session }: { session: AnalyzerSession | null }) {
+  const [ref, size] = useSize();
+  // FFT frames arrive at the analyzer's cadence (≤30 Hz) — redraw is driven
+  // by new frames only (no free-running RAF here).
+  const subs = useAnalyzerSubscriptions(session, { enableFft: true });
+  const spectrum = useMemo(() => fftFrameToSpectrum(subs.fft), [subs.fft]);
+  const hasProvider = hasParameterStateProvider();
+  const w = size.w, h = size.h;
+  return (
+    <div ref={ref} style={{ position: 'relative', flex: 1, minHeight: 0, borderRadius: 10, overflow: 'hidden' }}>
+      {w > 0 && h > 0 && spectrum && (
+        <>
+          <SpectrumWaveformCanvas
+            width={w}
+            height={h}
+            binCentresHz={spectrum.binCentresHz}
+            magnitudeDb={spectrum.magnitudeDb}
+            {...(spectrum.peakHoldDb ? { peakHoldDb: spectrum.peakHoldDb } : {})}
+          />
+          {hasProvider && <EqOverlayFromState width={w} height={h} />}
+        </>
+      )}
+      {!spectrum && <IdleOverlay />}
+    </div>
+  );
+}
+
+/** If the live visualizer throws, fall back to the proven spectrum panel. */
+class VisualizerBoundary extends React.Component<
+  { fallback: React.ReactNode; children: React.ReactNode },
+  { failed: boolean }
+> {
+  constructor(props: { fallback: React.ReactNode; children: React.ReactNode }) {
+    super(props);
+    this.state = { failed: false };
+  }
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(err: unknown) {
+    // eslint-disable-next-line no-console
+    console.warn('[live-visualizer] fell back to SpectrumAnalyzerPanel:', err);
+  }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
 }
