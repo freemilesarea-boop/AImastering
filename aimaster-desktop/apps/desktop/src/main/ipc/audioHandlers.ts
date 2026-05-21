@@ -320,6 +320,67 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     }
   });
 
+  // ── Rust offline render (experimental, RUST-OFFLINE-RENDER-1) ───────────
+  // Additive path: render the file through the SAME Rust MasteringChain as
+  // the realtime preview.  On ANY failure it falls back to the Python
+  // `masterFile` so the user always gets an output.  `audio:master` is
+  // unchanged.
+  ipc.handle('audio:master-rust-experimental', async (
+    _e,
+    req: {
+      sourcePath: string;
+      chainConfig: import('../offline/load-mastering-chain-node.js').OfflineChainConfig;
+      options: MasteringOptions;
+      requestId?: string;
+    },
+  ) => {
+    assertTmpWritable();
+    const { sourcePath, chainConfig, options, requestId } = req;
+    const wavTempPath = resolveOutputPath(sourcePath, '.wav', {
+      style: options?.style, targetLufs: options?.targetLufs,
+    });
+    const mp3Path = internalTempPath('_preview.mp3');
+    const t0 = Date.now();
+
+    // Try the Rust backend first.
+    try {
+      const { processAudioFileRust, encodePreviewMp3, isRustOfflineAvailable } =
+        await import('../offline/process-audio-file-rust.js');
+      if (!isRustOfflineAvailable()) throw new Error('rust offline backend unavailable');
+      const sr = (options?.sampleRate as number) || 48000;
+      const bd = (options?.bitDepth === 16 ? 16 : 24) as 16 | 24;
+      const rendered = await processAudioFileRust(sourcePath, chainConfig, {
+        sampleRate: sr, bitDepth: bd, outputPath: wavTempPath,
+      });
+      await encodePreviewMp3(wavTempPath, mp3Path);
+      return {
+        requestId, ok: true, backend: 'rust' as const, fallbackUsed: false,
+        outputPath: rendered.outputPath, previewPath: mp3Path,
+        metrics: rendered.metrics, renderMs: Date.now() - t0,
+      };
+    } catch (rustErr) {
+      log.warn('[audio:master-rust-experimental] rust render failed, falling back to Python', {
+        err: (rustErr as Error).message,
+      });
+      recordPipelineWarning({ code: 'rust_offline_fallback', level: 'warning', userMessage: `rust offline render fell back to Python: ${(rustErr as Error).message}` });
+      // Fallback: the proven Python path.
+      try {
+        const b = getBridge();
+        const result = await masterFile(b, sourcePath, wavTempPath, options, {});
+        return {
+          requestId, ok: true, backend: 'python' as const, fallbackUsed: true,
+          outputPath: result.outputPath, previewPath: result.previewPath || mp3Path,
+          metrics: result.loudnessAfter, renderMs: Date.now() - t0,
+        };
+      } catch (pyErr) {
+        return {
+          requestId, ok: false, backend: 'python' as const, fallbackUsed: true,
+          error: (pyErr as Error).message, renderMs: Date.now() - t0,
+        };
+      }
+    }
+  });
+
   ipc.handle('audio:qc', async (_e, filePath: string, targetLufs: number, targetTp: number) => {
     try {
       const b = getBridge();

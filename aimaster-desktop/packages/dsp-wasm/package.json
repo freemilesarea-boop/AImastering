@@ -13,13 +13,15 @@
       "import": "./pkg/loui_dsp_wasm.js",
       "default": "./pkg/loui_dsp_wasm.js"
     },
-    "./pkg/*": "./pkg/*"
+    "./pkg/*": "./pkg/*",
+    "./pkg-node/*": "./pkg-node/*"
   },
-  "files": ["pkg/"],
+  "files": ["pkg/", "pkg-node/"],
   "scripts": {
     "build": "bash ../../dsp-core/scripts/build-wasm-bindings.sh",
     "build:web": "bash ../../dsp-core/scripts/build-wasm-bindings.sh",
     "build:worklet": "bash ../../dsp-core/scripts/build-wasm-worklet.sh",
-    "build:all": "pnpm run build:web && pnpm run build:worklet"
+    "build:node": "bash ../../dsp-core/scripts/build-wasm-node.sh",
+    "build:all": "pnpm run build:web && pnpm run build:worklet && pnpm run build:node"
   }
 }

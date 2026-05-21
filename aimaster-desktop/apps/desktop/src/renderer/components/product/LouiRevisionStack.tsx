@@ -23,6 +23,8 @@ export interface LouiRevisionStackProps {
   createError?: string | null;
   /** Current edit settings duplicate an existing revision. */
   duplicateWarning?: boolean;
+  /** Experimental Rust offline render backend is enabled. */
+  experimental?: boolean;
   /** Resolve a preset id → display name (optional). */
   presetNameFor?: (presetId: string) => string;
   onSelect?: (id: string) => void;
@@ -173,6 +175,18 @@ export function LouiRevisionStack(props: LouiRevisionStackProps) {
         </button>
       </div>
 
+      {props.experimental && (
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, alignSelf: 'flex-start' }}>
+          <span style={{
+            fontFamily: typography.family.sans, fontSize: 9, fontWeight: typography.weight.semi,
+            letterSpacing: '0.06em', padding: '2px 5px', borderRadius: 4,
+            color: loui.warningAmber, border: `1px solid ${loui.warningAmber}`,
+          }}>
+            EXPERIMENTAL
+          </span>
+          <span style={{ fontSize: 10, color: text.muted }}>Rust offline render (falls back to Python)</span>
+        </div>
+      )}
       {props.duplicateWarning && !props.creating && (
         <div style={{ fontSize: 11, color: loui.warningAmber }}>
           현재 설정과 동일한 버전이 이미 있습니다 — 그래도 새 버전을 만들 수 있습니다.

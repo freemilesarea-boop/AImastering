@@ -54,6 +54,8 @@ import { CHAIN_MODULE_IDS, getModule } from '../audio/modules/loui-module-suite.
 import { RealtimeGrProvider, useRealtimeGr } from '../audio/modules/realtime-gr-context.js';
 import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
 import { decayPeak } from '../audio/modules/gr-meter-model.js';
+import { stateToChainConfig } from '../audio/realtime-mastering-chain.js';
+import { isRustOfflineRenderEnabled } from '../audio/rust-offline-render-flag.js';
 import {
   PresetPatchDispatcher,
   PreviewRenderController,
@@ -821,26 +823,61 @@ function ProductionPreviewProvider({
     })();
   }, [masterOutputPath, exportFormat, baseOptions, suggestedName]);
 
-  // Create a new revision — full master with the current edit settings,
-  // reusing the EXISTING audio:master channel (no new IPC / Python change).
+  // Create a new revision — full master with the current edit settings.
+  // Flag OFF (default): the proven Python `audio:master`.
+  // Flag ON: the experimental Rust offline render (same chain as preview),
+  // which the main process falls back to Python on any failure.
   const onCreateRevision = useCallback(() => {
     const api = window.electronAPI;
     if (!api) { setCreateRevisionError('electronAPI unavailable'); return; }
     const options = mergeOptions(baseOptions, exportOverride.optionsOverride);
     const sourceFileName = sourceAudioPath.split(/[\\/]/).pop() ?? 'master';
+    const useRust = isRustOfflineRenderEnabled();
     setCreatingRevision(true);
     setCreateRevisionError(null);
     const t0 = Date.now();
     void (async () => {
       try {
-        const result = await api.invoke('audio:master', sourceAudioPath, '', options) as {
-          outputPath?: string; previewPath?: string;
-          loudnessAfter?: { integratedLufs?: number; truePeakDbtp?: number; lra?: number };
-        } | undefined;
-        const outputPath = result?.outputPath;
-        const previewPath = result?.previewPath;
+        let outputPath: string | undefined;
+        let previewPath: string | undefined;
+        let integratedLufs = options.targetLufs;
+        let truePeakDbtp = options.targetTp;
+        let backend: 'rust' | 'python' = 'python';
+        let fallbackUsed = false;
+
+        if (useRust) {
+          const resp = await api.invoke('audio:master-rust-experimental', {
+            sourcePath: sourceAudioPath,
+            chainConfig: stateToChainConfig(state),
+            options,
+          }) as {
+            ok: boolean; backend?: 'rust' | 'python'; fallbackUsed?: boolean;
+            outputPath?: string; previewPath?: string; error?: string;
+            metrics?: { integratedLufs?: number; truePeakDbtp?: number; samplePeakDb?: number };
+          } | undefined;
+          if (!resp?.ok || !resp.outputPath || !resp.previewPath) {
+            setCreateRevisionError(resp?.error ?? 'rust render produced no output');
+            return;
+          }
+          outputPath = resp.outputPath; previewPath = resp.previewPath;
+          backend = resp.backend ?? 'rust';
+          fallbackUsed = Boolean(resp.fallbackUsed);
+          // Rust core measures sample peak (not LUFS); use the target as a
+          // loudness estimate (documented in the parity report).
+          integratedLufs = Number(resp.metrics?.integratedLufs ?? options.targetLufs);
+          truePeakDbtp = Number(resp.metrics?.truePeakDbtp ?? resp.metrics?.samplePeakDb ?? options.targetTp);
+        } else {
+          const result = await api.invoke('audio:master', sourceAudioPath, '', options) as {
+            outputPath?: string; previewPath?: string;
+            loudnessAfter?: { integratedLufs?: number; truePeakDbtp?: number; lra?: number };
+          } | undefined;
+          outputPath = result?.outputPath; previewPath = result?.previewPath;
+          integratedLufs = Number(result?.loudnessAfter?.integratedLufs ?? options.targetLufs);
+          truePeakDbtp = Number(result?.loudnessAfter?.truePeakDbtp ?? options.targetTp);
+        }
+
         if (!outputPath || !previewPath) { setCreateRevisionError('master produced no output'); return; }
-        const after = result?.loudnessAfter ?? {};
+        const backendTag = backend === 'rust' ? ' · Rust (exp)' : (useRust && fallbackUsed ? ' · Python (fallback)' : '');
         onRevisionCreatedRef.current({
           sourceFilePath: sourceAudioPath,
           sourceFileName,
@@ -848,12 +885,8 @@ function ProductionPreviewProvider({
           ...(presetId ? { presetId } : {}),
           outputPath,
           previewPath,
-          metrics: {
-            integratedLufs: Number(after.integratedLufs ?? options.targetLufs),
-            truePeakDbtp: Number(after.truePeakDbtp ?? options.targetTp),
-            ...(typeof after.lra === 'number' ? { lra: after.lra } : {}),
-          },
-          formatSummary: `${(options.sampleRate / 1000)} kHz · ${options.bitDepth}-bit`,
+          metrics: { integratedLufs, truePeakDbtp },
+          formatSummary: `${(options.sampleRate / 1000)} kHz · ${options.bitDepth}-bit${backendTag}`,
           renderDurationMs: Date.now() - t0,
         });
       } catch (err) {
@@ -862,7 +895,7 @@ function ProductionPreviewProvider({
         setCreatingRevision(false);
       }
     })();
-  }, [baseOptions, exportOverride, sourceAudioPath, presetId]);
+  }, [baseOptions, exportOverride, sourceAudioPath, presetId, state]);
 
   const bridge: PreviewBridge = {
     summary, phase, lastRenderedAt, error, onUpdate,
@@ -921,6 +954,7 @@ function RevisionStackHost(props: {
       activeId={group.activeRevisionId}
       creating={bridge.creatingRevision}
       createError={bridge.createRevisionError}
+      experimental={isRustOfflineRenderEnabled()}
       presetNameFor={(id) => getPreset(id)?.displayName ?? id}
       onCreateRevision={bridge.onCreateRevision}
       onSelect={setActive}
