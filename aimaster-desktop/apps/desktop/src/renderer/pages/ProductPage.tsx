@@ -51,8 +51,11 @@ import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioS
 import { getActiveRevision, getBaselineRevision, findDuplicate } from '../audio/revisions/revision-logic.js';
 import { LouiModuleChain } from '../components/product/modules/LouiModuleChain.js';
 import { LouiRealtimeStatus } from '../components/product/modules/LouiRealtimeStatus.js';
+import { LouiRealtimeToggle } from '../components/product/modules/LouiRealtimeToggle.js';
+import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { CHAIN_MODULE_IDS, getModule } from '../audio/modules/loui-module-suite.js';
 import { RealtimeGrProvider, useRealtimeGr } from '../audio/modules/realtime-gr-context.js';
+import { RealtimePreviewProvider, useRealtimePreviewStatus } from '../audio/modules/realtime-preview-context.js';
 import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
 import { decayPeak } from '../audio/modules/gr-meter-model.js';
 import { stateToChainConfig } from '../audio/realtime-mastering-chain.js';
@@ -398,14 +401,28 @@ function ModuleSlideOverHost(props: {
 function SlideOverActions({ moduleId }: { moduleId: ModuleId }) {
   const { isModified, bypass, setBypass, reset } = useModuleParameters(moduleId);
   const bridge = usePreviewBridge();
+  const rt = useRealtimePreviewStatus();
   const previewState = bridge?.summary.pendingByModule[moduleId] ?? null;
+  // Honest 3-state heard/staged badge.  When realtime is processing, every
+  // module edit (renderable or not) is audible now → "Heard live".  When
+  // it is off, renderable edits are "Staged" (Update Preview applies them);
+  // non-renderable edits are "Realtime-only" (never in the Python render).
+  const heardLive = rt.active && (previewState !== null || isModified);
+  const badge: { label: string; title: string; tone: 'live' | 'staged' | 'rtonly' } | null = heardLive
+    ? { label: 'Heard live', tone: 'live', title: 'Realtime preview is on — this module’s changes are audible now.' }
+    : previewState === 'renderable'
+      ? { label: 'Staged', tone: 'staged', title: 'Click Update Preview / Create Revision to hear this (loudness, true-peak, width, output gain reflect in the render).' }
+      : previewState === 'staged'
+        ? { label: 'Staged · Realtime-only', tone: 'rtonly', title: 'Not included in the Python re-render or export. Enable Realtime preview to hear it, or use the Rust experimental render to bake it into a file.' }
+        : null;
+  const badgeBorder = badge?.tone === 'live' ? 'rgba(16,185,129,0.45)' : badge?.tone === 'staged' ? 'rgba(167,139,250,0.45)' : surface.border;
+  const badgeBg = badge?.tone === 'live' ? meter.safe.background : badge?.tone === 'staged' ? 'rgba(167,139,250,0.12)' : surface.well;
+  const badgeColor = badge?.tone === 'live' ? meter.safe.foreground : badge?.tone === 'staged' ? meter.accent.foreground : text.muted;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: space['2'] }}>
-      {previewState && (
+      {badge && (
         <span
-          title={previewState === 'renderable'
-            ? 'This module has changes that will reflect on the next preview update'
-            : 'This module has changes that are staged only (not in the preview)'}
+          title={badge.title}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -413,16 +430,16 @@ function SlideOverActions({ moduleId }: { moduleId: ModuleId }) {
             height: 22,
             paddingInline: 8,
             borderRadius: radius.chip,
-            border: `1px solid ${previewState === 'renderable' ? 'rgba(16,185,129,0.45)' : surface.border}`,
-            background: previewState === 'renderable' ? meter.safe.background : surface.well,
-            color: previewState === 'renderable' ? meter.safe.foreground : text.muted,
+            border: `1px solid ${badgeBorder}`,
+            background: badgeBg,
+            color: badgeColor,
             fontFamily: typography.family.sans,
             fontSize: typography.size.xs,
             fontWeight: typography.weight.medium,
             letterSpacing: '0.02em',
           }}
         >
-          {previewState === 'renderable' ? 'Preview-ready' : 'Staged only'}
+          {badge.label}
         </span>
       )}
       {isModified && (
@@ -1379,6 +1396,11 @@ function ProductPageProductionInner(props: {
     () => ({ grDb, peakDb: grPeak, available: grAvailable, source: grAvailable ? ('realtime' as const) : ('unavailable' as const) }),
     [grDb, grPeak, grAvailable],
   );
+  // Realtime preview status for module badges ("Heard live" vs "Staged").
+  const realtimePreviewValue = useMemo(
+    () => ({ enabled: realtime.enabled, active: realtime.active }),
+    [realtime.enabled, realtime.active],
+  );
 
   // Preset selection → apply the preset's full DSP tuning to the central
   // parameter state.  This updates the realtime preview config (no graph
@@ -1446,11 +1468,22 @@ function ProductPageProductionInner(props: {
       {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
       moduleSuiteSlot={
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <LouiRealtimeStatus
-            enabled={realtime.enabled}
-            active={realtime.active}
-            readinessLabel={realtime.readinessLabel}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <LouiRealtimeStatus
+              enabled={realtime.enabled}
+              active={realtime.active}
+              readinessLabel={realtime.readinessLabel}
+            />
+            <LouiRealtimeToggle
+              enabled={realtime.enabled}
+              ready={realtime.readiness.ready}
+              readinessLabel={realtime.readinessLabel}
+              onToggle={(next) => {
+                setRealtimePreviewEnabled(next);
+                if (typeof window !== 'undefined') window.location.reload();
+              }}
+            />
+          </div>
           <LouiModuleChain
             moduleIds={CHAIN_MODULE_IDS as string[]}
             {...(props.selectedModule ? { activeId: props.selectedModule } : {})}
@@ -1469,8 +1502,12 @@ function ProductPageProductionInner(props: {
     <div style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 9999 }}>
       <LouiRealtimeDebugPanel
         active={realtime.active}
+        uiStatus={realtime.uiStatus}
         readiness={realtime.readinessLabel}
         metrics={realtime.metrics}
+        configUpdates={realtime.configUpdates}
+        lastConfigAt={realtime.lastConfigAt}
+        {...(realtime.graphState?.fallbackReason ? { fallbackReason: realtime.graphState.fallbackReason } : {})}
         {...(session?.audioContext()?.state ? { contextState: session.audioContext()!.state } : {})}
         sampleRate={48000}
         bufferSize={128}
@@ -1492,23 +1529,29 @@ function ProductPageProductionInner(props: {
   );
 
   if (!props.preview) {
-    return <RealtimeGrProvider value={grValue}>{layout}{debugOverlay}{presetBrowser}</RealtimeGrProvider>;
+    return (
+      <RealtimePreviewProvider value={realtimePreviewValue}>
+        <RealtimeGrProvider value={grValue}>{layout}{debugOverlay}{presetBrowser}</RealtimeGrProvider>
+      </RealtimePreviewProvider>
+    );
   }
   return (
-    <RealtimeGrProvider value={grValue}>
-      <ProductionPreviewProvider
-        sourceAudioPath={props.preview.sourceAudioPath}
-        baseOptions={props.preview.baseOptions}
-        masterOutputPath={props.preview.masterOutputPath}
-        onRendered={props.preview.onRendered}
-        {...(props.preview.presetId ? { presetId: props.preview.presetId } : {})}
-        onRevisionCreated={props.preview.onRevisionCreated}
-      >
-        {layout}
-        {debugOverlay}
-        {presetBrowser}
-      </ProductionPreviewProvider>
-    </RealtimeGrProvider>
+    <RealtimePreviewProvider value={realtimePreviewValue}>
+      <RealtimeGrProvider value={grValue}>
+        <ProductionPreviewProvider
+          sourceAudioPath={props.preview.sourceAudioPath}
+          baseOptions={props.preview.baseOptions}
+          masterOutputPath={props.preview.masterOutputPath}
+          onRendered={props.preview.onRendered}
+          {...(props.preview.presetId ? { presetId: props.preview.presetId } : {})}
+          onRevisionCreated={props.preview.onRevisionCreated}
+        >
+          {layout}
+          {debugOverlay}
+          {presetBrowser}
+        </ProductionPreviewProvider>
+      </RealtimeGrProvider>
+    </RealtimePreviewProvider>
   );
 }
 

@@ -105,20 +105,24 @@ export function LouiPreviewControl(props: LouiPreviewControlProps) {
         </span>
       )}
       {(props.stagedOnlyCount ?? 0) > 0 && (
-        <span style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          height: 20,
-          paddingInline: 8,
-          borderRadius: 999,
-          background: surface.well,
-          border: `1px solid ${surface.border}`,
-          color: text.muted,
-          fontFamily: typography.family.mono,
-          fontSize: typography.size.xs,
-          fontVariantNumeric: 'tabular-nums',
-        }}>
-          {props.stagedOnlyCount} staged-only
+        <span
+          title={'These changes are not in the Python render — Update Preview won’t apply them. '
+            + 'Enable Realtime preview to hear them, or use the Rust experimental render to bake them into a file.'}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            height: 20,
+            paddingInline: 8,
+            borderRadius: 999,
+            background: surface.well,
+            border: `1px solid ${surface.border}`,
+            color: text.muted,
+            fontFamily: typography.family.mono,
+            fontSize: typography.size.xs,
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {props.stagedOnlyCount} not in render
         </span>
       )}
 

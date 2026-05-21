@@ -45,15 +45,33 @@ const EMPTY_METRICS: RealtimeMetricsSnapshot = {
   totalXruns: 0, limiterGrDb: 0, samples: 0,
 };
 
+/**
+ * Coarse status for UI:
+ *   off         — flag off (hook is a no-op)
+ *   unavailable — flag on but the environment can't run realtime
+ *   starting    — flag on, ready, graph loading/attaching
+ *   active      — node spliced in and processing
+ *   bypassed    — node in graph but bypassed (audio passes through)
+ *   failed      — load/attach failed → fell back to native playback
+ */
+export type RealtimePreviewUiStatus =
+  | 'off' | 'unavailable' | 'starting' | 'active' | 'bypassed' | 'failed';
+
 export interface RealtimeMasteringPreviewStatus {
   /** The realtime flag is on. */
   enabled: boolean;
   /** Node spliced in and processing (not bypassed). */
   active: boolean;
+  /** Coarse UI status (off/unavailable/starting/active/bypassed/failed). */
+  uiStatus: RealtimePreviewUiStatus;
   /** Current graph/load state (null until attach starts). */
   graphState: RealtimeMasteringGraphState | null;
   /** Latest aggregated worklet metrics. */
   metrics: RealtimeMetricsSnapshot;
+  /** Count of config pushes to the audio thread (proves edits reach DSP). */
+  configUpdates: number;
+  /** Epoch ms of the last config push, or null. */
+  lastConfigAt: number | null;
   /** Environment readiness probe. */
   readiness: RealtimeReadiness;
   readinessLabel: string;
@@ -81,6 +99,8 @@ export function useRealtimeMasteringGraph(
   const graphRef = useRef<RealtimeMasteringGraph | null>(null);
   const [graphState, setGraphState] = useState<RealtimeMasteringGraphState | null>(null);
   const [metrics, setMetrics] = useState<RealtimeMetricsSnapshot>(EMPTY_METRICS);
+  const [configUpdates, setConfigUpdates] = useState(0);
+  const [lastConfigAt, setLastConfigAt] = useState<number | null>(null);
 
   // ── Lifecycle: attach when flag on + ready + session present ──────────
   useEffect(() => {
@@ -124,7 +144,11 @@ export function useRealtimeMasteringGraph(
       rafRef.current = null;
       const g = graphRef.current;
       if (!g) return;
-      try { g.updateConfig(stateToChainConfig(pendingState.current)); } catch { /* invalid config — skip */ }
+      try {
+        g.updateConfig(stateToChainConfig(pendingState.current));
+        setConfigUpdates((n) => n + 1);
+        setLastConfigAt(Date.now());
+      } catch { /* invalid config — skip */ }
     });
     return () => {
       if (rafRef.current !== null && typeof cancelAnimationFrame === 'function') {
@@ -165,11 +189,26 @@ export function useRealtimeMasteringGraph(
   }, [enabled, readiness]);
 
   const status = graphState?.status;
+  const active = status === 'active';
+  const uiStatus: RealtimePreviewUiStatus = !enabled
+    ? 'off'
+    : !readiness.ready
+      ? 'unavailable'
+      : status === 'active'
+        ? 'active'
+        : status === 'bypassed'
+          ? 'bypassed'
+          : status === 'failed'
+            ? 'failed'
+            : 'starting';
   return {
     enabled,
-    active: status === 'active',
+    active,
+    uiStatus,
     graphState,
     metrics,
+    configUpdates,
+    lastConfigAt,
     readiness,
     readinessLabel: describeReadiness(readiness),
   };

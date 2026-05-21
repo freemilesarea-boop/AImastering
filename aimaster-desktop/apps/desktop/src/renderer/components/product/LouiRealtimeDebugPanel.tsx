@@ -14,10 +14,18 @@ import { LouiGainReductionMeter } from './modules/LouiGainReductionMeter.js';
 export interface LouiRealtimeDebugPanelProps {
   /** Realtime path active (flag on + worklet attached). */
   active: boolean;
+  /** Coarse UI status (off/unavailable/starting/active/bypassed/failed). */
+  uiStatus?: string;
   /** Readiness summary (e.g. "realtime-ready" / "...unavailable: ..."). */
   readiness: string;
   /** Aggregated metrics from the worklet. */
   metrics: RealtimeMetricsSnapshot;
+  /** Count of config pushes to the audio thread (proves edits reach DSP). */
+  configUpdates?: number;
+  /** Epoch ms of the last config push, or null. */
+  lastConfigAt?: number | null;
+  /** Coded fallback reason when the graph failed. */
+  fallbackReason?: string;
   /** AudioContext state ('running' / 'suspended' / 'closed'). */
   contextState?: string;
   /** Active buffer / quantum size (samples). */
@@ -25,6 +33,11 @@ export interface LouiRealtimeDebugPanelProps {
   sampleRate?: number;
   /** no-modules WASM worklet load progress (M2-full-NEXT). */
   wasmLoad?: MasteringWorkletLoadState | undefined;
+}
+
+function clock(at: number): string {
+  const d = new Date(at);
+  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
 }
 
 function Row({ label, value, status }: { label: string; value: string; status?: 'ok' | 'warn' | 'danger' | undefined }) {
@@ -77,9 +90,15 @@ export function LouiRealtimeDebugPanel(props: LouiRealtimeDebugPanelProps) {
           boxShadow: props.active ? `0 0 6px ${meter.safe.foreground}` : 'none',
         }} />
       </div>
-      <Row label="status" value={props.active ? 'ON (Rust chain)' : 'OFF (re-render)'}
-           status={props.active ? 'ok' : undefined} />
+      <Row label="status" value={props.uiStatus ?? (props.active ? 'active' : 'off')}
+           status={props.active ? 'ok' : props.uiStatus === 'failed' ? 'danger' : props.uiStatus === 'off' ? undefined : 'warn'} />
+      <Row label="worklet" value={props.active ? 'processing' : 'passthrough'} status={props.active ? 'ok' : 'warn'} />
       <Row label="readiness" value={props.readiness} status={props.readiness === 'realtime-ready' ? 'ok' : 'warn'} />
+      {props.fallbackReason && <Row label="fallback" value={props.fallbackReason} status="danger" />}
+      {typeof props.configUpdates === 'number' && (
+        <Row label="config pushes" value={`${props.configUpdates}`} status={props.configUpdates > 0 ? 'ok' : undefined} />
+      )}
+      {props.lastConfigAt != null && <Row label="last config" value={clock(props.lastConfigAt)} />}
       {props.contextState && <Row label="ctx" value={props.contextState} />}
       {typeof props.sampleRate === 'number' && <Row label="rate" value={`${(props.sampleRate / 1000).toFixed(1)} kHz`} />}
       {typeof props.bufferSize === 'number' && <Row label="quantum" value={`${props.bufferSize} smp`} />}

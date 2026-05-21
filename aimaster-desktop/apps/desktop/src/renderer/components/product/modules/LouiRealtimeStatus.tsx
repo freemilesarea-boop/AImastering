@@ -22,12 +22,12 @@ export function LouiRealtimeStatus(props: LouiRealtimeStatusProps) {
   const color = live ? meter.safe.foreground : props.enabled ? loui.warningAmber : text.muted;
   const dot = live ? meter.safe.foreground : props.enabled ? loui.warningAmber : surface.overlay;
   const label = live
-    ? 'Live preview active · edits heard instantly'
+    ? 'Realtime on · module edits are heard live'
     : props.enabled
       ? (props.readinessLabel && props.readinessLabel !== 'realtime-ready'
-          ? `Realtime unavailable — use Update Preview (${props.readinessLabel})`
-          : 'Realtime preview starting… — use Update Preview meanwhile')
-      : 'Realtime off — edits apply on Update Preview / Re-master';
+          ? `Realtime unavailable — changes are staged (${props.readinessLabel})`
+          : 'Realtime starting… — changes are staged until it is active')
+      : 'Realtime off — changes are staged. Click Update Preview or Create Revision to hear supported changes.';
 
   return (
     <div style={{

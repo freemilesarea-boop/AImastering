@@ -35,9 +35,20 @@ type Story = StoryObj<typeof LouiRealtimeDebugPanel>;
 
 export const ActiveHealthy: Story = {
   args: {
-    active: true, readiness: 'realtime-ready',
+    active: true, uiStatus: 'active', readiness: 'realtime-ready',
     contextState: 'running', sampleRate: 48000, bufferSize: 128,
+    configUpdates: 42, lastConfigAt: Date.now(),
     metrics: metrics(),
+  },
+};
+
+export const Failed: Story = {
+  args: {
+    active: false, uiStatus: 'failed', readiness: 'realtime-ready',
+    fallbackReason: 'wasm-fetch-failed',
+    contextState: 'running', sampleRate: 48000,
+    configUpdates: 0, lastConfigAt: null,
+    metrics: metrics({ cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, samples: 0, limiterGrDb: 0 }),
   },
 };
 

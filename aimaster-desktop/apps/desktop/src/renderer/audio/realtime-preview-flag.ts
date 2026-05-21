@@ -12,8 +12,9 @@
 //
 // Decision order:
 //   1. Runtime `window.__LOUI_REALTIME_PREVIEW__` (boolean) — explicit.
-//   2. Build env `VITE_LOUI_REALTIME_PREVIEW` ('true'/'1' → on).
-//   3. Default → OFF.
+//   2. Persisted QA toggle `localStorage['loui.realtimePreview']`.
+//   3. Build env `VITE_LOUI_REALTIME_PREVIEW` ('true'/'1' → on).
+//   4. Default → OFF.
 
 declare global {
   interface Window {
@@ -24,14 +25,44 @@ declare global {
   }
 }
 
+/** localStorage key for the persisted dev/QA realtime toggle. */
+export const REALTIME_PREVIEW_LS_KEY = 'loui.realtimePreview';
+
+function readPersistedFlag(): boolean | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const v = localStorage.getItem(REALTIME_PREVIEW_LS_KEY);
+    if (v === 'true' || v === '1') return true;
+    if (v === 'false' || v === '0') return false;
+  } catch { /* ignore (private mode / unavailable) */ }
+  return null;
+}
+
 /** Whether the realtime Rust mastering-preview chain is enabled. */
 export function isRealtimePreviewEnabled(): boolean {
   if (typeof window !== 'undefined' && typeof window.__LOUI_REALTIME_PREVIEW__ === 'boolean') {
     return window.__LOUI_REALTIME_PREVIEW__;
   }
+  const persisted = readPersistedFlag();
+  if (persisted !== null) return persisted;
   const envFlag = (import.meta.env?.VITE_LOUI_REALTIME_PREVIEW ?? '').toString().toLowerCase();
   if (envFlag === 'true' || envFlag === '1') return true;
   return false;
+}
+
+/**
+ * Persist the dev/QA realtime toggle (localStorage + the runtime window
+ * flag).  The hook reads the flag once per mount, so callers should reload
+ * the renderer afterwards to (de)activate the graph.  NEVER changes the
+ * export path — final export remains the Python/Rust offline render.
+ */
+export function setRealtimePreviewEnabled(on: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(REALTIME_PREVIEW_LS_KEY, on ? 'true' : 'false');
+    }
+  } catch { /* ignore */ }
+  if (typeof window !== 'undefined') window.__LOUI_REALTIME_PREVIEW__ = on;
 }
 
 /** Diagnostic label. */
