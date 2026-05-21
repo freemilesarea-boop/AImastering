@@ -31,6 +31,7 @@
     "test:revision": "tsx scripts/revision-selftest.ts",
     "test:modules": "tsx scripts/modules-selftest.ts",
     "test:eq-curve": "tsx scripts/eq-curve-selftest.ts",
+    "test:gr-meter": "tsx scripts/gr-meter-selftest.ts",
     "test:release-smoke": "tsx scripts/release-smoke.ts",
     "aggregate-bundles": "tsx scripts/aggregate-support-bundles.ts",
     "clean": "rm -rf dist dist-electron out public/bin"

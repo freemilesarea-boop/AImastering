@@ -9,6 +9,7 @@ import React from 'react';
 import { surface, text, typography, meter, space, radius } from '../../theme/loui-theme.js';
 import type { RealtimeMetricsSnapshot } from '../../audio/realtime-metrics.js';
 import type { MasteringWorkletLoadState } from '../../audio/mastering-worklet-loader.js';
+import { LouiGainReductionMeter } from './modules/LouiGainReductionMeter.js';
 
 export interface LouiRealtimeDebugPanelProps {
   /** Realtime path active (flag on + worklet attached). */
@@ -88,7 +89,9 @@ export function LouiRealtimeDebugPanel(props: LouiRealtimeDebugPanelProps) {
       <Row label="peak process" value={`${m.peakProcessMs.toFixed(3)} ms`} />
       <Row label="block period" value={`${m.blockPeriodMs.toFixed(3)} ms`} />
       <Row label="xruns" value={`${m.totalXruns}`} status={xrunStatus} />
-      <Row label="limiter GR" value={`${m.limiterGrDb.toFixed(1)} dB`} />
+      <div style={{ marginBlock: 4 }}>
+        <LouiGainReductionMeter grDb={m.limiterGrDb} available={props.active} compact label="limiter GR" />
+      </div>
       {props.wasmLoad && <WasmLoadRows load={props.wasmLoad} />}
     </div>
   );

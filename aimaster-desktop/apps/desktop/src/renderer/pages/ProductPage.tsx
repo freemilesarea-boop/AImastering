@@ -51,6 +51,9 @@ import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioS
 import { getActiveRevision, getBaselineRevision, findDuplicate } from '../audio/revisions/revision-logic.js';
 import { LouiModuleChain } from '../components/product/modules/LouiModuleChain.js';
 import { CHAIN_MODULE_IDS, getModule } from '../audio/modules/loui-module-suite.js';
+import { RealtimeGrProvider, useRealtimeGr } from '../audio/modules/realtime-gr-context.js';
+import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
+import { decayPeak } from '../audio/modules/gr-meter-model.js';
 import {
   PresetPatchDispatcher,
   PreviewRenderController,
@@ -481,6 +484,17 @@ function SlideOverActions({ moduleId }: { moduleId: ModuleId }) {
 // Pulls the module slice from the central state and feeds it to the
 // appropriate panel as controlled props.  Every onChange becomes a
 // SET_MODULE_PARAM command in the log.
+// Live GR meter for the Limiter / Maximizer panel — reads the realtime GR
+// context (REAL limiterGrDb; "unavailable" when the preview isn't running).
+function GrMeterFromContext() {
+  const gr = useRealtimeGr();
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', paddingBlock: space['2'] }}>
+      <LouiGainReductionMeter grDb={gr.grDb} peakDb={gr.peakDb} available={gr.available} source={gr.source} label="Limiter GR" />
+    </div>
+  );
+}
+
 function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
   const api = useModuleParameters(moduleId);
   const stateRecord = api.state.parameters;
@@ -512,7 +526,12 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
     case 'eq':       return <EqParameterPanel       {...common} />;
     case 'dynamics': return <DynamicsParameterPanel {...common} />;
     case 'imager':   return <ImagerParameterPanel   {...common} />;
-    case 'limiter':  return <LimiterParameterPanel  {...common} />;
+    case 'limiter':  return (
+      <>
+        <GrMeterFromContext />
+        <LimiterParameterPanel {...common} />
+      </>
+    );
     case 'export':   return (
       <ExportParameterPanel
         {...common}
@@ -1285,6 +1304,22 @@ function ProductPageProductionInner(props: {
   // (and renders nothing) when the flag is OFF, which is the default.
   const realtime = useRealtimeMasteringGraph(session, { sampleRate: 48000, channels: 2 });
 
+  // Realtime gain reduction (Limiter/Maximizer) — REAL limiterGrDb from the
+  // worklet metrics, with a decaying peak hold.  Available only while the
+  // realtime preview is active; otherwise "unavailable" (never faked).
+  const grAvailable = realtime.enabled && realtime.active;
+  const grDb = grAvailable ? Math.max(0, realtime.metrics.limiterGrDb) : 0;
+  const [grPeak, setGrPeak] = useState(0);
+  React.useEffect(() => {
+    if (!grAvailable) { setGrPeak(0); return; }
+    // Decays per metrics frame (data-driven; no free-running RAF).
+    setGrPeak((prev) => decayPeak(prev, grDb, 0.4));
+  }, [grDb, grAvailable]);
+  const grValue = useMemo(
+    () => ({ grDb, peakDb: grPeak, available: grAvailable, source: grAvailable ? ('realtime' as const) : ('unavailable' as const) }),
+    [grDb, grPeak, grAvailable],
+  );
+
   // Preset selection → apply the preset's full DSP tuning to the central
   // parameter state.  This updates the realtime preview config (no graph
   // rebuild — the same worklet node receives a new config) and stages the
@@ -1388,20 +1423,24 @@ function ProductPageProductionInner(props: {
     />
   );
 
-  if (!props.preview) return <>{layout}{debugOverlay}{presetBrowser}</>;
+  if (!props.preview) {
+    return <RealtimeGrProvider value={grValue}>{layout}{debugOverlay}{presetBrowser}</RealtimeGrProvider>;
+  }
   return (
-    <ProductionPreviewProvider
-      sourceAudioPath={props.preview.sourceAudioPath}
-      baseOptions={props.preview.baseOptions}
-      masterOutputPath={props.preview.masterOutputPath}
-      onRendered={props.preview.onRendered}
-      {...(props.preview.presetId ? { presetId: props.preview.presetId } : {})}
-      onRevisionCreated={props.preview.onRevisionCreated}
-    >
-      {layout}
-      {debugOverlay}
-      {presetBrowser}
-    </ProductionPreviewProvider>
+    <RealtimeGrProvider value={grValue}>
+      <ProductionPreviewProvider
+        sourceAudioPath={props.preview.sourceAudioPath}
+        baseOptions={props.preview.baseOptions}
+        masterOutputPath={props.preview.masterOutputPath}
+        onRendered={props.preview.onRendered}
+        {...(props.preview.presetId ? { presetId: props.preview.presetId } : {})}
+        onRevisionCreated={props.preview.onRevisionCreated}
+      >
+        {layout}
+        {debugOverlay}
+        {presetBrowser}
+      </ProductionPreviewProvider>
+    </RealtimeGrProvider>
   );
 }
 
