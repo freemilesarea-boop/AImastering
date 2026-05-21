@@ -1080,6 +1080,27 @@ function ProductLayoutWithOverride({
 
 // ── Production path — provider + audio element ──────────────────────────
 
+interface AudioDiag {
+  /** Human-readable load error, or null when healthy. */
+  error: string | null;
+  /** HTMLMediaElement.readyState (0..4). */
+  readyState: number;
+  /** HTMLMediaElement.networkState (0..3). */
+  networkState: number;
+}
+
+/** Map a MediaError code → an honest, specific reason. */
+function mediaErrorMessage(err: MediaError | null): string | null {
+  if (!err) return null;
+  switch (err.code) {
+    case err.MEDIA_ERR_ABORTED:        return 'Load aborted';
+    case err.MEDIA_ERR_NETWORK:        return 'Network/file read error';
+    case err.MEDIA_ERR_DECODE:         return 'Decode error (corrupt or unsupported encoding)';
+    case err.MEDIA_ERR_SRC_NOT_SUPPORTED: return 'Unsupported source / file URL invalid';
+    default:                           return err.message || 'Unknown audio error';
+  }
+}
+
 function ProductPageProduction() {
   const setPage         = useAppStore((s) => s.setPage);
   const masteringResult = useAudioStore((s) => s.masteringResult);
@@ -1104,6 +1125,8 @@ function ProductPageProduction() {
   const [duration, setDuration] = useState(0);
   const [time, setTime] = useState(0);
   const [meterReady, setMeterReady] = useState(false);
+  // Audio-element diagnostics (honest source-load state for QA + UX).
+  const [audioDiag, setAudioDiag] = useState<AudioDiag>({ error: null, readyState: 0, networkState: 0 });
   const [presetId, setPresetId] = useState<string | undefined>(undefined);
   const [selectedModule, setSelectedModule] = useState<ModuleCardDef['id'] | undefined>(undefined);
   // Preview source override — set when a re-render swaps the preview file.
@@ -1298,6 +1321,19 @@ function ProductPageProduction() {
           const a = audioRef.current;
           if (a) setDuration(a.duration);
           setMeterReady(true);
+          setAudioDiag({ error: null, readyState: audioRef.current?.readyState ?? 0, networkState: audioRef.current?.networkState ?? 0 });
+        }}
+        onCanPlay={() => {
+          const a = audioRef.current;
+          setAudioDiag({ error: null, readyState: a?.readyState ?? 0, networkState: a?.networkState ?? 0 });
+        }}
+        onError={() => {
+          const a = audioRef.current;
+          setAudioDiag({
+            error: mediaErrorMessage(a?.error ?? null) ?? 'Audio source not loaded',
+            readyState: a?.readyState ?? 0,
+            networkState: a?.networkState ?? 0,
+          });
         }}
         style={{ display: 'none' }}
       />
@@ -1310,6 +1346,7 @@ function ProductPageProduction() {
         <ProductPageProductionInner
           isPlaying={playing}
           onPlayPause={togglePlay}
+          audioDiag={audioDiag}
           progress={duration > 0 ? time / duration : 0}
           currentTimeLabel={fmtTime(time)}
           durationLabel={fmtTime(duration)}
@@ -1352,6 +1389,7 @@ function ProductPageProduction() {
 function ProductPageProductionInner(props: {
   isPlaying: boolean;
   onPlayPause: () => void;
+  audioDiag?: AudioDiag;
   progress: number;
   currentTimeLabel: string;
   durationLabel: string;
@@ -1516,6 +1554,7 @@ function ProductPageProductionInner(props: {
           dynRatio: realtime.config.dynRatio,
         } } : {})}
         {...(realtime.graphState?.fallbackReason ? { fallbackReason: realtime.graphState.fallbackReason } : {})}
+        {...(props.audioDiag ? { audioDiag: props.audioDiag } : {})}
         {...(session?.audioContext()?.state ? { contextState: session.audioContext()!.state } : {})}
         sampleRate={48000}
         bufferSize={128}

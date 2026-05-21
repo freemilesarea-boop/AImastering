@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, protocol, net } from 'electron';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { checkFFmpeg } from '@aimaster/audio-engine';
 import { registerAudioHandlers } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
@@ -23,8 +24,11 @@ let mainWindow: BrowserWindow | null = null;
 // Renderer loads from http://localhost:5173 (dev) or file:// (prod).
 // Chromium blocks file:// resources from http:// origins, so we register a
 // custom scheme that proxies local file reads without relaxing webSecurity.
+// `standard: true` is required so the renderer parses URLs consistently and
+// — critically — so <audio>/<video> can issue HTTP Range requests against
+// the scheme (media metadata loading + seeking need 206 responses).
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'aimaster-local', privileges: { bypassCSP: true, supportFetchAPI: true, stream: true } },
+  { scheme: 'aimaster-local', privileges: { standard: true, secure: true, bypassCSP: true, supportFetchAPI: true, stream: true } },
 ]);
 
 function createWindow(): void {
@@ -81,10 +85,28 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   // ── 0. 로컬 파일 프로토콜 핸들러 ─────────────────────────────────────────
-  // aimaster-local:///<absolute-path> → reads from local filesystem
+  // aimaster-local:///<absolute-path> → reads from local filesystem.
+  //
+  // Two things matter for <audio> playback of large WAVs:
+  //   1. Robust path decode — parse via the URL API (handles spaces, Korean,
+  //      Windows drive letters) and rebuild a proper file:// URL.
+  //   2. Range requests — forward the media element's `Range` header so
+  //      net.fetch returns 206 Partial Content; without it Chromium's media
+  //      pipeline often fails to load metadata (duration stays 0:00).
   protocol.handle('aimaster-local', (request) => {
-    const filePath = decodeURIComponent(request.url.slice('aimaster-local://'.length));
-    return net.fetch(`file://${filePath}`);
+    let absPath: string;
+    try {
+      const u = new URL(request.url);
+      // `standard` scheme → host is usually empty and the path is in pathname.
+      // On Windows a drive path may surface as the host (C:) — recombine.
+      const raw = u.host ? `/${u.host}${u.pathname}` : u.pathname;
+      absPath = decodeURIComponent(raw);
+    } catch {
+      absPath = decodeURIComponent(request.url.slice('aimaster-local://'.length));
+    }
+    const fileUrl = pathToFileURL(absPath).toString();
+    const range = request.headers.get('Range') ?? request.headers.get('range');
+    return net.fetch(fileUrl, range ? { headers: { Range: range } } : undefined);
   });
 
   // ── 1. 창을 먼저 생성 ─────────────────────────────────────────────────────

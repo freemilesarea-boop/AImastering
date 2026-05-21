@@ -26,6 +26,8 @@ export interface LouiRealtimeDebugPanelProps {
   lastConfigAt?: number | null;
   /** Coded fallback reason when the graph failed. */
   fallbackReason?: string;
+  /** Audio-element load diagnostics (source-preview health). */
+  audioDiag?: { error: string | null; readyState: number; networkState: number };
   /** Live chain config the UI is sending (actual numeric values). */
   config?: {
     imgWidthPct: number; eqPresenceDb: number; eqAirDb: number;
@@ -39,6 +41,10 @@ export interface LouiRealtimeDebugPanelProps {
   /** no-modules WASM worklet load progress (M2-full-NEXT). */
   wasmLoad?: MasteringWorkletLoadState | undefined;
 }
+
+const READY_STATE: Record<number, string> = {
+  0: 'nothing', 1: 'metadata', 2: 'current', 3: 'future', 4: 'enough',
+};
 
 function clock(at: number): string {
   const d = new Date(at);
@@ -104,6 +110,13 @@ export function LouiRealtimeDebugPanel(props: LouiRealtimeDebugPanelProps) {
       />
       <Row label="readiness" value={props.readiness} status={props.readiness === 'realtime-ready' ? 'ok' : 'warn'} />
       {props.fallbackReason && <Row label="fallback" value={props.fallbackReason} status="danger" />}
+      {props.audioDiag && (
+        <>
+          <Row label="audio src" value={READY_STATE[props.audioDiag.readyState] ?? `rs${props.audioDiag.readyState}`}
+               status={props.audioDiag.error ? 'danger' : props.audioDiag.readyState >= 1 ? 'ok' : 'warn'} />
+          {props.audioDiag.error && <Row label="audio err" value={props.audioDiag.error} status="danger" />}
+        </>
+      )}
       {typeof props.configUpdates === 'number' && (
         <Row label="config pushes" value={`${props.configUpdates}`} status={props.configUpdates > 0 ? 'ok' : undefined} />
       )}
