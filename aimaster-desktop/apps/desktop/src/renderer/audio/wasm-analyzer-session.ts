@@ -45,6 +45,15 @@ import init, {
   WasmSpectrumOptions,
 } from '@loui/dsp-wasm';
 
+import {
+  getSharedAudioContext as getAppAudioContext,
+  ensureElementGraph,
+  addPassiveTap,
+  removePassiveTap,
+  setRealtimeInsert,
+  logAudioEvent,
+} from './shared-audio-graph.js';
+
 // The worklet ships from Vite's `public/` directory (root-relative URL).
 // This avoids the static-analysis fragility of `new URL(..., import.meta.url)`
 // when the importing module is behind a build-time-resolvable conditional —
@@ -100,25 +109,17 @@ export type AudioSourceNode =
 
 // ── Shared (singleton) AudioContext ─────────────────────────────────────────
 //
-// An HTMLMediaElement may have exactly ONE MediaElementSourceNode for its
-// entire lifetime — a second `createMediaElementSource` throws.  If each
-// analyzer session created + closed its own AudioContext (per mount /
-// StrictMode double-invoke / src swap), the second attach on a fresh
-// context would throw and leave the element captured by a dead context →
-// permanent silence + no frames.  So all sessions share ONE app-wide
-// context that is created once and never closed; the source node is cached
-// per element and reused forever.
+// Routing (context, MediaElementSource, audio bus, native analysers) is
+// owned by `shared-audio-graph.ts` — the single source of truth.  The WASM
+// session no longer creates or closes the context, nor the source: it only
+// attaches its analyzer-tap worklet as a PASSIVE tap on the post-DSP bus.
+// This guarantees playback + native spectrum/meters work even if this
+// session fails to start.
 
-let sharedAudioContext: AudioContext | null = null;
 const ctxModuleAdded = new WeakSet<AudioContext>();
 
 function getSharedAudioContext(sampleRate: number): AudioContext {
-  if (sharedAudioContext && sharedAudioContext.state !== 'closed') {
-    return sharedAudioContext;
-  }
-  sharedAudioContext = new AudioContext({ sampleRate });
-  rtLog('shared AudioContext created', { sampleRate: sharedAudioContext.sampleRate, state: sharedAudioContext.state });
-  return sharedAudioContext;
+  return getAppAudioContext(sampleRate);
 }
 
 const RT_DEBUG = (() => {
@@ -146,6 +147,8 @@ class WasmAnalyzerSession implements AnalyzerSession {
   // realtime-mastering insert node can be spliced in/out without a
   // re-attach).  Null until attach() runs.
   private currentSource: AudioSourceNode | null = null;
+  // The media element this session is tapping (shared-graph routing).
+  private currentMedia: HTMLMediaElement | null = null;
   // Optional processing node spliced between source and tap (realtime
   // mastering preview, M2-full-NEXT-2).  Null = analyzer-only graph
   // (the default; flag OFF behaviour is byte-identical).
@@ -220,25 +223,23 @@ class WasmAnalyzerSession implements AnalyzerSession {
   }
 
   async stop(): Promise<void> {
-    if (this.insertNode) {
-      try { this.insertNode.disconnect(); } catch { /* ignore */ }
-      this.insertNode = null;
+    // Detach the passive tap from the shared graph — NEVER touch the source,
+    // the DSP insert, or the audio bus (the shared graph owns those, so
+    // playback + native analysers keep working after this session stops).
+    if (this.currentMedia && this.tapNode) {
+      try { removePassiveTap(this.currentMedia, this.tapNode); } catch { /* ignore */ }
     }
-    if (this.currentSource) {
-      // Disconnect downstream only — NEVER drop the cached source node; it
-      // is the element's one-and-only MediaElementSource and is reused by
-      // the next session.  Keeping it cached avoids a fatal re-create.
-      try { this.currentSource.disconnect(); } catch { /* ignore */ }
-      this.currentSource = null;
-    }
+    this.currentSource = null;
+    this.insertNode = null;
     if (this.tapNode) {
       try { this.tapNode.port.onmessage = null; } catch { /* ignore */ }
       try { this.tapNode.disconnect(); } catch { /* ignore */ }
       this.tapNode = null;
     }
+    this.currentMedia = null;
     // NOTE: the shared AudioContext is intentionally NOT closed here.
     this.ctx = null;
-    rtLog('session stop (shared context kept alive)');
+    rtLog('session stop (shared context + routing kept alive)');
     if (this.analyzer) {
       try { this.analyzer.free(); } catch { /* ignore */ }
       this.analyzer = null;
@@ -295,13 +296,18 @@ class WasmAnalyzerSession implements AnalyzerSession {
   }
 
   /**
-   * Splice a processing node between the source and the analyzer tap
-   * (realtime mastering preview).  Pass `null` to remove it and restore
-   * the analyzer-only graph.  Safe to call before/after attach — the
-   * graph is rebuilt whenever a source is present.
+   * Splice a realtime DSP node into the shared audio bus
+   * (source → node → masterGain).  Pass `null` to remove it.  The analyzer
+   * tap reads the post-DSP bus, so the spectrum reflects processed audio.
+   * For the legacy raw-source path (no media element) we fall back to
+   * rewiring the local graph.
    */
   setInsertNode(node: AudioNode | null): void {
     this.insertNode = node;
+    if (this.currentMedia) {
+      setRealtimeInsert(this.currentMedia, node);
+      return;
+    }
     this.wireGraph();
   }
 
@@ -322,24 +328,18 @@ class WasmAnalyzerSession implements AnalyzerSession {
       paused: media.paused, currentTime: media.currentTime, duration: media.duration,
       readyState: media.readyState,
     });
-    let src = WasmAnalyzerSession.mediaSourceCache.get(media);
-    if (src && src.context === this.ctx) {
-      rtLog('media source reused (cached)');
-    } else if (src) {
-      // The element already owns a source on ANOTHER context — reusing it
-      // is impossible (it is bound to that context).  Adopt the shared
-      // context's cached node only; never call createMediaElementSource a
-      // second time (would throw).  This branch should not happen now that
-      // the context is a singleton, but we log it loudly if it does.
-      rtLog('media source exists on a different context — cannot recreate', {
-        cachedRate: src.context.sampleRate,
-      });
-    } else {
-      src = this.ctx.createMediaElementSource(media);
-      WasmAnalyzerSession.mediaSourceCache.set(media, src);
-      rtLog('media source connected (created once)');
-    }
-    if (src) this.attach(src);
+    // The shared graph owns the source + audio bus + native analysers.  It
+    // is created on element mount (independent of this session), so it
+    // already exists here; this is idempotent.
+    const graph = ensureElementGraph(media, this.options.sampleRate);
+    this.currentMedia = media;
+    this.currentSource = graph.source;
+    // Add the analyzer-tap as a passive tap on the post-DSP bus — it reads
+    // what the user hears and never affects the output.
+    addPassiveTap(media, this.tapNode);
+    // If a DSP insert was staged before attach, splice it now.
+    if (this.insertNode) setRealtimeInsert(media, this.insertNode);
+    logAudioEvent('wasm-analyzer-connected', 'session attached');
   }
 
   /**
@@ -350,17 +350,6 @@ class WasmAnalyzerSession implements AnalyzerSession {
   audioContext(): AudioContext | null {
     return this.ctx;
   }
-
-  /**
-   * Browser-imposed constraint: `createMediaElementSource` may only be
-   * called once per (element, context) pair.  We cache the result so
-   * the gate component can call `attachMediaElement` on every render
-   * without crashing.
-   */
-  private static mediaSourceCache = new WeakMap<
-    HTMLMediaElement,
-    MediaElementAudioSourceNode
-  >();
 
   // ── Subscriptions ────────────────────────────────────────────────────────
 
@@ -431,6 +420,7 @@ class WasmAnalyzerSession implements AnalyzerSession {
     // Dev frame-flow telemetry — logs the first block and then every ~1 s
     // worth of blocks so the console proves frames are arriving.
     this.blockCount++;
+    if (this.blockCount === 1) logAudioEvent('dsp-chain-connected', 'first WASM analyzer block');
     if (RT_DEBUG && (this.blockCount === 1 || this.blockCount % 256 === 0)) {
       rtLog('analyser frames', { blocks: this.blockCount, samples: this.samplesProcessed, len: left.length, stereo: !!right });
     }

@@ -30,9 +30,12 @@ import {
   WasmAnalyzerProvider,
   useWasmAnalyzerSession,
 } from '../audio/wasm-analyzer-context.js';
+import { MediaElementProvider } from '../audio/media-element-context.js';
+import { resumeSharedContext, logAudioEvent } from '../audio/shared-audio-graph.js';
 import { useRealtimeMasteringGraph } from '../hooks/useRealtimeMasteringGraph.js';
 import { LouiRealtimeDebugPanel } from '../components/product/LouiRealtimeDebugPanel.js';
 import { LouiRealtimeDebugDrawer } from '../components/product/LouiRealtimeDebugDrawer.js';
+import { LouiAudioDebugPanel } from '../components/product/LouiAudioDebugPanel.js';
 import {
   ModuleParameterStateProvider,
   useModuleParameters,
@@ -1126,6 +1129,7 @@ function ProductPageProduction() {
   const setAudioRef = useCallback((el: HTMLAudioElement | null) => {
     audioRef.current = el;
     setAudioEl(el);
+    if (el) logAudioEvent('audio-element-mounted');
   }, []);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -1276,10 +1280,22 @@ function ProductPageProduction() {
     a.volume = Math.pow(10, -trimDb / 20);
   }, [compensated, abMode, afterLufs, baseLufs]);
 
+  React.useEffect(() => {
+    if (effectiveSrc) logAudioEvent('src-changed', effectiveSrc.slice(0, 64));
+  }, [effectiveSrc]);
+
   const togglePlay = useCallback(() => {
     const a = audioRef.current;
     if (!a) return;
-    if (a.paused) { void a.play(); } else { a.pause(); }
+    if (a.paused) {
+      // Electron/Chromium autoplay policy can leave the shared AudioContext
+      // suspended — resume it from this user gesture so the graph is pulled
+      // (otherwise: silence + frozen meters despite "playing").
+      void resumeSharedContext();
+      void a.play();
+    } else {
+      a.pause();
+    }
   }, []);
 
   const seekTo = useCallback((ratio: number) => {
@@ -1315,8 +1331,8 @@ function ProductPageProduction() {
       <audio
         ref={setAudioRef}
         src={effectiveSrc || undefined}
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
+        onPlay={() => { setPlaying(true); logAudioEvent('audio-play'); }}
+        onPause={() => { setPlaying(false); logAudioEvent('audio-pause'); }}
         onEnded={() => { setPlaying(false); setTime(0); }}
         onTimeUpdate={() => {
           const a = audioRef.current;
@@ -1342,6 +1358,7 @@ function ProductPageProduction() {
         style={{ display: 'none' }}
       />
 
+      <MediaElementProvider value={effectiveSrc ? audioEl : null}>
       <WasmAnalyzerProvider
         mediaElement={effectiveSrc ? audioEl : null}
         active={playing}
@@ -1386,6 +1403,7 @@ function ProductPageProduction() {
         />
       </ModuleParameterStateProvider>
       </WasmAnalyzerProvider>
+      </MediaElementProvider>
     </>
   );
 }
@@ -1549,6 +1567,13 @@ function ProductPageProductionInner(props: {
               // Live/preview modules with a real panel open it; planned are inert.
               if (mod?.paramModuleId && mod.status !== 'planned') props.onSelectModule(mod.paramModuleId);
             }}
+          />
+          <LouiAudioDebugPanel
+            realtimeStatus={realtime.uiStatus}
+            realtimeActive={realtime.active}
+            avgProcessMs={realtime.metrics.avgProcessMs}
+            xruns={realtime.metrics.totalXruns}
+            dspBlocks={realtime.metrics.audioBlocks}
           />
         </div>
       }

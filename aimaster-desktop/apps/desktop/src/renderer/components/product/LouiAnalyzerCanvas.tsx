@@ -10,7 +10,6 @@
 
 import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { surface, text, typography, radius, space, meter } from '../../theme/loui-theme.js';
-import { SpectrumAnalyzerPanel } from '../SpectrumAnalyzerPanel.js';
 import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
 import { isLiveVisualizerEnabled } from '../../audio/live-visualizer-flag.js';
 import { useAnalyzerSubscriptions } from '../../hooks/useAnalyzerSubscriptions.js';
@@ -20,6 +19,10 @@ import { SpectrumWaveformCanvas } from './modules/SpectrumWaveformCanvas.js';
 import { type EqBands } from './modules/EQCurveOverlay.js';
 import { DraggableEQCurveEditor } from './modules/DraggableEQCurveEditor.js';
 import { hasParameterStateProvider, useModuleParameters } from '../../audio/parameters/useModuleParameterState.js';
+import { useMediaElement } from '../../audio/media-element-context.js';
+import { useNativeAnalyzer, type NativeAnalyzerState } from '../../hooks/useNativeAnalyzer.js';
+import { NativeSpectrumCanvas } from './modules/NativeSpectrumCanvas.js';
+import { sharedContextState } from '../../audio/shared-audio-graph.js';
 
 export interface LouiAnalyzerCanvasProps {
   /** Live analyzer session — passed through to SpectrumAnalyzerPanel. */
@@ -57,10 +60,14 @@ function LivePulse({ active }: { active: boolean }) {
 }
 
 export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
-  // Honest LIVE: reflects real FFT frame arrival (within 500ms), not just
-  // whether playback is running.
+  // Native (WASM-free) analyzer — always available the moment an element is
+  // mounted, so the spectrum is never blank.  Shared with the body below.
+  const media = useMediaElement();
+  const native = useNativeAnalyzer(media);
+  // Honest LIVE: real FFT frame arrival (WASM) OR native audio movement.
   const liveness = useFrameLiveness(props.session ?? null);
-  const active = liveness.live;
+  const nativeLive = native.lastFrameAt != null && (performance.now() - native.lastFrameAt) < 500;
+  const active = liveness.live || nativeLive;
   return (
     <div
       style={{
@@ -126,13 +133,15 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           transition: 'background 200ms ease-out',
         }}
       >
-        {isLiveVisualizerEnabled() ? (
-          <VisualizerBoundary fallback={<SpectrumAnalyzerPanel session={props.session ?? null} showPeakHold />}>
-            <LiveSpectrumBody session={props.session ?? null} />
-          </VisualizerBoundary>
-        ) : (
-          <SpectrumAnalyzerPanel session={props.session ?? null} showPeakHold />
-        )}
+        {/* The native spectrum is the always-on base layer (never blank).
+            The richer WASM 1/3-oct trace + EQ overlay layer on top when the
+            WASM analyzer is producing frames.  If the WASM layer throws, the
+            boundary falls back to the native-only body. */}
+        <VisualizerBoundary fallback={<NativeSpectrumBody native={native} />}>
+          {isLiveVisualizerEnabled()
+            ? <LiveSpectrumBody session={props.session ?? null} native={native} />
+            : <NativeSpectrumBody native={native} />}
+        </VisualizerBoundary>
       </div>
 
       {/* Footer legend */}
@@ -204,18 +213,52 @@ function EqOverlayFromState({ width, height }: { width: number; height: number }
   );
 }
 
-function IdleOverlay() {
+/** Small honest status chip in the analyzer corner — always shows what is
+ *  actually happening (analyzer source, context state, frame counts). */
+function AnalyzerStatusChip({ native, wasmLive, wasmFrames }: {
+  native: NativeAnalyzerState; wasmLive: boolean; wasmFrames: number;
+}) {
+  const ctxState = sharedContextState();
+  const analyzerLabel = wasmLive ? 'WASM' : native.status === 'connected' ? 'NATIVE' : native.status === 'error' ? 'FAILED' : 'OFF';
+  const tone = analyzerLabel === 'FAILED' ? meter.danger.foreground
+    : analyzerLabel === 'OFF' ? text.muted : meter.safe.foreground;
+  const ageMs = native.lastFrameAt != null ? Math.round(performance.now() - native.lastFrameAt) : null;
   return (
     <div style={{
-      position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      color: text.muted, fontFamily: typography.family.sans, fontSize: typography.size.sm, pointerEvents: 'none',
+      position: 'absolute', top: 8, left: 8, zIndex: 3, pointerEvents: 'none',
+      display: 'flex', gap: 8, flexWrap: 'wrap',
+      fontFamily: typography.family.mono, fontSize: 10, lineHeight: '14px',
+      color: text.muted, background: 'rgba(0,0,0,0.35)', border: `1px solid ${surface.border}`,
+      borderRadius: 6, padding: '4px 7px', backdropFilter: 'blur(4px)',
     }}>
-      재생을 시작하면 실시간 스펙트럼이 표시됩니다
+      <span style={{ color: tone, fontWeight: 600 }}>Analyzer: {analyzerLabel}</span>
+      <span>Ctx: {ctxState}</span>
+      <span>WASM frames: {wasmFrames}</span>
+      <span>Native: {native.frameCount}{ageMs != null ? ` (${ageMs}ms)` : ''}</span>
+      {native.error ? <span style={{ color: meter.danger.foreground }}>err: {native.error}</span> : null}
     </div>
   );
 }
 
-function LiveSpectrumBody({ session }: { session: AnalyzerSession | null }) {
+/** Native-only spectrum body (always-on fallback base). */
+function NativeSpectrumBody({ native }: { native: NativeAnalyzerState }) {
+  return (
+    <div style={{ position: 'relative', flex: 1, minHeight: 0, borderRadius: 10, overflow: 'hidden', background: surface.well }}>
+      <NativeSpectrumCanvas analyser={native.analysers?.main ?? null} />
+      <AnalyzerStatusChip native={native} wasmLive={false} wasmFrames={0} />
+      {native.status === 'no-element' && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: text.muted, fontFamily: typography.family.sans, fontSize: typography.size.sm, pointerEvents: 'none',
+        }}>
+          음원을 불러오면 스펙트럼이 표시됩니다
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LiveSpectrumBody({ session, native }: { session: AnalyzerSession | null; native: NativeAnalyzerState }) {
   const [ref, size] = useSize();
   // FFT frames arrive at the analyzer's cadence (≤30 Hz) — redraw is driven
   // by new frames only (no free-running RAF here).
@@ -223,10 +266,15 @@ function LiveSpectrumBody({ session }: { session: AnalyzerSession | null }) {
   const spectrum = useMemo(() => fftFrameToSpectrum(subs.fft), [subs.fft]);
   const hasProvider = hasParameterStateProvider();
   const w = size.w, h = size.h;
+  const wasmFrames = subs.fft?.samplesProcessed ?? 0;
+  const wasmLive = !!spectrum;
   return (
-    <div ref={ref} style={{ position: 'relative', flex: 1, minHeight: 0, borderRadius: 10, overflow: 'hidden' }}>
+    <div ref={ref} style={{ position: 'relative', flex: 1, minHeight: 0, borderRadius: 10, overflow: 'hidden', background: surface.well }}>
+      {/* Always-on native spectrum (base layer — guarantees visibility). */}
+      <NativeSpectrumCanvas analyser={native.analysers?.main ?? null} />
+      {/* WASM 1/3-oct trace overlays when frames are live. */}
       {w > 0 && h > 0 && spectrum && (
-        <>
+        <div style={{ position: 'absolute', inset: 0 }}>
           <SpectrumWaveformCanvas
             width={w}
             height={h}
@@ -234,10 +282,10 @@ function LiveSpectrumBody({ session }: { session: AnalyzerSession | null }) {
             magnitudeDb={spectrum.magnitudeDb}
             {...(spectrum.peakHoldDb ? { peakHoldDb: spectrum.peakHoldDb } : {})}
           />
-          {hasProvider && <EqOverlayFromState width={w} height={h} />}
-        </>
+        </div>
       )}
-      {!spectrum && <IdleOverlay />}
+      {w > 0 && h > 0 && hasProvider && <EqOverlayFromState width={w} height={h} />}
+      <AnalyzerStatusChip native={native} wasmLive={wasmLive} wasmFrames={wasmFrames} />
     </div>
   );
 }

@@ -23,7 +23,10 @@ import {
   createRealtimeMasteringGraph,
   type RealtimeMasteringGraph,
   type RealtimeMasteringGraphState,
+  type MasteringGraphSession,
 } from '../audio/realtime-mastering-graph.js';
+import { makeSharedMasteringSession } from '../audio/shared-audio-graph.js';
+import { useMediaElement } from '../audio/media-element-context.js';
 import { stateToChainConfig, type RealtimeChainConfig } from '../audio/realtime-mastering-chain.js';
 import {
   deriveRealtimeUiStatus,
@@ -93,6 +96,17 @@ export function useRealtimeMasteringGraph(
 
   const { state: paramState } = useAllModuleParameters();
 
+  // The realtime DSP prefers the WASM analyzer session (so it taps the same
+  // graph), but falls back to a shared-graph-backed session when the WASM
+  // analyzer is unavailable — so module edits stay AUDIBLE even when the
+  // WASM analyzer failed to start.
+  const media = useMediaElement();
+  const effectiveSession = useMemo<MasteringGraphSession | null>(() => {
+    if (session && typeof session.setInsertNode === 'function') return session;
+    if (media) return makeSharedMasteringSession(media, sampleRate);
+    return null;
+  }, [session, media, sampleRate]);
+
   const graphRef = useRef<RealtimeMasteringGraph | null>(null);
   const [graphState, setGraphState] = useState<RealtimeMasteringGraphState | null>(null);
   const [metrics, setMetrics] = useState<RealtimeMetricsSnapshot>(EMPTY_METRICS);
@@ -104,13 +118,13 @@ export function useRealtimeMasteringGraph(
   const pendingState = useRef(paramState);
   pendingState.current = paramState;
 
-  // ── Lifecycle: attach when flag on + ready + session present ──────────
+  // ── Lifecycle: attach when flag on + ready + a graph host is present ──
   useEffect(() => {
-    if (!enabled || !readiness.ready || !session || typeof session.setInsertNode !== 'function') {
+    if (!enabled || !readiness.ready || !effectiveSession) {
       return;
     }
     const graph = createRealtimeMasteringGraph({
-      session,
+      session: effectiveSession,
       sampleRate,
       channels,
       onStateChange: setGraphState,
@@ -140,7 +154,7 @@ export function useRealtimeMasteringGraph(
     // paramState intentionally excluded — config flows via the rAF effect
     // below, not by re-attaching the whole graph.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, readiness.ready, session, sampleRate, channels]);
+  }, [enabled, readiness.ready, effectiveSession, sampleRate, channels]);
 
   // ── Parameter live-update (rAF-batched) ──────────────────────────────
   const rafRef = useRef<number | null>(null);
@@ -205,7 +219,7 @@ export function useRealtimeMasteringGraph(
   const uiStatus: RealtimePreviewUiStatus = deriveRealtimeUiStatus({
     enabled,
     ready: readiness.ready,
-    hasSession: !!session && typeof session.setInsertNode === 'function',
+    hasSession: !!effectiveSession,
     graphStatus: graphState?.status,
     // The worklet now posts metrics even while passing through, so "samples"
     // alone is not proof of DSP.  Real chain processing accrues process

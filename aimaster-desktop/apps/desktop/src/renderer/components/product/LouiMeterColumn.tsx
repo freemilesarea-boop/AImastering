@@ -12,6 +12,7 @@ import React from 'react';
 import { surface, text, typography, radius, space } from '../../theme/loui-theme.js';
 import { LoudnessMeterPanelV2 } from '../LoudnessMeterPanelV2.js';
 import { StereoScopePanel } from '../StereoScopePanel.js';
+import { NativeLevelMeters } from './modules/NativeLevelMeters.js';
 import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
 
 export interface LouiMeterColumnProps {
@@ -92,6 +93,11 @@ export function LouiMeterColumn(props: LouiMeterColumnProps) {
       </PanelShell>
       <PanelShell title="Stereo" subtitle="Correlation · M/S">
         <StereoScopePanel session={props.session ?? null} />
+      </PanelShell>
+      {/* Always-on native levels — guarantees a moving meter even if the
+          WASM loudness/stereo analyzers fail to start. */}
+      <PanelShell title="Levels" subtitle="RMS · Peak · Φ (native)">
+        <NativeLevelMeters />
       </PanelShell>
     </div>
   );

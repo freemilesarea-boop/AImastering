@@ -21,6 +21,7 @@ import {
 } from './mastering-worklet-loader.js';
 import { RealtimeMetrics, type RealtimeMetricsSnapshot, type RealtimeMetricSample } from './realtime-metrics.js';
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
+import { logAudioEvent } from './shared-audio-graph.js';
 
 /** Minimal slice of the analyzer session the graph needs. */
 export interface MasteringGraphSession {
@@ -237,12 +238,21 @@ export function createRealtimeMasteringGraph(
   };
 
   let lastSentConfig: RealtimeChainConfig | null = null;
+  let configPostCount = 0;
   const postConfig = (config: RealtimeChainConfig) => {
     if (!node) return;
     const sane = sanitiseConfig(config);
     logConfigDelta(lastSentConfig, sane);
     lastSentConfig = sane;
-    try { node.port.postMessage({ type: 'config', config: sane }); } catch { /* ignore */ }
+    try {
+      node.port.postMessage({ type: 'config', config: sane });
+      // Surface the first push + occasional pushes to the in-app log so the
+      // tester can confirm edits actually reach the DSP graph.
+      if (configPostCount === 0 || configPostCount % 30 === 0) {
+        logAudioEvent('config-posted', `eqAir=${sane.eqAirDb} out=${sane.outputGainDb} width=${sane.imgWidthPct} #${configPostCount}`);
+      }
+      configPostCount++;
+    } catch { /* ignore */ }
   };
 
   const postBypass = (b: boolean) => {
