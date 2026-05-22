@@ -107,6 +107,7 @@ export function useNativeAnalyzer(media: HTMLMediaElement | null): NativeAnalyze
       raf = requestAnimationFrame(tick);
       const a = analysersRef.current;
       if (!a) return;
+      try {
       a.left.getFloatTimeDomainData(lBuf);
       a.right.getFloatTimeDomainData(rBuf);
 
@@ -163,6 +164,7 @@ export function useNativeAnalyzer(media: HTMLMediaElement | null): NativeAnalyze
         setFrameCount(frameCountRef.current);
         setLastFrameAt(lastFrameAtRef.current);
       }
+      } catch { /* never let a transient read error kill the RAF loop */ }
     };
     raf = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(raf); };

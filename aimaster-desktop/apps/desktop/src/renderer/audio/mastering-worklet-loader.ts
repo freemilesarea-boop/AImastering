@@ -141,27 +141,53 @@ export async function loadMasteringWorklet(
   }
 
   const run = async (): Promise<LoadedMasteringWorklet> => {
-    // 1) Compile the no-modules wasm on the main thread.
+    // 1) Fetch + compile the no-modules wasm on the main thread, with full
+    //    diagnostics so a failure pinpoints the exact cause on-screen
+    //    (404/HTML vs. CSP wasm-unsafe-eval vs. bad MIME vs. truncated).
     emit({ phase: 'compiling-wasm' });
     let wasmModule: WebAssembly.Module;
-    try {
-      let bytes: ArrayBuffer;
+    {
+      // Resolve relative + absolute candidates (fetch uses document.baseURI;
+      // an absolute URL guards against an unexpected base in some hosts).
+      const candidates = [wasmUrl];
       try {
-        const resp = await fetch(wasmUrl);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        bytes = await resp.arrayBuffer();
-      } catch (e) {
-        throw new MasteringWorkletLoadError('wasm-fetch-failed', `failed to fetch ${wasmUrl}`, e);
+        const abs = new URL(wasmUrl, (typeof document !== 'undefined' && document.baseURI) || location.href).href;
+        if (abs !== wasmUrl) candidates.push(abs);
+      } catch { /* ignore */ }
+      const isFileProto = (typeof location !== 'undefined' && location.protocol === 'file:');
+
+      let bytes: ArrayBuffer | null = null;
+      let diag = '';
+      for (const url of candidates) {
+        try {
+          const resp = await fetch(url);
+          const buf = await resp.arrayBuffer();
+          const head = new Uint8Array(buf.slice(0, 16));
+          const hex = Array.from(head).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+          const isWasm = head[0] === 0x00 && head[1] === 0x61 && head[2] === 0x73 && head[3] === 0x6d;
+          diag = `url=${url} status=${resp.status} type=${resp.headers.get('content-type') ?? '?'} `
+            + `size=${buf.byteLength} head16=[${hex}] wasmMagic=${isWasm} file://=${isFileProto}`;
+          if (!resp.ok) { continue; }
+          if (!isWasm) { continue; } // got HTML/404 body — try next candidate
+          bytes = buf;
+          break;
+        } catch (e) {
+          diag = `url=${url} fetchError=${e instanceof Error ? e.message : String(e)} file://=${isFileProto}`;
+        }
+      }
+      if (!bytes) {
+        emit({ phase: 'failed', failureReason: 'wasm-fetch-failed', lastError: diag });
+        throw new MasteringWorkletLoadError('wasm-fetch-failed', diag);
       }
       try {
         wasmModule = await WebAssembly.compile(bytes);
       } catch (e) {
-        throw new MasteringWorkletLoadError('wasm-compile-failed', 'WebAssembly.compile failed', e);
+        const msg = `WebAssembly.compile failed — likely CSP missing 'wasm-unsafe-eval' in script-src. `
+          + `${diag} :: ${e instanceof Error ? e.message : String(e)}`;
+        emit({ phase: 'failed', failureReason: 'wasm-compile-failed', lastError: msg });
+        throw new MasteringWorkletLoadError('wasm-compile-failed', msg, e);
       }
       emit({ wasmCompiled: true });
-    } catch (e) {
-      if (e instanceof MasteringWorkletLoadError) throw e;
-      throw new MasteringWorkletLoadError('wasm-compile-failed', 'wasm preparation failed', e);
     }
 
     // 2) Load the no-modules glue into the worklet scope.

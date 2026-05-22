@@ -31,6 +31,7 @@ import {
 } from 'react';
 
 import { isWasmAnalyzerEnabled } from './analyzer-factory-resolver.js';
+import { logAudioEvent } from './shared-audio-graph.js';
 import {
   WasmAnalyzerSessionFactory,
   type AudioSourceNode,
@@ -131,6 +132,7 @@ export function WasmAnalyzerProvider({
       .catch((err) => {
         // eslint-disable-next-line no-console
         console.warn('[wasm-analyzer-provider] start failed:', err);
+        logAudioEvent('worklet-error', `WASM analyzer start failed: ${err instanceof Error ? err.message : String(err)}`);
         if (!cancelled) setSession(null);
       });
 

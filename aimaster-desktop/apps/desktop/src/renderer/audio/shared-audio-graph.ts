@@ -344,6 +344,20 @@ export function activeContextState(): AudioContextState | 'none' {
 }
 
 /**
+ * Human-readable description of the CURRENT audio route for an element, for
+ * the debug panel.  The analyser/tap is always post-insert (it reads
+ * masterGain), so it is shown inline in every route.
+ */
+export function currentRouteLabel(media: HTMLMediaElement | null): string {
+  if (!media) return 'no element';
+  const g = graphs.get(media);
+  if (!g) return 'no graph';
+  if (g.wasmInsert) return 'WASM: source → WASM DSP → analyser/tap → master';
+  if (g.nativeDsp) return 'FALLBACK: source → Native DSP → analyser/tap → master';
+  return 'DIRECT: source → analyser/tap → master';
+}
+
+/**
  * A minimal MasteringGraphSession backed by the shared graph (not the WASM
  * analyzer session).  Lets the realtime DSP attach + splice its node even
  * when the WASM analyzer fails to start, so module edits stay audible.

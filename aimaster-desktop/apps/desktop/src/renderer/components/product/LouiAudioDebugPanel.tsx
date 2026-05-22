@@ -7,7 +7,7 @@
 import React from 'react';
 import { surface, text, typography, space, radius, meter as meterTokens } from '../../theme/loui-theme.js';
 import {
-  getAudioLog, subscribeAudioLog, sharedContextState, resumeSharedContext,
+  getAudioLog, subscribeAudioLog, sharedContextState, resumeSharedContext, currentRouteLabel,
   type AudioGraphEvent,
 } from '../../audio/shared-audio-graph.js';
 import { useMediaElement } from '../../audio/media-element-context.js';
@@ -112,6 +112,9 @@ export function LouiAudioDebugPanel(props: LouiAudioDebugPanelProps) {
         <StatusCell label="Native" value={String(native.frameCount)} />
         <StatusCell label="Avg ms" value={props.avgProcessMs.toFixed(2)} />
         <StatusCell label="Xruns" value={String(props.xruns)} tone={props.xruns > 0 ? meterTokens.warn.foreground : text.primary} />
+      </div>
+      <div style={{ fontFamily: typography.family.mono, fontSize: 10, color: text.tertiary }}>
+        route: {currentRouteLabel(media)}
       </div>
       {(props.lastError || native.error || props.fallbackReason || props.loadError) && (
         <div style={{ fontFamily: typography.family.mono, fontSize: 11, color: meterTokens.danger.foreground, display: 'flex', flexDirection: 'column', gap: 2 }}>
