@@ -1,20 +1,27 @@
 // Loui Mastering — realtime mastering-preview feature flag (M2-full).
 //
 // When ON, the AudioWorklet preview tap routes audio through the Rust
-// MasteringChain (WASM) so parameter changes are heard with low latency.
-// When OFF (default), the existing re-render preview workflow is used
-// unchanged.
+// MasteringChain (WASM) so parameter changes are heard with low latency:
+//   source → mastering chain → analyzer tap → destination.
+// When OFF, the chain node is never spliced in (source → tap → destination)
+// so EQ/Dynamics/Imager edits produce NO audible change — they only stage
+// for the offline re-render.
 //
-// DEFAULT = OFF.  The realtime chain is opt-in until it has been
-// device-tested for CPU + glitch behaviour (see m2-full benchmark +
-// fallback docs).  Toggling this flag NEVER changes the export path —
-// final export remains the Python/Rust offline render.
+// DEFAULT = ON.  Real-time audition of module edits is a core product
+// feature: turning a knob must change the sound.  The chain is wrapped in
+// hard safety layers (per-block passthrough on any error in the worklet,
+// finite/peak guards in the Rust chain) and gated by an environment
+// readiness probe, so the worst case is a transparent passthrough — never
+// broken or silenced audio.  Synthetic/offline stays an explicit opt-OUT.
 //
-// Decision order:
+// Toggling this flag NEVER changes the export path — final export remains
+// the Python/Rust offline render.
+//
+// Decision order (explicit OFF wins; otherwise ON):
 //   1. Runtime `window.__LOUI_REALTIME_PREVIEW__` (boolean) — explicit.
 //   2. Persisted QA toggle `localStorage['loui.realtimePreview']`.
-//   3. Build env `VITE_LOUI_REALTIME_PREVIEW` ('true'/'1' → on).
-//   4. Default → OFF.
+//   3. Build env `VITE_LOUI_REALTIME_PREVIEW` ('false'/'0' → off).
+//   4. Default → ON.
 
 declare global {
   interface Window {
@@ -38,7 +45,7 @@ function readPersistedFlag(): boolean | null {
   return null;
 }
 
-/** Whether the realtime Rust mastering-preview chain is enabled. */
+/** Whether the realtime Rust mastering-preview chain is enabled (ON by default). */
 export function isRealtimePreviewEnabled(): boolean {
   if (typeof window !== 'undefined' && typeof window.__LOUI_REALTIME_PREVIEW__ === 'boolean') {
     return window.__LOUI_REALTIME_PREVIEW__;
@@ -46,8 +53,8 @@ export function isRealtimePreviewEnabled(): boolean {
   const persisted = readPersistedFlag();
   if (persisted !== null) return persisted;
   const envFlag = (import.meta.env?.VITE_LOUI_REALTIME_PREVIEW ?? '').toString().toLowerCase();
-  if (envFlag === 'true' || envFlag === '1') return true;
-  return false;
+  if (envFlag === 'false' || envFlag === '0') return false;
+  return true;
 }
 
 /**

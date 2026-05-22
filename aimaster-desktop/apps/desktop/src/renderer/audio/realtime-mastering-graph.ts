@@ -68,6 +68,39 @@ export interface RealtimeMasteringGraph {
   dispose(): void;
 }
 
+const RT_DEBUG = (() => {
+  try { return Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV); }
+  catch { return false; }
+})();
+
+function rtLog(msg: string, data?: unknown): void {
+  if (!RT_DEBUG) return;
+  // eslint-disable-next-line no-console
+  if (data !== undefined) console.debug(`[RealtimeAudio] ${msg}`, data);
+  else console.debug(`[RealtimeAudio] ${msg}`);
+}
+
+/** Log which DSP groups changed between two configs (dev only, no spam). */
+function logConfigDelta(prev: RealtimeChainConfig | null, next: RealtimeChainConfig): void {
+  if (!RT_DEBUG) return;
+  if (!prev) { rtLog('config (initial)', next); return; }
+  const eqChanged = prev.eqLowCutHz !== next.eqLowCutHz || prev.eqLowShelfDb !== next.eqLowShelfDb
+    || prev.eqPresenceDb !== next.eqPresenceDb || prev.eqAirDb !== next.eqAirDb
+    || prev.eqAdaptive !== next.eqAdaptive || prev.eqBypass !== next.eqBypass
+    || prev.outputGainDb !== next.outputGainDb;
+  const dynChanged = prev.dynThresholdDb !== next.dynThresholdDb || prev.dynRatio !== next.dynRatio
+    || prev.dynAttackMs !== next.dynAttackMs || prev.dynReleaseMs !== next.dynReleaseMs
+    || prev.dynMixPct !== next.dynMixPct || prev.dynBypass !== next.dynBypass;
+  const imgChanged = prev.imgWidthPct !== next.imgWidthPct || prev.imgLowMonoHz !== next.imgLowMonoHz
+    || prev.imgBypass !== next.imgBypass;
+  const limChanged = prev.limCeilingDbtp !== next.limCeilingDbtp || prev.limLookaheadMs !== next.limLookaheadMs
+    || prev.limIsp !== next.limIsp || prev.limBypass !== next.limBypass;
+  if (eqChanged) rtLog('EQ param updated', { lowCutHz: next.eqLowCutHz, lowShelfDb: next.eqLowShelfDb, presenceDb: next.eqPresenceDb, airDb: next.eqAirDb, outputGainDb: next.outputGainDb, bypass: next.eqBypass });
+  if (dynChanged) rtLog('Dynamics param updated', { thresholdDb: next.dynThresholdDb, ratio: next.dynRatio, attackMs: next.dynAttackMs, releaseMs: next.dynReleaseMs, mixPct: next.dynMixPct, bypass: next.dynBypass });
+  if (imgChanged) rtLog('Imager param updated', { widthPct: next.imgWidthPct, lowMonoHz: next.imgLowMonoHz, bypass: next.imgBypass });
+  if (limChanged) rtLog('Limiter param updated', { ceilingDbtp: next.limCeilingDbtp, lookaheadMs: next.limLookaheadMs, isp: next.limIsp, bypass: next.limBypass });
+}
+
 function finite(v: number, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
@@ -191,6 +224,7 @@ export function createRealtimeMasteringGraph(
 
       // Splice into the analyzer graph: source → node → tap → destination.
       opts.session.setInsertNode(node);
+      rtLog('processor chain connected (source → mastering → tap → destination)', { ctxState: ctx.state, sampleRate: opts.sampleRate, channels: opts.channels ?? 2 });
       emit({ status: bypassed ? 'bypassed' : 'active' });
       return true;
     } catch (e) {
@@ -201,9 +235,13 @@ export function createRealtimeMasteringGraph(
     }
   };
 
+  let lastSentConfig: RealtimeChainConfig | null = null;
   const postConfig = (config: RealtimeChainConfig) => {
     if (!node) return;
-    try { node.port.postMessage({ type: 'config', config: sanitiseConfig(config) }); } catch { /* ignore */ }
+    const sane = sanitiseConfig(config);
+    logConfigDelta(lastSentConfig, sane);
+    lastSentConfig = sane;
+    try { node.port.postMessage({ type: 'config', config: sane }); } catch { /* ignore */ }
   };
 
   const postBypass = (b: boolean) => {
