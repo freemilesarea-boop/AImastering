@@ -98,6 +98,42 @@ export type AudioSourceNode =
   | AudioBufferSourceNode
   | MediaStreamAudioSourceNode;
 
+// ── Shared (singleton) AudioContext ─────────────────────────────────────────
+//
+// An HTMLMediaElement may have exactly ONE MediaElementSourceNode for its
+// entire lifetime — a second `createMediaElementSource` throws.  If each
+// analyzer session created + closed its own AudioContext (per mount /
+// StrictMode double-invoke / src swap), the second attach on a fresh
+// context would throw and leave the element captured by a dead context →
+// permanent silence + no frames.  So all sessions share ONE app-wide
+// context that is created once and never closed; the source node is cached
+// per element and reused forever.
+
+let sharedAudioContext: AudioContext | null = null;
+const ctxModuleAdded = new WeakSet<AudioContext>();
+
+function getSharedAudioContext(sampleRate: number): AudioContext {
+  if (sharedAudioContext && sharedAudioContext.state !== 'closed') {
+    return sharedAudioContext;
+  }
+  sharedAudioContext = new AudioContext({ sampleRate });
+  rtLog('shared AudioContext created', { sampleRate: sharedAudioContext.sampleRate, state: sharedAudioContext.state });
+  return sharedAudioContext;
+}
+
+const RT_DEBUG = (() => {
+  try { return Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV); }
+  catch { return false; }
+})();
+
+/** Dev-only diagnostic log for the realtime audio graph. */
+function rtLog(msg: string, data?: unknown): void {
+  if (!RT_DEBUG) return;
+  // eslint-disable-next-line no-console
+  if (data !== undefined) console.debug(`[RealtimeAudio] ${msg}`, data);
+  else console.debug(`[RealtimeAudio] ${msg}`);
+}
+
 // ── Internal session implementation ────────────────────────────────────────
 
 class WasmAnalyzerSession implements AnalyzerSession {
@@ -117,6 +153,7 @@ class WasmAnalyzerSession implements AnalyzerSession {
   private analyzer: LouiAnalyzer | null = null;
   private spectrum: LouiSpectrumAnalyzer | null = null;
   private samplesProcessed = 0;
+  private blockCount = 0;
   private lastFftFrameRef: FftFrame | null = null;
 
   // Subscribers
@@ -154,9 +191,14 @@ class WasmAnalyzerSession implements AnalyzerSession {
 
     await this.wasmReady;
 
-    // Create AudioContext at the requested sample rate when possible.
-    this.ctx = new AudioContext({ sampleRate: this.options.sampleRate });
-    await this.ctx.audioWorklet.addModule(this.workletUrl);
+    // Use the shared, never-closed AudioContext (see top of file) so the
+    // element's one-and-only MediaElementSource is reusable across mounts.
+    this.ctx = getSharedAudioContext(this.options.sampleRate);
+    if (!ctxModuleAdded.has(this.ctx)) {
+      await this.ctx.audioWorklet.addModule(this.workletUrl);
+      ctxModuleAdded.add(this.ctx);
+    }
+    rtLog('session start', { ctxState: this.ctx.state, sampleRate: this.ctx.sampleRate, channels: this.options.channels });
 
     this.tapNode = new AudioWorkletNode(this.ctx, 'analyzer-tap', {
       numberOfInputs: 1,
@@ -183,6 +225,9 @@ class WasmAnalyzerSession implements AnalyzerSession {
       this.insertNode = null;
     }
     if (this.currentSource) {
+      // Disconnect downstream only — NEVER drop the cached source node; it
+      // is the element's one-and-only MediaElementSource and is reused by
+      // the next session.  Keeping it cached avoids a fatal re-create.
       try { this.currentSource.disconnect(); } catch { /* ignore */ }
       this.currentSource = null;
     }
@@ -191,10 +236,9 @@ class WasmAnalyzerSession implements AnalyzerSession {
       try { this.tapNode.disconnect(); } catch { /* ignore */ }
       this.tapNode = null;
     }
-    if (this.ctx) {
-      try { await this.ctx.close(); } catch { /* ignore */ }
-      this.ctx = null;
-    }
+    // NOTE: the shared AudioContext is intentionally NOT closed here.
+    this.ctx = null;
+    rtLog('session stop (shared context kept alive)');
     if (this.analyzer) {
       try { this.analyzer.free(); } catch { /* ignore */ }
       this.analyzer = null;
@@ -274,12 +318,28 @@ class WasmAnalyzerSession implements AnalyzerSession {
     if (!this.ctx || !this.tapNode) {
       throw new Error('analyzer session not started');
     }
+    rtLog('audio element found', {
+      paused: media.paused, currentTime: media.currentTime, duration: media.duration,
+      readyState: media.readyState,
+    });
     let src = WasmAnalyzerSession.mediaSourceCache.get(media);
-    if (!src || src.context !== this.ctx) {
+    if (src && src.context === this.ctx) {
+      rtLog('media source reused (cached)');
+    } else if (src) {
+      // The element already owns a source on ANOTHER context — reusing it
+      // is impossible (it is bound to that context).  Adopt the shared
+      // context's cached node only; never call createMediaElementSource a
+      // second time (would throw).  This branch should not happen now that
+      // the context is a singleton, but we log it loudly if it does.
+      rtLog('media source exists on a different context — cannot recreate', {
+        cachedRate: src.context.sampleRate,
+      });
+    } else {
       src = this.ctx.createMediaElementSource(media);
       WasmAnalyzerSession.mediaSourceCache.set(media, src);
+      rtLog('media source connected (created once)');
     }
-    this.attach(src);
+    if (src) this.attach(src);
   }
 
   /**
@@ -367,6 +427,13 @@ class WasmAnalyzerSession implements AnalyzerSession {
 
   private processBlock(left: Float32Array, right?: Float32Array): void {
     if (!this.analyzer || !this.spectrum) return;
+
+    // Dev frame-flow telemetry — logs the first block and then every ~1 s
+    // worth of blocks so the console proves frames are arriving.
+    this.blockCount++;
+    if (RT_DEBUG && (this.blockCount === 1 || this.blockCount % 256 === 0)) {
+      rtLog('analyser frames', { blocks: this.blockCount, samples: this.samplesProcessed, len: left.length, stereo: !!right });
+    }
 
     if (right && this.options.channels === 2) {
       this.analyzer.processStereo(left, right);

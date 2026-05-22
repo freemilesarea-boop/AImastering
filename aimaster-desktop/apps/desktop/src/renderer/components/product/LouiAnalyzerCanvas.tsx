@@ -14,6 +14,7 @@ import { SpectrumAnalyzerPanel } from '../SpectrumAnalyzerPanel.js';
 import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
 import { isLiveVisualizerEnabled } from '../../audio/live-visualizer-flag.js';
 import { useAnalyzerSubscriptions } from '../../hooks/useAnalyzerSubscriptions.js';
+import { useFrameLiveness } from '../../hooks/useFrameLiveness.js';
 import { fftFrameToSpectrum } from '../../audio/modules/analyzer-to-visualizer-adapter.js';
 import { SpectrumWaveformCanvas } from './modules/SpectrumWaveformCanvas.js';
 import { type EqBands } from './modules/EQCurveOverlay.js';
@@ -56,7 +57,10 @@ function LivePulse({ active }: { active: boolean }) {
 }
 
 export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
-  const active = props.active ?? Boolean(props.session);
+  // Honest LIVE: reflects real FFT frame arrival (within 500ms), not just
+  // whether playback is running.
+  const liveness = useFrameLiveness(props.session ?? null);
+  const active = liveness.live;
   return (
     <div
       style={{

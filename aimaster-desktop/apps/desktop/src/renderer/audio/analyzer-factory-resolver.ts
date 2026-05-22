@@ -14,7 +14,6 @@ import type { AnalyzerSessionFactory } from '@aimaster/shared-types/streaming';
 
 import { SyntheticAnalyzerSessionFactory } from './analyzer-session-synthetic.js';
 import { WasmAnalyzerSessionFactory } from './wasm-analyzer-session.js';
-import { isRealtimePreviewEnabled } from './realtime-preview-flag.js';
 
 declare global {
   interface Window {
@@ -40,29 +39,28 @@ const syntheticFactory: SyntheticAnalyzerSessionFactory = new SyntheticAnalyzerS
 /**
  * Whether the WASM analyzer session is active.
  *
+ * The real WASM meter engine is the DEFAULT — the Spectrum / Loudness /
+ * Stereo panels are core product features and must show real analysis of
+ * the playing audio (never mock data).  The synthetic factory is a
+ * dev-only opt-OUT, requested explicitly.
+ *
  * Decision order:
- *   1. env `VITE_LOUI_WASM_ANALYZER`
- *   2. runtime `window.__LOUI_WASM_ANALYZER__`
- *   3. persisted `localStorage['loui.wasmAnalyzer']`
- *   4. **realtime-preview dependency** — the realtime mastering graph
- *      rides on this session (via `setInsertNode`), so enabling realtime
- *      preview implies the analyzer session must run.
- *   5. default → OFF.
+ *   1. explicit OFF — env `VITE_LOUI_WASM_ANALYZER=false` /
+ *      `window.__LOUI_WASM_ANALYZER__ === false` /
+ *      `localStorage['loui.wasmAnalyzer'] = 'false'`  → synthetic (dev).
+ *   2. otherwise → ON (real WASM analyzer).
  */
 export function isWasmAnalyzerEnabled(): boolean {
   const envFlag = (import.meta.env?.VITE_LOUI_WASM_ANALYZER ?? '').toString().toLowerCase();
-  if (envFlag === 'true' || envFlag === '1') return true;
-  if (typeof window !== 'undefined' && window.__LOUI_WASM_ANALYZER__ === true) return true;
+  if (envFlag === 'false' || envFlag === '0') return false;
+  if (typeof window !== 'undefined' && window.__LOUI_WASM_ANALYZER__ === false) return false;
   try {
     if (typeof localStorage !== 'undefined') {
       const v = localStorage.getItem(WASM_ANALYZER_LS_KEY);
-      if (v === 'true' || v === '1') return true;
       if (v === 'false' || v === '0') return false;
     }
   } catch { /* ignore */ }
-  // Realtime preview requires the WASM analyzer session it splices into.
-  if (isRealtimePreviewEnabled()) return true;
-  return false;
+  return true;
 }
 
 /** Return the active factory. */
