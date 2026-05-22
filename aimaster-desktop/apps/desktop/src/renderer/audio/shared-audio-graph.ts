@@ -357,6 +357,18 @@ export function currentRouteLabel(media: HTMLMediaElement | null): string {
   return 'DIRECT: source → analyser/tap → master';
 }
 
+export type RouteKind = 'wasm' | 'fallback' | 'direct' | 'none';
+
+/** Machine-readable current route for an element. */
+export function currentRouteKind(media: HTMLMediaElement | null): RouteKind {
+  if (!media) return 'none';
+  const g = graphs.get(media);
+  if (!g) return 'none';
+  if (g.wasmInsert) return 'wasm';
+  if (g.nativeDsp) return 'fallback';
+  return 'direct';
+}
+
 /**
  * A minimal MasteringGraphSession backed by the shared graph (not the WASM
  * analyzer session).  Lets the realtime DSP attach + splice its node even

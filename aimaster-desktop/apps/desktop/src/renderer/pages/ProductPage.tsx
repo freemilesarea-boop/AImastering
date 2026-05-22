@@ -1548,6 +1548,7 @@ function ProductPageProductionInner(props: {
               enabled={realtime.enabled}
               active={realtime.active}
               readinessLabel={realtime.readinessLabel}
+              fallbackActive={realtime.enabled && (realtime.uiStatus === 'failed' || realtime.uiStatus === 'unavailable')}
             />
             <LouiRealtimeToggle
               enabled={realtime.enabled}

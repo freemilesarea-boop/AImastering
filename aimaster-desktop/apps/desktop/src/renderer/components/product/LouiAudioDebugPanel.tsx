@@ -7,7 +7,8 @@
 import React from 'react';
 import { surface, text, typography, space, radius, meter as meterTokens } from '../../theme/loui-theme.js';
 import {
-  getAudioLog, subscribeAudioLog, sharedContextState, resumeSharedContext, currentRouteLabel,
+  getAudioLog, subscribeAudioLog, sharedContextState, resumeSharedContext,
+  currentRouteLabel, currentRouteKind, logAudioEvent,
   type AudioGraphEvent,
 } from '../../audio/shared-audio-graph.js';
 import { useMediaElement } from '../../audio/media-element-context.js';
@@ -84,14 +85,41 @@ export function LouiAudioDebugPanel(props: LouiAudioDebugPanelProps) {
     : native.status === 'connected' ? 'NATIVE'
     : native.status === 'error' ? 'FAILED' : 'OFF';
   const ctxState = sharedContextState();
-  const rtTone = props.realtimeStatus === 'active' ? meterTokens.safe.foreground
-    : props.realtimeStatus === 'failed' ? meterTokens.danger.foreground
-    : props.realtimeStatus === 'passthrough' || props.realtimeStatus === 'bypassed' ? meterTokens.warn.foreground
-    : text.muted;
+
+  // Truthful composite processing status from the ACTUAL audio route +
+  // whether audio is flowing — never claim FAILED while native DSP processes.
+  const route = currentRouteKind(media);
+  const flowing = native.lastFrameAt != null && (performance.now() - native.lastFrameAt) < 800;
+  const processStatus =
+    route === 'wasm' && props.dspBlocks > 0 ? 'WASM ACTIVE'
+    : route === 'fallback' && flowing ? 'FALLBACK ACTIVE'
+    : route === 'fallback' ? 'FALLBACK (idle)'
+    : route === 'direct' ? 'DIRECT ONLY'
+    : 'FAILED';
+  const psTone = processStatus.startsWith('WASM') ? meterTokens.safe.foreground
+    : processStatus.startsWith('FALLBACK ACTIVE') ? meterTokens.safe.foreground
+    : processStatus.startsWith('FALLBACK') ? meterTokens.warn.foreground
+    : processStatus === 'DIRECT ONLY' ? meterTokens.warn.foreground
+    : meterTokens.danger.foreground;
+
+  // Forced test: apply a param, then log the rendered RMS before/after so the
+  // user SEES the change land in the actual audio (not just the knob value).
+  const applyAndProve = (module: string, key: string, value: number, set: (v: number) => void) => {
+    const before = native.meters.rmsDb;
+    const beforePeak = Math.max(native.meters.peakLDb, native.meters.peakRDb);
+    logAudioEvent('param-updated', `${module}.${key} = ${value} | route=${route} rmsBefore=${before.toFixed(1)}dB`);
+    set(value);
+    window.setTimeout(() => {
+      const after = native.meters.rmsDb;
+      const afterPeak = Math.max(native.meters.peakLDb, native.meters.peakRDb);
+      logAudioEvent('config-posted', `${module}.${key}=${value} applied | rms ${before.toFixed(1)}→${after.toFixed(1)}dB peak ${beforePeak.toFixed(1)}→${afterPeak.toFixed(1)}dB`);
+    }, 450);
+  };
 
   const toggleBypass = () => {
     const next = !bypassed;
     setBypassed(next);
+    logAudioEvent('param-updated', `bypass(all) = ${next} | route=${route}`);
     eq.setBypass(next); dyn.setBypass(next); imager.setBypass(next); lim.setBypass(next);
   };
 
@@ -105,7 +133,8 @@ export function LouiAudioDebugPanel(props: LouiAudioDebugPanelProps) {
     }}>
       {/* Status row */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: space['3'] }}>
-        <StatusCell label="Realtime" value={props.realtimeStatus.toUpperCase()} tone={rtTone} />
+        <StatusCell label="Processing" value={processStatus} tone={psTone} />
+        <StatusCell label="Realtime(WASM)" value={props.realtimeStatus.toUpperCase()} tone={props.realtimeStatus === 'active' ? meterTokens.safe.foreground : props.realtimeStatus === 'failed' ? meterTokens.danger.foreground : text.muted} />
         <StatusCell label="Analyzer" value={analyzerLabel} tone={analyzerLabel === 'FAILED' ? meterTokens.danger.foreground : analyzerLabel === 'OFF' ? text.muted : meterTokens.safe.foreground} />
         <StatusCell label="Context" value={ctxState} tone={ctxState === 'running' ? meterTokens.safe.foreground : ctxState === 'suspended' ? meterTokens.warn.foreground : text.muted} />
         <StatusCell label="DSP blk" value={String(props.dspBlocks)} />
@@ -126,11 +155,11 @@ export function LouiAudioDebugPanel(props: LouiAudioDebugPanelProps) {
 
       {/* Forced DSP tests — prove parameter → graph → sound */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        <TestButton label="EQ +24dB Air" onClick={() => eq.setParam('airDb', 24)} />
-        <TestButton label="EQ -24dB Air" onClick={() => eq.setParam('airDb', -24)} />
-        <TestButton label="Output -24dB" onClick={() => eq.setParam('outputGainDb', -24)} />
-        <TestButton label="Mono (width 0%)" onClick={() => imager.setParam('widthPct', 0)} />
-        <TestButton label="Wide 200%" onClick={() => imager.setParam('widthPct', 200)} />
+        <TestButton label="EQ +24dB Air" onClick={() => applyAndProve('eq', 'airDb', 24, (v) => eq.setParam('airDb', v))} />
+        <TestButton label="EQ -24dB Air" onClick={() => applyAndProve('eq', 'airDb', -24, (v) => eq.setParam('airDb', v))} />
+        <TestButton label="Output -24dB" onClick={() => applyAndProve('eq', 'outputGainDb', -24, (v) => eq.setParam('outputGainDb', v))} />
+        <TestButton label="Mono (width 0%)" onClick={() => applyAndProve('imager', 'widthPct', 0, (v) => imager.setParam('widthPct', v))} />
+        <TestButton label="Wide 200%" onClick={() => applyAndProve('imager', 'widthPct', 200, (v) => imager.setParam('widthPct', v))} />
         <TestButton label={bypassed ? 'Bypass: ON' : 'Bypass: OFF'} active={bypassed} onClick={toggleBypass} />
         <TestButton label="Resume Ctx" onClick={() => void resumeSharedContext()} />
         {props.onReattach && <TestButton label="Reinit Worklet" onClick={props.onReattach} />}

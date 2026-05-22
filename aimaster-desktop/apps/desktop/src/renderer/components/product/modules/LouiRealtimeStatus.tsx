@@ -23,6 +23,8 @@ export interface LouiRealtimeStatusProps {
   active?: boolean;
   /** Readiness label (e.g. "realtime-ready" / "...unavailable: ..."). */
   readinessLabel?: string;
+  /** Native DSP fallback is processing audio (WASM down but edits audible). */
+  fallbackActive?: boolean;
 }
 
 /** Derive a status from the legacy enabled/active props (storybook etc.). */
@@ -35,11 +37,14 @@ function legacyStatus(props: LouiRealtimeStatusProps): RealtimePreviewUiStatus {
 
 export function LouiRealtimeStatus(props: LouiRealtimeStatusProps) {
   const status = props.status ?? legacyStatus(props);
-  const live = isRealtimeHeardLive(status);
+  // When the WASM realtime path failed but the native DSP fallback is
+  // processing, the edits ARE audible — show that honestly, not "failed".
+  const fallback = !!props.fallbackActive && (status === 'failed' || status === 'unavailable');
+  const live = isRealtimeHeardLive(status) || fallback;
   const off = status === 'off';
   const color = live ? meter.safe.foreground : off ? text.muted : loui.warningAmber;
   const dot = live ? meter.safe.foreground : off ? surface.overlay : loui.warningAmber;
-  const label = realtimeStatusLabel(status, props.readinessLabel);
+  const label = fallback ? 'Fallback active · native DSP' : realtimeStatusLabel(status, props.readinessLabel);
 
   return (
     <div style={{

@@ -205,7 +205,7 @@ export function useRealtimeMasteringGraph(
         rafRef.current = null;
       }
     };
-  }, [enabled, paramState]);
+  }, [enabled, paramState, media]);
 
   // ── Device-test hooks (window.__LOUI_REALTIME_DEBUG__) ────────────────
   useEffect(() => {
