@@ -158,7 +158,7 @@ impl MasteringChain {
         }
 
         self.gr = GainReduction {
-            dynamics_db: 0.0, // dynamics GR is implicit in its envelope; metered separately if needed
+            dynamics_db: self.dynamics.gain_reduction_db(),
             limiter_db: self.limiter.gain_reduction_db(),
         };
     }

@@ -153,6 +153,14 @@ let wasm_bindgen = (function(exports) {
             wasm.__wbg_louimasteringchain_free(ptr, 0);
         }
         /**
+         * Dynamics (compressor) gain reduction (dB, ≥ 0) from the last block.
+         * @returns {number}
+         */
+        dynamicsGrDb() {
+            const ret = wasm.louimasteringchain_dynamicsGrDb(this.__wbg_ptr);
+            return ret;
+        }
+        /**
          * Limiter gain reduction (dB, ≥ 0) from the last block.
          * @returns {number}
          */

@@ -18,6 +18,8 @@ export interface RealtimeMetricSample {
   xruns: number;
   /** Limiter gain reduction (dB) at the time of the sample. */
   limiterGrDb: number;
+  /** Dynamics (compressor) gain reduction (dB) at the time of the sample. */
+  dynamicsGrDb?: number;
   /** Cumulative output-safety bypasses (non-finite/absurd) from the chain. */
   safetyEvents?: number;
   /** Cumulative process() calls (proves the worklet is pulled). */
@@ -38,6 +40,8 @@ export interface RealtimeMetricsSnapshot {
   /** Cumulative xrun count since reset. */
   totalXruns: number;
   limiterGrDb: number;
+  /** Dynamics (compressor) gain reduction (dB) from the latest sample. */
+  dynamicsGrDb: number;
   /** Latest cumulative output-safety bypass count from the chain. */
   safetyEvents: number;
   /** Latest cumulative process() call count (0 = worklet never pulled). */
@@ -52,7 +56,7 @@ export interface RealtimeMetricsSnapshot {
 
 const EMPTY: RealtimeMetricsSnapshot = {
   cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, blockPeriodMs: 0,
-  totalXruns: 0, limiterGrDb: 0, safetyEvents: 0,
+  totalXruns: 0, limiterGrDb: 0, dynamicsGrDb: 0, safetyEvents: 0,
   processCalls: 0, audioBlocks: 0, nonSilentBlocks: 0, samples: 0,
 };
 
@@ -66,6 +70,7 @@ export class RealtimeMetrics {
   private blockMs = 0;
   private totalXruns = 0;
   private gr = 0;
+  private dynGr = 0;
   private safety = 0;
   private processCalls = 0;
   private audioBlocks = 0;
@@ -84,6 +89,7 @@ export class RealtimeMetrics {
     this.blockMs = s.blockPeriodMs;
     this.totalXruns += s.xruns;
     this.gr = s.limiterGrDb;
+    if (typeof s.dynamicsGrDb === 'number' && Number.isFinite(s.dynamicsGrDb)) this.dynGr = s.dynamicsGrDb;
     if (typeof s.safetyEvents === 'number' && Number.isFinite(s.safetyEvents)) {
       // Cumulative counter from the chain — keep the latest (highest) value.
       this.safety = Math.max(this.safety, s.safetyEvents);
@@ -104,6 +110,7 @@ export class RealtimeMetrics {
       blockPeriodMs: this.blockMs,
       totalXruns: this.totalXruns,
       limiterGrDb: this.gr,
+      dynamicsGrDb: this.dynGr,
       safetyEvents: this.safety,
       processCalls: this.processCalls,
       audioBlocks: this.audioBlocks,
@@ -115,7 +122,7 @@ export class RealtimeMetrics {
   /** Reset all counters. */
   reset(): void {
     this.avgMs = 0; this.peakMs = 0; this.blockMs = 0;
-    this.totalXruns = 0; this.gr = 0; this.safety = 0;
+    this.totalXruns = 0; this.gr = 0; this.dynGr = 0; this.safety = 0;
     this.processCalls = 0; this.audioBlocks = 0; this.nonSilentBlocks = 0;
     this.count = 0;
   }

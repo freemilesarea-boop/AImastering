@@ -210,6 +210,7 @@ export function createRealtimeMasteringGraph(
           blockPeriodMs: finite(msg.blockPeriodMs ?? 0, 0),
           xruns: Math.max(0, Math.trunc(finite(msg.xruns ?? 0, 0))),
           limiterGrDb: finite(msg.limiterGrDb ?? 0, 0),
+          dynamicsGrDb: finite(msg.dynamicsGrDb ?? 0, 0),
           safetyEvents: Math.max(0, Math.trunc(finite(msg.safetyEvents ?? 0, 0))),
           processCalls: Math.max(0, Math.trunc(finite(msg.processCalls ?? 0, 0))),
           audioBlocks: Math.max(0, Math.trunc(finite(msg.audioBlocks ?? 0, 0))),

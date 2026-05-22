@@ -10,6 +10,7 @@ import {
 import { space } from '../../../theme/loui-theme.js';
 import { ALL_MODULE_PARAMETER_DEFS } from '../../../audio/parameters/index.js';
 import { usePanelStateBridge, type ControlledPanelProps } from './usePanelStateBridge.js';
+import { useRealtimeDynamicsGr } from '../../../audio/modules/realtime-gr-context.js';
 
 interface DynState {
   thresholdDb: number;
@@ -27,23 +28,20 @@ const DEFAULTS: DynState = {
   mixPct:      ALL_MODULE_PARAMETER_DEFS.dynamics.parameters.find((p) => p.id === 'mixPct')!.default      as number,
 };
 
+// GR meter spans 0..GR_METER_MAX_DB (full-scale).  12 dB matches the
+// limiter meter's range so both read on the same visual scale.
+const GR_METER_MAX_DB = 12;
+
 export function DynamicsParameterPanel(props: ControlledPanelProps = {}) {
   const { state: s, setParam } = usePanelStateBridge<DynState>(DEFAULTS, props);
-  const [grNorm, setGrNorm] = React.useState(0.3);
-
-  React.useEffect(() => {
-    const id = setInterval(() => {
-      setGrNorm((prev) => {
-        const target = Math.min(1, Math.max(0, (Math.abs(s.thresholdDb) / 24) * (s.ratio / 4)));
-        const drift = (Math.random() - 0.5) * 0.12;
-        return Math.max(0, Math.min(1, prev * 0.6 + target * 0.4 + drift));
-      });
-    }, 100);
-    return () => clearInterval(id);
-  }, [s.thresholdDb, s.ratio]);
+  // REAL compressor gain reduction from the realtime worklet metrics.
+  // Outside an active realtime session this reads "unavailable" — never
+  // a faked/animated value.
+  const gr = useRealtimeDynamicsGr();
 
   const update = <K extends keyof DynState>(k: K) => (v: DynState[K]) => setParam(k, v);
-  const grDb = -grNorm * 12;
+  const grNorm = Math.min(1, gr.grDb / GR_METER_MAX_DB);
+  const readout = gr.available ? `−${gr.grDb.toFixed(1)} dB` : '—';
 
   return (
     <>
@@ -51,7 +49,7 @@ export function DynamicsParameterPanel(props: ControlledPanelProps = {}) {
         <LouiMiniMeter
           value={grNorm}
           status="ok"
-          readout={`${grDb.toFixed(1)} dB`}
+          readout={readout}
           height={12}
         />
       </LouiSectionCard>

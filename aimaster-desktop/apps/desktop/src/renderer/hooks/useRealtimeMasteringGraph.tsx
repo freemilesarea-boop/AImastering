@@ -48,7 +48,7 @@ declare global {
 
 const EMPTY_METRICS: RealtimeMetricsSnapshot = {
   cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, blockPeriodMs: 0,
-  totalXruns: 0, limiterGrDb: 0, safetyEvents: 0,
+  totalXruns: 0, limiterGrDb: 0, dynamicsGrDb: 0, safetyEvents: 0,
   processCalls: 0, audioBlocks: 0, nonSilentBlocks: 0, samples: 0,
 };
 

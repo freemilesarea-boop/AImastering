@@ -514,6 +514,12 @@ impl LouiMasteringChain {
         self.inner.gain_reduction().limiter_db
     }
 
+    /// Dynamics (compressor) gain reduction (dB, ≥ 0) from the last block.
+    #[wasm_bindgen(js_name = dynamicsGrDb)]
+    pub fn dynamics_gr_db(&self) -> f64 {
+        self.inner.gain_reduction().dynamics_db
+    }
+
     /// Count of blocks the output-safety layer had to replace with the dry
     /// signal (non-finite or absurd peak).  0 in healthy operation.
     #[wasm_bindgen(js_name = safetyEvents)]

@@ -18,6 +18,7 @@ pub struct Dynamics {
     env_db: f64,        // current envelope in dB
     atk_coeff: f64,
     rel_coeff: f64,
+    last_gr_db: f64,    // peak gain reduction over the last block (≥ 0), for metering
 }
 
 fn time_coeff(ms: f64, sr: f64) -> f64 {
@@ -34,7 +35,14 @@ impl Dynamics {
             env_db: -120.0,
             atk_coeff: time_coeff(cfg.attack_ms, sample_rate),
             rel_coeff: time_coeff(cfg.release_ms, sample_rate),
+            last_gr_db: 0.0,
         }
+    }
+
+    /// Peak gain reduction (dB, ≥ 0) applied over the last processed block.
+    /// 0 when bypassed / below threshold.  Drives the Dynamics GR meter.
+    pub fn gain_reduction_db(&self) -> f64 {
+        self.last_gr_db
     }
 
     /// Update parameters.
@@ -67,11 +75,13 @@ impl Dynamics {
 impl StereoModule for Dynamics {
     fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
         if self.cfg.bypass || self.cfg.ratio <= 1.0 {
+            self.last_gr_db = 0.0;
             return;
         }
         let mix = (self.cfg.mix_pct / 100.0).clamp(0.0, 1.0);
         let dry = 1.0 - mix;
         let n = left.len().min(right.len());
+        let mut block_gr = 0.0f64;
         for i in 0..n {
             let l = left[i] as f64;
             let r = right[i] as f64;
@@ -82,15 +92,21 @@ impl StereoModule for Dynamics {
             let coeff = if in_db > self.env_db { self.atk_coeff } else { self.rel_coeff };
             self.env_db = in_db + coeff * (self.env_db - in_db);
             let gain_db = self.computed_gain_db(self.env_db);
+            // computed_gain_db ≤ 0 when compressing; report the wet-path
+            // reduction the parallel mix actually applies (peak over block).
+            let gr = (-gain_db) * mix;
+            if gr > block_gr { block_gr = gr; }
             let g = 10f64.powf(gain_db / 20.0);
             // Parallel mix: dry + wet*g.
             left[i] = ((dry + mix * g) * l) as f32;
             right[i] = ((dry + mix * g) * r) as f32;
         }
+        self.last_gr_db = block_gr.max(0.0);
     }
 
     fn reset(&mut self) {
         self.env_db = -120.0;
+        self.last_gr_db = 0.0;
     }
 }
 

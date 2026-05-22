@@ -55,7 +55,7 @@ import { LouiRealtimeStatus } from '../components/product/modules/LouiRealtimeSt
 import { LouiRealtimeToggle } from '../components/product/modules/LouiRealtimeToggle.js';
 import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { CHAIN_MODULE_IDS, getModule } from '../audio/modules/loui-module-suite.js';
-import { RealtimeGrProvider, useRealtimeGr } from '../audio/modules/realtime-gr-context.js';
+import { RealtimeGrProvider, useRealtimeGr, RealtimeDynamicsGrProvider } from '../audio/modules/realtime-gr-context.js';
 import { RealtimePreviewProvider, useRealtimePreviewStatus } from '../audio/modules/realtime-preview-context.js';
 import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
 import { decayPeak } from '../audio/modules/gr-meter-model.js';
@@ -1438,6 +1438,20 @@ function ProductPageProductionInner(props: {
     () => ({ grDb, peakDb: grPeak, available: grAvailable, source: grAvailable ? ('realtime' as const) : ('unavailable' as const) }),
     [grDb, grPeak, grAvailable],
   );
+
+  // Realtime gain reduction (Dynamics/compressor) — REAL dynamicsGrDb from
+  // the worklet metrics.  Same honesty contract as the limiter GR above:
+  // available only while the realtime preview is genuinely processing.
+  const dynGrDb = grAvailable ? Math.max(0, realtime.metrics.dynamicsGrDb) : 0;
+  const [dynGrPeak, setDynGrPeak] = useState(0);
+  React.useEffect(() => {
+    if (!grAvailable) { setDynGrPeak(0); return; }
+    setDynGrPeak((prev) => decayPeak(prev, dynGrDb, 0.4));
+  }, [dynGrDb, grAvailable]);
+  const dynGrValue = useMemo(
+    () => ({ grDb: dynGrDb, peakDb: dynGrPeak, available: grAvailable, source: grAvailable ? ('realtime' as const) : ('unavailable' as const) }),
+    [dynGrDb, dynGrPeak, grAvailable],
+  );
   // Realtime preview status for module badges ("Heard live" vs "Staged").
   const realtimePreviewValue = useMemo(
     () => ({ enabled: realtime.enabled, active: realtime.active }),
@@ -1584,25 +1598,29 @@ function ProductPageProductionInner(props: {
   if (!props.preview) {
     return (
       <RealtimePreviewProvider value={realtimePreviewValue}>
-        <RealtimeGrProvider value={grValue}>{layout}{debugOverlay}{presetBrowser}</RealtimeGrProvider>
+        <RealtimeGrProvider value={grValue}>
+          <RealtimeDynamicsGrProvider value={dynGrValue}>{layout}{debugOverlay}{presetBrowser}</RealtimeDynamicsGrProvider>
+        </RealtimeGrProvider>
       </RealtimePreviewProvider>
     );
   }
   return (
     <RealtimePreviewProvider value={realtimePreviewValue}>
       <RealtimeGrProvider value={grValue}>
-        <ProductionPreviewProvider
-          sourceAudioPath={props.preview.sourceAudioPath}
-          baseOptions={props.preview.baseOptions}
-          masterOutputPath={props.preview.masterOutputPath}
-          onRendered={props.preview.onRendered}
-          {...(props.preview.presetId ? { presetId: props.preview.presetId } : {})}
-          onRevisionCreated={props.preview.onRevisionCreated}
-        >
-          {layout}
-          {debugOverlay}
-          {presetBrowser}
-        </ProductionPreviewProvider>
+        <RealtimeDynamicsGrProvider value={dynGrValue}>
+          <ProductionPreviewProvider
+            sourceAudioPath={props.preview.sourceAudioPath}
+            baseOptions={props.preview.baseOptions}
+            masterOutputPath={props.preview.masterOutputPath}
+            onRendered={props.preview.onRendered}
+            {...(props.preview.presetId ? { presetId: props.preview.presetId } : {})}
+            onRevisionCreated={props.preview.onRevisionCreated}
+          >
+            {layout}
+            {debugOverlay}
+            {presetBrowser}
+          </ProductionPreviewProvider>
+        </RealtimeDynamicsGrProvider>
       </RealtimeGrProvider>
     </RealtimePreviewProvider>
   );

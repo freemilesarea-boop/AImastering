@@ -50,6 +50,7 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     this._blockCount = 0;
     this._blockPeriodMs = (128 / sampleRate) * 1000;
     this._grDb = 0;
+    this._dynGrDb = 0;        // dynamics (compressor) gain reduction, last block
     this._safetyEvents = 0;   // chain output-safety bypasses (non-finite/absurd)
     this._processCalls = 0;   // total process() invocations
     this._audioBlocks = 0;    // process() calls with a non-empty input
@@ -160,6 +161,7 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       try {
         this._chain.processStereo(left, right);
         if (this._chain.limiterGrDb) this._grDb = this._chain.limiterGrDb();
+        if (this._chain.dynamicsGrDb) this._dynGrDb = this._chain.dynamicsGrDb();
         if (this._chain.safetyEvents) this._safetyEvents = this._chain.safetyEvents();
       } catch (e) {
         // On any process error: restore passthrough for this block + bypass.
@@ -194,6 +196,7 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       blockPeriodMs: this._blockPeriodMs,
       xruns: this._xruns,
       limiterGrDb: this._grDb,
+      dynamicsGrDb: this._dynGrDb,
       safetyEvents: this._safetyEvents,
       processCalls: this._processCalls,
       audioBlocks: this._audioBlocks,
