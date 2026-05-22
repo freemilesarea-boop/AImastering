@@ -21,6 +21,13 @@ export interface LouiAudioDebugPanelProps {
   xruns: number;
   /** DSP worklet processed-block count (proves the chain is being pulled). */
   dspBlocks: number;
+  /** Coded reason the WASM realtime path is not active (worklet load phase). */
+  fallbackReason?: string | null;
+  /** Worklet load phase + last error message (precise FAILED diagnosis). */
+  loadPhase?: string | null;
+  loadError?: string | null;
+  /** Re-run the WASM worklet attach. */
+  onReattach?: () => void;
   lastError?: string | null;
 }
 
@@ -106,9 +113,11 @@ export function LouiAudioDebugPanel(props: LouiAudioDebugPanelProps) {
         <StatusCell label="Avg ms" value={props.avgProcessMs.toFixed(2)} />
         <StatusCell label="Xruns" value={String(props.xruns)} tone={props.xruns > 0 ? meterTokens.warn.foreground : text.primary} />
       </div>
-      {(props.lastError || native.error) && (
-        <div style={{ fontFamily: typography.family.mono, fontSize: 11, color: meterTokens.danger.foreground }}>
-          last error: {props.lastError || native.error}
+      {(props.lastError || native.error || props.fallbackReason || props.loadError) && (
+        <div style={{ fontFamily: typography.family.mono, fontSize: 11, color: meterTokens.danger.foreground, display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {props.fallbackReason && <span>realtime reason: {props.fallbackReason}{props.loadPhase ? ` (phase: ${props.loadPhase})` : ''}</span>}
+          {props.loadError && <span>worklet load error: {props.loadError}</span>}
+          {(props.lastError || native.error) && <span>last error: {props.lastError || native.error}</span>}
         </div>
       )}
 
@@ -121,6 +130,7 @@ export function LouiAudioDebugPanel(props: LouiAudioDebugPanelProps) {
         <TestButton label="Wide 200%" onClick={() => imager.setParam('widthPct', 200)} />
         <TestButton label={bypassed ? 'Bypass: ON' : 'Bypass: OFF'} active={bypassed} onClick={toggleBypass} />
         <TestButton label="Resume Ctx" onClick={() => void resumeSharedContext()} />
+        {props.onReattach && <TestButton label="Reinit Worklet" onClick={props.onReattach} />}
       </div>
 
       {/* In-app event log (last 30) */}

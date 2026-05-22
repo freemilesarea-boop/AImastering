@@ -12,7 +12,7 @@ import React from 'react';
 import { surface, text, typography, radius, space } from '../../theme/loui-theme.js';
 import { LoudnessMeterPanelV2 } from '../LoudnessMeterPanelV2.js';
 import { StereoScopePanel } from '../StereoScopePanel.js';
-import { NativeLevelMeters } from './modules/NativeLevelMeters.js';
+import { NativeLoudnessMeter, NativeStereoMeter, NativeLevelsMeter } from './modules/NativeMeterCards.js';
 import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
 
 export interface LouiMeterColumnProps {
@@ -84,20 +84,30 @@ export function LouiMeterColumn(props: LouiMeterColumnProps) {
       height: '100%',
       overflowY: 'auto',
     }}>
-      <PanelShell title="Loudness" subtitle="LUFS · TP · LRA">
-        <LoudnessMeterPanelV2
-          session={props.session ?? null}
-          tickRate="30Hz"
-          {...(typeof props.targetLufs === 'number' ? { targetLufs: props.targetLufs } : {})}
-        />
+      {/* Native meters are the always-on base (never an empty card).  The
+          WASM BS.1770 panels render above them when a session has data. */}
+      <PanelShell title="Loudness" subtitle="Momentary · Short · Integ · Peak">
+        <NativeLoudnessMeter />
+        {props.session && (
+          <div style={{ marginTop: 10 }}>
+            <LoudnessMeterPanelV2
+              session={props.session}
+              tickRate="30Hz"
+              {...(typeof props.targetLufs === 'number' ? { targetLufs: props.targetLufs } : {})}
+            />
+          </div>
+        )}
       </PanelShell>
-      <PanelShell title="Stereo" subtitle="Correlation · M/S">
-        <StereoScopePanel session={props.session ?? null} />
+      <PanelShell title="Stereo" subtitle="Correlation · M/S · Width">
+        <NativeStereoMeter />
+        {props.session && (
+          <div style={{ marginTop: 10 }}>
+            <StereoScopePanel session={props.session} />
+          </div>
+        )}
       </PanelShell>
-      {/* Always-on native levels — guarantees a moving meter even if the
-          WASM loudness/stereo analyzers fail to start. */}
-      <PanelShell title="Levels" subtitle="RMS · Peak · Φ (native)">
-        <NativeLevelMeters />
+      <PanelShell title="Levels" subtitle="RMS · Peak · Headroom · Clip">
+        <NativeLevelsMeter />
       </PanelShell>
     </div>
   );

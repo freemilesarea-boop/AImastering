@@ -1574,6 +1574,10 @@ function ProductPageProductionInner(props: {
             avgProcessMs={realtime.metrics.avgProcessMs}
             xruns={realtime.metrics.totalXruns}
             dspBlocks={realtime.metrics.audioBlocks}
+            fallbackReason={realtime.graphState?.fallbackReason ?? null}
+            loadPhase={realtime.graphState?.load?.phase ?? null}
+            loadError={realtime.graphState?.load?.lastError ?? null}
+            onReattach={realtime.reattach}
           />
         </div>
       }

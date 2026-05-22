@@ -25,7 +25,12 @@ import {
   type RealtimeMasteringGraphState,
   type MasteringGraphSession,
 } from '../audio/realtime-mastering-graph.js';
-import { makeSharedMasteringSession } from '../audio/shared-audio-graph.js';
+import {
+  makeSharedMasteringSession,
+  installNativeDsp,
+  applyNativeDspConfig,
+  uninstallNativeDsp,
+} from '../audio/shared-audio-graph.js';
 import { useMediaElement } from '../audio/media-element-context.js';
 import { stateToChainConfig, type RealtimeChainConfig } from '../audio/realtime-mastering-chain.js';
 import {
@@ -75,6 +80,8 @@ export interface RealtimeMasteringPreviewStatus {
   /** Environment readiness probe. */
   readiness: RealtimeReadiness;
   readinessLabel: string;
+  /** Re-run the WASM worklet attach (recovery button). */
+  reattach: () => void;
 }
 
 export interface UseRealtimeMasteringGraphOptions {
@@ -108,6 +115,7 @@ export function useRealtimeMasteringGraph(
   }, [session, media, sampleRate]);
 
   const graphRef = useRef<RealtimeMasteringGraph | null>(null);
+  const [reattachNonce, setReattachNonce] = useState(0);
   const [graphState, setGraphState] = useState<RealtimeMasteringGraphState | null>(null);
   const [metrics, setMetrics] = useState<RealtimeMetricsSnapshot>(EMPTY_METRICS);
   const [configUpdates, setConfigUpdates] = useState(0);
@@ -154,7 +162,21 @@ export function useRealtimeMasteringGraph(
     // paramState intentionally excluded — config flows via the rAF effect
     // below, not by re-attaching the whole graph.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, readiness.ready, effectiveSession, sampleRate, channels]);
+  }, [enabled, readiness.ready, effectiveSession, sampleRate, channels, reattachNonce]);
+
+  // ── Native DSP fallback (always-audible WebAudio chain) ──────────────
+  // Installed whenever realtime is enabled + an element exists, so EQ /
+  // dynamics / width / output edits change the sound even when the WASM
+  // worklet fails.  When the WASM worklet attaches it takes priority; on
+  // WASM failure the bus falls back to this chain (never silent-direct).
+  useEffect(() => {
+    if (!enabled || !media) return;
+    try {
+      installNativeDsp(media, sampleRate);
+      applyNativeDspConfig(media, stateToChainConfig(pendingState.current));
+    } catch { /* ignore */ }
+    return () => { try { uninstallNativeDsp(media); } catch { /* ignore */ } };
+  }, [enabled, media, sampleRate]);
 
   // ── Parameter live-update (rAF-batched) ──────────────────────────────
   const rafRef = useRef<number | null>(null);
@@ -166,10 +188,13 @@ export function useRealtimeMasteringGraph(
       : (cb: FrameRequestCallback) => setTimeout(() => cb(0), 16) as unknown as number;
     rafRef.current = schedule(() => {
       rafRef.current = null;
+      const cfg = stateToChainConfig(pendingState.current);
+      // Always push to the native fallback chain so edits are audible even
+      // when the WASM worklet is down.
+      if (media) { try { applyNativeDspConfig(media, cfg); } catch { /* ignore */ } }
       const g = graphRef.current;
-      if (!g) return;
       try {
-        g.updateConfig(stateToChainConfig(pendingState.current));
+        if (g) g.updateConfig(cfg);
         setConfigUpdates((n) => n + 1);
         setLastConfigAt(Date.now());
       } catch { /* invalid config — skip */ }
@@ -238,5 +263,6 @@ export function useRealtimeMasteringGraph(
     config: enabled ? stateToChainConfig(paramState) : null,
     readiness,
     readinessLabel: describeReadiness(readiness),
+    reattach: () => setReattachNonce((n) => n + 1),
   };
 }

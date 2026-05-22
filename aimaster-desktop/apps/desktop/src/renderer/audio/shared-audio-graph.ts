@@ -24,6 +24,9 @@
 // zero-gain sink, so it processes audio without contributing to the output
 // (no +6 dB double-output, no phasing).
 
+import { createNativeDspChain, type NativeDspChain } from './native-dsp-chain.js';
+import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
+
 export type AudioGraphEventKind =
   | 'audio-element-mounted'
   | 'src-changed'
@@ -139,14 +142,40 @@ interface ElementGraph {
   masterGain: GainNode;
   /** Zero-gain sink that pulls every passive tap/analyser to destination. */
   silentSink: GainNode;
-  /** Current DSP insert (realtime mastering), spliced source→insert→masterGain. */
-  insert: AudioNode | null;
+  /** WASM mastering worklet insert (highest priority when present). */
+  wasmInsert: AudioNode | null;
+  /** Native (WebAudio) DSP fallback chain, when installed. */
+  nativeDsp: NativeDspChain | null;
   analysers: NativeAnalysers;
   splitter: ChannelSplitterNode;
   /** External passive taps (e.g. WASM analyzer-tap worklet). */
   passiveTaps: Set<AudioNode>;
   /** True once a MediaElementSource exists (i.e. element audio is captured). */
   sourceCreated: boolean;
+}
+
+/**
+ * (Re)wire the audio bus from the source, choosing the active insert:
+ *   wasmInsert  → source → wasmInsert → masterGain   (best quality)
+ *   nativeDsp   → source → nativeDsp  → masterGain   (WASM-free fallback)
+ *   neither     → source → masterGain                (direct)
+ * masterGain → destination + all taps/analysers are untouched.
+ */
+function rerouteBus(g: ElementGraph): void {
+  try { g.source.disconnect(); } catch { /* ignore */ }
+  if (g.nativeDsp) { try { g.nativeDsp.output.disconnect(g.masterGain); } catch { /* ignore */ } }
+  if (g.wasmInsert) {
+    g.source.connect(g.wasmInsert);
+    try { g.wasmInsert.connect(g.masterGain); } catch { /* ignore (already connected) */ }
+    logAudioEvent('dsp-chain-connected', 'source → WASM → master');
+  } else if (g.nativeDsp) {
+    g.source.connect(g.nativeDsp.input);
+    g.nativeDsp.output.connect(g.masterGain);
+    logAudioEvent('fallback-activated', 'source → native DSP → master');
+  } else {
+    g.source.connect(g.masterGain);
+    logAudioEvent('dsp-chain-removed', 'source → master (direct)');
+  }
 }
 
 const graphs = new WeakMap<HTMLMediaElement, ElementGraph>();
@@ -210,7 +239,7 @@ export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000)
 
   const graph: ElementGraph = {
     ctx: context, source, masterGain, silentSink,
-    insert: null, analysers: { ctx: context, main, left, right }, splitter,
+    wasmInsert: null, nativeDsp: null, analysers: { ctx: context, main, left, right }, splitter,
     passiveTaps: new Set(), sourceCreated: true,
   };
   graphs.set(media, graph);
@@ -231,27 +260,49 @@ export function isSourceCreated(media: HTMLMediaElement | null): boolean {
 }
 
 /**
- * Splice a realtime DSP node into the audio bus:
- *   node == null → source → masterGain
- *   node != null → source → node → masterGain
- * The taps/analysers always read masterGain (post-DSP), so the spectrum and
- * meters reflect what the user actually hears.  Never silences playback.
+ * Set (or clear) the WASM mastering worklet insert.  When cleared, routing
+ * falls back to the native DSP chain (if installed) — NOT silent direct —
+ * so module edits stay audible after a WASM failure.  Taps/analysers always
+ * read masterGain (post-DSP).
  */
 export function setRealtimeInsert(media: HTMLMediaElement, node: AudioNode | null): void {
   const g = graphs.get(media);
   if (!g) return;
-  // Tear down current source routing.
-  try { g.source.disconnect(); } catch { /* ignore */ }
-  if (g.insert) { try { g.insert.disconnect(g.masterGain); } catch { /* ignore */ } }
-  g.insert = node;
-  if (node) {
-    g.source.connect(node);
-    try { node.connect(g.masterGain); } catch { /* ignore (already connected) */ }
-    logAudioEvent('dsp-chain-connected', 'source → DSP → master');
-  } else {
-    g.source.connect(g.masterGain);
-    logAudioEvent('dsp-chain-removed', 'source → master (direct)');
+  if (g.wasmInsert && g.wasmInsert !== node) {
+    try { g.wasmInsert.disconnect(g.masterGain); } catch { /* ignore */ }
   }
+  g.wasmInsert = node;
+  rerouteBus(g);
+}
+
+/**
+ * Install the native (WebAudio) DSP fallback chain for an element and make
+ * it the active insert (unless the WASM worklet is present).  Idempotent.
+ * Returns the chain so callers can push config to it.
+ */
+export function installNativeDsp(media: HTMLMediaElement, sampleRate = 48_000): NativeDspChain {
+  const g = ensureElementGraph(media, sampleRate);
+  if (!g.nativeDsp) {
+    g.nativeDsp = createNativeDspChain(g.ctx);
+    logAudioEvent('native-analyzer-connected', 'native DSP chain built');
+    rerouteBus(g);
+  }
+  return g.nativeDsp;
+}
+
+/** Apply a config to the native DSP chain (no-op if not installed). */
+export function applyNativeDspConfig(media: HTMLMediaElement, cfg: RealtimeChainConfig): void {
+  graphs.get(media)?.nativeDsp?.apply(cfg);
+}
+
+/** Remove the native DSP chain and re-route (→ WASM insert or direct). */
+export function uninstallNativeDsp(media: HTMLMediaElement): void {
+  const g = graphs.get(media);
+  if (!g || !g.nativeDsp) return;
+  const chain = g.nativeDsp;
+  g.nativeDsp = null;
+  rerouteBus(g);
+  try { chain.dispose(); } catch { /* ignore */ }
 }
 
 /**
