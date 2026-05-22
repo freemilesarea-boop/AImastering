@@ -1122,10 +1122,14 @@ function ProductPageProduction() {
   }, [sourceAudioPath]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+  const setAudioRef = useCallback((el: HTMLAudioElement | null) => {
+    audioRef.current = el;
+    setAudioEl(el);
+  }, []);
   const [playing, setPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [time, setTime] = useState(0);
-  const [meterReady, setMeterReady] = useState(false);
   // Audio-element diagnostics (honest source-load state for QA + UX).
   const [audioDiag, setAudioDiag] = useState<AudioDiag>({ error: null, readyState: 0, networkState: 0 });
   const [presetId, setPresetId] = useState<string | undefined>(undefined);
@@ -1309,7 +1313,7 @@ function ProductPageProduction() {
       {/* Hidden audio element — required for WasmAnalyzerProvider to attach
           a MediaElementAudioSourceNode.  We control it via React state. */}
       <audio
-        ref={audioRef}
+        ref={setAudioRef}
         src={effectiveSrc || undefined}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
@@ -1321,7 +1325,6 @@ function ProductPageProduction() {
         onLoadedMetadata={() => {
           const a = audioRef.current;
           if (a) setDuration(a.duration);
-          setMeterReady(true);
           setAudioDiag({ error: null, readyState: audioRef.current?.readyState ?? 0, networkState: audioRef.current?.networkState ?? 0 });
         }}
         onCanPlay={() => {
@@ -1340,7 +1343,7 @@ function ProductPageProduction() {
       />
 
       <WasmAnalyzerProvider
-        mediaElement={meterReady ? audioRef.current : null}
+        mediaElement={effectiveSrc ? audioEl : null}
         active={playing}
       >
       <ModuleParameterStateProvider dispatcher={dispatcher} initialState={initialParamState}>
