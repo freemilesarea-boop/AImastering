@@ -528,6 +528,10 @@ function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
         {...common}
         targetLufs={typeof tLufs === 'number' ? tLufs : -14}
         targetTp={typeof tTp   === 'number' ? tTp   : -1}
+        onApplyLoudness={(lufs, tp) => {
+          limiterApi.setParam('targetLufs', lufs);
+          limiterApi.setParam('ceilingDbtp', tp);
+        }}
         {...(bridge && exportInfo ? {
           reMasterExport: {
             appliedKeys: exportInfo.appliedOverrideKeys,
