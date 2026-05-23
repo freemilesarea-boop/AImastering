@@ -1561,10 +1561,10 @@ function ProductPageProductionInner(props: {
       }
     />
   );
-  // Dev/QA realtime-preview health — collapsed by default into a corner
-  // drawer (a small status chip).  Opened on demand; never covers the
-  // Loudness / Limiter / module UI unless the user expands it.
-  const debugOverlay = realtime.enabled ? (
+  // Dev/QA realtime-preview health — a fixed bottom-right corner drawer.
+  // Hidden for normal users (it floats above the module slide-over and would
+  // otherwise cover the Export buttons); shown only in dev mode.
+  const debugOverlay = (isDevMode() && realtime.enabled) ? (
     <LouiRealtimeDebugDrawer status={realtime.uiStatus}>
       <LouiRealtimeDebugPanel
         active={realtime.active}

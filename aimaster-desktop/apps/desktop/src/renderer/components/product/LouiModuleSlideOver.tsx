@@ -215,15 +215,21 @@ export function LouiModuleSlideOver(props: LouiModuleSlideOverProps) {
           </div>
         </header>
 
-        {/* Body — scroll inside the panel */}
+        {/* Body — scroll inside the panel.  Extra bottom padding so the last
+            control / export button is never flush against the viewport edge
+            (and clears any floating corner UI). */}
         <div style={{
           flex: 1,
           minHeight: 0,
           overflowY: 'auto',
-          padding: space['4'],
+          overflowX: 'hidden',
+          paddingInline: space['4'],
+          paddingTop: space['4'],
+          paddingBottom: space['6'],
           display: 'flex',
           flexDirection: 'column',
           gap: space['3'],
+          WebkitOverflowScrolling: 'touch',
         }}>
           {props.children}
         </div>
