@@ -57,6 +57,7 @@ import { LouiRealtimeStatus } from '../components/product/modules/LouiRealtimeSt
 import { LouiRealtimeToggle } from '../components/product/modules/LouiRealtimeToggle.js';
 import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { isDevMode } from '../audio/dev-mode.js';
+import { LouiPlaybackBar } from '../components/product/LouiPlaybackBar.js';
 import { RealtimeGrProvider, useRealtimeGr, RealtimeDynamicsGrProvider } from '../audio/modules/realtime-gr-context.js';
 import { RealtimePreviewProvider, useRealtimePreviewStatus } from '../audio/modules/realtime-preview-context.js';
 import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
@@ -272,43 +273,7 @@ function ProductLayoutInner({
               </svg>
             )}
           </button>
-          <div
-            className="no-drag"
-            onClick={(e) => {
-              if (!onSeek) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              onSeek((e.clientX - rect.left) / rect.width);
-            }}
-            style={{
-              flex: 1,
-              height: 6,
-              background: surface.well,
-              borderRadius: 3,
-              cursor: onSeek ? 'pointer' : 'default',
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              style={{
-                width: `${Math.round((progress ?? 0) * 100)}%`,
-                height: '100%',
-                background: text.tertiary,
-                transition: 'width 100ms linear',
-              }}
-            />
-          </div>
-          <span
-            style={{
-              fontFamily: typography.family.mono,
-              fontSize: typography.size.xs,
-              color: text.muted,
-              fontVariantNumeric: 'tabular-nums',
-              minWidth: 88,
-              textAlign: 'right',
-            }}
-          >
-            {currentTimeLabel ?? '0:00'} / {durationLabel ?? '0:00'}
-          </span>
+          <LouiPlaybackBar isPlaying={Boolean(isPlaying)} {...(onSeek ? { onSeek } : {})} />
           {abControl}
         </div>
       )}
@@ -682,6 +647,7 @@ function ProductionPreviewProvider({
   const [lastExportAsIsPath, setLastExportAsIsPath] = useState<string | null>(null);
   // Revision creation state (M3-REVISION-WORKFLOW)
   const [creatingRevision, setCreatingRevision] = useState(false);
+  const creatingRevisionRef = useRef(false);
   const [createRevisionError, setCreateRevisionError] = useState<string | null>(null);
   const onRevisionCreatedRef = useRef(onRevisionCreated);
   onRevisionCreatedRef.current = onRevisionCreated;
@@ -854,12 +820,24 @@ function ProductionPreviewProvider({
   const onCreateRevision = useCallback(() => {
     const api = window.electronAPI;
     if (!api) { setCreateRevisionError('electronAPI unavailable'); return; }
+    // Guard against double-clicks producing duplicate renders / stuck spinner.
+    if (creatingRevisionRef.current) return;
+    creatingRevisionRef.current = true;
     const options = mergeOptions(baseOptions, exportOverride.optionsOverride);
     const sourceFileName = sourceAudioPath.split(/[\\/]/).pop() ?? 'master';
     const useRust = isRustOfflineRenderEnabled();
     setCreatingRevision(true);
     setCreateRevisionError(null);
     const t0 = Date.now();
+    // Hard timeout so a hung render can never leave the button spinning forever.
+    const REVISION_TIMEOUT_MS = 60_000;
+    const withTimeout = <T,>(p: Promise<T>): Promise<T> => Promise.race([
+      p,
+      new Promise<T>((_, reject) => setTimeout(
+        () => reject(new Error('새 버전 생성 시간이 초과되었습니다. 다시 시도해주세요.')),
+        REVISION_TIMEOUT_MS,
+      )),
+    ]);
     void (async () => {
       try {
         let outputPath: string | undefined;
@@ -870,11 +848,11 @@ function ProductionPreviewProvider({
         let fallbackUsed = false;
 
         if (useRust) {
-          const resp = await api.invoke('audio:master-rust-experimental', {
+          const resp = await withTimeout(api.invoke('audio:master-rust-experimental', {
             sourcePath: sourceAudioPath,
             chainConfig: stateToChainConfig(state),
             options,
-          }) as {
+          })) as {
             ok: boolean; backend?: 'rust' | 'python'; fallbackUsed?: boolean;
             outputPath?: string; previewPath?: string; error?: string;
             metrics?: {
@@ -894,7 +872,7 @@ function ProductionPreviewProvider({
           integratedLufs = Number(m.finalLufs ?? m.integratedLufs ?? options.targetLufs);
           truePeakDbtp = Number(m.finalTruePeakDb ?? m.truePeakDbtp ?? m.samplePeakDb ?? options.targetTp);
         } else {
-          const result = await api.invoke('audio:master', sourceAudioPath, '', options) as {
+          const result = await withTimeout(api.invoke('audio:master', sourceAudioPath, '', options)) as {
             outputPath?: string; previewPath?: string;
             loudnessAfter?: { integratedLufs?: number; truePeakDbtp?: number; lra?: number };
           } | undefined;
@@ -917,8 +895,9 @@ function ProductionPreviewProvider({
           renderDurationMs: Date.now() - t0,
         });
       } catch (err) {
-        setCreateRevisionError(err instanceof Error ? err.message : String(err));
+        setCreateRevisionError(err instanceof Error ? err.message : '새 버전 생성에 실패했습니다. 다시 시도해주세요.');
       } finally {
+        creatingRevisionRef.current = false;
         setCreatingRevision(false);
       }
     })();

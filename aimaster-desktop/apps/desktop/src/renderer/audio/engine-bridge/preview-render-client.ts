@@ -14,6 +14,13 @@ import type {
   PreviewRenderRequest,
   PreviewRenderResponse,
 } from '@aimaster/shared-types';
+import { isDevMode } from '../dev-mode.js';
+
+function devLog(msg: string): void {
+  if (!isDevMode()) return;
+  // eslint-disable-next-line no-console
+  console.debug(`[PreviewRender] ${msg}`);
+}
 
 // ── Transport ────────────────────────────────────────────────────────────
 
@@ -68,6 +75,9 @@ export interface RenderPayload {
 export interface PreviewRenderControllerOptions {
   /** Debounce window (ms) before a queued render fires.  Default 600. */
   debounceMs?: number;
+  /** Hard timeout (ms) for a single render; on timeout the state becomes
+   *  'error' so the UI never stays stuck 'rendering'.  Default 90000. */
+  renderTimeoutMs?: number;
   /** Called whenever the controller's state changes. */
   onState?: (state: PreviewRenderState) => void;
   /** Called on a non-stale successful render.  `metrics` from the response. */
@@ -83,6 +93,7 @@ export interface PreviewRenderControllerOptions {
 export class PreviewRenderController {
   private readonly transport: PreviewRenderTransport;
   private readonly debounceMs: number;
+  private readonly renderTimeoutMs: number;
   private readonly opts: PreviewRenderControllerOptions;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -96,6 +107,7 @@ export class PreviewRenderController {
   constructor(transport: PreviewRenderTransport, opts: PreviewRenderControllerOptions = {}) {
     this.transport = transport;
     this.debounceMs = opts.debounceMs ?? 600;
+    this.renderTimeoutMs = opts.renderTimeoutMs ?? 90_000;
     this.opts = opts;
   }
 
@@ -156,10 +168,20 @@ export class PreviewRenderController {
       ...(payload.targetSummary ? { targetSummary: payload.targetSummary } : {}),
     };
     const firedHash = payload.patchHash;
+    const startedAt = Date.now();
 
-    void this.transport.render(request).then((response) => {
+    const timeout = new Promise<PreviewRenderResponse>((resolve) =>
+      setTimeout(() => resolve({
+        requestId,
+        ok: false,
+        error: '미리듣기 렌더링 시간이 초과되었습니다. 다시 시도해주세요.',
+      }), this.renderTimeoutMs),
+    );
+
+    void Promise.race([this.transport.render(request), timeout]).then((response) => {
       // Latest-wins: drop responses from superseded requests.
       if (response.requestId !== this.latestRequestId) return;
+      devLog(`preview render ${response.ok ? 'ok' : 'fail'} in ${Date.now() - startedAt}ms (id=${requestId})`);
       if (response.ok) {
         // Defence in depth: if the response echoes a patch hash, it must
         // match the request we fired.

@@ -94,21 +94,41 @@ export function DraggableEQCurveEditor(props: DraggableEQCurveEditorProps) {
     e.stopPropagation();
     if (bypassed) return;
     setActive(bandId);
-    const move = (ev: PointerEvent) => {
-      const rect = svgRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const px = ev.clientX - rect.left;
-      const py = ev.clientY - rect.top;
-      const r = dragToValue(bandId, px, py, geom);
-      props.onChange?.(r.paramId, r.value);
+    try { (e.currentTarget as Element).setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    // rAF-throttle so a fast drag emits at most one config update per frame
+    // (≤60 fps) — keeps the realtime DSP responsive without flooding the
+    // parameter state.  The LAST position is always committed exactly.
+    let raf = 0;
+    let pending: { paramId: string; value: number } | null = null;
+    const flush = () => {
+      raf = 0;
+      if (pending) { props.onChange?.(pending.paramId, pending.value); pending = null; }
     };
-    const up = () => {
+    const compute = (ev: PointerEvent) => {
+      const rect = svgRef.current?.getBoundingClientRect();
+      if (!rect) return null;
+      return dragToValue(bandId, ev.clientX - rect.left, ev.clientY - rect.top, geom);
+    };
+    const move = (ev: PointerEvent) => {
+      const r = compute(ev);
+      if (!r) return;
+      pending = r;
+      if (raf === 0) raf = requestAnimationFrame(flush);
+    };
+    const up = (ev: PointerEvent) => {
+      if (raf !== 0) { cancelAnimationFrame(raf); raf = 0; }
+      // Commit the exact final position (never lose the last sample).
+      const r = compute(ev) ?? pending;
+      if (r) props.onChange?.(r.paramId, r.value);
+      pending = null;
       setActive(null);
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   }
 
   function resetBand(bandId: EqBandId) {
