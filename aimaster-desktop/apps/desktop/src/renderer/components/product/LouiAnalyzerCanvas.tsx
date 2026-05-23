@@ -83,6 +83,7 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
     >
       {/* Header */}
       <div
+        title="주파수 스펙트럼. 재생 중인 (처리 후) 신호의 저역·중역·고역 에너지를 실시간으로 표시합니다. 20Hz~20kHz 로그 스케일."
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -90,6 +91,7 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           paddingInline: space['4'],
           paddingBlock: space['3'],
           borderBottom: `1px solid ${surface.border}`,
+          cursor: 'help',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'baseline', gap: space['3'] }}>

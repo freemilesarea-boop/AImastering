@@ -9,7 +9,6 @@ import React from 'react';
 import { surface, text, typography, radius, meter } from '../../../theme/loui-theme.js';
 import { loui } from '../../../theme/loui-home.js';
 import {
-  realtimeStatusLabel,
   isRealtimeHeardLive,
   type RealtimePreviewUiStatus,
 } from '../../../audio/realtime-ui-status.js';
@@ -35,6 +34,22 @@ function legacyStatus(props: LouiRealtimeStatusProps): RealtimePreviewUiStatus {
   return 'starting';
 }
 
+/** User-facing Korean status (plain language, no engine jargon). */
+function friendlyLabel(status: RealtimePreviewUiStatus, fallback: boolean): string {
+  if (fallback) return '실시간으로 적용 중 (대체 엔진)';
+  switch (status) {
+    case 'active':      return '변경 내용이 실시간으로 적용 중입니다';
+    case 'passthrough':
+    case 'starting':    return '실시간 미리듣기 준비 중…';
+    case 'waiting':     return '재생을 시작하면 변경 내용이 바로 적용됩니다';
+    case 'bypassed':    return '바이패스 — 원본을 듣고 있습니다';
+    case 'failed':      return '실시간 엔진 오류 — 다시 시작해 주세요';
+    case 'unavailable': return '이 환경에서는 실시간 미리듣기를 사용할 수 없습니다';
+    case 'off':
+    default:            return '실시간 미리듣기 꺼짐';
+  }
+}
+
 export function LouiRealtimeStatus(props: LouiRealtimeStatusProps) {
   const status = props.status ?? legacyStatus(props);
   // When the WASM realtime path failed but the native DSP fallback is
@@ -44,7 +59,7 @@ export function LouiRealtimeStatus(props: LouiRealtimeStatusProps) {
   const off = status === 'off';
   const color = live ? meter.safe.foreground : off ? text.muted : loui.warningAmber;
   const dot = live ? meter.safe.foreground : off ? surface.overlay : loui.warningAmber;
-  const label = fallback ? 'Fallback active · native DSP' : realtimeStatusLabel(status, props.readinessLabel);
+  const label = friendlyLabel(status, fallback);
 
   return (
     <div style={{

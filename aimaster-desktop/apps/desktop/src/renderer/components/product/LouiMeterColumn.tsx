@@ -25,10 +25,12 @@ function PanelShell({
   title,
   subtitle,
   children,
+  description,
 }: {
   title: string;
   subtitle?: string;
   children: React.ReactNode;
+  description?: string;
 }) {
   return (
     <div style={{
@@ -39,14 +41,18 @@ function PanelShell({
       borderRadius: radius.panel,
       overflow: 'hidden',
     }}>
-      <div style={{
-        display: 'flex',
-        alignItems: 'baseline',
-        justifyContent: 'space-between',
-        paddingInline: space['4'],
-        paddingBlock: space['3'],
-        borderBottom: `1px solid ${surface.border}`,
-      }}>
+      <div
+        title={description}
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          justifyContent: 'space-between',
+          paddingInline: space['4'],
+          paddingBlock: space['3'],
+          borderBottom: `1px solid ${surface.border}`,
+          cursor: description ? 'help' : 'default',
+        }}
+      >
         <span style={{
           fontFamily: typography.family.sans,
           fontSize: typography.size.md,
@@ -86,7 +92,9 @@ export function LouiMeterColumn(props: LouiMeterColumnProps) {
     }}>
       {/* Native meters are the always-on base (never an empty card).  The
           WASM BS.1770 panels render above them when a session has data. */}
-      <PanelShell title="Loudness" subtitle="Momentary · Short · Integ · Peak">
+      <PanelShell title="Loudness" subtitle="Momentary · Short · Integ · Peak"
+        description="음량 미터. Momentary(순간)·Short-term(단기)·Integrated(평균) 음량과 Peak/True Peak를 dBFS로 표시합니다.">
+
         <NativeLoudnessMeter />
         {props.session && (
           <div style={{ marginTop: 10 }}>
@@ -98,7 +106,9 @@ export function LouiMeterColumn(props: LouiMeterColumnProps) {
           </div>
         )}
       </PanelShell>
-      <PanelShell title="Stereo" subtitle="Correlation · M/S · Width">
+      <PanelShell title="Stereo" subtitle="Correlation · M/S · Width"
+        description="스테레오 미터. 좌/우 레벨, Mid/Side 비율, 좌우 폭(Width%), 위상 상관도(Φ: +1 모노~ -1 역상)를 표시합니다.">
+
         <NativeStereoMeter />
         {props.session && (
           <div style={{ marginTop: 10 }}>
@@ -106,7 +116,9 @@ export function LouiMeterColumn(props: LouiMeterColumnProps) {
           </div>
         )}
       </PanelShell>
-      <PanelShell title="Levels" subtitle="RMS · Peak · Headroom · Clip">
+      <PanelShell title="Levels" subtitle="RMS · Peak · Headroom · Clip"
+        description="출력 레벨. 처리 후 출력 RMS, 좌/우 Peak(홀드), 남은 헤드룸(dB), 클리핑 여부를 표시합니다.">
+
         <NativeLevelsMeter />
       </PanelShell>
     </div>

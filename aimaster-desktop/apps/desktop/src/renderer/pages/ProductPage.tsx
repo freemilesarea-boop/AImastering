@@ -53,11 +53,10 @@ import { LouiRevisionStack } from '../components/product/LouiRevisionStack.js';
 import type { RevisionInput } from '../audio/revisions/revision-types.js';
 import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioStore.js';
 import { getActiveRevision, getBaselineRevision, findDuplicate } from '../audio/revisions/revision-logic.js';
-import { LouiModuleChain } from '../components/product/modules/LouiModuleChain.js';
 import { LouiRealtimeStatus } from '../components/product/modules/LouiRealtimeStatus.js';
 import { LouiRealtimeToggle } from '../components/product/modules/LouiRealtimeToggle.js';
 import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
-import { CHAIN_MODULE_IDS, getModule } from '../audio/modules/loui-module-suite.js';
+import { isDevMode } from '../audio/dev-mode.js';
 import { RealtimeGrProvider, useRealtimeGr, RealtimeDynamicsGrProvider } from '../audio/modules/realtime-gr-context.js';
 import { RealtimePreviewProvider, useRealtimePreviewStatus } from '../audio/modules/realtime-preview-context.js';
 import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
@@ -1560,26 +1559,21 @@ function ProductPageProductionInner(props: {
               }}
             />
           </div>
-          <LouiModuleChain
-            moduleIds={CHAIN_MODULE_IDS as string[]}
-            {...(props.selectedModule ? { activeId: props.selectedModule } : {})}
-            onSelect={(id) => {
-              const mod = getModule(id);
-              // Live/preview modules with a real panel open it; planned are inert.
-              if (mod?.paramModuleId && mod.status !== 'planned') props.onSelectModule(mod.paramModuleId);
-            }}
-          />
-          <LouiAudioDebugPanel
-            realtimeStatus={realtime.uiStatus}
-            realtimeActive={realtime.active}
-            avgProcessMs={realtime.metrics.avgProcessMs}
-            xruns={realtime.metrics.totalXruns}
-            dspBlocks={realtime.metrics.audioBlocks}
-            fallbackReason={realtime.graphState?.fallbackReason ?? null}
-            loadPhase={realtime.graphState?.load?.phase ?? null}
-            loadError={realtime.graphState?.load?.lastError ?? null}
-            onReattach={realtime.reattach}
-          />
+          {/* Developer diagnostics — hidden for normal users; enable with
+              localStorage['loui.devMode']='true' or a dev build. */}
+          {isDevMode() && (
+            <LouiAudioDebugPanel
+              realtimeStatus={realtime.uiStatus}
+              realtimeActive={realtime.active}
+              avgProcessMs={realtime.metrics.avgProcessMs}
+              xruns={realtime.metrics.totalXruns}
+              dspBlocks={realtime.metrics.audioBlocks}
+              fallbackReason={realtime.graphState?.fallbackReason ?? null}
+              loadPhase={realtime.graphState?.load?.phase ?? null}
+              loadError={realtime.graphState?.load?.lastError ?? null}
+              onReattach={realtime.reattach}
+            />
+          )}
         </div>
       }
     />
