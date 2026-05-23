@@ -20,6 +20,8 @@
 // On ANY failure the loader rejects with a coded reason; callers fall
 // back to the existing re-render preview — audio is never interrupted.
 
+import { loadWasmBytes, loadModuleUrl } from './worklet-asset-source.js';
+
 // ── Asset URLs (deliverable 5) ────────────────────────────────────────
 //
 // All three assets ship from Vite's `public/` dir (copied verbatim by
@@ -30,6 +32,11 @@
 export const MASTERING_WORKLET_URL = './mastering-chain.worklet.js';
 export const MASTERING_WASM_GLUE_URL = './loui-mastering-wasm.nomodules.js';
 export const MASTERING_WASM_BINARY_URL = './loui-mastering-wasm.nomodules.wasm';
+
+// Bare asset names for the main-process bridge (packaged file:// + asar safe).
+const WORKLET_ASSET_NAME = 'mastering-chain.worklet.js';
+const GLUE_ASSET_NAME = 'loui-mastering-wasm.nomodules.js';
+const WASM_ASSET_NAME = 'loui-mastering-wasm.nomodules.wasm';
 
 /** Stable, machine-readable failure reasons (never throws raw strings). */
 export type MasteringWorkletLoadCode =
@@ -145,39 +152,20 @@ export async function loadMasteringWorklet(
     //    diagnostics so a failure pinpoints the exact cause on-screen
     //    (404/HTML vs. CSP wasm-unsafe-eval vs. bad MIME vs. truncated).
     emit({ phase: 'compiling-wasm' });
+    const isFileProto = (typeof location !== 'undefined' && location.protocol === 'file:');
     let wasmModule: WebAssembly.Module;
     {
-      // Resolve relative + absolute candidates (fetch uses document.baseURI;
-      // an absolute URL guards against an unexpected base in some hosts).
-      const candidates = [wasmUrl];
-      try {
-        const abs = new URL(wasmUrl, (typeof document !== 'undefined' && document.baseURI) || location.href).href;
-        if (abs !== wasmUrl) candidates.push(abs);
-      } catch { /* ignore */ }
-      const isFileProto = (typeof location !== 'undefined' && location.protocol === 'file:');
-
-      let bytes: ArrayBuffer | null = null;
-      let diag = '';
-      for (const url of candidates) {
-        try {
-          const resp = await fetch(url);
-          const buf = await resp.arrayBuffer();
-          const head = new Uint8Array(buf.slice(0, 16));
-          const hex = Array.from(head).map((b) => b.toString(16).padStart(2, '0')).join(' ');
-          const isWasm = head[0] === 0x00 && head[1] === 0x61 && head[2] === 0x73 && head[3] === 0x6d;
-          diag = `url=${url} status=${resp.status} type=${resp.headers.get('content-type') ?? '?'} `
-            + `size=${buf.byteLength} head16=[${hex}] wasmMagic=${isWasm} file://=${isFileProto}`;
-          if (!resp.ok) { continue; }
-          if (!isWasm) { continue; } // got HTML/404 body — try next candidate
-          bytes = buf;
-          break;
-        } catch (e) {
-          diag = `url=${url} fetchError=${e instanceof Error ? e.message : String(e)} file://=${isFileProto}`;
-        }
-      }
-      if (!bytes) {
-        emit({ phase: 'failed', failureReason: 'wasm-fetch-failed', lastError: diag });
-        throw new MasteringWorkletLoadError('wasm-fetch-failed', diag);
+      // Prefer the main-process bridge (Node fs reads inside app.asar); fall
+      // back to fetch in dev/browser.  Full diagnostics either way.
+      const { bytes, source, diag: loadDiag } = await loadWasmBytes(WASM_ASSET_NAME, wasmUrl);
+      const head = new Uint8Array(bytes.slice(0, 32));
+      const hex = Array.from(head).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+      const ascii = Array.from(head).map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join('');
+      const isWasm = head[0] === 0x00 && head[1] === 0x61 && head[2] === 0x73 && head[3] === 0x6d;
+      const diag = `${loadDiag} head32=[${hex}] ascii="${ascii}" wasmMagic=${isWasm} file://=${isFileProto} src=${source}`;
+      if (!isWasm) {
+        emit({ phase: 'failed', failureReason: 'wasm-fetch-failed', lastError: `not a wasm binary — ${diag}` });
+        throw new MasteringWorkletLoadError('wasm-fetch-failed', `not a wasm binary — ${diag}`);
       }
       try {
         wasmModule = await WebAssembly.compile(bytes);
@@ -190,28 +178,37 @@ export async function loadMasteringWorklet(
       emit({ wasmCompiled: true });
     }
 
-    // 2) Load the no-modules glue into the worklet scope.
+    // 2) Load the no-modules glue into the worklet scope (blob URL when the
+    //    bridge is present → packaged file:// safe).
     emit({ phase: 'loading-glue' });
-    try {
-      if (!glueLoadedFor.has(ctx)) {
-        await ctx.audioWorklet.addModule(glueUrl);
-        glueLoadedFor.add(ctx);
-      }
-      emit({ glueLoaded: true });
-    } catch (e) {
-      throw new MasteringWorkletLoadError('glue-module-failed', `addModule(${glueUrl}) failed`, e);
+    {
+      const g = await loadModuleUrl(GLUE_ASSET_NAME, glueUrl);
+      try {
+        if (!glueLoadedFor.has(ctx)) {
+          await ctx.audioWorklet.addModule(g.url);
+          glueLoadedFor.add(ctx);
+        }
+        emit({ glueLoaded: true });
+      } catch (e) {
+        emit({ phase: 'failed', failureReason: 'glue-module-failed', lastError: `addModule(${g.diag}) failed: ${e instanceof Error ? e.message : String(e)}` });
+        throw new MasteringWorkletLoadError('glue-module-failed', `addModule glue (${g.diag}) failed`, e);
+      } finally { g.revoke?.(); }
     }
 
-    // 3) Register the processor.
+    // 3) Register the processor (blob URL when the bridge is present).
     emit({ phase: 'loading-processor' });
-    try {
-      if (!processorLoadedFor.has(ctx)) {
-        await ctx.audioWorklet.addModule(workletUrl);
-        processorLoadedFor.add(ctx);
-      }
-      emit({ processorRegistered: true });
-    } catch (e) {
-      throw new MasteringWorkletLoadError('processor-module-failed', `addModule(${workletUrl}) failed`, e);
+    {
+      const w = await loadModuleUrl(WORKLET_ASSET_NAME, workletUrl);
+      try {
+        if (!processorLoadedFor.has(ctx)) {
+          await ctx.audioWorklet.addModule(w.url);
+          processorLoadedFor.add(ctx);
+        }
+        emit({ processorRegistered: true });
+      } catch (e) {
+        emit({ phase: 'failed', failureReason: 'processor-module-failed', lastError: `addModule(${w.diag}) failed: ${e instanceof Error ? e.message : String(e)}` });
+        throw new MasteringWorkletLoadError('processor-module-failed', `addModule processor (${w.diag}) failed`, e);
+      } finally { w.revoke?.(); }
     }
 
     // 4) Construct the node — the processor's ctor inits the chain from

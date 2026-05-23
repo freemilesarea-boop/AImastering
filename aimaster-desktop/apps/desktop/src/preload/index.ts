@@ -21,6 +21,8 @@ const INVOKE_CHANNELS = [
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // System
   'system:ffmpeg-status',
+  // Worklet/WASM asset reader (packaged file:// + asar safe)
+  'loui:read-worklet-asset',
   // Support bundle (v3.6 QA)
   'support:bundle', 'support:bundle-export', 'support:record-failure',
   // Updater (v3.4.3)
@@ -53,6 +55,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   platform: process.platform,
   version:  process.env['npm_package_version'] ?? '1.0.0',
+});
+
+// ── Worklet/WASM asset bridge (packaged file:// + asar safe) ──────────────
+// Lets the renderer load AudioWorklet + WASM assets via the main process
+// (Node fs reads inside app.asar), bypassing Chromium's file:// fetch
+// restrictions in the packaged app.
+contextBridge.exposeInMainWorld('louiAssets', {
+  read: (name: string) => ipcRenderer.invoke('loui:read-worklet-asset', name),
 });
 
 // ── Dedicated `window.updater` namespace (v3.4.3) ─────────────────────────────

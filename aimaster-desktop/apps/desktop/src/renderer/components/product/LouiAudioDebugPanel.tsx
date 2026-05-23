@@ -8,7 +8,7 @@ import React from 'react';
 import { surface, text, typography, space, radius, meter as meterTokens } from '../../theme/loui-theme.js';
 import {
   getAudioLog, subscribeAudioLog, sharedContextState, resumeSharedContext,
-  currentRouteLabel, currentRouteKind, logAudioEvent,
+  currentRouteLabel, currentRouteKind, logAudioEvent, dumpGraph,
   type AudioGraphEvent,
 } from '../../audio/shared-audio-graph.js';
 import { useMediaElement } from '../../audio/media-element-context.js';
@@ -162,6 +162,7 @@ export function LouiAudioDebugPanel(props: LouiAudioDebugPanelProps) {
         <TestButton label="Wide 200%" onClick={() => applyAndProve('imager', 'widthPct', 200, (v) => imager.setParam('widthPct', v))} />
         <TestButton label={bypassed ? 'Bypass: ON' : 'Bypass: OFF'} active={bypassed} onClick={toggleBypass} />
         <TestButton label="Resume Ctx" onClick={() => void resumeSharedContext()} />
+        <TestButton label="Dump Graph" onClick={() => dumpGraph(media)} />
         {props.onReattach && <TestButton label="Reinit Worklet" onClick={props.onReattach} />}
       </div>
 

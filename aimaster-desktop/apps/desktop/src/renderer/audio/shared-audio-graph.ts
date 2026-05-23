@@ -357,6 +357,19 @@ export function currentRouteLabel(media: HTMLMediaElement | null): string {
   return 'DIRECT: source → analyser/tap → master';
 }
 
+/** Dump the actual graph edges + node states to the event log (req: graph dump). */
+export function dumpGraph(media: HTMLMediaElement | null): void {
+  if (!media) { logAudioEvent('error', 'dumpGraph: no element'); return; }
+  const g = graphs.get(media);
+  if (!g) { logAudioEvent('error', 'dumpGraph: no graph for element'); return; }
+  const insert = g.wasmInsert ? 'WASM-node' : g.nativeDsp ? 'native-DSP' : 'none(direct)';
+  logAudioEvent('dsp-chain-connected',
+    `GRAPH DUMP — ctx=${g.ctx.state}@${g.ctx.sampleRate}Hz | insert=${insert} | `
+    + `edges: source→${insert === 'none(direct)' ? 'masterGain' : insert}→masterGain→destination; `
+    + `masterGain→[mainAnalyser,splitter(L/R)]→silentSink(0)→destination; `
+    + `passiveTaps=${g.passiveTaps.size} | masterGain.gain=${g.masterGain.gain.value} silentSink.gain=${g.silentSink.gain.value}`);
+}
+
 export type RouteKind = 'wasm' | 'fallback' | 'direct' | 'none';
 
 /** Machine-readable current route for an element. */

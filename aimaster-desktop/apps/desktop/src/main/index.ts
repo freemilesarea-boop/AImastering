@@ -133,6 +133,38 @@ app.whenReady().then(() => {
 
   ipcMain.handle('system:ffmpeg-status', () => ffmpeg);
 
+  // ── Worklet/WASM asset reader (packaged file:// + asar safe) ───────────
+  // Chromium's fetch()/audioWorklet.addModule() of file:// resources inside
+  // app.asar is unreliable/blocked.  The main process reads these assets via
+  // Node fs (which understands asar) and hands the bytes to the renderer,
+  // which compiles the wasm directly and loads the JS via a blob: URL — no
+  // file:// fetch.  Allow-list only the known worklet assets.
+  {
+    const ALLOWED = new Set([
+      'loui-mastering-wasm.nomodules.wasm',
+      'loui-mastering-wasm.nomodules.js',
+      'mastering-chain.worklet.js',
+      'analyzer-tap.worklet.js',
+    ]);
+    // Renderer assets sit next to index.html: dist/renderer/<name>.
+    // __dirname = dist-electron/main, so ../../dist/renderer.
+    const rendererDir = path.join(__dirname, '../..', 'dist', 'renderer');
+    ipcMain.handle('loui:read-worklet-asset', async (_e, name: unknown) => {
+      if (typeof name !== 'string' || !ALLOWED.has(name)) {
+        throw new Error(`blocked asset: ${String(name)}`);
+      }
+      const fs = await import('node:fs/promises');
+      const full = path.join(rendererDir, name);
+      const buf = await fs.readFile(full);
+      const isText = name.endsWith('.js');
+      log.info(`[worklet-asset] read ${name} ${buf.byteLength} ${isText ? 'text' : 'binary'}`);
+      // Return text for JS (renderer makes a Blob), bytes for wasm.
+      return isText
+        ? { kind: 'text', name, text: buf.toString('utf8'), size: buf.byteLength }
+        : { kind: 'bytes', name, bytes: new Uint8Array(buf), size: buf.byteLength };
+    });
+  }
+
   // ── 3. IPC 핸들러 등록 (mainWindow가 이미 생성된 뒤) ─────────────────────
   // License IPC handlers intentionally NOT registered — license gate
   // disabled for the internal RC test cycle.  See main/index.ts header
