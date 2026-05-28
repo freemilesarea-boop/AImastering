@@ -261,7 +261,7 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           color: meter.safe.foreground,
           letterSpacing: '0.04em',
         }}>
-          FREE EQ — 실시간 프리뷰 + Rust offline render 익스포트에 모두 반영됩니다.
+          FREE EQ — 실시간 프리뷰 + Rust 백엔드 익스포트에 반영 (Python fallback 시 미반영).
         </div>
       )}
 
