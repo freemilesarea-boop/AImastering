@@ -58,23 +58,48 @@ async function fetchBytes(url: string): Promise<{ bytes: ArrayBuffer; source: 'f
 }
 
 /** Resolve a loadable module URL for an AudioWorklet JS asset.
- *  IPC → blob: URL (packaged-safe); otherwise the relative URL. */
+ *  IPC → blob: URL (packaged-safe); otherwise the relative URL.
+ *  `prepend` is prefixed to the script text before the blob is created — used
+ *  to inject a TextEncoder/TextDecoder polyfill into wasm-bindgen glue, which
+ *  references those globals bare even though AudioWorkletGlobalScope in some
+ *  Electron/Chromium versions does not expose them. */
 export async function loadModuleUrl(
   assetName: string,
   fallbackUrl: string,
+  prepend = '',
 ): Promise<{ url: string; source: 'ipc-blob' | 'fetch-url'; revoke?: () => void; diag: string }> {
   if (hasBridge()) {
     try {
       const p = await window.louiAssets!.read(assetName);
       if (p.kind === 'text') {
-        const blob = new Blob([p.text], { type: 'text/javascript' });
+        const blob = new Blob([prepend, p.text], { type: 'text/javascript' });
         const url = URL.createObjectURL(blob);
-        return { url, source: 'ipc-blob', revoke: () => URL.revokeObjectURL(url), diag: `ipc-blob:${assetName} size=${p.size}` };
+        return { url, source: 'ipc-blob', revoke: () => URL.revokeObjectURL(url), diag: `ipc-blob:${assetName} size=${p.size}${prepend ? ` +prepend=${prepend.length}` : ''}` };
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // Fall through to a fetched-and-prepended blob when prepend is needed.
+      if (prepend) {
+        try {
+          const resp = await fetch(fallbackUrl);
+          const text = await resp.text();
+          const blob = new Blob([prepend, text], { type: 'text/javascript' });
+          const url = URL.createObjectURL(blob);
+          return { url, source: 'ipc-blob', revoke: () => URL.revokeObjectURL(url), diag: `ipc-failed(${msg}) → fetched+prepended:${fallbackUrl} size=${text.length}` };
+        } catch { /* ignore, fall back to raw URL below */ }
+      }
       return { url: fallbackUrl, source: 'fetch-url', diag: `ipc-failed(${msg}) → url:${fallbackUrl}` };
     }
+  }
+  // Browser/dev fallback — if we need to prepend, fetch-and-reblob.
+  if (prepend) {
+    try {
+      const resp = await fetch(fallbackUrl);
+      const text = await resp.text();
+      const blob = new Blob([prepend, text], { type: 'text/javascript' });
+      const url = URL.createObjectURL(blob);
+      return { url, source: 'ipc-blob', revoke: () => URL.revokeObjectURL(url), diag: `fetched+prepended:${fallbackUrl} size=${text.length}` };
+    } catch { /* fall through */ }
   }
   return { url: fallbackUrl, source: 'fetch-url', diag: `url:${fallbackUrl}` };
 }

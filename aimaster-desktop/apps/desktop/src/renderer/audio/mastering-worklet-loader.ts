@@ -21,6 +21,7 @@
 // back to the existing re-render preview — audio is never interrupted.
 
 import { loadWasmBytes, loadModuleUrl } from './worklet-asset-source.js';
+import { WORKLET_TEXTCODEC_POLYFILL } from './worklet-textcodec-polyfill.js';
 
 // ── Asset URLs (deliverable 5) ────────────────────────────────────────
 //
@@ -179,10 +180,13 @@ export async function loadMasteringWorklet(
     }
 
     // 2) Load the no-modules glue into the worklet scope (blob URL when the
-    //    bridge is present → packaged file:// safe).
+    //    bridge is present → packaged file:// safe).  Prepend a TextEncoder/
+    //    TextDecoder polyfill so wasm-bindgen's bare `new TextDecoder(...)` /
+    //    `new TextEncoder()` don't throw in AudioWorkletGlobalScope (some
+    //    Electron/Chromium worklet scopes do not expose those globals).
     emit({ phase: 'loading-glue' });
     {
-      const g = await loadModuleUrl(GLUE_ASSET_NAME, glueUrl);
+      const g = await loadModuleUrl(GLUE_ASSET_NAME, glueUrl, WORKLET_TEXTCODEC_POLYFILL);
       try {
         if (!glueLoadedFor.has(ctx)) {
           await ctx.audioWorklet.addModule(g.url);
