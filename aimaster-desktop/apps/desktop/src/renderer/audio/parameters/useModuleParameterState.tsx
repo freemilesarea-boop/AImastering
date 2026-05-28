@@ -66,7 +66,22 @@ interface ParameterStateContextValue {
    */
   applyPreset: (plan: PresetApplyPlan, meta?: { presetId?: string; presetName?: string; source?: CommandSource }) => void;
   clearLog: () => void;
+  /** Replace the full state in one shot — used by undo/redo + custom-preset load. */
+  replaceState: (next: AllModulesParameterState, source?: CommandSource) => void;
+  /** Step one entry back in the history stack. */
+  undo: () => void;
+  /** Step one entry forward in the (redo) stack — empty after any new edit. */
+  redo: () => void;
+  /** Whether there is a state to undo to. */
+  canUndo: boolean;
+  /** Whether there is a state to redo to. */
+  canRedo: boolean;
 }
+
+/** History cap — keeps memory bounded while remaining far above realistic use. */
+const HISTORY_CAP = 64;
+/** Coalesce window — repeated edits on the same target within this ms reuse the same history slot. */
+const COALESCE_MS = 500;
 
 const ParameterStateContext = createContext<ParameterStateContextValue | null>(null);
 
@@ -99,6 +114,54 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
   const [log, setLog] = useState<EngineCommand[]>([]);
   const [dispatchLog, setDispatchLog] = useState<DispatchResult[]>([]);
   const capacity = props.logCapacity ?? 256;
+
+  // ── Undo/redo history ──────────────────────────────────────────────
+  // Past = states BEFORE recent edits (oldest at index 0).  Future =
+  // states forfeited by undo; cleared on any new edit.  Repeated edits
+  // on the same parameter inside COALESCE_MS reuse the top history slot
+  // so dragging a slider doesn't flood the stack with one entry per pixel.
+  const pastRef = useRef<AllModulesParameterState[]>([]);
+  const futureRef = useRef<AllModulesParameterState[]>([]);
+  const lastPushAt = useRef(0);
+  const lastPushKey = useRef('');
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // Force-update counter so canUndo/canRedo recompute when refs change.
+  const [historyTick, setHistoryTick] = useState(0);
+  const bumpHistory = useCallback(() => setHistoryTick((n) => (n + 1) | 0), []);
+
+  const pushHistory = useCallback((prev: AllModulesParameterState, key: string) => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const sameAsLast = key === lastPushKey.current && (now - lastPushAt.current) < COALESCE_MS;
+    if (!sameAsLast) {
+      pastRef.current.push(prev);
+      if (pastRef.current.length > HISTORY_CAP) pastRef.current.shift();
+    }
+    lastPushAt.current = now;
+    lastPushKey.current = key;
+    if (futureRef.current.length > 0) futureRef.current = [];
+    bumpHistory();
+  }, [bumpHistory]);
+
+  const undo = useCallback(() => {
+    const prev = pastRef.current.pop();
+    if (!prev) return;
+    futureRef.current.push(stateRef.current);
+    if (futureRef.current.length > HISTORY_CAP) futureRef.current.shift();
+    lastPushKey.current = '__undo__'; // break coalescing
+    setState(prev);
+    bumpHistory();
+  }, [bumpHistory]);
+
+  const redo = useCallback(() => {
+    const next = futureRef.current.pop();
+    if (!next) return;
+    pastRef.current.push(stateRef.current);
+    if (pastRef.current.length > HISTORY_CAP) pastRef.current.shift();
+    lastPushKey.current = '__redo__';
+    setState(next);
+    bumpHistory();
+  }, [bumpHistory]);
 
   // Keep the dispatcher in a ref so callbacks stay stable even if the
   // caller passes a freshly-constructed dispatcher each render.
@@ -149,6 +212,8 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
     appendLog(cmd);
     // Rejected commands: keep UI state, never dispatch.
     if (cmd.validation.status === 'rejected') return;
+    // History snapshot BEFORE the change (coalesces drag-as-one-undo).
+    if (source === 'user') pushHistory(stateRef.current, `setParam:${moduleId}:${parameterId}`);
     // Optimistic UI update (no rollback on engine failure in this phase).
     setState((s) => ({
       ...s,
@@ -159,24 +224,31 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
     }));
     // Dispatch ok / clamped commands to the engine.
     dispatch(cmd);
-  }, [appendLog, defs, dispatch]);
+  }, [appendLog, defs, dispatch, pushHistory]);
 
   const setBypass = useCallback((moduleId: ModuleId, bypass: boolean, source: CommandSource = 'user') => {
     const cmd = makeSetBypassCommand({ moduleId, bypass, source });
     appendLog(cmd);
+    if (source === 'user') pushHistory(stateRef.current, `setBypass:${moduleId}`);
     setState((s) => ({
       ...s,
       [moduleId]: { ...s[moduleId], bypass },
     }));
     dispatch(cmd);
-  }, [appendLog, dispatch]);
+  }, [appendLog, dispatch, pushHistory]);
 
   const resetModule = useCallback((moduleId: ModuleId, source: CommandSource = 'reset') => {
     const cmd = makeResetModuleCommand({ moduleId, source });
     appendLog(cmd);
+    pushHistory(stateRef.current, `reset:${moduleId}`);
     setState((s) => ({ ...s, [moduleId]: defaultStateForModule(defs[moduleId]) }));
     dispatch(cmd);
-  }, [appendLog, defs, dispatch]);
+  }, [appendLog, defs, dispatch, pushHistory]);
+
+  const replaceState = useCallback((next: AllModulesParameterState, source: CommandSource = 'user') => {
+    pushHistory(stateRef.current, `replaceState:${source}`);
+    setState(next);
+  }, [pushHistory]);
 
   const applyPreset = useCallback((
     plan: PresetApplyPlan,
@@ -208,6 +280,11 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
     for (const { cmd } of paramCmds) appendLog(cmd);
     for (const cmd of bypassCmds) appendLog(cmd);
 
+    // History snapshot before the bulk preset apply (so undo restores
+    // whatever the user had before).  Coalesced under a single key per
+    // preset so applying the same preset twice doesn't pile up entries.
+    pushHistory(stateRef.current, `applyPreset:${meta.presetId ?? 'unknown'}`);
+
     // Single merged state update — accepted (ok/clamped) params + bypasses.
     setState((s) => {
       const next: AllModulesParameterState = { ...s };
@@ -229,16 +306,20 @@ export function ModuleParameterStateProvider(props: ModuleParameterStateProvider
       if (cmd.validation.status !== 'rejected') dispatch(cmd);
     }
     for (const cmd of bypassCmds) dispatch(cmd);
-  }, [appendLog, defs, dispatch]);
+  }, [appendLog, defs, dispatch, pushHistory]);
 
   const clearLog = useCallback(() => { setLog([]); setDispatchLog([]); }, []);
 
   const dispatcherName = dispatcherRef.current.name;
 
+  const canUndo = pastRef.current.length > 0;
+  const canRedo = futureRef.current.length > 0;
+
   const value: ParameterStateContextValue = useMemo(() => ({
     state, defs, log, dispatchLog, dispatcherName,
     setParam, setBypass, resetModule, applyPreset, clearLog,
-  }), [state, defs, log, dispatchLog, dispatcherName, setParam, setBypass, resetModule, applyPreset, clearLog]);
+    replaceState, undo, redo, canUndo, canRedo,
+  }), [state, defs, log, dispatchLog, dispatcherName, setParam, setBypass, resetModule, applyPreset, clearLog, replaceState, undo, redo, canUndo, canRedo, historyTick]);
 
   return (
     <ParameterStateContext.Provider value={value}>
@@ -379,6 +460,22 @@ export function useAllModuleParameters(): {
  */
 export function useApplyPreset(): ParameterStateContextValue['applyPreset'] {
   return useParameterStateContext().applyPreset;
+}
+
+/** Undo / redo the central parameter state. */
+export function useUndoRedo(): {
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+} {
+  const ctx = useParameterStateContext();
+  return { undo: ctx.undo, redo: ctx.redo, canUndo: ctx.canUndo, canRedo: ctx.canRedo };
+}
+
+/** Replace the entire parameter state in one shot (custom-preset load). */
+export function useReplaceParameterState(): ParameterStateContextValue['replaceState'] {
+  return useParameterStateContext().replaceState;
 }
 
 /** Render a command as a single-line string.  Re-exported for ergonomics. */

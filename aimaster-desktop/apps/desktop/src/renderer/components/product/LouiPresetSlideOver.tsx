@@ -9,8 +9,10 @@ import React from 'react';
 import { surface, text, typography, space, radius, meter } from '../../theme/loui-theme.js';
 import { LouiModuleSlideOver } from './LouiModuleSlideOver.js';
 import { LouiPresetBrowser } from './LouiPresetBrowser.js';
+import { LouiCustomPresetSection } from './LouiCustomPresetSection.js';
 import { getPreset, type LouiPreset } from '../../audio/presets/loui-presets.js';
 import { presetChangeGroups } from '../../audio/presets/preset-summary.js';
+import type { AllModulesParameterState } from '../../audio/parameters/parameter-state.js';
 
 export interface LouiPresetSlideOverProps {
   open: boolean;
@@ -31,6 +33,11 @@ export interface LouiPresetSlideOverProps {
   width?: number;
   /** Override the preset list (tests / storybook). */
   presets?: readonly LouiPreset[];
+  /** Current parameter state (used to save user presets).  When set, the
+   *  "내 프리셋" section is shown above the built-in browser. */
+  currentState?: AllModulesParameterState;
+  /** Caller receives the loaded user preset's state. */
+  onApplyCustomPreset?: (state: AllModulesParameterState, presetName: string) => void;
 }
 
 function ChangeSummary({ from, to }: { from: LouiPreset; to: LouiPreset }) {
@@ -81,6 +88,11 @@ export function LouiPresetSlideOver(props: LouiPresetSlideOverProps) {
   const active = props.activeId ? getPreset(props.activeId) : undefined;
   const previous = props.previousId ? getPreset(props.previousId) : undefined;
   const showSummary = active && previous && previous.id !== active.id;
+  // Refresh the user preset list every time the slide-over opens.
+  const [openCount, setOpenCount] = React.useState(0);
+  React.useEffect(() => {
+    if (props.open) setOpenCount((n) => n + 1);
+  }, [props.open]);
 
   return (
     <LouiModuleSlideOver
@@ -90,6 +102,13 @@ export function LouiPresetSlideOver(props: LouiPresetSlideOverProps) {
       onClose={props.onClose}
       width={props.width ?? 560}
     >
+      {props.currentState && props.onApplyCustomPreset && (
+        <LouiCustomPresetSection
+          currentState={props.currentState}
+          onApply={props.onApplyCustomPreset}
+          refreshKey={openCount}
+        />
+      )}
       {showSummary && <ChangeSummary from={previous!} to={active!} />}
       <LouiPresetBrowser
         {...(props.activeId ? { activeId: props.activeId } : {})}

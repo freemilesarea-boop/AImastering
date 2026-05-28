@@ -41,6 +41,8 @@ import {
   useModuleParameters,
   useAllModuleParameters,
   useApplyPreset,
+  useUndoRedo,
+  useReplaceParameterState,
   ALL_MODULE_PARAMETER_DEFS,
   type ModuleId,
   type ParameterValue,
@@ -1441,6 +1443,30 @@ function ProductPageProductionInner(props: {
   // (and renders nothing) when the flag is OFF, which is the default.
   const realtime = useRealtimeMasteringGraph(session, { sampleRate: 48000, channels: 2 });
 
+  // Undo / Redo keyboard shortcuts:
+  //   Cmd/Ctrl+Z          → undo
+  //   Cmd/Ctrl+Shift+Z    → redo (mac)
+  //   Cmd/Ctrl+Y          → redo (windows)
+  // Ignored when typing into inputs / textareas / contentEditable so the
+  // user's local undo works (e.g. revision-name field).
+  const { undo, redo } = useUndoRedo();
+  const replaceParameterState = useReplaceParameterState();
+  const { state: allModuleState } = useAllModuleParameters();
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'z' && e.key !== 'Z' && e.key !== 'y' && e.key !== 'Y') return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      const isRedo = (e.shiftKey && (e.key === 'z' || e.key === 'Z')) || e.key === 'y' || e.key === 'Y';
+      if (isRedo) redo(); else undo();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [undo, redo]);
+
   // Realtime gain reduction (Limiter/Maximizer) — REAL limiterGrDb from the
   // worklet metrics, with a decaying peak hold.  Available only while the
   // realtime preview is active; otherwise "unavailable" (never faked).
@@ -1617,6 +1643,11 @@ function ProductPageProductionInner(props: {
       {...(previousPresetId ? { previousId: previousPresetId } : {})}
       {...(lastUsedId ? { lastUsedId } : {})}
       onSelect={handlePreset}
+      currentState={allModuleState}
+      onApplyCustomPreset={(state) => {
+        replaceParameterState(state, 'preset');
+        setPresetBrowserOpen(false);
+      }}
     />
   );
 

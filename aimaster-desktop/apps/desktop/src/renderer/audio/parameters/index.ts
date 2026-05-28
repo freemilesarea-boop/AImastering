@@ -65,6 +65,8 @@ export {
   useEngineCommandLog,
   useEngineDispatchLog,
   hasParameterStateProvider,
+  useUndoRedo,
+  useReplaceParameterState,
 } from './useModuleParameterState.js';
 
 export type {
