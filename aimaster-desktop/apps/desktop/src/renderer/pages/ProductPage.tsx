@@ -60,6 +60,7 @@ import { LouiRealtimeToggle } from '../components/product/modules/LouiRealtimeTo
 import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { isDevMode } from '../audio/dev-mode.js';
 import { LouiPlaybackBar } from '../components/product/LouiPlaybackBar.js';
+import { LouiShortcutHelp } from '../components/product/LouiShortcutHelp.js';
 import { RealtimeGrProvider, useRealtimeGr, RealtimeDynamicsGrProvider } from '../audio/modules/realtime-gr-context.js';
 import { RealtimePreviewProvider, useRealtimePreviewStatus } from '../audio/modules/realtime-preview-context.js';
 import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
@@ -1228,6 +1229,8 @@ function ProductPageProduction() {
   // Audio-element diagnostics (honest source-load state for QA + UX).
   const [audioDiag, setAudioDiag] = useState<AudioDiag>({ error: null, readyState: 0, networkState: 0 });
   const [presetId, setPresetId] = useState<string | undefined>(undefined);
+  // Shortcut help overlay.
+  const [showHelp, setShowHelp] = useState(false);
   // Loop region (Shift+drag on waveform bar) + playback rate.
   const [loopRegion, setLoopRegion] = useState<import('../components/product/LouiPlaybackBar.js').LoopRegion | null>(null);
   const [loopActive, setLoopActive] = useState(false);
@@ -1456,6 +1459,21 @@ function ProductPageProduction() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // "?" = toggle shortcut help overlay.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== '?') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      setShowHelp((prev) => !prev);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   // Apply playback rate to audio element whenever it changes.
   useEffect(() => {
     const a = audioRef.current;
@@ -1490,6 +1508,7 @@ function ProductPageProduction() {
 
   return (
     <>
+      {showHelp && <LouiShortcutHelp onClose={() => setShowHelp(false)} />}
       {/* Hidden audio element — required for WasmAnalyzerProvider to attach
           a MediaElementAudioSourceNode.  We control it via React state. */}
       <audio
