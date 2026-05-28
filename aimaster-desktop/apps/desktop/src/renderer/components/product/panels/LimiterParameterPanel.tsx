@@ -11,6 +11,7 @@ import {
 import { surface, text, typography, meter, space } from '../../../theme/loui-theme.js';
 import { ALL_MODULE_PARAMETER_DEFS } from '../../../audio/parameters/index.js';
 import { usePanelStateBridge, type ControlledPanelProps } from './usePanelStateBridge.js';
+import { useRealtimeGr } from '../../../audio/modules/realtime-gr-context.js';
 
 type LimiterCharacter = 'transparent' | 'glue' | 'aggressive' | 'classic';
 
@@ -41,22 +42,14 @@ const CHARACTERS: { id: LimiterCharacter; label: string; desc: string }[] = [
 
 export function LimiterParameterPanel(props: ControlledPanelProps = {}) {
   const { state: s, setParam } = usePanelStateBridge<LimState>(DEFAULTS, props);
-  const [grNorm, setGrNorm] = React.useState(0.4);
-
-  React.useEffect(() => {
-    const id = setInterval(() => {
-      setGrNorm((prev) => {
-        const target = Math.min(1, Math.max(0, (Math.abs(s.targetLufs) - 8) / 16));
-        const drift = (Math.random() - 0.5) * 0.18;
-        return Math.max(0, Math.min(1, prev * 0.55 + target * 0.45 + drift));
-      });
-    }, 90);
-    return () => clearInterval(id);
-  }, [s.targetLufs]);
+  const gr = useRealtimeGr();
 
   const update = <K extends keyof LimState>(k: K) => (v: LimState[K]) => setParam(k, v);
 
-  const grDb = -grNorm * 6;
+  const GR_METER_MAX_DB = 12;
+  const grNorm = Math.min(1, gr.grDb / GR_METER_MAX_DB);
+  const grDb = gr.grDb;
+  const grReadout = gr.available ? `−${grDb.toFixed(1)} dB` : '—';
   const grStatus: 'ok' | 'warn' | 'danger' = grNorm > 0.8 ? 'danger' : grNorm > 0.5 ? 'warn' : 'ok';
   const ceilingStatus: 'ok' | 'warn' | 'danger' = s.ceilingDbtp >= -0.2 ? 'danger' : s.ceilingDbtp >= -0.6 ? 'warn' : 'ok';
 
@@ -173,7 +166,7 @@ export function LimiterParameterPanel(props: ControlledPanelProps = {}) {
         <LouiMiniMeter
           value={grNorm}
           status={grStatus}
-          readout={`${grDb.toFixed(1)} dB`}
+          readout={grReadout}
           height={12}
         />
       </LouiSectionCard>

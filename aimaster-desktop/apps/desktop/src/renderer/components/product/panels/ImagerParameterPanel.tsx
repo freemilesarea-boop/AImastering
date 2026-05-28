@@ -11,6 +11,8 @@ import {
 import { surface, text, typography, space } from '../../../theme/loui-theme.js';
 import { ALL_MODULE_PARAMETER_DEFS } from '../../../audio/parameters/index.js';
 import { usePanelStateBridge, type ControlledPanelProps } from './usePanelStateBridge.js';
+import { useMediaElement } from '../../../audio/media-element-context.js';
+import { useNativeAnalyzer } from '../../../hooks/useNativeAnalyzer.js';
 
 interface ImgState {
   widthPct:        number;
@@ -39,38 +41,44 @@ const BAND_LABELS = ['Low', 'Mid-Low', 'Mid-High', 'High'];
 
 export function ImagerParameterPanel(props: ControlledPanelProps = {}) {
   const { state: s, setParam } = usePanelStateBridge<ImgState>(DEFAULTS, props);
-  const [correlation, setCorrelation] = React.useState(0.78);
-  React.useEffect(() => {
-    const id = setInterval(() => {
-      setCorrelation((prev) => {
-        const base = 1 - (s.widthPct / 100) * 0.6;
-        const drift = (Math.random() - 0.5) * 0.08;
-        return Math.max(-1, Math.min(1, prev * 0.55 + base * 0.45 + drift));
-      });
-    }, 120);
-    return () => clearInterval(id);
-  }, [s.widthPct]);
+  const media = useMediaElement();
+  const nativeAnalyzer = useNativeAnalyzer(media);
+  const correlationAvailable = nativeAnalyzer.status === 'connected' && nativeAnalyzer.lastFrameAt !== null;
+  const correlation = correlationAvailable ? nativeAnalyzer.meters.correlation : null;
 
   const update = <K extends keyof ImgState>(k: K) => (v: ImgState[K]) => setParam(k, v);
 
   const correlationStatus: 'ok' | 'warn' | 'danger' =
-    correlation < -0.1 ? 'danger' : correlation < 0.2 ? 'warn' : 'ok';
+    correlation === null ? 'ok'
+    : correlation < -0.1 ? 'danger'
+    : correlation < 0.2  ? 'warn'
+    : 'ok';
 
   return (
     <>
       <LouiSectionCard
         title="Correlation"
         trailing={
-          <LouiValueBadge label="Live" status={correlationStatus}>
-            {correlation.toFixed(2)}
-          </LouiValueBadge>
+          correlation !== null
+            ? (
+              <LouiValueBadge label="Live" status={correlationStatus}>
+                {correlation.toFixed(2)}
+              </LouiValueBadge>
+            )
+            : undefined
         }
       >
         <LouiMiniMeter
-          value={correlation}
+          value={correlation ?? 0}
           mode="mirror"
           status={correlationStatus}
-          readout={correlation < 0.2 ? 'Phase risk — fold-down may cancel' : 'Stable'}
+          readout={
+            correlation === null
+              ? '재생 중 표시됩니다'
+              : correlation < 0.2
+                ? 'Phase risk — fold-down may cancel'
+                : 'Stable'
+          }
           height={10}
         />
       </LouiSectionCard>
