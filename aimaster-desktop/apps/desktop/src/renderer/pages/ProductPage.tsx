@@ -31,7 +31,7 @@ import {
   useWasmAnalyzerSession,
 } from '../audio/wasm-analyzer-context.js';
 import { MediaElementProvider } from '../audio/media-element-context.js';
-import { resumeSharedContext, logAudioEvent } from '../audio/shared-audio-graph.js';
+import { resumeSharedContext, logAudioEvent, setFreeEqBands as setGraphFreeEqBands } from '../audio/shared-audio-graph.js';
 import { useRealtimeMasteringGraph } from '../hooks/useRealtimeMasteringGraph.js';
 import { LouiRealtimeDebugPanel } from '../components/product/LouiRealtimeDebugPanel.js';
 import { LouiRealtimeDebugDrawer } from '../components/product/LouiRealtimeDebugDrawer.js';
@@ -1574,6 +1574,17 @@ function ProductPageProduction() {
     const a = audioRef.current;
     if (a) a.playbackRate = playbackRate;
   }, [playbackRate]);
+
+  // Sync free parametric EQ bands to the audio graph (Phase 2: audible).
+  // The audio graph splices the BiquadFilter chain between source and the
+  // insert when at least one band is enabled; bypasses it otherwise.  When
+  // free EQ is toggled off, we feed an empty band list so the chain
+  // un-routes itself even if the user had bands defined.
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    setGraphFreeEqBands(el, freeEqEnabled ? freeEqBands : []);
+  }, [freeEqEnabled, freeEqBands, audioEl]);
 
   const seekTo = useCallback((ratio: number) => {
     const a = audioRef.current;

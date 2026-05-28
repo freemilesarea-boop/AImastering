@@ -33,9 +33,9 @@ const GROUPS: { title: string; rows: ShortcutRow[] }[] = [
     ],
   },
   {
-    title: 'Free EQ (Phase 1)',
+    title: 'Free EQ (실시간 들림)',
     rows: [
-      { keys: ['FREE EQ'], desc: '헤더 토글 — 스펙트럼 위 자유 파라메트릭 EQ 활성화 (곡선 미리보기, 오디오 미적용)' },
+      { keys: ['FREE EQ'], desc: '헤더 토글 — 자유 파라메트릭 EQ 활성화 (실시간 프리뷰 반영)' },
       { keys: ['click'], desc: '빈 곳 클릭 → 새 밴드 추가' },
       { keys: ['drag'], desc: '노드 드래그 → 주파수 / 게인' },
       { keys: ['Shift', 'drag'], desc: '노드 → Q 조절' },

@@ -243,8 +243,10 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           />
         )}
       </div>
-      {/* Free EQ honesty banner — clearly states "preview only" since Phase 2
-          DSP integration hasn't shipped.  Hidden once Phase 2 lands. */}
+      {/* Free EQ honesty banner — Phase 2 makes this audible in realtime preview,
+          but the EQ is NOT yet baked into the exported WAV (Phase 3).  The
+          banner makes this distinction explicit so the user is never misled
+          about what the offline render contains. */}
       {freeEqEnabled && !duoMode && (
         <div style={{
           display: 'flex',
@@ -260,7 +262,7 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           color: meter.warn.foreground,
           letterSpacing: '0.04em',
         }}>
-          ⚠ FREE EQ (Phase 1) — 곡선 미리보기만 표시됨. 오디오에는 아직 적용되지 않습니다.
+          FREE EQ — 실시간 프리뷰에는 들리지만 익스포트(WAV)에는 아직 반영되지 않습니다 (Phase 3 예정).
         </div>
       )}
 

@@ -25,6 +25,8 @@
 // (no +6 dB double-output, no phasing).
 
 import { createNativeDspChain, type NativeDspChain } from './native-dsp-chain.js';
+import { createParametricEqChain, type ParametricEqChain } from './parametric-eq-chain.js';
+import type { ParametricEqBand } from './modules/parametric-eq-model.js';
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
 
 export type AudioGraphEventKind =
@@ -146,6 +148,8 @@ interface ElementGraph {
   wasmInsert: AudioNode | null;
   /** Native (WebAudio) DSP fallback chain, when installed. */
   nativeDsp: NativeDspChain | null;
+  /** Free parametric EQ chain (Phase 2) — sits between source and the insert. */
+  freeEq: ParametricEqChain | null;
   analysers: NativeAnalysers;
   splitter: ChannelSplitterNode;
   /** External passive taps (e.g. WASM analyzer-tap worklet). */
@@ -156,25 +160,37 @@ interface ElementGraph {
 
 /**
  * (Re)wire the audio bus from the source, choosing the active insert:
- *   wasmInsert  → source → wasmInsert → masterGain   (best quality)
- *   nativeDsp   → source → nativeDsp  → masterGain   (WASM-free fallback)
- *   neither     → source → masterGain                (direct)
+ *   wasmInsert  → source → [freeEq?] → wasmInsert → masterGain   (best quality)
+ *   nativeDsp   → source → [freeEq?] → nativeDsp  → masterGain   (WASM-free fallback)
+ *   neither     → source → [freeEq?] → masterGain                (direct)
  * masterGain → destination + all taps/analysers are untouched.
+ * The free EQ stage is spliced in only when it has at least one enabled band.
  */
 function rerouteBus(g: ElementGraph): void {
   try { g.source.disconnect(); } catch { /* ignore */ }
   if (g.nativeDsp) { try { g.nativeDsp.output.disconnect(g.masterGain); } catch { /* ignore */ } }
+  if (g.freeEq) {
+    try { g.freeEq.input.disconnect(); } catch { /* ignore */ }
+    try { g.freeEq.output.disconnect(); } catch { /* ignore */ }
+  }
+
+  // Pick the upstream-of-insert node: source itself, or freeEq's output when active.
+  const useFreeEq = !!g.freeEq && g.freeEq.isActive();
+  const sourceTail: AudioNode = useFreeEq
+    ? (g.source.connect(g.freeEq!.input), g.freeEq!.output)
+    : g.source;
+
   if (g.wasmInsert) {
-    g.source.connect(g.wasmInsert);
+    sourceTail.connect(g.wasmInsert);
     try { g.wasmInsert.connect(g.masterGain); } catch { /* ignore (already connected) */ }
-    logAudioEvent('dsp-chain-connected', 'source → WASM → master');
+    logAudioEvent('dsp-chain-connected', useFreeEq ? 'source → freeEQ → WASM → master' : 'source → WASM → master');
   } else if (g.nativeDsp) {
-    g.source.connect(g.nativeDsp.input);
+    sourceTail.connect(g.nativeDsp.input);
     g.nativeDsp.output.connect(g.masterGain);
-    logAudioEvent('fallback-activated', 'source → native DSP → master');
+    logAudioEvent('fallback-activated', useFreeEq ? 'source → freeEQ → native DSP → master' : 'source → native DSP → master');
   } else {
-    g.source.connect(g.masterGain);
-    logAudioEvent('dsp-chain-removed', 'source → master (direct)');
+    sourceTail.connect(g.masterGain);
+    logAudioEvent('dsp-chain-removed', useFreeEq ? 'source → freeEQ → master' : 'source → master (direct)');
   }
 }
 
@@ -239,7 +255,8 @@ export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000)
 
   const graph: ElementGraph = {
     ctx: context, source, masterGain, silentSink,
-    wasmInsert: null, nativeDsp: null, analysers: { ctx: context, main, left, right }, splitter,
+    wasmInsert: null, nativeDsp: null, freeEq: null,
+    analysers: { ctx: context, main, left, right }, splitter,
     passiveTaps: new Set(), sourceCreated: true,
   };
   graphs.set(media, graph);
@@ -293,6 +310,25 @@ export function installNativeDsp(media: HTMLMediaElement, sampleRate = 48_000): 
 /** Apply a config to the native DSP chain (no-op if not installed). */
 export function applyNativeDspConfig(media: HTMLMediaElement, cfg: RealtimeChainConfig): void {
   graphs.get(media)?.nativeDsp?.apply(cfg);
+}
+
+/**
+ * Set the free-parametric EQ band list for an element.  Lazy-creates the
+ * chain on first non-empty call and re-routes the bus to include it when
+ * any band is enabled.  When the list is empty / no enabled bands, the
+ * chain is bypassed (re-route removes it from the signal path) but the
+ * node objects survive for cheap re-activation later.
+ */
+export function setFreeEqBands(media: HTMLMediaElement, bands: ParametricEqBand[]): void {
+  const g = graphs.get(media);
+  if (!g) return;
+  const hasEnabled = bands.some((b) => b.enabled);
+  if (hasEnabled && !g.freeEq) {
+    g.freeEq = createParametricEqChain(g.ctx);
+  }
+  g.freeEq?.applyBands(bands);
+  // Always re-route — the active vs bypassed state of freeEq may have flipped.
+  rerouteBus(g);
 }
 
 /** Remove the native DSP chain and re-route (→ WASM insert or direct). */
