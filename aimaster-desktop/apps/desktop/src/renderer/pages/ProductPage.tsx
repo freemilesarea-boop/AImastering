@@ -150,6 +150,7 @@ function ProductLayoutInner({
   revisionSlot,
   moduleSuiteSlot,
   abControl,
+  abMode,
 }: {
   session: AnalyzerSession | null;
   active: boolean;
@@ -182,6 +183,8 @@ function ProductLayoutInner({
   moduleSuiteSlot?: React.ReactNode;
   /** Optional A/B compare control (production path only). */
   abControl?: React.ReactNode;
+  /** Current A/B compare mode — threads to the spectrum canvas for ghost overlay. */
+  abMode?: ABMode;
 }) {
   // Pending summary (production path only; null in storybook).
   const previewBridge = usePreviewBridge();
@@ -291,7 +294,7 @@ function ProductLayoutInner({
           padding: space['3'],
         }}
       >
-        <LouiAnalyzerCanvas session={session} active={active} />
+        <LouiAnalyzerCanvas session={session} active={active} {...(abMode !== undefined ? { abMode } : {})} />
         <LouiMeterColumn
           session={session}
           {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
@@ -1564,6 +1567,7 @@ function ProductPageProductionInner(props: {
       onExport={props.onExport}
       onSettings={props.onSettings}
       abControl={<ABCompareSlot {...props.ab} />}
+      {...(props.ab.available ? { abMode: props.ab.mode } : {})}
       {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
       {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
       moduleSuiteSlot={

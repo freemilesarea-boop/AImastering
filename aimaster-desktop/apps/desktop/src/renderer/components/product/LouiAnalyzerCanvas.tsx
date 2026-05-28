@@ -29,6 +29,8 @@ export interface LouiAnalyzerCanvasProps {
   session?: AnalyzerSession | null;
   /** Whether the engine is actively producing frames (drives the pulse dot). */
   active?: boolean;
+  /** A/B compare mode — when set, the spectrum shows a ghost of the other side. */
+  abMode?: 'before' | 'after';
 }
 
 function LivePulse({ active }: { active: boolean }) {
@@ -68,6 +70,7 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
   const liveness = useFrameLiveness(props.session ?? null);
   const nativeLive = native.lastFrameAt != null && (performance.now() - native.lastFrameAt) < 500;
   const active = liveness.live || nativeLive;
+  const abMode = props.abMode;
   return (
     <div
       style={{
@@ -114,7 +117,25 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
             Live FFT · 1/3-oct
           </span>
         </div>
-        <LivePulse active={active} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {abMode !== undefined && (
+            <span
+              title={abMode === 'after'
+                ? 'A/B 비교: 지금 After(B) 재생 중 — 노란 그래프가 Before(A) 기준'
+                : 'A/B 비교: 지금 Before(A) 재생 중 — 초록 그래프가 After(B) 결과'}
+              style={{
+                fontFamily: typography.family.mono, fontSize: 9, letterSpacing: '0.06em',
+                border: `1px solid ${surface.border}`, borderRadius: 4, padding: '2px 6px',
+                userSelect: 'none',
+              }}
+            >
+              <span style={{ color: abMode === 'before' ? text.primary : text.muted }}>A</span>
+              <span style={{ color: text.muted, margin: '0 1px' }}>/</span>
+              <span style={{ color: abMode === 'after' ? text.primary : text.muted }}>B</span>
+            </span>
+          )}
+          <LivePulse active={active} />
+        </div>
       </div>
 
       {/* Canvas body — spectrum fills the remaining space.  The panel sets
@@ -139,10 +160,10 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
             The richer WASM 1/3-oct trace + EQ overlay layer on top when the
             WASM analyzer is producing frames.  If the WASM layer throws, the
             boundary falls back to the native-only body. */}
-        <VisualizerBoundary fallback={<NativeSpectrumBody native={native} />}>
+        <VisualizerBoundary fallback={<NativeSpectrumBody native={native} {...(abMode !== undefined ? { abMode } : {})} />}>
           {isLiveVisualizerEnabled()
-            ? <LiveSpectrumBody session={props.session ?? null} native={native} />
-            : <NativeSpectrumBody native={native} />}
+            ? <LiveSpectrumBody session={props.session ?? null} native={native} {...(abMode !== undefined ? { abMode } : {})} />
+            : <NativeSpectrumBody native={native} {...(abMode !== undefined ? { abMode } : {})} />}
         </VisualizerBoundary>
       </div>
 
@@ -243,10 +264,10 @@ function AnalyzerStatusChip({ native, wasmLive, wasmFrames }: {
 }
 
 /** Native-only spectrum body (always-on fallback base). */
-function NativeSpectrumBody({ native }: { native: NativeAnalyzerState }) {
+function NativeSpectrumBody({ native, abMode }: { native: NativeAnalyzerState; abMode?: 'before' | 'after' }) {
   return (
     <div style={{ position: 'relative', flex: 1, minHeight: 0, borderRadius: 10, overflow: 'hidden', background: surface.well }}>
-      <NativeSpectrumCanvas analyser={native.analysers?.main ?? null} />
+      <NativeSpectrumCanvas analyser={native.analysers?.main ?? null} {...(abMode !== undefined ? { abMode } : {})} />
       <AnalyzerStatusChip native={native} wasmLive={false} wasmFrames={0} />
       {native.status === 'no-element' && (
         <div style={{
@@ -260,7 +281,7 @@ function NativeSpectrumBody({ native }: { native: NativeAnalyzerState }) {
   );
 }
 
-function LiveSpectrumBody({ session, native }: { session: AnalyzerSession | null; native: NativeAnalyzerState }) {
+function LiveSpectrumBody({ session, native, abMode }: { session: AnalyzerSession | null; native: NativeAnalyzerState; abMode?: 'before' | 'after' }) {
   const [ref, size] = useSize();
   // FFT frames arrive at the analyzer's cadence (≤30 Hz) — redraw is driven
   // by new frames only (no free-running RAF here).
@@ -273,7 +294,7 @@ function LiveSpectrumBody({ session, native }: { session: AnalyzerSession | null
   return (
     <div ref={ref} style={{ position: 'relative', flex: 1, minHeight: 0, borderRadius: 10, overflow: 'hidden', background: surface.well }}>
       {/* Always-on native spectrum (base layer — guarantees visibility). */}
-      <NativeSpectrumCanvas analyser={native.analysers?.main ?? null} />
+      <NativeSpectrumCanvas analyser={native.analysers?.main ?? null} {...(abMode !== undefined ? { abMode } : {})} />
       {/* WASM 1/3-oct trace overlays when frames are live. */}
       {w > 0 && h > 0 && spectrum && (
         <div style={{ position: 'absolute', inset: 0 }}>

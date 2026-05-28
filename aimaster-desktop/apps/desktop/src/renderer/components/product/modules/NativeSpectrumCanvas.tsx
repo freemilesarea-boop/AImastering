@@ -14,15 +14,33 @@ export interface NativeSpectrumCanvasProps {
   bars?: number;
   /** Accent colour for the bars. */
   color?: string;
+  /**
+   * A/B compare mode.  When provided, switching modes captures the current
+   * heights as a ghost overlay (the "other side" persists for comparison).
+   * Amber ghost = the Before (A) reference; green ghost = the After (B) result.
+   */
+  abMode?: 'before' | 'after';
 }
 
-export function NativeSpectrumCanvas({ analyser, bars = 96, color = '#a78bfa' }: NativeSpectrumCanvasProps) {
+export function NativeSpectrumCanvas({ analyser, bars = 96, color = '#a78bfa', abMode }: NativeSpectrumCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const analyserRef = useRef<AnalyserNode | null>(analyser);
   analyserRef.current = analyser;
   // Smoothed bar heights (0..1) for a graceful fall when audio stops.
   const heightsRef = useRef<Float32Array>(new Float32Array(bars));
+
+  // A/B ghost capture — synchronous during render so we grab heights BEFORE
+  // the new source starts overwriting them.  Amber = 'before' ghost (you are
+  // now in 'after' mode); green = 'after' ghost (you are now in 'before' mode).
+  const abModeRef = useRef(abMode);
+  abModeRef.current = abMode;
+  const ghostBarsRef = useRef<Float32Array | null>(null);
+  const prevAbModeRef = useRef<typeof abMode>(abMode);
+  if (prevAbModeRef.current !== abMode) {
+    ghostBarsRef.current = abMode !== undefined ? new Float32Array(heightsRef.current) : null;
+    prevAbModeRef.current = abMode;
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -88,6 +106,23 @@ export function NativeSpectrumCanvas({ analyser, bars = 96, color = '#a78bfa' }:
 
       const gap = dpr * 1.5;
       const barW = (W - gap * (bars - 1)) / bars;
+
+      // Ghost overlay (A/B compare: the "other side" frozen spectrum).
+      const ghost = ghostBarsRef.current;
+      const am = abModeRef.current;
+      if (ghost && am !== undefined) {
+        // Amber = Before (A) ghost when viewing After (B).
+        // Green = After (B) ghost when viewing Before (A).
+        const ghostColor = am === 'after' ? 'rgba(251,191,36,0.40)' : 'rgba(52,211,153,0.40)';
+        ctx.fillStyle = ghostColor;
+        for (let b = 0; b < bars; b++) {
+          const hv = ghost[b] ?? 0;
+          if (hv <= 0.001) continue;
+          const bh = Math.max(dpr, hv * (H - dpr * 2));
+          ctx.fillRect(b * (barW + gap), H - bh, barW, bh);
+        }
+      }
+
       for (let b = 0; b < bars; b++) {
         const hv = heights[b] ?? 0;
         const bh = Math.max(dpr, hv * (H - dpr * 2));
