@@ -1,11 +1,14 @@
 // LouiStatusBar — slim bottom strip with engine + signal stats.
 //
-// Left cluster: sample rate · channels · oversampling factor
-// Mid cluster:  target LUFS · target TP
+// Left cluster:  sample rate · channels · oversampling factor
+// Mid cluster:   target LUFS · target TP
+// Live cluster:  live integrated LUFS · live peak (always visible, no rail trip)
 // Right cluster: engine status (WASM/Synthetic) · running indicator
 
 import React from 'react';
 import { surface, text, typography, space, meter } from '../../theme/loui-theme.js';
+import { useMediaElement } from '../../audio/media-element-context.js';
+import { useNativeAnalyzer } from '../../hooks/useNativeAnalyzer.js';
 
 export interface LouiStatusBarProps {
   sampleRate?: number;
@@ -18,7 +21,7 @@ export interface LouiStatusBarProps {
   running?: boolean;
 }
 
-function StatusCell({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+function StatusCell({ label, value, mono = true, valueColor }: { label: string; value: string; mono?: boolean; valueColor?: string }) {
   return (
     <span style={{
       display: 'inline-flex',
@@ -37,12 +40,40 @@ function StatusCell({ label, value, mono = true }: { label: string; value: strin
       <span style={{
         fontFamily: mono ? typography.family.mono : typography.family.sans,
         fontSize: typography.size.xs,
-        color: text.secondary,
+        color: valueColor ?? text.secondary,
         fontVariantNumeric: 'tabular-nums',
       }}>
         {value}
       </span>
     </span>
+  );
+}
+
+function LiveLoudnessCells({ targetLufs }: { targetLufs: number }) {
+  const media = useMediaElement();
+  const a = useNativeAnalyzer(media);
+  const hasFrame = a.status === 'connected' && a.lastFrameAt !== null;
+  const intg = a.meters.integratedDb;
+  const peak = Math.max(a.meters.peakHoldLDb, a.meters.peakHoldRDb);
+  // Tone: red if within 0.5 of target+/-, amber within 1.5, otherwise muted.
+  const delta = Number.isFinite(intg) ? Math.abs(intg - targetLufs) : Infinity;
+  const intgColor =
+    !hasFrame || !Number.isFinite(intg) ? text.tertiary
+    : delta < 0.5 ? meter.safe.foreground
+    : delta < 1.5 ? meter.warn.foreground
+    : text.secondary;
+  const peakColor =
+    !hasFrame || !Number.isFinite(peak) ? text.tertiary
+    : peak >= -0.2 ? meter.danger.foreground
+    : peak >= -1.0 ? meter.warn.foreground
+    : text.secondary;
+  const intgLabel = hasFrame && Number.isFinite(intg) ? `${intg.toFixed(1)} LUFS` : '— LUFS';
+  const peakLabel = hasFrame && Number.isFinite(peak) ? `${peak.toFixed(1)} dB`   : '— dB';
+  return (
+    <>
+      <StatusCell label="Live"     value={intgLabel} valueColor={intgColor} />
+      <StatusCell label="Live Peak" value={peakLabel} valueColor={peakColor} />
+    </>
   );
 }
 
@@ -76,6 +107,14 @@ export function LouiStatusBar(props: LouiStatusBarProps) {
 
       <StatusCell label="Target LUFS" value={tLufs} />
       <StatusCell label="Target TP"   value={tTp} />
+
+      <span style={{
+        height: 12,
+        width: 1,
+        background: surface.border,
+      }} />
+
+      <LiveLoudnessCells targetLufs={typeof props.targetLufs === 'number' ? props.targetLufs : -14} />
 
       <div style={{ flex: 1 }} />
 

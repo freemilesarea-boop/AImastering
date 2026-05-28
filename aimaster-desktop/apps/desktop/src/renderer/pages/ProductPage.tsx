@@ -20,7 +20,7 @@
 // `sessionOverride` — a pre-built AnalyzerSession that bypasses the
 // WasmAnalyzerProvider entirely.
 
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { toFileUrl } from '../utils/fileUrl.js';
@@ -1279,6 +1279,24 @@ function ProductPageProduction() {
       a.pause();
     }
   }, []);
+
+  // Spacebar = play/pause global shortcut.  Same focus-guard pattern as the
+  // A/B shortcut: ignored when typing in inputs / textareas / contentEditable
+  // and when a modifier key is held.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      if (tag === 'BUTTON') return; // let the button receive its own activate
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      e.preventDefault();
+      togglePlay();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [togglePlay]);
 
   const seekTo = useCallback((ratio: number) => {
     const a = audioRef.current;
