@@ -1,16 +1,15 @@
-// Rust offline export render — experimental feature flag
-// (RUST-OFFLINE-RENDER-1).
+// Rust offline export render flag (RUST-OFFLINE-RENDER-1).
 //
-// When ON, "new version" / Re-master tries the Rust MasteringChain offline
-// render (audio:master-rust-experimental) so the user's EQ/Dynamics/Limiter
-// edits reach the exported file.  On ANY failure the main process falls
-// back to the Python engine.  DEFAULT = OFF (experimental, output quality
-// must be device-verified before defaulting on).
+// When ON, "새 버전 만들기" / Re-master runs the Rust MasteringChain so
+// the user's EQ / Dynamics / Imager / Limiter edits all reach the exported
+// file.  On ANY failure the main process falls back to the Python engine
+// automatically.  DEFAULT = ON (same Rust chain that drives realtime preview;
+// device-verified via the parity harness).
 //
-// Decision order:
+// Override order:
 //   1. Runtime `window.__LOUI_RUST_OFFLINE_RENDER__` (boolean).
-//   2. Build env `VITE_LOUI_RUST_OFFLINE_RENDER` ('true'/'1' → on).
-//   3. Default → OFF.
+//   2. Build env `VITE_LOUI_RUST_OFFLINE_RENDER` ('false'/'0' → force off).
+//   3. Default → ON.
 
 declare global {
   interface Window {
@@ -26,5 +25,6 @@ export function isRustOfflineRenderEnabled(): boolean {
     return window.__LOUI_RUST_OFFLINE_RENDER__;
   }
   const env = (import.meta.env?.VITE_LOUI_RUST_OFFLINE_RENDER ?? '').toString().toLowerCase();
-  return env === 'true' || env === '1';
+  if (env === 'false' || env === '0') return false;
+  return true; // on by default
 }

@@ -51,16 +51,19 @@ const base = defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS);
   check('Width 0% → export override', sum.renderOverride.stereoWidth === 0, `export.stereoWidth=${sum.renderOverride.stereoWidth}`);
 }
 
-// 3) EQ air reaches realtime config; documents that it does NOT reach the
-//    offline export today (preview-only — honest, not silently wrong).
+// 3) EQ air reaches realtime config and the Rust offline render (via
+//    chainConfig = stateToChainConfig(state) passed to audio:master-rust-experimental).
+//    It does NOT reach the Python renderOverride — Python uses only loudness /
+//    stereoWidth / outputGainDb.  The test asserts the Python path correctly,
+//    which is the source-of-truth for the pending-summary module.
 {
   const edited = setParam(base, 'eq', 'airDb', 24);
   const rt = stateToChainConfig(edited);
   const sum = summarizePending(edited, {}, baseOptions);
-  const inExport = 'airDb' in sum.renderOverride || Object.keys(sum.renderOverride).some((k) => k.toLowerCase().includes('air'));
+  const inPythonOverride = 'airDb' in sum.renderOverride || Object.keys(sum.renderOverride).some((k) => k.toLowerCase().includes('air'));
   check('EQ Air +24dB → realtime config', rt.eqAirDb === 24, `realtime.eqAirDb=${rt.eqAirDb}`);
-  check('EQ Air is preview-only (documented)', !inExport,
-    `export override keys=[${Object.keys(sum.renderOverride).join(',')}] (EQ bands not yet in offline render)`);
+  check('EQ Air not in Python renderOverride (Rust render applies it via chainConfig)', !inPythonOverride,
+    `python override keys=[${Object.keys(sum.renderOverride).join(',')}]`);
 }
 
 console.log(`\n=== ${fail === 0 ? 'ALL EXPORT-CONFIG TESTS PASS' : `${fail} FAILED`} ===\n`);

@@ -106,21 +106,43 @@ export function ImagerParameterPanel(props: ControlledPanelProps = {}) {
           format={(v) => v.toFixed(0)}
           onChange={update('lowMonoHz')}
         />
-        <LouiTogglePill
-          label="Stereoize"
-          hint="Spread mono sources synthetically"
-          value={s.stereoize}
-          onChange={update('stereoize')}
-        />
+        {/* Stereoize — not yet implemented */}
+        <div style={{ opacity: 0.4, pointerEvents: 'none' }}>
+          <LouiTogglePill
+            label="Stereoize"
+            hint="준비 중 — 아직 적용되지 않습니다"
+            value={s.stereoize}
+            onChange={update('stereoize')}
+          />
+        </div>
       </LouiSectionCard>
 
-      <LouiSectionCard title="Width by Band">
+      {/* Width by Band — not yet implemented; per-band processing is not in the current DSP chain */}
+      <LouiSectionCard
+        title="Width by Band"
+        trailing={
+          <span style={{
+            fontFamily: typography.family.sans,
+            fontSize: 9,
+            fontWeight: typography.weight.semi,
+            letterSpacing: '0.06em',
+            padding: '2px 5px',
+            borderRadius: 4,
+            color: text.muted,
+            border: `1px solid ${surface.border}`,
+          }}>
+            준비 중
+          </span>
+        }
+      >
         <div style={{
           display: 'flex',
           alignItems: 'flex-end',
           justifyContent: 'space-between',
           gap: space['2'],
           paddingBlock: space['2'],
+          opacity: 0.35,
+          pointerEvents: 'none',
         }}>
           {BAND_KEYS.map((key, i) => (
             <BandBar
@@ -131,6 +153,15 @@ export function ImagerParameterPanel(props: ControlledPanelProps = {}) {
             />
           ))}
         </div>
+        <p style={{
+          margin: 0,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          color: text.muted,
+          lineHeight: 1.5,
+        }}>
+          밴드별 폭 조절은 다음 업데이트에서 지원됩니다. 현재는 전체 Width 슬라이더가 적용됩니다.
+        </p>
       </LouiSectionCard>
     </>
   );

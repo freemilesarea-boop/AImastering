@@ -106,26 +106,40 @@ export function LimiterParameterPanel(props: ControlledPanelProps = {}) {
           onChange={update('lookaheadMs')}
         />
         <div style={{ display: 'flex', flexDirection: 'column', gap: space['2'] }}>
-          <span style={{
-            fontFamily: typography.family.sans,
-            fontSize: typography.size.sm,
-            color: text.secondary,
-            fontWeight: typography.weight.medium,
-          }}>
-            Character
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space['2'] }}>
+            <span style={{
+              fontFamily: typography.family.sans,
+              fontSize: typography.size.sm,
+              color: text.secondary,
+              fontWeight: typography.weight.medium,
+            }}>
+              Character
+            </span>
+            <span style={{
+              fontFamily: typography.family.sans,
+              fontSize: 9,
+              fontWeight: typography.weight.semi,
+              letterSpacing: '0.06em',
+              padding: '2px 5px',
+              borderRadius: 4,
+              color: text.muted,
+              border: `1px solid ${surface.border}`,
+            }}>
+              준비 중
+            </span>
+          </div>
           <div style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(2, 1fr)',
             gap: space['2'],
+            opacity: 0.4,
+            pointerEvents: 'none',
           }}>
             {CHARACTERS.map((c) => {
               const active = s.character === c.id;
               return (
-                <button
+                <div
                   key={c.id}
-                  type="button"
-                  onClick={() => update('character')(c.id)}
                   style={{
                     display: 'flex',
                     flexDirection: 'column',
@@ -135,9 +149,7 @@ export function LimiterParameterPanel(props: ControlledPanelProps = {}) {
                     background: active ? 'rgba(167,139,250,0.10)' : surface.well,
                     border: `1px solid ${active ? meter.accent.foreground : surface.border}`,
                     borderRadius: 6,
-                    cursor: 'pointer',
                     textAlign: 'left',
-                    transition: 'background 120ms ease-out, border-color 120ms ease-out',
                   }}
                 >
                   <span style={{
@@ -155,7 +167,7 @@ export function LimiterParameterPanel(props: ControlledPanelProps = {}) {
                   }}>
                     {c.desc}
                   </span>
-                </button>
+                </div>
               );
             })}
           </div>

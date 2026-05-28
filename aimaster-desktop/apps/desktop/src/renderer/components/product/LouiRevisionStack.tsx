@@ -177,14 +177,7 @@ export function LouiRevisionStack(props: LouiRevisionStackProps) {
 
       {props.experimental && (
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, alignSelf: 'flex-start' }}>
-          <span style={{
-            fontFamily: typography.family.sans, fontSize: 9, fontWeight: typography.weight.semi,
-            letterSpacing: '0.06em', padding: '2px 5px', borderRadius: 4,
-            color: loui.warningAmber, border: `1px solid ${loui.warningAmber}`,
-          }}>
-            EXPERIMENTAL
-          </span>
-          <span style={{ fontSize: 10, color: text.muted }}>Rust offline render (falls back to Python)</span>
+          <span style={{ fontSize: 10, color: text.muted }}>EQ · 다이나믹 · 이미저 설정이 파일에 반영됩니다</span>
         </div>
       )}
       {props.duplicateWarning && !props.creating && (
