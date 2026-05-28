@@ -23,6 +23,8 @@ import { useMediaElement } from '../../audio/media-element-context.js';
 import { useNativeAnalyzer, type NativeAnalyzerState } from '../../hooks/useNativeAnalyzer.js';
 import { NativeSpectrumCanvas } from './modules/NativeSpectrumCanvas.js';
 import { DualSpectrumBody } from './modules/DualSpectrumBody.js';
+import { DraggableParametricEqEditor } from './modules/DraggableParametricEqEditor.js';
+import type { ParametricEqBand } from '../../audio/modules/parametric-eq-model.js';
 import { sharedContextState } from '../../audio/shared-audio-graph.js';
 
 export interface LouiAnalyzerCanvasProps {
@@ -42,6 +44,15 @@ export interface LouiAnalyzerCanvasProps {
   duoSecondaryStatus?: 'idle' | 'connected' | 'error';
   /** Optional toggle handler — when provided, renders a "PRE/POST" button in the header. */
   onToggleDuoMode?: () => void;
+  /**
+   * Free parametric EQ overlay (Phase 1).  When set, renders an interactive
+   * curve + draggable dots over the spectrum.  Audio adoption arrives in
+   * Phase 2 — this overlay is currently preview-only.
+   */
+  freeEqBands?: ParametricEqBand[];
+  onFreeEqChange?: (bands: ParametricEqBand[]) => void;
+  freeEqEnabled?: boolean;
+  onToggleFreeEq?: () => void;
 }
 
 function LivePulse({ active }: { active: boolean }) {
@@ -83,6 +94,7 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
   const active = liveness.live || nativeLive;
   const abMode = props.abMode;
   const duoMode = props.duoMode === true;
+  const freeEqEnabled = props.freeEqEnabled === true;
   return (
     <div
       style={{
@@ -130,6 +142,25 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {props.onToggleFreeEq && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); props.onToggleFreeEq?.(); }}
+              title={freeEqEnabled
+                ? '자유 파라메트릭 EQ 끄기'
+                : '자유 파라메트릭 EQ — 스펙트럼 위에 노드를 추가/드래그/삭제 (Phase 1: 미리보기만, 오디오 미적용)'}
+              className="no-drag"
+              style={{
+                fontFamily: typography.family.mono, fontSize: 9, letterSpacing: '0.06em',
+                border: `1px solid ${freeEqEnabled ? meter.warn.foreground : surface.border}`,
+                borderRadius: 4, padding: '2px 6px', cursor: 'pointer',
+                background: freeEqEnabled ? meter.warn.background : 'transparent',
+                color: freeEqEnabled ? meter.warn.foreground : text.muted,
+              }}
+            >
+              FREE EQ
+            </button>
+          )}
           {props.onToggleDuoMode && (
             <button
               type="button"
@@ -204,7 +235,34 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
               : <NativeSpectrumBody native={native} {...(abMode !== undefined ? { abMode } : {})} />}
           </VisualizerBoundary>
         )}
+        {/* Free parametric EQ overlay (Phase 1: visualization only). */}
+        {freeEqEnabled && !duoMode && props.freeEqBands && props.onFreeEqChange && (
+          <FreeEqOverlay
+            bands={props.freeEqBands}
+            onChange={props.onFreeEqChange}
+          />
+        )}
       </div>
+      {/* Free EQ honesty banner — clearly states "preview only" since Phase 2
+          DSP integration hasn't shipped.  Hidden once Phase 2 lands. */}
+      {freeEqEnabled && !duoMode && (
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 6,
+          paddingInline: space['4'],
+          paddingBlock: 4,
+          background: meter.warn.background,
+          borderTop: `1px solid ${meter.warn.foreground}`,
+          fontFamily: typography.family.mono,
+          fontSize: 9,
+          color: meter.warn.foreground,
+          letterSpacing: '0.04em',
+        }}>
+          ⚠ FREE EQ (Phase 1) — 곡선 미리보기만 표시됨. 오디오에는 아직 적용되지 않습니다.
+        </div>
+      )}
 
       {/* Footer legend */}
       <div
@@ -272,6 +330,36 @@ function EqOverlayFromState({ width, height }: { width: number; height: number }
       {...(eq.bypass ? { bypassed: true } : {})}
       onChange={(paramId, value) => eq.setParam(paramId, value)}
     />
+  );
+}
+
+/** Free parametric EQ overlay — measures its parent body size + renders the
+ *  draggable curve editor.  Phase 1: visualization only (no DSP wiring). */
+function FreeEqOverlay({
+  bands, onChange,
+}: { bands: ParametricEqBand[]; onChange: (b: ParametricEqBand[]) => void }) {
+  const [ref, size] = useSize();
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: 'absolute',
+        inset: space['3'],   // matches the body's padding
+        pointerEvents: 'none',
+        // SVG inside re-enables pointer-events for its own elements.
+      }}
+    >
+      {size.w > 0 && size.h > 0 && (
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'auto' }}>
+          <DraggableParametricEqEditor
+            width={size.w}
+            height={size.h}
+            bands={bands}
+            onChange={onChange}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 

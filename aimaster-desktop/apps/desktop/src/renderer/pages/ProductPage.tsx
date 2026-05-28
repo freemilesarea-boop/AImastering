@@ -169,6 +169,10 @@ function ProductLayoutInner({
   duoSecondaryAnalyser,
   duoSecondaryStatus,
   onToggleDuoMode,
+  freeEqEnabled,
+  freeEqBands,
+  onFreeEqChange,
+  onToggleFreeEq,
 }: {
   session: AnalyzerSession | null;
   active: boolean;
@@ -212,6 +216,10 @@ function ProductLayoutInner({
   duoSecondaryAnalyser?: AnalyserNode | null;
   duoSecondaryStatus?: 'idle' | 'connected' | 'error';
   onToggleDuoMode?: () => void;
+  freeEqEnabled?: boolean;
+  freeEqBands?: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[];
+  onFreeEqChange?: (b: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[]) => void;
+  onToggleFreeEq?: () => void;
 }) {
   // Pending summary (production path only; null in storybook).
   const previewBridge = usePreviewBridge();
@@ -375,6 +383,10 @@ function ProductLayoutInner({
           {...(duoSecondaryAnalyser !== undefined ? { duoSecondaryAnalyser } : {})}
           {...(duoSecondaryStatus !== undefined ? { duoSecondaryStatus } : {})}
           {...(onToggleDuoMode ? { onToggleDuoMode } : {})}
+          {...(freeEqEnabled !== undefined ? { freeEqEnabled } : {})}
+          {...(freeEqBands !== undefined ? { freeEqBands } : {})}
+          {...(onFreeEqChange ? { onFreeEqChange } : {})}
+          {...(onToggleFreeEq ? { onToggleFreeEq } : {})}
         />
         <LouiMeterColumn
           session={session}
@@ -1283,6 +1295,9 @@ function ProductPageProduction() {
   const [showHelp, setShowHelp] = useState(false);
   // Pre/Post duo spectrum mode (renders source.wav PRE on top of master POST).
   const [duoMode, setDuoMode] = useState(false);
+  // Free parametric EQ (Phase 1: visualization only, audio adoption in Phase 2).
+  const [freeEqEnabled, setFreeEqEnabled] = useState(false);
+  const [freeEqBands, setFreeEqBands] = useState<import('../audio/modules/parametric-eq-model.js').ParametricEqBand[]>([]);
   // Loop region (Shift+drag on waveform bar) + playback rate.
   const [loopRegion, setLoopRegion] = useState<import('../components/product/LouiPlaybackBar.js').LoopRegion | null>(null);
   const [loopActive, setLoopActive] = useState(false);
@@ -1676,6 +1691,10 @@ function ProductPageProduction() {
           {...(sourcePreviewSrc && sourcePreviewSrc !== effectiveSrc
             ? { onToggleDuoMode: () => setDuoMode((v) => !v) }
             : {})}
+          freeEqEnabled={freeEqEnabled}
+          freeEqBands={freeEqBands}
+          onFreeEqChange={setFreeEqBands}
+          onToggleFreeEq={() => setFreeEqEnabled((v) => !v)}
           {...(sourceAudioPath ? {
             preview: {
               sourceAudioPath,
@@ -1722,6 +1741,10 @@ function ProductPageProductionInner(props: {
   duoSecondaryAnalyser?: AnalyserNode | null;
   duoSecondaryStatus?: 'idle' | 'connected' | 'error';
   onToggleDuoMode?: () => void;
+  freeEqEnabled?: boolean;
+  freeEqBands?: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[];
+  onFreeEqChange?: (b: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[]) => void;
+  onToggleFreeEq?: () => void;
   preview?: {
     sourceAudioPath: string;
     baseOptions: MasteringOptions;
@@ -1988,6 +2011,10 @@ function ProductPageProductionInner(props: {
       {...(props.duoSecondaryAnalyser !== undefined ? { duoSecondaryAnalyser: props.duoSecondaryAnalyser } : {})}
       {...(props.duoSecondaryStatus !== undefined ? { duoSecondaryStatus: props.duoSecondaryStatus } : {})}
       {...(props.onToggleDuoMode ? { onToggleDuoMode: props.onToggleDuoMode } : {})}
+      {...(props.freeEqEnabled !== undefined ? { freeEqEnabled: props.freeEqEnabled } : {})}
+      {...(props.freeEqBands !== undefined ? { freeEqBands: props.freeEqBands } : {})}
+      {...(props.onFreeEqChange ? { onFreeEqChange: props.onFreeEqChange } : {})}
+      {...(props.onToggleFreeEq ? { onToggleFreeEq: props.onToggleFreeEq } : {})}
       {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
       {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
       moduleSuiteSlot={

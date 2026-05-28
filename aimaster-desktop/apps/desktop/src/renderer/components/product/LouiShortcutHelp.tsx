@@ -33,6 +33,18 @@ const GROUPS: { title: string; rows: ShortcutRow[] }[] = [
     ],
   },
   {
+    title: 'Free EQ (Phase 1)',
+    rows: [
+      { keys: ['FREE EQ'], desc: '헤더 토글 — 스펙트럼 위 자유 파라메트릭 EQ 활성화 (곡선 미리보기, 오디오 미적용)' },
+      { keys: ['click'], desc: '빈 곳 클릭 → 새 밴드 추가' },
+      { keys: ['drag'], desc: '노드 드래그 → 주파수 / 게인' },
+      { keys: ['Shift', 'drag'], desc: '노드 → Q 조절' },
+      { keys: ['wheel'], desc: '노드 위 휠 → Q 조절' },
+      { keys: ['dbl'], desc: '더블클릭 → 필터 타입 순환' },
+      { keys: ['R-click'], desc: '우클릭 → 밴드 삭제' },
+    ],
+  },
+  {
     title: '편집',
     rows: [
       { keys: [MOD, 'Z'], desc: '실행 취소 (Undo)' },
