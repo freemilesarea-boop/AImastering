@@ -1219,8 +1219,12 @@ function ProductPageProduction() {
   // A/B is available when there's a re-rendered preview OR a reference track.
   const abAvailable = Boolean(reRenderedSrc) || Boolean(referenceSrc);
 
-  const baseLufs = baselineRevision?.metrics.integratedLufs
-    ?? (typeof masteringResult?.loudnessAfter?.integratedLufs === 'number' ? masteringResult.loudnessAfter.integratedLufs : null);
+  // When a reference is loaded its true LUFS is unknown until played + measured,
+  // so the "before" LUFS becomes null and LU comp can't trim — honest.
+  const baseLufs = referenceSrc !== null
+    ? null
+    : (baselineRevision?.metrics.integratedLufs
+        ?? (typeof masteringResult?.loudnessAfter?.integratedLufs === 'number' ? masteringResult.loudnessAfter.integratedLufs : null));
   // "After" loudness: the quick-render value when overriding, else the
   // active revision's measured loudness.
   const afterLufs = previewSrcOverride !== null

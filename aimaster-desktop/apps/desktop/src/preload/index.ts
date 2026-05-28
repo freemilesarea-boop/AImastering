@@ -25,6 +25,8 @@ const INVOKE_CHANNELS = [
   'loui:read-worklet-asset',
   // Support bundle (v3.6 QA)
   'support:bundle', 'support:bundle-export', 'support:record-failure',
+  // Session save / load (.louisession)
+  'session:save', 'session:load',
   // Updater (v3.4.3)
   'updater:check', 'updater:download', 'updater:quit-and-install',
   'updater:get-status',
