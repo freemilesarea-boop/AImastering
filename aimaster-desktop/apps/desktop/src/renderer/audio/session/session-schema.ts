@@ -18,6 +18,7 @@
 
 import type { AllModulesParameterState } from '../parameters/parameter-state.js';
 import type { MasteringOptions } from '../../stores/audioStore.js';
+import type { ParametricEqBand } from '../modules/parametric-eq-model.js';
 
 export const SESSION_VERSION = 1 as const;
 
@@ -35,6 +36,27 @@ export interface LouiSession {
   presetId: string | undefined;
   /** Base mastering options (target LUFS / TP / SR / bitDepth / style). */
   baseOptions: MasteringOptions;
+  /**
+   * Free parametric EQ — added in Phase 3a.  Optional so v1 sessions saved
+   * before this field shipped still load.  When absent on load, the editor
+   * starts with FREE EQ disabled + an empty band list.
+   */
+  freeEqEnabled: boolean;
+  freeEqBands: ParametricEqBand[];
+}
+
+// Loose runtime guard for a band entry (defensive — we never trust file input).
+function isParametricBand(v: unknown): v is ParametricEqBand {
+  if (!v || typeof v !== 'object') return false;
+  const b = v as Record<string, unknown>;
+  return (
+    typeof b['id'] === 'string'
+    && (b['type'] === 'highpass' || b['type'] === 'lowpass' || b['type'] === 'bell' || b['type'] === 'lowshelf' || b['type'] === 'highshelf')
+    && typeof b['frequencyHz'] === 'number'
+    && typeof b['gainDb'] === 'number'
+    && typeof b['q'] === 'number'
+    && typeof b['enabled'] === 'boolean'
+  );
 }
 
 // ── Serialize ──────────────────────────────────────────────────────────────
@@ -80,6 +102,17 @@ export function deserializeSession(raw: string): SessionLoadResult | SessionLoad
   if (!obj['baseOptions'] || typeof obj['baseOptions'] !== 'object') {
     return { ok: false, error: '세션 파일에 마스터링 옵션이 없습니다.' };
   }
+  // Free EQ — optional for backward compat with v1 sessions saved before Phase 3a.
+  let freeEqBands: ParametricEqBand[] = [];
+  const rawBands = obj['freeEqBands'];
+  if (Array.isArray(rawBands)) {
+    freeEqBands = rawBands.filter(isParametricBand);
+    if (freeEqBands.length !== rawBands.length) {
+      warnings.push(`freeEqBands: ${rawBands.length - freeEqBands.length}개 밴드가 형식 오류로 스킵됨`);
+    }
+  }
+  const freeEqEnabled = typeof obj['freeEqEnabled'] === 'boolean' ? obj['freeEqEnabled'] : false;
+
   const session: LouiSession = {
     version: SESSION_VERSION,
     createdAt:         typeof obj['createdAt']         === 'string' ? obj['createdAt']         : new Date().toISOString(),
@@ -88,6 +121,8 @@ export function deserializeSession(raw: string): SessionLoadResult | SessionLoad
     allModulesState:   obj['allModulesState'] as AllModulesParameterState,
     presetId:          typeof obj['presetId']          === 'string' ? obj['presetId']          : undefined,
     baseOptions:       obj['baseOptions'] as MasteringOptions,
+    freeEqEnabled,
+    freeEqBands,
   };
   return { ok: true, session, warnings };
 }

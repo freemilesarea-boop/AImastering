@@ -1706,6 +1706,7 @@ function ProductPageProduction() {
           freeEqBands={freeEqBands}
           onFreeEqChange={setFreeEqBands}
           onToggleFreeEq={() => setFreeEqEnabled((v) => !v)}
+          setFreeEqEnabled={setFreeEqEnabled}
           {...(sourceAudioPath ? {
             preview: {
               sourceAudioPath,
@@ -1756,6 +1757,8 @@ function ProductPageProductionInner(props: {
   freeEqBands?: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[];
   onFreeEqChange?: (b: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[]) => void;
   onToggleFreeEq?: () => void;
+  /** Direct boolean setter for free EQ on/off (used by session load). */
+  setFreeEqEnabled?: (v: boolean) => void;
   preview?: {
     sourceAudioPath: string;
     baseOptions: MasteringOptions;
@@ -1887,11 +1890,13 @@ function ProductPageProductionInner(props: {
         allModulesState: allModuleState,
         presetId: props.presetId,
         baseOptions: useAudioStore.getState().options,
+        freeEqEnabled: props.freeEqEnabled === true,
+        freeEqBands: props.freeEqBands ?? [],
       });
       await api.invoke('session:save', session);
       setSessionStatus('idle');
     } catch { setSessionStatus('error'); setTimeout(() => setSessionStatus('idle'), 3000); }
-  }, [allModuleState, props.presetId, sourceAudioPathForSession, referenceFilePathForSession]);
+  }, [allModuleState, props.presetId, sourceAudioPathForSession, referenceFilePathForSession, props.freeEqEnabled, props.freeEqBands]);
 
   const onLoadSession = useCallback(async () => {
     const api = window.electronAPI;
@@ -1907,6 +1912,10 @@ function ProductPageProductionInner(props: {
       replaceParameterState(s.allModulesState, 'preset');
       if (s.presetId) props.onPresetChange(s.presetId);
       if (s.referenceFilePath) setReferenceFileFromSession(s.referenceFilePath);
+      // Free EQ — restore the band list first so the audio graph effect picks
+      // it up, then flip the enabled flag so the chain routes.
+      props.onFreeEqChange?.(s.freeEqBands);
+      props.setFreeEqEnabled?.(s.freeEqEnabled);
       setSessionStatus('idle');
     } catch { setSessionStatus('error'); setTimeout(() => setSessionStatus('idle'), 3000); }
   }, [replaceParameterState, updateOptionsFromSession, props, setReferenceFileFromSession]);
