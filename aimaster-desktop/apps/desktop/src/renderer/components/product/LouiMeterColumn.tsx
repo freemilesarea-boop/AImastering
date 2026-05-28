@@ -13,6 +13,7 @@ import { surface, text, typography, radius, space } from '../../theme/loui-theme
 import { LoudnessMeterPanelV2 } from '../LoudnessMeterPanelV2.js';
 import { StereoScopePanel } from '../StereoScopePanel.js';
 import { NativeLoudnessMeter, NativeStereoMeter, NativeLevelsMeter } from './modules/NativeMeterCards.js';
+import { LouiLoudnessHistory } from './modules/LouiLoudnessHistory.js';
 import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
 
 export interface LouiMeterColumnProps {
@@ -96,6 +97,10 @@ export function LouiMeterColumn(props: LouiMeterColumnProps) {
         description="음량 미터. Momentary(순간)·Short-term(단기)·Integrated(평균) 음량과 Peak/True Peak를 dBFS로 표시합니다.">
 
         <NativeLoudnessMeter />
+        <div style={{ marginTop: 10 }}
+             title="단기(≈3초) 음량의 시간축 그래프. 점선은 타깃 LUFS — 곡 내내 타깃 근처에서 출렁이는 폭이 다이내믹입니다.">
+          <LouiLoudnessHistory {...(typeof props.targetLufs === 'number' ? { targetLufs: props.targetLufs } : {})} />
+        </div>
         {props.session && (
           <div style={{ marginTop: 10 }}>
             <LoudnessMeterPanelV2
