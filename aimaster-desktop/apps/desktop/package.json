@@ -28,6 +28,7 @@
     "test:loudness": "tsx scripts/loudness-selftest.ts",
     "test:realtime-graph": "tsx scripts/realtime-graph-selftest.ts",
     "test:native-dsp": "tsx scripts/native-dsp-selftest.ts",
+    "test:polyfill": "tsx scripts/polyfill-self-check.ts",
     "test:realtime-config": "tsx scripts/realtime-config-selftest.ts",
     "test:preset-tuning": "tsx scripts/preset-tuning-selftest.ts",
     "test:preset-differentiation": "tsx scripts/preset-differentiation-selftest.ts",
