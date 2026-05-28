@@ -29,6 +29,7 @@ const GROUPS: { title: string; rows: ShortcutRow[] }[] = [
     title: 'A/B 비교',
     rows: [
       { keys: ['B'], desc: 'Before / After 전환' },
+      { keys: ['PRE/POST'], desc: '스펙트럼 헤더의 PRE/POST 버튼 — 듀얼 스펙트럼 표시' },
     ],
   },
   {

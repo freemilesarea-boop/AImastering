@@ -22,6 +22,7 @@ import { hasParameterStateProvider, useModuleParameters } from '../../audio/para
 import { useMediaElement } from '../../audio/media-element-context.js';
 import { useNativeAnalyzer, type NativeAnalyzerState } from '../../hooks/useNativeAnalyzer.js';
 import { NativeSpectrumCanvas } from './modules/NativeSpectrumCanvas.js';
+import { DualSpectrumBody } from './modules/DualSpectrumBody.js';
 import { sharedContextState } from '../../audio/shared-audio-graph.js';
 
 export interface LouiAnalyzerCanvasProps {
@@ -31,6 +32,16 @@ export interface LouiAnalyzerCanvasProps {
   active?: boolean;
   /** A/B compare mode — when set, the spectrum shows a ghost of the other side. */
   abMode?: 'before' | 'after';
+  /**
+   * When set, render two stacked spectrum canvases (PRE on top, POST on bottom).
+   * `secondaryAnalyser` is the AnalyserNode for the PRE side (typically the
+   * source file via a muted hidden audio element).  null = no analyser yet.
+   */
+  duoMode?: boolean;
+  duoSecondaryAnalyser?: AnalyserNode | null;
+  duoSecondaryStatus?: 'idle' | 'connected' | 'error';
+  /** Optional toggle handler — when provided, renders a "PRE/POST" button in the header. */
+  onToggleDuoMode?: () => void;
 }
 
 function LivePulse({ active }: { active: boolean }) {
@@ -71,6 +82,7 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
   const nativeLive = native.lastFrameAt != null && (performance.now() - native.lastFrameAt) < 500;
   const active = liveness.live || nativeLive;
   const abMode = props.abMode;
+  const duoMode = props.duoMode === true;
   return (
     <div
       style={{
@@ -118,7 +130,26 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {abMode !== undefined && (
+          {props.onToggleDuoMode && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); props.onToggleDuoMode?.(); }}
+              title={duoMode
+                ? 'Pre/Post 듀얼 스펙트럼 끄기'
+                : 'Pre/Post 듀얼 스펙트럼 — 원본(PRE)과 마스터(POST)를 위/아래로 동시에 표시'}
+              className="no-drag"
+              style={{
+                fontFamily: typography.family.mono, fontSize: 9, letterSpacing: '0.06em',
+                border: `1px solid ${duoMode ? meter.safe.foreground : surface.border}`,
+                borderRadius: 4, padding: '2px 6px', cursor: 'pointer',
+                background: duoMode ? meter.safe.background : 'transparent',
+                color: duoMode ? meter.safe.foreground : text.muted,
+              }}
+            >
+              PRE/POST
+            </button>
+          )}
+          {abMode !== undefined && !duoMode && (
             <span
               title={abMode === 'after'
                 ? 'A/B 비교: 지금 After(B) 재생 중 — 노란 그래프가 Before(A) 기준'
@@ -160,11 +191,19 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
             The richer WASM 1/3-oct trace + EQ overlay layer on top when the
             WASM analyzer is producing frames.  If the WASM layer throws, the
             boundary falls back to the native-only body. */}
-        <VisualizerBoundary fallback={<NativeSpectrumBody native={native} {...(abMode !== undefined ? { abMode } : {})} />}>
-          {isLiveVisualizerEnabled()
-            ? <LiveSpectrumBody session={props.session ?? null} native={native} {...(abMode !== undefined ? { abMode } : {})} />
-            : <NativeSpectrumBody native={native} {...(abMode !== undefined ? { abMode } : {})} />}
-        </VisualizerBoundary>
+        {duoMode ? (
+          <DualSpectrumBody
+            preAnalyser={props.duoSecondaryAnalyser ?? null}
+            postAnalyser={native.analysers?.main ?? null}
+            {...(props.duoSecondaryStatus ? { preStatus: props.duoSecondaryStatus } : {})}
+          />
+        ) : (
+          <VisualizerBoundary fallback={<NativeSpectrumBody native={native} {...(abMode !== undefined ? { abMode } : {})} />}>
+            {isLiveVisualizerEnabled()
+              ? <LiveSpectrumBody session={props.session ?? null} native={native} {...(abMode !== undefined ? { abMode } : {})} />
+              : <NativeSpectrumBody native={native} {...(abMode !== undefined ? { abMode } : {})} />}
+          </VisualizerBoundary>
+        )}
       </div>
 
       {/* Footer legend */}

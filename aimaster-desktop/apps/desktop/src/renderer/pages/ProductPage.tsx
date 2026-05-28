@@ -67,6 +67,7 @@ import {
   SNAPSHOT_COUNT,
   type SnapshotSlots,
 } from '../components/product/modules/LouiSnapshotSlots.js';
+import { useSecondaryAnalyzer } from '../hooks/useSecondaryAnalyzer.js';
 import { RealtimeGrProvider, useRealtimeGr, RealtimeDynamicsGrProvider } from '../audio/modules/realtime-gr-context.js';
 import { RealtimePreviewProvider, useRealtimePreviewStatus } from '../audio/modules/realtime-preview-context.js';
 import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
@@ -164,6 +165,10 @@ function ProductLayoutInner({
   onLoopRegion,
   playbackRate,
   onPlaybackRateChange,
+  duoMode,
+  duoSecondaryAnalyser,
+  duoSecondaryStatus,
+  onToggleDuoMode,
 }: {
   session: AnalyzerSession | null;
   active: boolean;
@@ -203,6 +208,10 @@ function ProductLayoutInner({
   onLoopRegion?: (r: import('../components/product/LouiPlaybackBar.js').LoopRegion | null) => void;
   playbackRate?: number;
   onPlaybackRateChange?: (rate: number) => void;
+  duoMode?: boolean;
+  duoSecondaryAnalyser?: AnalyserNode | null;
+  duoSecondaryStatus?: 'idle' | 'connected' | 'error';
+  onToggleDuoMode?: () => void;
 }) {
   // Pending summary (production path only; null in storybook).
   const previewBridge = usePreviewBridge();
@@ -358,7 +367,15 @@ function ProductLayoutInner({
           padding: space['3'],
         }}
       >
-        <LouiAnalyzerCanvas session={session} active={active} {...(abMode !== undefined ? { abMode } : {})} />
+        <LouiAnalyzerCanvas
+          session={session}
+          active={active}
+          {...(abMode !== undefined ? { abMode } : {})}
+          {...(duoMode !== undefined ? { duoMode } : {})}
+          {...(duoSecondaryAnalyser !== undefined ? { duoSecondaryAnalyser } : {})}
+          {...(duoSecondaryStatus !== undefined ? { duoSecondaryStatus } : {})}
+          {...(onToggleDuoMode ? { onToggleDuoMode } : {})}
+        />
         <LouiMeterColumn
           session={session}
           {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
@@ -1264,6 +1281,8 @@ function ProductPageProduction() {
   const [presetId, setPresetId] = useState<string | undefined>(undefined);
   // Shortcut help overlay.
   const [showHelp, setShowHelp] = useState(false);
+  // Pre/Post duo spectrum mode (renders source.wav PRE on top of master POST).
+  const [duoMode, setDuoMode] = useState(false);
   // Loop region (Shift+drag on waveform bar) + playback rate.
   const [loopRegion, setLoopRegion] = useState<import('../components/product/LouiPlaybackBar.js').LoopRegion | null>(null);
   const [loopActive, setLoopActive] = useState(false);
@@ -1318,6 +1337,16 @@ function ProductPageProduction() {
   const effectiveSrc = abMode === 'before' ? effectiveBeforeSrc : (reRenderedSrc ?? basePreviewSrc);
   // A/B is available when there's a re-rendered preview OR a reference track.
   const abAvailable = Boolean(reRenderedSrc) || Boolean(referenceSrc);
+
+  // Duo Pre/Post: secondary muted element plays the SOURCE so the user sees
+  // both spectra simultaneously while still only hearing the master.  Only
+  // enabled when duoMode is on AND we have a source path (else no comparison).
+  const duoEnabled = duoMode && Boolean(sourcePreviewSrc) && Boolean(sourcePreviewSrc !== effectiveSrc);
+  const secondary = useSecondaryAnalyzer(
+    duoEnabled ? audioEl : null,
+    duoEnabled ? sourcePreviewSrc : null,
+    duoEnabled,
+  );
 
   // When a reference is loaded, baseLufs = the measured integratedLufs of the
   // reference file (null while still measuring → LU comp stays disabled until
@@ -1641,6 +1670,12 @@ function ProductPageProduction() {
           onLoopRegion={(r) => { setLoopRegion(r); if (!r) setLoopActive(false); }}
           playbackRate={playbackRate}
           onPlaybackRateChange={setPlaybackRate}
+          duoMode={duoMode}
+          duoSecondaryAnalyser={secondary.analyser}
+          duoSecondaryStatus={secondary.status}
+          {...(sourcePreviewSrc && sourcePreviewSrc !== effectiveSrc
+            ? { onToggleDuoMode: () => setDuoMode((v) => !v) }
+            : {})}
           {...(sourceAudioPath ? {
             preview: {
               sourceAudioPath,
@@ -1683,6 +1718,10 @@ function ProductPageProductionInner(props: {
   onLoopRegion?: (r: import('../components/product/LouiPlaybackBar.js').LoopRegion | null) => void;
   playbackRate?: number;
   onPlaybackRateChange?: (rate: number) => void;
+  duoMode?: boolean;
+  duoSecondaryAnalyser?: AnalyserNode | null;
+  duoSecondaryStatus?: 'idle' | 'connected' | 'error';
+  onToggleDuoMode?: () => void;
   preview?: {
     sourceAudioPath: string;
     baseOptions: MasteringOptions;
@@ -1945,6 +1984,10 @@ function ProductPageProductionInner(props: {
       {...(props.onLoopRegion ? { onLoopRegion: props.onLoopRegion } : {})}
       {...(props.playbackRate !== undefined ? { playbackRate: props.playbackRate } : {})}
       {...(props.onPlaybackRateChange ? { onPlaybackRateChange: props.onPlaybackRateChange } : {})}
+      {...(props.duoMode !== undefined ? { duoMode: props.duoMode } : {})}
+      {...(props.duoSecondaryAnalyser !== undefined ? { duoSecondaryAnalyser: props.duoSecondaryAnalyser } : {})}
+      {...(props.duoSecondaryStatus !== undefined ? { duoSecondaryStatus: props.duoSecondaryStatus } : {})}
+      {...(props.onToggleDuoMode ? { onToggleDuoMode: props.onToggleDuoMode } : {})}
       {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
       {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
       moduleSuiteSlot={
