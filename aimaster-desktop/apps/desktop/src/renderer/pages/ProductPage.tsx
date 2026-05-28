@@ -61,6 +61,12 @@ import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { isDevMode } from '../audio/dev-mode.js';
 import { LouiPlaybackBar } from '../components/product/LouiPlaybackBar.js';
 import { LouiShortcutHelp } from '../components/product/LouiShortcutHelp.js';
+import {
+  LouiSnapshotSlots,
+  emptySnapshots,
+  SNAPSHOT_COUNT,
+  type SnapshotSlots,
+} from '../components/product/modules/LouiSnapshotSlots.js';
 import { RealtimeGrProvider, useRealtimeGr, RealtimeDynamicsGrProvider } from '../audio/modules/realtime-gr-context.js';
 import { RealtimePreviewProvider, useRealtimePreviewStatus } from '../audio/modules/realtime-preview-context.js';
 import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
@@ -1850,6 +1856,65 @@ function ProductPageProductionInner(props: {
     return () => window.removeEventListener('keydown', handler);
   }, [onSaveSession, onLoadSession, props.onExport]);
 
+  // ── Snapshot slots 1~8 ────────────────────────────────────────────────
+  // Volatile parameter snapshots for quick A/B/C... comparisons.  Cleared
+  // on remount (page navigation).  Persistent presets live in custom-preset
+  // storage (a separate feature with names + localStorage).
+  const [snapshots, setSnapshots] = useState<SnapshotSlots>(emptySnapshots);
+  const [activeSnapshot, setActiveSnapshot] = useState<number | null>(null);
+
+  const saveSnapshot = useCallback((idx: number) => {
+    if (idx < 0 || idx >= SNAPSHOT_COUNT) return;
+    setSnapshots((prev) => {
+      const next = prev.slice();
+      // Deep-clone the parameter state so later edits don't mutate the snapshot.
+      next[idx] = {
+        state: JSON.parse(JSON.stringify(allModuleState)),
+        presetId: props.presetId,
+        capturedAt: Date.now(),
+      };
+      return next;
+    });
+    setActiveSnapshot(idx);
+  }, [allModuleState, props.presetId]);
+
+  const recallSnapshot = useCallback((idx: number) => {
+    const snap = snapshots[idx];
+    if (!snap) return;
+    replaceParameterState(snap.state, 'preset');
+    if (snap.presetId) props.onPresetChange(snap.presetId);
+    setActiveSnapshot(idx);
+  }, [snapshots, replaceParameterState, props]);
+
+  const clearSnapshot = useCallback((idx: number) => {
+    setSnapshots((prev) => {
+      const next = prev.slice();
+      next[idx] = null;
+      return next;
+    });
+    setActiveSnapshot((a) => (a === idx ? null : a));
+  }, []);
+
+  // Number-key shortcuts: 1..8 = recall, Shift+1..8 = save.  We use e.code
+  // (Digit1..Digit8) so it works regardless of the user's keyboard layout
+  // and survives Shift (which would otherwise turn "1" into "!" on key).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const m = /^Digit([1-8])$/.exec(e.code);
+      if (!m) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      const idx = Number(m[1]) - 1;
+      if (e.shiftKey) saveSnapshot(idx);
+      else recallSnapshot(idx);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [saveSnapshot, recallSnapshot]);
+
   const layout = (
     <ProductLayoutInner
       session={session}
@@ -1884,6 +1949,14 @@ function ProductPageProductionInner(props: {
       {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
       moduleSuiteSlot={
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Snapshot slots 1~8 — volatile A/B/C... compare buffers. */}
+          <LouiSnapshotSlots
+            slots={snapshots}
+            activeSlot={activeSnapshot}
+            onSave={saveSnapshot}
+            onRecall={recallSnapshot}
+            onClear={clearSnapshot}
+          />
           {/* Session save / load */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             {(['save', 'load'] as const).map((action) => (

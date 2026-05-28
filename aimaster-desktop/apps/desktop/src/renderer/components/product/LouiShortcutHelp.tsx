@@ -48,6 +48,13 @@ const GROUPS: { title: string; rows: ShortcutRow[] }[] = [
     ],
   },
   {
+    title: '스냅샷 (1~8)',
+    rows: [
+      { keys: ['1', '~', '8'], desc: '슬롯 N 불러오기 (빠른 A/B/C 비교)' },
+      { keys: ['Shift', '1', '~', '8'], desc: '현재 파라미터를 슬롯 N에 저장' },
+    ],
+  },
+  {
     title: '기타',
     rows: [
       { keys: ['?'], desc: '단축키 도움말 열기 / 닫기' },
