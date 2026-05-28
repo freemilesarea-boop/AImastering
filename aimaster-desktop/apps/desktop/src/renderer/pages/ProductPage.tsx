@@ -66,6 +66,7 @@ import { LouiGainReductionMeter } from '../components/product/modules/LouiGainRe
 import { decayPeak } from '../audio/modules/gr-meter-model.js';
 import { stateToChainConfig } from '../audio/realtime-mastering-chain.js';
 import { isRustOfflineRenderEnabled } from '../audio/rust-offline-render-flag.js';
+import { serializeSession, deserializeSession, SESSION_VERSION } from '../audio/session/session-schema.js';
 import {
   PresetPatchDispatcher,
   PreviewRenderController,
@@ -1615,6 +1616,50 @@ function ProductPageProductionInner(props: {
     }
   }, [revisionGroup, updateOptions, applyPreset, props]);
 
+  // ── Session save / load ───────────────────────────────────────────────
+  const sourceAudioPathForSession = useAudioStore((s) => s.selectedFile);
+  const referenceFilePathForSession = useAudioStore((s) => s.referenceFilePath);
+  const setReferenceFileFromSession = useAudioStore((s) => s.setReferenceFile);
+  const updateOptionsFromSession = useAudioStore((s) => s.updateOptions);
+  const [sessionStatus, setSessionStatus] = useState<'idle' | 'saving' | 'loading' | 'error'>('idle');
+
+  const onSaveSession = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api) return;
+    setSessionStatus('saving');
+    try {
+      const session = serializeSession({
+        version: SESSION_VERSION,
+        createdAt: new Date().toISOString(),
+        sourceFilePath: sourceAudioPathForSession,
+        referenceFilePath: referenceFilePathForSession,
+        allModulesState: allModuleState,
+        presetId: props.presetId,
+        baseOptions: useAudioStore.getState().options,
+      });
+      await api.invoke('session:save', session);
+      setSessionStatus('idle');
+    } catch { setSessionStatus('error'); setTimeout(() => setSessionStatus('idle'), 3000); }
+  }, [allModuleState, props.presetId, sourceAudioPathForSession, referenceFilePathForSession]);
+
+  const onLoadSession = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api) return;
+    setSessionStatus('loading');
+    try {
+      const result = await api.invoke('session:load') as { path: string; data: string } | null;
+      if (!result) { setSessionStatus('idle'); return; }
+      const parsed = deserializeSession(result.data);
+      if (!parsed.ok) { setSessionStatus('error'); setTimeout(() => setSessionStatus('idle'), 3000); return; }
+      const s = parsed.session;
+      updateOptionsFromSession(s.baseOptions);
+      replaceParameterState(s.allModulesState, 'preset');
+      if (s.presetId) props.onPresetChange(s.presetId);
+      if (s.referenceFilePath) setReferenceFileFromSession(s.referenceFilePath);
+      setSessionStatus('idle');
+    } catch { setSessionStatus('error'); setTimeout(() => setSessionStatus('idle'), 3000); }
+  }, [replaceParameterState, updateOptionsFromSession, props, setReferenceFileFromSession]);
+
   const layout = (
     <ProductLayoutInner
       session={session}
@@ -1644,6 +1689,35 @@ function ProductPageProductionInner(props: {
       {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
       moduleSuiteSlot={
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Session save / load */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {(['save', 'load'] as const).map((action) => (
+              <button
+                key={action}
+                type="button"
+                disabled={sessionStatus !== 'idle'}
+                onClick={action === 'save' ? onSaveSession : onLoadSession}
+                title={action === 'save' ? '현재 파라미터·레퍼런스·타깃 설정을 .louisession 파일로 저장' : '.louisession 파일에서 세션 불러오기'}
+                style={{
+                  fontFamily: typography.family.mono, fontSize: 9, letterSpacing: '0.04em',
+                  padding: '3px 8px', borderRadius: radius.chip,
+                  border: `1px solid ${surface.border}`, background: 'transparent',
+                  color: sessionStatus === 'error' ? meter.danger.foreground : text.muted,
+                  cursor: sessionStatus === 'idle' ? 'pointer' : 'not-allowed',
+                  opacity: sessionStatus !== 'idle' && sessionStatus !== 'error' ? 0.5 : 1,
+                }}
+              >
+                {action === 'save'
+                  ? (sessionStatus === 'saving' ? '저장 중…' : '세션 저장')
+                  : (sessionStatus === 'loading' ? '불러오는 중…' : '세션 불러오기')}
+              </button>
+            ))}
+            {sessionStatus === 'error' && (
+              <span style={{ fontFamily: typography.family.mono, fontSize: 9, color: meter.danger.foreground }}>
+                오류 발생
+              </span>
+            )}
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <LouiRealtimeStatus
               status={realtime.uiStatus}

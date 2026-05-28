@@ -541,12 +541,23 @@ function QueueRow({
             onChange={(e) => onSetPreset(item.id, e.target.value || undefined)}
             onClick={(e) => e.stopPropagation()}
             className="no-drag shrink-0 text-[10px] rounded px-1 py-0.5 border appearance-none"
-            style={{ maxWidth: 90, background: '#1c1c24', borderColor: 'rgba(167,139,250,0.25)', color: '#a1a1aa' }}
+            style={{ maxWidth: 100, background: '#1c1c24', borderColor: 'rgba(167,139,250,0.25)', color: '#a1a1aa' }}
             title="이 파일에 적용할 프리셋 (비워두면 전역 설정 사용)"
           >
-            <option value="">기본 설정</option>
-            {['balanced', 'punchy', 'warm', 'bright', 'open', 'cinematic'].map((id) => (
-              <option key={id} value={id}>{id}</option>
+            <option value="">전역 설정</option>
+            {[
+              { id: 'ai-pop',           label: 'AI Pop' },
+              { id: 'kpop-loud',        label: 'K-Pop Loud' },
+              { id: 'streaming-pro',    label: 'Streaming' },
+              { id: 'youtube-safe',     label: 'YouTube' },
+              { id: 'lofi-warm',        label: 'Lo-Fi Warm' },
+              { id: 'edm-wide',         label: 'EDM Wide' },
+              { id: 'ballad-vocal',     label: 'Ballad' },
+              { id: 'piano-natural',    label: 'Piano' },
+              { id: 'vintage-soft',     label: 'Vintage' },
+              { id: 'mono-safe-shorts', label: 'Mono Safe' },
+            ].map(({ id, label }) => (
+              <option key={id} value={id}>{label}</option>
             ))}
           </select>
         )}
