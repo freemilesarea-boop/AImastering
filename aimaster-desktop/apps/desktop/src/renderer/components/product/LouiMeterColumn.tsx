@@ -14,6 +14,7 @@ import { LoudnessMeterPanelV2 } from '../LoudnessMeterPanelV2.js';
 import { StereoScopePanel } from '../StereoScopePanel.js';
 import { NativeLoudnessMeter, NativeStereoMeter, NativeLevelsMeter } from './modules/NativeMeterCards.js';
 import { LouiLoudnessHistory } from './modules/LouiLoudnessHistory.js';
+import { NativeBandMeter } from './modules/NativeBandMeter.js';
 import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
 
 export interface LouiMeterColumnProps {
@@ -125,6 +126,11 @@ export function LouiMeterColumn(props: LouiMeterColumnProps) {
         description="출력 레벨. 처리 후 출력 RMS, 좌/우 Peak(홀드), 남은 헤드룸(dB), 클리핑 여부를 표시합니다.">
 
         <NativeLevelsMeter />
+      </PanelShell>
+      <PanelShell title="Bands" subtitle="Sub · Low · Mid · High · Air"
+        description="6밴드 RMS 미터. Sub(20-80Hz)부터 Air(12-20kHz)까지 각 대역의 실시간 출력 레벨을 표시합니다.">
+
+        <NativeBandMeter />
       </PanelShell>
     </div>
   );

@@ -102,6 +102,8 @@ export interface QueueItem {
   error?: StructuredError;
   progress: number;
   progressStage: string;
+  /** Per-file Loui preset override (undefined = use the global options). */
+  presetId: string | undefined;
 }
 
 export const MAX_QUEUE_SIZE = 20;
@@ -175,6 +177,11 @@ interface AudioStore {
   showAdvanced: boolean;
   setShowAdvanced: (v: boolean) => void;
 
+  // ── Reference track for A/B comparison ────────────────────────────────
+  /** Absolute path to a user-loaded reference audio file (null = none). */
+  referenceFilePath: string | null;
+  setReferenceFile: (path: string | null) => void;
+
   // ── Revision workflow (M3-REVISION-WORKFLOW) ───────────────────────────
   /** Multiple mastering versions of the active source file.  null = none. */
   revisionGroup: RevisionGroup | null;
@@ -209,9 +216,10 @@ export const useAudioStore = create<AudioStore>((set) => ({
         id:            crypto.randomUUID(),
         filePath:      p,
         fileName:      baseName(p),
-        status:        'pending',
+        status:        'pending' as const,
         progress:      0,
         progressStage: '',
+        presetId:      undefined,
       }));
     return { queue: [...s.queue, ...newItems] };
   }),
@@ -256,6 +264,10 @@ export const useAudioStore = create<AudioStore>((set) => ({
 
   showAdvanced:       false,
   setShowAdvanced:    (v)          => set({ showAdvanced: v }),
+
+  // ── Reference track ─────────────────────────────────────────────────
+  referenceFilePath: null,
+  setReferenceFile: (path) => set({ referenceFilePath: path }),
 
   // ── Revision workflow ────────────────────────────────────────────────
   revisionGroup: null,

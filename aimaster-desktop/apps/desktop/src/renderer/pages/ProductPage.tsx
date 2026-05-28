@@ -993,20 +993,64 @@ interface ABSlotProps {
   compensated: boolean;
   onToggleCompensation: (on: boolean) => void;
   loudnessDeltaLu: number | null;
+  /** Absolute path to the loaded reference file (if any). */
+  referenceFilePath?: string | null;
+  /** Open the file picker to load a reference track. */
+  onLoadReference?: () => void;
+  /** Clear the loaded reference track. */
+  onClearReference?: () => void;
 }
 
-/** Wires the global "B" shortcut + renders the A/B toggle. */
+/** Wires the global "B" shortcut + renders the A/B toggle + reference loader. */
 function ABCompareSlot(props: ABSlotProps) {
   useABShortcut(props.mode, props.available, props.onToggle);
+  const refName = props.referenceFilePath
+    ? (props.referenceFilePath.split(/[\\/]/).pop() ?? props.referenceFilePath)
+    : null;
   return (
-    <LouiABCompare
-      mode={props.mode}
-      available={props.available}
-      onToggle={props.onToggle}
-      compensated={props.compensated}
-      onToggleCompensation={props.onToggleCompensation}
-      loudnessDeltaLu={props.loudnessDeltaLu}
-    />
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <LouiABCompare
+        mode={props.mode}
+        available={props.available}
+        onToggle={props.onToggle}
+        compensated={props.compensated}
+        onToggleCompensation={props.onToggleCompensation}
+        loudnessDeltaLu={props.loudnessDeltaLu}
+      />
+      {/* Reference track loader — "Ref" button and clear × */}
+      {refName ? (
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          fontFamily: typography.family.mono, fontSize: 9, color: text.muted,
+          border: `1px solid ${surface.border}`, borderRadius: 4,
+          padding: '2px 6px', maxWidth: 140, overflow: 'hidden',
+        }}>
+          <span title={props.referenceFilePath ?? ''} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+            Ref: {refName}
+          </span>
+          <button
+            type="button"
+            onClick={props.onClearReference}
+            title="레퍼런스 트랙 제거"
+            style={{ background: 'none', border: 'none', color: text.muted, cursor: 'pointer', padding: 0, lineHeight: 1, fontSize: 11 }}
+          >×</button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={props.onLoadReference}
+          title="레퍼런스 트랙 불러오기 — A(Before) 슬롯에 연결됩니다"
+          className="no-drag"
+          style={{
+            fontFamily: typography.family.mono, fontSize: 9, letterSpacing: '0.06em',
+            border: `1px solid ${surface.border}`, borderRadius: 4, padding: '2px 6px',
+            background: 'transparent', color: text.muted, cursor: 'pointer',
+          }}
+        >
+          + Ref
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -1097,6 +1141,9 @@ function ProductPageProduction() {
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const sourceAudioPath = useAudioStore((s) => s.selectedFile);
   const baseOptions     = useAudioStore((s) => s.options);
+  // Reference track for A/B compare.
+  const referenceFilePath = useAudioStore((s) => s.referenceFilePath);
+  const setReferenceFile  = useAudioStore((s) => s.setReferenceFile);
   // Revision workflow (M3-REVISION-WORKFLOW)
   const revisionGroup   = useAudioStore((s) => s.revisionGroup);
   const addRevision     = useAudioStore((s) => s.addRevision);
@@ -1163,8 +1210,13 @@ function ProductPageProduction() {
   // revision's preview when it differs from the baseline.
   const reRenderedSrc = previewSrcOverride
     ?? (activeIsNotBaseline ? toFileUrl(activePreview) : null);
-  const effectiveSrc = abMode === 'before' ? basePreviewSrc : (reRenderedSrc ?? basePreviewSrc);
-  const abAvailable = Boolean(reRenderedSrc);
+  // Reference file: when loaded, it becomes "A Before" (overrides the
+  // baseline master so the user can compare their master against any track).
+  const referenceSrc = referenceFilePath ? toFileUrl(referenceFilePath) : null;
+  const effectiveBeforeSrc = referenceSrc ?? basePreviewSrc;
+  const effectiveSrc = abMode === 'before' ? effectiveBeforeSrc : (reRenderedSrc ?? basePreviewSrc);
+  // A/B is available when there's a re-rendered preview OR a reference track.
+  const abAvailable = Boolean(reRenderedSrc) || Boolean(referenceSrc);
 
   const baseLufs = baselineRevision?.metrics.integratedLufs
     ?? (typeof masteringResult?.loudnessAfter?.integratedLufs === 'number' ? masteringResult.loudnessAfter.integratedLufs : null);
@@ -1254,6 +1306,23 @@ function ProductPageProduction() {
     restorePositionOnLoad();
     setAbMode(mode);
   }, [restorePositionOnLoad]);
+
+  // Load a reference track — IPC picks the file, stores it in the global
+  // ref state, and activates "Before" mode so the user hears it immediately.
+  const onLoadReference = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api) return;
+    const p = await api.invoke('file:open-dialog') as string | null;
+    if (!p) return;
+    restorePositionOnLoad();
+    setReferenceFile(p);
+    setAbMode('before'); // hear the reference first
+  }, [restorePositionOnLoad, setReferenceFile]);
+
+  const onClearReference = useCallback(() => {
+    setReferenceFile(null);
+    setAbMode('after');
+  }, [setReferenceFile]);
 
   // Loudness-compensated comparison — trim the louder side down to the
   // quieter reference so A/B reflects TONE, not loudness.
@@ -1394,6 +1463,9 @@ function ProductPageProduction() {
             compensated,
             onToggleCompensation: setCompensated,
             loudnessDeltaLu,
+            referenceFilePath,
+            onLoadReference,
+            onClearReference,
           }}
           {...(sourceAudioPath ? {
             preview: {

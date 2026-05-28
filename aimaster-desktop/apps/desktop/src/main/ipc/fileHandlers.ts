@@ -232,4 +232,44 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
   // ── Recent files (v1 stub) ────────────────────────────────────────────
   ipc.handle('file:get-recent', () => []);
+
+  // ── Session save / load (.louisession) ────────────────────────────────
+
+  ipc.handle('session:save', async (_e, sessionData: string) => {
+    if (!win) return null;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `loui-session-${stamp}.louisession`,
+      filters: [
+        { name: 'Loui Session', extensions: ['louisession'] },
+        { name: 'JSON',         extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, sessionData, 'utf8');
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `session:save failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('session:load', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [
+        { name: 'Loui Session', extensions: ['louisession', 'json'] },
+      ],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    try {
+      const data = fs.readFileSync(result.filePaths[0]!, 'utf8');
+      return { path: result.filePaths[0], data };
+    } catch (err) {
+      recordFailure('session', `session:load failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
 }

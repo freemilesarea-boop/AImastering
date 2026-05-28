@@ -474,6 +474,7 @@ function QueueRow({
   onRemove,
   onViewResult,
   onTweak,
+  onSetPreset,
   notify,
 }: {
   item: QueueItem;
@@ -482,6 +483,7 @@ function QueueRow({
   onRemove: (id: string) => void;
   onViewResult: (item: QueueItem) => void;
   onTweak: (item: QueueItem) => void;
+  onSetPreset: (id: string, presetId: string | undefined) => void;
   notify: (msg: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }) {
   const previewSrc = item.masteringResult?.previewPath
@@ -532,6 +534,22 @@ function QueueRow({
         <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
         <span className="flex-1 text-xs text-zinc-300 truncate">{item.fileName}</span>
         <span className="text-[10px] text-zinc-600 shrink-0">{statusLabel}</span>
+        {/* Per-file preset selector (pending only) */}
+        {item.status === 'pending' && (
+          <select
+            value={item.presetId ?? ''}
+            onChange={(e) => onSetPreset(item.id, e.target.value || undefined)}
+            onClick={(e) => e.stopPropagation()}
+            className="no-drag shrink-0 text-[10px] rounded px-1 py-0.5 border appearance-none"
+            style={{ maxWidth: 90, background: '#1c1c24', borderColor: 'rgba(167,139,250,0.25)', color: '#a1a1aa' }}
+            title="이 파일에 적용할 프리셋 (비워두면 전역 설정 사용)"
+          >
+            <option value="">기본 설정</option>
+            {['balanced', 'punchy', 'warm', 'bright', 'open', 'cinematic'].map((id) => (
+              <option key={id} value={id}>{id}</option>
+            ))}
+          </select>
+        )}
         {(item.status === 'pending' || item.status === 'error') && (
           <button
             onClick={(e) => { e.stopPropagation(); onTweak(item); }}
@@ -859,24 +877,26 @@ export default function HomePage() {
           updateQueueItem(item.id, { progress: m.percent, progressStage: m.stage });
         });
 
-        // Step 3: Master
-        // analyze 단계에서 측정된 loudness 를 함께 넘긴다 — Python 이 별도
-        // pass1 을 다시 돌리지 않게 해서 master 시간을 ~20% 단축한다.
+        // Step 3: Master — use per-file preset override when set.
+        const presetOverride = item.presetId
+          ? louiPresetToMasteringOptions(getPreset(item.presetId)!)
+          : null;
+        const itemOptions = presetOverride ? { ...options, ...presetOverride } : options;
         const result = await window.electronAPI!.invoke(
           'audio:master',
           item.filePath,
           '',
           {
-            style:              options.style,
-            targetLufs:         options.targetLufs,
-            targetTp:           options.targetTp,
-            sampleRate:         options.sampleRate,
-            bitDepth:           options.bitDepth,
-            applyAiCorrections: options.applyAiCorrections,
-            limiterStrength:    options.limiterStrength,
-            saturationAmount:   options.saturationAmount,
-            stereoWidth:        options.stereoWidth,
-            outputGainDb:       options.outputGainDb,
+            style:              itemOptions.style,
+            targetLufs:         itemOptions.targetLufs,
+            targetTp:           itemOptions.targetTp,
+            sampleRate:         itemOptions.sampleRate,
+            bitDepth:           itemOptions.bitDepth,
+            applyAiCorrections: itemOptions.applyAiCorrections,
+            limiterStrength:    itemOptions.limiterStrength,
+            saturationAmount:   itemOptions.saturationAmount,
+            stereoWidth:        itemOptions.stereoWidth,
+            outputGainDb:       itemOptions.outputGainDb,
             aiDetections:       analysis.aiDetection ?? {},
           },
           {
@@ -1025,6 +1045,7 @@ export default function HomePage() {
                     onRemove={removeFromQueue}
                     onViewResult={handleViewResult}
                     onTweak={handleTweakListen}
+                    onSetPreset={(id, presetId) => updateQueueItem(id, { presetId })}
                     notify={notify}
                   />
                 ))}

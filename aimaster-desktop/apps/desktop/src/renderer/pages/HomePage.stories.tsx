@@ -20,10 +20,10 @@ const baseOptions: MasteringOptions = {
 };
 
 function pending(id: string, name: string): QueueItem {
-  return { id, filePath: `/tmp/${name}`, fileName: name, status: 'pending', progress: 0, progressStage: '' };
+  return { id, filePath: `/tmp/${name}`, fileName: name, status: 'pending', progress: 0, progressStage: '', presetId: undefined };
 }
 function mastering(id: string, name: string, progress: number): QueueItem {
-  return { id, filePath: `/tmp/${name}`, fileName: name, status: 'mastering', progress, progressStage: 'limiter' };
+  return { id, filePath: `/tmp/${name}`, fileName: name, status: 'mastering', progress, progressStage: 'limiter', presetId: undefined };
 }
 
 interface Seed {
