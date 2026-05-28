@@ -721,6 +721,7 @@ function ProductionPreviewProvider({
   onRendered,
   presetId,
   onRevisionCreated,
+  freeEqBands,
   children,
 }: {
   sourceAudioPath: string;
@@ -732,6 +733,8 @@ function ProductionPreviewProvider({
   presetId?: string;
   /** A new full master (revision) finished — append it to the group. */
   onRevisionCreated: (input: RevisionInput) => void;
+  /** Free parametric EQ bands — flow into Rust offline render only when non-empty. */
+  freeEqBands?: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[];
   children: React.ReactNode;
 }) {
   const { state } = useAllModuleParameters();
@@ -950,9 +953,19 @@ function ProductionPreviewProvider({
         let fallbackUsed = false;
 
         if (useRust) {
+          // Map UI parametric EQ bands → the offline-config wire shape (Phase 3b).
+          // 0=HighPass, 1=LowPass, 2=Bell, 3=LowShelf, 4=HighShelf
+          const PARAMETRIC_TYPE_MAP = { highpass: 0, lowpass: 1, bell: 2, lowshelf: 3, highshelf: 4 } as const;
+          const offlineBands = (freeEqBands ?? []).map((b) => ({
+            type: PARAMETRIC_TYPE_MAP[b.type] as 0 | 1 | 2 | 3 | 4,
+            frequencyHz: b.frequencyHz,
+            gainDb: b.gainDb,
+            q: b.q,
+            enabled: b.enabled,
+          }));
           const resp = await withTimeout(api.invoke('audio:master-rust-experimental', {
             sourcePath: sourceAudioPath,
-            chainConfig: stateToChainConfig(state),
+            chainConfig: { ...stateToChainConfig(state), parametricBands: offlineBands },
             options,
           })) as {
             ok: boolean; backend?: 'rust' | 'python'; fallbackUsed?: boolean;
@@ -1003,7 +1016,7 @@ function ProductionPreviewProvider({
         setCreatingRevision(false);
       }
     })();
-  }, [baseOptions, exportOverride, sourceAudioPath, presetId, state]);
+  }, [baseOptions, exportOverride, sourceAudioPath, presetId, state, freeEqBands]);
 
   const bridge: PreviewBridge = {
     summary, phase, lastRenderedAt, error, onUpdate,
@@ -2179,6 +2192,7 @@ function ProductPageProductionInner(props: {
             onRendered={props.preview.onRendered}
             {...(props.preview.presetId ? { presetId: props.preview.presetId } : {})}
             onRevisionCreated={props.preview.onRevisionCreated}
+            {...(props.freeEqBands ? { freeEqBands: props.freeEqBands } : {})}
           >
             {layout}
             {debugOverlay}

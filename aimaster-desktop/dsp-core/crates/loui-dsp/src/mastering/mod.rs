@@ -25,6 +25,7 @@
 mod config;
 mod gain;
 mod eq;
+mod parametric_eq;
 mod dynamics;
 mod imager;
 mod limiter;
@@ -33,6 +34,7 @@ mod chain;
 pub use config::{
     MasteringChainConfig, EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
 };
+pub use parametric_eq::{ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS};
 pub use chain::{MasteringChain, GainReduction};
 
 /// A stereo processing module in the mastering chain.

@@ -105,4 +105,5 @@ pub use buffer::{AudioBlockMut, AudioBlockRef, AudioBuffer};
 pub use mastering::{
     MasteringChain, MasteringChainConfig, GainReduction,
     EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
+    ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS,
 };

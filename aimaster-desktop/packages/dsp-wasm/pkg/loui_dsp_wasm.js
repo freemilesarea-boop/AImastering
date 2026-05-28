@@ -148,6 +148,14 @@ export class LouiMasteringChain {
         wasm.__wbg_louimasteringchain_free(ptr, 0);
     }
     /**
+     * Dynamics (compressor) gain reduction (dB, ≥ 0) from the last block.
+     * @returns {number}
+     */
+    dynamicsGrDb() {
+        const ret = wasm.louimasteringchain_dynamicsGrDb(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * Limiter gain reduction (dB, ≥ 0) from the last block.
      * @returns {number}
      */
@@ -165,6 +173,14 @@ export class LouiMasteringChain {
         this.__wbg_ptr = ret;
         LouiMasteringChainFinalization.register(this, this.__wbg_ptr, this);
         return this;
+    }
+    /**
+     * Count of currently-active parametric EQ bands (for diagnostics).
+     * @returns {number}
+     */
+    parametricEqBandCount() {
+        const ret = wasm.louimasteringchain_parametricEqBandCount(this.__wbg_ptr);
+        return ret >>> 0;
     }
     /**
      * Process one block of planar stereo audio in place.  The mutations
@@ -223,6 +239,41 @@ export class LouiMasteringChain {
      */
     setConfig(input_gain_db, eq_low_cut_hz, eq_low_shelf_db, eq_presence_db, eq_air_db, eq_adaptive, eq_bypass, dyn_threshold_db, dyn_ratio, dyn_attack_ms, dyn_release_ms, dyn_mix_pct, dyn_bypass, img_width_pct, img_low_mono_hz, img_bypass, lim_ceiling_dbtp, lim_lookahead_ms, lim_isp, lim_bypass, output_gain_db, master_bypass) {
         wasm.louimasteringchain_setConfig(this.__wbg_ptr, input_gain_db, eq_low_cut_hz, eq_low_shelf_db, eq_presence_db, eq_air_db, eq_adaptive, eq_bypass, dyn_threshold_db, dyn_ratio, dyn_attack_ms, dyn_release_ms, dyn_mix_pct, dyn_bypass, img_width_pct, img_low_mono_hz, img_bypass, lim_ceiling_dbtp, lim_lookahead_ms, lim_isp, lim_bypass, output_gain_db, master_bypass);
+    }
+    /**
+     * Replace the free parametric EQ band list.  Bands are passed as five
+     * parallel typed arrays so JS can populate them without per-band JS
+     * object overhead (single zero-copy pass into WASM memory):
+     *
+     *   types:    Uint8Array      0=HighPass, 1=LowPass, 2=Bell, 3=LowShelf, 4=HighShelf
+     *   freqs:    Float64Array    Hz
+     *   gains:    Float64Array    dB (ignored for cuts/passes)
+     *   qs:       Float64Array    Q (0.1..18)
+     *   enableds: Uint8Array      0 = off, non-zero = on
+     *
+     * All arrays must have the same length.  Pass empty arrays to clear
+     * all bands (chain becomes a parametric-EQ passthrough).
+     * @param {Uint8Array} types
+     * @param {Float64Array} freqs
+     * @param {Float64Array} gains
+     * @param {Float64Array} qs
+     * @param {Uint8Array} enableds
+     */
+    setParametricEqBands(types, freqs, gains, qs, enableds) {
+        const ptr0 = passArray8ToWasm0(types, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(freqs, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(gains, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayF64ToWasm0(qs, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArray8ToWasm0(enableds, wasm.__wbindgen_malloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ret = wasm.louimasteringchain_setParametricEqBands(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
 }
 if (Symbol.dispose) LouiMasteringChain.prototype[Symbol.dispose] = LouiMasteringChain.prototype.free;
@@ -715,6 +766,14 @@ function getFloat32ArrayMemory0() {
     return cachedFloat32ArrayMemory0;
 }
 
+let cachedFloat64ArrayMemory0 = null;
+function getFloat64ArrayMemory0() {
+    if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
+        cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
+    }
+    return cachedFloat64ArrayMemory0;
+}
+
 function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
 }
@@ -731,9 +790,23 @@ function isLikeNone(x) {
     return x === undefined || x === null;
 }
 
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
 function passArrayF32ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 4, 4) >>> 0;
     getFloat32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayF64ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 8, 8) >>> 0;
+    getFloat64ArrayMemory0().set(arg, ptr / 8);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }
@@ -817,6 +890,7 @@ function __wbg_finalize_init(instance, module) {
     wasmModule = module;
     cachedDataViewMemory0 = null;
     cachedFloat32ArrayMemory0 = null;
+    cachedFloat64ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;

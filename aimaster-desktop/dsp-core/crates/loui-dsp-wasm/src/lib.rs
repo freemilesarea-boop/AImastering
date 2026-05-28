@@ -436,6 +436,7 @@ impl LouiSpectrumAnalyzer {
 use loui_dsp::{
     MasteringChain, MasteringChainConfig,
     EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
+    ParametricBand, ParametricBandType,
 };
 
 /// WASM handle for the preview mastering chain.
@@ -530,5 +531,56 @@ impl LouiMasteringChain {
     /// Clear all module state (transport seek / source swap).
     pub fn reset(&mut self) {
         self.inner.reset();
+    }
+
+    /// Replace the free parametric EQ band list.  Bands are passed as five
+    /// parallel typed arrays so JS can populate them without per-band JS
+    /// object overhead (single zero-copy pass into WASM memory):
+    ///
+    ///   types:    Uint8Array      0=HighPass, 1=LowPass, 2=Bell, 3=LowShelf, 4=HighShelf
+    ///   freqs:    Float64Array    Hz
+    ///   gains:    Float64Array    dB (ignored for cuts/passes)
+    ///   qs:       Float64Array    Q (0.1..18)
+    ///   enableds: Uint8Array      0 = off, non-zero = on
+    ///
+    /// All arrays must have the same length.  Pass empty arrays to clear
+    /// all bands (chain becomes a parametric-EQ passthrough).
+    #[wasm_bindgen(js_name = setParametricEqBands)]
+    pub fn set_parametric_eq_bands(
+        &mut self,
+        types: &[u8], freqs: &[f64], gains: &[f64], qs: &[f64], enableds: &[u8],
+    ) -> Result<(), JsError> {
+        let n = types.len();
+        if freqs.len() != n || gains.len() != n || qs.len() != n || enableds.len() != n {
+            return Err(JsError::new("parametric EQ arrays must have equal length"));
+        }
+        // Build a small stack-friendly Vec; n is bounded by UI cap (7) but the
+        // Rust chain accepts up to MAX_PARAMETRIC_BANDS (16).
+        let mut bands: Vec<ParametricBand> = Vec::with_capacity(n);
+        for i in 0..n {
+            let kind = match types[i] {
+                0 => ParametricBandType::HighPass,
+                1 => ParametricBandType::LowPass,
+                2 => ParametricBandType::Bell,
+                3 => ParametricBandType::LowShelf,
+                4 => ParametricBandType::HighShelf,
+                other => return Err(JsError::new(&format!("invalid band type {other} at index {i}"))),
+            };
+            bands.push(ParametricBand {
+                kind,
+                frequency_hz: freqs[i],
+                gain_db: gains[i],
+                q: qs[i],
+                enabled: enableds[i] != 0,
+            });
+        }
+        self.inner.set_parametric_eq_bands(&bands);
+        Ok(())
+    }
+
+    /// Count of currently-active parametric EQ bands (for diagnostics).
+    #[wasm_bindgen(js_name = parametricEqBandCount)]
+    pub fn parametric_eq_band_count(&self) -> u32 {
+        self.inner.parametric_eq_band_count() as u32
     }
 }

@@ -3,6 +3,7 @@
 use super::config::MasteringChainConfig;
 use super::gain::Gain;
 use super::eq::Eq;
+use super::parametric_eq::{ParametricBand, ParametricEq};
 use super::dynamics::Dynamics;
 use super::imager::Imager;
 use super::limiter::Limiter;
@@ -38,6 +39,7 @@ const SAFETY_PEAK_LIN: f32 = 4.0;
 pub struct MasteringChain {
     cfg: MasteringChainConfig,
     input_gain: Gain,
+    parametric_eq: ParametricEq,
     eq: Eq,
     dynamics: Dynamics,
     imager: Imager,
@@ -56,6 +58,7 @@ impl MasteringChain {
         Self {
             cfg,
             input_gain: Gain::from_db(cfg.input_gain_db),
+            parametric_eq: ParametricEq::new(sample_rate),
             eq: Eq::new(sample_rate, cfg.eq),
             dynamics: Dynamics::new(sample_rate, cfg.dynamics),
             imager: Imager::new(sample_rate, cfg.imager),
@@ -66,6 +69,18 @@ impl MasteringChain {
             dry_r: vec![0.0; SAFETY_SCRATCH],
             safety_events: 0,
         }
+    }
+
+    /// Replace the free parametric EQ band list (independent of `set_config`,
+    /// since the band list is variable-length and lives outside the flat
+    /// `MasteringChainConfig` value type).  Empty list = bypass.
+    pub fn set_parametric_eq_bands(&mut self, bands: &[ParametricBand]) {
+        self.parametric_eq.set_bands(bands);
+    }
+
+    /// Number of enabled parametric-EQ bands currently active.
+    pub fn parametric_eq_band_count(&self) -> usize {
+        self.parametric_eq.active_bands()
     }
 
     /// Number of blocks the output-safety layer had to replace with the
@@ -114,6 +129,7 @@ impl MasteringChain {
         }
 
         self.input_gain.process_stereo(left, right);
+        self.parametric_eq.process_stereo(left, right);
         self.eq.process_stereo(left, right);
         self.dynamics.process_stereo(left, right);
         self.imager.process_stereo(left, right);
@@ -165,6 +181,7 @@ impl MasteringChain {
 
     /// Clear all module state (transport seek / source swap).
     pub fn reset(&mut self) {
+        self.parametric_eq.reset();
         self.eq.reset();
         self.dynamics.reset();
         self.imager.reset();

@@ -9,6 +9,16 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
 
+/** One band in the free parametric EQ (RUST-OFFLINE-RENDER-FREE-EQ). */
+export interface OfflineParametricBand {
+  /** 0=HighPass, 1=LowPass, 2=Bell, 3=LowShelf, 4=HighShelf */
+  type: 0 | 1 | 2 | 3 | 4;
+  frequencyHz: number;
+  gainDb: number;
+  q: number;
+  enabled: boolean;
+}
+
 /** The flat config passed to the WASM chain's `setConfig` (same order as the
  *  realtime preview's `RealtimeChainConfig`). */
 export interface OfflineChainConfig {
@@ -21,6 +31,8 @@ export interface OfflineChainConfig {
   limCeilingDbtp: number; limLookaheadMs: number; limIsp: boolean; limBypass: boolean;
   outputGainDb: number;
   masterBypass: boolean;
+  /** Optional free parametric EQ bands.  Absent / empty = no parametric EQ. */
+  parametricBands?: OfflineParametricBand[];
 }
 
 /** Structural type of the WASM chain (avoids a hard dep on the typings). */
@@ -35,10 +47,38 @@ export interface WasmMasteringChain {
     limCeilingDbtp: number, limLookaheadMs: number, limIsp: boolean, limBypass: boolean,
     outputGainDb: number, masterBypass: boolean,
   ): void;
+  /** Free parametric EQ — pass parallel typed arrays (length must match). */
+  setParametricEqBands(
+    types: Uint8Array, freqs: Float64Array, gains: Float64Array, qs: Float64Array, enableds: Uint8Array,
+  ): void;
+  parametricEqBandCount(): number;
   processStereo(left: Float32Array, right: Float32Array): void;
   limiterGrDb(): number;
   reset(): void;
   free?(): void;
+}
+
+/** Pack `OfflineParametricBand[]` into the 5 parallel typed arrays the WASM
+ *  binding expects.  Disabled bands are still included — the Rust side
+ *  filters them out, and including them keeps the round-trip honest. */
+export function packParametricBands(bands: OfflineParametricBand[]): {
+  types: Uint8Array; freqs: Float64Array; gains: Float64Array; qs: Float64Array; enableds: Uint8Array;
+} {
+  const n = bands.length;
+  const types = new Uint8Array(n);
+  const freqs = new Float64Array(n);
+  const gains = new Float64Array(n);
+  const qs = new Float64Array(n);
+  const enableds = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const b = bands[i]!;
+    types[i] = b.type;
+    freqs[i] = b.frequencyHz;
+    gains[i] = b.gainDb;
+    qs[i] = b.q;
+    enableds[i] = b.enabled ? 1 : 0;
+  }
+  return { types, freqs, gains, qs, enableds };
 }
 
 interface WasmModule {
@@ -101,7 +141,8 @@ export function createOfflineAnalyzer(sampleRate: number, channels = 2): WasmAna
   return new mod.LouiAnalyzer(sampleRate, channels);
 }
 
-/** Apply a flat config to a chain (spreads the 22 args in setConfig order). */
+/** Apply a flat config to a chain (spreads the 22 args in setConfig order).
+ *  Also applies the optional free parametric EQ band list. */
 export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineChainConfig): void {
   chain.setConfig(
     c.inputGainDb,
@@ -111,4 +152,8 @@ export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineChainCon
     c.limCeilingDbtp, c.limLookaheadMs, c.limIsp, c.limBypass,
     c.outputGainDb, c.masterBypass,
   );
+  // Free parametric EQ — always call so disabling the chain is a clean reset.
+  const bands = c.parametricBands ?? [];
+  const packed = packParametricBands(bands);
+  chain.setParametricEqBands(packed.types, packed.freqs, packed.gains, packed.qs, packed.enableds);
 }

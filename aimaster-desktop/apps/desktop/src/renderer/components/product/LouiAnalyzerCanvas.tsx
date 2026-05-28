@@ -243,10 +243,9 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           />
         )}
       </div>
-      {/* Free EQ honesty banner — Phase 2 makes this audible in realtime preview,
-          but the EQ is NOT yet baked into the exported WAV (Phase 3).  The
-          banner makes this distinction explicit so the user is never misled
-          about what the offline render contains. */}
+      {/* Free EQ status banner — Phase 3b complete: bands are baked into
+          Rust offline render (when the rust backend is selected).  The
+          banner now confirms which export path includes the EQ. */}
       {freeEqEnabled && !duoMode && (
         <div style={{
           display: 'flex',
@@ -255,14 +254,14 @@ export function LouiAnalyzerCanvas(props: LouiAnalyzerCanvasProps) {
           gap: 6,
           paddingInline: space['4'],
           paddingBlock: 4,
-          background: meter.warn.background,
-          borderTop: `1px solid ${meter.warn.foreground}`,
+          background: meter.safe.background,
+          borderTop: `1px solid ${meter.safe.foreground}`,
           fontFamily: typography.family.mono,
           fontSize: 9,
-          color: meter.warn.foreground,
+          color: meter.safe.foreground,
           letterSpacing: '0.04em',
         }}>
-          FREE EQ — 실시간 프리뷰에는 들리지만 익스포트(WAV)에는 아직 반영되지 않습니다 (Phase 3 예정).
+          FREE EQ — 실시간 프리뷰 + Rust offline render 익스포트에 모두 반영됩니다.
         </div>
       )}
 

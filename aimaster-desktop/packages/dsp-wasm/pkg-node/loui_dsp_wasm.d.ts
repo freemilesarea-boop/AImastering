@@ -72,6 +72,10 @@ export class LouiMasteringChain {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Dynamics (compressor) gain reduction (dB, ≥ 0) from the last block.
+     */
+    dynamicsGrDb(): number;
+    /**
      * Limiter gain reduction (dB, ≥ 0) from the last block.
      */
     limiterGrDb(): number;
@@ -80,6 +84,10 @@ export class LouiMasteringChain {
      * config = transparent pass-through until the UI sets parameters).
      */
     constructor(sample_rate: number);
+    /**
+     * Count of currently-active parametric EQ bands (for diagnostics).
+     */
+    parametricEqBandCount(): number;
     /**
      * Process one block of planar stereo audio in place.  The mutations
      * are reflected back into the JS-side Float32Arrays.
@@ -100,6 +108,21 @@ export class LouiMasteringChain {
      * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
      */
     setConfig(input_gain_db: number, eq_low_cut_hz: number, eq_low_shelf_db: number, eq_presence_db: number, eq_air_db: number, eq_adaptive: boolean, eq_bypass: boolean, dyn_threshold_db: number, dyn_ratio: number, dyn_attack_ms: number, dyn_release_ms: number, dyn_mix_pct: number, dyn_bypass: boolean, img_width_pct: number, img_low_mono_hz: number, img_bypass: boolean, lim_ceiling_dbtp: number, lim_lookahead_ms: number, lim_isp: boolean, lim_bypass: boolean, output_gain_db: number, master_bypass: boolean): void;
+    /**
+     * Replace the free parametric EQ band list.  Bands are passed as five
+     * parallel typed arrays so JS can populate them without per-band JS
+     * object overhead (single zero-copy pass into WASM memory):
+     *
+     *   types:    Uint8Array      0=HighPass, 1=LowPass, 2=Bell, 3=LowShelf, 4=HighShelf
+     *   freqs:    Float64Array    Hz
+     *   gains:    Float64Array    dB (ignored for cuts/passes)
+     *   qs:       Float64Array    Q (0.1..18)
+     *   enableds: Uint8Array      0 = off, non-zero = on
+     *
+     * All arrays must have the same length.  Pass empty arrays to clear
+     * all bands (chain becomes a parametric-EQ passthrough).
+     */
+    setParametricEqBands(types: Uint8Array, freqs: Float64Array, gains: Float64Array, qs: Float64Array, enableds: Uint8Array): void;
 }
 
 /**
