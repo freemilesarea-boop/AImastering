@@ -1053,6 +1053,12 @@ interface ABSlotProps {
   loudnessDeltaLu: number | null;
   /** Absolute path to the loaded reference file (if any). */
   referenceFilePath?: string | null;
+  /**
+   * Measured integrated LUFS of the reference track.
+   * null = reference loaded but measurement still in progress.
+   * undefined = no reference loaded.
+   */
+  referenceLufs?: number | null;
   /** Open the file picker to load a reference track. */
   onLoadReference?: () => void;
   /** Clear the loaded reference track. */
@@ -1077,21 +1083,39 @@ function ABCompareSlot(props: ABSlotProps) {
       />
       {/* Reference track loader — "Ref" button and clear × */}
       {refName ? (
-        <div style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4,
-          fontFamily: typography.family.mono, fontSize: 9, color: text.muted,
-          border: `1px solid ${surface.border}`, borderRadius: 4,
-          padding: '2px 6px', maxWidth: 140, overflow: 'hidden',
-        }}>
-          <span title={props.referenceFilePath ?? ''} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-            Ref: {refName}
+        <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+          {/* Filename chip */}
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            fontFamily: typography.family.mono, fontSize: 9, color: text.muted,
+            border: `1px solid ${surface.border}`, borderRadius: 4,
+            padding: '2px 6px', maxWidth: 148, overflow: 'hidden',
+          }}>
+            <span title={props.referenceFilePath ?? ''} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+              Ref: {refName}
+            </span>
+            <button
+              type="button"
+              onClick={props.onClearReference}
+              title="레퍼런스 트랙 제거"
+              style={{ background: 'none', border: 'none', color: text.muted, cursor: 'pointer', padding: 0, lineHeight: 1, fontSize: 11, flexShrink: 0 }}
+            >×</button>
+          </div>
+          {/* LUFS measurement result / measuring indicator */}
+          <span style={{
+            fontFamily: typography.family.mono, fontSize: 8,
+            color: props.referenceLufs !== null && props.referenceLufs !== undefined
+              ? meter.safe.foreground
+              : text.muted,
+            letterSpacing: '0.03em',
+            paddingInline: 2,
+          }}>
+            {props.referenceLufs === null
+              ? '측정 중…'
+              : props.referenceLufs !== undefined
+                ? `${props.referenceLufs.toFixed(1)} LUFS`
+                : ''}
           </span>
-          <button
-            type="button"
-            onClick={props.onClearReference}
-            title="레퍼런스 트랙 제거"
-            style={{ background: 'none', border: 'none', color: text.muted, cursor: 'pointer', padding: 0, lineHeight: 1, fontSize: 11 }}
-          >×</button>
         </div>
       ) : (
         <button
@@ -1202,6 +1226,9 @@ function ProductPageProduction() {
   // Reference track for A/B compare.
   const referenceFilePath = useAudioStore((s) => s.referenceFilePath);
   const setReferenceFile  = useAudioStore((s) => s.setReferenceFile);
+  // Measured integrated LUFS of the reference track (null = measuring / unmeasured).
+  const referenceLufs    = useAudioStore((s) => s.referenceLufs);
+  const setReferenceLufs = useAudioStore((s) => s.setReferenceLufs);
   // Revision workflow (M3-REVISION-WORKFLOW)
   const revisionGroup   = useAudioStore((s) => s.revisionGroup);
   const addRevision     = useAudioStore((s) => s.addRevision);
@@ -1286,10 +1313,12 @@ function ProductPageProduction() {
   // A/B is available when there's a re-rendered preview OR a reference track.
   const abAvailable = Boolean(reRenderedSrc) || Boolean(referenceSrc);
 
-  // When a reference is loaded its true LUFS is unknown until played + measured,
-  // so the "before" LUFS becomes null and LU comp can't trim — honest.
+  // When a reference is loaded, baseLufs = the measured integratedLufs of the
+  // reference file (null while still measuring → LU comp stays disabled until
+  // the analysis completes, which is honest).  Without a reference, use the
+  // baseline revision / legacy masteringResult loudness.
   const baseLufs = referenceSrc !== null
-    ? null
+    ? referenceLufs   // null = measuring (comp disabled); number = measured (comp available)
     : (baselineRevision?.metrics.integratedLufs
         ?? (typeof masteringResult?.loudnessAfter?.integratedLufs === 'number' ? masteringResult.loudnessAfter.integratedLufs : null));
   // "After" loudness: the quick-render value when overriding, else the
@@ -1379,8 +1408,9 @@ function ProductPageProduction() {
     setAbMode(mode);
   }, [restorePositionOnLoad]);
 
-  // Load a reference track — IPC picks the file, stores it in the global
-  // ref state, and activates "Before" mode so the user hears it immediately.
+  // Load a reference track — IPC picks the file, stores it, activates Before
+  // mode, then measures the integrated LUFS in the background so LU comp can
+  // work honestly (disabled until the measurement completes).
   const onLoadReference = useCallback(async () => {
     const api = window.electronAPI;
     if (!api) return;
@@ -1389,7 +1419,22 @@ function ProductPageProduction() {
     restorePositionOnLoad();
     setReferenceFile(p);
     setAbMode('before'); // hear the reference first
-  }, [restorePositionOnLoad, setReferenceFile]);
+    // Reset prior measurement immediately so LU comp is disabled while measuring.
+    setReferenceLufs(null);
+    // Background loudness analysis — no await; fires and updates when ready.
+    void (async () => {
+      try {
+        type AnalyzeResult = { loudness?: { integratedLufs?: number } };
+        const result = await api.invoke('audio:analyze', p) as AnalyzeResult | null;
+        const lufs = result?.loudness?.integratedLufs;
+        if (typeof lufs === 'number') setReferenceLufs(lufs);
+        // If analysis fails or returns no loudness, referenceLufs stays null
+        // and LU comp stays off — we never fabricate a value.
+      } catch {
+        // Silently leave referenceLufs as null (LU comp remains disabled).
+      }
+    })();
+  }, [restorePositionOnLoad, setReferenceFile, setReferenceLufs]);
 
   const onClearReference = useCallback(() => {
     setReferenceFile(null);
@@ -1581,6 +1626,7 @@ function ProductPageProduction() {
             onToggleCompensation: setCompensated,
             loudnessDeltaLu,
             referenceFilePath,
+            referenceLufs,
             onLoadReference,
             onClearReference,
           }}

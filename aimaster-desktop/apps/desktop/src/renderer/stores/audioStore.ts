@@ -181,6 +181,13 @@ interface AudioStore {
   /** Absolute path to a user-loaded reference audio file (null = none). */
   referenceFilePath: string | null;
   setReferenceFile: (path: string | null) => void;
+  /**
+   * Integrated LUFS of the reference track measured via audio:analyze.
+   * null = reference loaded but measurement still in progress (LU comp disabled).
+   * undefined-like state = no reference (referenceFilePath is null).
+   */
+  referenceLufs: number | null;
+  setReferenceLufs: (lufs: number | null) => void;
 
   // ── Revision workflow (M3-REVISION-WORKFLOW) ───────────────────────────
   /** Multiple mastering versions of the active source file.  null = none. */
@@ -267,7 +274,10 @@ export const useAudioStore = create<AudioStore>((set) => ({
 
   // ── Reference track ─────────────────────────────────────────────────
   referenceFilePath: null,
-  setReferenceFile: (path) => set({ referenceFilePath: path }),
+  // Clear referenceLufs whenever the reference file is removed.
+  setReferenceFile: (path) => set({ referenceFilePath: path, ...(path === null ? { referenceLufs: null } : {}) }),
+  referenceLufs: null,
+  setReferenceLufs: (lufs) => set({ referenceLufs: lufs }),
 
   // ── Revision workflow ────────────────────────────────────────────────
   revisionGroup: null,
