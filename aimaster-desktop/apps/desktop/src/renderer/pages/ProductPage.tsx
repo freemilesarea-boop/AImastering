@@ -152,6 +152,11 @@ function ProductLayoutInner({
   moduleSuiteSlot,
   abControl,
   abMode,
+  loopRegion,
+  loopActive,
+  onLoopRegion,
+  playbackRate,
+  onPlaybackRateChange,
 }: {
   session: AnalyzerSession | null;
   active: boolean;
@@ -186,6 +191,11 @@ function ProductLayoutInner({
   abControl?: React.ReactNode;
   /** Current A/B compare mode — threads to the spectrum canvas for ghost overlay. */
   abMode?: ABMode;
+  loopRegion?: import('../components/product/LouiPlaybackBar.js').LoopRegion | null;
+  loopActive?: boolean;
+  onLoopRegion?: (r: import('../components/product/LouiPlaybackBar.js').LoopRegion | null) => void;
+  playbackRate?: number;
+  onPlaybackRateChange?: (rate: number) => void;
 }) {
   // Pending summary (production path only; null in storybook).
   const previewBridge = usePreviewBridge();
@@ -279,7 +289,53 @@ function ProductLayoutInner({
               </svg>
             )}
           </button>
-          <LouiPlaybackBar isPlaying={Boolean(isPlaying)} {...(onSeek ? { onSeek } : {})} />
+          <LouiPlaybackBar
+            isPlaying={Boolean(isPlaying)}
+            {...(onSeek ? { onSeek } : {})}
+            {...(loopRegion !== undefined ? { loopRegion } : {})}
+            {...(loopActive !== undefined ? { loopActive } : {})}
+            {...(onLoopRegion ? { onLoopRegion } : {})}
+          />
+          {/* Playback rate selector. */}
+          {onPlaybackRateChange && (
+            <select
+              value={playbackRate ?? 1}
+              onChange={(e) => onPlaybackRateChange(Number(e.target.value))}
+              title="재생 속도 (Shift+drag 바로 위에서 루프 영역 설정 가능)"
+              className="no-drag"
+              style={{
+                fontFamily: typography.family.mono,
+                fontSize: 10,
+                background: 'transparent',
+                border: `1px solid ${surface.border}`,
+                borderRadius: 4,
+                color: (playbackRate ?? 1) !== 1 ? meter.warn.foreground : text.muted,
+                padding: '1px 4px',
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => (
+                <option key={r} value={r}>{r === 1 ? '1×' : `${r}×`}</option>
+              ))}
+            </select>
+          )}
+          {/* Loop active badge — shows "LOOP" when a loop region is armed. */}
+          {loopRegion && (
+            <span
+              title={`루프 ${loopActive ? '활성' : '비활성'} (L 키로 토글)`}
+              style={{
+                fontFamily: typography.family.mono, fontSize: 9,
+                letterSpacing: '0.06em',
+                color: loopActive ? meter.warn.foreground : text.muted,
+                flexShrink: 0,
+                cursor: 'default',
+                userSelect: 'none',
+              }}
+            >
+              LOOP
+            </span>
+          )}
           {abControl}
         </div>
       )}
@@ -1172,6 +1228,14 @@ function ProductPageProduction() {
   // Audio-element diagnostics (honest source-load state for QA + UX).
   const [audioDiag, setAudioDiag] = useState<AudioDiag>({ error: null, readyState: 0, networkState: 0 });
   const [presetId, setPresetId] = useState<string | undefined>(undefined);
+  // Loop region (Shift+drag on waveform bar) + playback rate.
+  const [loopRegion, setLoopRegion] = useState<import('../components/product/LouiPlaybackBar.js').LoopRegion | null>(null);
+  const [loopActive, setLoopActive] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1.0);
+  const loopActiveRef = useRef(false);
+  const loopRegionRef = useRef<import('../components/product/LouiPlaybackBar.js').LoopRegion | null>(null);
+  useEffect(() => { loopActiveRef.current = loopActive; }, [loopActive]);
+  useEffect(() => { loopRegionRef.current = loopRegion; }, [loopRegion]);
   const [selectedModule, setSelectedModule] = useState<ModuleCardDef['id'] | undefined>(undefined);
   // Preview source override — set when a re-render swaps the preview file.
   const [previewSrcOverride, setPreviewSrcOverride] = useState<string | null>(null);
@@ -1377,6 +1441,27 @@ function ProductPageProduction() {
     return () => window.removeEventListener('keydown', handler);
   }, [togglePlay]);
 
+  // "L" = toggle loop on/off (only when a region is set).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'l' && e.key !== 'L') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      setLoopActive((prev) => !prev);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Apply playback rate to audio element whenever it changes.
+  useEffect(() => {
+    const a = audioRef.current;
+    if (a) a.playbackRate = playbackRate;
+  }, [playbackRate]);
+
   const seekTo = useCallback((ratio: number) => {
     const a = audioRef.current;
     if (!a || !duration) return;
@@ -1415,7 +1500,15 @@ function ProductPageProduction() {
         onEnded={() => { setPlaying(false); setTime(0); }}
         onTimeUpdate={() => {
           const a = audioRef.current;
-          if (a) setTime(a.currentTime);
+          if (!a) return;
+          setTime(a.currentTime);
+          // Loop enforcement: when loop is active and playhead exits the region, wrap.
+          if (loopActiveRef.current && loopRegionRef.current && Number.isFinite(a.duration) && a.duration > 0) {
+            const { out } = loopRegionRef.current;
+            if (a.currentTime >= out * a.duration) {
+              a.currentTime = loopRegionRef.current.in * a.duration;
+            }
+          }
         }}
         onLoadedMetadata={() => {
           const a = audioRef.current;
@@ -1472,6 +1565,11 @@ function ProductPageProduction() {
             onLoadReference,
             onClearReference,
           }}
+          loopRegion={loopRegion}
+          loopActive={loopActive}
+          onLoopRegion={(r) => { setLoopRegion(r); if (!r) setLoopActive(false); }}
+          playbackRate={playbackRate}
+          onPlaybackRateChange={setPlaybackRate}
           {...(sourceAudioPath ? {
             preview: {
               sourceAudioPath,
@@ -1509,6 +1607,11 @@ function ProductPageProductionInner(props: {
   onExport: () => void;
   onSettings: () => void;
   ab: ABSlotProps;
+  loopRegion?: import('../components/product/LouiPlaybackBar.js').LoopRegion | null;
+  loopActive?: boolean;
+  onLoopRegion?: (r: import('../components/product/LouiPlaybackBar.js').LoopRegion | null) => void;
+  playbackRate?: number;
+  onPlaybackRateChange?: (rate: number) => void;
   preview?: {
     sourceAudioPath: string;
     baseOptions: MasteringOptions;
@@ -1664,6 +1767,24 @@ function ProductPageProductionInner(props: {
     } catch { setSessionStatus('error'); setTimeout(() => setSessionStatus('idle'), 3000); }
   }, [replaceParameterState, updateOptionsFromSession, props, setReferenceFileFromSession]);
 
+  // Ctrl/Cmd+S → save session, +O → load session, +E → export.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const lower = e.key.toLowerCase();
+      if (lower !== 's' && lower !== 'o' && lower !== 'e') return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      if (lower === 's') void onSaveSession();
+      else if (lower === 'o') void onLoadSession();
+      else props.onExport();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onSaveSession, onLoadSession, props.onExport]);
+
   const layout = (
     <ProductLayoutInner
       session={session}
@@ -1689,6 +1810,11 @@ function ProductPageProductionInner(props: {
       onSettings={props.onSettings}
       abControl={<ABCompareSlot {...props.ab} />}
       {...(props.ab.available ? { abMode: props.ab.mode } : {})}
+      {...(props.loopRegion !== undefined ? { loopRegion: props.loopRegion } : {})}
+      {...(props.loopActive !== undefined ? { loopActive: props.loopActive } : {})}
+      {...(props.onLoopRegion ? { onLoopRegion: props.onLoopRegion } : {})}
+      {...(props.playbackRate !== undefined ? { playbackRate: props.playbackRate } : {})}
+      {...(props.onPlaybackRateChange ? { onPlaybackRateChange: props.onPlaybackRateChange } : {})}
       {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
       {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
       moduleSuiteSlot={

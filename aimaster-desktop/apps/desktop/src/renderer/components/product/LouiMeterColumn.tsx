@@ -15,6 +15,7 @@ import { StereoScopePanel } from '../StereoScopePanel.js';
 import { NativeLoudnessMeter, NativeStereoMeter, NativeLevelsMeter } from './modules/NativeMeterCards.js';
 import { LouiLoudnessHistory } from './modules/LouiLoudnessHistory.js';
 import { NativeBandMeter } from './modules/NativeBandMeter.js';
+import { LouiGoniometer } from './modules/LouiGoniometer.js';
 import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
 
 export interface LouiMeterColumnProps {
@@ -112,10 +113,15 @@ export function LouiMeterColumn(props: LouiMeterColumnProps) {
           </div>
         )}
       </PanelShell>
-      <PanelShell title="Stereo" subtitle="Correlation · M/S · Width"
-        description="스테레오 미터. 좌/우 레벨, Mid/Side 비율, 좌우 폭(Width%), 위상 상관도(Φ: +1 모노~ -1 역상)를 표시합니다.">
+      <PanelShell title="Stereo" subtitle="Correlation · M/S · Width · Phase"
+        description="스테레오 미터. 좌/우 레벨, Mid/Side 비율, 좌우 폭(Width%), 위상 상관도(Φ), 위상 스코프(Goniometer)를 표시합니다.">
 
-        <NativeStereoMeter />
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+          <LouiGoniometer size={88} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <NativeStereoMeter />
+          </div>
+        </div>
         {props.session && (
           <div style={{ marginTop: 10 }}>
             <StereoScopePanel session={props.session} />

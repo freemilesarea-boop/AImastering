@@ -28,7 +28,21 @@ function fmtTime(s: number): string {
 const BAR_HEIGHT_PX = 28;
 const WAVE_BUCKETS = 1200;
 
-export function LouiPlaybackBar({ isPlaying, onSeek }: { isPlaying: boolean; onSeek?: (ratio: number) => void }) {
+export interface LoopRegion { in: number; out: number }
+
+export function LouiPlaybackBar({
+  isPlaying,
+  onSeek,
+  loopRegion,
+  loopActive,
+  onLoopRegion,
+}: {
+  isPlaying: boolean;
+  onSeek?: (ratio: number) => void;
+  loopRegion?: LoopRegion | null;
+  loopActive?: boolean;
+  onLoopRegion?: (r: LoopRegion | null) => void;
+}) {
   const media = useMediaElement();
   const trackRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
@@ -36,6 +50,10 @@ export function LouiPlaybackBar({ isPlaying, onSeek }: { isPlaying: boolean; onS
   const waveCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const draggingRef = useRef(false);
+  // Loop-drag state: Shift+drag defines a new loop region.
+  const loopDraggingRef = useRef(false);
+  const loopDragStartRef = useRef<number | null>(null);
+  const loopPreviewRef = useRef<HTMLDivElement>(null);
   const lastLabelRef = useRef('');
   const lastProgressRef = useRef(-1);
 
@@ -155,20 +173,66 @@ export function LouiPlaybackBar({ isPlaying, onSeek }: { isPlaying: boolean; onS
     return ratio;
   };
 
+  const ratioFromX = (clientX: number): number | undefined => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return undefined;
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  };
+
+  const updateLoopPreview = (start: number, end: number) => {
+    const el = loopPreviewRef.current;
+    if (!el) return;
+    const lo = Math.min(start, end);
+    const hi = Math.max(start, end);
+    el.style.left = `${(lo * 100).toFixed(2)}%`;
+    el.style.width = `${((hi - lo) * 100).toFixed(2)}%`;
+    el.style.display = hi - lo > 0.005 ? 'block' : 'none';
+  };
+
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    if (e.shiftKey && onLoopRegion) {
+      // Shift+drag = define loop region.
+      const ratio = ratioFromX(e.clientX);
+      if (ratio !== undefined) {
+        loopDraggingRef.current = true;
+        loopDragStartRef.current = ratio;
+        updateLoopPreview(ratio, ratio);
+      }
+      return;
+    }
     if (!onSeek) return;
     draggingRef.current = true;
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
     seekRatioFromX(e.clientX);
   };
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (loopDraggingRef.current) {
+      const ratio = ratioFromX(e.clientX);
+      const start = loopDragStartRef.current;
+      if (ratio !== undefined && start !== null) updateLoopPreview(start, ratio);
+      return;
+    }
     if (!draggingRef.current) return;
     seekRatioFromX(e.clientX);
   };
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    if (loopDraggingRef.current) {
+      loopDraggingRef.current = false;
+      const ratio = ratioFromX(e.clientX);
+      const start = loopDragStartRef.current;
+      if (ratio !== undefined && start !== null) {
+        const lo = Math.min(start, ratio);
+        const hi = Math.max(start, ratio);
+        onLoopRegion?.(hi - lo > 0.005 ? { in: lo, out: hi } : null);
+      }
+      // Hide preview overlay — committed region is shown by the loopRegion prop.
+      if (loopPreviewRef.current) loopPreviewRef.current.style.display = 'none';
+      loopDragStartRef.current = null;
+      return;
+    }
     if (!draggingRef.current) return;
     draggingRef.current = false;
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
     const ratio = seekRatioFromX(e.clientX);
     if (ratio !== undefined) onSeek?.(ratio);
   };
@@ -190,7 +254,8 @@ export function LouiPlaybackBar({ isPlaying, onSeek }: { isPlaying: boolean; onS
           flex: 1, position: 'relative',
           height: hasWaveform ? BAR_HEIGHT_PX : 6,
           background: surface.well, borderRadius: hasWaveform ? 4 : 3,
-          cursor: onSeek ? 'pointer' : 'default', overflow: 'hidden', touchAction: 'none',
+          cursor: onSeek ? 'pointer' : 'default',
+          overflow: 'hidden', touchAction: 'none',
           transition: 'height 200ms ease-out',
         }}
       >
@@ -223,6 +288,32 @@ export function LouiPlaybackBar({ isPlaying, onSeek }: { isPlaying: boolean; onS
             background: text.tertiary,
             opacity: hasWaveform ? 0 : 1,
             transition: 'opacity 200ms ease-out',
+            pointerEvents: 'none',
+          }}
+        />
+        {/* Committed loop region overlay (from loopRegion prop). */}
+        {loopRegion && (
+          <div style={{
+            position: 'absolute',
+            left: `${(loopRegion.in * 100).toFixed(2)}%`,
+            width: `${((loopRegion.out - loopRegion.in) * 100).toFixed(2)}%`,
+            top: 0, bottom: 0,
+            background: loopActive ? 'rgba(250,204,21,0.22)' : 'rgba(250,204,21,0.10)',
+            borderLeft: `1px solid ${loopActive ? 'rgba(250,204,21,0.70)' : 'rgba(250,204,21,0.35)'}`,
+            borderRight: `1px solid ${loopActive ? 'rgba(250,204,21,0.70)' : 'rgba(250,204,21,0.35)'}`,
+            pointerEvents: 'none',
+            transition: 'background 150ms, border-color 150ms',
+          }} />
+        )}
+        {/* In-progress loop drag preview (before pointer-up commits). */}
+        <div
+          ref={loopPreviewRef}
+          style={{
+            display: 'none',
+            position: 'absolute', top: 0, bottom: 0,
+            background: 'rgba(250,204,21,0.18)',
+            borderLeft: '1px solid rgba(250,204,21,0.5)',
+            borderRight: '1px solid rgba(250,204,21,0.5)',
             pointerEvents: 'none',
           }}
         />
