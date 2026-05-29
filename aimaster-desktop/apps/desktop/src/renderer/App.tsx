@@ -6,6 +6,7 @@ import HomePage     from './pages/HomePage.js';
 import AnalysisPage from './pages/AnalysisPage.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
+import TweakPage    from './pages/TweakPage.js';
 import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { isProductLayoutEnabled } from './audio/product-layout-flag.js';
@@ -279,17 +280,9 @@ function AppInner() {
     : <HomePage />;
 
   // tweak: source-only preview — selectedFile required, masteringResult NOT required.
-  // ProductPage renders in source-playback mode so the user can audition and
-  // adjust parameters before committing to a master.
-  const tweakSlot = productLayout && Boolean(selectedFile)
-    ? (
-        <ProductPageErrorBoundary fallback={<HomePage />}>
-          <React.Suspense fallback={<div style={{ height: '100vh', background: '#13131A' }} />}>
-            <ProductPage />
-          </React.Suspense>
-        </ProductPageErrorBoundary>
-      )
-    : <HomePage />;
+  // TweakPage is a dedicated lightweight component; it never loads the heavy
+  // ProductPage audio graph so it can't crash on null masteringResult.
+  const tweakSlot = Boolean(selectedFile) ? <TweakPage /> : <HomePage />;
 
   const pages: Record<string, React.ReactNode> = {
     home:      <HomePage />,
