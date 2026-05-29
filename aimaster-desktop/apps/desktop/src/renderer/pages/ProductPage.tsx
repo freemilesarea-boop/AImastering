@@ -1601,7 +1601,7 @@ function ProductPageProduction() {
       // eslint-disable-next-line no-console
       console.error('[ProductPage] setGraphFreeEqBands failed (free EQ ignored):', err);
     }
-  }, [freeEqEnabled, freeEqBands, audioEl]);
+  }, [freeEqEnabled, freeEqBands]);
 
   const seekTo = useCallback((ratio: number) => {
     const a = audioRef.current;

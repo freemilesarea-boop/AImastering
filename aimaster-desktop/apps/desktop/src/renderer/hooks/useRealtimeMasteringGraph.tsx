@@ -109,12 +109,15 @@ export function useRealtimeMasteringGraph(
   // WASM analyzer failed to start.
   const media = useMediaElement();
   const effectiveSession = useMemo<MasteringGraphSession | null>(() => {
+    if (!enabled) return null;  // never create AudioContext when realtime is disabled
     if (session && typeof session.setInsertNode === 'function') return session;
     if (media) return makeSharedMasteringSession(media, sampleRate);
     return null;
-  }, [session, media, sampleRate]);
+  }, [enabled, session, media, sampleRate]);
 
   const graphRef = useRef<RealtimeMasteringGraph | null>(null);
+  const metricsRafRef = useRef<number | null>(null);
+  const pendingMetricsRef = useRef<RealtimeMetricsSnapshot | null>(null);
   const [reattachNonce, setReattachNonce] = useState(0);
   const [graphState, setGraphState] = useState<RealtimeMasteringGraphState | null>(null);
   const [metrics, setMetrics] = useState<RealtimeMetricsSnapshot>(EMPTY_METRICS);
@@ -136,7 +139,15 @@ export function useRealtimeMasteringGraph(
       sampleRate,
       channels,
       onStateChange: setGraphState,
-      onMetrics: setMetrics,
+      onMetrics: (snapshot) => {
+        pendingMetricsRef.current = snapshot;
+        if (metricsRafRef.current === null) {
+          metricsRafRef.current = requestAnimationFrame(() => {
+            metricsRafRef.current = null;
+            if (pendingMetricsRef.current) setMetrics(pendingMetricsRef.current);
+          });
+        }
+      },
     });
     graphRef.current = graph;
     // Seed the chain with the current parameter state before splicing in.
@@ -156,6 +167,11 @@ export function useRealtimeMasteringGraph(
     return () => {
       graphRef.current = null;
       graph.dispose();
+      if (metricsRafRef.current !== null) {
+        cancelAnimationFrame(metricsRafRef.current);
+        metricsRafRef.current = null;
+      }
+      pendingMetricsRef.current = null;
       setGraphState(null);
       setMetrics(EMPTY_METRICS);
     };

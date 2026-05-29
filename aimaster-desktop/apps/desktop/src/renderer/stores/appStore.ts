@@ -19,8 +19,10 @@ export const useAppStore = create<AppStore>((set) => ({
   notification: null,
 
   setPage: (page) => {
-    // eslint-disable-next-line no-console
-    console.log('[appStore] setPage:', page, new Error('caller stack').stack?.split('\n').slice(1, 6).join(' | '));
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.log('[appStore] setPage:', page, new Error('caller stack').stack?.split('\n').slice(1, 6).join(' | '));
+    }
     set({ currentPage: page });
   },
 
