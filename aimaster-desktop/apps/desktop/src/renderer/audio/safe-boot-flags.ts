@@ -49,7 +49,14 @@ const DEFAULT_ENABLED: Record<FlagName, boolean> = {
 function readFlags(): Record<FlagName, boolean> {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_ENABLED };
+    if (!raw) {
+      // First boot — eagerly persist the defaults so other modules
+      // (e.g. realtime-preview-flag) reading sessionStorage on their
+      // own initialisation see the SAFE_BOOT decisions instead of
+      // falling back to their own default-ON behaviour.
+      try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_ENABLED)); } catch { /* ignore */ }
+      return { ...DEFAULT_ENABLED };
+    }
     const parsed = JSON.parse(raw) as Partial<Record<FlagName, boolean>>;
     return { ...DEFAULT_ENABLED, ...parsed };
   } catch {

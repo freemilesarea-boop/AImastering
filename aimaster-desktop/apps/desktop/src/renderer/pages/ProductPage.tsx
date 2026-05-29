@@ -59,7 +59,7 @@ import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioS
 import { getActiveRevision, getBaselineRevision, findDuplicate } from '../audio/revisions/revision-logic.js';
 import { LouiRealtimeStatus } from '../components/product/modules/LouiRealtimeStatus.js';
 import { LouiRealtimeToggle } from '../components/product/modules/LouiRealtimeToggle.js';
-import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
+import { setRealtimePreviewEnabled, isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { isDevMode } from '../audio/dev-mode.js';
 import { LouiPlaybackBar } from '../components/product/LouiPlaybackBar.js';
 import { LouiShortcutHelp } from '../components/product/LouiShortcutHelp.js';
@@ -1812,6 +1812,12 @@ function ProductPageProductionInner(props: {
       secondaryAnalyzer:      isSafeBootEnabled('secondaryAnalyzer'),
       freeEqSync:             isSafeBootEnabled('freeEqSync'),
     });
+    // Cross-check: the SAFE_BOOT gate on realtime-preview-flag MUST resolve
+    // to false when realtimeMasteringGraph is disabled.  If this prints
+    // true, the gate is leaking and the worklet load will run despite the
+    // SAFE_BOOT flag.
+    // eslint-disable-next-line no-console
+    console.log('[ProductPage] isRealtimePreviewEnabled() =', isRealtimePreviewEnabled());
   }, []);
   const session = useWasmAnalyzerSession();
   // Realtime mastering preview — flag-gated + readiness-gated.  No-op
