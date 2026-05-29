@@ -1592,11 +1592,17 @@ function ProductPageProduction() {
   // The audio graph splices the BiquadFilter chain between source and the
   // insert when at least one band is enabled; bypasses it otherwise.  When
   // free EQ is toggled off, we feed an empty band list so the chain
-  // un-routes itself even if the user had bands defined.
+  // un-routes itself even if the user had bands defined.  Wrapped in
+  // try/catch so a transient graph error never tears down the renderer.
   useEffect(() => {
     const el = audioRef.current;
     if (!el) return;
-    setGraphFreeEqBands(el, freeEqEnabled ? freeEqBands : []);
+    try {
+      setGraphFreeEqBands(el, freeEqEnabled ? freeEqBands : []);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[ProductPage] setGraphFreeEqBands failed (free EQ ignored):', err);
+    }
   }, [freeEqEnabled, freeEqBands, audioEl]);
 
   const seekTo = useCallback((ratio: number) => {

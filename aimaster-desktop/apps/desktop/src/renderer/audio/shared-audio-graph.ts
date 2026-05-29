@@ -318,16 +318,27 @@ export function applyNativeDspConfig(media: HTMLMediaElement, cfg: RealtimeChain
  * any band is enabled.  When the list is empty / no enabled bands, the
  * chain is bypassed (re-route removes it from the signal path) but the
  * node objects survive for cheap re-activation later.
+ *
+ * Fast path (defensive): if nothing is enabled AND no chain exists yet,
+ * we skip rerouteBus entirely.  Without this short-circuit, every mount
+ * of an audio element would call setFreeEqBands(el, []) once, which
+ * would re-disconnect/reconnect `source` while other graph hooks
+ * (useRealtimeMasteringGraph, native DSP install) are also racing to
+ * touch the bus — that race manifested as a black screen in dev when
+ * the routing ended up inconsistent and an audio node threw.
  */
 export function setFreeEqBands(media: HTMLMediaElement, bands: ParametricEqBand[]): void {
   const g = graphs.get(media);
   if (!g) return;
   const hasEnabled = bands.some((b) => b.enabled);
+  // Fast path: free EQ stayed off and was never created — no routing change.
+  if (!hasEnabled && !g.freeEq) return;
   if (hasEnabled && !g.freeEq) {
     g.freeEq = createParametricEqChain(g.ctx);
   }
   g.freeEq?.applyBands(bands);
-  // Always re-route — the active vs bypassed state of freeEq may have flipped.
+  // Routing only needs to flip when the active-vs-bypassed state of free EQ
+  // might have changed.  isActive() already reflects the post-applyBands state.
   rerouteBus(g);
 }
 
