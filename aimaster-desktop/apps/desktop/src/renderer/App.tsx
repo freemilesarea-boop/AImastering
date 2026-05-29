@@ -6,7 +6,6 @@ import HomePage     from './pages/HomePage.js';
 import AnalysisPage from './pages/AnalysisPage.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
-import ProductPage  from './pages/ProductPage.js';
 import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { isProductLayoutEnabled } from './audio/product-layout-flag.js';
@@ -17,6 +16,12 @@ import { DevAnalyzerStreamPage } from './pages/DevAnalyzerStreamPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
+
+// ProductPage lazy-loaded so its entire audio import chain (AudioContext,
+// WASM, worklets) does NOT evaluate at renderer startup.  The heavy module
+// is only fetched+evaluated when the user actually navigates to the result
+// page, keeping the home page boot path completely audio-free.
+const ProductPage = React.lazy(() => import('./pages/ProductPage.js'));
 
 // ── Toast notification ────────────────────────────────────────────────────────
 
@@ -216,6 +221,10 @@ export default function App() {
 }
 
 function AppInner() {
+  console.log('[AppInner] rendering');
+  useEffect(() => {
+    console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
+  }, []);
   const page = useAppStore((s) => s.currentPage);
 
   // Dev-only: route via URL query so the analyzer-stream smoke page can
@@ -234,7 +243,9 @@ function AppInner() {
   const resultSlot = productLayout
     ? (
         <ProductPageErrorBoundary fallback={<ResultPage />}>
-          <ProductPage />
+          <React.Suspense fallback={<div style={{ height: '100vh', background: '#13131A' }} />}>
+            <ProductPage />
+          </React.Suspense>
         </ProductPageErrorBoundary>
       )
     : <ResultPage />;

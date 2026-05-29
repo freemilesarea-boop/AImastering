@@ -1,27 +1,13 @@
 // Loui Mastering — realtime mastering-preview feature flag (M2-full).
 //
-// When ON, the AudioWorklet preview tap routes audio through the Rust
-// MasteringChain (WASM) so parameter changes are heard with low latency:
-//   source → mastering chain → analyzer tap → destination.
-// When OFF, the chain node is never spliced in (source → tap → destination)
-// so EQ/Dynamics/Imager edits produce NO audible change — they only stage
-// for the offline re-render.
-//
-// DEFAULT = ON.  Real-time audition of module edits is a core product
-// feature: turning a knob must change the sound.  The chain is wrapped in
-// hard safety layers (per-block passthrough on any error in the worklet,
-// finite/peak guards in the Rust chain) and gated by an environment
-// readiness probe, so the worst case is a transparent passthrough — never
-// broken or silenced audio.  Synthetic/offline stays an explicit opt-OUT.
+// HARD-DISABLED: returns false unconditionally.  The realtime worklet +
+// WASM mastering chain were confirmed as the source of renderer crashes;
+// the worklet's onMetrics callback fired every audio block and the runaway
+// setState loop killed the renderer process.  Until the worklet is
+// rewritten to be mount-safe, this is a compile-time constant = false.
 //
 // Toggling this flag NEVER changes the export path — final export remains
 // the Python/Rust offline render.
-//
-// Decision order (explicit OFF wins; otherwise ON):
-//   1. Runtime `window.__LOUI_REALTIME_PREVIEW__` (boolean) — explicit.
-//   2. Persisted QA toggle `localStorage['loui.realtimePreview']`.
-//   3. Build env `VITE_LOUI_REALTIME_PREVIEW` ('false'/'0' → off).
-//   4. Default → ON.
 
 declare global {
   interface Window {
@@ -34,16 +20,6 @@ declare global {
 
 /** localStorage key for the persisted dev/QA realtime toggle. */
 export const REALTIME_PREVIEW_LS_KEY = 'loui.realtimePreview';
-
-function readPersistedFlag(): boolean | null {
-  try {
-    if (typeof localStorage === 'undefined') return null;
-    const v = localStorage.getItem(REALTIME_PREVIEW_LS_KEY);
-    if (v === 'true' || v === '1') return true;
-    if (v === 'false' || v === '0') return false;
-  } catch { /* ignore (private mode / unavailable) */ }
-  return null;
-}
 
 /**
  * Whether the realtime Rust mastering-preview chain is enabled.
