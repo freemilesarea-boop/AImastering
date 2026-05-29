@@ -238,14 +238,16 @@ function AppInner() {
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
   }, []);
 
-  // Defensive redirect — ProductPage assumes at least a source file is
-  // selected.  If something navigates to 'result' without one (mystery
-  // auto-call observed during crash hunt), bounce back to home BEFORE
-  // the lazy ProductPage chunk is even fetched.  This guarantees the
-  // app cannot crash by accidentally rendering ProductPage with no data.
+  // Defensive redirects — bounce to home when a page is reached without
+  // the data it requires.  Runs synchronously after every render so the
+  // bad route never actually displays.
   useEffect(() => {
-    if (page === 'result' && !selectedFile && !masteringResult) {
-      console.warn('[AppInner] page=result with no file/result — redirecting to home');
+    if (page === 'result' && !(selectedFile && masteringResult?.outputPath)) {
+      console.warn('[AppInner] page=result with no result data — redirecting to home');
+      setPage('home');
+    }
+    if (page === 'tweak' && !selectedFile) {
+      console.warn('[AppInner] page=tweak with no selectedFile — redirecting to home');
       setPage('home');
     }
   }, [page, selectedFile, masteringResult, setPage]);
@@ -263,18 +265,25 @@ function AppInner() {
   // (the error boundary renders ResultPage in its place).
   const productLayout = isProductLayoutEnabled();
 
-  // Only render ProductPage when there is a completed mastering result with an
-  // output file.  selectedFile alone (Tweak & Listen) is NOT enough — ProductPage
-  // needs the full result shape.  If this gate is false, AppInner falls back to
-  // HomePage so the user is never stranded on a blank result screen.
+  // result: requires a completed mastering session (selectedFile + outputPath).
+  // ProductPage is only lazy-fetched when the full result shape is present.
   const hasResultData = Boolean(selectedFile && masteringResult?.outputPath);
-  if (!hasResultData && page === 'result') {
-    // eslint-disable-next-line no-console
-    console.warn('[AppInner] invalid result route, fallback home — no result data (selectedFile:', selectedFile, ', masteringResult:', masteringResult?.outputPath ?? null, ')');
-  }
   const resultSlot = productLayout && hasResultData
     ? (
         <ProductPageErrorBoundary fallback={<ResultPage />}>
+          <React.Suspense fallback={<div style={{ height: '100vh', background: '#13131A' }} />}>
+            <ProductPage />
+          </React.Suspense>
+        </ProductPageErrorBoundary>
+      )
+    : <HomePage />;
+
+  // tweak: source-only preview — selectedFile required, masteringResult NOT required.
+  // ProductPage renders in source-playback mode so the user can audition and
+  // adjust parameters before committing to a master.
+  const tweakSlot = productLayout && Boolean(selectedFile)
+    ? (
+        <ProductPageErrorBoundary fallback={<HomePage />}>
           <React.Suspense fallback={<div style={{ height: '100vh', background: '#13131A' }} />}>
             <ProductPage />
           </React.Suspense>
@@ -287,6 +296,7 @@ function AppInner() {
     analysis:  <AnalysisPage />,
     mastering: <MasteringPage />,
     result:    resultSlot,
+    tweak:     tweakSlot,
     qc:        <QCPage />,
     settings:  <SettingsPage />,
   };

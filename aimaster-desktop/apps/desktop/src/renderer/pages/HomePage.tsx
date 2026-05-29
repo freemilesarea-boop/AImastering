@@ -865,20 +865,20 @@ export default function HomePage() {
   }, [setFile, setAnalysis, setMasteringResult, setPage]);
 
   // ── Tweak & Listen — open the workspace BEFORE mastering (source preview).
-  // No master result required; ProductPage plays the source + lets the user
-  // tweak and create the first version.  Queue is untouched.
+  // Navigates to 'tweak' (NOT 'result') so result page stays exclusively for
+  // completed mastering sessions.  masteringResult is NOT required here.
   const handleTweakListen = useCallback((item: QueueItem) => {
     if (!item.filePath) {
       // eslint-disable-next-line no-console
-      console.warn('[HomePage] blocked result navigation: missing filePath');
+      console.warn('[HomePage] blocked tweak navigation: missing filePath');
       return;
     }
     // eslint-disable-next-line no-console
-    console.log('[HomePage] result navigation allowed — tweakListen');
+    console.log('[HomePage] tweak listen allowed -> setPage(\'tweak\')');
     setFile(item.filePath);
     setAnalysis(item.analysis ?? null);
     setMasteringResult(item.masteringResult ?? null);
-    setPage('result');
+    setPage('tweak');
   }, [setFile, setAnalysis, setMasteringResult, setPage]);
 
   // ── Batch processing ──────────────────────────────────────────────────
