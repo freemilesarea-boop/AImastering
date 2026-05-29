@@ -32,8 +32,6 @@ import {
 } from '../audio/wasm-analyzer-context.js';
 import { MediaElementProvider } from '../audio/media-element-context.js';
 import { resumeSharedContext, logAudioEvent, setFreeEqBands as setGraphFreeEqBands } from '../audio/shared-audio-graph.js';
-import { isEnabled as isSafeBootEnabled } from '../audio/safe-boot-flags.js';
-import { SafeBootBanner } from '../components/product/SafeBootBanner.js';
 import { useRealtimeMasteringGraph } from '../hooks/useRealtimeMasteringGraph.js';
 import { LouiRealtimeDebugPanel } from '../components/product/LouiRealtimeDebugPanel.js';
 import { LouiRealtimeDebugDrawer } from '../components/product/LouiRealtimeDebugDrawer.js';
@@ -59,7 +57,7 @@ import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioS
 import { getActiveRevision, getBaselineRevision, findDuplicate } from '../audio/revisions/revision-logic.js';
 import { LouiRealtimeStatus } from '../components/product/modules/LouiRealtimeStatus.js';
 import { LouiRealtimeToggle } from '../components/product/modules/LouiRealtimeToggle.js';
-import { setRealtimePreviewEnabled, isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
+import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { isDevMode } from '../audio/dev-mode.js';
 import { LouiPlaybackBar } from '../components/product/LouiPlaybackBar.js';
 import { LouiShortcutHelp } from '../components/product/LouiShortcutHelp.js';
@@ -239,7 +237,6 @@ function ProductLayoutInner({
         fontFamily: typography.family.sans,
       }}
     >
-      <SafeBootBanner />
       <LouiTopBar
         subtitle="Result"
         engineLabel={analyzerFactoryLabel()}
@@ -1270,11 +1267,6 @@ function mediaErrorMessage(err: MediaError | null): string | null {
 }
 
 function ProductPageProduction() {
-  // Mount-only log (NOT per-render — see inner for the same rationale).
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[ProductPage] mounted (outer)');
-  }, []);
   const setPage         = useAppStore((s) => s.setPage);
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const sourceAudioPath = useAudioStore((s) => s.selectedFile);
@@ -1377,10 +1369,7 @@ function ProductPageProduction() {
   // Duo Pre/Post: secondary muted element plays the SOURCE so the user sees
   // both spectra simultaneously while still only hearing the master.  Only
   // enabled when duoMode is on AND we have a source path (else no comparison).
-  // SAFE_BOOT: gated by `secondaryAnalyzer` flag — when OFF, the hook is
-  // still called (hook rules) but receives null/false so it allocates nothing.
-  const sbSecondary = isSafeBootEnabled('secondaryAnalyzer');
-  const duoEnabled = sbSecondary && duoMode && Boolean(sourcePreviewSrc) && Boolean(sourcePreviewSrc !== effectiveSrc);
+  const duoEnabled = duoMode && Boolean(sourcePreviewSrc) && Boolean(sourcePreviewSrc !== effectiveSrc);
   const secondary = useSecondaryAnalyzer(
     duoEnabled ? audioEl : null,
     duoEnabled ? sourcePreviewSrc : null,
@@ -1600,10 +1589,10 @@ function ProductPageProduction() {
   }, [playbackRate]);
 
   // Sync free parametric EQ bands to the audio graph (Phase 2: audible).
-  // SAFE_BOOT: gated by `freeEqSync` flag.  When OFF, the effect runs but
-  // immediately bails — no audio graph mutation, no setGraphFreeEqBands call.
+  // Wrapped in try/catch so a transient graph error never tears down
+  // the renderer.  Fast-path in setGraphFreeEqBands skips routing
+  // changes when free EQ has never been used.
   useEffect(() => {
-    if (!isSafeBootEnabled('freeEqSync')) return;
     const el = audioRef.current;
     if (!el) return;
     try {
@@ -1683,15 +1672,14 @@ function ProductPageProduction() {
         style={{ display: 'none' }}
       />
 
-      {/* SAFE_BOOT: provider gates.  When the analyzer flags are OFF, we
-          feed `null` so the WasmAnalyzerProvider / native-graph hooks see
-          no media element and never call createMediaElementSource on it
-          (the prime suspect for the native renderer crash). */}
-      <MediaElementProvider value={isSafeBootEnabled('nativeAnalyzers') && effectiveSrc ? audioEl : null}>
-      <WasmAnalyzerProvider
-        mediaElement={isSafeBootEnabled('wasmAnalyzer') && effectiveSrc ? audioEl : null}
-        active={isSafeBootEnabled('wasmAnalyzer') && playing}
-      >
+      {/* WASM analyzer + realtime worklet are HARD-DISABLED in this build.
+          They were the confirmed cause of the renderer crash when the audio
+          element drove createMediaElementSource into the worklet attach
+          path.  Native AnalyserNode tap stays ON so Spectrum / Loudness /
+          Stereo / Levels / Bands / Goniometer all work.  Realtime EQ /
+          Dynamics audition is OFF — the offline export path is unchanged. */}
+      <MediaElementProvider value={effectiveSrc ? audioEl : null}>
+      <WasmAnalyzerProvider mediaElement={null} active={false}>
       <ModuleParameterStateProvider dispatcher={dispatcher} initialState={initialParamState}>
         <ProductPageProductionInner
           isPlaying={playing}
@@ -1800,34 +1788,11 @@ function ProductPageProductionInner(props: {
     onRevisionCreated: (input: RevisionInput) => void;
   };
 }) {
-  // Mount-only logs (NOT every render — the inner re-renders many times
-  // per second once meter state mirrors arrive, which would flood the
-  // console and obscure real errors).
-  useEffect(() => {
-    // eslint-disable-next-line no-console
-    console.log('[ProductPage] mounted (inner). SAFE_BOOT state:', {
-      nativeAnalyzers:        isSafeBootEnabled('nativeAnalyzers'),
-      wasmAnalyzer:           isSafeBootEnabled('wasmAnalyzer'),
-      realtimeMasteringGraph: isSafeBootEnabled('realtimeMasteringGraph'),
-      secondaryAnalyzer:      isSafeBootEnabled('secondaryAnalyzer'),
-      freeEqSync:             isSafeBootEnabled('freeEqSync'),
-    });
-    // Cross-check: the SAFE_BOOT gate on realtime-preview-flag MUST resolve
-    // to false when realtimeMasteringGraph is disabled.  If this prints
-    // true, the gate is leaking and the worklet load will run despite the
-    // SAFE_BOOT flag.
-    // eslint-disable-next-line no-console
-    console.log('[ProductPage] isRealtimePreviewEnabled() =', isRealtimePreviewEnabled());
-  }, []);
   const session = useWasmAnalyzerSession();
-  // Realtime mastering preview — flag-gated + readiness-gated.  No-op
-  // (and renders nothing) when the flag is OFF, which is the default.
-  // SAFE_BOOT: the hook is still called (hook-rule) but the session is
-  // null when wasmAnalyzer is OFF, so it allocates nothing.
-  const realtime = useRealtimeMasteringGraph(
-    isSafeBootEnabled('realtimeMasteringGraph') ? session : null,
-    { sampleRate: 48000, channels: 2 },
-  );
+  // Realtime mastering preview is HARD-DISABLED: session forced to null
+  // so the hook's attach effect early-returns.  See WasmAnalyzerProvider
+  // mediaElement={null} above for the matching wasm-side disable.
+  const realtime = useRealtimeMasteringGraph(null, { sampleRate: 48000, channels: 2 });
 
   // Undo / Redo keyboard shortcuts:
   //   Cmd/Ctrl+Z          → undo

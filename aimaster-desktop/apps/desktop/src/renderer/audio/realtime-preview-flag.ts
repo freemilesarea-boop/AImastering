@@ -23,8 +23,6 @@
 //   3. Build env `VITE_LOUI_REALTIME_PREVIEW` ('false'/'0' → off).
 //   4. Default → ON.
 
-import { isEnabled as isSafeBootEnabledFn } from './safe-boot-flags.js';
-
 declare global {
   interface Window {
     __LOUI_REALTIME_PREVIEW__?: boolean;
@@ -47,32 +45,20 @@ function readPersistedFlag(): boolean | null {
   return null;
 }
 
-/** Whether the realtime Rust mastering-preview chain is enabled (ON by default). */
+/**
+ * Whether the realtime Rust mastering-preview chain is enabled.
+ *
+ * HARD-DISABLED in this build.  The realtime worklet + WASM mastering
+ * chain attach path was the confirmed cause of renderer death when an
+ * audio file was loaded into the product page; the worklet's onMetrics
+ * callback fires every audio block and the runaway setState loop killed
+ * the renderer process.  Until the worklet itself is rewritten to be
+ * mount-safe, this returns false unconditionally.  Module edits no
+ * longer change the sound in real time, but the offline export path is
+ * untouched and produces the same WAV as before.
+ */
 export function isRealtimePreviewEnabled(): boolean {
-  // SAFE_BOOT override (highest priority): if the user disabled the
-  // realtime worklet via the safe-boot flag, force it off regardless of
-  // the runtime / persisted / env settings.  Without this gate the hook
-  // would still build a shared-graph session from any media element and
-  // attempt to load the worklet — defeating the safe-boot guard.
-  //
-  // Import the memory state directly (NOT sessionStorage) so the gate
-  // works even when the first boot hasn't persisted defaults yet.
-  // Lazy import via dynamic require would create a cycle; instead we use
-  // a side-effect-free top-level import.
-  if (!isSafeBootRealtimeEnabled()) return false;
-  if (typeof window !== 'undefined' && typeof window.__LOUI_REALTIME_PREVIEW__ === 'boolean') {
-    return window.__LOUI_REALTIME_PREVIEW__;
-  }
-  const persisted = readPersistedFlag();
-  if (persisted !== null) return persisted;
-  const envFlag = (import.meta.env?.VITE_LOUI_REALTIME_PREVIEW ?? '').toString().toLowerCase();
-  if (envFlag === 'false' || envFlag === '0') return false;
-  return true;
-}
-
-function isSafeBootRealtimeEnabled(): boolean {
-  try { return isSafeBootEnabledFn('realtimeMasteringGraph'); }
-  catch { return true; } // on import-order failure: don't block the user from realtime
+  return false;
 }
 
 /**
