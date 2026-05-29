@@ -771,10 +771,12 @@ function DropZone({
 // ── HomePage ──────────────────────────────────────────────────────────────────
 
 export default function HomePage() {
-  // eslint-disable-next-line no-console
-  console.log('[HomePage] render entered');
   const setPage  = useAppStore((s) => s.setPage);
   const notify   = useAppStore((s) => s.notify);
+  React.useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[HomePage] mounted');
+  }, []);
 
   const {
     queue,

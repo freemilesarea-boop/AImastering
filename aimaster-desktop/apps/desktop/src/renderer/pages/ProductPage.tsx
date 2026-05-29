@@ -1270,11 +1270,10 @@ function mediaErrorMessage(err: MediaError | null): string | null {
 }
 
 function ProductPageProduction() {
-  // eslint-disable-next-line no-console
-  console.log('[ProductPage] before hooks (outer)');
+  // Mount-only log (NOT per-render — see inner for the same rationale).
   useEffect(() => {
     // eslint-disable-next-line no-console
-    console.log('[ProductPage] effects mounted (outer)');
+    console.log('[ProductPage] mounted (outer)');
   }, []);
   const setPage         = useAppStore((s) => s.setPage);
   const masteringResult = useAudioStore((s) => s.masteringResult);
@@ -1801,17 +1800,18 @@ function ProductPageProductionInner(props: {
     onRevisionCreated: (input: RevisionInput) => void;
   };
 }) {
-  // eslint-disable-next-line no-console
-  console.log('[ProductPage] after hooks (inner). SAFE_BOOT state:', {
-    nativeAnalyzers:        isSafeBootEnabled('nativeAnalyzers'),
-    wasmAnalyzer:           isSafeBootEnabled('wasmAnalyzer'),
-    realtimeMasteringGraph: isSafeBootEnabled('realtimeMasteringGraph'),
-    secondaryAnalyzer:      isSafeBootEnabled('secondaryAnalyzer'),
-    freeEqSync:             isSafeBootEnabled('freeEqSync'),
-  });
+  // Mount-only logs (NOT every render — the inner re-renders many times
+  // per second once meter state mirrors arrive, which would flood the
+  // console and obscure real errors).
   useEffect(() => {
     // eslint-disable-next-line no-console
-    console.log('[ProductPage] effects mounted (inner)');
+    console.log('[ProductPage] mounted (inner). SAFE_BOOT state:', {
+      nativeAnalyzers:        isSafeBootEnabled('nativeAnalyzers'),
+      wasmAnalyzer:           isSafeBootEnabled('wasmAnalyzer'),
+      realtimeMasteringGraph: isSafeBootEnabled('realtimeMasteringGraph'),
+      secondaryAnalyzer:      isSafeBootEnabled('secondaryAnalyzer'),
+      freeEqSync:             isSafeBootEnabled('freeEqSync'),
+    });
   }, []);
   const session = useWasmAnalyzerSession();
   // Realtime mastering preview — flag-gated + readiness-gated.  No-op
@@ -2244,8 +2244,6 @@ function ProductPageProductionInner(props: {
 // ── Public component ─────────────────────────────────────────────────────
 
 export default function ProductPage(props: ProductPageProps = {}) {
-  // eslint-disable-next-line no-console
-  console.log('[ProductPage] render start. sessionOverride=', props.sessionOverride !== undefined);
   if (props.sessionOverride !== undefined) {
     return (
       <ProductLayoutWithOverride

@@ -47,6 +47,18 @@ function readPersistedFlag(): boolean | null {
 
 /** Whether the realtime Rust mastering-preview chain is enabled (ON by default). */
 export function isRealtimePreviewEnabled(): boolean {
+  // SAFE_BOOT override (highest priority): if the user disabled the
+  // realtime worklet via the safe-boot flag, force it off regardless of
+  // the runtime / persisted / env settings.  Without this gate the hook
+  // would still build a shared-graph session from any media element and
+  // attempt to load the worklet — defeating the safe-boot guard.
+  try {
+    const sb = sessionStorage.getItem('__loui_safe_boot__v2');
+    if (sb) {
+      const parsed = JSON.parse(sb) as { realtimeMasteringGraph?: boolean };
+      if (parsed.realtimeMasteringGraph === false) return false;
+    }
+  } catch { /* ignore */ }
   if (typeof window !== 'undefined' && typeof window.__LOUI_REALTIME_PREVIEW__ === 'boolean') {
     return window.__LOUI_REALTIME_PREVIEW__;
   }
