@@ -9,7 +9,7 @@
  *   QC summary chips
  *   YouTube Music notice
  */
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
@@ -784,6 +784,7 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
 export default function ResultPage() {
   const setPage         = useAppStore((s) => s.setPage);
   const masteringResult = useAudioStore((s) => s.masteringResult);
+  const selectedFile    = useAudioStore((s) => s.selectedFile);
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
 
@@ -791,6 +792,36 @@ export default function ResultPage() {
     reset();
     setPage('home');
   }, [reset, setPage]);
+
+  // Fallback: if we end up here with no data, redirect to home immediately
+  useEffect(() => {
+    if (!masteringResult && !selectedFile) {
+      // eslint-disable-next-line no-console
+      console.warn('[ResultPage] missing result, fallback to home');
+      setPage('home');
+    }
+  }, [masteringResult, selectedFile, setPage]);
+
+  if (!masteringResult && !selectedFile) {
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', height: '100vh',
+        background: '#13131A', color: '#a1a1aa', gap: '1rem',
+      }}>
+        <p style={{ fontSize: '0.875rem' }}>완성된 마스터링 결과가 없습니다. 음원을 업로드해주세요.</p>
+        <button
+          onClick={() => setPage('home')}
+          style={{
+            padding: '0.4rem 1.2rem', background: '#3f3f46', color: '#e4e4e7',
+            border: '1px solid #52525b', borderRadius: '0.5rem', cursor: 'pointer', fontSize: '0.8rem',
+          }}
+        >
+          홈으로
+        </button>
+      </div>
+    );
+  }
 
   const previewSrc = masteringResult?.previewPath
     ? toFileUrl(masteringResult.previewPath)

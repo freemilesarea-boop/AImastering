@@ -851,7 +851,13 @@ export default function HomePage() {
 
   // ── Navigate to detail view ───────────────────────────────────────────
   const handleViewResult = useCallback((item: QueueItem) => {
-    if (!item.analysis || !item.masteringResult) return;
+    if (!item.analysis || !item.masteringResult?.outputPath) {
+      // eslint-disable-next-line no-console
+      console.warn('[HomePage] blocked result navigation: missing result', item.status);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log('[HomePage] result navigation allowed — viewResult');
     setFile(item.filePath);
     setAnalysis(item.analysis);
     setMasteringResult(item.masteringResult);
@@ -862,6 +868,13 @@ export default function HomePage() {
   // No master result required; ProductPage plays the source + lets the user
   // tweak and create the first version.  Queue is untouched.
   const handleTweakListen = useCallback((item: QueueItem) => {
+    if (!item.filePath) {
+      // eslint-disable-next-line no-console
+      console.warn('[HomePage] blocked result navigation: missing filePath');
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log('[HomePage] result navigation allowed — tweakListen');
     setFile(item.filePath);
     setAnalysis(item.analysis ?? null);
     setMasteringResult(item.masteringResult ?? null);

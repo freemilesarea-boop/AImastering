@@ -263,12 +263,15 @@ function AppInner() {
   // (the error boundary renders ResultPage in its place).
   const productLayout = isProductLayoutEnabled();
 
-  // Only render the heavy ProductPage when there's actual data for it.
-  // Without this, a mistaken page='result' would lazy-load the entire
-  // audio module graph just to crash on null data.  The defensive
-  // useEffect above already redirects to 'home', but this is the second
-  // layer that gates the actual chunk fetch.
-  const hasResultData = Boolean(selectedFile || masteringResult);
+  // Only render ProductPage when there is a completed mastering result with an
+  // output file.  selectedFile alone (Tweak & Listen) is NOT enough — ProductPage
+  // needs the full result shape.  If this gate is false, AppInner falls back to
+  // HomePage so the user is never stranded on a blank result screen.
+  const hasResultData = Boolean(selectedFile && masteringResult?.outputPath);
+  if (!hasResultData && page === 'result') {
+    // eslint-disable-next-line no-console
+    console.warn('[AppInner] invalid result route, fallback home — no result data (selectedFile:', selectedFile, ', masteringResult:', masteringResult?.outputPath ?? null, ')');
+  }
   const resultSlot = productLayout && hasResultData
     ? (
         <ProductPageErrorBoundary fallback={<ResultPage />}>
