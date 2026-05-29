@@ -222,6 +222,9 @@ export default function App() {
 
 function AppInner() {
   const page = useAppStore((s) => s.currentPage);
+  const setPage = useAppStore((s) => s.setPage);
+  const selectedFile = useAudioStore((s) => s.selectedFile);
+  const masteringResult = useAudioStore((s) => s.masteringResult);
   const renderRef = useRef(0);
   renderRef.current++;
   const prevPageRef = useRef(page);
@@ -234,6 +237,18 @@ function AppInner() {
   useEffect(() => {
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
   }, []);
+
+  // Defensive redirect — ProductPage assumes at least a source file is
+  // selected.  If something navigates to 'result' without one (mystery
+  // auto-call observed during crash hunt), bounce back to home BEFORE
+  // the lazy ProductPage chunk is even fetched.  This guarantees the
+  // app cannot crash by accidentally rendering ProductPage with no data.
+  useEffect(() => {
+    if (page === 'result' && !selectedFile && !masteringResult) {
+      console.warn('[AppInner] page=result with no file/result — redirecting to home');
+      setPage('home');
+    }
+  }, [page, selectedFile, masteringResult, setPage]);
 
   // Dev-only: route via URL query so the analyzer-stream smoke page can
   // be reached without touching the appStore page enum.  Production
@@ -248,7 +263,13 @@ function AppInner() {
   // (the error boundary renders ResultPage in its place).
   const productLayout = isProductLayoutEnabled();
 
-  const resultSlot = productLayout
+  // Only render the heavy ProductPage when there's actual data for it.
+  // Without this, a mistaken page='result' would lazy-load the entire
+  // audio module graph just to crash on null data.  The defensive
+  // useEffect above already redirects to 'home', but this is the second
+  // layer that gates the actual chunk fetch.
+  const hasResultData = Boolean(selectedFile || masteringResult);
+  const resultSlot = productLayout && hasResultData
     ? (
         <ProductPageErrorBoundary fallback={<ResultPage />}>
           <React.Suspense fallback={<div style={{ height: '100vh', background: '#13131A' }} />}>
@@ -256,7 +277,7 @@ function AppInner() {
           </React.Suspense>
         </ProductPageErrorBoundary>
       )
-    : <ResultPage />;
+    : <HomePage />;
 
   const pages: Record<string, React.ReactNode> = {
     home:      <HomePage />,
