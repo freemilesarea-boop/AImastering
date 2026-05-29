@@ -32,6 +32,7 @@ import {
 } from '../audio/wasm-analyzer-context.js';
 import { MediaElementProvider } from '../audio/media-element-context.js';
 import { resumeSharedContext, logAudioEvent, setFreeEqBands as setGraphFreeEqBands } from '../audio/shared-audio-graph.js';
+import { isEnabled as isSafeBootEnabled } from '../audio/safe-boot-flags.js';
 import { useRealtimeMasteringGraph } from '../hooks/useRealtimeMasteringGraph.js';
 import { LouiRealtimeDebugPanel } from '../components/product/LouiRealtimeDebugPanel.js';
 import { LouiRealtimeDebugDrawer } from '../components/product/LouiRealtimeDebugDrawer.js';
@@ -1267,6 +1268,12 @@ function mediaErrorMessage(err: MediaError | null): string | null {
 }
 
 function ProductPageProduction() {
+  // eslint-disable-next-line no-console
+  console.log('[ProductPage] before hooks (outer)');
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[ProductPage] effects mounted (outer)');
+  }, []);
   const setPage         = useAppStore((s) => s.setPage);
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const sourceAudioPath = useAudioStore((s) => s.selectedFile);
@@ -1369,7 +1376,10 @@ function ProductPageProduction() {
   // Duo Pre/Post: secondary muted element plays the SOURCE so the user sees
   // both spectra simultaneously while still only hearing the master.  Only
   // enabled when duoMode is on AND we have a source path (else no comparison).
-  const duoEnabled = duoMode && Boolean(sourcePreviewSrc) && Boolean(sourcePreviewSrc !== effectiveSrc);
+  // SAFE_BOOT: gated by `secondaryAnalyzer` flag — when OFF, the hook is
+  // still called (hook rules) but receives null/false so it allocates nothing.
+  const sbSecondary = isSafeBootEnabled('secondaryAnalyzer');
+  const duoEnabled = sbSecondary && duoMode && Boolean(sourcePreviewSrc) && Boolean(sourcePreviewSrc !== effectiveSrc);
   const secondary = useSecondaryAnalyzer(
     duoEnabled ? audioEl : null,
     duoEnabled ? sourcePreviewSrc : null,
@@ -1589,12 +1599,10 @@ function ProductPageProduction() {
   }, [playbackRate]);
 
   // Sync free parametric EQ bands to the audio graph (Phase 2: audible).
-  // The audio graph splices the BiquadFilter chain between source and the
-  // insert when at least one band is enabled; bypasses it otherwise.  When
-  // free EQ is toggled off, we feed an empty band list so the chain
-  // un-routes itself even if the user had bands defined.  Wrapped in
-  // try/catch so a transient graph error never tears down the renderer.
+  // SAFE_BOOT: gated by `freeEqSync` flag.  When OFF, the effect runs but
+  // immediately bails — no audio graph mutation, no setGraphFreeEqBands call.
   useEffect(() => {
+    if (!isSafeBootEnabled('freeEqSync')) return;
     const el = audioRef.current;
     if (!el) return;
     try {
@@ -1674,10 +1682,14 @@ function ProductPageProduction() {
         style={{ display: 'none' }}
       />
 
-      <MediaElementProvider value={effectiveSrc ? audioEl : null}>
+      {/* SAFE_BOOT: provider gates.  When the analyzer flags are OFF, we
+          feed `null` so the WasmAnalyzerProvider / native-graph hooks see
+          no media element and never call createMediaElementSource on it
+          (the prime suspect for the native renderer crash). */}
+      <MediaElementProvider value={isSafeBootEnabled('nativeAnalyzers') && effectiveSrc ? audioEl : null}>
       <WasmAnalyzerProvider
-        mediaElement={effectiveSrc ? audioEl : null}
-        active={playing}
+        mediaElement={isSafeBootEnabled('wasmAnalyzer') && effectiveSrc ? audioEl : null}
+        active={isSafeBootEnabled('wasmAnalyzer') && playing}
       >
       <ModuleParameterStateProvider dispatcher={dispatcher} initialState={initialParamState}>
         <ProductPageProductionInner
@@ -1787,10 +1799,27 @@ function ProductPageProductionInner(props: {
     onRevisionCreated: (input: RevisionInput) => void;
   };
 }) {
+  // eslint-disable-next-line no-console
+  console.log('[ProductPage] after hooks (inner). SAFE_BOOT state:', {
+    nativeAnalyzers:        isSafeBootEnabled('nativeAnalyzers'),
+    wasmAnalyzer:           isSafeBootEnabled('wasmAnalyzer'),
+    realtimeMasteringGraph: isSafeBootEnabled('realtimeMasteringGraph'),
+    secondaryAnalyzer:      isSafeBootEnabled('secondaryAnalyzer'),
+    freeEqSync:             isSafeBootEnabled('freeEqSync'),
+  });
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[ProductPage] effects mounted (inner)');
+  }, []);
   const session = useWasmAnalyzerSession();
   // Realtime mastering preview — flag-gated + readiness-gated.  No-op
   // (and renders nothing) when the flag is OFF, which is the default.
-  const realtime = useRealtimeMasteringGraph(session, { sampleRate: 48000, channels: 2 });
+  // SAFE_BOOT: the hook is still called (hook-rule) but the session is
+  // null when wasmAnalyzer is OFF, so it allocates nothing.
+  const realtime = useRealtimeMasteringGraph(
+    isSafeBootEnabled('realtimeMasteringGraph') ? session : null,
+    { sampleRate: 48000, channels: 2 },
+  );
 
   // Undo / Redo keyboard shortcuts:
   //   Cmd/Ctrl+Z          → undo
@@ -2214,11 +2243,7 @@ function ProductPageProductionInner(props: {
 
 export default function ProductPage(props: ProductPageProps = {}) {
   // eslint-disable-next-line no-console
-  console.log('[ProductPage] render entered. sessionOverride=', props.sessionOverride !== undefined);
-  // Two top-level branches — both return distinct component subtrees, so
-  // no hooks are shared across branches.  `sessionOverride === undefined`
-  // means production path; otherwise the storybook override drives the
-  // layout directly.
+  console.log('[ProductPage] render start. sessionOverride=', props.sessionOverride !== undefined);
   if (props.sessionOverride !== undefined) {
     return (
       <ProductLayoutWithOverride
@@ -2227,5 +2252,71 @@ export default function ProductPage(props: ProductPageProps = {}) {
       />
     );
   }
-  return <ProductPageProduction />;
+  return (
+    <ProductPageCrashBoundary>
+      <ProductPageProduction />
+    </ProductPageCrashBoundary>
+  );
+}
+
+// ── ProductPage-local ErrorBoundary ──────────────────────────────────────
+// Catches sync render-time exceptions that would otherwise wipe the page.
+// Native crashes (WebAudio, WASM, OOM) still bypass this — those are the
+// kind we suspect when the renderer process dies.  The boundary still
+// helps narrow the search: if it fires, it's React/JS land; if it doesn't
+// (and main process logs render-process-gone), it's native land.
+class ProductPageCrashBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  override componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // eslint-disable-next-line no-console
+    console.error('[ProductPage:CrashBoundary] caught:', error.message);
+    // eslint-disable-next-line no-console
+    console.error('[ProductPage:CrashBoundary] stack:', error.stack);
+    // eslint-disable-next-line no-console
+    console.error('[ProductPage:CrashBoundary] component stack:', info.componentStack);
+    try {
+      (globalThis as { electronAPI?: { invoke: (c: string, ...a: unknown[]) => unknown } })
+        .electronAPI?.invoke('support:record-failure', {
+          category: 'preview',
+          message: `ProductPage crash: ${error.message}`,
+          data: { stack: error.stack?.slice(0, 4000) ?? '', componentStack: info.componentStack?.slice(0, 2000) ?? '' },
+        });
+    } catch { /* ignore */ }
+  }
+  override render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          height: '100vh', background: '#13131A', color: '#e4e4e7',
+          fontFamily: 'ui-monospace, SF Mono, monospace', padding: 24, gap: 16,
+        }}>
+          <p style={{ fontSize: 11, letterSpacing: '0.18em', textTransform: 'uppercase', color: '#52525b' }}>
+            ProductPage Crash
+          </p>
+          <pre style={{
+            background: '#18181b', borderRadius: 8, padding: 12, fontSize: 12,
+            color: '#f87171', maxWidth: 720, width: '100%', overflow: 'auto',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word', border: '1px solid #3f3f46',
+          }}>
+            {this.state.error.message}
+            {'\n\n'}
+            {this.state.error.stack?.slice(0, 1200) ?? ''}
+          </pre>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              padding: '6px 16px', background: '#3f3f46', color: '#e4e4e7',
+              border: '1px solid #52525b', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+            }}
+          >다시 시작</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }

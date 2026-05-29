@@ -2,6 +2,9 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.js';
 import './styles/index.css';
+// SAFE_BOOT: load flag helpers first so window.__SAFE_BOOT__ is available
+// before any feature code reads them.
+import './audio/safe-boot-flags.js';
 
 // ── 시작 진단 로그 ─────────────────────────────────────────────────────────────
 // DevTools(Ctrl+Shift+I) 콘솔에서 이 로그로 preload 상태를 확인하세요.
