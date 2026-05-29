@@ -30,6 +30,15 @@ import { AnalyzerPanelStack } from '../components/AnalyzerPanelStack.js';
 import { reportFailure } from '../utils/reportFailure.js';
 import { toFileUrl } from '../utils/fileUrl.js';
 
+// ── Feature flags ─────────────────────────────────────────────────────────────
+// HARD-DISABLED: live WASM-based analysis (BS.1770 loudness stream, spectrum
+// FFT, stereo scope) panicked the renderer on the result page —
+// loui_dsp_wasm_bg.wasm fires `assertion failed: psize <= size + max_overhead`
+// → `Uncaught RuntimeError: unreachable` and kills the page.  Static metadata
+// from the Python pipeline (loudnessAfter, metricComparison) covers the
+// numbers the user needs.  Re-enable only after the WASM module is fixed.
+const ENABLE_RESULT_WASM_ANALYSIS = false;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number, d = 1) { return n.toFixed(d); }
@@ -215,23 +224,51 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
         </div>
       </div>
 
-      {/* Live BS.1770-4 LUFS / TP meter — V1 by default, swaps to V2
-          (Rust dsp-core via WASM + Spectrum + StereoScope) when the
-          feature flag `VITE_LOUI_WASM_ANALYZER=true` is set at build
-          time or `window.__LOUI_WASM_ANALYZER__ = true` at runtime.
-          Rollback = unset the flag → V1 path reappears with zero
-          functional difference. */}
-      {meterReady && audioRef.current && (
-        <div className="mt-3">
-          <AnalyzerPanelStack
-            mediaElement={audioRef.current}
-            active={playing}
-            {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
-          />
-        </div>
+      {/* Live BS.1770-4 / Spectrum / StereoScope meters were mounted here.
+          HARD-DISABLED via ENABLE_RESULT_WASM_ANALYSIS — see top-of-file
+          comment for why.  Static metadata (LUFS / TP / LRA) lives in
+          BeforeAfterCard + MetricComparisonTable above. */}
+      {ENABLE_RESULT_WASM_ANALYSIS && meterReady && audioRef.current && (
+        <WasmAnalyzerSafe
+          mediaElement={audioRef.current}
+          active={playing}
+          {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
+        />
       )}
     </div>
   );
+}
+
+// Error-boundary-style wrapper that swallows WASM panics so the rest of
+// the result page keeps rendering even if loui_dsp_wasm_bg.wasm aborts.
+class WasmAnalyzerSafe extends React.Component<
+  { mediaElement: HTMLAudioElement; active: boolean; targetLufs?: number },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(err: unknown) {
+    // eslint-disable-next-line no-console
+    console.error('[ResultPage] WASM analyzer crashed — disabling for this session:', err);
+  }
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="mt-3 text-[10px] text-zinc-700 font-mono">
+          실시간 분석 비활성 (WASM 오류)
+        </div>
+      );
+    }
+    return (
+      <div className="mt-3">
+        <AnalyzerPanelStack
+          mediaElement={this.props.mediaElement}
+          active={this.props.active}
+          {...(typeof this.props.targetLufs === 'number' ? { targetLufs: this.props.targetLufs } : {})}
+        />
+      </div>
+    );
+  }
 }
 
 // ── Save buttons ──────────────────────────────────────────────────────────────
