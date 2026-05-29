@@ -18,7 +18,11 @@ export const useAppStore = create<AppStore>((set) => ({
   currentPage:  'home',
   notification: null,
 
-  setPage: (page) => set({ currentPage: page }),
+  setPage: (page) => {
+    // eslint-disable-next-line no-console
+    console.log('[appStore] setPage:', page, new Error('caller stack').stack?.split('\n').slice(1, 6).join(' | '));
+    set({ currentPage: page });
+  },
 
   notify: (message, type = 'info') => {
     set({ notification: { message, type } });
