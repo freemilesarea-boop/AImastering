@@ -783,15 +783,39 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
 
 export default function ResultPage() {
   const setPage         = useAppStore((s) => s.setPage);
+  const notify          = useAppStore((s) => s.notify);
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const selectedFile    = useAudioStore((s) => s.selectedFile);
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
 
+  // eslint-disable-next-line no-console
+  console.log('[ResultPage] render entered');
+  // eslint-disable-next-line no-console
+  console.log('[ResultPage] masteringResult:', masteringResult);
+  // eslint-disable-next-line no-console
+  console.log('[ResultPage] outputPath exists:', Boolean(masteringResult?.outputPath));
+
   const handleNewFile = useCallback(() => {
     reset();
     setPage('home');
   }, [reset, setPage]);
+
+  const handleReMaster = useCallback(() => {
+    setPage('mastering');
+  }, [setPage]);
+
+  const handleOpenInFinder = useCallback(async () => {
+    const path = masteringResult?.outputPath;
+    if (!path) return;
+    try {
+      await window.electronAPI!.invoke('file:open-in-finder', path);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[ResultPage] open-in-finder failed:', err);
+      notify('파일 위치를 열 수 없습니다.', 'error');
+    }
+  }, [masteringResult, notify]);
 
   // Fallback: if we end up here with no data, redirect to home immediately
   useEffect(() => {
@@ -825,7 +849,9 @@ export default function ResultPage() {
 
   const previewSrc = masteringResult?.previewPath
     ? toFileUrl(masteringResult.previewPath)
-    : '';
+    : masteringResult?.outputPath
+      ? toFileUrl(masteringResult.outputPath)
+      : '';
 
   // Phase-E: surface a stable mode label for the section analyzer
   // (which may suggest a different mode than the user chose).
@@ -833,6 +859,13 @@ export default function ResultPage() {
     masteringResult?.analysisReport?.mastering?.mode
     ?? options?.style
     ?? null;
+
+  const inputFileName = selectedFile
+    ? (selectedFile.split('/').pop()?.split('\\').pop() ?? selectedFile)
+    : null;
+  const outputFileName = masteringResult?.outputPath
+    ? (masteringResult.outputPath.split('/').pop()?.split('\\').pop() ?? masteringResult.outputPath)
+    : null;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -850,6 +883,51 @@ export default function ResultPage() {
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-lg mx-auto px-6 py-5 space-y-4 animate-in">
+
+          {/* ── 완료 메시지 ──────────────────────────────── */}
+          <div className="rounded-xl bg-emerald-950/20 border border-emerald-900/40 px-4 py-3 flex items-center gap-3">
+            <svg className="w-5 h-5 text-emerald-400 shrink-0" viewBox="0 0 20 20" fill="none"
+                 stroke="currentColor" strokeWidth={1.75} strokeLinecap="round">
+              <circle cx="10" cy="10" r="8" />
+              <path d="M6.5 10.5l2.5 2.5 4.5-4.5" />
+            </svg>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-emerald-300">마스터링 완료</p>
+              {inputFileName && (
+                <p className="text-xs text-zinc-500 truncate mt-0.5" title={selectedFile ?? ''}>
+                  {inputFileName}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* ── 출력 파일 정보 + 열기 버튼 ──────────────── */}
+          {masteringResult?.outputPath && (
+            <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 px-4 py-3 space-y-2">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">출력 파일</p>
+              <p className="text-xs font-mono text-zinc-400 break-all leading-relaxed">
+                {outputFileName}
+              </p>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={handleOpenInFinder}
+                  className="no-drag px-3 py-1.5 rounded-lg text-xs font-medium
+                             bg-zinc-800 border border-zinc-700 text-zinc-300
+                             hover:border-zinc-600 hover:text-zinc-100 transition-colors"
+                >
+                  파일 위치 열기
+                </button>
+                <button
+                  onClick={handleReMaster}
+                  className="no-drag px-3 py-1.5 rounded-lg text-xs font-medium
+                             bg-zinc-800 border border-zinc-700 text-zinc-300
+                             hover:border-zinc-600 hover:text-zinc-100 transition-colors"
+                >
+                  다시 마스터링
+                </button>
+              </div>
+            </div>
+          )}
 
           {masteringResult?.analysisReport?.mastering && (
             <MasteringMetaCard meta={masteringResult.analysisReport.mastering} />

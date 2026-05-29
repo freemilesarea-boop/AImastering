@@ -267,17 +267,8 @@ function AppInner() {
   const productLayout = isProductLayoutEnabled();
 
   // result: requires a completed mastering session (selectedFile + outputPath).
-  // ProductPage is only lazy-fetched when the full result shape is present.
   const hasResultData = Boolean(selectedFile && masteringResult?.outputPath);
-  const resultSlot = productLayout && hasResultData
-    ? (
-        <ProductPageErrorBoundary fallback={<ResultPage />}>
-          <React.Suspense fallback={<div style={{ height: '100vh', background: '#13131A' }} />}>
-            <ProductPage />
-          </React.Suspense>
-        </ProductPageErrorBoundary>
-      )
-    : <HomePage />;
+  const resultSlot = hasResultData ? <ResultPage /> : <HomePage />;
 
   // tweak: source-only preview — selectedFile required, masteringResult NOT required.
   // TweakPage is a dedicated lightweight component; it never loads the heavy
