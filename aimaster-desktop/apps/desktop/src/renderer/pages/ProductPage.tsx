@@ -2213,6 +2213,8 @@ function ProductPageProductionInner(props: {
 // ── Public component ─────────────────────────────────────────────────────
 
 export default function ProductPage(props: ProductPageProps = {}) {
+  // eslint-disable-next-line no-console
+  console.log('[ProductPage] render entered. sessionOverride=', props.sessionOverride !== undefined);
   // Two top-level branches — both return distinct component subtrees, so
   // no hooks are shared across branches.  `sessionOverride === undefined`
   // means production path; otherwise the storybook override drives the

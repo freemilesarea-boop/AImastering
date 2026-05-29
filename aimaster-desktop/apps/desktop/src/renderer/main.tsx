@@ -8,6 +8,18 @@ import './styles/index.css';
 console.log('[AIMASTER] renderer starting...');
 console.log('[AIMASTER] window.electronAPI:', (window as Window & { electronAPI?: unknown }).electronAPI ?? 'NOT EXPOSED — preload missing or CSP blocked');
 
+// ── 글로벌 에러 캐처 (검은 화면 디버깅용) ────────────────────────────────────
+// React ErrorBoundary 가 못 잡는 async / effect / promise 에러를 콘솔에
+// 강제로 노출.  검은 화면 + DevTools disconnect 같은 상황에서 원인 추적용.
+window.addEventListener('error', (e) => {
+  // eslint-disable-next-line no-console
+  console.error('[AIMASTER:window-error]', e.message, e.error?.stack || '', 'at', e.filename + ':' + e.lineno);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  // eslint-disable-next-line no-console
+  console.error('[AIMASTER:unhandled-rejection]', e.reason);
+});
+
 // ── ErrorBoundary ──────────────────────────────────────────────────────────────
 // 렌더 타임 에러를 잡아 blank screen 대신 fallback UI를 표시합니다.
 
