@@ -26,16 +26,24 @@ type FlagName =
   | 'bandMeter'              // NativeBandMeter
   | 'waveformPeaks';         // useWaveformPeaks (decodes audio file in renderer)
 
-const STORAGE_KEY = '__loui_safe_boot__';
+// Bump suffix when DEFAULT_ENABLED shape changes so users get the new
+// defaults instead of stale sessionStorage from the previous boot.
+const STORAGE_KEY = '__loui_safe_boot__v2';
+// Defaults after the initial crash-hunt commit (b94f929).  Three groups
+// are now confirmed safe-to-mount and ship ON; the two heaviest paths
+// (WASM analyzer + Realtime mastering worklet) stay OFF until a user
+// gesture explicitly enables them — both call createMediaElementSource
+// or compile worklet modules synchronously on mount, which is the
+// suspected origin of the renderer crash.
 const DEFAULT_ENABLED: Record<FlagName, boolean> = {
-  nativeAnalyzers:        false, // OFF by default during diagnosis
-  secondaryAnalyzer:      false,
-  freeEqSync:             false,
-  wasmAnalyzer:           false,
-  realtimeMasteringGraph: false,
-  loudnessHistory:        false,
-  bandMeter:              false,
-  waveformPeaks:          false,
+  nativeAnalyzers:        true,  // WebAudio AnalyserNode (read-only tap) — confirmed safe
+  secondaryAnalyzer:      true,  // hook runs but does nothing while duoMode=false
+  freeEqSync:             true,  // fast-path bail when no band enabled — confirmed safe
+  wasmAnalyzer:           false, // PRIME SUSPECT — leave OFF until user toggles
+  realtimeMasteringGraph: false, // PRIME SUSPECT — leave OFF until user toggles
+  loudnessHistory:        true,
+  bandMeter:              true,
+  waveformPeaks:          true,
 };
 
 function readFlags(): Record<FlagName, boolean> {

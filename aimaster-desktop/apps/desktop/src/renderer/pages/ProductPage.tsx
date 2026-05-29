@@ -33,6 +33,7 @@ import {
 import { MediaElementProvider } from '../audio/media-element-context.js';
 import { resumeSharedContext, logAudioEvent, setFreeEqBands as setGraphFreeEqBands } from '../audio/shared-audio-graph.js';
 import { isEnabled as isSafeBootEnabled } from '../audio/safe-boot-flags.js';
+import { SafeBootBanner } from '../components/product/SafeBootBanner.js';
 import { useRealtimeMasteringGraph } from '../hooks/useRealtimeMasteringGraph.js';
 import { LouiRealtimeDebugPanel } from '../components/product/LouiRealtimeDebugPanel.js';
 import { LouiRealtimeDebugDrawer } from '../components/product/LouiRealtimeDebugDrawer.js';
@@ -238,6 +239,7 @@ function ProductLayoutInner({
         fontFamily: typography.family.sans,
       }}
     >
+      <SafeBootBanner />
       <LouiTopBar
         subtitle="Result"
         engineLabel={analyzerFactoryLabel()}
