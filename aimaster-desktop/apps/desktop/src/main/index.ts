@@ -60,6 +60,37 @@ function createWindow(): void {
     mainWindow?.show();
   });
 
+  // ── Renderer crash listeners (긴급 크래시 분석) ─────────────────────────
+  // renderer process가 갑자기 죽으면 reason + exitCode를 정확히 기록.
+  // ErrorBoundary가 못 잡는 종류 (native crash, OOM, IPC 등)의 원인 표시.
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    log.error('[CRASH] webContents render-process-gone:', JSON.stringify({
+      reason: details.reason,   // 'crashed' | 'killed' | 'oom' | 'launch-failed' | etc.
+      exitCode: details.exitCode,
+    }));
+    recordFailure('engine', `renderer render-process-gone: reason=${details.reason} exit=${details.exitCode}`);
+    // DO NOT auto-reload — first time we want the user/devtools to see the state.
+    mainWindow?.show();
+  });
+  mainWindow.webContents.on('unresponsive', () => {
+    log.error('[CRASH] webContents unresponsive (renderer event loop blocked)');
+    recordFailure('engine', 'renderer unresponsive');
+  });
+  mainWindow.webContents.on('responsive', () => {
+    log.info('[CRASH] webContents responsive again');
+  });
+  // Capture console errors from the renderer into the main log so they
+  // survive a renderer crash that wipes DevTools.
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    if (level >= 2) { // 2=warning, 3=error
+      log.warn(`[renderer-console L${level}] ${message} (${sourceId}:${line})`);
+    }
+  });
+  mainWindow.webContents.on('preload-error', (_e, preloadPath, error) => {
+    log.error('[CRASH] preload-error', { preloadPath, message: error.message, stack: error.stack });
+    recordFailure('engine', `preload-error: ${error.message}`);
+  });
+
   // Cmd+Option+I (Mac) / Ctrl+Shift+I (Win) 로 DevTools 열기
   mainWindow.webContents.on('before-input-event', (_e, input) => {
     const isMac = process.platform === 'darwin';
@@ -199,6 +230,32 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+// ── App-level renderer crash catch-all (긴급 크래시 분석) ───────────────────
+// Catches renderer crashes from any window, including ones that fire too
+// early for the per-window listener to register.
+app.on('render-process-gone', (_e, webContents, details) => {
+  log.error('[CRASH] app.render-process-gone:', JSON.stringify({
+    reason: details.reason,
+    exitCode: details.exitCode,
+    url: webContents.getURL(),
+  }));
+  recordFailure('engine', `app render-process-gone: reason=${details.reason} exit=${details.exitCode}`);
+});
+app.on('child-process-gone', (_e, details) => {
+  log.error('[CRASH] app.child-process-gone:', JSON.stringify({
+    type: details.type,        // 'GPU' | 'Pepper Plugin' | 'Utility' | 'Zygote' | etc.
+    reason: details.reason,
+    exitCode: details.exitCode,
+    name: details.name,
+  }));
+  recordFailure('engine', `child-process-gone: type=${details.type} reason=${details.reason}`);
+});
+
 process.on('uncaughtException', (err) => {
-  log.error('Uncaught exception', err);
+  log.error('[CRASH] Uncaught exception', err);
+  recordFailure('engine', `uncaughtException: ${err.message}`);
+});
+process.on('unhandledRejection', (reason) => {
+  log.error('[CRASH] Unhandled rejection', reason);
+  recordFailure('engine', `unhandledRejection: ${reason instanceof Error ? reason.message : String(reason)}`);
 });
