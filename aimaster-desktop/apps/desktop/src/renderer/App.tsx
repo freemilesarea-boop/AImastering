@@ -10,18 +10,18 @@ import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { isProductLayoutEnabled } from './audio/product-layout-flag.js';
 import { ProductPageErrorBoundary } from './components/ProductPageErrorBoundary.js';
-// Dev-only: analyzer streaming smoke route.  Mounted when URL contains
-// `?dev=analyzer-stream`.  No production navigation entry.
-import { DevAnalyzerStreamPage } from './pages/DevAnalyzerStreamPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
 
-// ProductPage lazy-loaded so its entire audio import chain (AudioContext,
-// WASM, worklets) does NOT evaluate at renderer startup.  The heavy module
-// is only fetched+evaluated when the user actually navigates to the result
-// page, keeping the home page boot path completely audio-free.
+// Both heavy pages are lazy-loaded so their audio/dev import chains do NOT
+// evaluate at renderer startup.  They're only fetched when actually navigated to.
 const ProductPage = React.lazy(() => import('./pages/ProductPage.js'));
+// Dev-only: analyzer streaming smoke route — only on ?dev=analyzer-stream URL.
+// Named export → wrap in a default-export shim for React.lazy.
+const DevAnalyzerStreamPage = React.lazy(() =>
+  import('./pages/DevAnalyzerStreamPage.js').then((m) => ({ default: m.DevAnalyzerStreamPage }))
+);
 
 // ── Toast notification ────────────────────────────────────────────────────────
 
@@ -221,11 +221,19 @@ export default function App() {
 }
 
 function AppInner() {
-  console.log('[AppInner] rendering');
+  const page = useAppStore((s) => s.currentPage);
+  const renderRef = useRef(0);
+  renderRef.current++;
+  const prevPageRef = useRef(page);
+  if (prevPageRef.current !== page) {
+    console.log(`[AppInner] page: ${prevPageRef.current} → ${page} (render #${renderRef.current})`);
+    prevPageRef.current = page;
+  } else {
+    console.log(`[AppInner] rendering #${renderRef.current} page=${page}`);
+  }
   useEffect(() => {
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
   }, []);
-  const page = useAppStore((s) => s.currentPage);
 
   // Dev-only: route via URL query so the analyzer-stream smoke page can
   // be reached without touching the appStore page enum.  Production
@@ -261,7 +269,10 @@ function AppInner() {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      {isDevRoute ? <DevAnalyzerStreamPage /> : (pages[page] ?? <HomePage />)}
+      {isDevRoute
+        ? <React.Suspense fallback={null}><DevAnalyzerStreamPage /></React.Suspense>
+        : (pages[page] ?? <HomePage />)
+      }
 
       {/* Creator watermark — fixed bottom-left */}
       <div className="fixed bottom-3 left-4 pointer-events-none select-none z-10">
