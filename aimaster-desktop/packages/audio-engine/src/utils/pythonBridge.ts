@@ -195,7 +195,54 @@ export class PythonBridge extends EventEmitter {
     this.readyQueue = [];
   }
 
+  /**
+   * Send SIGTERM, then escalate to SIGKILL after 250 ms if the process
+   * hasn't exited.  Synchronous-but-deferred: returns immediately, the
+   * SIGKILL fires from a setTimeout.  Suitable for callers that don't
+   * await — for cleanup-on-quit prefer `killAndWait`.
+   */
   kill(): void {
-    this.proc?.kill();
+    const proc = this.proc;
+    if (!proc) return;
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+    setTimeout(() => {
+      if (proc.exitCode === null && proc.signalCode === null) {
+        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+      }
+    }, 250);
+  }
+
+  /**
+   * Send SIGTERM and resolve when the process actually exits, or after
+   * `timeoutMs` (default 500 ms) escalate to SIGKILL and resolve once that
+   * signal has been delivered.  Use this on app shutdown so the Python
+   * engine is definitely gone before Electron returns from before-quit.
+   */
+  async killAndWait(timeoutMs = 500): Promise<void> {
+    const proc = this.proc;
+    if (!proc) return;
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+
+    await new Promise<void>((resolve) => {
+      const onExit = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      proc.once('exit', onExit);
+      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      const timer = setTimeout(() => {
+        if (proc.exitCode === null && proc.signalCode === null) {
+          try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        }
+        // Either the SIGKILL exit will fire onExit shortly, or the process
+        // was already gone.  Either way, give up on the listener after one
+        // more tick to keep shutdown predictable.
+        setTimeout(() => {
+          proc.removeListener('exit', onExit);
+          resolve();
+        }, 100);
+      }, timeoutMs);
+    });
   }
 }

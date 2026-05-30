@@ -3,6 +3,7 @@ import { app, dialog, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { recordFailure } from '../utils/failureLog.js';
+import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
 import {
   buildSupportBundle,
   supportBundleToJson,
@@ -52,10 +53,11 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
   // ── Save WAV or MP3 — shows dialog, then copies from src ─────────────
   // Used by ResultPage for both WAV and MP3 export.
-  ipc.handle('file:save-wav', async (_e, srcPath: string) => {
-    if (!win || !srcPath) return null;
+  ipc.handle('file:save-wav', async (_e, srcPath: unknown) => {
+    if (!win) return null;
+    const safeSrc = validateAbsoluteFilePath(srcPath, 'file:save-wav');
 
-    const ext      = path.extname(srcPath).toLowerCase().replace('.', '');
+    const ext      = path.extname(safeSrc).toLowerCase().replace('.', '');
     const isWav    = ext === 'wav';
     const filters  = isWav
       ? [{ name: 'WAV Audio', extensions: ['wav'] }]
@@ -63,16 +65,16 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
     try {
       const result = await dialog.showSaveDialog(win, {
-        defaultPath: path.basename(srcPath),
+        defaultPath: path.basename(safeSrc),
         filters,
       });
       if (result.canceled || !result.filePath) return null;
 
-      fs.copyFileSync(srcPath, result.filePath);
+      fs.copyFileSync(safeSrc, result.filePath);
       return result.filePath;
     } catch (err) {
       recordFailure('export', `file:save-wav failed: ${(err as Error).message}`, {
-        ext, srcPath,
+        ext, srcPath: safeSrc,
       });
       throw err;
     }
@@ -241,8 +243,21 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   });
 
   // ── Batch save: folder picker → copy all WAV/MP3 files ───────────────
-  ipc.handle('file:batch-save-wav', async (_e, srcPaths: string[]) => {
+  ipc.handle('file:batch-save-wav', async (_e, srcPaths: unknown) => {
     if (!win || !Array.isArray(srcPaths) || !srcPaths.length) return null;
+
+    // Validate every source path up-front so we never go through the
+    // dialog with garbage that would silently no-op the whole batch.
+    const validSrcs: string[] = [];
+    for (const src of srcPaths) {
+      try {
+        validSrcs.push(validateAbsoluteFilePath(src, 'file:batch-save-wav'));
+      } catch {
+        // Skip individual invalid entries rather than failing the whole
+        // batch — the caller may legitimately have a mix of paths.
+      }
+    }
+    if (!validSrcs.length) return null;
 
     const folderResult = await dialog.showOpenDialog(win, {
       title: '저장할 폴더 선택',
@@ -253,13 +268,16 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
     const destDir = folderResult.filePaths[0];
     let saved = 0;
-    for (const src of srcPaths) {
-      if (!src) continue;
+    for (const src of validSrcs) {
       try {
         const dest = path.join(destDir, path.basename(src));
         fs.copyFileSync(src, dest);
         saved++;
-      } catch { /* skip missing/inaccessible files */ }
+      } catch (err) {
+        recordFailure('export', `file:batch-save-wav copy failed: ${(err as Error).message}`, {
+          src, destDir,
+        });
+      }
     }
     return { destDir, saved };
   });

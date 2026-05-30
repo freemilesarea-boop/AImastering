@@ -24,24 +24,26 @@ import type {
 import { log } from '../utils/logger.js';
 import { recordFailure } from '../utils/failureLog.js';
 import { recordPipelineWarning } from '../utils/supportBundle.js';
+import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
 
 let bridge: PythonBridge | null = null;
 
 /**
  * Forcefully terminate the Python engine subprocess if one is alive.
  * Called from main/index.ts on `before-quit` so the engine doesn't outlive
- * the app as a zombie process.
+ * the app as a zombie process.  Awaits the actual SIGTERM exit (or
+ * SIGKILL escalation after the bridge's internal timeout) so the parent
+ * doesn't return from before-quit while the child is still draining.
  */
-export function killBridge(): void {
-  if (!bridge) return;
+export async function killBridge(): Promise<void> {
+  const b = bridge;
+  if (!b) return;
+  bridge = null;  // detach immediately so a re-entry spawns a fresh bridge
   try {
-    // PythonBridge.kill is best-effort — it sends SIGTERM, then SIGKILL.
-    // If the engine has already exited the call is a no-op.
-    bridge.kill();
+    await b.killAndWait();
   } catch (err) {
     log.warn('killBridge failed:', err);
   }
-  bridge = null;
 }
 
 /**
@@ -248,24 +250,26 @@ function toAppError(err: unknown, filePath = ''): never {
 }
 
 export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
-  ipc.handle('audio:analyze', async (_e, filePath: string) => {
+  ipc.handle('audio:analyze', async (_e, filePath: unknown) => {
+    const safePath = validateAbsoluteFilePath(filePath, 'audio:analyze');
     try {
       const b = getBridge();
-      return await analyzeFile(b, filePath);
+      return await analyzeFile(b, safePath);
     } catch (err) {
-      log.error('[audio:analyze] error', { filePath, err: (err as Error).message });
-      recordFailure('engine', `analyzeFile failed: ${(err as Error).message}`, { filePath });
-      toAppError(err, filePath);
+      log.error('[audio:analyze] error', { filePath: safePath, err: (err as Error).message });
+      recordFailure('engine', `analyzeFile failed: ${(err as Error).message}`, { filePath: safePath });
+      toAppError(err, safePath);
     }
   });
 
   ipc.handle('audio:master', async (
     _e,
-    filePath: string,
+    filePath: unknown,
     _outputPath: string,   // ignored — we always generate temp paths here
     options: MasteringOptions,
     extras?: { preLoudness?: LoudnessStats },
   ) => {
+    const safePath = validateAbsoluteFilePath(filePath, 'audio:master');
     // ── Write-permission pre-check ────────────────────────────────────────
     assertTmpWritable();
 
@@ -288,7 +292,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     // ── Output path: original-filename-based, not UUID ────────────────────
     // Python derives the preview MP3 path as: outputPath_without_ext + "_preview.mp3"
     // so naming the WAV correctly automatically names the preview correctly too.
-    const wavTempPath = resolveOutputPath(filePath, '.wav', {
+    const wavTempPath = resolveOutputPath(safePath, '.wav', {
       style:      options?.style,
       targetLufs: options?.targetLufs,
     });
@@ -296,7 +300,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     const mp3FallbackPath = internalTempPath('_preview.mp3');
 
     try {
-      const result = await masterFile(b, filePath, wavTempPath, options, {
+      const result = await masterFile(b, safePath, wavTempPath, options, {
         preLoudness: extras?.preLoudness,
       });
 
@@ -320,12 +324,12 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       try { fs.unlinkSync(wavTempPath); } catch { /* already gone */ }
 
       log.error('[audio:master] error', {
-        filePath,
+        filePath: safePath,
         err: (err as Error).message,
         bridgeDied,
       });
       recordFailure('pipeline', `masterFile failed: ${(err as Error).message}`, {
-        filePath, bridgeDied,
+        filePath: safePath, bridgeDied,
       });
 
       // If bridge died, reset so next call spawns a fresh process
@@ -334,7 +338,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         throw pythonProcessFailed('Bridge process exited unexpectedly', true);
       }
 
-      toAppError(err, filePath);
+      toAppError(err, safePath);
     } finally {
       b.removeListener('exit', bridgeExitHandler);
       b.removeListener('progress', progressHandler);
@@ -357,7 +361,8 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
   ) => {
     assertTmpWritable();
     const { sourcePath, chainConfig, options, requestId } = req;
-    const wavTempPath = resolveOutputPath(sourcePath, '.wav', {
+    const safeSourcePath = validateAbsoluteFilePath(sourcePath, 'audio:master-rust-experimental');
+    const wavTempPath = resolveOutputPath(safeSourcePath, '.wav', {
       style: options?.style, targetLufs: options?.targetLufs,
     });
     const mp3Path = internalTempPath('_preview.mp3');
@@ -370,7 +375,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       if (!isRustOfflineAvailable()) throw new Error('rust offline backend unavailable');
       const sr = (options?.sampleRate as number) || 48000;
       const bd = (options?.bitDepth === 16 ? 16 : 24) as 16 | 24;
-      const rendered = await processAudioFileRust(sourcePath, chainConfig, {
+      const rendered = await processAudioFileRust(safeSourcePath, chainConfig, {
         sampleRate: sr, bitDepth: bd, outputPath: wavTempPath,
         // Two-pass loudness-normalize toward the same target the UI requests.
         ...(typeof options?.targetLufs === 'number' ? { targetLufs: options.targetLufs } : {}),
@@ -391,7 +396,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       // Fallback: the proven Python path.
       try {
         const b = getBridge();
-        const result = await masterFile(b, sourcePath, wavTempPath, options, {});
+        const result = await masterFile(b, safeSourcePath, wavTempPath, options, {});
         return {
           requestId, ok: true, backend: 'python' as const, fallbackUsed: true,
           outputPath: result.outputPath, previewPath: result.previewPath || mp3Path,
@@ -406,14 +411,15 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     }
   });
 
-  ipc.handle('audio:qc', async (_e, filePath: string, targetLufs: number, targetTp: number) => {
+  ipc.handle('audio:qc', async (_e, filePath: unknown, targetLufs: number, targetTp: number) => {
+    const safePath = validateAbsoluteFilePath(filePath, 'audio:qc');
     try {
       const b = getBridge();
-      return await runQC(b, filePath, targetLufs, targetTp);
+      return await runQC(b, safePath, targetLufs, targetTp);
     } catch (err) {
-      log.error('[audio:qc] error', { filePath, err: (err as Error).message });
-      recordFailure('engine', `runQC failed: ${(err as Error).message}`, { filePath });
-      toAppError(err, filePath);
+      log.error('[audio:qc] error', { filePath: safePath, err: (err as Error).message });
+      recordFailure('engine', `runQC failed: ${(err as Error).message}`, { filePath: safePath });
+      toAppError(err, safePath);
     }
   });
 
@@ -433,18 +439,24 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     if (!sourceAudioPath || !options) {
       return { requestId: requestId ?? 0, ok: false, error: 'invalid request payload' };
     }
+    let safeSourcePath: string;
+    try {
+      safeSourcePath = validateAbsoluteFilePath(sourceAudioPath, 'audio:re-render-preview');
+    } catch (err) {
+      return { requestId: requestId ?? 0, ok: false, error: (err as Error).message };
+    }
     const t0 = Date.now();
     try {
       assertTmpWritable();
       const b = getBridge();
 
-      const wavTempPath = resolveOutputPath(sourceAudioPath, '.wav', {
+      const wavTempPath = resolveOutputPath(safeSourcePath, '.wav', {
         style:      options.style,
         targetLufs: options.targetLufs,
       });
       const mp3FallbackPath = internalTempPath('_preview.mp3');
 
-      const result = await masterFile(b, sourceAudioPath, wavTempPath, options, {});
+      const result = await masterFile(b, safeSourcePath, wavTempPath, options, {});
       const durationMs = Date.now() - t0;
 
       const after = (result as { loudnessAfter?: { integratedLufs?: number; truePeakDbtp?: number } })?.loudnessAfter;
@@ -464,8 +476,8 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       };
     } catch (err) {
       const msg = (err as Error).message;
-      log.error('[audio:re-render-preview] error', { sourceAudioPath, err: msg });
-      recordFailure('pipeline', `re-render-preview failed: ${msg}`, { sourceAudioPath });
+      log.error('[audio:re-render-preview] error', { sourceAudioPath: safeSourcePath, err: msg });
+      recordFailure('pipeline', `re-render-preview failed: ${msg}`, { sourceAudioPath: safeSourcePath });
       return { requestId: requestId ?? 0, ok: false, error: msg };
     }
   });
