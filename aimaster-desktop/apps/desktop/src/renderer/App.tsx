@@ -204,8 +204,10 @@ export default function App() {
   const hasAPI = Boolean(window.electronAPI);
 
   useEffect(() => {
+    // eslint-disable-next-line no-console
     console.log('[App] mounted. window.electronAPI available:', hasAPI);
     if (!hasAPI) {
+      // eslint-disable-next-line no-console
       console.warn('[App] electronAPI is undefined. Preload did not run. Check: 1) dist-electron/preload/index.js 존재 여부 2) CSP 3) sandbox 설정');
     }
   }, [hasAPI]);
@@ -220,16 +222,8 @@ function AppInner() {
   const setPage = useAppStore((s) => s.setPage);
   const selectedFile = useAudioStore((s) => s.selectedFile);
   const masteringResult = useAudioStore((s) => s.masteringResult);
-  const renderRef = useRef(0);
-  renderRef.current++;
-  const prevPageRef = useRef(page);
-  if (prevPageRef.current !== page) {
-    console.log(`[AppInner] page: ${prevPageRef.current} → ${page} (render #${renderRef.current})`);
-    prevPageRef.current = page;
-  } else {
-    console.log(`[AppInner] rendering #${renderRef.current} page=${page}`);
-  }
   useEffect(() => {
+    // eslint-disable-next-line no-console
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
   }, []);
 
@@ -238,10 +232,12 @@ function AppInner() {
   // bad route never actually displays.
   useEffect(() => {
     if (page === 'result' && !(selectedFile && masteringResult?.outputPath)) {
+      // eslint-disable-next-line no-console
       console.warn('[AppInner] page=result with no result data — redirecting to home');
       setPage('home');
     }
     if (page === 'tweak' && !selectedFile) {
+      // eslint-disable-next-line no-console
       console.warn('[AppInner] page=tweak with no selectedFile — redirecting to home');
       setPage('home');
     }

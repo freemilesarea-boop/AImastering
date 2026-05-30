@@ -28,12 +28,6 @@ function dbToRatio(db: number): number {
   return Math.max(0, Math.min(1, (db - MIN_DB) / (MAX_DB - MIN_DB)));
 }
 
-function barColor(db: number): string {
-  if (db >= -6)  return meterTheme.danger.foreground;
-  if (db >= -12) return meterTheme.warn.foreground;
-  return meterTheme.safe.foreground;
-}
-
 export function NativeBandMeter() {
   const media = useMediaElement();
   const analyzer = useNativeAnalyzer(media);

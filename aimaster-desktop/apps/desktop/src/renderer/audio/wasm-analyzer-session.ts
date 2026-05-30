@@ -157,6 +157,7 @@ function rtLog(msg: string, data?: unknown): void {
   if (!RT_DEBUG) return;
   // eslint-disable-next-line no-console
   if (data !== undefined) console.debug(`[RealtimeAudio] ${msg}`, data);
+  // eslint-disable-next-line no-console
   else console.debug(`[RealtimeAudio] ${msg}`);
 }
 

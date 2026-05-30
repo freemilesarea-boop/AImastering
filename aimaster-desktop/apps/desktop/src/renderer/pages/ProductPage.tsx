@@ -54,7 +54,7 @@ import { LouiPresetSlideOver } from '../components/product/LouiPresetSlideOver.j
 import { LouiRevisionStack } from '../components/product/LouiRevisionStack.js';
 import type { RevisionInput } from '../audio/revisions/revision-types.js';
 import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioStore.js';
-import { getActiveRevision, getBaselineRevision, findDuplicate } from '../audio/revisions/revision-logic.js';
+import { getActiveRevision, getBaselineRevision } from '../audio/revisions/revision-logic.js';
 import { LouiRealtimeStatus } from '../components/product/modules/LouiRealtimeStatus.js';
 import { LouiRealtimeToggle } from '../components/product/modules/LouiRealtimeToggle.js';
 import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
@@ -146,10 +146,10 @@ function ProductLayoutInner({
   onSelectModule,
   onPlayPause,
   isPlaying,
-  durationLabel,
-  currentTimeLabel,
+  durationLabel: _durationLabel,
+  currentTimeLabel: _currentTimeLabel,
   onSeek,
-  progress,
+  progress: _progress,
   modules,
   onBack,
   onImport,
@@ -1280,7 +1280,6 @@ function ProductPageProduction() {
   // Revision workflow (M3-REVISION-WORKFLOW)
   const revisionGroup   = useAudioStore((s) => s.revisionGroup);
   const addRevision     = useAudioStore((s) => s.addRevision);
-  const setActiveRevision = useAudioStore((s) => s.setActiveRevision);
   const clearRevisions = useAudioStore((s) => s.clearRevisions);
 
   // Keep the revision group bound to the CURRENT source — clear stale
@@ -1350,7 +1349,6 @@ function ProductPageProduction() {
   // Source-preview mode (UX-FLOW-NEXT-1): with no master result yet, play
   // the ORIGINAL file so the user can listen + tweak before rendering.
   const sourcePreviewSrc = sourceAudioPath ? toFileUrl(sourceAudioPath) : '';
-  const hasResult = Boolean(baselineRevision) || Boolean(masteringResult?.outputPath);
 
   const basePreviewSrc = baselinePreview ? toFileUrl(baselinePreview) : sourcePreviewSrc;
   const activeIsNotBaseline = Boolean(activeRevision && baselineRevision && activeRevision.id !== baselineRevision.id);

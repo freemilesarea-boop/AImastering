@@ -13,7 +13,7 @@
 // but the audible audio is NOT affected.  The Phase 2 commit will wire
 // the bands into the native DSP via dynamic BiquadFilter nodes.
 
-import React, { useRef, useState } from 'react';
+import React, { useRef } from 'react';
 import {
   type ParametricEqBand,
   type ParametricBandType,
@@ -25,8 +25,6 @@ import {
   clampQ,
   MIN_FREQ_HZ,
   MAX_FREQ_HZ,
-  MIN_GAIN_DB,
-  MAX_GAIN_DB,
   MAX_BANDS,
 } from '../../../audio/modules/parametric-eq-model.js';
 import { text, typography } from '../../../theme/loui-theme.js';

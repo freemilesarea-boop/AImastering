@@ -14,6 +14,7 @@ import type { AnalyzerSessionFactory } from '@aimaster/shared-types/streaming';
 
 import { SyntheticAnalyzerSessionFactory } from './analyzer-session-synthetic.js';
 import { WasmAnalyzerSessionFactory } from './wasm-analyzer-session.js';
+import { isEnabled as isSafeBootEnabled } from './safe-boot-flags.js';
 
 declare global {
   interface Window {
@@ -48,7 +49,13 @@ const syntheticFactory: SyntheticAnalyzerSessionFactory = new SyntheticAnalyzerS
  *   1. explicit OFF — env `VITE_LOUI_WASM_ANALYZER=false` /
  *      `window.__LOUI_WASM_ANALYZER__ === false` /
  *      `localStorage['loui.wasmAnalyzer'] = 'false'`  → synthetic (dev).
- *   2. otherwise → ON (real WASM analyzer).
+ *   2. safe-boot crash-hunt gate: `safe-boot-flags.wasmAnalyzer === false`
+ *      (sessionStorage-backed kill switch reachable from DevTools as
+ *      `window.__SAFE_BOOT__.enableWasmAnalyzer()` / disable equivalents)
+ *      → synthetic.  This collapses two previously-independent gates into
+ *      one, so a single safe-boot toggle disables BOTH the panel-stack
+ *      provider and the AnalyzerSession factory.
+ *   3. otherwise → ON (real WASM analyzer).
  */
 export function isWasmAnalyzerEnabled(): boolean {
   const envFlag = (import.meta.env?.VITE_LOUI_WASM_ANALYZER ?? '').toString().toLowerCase();
@@ -60,6 +67,12 @@ export function isWasmAnalyzerEnabled(): boolean {
       if (v === 'false' || v === '0') return false;
     }
   } catch { /* ignore */ }
+  // Safe-boot kill switch — defaults to OFF for the wasmAnalyzer flag in
+  // safe-boot-flags.DEFAULT_ENABLED, so this is the active gate during
+  // crash-hunt sessions until the user explicitly toggles it on.
+  try {
+    if (!isSafeBootEnabled('wasmAnalyzer')) return false;
+  } catch { /* sessionStorage not available — fall through to ON */ }
   return true;
 }
 

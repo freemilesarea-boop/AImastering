@@ -380,10 +380,6 @@ function QCSummary() {
 // ── Mastering meta card (v3) ─────────────────────────────────────────────────
 
 function MasteringMetaCard({ meta }: { meta: MasteringMeta }) {
-  const lufsOK = Math.abs(meta.appliedGainDb) >= 0
-    ? Math.abs((meta as MasteringMeta & { lufsDelta?: number }).lufsDelta ?? 0) <= 0.5
-    : true;
-
   const cells: Array<{ label: string; value: string; ok?: boolean; hint?: string }> = [
     { label: 'Selected Mode',     value: meta.mode },
     { label: 'Target',            value: `${meta.targetLufs.toFixed(1)} LUFS · ${meta.targetTruePeak.toFixed(1)} dBTP` },

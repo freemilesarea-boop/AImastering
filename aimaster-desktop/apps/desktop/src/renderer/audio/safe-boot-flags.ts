@@ -28,19 +28,19 @@ type FlagName =
 
 // Bump suffix when DEFAULT_ENABLED shape changes so users get the new
 // defaults instead of stale sessionStorage from the previous boot.
-const STORAGE_KEY = '__loui_safe_boot__v2';
-// Defaults after the initial crash-hunt commit (b94f929).  Three groups
-// are now confirmed safe-to-mount and ship ON; the two heaviest paths
-// (WASM analyzer + Realtime mastering worklet) stay OFF until a user
-// gesture explicitly enables them — both call createMediaElementSource
-// or compile worklet modules synchronously on mount, which is the
-// suspected origin of the renderer crash.
+const STORAGE_KEY = '__loui_safe_boot__v3';
+// Defaults after the WASM-lifecycle fixes (init() singleton, stop()
+// idempotency, provider single-stop, asarUnpack).  The two previously
+// "PRIME SUSPECT" flags can now default ON because the root cause of the
+// dlmalloc panic — concurrent init() races and double-stop free() — has
+// been collapsed at the source.  They remain TOGGLEABLE so a future
+// regression can be isolated by hand from DevTools without a redeploy.
 const DEFAULT_ENABLED: Record<FlagName, boolean> = {
   nativeAnalyzers:        true,  // WebAudio AnalyserNode (read-only tap) — confirmed safe
   secondaryAnalyzer:      true,  // hook runs but does nothing while duoMode=false
   freeEqSync:             true,  // fast-path bail when no band enabled — confirmed safe
-  wasmAnalyzer:           false, // PRIME SUSPECT — leave OFF until user toggles
-  realtimeMasteringGraph: false, // PRIME SUSPECT — leave OFF until user toggles
+  wasmAnalyzer:           true,  // safe after WASM lifecycle hardening
+  realtimeMasteringGraph: true,  // safe after WASM lifecycle hardening
   loudnessHistory:        true,
   bandMeter:              true,
   waveformPeaks:          true,

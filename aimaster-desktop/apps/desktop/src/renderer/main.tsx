@@ -8,7 +8,9 @@ import './audio/safe-boot-flags.js';
 
 // ── 시작 진단 로그 ─────────────────────────────────────────────────────────────
 // DevTools(Ctrl+Shift+I) 콘솔에서 이 로그로 preload 상태를 확인하세요.
+// eslint-disable-next-line no-console
 console.log('[AIMASTER] renderer starting...');
+// eslint-disable-next-line no-console
 console.log('[AIMASTER] window.electronAPI:', (window as Window & { electronAPI?: unknown }).electronAPI ?? 'NOT EXPOSED — preload missing or CSP blocked');
 
 // ── 글로벌 에러 캐처 (검은 화면 디버깅용) ────────────────────────────────────
@@ -39,7 +41,9 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, EBSta
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // eslint-disable-next-line no-console
     console.error('[ErrorBoundary] render error:', error.message);
+    // eslint-disable-next-line no-console
     console.error('[ErrorBoundary] component stack:', info.componentStack);
   }
 

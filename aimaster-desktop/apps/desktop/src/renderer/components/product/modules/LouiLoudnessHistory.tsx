@@ -125,7 +125,7 @@ export function LouiLoudnessHistory({ targetLufs, height = 56, windowSec = 30 }:
       ctx.fillStyle = 'rgba(167,139,250,0.16)';
       ctx.beginPath();
       let started = false;
-      let lastX = 0, lastY = H;
+      let lastX = 0;
       for (let i = 0; i < capacity; i++) {
         const idx = (head + i) % capacity;
         const v = buf[idx]!;
@@ -148,7 +148,7 @@ export function LouiLoudnessHistory({ targetLufs, height = 56, windowSec = 30 }:
         } else {
           ctx.lineTo(x, y);
         }
-        lastX = x; lastY = y;
+        lastX = x;
       }
       if (started) {
         ctx.lineTo(lastX, H);

@@ -20,7 +20,7 @@ interface LicenseStore {
   activate: (key: string) => Promise<void>;
 }
 
-export const useLicenseStore = create<LicenseStore>((set, get) => ({
+export const useLicenseStore = create<LicenseStore>((set, _get) => ({
   licenseInfo: null,
   isLoading:   false,
   error:       null,
@@ -33,6 +33,7 @@ export const useLicenseStore = create<LicenseStore>((set, get) => ({
 
   load: async () => {
     if (!window.electronAPI) {
+      // eslint-disable-next-line no-console
       console.warn('[licenseStore] electronAPI not available — skipping license load');
       return;
     }
@@ -41,6 +42,7 @@ export const useLicenseStore = create<LicenseStore>((set, get) => ({
       const info = await window.electronAPI.invoke('license:status') as LicenseInfo;
       set({ licenseInfo: info });
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error('[licenseStore] license:status error:', err);
       set({ error: (err as Error).message });
     } finally {
