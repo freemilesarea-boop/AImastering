@@ -155,6 +155,18 @@ export default function MasteringPage() {
 
   const fileName = analysis?.fileInfo.name ?? selectedFile?.split('/').pop() ?? '…';
 
+  // Ref + helper used by the auto-start effect, the timeout, and the
+  // navigation-cleanup effect to issue a single `audio:cancel` IPC when
+  // the user (or the timeout) abandons an in-flight mastering call.
+  // The main process tears down the Python bridge; the next attempt
+  // respawns it.
+  const inFlightRef = useRef(false);
+  const sendCancel = useCallback((reason: string) => {
+    if (!inFlightRef.current) return;
+    inFlightRef.current = false;
+    void window.electronAPI?.invoke('audio:cancel', reason).catch(() => { /* swallow — best effort */ });
+  }, []);
+
   // ── Core mastering runner ─────────────────────────────────────────────
   // Returns true on success, false on error.  Encapsulates the IPC dance so
   // both the auto-start effect and the retry button share one code path.
@@ -178,18 +190,23 @@ export default function MasteringPage() {
     setIsMastering(true);
     setError(null);
     setProgress(0, '파일 검사');
+    inFlightRef.current = true;
 
     const cleanupProgress = window.electronAPI!.on('audio:progress', (msg: unknown) => {
       const m = msg as { percent: number; stage: string };
       setProgress(m.percent, m.stage);
     });
 
-    // Hard timeout that races against the IPC promise.
+    // Hard timeout that races against the IPC promise.  When the timeout
+    // wins, we also send `audio:cancel` so the Python engine actually
+    // stops working in the background instead of finishing into a
+    // discarded result.
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(() => {
         // eslint-disable-next-line no-console
         console.error('[MasteringPage] timeout fallback — IPC exceeded', MASTERING_TIMEOUT_MS, 'ms');
+        sendCancel('timeout');
         reject(new Error('엔진 응답이 없습니다. 다시 시도해주세요.'));
       }, MASTERING_TIMEOUT_MS);
     });
@@ -249,8 +266,19 @@ export default function MasteringPage() {
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       cleanupProgress();
       setIsMastering(false);
+      inFlightRef.current = false;
     }
-  }, [selectedFile, analysis, options, setIsMastering, setError, setProgress, setMasteringResult, setAnalysis, setPage, notify]);
+  }, [selectedFile, analysis, options, setIsMastering, setError, setProgress, setMasteringResult, setAnalysis, setPage, notify, sendCancel]);
+
+  // Navigation-away cleanup: if the user leaves MasteringPage while an
+  // IPC is still pending (e.g. ESC + 새 파일, back-to-home, app quit
+  // mid-mastering) tell the main process to kill the Python engine so it
+  // doesn't keep working on a result nobody will use.
+  useEffect(() => {
+    return () => {
+      sendCancel('unmount');
+    };
+  }, [sendCancel]);
 
   // ── Auto-start on mount (StrictMode-safe) ─────────────────────────────
   // React 18 StrictMode double-invokes effects in dev; the ref guard makes

@@ -4,6 +4,9 @@ import type { IpcRendererEvent } from 'electron';
 const INVOKE_CHANNELS = [
   // Audio
   'audio:analyze', 'audio:master', 'audio:qc',
+  // Renderer-initiated cancel of an in-flight Python engine call.
+  // killBridge() terminates the engine subprocess; the next call respawns.
+  'audio:cancel',
   // Preview re-render (M3-P-NEXT-5C) — reuses the existing master path
   // with an options override.  Product-layout flag gates the renderer
   // caller; the channel itself is always registered.

@@ -250,6 +250,16 @@ function toAppError(err: unknown, filePath = ''): never {
 }
 
 export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
+  // Renderer-initiated cancel: tear down the Python engine so any in-flight
+  // analyze / master / qc work stops immediately.  The next IPC call will
+  // respawn a fresh bridge.  Used when the user navigates away from the
+  // mastering page mid-IPC, when the renderer's hard timeout fires, etc.
+  ipc.handle('audio:cancel', async (_e, reason: unknown) => {
+    const reasonStr = typeof reason === 'string' ? reason : 'unknown';
+    log.info('[audio:cancel] killing bridge', { reason: reasonStr });
+    await killBridge();
+  });
+
   ipc.handle('audio:analyze', async (_e, filePath: unknown) => {
     const safePath = validateAbsoluteFilePath(filePath, 'audio:analyze');
     try {
