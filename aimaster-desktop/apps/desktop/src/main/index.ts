@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, protocol, net } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { checkFFmpeg } from '@aimaster/audio-engine';
-import { registerAudioHandlers } from './ipc/audioHandlers.js';
+import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { initUpdater } from './updater.js';
@@ -228,6 +228,15 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// Kill the Python engine subprocess before the app exits so it can't
+// outlive Electron as a zombie (most painful on macOS Cmd+Q where the
+// window-all-closed → app.quit chain is skipped for the dock-resident
+// process).  before-quit fires for every quit path: Cmd+Q, app.quit(),
+// even SIGINT from the terminal in dev.
+app.on('before-quit', () => {
+  killBridge();
 });
 
 // ── App-level renderer crash catch-all (긴급 크래시 분석) ───────────────────

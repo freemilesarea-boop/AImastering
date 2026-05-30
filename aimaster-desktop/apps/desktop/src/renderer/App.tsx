@@ -3,7 +3,6 @@ import { useAppStore } from './stores/appStore.js';
 // License gate disabled for the internal RC (v3.6.0-rc.1+1) — license
 // store / modal imports removed.  See main/index.ts header.
 import HomePage     from './pages/HomePage.js';
-import AnalysisPage from './pages/AnalysisPage.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
@@ -277,7 +276,6 @@ function AppInner() {
 
   const pages: Record<string, React.ReactNode> = {
     home:      <HomePage />,
-    analysis:  <AnalysisPage />,
     mastering: <MasteringPage />,
     result:    resultSlot,
     tweak:     tweakSlot,

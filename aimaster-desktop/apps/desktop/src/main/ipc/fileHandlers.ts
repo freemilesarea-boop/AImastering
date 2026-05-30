@@ -186,23 +186,57 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   });
 
   // ── File info ─────────────────────────────────────────────────────────
-  ipc.handle('file:get-info', (_e, filePath: string) => {
-    const stat = fs.statSync(filePath);
-    return {
-      path:      filePath,
-      name:      path.basename(filePath),
-      sizeBytes: stat.size,
-    };
+  // Renderer-supplied paths are untrusted — even though Electron's IPC
+  // boundary is private, defence-in-depth blocks obvious abuse (null-byte
+  // injection, non-absolute paths, non-files).  Returning metadata for
+  // arbitrary system files is the only thing this handler can leak, but we
+  // refuse to participate in path-traversal probing all the same.
+  ipc.handle('file:get-info', (_e, filePath: unknown) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      throw new Error('file:get-info: filePath must be a non-empty string');
+    }
+    if (filePath.includes('\0')) {
+      throw new Error('file:get-info: null byte in path');
+    }
+    const resolved = path.resolve(filePath);
+    if (!path.isAbsolute(resolved)) {
+      throw new Error('file:get-info: path must resolve to an absolute location');
+    }
+    try {
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile()) {
+        throw new Error('file:get-info: not a regular file');
+      }
+      return {
+        path:      resolved,
+        name:      path.basename(resolved),
+        sizeBytes: stat.size,
+      };
+    } catch (err) {
+      recordFailure('export', `file:get-info failed: ${(err as Error).message}`);
+      throw err;
+    }
   });
 
   // ── Reveal in Finder / Explorer ───────────────────────────────────────
-  // Special token 'logs' resolves to the app log directory.
-  ipc.handle('file:open-in-finder', (_e, filePath: string) => {
-    const resolved = filePath === 'logs'
-      ? path.join(app.getPath('userData'), 'logs')
-      : filePath;
-    // Ensure the directory exists before trying to reveal it
-    if (!fs.existsSync(resolved)) fs.mkdirSync(resolved, { recursive: true });
+  // Special token 'logs' resolves to (and may create) the app log directory.
+  // Any other value must be a real existing path; we DO NOT mkdir arbitrary
+  // renderer-supplied paths (that would let the renderer scatter empty
+  // directories anywhere on the filesystem).
+  ipc.handle('file:open-in-finder', (_e, filePath: unknown) => {
+    if (typeof filePath !== 'string' || filePath.length === 0 || filePath.includes('\0')) {
+      throw new Error('file:open-in-finder: invalid path');
+    }
+    if (filePath === 'logs') {
+      const logDir = path.join(app.getPath('userData'), 'logs');
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+      shell.showItemInFolder(logDir);
+      return;
+    }
+    const resolved = path.resolve(filePath);
+    if (!fs.existsSync(resolved)) {
+      throw new Error('file:open-in-finder: path does not exist');
+    }
     shell.showItemInFolder(resolved);
   });
 

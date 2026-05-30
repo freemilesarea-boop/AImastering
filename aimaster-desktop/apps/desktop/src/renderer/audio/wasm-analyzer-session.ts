@@ -560,25 +560,3 @@ export class WasmAnalyzerSessionFactory implements AnalyzerSessionFactory {
     return new WasmAnalyzerSession(options, this.workletUrl);
   }
 }
-
-/**
- * One-shot helper for the common case: create a session and attach an
- * `<audio>` element source to it.  Returns the session ready to consume.
- */
-export async function startWasmAnalyzerForMediaElement(
-  factory: WasmAnalyzerSessionFactory,
-  media: HTMLMediaElement,
-  options: AnalyzerSessionOptions,
-): Promise<{ session: AnalyzerSession; ctx: AudioContext }> {
-  const session = factory.create(options);
-  await session.start();
-  // Cast — we know the impl is `WasmAnalyzerSession` which exposes attach.
-  const ws = session as WasmAnalyzerSession;
-  if (!(ws as unknown as { ctx?: AudioContext }).ctx) {
-    throw new Error('analyzer session failed to initialise AudioContext');
-  }
-  const ctx = (ws as unknown as { ctx: AudioContext }).ctx;
-  const src = ctx.createMediaElementSource(media);
-  ws.attach(src);
-  return { session, ctx };
-}

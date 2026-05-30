@@ -28,6 +28,23 @@ import { recordPipelineWarning } from '../utils/supportBundle.js';
 let bridge: PythonBridge | null = null;
 
 /**
+ * Forcefully terminate the Python engine subprocess if one is alive.
+ * Called from main/index.ts on `before-quit` so the engine doesn't outlive
+ * the app as a zombie process.
+ */
+export function killBridge(): void {
+  if (!bridge) return;
+  try {
+    // PythonBridge.kill is best-effort — it sends SIGTERM, then SIGKILL.
+    // If the engine has already exited the call is a no-op.
+    bridge.kill();
+  } catch (err) {
+    log.warn('killBridge failed:', err);
+  }
+  bridge = null;
+}
+
+/**
  * Resolve the paths for the Python engine and FFmpeg binaries.
  *
  * DEV mode  : uses system python3 + source tree main.py
@@ -254,15 +271,18 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
 
     const b = getBridge();
 
-    // Deduplicate progress listener on each call
-    b.removeAllListeners('progress');
-    b.on('progress', (msg) => {
+    // Named progress handler — removed in `finally` so it doesn't leak
+    // between calls.  removeAllListeners() would have wiped any other
+    // subscribers attached elsewhere on the bridge; this is scoped to
+    // exactly the listener we created.
+    const progressHandler = (msg: unknown): void => {
       win?.webContents.send('audio:progress', msg);
-    });
+    };
+    b.on('progress', progressHandler);
 
     // Handle bridge death mid-processing (case 8)
     let bridgeDied = false;
-    const bridgeExitHandler = () => { bridgeDied = true; };
+    const bridgeExitHandler = (): void => { bridgeDied = true; };
     b.once('exit', bridgeExitHandler);
 
     // ── Output path: original-filename-based, not UUID ────────────────────
@@ -317,6 +337,7 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       toAppError(err, filePath);
     } finally {
       b.removeListener('exit', bridgeExitHandler);
+      b.removeListener('progress', progressHandler);
     }
   });
 
