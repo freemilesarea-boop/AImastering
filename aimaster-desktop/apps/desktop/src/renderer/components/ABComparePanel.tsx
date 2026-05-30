@@ -12,7 +12,7 @@
  * Pass two AudioBufferLike (or real AudioBuffer) instances and the
  * component will load them, level-match, and let the user audition.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ABPlayer, ABState, ABSide } from '../audio/abPlayer.js';
 import type { AudioBufferLike } from '../audio/loudnessCore.js';
 

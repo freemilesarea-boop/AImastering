@@ -1,7 +1,8 @@
 import { app, BrowserWindow, ipcMain, protocol, net } from 'electron';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { checkFFmpeg } from '@aimaster/audio-engine';
-import { registerAudioHandlers } from './ipc/audioHandlers.js';
+import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { initUpdater } from './updater.js';
@@ -23,8 +24,11 @@ let mainWindow: BrowserWindow | null = null;
 // Renderer loads from http://localhost:5173 (dev) or file:// (prod).
 // Chromium blocks file:// resources from http:// origins, so we register a
 // custom scheme that proxies local file reads without relaxing webSecurity.
+// `standard: true` is required so the renderer parses URLs consistently and
+// — critically — so <audio>/<video> can issue HTTP Range requests against
+// the scheme (media metadata loading + seeking need 206 responses).
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'aimaster-local', privileges: { bypassCSP: true, supportFetchAPI: true, stream: true } },
+  { scheme: 'aimaster-local', privileges: { standard: true, secure: true, bypassCSP: true, supportFetchAPI: true, stream: true } },
 ]);
 
 function createWindow(): void {
@@ -56,6 +60,37 @@ function createWindow(): void {
     mainWindow?.show();
   });
 
+  // ── Renderer crash listeners (긴급 크래시 분석) ─────────────────────────
+  // renderer process가 갑자기 죽으면 reason + exitCode를 정확히 기록.
+  // ErrorBoundary가 못 잡는 종류 (native crash, OOM, IPC 등)의 원인 표시.
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    log.error('[CRASH] webContents render-process-gone:', JSON.stringify({
+      reason: details.reason,   // 'crashed' | 'killed' | 'oom' | 'launch-failed' | etc.
+      exitCode: details.exitCode,
+    }));
+    recordFailure('engine', `renderer render-process-gone: reason=${details.reason} exit=${details.exitCode}`);
+    // DO NOT auto-reload — first time we want the user/devtools to see the state.
+    mainWindow?.show();
+  });
+  mainWindow.webContents.on('unresponsive', () => {
+    log.error('[CRASH] webContents unresponsive (renderer event loop blocked)');
+    recordFailure('engine', 'renderer unresponsive');
+  });
+  mainWindow.webContents.on('responsive', () => {
+    log.info('[CRASH] webContents responsive again');
+  });
+  // Capture console errors from the renderer into the main log so they
+  // survive a renderer crash that wipes DevTools.
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    if (level >= 2) { // 2=warning, 3=error
+      log.warn(`[renderer-console L${level}] ${message} (${sourceId}:${line})`);
+    }
+  });
+  mainWindow.webContents.on('preload-error', (_e, preloadPath, error) => {
+    log.error('[CRASH] preload-error', { preloadPath, message: error.message, stack: error.stack });
+    recordFailure('engine', `preload-error: ${error.message}`);
+  });
+
   // Cmd+Option+I (Mac) / Ctrl+Shift+I (Win) 로 DevTools 열기
   mainWindow.webContents.on('before-input-event', (_e, input) => {
     const isMac = process.platform === 'darwin';
@@ -81,10 +116,28 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   // ── 0. 로컬 파일 프로토콜 핸들러 ─────────────────────────────────────────
-  // aimaster-local:///<absolute-path> → reads from local filesystem
+  // aimaster-local:///<absolute-path> → reads from local filesystem.
+  //
+  // Two things matter for <audio> playback of large WAVs:
+  //   1. Robust path decode — parse via the URL API (handles spaces, Korean,
+  //      Windows drive letters) and rebuild a proper file:// URL.
+  //   2. Range requests — forward the media element's `Range` header so
+  //      net.fetch returns 206 Partial Content; without it Chromium's media
+  //      pipeline often fails to load metadata (duration stays 0:00).
   protocol.handle('aimaster-local', (request) => {
-    const filePath = decodeURIComponent(request.url.slice('aimaster-local://'.length));
-    return net.fetch(`file://${filePath}`);
+    let absPath: string;
+    try {
+      const u = new URL(request.url);
+      // `standard` scheme → host is usually empty and the path is in pathname.
+      // On Windows a drive path may surface as the host (C:) — recombine.
+      const raw = u.host ? `/${u.host}${u.pathname}` : u.pathname;
+      absPath = decodeURIComponent(raw);
+    } catch {
+      absPath = decodeURIComponent(request.url.slice('aimaster-local://'.length));
+    }
+    const fileUrl = pathToFileURL(absPath).toString();
+    const range = request.headers.get('Range') ?? request.headers.get('range');
+    return net.fetch(fileUrl, range ? { headers: { Range: range } } : undefined);
   });
 
   // ── 1. 창을 먼저 생성 ─────────────────────────────────────────────────────
@@ -110,6 +163,38 @@ app.whenReady().then(() => {
   }
 
   ipcMain.handle('system:ffmpeg-status', () => ffmpeg);
+
+  // ── Worklet/WASM asset reader (packaged file:// + asar safe) ───────────
+  // Chromium's fetch()/audioWorklet.addModule() of file:// resources inside
+  // app.asar is unreliable/blocked.  The main process reads these assets via
+  // Node fs (which understands asar) and hands the bytes to the renderer,
+  // which compiles the wasm directly and loads the JS via a blob: URL — no
+  // file:// fetch.  Allow-list only the known worklet assets.
+  {
+    const ALLOWED = new Set([
+      'loui-mastering-wasm.nomodules.wasm',
+      'loui-mastering-wasm.nomodules.js',
+      'mastering-chain.worklet.js',
+      'analyzer-tap.worklet.js',
+    ]);
+    // Renderer assets sit next to index.html: dist/renderer/<name>.
+    // __dirname = dist-electron/main, so ../../dist/renderer.
+    const rendererDir = path.join(__dirname, '../..', 'dist', 'renderer');
+    ipcMain.handle('loui:read-worklet-asset', async (_e, name: unknown) => {
+      if (typeof name !== 'string' || !ALLOWED.has(name)) {
+        throw new Error(`blocked asset: ${String(name)}`);
+      }
+      const fs = await import('node:fs/promises');
+      const full = path.join(rendererDir, name);
+      const buf = await fs.readFile(full);
+      const isText = name.endsWith('.js');
+      log.info(`[worklet-asset] read ${name} ${buf.byteLength} ${isText ? 'text' : 'binary'}`);
+      // Return text for JS (renderer makes a Blob), bytes for wasm.
+      return isText
+        ? { kind: 'text', name, text: buf.toString('utf8'), size: buf.byteLength }
+        : { kind: 'bytes', name, bytes: new Uint8Array(buf), size: buf.byteLength };
+    });
+  }
 
   // ── 3. IPC 핸들러 등록 (mainWindow가 이미 생성된 뒤) ─────────────────────
   // License IPC handlers intentionally NOT registered — license gate
@@ -145,6 +230,41 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+// Kill the Python engine subprocess before the app exits so it can't
+// outlive Electron as a zombie (most painful on macOS Cmd+Q where the
+// window-all-closed → app.quit chain is skipped for the dock-resident
+// process).  before-quit fires for every quit path: Cmd+Q, app.quit(),
+// even SIGINT from the terminal in dev.
+app.on('before-quit', () => {
+  killBridge();
+});
+
+// ── App-level renderer crash catch-all (긴급 크래시 분석) ───────────────────
+// Catches renderer crashes from any window, including ones that fire too
+// early for the per-window listener to register.
+app.on('render-process-gone', (_e, webContents, details) => {
+  log.error('[CRASH] app.render-process-gone:', JSON.stringify({
+    reason: details.reason,
+    exitCode: details.exitCode,
+    url: webContents.getURL(),
+  }));
+  recordFailure('engine', `app render-process-gone: reason=${details.reason} exit=${details.exitCode}`);
+});
+app.on('child-process-gone', (_e, details) => {
+  log.error('[CRASH] app.child-process-gone:', JSON.stringify({
+    type: details.type,        // 'GPU' | 'Pepper Plugin' | 'Utility' | 'Zygote' | etc.
+    reason: details.reason,
+    exitCode: details.exitCode,
+    name: details.name,
+  }));
+  recordFailure('engine', `child-process-gone: type=${details.type} reason=${details.reason}`);
+});
+
 process.on('uncaughtException', (err) => {
-  log.error('Uncaught exception', err);
+  log.error('[CRASH] Uncaught exception', err);
+  recordFailure('engine', `uncaughtException: ${err.message}`);
+});
+process.on('unhandledRejection', (reason) => {
+  log.error('[CRASH] Unhandled rejection', reason);
+  recordFailure('engine', `unhandledRejection: ${reason instanceof Error ? reason.message : String(reason)}`);
 });

@@ -1,0 +1,2291 @@
+// ProductPage — Loui Mastering product-layout result screen.
+//
+// Ozone-style layout:
+//   ┌─────────────────────────── TopBar ──────────────────────────────┐
+//   ├──────────────────────── Preset Header ──────────────────────────┤
+//   ├──────────────────────────────────────────────────┬──────────────┤
+//   │                                                  │              │
+//   │           Analyzer Canvas (Spectrum)             │   Meter      │
+//   │                                                  │   Column     │
+//   │                                                  │              │
+//   ├──────────────────────────────────────────────────┴──────────────┤
+//   │                        Module Strip                              │
+//   ├─────────────────────────── Status ──────────────────────────────┤
+//   └──────────────────────────────────────────────────────────────────┘
+//
+// Mounted by App.tsx ONLY when the product-layout flag is on.  When the
+// flag is off, App.tsx renders the legacy ResultPage as before.
+//
+// Storybook + tests can drive the page deterministically by passing
+// `sessionOverride` — a pre-built AnalyzerSession that bypasses the
+// WasmAnalyzerProvider entirely.
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAppStore } from '../stores/appStore.js';
+import { useAudioStore } from '../stores/audioStore.js';
+import { toFileUrl } from '../utils/fileUrl.js';
+import { surface, text, typography, meter, space, radius } from '../theme/loui-theme.js';
+import { analyzerFactoryLabel } from '../audio/analyzer-factory-resolver.js';
+import {
+  WasmAnalyzerProvider,
+  useWasmAnalyzerSession,
+} from '../audio/wasm-analyzer-context.js';
+import { MediaElementProvider } from '../audio/media-element-context.js';
+import { resumeSharedContext, logAudioEvent, setFreeEqBands as setGraphFreeEqBands } from '../audio/shared-audio-graph.js';
+import { useRealtimeMasteringGraph } from '../hooks/useRealtimeMasteringGraph.js';
+import { LouiRealtimeDebugPanel } from '../components/product/LouiRealtimeDebugPanel.js';
+import { LouiRealtimeDebugDrawer } from '../components/product/LouiRealtimeDebugDrawer.js';
+import { LouiAudioDebugPanel } from '../components/product/LouiAudioDebugPanel.js';
+import {
+  ModuleParameterStateProvider,
+  useModuleParameters,
+  useAllModuleParameters,
+  useApplyPreset,
+  useUndoRedo,
+  useReplaceParameterState,
+  ALL_MODULE_PARAMETER_DEFS,
+  type ModuleId,
+  type ParameterValue,
+} from '../audio/parameters/index.js';
+import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
+import { presetApplyPlan } from '../audio/presets/preset-to-state.js';
+import { setLastUsedPreset, getLastUsedPreset } from '../audio/presets/preset-storage.js';
+import { LouiPresetSlideOver } from '../components/product/LouiPresetSlideOver.js';
+import { LouiRevisionStack } from '../components/product/LouiRevisionStack.js';
+import type { RevisionInput } from '../audio/revisions/revision-types.js';
+import type { MasteringOptions as StoreMasteringOptions } from '../stores/audioStore.js';
+import { getActiveRevision, getBaselineRevision } from '../audio/revisions/revision-logic.js';
+import { LouiRealtimeStatus } from '../components/product/modules/LouiRealtimeStatus.js';
+import { LouiRealtimeToggle } from '../components/product/modules/LouiRealtimeToggle.js';
+import { setRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
+import { isDevMode } from '../audio/dev-mode.js';
+import { LouiPlaybackBar } from '../components/product/LouiPlaybackBar.js';
+import { LouiShortcutHelp } from '../components/product/LouiShortcutHelp.js';
+import {
+  LouiSnapshotSlots,
+  emptySnapshots,
+  SNAPSHOT_COUNT,
+  type SnapshotSlots,
+} from '../components/product/modules/LouiSnapshotSlots.js';
+import { useSecondaryAnalyzer } from '../hooks/useSecondaryAnalyzer.js';
+import { RealtimeGrProvider, useRealtimeGr, RealtimeDynamicsGrProvider } from '../audio/modules/realtime-gr-context.js';
+import { RealtimePreviewProvider, useRealtimePreviewStatus } from '../audio/modules/realtime-preview-context.js';
+import { LouiGainReductionMeter } from '../components/product/modules/LouiGainReductionMeter.js';
+import { decayPeak } from '../audio/modules/gr-meter-model.js';
+import { stateToChainConfig } from '../audio/realtime-mastering-chain.js';
+import { isRustOfflineRenderEnabled } from '../audio/rust-offline-render-flag.js';
+import { serializeSession, deserializeSession, SESSION_VERSION } from '../audio/session/session-schema.js';
+import {
+  PresetPatchDispatcher,
+  PreviewRenderController,
+  IpcPreviewRenderTransport,
+  mergeOptions,
+  summarizePending,
+  initialStateFromBaseOptions,
+  buildExportOverride,
+  hashOverride,
+  type PreviewRenderState,
+  type PendingSummary,
+  type ExportOverrideResult,
+} from '../audio/engine-bridge/index.js';
+import { LouiPreviewControl, type PreviewControlPhase } from '../components/product/LouiPreviewControl.js';
+import type {
+  MasteringOptions,
+  ExportFormat,
+  ExportDither,
+  SaveAudioRequest,
+  SaveAudioResponse,
+} from '@aimaster/shared-types';
+import {
+  LouiTopBar,
+  LouiPresetHeader,
+  LouiAnalyzerCanvas,
+  LouiMeterColumn,
+  LouiModuleStrip,
+  LouiStatusBar,
+  LouiModuleSlideOver,
+  LouiABCompare,
+  useABShortcut,
+  type ABMode,
+  EqParameterPanel,
+  DynamicsParameterPanel,
+  ImagerParameterPanel,
+  LimiterParameterPanel,
+  ExportParameterPanel,
+  type ModuleCardDef,
+} from '../components/product/index.js';
+import type { AnalyzerSession } from '@aimaster/shared-types/streaming';
+
+export interface ProductPageProps {
+  /**
+   * Storybook / test override.  When provided, the page renders its
+   * panels with this session directly — no AudioContext, no WASM
+   * provider, no media element.
+   */
+  sessionOverride?: AnalyzerSession | null;
+  /**
+   * Storybook-only convenience: render the layout in "playing" state
+   * without a real audio element.
+   */
+  storybookActive?: boolean;
+}
+
+// ── Inner layout (shared between production and storybook modes) ────────
+
+function ProductLayoutInner({
+  session,
+  active,
+  sampleRate,
+  channels,
+  targetLufs,
+  targetTp,
+  presetId,
+  onPresetChange,
+  onBrowsePresets,
+  selectedModule,
+  onSelectModule,
+  onPlayPause,
+  isPlaying,
+  durationLabel: _durationLabel,
+  currentTimeLabel: _currentTimeLabel,
+  onSeek,
+  progress: _progress,
+  modules,
+  onBack,
+  onImport,
+  onExport,
+  onSettings,
+  previewSlot,
+  revisionSlot,
+  moduleSuiteSlot,
+  abControl,
+  abMode,
+  loopRegion,
+  loopActive,
+  onLoopRegion,
+  playbackRate,
+  onPlaybackRateChange,
+  duoMode,
+  duoSecondaryAnalyser,
+  duoSecondaryStatus,
+  onToggleDuoMode,
+  freeEqEnabled,
+  freeEqBands,
+  onFreeEqChange,
+  onToggleFreeEq,
+}: {
+  session: AnalyzerSession | null;
+  active: boolean;
+  sampleRate: number;
+  channels: number;
+  targetLufs?: number;
+  targetTp?: number;
+  presetId?: string;
+  onPresetChange?: (id: string) => void;
+  /** Opens the full preset browser slide-over. */
+  onBrowsePresets?: () => void;
+  selectedModule?: ModuleCardDef['id'];
+  onSelectModule?: (id: ModuleCardDef['id']) => void;
+  onPlayPause?: () => void;
+  isPlaying?: boolean;
+  durationLabel?: string;
+  currentTimeLabel?: string;
+  onSeek?: (ratio: number) => void;
+  progress?: number;
+  modules?: ModuleCardDef[];
+  onBack?: () => void;
+  onImport?: () => void;
+  onExport?: () => void;
+  onSettings?: () => void;
+  /** Optional preview-control strip (production path only). */
+  previewSlot?: React.ReactNode;
+  /** Optional revision (version) stack (production path only). */
+  revisionSlot?: React.ReactNode;
+  /** Optional module-suite chain overview (production path only). */
+  moduleSuiteSlot?: React.ReactNode;
+  /** Optional A/B compare control (production path only). */
+  abControl?: React.ReactNode;
+  /** Current A/B compare mode — threads to the spectrum canvas for ghost overlay. */
+  abMode?: ABMode;
+  loopRegion?: import('../components/product/LouiPlaybackBar.js').LoopRegion | null;
+  loopActive?: boolean;
+  onLoopRegion?: (r: import('../components/product/LouiPlaybackBar.js').LoopRegion | null) => void;
+  playbackRate?: number;
+  onPlaybackRateChange?: (rate: number) => void;
+  duoMode?: boolean;
+  duoSecondaryAnalyser?: AnalyserNode | null;
+  duoSecondaryStatus?: 'idle' | 'connected' | 'error';
+  onToggleDuoMode?: () => void;
+  freeEqEnabled?: boolean;
+  freeEqBands?: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[];
+  onFreeEqChange?: (b: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[]) => void;
+  onToggleFreeEq?: () => void;
+}) {
+  // Pending summary (production path only; null in storybook).
+  const previewBridge = usePreviewBridge();
+  const pendingByModule = previewBridge?.summary.pendingByModule;
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        flex: 1,
+        minWidth: 0,
+        minHeight: 0,
+        background: surface.background,
+        color: text.secondary,
+        fontFamily: typography.family.sans,
+      }}
+    >
+      <LouiTopBar
+        subtitle="Result"
+        engineLabel={analyzerFactoryLabel()}
+        {...(onBack ? { onBack } : {})}
+        {...(onImport ? { onImport } : {})}
+        {...(onExport ? { onExport } : {})}
+        {...(onSettings ? { onSettings } : {})}
+      />
+
+      <LouiPresetHeader
+        {...(presetId ? { activeId: presetId } : {})}
+        {...(onPresetChange ? { onTargetChange: onPresetChange } : {})}
+        {...(onBrowsePresets ? { onBrowse: onBrowsePresets } : {})}
+      />
+
+      {/* Preview-control strip — staged-change → re-render loop (production). */}
+      {previewSlot}
+
+      {/* Revision (version) stack — multiple masters of the same source. */}
+      {revisionSlot && (
+        <div style={{ paddingInline: space['4'], paddingBlock: space['3'], borderBottom: `1px solid ${surface.border}` }}>
+          {revisionSlot}
+        </div>
+      )}
+
+      {/* Module suite — honest chain overview (Live / Preview / Planned). */}
+      {moduleSuiteSlot && (
+        <div style={{ paddingInline: space['4'], paddingBlock: space['3'], borderBottom: `1px solid ${surface.border}` }}>
+          {moduleSuiteSlot}
+        </div>
+      )}
+
+      {/* Optional transport strip — visible only when a play handler is wired
+          (production path).  Storybook stories without media skip this. */}
+      {onPlayPause && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: space['3'],
+            paddingInline: space['4'],
+            paddingBlock: space['2'],
+            background: surface.background,
+            borderBottom: `1px solid ${surface.border}`,
+            flexShrink: 0,
+          }}
+        >
+          <button
+            type="button"
+            onClick={onPlayPause}
+            className="no-drag"
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 999,
+              border: `1px solid ${surface.border}`,
+              background: surface.well,
+              color: text.primary,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying ? (
+              <svg width={10} height={10} viewBox="0 0 16 16" fill="currentColor">
+                <rect x="3" y="2" width="3.5" height="12" rx="1" />
+                <rect x="9.5" y="2" width="3.5" height="12" rx="1" />
+              </svg>
+            ) : (
+              <svg width={10} height={10} viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 2.5l10 5.5-10 5.5V2.5z" />
+              </svg>
+            )}
+          </button>
+          <LouiPlaybackBar
+            isPlaying={Boolean(isPlaying)}
+            {...(onSeek ? { onSeek } : {})}
+            {...(loopRegion !== undefined ? { loopRegion } : {})}
+            {...(loopActive !== undefined ? { loopActive } : {})}
+            {...(onLoopRegion ? { onLoopRegion } : {})}
+          />
+          {/* Playback rate selector. */}
+          {onPlaybackRateChange && (
+            <select
+              value={playbackRate ?? 1}
+              onChange={(e) => onPlaybackRateChange(Number(e.target.value))}
+              title="재생 속도 (Shift+drag 바로 위에서 루프 영역 설정 가능)"
+              className="no-drag"
+              style={{
+                fontFamily: typography.family.mono,
+                fontSize: 10,
+                background: 'transparent',
+                border: `1px solid ${surface.border}`,
+                borderRadius: 4,
+                color: (playbackRate ?? 1) !== 1 ? meter.warn.foreground : text.muted,
+                padding: '1px 4px',
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              {[0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => (
+                <option key={r} value={r}>{r === 1 ? '1×' : `${r}×`}</option>
+              ))}
+            </select>
+          )}
+          {/* Loop active badge — shows "LOOP" when a loop region is armed. */}
+          {loopRegion && (
+            <span
+              title={`루프 ${loopActive ? '활성' : '비활성'} (L 키로 토글)`}
+              style={{
+                fontFamily: typography.family.mono, fontSize: 9,
+                letterSpacing: '0.06em',
+                color: loopActive ? meter.warn.foreground : text.muted,
+                flexShrink: 0,
+                cursor: 'default',
+                userSelect: 'none',
+              }}
+            >
+              LOOP
+            </span>
+          )}
+          {abControl}
+        </div>
+      )}
+
+      {/* Main content grid — analyzer (flex) + meter column (320px) */}
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) 320px',
+          gap: space['3'],
+          padding: space['3'],
+        }}
+      >
+        <LouiAnalyzerCanvas
+          session={session}
+          active={active}
+          {...(abMode !== undefined ? { abMode } : {})}
+          {...(duoMode !== undefined ? { duoMode } : {})}
+          {...(duoSecondaryAnalyser !== undefined ? { duoSecondaryAnalyser } : {})}
+          {...(duoSecondaryStatus !== undefined ? { duoSecondaryStatus } : {})}
+          {...(onToggleDuoMode ? { onToggleDuoMode } : {})}
+          {...(freeEqEnabled !== undefined ? { freeEqEnabled } : {})}
+          {...(freeEqBands !== undefined ? { freeEqBands } : {})}
+          {...(onFreeEqChange ? { onFreeEqChange } : {})}
+          {...(onToggleFreeEq ? { onToggleFreeEq } : {})}
+        />
+        <LouiMeterColumn
+          session={session}
+          {...(typeof targetLufs === 'number' ? { targetLufs } : {})}
+        />
+      </div>
+
+      <LouiModuleStrip
+        {...(selectedModule ? { selectedId: selectedModule } : {})}
+        {...(onSelectModule ? { onSelect: onSelectModule } : {})}
+        {...(modules ? { modules } : {})}
+        {...(pendingByModule ? { pendingByModule } : {})}
+      />
+
+      <LouiStatusBar
+        sampleRate={sampleRate}
+        channels={channels}
+        oversample={4}
+        {...(typeof targetLufs === 'number' ? { targetLufs } : { targetLufs: -14 })}
+        {...(typeof targetTp === 'number' ? { targetTp } : { targetTp: -1 })}
+        engineLabel={analyzerFactoryLabel()}
+        running={active}
+      />
+
+      {/* Module parameter slide-over.  Mounts behind a backdrop when a
+          module is selected; closes via ESC / backdrop / close button.
+          Re-clicking the same card from LouiModuleStrip also closes
+          (handled by the caller's `onSelectModule` toggle logic). */}
+      <ModuleSlideOverHost
+        selected={selectedModule ?? null}
+        onClose={() => { if (selectedModule) onSelectModule?.(selectedModule); }}
+      />
+    </div>
+  );
+}
+
+// ── Slide-over host — maps `selectedModule` id to the right panel ──────
+
+function ModuleSlideOverHost(props: {
+  selected: ModuleCardDef['id'] | null;
+  onClose: () => void;
+}) {
+  const isOpen = Boolean(props.selected);
+  // Keep the previous selection visible during the close transition so
+  // the content doesn't blank out before the panel finishes sliding.
+  const [renderedId, setRenderedId] = React.useState<ModuleCardDef['id'] | null>(props.selected);
+  React.useEffect(() => {
+    if (props.selected) setRenderedId(props.selected);
+  }, [props.selected]);
+
+  const titleFor = (id: ModuleCardDef['id']): { title: string; subtitle: string } => {
+    switch (id) {
+      case 'eq':       return { title: 'EQ',       subtitle: 'Adaptive 7-band' };
+      case 'dynamics': return { title: 'Dynamics', subtitle: 'Glue Comp' };
+      case 'imager':   return { title: 'Imager',   subtitle: 'Stereo width · Mono fold-down' };
+      case 'limiter':  return { title: 'Limiter',  subtitle: 'True-peak guard' };
+      case 'export':   return { title: 'Export',   subtitle: 'Format · Sample rate · Dither' };
+    }
+  };
+
+  const id = renderedId ?? 'eq';
+  const meta = titleFor(id);
+  return (
+    <LouiModuleSlideOver
+      title={meta.title}
+      subtitle={meta.subtitle}
+      open={isOpen}
+      onClose={props.onClose}
+      headerActions={renderedId ? <SlideOverActions moduleId={renderedId as ModuleId} /> : null}
+    >
+      {renderedId ? <ControlledPanelHost moduleId={renderedId as ModuleId} /> : null}
+    </LouiModuleSlideOver>
+  );
+}
+
+// Renders the inline header actions: preview-ready tag + modified badge +
+// bypass toggle + reset.
+function SlideOverActions({ moduleId }: { moduleId: ModuleId }) {
+  const { isModified, bypass, setBypass, reset } = useModuleParameters(moduleId);
+  const bridge = usePreviewBridge();
+  const rt = useRealtimePreviewStatus();
+  const previewState = bridge?.summary.pendingByModule[moduleId] ?? null;
+  // Honest 3-state heard/staged badge.  When realtime is processing, every
+  // module edit (renderable or not) is audible now → "Heard live".  When
+  // it is off, renderable edits are "Staged" (Update Preview applies them);
+  // non-renderable edits are "Realtime-only" (never in the Python render).
+  const heardLive = rt.active && (previewState !== null || isModified);
+  const badge: { label: string; title: string; tone: 'live' | 'staged' | 'rtonly' } | null = heardLive
+    ? { label: 'Heard live', tone: 'live', title: 'Realtime preview is on — this module’s changes are audible now.' }
+    : previewState === 'renderable'
+      ? { label: 'Staged', tone: 'staged', title: 'Click Update Preview / Create Revision to hear this (loudness, true-peak, width, output gain reflect in the render).' }
+      : previewState === 'staged'
+        ? { label: 'Staged · Realtime-only', tone: 'rtonly', title: 'Not included in the Python re-render or export. Enable Realtime preview to hear it, or use the Rust experimental render to bake it into a file.' }
+        : null;
+  const badgeBorder = badge?.tone === 'live' ? 'rgba(16,185,129,0.45)' : badge?.tone === 'staged' ? 'rgba(167,139,250,0.45)' : surface.border;
+  const badgeBg = badge?.tone === 'live' ? meter.safe.background : badge?.tone === 'staged' ? 'rgba(167,139,250,0.12)' : surface.well;
+  const badgeColor = badge?.tone === 'live' ? meter.safe.foreground : badge?.tone === 'staged' ? meter.accent.foreground : text.muted;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: space['2'] }}>
+      {badge && (
+        <span
+          title={badge.title}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            height: 22,
+            paddingInline: 8,
+            borderRadius: radius.chip,
+            border: `1px solid ${badgeBorder}`,
+            background: badgeBg,
+            color: badgeColor,
+            fontFamily: typography.family.sans,
+            fontSize: typography.size.xs,
+            fontWeight: typography.weight.medium,
+            letterSpacing: '0.02em',
+          }}
+        >
+          {badge.label}
+        </span>
+      )}
+      {isModified && (
+        <span style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          height: 22,
+          paddingInline: 8,
+          borderRadius: radius.chip,
+          border: `1px solid rgba(167,139,250,0.45)`,
+          background: 'rgba(167,139,250,0.16)',
+          color: meter.accent.foreground,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          fontWeight: typography.weight.medium,
+          letterSpacing: '0.04em',
+          textTransform: 'uppercase',
+        }}>
+          Modified
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => setBypass(!bypass)}
+        aria-pressed={bypass}
+        title={bypass ? 'Bypassed — click to enable' : 'Enabled — click to bypass'}
+        style={{
+          height: 22,
+          paddingInline: 10,
+          borderRadius: radius.chip,
+          border: `1px solid ${bypass ? meter.warn.foreground : surface.border}`,
+          background: bypass ? meter.warn.background : 'transparent',
+          color: bypass ? meter.warn.foreground : text.tertiary,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          fontWeight: typography.weight.medium,
+          letterSpacing: '0.02em',
+          cursor: 'pointer',
+        }}
+      >
+        {bypass ? 'Bypassed' : 'On'}
+      </button>
+      <button
+        type="button"
+        onClick={() => reset()}
+        title="Reset module parameters to defaults"
+        style={{
+          height: 22,
+          paddingInline: 8,
+          borderRadius: radius.chip,
+          border: `1px solid ${surface.border}`,
+          background: 'transparent',
+          color: text.tertiary,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          cursor: 'pointer',
+        }}
+      >
+        Reset
+      </button>
+    </div>
+  );
+}
+
+// Pulls the module slice from the central state and feeds it to the
+// appropriate panel as controlled props.  Every onChange becomes a
+// SET_MODULE_PARAM command in the log.
+// Live GR meter for the Limiter / Maximizer panel — reads the realtime GR
+// context (REAL limiterGrDb; "unavailable" when the preview isn't running).
+function GrMeterFromContext() {
+  const gr = useRealtimeGr();
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', paddingBlock: space['2'] }}>
+      <LouiGainReductionMeter grDb={gr.grDb} peakDb={gr.peakDb} available={gr.available} source={gr.source} label="Limiter GR" />
+    </div>
+  );
+}
+
+function ControlledPanelHost({ moduleId }: { moduleId: ModuleId }) {
+  const api = useModuleParameters(moduleId);
+  const stateRecord = api.state.parameters;
+  const onParamChange = (parameterId: string, value: ParameterValue) =>
+    api.setParam(parameterId, value);
+  const onBypassChange = (b: boolean) => api.setBypass(b);
+  const onReset = () => api.reset();
+
+  // Read limiter targets when rendering the export panel so the
+  // "Normalize Target" echo reflects the live state.
+  const limiterApi = useModuleParameters('limiter');
+  const tLufs = limiterApi.get('targetLufs');
+  const tTp   = limiterApi.get('ceilingDbtp');
+
+  // Re-master & Export wiring (production path only).
+  const bridge = usePreviewBridge();
+  const exportInfo: ExportOverrideResult | null = bridge ? bridge.exportOverride : null;
+
+  const common = {
+    state: stateRecord,
+    bypass: api.bypass,
+    isModified: api.isModified,
+    onParamChange,
+    onBypassChange,
+    onReset,
+  };
+
+  switch (moduleId) {
+    case 'eq':       return <EqParameterPanel       {...common} />;
+    case 'dynamics': return <DynamicsParameterPanel {...common} />;
+    case 'imager':   return <ImagerParameterPanel   {...common} />;
+    case 'limiter':  return (
+      <>
+        <GrMeterFromContext />
+        <LimiterParameterPanel {...common} />
+      </>
+    );
+    case 'export':   return (
+      <ExportParameterPanel
+        {...common}
+        targetLufs={typeof tLufs === 'number' ? tLufs : -14}
+        targetTp={typeof tTp   === 'number' ? tTp   : -1}
+        onApplyLoudness={(lufs, tp) => {
+          limiterApi.setParam('targetLufs', lufs);
+          limiterApi.setParam('ceilingDbtp', tp);
+        }}
+        {...(bridge && exportInfo ? {
+          reMasterExport: {
+            appliedKeys: exportInfo.appliedOverrideKeys,
+            skippedParameterIds: exportInfo.skippedParameterIds,
+            hasUnpreviewedChanges: bridge.hasUnpreviewedChanges,
+            phase: bridge.exportPhase,
+            error: bridge.exportError,
+            lastExportPath: bridge.lastExportPath,
+            onReMasterExport: bridge.onReMasterExport,
+            asIs: {
+              available: bridge.exportAsIsAvailable,
+              phase: bridge.exportAsIsPhase,
+              error: bridge.exportAsIsError,
+              lastExportPath: bridge.lastExportAsIsPath,
+              onExportAsIs: bridge.onExportAsIs,
+            },
+            quality: {
+              label: bridge.qualityLabel,
+              willApply: bridge.exportOverride.qualityAppliedKeys.length > 0,
+              format: bridge.exportFormat,
+              transcodeRequired: bridge.transcodeRequired,
+              ditherIgnored: bridge.ditherIgnored,
+            },
+          },
+        } : {})}
+      />
+    );
+  }
+}
+
+// ── Preview bridge — shared pending summary + render controls ──────────
+//
+// M3-P-NEXT-5D-1: multiple consumers (preview strip, module strip pending
+// dots, slide-over "Preview-ready" tag) need the same pending summary +
+// render state.  A small context provides it.  Mounted only in the
+// production path; storybook consumers see `null` and show no pending.
+
+type ExportPhase = 'idle' | 'exporting' | 'done' | 'error';
+
+interface PreviewBridge {
+  summary: PendingSummary;
+  phase: PreviewControlPhase;
+  lastRenderedAt: number | null;
+  error: string | null;
+  onUpdate: () => void;
+  // Export (M3-P-NEXT-5D-2-a)
+  exportPhase: ExportPhase;
+  exportError: string | null;
+  lastExportPath: string | null;
+  /** Renderable changes not yet reflected in the preview (export-includes warning). */
+  hasUnpreviewedChanges: boolean;
+  /** Re-master with the current render override, then save via dialog. */
+  onReMasterExport: () => void;
+  // Export As-is (M3-P-NEXT-5D-2-b)
+  exportAsIsAvailable: boolean;
+  exportAsIsPhase: ExportPhase;
+  exportAsIsError: string | null;
+  lastExportAsIsPath: string | null;
+  /** Save the current master WAV unchanged (no re-render). */
+  onExportAsIs: () => void;
+  // Export quality (M3-P-NEXT-5D-2-c)
+  exportOverride: ExportOverrideResult;
+  /** Human label of the export quality, e.g. "FLAC · 48 kHz · 24-bit". */
+  qualityLabel: string;
+  // Export format / dither (M3-P-NEXT-5D-2-d)
+  exportFormat: string;
+  /** True when the format requires an ffmpeg transcode (non-WAV). */
+  transcodeRequired: boolean;
+  /** True when dither doesn't apply (lossy format or 32-bit float). */
+  ditherIgnored: boolean;
+  // Revision workflow (M3-REVISION-WORKFLOW)
+  /** A new revision is currently rendering. */
+  creatingRevision: boolean;
+  /** Error from the last create-revision attempt. */
+  createRevisionError: string | null;
+  /** Render the current edit settings into a NEW revision (reuses audio:master). */
+  onCreateRevision: () => void;
+}
+
+const PreviewBridgeContext = React.createContext<PreviewBridge | null>(null);
+function usePreviewBridge(): PreviewBridge | null {
+  return React.useContext(PreviewBridgeContext);
+}
+
+function ProductionPreviewProvider({
+  sourceAudioPath,
+  baseOptions,
+  masterOutputPath,
+  onRendered,
+  presetId,
+  onRevisionCreated,
+  freeEqBands,
+  children,
+}: {
+  sourceAudioPath: string;
+  baseOptions: MasteringOptions;   // already normalised
+  /** The current master WAV path — saved unchanged by "Export As-is". */
+  masterOutputPath: string | null;
+  onRendered: (previewPath: string, integratedLufs?: number) => void;
+  /** Preset id stamped onto a created revision. */
+  presetId?: string;
+  /** A new full master (revision) finished — append it to the group. */
+  onRevisionCreated: (input: RevisionInput) => void;
+  /** Free parametric EQ bands — flow into Rust offline render only when non-empty. */
+  freeEqBands?: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[];
+  children: React.ReactNode;
+}) {
+  const { state } = useAllModuleParameters();
+  const [lastRenderedOverride, setLastRenderedOverride] = useState<Partial<MasteringOptions>>({});
+  const [phase, setPhase] = useState<PreviewControlPhase>('idle');
+  const [lastRenderedAt, setLastRenderedAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Export state (M3-P-NEXT-5D-2-a)
+  const [exportPhase, setExportPhase] = useState<ExportPhase>('idle');
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [lastExportPath, setLastExportPath] = useState<string | null>(null);
+  // Export As-is state (M3-P-NEXT-5D-2-b)
+  const [exportAsIsPhase, setExportAsIsPhase] = useState<ExportPhase>('idle');
+  const [exportAsIsError, setExportAsIsError] = useState<string | null>(null);
+  const [lastExportAsIsPath, setLastExportAsIsPath] = useState<string | null>(null);
+  // Revision creation state (M3-REVISION-WORKFLOW)
+  const [creatingRevision, setCreatingRevision] = useState(false);
+  const creatingRevisionRef = useRef(false);
+  const [createRevisionError, setCreateRevisionError] = useState<string | null>(null);
+  const onRevisionCreatedRef = useRef(onRevisionCreated);
+  onRevisionCreatedRef.current = onRevisionCreated;
+
+  const summary = useMemo(
+    () => summarizePending(state, lastRenderedOverride, baseOptions),
+    [state, lastRenderedOverride, baseOptions],
+  );
+
+  // Export override = renderable audio params + export quality (SR/bitDepth).
+  const exportOverride = useMemo(
+    () => buildExportOverride(summary, state.export.parameters, baseOptions),
+    [summary, state, baseOptions],
+  );
+
+  // Export container + quality (M3-P-NEXT-5D-2-d).
+  const exportFormat   = (state.export.parameters['format'] as ExportFormat | undefined) ?? 'wav';
+  const exportDither   = (state.export.parameters['dither'] as ExportDither | undefined) ?? 'none';
+  const exportSampleRate = Number(state.export.parameters['sampleRate'] ?? baseOptions.sampleRate);
+  const exportBitDepth   = Number(state.export.parameters['bitDepth']   ?? baseOptions.bitDepth);
+  const isLossy = exportFormat === 'mp3' || exportFormat === 'ogg';
+  const ditherIgnored = isLossy || exportBitDepth === 32;
+  const transcodeRequired = exportFormat !== 'wav';
+
+  // Quality label for the export panel (e.g. "FLAC · 48 kHz · 24-bit").
+  const qualityLabel = useMemo(() => {
+    const fmt = exportFormat.toUpperCase();
+    const srLabel = Number.isFinite(exportSampleRate)
+      ? `${(exportSampleRate / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })} kHz` : '—';
+    return isLossy ? `${fmt} · ${srLabel}` : `${fmt} · ${srLabel} · ${exportBitDepth}-bit`;
+  }, [exportFormat, exportSampleRate, exportBitDepth, isLossy]);
+
+  // Suggested export filename base from the source.
+  const suggestedName = useMemo(() => {
+    const base = sourceAudioPath.split(/[\\/]/).pop() ?? 'master';
+    return base.replace(/\.[^.]+$/, '');
+  }, [sourceAudioPath]);
+
+  // Renderable changes the user hasn't previewed yet (export-includes warning).
+  const hasUnpreviewedChanges = summary.patchHash !== hashOverride(lastRenderedOverride);
+
+  const onRenderedRef = useRef(onRendered);
+  onRenderedRef.current = onRendered;
+  const requestedOverrideRef = useRef<Partial<MasteringOptions>>({});
+
+  const controllerRef = useRef<PreviewRenderController | null>(null);
+  if (!controllerRef.current) {
+    controllerRef.current = new PreviewRenderController(new IpcPreviewRenderTransport(), {
+      debounceMs: 600,
+      onState: (s: PreviewRenderState) => {
+        switch (s.phase) {
+          case 'idle':      setPhase('idle'); break;
+          case 'pending':   setPhase('pending'); break;
+          case 'rendering': setPhase('rendering'); break;
+          case 'updated':   setPhase('updated'); setLastRenderedAt(s.at); break;
+          case 'error':     setPhase('error'); setError(s.error); break;
+        }
+      },
+      onSuccess: (previewPath, _durationMs, metrics) => {
+        onRenderedRef.current(previewPath, metrics?.integratedLufs);
+        setLastRenderedOverride(requestedOverrideRef.current);
+      },
+      onError: () => { /* state set via onState */ },
+      onNoop: () => setPhase('idle'),
+    });
+  }
+  React.useEffect(() => () => controllerRef.current?.dispose(), []);
+
+  const onUpdate = useCallback(() => {
+    if (!summary.hasUnrenderedChanges) return;
+    const override = summary.renderOverride;
+    requestedOverrideRef.current = override;
+    const options = mergeOptions(baseOptions, override);
+    controllerRef.current!.request({
+      sourceAudioPath,
+      options,
+      changedKeys: Object.keys(override),
+      patchHash: summary.patchHash,
+      appliedOverrideKeys: Object.keys(override),
+      skippedParameterIds: summary.unsupportedPending.map((u) => `${u.moduleId}.${u.parameterId}`),
+      targetSummary: `${options.targetLufs.toFixed(1)} LUFS · ${options.targetTp.toFixed(1)} dBTP`,
+    });
+    controllerRef.current!.flush();   // explicit click → render now
+  }, [summary, baseOptions, sourceAudioPath]);
+
+  // Re-master & Export — reuses the EXISTING audio:master + file:save-wav
+  // channels.  No new IPC, no Python change.  The export override is the
+  // SAME `summary.renderOverride` the preview uses (consistency by
+  // construction).
+  const onReMasterExport = useCallback(() => {
+    const options = mergeOptions(baseOptions, exportOverride.optionsOverride);
+    const api = window.electronAPI;
+    if (!api) { setExportPhase('error'); setExportError('electronAPI unavailable'); return; }
+    setExportPhase('exporting');
+    setExportError(null);
+    void (async () => {
+      try {
+        const result = await api.invoke('audio:master', sourceAudioPath, '', options) as
+          { outputPath?: string } | undefined;
+        const outputPath = result?.outputPath;
+        if (!outputPath) { setExportPhase('error'); setExportError('master produced no output'); return; }
+        // WAV → proven file:save-wav.  Other formats → file:save-audio
+        // (transcode).  The re-mastered WAV is already at target SR/bitDepth.
+        if (exportFormat === 'wav') {
+          const saved = await api.invoke('file:save-wav', outputPath) as string | null;
+          if (saved) { setLastExportPath(saved); setExportPhase('done'); }
+          else setExportPhase('idle');
+        } else {
+          const req: SaveAudioRequest = {
+            sourcePath: outputPath,
+            format: exportFormat,
+            sampleRate: exportSampleRate,
+            bitDepth: exportBitDepth,
+            dither: exportDither,
+            suggestedName,
+          };
+          const resp = await api.invoke('file:save-audio', req) as SaveAudioResponse;
+          if (resp.error) { setExportPhase('error'); setExportError(resp.error); return; }
+          if (resp.savedPath) { setLastExportPath(resp.savedPath); setExportPhase('done'); }
+          else setExportPhase('idle');
+        }
+      } catch (err) {
+        setExportPhase('error');
+        setExportError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+  }, [exportOverride, baseOptions, sourceAudioPath, exportFormat, exportSampleRate, exportBitDepth, exportDither, suggestedName]);
+
+  // Export As-is — saves the current master WAV.  WAV keeps the proven
+  // file:save-wav path; a non-WAV format transcodes the current master
+  // (container change only — quality stays at the master's SR/bitDepth).
+  const onExportAsIs = useCallback(() => {
+    const api = window.electronAPI;
+    if (!api) { setExportAsIsPhase('error'); setExportAsIsError('electronAPI unavailable'); return; }
+    if (!masterOutputPath) { setExportAsIsPhase('error'); setExportAsIsError('no master to export'); return; }
+    setExportAsIsPhase('exporting');
+    setExportAsIsError(null);
+    void (async () => {
+      try {
+        if (exportFormat === 'wav') {
+          const saved = await api.invoke('file:save-wav', masterOutputPath) as string | null;
+          if (saved) { setLastExportAsIsPath(saved); setExportAsIsPhase('done'); }
+          else setExportAsIsPhase('idle');
+        } else {
+          // Container change only — preserve the master's quality.
+          const req: SaveAudioRequest = {
+            sourcePath: masterOutputPath,
+            format: exportFormat,
+            sampleRate: baseOptions.sampleRate,
+            bitDepth: baseOptions.bitDepth,
+            dither: 'none',
+            suggestedName,
+          };
+          const resp = await api.invoke('file:save-audio', req) as SaveAudioResponse;
+          if (resp.error) { setExportAsIsPhase('error'); setExportAsIsError(resp.error); return; }
+          if (resp.savedPath) { setLastExportAsIsPath(resp.savedPath); setExportAsIsPhase('done'); }
+          else setExportAsIsPhase('idle');
+        }
+      } catch (err) {
+        setExportAsIsPhase('error');
+        setExportAsIsError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+  }, [masterOutputPath, exportFormat, baseOptions, suggestedName]);
+
+  // Create a new revision — full master with the current edit settings.
+  // Flag OFF (default): the proven Python `audio:master`.
+  // Flag ON: the experimental Rust offline render (same chain as preview),
+  // which the main process falls back to Python on any failure.
+  const onCreateRevision = useCallback(() => {
+    const api = window.electronAPI;
+    if (!api) { setCreateRevisionError('electronAPI unavailable'); return; }
+    // Guard against double-clicks producing duplicate renders / stuck spinner.
+    if (creatingRevisionRef.current) return;
+    creatingRevisionRef.current = true;
+    const options = mergeOptions(baseOptions, exportOverride.optionsOverride);
+    const sourceFileName = sourceAudioPath.split(/[\\/]/).pop() ?? 'master';
+    const useRust = isRustOfflineRenderEnabled();
+    setCreatingRevision(true);
+    setCreateRevisionError(null);
+    const t0 = Date.now();
+    // Hard timeout so a hung render can never leave the button spinning forever.
+    const REVISION_TIMEOUT_MS = 60_000;
+    const withTimeout = <T,>(p: Promise<T>): Promise<T> => Promise.race([
+      p,
+      new Promise<T>((_, reject) => setTimeout(
+        () => reject(new Error('새 버전 생성 시간이 초과되었습니다. 다시 시도해주세요.')),
+        REVISION_TIMEOUT_MS,
+      )),
+    ]);
+    void (async () => {
+      try {
+        let outputPath: string | undefined;
+        let previewPath: string | undefined;
+        let integratedLufs = options.targetLufs;
+        let truePeakDbtp = options.targetTp;
+        let backend: 'rust' | 'python' = 'python';
+        let fallbackUsed = false;
+
+        if (useRust) {
+          // Map UI parametric EQ bands → the offline-config wire shape (Phase 3b).
+          // 0=HighPass, 1=LowPass, 2=Bell, 3=LowShelf, 4=HighShelf
+          const PARAMETRIC_TYPE_MAP = { highpass: 0, lowpass: 1, bell: 2, lowshelf: 3, highshelf: 4 } as const;
+          const offlineBands = (freeEqBands ?? []).map((b) => ({
+            type: PARAMETRIC_TYPE_MAP[b.type] as 0 | 1 | 2 | 3 | 4,
+            frequencyHz: b.frequencyHz,
+            gainDb: b.gainDb,
+            q: b.q,
+            enabled: b.enabled,
+          }));
+          const resp = await withTimeout(api.invoke('audio:master-rust-experimental', {
+            sourcePath: sourceAudioPath,
+            chainConfig: { ...stateToChainConfig(state), parametricBands: offlineBands },
+            options,
+          })) as {
+            ok: boolean; backend?: 'rust' | 'python'; fallbackUsed?: boolean;
+            outputPath?: string; previewPath?: string; error?: string;
+            metrics?: {
+              integratedLufs?: number; truePeakDbtp?: number; samplePeakDb?: number;
+              finalLufs?: number; finalTruePeakDb?: number;
+            };
+          } | undefined;
+          if (!resp?.ok || !resp.outputPath || !resp.previewPath) {
+            setCreateRevisionError(resp?.error ?? 'rust render produced no output');
+            return;
+          }
+          outputPath = resp.outputPath; previewPath = resp.previewPath;
+          backend = resp.backend ?? 'rust';
+          fallbackUsed = Boolean(resp.fallbackUsed);
+          // Two-pass render measures real integrated LUFS + true peak.
+          const m = resp.metrics ?? {};
+          integratedLufs = Number(m.finalLufs ?? m.integratedLufs ?? options.targetLufs);
+          truePeakDbtp = Number(m.finalTruePeakDb ?? m.truePeakDbtp ?? m.samplePeakDb ?? options.targetTp);
+        } else {
+          const result = await withTimeout(api.invoke('audio:master', sourceAudioPath, '', options)) as {
+            outputPath?: string; previewPath?: string;
+            loudnessAfter?: { integratedLufs?: number; truePeakDbtp?: number; lra?: number };
+          } | undefined;
+          outputPath = result?.outputPath; previewPath = result?.previewPath;
+          integratedLufs = Number(result?.loudnessAfter?.integratedLufs ?? options.targetLufs);
+          truePeakDbtp = Number(result?.loudnessAfter?.truePeakDbtp ?? options.targetTp);
+        }
+
+        if (!outputPath || !previewPath) { setCreateRevisionError('master produced no output'); return; }
+        const backendTag = backend === 'rust' ? ' · Rust (exp)' : (useRust && fallbackUsed ? ' · Python (fallback)' : '');
+        onRevisionCreatedRef.current({
+          sourceFilePath: sourceAudioPath,
+          sourceFileName,
+          optionsSnapshot: options as unknown as StoreMasteringOptions,
+          ...(presetId ? { presetId } : {}),
+          outputPath,
+          previewPath,
+          metrics: { integratedLufs, truePeakDbtp },
+          formatSummary: `${(options.sampleRate / 1000)} kHz · ${options.bitDepth}-bit${backendTag}`,
+          renderDurationMs: Date.now() - t0,
+        });
+      } catch (err) {
+        setCreateRevisionError(err instanceof Error ? err.message : '새 버전 생성에 실패했습니다. 다시 시도해주세요.');
+      } finally {
+        creatingRevisionRef.current = false;
+        setCreatingRevision(false);
+      }
+    })();
+  }, [baseOptions, exportOverride, sourceAudioPath, presetId, state, freeEqBands]);
+
+  const bridge: PreviewBridge = {
+    summary, phase, lastRenderedAt, error, onUpdate,
+    exportPhase, exportError, lastExportPath, hasUnpreviewedChanges, onReMasterExport,
+    exportAsIsAvailable: Boolean(masterOutputPath),
+    exportAsIsPhase, exportAsIsError, lastExportAsIsPath, onExportAsIs,
+    exportOverride, qualityLabel,
+    exportFormat, transcodeRequired, ditherIgnored,
+    creatingRevision, createRevisionError, onCreateRevision,
+  };
+  return (
+    <PreviewBridgeContext.Provider value={bridge}>
+      {children}
+    </PreviewBridgeContext.Provider>
+  );
+}
+
+/** Preview strip — reads the bridge.  Rendered as ProductLayoutInner's slot. */
+function PreviewSlotFromBridge() {
+  const bridge = usePreviewBridge();
+  if (!bridge) return null;
+  return (
+    <LouiPreviewControl
+      pendingCount={bridge.summary.renderablePendingCount}
+      stagedOnlyCount={bridge.summary.unsupportedPendingCount}
+      phase={bridge.phase}
+      lastRenderedAt={bridge.lastRenderedAt}
+      error={bridge.error}
+      onUpdate={bridge.onUpdate}
+    />
+  );
+}
+
+// ── Revision (version) stack slot (M3-REVISION-WORKFLOW) ───────────────
+//
+// Reads the bridge (create) + store (group + actions).  Rendered inside
+// the preview provider so it can trigger a full re-master.
+function RevisionStackHost(props: {
+  presetId?: string;
+  onLoadSettings: (revisionId: string) => void;
+}) {
+  const bridge = usePreviewBridge();
+  const group = useAudioStore((s) => s.revisionGroup);
+  const setActive = useAudioStore((s) => s.setActiveRevision);
+  const remove = useAudioStore((s) => s.removeRevision);
+  const rename = useAudioStore((s) => s.renameRevision);
+  const toggleFav = useAudioStore((s) => s.toggleRevisionFavorite);
+  if (!bridge) return null;
+
+  const saveCopy = (srcPath: string) => { void window.electronAPI?.invoke('file:save-wav', srcPath); };
+  const revFor = (id: string) => group?.revisions.find((r) => r.id === id);
+
+  // No group yet = source-preview mode → empty stack with the create CTA.
+  return (
+    <LouiRevisionStack
+      revisions={group?.revisions ?? []}
+      activeId={group?.activeRevisionId ?? ''}
+      creating={bridge.creatingRevision}
+      createError={bridge.createRevisionError}
+      experimental={isRustOfflineRenderEnabled()}
+      presetNameFor={(id) => getPreset(id)?.displayName ?? id}
+      onCreateRevision={bridge.onCreateRevision}
+      onSelect={setActive}
+      onSaveWav={(id) => { const r = revFor(id); if (r) saveCopy(r.outputPath); }}
+      onSaveFormat={(id) => { const r = revFor(id); if (r) saveCopy(r.previewPath); }}
+      onRename={rename}
+      onDelete={remove}
+      onToggleFavorite={toggleFav}
+      onLoadSettings={props.onLoadSettings}
+    />
+  );
+}
+
+// ── A/B compare slot (M3-O-NEXT-7) ─────────────────────────────────────
+
+interface ABSlotProps {
+  mode: ABMode;
+  available: boolean;
+  onToggle: (mode: ABMode) => void;
+  compensated: boolean;
+  onToggleCompensation: (on: boolean) => void;
+  loudnessDeltaLu: number | null;
+  /** Absolute path to the loaded reference file (if any). */
+  referenceFilePath?: string | null;
+  /**
+   * Measured integrated LUFS of the reference track.
+   * null = reference loaded but measurement still in progress.
+   * undefined = no reference loaded.
+   */
+  referenceLufs?: number | null;
+  /** Open the file picker to load a reference track. */
+  onLoadReference?: () => void;
+  /** Clear the loaded reference track. */
+  onClearReference?: () => void;
+}
+
+/** Wires the global "B" shortcut + renders the A/B toggle + reference loader. */
+function ABCompareSlot(props: ABSlotProps) {
+  useABShortcut(props.mode, props.available, props.onToggle);
+  const refName = props.referenceFilePath
+    ? (props.referenceFilePath.split(/[\\/]/).pop() ?? props.referenceFilePath)
+    : null;
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <LouiABCompare
+        mode={props.mode}
+        available={props.available}
+        onToggle={props.onToggle}
+        compensated={props.compensated}
+        onToggleCompensation={props.onToggleCompensation}
+        loudnessDeltaLu={props.loudnessDeltaLu}
+      />
+      {/* Reference track loader — "Ref" button and clear × */}
+      {refName ? (
+        <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 2 }}>
+          {/* Filename chip */}
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            fontFamily: typography.family.mono, fontSize: 9, color: text.muted,
+            border: `1px solid ${surface.border}`, borderRadius: 4,
+            padding: '2px 6px', maxWidth: 148, overflow: 'hidden',
+          }}>
+            <span title={props.referenceFilePath ?? ''} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+              Ref: {refName}
+            </span>
+            <button
+              type="button"
+              onClick={props.onClearReference}
+              title="레퍼런스 트랙 제거"
+              style={{ background: 'none', border: 'none', color: text.muted, cursor: 'pointer', padding: 0, lineHeight: 1, fontSize: 11, flexShrink: 0 }}
+            >×</button>
+          </div>
+          {/* LUFS measurement result / measuring indicator */}
+          <span style={{
+            fontFamily: typography.family.mono, fontSize: 8,
+            color: props.referenceLufs !== null && props.referenceLufs !== undefined
+              ? meter.safe.foreground
+              : text.muted,
+            letterSpacing: '0.03em',
+            paddingInline: 2,
+          }}>
+            {props.referenceLufs === null
+              ? '측정 중…'
+              : props.referenceLufs !== undefined
+                ? `${props.referenceLufs.toFixed(1)} LUFS`
+                : ''}
+          </span>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={props.onLoadReference}
+          title="레퍼런스 트랙 불러오기 — A(Before) 슬롯에 연결됩니다"
+          className="no-drag"
+          style={{
+            fontFamily: typography.family.mono, fontSize: 9, letterSpacing: '0.06em',
+            border: `1px solid ${surface.border}`, borderRadius: 4, padding: '2px 6px',
+            background: 'transparent', color: text.muted, cursor: 'pointer',
+          }}
+        >
+          + Ref
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Normalise store-shaped options into a shared-types MasteringOptions. */
+function normaliseOptions(o: {
+  style: MasteringOptions['style'];
+  targetLufs: number; targetTp: number; sampleRate: number; bitDepth: number;
+  applyAiCorrections: boolean;
+  limiterStrength?: MasteringOptions['limiterStrength'];
+  saturationAmount?: number | undefined;
+  stereoWidth?: number | undefined;
+  outputGainDb?: number | undefined;
+}): MasteringOptions {
+  return {
+    style: o.style,
+    targetLufs: o.targetLufs,
+    targetTp: o.targetTp,
+    sampleRate: o.sampleRate,
+    bitDepth: o.bitDepth,
+    applyAiCorrections: o.applyAiCorrections,
+    ...(o.limiterStrength !== undefined ? { limiterStrength: o.limiterStrength } : {}),
+    ...(o.saturationAmount !== undefined ? { saturationAmount: o.saturationAmount } : {}),
+    ...(o.stereoWidth !== undefined ? { stereoWidth: o.stereoWidth } : {}),
+    ...(o.outputGainDb !== undefined ? { outputGainDb: o.outputGainDb } : {}),
+  };
+}
+
+// ── Storybook / test path — session bypasses provider ────────────────────
+
+function ProductLayoutWithOverride({
+  session,
+  active,
+}: {
+  session: AnalyzerSession | null;
+  active: boolean;
+}) {
+  const [presetId, setPresetId] = useState<string | undefined>(undefined);
+  const [selectedModule, setSelectedModule] = useState<ModuleCardDef['id'] | undefined>(undefined);
+  // Toggle: click the same card → close.
+  const onSelectModule = (id: ModuleCardDef['id']) =>
+    setSelectedModule((prev) => (prev === id ? undefined : id));
+  // Stage wired parameters into an EngineSchema preset patch.  No live
+  // DSP write — see audio/engine-bridge/engine-dispatcher.ts.
+  const dispatcher = useMemo(() => new PresetPatchDispatcher(ALL_MODULE_PARAMETER_DEFS), []);
+  return (
+    <ModuleParameterStateProvider dispatcher={dispatcher}>
+      <ProductLayoutInner
+        session={session}
+        active={active}
+        sampleRate={48000}
+        channels={2}
+        targetLufs={-14}
+        targetTp={-1}
+        {...(presetId ? { presetId } : {})}
+        onPresetChange={setPresetId}
+        {...(selectedModule ? { selectedModule } : {})}
+        onSelectModule={onSelectModule}
+      />
+    </ModuleParameterStateProvider>
+  );
+}
+
+// ── Production path — provider + audio element ──────────────────────────
+
+interface AudioDiag {
+  /** Human-readable load error, or null when healthy. */
+  error: string | null;
+  /** HTMLMediaElement.readyState (0..4). */
+  readyState: number;
+  /** HTMLMediaElement.networkState (0..3). */
+  networkState: number;
+}
+
+/** Map a MediaError code → an honest, specific reason. */
+function mediaErrorMessage(err: MediaError | null): string | null {
+  if (!err) return null;
+  switch (err.code) {
+    case err.MEDIA_ERR_ABORTED:        return 'Load aborted';
+    case err.MEDIA_ERR_NETWORK:        return 'Network/file read error';
+    case err.MEDIA_ERR_DECODE:         return 'Decode error (corrupt or unsupported encoding)';
+    case err.MEDIA_ERR_SRC_NOT_SUPPORTED: return 'Unsupported source / file URL invalid';
+    default:                           return err.message || 'Unknown audio error';
+  }
+}
+
+function ProductPageProduction() {
+  const setPage         = useAppStore((s) => s.setPage);
+  const masteringResult = useAudioStore((s) => s.masteringResult);
+  const sourceAudioPath = useAudioStore((s) => s.selectedFile);
+  const baseOptions     = useAudioStore((s) => s.options);
+  // Reference track for A/B compare.
+  const referenceFilePath = useAudioStore((s) => s.referenceFilePath);
+  const setReferenceFile  = useAudioStore((s) => s.setReferenceFile);
+  // Measured integrated LUFS of the reference track (null = measuring / unmeasured).
+  const referenceLufs    = useAudioStore((s) => s.referenceLufs);
+  const setReferenceLufs = useAudioStore((s) => s.setReferenceLufs);
+  // Revision workflow (M3-REVISION-WORKFLOW)
+  const revisionGroup   = useAudioStore((s) => s.revisionGroup);
+  const addRevision     = useAudioStore((s) => s.addRevision);
+  const clearRevisions = useAudioStore((s) => s.clearRevisions);
+
+  // Keep the revision group bound to the CURRENT source — clear stale
+  // revisions when the user opens a different file (source-preview / tweak).
+  React.useEffect(() => {
+    const g = useAudioStore.getState().revisionGroup;
+    if (g && sourceAudioPath && g.sourceFilePath !== sourceAudioPath) clearRevisions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceAudioPath]);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+  const setAudioRef = useCallback((el: HTMLAudioElement | null) => {
+    audioRef.current = el;
+    setAudioEl(el);
+    if (el) logAudioEvent('audio-element-mounted');
+  }, []);
+  const [playing, setPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [time, setTime] = useState(0);
+  // Audio-element diagnostics (honest source-load state for QA + UX).
+  const [audioDiag, setAudioDiag] = useState<AudioDiag>({ error: null, readyState: 0, networkState: 0 });
+  const [presetId, setPresetId] = useState<string | undefined>(undefined);
+  // Shortcut help overlay.
+  const [showHelp, setShowHelp] = useState(false);
+  // Pre/Post duo spectrum mode (renders source.wav PRE on top of master POST).
+  const [duoMode, setDuoMode] = useState(false);
+  // Free parametric EQ (Phase 1: visualization only, audio adoption in Phase 2).
+  const [freeEqEnabled, setFreeEqEnabled] = useState(false);
+  const [freeEqBands, setFreeEqBands] = useState<import('../audio/modules/parametric-eq-model.js').ParametricEqBand[]>([]);
+  // Loop region (Shift+drag on waveform bar) + playback rate.
+  const [loopRegion, setLoopRegion] = useState<import('../components/product/LouiPlaybackBar.js').LoopRegion | null>(null);
+  const [loopActive, setLoopActive] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1.0);
+  const loopActiveRef = useRef(false);
+  const loopRegionRef = useRef<import('../components/product/LouiPlaybackBar.js').LoopRegion | null>(null);
+  useEffect(() => { loopActiveRef.current = loopActive; }, [loopActive]);
+  useEffect(() => { loopRegionRef.current = loopRegion; }, [loopRegion]);
+  const [selectedModule, setSelectedModule] = useState<ModuleCardDef['id'] | undefined>(undefined);
+  // Preview source override — set when a re-render swaps the preview file.
+  const [previewSrcOverride, setPreviewSrcOverride] = useState<string | null>(null);
+  // Before/After compare (M3-O-NEXT-7) — real preview source swap.
+  const [abMode, setAbMode] = useState<ABMode>('after');
+  const [reRenderedLufs, setReRenderedLufs] = useState<number | null>(null);
+  const [compensated, setCompensated] = useState(true);
+  const dispatcher = useMemo(() => new PresetPatchDispatcher(ALL_MODULE_PARAMETER_DEFS), []);
+
+  // Normalise the store options + seed the parameter state from the base
+  // master so renderable params start matching the preview (no false
+  // pending at load).
+  const normalisedBase = useMemo(() => normaliseOptions(baseOptions), [baseOptions]);
+  const initialParamState = useMemo(
+    () => initialStateFromBaseOptions(normalisedBase),
+    [normalisedBase],
+  );
+
+  // ── Revision-aware preview sources ───────────────────────────────────
+  // Revision 1 (baseline) is "A"; the active revision is "B".  When the
+  // user runs a quick "Update Preview", that override transiently becomes
+  // "B" for the edited settings.  Falls back to the single masteringResult
+  // when no revision group exists yet (pre-seed / storybook).
+  const activeRevision   = getActiveRevision(revisionGroup);
+  const baselineRevision = getBaselineRevision(revisionGroup);
+  const baselinePreview = baselineRevision?.previewPath ?? masteringResult?.previewPath ?? '';
+  const activePreview   = activeRevision?.previewPath ?? masteringResult?.previewPath ?? '';
+
+  // Source-preview mode (UX-FLOW-NEXT-1): with no master result yet, play
+  // the ORIGINAL file so the user can listen + tweak before rendering.
+  const sourcePreviewSrc = sourceAudioPath ? toFileUrl(sourceAudioPath) : '';
+
+  const basePreviewSrc = baselinePreview ? toFileUrl(baselinePreview) : sourcePreviewSrc;
+  const activeIsNotBaseline = Boolean(activeRevision && baselineRevision && activeRevision.id !== baselineRevision.id);
+  // "B" = a fresh quick-render override if present, else the active
+  // revision's preview when it differs from the baseline.
+  const reRenderedSrc = previewSrcOverride
+    ?? (activeIsNotBaseline ? toFileUrl(activePreview) : null);
+  // Reference file: when loaded, it becomes "A Before" (overrides the
+  // baseline master so the user can compare their master against any track).
+  const referenceSrc = referenceFilePath ? toFileUrl(referenceFilePath) : null;
+  const effectiveBeforeSrc = referenceSrc ?? basePreviewSrc;
+  const effectiveSrc = abMode === 'before' ? effectiveBeforeSrc : (reRenderedSrc ?? basePreviewSrc);
+  // A/B is available when there's a re-rendered preview OR a reference track.
+  const abAvailable = Boolean(reRenderedSrc) || Boolean(referenceSrc);
+
+  // Duo Pre/Post: secondary muted element plays the SOURCE so the user sees
+  // both spectra simultaneously while still only hearing the master.  Only
+  // enabled when duoMode is on AND we have a source path (else no comparison).
+  const duoEnabled = duoMode && Boolean(sourcePreviewSrc) && Boolean(sourcePreviewSrc !== effectiveSrc);
+  const secondary = useSecondaryAnalyzer(
+    duoEnabled ? audioEl : null,
+    duoEnabled ? sourcePreviewSrc : null,
+    duoEnabled,
+  );
+
+  // When a reference is loaded, baseLufs = the measured integratedLufs of the
+  // reference file (null while still measuring → LU comp stays disabled until
+  // the analysis completes, which is honest).  Without a reference, use the
+  // baseline revision / legacy masteringResult loudness.
+  const baseLufs = referenceSrc !== null
+    ? referenceLufs   // null = measuring (comp disabled); number = measured (comp available)
+    : (baselineRevision?.metrics.integratedLufs
+        ?? (typeof masteringResult?.loudnessAfter?.integratedLufs === 'number' ? masteringResult.loudnessAfter.integratedLufs : null));
+  // "After" loudness: the quick-render value when overriding, else the
+  // active revision's measured loudness.
+  const afterLufs = previewSrcOverride !== null
+    ? reRenderedLufs
+    : (activeIsNotBaseline ? activeRevision!.metrics.integratedLufs : null);
+  const loudnessDeltaLu = (afterLufs !== null && baseLufs !== null) ? afterLufs - baseLufs : null;
+
+  // Export As-is target — the active revision's master WAV.
+  const activeOutputPath = activeRevision?.outputPath ?? masteringResult?.outputPath ?? null;
+
+  // Seed Revision 1 from the initial master once it's available for this
+  // source (migrates the legacy single masteringResult into the group).
+  const seededRef = useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!masteringResult?.outputPath || !masteringResult.previewPath || !sourceAudioPath) return;
+    const key = `${sourceAudioPath}::${masteringResult.outputPath}`;
+    if (seededRef.current === key) return;
+    const alreadyInGroup = revisionGroup
+      && revisionGroup.sourceFilePath === sourceAudioPath
+      && revisionGroup.revisions.some((r) => r.outputPath === masteringResult.outputPath);
+    if (alreadyInGroup) { seededRef.current = key; return; }
+    if (revisionGroup && revisionGroup.sourceFilePath === sourceAudioPath) { seededRef.current = key; return; }
+    seededRef.current = key;
+    const after = masteringResult.loudnessAfter;
+    addRevision({
+      sourceFilePath: sourceAudioPath,
+      sourceFileName: sourceAudioPath.split(/[\\/]/).pop() ?? 'master',
+      optionsSnapshot: normalisedBase as unknown as StoreMasteringOptions,
+      ...(presetId ? { presetId } : {}),
+      outputPath: masteringResult.outputPath,
+      previewPath: masteringResult.previewPath,
+      metrics: {
+        integratedLufs: Number(after?.integratedLufs ?? normalisedBase.targetLufs),
+        truePeakDbtp: Number(after?.truePeakDbtp ?? normalisedBase.targetTp),
+        ...(typeof after?.lra === 'number' ? { lra: after.lra } : {}),
+      },
+      formatSummary: `${normalisedBase.sampleRate / 1000} kHz · ${normalisedBase.bitDepth}-bit`,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [masteringResult, sourceAudioPath]);
+
+  // When the active revision changes, hear it cleanly: drop any stale
+  // quick-preview override and show it as "After".
+  const activeRevId = activeRevision?.id;
+  const prevActiveRef = useRef<string | undefined>(activeRevId);
+  React.useEffect(() => {
+    if (prevActiveRef.current === activeRevId) return;
+    prevActiveRef.current = activeRevId;
+    restorePositionOnLoad();
+    setPreviewSrcOverride(null);
+    setAbMode('after');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRevId]);
+  const meta = masteringResult?.analysisReport?.mastering;
+  const targetLufs = typeof meta?.targetLufs === 'number' ? meta.targetLufs : -14;
+  const targetTp   = typeof meta?.targetTruePeak === 'number' ? meta.targetTruePeak : -1;
+
+  // Capture playback position + play state, restore after the next
+  // `loadedmetadata` (used after every src change so swaps are seamless).
+  const restorePositionOnLoad = useCallback(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    const t = a.currentTime;
+    const wasPlaying = !a.paused;
+    const restore = () => {
+      try { a.currentTime = t; } catch { /* duration may differ slightly */ }
+      if (wasPlaying) void a.play();
+      a.removeEventListener('loadedmetadata', restore);
+    };
+    a.addEventListener('loadedmetadata', restore);
+  }, []);
+
+  // A re-render produced a new preview — swap to it (After) + capture its
+  // measured loudness for A/B compensation.
+  const onPreviewRendered = useCallback((newPreviewPath: string, integratedLufs?: number) => {
+    restorePositionOnLoad();
+    if (typeof integratedLufs === 'number') setReRenderedLufs(integratedLufs);
+    setPreviewSrcOverride(toFileUrl(newPreviewPath));
+    setAbMode('after');
+  }, [restorePositionOnLoad]);
+
+  // Before/After toggle — flips the effective source (real swap).
+  const onABToggle = useCallback((mode: ABMode) => {
+    restorePositionOnLoad();
+    setAbMode(mode);
+  }, [restorePositionOnLoad]);
+
+  // Load a reference track — IPC picks the file, stores it, activates Before
+  // mode, then measures the integrated LUFS in the background so LU comp can
+  // work honestly (disabled until the measurement completes).
+  const onLoadReference = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api) return;
+    const p = await api.invoke('file:open-dialog') as string | null;
+    if (!p) return;
+    restorePositionOnLoad();
+    setReferenceFile(p);
+    setAbMode('before'); // hear the reference first
+    // Reset prior measurement immediately so LU comp is disabled while measuring.
+    setReferenceLufs(null);
+    // Background loudness analysis — no await; fires and updates when ready.
+    void (async () => {
+      try {
+        type AnalyzeResult = { loudness?: { integratedLufs?: number } };
+        const result = await api.invoke('audio:analyze', p) as AnalyzeResult | null;
+        const lufs = result?.loudness?.integratedLufs;
+        if (typeof lufs === 'number') setReferenceLufs(lufs);
+        // If analysis fails or returns no loudness, referenceLufs stays null
+        // and LU comp stays off — we never fabricate a value.
+      } catch {
+        // Silently leave referenceLufs as null (LU comp remains disabled).
+      }
+    })();
+  }, [restorePositionOnLoad, setReferenceFile, setReferenceLufs]);
+
+  const onClearReference = useCallback(() => {
+    setReferenceFile(null);
+    setAbMode('after');
+  }, [setReferenceFile]);
+
+  // Loudness-compensated comparison — trim the louder side down to the
+  // quieter reference so A/B reflects TONE, not loudness.
+  React.useEffect(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (!compensated || afterLufs === null || baseLufs === null) { a.volume = 1; return; }
+    const ref = Math.min(baseLufs, afterLufs);
+    const cur = abMode === 'before' ? baseLufs : afterLufs;
+    const trimDb = Math.max(0, cur - ref);
+    a.volume = Math.pow(10, -trimDb / 20);
+  }, [compensated, abMode, afterLufs, baseLufs]);
+
+  React.useEffect(() => {
+    if (effectiveSrc) logAudioEvent('src-changed', effectiveSrc.slice(0, 64));
+  }, [effectiveSrc]);
+
+  const togglePlay = useCallback(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (a.paused) {
+      // Electron/Chromium autoplay policy can leave the shared AudioContext
+      // suspended — resume it from this user gesture so the graph is pulled
+      // (otherwise: silence + frozen meters despite "playing").
+      void resumeSharedContext();
+      void a.play();
+    } else {
+      a.pause();
+    }
+  }, []);
+
+  // Spacebar = play/pause global shortcut.  Same focus-guard pattern as the
+  // A/B shortcut: ignored when typing in inputs / textareas / contentEditable
+  // and when a modifier key is held.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      if (tag === 'BUTTON') return; // let the button receive its own activate
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      e.preventDefault();
+      togglePlay();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [togglePlay]);
+
+  // "L" = toggle loop on/off (only when a region is set).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'l' && e.key !== 'L') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      setLoopActive((prev) => !prev);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // "?" = toggle shortcut help overlay.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== '?') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      setShowHelp((prev) => !prev);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Apply playback rate to audio element whenever it changes.
+  useEffect(() => {
+    const a = audioRef.current;
+    if (a) a.playbackRate = playbackRate;
+  }, [playbackRate]);
+
+  // Sync free parametric EQ bands to the audio graph (Phase 2: audible).
+  // Wrapped in try/catch so a transient graph error never tears down
+  // the renderer.  Fast-path in setGraphFreeEqBands skips routing
+  // changes when free EQ has never been used.
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    try {
+      setGraphFreeEqBands(el, freeEqEnabled ? freeEqBands : []);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[ProductPage] setGraphFreeEqBands failed (free EQ ignored):', err);
+    }
+  }, [freeEqEnabled, freeEqBands]);
+
+  const seekTo = useCallback((ratio: number) => {
+    const a = audioRef.current;
+    if (!a || !duration) return;
+    a.currentTime = Math.max(0, Math.min(duration, ratio * duration));
+  }, [duration]);
+
+  const fmtTime = (s: number) => {
+    if (!Number.isFinite(s)) return '0:00';
+    const m = Math.floor(s / 60);
+    return `${m}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+  };
+
+  const onImport = useCallback(() => { setPage('home'); }, [setPage]);
+  // Back to the start screen — keeps queue + revisions (no clear).
+  const onBack = useCallback(() => { setPage('home'); }, [setPage]);
+  const onExport = useCallback(async () => {
+    if (!activeOutputPath) return;
+    await window.electronAPI?.invoke('file:save-wav', activeOutputPath);
+  }, [activeOutputPath]);
+  const onSettings = useCallback(() => { setPage('settings'); }, [setPage]);
+
+  // Toggle behaviour: re-clicking the active card closes the slide-over.
+  const onSelectModule = useCallback((id: ModuleCardDef['id']) => {
+    setSelectedModule((prev) => (prev === id ? undefined : id));
+  }, []);
+
+  return (
+    <>
+      {showHelp && <LouiShortcutHelp onClose={() => setShowHelp(false)} />}
+      {/* Hidden audio element — required for WasmAnalyzerProvider to attach
+          a MediaElementAudioSourceNode.  We control it via React state. */}
+      <audio
+        ref={setAudioRef}
+        src={effectiveSrc || undefined}
+        onPlay={() => { setPlaying(true); logAudioEvent('audio-play'); }}
+        onPause={() => { setPlaying(false); logAudioEvent('audio-pause'); }}
+        onEnded={() => { setPlaying(false); setTime(0); }}
+        onTimeUpdate={() => {
+          const a = audioRef.current;
+          if (!a) return;
+          setTime(a.currentTime);
+          // Loop enforcement: when loop is active and playhead exits the region, wrap.
+          if (loopActiveRef.current && loopRegionRef.current && Number.isFinite(a.duration) && a.duration > 0) {
+            const { out } = loopRegionRef.current;
+            if (a.currentTime >= out * a.duration) {
+              a.currentTime = loopRegionRef.current.in * a.duration;
+            }
+          }
+        }}
+        onLoadedMetadata={() => {
+          const a = audioRef.current;
+          if (a) setDuration(a.duration);
+          setAudioDiag({ error: null, readyState: audioRef.current?.readyState ?? 0, networkState: audioRef.current?.networkState ?? 0 });
+        }}
+        onCanPlay={() => {
+          const a = audioRef.current;
+          setAudioDiag({ error: null, readyState: a?.readyState ?? 0, networkState: a?.networkState ?? 0 });
+        }}
+        onError={() => {
+          const a = audioRef.current;
+          setAudioDiag({
+            error: mediaErrorMessage(a?.error ?? null) ?? 'Audio source not loaded',
+            readyState: a?.readyState ?? 0,
+            networkState: a?.networkState ?? 0,
+          });
+        }}
+        style={{ display: 'none' }}
+      />
+
+      {/* WASM analyzer + realtime worklet are HARD-DISABLED in this build.
+          They were the confirmed cause of the renderer crash when the audio
+          element drove createMediaElementSource into the worklet attach
+          path.  Native AnalyserNode tap stays ON so Spectrum / Loudness /
+          Stereo / Levels / Bands / Goniometer all work.  Realtime EQ /
+          Dynamics audition is OFF — the offline export path is unchanged. */}
+      <MediaElementProvider value={effectiveSrc ? audioEl : null}>
+      <WasmAnalyzerProvider mediaElement={null} active={false}>
+      <ModuleParameterStateProvider dispatcher={dispatcher} initialState={initialParamState}>
+        <ProductPageProductionInner
+          isPlaying={playing}
+          onPlayPause={togglePlay}
+          audioDiag={audioDiag}
+          progress={duration > 0 ? time / duration : 0}
+          currentTimeLabel={fmtTime(time)}
+          durationLabel={fmtTime(duration)}
+          onSeek={seekTo}
+          targetLufs={targetLufs}
+          targetTp={targetTp}
+          {...(presetId ? { presetId } : {})}
+          onPresetChange={setPresetId}
+          {...(selectedModule ? { selectedModule } : {})}
+          onSelectModule={onSelectModule}
+          onBack={onBack}
+          onImport={onImport}
+          onExport={onExport}
+          onSettings={onSettings}
+          ab={{
+            mode: abMode,
+            available: abAvailable,
+            onToggle: onABToggle,
+            compensated,
+            onToggleCompensation: setCompensated,
+            loudnessDeltaLu,
+            referenceFilePath,
+            referenceLufs,
+            onLoadReference,
+            onClearReference,
+          }}
+          loopRegion={loopRegion}
+          loopActive={loopActive}
+          onLoopRegion={(r) => { setLoopRegion(r); if (!r) setLoopActive(false); }}
+          playbackRate={playbackRate}
+          onPlaybackRateChange={setPlaybackRate}
+          duoMode={duoMode}
+          duoSecondaryAnalyser={secondary.analyser}
+          duoSecondaryStatus={secondary.status}
+          {...(sourcePreviewSrc && sourcePreviewSrc !== effectiveSrc
+            ? { onToggleDuoMode: () => setDuoMode((v) => !v) }
+            : {})}
+          freeEqEnabled={freeEqEnabled}
+          freeEqBands={freeEqBands}
+          onFreeEqChange={setFreeEqBands}
+          onToggleFreeEq={() => setFreeEqEnabled((v) => !v)}
+          setFreeEqEnabled={setFreeEqEnabled}
+          {...(sourceAudioPath ? {
+            preview: {
+              sourceAudioPath,
+              baseOptions: normalisedBase,
+              masterOutputPath: activeOutputPath,
+              onRendered: onPreviewRendered,
+              ...(presetId ? { presetId } : {}),
+              onRevisionCreated: addRevision,
+            },
+          } : {})}
+        />
+      </ModuleParameterStateProvider>
+      </WasmAnalyzerProvider>
+      </MediaElementProvider>
+    </>
+  );
+}
+
+function ProductPageProductionInner(props: {
+  isPlaying: boolean;
+  onPlayPause: () => void;
+  audioDiag?: AudioDiag;
+  progress: number;
+  currentTimeLabel: string;
+  durationLabel: string;
+  onSeek: (ratio: number) => void;
+  targetLufs: number;
+  targetTp: number;
+  presetId?: string;
+  onPresetChange: (id: string) => void;
+  selectedModule?: ModuleCardDef['id'];
+  onSelectModule: (id: ModuleCardDef['id']) => void;
+  onBack?: () => void;
+  onImport: () => void;
+  onExport: () => void;
+  onSettings: () => void;
+  ab: ABSlotProps;
+  loopRegion?: import('../components/product/LouiPlaybackBar.js').LoopRegion | null;
+  loopActive?: boolean;
+  onLoopRegion?: (r: import('../components/product/LouiPlaybackBar.js').LoopRegion | null) => void;
+  playbackRate?: number;
+  onPlaybackRateChange?: (rate: number) => void;
+  duoMode?: boolean;
+  duoSecondaryAnalyser?: AnalyserNode | null;
+  duoSecondaryStatus?: 'idle' | 'connected' | 'error';
+  onToggleDuoMode?: () => void;
+  freeEqEnabled?: boolean;
+  freeEqBands?: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[];
+  onFreeEqChange?: (b: import('../audio/modules/parametric-eq-model.js').ParametricEqBand[]) => void;
+  onToggleFreeEq?: () => void;
+  /** Direct boolean setter for free EQ on/off (used by session load). */
+  setFreeEqEnabled?: (v: boolean) => void;
+  preview?: {
+    sourceAudioPath: string;
+    baseOptions: MasteringOptions;
+    masterOutputPath: string | null;
+    onRendered: (previewPath: string, integratedLufs?: number) => void;
+    presetId?: string;
+    onRevisionCreated: (input: RevisionInput) => void;
+  };
+}) {
+  const session = useWasmAnalyzerSession();
+  // Realtime mastering preview is HARD-DISABLED: session forced to null
+  // so the hook's attach effect early-returns.  See WasmAnalyzerProvider
+  // mediaElement={null} above for the matching wasm-side disable.
+  const realtime = useRealtimeMasteringGraph(null, { sampleRate: 48000, channels: 2 });
+
+  // Undo / Redo keyboard shortcuts:
+  //   Cmd/Ctrl+Z          → undo
+  //   Cmd/Ctrl+Shift+Z    → redo (mac)
+  //   Cmd/Ctrl+Y          → redo (windows)
+  // Ignored when typing into inputs / textareas / contentEditable so the
+  // user's local undo works (e.g. revision-name field).
+  const { undo, redo } = useUndoRedo();
+  const replaceParameterState = useReplaceParameterState();
+  const { state: allModuleState } = useAllModuleParameters();
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'z' && e.key !== 'Z' && e.key !== 'y' && e.key !== 'Y') return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      const isRedo = (e.shiftKey && (e.key === 'z' || e.key === 'Z')) || e.key === 'y' || e.key === 'Y';
+      if (isRedo) redo(); else undo();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [undo, redo]);
+
+  // Realtime gain reduction (Limiter/Maximizer) — REAL limiterGrDb from the
+  // worklet metrics, with a decaying peak hold.  Available only while the
+  // realtime preview is active; otherwise "unavailable" (never faked).
+  const grAvailable = realtime.enabled && realtime.active;
+  const grDb = grAvailable ? Math.max(0, realtime.metrics.limiterGrDb) : 0;
+  const [grPeak, setGrPeak] = useState(0);
+  React.useEffect(() => {
+    if (!grAvailable) { setGrPeak(0); return; }
+    // Decays per metrics frame (data-driven; no free-running RAF).
+    setGrPeak((prev) => decayPeak(prev, grDb, 0.4));
+  }, [grDb, grAvailable]);
+  const grValue = useMemo(
+    () => ({ grDb, peakDb: grPeak, available: grAvailable, source: grAvailable ? ('realtime' as const) : ('unavailable' as const) }),
+    [grDb, grPeak, grAvailable],
+  );
+
+  // Realtime gain reduction (Dynamics/compressor) — REAL dynamicsGrDb from
+  // the worklet metrics.  Same honesty contract as the limiter GR above:
+  // available only while the realtime preview is genuinely processing.
+  const dynGrDb = grAvailable ? Math.max(0, realtime.metrics.dynamicsGrDb) : 0;
+  const [dynGrPeak, setDynGrPeak] = useState(0);
+  React.useEffect(() => {
+    if (!grAvailable) { setDynGrPeak(0); return; }
+    setDynGrPeak((prev) => decayPeak(prev, dynGrDb, 0.4));
+  }, [dynGrDb, grAvailable]);
+  const dynGrValue = useMemo(
+    () => ({ grDb: dynGrDb, peakDb: dynGrPeak, available: grAvailable, source: grAvailable ? ('realtime' as const) : ('unavailable' as const) }),
+    [dynGrDb, dynGrPeak, grAvailable],
+  );
+  // Realtime preview status for module badges ("Heard live" vs "Staged").
+  const realtimePreviewValue = useMemo(
+    () => ({ enabled: realtime.enabled, active: realtime.active }),
+    [realtime.enabled, realtime.active],
+  );
+
+  // Preset selection → apply the preset's full DSP tuning to the central
+  // parameter state.  This updates the realtime preview config (no graph
+  // rebuild — the same worklet node receives a new config) and stages the
+  // renderable params for export, keeping preview/export consistent.
+  const applyPreset = useApplyPreset();
+  const [presetBrowserOpen, setPresetBrowserOpen] = useState(false);
+  const [previousPresetId, setPreviousPresetId] = useState<string | undefined>(undefined);
+  // Last-used is a badge hint only — it does NOT auto-apply on load (the
+  // master is already rendered); the user re-applies by selecting.
+  const [lastUsedId] = useState<string | undefined>(() => getLastUsedPreset() ?? undefined);
+
+  const handlePreset = useCallback((id: string) => {
+    setPreviousPresetId(props.presetId);
+    props.onPresetChange(id);
+    const preset = getPreset(id);
+    if (!preset) return;
+    applyPreset(presetApplyPlan(preset), { presetId: id, presetName: preset.displayName });
+    setLastUsedPreset(id);
+  }, [applyPreset, props]);
+
+  // Load a revision's settings back into the editor (then the user can
+  // tweak + make a new version).  Restores the master options; if the
+  // revision carried a preset, re-applies it to the parameter state.
+  const updateOptions = useAudioStore((s) => s.updateOptions);
+  const revisionGroup = useAudioStore((s) => s.revisionGroup);
+  const onLoadRevisionSettings = useCallback((revisionId: string) => {
+    const rev = revisionGroup?.revisions.find((r) => r.id === revisionId);
+    if (!rev) return;
+    updateOptions(rev.optionsSnapshot);
+    if (rev.presetId) {
+      const preset = getPreset(rev.presetId);
+      if (preset) {
+        props.onPresetChange(rev.presetId);
+        applyPreset(presetApplyPlan(preset), { presetId: rev.presetId, presetName: preset.displayName });
+      }
+    }
+  }, [revisionGroup, updateOptions, applyPreset, props]);
+
+  // ── Session save / load ───────────────────────────────────────────────
+  const sourceAudioPathForSession = useAudioStore((s) => s.selectedFile);
+  const referenceFilePathForSession = useAudioStore((s) => s.referenceFilePath);
+  const setReferenceFileFromSession = useAudioStore((s) => s.setReferenceFile);
+  const updateOptionsFromSession = useAudioStore((s) => s.updateOptions);
+  const [sessionStatus, setSessionStatus] = useState<'idle' | 'saving' | 'loading' | 'error'>('idle');
+
+  const onSaveSession = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api) return;
+    setSessionStatus('saving');
+    try {
+      const session = serializeSession({
+        version: SESSION_VERSION,
+        createdAt: new Date().toISOString(),
+        sourceFilePath: sourceAudioPathForSession,
+        referenceFilePath: referenceFilePathForSession,
+        allModulesState: allModuleState,
+        presetId: props.presetId,
+        baseOptions: useAudioStore.getState().options,
+        freeEqEnabled: props.freeEqEnabled === true,
+        freeEqBands: props.freeEqBands ?? [],
+      });
+      await api.invoke('session:save', session);
+      setSessionStatus('idle');
+    } catch { setSessionStatus('error'); setTimeout(() => setSessionStatus('idle'), 3000); }
+  }, [allModuleState, props.presetId, sourceAudioPathForSession, referenceFilePathForSession, props.freeEqEnabled, props.freeEqBands]);
+
+  const onLoadSession = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api) return;
+    setSessionStatus('loading');
+    try {
+      const result = await api.invoke('session:load') as { path: string; data: string } | null;
+      if (!result) { setSessionStatus('idle'); return; }
+      const parsed = deserializeSession(result.data);
+      if (!parsed.ok) { setSessionStatus('error'); setTimeout(() => setSessionStatus('idle'), 3000); return; }
+      const s = parsed.session;
+      updateOptionsFromSession(s.baseOptions);
+      replaceParameterState(s.allModulesState, 'preset');
+      if (s.presetId) props.onPresetChange(s.presetId);
+      if (s.referenceFilePath) setReferenceFileFromSession(s.referenceFilePath);
+      // Free EQ — restore the band list first so the audio graph effect picks
+      // it up, then flip the enabled flag so the chain routes.
+      props.onFreeEqChange?.(s.freeEqBands);
+      props.setFreeEqEnabled?.(s.freeEqEnabled);
+      setSessionStatus('idle');
+    } catch { setSessionStatus('error'); setTimeout(() => setSessionStatus('idle'), 3000); }
+  }, [replaceParameterState, updateOptionsFromSession, props, setReferenceFileFromSession]);
+
+  // Ctrl/Cmd+S → save session, +O → load session, +E → export.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const lower = e.key.toLowerCase();
+      if (lower !== 's' && lower !== 'o' && lower !== 'e') return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      if (lower === 's') void onSaveSession();
+      else if (lower === 'o') void onLoadSession();
+      else props.onExport();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onSaveSession, onLoadSession, props.onExport]);
+
+  // ── Snapshot slots 1~8 ────────────────────────────────────────────────
+  // Volatile parameter snapshots for quick A/B/C... comparisons.  Cleared
+  // on remount (page navigation).  Persistent presets live in custom-preset
+  // storage (a separate feature with names + localStorage).
+  const [snapshots, setSnapshots] = useState<SnapshotSlots>(emptySnapshots);
+  const [activeSnapshot, setActiveSnapshot] = useState<number | null>(null);
+
+  const saveSnapshot = useCallback((idx: number) => {
+    if (idx < 0 || idx >= SNAPSHOT_COUNT) return;
+    setSnapshots((prev) => {
+      const next = prev.slice();
+      // Deep-clone the parameter state so later edits don't mutate the snapshot.
+      next[idx] = {
+        state: JSON.parse(JSON.stringify(allModuleState)),
+        presetId: props.presetId,
+        capturedAt: Date.now(),
+      };
+      return next;
+    });
+    setActiveSnapshot(idx);
+  }, [allModuleState, props.presetId]);
+
+  const recallSnapshot = useCallback((idx: number) => {
+    const snap = snapshots[idx];
+    if (!snap) return;
+    replaceParameterState(snap.state, 'preset');
+    if (snap.presetId) props.onPresetChange(snap.presetId);
+    setActiveSnapshot(idx);
+  }, [snapshots, replaceParameterState, props]);
+
+  const clearSnapshot = useCallback((idx: number) => {
+    setSnapshots((prev) => {
+      const next = prev.slice();
+      next[idx] = null;
+      return next;
+    });
+    setActiveSnapshot((a) => (a === idx ? null : a));
+  }, []);
+
+  // Number-key shortcuts: 1..8 = recall, Shift+1..8 = save.  We use e.code
+  // (Digit1..Digit8) so it works regardless of the user's keyboard layout
+  // and survives Shift (which would otherwise turn "1" into "!" on key).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const m = /^Digit([1-8])$/.exec(e.code);
+      if (!m) return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+      e.preventDefault();
+      const idx = Number(m[1]) - 1;
+      if (e.shiftKey) saveSnapshot(idx);
+      else recallSnapshot(idx);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [saveSnapshot, recallSnapshot]);
+
+  const layout = (
+    <ProductLayoutInner
+      session={session}
+      active={props.isPlaying}
+      sampleRate={48000}
+      channels={2}
+      targetLufs={props.targetLufs}
+      targetTp={props.targetTp}
+      {...(props.presetId ? { presetId: props.presetId } : {})}
+      onPresetChange={handlePreset}
+      onBrowsePresets={() => setPresetBrowserOpen(true)}
+      {...(props.selectedModule ? { selectedModule: props.selectedModule } : {})}
+      onSelectModule={props.onSelectModule}
+      isPlaying={props.isPlaying}
+      onPlayPause={props.onPlayPause}
+      progress={props.progress}
+      currentTimeLabel={props.currentTimeLabel}
+      durationLabel={props.durationLabel}
+      onSeek={props.onSeek}
+      {...(props.onBack ? { onBack: props.onBack } : {})}
+      onImport={props.onImport}
+      onExport={props.onExport}
+      onSettings={props.onSettings}
+      abControl={<ABCompareSlot {...props.ab} />}
+      {...(props.ab.available ? { abMode: props.ab.mode } : {})}
+      {...(props.loopRegion !== undefined ? { loopRegion: props.loopRegion } : {})}
+      {...(props.loopActive !== undefined ? { loopActive: props.loopActive } : {})}
+      {...(props.onLoopRegion ? { onLoopRegion: props.onLoopRegion } : {})}
+      {...(props.playbackRate !== undefined ? { playbackRate: props.playbackRate } : {})}
+      {...(props.onPlaybackRateChange ? { onPlaybackRateChange: props.onPlaybackRateChange } : {})}
+      {...(props.duoMode !== undefined ? { duoMode: props.duoMode } : {})}
+      {...(props.duoSecondaryAnalyser !== undefined ? { duoSecondaryAnalyser: props.duoSecondaryAnalyser } : {})}
+      {...(props.duoSecondaryStatus !== undefined ? { duoSecondaryStatus: props.duoSecondaryStatus } : {})}
+      {...(props.onToggleDuoMode ? { onToggleDuoMode: props.onToggleDuoMode } : {})}
+      {...(props.freeEqEnabled !== undefined ? { freeEqEnabled: props.freeEqEnabled } : {})}
+      {...(props.freeEqBands !== undefined ? { freeEqBands: props.freeEqBands } : {})}
+      {...(props.onFreeEqChange ? { onFreeEqChange: props.onFreeEqChange } : {})}
+      {...(props.onToggleFreeEq ? { onToggleFreeEq: props.onToggleFreeEq } : {})}
+      {...(props.preview ? { previewSlot: <PreviewSlotFromBridge /> } : {})}
+      {...(props.preview ? { revisionSlot: <RevisionStackHost {...(props.presetId ? { presetId: props.presetId } : {})} onLoadSettings={onLoadRevisionSettings} /> } : {})}
+      moduleSuiteSlot={
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Snapshot slots 1~8 — volatile A/B/C... compare buffers. */}
+          <LouiSnapshotSlots
+            slots={snapshots}
+            activeSlot={activeSnapshot}
+            onSave={saveSnapshot}
+            onRecall={recallSnapshot}
+            onClear={clearSnapshot}
+          />
+          {/* Session save / load */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {(['save', 'load'] as const).map((action) => (
+              <button
+                key={action}
+                type="button"
+                disabled={sessionStatus !== 'idle'}
+                onClick={action === 'save' ? onSaveSession : onLoadSession}
+                title={action === 'save' ? '현재 파라미터·레퍼런스·타깃 설정을 .louisession 파일로 저장' : '.louisession 파일에서 세션 불러오기'}
+                style={{
+                  fontFamily: typography.family.mono, fontSize: 9, letterSpacing: '0.04em',
+                  padding: '3px 8px', borderRadius: radius.chip,
+                  border: `1px solid ${surface.border}`, background: 'transparent',
+                  color: sessionStatus === 'error' ? meter.danger.foreground : text.muted,
+                  cursor: sessionStatus === 'idle' ? 'pointer' : 'not-allowed',
+                  opacity: sessionStatus !== 'idle' && sessionStatus !== 'error' ? 0.5 : 1,
+                }}
+              >
+                {action === 'save'
+                  ? (sessionStatus === 'saving' ? '저장 중…' : '세션 저장')
+                  : (sessionStatus === 'loading' ? '불러오는 중…' : '세션 불러오기')}
+              </button>
+            ))}
+            {sessionStatus === 'error' && (
+              <span style={{ fontFamily: typography.family.mono, fontSize: 9, color: meter.danger.foreground }}>
+                오류 발생
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <LouiRealtimeStatus
+              status={realtime.uiStatus}
+              enabled={realtime.enabled}
+              active={realtime.active}
+              readinessLabel={realtime.readinessLabel}
+              fallbackActive={realtime.enabled && (realtime.uiStatus === 'failed' || realtime.uiStatus === 'unavailable')}
+            />
+            <LouiRealtimeToggle
+              enabled={realtime.enabled}
+              ready={realtime.readiness.ready}
+              readinessLabel={realtime.readinessLabel}
+              onToggle={(next) => {
+                setRealtimePreviewEnabled(next);
+                if (typeof window !== 'undefined') window.location.reload();
+              }}
+            />
+          </div>
+          {/* Developer diagnostics — hidden for normal users; enable with
+              localStorage['loui.devMode']='true' or a dev build. */}
+          {isDevMode() && (
+            <LouiAudioDebugPanel
+              realtimeStatus={realtime.uiStatus}
+              realtimeActive={realtime.active}
+              avgProcessMs={realtime.metrics.avgProcessMs}
+              xruns={realtime.metrics.totalXruns}
+              dspBlocks={realtime.metrics.audioBlocks}
+              fallbackReason={realtime.graphState?.fallbackReason ?? null}
+              loadPhase={realtime.graphState?.load?.phase ?? null}
+              loadError={realtime.graphState?.load?.lastError ?? null}
+              onReattach={realtime.reattach}
+            />
+          )}
+        </div>
+      }
+    />
+  );
+  // Dev/QA realtime-preview health — a fixed bottom-right corner drawer.
+  // Hidden for normal users (it floats above the module slide-over and would
+  // otherwise cover the Export buttons); shown only in dev mode.
+  const debugOverlay = (isDevMode() && realtime.enabled) ? (
+    <LouiRealtimeDebugDrawer status={realtime.uiStatus}>
+      <LouiRealtimeDebugPanel
+        active={realtime.active}
+        uiStatus={realtime.uiStatus}
+        readiness={realtime.readinessLabel}
+        metrics={realtime.metrics}
+        configUpdates={realtime.configUpdates}
+        lastConfigAt={realtime.lastConfigAt}
+        {...(realtime.config ? { config: {
+          imgWidthPct: realtime.config.imgWidthPct,
+          eqPresenceDb: realtime.config.eqPresenceDb,
+          eqAirDb: realtime.config.eqAirDb,
+          dynThresholdDb: realtime.config.dynThresholdDb,
+          dynRatio: realtime.config.dynRatio,
+        } } : {})}
+        {...(realtime.graphState?.fallbackReason ? { fallbackReason: realtime.graphState.fallbackReason } : {})}
+        {...(props.audioDiag ? { audioDiag: props.audioDiag } : {})}
+        {...(session?.audioContext()?.state ? { contextState: session.audioContext()!.state } : {})}
+        sampleRate={48000}
+        bufferSize={128}
+        wasmLoad={realtime.graphState?.load}
+      />
+    </LouiRealtimeDebugDrawer>
+  ) : null;
+
+  const presetBrowser = (
+    <LouiPresetSlideOver
+      open={presetBrowserOpen}
+      onClose={() => setPresetBrowserOpen(false)}
+      recommendedId={DEFAULT_PRESET_ID}
+      {...(props.presetId ? { activeId: props.presetId } : {})}
+      {...(previousPresetId ? { previousId: previousPresetId } : {})}
+      {...(lastUsedId ? { lastUsedId } : {})}
+      onSelect={handlePreset}
+      currentState={allModuleState}
+      onApplyCustomPreset={(state) => {
+        replaceParameterState(state, 'preset');
+        setPresetBrowserOpen(false);
+      }}
+    />
+  );
+
+  if (!props.preview) {
+    return (
+      <RealtimePreviewProvider value={realtimePreviewValue}>
+        <RealtimeGrProvider value={grValue}>
+          <RealtimeDynamicsGrProvider value={dynGrValue}>{layout}{debugOverlay}{presetBrowser}</RealtimeDynamicsGrProvider>
+        </RealtimeGrProvider>
+      </RealtimePreviewProvider>
+    );
+  }
+  return (
+    <RealtimePreviewProvider value={realtimePreviewValue}>
+      <RealtimeGrProvider value={grValue}>
+        <RealtimeDynamicsGrProvider value={dynGrValue}>
+          <ProductionPreviewProvider
+            sourceAudioPath={props.preview.sourceAudioPath}
+            baseOptions={props.preview.baseOptions}
+            masterOutputPath={props.preview.masterOutputPath}
+            onRendered={props.preview.onRendered}
+            {...(props.preview.presetId ? { presetId: props.preview.presetId } : {})}
+            onRevisionCreated={props.preview.onRevisionCreated}
+            {...(props.freeEqBands ? { freeEqBands: props.freeEqBands } : {})}
+          >
+            {layout}
+            {debugOverlay}
+            {presetBrowser}
+          </ProductionPreviewProvider>
+        </RealtimeDynamicsGrProvider>
+      </RealtimeGrProvider>
+    </RealtimePreviewProvider>
+  );
+}
+
+// ── Public component ─────────────────────────────────────────────────────
+
+export default function ProductPage(props: ProductPageProps = {}) {
+  if (props.sessionOverride !== undefined) {
+    return (
+      <ProductLayoutWithOverride
+        session={props.sessionOverride}
+        active={props.storybookActive ?? Boolean(props.sessionOverride)}
+      />
+    );
+  }
+  return (
+    <ProductPageCrashBoundary>
+      <ProductPageProduction />
+    </ProductPageCrashBoundary>
+  );
+}
+
+// ── ProductPage-local ErrorBoundary ──────────────────────────────────────
+// Catches sync render-time exceptions that would otherwise wipe the page.
+// Native crashes (WebAudio, WASM, OOM) still bypass this — those are the
+// kind we suspect when the renderer process dies.  The boundary still
+// helps narrow the search: if it fires, it's React/JS land; if it doesn't
+// (and main process logs render-process-gone), it's native land.
+class ProductPageCrashBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  override componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // eslint-disable-next-line no-console
+    console.error('[ProductPage:CrashBoundary] caught:', error.message);
+    // eslint-disable-next-line no-console
+    console.error('[ProductPage:CrashBoundary] stack:', error.stack);
+    // eslint-disable-next-line no-console
+    console.error('[ProductPage:CrashBoundary] component stack:', info.componentStack);
+    try {
+      (globalThis as { electronAPI?: { invoke: (c: string, ...a: unknown[]) => unknown } })
+        .electronAPI?.invoke('support:record-failure', {
+          category: 'preview',
+          message: `ProductPage crash: ${error.message}`,
+          data: { stack: error.stack?.slice(0, 4000) ?? '', componentStack: info.componentStack?.slice(0, 2000) ?? '' },
+        });
+    } catch { /* ignore */ }
+  }
+  override render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          height: '100vh', background: '#13131A', color: '#e4e4e7',
+          fontFamily: 'ui-monospace, SF Mono, monospace', padding: 24, gap: 16,
+        }}>
+          <p style={{ fontSize: 11, letterSpacing: '0.18em', textTransform: 'uppercase', color: '#52525b' }}>
+            ProductPage Crash
+          </p>
+          <pre style={{
+            background: '#18181b', borderRadius: 8, padding: 12, fontSize: 12,
+            color: '#f87171', maxWidth: 720, width: '100%', overflow: 'auto',
+            whiteSpace: 'pre-wrap', wordBreak: 'break-word', border: '1px solid #3f3f46',
+          }}>
+            {this.state.error.message}
+            {'\n\n'}
+            {this.state.error.stack?.slice(0, 1200) ?? ''}
+          </pre>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              padding: '6px 16px', background: '#3f3f46', color: '#e4e4e7',
+              border: '1px solid #52525b', borderRadius: 6, cursor: 'pointer', fontSize: 13,
+            }}
+          >다시 시작</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}

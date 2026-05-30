@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schemas.loui.studio/fixture/v1",
+  "id": "ballad-piano-01",
+  "category": "ballad",
+  "name": "Piano Ballad — wide dynamics",
+  "version": "1.0.0",
+  "description": "Piano-led ballad — sparse piano, soft strings pad, intimate female vocal. Wide LRA target.",
+  "source": {
+    "type": "synthetic-recipe",
+    "recipe": "multitrack-mix",
+    "params": {
+      "durationSec": 30,
+      "tracks": [
+        { "kind": "synth-pad",  "chordHz": [220, 261.63, 329.63, 392], "gainDb": -18 },
+        { "kind": "soft-piano", "phraseHz": [261.63, 329.63, 392, 523, 440, 392, 329.63], "gainDb": -10, "decay": 0.7 },
+        { "kind": "string-pad", "chordHz": [110, 165, 220], "gainDb": -22, "hpfHz": 200 },
+        { "kind": "lead-vocal", "centerHz": 750, "vibratoHz": 5.5, "phraseHz": [261.63, 311, 392, 466, 440, 349], "gainDb": -14 }
+      ],
+      "preMasterTrimDb": -6.0,
+      "dynamicEnvelope": "ballad-quiet-loud-quiet"
+    }
+  },
+  "characteristics": {
+    "durationSec": 30,
+    "sampleRate": 44100,
+    "bitDepth": 24,
+    "channels": 2,
+    "preMasterLufsI": -23,
+    "tags": ["ballad", "piano", "female-vocal", "wide-lra", "intimate"]
+  },
+  "referenceMaster": {
+    "available": false,
+    "targetMetrics": {
+      "lufsI": -14.0,
+      "tpMaxDb": -1.0,
+      "lraMinLu": 8.0,
+      "lraMaxLu": 14.0,
+      "crestDb": 10.0,
+      "rationale": "Ballad / acoustic streaming target — preserve dynamic emotion."
+    }
+  },
+  "recommendedPresetId": "builtin-warm",
+  "policy": {
+    "lufsToleranceLu": 1.0,
+    "tpHardCeiling": true,
+    "spectrumMaxDeltaMaxDb": 8.0
+  }
+}

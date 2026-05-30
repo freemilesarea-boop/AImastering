@@ -7,6 +7,16 @@ import {
   buildSupportBundle,
   supportBundleToJson,
 } from '../utils/supportBundle.js';
+import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
+import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
+
+const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
+  wav:  { name: 'WAV Audio',  extensions: ['wav'] },
+  flac: { name: 'FLAC Audio', extensions: ['flac'] },
+  mp3:  { name: 'MP3 Audio',  extensions: ['mp3'] },
+  aiff: { name: 'AIFF Audio', extensions: ['aiff', 'aif'] },
+  ogg:  { name: 'OGG Audio',  extensions: ['ogg'] },
+};
 
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   // ── Open file picker (single) ─────────────────────────────────────────
@@ -68,6 +78,65 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
   });
 
+  // ── Save audio with optional transcode (M3-P-NEXT-5D-2-d) ────────────
+  // NEW channel — file:save-wav above is untouched.  Saves a source WAV
+  // to a user location, transcoding to the chosen format / quality /
+  // dither via ffmpeg when needed.  Returns a typed response (never
+  // throws) so the renderer handles cancel / warning / error uniformly.
+  ipc.handle('file:save-audio', async (_e, req: SaveAudioRequest): Promise<SaveAudioResponse> => {
+    const t0 = Date.now();
+    if (!win || !req?.sourcePath || !req?.format) {
+      return { savedPath: null, error: 'invalid request' };
+    }
+    const filter = FORMAT_FILTERS[req.format];
+    if (!filter) return { savedPath: null, error: `unsupported format: ${req.format}` };
+
+    const sourceExt = path.extname(req.sourcePath).replace('.', '');
+    const spec = {
+      format: req.format,
+      sampleRate: req.sampleRate,
+      bitDepth: req.bitDepth,
+      dither: req.dither,
+    };
+
+    try {
+      // Save dialog with a default name in the target extension.
+      const defaultBase = (req.suggestedName ?? path.basename(req.sourcePath, path.extname(req.sourcePath)))
+        .replace(/\.[^.]+$/, '');
+      const result = await dialog.showSaveDialog(win, {
+        defaultPath: `${defaultBase}.${filter.extensions[0]}`,
+        filters: [filter],
+      });
+      if (result.canceled || !result.filePath) {
+        return { savedPath: null };   // user cancelled
+      }
+      const dest = result.filePath;
+
+      if (!needsTranscode(sourceExt, spec)) {
+        // WAV passthrough — plain copy (no ffmpeg).
+        fs.copyFileSync(req.sourcePath, dest);
+        return { savedPath: dest, format: req.format, transcoded: false, durationMs: Date.now() - t0 };
+      }
+
+      // Transcode to a temp file, then copy to the chosen destination.
+      const { outputPath: tmp, warning } = await transcodeToTemp(req.sourcePath, spec);
+      try {
+        fs.copyFileSync(tmp, dest);
+      } finally {
+        try { fs.unlinkSync(tmp); } catch { /* temp already gone */ }
+      }
+      return {
+        savedPath: dest, format: req.format, transcoded: true,
+        durationMs: Date.now() - t0,
+        ...(warning ? { warning } : {}),
+      };
+    } catch (err) {
+      const msg = (err as Error).message;
+      recordFailure('export', `file:save-audio failed: ${msg}`, { format: req.format, sourcePath: req.sourcePath });
+      return { savedPath: null, error: msg };   // dest never written; source intact
+    }
+  });
+
   // ── Support bundle (v3.6 QA) ─────────────────────────────────────────
   // Returns the JSON snapshot in-memory.  No filesystem write — the
   // renderer can copy to clipboard or hand off to the export helper.
@@ -117,23 +186,57 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   });
 
   // ── File info ─────────────────────────────────────────────────────────
-  ipc.handle('file:get-info', (_e, filePath: string) => {
-    const stat = fs.statSync(filePath);
-    return {
-      path:      filePath,
-      name:      path.basename(filePath),
-      sizeBytes: stat.size,
-    };
+  // Renderer-supplied paths are untrusted — even though Electron's IPC
+  // boundary is private, defence-in-depth blocks obvious abuse (null-byte
+  // injection, non-absolute paths, non-files).  Returning metadata for
+  // arbitrary system files is the only thing this handler can leak, but we
+  // refuse to participate in path-traversal probing all the same.
+  ipc.handle('file:get-info', (_e, filePath: unknown) => {
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      throw new Error('file:get-info: filePath must be a non-empty string');
+    }
+    if (filePath.includes('\0')) {
+      throw new Error('file:get-info: null byte in path');
+    }
+    const resolved = path.resolve(filePath);
+    if (!path.isAbsolute(resolved)) {
+      throw new Error('file:get-info: path must resolve to an absolute location');
+    }
+    try {
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile()) {
+        throw new Error('file:get-info: not a regular file');
+      }
+      return {
+        path:      resolved,
+        name:      path.basename(resolved),
+        sizeBytes: stat.size,
+      };
+    } catch (err) {
+      recordFailure('export', `file:get-info failed: ${(err as Error).message}`);
+      throw err;
+    }
   });
 
   // ── Reveal in Finder / Explorer ───────────────────────────────────────
-  // Special token 'logs' resolves to the app log directory.
-  ipc.handle('file:open-in-finder', (_e, filePath: string) => {
-    const resolved = filePath === 'logs'
-      ? path.join(app.getPath('userData'), 'logs')
-      : filePath;
-    // Ensure the directory exists before trying to reveal it
-    if (!fs.existsSync(resolved)) fs.mkdirSync(resolved, { recursive: true });
+  // Special token 'logs' resolves to (and may create) the app log directory.
+  // Any other value must be a real existing path; we DO NOT mkdir arbitrary
+  // renderer-supplied paths (that would let the renderer scatter empty
+  // directories anywhere on the filesystem).
+  ipc.handle('file:open-in-finder', (_e, filePath: unknown) => {
+    if (typeof filePath !== 'string' || filePath.length === 0 || filePath.includes('\0')) {
+      throw new Error('file:open-in-finder: invalid path');
+    }
+    if (filePath === 'logs') {
+      const logDir = path.join(app.getPath('userData'), 'logs');
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+      shell.showItemInFolder(logDir);
+      return;
+    }
+    const resolved = path.resolve(filePath);
+    if (!fs.existsSync(resolved)) {
+      throw new Error('file:open-in-finder: path does not exist');
+    }
     shell.showItemInFolder(resolved);
   });
 
@@ -163,4 +266,65 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
   // ── Recent files (v1 stub) ────────────────────────────────────────────
   ipc.handle('file:get-recent', () => []);
+
+  // ── Session save / load (.louisession) ────────────────────────────────
+
+  ipc.handle('session:save', async (_e, sessionData: string) => {
+    if (!win) return null;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `loui-session-${stamp}.louisession`,
+      filters: [
+        { name: 'Loui Session', extensions: ['louisession'] },
+        { name: 'JSON',         extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, sessionData, 'utf8');
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `session:save failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('session:load', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [
+        { name: 'Loui Session', extensions: ['louisession', 'json'] },
+      ],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const chosen = result.filePaths[0];
+    try {
+      const data = fs.readFileSync(chosen, 'utf8');
+      // Validate JSON shape here so a corrupted .louisession can't crash
+      // the renderer with a thrown SyntaxError during JSON.parse().  We
+      // only check that the top-level value is a non-null object; the
+      // renderer is still responsible for schema-level validation of the
+      // specific session fields it consumes.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(data);
+      } catch (err) {
+        const msg = (err as Error).message;
+        recordFailure('session', `session:load invalid JSON: ${msg}`, { path: chosen });
+        throw new Error(`Session file is not valid JSON: ${msg}`);
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        recordFailure('session', 'session:load JSON root is not an object', { path: chosen });
+        throw new Error('Session file root must be a JSON object');
+      }
+      return { path: chosen, data };
+    } catch (err) {
+      // Don't double-record JSON-parse failures (already recorded above).
+      if (!/JSON|object/.test((err as Error).message)) {
+        recordFailure('session', `session:load failed: ${(err as Error).message}`);
+      }
+      throw err;
+    }
+  });
 }

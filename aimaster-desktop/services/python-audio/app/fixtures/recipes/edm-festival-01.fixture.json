@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schemas.loui.studio/fixture/v1",
+  "id": "edm-festival-01",
+  "category": "edm",
+  "name": "EDM Festival Drop",
+  "version": "1.0.0",
+  "description": "EDM-style festival mix — 4-on-the-floor kick, sidechain-style pumping pad, wide stereo synths.",
+  "source": {
+    "type": "synthetic-recipe",
+    "recipe": "multitrack-mix",
+    "params": {
+      "durationSec": 24,
+      "tracks": [
+        { "kind": "kick",      "freqHz": 60,   "rateHz": 2.16, "decay": 0.18, "gainDb": -6 },
+        { "kind": "sub-bass",  "freqHz": 50,   "noteHz": [55, 65, 73, 82, 92], "gainDb": -10, "sidechainHz": 2.16 },
+        { "kind": "synth-pad", "chordHz": [220, 261.63, 329.63], "gainDb": -14, "sidechainHz": 2.16, "stereoOffsetMs": 12 },
+        { "kind": "lead-synth","centerHz": 600, "vibratoHz": 6, "phraseHz": [392, 440, 523, 587], "gainDb": -12, "stereoOffsetMs": 8 },
+        { "kind": "hi-hat",    "hpfHz": 7000, "rateHz": 8.64, "gainDb": -18 },
+        { "kind": "air-shimmer","centerHz": 12000, "gainDb": -22 }
+      ],
+      "preMasterTrimDb": -1.5
+    }
+  },
+  "characteristics": {
+    "durationSec": 24,
+    "sampleRate": 44100,
+    "bitDepth": 24,
+    "channels": 2,
+    "preMasterLufsI": -16,
+    "tags": ["edm", "festival", "wide", "sidechain", "loud"]
+  },
+  "referenceMaster": {
+    "available": false,
+    "targetMetrics": {
+      "lufsI": -8.0,
+      "tpMaxDb": -1.0,
+      "lraMinLu": 3.0,
+      "lraMaxLu": 6.0,
+      "crestDb": 6.0,
+      "rationale": "EDM club / festival reference — high loudness, controlled dynamics."
+    }
+  },
+  "recommendedPresetId": "builtin-loud",
+  "policy": {
+    "lufsToleranceLu": 0.8,
+    "tpHardCeiling": true,
+    "spectrumMaxDeltaMaxDb": 8.0
+  }
+}

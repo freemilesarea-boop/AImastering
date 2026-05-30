@@ -5,12 +5,12 @@
  * Reads progress % from audioStore (set by AnalysisPage's IPC listener).
  * On error: shows error-type-specific card with conditional retry button.
  */
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore, toStructuredError } from '../stores/audioStore.js';
 import type { StructuredError } from '../stores/audioStore.js';
-import type { MasteringResult } from '@aimaster/shared-types';
+import type { MasteringResult, AudioAnalysisResult } from '@aimaster/shared-types';
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
 
@@ -134,54 +134,154 @@ function ErrorCard({
 
 // ── MasteringPage ─────────────────────────────────────────────────────────────
 
+// Hard cap to prevent the user from sitting on a frozen progress bar forever.
+// The Python pipeline normally completes in <60s; 180s is a deliberate ceiling.
+const MASTERING_TIMEOUT_MS = 180_000;
+
 export default function MasteringPage() {
-  const setPage            = useAppStore((s) => s.setPage);
-  const notify             = useAppStore((s) => s.notify);
-  const {
-    selectedFile, analysis, options,
-    progress, isMastering, error,
-    setIsMastering, setProgress, setError, setMasteringResult,
-  } = useAudioStore();
+  const setPage         = useAppStore((s) => s.setPage);
+  const notify          = useAppStore((s) => s.notify);
+  const selectedFile    = useAudioStore((s) => s.selectedFile);
+  const analysis        = useAudioStore((s) => s.analysis);
+  const options         = useAudioStore((s) => s.options);
+  const progress        = useAudioStore((s) => s.progress);
+  const isMastering     = useAudioStore((s) => s.isMastering);
+  const error           = useAudioStore((s) => s.error);
+  const setIsMastering  = useAudioStore((s) => s.setIsMastering);
+  const setProgress     = useAudioStore((s) => s.setProgress);
+  const setError        = useAudioStore((s) => s.setError);
+  const setMasteringResult = useAudioStore((s) => s.setMasteringResult);
+  const setAnalysis     = useAudioStore((s) => s.setAnalysis);
 
   const fileName = analysis?.fileInfo.name ?? selectedFile?.split('/').pop() ?? '…';
 
-  // ── Retry handler ─────────────────────────────────────────────────────
-  const handleRetry = useCallback(async () => {
-    if (!selectedFile) { setPage('home'); return; }
+  // ── Core mastering runner ─────────────────────────────────────────────
+  // Returns true on success, false on error.  Encapsulates the IPC dance so
+  // both the auto-start effect and the retry button share one code path.
+  const runMastering = useCallback(async () => {
+    if (!selectedFile) {
+      // eslint-disable-next-line no-console
+      console.warn('[MasteringPage] startMastering called without selectedFile');
+      setError({
+        code: 'UNKNOWN',
+        userMessage: '선택된 파일이 없습니다.',
+        devDetail: 'selectedFile is null at MasteringPage mount',
+        recoverable: false,
+      });
+      setPage('home');
+      return;
+    }
+
+    // eslint-disable-next-line no-console
+    console.log('[MasteringPage] startMastering called — file:', selectedFile);
 
     setIsMastering(true);
     setError(null);
+    setProgress(0, '파일 검사');
 
-    const cleanupProgress = window.electronAPI.on('audio:progress', (msg: unknown) => {
+    const cleanupProgress = window.electronAPI!.on('audio:progress', (msg: unknown) => {
       const m = msg as { percent: number; stage: string };
       setProgress(m.percent, m.stage);
     });
 
+    // Hard timeout that races against the IPC promise.
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        // eslint-disable-next-line no-console
+        console.error('[MasteringPage] timeout fallback — IPC exceeded', MASTERING_TIMEOUT_MS, 'ms');
+        reject(new Error('엔진 응답이 없습니다. 다시 시도해주세요.'));
+      }, MASTERING_TIMEOUT_MS);
+    });
+
     try {
-      const result = await window.electronAPI.invoke(
-        'audio:master',
-        selectedFile,
-        '',
-        {
-          style:              options.style,
-          targetLufs:         options.targetLufs,
-          targetTp:           options.targetTp,
-          sampleRate:         options.sampleRate,
-          bitDepth:           options.bitDepth,
-          applyAiCorrections: options.applyAiCorrections,
-        },
-      ) as MasteringResult;
+      // Run analyze if missing — main process needs preLoudness for full pipeline.
+      let analysisToUse = analysis;
+      if (!analysisToUse) {
+        // eslint-disable-next-line no-console
+        console.log('[MasteringPage] ipc invoke start — audio:analyze');
+        analysisToUse = await Promise.race([
+          window.electronAPI!.invoke('audio:analyze', selectedFile) as Promise<AudioAnalysisResult>,
+          timeoutPromise,
+        ]);
+        setAnalysis(analysisToUse);
+        // eslint-disable-next-line no-console
+        console.log('[MasteringPage] ipc success — analyze done');
+      }
+
+      // eslint-disable-next-line no-console
+      console.log('[MasteringPage] ipc invoke start — audio:master');
+      const result = await Promise.race([
+        window.electronAPI!.invoke(
+          'audio:master',
+          selectedFile,
+          '',
+          {
+            style:              options.style,
+            targetLufs:         options.targetLufs,
+            targetTp:           options.targetTp,
+            sampleRate:         options.sampleRate,
+            bitDepth:           options.bitDepth,
+            applyAiCorrections: options.applyAiCorrections,
+            limiterStrength:    options.limiterStrength,
+            saturationAmount:   options.saturationAmount,
+            stereoWidth:        options.stereoWidth,
+            outputGainDb:       options.outputGainDb,
+            aiDetections:       analysisToUse?.aiDetection ?? {},
+          },
+          { preLoudness: analysisToUse?.loudness },
+        ) as Promise<MasteringResult>,
+        timeoutPromise,
+      ]);
+      // eslint-disable-next-line no-console
+      console.log('[MasteringPage] ipc success — master done, outputPath:', result.outputPath);
+
       setMasteringResult(result);
+      setProgress(100, '완료');
       setPage('result');
     } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[MasteringPage] ipc error:', err);
       const structured = toStructuredError(err);
       setError(structured);
       notify(structured.userMessage, 'error');
     } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       cleanupProgress();
       setIsMastering(false);
     }
-  }, [selectedFile, options, setIsMastering, setError, setProgress, setMasteringResult, setPage, notify]);
+  }, [selectedFile, analysis, options, setIsMastering, setError, setProgress, setMasteringResult, setAnalysis, setPage, notify]);
+
+  // ── Auto-start on mount (StrictMode-safe) ─────────────────────────────
+  // React 18 StrictMode double-invokes effects in dev; the ref guard makes
+  // sure we only spawn one IPC pipeline regardless.
+  //
+  // We keep a ref to the latest `runMastering` so the start-once effect
+  // doesn't need to list `runMastering` (which would re-run on every option
+  // change) in its deps.  The retry button still picks up the latest
+  // closure because it references `runMastering` directly.
+  const startedRef = useRef(false);
+  const runMasteringRef = useRef(runMastering);
+  useEffect(() => { runMasteringRef.current = runMastering; }, [runMastering]);
+
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[MasteringPage] render entered — selectedFile:', selectedFile, 'startedRef:', startedRef.current);
+    if (startedRef.current) return;
+    if (!selectedFile) {
+      // eslint-disable-next-line no-console
+      console.warn('[MasteringPage] missing selectedFile -> fallback home');
+      setPage('home');
+      return;
+    }
+    startedRef.current = true;
+    void runMasteringRef.current();
+  }, [selectedFile, setPage]);
+
+  const handleRetry = useCallback(() => {
+    startedRef.current = true;
+    void runMastering();
+  }, [runMastering]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">

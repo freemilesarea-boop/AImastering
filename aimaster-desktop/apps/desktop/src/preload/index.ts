@@ -4,19 +4,34 @@ import type { IpcRendererEvent } from 'electron';
 const INVOKE_CHANNELS = [
   // Audio
   'audio:analyze', 'audio:master', 'audio:qc',
+  // Preview re-render (M3-P-NEXT-5C) — reuses the existing master path
+  // with an options override.  Product-layout flag gates the renderer
+  // caller; the channel itself is always registered.
+  'audio:re-render-preview',
+  // Rust offline render (RUST-OFFLINE-RENDER-1) — same Rust MasteringChain
+  // as the realtime preview, used by the "새 버전 만들기" path when the
+  // rust-offline flag is ON (default).  Free parametric EQ bands flow
+  // through here (Phase 3b).
+  'audio:master-rust-experimental',
   // License IPC channels REMOVED (v3.6.0-rc.1+1) — license gate disabled
   // for the internal RC test cycle; the renderer no longer invokes these
   // and the main process no longer registers them.
   // Files
   'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
   'file:batch-save-wav',
+  // Save with transcode (M3-P-NEXT-5D-2-d) — separate from file:save-wav
+  'file:save-audio',
   'file:get-info', 'file:open-in-finder', 'file:get-recent',
   // Settings
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // System
   'system:ffmpeg-status',
+  // Worklet/WASM asset reader (packaged file:// + asar safe)
+  'loui:read-worklet-asset',
   // Support bundle (v3.6 QA)
   'support:bundle', 'support:bundle-export', 'support:record-failure',
+  // Session save / load (.louisession)
+  'session:save', 'session:load',
   // Updater (v3.4.3)
   'updater:check', 'updater:download', 'updater:quit-and-install',
   'updater:get-status',
@@ -47,6 +62,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   platform: process.platform,
   version:  process.env['npm_package_version'] ?? '1.0.0',
+});
+
+// ── Worklet/WASM asset bridge (packaged file:// + asar safe) ──────────────
+// Lets the renderer load AudioWorklet + WASM assets via the main process
+// (Node fs reads inside app.asar), bypassing Chromium's file:// fetch
+// restrictions in the packaged app.
+contextBridge.exposeInMainWorld('louiAssets', {
+  read: (name: string) => ipcRenderer.invoke('loui:read-worklet-asset', name),
 });
 
 // ── Dedicated `window.updater` namespace (v3.4.3) ─────────────────────────────

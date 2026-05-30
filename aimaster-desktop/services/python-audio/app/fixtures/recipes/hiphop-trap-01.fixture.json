@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schemas.loui.studio/fixture/v1",
+  "id": "hiphop-trap-01",
+  "category": "hiphop",
+  "name": "HipHop Trap",
+  "version": "1.0.0",
+  "description": "Trap-style mix — 808 sub-bass, snappy snare, rapid hi-hat pattern, sparse top end.",
+  "source": {
+    "type": "synthetic-recipe",
+    "recipe": "multitrack-mix",
+    "params": {
+      "durationSec": 25,
+      "tracks": [
+        { "kind": "kick",      "freqHz": 55,   "rateHz": 1.5,  "decay": 0.25, "gainDb": -7 },
+        { "kind": "sub-bass",  "freqHz": 45,   "noteHz": [49, 55, 41, 65], "gainDb": -8, "decay": 0.7 },
+        { "kind": "soft-snare","centerHz": 250, "rateHz": 1.0, "gainDb": -10 },
+        { "kind": "hi-hat",    "hpfHz": 6500, "rateHz": 12.0, "gainDb": -16 },
+        { "kind": "lead-vocal","centerHz": 280, "vibratoHz": 4, "phraseHz": [196, 220, 247, 277], "gainDb": -13 }
+      ],
+      "preMasterTrimDb": -3.0
+    }
+  },
+  "characteristics": {
+    "durationSec": 25,
+    "sampleRate": 44100,
+    "bitDepth": 24,
+    "channels": 2,
+    "preMasterLufsI": -18,
+    "tags": ["hiphop", "trap", "808", "male-vocal", "loud"]
+  },
+  "referenceMaster": {
+    "available": false,
+    "targetMetrics": {
+      "lufsI": -10.0,
+      "tpMaxDb": -1.0,
+      "lraMinLu": 4.0,
+      "lraMaxLu": 8.0,
+      "crestDb": 7.0,
+      "rationale": "HipHop modern streaming target — punch + dynamic vocal."
+    }
+  },
+  "recommendedPresetId": "builtin-punch",
+  "policy": {
+    "lufsToleranceLu": 0.8,
+    "tpHardCeiling": true,
+    "spectrumMaxDeltaMaxDb": 8.0
+  }
+}

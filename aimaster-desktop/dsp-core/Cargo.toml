@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "crates/loui-dsp",
+    "crates/loui-dsp-wasm",
+    "crates/loui-dsp-node",
+]
+resolver = "2"
+
+# Profile settings shared across the workspace.  Realtime DSP needs
+# predictable performance — opt-level=3 in release, no LTO to keep
+# compile times reasonable for fast iteration.
+[profile.release]
+opt-level = 3
+debug = false
+lto = false
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+opt-level = 3
+debug = false
+lto = false
+codegen-units = 1

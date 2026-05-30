@@ -20,7 +20,7 @@
  * time of the most recent slice (dev metric, sub-second on any
  * modern machine).
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   PreviewPlayer,
   PreviewPlayerState,

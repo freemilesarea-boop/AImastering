@@ -6,6 +6,14 @@ import type {
   MasteringStyle,
   LimiterStrength,
 } from '@aimaster/shared-types';
+import type { RevisionGroup, RevisionInput } from '../audio/revisions/revision-types.js';
+import {
+  addRevision as addRevisionToGroup,
+  setActiveRevision as setActiveInGroup,
+  removeRevision as removeFromGroup,
+  renameRevision as renameInGroup,
+  toggleFavorite as toggleFavoriteInGroup,
+} from '../audio/revisions/revision-logic.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -94,6 +102,8 @@ export interface QueueItem {
   error?: StructuredError;
   progress: number;
   progressStage: string;
+  /** Per-file Loui preset override (undefined = use the global options). */
+  presetId: string | undefined;
 }
 
 export const MAX_QUEUE_SIZE = 20;
@@ -166,6 +176,32 @@ interface AudioStore {
   /** Advanced Settings 패널 펼침 여부 */
   showAdvanced: boolean;
   setShowAdvanced: (v: boolean) => void;
+
+  // ── Reference track for A/B comparison ────────────────────────────────
+  /** Absolute path to a user-loaded reference audio file (null = none). */
+  referenceFilePath: string | null;
+  setReferenceFile: (path: string | null) => void;
+  /**
+   * Integrated LUFS of the reference track measured via audio:analyze.
+   * null = reference loaded but measurement still in progress (LU comp disabled).
+   * undefined-like state = no reference (referenceFilePath is null).
+   */
+  referenceLufs: number | null;
+  setReferenceLufs: (lufs: number | null) => void;
+
+  // ── Revision workflow (M3-REVISION-WORKFLOW) ───────────────────────────
+  /** Multiple mastering versions of the active source file.  null = none. */
+  revisionGroup: RevisionGroup | null;
+  /** Append a revision (becomes active).  Starts a group if needed / source changed. */
+  addRevision: (input: RevisionInput) => void;
+  /** Select an existing revision as active. */
+  setActiveRevision: (id: string) => void;
+  /** Remove a revision (never the last; source untouched). */
+  removeRevision: (id: string) => void;
+  renameRevision: (id: string, label: string) => void;
+  toggleRevisionFavorite: (id: string) => void;
+  /** Clear the revision group (e.g. on new source / queue clear). */
+  clearRevisions: () => void;
 }
 
 function baseName(p: string): string {
@@ -187,9 +223,10 @@ export const useAudioStore = create<AudioStore>((set) => ({
         id:            crypto.randomUUID(),
         filePath:      p,
         fileName:      baseName(p),
-        status:        'pending',
+        status:        'pending' as const,
         progress:      0,
         progressStage: '',
+        presetId:      undefined,
       }));
     return { queue: [...s.queue, ...newItems] };
   }),
@@ -198,7 +235,7 @@ export const useAudioStore = create<AudioStore>((set) => ({
     queue: s.queue.filter((i) => i.id !== id),
   })),
 
-  clearQueue: () => set({ queue: [] }),
+  clearQueue: () => set({ queue: [], revisionGroup: null }),
 
   updateQueueItem: (id, updates) => set((s) => ({
     queue: s.queue.map((item) =>
@@ -230,8 +267,24 @@ export const useAudioStore = create<AudioStore>((set) => ({
   setError:           (err)        => set({ error: err }),
   setStyle:           (style)      => set((s) => ({ options: { ...s.options, style, quickPreset: undefined } })),
   updateOptions:      (patch)      => set((s) => ({ options: { ...s.options, ...patch } })),
-  reset:              ()           => set({ selectedFile: null, analysis: null, masteringResult: null, qcResult: null, error: null, progress: 0, progressStage: '', queue: [], isBatchRunning: false }),
+  reset:              ()           => set({ selectedFile: null, analysis: null, masteringResult: null, qcResult: null, error: null, progress: 0, progressStage: '', queue: [], isBatchRunning: false, revisionGroup: null }),
 
   showAdvanced:       false,
   setShowAdvanced:    (v)          => set({ showAdvanced: v }),
+
+  // ── Reference track ─────────────────────────────────────────────────
+  referenceFilePath: null,
+  // Clear referenceLufs whenever the reference file is removed.
+  setReferenceFile: (path) => set({ referenceFilePath: path, ...(path === null ? { referenceLufs: null } : {}) }),
+  referenceLufs: null,
+  setReferenceLufs: (lufs) => set({ referenceLufs: lufs }),
+
+  // ── Revision workflow ────────────────────────────────────────────────
+  revisionGroup: null,
+  addRevision:          (input)    => set((s) => ({ revisionGroup: addRevisionToGroup(s.revisionGroup, input) })),
+  setActiveRevision:    (id)       => set((s) => ({ revisionGroup: s.revisionGroup ? setActiveInGroup(s.revisionGroup, id) : s.revisionGroup })),
+  removeRevision:       (id)       => set((s) => ({ revisionGroup: s.revisionGroup ? removeFromGroup(s.revisionGroup, id) : s.revisionGroup })),
+  renameRevision:       (id, l)    => set((s) => ({ revisionGroup: s.revisionGroup ? renameInGroup(s.revisionGroup, id, l) : s.revisionGroup })),
+  toggleRevisionFavorite: (id)     => set((s) => ({ revisionGroup: s.revisionGroup ? toggleFavoriteInGroup(s.revisionGroup, id) : s.revisionGroup })),
+  clearRevisions:       ()         => set({ revisionGroup: null }),
 }));

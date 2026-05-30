@@ -3,14 +3,20 @@ import { useAppStore } from './stores/appStore.js';
 // License gate disabled for the internal RC (v3.6.0-rc.1+1) — license
 // store / modal imports removed.  See main/index.ts header.
 import HomePage     from './pages/HomePage.js';
-import AnalysisPage from './pages/AnalysisPage.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
+import TweakPage    from './pages/TweakPage.js';
 import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
+
+// Dev-only: analyzer streaming smoke route — only on ?dev=analyzer-stream URL.
+// Named export → wrap in a default-export shim for React.lazy.
+const DevAnalyzerStreamPage = React.lazy(() =>
+  import('./pages/DevAnalyzerStreamPage.js').then((m) => ({ default: m.DevAnalyzerStreamPage }))
+);
 
 // ── Toast notification ────────────────────────────────────────────────────────
 
@@ -43,7 +49,7 @@ function NoApiUI() {
     <div style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       justifyContent: 'center', height: '100vh',
-      background: '#09090b', color: '#e4e4e7',
+      background: '#13131A', color: '#e4e4e7',
       fontFamily: 'ui-sans-serif, system-ui, sans-serif',
       gap: '1.5rem', padding: '2rem',
     }}>
@@ -198,8 +204,10 @@ export default function App() {
   const hasAPI = Boolean(window.electronAPI);
 
   useEffect(() => {
+    // eslint-disable-next-line no-console
     console.log('[App] mounted. window.electronAPI available:', hasAPI);
     if (!hasAPI) {
+      // eslint-disable-next-line no-console
       console.warn('[App] electronAPI is undefined. Preload did not run. Check: 1) dist-electron/preload/index.js 존재 여부 2) CSP 3) sandbox 설정');
     }
   }, [hasAPI]);
@@ -211,19 +219,64 @@ export default function App() {
 
 function AppInner() {
   const page = useAppStore((s) => s.currentPage);
+  const setPage = useAppStore((s) => s.setPage);
+  const selectedFile = useAudioStore((s) => s.selectedFile);
+  const masteringResult = useAudioStore((s) => s.masteringResult);
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
+  }, []);
+
+  // Defensive redirects — bounce to home when a page is reached without
+  // the data it requires.  Runs synchronously after every render so the
+  // bad route never actually displays.
+  useEffect(() => {
+    if (page === 'result' && !(selectedFile && masteringResult?.outputPath)) {
+      // eslint-disable-next-line no-console
+      console.warn('[AppInner] page=result with no result data — redirecting to home');
+      setPage('home');
+    }
+    if (page === 'tweak' && !selectedFile) {
+      // eslint-disable-next-line no-console
+      console.warn('[AppInner] page=tweak with no selectedFile — redirecting to home');
+      setPage('home');
+    }
+  }, [page, selectedFile, masteringResult, setPage]);
+
+  // Dev-only: route via URL query so the analyzer-stream smoke page can
+  // be reached without touching the appStore page enum.  Production
+  // navigation never lands here.
+  const isDevRoute =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('dev') === 'analyzer-stream';
+
+  // result: requires a completed mastering session (selectedFile + outputPath).
+  // ProductPage / ProductPageErrorBoundary / isProductLayoutEnabled used to
+  // gate this slot but were retired when ResultPage became the canonical
+  // result screen — see the WASM panic recovery in the redesign branch.
+  const hasResultData = Boolean(selectedFile && masteringResult?.outputPath);
+  const resultSlot = hasResultData ? <ResultPage /> : <HomePage />;
+
+  // tweak: source-only preview — selectedFile required, masteringResult NOT required.
+  // TweakPage is a dedicated lightweight component; it never loads the heavy
+  // ProductPage audio graph so it can't crash on null masteringResult.
+  const tweakSlot = Boolean(selectedFile) ? <TweakPage /> : <HomePage />;
 
   const pages: Record<string, React.ReactNode> = {
     home:      <HomePage />,
-    analysis:  <AnalysisPage />,
     mastering: <MasteringPage />,
-    result:    <ResultPage />,
+    result:    resultSlot,
+    tweak:     tweakSlot,
     qc:        <QCPage />,
     settings:  <SettingsPage />,
   };
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      {pages[page] ?? <HomePage />}
+      {isDevRoute
+        ? <React.Suspense fallback={null}><DevAnalyzerStreamPage /></React.Suspense>
+        : (pages[page] ?? <HomePage />)
+      }
 
       {/* Creator watermark — fixed bottom-left */}
       <div className="fixed bottom-3 left-4 pointer-events-none select-none z-10">

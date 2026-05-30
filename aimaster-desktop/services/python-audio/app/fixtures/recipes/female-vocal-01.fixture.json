@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schemas.loui.studio/fixture/v1",
+  "id": "female-vocal-01",
+  "category": "female-vocal",
+  "name": "Female Lead Vocal — pop",
+  "version": "1.0.0",
+  "description": "Pop-style female lead vocal with light backing — vocal-band emphasis at 1-3 kHz, sibilance at 6-8 kHz.",
+  "source": {
+    "type": "synthetic-recipe",
+    "recipe": "multitrack-mix",
+    "params": {
+      "durationSec": 25,
+      "tracks": [
+        { "kind": "lead-vocal",  "centerHz": 900, "vibratoHz": 5.5, "phraseHz": [440, 523, 587, 659, 587, 494], "gainDb": -8 },
+        { "kind": "vocal-sibilance", "centerHz": 7000, "rateHz": 0.6, "gainDb": -18 },
+        { "kind": "synth-pad",   "chordHz": [220, 277, 329], "gainDb": -22 },
+        { "kind": "soft-piano",  "phraseHz": [261.63, 311, 392], "gainDb": -20 }
+      ],
+      "preMasterTrimDb": -5.0
+    }
+  },
+  "characteristics": {
+    "durationSec": 25,
+    "sampleRate": 44100,
+    "bitDepth": 24,
+    "channels": 2,
+    "preMasterLufsI": -21,
+    "tags": ["female-vocal", "pop", "presence", "sibilance-present"]
+  },
+  "referenceMaster": {
+    "available": false,
+    "targetMetrics": {
+      "lufsI": -14.0,
+      "tpMaxDb": -1.0,
+      "lraMinLu": 6.0,
+      "lraMaxLu": 10.0,
+      "crestDb": 9.0,
+      "rationale": "Vocal-forward streaming master — preserve diction, tame sibilance."
+    }
+  },
+  "recommendedPresetId": "builtin-bright",
+  "policy": {
+    "lufsToleranceLu": 0.8,
+    "tpHardCeiling": true,
+    "spectrumMaxDeltaMaxDb": 8.0
+  }
+}

@@ -14,6 +14,10 @@ apps/desktop/release/
 # prebuild.cjs writes ffmpeg/ffprobe binaries here (~80 MB each)
 apps/desktop/public/bin/
 
+# no-modules wasm-bindgen staging (intermediate; worklet assets are
+# copied into apps/desktop/src/renderer/public/ by build-wasm-worklet.sh)
+packages/dsp-wasm/pkg-worklet/
+
 # Python
 __pycache__/
 *.pyc

@@ -29,6 +29,7 @@ export type FailureCategory =
   | 'export'         // TXT / JSON / WAV / MP3 export
   | 'pipeline'       // mastering pipeline warnings escalated to errors
   | 'license'        // license verification / HMAC failures
+  | 'session'        // session save / load (workspace state)
   | 'unknown';
 
 export interface FailureEntry {
@@ -110,6 +111,7 @@ const buckets: Record<FailureCategory, FailureEntry[]> = {
   export:   [],
   pipeline: [],
   license:  [],
+  session:  [],
   unknown:  [],
 };
 
@@ -156,7 +158,7 @@ export function snapshotFailures(): FailureEntry[] {
 export function failureCounts(): Record<FailureCategory, number> {
   const c: Record<FailureCategory, number> = {
     preview: 0, worklet: 0, ffmpeg: 0, engine: 0, export: 0,
-    pipeline: 0, license: 0, unknown: 0,
+    pipeline: 0, license: 0, session: 0, unknown: 0,
   };
   for (const cat of Object.keys(buckets) as FailureCategory[]) {
     c[cat] = buckets[cat].length;

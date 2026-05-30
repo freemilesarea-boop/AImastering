@@ -4,9 +4,13 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Dark background token used in global CSS
+        // Charcoal surface ladder (DESIGN-POLISH-2) — pure black removed.
+        // 950 app background · 900 main panel · 800 elevated · 700 subtle.
         surface: {
-          950: '#09090b',
+          950: '#13131A',
+          900: '#1A1A24',
+          800: '#222230',
+          700: '#2A2A36',
         },
       },
       fontFamily: {

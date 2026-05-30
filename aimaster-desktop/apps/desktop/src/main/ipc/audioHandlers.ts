@@ -15,12 +15,34 @@ import { v4 as uuidv4 } from 'uuid';import {
   unknownError,
   pathEncodingError,
 } from '@aimaster/audio-engine';
-import type { MasteringOptions, LoudnessStats } from '@aimaster/shared-types';
+import type {
+  MasteringOptions,
+  LoudnessStats,
+  PreviewRenderRequest,
+  PreviewRenderResponse,
+} from '@aimaster/shared-types';
 import { log } from '../utils/logger.js';
 import { recordFailure } from '../utils/failureLog.js';
 import { recordPipelineWarning } from '../utils/supportBundle.js';
 
 let bridge: PythonBridge | null = null;
+
+/**
+ * Forcefully terminate the Python engine subprocess if one is alive.
+ * Called from main/index.ts on `before-quit` so the engine doesn't outlive
+ * the app as a zombie process.
+ */
+export function killBridge(): void {
+  if (!bridge) return;
+  try {
+    // PythonBridge.kill is best-effort — it sends SIGTERM, then SIGKILL.
+    // If the engine has already exited the call is a no-op.
+    bridge.kill();
+  } catch (err) {
+    log.warn('killBridge failed:', err);
+  }
+  bridge = null;
+}
 
 /**
  * Resolve the paths for the Python engine and FFmpeg binaries.
@@ -249,15 +271,18 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
 
     const b = getBridge();
 
-    // Deduplicate progress listener on each call
-    b.removeAllListeners('progress');
-    b.on('progress', (msg) => {
+    // Named progress handler — removed in `finally` so it doesn't leak
+    // between calls.  removeAllListeners() would have wiped any other
+    // subscribers attached elsewhere on the bridge; this is scoped to
+    // exactly the listener we created.
+    const progressHandler = (msg: unknown): void => {
       win?.webContents.send('audio:progress', msg);
-    });
+    };
+    b.on('progress', progressHandler);
 
     // Handle bridge death mid-processing (case 8)
     let bridgeDied = false;
-    const bridgeExitHandler = () => { bridgeDied = true; };
+    const bridgeExitHandler = (): void => { bridgeDied = true; };
     b.once('exit', bridgeExitHandler);
 
     // ── Output path: original-filename-based, not UUID ────────────────────
@@ -312,6 +337,72 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       toAppError(err, filePath);
     } finally {
       b.removeListener('exit', bridgeExitHandler);
+      b.removeListener('progress', progressHandler);
+    }
+  });
+
+  // ── Rust offline render (experimental, RUST-OFFLINE-RENDER-1) ───────────
+  // Additive path: render the file through the SAME Rust MasteringChain as
+  // the realtime preview.  On ANY failure it falls back to the Python
+  // `masterFile` so the user always gets an output.  `audio:master` is
+  // unchanged.
+  ipc.handle('audio:master-rust-experimental', async (
+    _e,
+    req: {
+      sourcePath: string;
+      chainConfig: import('../offline/load-mastering-chain-node.js').OfflineChainConfig;
+      options: MasteringOptions;
+      requestId?: string;
+    },
+  ) => {
+    assertTmpWritable();
+    const { sourcePath, chainConfig, options, requestId } = req;
+    const wavTempPath = resolveOutputPath(sourcePath, '.wav', {
+      style: options?.style, targetLufs: options?.targetLufs,
+    });
+    const mp3Path = internalTempPath('_preview.mp3');
+    const t0 = Date.now();
+
+    // Try the Rust backend first.
+    try {
+      const { processAudioFileRust, encodePreviewMp3, isRustOfflineAvailable } =
+        await import('../offline/process-audio-file-rust.js');
+      if (!isRustOfflineAvailable()) throw new Error('rust offline backend unavailable');
+      const sr = (options?.sampleRate as number) || 48000;
+      const bd = (options?.bitDepth === 16 ? 16 : 24) as 16 | 24;
+      const rendered = await processAudioFileRust(sourcePath, chainConfig, {
+        sampleRate: sr, bitDepth: bd, outputPath: wavTempPath,
+        // Two-pass loudness-normalize toward the same target the UI requests.
+        ...(typeof options?.targetLufs === 'number' ? { targetLufs: options.targetLufs } : {}),
+        ...(typeof options?.targetTp === 'number' ? { targetTp: options.targetTp } : {}),
+      });
+      await encodePreviewMp3(wavTempPath, mp3Path);
+      return {
+        requestId, ok: true, backend: 'rust' as const, fallbackUsed: false,
+        loudnessNormalized: rendered.loudnessNormalized,
+        outputPath: rendered.outputPath, previewPath: mp3Path,
+        metrics: rendered.metrics, renderMs: Date.now() - t0,
+      };
+    } catch (rustErr) {
+      log.warn('[audio:master-rust-experimental] rust render failed, falling back to Python', {
+        err: (rustErr as Error).message,
+      });
+      recordPipelineWarning({ code: 'rust_offline_fallback', level: 'warning', userMessage: `rust offline render fell back to Python: ${(rustErr as Error).message}` });
+      // Fallback: the proven Python path.
+      try {
+        const b = getBridge();
+        const result = await masterFile(b, sourcePath, wavTempPath, options, {});
+        return {
+          requestId, ok: true, backend: 'python' as const, fallbackUsed: true,
+          outputPath: result.outputPath, previewPath: result.previewPath || mp3Path,
+          metrics: result.loudnessAfter, renderMs: Date.now() - t0,
+        };
+      } catch (pyErr) {
+        return {
+          requestId, ok: false, backend: 'python' as const, fallbackUsed: true,
+          error: (pyErr as Error).message, renderMs: Date.now() - t0,
+        };
+      }
     }
   });
 
@@ -323,6 +414,59 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       log.error('[audio:qc] error', { filePath, err: (err as Error).message });
       recordFailure('engine', `runQC failed: ${(err as Error).message}`, { filePath });
       toAppError(err, filePath);
+    }
+  });
+
+  // ── Preview re-render (M3-P-NEXT-5C) ────────────────────────────────────
+  // Re-runs the EXISTING Python master path with overridden options and
+  // returns a fresh preview MP3.  No pipeline change — this is a thin
+  // wrapper around `masterFile`, the same function `audio:master` calls.
+  //
+  // Returns a typed PreviewRenderResponse (ok/error) rather than throwing,
+  // so the renderer's latest-wins controller can handle stale / failed
+  // responses uniformly.
+  ipc.handle('audio:re-render-preview', async (
+    _e,
+    request: PreviewRenderRequest,
+  ): Promise<PreviewRenderResponse> => {
+    const { requestId, sourceAudioPath, options, appliedOverrideKeys, patchHash } = request ?? {};
+    if (!sourceAudioPath || !options) {
+      return { requestId: requestId ?? 0, ok: false, error: 'invalid request payload' };
+    }
+    const t0 = Date.now();
+    try {
+      assertTmpWritable();
+      const b = getBridge();
+
+      const wavTempPath = resolveOutputPath(sourceAudioPath, '.wav', {
+        style:      options.style,
+        targetLufs: options.targetLufs,
+      });
+      const mp3FallbackPath = internalTempPath('_preview.mp3');
+
+      const result = await masterFile(b, sourceAudioPath, wavTempPath, options, {});
+      const durationMs = Date.now() - t0;
+
+      const after = (result as { loudnessAfter?: { integratedLufs?: number; truePeakDbtp?: number } })?.loudnessAfter;
+      return {
+        requestId,
+        ok: true,
+        previewPath: result.previewPath || mp3FallbackPath,
+        ...(after ? {
+          metrics: {
+            ...(typeof after.integratedLufs === 'number' ? { integratedLufs: after.integratedLufs } : {}),
+            ...(typeof after.truePeakDbtp === 'number' ? { truePeakDbtp: after.truePeakDbtp } : {}),
+          },
+        } : {}),
+        durationMs,
+        ...(appliedOverrideKeys ? { appliedOverrideKeys } : {}),
+        ...(patchHash ? { patchHash } : {}),
+      };
+    } catch (err) {
+      const msg = (err as Error).message;
+      log.error('[audio:re-render-preview] error', { sourceAudioPath, err: msg });
+      recordFailure('pipeline', `re-render-preview failed: ${msg}`, { sourceAudioPath });
+      return { requestId: requestId ?? 0, ok: false, error: msg };
     }
   });
 }

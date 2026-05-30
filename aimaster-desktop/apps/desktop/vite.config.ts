@@ -21,11 +21,43 @@ export default defineConfig({
       '@': path.resolve(__dirname, 'src/renderer'),
     },
   },
+  // ── M3-bridge-impl: WASM + AudioWorklet asset handling ────────────────
+  //
+  // The Rust dsp-core ships as a workspace package (`@loui/dsp-wasm`)
+  // whose `pkg/loui_dsp_wasm_bg.wasm` we want emitted as a static
+  // asset.  `assetsInclude` makes Vite copy the `.wasm` file alongside
+  // the renderer bundle; the wasm-bindgen JS module's `init()` then
+  // fetches it from the resolved URL.
+  //
+  // The `analyzer-tap.worklet.js` file is loaded by Vite's `new URL(...)`
+  // import pattern in `wasm-analyzer-session.ts` — no plugin config needed.
+  assetsInclude: ['**/*.wasm'],
+  // Allow Vite to serve from the workspace `packages/` directory so
+  // the wasm-bindgen JS module's relative-URL `.wasm` fetch succeeds.
+  // (Vite's default `server.fs.allow` is just `root`; broaden to the repo.)
+  server: {
+    port: 5173,
+    fs: {
+      allow: [path.resolve(__dirname, '..', '..')],
+    },
+  },
   build: {
     outDir: path.resolve(__dirname, 'dist/renderer'),
     emptyOutDir: true,
-  },
-  server: {
-    port: 5173,
+    // Keep wasm + worklet files at recognisable names — easier debug,
+    // matches the wasm-bindgen JS module's resolution.
+    rollupOptions: {
+      output: {
+        assetFileNames: (asset) => {
+          if (asset.name?.endsWith('.wasm')) {
+            return 'assets/[name][extname]';
+          }
+          if (asset.name?.endsWith('.worklet.js')) {
+            return 'assets/[name][extname]';
+          }
+          return 'assets/[name]-[hash][extname]';
+        },
+      },
+    },
   },
 });

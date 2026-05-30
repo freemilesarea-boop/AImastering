@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schemas.loui.studio/fixture/v1",
+  "id": "lofi-chill-01",
+  "category": "lofi",
+  "name": "LoFi Chill — vinyl-character",
+  "version": "1.0.0",
+  "description": "Slow lo-fi loop — soft kick, jazz chord pad, vinyl noise, low-passed top end. Wide LRA target.",
+  "source": {
+    "type": "synthetic-recipe",
+    "recipe": "multitrack-mix",
+    "params": {
+      "durationSec": 30,
+      "tracks": [
+        { "kind": "kick",      "freqHz": 60,   "rateHz": 0.9,  "decay": 0.4, "gainDb": -14 },
+        { "kind": "sub-bass",  "freqHz": 50,   "noteHz": [55, 65, 73],  "gainDb": -18 },
+        { "kind": "synth-pad", "chordHz": [220, 261.63, 329.63, 392], "gainDb": -16, "lpfHz": 4500 },
+        { "kind": "soft-snare","centerHz": 200, "rateHz": 1.8, "gainDb": -20 },
+        { "kind": "vinyl-noise","gainDb": -32 }
+      ],
+      "preMasterTrimDb": -6.0,
+      "lpfHz": 8000
+    }
+  },
+  "characteristics": {
+    "durationSec": 30,
+    "sampleRate": 44100,
+    "bitDepth": 24,
+    "channels": 2,
+    "preMasterLufsI": -23,
+    "tags": ["lofi", "chill", "vinyl", "low-pass", "wide-lra"]
+  },
+  "referenceMaster": {
+    "available": false,
+    "targetMetrics": {
+      "lufsI": -16.0,
+      "tpMaxDb": -1.0,
+      "lraMinLu": 6.0,
+      "lraMaxLu": 12.0,
+      "crestDb": 9.0,
+      "rationale": "LoFi streaming target — preserve dynamics, avoid loudness war."
+    }
+  },
+  "recommendedPresetId": "builtin-natural",
+  "policy": {
+    "lufsToleranceLu": 1.0,
+    "tpHardCeiling": true,
+    "spectrumMaxDeltaMaxDb": 8.0
+  }
+}

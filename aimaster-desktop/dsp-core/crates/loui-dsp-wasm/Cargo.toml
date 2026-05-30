@@ -1,0 +1,30 @@
+[package]
+name = "loui-dsp-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "WebAssembly binding for loui-dsp — browser/renderer-side realtime analyzer (M2-lite-NEXT)"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+loui-dsp = { path = "../loui-dsp" }
+wasm-bindgen = "0.2"
+# js-sys is the runtime support crate for wasm-bindgen — provides Float32Array
+# wrapper used by zero-copy buffer transfers.
+js-sys = "0.3"
+
+# Enabled by default; turn off to opt out of console_error_panic_hook (saves ~10 KB).
+[features]
+default = ["console-panic"]
+console-panic = ["dep:console_error_panic_hook"]
+
+[dependencies.console_error_panic_hook]
+version = "0.1"
+optional = true
+
+[package.metadata.wasm-pack.profile.release]
+# Defaults to "-O" which is good enough; tweak for smaller binary later.
+wasm-opt = false

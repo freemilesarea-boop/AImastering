@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schemas.loui.studio/engine-preset/v1",
+  "id": "builtin-punch",
+  "name": "Punch",
+  "version": "1.0.0",
+  "compatibility": { "engineApiMin": "1.0.0" },
+  "meta": {
+    "author": "Loui Mastering (built-in)",
+    "tags": ["punch", "hip-hop", "legacy"],
+    "description": "Faster bus comp for impact. Heavier saturation. Legacy mode (consider hip-hop preset instead).",
+    "legacyStyleId": "punch"
+  },
+  "policies": {
+    "vocalProtection": "safe",
+    "safeMode": "none",
+    "aiCorrections": true,
+    "limiterStrength": "high"
+  },
+  "output": { "sampleRate": 44100, "bitDepth": 24, "format": "wav" },
+  "chain": {
+    "nodes": [
+      { "type": "source", "id": "src" },
+
+      { "type": "adaptive-eq", "id": "eq",
+        "bands": [
+          { "id": "low_shelf", "filterType": "low_shelf",  "freqHz": 80,    "widthOctaves": 2.0, "gainDb": 3.0, "adaptive": true },
+          { "id": "lo_supp",   "filterType": "peak",       "freqHz": 120,   "widthOctaves": 1.2, "gainDb": 1.2, "adaptive": true },
+          { "id": "mud_cut",   "filterType": "peak",       "freqHz": 250,   "widthOctaves": 1.2, "gainDb": -3.0 },
+          { "id": "muddy",     "filterType": "peak",       "freqHz": 320,   "widthOctaves": 0.8, "gainDb": -1.0 },
+          { "id": "air",       "filterType": "high_shelf", "freqHz": 12000, "widthOctaves": 1.0, "gainDb": 2.5, "adaptive": true }
+        ]
+      },
+
+      { "type": "dynamic-eq", "id": "dyneq", "intensity": 1.0,
+        "bands": [
+          { "id": "boomy_low",    "freqHz":   90, "q": 1.2, "thresholdDb": -16, "reductionDb": 2.5, "mode": "cut" },
+          { "id": "muddy_lowmid", "freqHz":  280, "q": 1.0, "thresholdDb": -16, "reductionDb": 2.0, "mode": "cut" },
+          { "id": "sibilance",    "freqHz": 7000, "q": 1.6, "thresholdDb": -20, "reductionDb": 2.0, "mode": "cut" }
+        ]
+      },
+
+      { "type": "bus-comp", "id": "comp",
+        "thresholdDb": -18, "ratio": 2.0, "attackMs": 20, "releaseMs": 100, "makeupDb": 0.8, "kneeDb": 6.0,
+        "vocalProtection": { "maxRatio": 2.0, "minAttackMs": 25, "maxMakeupDb": 0.7 }
+      },
+
+      { "type": "saturator",     "id": "sat",   "amount": 0.30, "model": "compand-curve" },
+      { "type": "stereo-imager", "id": "width", "width":  1.05 },
+
+      { "type": "loudness-norm", "id": "lnorm",
+        "targetLufs": -11.0, "targetTpDb": -1.0, "targetLra": 11.0, "algorithm": "linear",
+        "toleranceLu": 0.3, "maxIters": 4
+      },
+
+      { "type": "limiter", "id": "lim",
+        "ceilingDb": -1.0, "inputGainDb": 1.5, "attackMs": 3.0, "releaseMs": 60.0,
+        "lookAheadMs": 5, "oversample": 4
+      },
+
+      { "type": "isp-safety", "id": "isp", "ceilingDbtp": -1.0, "headroomDb": 0.1, "oversample": 4 },
+
+      { "type": "sink", "id": "out" }
+    ]
+  }
+}

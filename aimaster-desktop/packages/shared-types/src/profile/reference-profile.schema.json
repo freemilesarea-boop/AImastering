@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schemas.loui.studio/reference-profile/v1",
+  "title": "Loui ReferenceProfile v1",
+  "description": "Characteristic-based reference profile. AGGREGATE STATISTICS ONLY — by design cannot reconstruct source audio. Forbids any identifying metadata (artist/title/album/lyrics/isrc/mbid) and any time-series / fingerprint data. See docs/redesign/loui-mastering-v2/m1.75/06-REFERENCE-SAFE-LEGAL-GUIDELINE.md.",
+  "type": "object",
+  "required": ["$schema", "id", "version", "provenance", "features", "featureFingerprint"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "https://schemas.loui.studio/reference-profile/v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{2,128}$",
+      "description": "Stable slug, never derived from audio content."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[A-Za-z0-9.-]+)?$"
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["sourceType", "createdAt", "durationSec", "sampleRate", "channels", "extractorVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceType": {
+          "type": "string",
+          "enum": ["user-supplied", "fixture", "builtin", "streaming-snapshot"]
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "durationSec": { "type": "number", "exclusiveMinimum": 0 },
+        "sampleRate": { "type": "number", "exclusiveMinimum": 0 },
+        "channels": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "sourceFileSha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "OPTIONAL cache key only. Not a fingerprint. Not for identification. May be omitted entirely. Implementations distributing profiles publicly SHOULD strip this field."
+        },
+        "userLabel": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Free-form user-attached label. Sole user responsibility — the system never auto-fills this with rights-holding identifiers."
+        },
+        "extractorVersion": { "type": "string" }
+      }
+    },
+    "features": {
+      "type": "object",
+      "required": ["loudness", "dynamics", "tonal", "stereo"],
+      "additionalProperties": false,
+      "properties": {
+        "loudness": {
+          "type": "object",
+          "required": ["integratedLufs", "truePeakDbtp", "loudnessRange", "shortTermPercentiles", "momentaryPercentiles"],
+          "additionalProperties": false,
+          "properties": {
+            "integratedLufs": { "type": "number", "minimum": -90, "maximum": 6 },
+            "truePeakDbtp":  { "type": "number", "minimum": -90, "maximum": 6 },
+            "loudnessRange": { "type": "number", "minimum": 0, "maximum": 40 },
+            "shortTermPercentiles": { "$ref": "#/$defs/percentiles" },
+            "momentaryPercentiles":  { "$ref": "#/$defs/percentiles" }
+          }
+        },
+        "dynamics": {
+          "type": "object",
+          "required": ["crestDb", "transientDensityPerMin", "compressionScore"],
+          "additionalProperties": false,
+          "properties": {
+            "crestDb":                 { "type": "number", "minimum": 0, "maximum": 40 },
+            "transientDensityPerMin":  { "type": "number", "minimum": 0 },
+            "compressionScore":        { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "tonal": {
+          "type": "object",
+          "required": ["thirdOctSpectrumDb", "spectralTiltDbPerOct", "subEnergyRatio", "lowMidBalanceDb", "vocalRegionEnergyDb", "airBandEnergyDb", "harshnessIndex"],
+          "additionalProperties": false,
+          "properties": {
+            "thirdOctSpectrumDb": {
+              "type": "object",
+              "description": "Bin → dB.  Keys are ANSI S1.11 1/3-oct centres as strings.  Max 64 bins (1/3-oct resolution maximum — no fingerprinting).",
+              "maxProperties": 64,
+              "patternProperties": {
+                "^[0-9.]+$": { "type": "number" }
+              },
+              "additionalProperties": false
+            },
+            "spectralTiltDbPerOct": { "type": "number", "minimum": -12, "maximum": 12 },
+            "subEnergyRatio":       { "type": "number", "minimum": 0, "maximum": 1 },
+            "lowMidBalanceDb":      { "type": "number", "minimum": -60, "maximum": 12 },
+            "vocalRegionEnergyDb":  { "type": "number", "minimum": -60, "maximum": 12 },
+            "airBandEnergyDb":      { "type": "number", "minimum": -60, "maximum": 12 },
+            "harshnessIndex":       { "type": "number", "minimum": 0, "maximum": 20 }
+          }
+        },
+        "stereo": {
+          "type": "object",
+          "required": ["correlationMean", "msRatioDb", "stereoWidthIndex"],
+          "additionalProperties": false,
+          "properties": {
+            "correlationMean":  { "type": "number", "minimum": -1, "maximum": 1 },
+            "msRatioDb":        { "type": "number", "minimum": -60, "maximum": 30 },
+            "stereoWidthIndex": { "type": "number", "minimum": 0,   "maximum": 4 }
+          }
+        }
+      }
+    },
+    "featureFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 of the canonical-serialised `features` object. NOT a fingerprint of the audio — a change-detector for the features dictionary itself."
+    }
+  },
+  "$defs": {
+    "percentiles": {
+      "type": "object",
+      "required": ["p10", "p50", "p90"],
+      "additionalProperties": false,
+      "properties": {
+        "p10": { "type": "number" },
+        "p50": { "type": "number" },
+        "p90": { "type": "number" }
+      },
+      "description": "Distribution of a per-block measurement reduced to three percentiles. NO time-series."
+    }
+  }
+}

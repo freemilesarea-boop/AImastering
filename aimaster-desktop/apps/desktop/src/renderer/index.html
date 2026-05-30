@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:5173 ws://localhost:*; media-src file: blob: 'self';" />
+      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' file: data: blob: ws://localhost:5173 ws://localhost:*; worker-src 'self' blob:; media-src file: blob: 'self';" />
     <title>AIMASTER</title>
   </head>
   <body>

@@ -2,11 +2,28 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.js';
 import './styles/index.css';
+// SAFE_BOOT: load flag helpers first so window.__SAFE_BOOT__ is available
+// before any feature code reads them.
+import './audio/safe-boot-flags.js';
 
 // ── 시작 진단 로그 ─────────────────────────────────────────────────────────────
 // DevTools(Ctrl+Shift+I) 콘솔에서 이 로그로 preload 상태를 확인하세요.
+// eslint-disable-next-line no-console
 console.log('[AIMASTER] renderer starting...');
+// eslint-disable-next-line no-console
 console.log('[AIMASTER] window.electronAPI:', (window as Window & { electronAPI?: unknown }).electronAPI ?? 'NOT EXPOSED — preload missing or CSP blocked');
+
+// ── 글로벌 에러 캐처 (검은 화면 디버깅용) ────────────────────────────────────
+// React ErrorBoundary 가 못 잡는 async / effect / promise 에러를 콘솔에
+// 강제로 노출.  검은 화면 + DevTools disconnect 같은 상황에서 원인 추적용.
+window.addEventListener('error', (e) => {
+  // eslint-disable-next-line no-console
+  console.error('[AIMASTER:window-error]', e.message, e.error?.stack || '', 'at', e.filename + ':' + e.lineno);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  // eslint-disable-next-line no-console
+  console.error('[AIMASTER:unhandled-rejection]', e.reason);
+});
 
 // ── ErrorBoundary ──────────────────────────────────────────────────────────────
 // 렌더 타임 에러를 잡아 blank screen 대신 fallback UI를 표시합니다.
@@ -24,7 +41,9 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, EBSta
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // eslint-disable-next-line no-console
     console.error('[ErrorBoundary] render error:', error.message);
+    // eslint-disable-next-line no-console
     console.error('[ErrorBoundary] component stack:', info.componentStack);
   }
 
@@ -36,7 +55,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, EBSta
       <div style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center',
         justifyContent: 'center', height: '100vh',
-        background: '#09090b', color: '#e4e4e7',
+        background: '#13131A', color: '#e4e4e7',
         fontFamily: 'ui-monospace, "SF Mono", monospace',
         padding: '2rem', gap: '1rem',
       }}>
