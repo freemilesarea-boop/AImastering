@@ -235,8 +235,25 @@ app.on('window-all-closed', () => {
 // window-all-closed → app.quit chain is skipped for the dock-resident
 // process).  before-quit fires for every quit path: Cmd+Q, app.quit(),
 // even SIGINT from the terminal in dev.
-app.on('before-quit', () => {
-  killBridge();
+//
+// killBridge() is async (it awaits the child's actual exit via SIGTERM,
+// escalating to SIGKILL after ~500 ms), so we preventDefault() the first
+// before-quit, run the cleanup, then re-quit.  `_engineCleanupDone`
+// short-circuits the second before-quit so we don't recurse.
+let _engineCleanupDone = false;
+app.on('before-quit', (event) => {
+  if (_engineCleanupDone) return;
+  event.preventDefault();
+  void (async () => {
+    try {
+      await killBridge();
+    } catch (err) {
+      log.warn('[before-quit] killBridge threw', err);
+    } finally {
+      _engineCleanupDone = true;
+      app.quit();
+    }
+  })();
 });
 
 // ── App-level renderer crash catch-all (긴급 크래시 분석) ───────────────────
