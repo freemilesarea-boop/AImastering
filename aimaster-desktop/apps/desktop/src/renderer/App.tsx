@@ -8,15 +8,10 @@ import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
 import QCPage       from './pages/QCPage.js';
 import SettingsPage from './pages/SettingsPage.js';
-import { isProductLayoutEnabled } from './audio/product-layout-flag.js';
-import { ProductPageErrorBoundary } from './components/ProductPageErrorBoundary.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
 
-// Both heavy pages are lazy-loaded so their audio/dev import chains do NOT
-// evaluate at renderer startup.  They're only fetched when actually navigated to.
-const ProductPage = React.lazy(() => import('./pages/ProductPage.js'));
 // Dev-only: analyzer streaming smoke route — only on ?dev=analyzer-stream URL.
 // Named export → wrap in a default-export shim for React.lazy.
 const DevAnalyzerStreamPage = React.lazy(() =>
@@ -259,13 +254,10 @@ function AppInner() {
     typeof window !== 'undefined' &&
     new URLSearchParams(window.location.search).get('dev') === 'analyzer-stream';
 
-  // Product-layout feature flag (M3-P-NEXT-6): ProductPage is the DEFAULT
-  // result screen.  The legacy ResultPage is the fallback — restored via
-  // the runtime / env flag, or automatically when ProductPage crashes
-  // (the error boundary renders ResultPage in its place).
-  const productLayout = isProductLayoutEnabled();
-
   // result: requires a completed mastering session (selectedFile + outputPath).
+  // ProductPage / ProductPageErrorBoundary / isProductLayoutEnabled used to
+  // gate this slot but were retired when ResultPage became the canonical
+  // result screen — see the WASM panic recovery in the redesign branch.
   const hasResultData = Boolean(selectedFile && masteringResult?.outputPath);
   const resultSlot = hasResultData ? <ResultPage /> : <HomePage />;
 

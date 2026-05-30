@@ -298,11 +298,32 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       properties: ['openFile'],
     });
     if (result.canceled || !result.filePaths[0]) return null;
+    const chosen = result.filePaths[0];
     try {
-      const data = fs.readFileSync(result.filePaths[0]!, 'utf8');
-      return { path: result.filePaths[0], data };
+      const data = fs.readFileSync(chosen, 'utf8');
+      // Validate JSON shape here so a corrupted .louisession can't crash
+      // the renderer with a thrown SyntaxError during JSON.parse().  We
+      // only check that the top-level value is a non-null object; the
+      // renderer is still responsible for schema-level validation of the
+      // specific session fields it consumes.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(data);
+      } catch (err) {
+        const msg = (err as Error).message;
+        recordFailure('session', `session:load invalid JSON: ${msg}`, { path: chosen });
+        throw new Error(`Session file is not valid JSON: ${msg}`);
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        recordFailure('session', 'session:load JSON root is not an object', { path: chosen });
+        throw new Error('Session file root must be a JSON object');
+      }
+      return { path: chosen, data };
     } catch (err) {
-      recordFailure('session', `session:load failed: ${(err as Error).message}`);
+      // Don't double-record JSON-parse failures (already recorded above).
+      if (!/JSON|object/.test((err as Error).message)) {
+        recordFailure('session', `session:load failed: ${(err as Error).message}`);
+      }
       throw err;
     }
   });

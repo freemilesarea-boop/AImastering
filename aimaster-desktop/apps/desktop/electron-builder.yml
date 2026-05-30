@@ -43,6 +43,21 @@ files:
   - dist-electron/**/*
   - "!dist/renderer/**/*.map"
 
+# ── ASAR layout ──────────────────────────────────────────────────────────────
+# Default asar:true is kept — the main process reads .worklet.js / .wasm via
+# Node fs (handles asar transparently) and ships the bytes to the renderer
+# over IPC (see loui:read-worklet-asset in main/index.ts).  However,
+# Chromium's renderer-side fetch() of `new URL('loui_dsp_wasm_bg.wasm',
+# import.meta.url)` (the wasm-bindgen default path inside @loui/dsp-wasm's
+# generated JS) goes through file:// directly, which has historically
+# misbehaved inside app.asar.  Unpacking the .wasm + worklet assets keeps
+# both code paths working — the IPC bridge stays the primary loader, but
+# any fallback fetch lands on a real on-disk file.
+asarUnpack:
+  - "dist/renderer/assets/*.wasm"
+  - "dist/renderer/*.worklet.js"
+  - "dist/renderer/assets/*.worklet.js"
+
 extraMetadata:
   main: dist-electron/main/index.js
 

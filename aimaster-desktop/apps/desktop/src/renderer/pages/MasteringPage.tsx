@@ -255,7 +255,15 @@ export default function MasteringPage() {
   // ── Auto-start on mount (StrictMode-safe) ─────────────────────────────
   // React 18 StrictMode double-invokes effects in dev; the ref guard makes
   // sure we only spawn one IPC pipeline regardless.
+  //
+  // We keep a ref to the latest `runMastering` so the start-once effect
+  // doesn't need to list `runMastering` (which would re-run on every option
+  // change) in its deps.  The retry button still picks up the latest
+  // closure because it references `runMastering` directly.
   const startedRef = useRef(false);
+  const runMasteringRef = useRef(runMastering);
+  useEffect(() => { runMasteringRef.current = runMastering; }, [runMastering]);
+
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log('[MasteringPage] render entered — selectedFile:', selectedFile, 'startedRef:', startedRef.current);
@@ -267,9 +275,8 @@ export default function MasteringPage() {
       return;
     }
     startedRef.current = true;
-    void runMastering();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedFile]);
+    void runMasteringRef.current();
+  }, [selectedFile, setPage]);
 
   const handleRetry = useCallback(() => {
     startedRef.current = true;

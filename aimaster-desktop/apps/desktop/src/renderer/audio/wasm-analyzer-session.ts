@@ -53,6 +53,31 @@ import {
   setRealtimeInsert,
   logAudioEvent,
 } from './shared-audio-graph.js';
+import { loadModuleUrl } from './worklet-asset-source.js';
+
+// ── Module-level WASM singleton ──────────────────────────────────────────────
+//
+// `init()` (wasm-bindgen's __wbg_init) checks `if (wasm !== undefined) return
+// wasm` synchronously, but `wasm` is only assigned AFTER an `await` resolves.
+// Two concurrent callers (e.g. React StrictMode double-invoking
+// WasmAnalyzerProvider.useEffect) both pass the guard, each calls
+// `WebAssembly.instantiate`, and each gets a private dlmalloc heap.  The
+// module-level `wasm` binding is then overwritten by the second init; the
+// first session's LouiAnalyzer holds a pointer valid only in the first heap,
+// and any later call (including `free()` from stop()) executes against the
+// SECOND heap → assertion failed: psize <= size + max_overhead → unreachable.
+//
+// We collapse every concurrent init call onto a single Promise so the
+// underlying `WebAssembly.instantiate` runs at most once per renderer
+// lifetime.  See investigate report for the full mechanism.
+let _wasmReadyPromise: Promise<void> | null = null;
+
+function ensureWasmReady(): Promise<void> {
+  if (!_wasmReadyPromise) {
+    _wasmReadyPromise = init().then(() => undefined);
+  }
+  return _wasmReadyPromise;
+}
 
 // The worklet ships from Vite's `public/` directory (root-relative URL).
 // This avoids the static-analysis fragility of `new URL(..., import.meta.url)`
@@ -141,6 +166,12 @@ class WasmAnalyzerSession implements AnalyzerSession {
   readonly options: AnalyzerSessionOptions;
   isRunning = false;
 
+  // Lifecycle gates — `_stopRequested` aborts an in-flight start() after the
+  // WASM init await resolves; `_stopped` is the idempotency guard for stop()
+  // so React StrictMode (cleanup + remount) can't double-free WASM heap.
+  private _stopRequested = false;
+  private _stopped = false;
+
   private ctx: AudioContext | null = null;
   private tapNode: AudioWorkletNode | null = null;
   // The current source node attached to the graph (kept so the optional
@@ -171,36 +202,58 @@ class WasmAnalyzerSession implements AnalyzerSession {
   private lastFftEmitAt = 0;
   private lastStereoEmitAt = 0;
 
-  private wasmReady: Promise<void> | null = null;
-
   constructor(options: AnalyzerSessionOptions, private readonly workletUrl: string) {
     this.options = { ...options };
   }
 
   async start(): Promise<void> {
-    if (this.isRunning) return;
-    // Init WASM once per session.
-    this.wasmReady = init().then(() => {
-      this.analyzer = new LouiAnalyzer(this.options.sampleRate, this.options.channels);
-      this.spectrum = new LouiSpectrumAnalyzer(
-        this.options.sampleRate,
-        new WasmSpectrumOptions()
-          .setFftSize(2048)
-          .setSmoothing(0.5)
-          .setPeakHoldDecayDb(1.5)
-          .useLog(128, 20, 20_000),
-      );
-    });
+    if (this.isRunning || this._stopRequested || this._stopped) return;
 
-    await this.wasmReady;
+    // ① WASM init — collapses onto a shared singleton so concurrent
+    //    sessions (StrictMode, page swap) instantiate at most once.
+    await ensureWasmReady();
+    if (this._stopRequested) return;  // cleanup ran while we were awaiting
 
-    // Use the shared, never-closed AudioContext (see top of file) so the
-    // element's one-and-only MediaElementSource is reusable across mounts.
+    this.analyzer = new LouiAnalyzer(this.options.sampleRate, this.options.channels);
+    this.spectrum = new LouiSpectrumAnalyzer(
+      this.options.sampleRate,
+      new WasmSpectrumOptions()
+        .setFftSize(2048)
+        .setSmoothing(0.5)
+        .setPeakHoldDecayDb(1.5)
+        .useLog(128, 20, 20_000),
+    );
+    if (this._stopRequested) {
+      // Caller asked us to stop after the allocation finished — free
+      // here so the WASM heap doesn't leak the just-built objects.
+      try { this.analyzer.free(); } catch { /* ignore */ }
+      try { this.spectrum.free(); } catch { /* ignore */ }
+      this.analyzer = null;
+      this.spectrum = null;
+      return;
+    }
+
+    // ② AudioContext + worklet.  Module URL may resolve through the IPC
+    //    bridge (asar-safe) on packaged Electron; in dev/browser it falls
+    //    back to the relative URL.
     this.ctx = getSharedAudioContext(this.options.sampleRate);
     if (!ctxModuleAdded.has(this.ctx)) {
-      await this.ctx.audioWorklet.addModule(this.workletUrl);
+      const resolved = await loadModuleUrl(
+        'analyzer-tap.worklet.js',
+        this.workletUrl,
+      );
+      try {
+        await this.ctx.audioWorklet.addModule(resolved.url);
+      } finally {
+        // Blob URLs are one-shot; revoke immediately after addModule has
+        // pulled the script text into the worklet global scope.
+        try { resolved.revoke?.(); } catch { /* ignore */ }
+      }
       ctxModuleAdded.add(this.ctx);
+      rtLog('analyzer-tap worklet loaded', { source: resolved.source, diag: resolved.diag });
     }
+    if (this._stopRequested) return;
+
     rtLog('session start', { ctxState: this.ctx.state, sampleRate: this.ctx.sampleRate, channels: this.options.channels });
 
     this.tapNode = new AudioWorkletNode(this.ctx, 'analyzer-tap', {
@@ -223,6 +276,13 @@ class WasmAnalyzerSession implements AnalyzerSession {
   }
 
   async stop(): Promise<void> {
+    // Idempotency guard — React StrictMode tears the provider down twice
+    // (cleanup → remount → cleanup) and any caller that double-fires the
+    // intent would otherwise double-free the WASM heap allocations below.
+    if (this._stopped) return;
+    this._stopped = true;
+    this._stopRequested = true;
+
     // Detach the passive tap from the shared graph — NEVER touch the source,
     // the DSP insert, or the audio bus (the shared graph owns those, so
     // playback + native analysers keep working after this session stops).

@@ -113,10 +113,11 @@ export function WasmAnalyzerProvider({
 
     s.start()
       .then(() => {
-        if (cancelled) {
-          void s.stop();
-          return;
-        }
+        // If cleanup ran during start(), the session has already been told
+        // to stop by the return-fn below (which calls void s.stop() once).
+        // Just bail — calling stop() again here would re-enter the now
+        // idempotent guard for no benefit and obscures the contract.
+        if (cancelled) return;
         try {
           s.attachMediaElement(mediaElement);
         } catch (err) {
@@ -138,6 +139,9 @@ export function WasmAnalyzerProvider({
 
     return () => {
       cancelled = true;
+      // Single authoritative stop() call — WasmAnalyzerSession.stop() is
+      // idempotent so the race with the .then() short-circuit above is
+      // benign even on React StrictMode double-invoke.
       void s.stop();
       setSession((prev) => (prev === s ? null : prev));
     };
