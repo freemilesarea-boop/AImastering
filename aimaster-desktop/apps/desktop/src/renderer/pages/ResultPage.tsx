@@ -31,13 +31,26 @@ import { reportFailure } from '../utils/reportFailure.js';
 import { toFileUrl } from '../utils/fileUrl.js';
 
 // ── Feature flags ─────────────────────────────────────────────────────────────
-// HARD-DISABLED: live WASM-based analysis (BS.1770 loudness stream, spectrum
-// FFT, stereo scope) panicked the renderer on the result page —
-// loui_dsp_wasm_bg.wasm fires `assertion failed: psize <= size + max_overhead`
-// → `Uncaught RuntimeError: unreachable` and kills the page.  Static metadata
-// from the Python pipeline (loudnessAfter, metricComparison) covers the
-// numbers the user needs.  Re-enable only after the WASM module is fixed.
-const ENABLE_RESULT_WASM_ANALYSIS = false;
+// Live WASM-based analysis (BS.1770 loudness, spectrum FFT, stereo scope)
+// previously panicked the renderer with
+//   loui_dsp_wasm_bg.wasm: assertion failed: psize <= size + max_overhead
+//   → Uncaught RuntimeError: unreachable
+// The dlmalloc corruption was caused by (a) a TOCTOU race in @loui/dsp-wasm's
+// init() under React StrictMode and (b) a non-idempotent stop() that
+// double-freed LouiAnalyzer pointers across runs.  Both are fixed now:
+//   • wasm-analyzer-session.ts uses a module-level ensureWasmReady()
+//     singleton so init() runs at most once per renderer lifetime.
+//   • WasmAnalyzerSession.stop() is guarded with _stopped + _stopRequested
+//     so concurrent / cleanup callers cannot re-enter free().
+//   • WasmAnalyzerProvider invokes stop() exactly once (the cleanup fn).
+//   • analyzer-tap worklet loads via the IPC blob bridge (asar-safe).
+//   • electron-builder.yml unpacks *.wasm / *.worklet.js for renderer fetch
+//     fallbacks.
+// The <WasmAnalyzerSafe> error boundary below stays in place as
+// belt-and-suspenders — any future regression collapses the panel into a
+// small "실시간 분석 비활성 (WASM 오류)" label instead of tearing down
+// the whole result page.
+const ENABLE_RESULT_WASM_ANALYSIS = true;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
