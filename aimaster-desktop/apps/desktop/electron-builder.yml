@@ -127,9 +127,32 @@ nsis:
 # ── Filename templates (all targets) ──────────────────────────────────────────
 artifactName: "${productName}-${version}-${os}-${arch}.${ext}"
 
-# ── Linux (AppImage — also auto-updateable via electron-updater) ─────────────
+# ── Linux (AppImage + deb) ────────────────────────────────────────────────────
+# AppImage — universal, runs on any distro without install, auto-updateable
+#            via electron-updater (reads latest-linux.yml).
+# deb       — Debian/Ubuntu native package, installs to /opt, registers a
+#             .desktop entry and MIME type automatically.
 linux:
   category: Audio
   icon: public/icon.png
+  mimeTypes:
+    - audio/wav
+    - audio/x-wav
+    - audio/flac
+    - audio/x-flac
+    - audio/aiff
+    - audio/x-aiff
+    - audio/mpeg
+    - audio/mp4
+  desktop:
+    Name: Louver Mastering AI
+    Comment: AI-powered audio mastering
+    Categories: Audio;AudioVideo;Music;
+    Keywords: mastering;audio;music;louver;
   target:
-    - AppImage
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
