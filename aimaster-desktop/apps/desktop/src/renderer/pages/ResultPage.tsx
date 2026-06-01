@@ -836,7 +836,9 @@ function SliderRow({
 }) {
   const display = unit === '%'
     ? `${Math.round(value)}${unit}`
-    : `${value >= 0 && unit === 'dB' ? '+' : ''}${value.toFixed(1)} ${unit}`;
+    : unit === ''
+      ? value.toFixed(2)
+      : `${value >= 0 && unit === 'dB' ? '+' : ''}${value.toFixed(1)} ${unit}`;
   return (
     <div className="space-y-1.5">
       <div className="flex justify-between items-baseline">
@@ -870,133 +872,159 @@ const LIMITERS: Array<{ id: LimiterStrength; label: string }> = [
   { id: 'high',   label: '강하게' },
 ];
 
+// Collapsible section wrapper.
+function Section({
+  title, defaultOpen = true, children,
+}: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border border-zinc-800 rounded-lg bg-zinc-900/30 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="no-drag w-full flex items-center justify-between px-3 py-2 hover:bg-zinc-800/30 transition-colors"
+      >
+        <span className="text-[10px] uppercase tracking-[0.14em] text-zinc-400 font-semibold">{title}</span>
+        <span className="text-[9px] text-zinc-600">{open ? '▼' : '▶'}</span>
+      </button>
+      {open && <div className="px-3 pb-3 pt-1 space-y-3 border-t border-zinc-800/60">{children}</div>}
+    </div>
+  );
+}
+
 function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
   const options       = useAudioStore((s) => s.options);
   const setStyle      = useAudioStore((s) => s.setStyle);
   const updateOptions = useAudioStore((s) => s.updateOptions);
 
   // Resolved display values for optional params (undefined = use mode default).
-  // We show a sensible starting point; once the user moves the slider, the
-  // explicit value replaces the mode default.
-  const satDisplay   = options.saturationAmount != null ? Math.round(options.saturationAmount * 100) : 50;
-  const widthDisplay = options.stereoWidth       != null ? Math.round(options.stereoWidth       * 100) : 100;
-  const gainDisplay  = options.outputGainDb      ?? 0;
+  const satDisplay   = options.saturationAmount   != null ? Math.round(options.saturationAmount * 100) : 50;
+  const widthDisplay = options.stereoWidth        != null ? Math.round(options.stereoWidth       * 100) : 100;
+  const gainDisplay  = options.outputGainDb       ?? 0;
+  const dynEqDisplay = options.dynamicEqIntensity ?? 1.0;
 
   return (
-    <div className="p-4 space-y-5">
+    <div className="p-3 space-y-3">
       {/* Header */}
       <div>
-        <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-400 font-medium">세밀 조정</p>
-        <p className="text-[10px] text-zinc-700 mt-0.5">조정 후 아래 버튼으로 다시 마스터링</p>
+        <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-300 font-semibold">세밀 조정</p>
+        <p className="text-[10px] text-zinc-600 mt-0.5">조정 후 [다시 마스터링] 클릭</p>
       </div>
 
-      {/* ── Style ──────────────────────────────────────────────────────────── */}
-      <div className="space-y-2">
-        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">스타일</p>
-        <div className="grid grid-cols-2 gap-1">
-          {STYLES.map(({ id, label, hint }) => (
-            <button
-              key={id}
-              onClick={() => setStyle(id)}
-              className={`no-drag px-2 py-2 rounded-lg text-left transition-colors ${
-                options.style === id
-                  ? 'bg-indigo-600/25 border border-indigo-500/50 text-indigo-300'
-                  : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-400 hover:border-zinc-600'
-              }`}
-            >
-              <span className="block text-xs font-medium">{label}</span>
-              <span className="block text-[9px] opacity-60 mt-0.5">{hint}</span>
-            </button>
-          ))}
+      {/* ── EQ section ─────────────────────────────────────────────────────── */}
+      <Section title="EQ">
+        <div className="space-y-2">
+          <p className="text-[10px] text-zinc-600">스타일 (EQ 프리셋 결정)</p>
+          <div className="grid grid-cols-2 gap-1">
+            {STYLES.map(({ id, label, hint }) => (
+              <button
+                key={id}
+                onClick={() => setStyle(id)}
+                className={`no-drag px-2 py-1.5 rounded-md text-left transition-colors ${
+                  options.style === id
+                    ? 'bg-indigo-600/25 border border-indigo-500/50 text-indigo-300'
+                    : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-400 hover:border-zinc-600'
+                }`}
+              >
+                <span className="block text-[11px] font-medium">{label}</span>
+                <span className="block text-[9px] opacity-60 mt-0.5">{hint}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-[9px] text-zinc-700 leading-snug pt-1">
+            엔진은 스타일별 EQ 프리셋(low-shelf · presence · air)을 적용합니다.
+          </p>
         </div>
-      </div>
+      </Section>
 
-      {/* ── Loudness target ────────────────────────────────────────────────── */}
-      <SliderRow
-        label="목표 라우드니스"
-        value={options.targetLufs}
-        min={-20} max={-8} step={0.5}
-        unit="LUFS"
-        onChange={(v) => updateOptions({ targetLufs: v })}
-      />
-
-      {/* ── True Peak ──────────────────────────────────────────────────────── */}
-      <SliderRow
-        label="True Peak 한계"
-        value={options.targetTp}
-        min={-3} max={-0.1} step={0.1}
-        unit="dBTP"
-        onChange={(v) => updateOptions({ targetTp: v })}
-      />
-
-      {/* ── Limiter strength ───────────────────────────────────────────────── */}
-      <div className="space-y-2">
-        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">리미터 강도</p>
-        <div className="flex gap-1">
-          {LIMITERS.map(({ id, label }) => (
-            <button
-              key={id}
-              onClick={() => updateOptions({ limiterStrength: id })}
-              className={`no-drag flex-1 py-1.5 rounded-md text-[11px] transition-colors ${
-                options.limiterStrength === id
-                  ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
-                  : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-500 hover:border-zinc-600 hover:text-zinc-400'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+      {/* ── Dynamics section ───────────────────────────────────────────────── */}
+      <Section title="Dynamics">
+        <SliderRow
+          label="Dynamic EQ 강도"
+          value={dynEqDisplay}
+          min={0} max={1.5} step={0.05}
+          unit=""
+          onChange={(v) => updateOptions({ dynamicEqIntensity: v })}
+        />
+        <div className="space-y-1.5">
+          <p className="text-[10px] text-zinc-600 uppercase tracking-wider">리미터 강도</p>
+          <div className="flex gap-1">
+            {LIMITERS.map(({ id, label }) => (
+              <button
+                key={id}
+                onClick={() => updateOptions({ limiterStrength: id })}
+                className={`no-drag flex-1 py-1.5 rounded-md text-[11px] transition-colors ${
+                  options.limiterStrength === id
+                    ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                    : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-500 hover:border-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      </Section>
 
-      {/* ── Saturation ─────────────────────────────────────────────────────── */}
-      <SliderRow
-        label="포화 (Saturation)"
-        value={satDisplay}
-        min={0} max={100} step={1}
-        unit="%"
-        onChange={(v) => updateOptions({ saturationAmount: v / 100 })}
-      />
+      {/* ── Stereo & Saturation ────────────────────────────────────────────── */}
+      <Section title="Stereo & Saturation">
+        <SliderRow
+          label="스테레오 폭"
+          value={widthDisplay}
+          min={50} max={200} step={5}
+          unit="%"
+          onChange={(v) => updateOptions({ stereoWidth: v / 100 })}
+        />
+        <SliderRow
+          label="포화 (Saturation)"
+          value={satDisplay}
+          min={0} max={100} step={1}
+          unit="%"
+          onChange={(v) => updateOptions({ saturationAmount: v / 100 })}
+        />
+      </Section>
 
-      {/* ── Stereo width ───────────────────────────────────────────────────── */}
-      <SliderRow
-        label="스테레오 폭"
-        value={widthDisplay}
-        min={50} max={200} step={5}
-        unit="%"
-        onChange={(v) => updateOptions({ stereoWidth: v / 100 })}
-      />
-
-      {/* ── Output gain ────────────────────────────────────────────────────── */}
-      <SliderRow
-        label="출력 게인"
-        value={gainDisplay}
-        min={-6} max={6} step={0.1}
-        unit="dB"
-        onChange={(v) => updateOptions({ outputGainDb: v })}
-      />
-
-      {/* ── AI corrections toggle ──────────────────────────────────────────── */}
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] text-zinc-400">AI 보정 적용</span>
-        <button
-          onClick={() => updateOptions({ applyAiCorrections: !options.applyAiCorrections })}
-          className={`no-drag relative w-9 h-5 rounded-full transition-colors ${
-            options.applyAiCorrections ? 'bg-indigo-600' : 'bg-zinc-700'
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-              options.applyAiCorrections ? 'translate-x-4 left-0.5' : 'translate-x-0 left-0.5'
+      {/* ── Loudness ───────────────────────────────────────────────────────── */}
+      <Section title="Loudness">
+        <SliderRow
+          label="목표 라우드니스"
+          value={options.targetLufs}
+          min={-20} max={-8} step={0.5}
+          unit="LUFS"
+          onChange={(v) => updateOptions({ targetLufs: v })}
+        />
+        <SliderRow
+          label="True Peak 한계"
+          value={options.targetTp}
+          min={-3} max={-0.1} step={0.1}
+          unit="dBTP"
+          onChange={(v) => updateOptions({ targetTp: v })}
+        />
+        <SliderRow
+          label="출력 게인"
+          value={gainDisplay}
+          min={-6} max={6} step={0.1}
+          unit="dB"
+          onChange={(v) => updateOptions({ outputGainDb: v })}
+        />
+        <div className="flex items-center justify-between pt-1">
+          <span className="text-[11px] text-zinc-400">AI 보정 적용</span>
+          <button
+            onClick={() => updateOptions({ applyAiCorrections: !options.applyAiCorrections })}
+            className={`no-drag relative w-9 h-5 rounded-full transition-colors ${
+              options.applyAiCorrections ? 'bg-indigo-600' : 'bg-zinc-700'
             }`}
-          />
-        </button>
-      </div>
+          >
+            <span
+              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                options.applyAiCorrections ? 'translate-x-4 left-0.5' : 'translate-x-0 left-0.5'
+              }`}
+            />
+          </button>
+        </div>
+      </Section>
 
-      {/* ── Output format ──────────────────────────────────────────────────── */}
-      <div className="border-t border-zinc-800 pt-4 space-y-3">
-        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">출력 포맷</p>
-
+      {/* ── Format ─────────────────────────────────────────────────────────── */}
+      <Section title="Format" defaultOpen={false}>
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-zinc-500">샘플레이트</span>
           <div className="flex gap-1">
@@ -1015,7 +1043,6 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
             ))}
           </div>
         </div>
-
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-zinc-500">비트 심도</span>
           <div className="flex gap-1">
@@ -1034,7 +1061,7 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
             ))}
           </div>
         </div>
-      </div>
+      </Section>
 
       {/* ── Re-master CTA ──────────────────────────────────────────────────── */}
       <button
