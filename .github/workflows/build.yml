@@ -70,12 +70,6 @@ jobs:
           chmod +x ../../apps/desktop/public/bin/engine
           ls -la ../../apps/desktop/public/bin/
 
-      - name: Install Rust wasm32 target + wasm-pack
-        run: |
-          rustup update stable
-          rustup target add wasm32-unknown-unknown
-          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
       - name: Install Node dependencies
         working-directory: aimaster-desktop
         run: pnpm install --no-frozen-lockfile
