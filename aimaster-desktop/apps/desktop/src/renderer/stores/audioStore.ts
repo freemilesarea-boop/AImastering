@@ -110,6 +110,26 @@ export const MAX_QUEUE_SIZE = 20;
 
 // ── Mastering options ─────────────────────────────────────────────────────────
 
+/**
+ * Real-time DSP overrides — applied LIVE to the preview audio element via
+ * the WebAudio native DSP chain on ResultPage.  Values mirror
+ * RealtimeChainConfig.  Each field is optional; undefined means the
+ * field is omitted from the chain config (chain falls back to its own
+ * default).  ALL fields default to a neutral pass-through value so the
+ * sliders read "0 dB / 100 %" before the user touches anything.
+ */
+export interface RealtimeDspOverrides {
+  eqLowCutHz?:    number; eqLowShelfDb?: number;
+  eqPresenceDb?:  number; eqAirDb?:      number;
+  dynThresholdDb?: number; dynRatio?:     number;
+  dynAttackMs?:    number; dynReleaseMs?: number;
+  dynMixPct?:      number;
+  imgWidthPct?:  number; imgLowMonoHz?: number;
+  limCeilingDbtp?: number;
+  eqBypass?: boolean; dynBypass?: boolean; imgBypass?: boolean; limBypass?: boolean;
+  masterBypass?: boolean;
+}
+
 export interface MasteringOptions {
   style: MasteringStyle;
   targetLufs: number;
@@ -126,7 +146,29 @@ export interface MasteringOptions {
   dynamicEqIntensity?: number | undefined;
   /** UI 상태: 어떤 빠른 프리셋이 선택되어 있는지 */
   quickPreset?: string | undefined;
+  /** Live DSP overrides — applied to the WebAudio preview chain. */
+  rt?: RealtimeDspOverrides;
 }
+
+const defaultRtOverrides: RealtimeDspOverrides = {
+  eqLowCutHz:     20,
+  eqLowShelfDb:   0,
+  eqPresenceDb:   0,
+  eqAirDb:        0,
+  dynThresholdDb: -18,
+  dynRatio:       2,
+  dynAttackMs:    10,
+  dynReleaseMs:   120,
+  dynMixPct:      100,
+  imgWidthPct:    100,
+  imgLowMonoHz:   120,
+  limCeilingDbtp: -1,
+  eqBypass:       false,
+  dynBypass:      false,
+  imgBypass:      false,
+  limBypass:      false,
+  masterBypass:   false,
+};
 
 const defaultOptions: MasteringOptions = {
   style:              'balanced',
@@ -136,6 +178,7 @@ const defaultOptions: MasteringOptions = {
   bitDepth:           24,
   applyAiCorrections: true,
   limiterStrength:    'medium',
+  rt:                 defaultRtOverrides,
 };
 
 // ── Store ─────────────────────────────────────────────────────────────────────

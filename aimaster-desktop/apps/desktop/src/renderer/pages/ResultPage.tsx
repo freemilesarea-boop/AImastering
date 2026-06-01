@@ -9,15 +9,17 @@
  *   QC summary chips
  *   YouTube Music notice
  */
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
+import type { MasteringOptions, RealtimeDspOverrides } from '../stores/audioStore.js';
 import {
-  PreviewRenderController,
-  IpcPreviewRenderTransport,
-} from '../audio/engine-bridge/preview-render-client.js';
-import type { PreviewRenderState } from '../audio/engine-bridge/preview-render-client.js';
+  installNativeDsp,
+  applyNativeDspConfig,
+  uninstallNativeDsp,
+} from '../audio/shared-audio-graph.js';
+import type { RealtimeChainConfig } from '../audio/realtime-mastering-chain.js';
 import type {
   AnalysisReport as AnalysisReportType,
   MasteringMeta,
@@ -136,11 +138,9 @@ function BeforeAfterCard() {
 function PreviewPlayer({
   src,
   targetLufs,
-  rerendering = false,
 }: {
   src: string;
   targetLufs?: number | undefined;
-  rerendering?: boolean;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying]   = useState(false);
@@ -152,26 +152,38 @@ function PreviewPlayer({
   // the user is actually listening.
   const [meterReady, setMeterReady] = useState(false);
 
-  // Playback-position preservation across src swaps (real-time re-renders).
-  // We capture position + playing state before the browser processes the new
-  // src, then restore in onLoadedMetadata.
-  const currentTimeRef    = useRef(0);
-  const wasPlayingRef     = useRef(false);
-  const pendingRestoreRef = useRef(false);
-  const isFirstSrcRef     = useRef(true);
-
-  // Runs synchronously after the DOM src attribute is updated but before the
-  // browser's media-element load algorithm fires pause / emptied events.
-  useLayoutEffect(() => {
-    if (isFirstSrcRef.current) {
-      isFirstSrcRef.current = false;
-      return;
+  // ── Live DSP — install native WebAudio chain on the element ──────────
+  // Slider changes in TweakPanel feed `audioStore.options`.  We subscribe
+  // here and push the derived chain config into the native DSP chain on
+  // every change so EQ / Dynamics / Imager / Limiter edits are AUDIBLE
+  // immediately while the file plays.  No re-render, no IPC, no Python.
+  const options = useAudioStore((s) => s.options);
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try {
+      installNativeDsp(a);
+      applyNativeDspConfig(a, optionsToChainConfig(options));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[PreviewPlayer] native DSP install failed:', err);
     }
-    if (!src) return;
-    // src has changed — flag restoration for the next loadedmetadata event.
-    pendingRestoreRef.current = true;
-    // wasPlayingRef / currentTimeRef are already up-to-date from onPlay/onTimeUpdate.
-  }, [src]);
+    return () => {
+      try { uninstallNativeDsp(a); } catch { /* ignore */ }
+    };
+  // installNativeDsp is idempotent; we only need to install once per element
+  // mount.  Config-only updates happen in the effect below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meterReady]);
+
+  // Push new config on every options change (rAF-batched for free via React).
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try {
+      applyNativeDspConfig(a, optionsToChainConfig(options));
+    } catch { /* invalid config — skip */ }
+  }, [options, meterReady]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -198,43 +210,27 @@ function PreviewPlayer({
     <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
       <div className="flex items-center justify-between mb-3">
         <p className="text-xs text-zinc-600 uppercase tracking-wider">프리뷰 (MP3)</p>
-        {rerendering && (
-          <span className="flex items-center gap-1.5 text-[10px] text-zinc-500">
-            <span className="w-3 h-3 rounded-full border border-zinc-600 border-t-zinc-400 animate-spin shrink-0" />
-            재렌더링 중…
-          </span>
-        )}
+        <span className="flex items-center gap-1.5 text-[10px] text-zinc-600">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+          실시간 DSP
+        </span>
       </div>
 
       {/* Hidden audio element */}
       <audio
         ref={audioRef}
         src={src}
-        onPlay={() => { setPlaying(true); wasPlayingRef.current = true; }}
-        onPause={() => { setPlaying(false); wasPlayingRef.current = false; }}
-        onEnded={() => { setPlaying(false); setProgress(0); wasPlayingRef.current = false; }}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); setProgress(0); }}
         onTimeUpdate={() => {
           const a = audioRef.current;
-          if (a && a.duration) {
-            setProgress(a.currentTime / a.duration);
-            currentTimeRef.current = a.currentTime;
-          }
+          if (a && a.duration) setProgress(a.currentTime / a.duration);
         }}
         onLoadedMetadata={() => {
           const a = audioRef.current;
-          if (!a) return;
-          setDuration(a.duration);
+          if (a) setDuration(a.duration);
           setMeterReady(true);
-          if (pendingRestoreRef.current) {
-            pendingRestoreRef.current = false;
-            const restoreTime = Math.min(currentTimeRef.current, a.duration - 0.05);
-            if (restoreTime > 0.1) {
-              a.currentTime = restoreTime;
-            }
-            if (wasPlayingRef.current) {
-              void a.play();
-            }
-          }
         }}
         onError={() => {
           // Codec / file-protocol / quarantined-resource failures land here.
@@ -882,6 +878,43 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
   );
 }
 
+// ── Realtime DSP wiring ──────────────────────────────────────────────────────
+
+/**
+ * Build a RealtimeChainConfig from a MasteringOptions object.  This is the
+ * single source of truth for how store options map to the live WebAudio
+ * DSP chain — used by the audio-element effect to push parameter changes
+ * to the chain in real time.  Falls back to sensible defaults so the chain
+ * never receives NaN even before the user touches a slider.
+ */
+function optionsToChainConfig(opts: MasteringOptions): RealtimeChainConfig {
+  const rt: RealtimeDspOverrides = opts.rt ?? {};
+  return {
+    inputGainDb:    0,
+    eqLowCutHz:     rt.eqLowCutHz     ?? 20,
+    eqLowShelfDb:   rt.eqLowShelfDb   ?? 0,
+    eqPresenceDb:   rt.eqPresenceDb   ?? 0,
+    eqAirDb:        rt.eqAirDb        ?? 0,
+    eqAdaptive:     opts.applyAiCorrections,
+    eqBypass:       rt.eqBypass       ?? false,
+    dynThresholdDb: rt.dynThresholdDb ?? -18,
+    dynRatio:       rt.dynRatio       ?? 2,
+    dynAttackMs:    rt.dynAttackMs    ?? 10,
+    dynReleaseMs:   rt.dynReleaseMs   ?? 120,
+    dynMixPct:      rt.dynMixPct      ?? 100,
+    dynBypass:      rt.dynBypass      ?? false,
+    imgWidthPct:    rt.imgWidthPct    ?? (opts.stereoWidth != null ? opts.stereoWidth * 100 : 100),
+    imgLowMonoHz:   rt.imgLowMonoHz   ?? 120,
+    imgBypass:      rt.imgBypass      ?? false,
+    limCeilingDbtp: rt.limCeilingDbtp ?? opts.targetTp ?? -1,
+    limLookaheadMs: 2.5,
+    limIsp:         true,
+    limBypass:      rt.limBypass      ?? false,
+    outputGainDb:   opts.outputGainDb ?? 0,
+    masterBypass:   rt.masterBypass   ?? false,
+  };
+}
+
 // ── Slider row (right panel helper) ──────────────────────────────────────────
 
 function SliderRow({
@@ -952,57 +985,110 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
   const setStyle      = useAudioStore((s) => s.setStyle);
   const updateOptions = useAudioStore((s) => s.updateOptions);
 
-  // Resolved display values for optional params (undefined = use mode default).
-  const satDisplay   = options.saturationAmount   != null ? Math.round(options.saturationAmount * 100) : 50;
-  const widthDisplay = options.stereoWidth        != null ? Math.round(options.stereoWidth       * 100) : 100;
-  const gainDisplay  = options.outputGainDb       ?? 0;
-  const dynEqDisplay = options.dynamicEqIntensity ?? 1.0;
+  const rt = options.rt ?? {};
+  const updateRt = useCallback((patch: Partial<NonNullable<MasteringOptions['rt']>>) => {
+    updateOptions({ rt: { ...rt, ...patch } });
+  }, [rt, updateOptions]);
+
+  // Resolved display values.
+  const widthDisplay = rt.imgWidthPct ?? (options.stereoWidth != null ? options.stereoWidth * 100 : 100);
+  const gainDisplay  = options.outputGainDb ?? 0;
 
   return (
     <div className="p-3 space-y-3">
       {/* Header */}
       <div>
         <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-300 font-semibold">세밀 조정</p>
-        <p className="text-[10px] text-zinc-600 mt-0.5">슬라이더 조정 시 프리뷰가 자동 업데이트됩니다</p>
+        <p className="text-[10px] text-zinc-600 mt-0.5">슬라이더 조정 → 즉시 들립니다 (실시간 DSP)</p>
       </div>
 
-      {/* ── EQ section ─────────────────────────────────────────────────────── */}
-      <Section title="EQ">
-        <div className="space-y-2">
-          <p className="text-[10px] text-zinc-600">스타일 (EQ 프리셋 결정)</p>
-          <div className="grid grid-cols-2 gap-1">
-            {STYLES.map(({ id, label, hint }) => (
-              <button
-                key={id}
-                onClick={() => setStyle(id)}
-                className={`no-drag px-2 py-1.5 rounded-md text-left transition-colors ${
-                  options.style === id
-                    ? 'bg-indigo-600/25 border border-indigo-500/50 text-indigo-300'
-                    : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-400 hover:border-zinc-600'
-                }`}
-              >
-                <span className="block text-[11px] font-medium">{label}</span>
-                <span className="block text-[9px] opacity-60 mt-0.5">{hint}</span>
-              </button>
-            ))}
-          </div>
-          <p className="text-[9px] text-zinc-700 leading-snug pt-1">
-            엔진은 스타일별 EQ 프리셋(low-shelf · presence · air)을 적용합니다.
-          </p>
+      {/* ── Style preset ───────────────────────────────────────────────────── */}
+      <Section title="Style">
+        <div className="grid grid-cols-2 gap-1">
+          {STYLES.map(({ id, label, hint }) => (
+            <button
+              key={id}
+              onClick={() => setStyle(id)}
+              className={`no-drag px-2 py-1.5 rounded-md text-left transition-colors ${
+                options.style === id
+                  ? 'bg-indigo-600/25 border border-indigo-500/50 text-indigo-300'
+                  : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-400 hover:border-zinc-600'
+              }`}
+            >
+              <span className="block text-[11px] font-medium">{label}</span>
+              <span className="block text-[9px] opacity-60 mt-0.5">{hint}</span>
+            </button>
+          ))}
         </div>
+        <p className="text-[9px] text-zinc-700 leading-snug pt-1">
+          저장 시 엔진은 스타일 프리셋 + 아래 슬라이더를 적용합니다.
+        </p>
       </Section>
 
-      {/* ── Dynamics section ───────────────────────────────────────────────── */}
+      {/* ── EQ section (live) ──────────────────────────────────────────────── */}
+      <Section title="EQ">
+        <SliderRow
+          label="Low Cut"
+          value={rt.eqLowCutHz ?? 20}
+          min={20} max={200} step={1}
+          unit="Hz"
+          onChange={(v) => updateRt({ eqLowCutHz: v })}
+        />
+        <SliderRow
+          label="Low Shelf (120Hz)"
+          value={rt.eqLowShelfDb ?? 0}
+          min={-12} max={12} step={0.1}
+          unit="dB"
+          onChange={(v) => updateRt({ eqLowShelfDb: v })}
+        />
+        <SliderRow
+          label="Presence (3kHz)"
+          value={rt.eqPresenceDb ?? 0}
+          min={-12} max={12} step={0.1}
+          unit="dB"
+          onChange={(v) => updateRt({ eqPresenceDb: v })}
+        />
+        <SliderRow
+          label="Air (12kHz)"
+          value={rt.eqAirDb ?? 0}
+          min={-12} max={12} step={0.1}
+          unit="dB"
+          onChange={(v) => updateRt({ eqAirDb: v })}
+        />
+      </Section>
+
+      {/* ── Dynamics section (live) ────────────────────────────────────────── */}
       <Section title="Dynamics">
         <SliderRow
-          label="Dynamic EQ 강도"
-          value={dynEqDisplay}
-          min={0} max={1.5} step={0.05}
-          unit=""
-          onChange={(v) => updateOptions({ dynamicEqIntensity: v })}
+          label="Threshold"
+          value={rt.dynThresholdDb ?? -18}
+          min={-60} max={0} step={0.5}
+          unit="dB"
+          onChange={(v) => updateRt({ dynThresholdDb: v })}
         />
-        <div className="space-y-1.5">
-          <p className="text-[10px] text-zinc-600 uppercase tracking-wider">리미터 강도</p>
+        <SliderRow
+          label="Ratio"
+          value={rt.dynRatio ?? 2}
+          min={1} max={20} step={0.1}
+          unit=""
+          onChange={(v) => updateRt({ dynRatio: v })}
+        />
+        <SliderRow
+          label="Attack"
+          value={rt.dynAttackMs ?? 10}
+          min={0.1} max={200} step={0.1}
+          unit="ms"
+          onChange={(v) => updateRt({ dynAttackMs: v })}
+        />
+        <SliderRow
+          label="Release"
+          value={rt.dynReleaseMs ?? 120}
+          min={5} max={2000} step={1}
+          unit="ms"
+          onChange={(v) => updateRt({ dynReleaseMs: v })}
+        />
+        <div className="space-y-1.5 pt-1">
+          <p className="text-[10px] text-zinc-600 uppercase tracking-wider">리미터 강도 (저장용)</p>
           <div className="flex gap-1">
             {LIMITERS.map(({ id, label }) => (
               <button
@@ -1021,21 +1107,24 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
         </div>
       </Section>
 
-      {/* ── Stereo & Saturation ────────────────────────────────────────────── */}
-      <Section title="Stereo & Saturation">
+      {/* ── Imager (live stereo width) ─────────────────────────────────────── */}
+      <Section title="Stereo Imager">
         <SliderRow
           label="스테레오 폭"
           value={widthDisplay}
-          min={50} max={200} step={5}
+          min={0} max={200} step={1}
           unit="%"
-          onChange={(v) => updateOptions({ stereoWidth: v / 100 })}
+          onChange={(v) => {
+            updateRt({ imgWidthPct: v });
+            updateOptions({ stereoWidth: v / 100 });
+          }}
         />
         <SliderRow
-          label="포화 (Saturation)"
-          value={satDisplay}
-          min={0} max={100} step={1}
-          unit="%"
-          onChange={(v) => updateOptions({ saturationAmount: v / 100 })}
+          label="Low-Mono Freq"
+          value={rt.imgLowMonoHz ?? 120}
+          min={20} max={500} step={1}
+          unit="Hz"
+          onChange={(v) => updateRt({ imgLowMonoHz: v })}
         />
       </Section>
 
@@ -1147,67 +1236,8 @@ export default function ResultPage() {
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
 
-  // ── Real-time preview re-render ─────────────────────────────────────────
-  // Lift previewSrc into state so TweakPanel slider changes can swap the
-  // audio source without a full re-master.
-  const initialPreviewSrc = masteringResult?.previewPath
-    ? toFileUrl(masteringResult.previewPath)
-    : masteringResult?.outputPath
-      ? toFileUrl(masteringResult.outputPath)
-      : '';
-  const [previewSrc, setPreviewSrc] = useState(initialPreviewSrc);
-  const [previewRenderState, setPreviewRenderState] = useState<PreviewRenderState>({ phase: 'idle' });
-
-  // Sync previewSrc when a full re-master completes (masteringResult changes).
-  useEffect(() => {
-    const newBase = masteringResult?.previewPath
-      ? toFileUrl(masteringResult.previewPath)
-      : masteringResult?.outputPath
-        ? toFileUrl(masteringResult.outputPath)
-        : '';
-    if (newBase) setPreviewSrc(newBase);
-  }, [masteringResult]);
-
-  // Build the controller once on mount and dispose on unmount.
-  const controllerRef = useRef<PreviewRenderController | null>(null);
-  useEffect(() => {
-    const transport = new IpcPreviewRenderTransport();
-    const ctrl = new PreviewRenderController(transport, {
-      debounceMs: 500,
-      onState: (s) => setPreviewRenderState(s),
-      onSuccess: (newPreviewPath) => {
-        setPreviewSrc(toFileUrl(newPreviewPath));
-      },
-      onError: (err) => {
-        // eslint-disable-next-line no-console
-        console.warn('[ResultPage] preview re-render failed:', err);
-      },
-    });
-    controllerRef.current = ctrl;
-    return () => {
-      ctrl.dispose();
-      controllerRef.current = null;
-    };
-  }, []);
-
-  // Watch options — request a re-render whenever they change.
-  // The controller debounces rapid changes and only honours the latest.
-  const isFirstOptionsRef = useRef(true);
-  useEffect(() => {
-    if (isFirstOptionsRef.current) {
-      isFirstOptionsRef.current = false;
-      return;
-    }
-    const ctrl = controllerRef.current;
-    if (!ctrl || !selectedFile) return;
-    ctrl.request({
-      sourceAudioPath: selectedFile,
-      options: options as Parameters<typeof ctrl.request>[0]['options'],
-      changedKeys: [],
-      patchHash: JSON.stringify(options),
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options]);
+  // previewSrc is derived from masteringResult; live DSP edits are applied
+  // to the <audio> element via the WebAudio native chain (see PreviewPlayer).
 
   // eslint-disable-next-line no-console
   console.log('[ResultPage] render entered');
@@ -1267,7 +1297,11 @@ export default function ResultPage() {
     );
   }
 
-  // previewSrc is managed as state above (for real-time re-render swaps).
+  const previewSrc = masteringResult?.previewPath
+    ? toFileUrl(masteringResult.previewPath)
+    : masteringResult?.outputPath
+      ? toFileUrl(masteringResult.outputPath)
+      : '';
 
   // Phase-E: surface a stable mode label for the section analyzer
   // (which may suggest a different mode than the user chose).
@@ -1396,7 +1430,6 @@ export default function ResultPage() {
           {previewSrc && (
             <PreviewPlayer
               src={previewSrc}
-              rerendering={previewRenderState.phase === 'pending' || previewRenderState.phase === 'rendering'}
               {...(typeof masteringResult?.analysisReport?.mastering?.targetLufs === 'number'
                 ? { targetLufs: masteringResult.analysisReport.mastering.targetLufs }
                 : {})}
