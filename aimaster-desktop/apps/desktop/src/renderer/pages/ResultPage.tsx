@@ -9,10 +9,15 @@
  *   QC summary chips
  *   YouTube Music notice
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
+import {
+  PreviewRenderController,
+  IpcPreviewRenderTransport,
+} from '../audio/engine-bridge/preview-render-client.js';
+import type { PreviewRenderState } from '../audio/engine-bridge/preview-render-client.js';
 import type {
   AnalysisReport as AnalysisReportType,
   MasteringMeta,
@@ -22,6 +27,7 @@ import type {
   DynamicEqReport,
 } from '@aimaster/shared-types';
 import { LIMITER_STRENGTH_LABELS } from '@aimaster/shared-types';
+import type { MasteringStyle, LimiterStrength } from '@aimaster/shared-types';
 import SectionAnalysisPanel from '../components/SectionAnalysisPanel.js';
 import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
 import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
@@ -127,7 +133,15 @@ function BeforeAfterCard() {
 
 // ── Audio preview player ──────────────────────────────────────────────────────
 
-function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number | undefined }) {
+function PreviewPlayer({
+  src,
+  targetLufs,
+  rerendering = false,
+}: {
+  src: string;
+  targetLufs?: number | undefined;
+  rerendering?: boolean;
+}) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying]   = useState(false);
   const [progress, setProgress] = useState(0);
@@ -137,6 +151,27 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
   // platforms.  We also gate on `playing` so the worklet only runs while
   // the user is actually listening.
   const [meterReady, setMeterReady] = useState(false);
+
+  // Playback-position preservation across src swaps (real-time re-renders).
+  // We capture position + playing state before the browser processes the new
+  // src, then restore in onLoadedMetadata.
+  const currentTimeRef    = useRef(0);
+  const wasPlayingRef     = useRef(false);
+  const pendingRestoreRef = useRef(false);
+  const isFirstSrcRef     = useRef(true);
+
+  // Runs synchronously after the DOM src attribute is updated but before the
+  // browser's media-element load algorithm fires pause / emptied events.
+  useLayoutEffect(() => {
+    if (isFirstSrcRef.current) {
+      isFirstSrcRef.current = false;
+      return;
+    }
+    if (!src) return;
+    // src has changed — flag restoration for the next loadedmetadata event.
+    pendingRestoreRef.current = true;
+    // wasPlayingRef / currentTimeRef are already up-to-date from onPlay/onTimeUpdate.
+  }, [src]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -161,23 +196,45 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
 
   return (
     <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
-      <p className="text-xs text-zinc-600 uppercase tracking-wider mb-3">프리뷰 (MP3)</p>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-zinc-600 uppercase tracking-wider">프리뷰 (MP3)</p>
+        {rerendering && (
+          <span className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+            <span className="w-3 h-3 rounded-full border border-zinc-600 border-t-zinc-400 animate-spin shrink-0" />
+            재렌더링 중…
+          </span>
+        )}
+      </div>
 
       {/* Hidden audio element */}
       <audio
         ref={audioRef}
         src={src}
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onEnded={() => { setPlaying(false); setProgress(0); }}
+        onPlay={() => { setPlaying(true); wasPlayingRef.current = true; }}
+        onPause={() => { setPlaying(false); wasPlayingRef.current = false; }}
+        onEnded={() => { setPlaying(false); setProgress(0); wasPlayingRef.current = false; }}
         onTimeUpdate={() => {
           const a = audioRef.current;
-          if (a && a.duration) setProgress(a.currentTime / a.duration);
+          if (a && a.duration) {
+            setProgress(a.currentTime / a.duration);
+            currentTimeRef.current = a.currentTime;
+          }
         }}
         onLoadedMetadata={() => {
           const a = audioRef.current;
-          if (a) setDuration(a.duration);
+          if (!a) return;
+          setDuration(a.duration);
           setMeterReady(true);
+          if (pendingRestoreRef.current) {
+            pendingRestoreRef.current = false;
+            const restoreTime = Math.min(currentTimeRef.current, a.duration - 0.05);
+            if (restoreTime > 0.1) {
+              a.currentTime = restoreTime;
+            }
+            if (wasPlayingRef.current) {
+              void a.play();
+            }
+          }
         }}
         onError={() => {
           // Codec / file-protocol / quarantined-resource failures land here.
@@ -825,6 +882,261 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
   );
 }
 
+// ── Slider row (right panel helper) ──────────────────────────────────────────
+
+function SliderRow({
+  label, value, min, max, step, unit, onChange,
+}: {
+  label: string; value: number; min: number; max: number; step: number; unit: string;
+  onChange: (v: number) => void;
+}) {
+  const display = unit === '%'
+    ? `${Math.round(value)}${unit}`
+    : unit === ''
+      ? value.toFixed(2)
+      : `${value >= 0 && unit === 'dB' ? '+' : ''}${value.toFixed(1)} ${unit}`;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-between items-baseline">
+        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">{label}</p>
+        <span className="text-[11px] font-mono text-zinc-400">{display}</span>
+      </div>
+      <input
+        type="range"
+        min={min} max={max} step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full cursor-pointer accent-indigo-500"
+        style={{ height: '4px' }}
+      />
+    </div>
+  );
+}
+
+// ── Right panel: fine-tuning controls ────────────────────────────────────────
+
+const STYLES: Array<{ id: MasteringStyle; label: string; hint: string }> = [
+  { id: 'balanced', label: 'Balanced', hint: '범용'   },
+  { id: 'warm',     label: 'Warm',     hint: '따뜻한' },
+  { id: 'bright',   label: 'Bright',   hint: '선명한' },
+  { id: 'punch',    label: 'Punch',    hint: '강한'   },
+];
+
+const LIMITERS: Array<{ id: LimiterStrength; label: string }> = [
+  { id: 'low',    label: '약하게' },
+  { id: 'medium', label: '보통'   },
+  { id: 'high',   label: '강하게' },
+];
+
+// Collapsible section wrapper.
+function Section({
+  title, defaultOpen = true, children,
+}: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border border-zinc-800 rounded-lg bg-zinc-900/30 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="no-drag w-full flex items-center justify-between px-3 py-2 hover:bg-zinc-800/30 transition-colors"
+      >
+        <span className="text-[10px] uppercase tracking-[0.14em] text-zinc-400 font-semibold">{title}</span>
+        <span className="text-[9px] text-zinc-600">{open ? '▼' : '▶'}</span>
+      </button>
+      {open && <div className="px-3 pb-3 pt-1 space-y-3 border-t border-zinc-800/60">{children}</div>}
+    </div>
+  );
+}
+
+function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
+  const options       = useAudioStore((s) => s.options);
+  const setStyle      = useAudioStore((s) => s.setStyle);
+  const updateOptions = useAudioStore((s) => s.updateOptions);
+
+  // Resolved display values for optional params (undefined = use mode default).
+  const satDisplay   = options.saturationAmount   != null ? Math.round(options.saturationAmount * 100) : 50;
+  const widthDisplay = options.stereoWidth        != null ? Math.round(options.stereoWidth       * 100) : 100;
+  const gainDisplay  = options.outputGainDb       ?? 0;
+  const dynEqDisplay = options.dynamicEqIntensity ?? 1.0;
+
+  return (
+    <div className="p-3 space-y-3">
+      {/* Header */}
+      <div>
+        <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-300 font-semibold">세밀 조정</p>
+        <p className="text-[10px] text-zinc-600 mt-0.5">슬라이더 조정 시 프리뷰가 자동 업데이트됩니다</p>
+      </div>
+
+      {/* ── EQ section ─────────────────────────────────────────────────────── */}
+      <Section title="EQ">
+        <div className="space-y-2">
+          <p className="text-[10px] text-zinc-600">스타일 (EQ 프리셋 결정)</p>
+          <div className="grid grid-cols-2 gap-1">
+            {STYLES.map(({ id, label, hint }) => (
+              <button
+                key={id}
+                onClick={() => setStyle(id)}
+                className={`no-drag px-2 py-1.5 rounded-md text-left transition-colors ${
+                  options.style === id
+                    ? 'bg-indigo-600/25 border border-indigo-500/50 text-indigo-300'
+                    : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-400 hover:border-zinc-600'
+                }`}
+              >
+                <span className="block text-[11px] font-medium">{label}</span>
+                <span className="block text-[9px] opacity-60 mt-0.5">{hint}</span>
+              </button>
+            ))}
+          </div>
+          <p className="text-[9px] text-zinc-700 leading-snug pt-1">
+            엔진은 스타일별 EQ 프리셋(low-shelf · presence · air)을 적용합니다.
+          </p>
+        </div>
+      </Section>
+
+      {/* ── Dynamics section ───────────────────────────────────────────────── */}
+      <Section title="Dynamics">
+        <SliderRow
+          label="Dynamic EQ 강도"
+          value={dynEqDisplay}
+          min={0} max={1.5} step={0.05}
+          unit=""
+          onChange={(v) => updateOptions({ dynamicEqIntensity: v })}
+        />
+        <div className="space-y-1.5">
+          <p className="text-[10px] text-zinc-600 uppercase tracking-wider">리미터 강도</p>
+          <div className="flex gap-1">
+            {LIMITERS.map(({ id, label }) => (
+              <button
+                key={id}
+                onClick={() => updateOptions({ limiterStrength: id })}
+                className={`no-drag flex-1 py-1.5 rounded-md text-[11px] transition-colors ${
+                  options.limiterStrength === id
+                    ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                    : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-500 hover:border-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Section>
+
+      {/* ── Stereo & Saturation ────────────────────────────────────────────── */}
+      <Section title="Stereo & Saturation">
+        <SliderRow
+          label="스테레오 폭"
+          value={widthDisplay}
+          min={50} max={200} step={5}
+          unit="%"
+          onChange={(v) => updateOptions({ stereoWidth: v / 100 })}
+        />
+        <SliderRow
+          label="포화 (Saturation)"
+          value={satDisplay}
+          min={0} max={100} step={1}
+          unit="%"
+          onChange={(v) => updateOptions({ saturationAmount: v / 100 })}
+        />
+      </Section>
+
+      {/* ── Loudness ───────────────────────────────────────────────────────── */}
+      <Section title="Loudness">
+        <SliderRow
+          label="목표 라우드니스"
+          value={options.targetLufs}
+          min={-20} max={-8} step={0.5}
+          unit="LUFS"
+          onChange={(v) => updateOptions({ targetLufs: v })}
+        />
+        <SliderRow
+          label="True Peak 한계"
+          value={options.targetTp}
+          min={-3} max={-0.1} step={0.1}
+          unit="dBTP"
+          onChange={(v) => updateOptions({ targetTp: v })}
+        />
+        <SliderRow
+          label="출력 게인"
+          value={gainDisplay}
+          min={-6} max={6} step={0.1}
+          unit="dB"
+          onChange={(v) => updateOptions({ outputGainDb: v })}
+        />
+        <div className="flex items-center justify-between pt-1">
+          <span className="text-[11px] text-zinc-400">AI 보정 적용</span>
+          <button
+            onClick={() => updateOptions({ applyAiCorrections: !options.applyAiCorrections })}
+            className={`no-drag relative w-9 h-5 rounded-full transition-colors ${
+              options.applyAiCorrections ? 'bg-indigo-600' : 'bg-zinc-700'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                options.applyAiCorrections ? 'translate-x-4 left-0.5' : 'translate-x-0 left-0.5'
+              }`}
+            />
+          </button>
+        </div>
+      </Section>
+
+      {/* ── Format ─────────────────────────────────────────────────────────── */}
+      <Section title="Format" defaultOpen={false}>
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] text-zinc-500">샘플레이트</span>
+          <div className="flex gap-1">
+            {([44100, 48000, 96000] as const).map((sr) => (
+              <button
+                key={sr}
+                onClick={() => updateOptions({ sampleRate: sr })}
+                className={`no-drag px-2 py-1 rounded text-[10px] transition-colors ${
+                  options.sampleRate === sr
+                    ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                    : 'bg-zinc-800 border border-zinc-700 text-zinc-600 hover:border-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {sr === 44100 ? '44.1k' : sr === 48000 ? '48k' : '96k'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] text-zinc-500">비트 심도</span>
+          <div className="flex gap-1">
+            {([16, 24] as const).map((bd) => (
+              <button
+                key={bd}
+                onClick={() => updateOptions({ bitDepth: bd })}
+                className={`no-drag px-2.5 py-1 rounded text-[10px] transition-colors ${
+                  options.bitDepth === bd
+                    ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                    : 'bg-zinc-800 border border-zinc-700 text-zinc-600 hover:border-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {bd}-bit
+              </button>
+            ))}
+          </div>
+        </div>
+      </Section>
+
+      {/* ── Re-master CTA ──────────────────────────────────────────────────── */}
+      <button
+        onClick={onReMaster}
+        className="no-drag w-full py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90 active:scale-[0.98]"
+        style={{
+          background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+          color: '#fff',
+          border: '1px solid rgba(99,102,241,0.4)',
+        }}
+      >
+        다시 마스터링
+      </button>
+
+      <div className="h-2" />
+    </div>
+  );
+}
+
 // ── ResultPage ────────────────────────────────────────────────────────────────
 
 export default function ResultPage() {
@@ -834,6 +1146,68 @@ export default function ResultPage() {
   const selectedFile    = useAudioStore((s) => s.selectedFile);
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
+
+  // ── Real-time preview re-render ─────────────────────────────────────────
+  // Lift previewSrc into state so TweakPanel slider changes can swap the
+  // audio source without a full re-master.
+  const initialPreviewSrc = masteringResult?.previewPath
+    ? toFileUrl(masteringResult.previewPath)
+    : masteringResult?.outputPath
+      ? toFileUrl(masteringResult.outputPath)
+      : '';
+  const [previewSrc, setPreviewSrc] = useState(initialPreviewSrc);
+  const [previewRenderState, setPreviewRenderState] = useState<PreviewRenderState>({ phase: 'idle' });
+
+  // Sync previewSrc when a full re-master completes (masteringResult changes).
+  useEffect(() => {
+    const newBase = masteringResult?.previewPath
+      ? toFileUrl(masteringResult.previewPath)
+      : masteringResult?.outputPath
+        ? toFileUrl(masteringResult.outputPath)
+        : '';
+    if (newBase) setPreviewSrc(newBase);
+  }, [masteringResult]);
+
+  // Build the controller once on mount and dispose on unmount.
+  const controllerRef = useRef<PreviewRenderController | null>(null);
+  useEffect(() => {
+    const transport = new IpcPreviewRenderTransport();
+    const ctrl = new PreviewRenderController(transport, {
+      debounceMs: 500,
+      onState: (s) => setPreviewRenderState(s),
+      onSuccess: (newPreviewPath) => {
+        setPreviewSrc(toFileUrl(newPreviewPath));
+      },
+      onError: (err) => {
+        // eslint-disable-next-line no-console
+        console.warn('[ResultPage] preview re-render failed:', err);
+      },
+    });
+    controllerRef.current = ctrl;
+    return () => {
+      ctrl.dispose();
+      controllerRef.current = null;
+    };
+  }, []);
+
+  // Watch options — request a re-render whenever they change.
+  // The controller debounces rapid changes and only honours the latest.
+  const isFirstOptionsRef = useRef(true);
+  useEffect(() => {
+    if (isFirstOptionsRef.current) {
+      isFirstOptionsRef.current = false;
+      return;
+    }
+    const ctrl = controllerRef.current;
+    if (!ctrl || !selectedFile) return;
+    ctrl.request({
+      sourceAudioPath: selectedFile,
+      options: options as Parameters<typeof ctrl.request>[0]['options'],
+      changedKeys: [],
+      patchHash: JSON.stringify(options),
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options]);
 
   // eslint-disable-next-line no-console
   console.log('[ResultPage] render entered');
@@ -893,11 +1267,7 @@ export default function ResultPage() {
     );
   }
 
-  const previewSrc = masteringResult?.previewPath
-    ? toFileUrl(masteringResult.previewPath)
-    : masteringResult?.outputPath
-      ? toFileUrl(masteringResult.outputPath)
-      : '';
+  // previewSrc is managed as state above (for real-time re-render swaps).
 
   // Phase-E: surface a stable mode label for the section analyzer
   // (which may suggest a different mode than the user chose).
@@ -927,8 +1297,10 @@ export default function ResultPage() {
         }
       />
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-lg mx-auto px-6 py-5 space-y-4 animate-in">
+      <div className="flex-1 flex overflow-hidden">
+        {/* ── Left: result content (scrollable) ─────────────────────────── */}
+        <div className="flex-1 min-w-0 overflow-y-auto">
+        <div className="px-6 py-5 space-y-4 animate-in">
 
           {/* ── 완료 메시지 ──────────────────────────────── */}
           <div className="rounded-xl bg-emerald-950/20 border border-emerald-900/40 px-4 py-3 flex items-center gap-3">
@@ -1024,6 +1396,7 @@ export default function ResultPage() {
           {previewSrc && (
             <PreviewPlayer
               src={previewSrc}
+              rerendering={previewRenderState.phase === 'pending' || previewRenderState.phase === 'rendering'}
               {...(typeof masteringResult?.analysisReport?.mastering?.targetLufs === 'number'
                 ? { targetLufs: masteringResult.analysisReport.mastering.targetLufs }
                 : {})}
@@ -1054,6 +1427,12 @@ export default function ResultPage() {
           )}
 
           <div className="h-4" />
+        </div>
+        </div>{/* end left scroll */}
+
+        {/* ── Right: fine-tuning panel (scrollable) ──────────────────────── */}
+        <div className="w-64 shrink-0 border-l border-zinc-800 bg-zinc-900/20 overflow-y-auto">
+          <TweakPanel onReMaster={handleReMaster} />
         </div>
       </div>
     </div>

@@ -148,6 +148,8 @@ export interface MasteringOptions {
   stereoWidth?: number;
   /** v3 — output gain dB (-6~+6). 누락 시 0. */
   outputGainDb?: number;
+  /** v3 — dynamic EQ intensity (0=off, 1=full). 누락 시 1.0. */
+  dynamicEqIntensity?: number;
 }
 
 export interface EqMoveReport {

@@ -1,6 +1,6 @@
 {
   "name": "aimaster-desktop-monorepo",
-  "version": "3.6.0-rc.1",
+  "version": "3.6.0",
   "private": true,
   "packageManager": "pnpm@9.0.0",
   "scripts": {

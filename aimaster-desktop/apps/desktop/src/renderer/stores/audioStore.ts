@@ -122,6 +122,8 @@ export interface MasteringOptions {
   saturationAmount?: number | undefined;     // undefined = 모드 기본값
   stereoWidth?: number | undefined;          // undefined = 모드 기본값
   outputGainDb?: number | undefined;         // undefined = 0
+  /** Dynamic EQ intensity (0=off, 1=full).  undefined = 1.0 (full). */
+  dynamicEqIntensity?: number | undefined;
   /** UI 상태: 어떤 빠른 프리셋이 선택되어 있는지 */
   quickPreset?: string | undefined;
 }

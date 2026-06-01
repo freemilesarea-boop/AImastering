@@ -35,6 +35,7 @@ export async function masterFile(
   if (options.saturationAmount != null) params['saturation_amount'] = options.saturationAmount;
   if (options.stereoWidth != null)      params['stereo_width']      = options.stereoWidth;
   if (options.outputGainDb != null)     params['output_gain_db']    = options.outputGainDb;
+  if (options.dynamicEqIntensity != null) params['dynamic_eq_intensity'] = options.dynamicEqIntensity;
 
   if (extras.preLoudness) {
     params['pre_loudness'] = {
