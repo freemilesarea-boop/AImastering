@@ -9,10 +9,15 @@
  *   QC summary chips
  *   YouTube Music notice
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
+import {
+  PreviewRenderController,
+  IpcPreviewRenderTransport,
+} from '../audio/engine-bridge/preview-render-client.js';
+import type { PreviewRenderState } from '../audio/engine-bridge/preview-render-client.js';
 import type {
   AnalysisReport as AnalysisReportType,
   MasteringMeta,
@@ -128,7 +133,15 @@ function BeforeAfterCard() {
 
 // ── Audio preview player ──────────────────────────────────────────────────────
 
-function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number | undefined }) {
+function PreviewPlayer({
+  src,
+  targetLufs,
+  rerendering = false,
+}: {
+  src: string;
+  targetLufs?: number | undefined;
+  rerendering?: boolean;
+}) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying]   = useState(false);
   const [progress, setProgress] = useState(0);
@@ -138,6 +151,27 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
   // platforms.  We also gate on `playing` so the worklet only runs while
   // the user is actually listening.
   const [meterReady, setMeterReady] = useState(false);
+
+  // Playback-position preservation across src swaps (real-time re-renders).
+  // We capture position + playing state before the browser processes the new
+  // src, then restore in onLoadedMetadata.
+  const currentTimeRef    = useRef(0);
+  const wasPlayingRef     = useRef(false);
+  const pendingRestoreRef = useRef(false);
+  const isFirstSrcRef     = useRef(true);
+
+  // Runs synchronously after the DOM src attribute is updated but before the
+  // browser's media-element load algorithm fires pause / emptied events.
+  useLayoutEffect(() => {
+    if (isFirstSrcRef.current) {
+      isFirstSrcRef.current = false;
+      return;
+    }
+    if (!src) return;
+    // src has changed — flag restoration for the next loadedmetadata event.
+    pendingRestoreRef.current = true;
+    // wasPlayingRef / currentTimeRef are already up-to-date from onPlay/onTimeUpdate.
+  }, [src]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -162,23 +196,45 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
 
   return (
     <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
-      <p className="text-xs text-zinc-600 uppercase tracking-wider mb-3">프리뷰 (MP3)</p>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-zinc-600 uppercase tracking-wider">프리뷰 (MP3)</p>
+        {rerendering && (
+          <span className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+            <span className="w-3 h-3 rounded-full border border-zinc-600 border-t-zinc-400 animate-spin shrink-0" />
+            재렌더링 중…
+          </span>
+        )}
+      </div>
 
       {/* Hidden audio element */}
       <audio
         ref={audioRef}
         src={src}
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onEnded={() => { setPlaying(false); setProgress(0); }}
+        onPlay={() => { setPlaying(true); wasPlayingRef.current = true; }}
+        onPause={() => { setPlaying(false); wasPlayingRef.current = false; }}
+        onEnded={() => { setPlaying(false); setProgress(0); wasPlayingRef.current = false; }}
         onTimeUpdate={() => {
           const a = audioRef.current;
-          if (a && a.duration) setProgress(a.currentTime / a.duration);
+          if (a && a.duration) {
+            setProgress(a.currentTime / a.duration);
+            currentTimeRef.current = a.currentTime;
+          }
         }}
         onLoadedMetadata={() => {
           const a = audioRef.current;
-          if (a) setDuration(a.duration);
+          if (!a) return;
+          setDuration(a.duration);
           setMeterReady(true);
+          if (pendingRestoreRef.current) {
+            pendingRestoreRef.current = false;
+            const restoreTime = Math.min(currentTimeRef.current, a.duration - 0.05);
+            if (restoreTime > 0.1) {
+              a.currentTime = restoreTime;
+            }
+            if (wasPlayingRef.current) {
+              void a.play();
+            }
+          }
         }}
         onError={() => {
           // Codec / file-protocol / quarantined-resource failures land here.
@@ -907,7 +963,7 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* Header */}
       <div>
         <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-300 font-semibold">세밀 조정</p>
-        <p className="text-[10px] text-zinc-600 mt-0.5">조정 후 [다시 마스터링] 클릭</p>
+        <p className="text-[10px] text-zinc-600 mt-0.5">슬라이더 조정 시 프리뷰가 자동 업데이트됩니다</p>
       </div>
 
       {/* ── EQ section ─────────────────────────────────────────────────────── */}
@@ -1091,6 +1147,68 @@ export default function ResultPage() {
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
 
+  // ── Real-time preview re-render ─────────────────────────────────────────
+  // Lift previewSrc into state so TweakPanel slider changes can swap the
+  // audio source without a full re-master.
+  const initialPreviewSrc = masteringResult?.previewPath
+    ? toFileUrl(masteringResult.previewPath)
+    : masteringResult?.outputPath
+      ? toFileUrl(masteringResult.outputPath)
+      : '';
+  const [previewSrc, setPreviewSrc] = useState(initialPreviewSrc);
+  const [previewRenderState, setPreviewRenderState] = useState<PreviewRenderState>({ phase: 'idle' });
+
+  // Sync previewSrc when a full re-master completes (masteringResult changes).
+  useEffect(() => {
+    const newBase = masteringResult?.previewPath
+      ? toFileUrl(masteringResult.previewPath)
+      : masteringResult?.outputPath
+        ? toFileUrl(masteringResult.outputPath)
+        : '';
+    if (newBase) setPreviewSrc(newBase);
+  }, [masteringResult]);
+
+  // Build the controller once on mount and dispose on unmount.
+  const controllerRef = useRef<PreviewRenderController | null>(null);
+  useEffect(() => {
+    const transport = new IpcPreviewRenderTransport();
+    const ctrl = new PreviewRenderController(transport, {
+      debounceMs: 500,
+      onState: (s) => setPreviewRenderState(s),
+      onSuccess: (newPreviewPath) => {
+        setPreviewSrc(toFileUrl(newPreviewPath));
+      },
+      onError: (err) => {
+        // eslint-disable-next-line no-console
+        console.warn('[ResultPage] preview re-render failed:', err);
+      },
+    });
+    controllerRef.current = ctrl;
+    return () => {
+      ctrl.dispose();
+      controllerRef.current = null;
+    };
+  }, []);
+
+  // Watch options — request a re-render whenever they change.
+  // The controller debounces rapid changes and only honours the latest.
+  const isFirstOptionsRef = useRef(true);
+  useEffect(() => {
+    if (isFirstOptionsRef.current) {
+      isFirstOptionsRef.current = false;
+      return;
+    }
+    const ctrl = controllerRef.current;
+    if (!ctrl || !selectedFile) return;
+    ctrl.request({
+      sourceAudioPath: selectedFile,
+      options: options as Parameters<typeof ctrl.request>[0]['options'],
+      changedKeys: [],
+      patchHash: JSON.stringify(options),
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options]);
+
   // eslint-disable-next-line no-console
   console.log('[ResultPage] render entered');
   // eslint-disable-next-line no-console
@@ -1149,11 +1267,7 @@ export default function ResultPage() {
     );
   }
 
-  const previewSrc = masteringResult?.previewPath
-    ? toFileUrl(masteringResult.previewPath)
-    : masteringResult?.outputPath
-      ? toFileUrl(masteringResult.outputPath)
-      : '';
+  // previewSrc is managed as state above (for real-time re-render swaps).
 
   // Phase-E: surface a stable mode label for the section analyzer
   // (which may suggest a different mode than the user chose).
@@ -1282,6 +1396,7 @@ export default function ResultPage() {
           {previewSrc && (
             <PreviewPlayer
               src={previewSrc}
+              rerendering={previewRenderState.phase === 'pending' || previewRenderState.phase === 'rendering'}
               {...(typeof masteringResult?.analysisReport?.mastering?.targetLufs === 'number'
                 ? { targetLufs: masteringResult.analysisReport.mastering.targetLufs }
                 : {})}
