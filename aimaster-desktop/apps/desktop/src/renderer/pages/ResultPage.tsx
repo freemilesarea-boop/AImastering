@@ -22,6 +22,7 @@ import type {
   DynamicEqReport,
 } from '@aimaster/shared-types';
 import { LIMITER_STRENGTH_LABELS } from '@aimaster/shared-types';
+import type { MasteringStyle, LimiterStrength } from '@aimaster/shared-types';
 import SectionAnalysisPanel from '../components/SectionAnalysisPanel.js';
 import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
 import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
@@ -825,6 +826,234 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
   );
 }
 
+// ── Slider row (right panel helper) ──────────────────────────────────────────
+
+function SliderRow({
+  label, value, min, max, step, unit, onChange,
+}: {
+  label: string; value: number; min: number; max: number; step: number; unit: string;
+  onChange: (v: number) => void;
+}) {
+  const display = unit === '%'
+    ? `${Math.round(value)}${unit}`
+    : `${value >= 0 && unit === 'dB' ? '+' : ''}${value.toFixed(1)} ${unit}`;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-between items-baseline">
+        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">{label}</p>
+        <span className="text-[11px] font-mono text-zinc-400">{display}</span>
+      </div>
+      <input
+        type="range"
+        min={min} max={max} step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full cursor-pointer accent-indigo-500"
+        style={{ height: '4px' }}
+      />
+    </div>
+  );
+}
+
+// ── Right panel: fine-tuning controls ────────────────────────────────────────
+
+const STYLES: Array<{ id: MasteringStyle; label: string; hint: string }> = [
+  { id: 'balanced', label: 'Balanced', hint: '범용'   },
+  { id: 'warm',     label: 'Warm',     hint: '따뜻한' },
+  { id: 'bright',   label: 'Bright',   hint: '선명한' },
+  { id: 'punch',    label: 'Punch',    hint: '강한'   },
+];
+
+const LIMITERS: Array<{ id: LimiterStrength; label: string }> = [
+  { id: 'low',    label: '약하게' },
+  { id: 'medium', label: '보통'   },
+  { id: 'high',   label: '강하게' },
+];
+
+function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
+  const options       = useAudioStore((s) => s.options);
+  const setStyle      = useAudioStore((s) => s.setStyle);
+  const updateOptions = useAudioStore((s) => s.updateOptions);
+
+  // Resolved display values for optional params (undefined = use mode default).
+  // We show a sensible starting point; once the user moves the slider, the
+  // explicit value replaces the mode default.
+  const satDisplay   = options.saturationAmount != null ? Math.round(options.saturationAmount * 100) : 50;
+  const widthDisplay = options.stereoWidth       != null ? Math.round(options.stereoWidth       * 100) : 100;
+  const gainDisplay  = options.outputGainDb      ?? 0;
+
+  return (
+    <div className="p-4 space-y-5">
+      {/* Header */}
+      <div>
+        <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-400 font-medium">세밀 조정</p>
+        <p className="text-[10px] text-zinc-700 mt-0.5">조정 후 아래 버튼으로 다시 마스터링</p>
+      </div>
+
+      {/* ── Style ──────────────────────────────────────────────────────────── */}
+      <div className="space-y-2">
+        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">스타일</p>
+        <div className="grid grid-cols-2 gap-1">
+          {STYLES.map(({ id, label, hint }) => (
+            <button
+              key={id}
+              onClick={() => setStyle(id)}
+              className={`no-drag px-2 py-2 rounded-lg text-left transition-colors ${
+                options.style === id
+                  ? 'bg-indigo-600/25 border border-indigo-500/50 text-indigo-300'
+                  : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-400 hover:border-zinc-600'
+              }`}
+            >
+              <span className="block text-xs font-medium">{label}</span>
+              <span className="block text-[9px] opacity-60 mt-0.5">{hint}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Loudness target ────────────────────────────────────────────────── */}
+      <SliderRow
+        label="목표 라우드니스"
+        value={options.targetLufs}
+        min={-20} max={-8} step={0.5}
+        unit="LUFS"
+        onChange={(v) => updateOptions({ targetLufs: v })}
+      />
+
+      {/* ── True Peak ──────────────────────────────────────────────────────── */}
+      <SliderRow
+        label="True Peak 한계"
+        value={options.targetTp}
+        min={-3} max={-0.1} step={0.1}
+        unit="dBTP"
+        onChange={(v) => updateOptions({ targetTp: v })}
+      />
+
+      {/* ── Limiter strength ───────────────────────────────────────────────── */}
+      <div className="space-y-2">
+        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">리미터 강도</p>
+        <div className="flex gap-1">
+          {LIMITERS.map(({ id, label }) => (
+            <button
+              key={id}
+              onClick={() => updateOptions({ limiterStrength: id })}
+              className={`no-drag flex-1 py-1.5 rounded-md text-[11px] transition-colors ${
+                options.limiterStrength === id
+                  ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                  : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-500 hover:border-zinc-600 hover:text-zinc-400'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Saturation ─────────────────────────────────────────────────────── */}
+      <SliderRow
+        label="포화 (Saturation)"
+        value={satDisplay}
+        min={0} max={100} step={1}
+        unit="%"
+        onChange={(v) => updateOptions({ saturationAmount: v / 100 })}
+      />
+
+      {/* ── Stereo width ───────────────────────────────────────────────────── */}
+      <SliderRow
+        label="스테레오 폭"
+        value={widthDisplay}
+        min={50} max={200} step={5}
+        unit="%"
+        onChange={(v) => updateOptions({ stereoWidth: v / 100 })}
+      />
+
+      {/* ── Output gain ────────────────────────────────────────────────────── */}
+      <SliderRow
+        label="출력 게인"
+        value={gainDisplay}
+        min={-6} max={6} step={0.1}
+        unit="dB"
+        onChange={(v) => updateOptions({ outputGainDb: v })}
+      />
+
+      {/* ── AI corrections toggle ──────────────────────────────────────────── */}
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] text-zinc-400">AI 보정 적용</span>
+        <button
+          onClick={() => updateOptions({ applyAiCorrections: !options.applyAiCorrections })}
+          className={`no-drag relative w-9 h-5 rounded-full transition-colors ${
+            options.applyAiCorrections ? 'bg-indigo-600' : 'bg-zinc-700'
+          }`}
+        >
+          <span
+            className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+              options.applyAiCorrections ? 'translate-x-4 left-0.5' : 'translate-x-0 left-0.5'
+            }`}
+          />
+        </button>
+      </div>
+
+      {/* ── Output format ──────────────────────────────────────────────────── */}
+      <div className="border-t border-zinc-800 pt-4 space-y-3">
+        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">출력 포맷</p>
+
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] text-zinc-500">샘플레이트</span>
+          <div className="flex gap-1">
+            {([44100, 48000, 96000] as const).map((sr) => (
+              <button
+                key={sr}
+                onClick={() => updateOptions({ sampleRate: sr })}
+                className={`no-drag px-2 py-1 rounded text-[10px] transition-colors ${
+                  options.sampleRate === sr
+                    ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                    : 'bg-zinc-800 border border-zinc-700 text-zinc-600 hover:border-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {sr === 44100 ? '44.1k' : sr === 48000 ? '48k' : '96k'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] text-zinc-500">비트 심도</span>
+          <div className="flex gap-1">
+            {([16, 24] as const).map((bd) => (
+              <button
+                key={bd}
+                onClick={() => updateOptions({ bitDepth: bd })}
+                className={`no-drag px-2.5 py-1 rounded text-[10px] transition-colors ${
+                  options.bitDepth === bd
+                    ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                    : 'bg-zinc-800 border border-zinc-700 text-zinc-600 hover:border-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {bd}-bit
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Re-master CTA ──────────────────────────────────────────────────── */}
+      <button
+        onClick={onReMaster}
+        className="no-drag w-full py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90 active:scale-[0.98]"
+        style={{
+          background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+          color: '#fff',
+          border: '1px solid rgba(99,102,241,0.4)',
+        }}
+      >
+        다시 마스터링
+      </button>
+
+      <div className="h-2" />
+    </div>
+  );
+}
+
 // ── ResultPage ────────────────────────────────────────────────────────────────
 
 export default function ResultPage() {
@@ -927,8 +1156,10 @@ export default function ResultPage() {
         }
       />
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-lg mx-auto px-6 py-5 space-y-4 animate-in">
+      <div className="flex-1 flex overflow-hidden">
+        {/* ── Left: result content (scrollable) ─────────────────────────── */}
+        <div className="flex-1 min-w-0 overflow-y-auto">
+        <div className="px-6 py-5 space-y-4 animate-in">
 
           {/* ── 완료 메시지 ──────────────────────────────── */}
           <div className="rounded-xl bg-emerald-950/20 border border-emerald-900/40 px-4 py-3 flex items-center gap-3">
@@ -1054,6 +1285,12 @@ export default function ResultPage() {
           )}
 
           <div className="h-4" />
+        </div>
+        </div>{/* end left scroll */}
+
+        {/* ── Right: fine-tuning panel (scrollable) ──────────────────────── */}
+        <div className="w-64 shrink-0 border-l border-zinc-800 bg-zinc-900/20 overflow-y-auto">
+          <TweakPanel onReMaster={handleReMaster} />
         </div>
       </div>
     </div>
