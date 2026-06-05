@@ -14,6 +14,7 @@
  */
 
 import { toFileUrl, fromFileUrl } from '../src/renderer/utils/fileUrl.js';
+import { localUrlToFsPath } from '../src/main/utils/localFileUrl.js';
 import {
   recordFailure,
   resetFailureLogForTests,
@@ -95,6 +96,36 @@ for (const [input, expected] of PATH_CASES) {
 
 check('fileUrl: empty input → empty string', () => {
   eq(toFileUrl(''), '', 'empty');
+});
+
+// ── 1b. main-side decode (localUrlToFsPath) ─────────────────────────────────
+// Regression guard for the Windows preview bug: a drive path round-trips
+// through toFileUrl → localUrlToFsPath WITHOUT a leading slash before the
+// drive letter, so pathToFileURL/path.resolve produce a valid `C:\…` path.
+// Posix paths must be returned verbatim.
+
+const MAIN_DECODE_CASES: Array<[string, string]> = [
+  // [original absolute path, expected decoded path on the main side]
+  ['/Users/foo/song.wav',                 '/Users/foo/song.wav'],
+  ['/Users/foo/My Track v2.wav',          '/Users/foo/My Track v2.wav'],
+  ['/Users/foo/Track #3.mp3',             '/Users/foo/Track #3.mp3'],
+  ['/Users/foo/What is this?.mp3',        '/Users/foo/What is this?.mp3'],
+  ['/Users/foo/음악/한글_파일명.wav',       '/Users/foo/음악/한글_파일명.wav'],
+  // Windows: the leading slash before the drive letter MUST be dropped.
+  ['C:\\Users\\foo\\song.wav',            'C:/Users/foo/song.wav'],
+  ['D:\\Music\\My Track #3.mp3',          'D:/Music/My Track #3.mp3'],
+];
+
+for (const [input, expected] of MAIN_DECODE_CASES) {
+  check(`mainDecode: toFileUrl → localUrlToFsPath "${input}"`, () => {
+    eq(localUrlToFsPath(toFileUrl(input)), expected, 'decoded fs path');
+  });
+}
+
+check('mainDecode: Windows path has no leading-slash-before-drive', () => {
+  const decoded = localUrlToFsPath(toFileUrl('C:\\Users\\foo\\song.wav'));
+  assert(!/^\/[A-Za-z]:/.test(decoded), `leading slash before drive survived: ${decoded}`);
+  assert(/^[A-Za-z]:/.test(decoded), `drive letter does not lead: ${decoded}`);
 });
 
 // ── 2. failure-log path redaction ──────────────────────────────────────────
