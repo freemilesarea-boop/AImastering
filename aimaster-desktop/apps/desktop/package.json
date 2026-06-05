@@ -2,7 +2,11 @@
   "name": "@aimaster/desktop",
   "version": "3.6.0",
   "description": "Louver Mastering AI — local commercial-grade mastering for desktop",
-  "author": "Louver",
+  "homepage": "https://github.com/freemilesarea-boop/AImastering",
+  "author": {
+    "name": "Louver",
+    "email": "251591504+freemilesarea-boop@users.noreply.github.com"
+  },
   "private": true,
   "main": "dist-electron/main/index.js",
   "scripts": {
