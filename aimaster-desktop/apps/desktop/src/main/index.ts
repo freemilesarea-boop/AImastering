@@ -1,6 +1,5 @@
 import { app, BrowserWindow, ipcMain, protocol, net } from 'electron';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { checkFFmpeg } from '@aimaster/audio-engine';
 import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
@@ -8,6 +7,7 @@ import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
 import { recordFailure } from './utils/failureLog.js';
+import { localUrlToFileUrl } from './utils/localFileUrl.js';
 
 // ── License gate REMOVED (v3.6.0-rc.1+1) ─────────────────────────────────────
 // The previous LICENSE_HMAC_SECRET startup gate has been removed for the
@@ -125,17 +125,11 @@ app.whenReady().then(() => {
   //      net.fetch returns 206 Partial Content; without it Chromium's media
   //      pipeline often fails to load metadata (duration stays 0:00).
   protocol.handle('aimaster-local', (request) => {
-    let absPath: string;
-    try {
-      const u = new URL(request.url);
-      // `standard` scheme → host is usually empty and the path is in pathname.
-      // On Windows a drive path may surface as the host (C:) — recombine.
-      const raw = u.host ? `/${u.host}${u.pathname}` : u.pathname;
-      absPath = decodeURIComponent(raw);
-    } catch {
-      absPath = decodeURIComponent(request.url.slice('aimaster-local://'.length));
-    }
-    const fileUrl = pathToFileURL(absPath).toString();
+    // localUrlToFsPath handles spaces / Korean / `#` / `?` and — critically
+    // for Windows — strips the leading slash before a drive letter so
+    // `/C:/Users/…` decodes to a valid `C:/Users/…` path (otherwise audio
+    // preview, waveforms, and live tweak all fail to load on Windows).
+    const fileUrl = localUrlToFileUrl(request.url);
     const range = request.headers.get('Range') ?? request.headers.get('range');
     return net.fetch(fileUrl, range ? { headers: { Range: range } } : undefined);
   });

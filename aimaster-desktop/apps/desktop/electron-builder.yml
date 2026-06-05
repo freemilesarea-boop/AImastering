@@ -135,6 +135,10 @@ artifactName: "${productName}-${version}-${os}-${arch}.${ext}"
 linux:
   category: Audio
   icon: public/icon.png
+  # Required by the .deb (fpm) target — without a maintainer the deb build
+  # aborts ("It is required to set Linux .deb package maintainer").  Uses the
+  # GitHub noreply address so no personal email is committed.
+  maintainer: Louver <251591504+freemilesarea-boop@users.noreply.github.com>
   mimeTypes:
     - audio/wav
     - audio/x-wav
