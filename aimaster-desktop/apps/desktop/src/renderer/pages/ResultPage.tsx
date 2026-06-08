@@ -217,16 +217,13 @@ function PreviewPlayer({
       </div>
 
       {/* Hidden audio element.
-          crossOrigin="anonymous" keeps the element CORS-clean so
-          createMediaElementSource (installNativeDsp) is never tainted —
-          a tainted source feeds SILENCE through the realtime DSP bus, which
-          would make playback + slider edits inaudible.  The aimaster-local
-          handler returns Access-Control-Allow-Origin:* so the CORS-mode
-          fetch this triggers is approved on every platform. */}
+          NOTE: do NOT set crossOrigin here.  The aimaster-local scheme is
+          registered `secure` but NOT `corsEnabled`, so a crossOrigin (CORS-mode)
+          request is blocked by Chromium and the element never loads.  The
+          scheme is trusted, so createMediaElementSource does not taint it. */}
       <audio
         ref={audioRef}
         src={src}
-        crossOrigin="anonymous"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => { setPlaying(false); setProgress(0); }}
