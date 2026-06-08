@@ -8,6 +8,7 @@ import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
 import { recordFailure } from './utils/failureLog.js';
 import { localUrlToFileUrl } from './utils/localFileUrl.js';
+import { applyBundledFfmpegEnv } from './utils/ffmpegEnv.js';
 
 // ── License gate REMOVED (v3.6.0-rc.1+1) ─────────────────────────────────────
 // The previous LICENSE_HMAC_SECRET startup gate has been removed for the
@@ -141,9 +142,14 @@ app.whenReady().then(() => {
   createWindow();
 
   // ── 2. FFmpeg 상태 확인 (실패해도 창은 유지) ──────────────────────────────
+  // Point AIMASTER_FFMPEG/FFPROBE at the bundled binaries BEFORE the first
+  // resolution so checkFFmpeg() — and every later consumer that resolves with
+  // no opts (export transcode, Rust offline render, the Python engine) —
+  // finds the bundled binary on a clean machine regardless of call order.
+  applyBundledFfmpegEnv(app.isPackaged, process.resourcesPath);
   let ffmpeg;
   try {
-    ffmpeg = checkFFmpeg();
+    ffmpeg = checkFFmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath });
     log.info('FFmpeg status', ffmpeg);
     if (!ffmpeg?.available) {
       recordFailure('ffmpeg', 'checkFFmpeg() returned available=false', { ffmpeg });

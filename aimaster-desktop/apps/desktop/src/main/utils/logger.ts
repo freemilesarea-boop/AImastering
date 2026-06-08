@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { app } from 'electron';
 
@@ -6,7 +7,10 @@ function logDir(): string {
   try {
     return path.join(app.getPath('userData'), 'logs');
   } catch {
-    return '/tmp/aimaster-logs';
+    // Fallback when userData is unavailable (e.g. very early startup).
+    // Use os.tmpdir() — `/tmp` does not exist on Windows, so a hardcoded
+    // POSIX path would silently drop logs there.
+    return path.join(os.tmpdir(), 'aimaster-logs');
   }
 }
 
