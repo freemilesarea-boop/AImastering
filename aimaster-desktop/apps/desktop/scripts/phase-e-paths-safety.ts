@@ -56,43 +56,33 @@ function eq<T>(a: T, b: T, msg: string): void {
 }
 
 // ── 1. fileUrl edge cases ──────────────────────────────────────────────────
+// v3.7 format: aimaster-local://local/<encodeURIComponent(normalizedPath)>.
+// The decisive properties are (a) a fixed `local` host so Chromium can't pull
+// a path segment / Windows drive into the authority, and (b) lossless
+// round-trip of the absolute path (with backslashes normalised to `/`).
 
-const PATH_CASES: Array<[string, string]> = [
-  // [input, expected URL]
-  ['/Users/foo/song.wav',
-   'aimaster-local:///Users/foo/song.wav'],
-
-  // Spaces
-  ['/Users/foo/My Track v2.wav',
-   'aimaster-local:///Users/foo/My%20Track%20v2.wav'],
-
-  // Hash (would otherwise truncate to a fragment in the real loader)
-  ['/Users/foo/Track #3.mp3',
-   'aimaster-local:///Users/foo/Track%20%233.mp3'],
-
-  // Question mark (would otherwise become a query string)
-  ['/Users/foo/What is this?.mp3',
-   'aimaster-local:///Users/foo/What%20is%20this%3F.mp3'],
-
-  // Korean (UTF-8) — `한글` → percent-encoded
-  ['/Users/foo/음악/한글_파일명.wav',
-   'aimaster-local:///Users/foo/%EC%9D%8C%EC%95%85/%ED%95%9C%EA%B8%80_%ED%8C%8C%EC%9D%BC%EB%AA%85.wav'],
-
-  // Windows backslash → normalised + drive preserved
-  ['C:\\Users\\foo\\song.wav',
-   'aimaster-local:///C%3A/Users/foo/song.wav'],
+const PATH_INPUTS: string[] = [
+  '/Users/foo/song.wav',
+  '/Users/foo/My Track v2.wav',          // spaces
+  '/Users/foo/Track #3.mp3',             // hash (would truncate to a fragment)
+  '/Users/foo/What is this?.mp3',        // question mark (would become a query)
+  '/Users/foo/음악/한글_파일명.wav',       // Korean (UTF-8)
+  'C:\\Users\\foo\\song.wav',            // Windows drive + backslashes
+  'D:\\Music\\곡 이름 (final) #3.mp3',    // Windows + Korean + spaces + hash
 ];
 
-for (const [input, expected] of PATH_CASES) {
-  check(`fileUrl: encode "${input}"`, () => {
-    eq(toFileUrl(input), expected, 'encoded URL');
+for (const input of PATH_INPUTS) {
+  const normalized = input.replace(/\\/g, '/');
+  check(`fileUrl: encode "${input}" → fixed local host, single segment`, () => {
+    const url = toFileUrl(input);
+    assert(url.startsWith('aimaster-local://local/'), `fixed host prefix: ${url}`);
+    // The path must be ONE encoded segment — no literal slash after the host.
+    const seg = url.slice('aimaster-local://local/'.length);
+    assert(!seg.includes('/'), `single encoded segment (no literal /): ${url}`);
+    eq(decodeURIComponent(seg), normalized, 'segment decodes to normalized path');
   });
   check(`fileUrl: round-trip "${input}"`, () => {
-    const expectedDecoded = input.replace(/\\/g, '/').startsWith('/')
-      ? input.replace(/\\/g, '/')
-      : '/' + input.replace(/\\/g, '/');
-    eq(fromFileUrl(toFileUrl(input)), expectedDecoded,
-       `round-trip equality for ${input}`);
+    eq(fromFileUrl(toFileUrl(input)), normalized, `round-trip equality for ${input}`);
   });
 }
 
@@ -129,6 +119,31 @@ check('mainDecode: Windows path has no leading-slash-before-drive', () => {
   assert(!/^\/[A-Za-z]:/.test(decoded), `leading slash before drive survived: ${decoded}`);
   assert(/^[A-Za-z]:/.test(decoded), `drive letter does not lead: ${decoded}`);
 });
+
+// ── 1b′. EXACT request.url forms Chromium hands the protocol handler ─────────
+// These strings were captured from a real Electron/Chromium run (not derived
+// from toFileUrl).  They are the ground-truth regression guard for the Windows
+// "preview + detailed controls dead" bug: the standard-scheme parser pulls the
+// first segment into the host, so the decoder MUST reconstruct the path from
+// BOTH the new fixed-host form and the legacy host-pulled form.
+
+const CHROMIUM_URL_CASES: Array<[string, string, string]> = [
+  // [label, request.url as Chromium delivers it, expected fs path]
+  // v3.7 fixed-host form (what toFileUrl now emits; Chromium keeps verbatim):
+  ['v3.7 posix',   'aimaster-local://local/%2Ftmp%2Faimtest%2Fplain.wav', '/tmp/aimtest/plain.wav'],
+  ['v3.7 windows', 'aimaster-local://local/C%3A%2FUsers%2Fme%2Fsong.wav', 'C:/Users/me/song.wav'],
+  ['v3.7 korean',  'aimaster-local://local/%2Ftmp%2F%EA%B3%A1%20(final).mp3', '/tmp/곡 (final).mp3'],
+  // Legacy forms still accepted (older renderer bundle / in-flight URLs):
+  ['legacy posix host-pulled', 'aimaster-local://tmp/aimtest/plain.wav', '/tmp/aimtest/plain.wav'],
+  ['legacy windows drive-in-path', 'aimaster-local:///C%3A/Users/me/song.wav', 'C:/Users/me/song.wav'],
+  ['legacy windows drive-as-host(enc)', 'aimaster-local://c%3a/Users/me/song.wav', 'c:/Users/me/song.wav'],
+];
+
+for (const [label, url, expected] of CHROMIUM_URL_CASES) {
+  check(`chromiumUrl: ${label}`, () => {
+    eq(localUrlToFsPath(url), expected, `decode ${url}`);
+  });
+}
 
 // ── 1c. bundled FFmpeg env resolution (resolveBundledFfmpegEnv) ─────────────
 // Regression guard for the "FFmpeg not found on a clean machine" bug: in a
