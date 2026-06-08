@@ -216,10 +216,17 @@ function PreviewPlayer({
         </span>
       </div>
 
-      {/* Hidden audio element */}
+      {/* Hidden audio element.
+          crossOrigin="anonymous" keeps the element CORS-clean so
+          createMediaElementSource (installNativeDsp) is never tainted —
+          a tainted source feeds SILENCE through the realtime DSP bus, which
+          would make playback + slider edits inaudible.  The aimaster-local
+          handler returns Access-Control-Allow-Origin:* so the CORS-mode
+          fetch this triggers is approved on every platform. */}
       <audio
         ref={audioRef}
         src={src}
+        crossOrigin="anonymous"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => { setPlaying(false); setProgress(0); }}
@@ -230,6 +237,13 @@ function PreviewPlayer({
         onLoadedMetadata={() => {
           const a = audioRef.current;
           if (a) setDuration(a.duration);
+          setMeterReady(true);
+        }}
+        onCanPlay={() => {
+          // Safety net: if `loadedmetadata` is flaky on a platform, `canplay`
+          // still arms the realtime DSP + meters (setMeterReady is idempotent).
+          const a = audioRef.current;
+          if (a && Number.isFinite(a.duration)) setDuration(a.duration);
           setMeterReady(true);
         }}
         onError={() => {
