@@ -72,7 +72,16 @@ jobs:
 
       - name: Install Node dependencies
         working-directory: aimaster-desktop
-        run: pnpm install --no-frozen-lockfile
+        # Retry: pnpm install downloads ffmpeg-static / electron binaries from
+        # GitHub release CDNs that intermittently return 504, which otherwise
+        # fails the whole build.
+        run: |
+          n=0
+          until pnpm install --no-frozen-lockfile; do
+            n=$((n+1)); [ $n -ge 5 ] && { echo "pnpm install failed after $n attempts"; exit 1; }
+            echo "::warning::pnpm install failed (transient binary-CDN 504?) — retry $n in $((n*15))s"
+            sleep $((n*15))
+          done
 
       - name: Copy FFmpeg binaries
         working-directory: aimaster-desktop/apps/desktop
@@ -109,7 +118,15 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage deb --x64 --publish ${{ steps.pub.outputs.flag }}
+        # Retry: electron-builder downloads the Electron binary from GitHub
+        # releases, which intermittently returns 504.
+        run: |
+          n=0
+          until pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage deb --x64 --publish ${{ steps.pub.outputs.flag }}; do
+            n=$((n+1)); [ $n -ge 4 ] && { echo "electron-builder failed after $n attempts"; exit 1; }
+            echo "::warning::electron-builder failed (transient Electron-CDN 504?) — retry $n in $((n*15))s"
+            sleep $((n*15))
+          done
 
       - name: List build outputs
         working-directory: aimaster-desktop/apps/desktop
@@ -188,7 +205,12 @@ jobs:
         run: |
           rm -rf node_modules apps/desktop/node_modules packages/*/node_modules
           pnpm store prune || true
-          pnpm install --no-frozen-lockfile
+          n=0
+          until pnpm install --no-frozen-lockfile; do
+            n=$((n+1)); [ $n -ge 5 ] && { echo "pnpm install failed after $n attempts"; exit 1; }
+            echo "::warning::pnpm install failed (transient binary-CDN 504?) — retry $n in $((n*15))s"
+            sleep $((n*15))
+          done
 
       # Filesystem-only diagnostic — never launches the electron binary
       # (which would fail on CI runners due to GUI / quarantine / sandbox).
@@ -441,7 +463,15 @@ jobs:
           npm_config_virtual_store_dir_max_length: "60"
         run: |
           cd D:\w\aimaster-desktop
-          pnpm install --no-frozen-lockfile
+          # Retry: ffmpeg-static / electron binary downloads from GitHub CDNs
+          # intermittently return 504.
+          for ($i = 1; $i -le 5; $i++) {
+            pnpm install --no-frozen-lockfile
+            if ($LASTEXITCODE -eq 0) { break }
+            Write-Host "::warning::pnpm install attempt $i failed (transient binary-CDN 504?) — retrying"
+            Start-Sleep -Seconds ($i * 15)
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       # Filesystem-only diagnostic — never launches the electron.exe binary
       # (avoids any GUI / signing / sandbox failure modes on CI).
@@ -542,7 +572,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd D:\w\aimaster-desktop
-          pnpm --filter @aimaster/desktop exec electron-builder --win nsis --x64 --publish ${{ steps.pub.outputs.flag }}
+          # Retry: electron-builder downloads the Electron win32 binary from
+          # GitHub releases, which intermittently returns 504 (the exact error
+          # that failed run #242: electron-v28.3.3-win32-x64.zip status 504).
+          for ($i = 1; $i -le 4; $i++) {
+            pnpm --filter @aimaster/desktop exec electron-builder --win nsis --x64 --publish ${{ steps.pub.outputs.flag }}
+            if ($LASTEXITCODE -eq 0) { break }
+            Write-Host "::warning::electron-builder attempt $i failed (transient Electron-CDN 504?) — retrying"
+            Start-Sleep -Seconds ($i * 15)
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: List build outputs
         run: |
