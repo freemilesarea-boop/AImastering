@@ -15,6 +15,7 @@
 
 import { toFileUrl, fromFileUrl } from '../src/renderer/utils/fileUrl.js';
 import { localUrlToFsPath } from '../src/main/utils/localFileUrl.js';
+import { resolveBundledFfmpegEnv } from '../src/main/utils/ffmpegEnv.js';
 import {
   recordFailure,
   resetFailureLogForTests,
@@ -126,6 +127,50 @@ check('mainDecode: Windows path has no leading-slash-before-drive', () => {
   const decoded = localUrlToFsPath(toFileUrl('C:\\Users\\foo\\song.wav'));
   assert(!/^\/[A-Za-z]:/.test(decoded), `leading slash before drive survived: ${decoded}`);
   assert(/^[A-Za-z]:/.test(decoded), `drive letter does not lead: ${decoded}`);
+});
+
+// ── 1c. bundled FFmpeg env resolution (resolveBundledFfmpegEnv) ─────────────
+// Regression guard for the "FFmpeg not found on a clean machine" bug: in a
+// packaged build the bundled binaries MUST be discoverable regardless of call
+// order.  The pure resolver maps resourcesPath → AIMASTER_FFMPEG/FFPROBE with
+// the right extension per platform, is a no-op in dev, and never clobbers a
+// value the environment already supplies.
+
+check('ffmpegEnv: packaged win32 → .exe binary names under resources/bin', () => {
+  // NOTE: the directory separator comes from the HOST path.join (this test
+  // runs on POSIX/CI), so assert the win32-specific bit — the `.exe`
+  // extension — plus the bin/ placement rather than an exact separator.
+  const v = resolveBundledFfmpegEnv({ packaged: true, resourcesPath: 'C:\\App\\resources', platform: 'win32' });
+  assert(/ffmpeg\.exe$/.test(v.AIMASTER_FFMPEG ?? ''),  `ffmpeg.exe suffix: ${v.AIMASTER_FFMPEG}`);
+  assert(/ffprobe\.exe$/.test(v.AIMASTER_FFPROBE ?? ''), `ffprobe.exe suffix: ${v.AIMASTER_FFPROBE}`);
+  assert(/[\\/]bin[\\/]ffmpeg\.exe$/.test(v.AIMASTER_FFMPEG ?? ''), `under bin/: ${v.AIMASTER_FFMPEG}`);
+});
+
+check('ffmpegEnv: packaged darwin → extensionless paths under resources/bin', () => {
+  const v = resolveBundledFfmpegEnv({ packaged: true, resourcesPath: '/App/Contents/Resources', platform: 'darwin' });
+  eq(v.AIMASTER_FFMPEG,  '/App/Contents/Resources/bin/ffmpeg',  'ffmpeg');
+  eq(v.AIMASTER_FFPROBE, '/App/Contents/Resources/bin/ffprobe', 'ffprobe');
+});
+
+check('ffmpegEnv: dev (not packaged) → no env set', () => {
+  const v = resolveBundledFfmpegEnv({ packaged: false, resourcesPath: '/App/Contents/Resources', platform: 'darwin' });
+  eq(v.AIMASTER_FFMPEG,  undefined, 'ffmpeg unset');
+  eq(v.AIMASTER_FFPROBE, undefined, 'ffprobe unset');
+});
+
+check('ffmpegEnv: missing resourcesPath → no env set', () => {
+  const v = resolveBundledFfmpegEnv({ packaged: true, platform: 'darwin' });
+  eq(v.AIMASTER_FFMPEG,  undefined, 'ffmpeg unset');
+  eq(v.AIMASTER_FFPROBE, undefined, 'ffprobe unset');
+});
+
+check('ffmpegEnv: existing override is never clobbered', () => {
+  const v = resolveBundledFfmpegEnv({
+    packaged: true, resourcesPath: '/App/Contents/Resources', platform: 'darwin',
+    existing: { ffmpeg: '/usr/local/bin/ffmpeg' },
+  });
+  eq(v.AIMASTER_FFMPEG,  undefined, 'existing ffmpeg kept (not returned)');
+  eq(v.AIMASTER_FFPROBE, '/App/Contents/Resources/bin/ffprobe', 'ffprobe still resolved');
 });
 
 // ── 2. failure-log path redaction ──────────────────────────────────────────
