@@ -1,5 +1,7 @@
-import { app, BrowserWindow, ipcMain, protocol, net } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol } from 'electron';
 import path from 'node:path';
+import fs from 'node:fs';
+import { Readable } from 'node:stream';
 import { checkFFmpeg } from '@aimaster/audio-engine';
 import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
@@ -7,7 +9,8 @@ import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
 import { recordFailure } from './utils/failureLog.js';
-import { localUrlToFileUrl } from './utils/localFileUrl.js';
+import { localUrlToFsPath } from './utils/localFileUrl.js';
+import { parseRangeHeader, contentTypeForPath } from './utils/localFileResponse.js';
 import { applyBundledFfmpegEnv } from './utils/ffmpegEnv.js';
 
 // ── License gate REMOVED (v3.6.0-rc.1+1) ─────────────────────────────────────
@@ -125,14 +128,74 @@ app.whenReady().then(() => {
   //   2. Range requests — forward the media element's `Range` header so
   //      net.fetch returns 206 Partial Content; without it Chromium's media
   //      pipeline often fails to load metadata (duration stays 0:00).
-  protocol.handle('aimaster-local', (request) => {
+  protocol.handle('aimaster-local', async (request) => {
     // localUrlToFsPath handles spaces / Korean / `#` / `?` and — critically
     // for Windows — strips the leading slash before a drive letter so
-    // `/C:/Users/…` decodes to a valid `C:/Users/…` path (otherwise audio
-    // preview, waveforms, and live tweak all fail to load on Windows).
-    const fileUrl = localUrlToFileUrl(request.url);
-    const range = request.headers.get('Range') ?? request.headers.get('range');
-    return net.fetch(fileUrl, range ? { headers: { Range: range } } : undefined);
+    // `/C:/Users/…` decodes to a valid `C:/Users/…` path.
+    //
+    // We serve the file ourselves with fs streaming (NOT net.fetch('file://'))
+    // so the HTTP `206 Partial Content` reply to the media element's Range
+    // probe is byte-identical on every platform.  Electron's net.fetch does
+    // not honour Range for file:// consistently on Windows, so the <audio>
+    // never got a 206, `loadedmetadata` never fired, and the preview player +
+    // realtime DSP (both gated on metadata) silently did nothing — the
+    // "preview/detailed controls don't respond on Windows" bug.
+    const corsHeaders: Record<string, string> = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Range',
+      'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+    };
+    let fsPath = '';
+    try {
+      fsPath = localUrlToFsPath(request.url);
+      const stat = await fs.promises.stat(fsPath);
+      if (!stat.isFile()) throw new Error('not a regular file');
+      const total = stat.size;
+      const type = contentTypeForPath(fsPath);
+      const rangeHeader = request.headers.get('Range') ?? request.headers.get('range');
+      const parsed = parseRangeHeader(rangeHeader, total);
+
+      if (parsed.kind === 'unsatisfiable') {
+        return new Response(null, {
+          status: 416,
+          headers: { ...corsHeaders, 'Content-Range': `bytes */${total}`, 'Accept-Ranges': 'bytes' },
+        });
+      }
+
+      if (parsed.kind === 'range') {
+        const { start, end } = parsed;
+        const stream = fs.createReadStream(fsPath, { start, end });
+        const body = Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>;
+        return new Response(body, {
+          status: 206,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': type,
+            'Content-Length': String(end - start + 1),
+            'Content-Range': `bytes ${start}-${end}/${total}`,
+            'Accept-Ranges': 'bytes',
+          },
+        });
+      }
+
+      // Whole file.
+      const stream = fs.createReadStream(fsPath);
+      const body = Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>;
+      return new Response(body, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': type,
+          'Content-Length': String(total),
+          'Accept-Ranges': 'bytes',
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('[aimaster-local] serve failed', { url: request.url, fsPath, msg });
+      recordFailure('preview', `aimaster-local serve failed: ${msg}`, { fsPath });
+      return new Response(null, { status: 404, headers: corsHeaders });
+    }
   });
 
   // ── 1. 창을 먼저 생성 ─────────────────────────────────────────────────────

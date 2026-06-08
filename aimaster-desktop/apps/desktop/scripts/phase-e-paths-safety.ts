@@ -16,6 +16,7 @@
 import { toFileUrl, fromFileUrl } from '../src/renderer/utils/fileUrl.js';
 import { localUrlToFsPath } from '../src/main/utils/localFileUrl.js';
 import { resolveBundledFfmpegEnv } from '../src/main/utils/ffmpegEnv.js';
+import { parseRangeHeader, contentTypeForPath } from '../src/main/utils/localFileResponse.js';
 import {
   recordFailure,
   resetFailureLogForTests,
@@ -171,6 +172,65 @@ check('ffmpegEnv: existing override is never clobbered', () => {
   });
   eq(v.AIMASTER_FFMPEG,  undefined, 'existing ffmpeg kept (not returned)');
   eq(v.AIMASTER_FFPROBE, '/App/Contents/Resources/bin/ffprobe', 'ffprobe still resolved');
+});
+
+// ── 1d. aimaster-local Range serving (parseRangeHeader / contentTypeForPath) ─
+// Regression guard for the Windows "preview + detailed controls don't respond"
+// bug: the media element issues a Range probe and needs a 206 reply or
+// `loadedmetadata` never fires.  We serve the file ourselves, so the Range
+// math must be correct for the forms the <audio> element emits.
+
+check('range: no header → full body', () => {
+  const r = parseRangeHeader(null, 1000);
+  eq(r.kind, 'full', 'null → full');
+  eq(parseRangeHeader(undefined, 1000).kind, 'full', 'undefined → full');
+  eq(parseRangeHeader('', 1000).kind, 'full', 'empty → full');
+});
+
+check('range: bytes=0- → full span as a 206 range', () => {
+  const r = parseRangeHeader('bytes=0-', 1000);
+  assert(r.kind === 'range', 'is range');
+  if (r.kind === 'range') { eq(r.start, 0, 'start'); eq(r.end, 999, 'end clamped to size-1'); }
+});
+
+check('range: bytes=100-199 → inclusive', () => {
+  const r = parseRangeHeader('bytes=100-199', 1000);
+  assert(r.kind === 'range', 'is range');
+  if (r.kind === 'range') { eq(r.start, 100, 'start'); eq(r.end, 199, 'end'); }
+});
+
+check('range: end past EOF is clamped', () => {
+  const r = parseRangeHeader('bytes=900-99999', 1000);
+  assert(r.kind === 'range', 'is range');
+  if (r.kind === 'range') { eq(r.start, 900, 'start'); eq(r.end, 999, 'clamped end'); }
+});
+
+check('range: suffix bytes=-200 → last 200 bytes', () => {
+  const r = parseRangeHeader('bytes=-200', 1000);
+  assert(r.kind === 'range', 'is range');
+  if (r.kind === 'range') { eq(r.start, 800, 'start'); eq(r.end, 999, 'end'); }
+});
+
+check('range: start beyond EOF → unsatisfiable (416)', () => {
+  eq(parseRangeHeader('bytes=2000-3000', 1000).kind, 'unsatisfiable', 'start past EOF');
+});
+
+check('range: empty file + concrete range → unsatisfiable', () => {
+  eq(parseRangeHeader('bytes=0-10', 0).kind, 'unsatisfiable', 'empty file');
+});
+
+check('range: multi-range / unknown unit → full body fallback', () => {
+  eq(parseRangeHeader('bytes=0-99,200-299', 1000).kind, 'full', 'multi-range');
+  eq(parseRangeHeader('items=0-10', 1000).kind, 'full', 'non-bytes unit');
+});
+
+check('contentType: audio + image extensions, case-insensitive', () => {
+  eq(contentTypeForPath('/x/song.wav'), 'audio/wav', 'wav');
+  eq(contentTypeForPath('C:\\x\\song.MP3'), 'audio/mpeg', 'MP3 upper');
+  eq(contentTypeForPath('/x/track.flac'), 'audio/flac', 'flac');
+  eq(contentTypeForPath('/x/wave.aiff'), 'audio/aiff', 'aiff');
+  eq(contentTypeForPath('/x/peaks.png'), 'image/png', 'png');
+  eq(contentTypeForPath('/x/unknown.xyz'), 'application/octet-stream', 'fallback');
 });
 
 // ── 2. failure-log path redaction ──────────────────────────────────────────
