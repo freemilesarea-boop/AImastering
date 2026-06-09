@@ -44,12 +44,21 @@
 - **테스트**: multiband-chain mock-AudioContext(4). **vitest 40/40**, 전체 pnpm test 그린, typecheck 0.
 - 기본 프리뷰 = WebAudio **근사**(출력 파일 = Rust 렌더가 정답). worklet 경로는 재빌드+활성 시 고정밀.
 
+### P2-4. 4밴드 M/S 스테레오 이미저 (DSP) ✅
+**커밋**: `feat(dsp): 4-band M/S stereo imager + shared crossover module (Phase 2)`
+- **`crossover.rs`** 신설: LR4 lowpass + subtractive 4밴드 split을 공유 모듈로 추출, 멀티밴드 컴프를 거기에 맞춰 리팩터(DRY, 동작 무변경).
+- **`imager.rs`**: 옵션 4밴드 M/S 폭 — Side를 4밴드로 분할(subtractive LR4)해 밴드별 width 적용(저역 모노 유지 + 고역 확장 등). unity widths면 Side를 정확 재구성(투명).
+- **config**: `ImagerConfig`에 `multiband_enabled` + `band_widths_pct[4]` + 크로스오버 3개(기본 OFF → 단일밴드 동작 불변).
+- 이미저 테스트 3종(unity 재구성 / 고역 Side 보존 / 저역 near-mono) — subtractive 위상 누설 정직 반영.
+- **검증**: `cargo test -p loui-dsp` 76/76 + 하니스, `cargo check --workspace` 0.
+- 노출(WASM setter + UI + 프리뷰)은 멀티밴드 컴프와 동일 패턴의 후속.
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
+| 4밴드 이미저 **노출**(WASM/UI/프리뷰) | P1 후속 | DSP 완료 |
 | 멀티밴드 프리셋(스타일별 기본값) | P2 | |
-| 멀티밴드 Stereo Imager (4밴드 M/S) | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 캐릭터) | P1 | 신규 모듈 |
 | Transient/Impact | P1 | 신규 모듈 |
 | Dynamic EQ 완전 파라메트릭화 (Rust) | P1 | |
