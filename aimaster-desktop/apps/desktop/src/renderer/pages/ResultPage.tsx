@@ -21,7 +21,9 @@ import {
   ensureElementGraph,
   setRealtimeInsert,
   setFreeEqBands,
+  setMultibandConfig,
 } from '../audio/shared-audio-graph.js';
+import { packMultibandArrays, sanitizeMultiband } from '../audio/multiband-config.js';
 import ParametricEqPanel from '../components/ParametricEqPanel.js';
 import MultibandPanel from '../components/MultibandPanel.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
@@ -222,6 +224,17 @@ function PreviewPlayer({
           if (msg && msg.type === 'metrics') sink.push(msg as unknown as WorkletMetrics);
         };
         node.port.postMessage({ type: 'config', config: optionsToChainConfig(options) });
+        // Seed the worklet with the current multiband config too.
+        {
+          const mb = useAudioStore.getState().multiband;
+          const s = sanitizeMultiband(mb);
+          const p = packMultibandArrays(mb);
+          node.port.postMessage({
+            type: 'multiband',
+            bypass: s.bypass, lo: s.xoverLoHz, mid: s.xoverMidHz, hi: s.xoverHiHz,
+            thresholds: p.thresholds, ratios: p.ratios, attacks: p.attacks, releases: p.releases, makeups: p.makeups,
+          });
+        }
         setRealtimeInsert(a, node); // worklet becomes the active insert
       } catch (err) {
         // eslint-disable-next-line no-console
@@ -261,6 +274,29 @@ function PreviewPlayer({
     if (!a || !meterReady) return;
     try { setFreeEqBands(a, parametricEqBands); } catch { /* ignore */ }
   }, [parametricEqBands, meterReady]);
+
+  // ── Multiband compressor — preview (native approx + worklet, when active) ──
+  const multiband = useAudioStore((s) => s.multiband);
+  // Native WebAudio approximation (default preview).
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try { setMultibandConfig(a, multiband); } catch { /* ignore */ }
+  }, [multiband, meterReady]);
+  // High-fidelity worklet path (opt-in): post the packed multiband to the node.
+  useEffect(() => {
+    const node = workletNodeRef.current;
+    if (!node) return;
+    try {
+      const s = sanitizeMultiband(multiband);
+      const p = packMultibandArrays(multiband);
+      node.port.postMessage({
+        type: 'multiband',
+        bypass: s.bypass, lo: s.xoverLoHz, mid: s.xoverMidHz, hi: s.xoverHiHz,
+        thresholds: p.thresholds, ratios: p.ratios, attacks: p.attacks, releases: p.releases, makeups: p.makeups,
+      });
+    } catch { /* ignore */ }
+  }, [multiband]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;

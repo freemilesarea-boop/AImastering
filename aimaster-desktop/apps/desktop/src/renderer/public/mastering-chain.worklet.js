@@ -81,6 +81,17 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
         this._bypass = !!msg.bypass;
       } else if (msg.type === 'reset') {
         if (this._ready && this._chain && this._chain.reset) this._chain.reset();
+      } else if (msg.type === 'multiband') {
+        // Guarded: setMultibandConfig exists only on wasm artifacts rebuilt
+        // after the binding landed.  On older artifacts this is a no-op.
+        if (this._ready && this._chain && typeof this._chain.setMultibandConfig === 'function') {
+          try {
+            this._chain.setMultibandConfig(
+              !!msg.bypass, msg.lo, msg.mid, msg.hi,
+              msg.thresholds, msg.ratios, msg.attacks, msg.releases, msg.makeups,
+            );
+          } catch (e) { /* keep audio alive */ }
+        }
       }
     };
   }

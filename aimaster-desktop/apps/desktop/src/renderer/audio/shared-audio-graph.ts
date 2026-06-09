@@ -26,8 +26,10 @@
 
 import { createNativeDspChain, type NativeDspChain } from './native-dsp-chain.js';
 import { createParametricEqChain, type ParametricEqChain } from './parametric-eq-chain.js';
+import { createMultibandChain, type MultibandChain } from './multiband-chain.js';
 import type { ParametricEqBand } from './modules/parametric-eq-model.js';
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
+import { isMultibandUnity, type MultibandConfig } from './multiband-config.js';
 
 export type AudioGraphEventKind =
   | 'audio-element-mounted'
@@ -150,6 +152,8 @@ interface ElementGraph {
   nativeDsp: NativeDspChain | null;
   /** Free parametric EQ chain (Phase 2) — sits between source and the insert. */
   freeEq: ParametricEqChain | null;
+  /** WebAudio multiband-compressor approximation — sits after the insert. */
+  multiband: MultibandChain | null;
   analysers: NativeAnalysers;
   splitter: ChannelSplitterNode;
   /** External passive taps (e.g. WASM analyzer-tap worklet). */
@@ -168,10 +172,15 @@ interface ElementGraph {
  */
 function rerouteBus(g: ElementGraph): void {
   try { g.source.disconnect(); } catch { /* ignore */ }
-  if (g.nativeDsp) { try { g.nativeDsp.output.disconnect(g.masterGain); } catch { /* ignore */ } }
+  if (g.nativeDsp) { try { g.nativeDsp.output.disconnect(); } catch { /* ignore */ } }
+  if (g.wasmInsert) { try { g.wasmInsert.disconnect(g.masterGain); } catch { /* ignore */ } }
   if (g.freeEq) {
     try { g.freeEq.input.disconnect(); } catch { /* ignore */ }
     try { g.freeEq.output.disconnect(); } catch { /* ignore */ }
+  }
+  if (g.multiband) {
+    try { g.multiband.input.disconnect(); } catch { /* ignore */ }
+    try { g.multiband.output.disconnect(); } catch { /* ignore */ }
   }
 
   // Pick the upstream-of-insert node: source itself, or freeEq's output when active.
@@ -180,17 +189,31 @@ function rerouteBus(g: ElementGraph): void {
     ? (g.source.connect(g.freeEq!.input), g.freeEq!.output)
     : g.source;
 
+  // The node feeding the pre-master stage: WASM insert, native DSP, or dry.
+  let insertTail: AudioNode;
+  let label: string;
   if (g.wasmInsert) {
     sourceTail.connect(g.wasmInsert);
-    try { g.wasmInsert.connect(g.masterGain); } catch { /* ignore (already connected) */ }
-    logAudioEvent('dsp-chain-connected', useFreeEq ? 'source → freeEQ → WASM → master' : 'source → WASM → master');
+    insertTail = g.wasmInsert;
+    label = useFreeEq ? 'source → freeEQ → WASM' : 'source → WASM';
   } else if (g.nativeDsp) {
     sourceTail.connect(g.nativeDsp.input);
-    g.nativeDsp.output.connect(g.masterGain);
-    logAudioEvent('fallback-activated', useFreeEq ? 'source → freeEQ → native DSP → master' : 'source → native DSP → master');
+    insertTail = g.nativeDsp.output;
+    label = useFreeEq ? 'source → freeEQ → native DSP' : 'source → native DSP';
   } else {
-    sourceTail.connect(g.masterGain);
-    logAudioEvent('dsp-chain-removed', useFreeEq ? 'source → freeEQ → master' : 'source → master (direct)');
+    insertTail = sourceTail;
+    label = useFreeEq ? 'source → freeEQ' : 'source';
+  }
+
+  // Optional multiband stage between the insert tail and masterGain.
+  const useMultiband = !!g.multiband && g.multiband.isActive();
+  if (useMultiband) {
+    insertTail.connect(g.multiband!.input);
+    g.multiband!.output.connect(g.masterGain);
+    logAudioEvent('dsp-chain-connected', `${label} → multiband → master`);
+  } else {
+    insertTail.connect(g.masterGain);
+    logAudioEvent(g.wasmInsert ? 'dsp-chain-connected' : g.nativeDsp ? 'fallback-activated' : 'dsp-chain-removed', `${label} → master`);
   }
 }
 
@@ -255,7 +278,7 @@ export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000)
 
   const graph: ElementGraph = {
     ctx: context, source, masterGain, silentSink,
-    wasmInsert: null, nativeDsp: null, freeEq: null,
+    wasmInsert: null, nativeDsp: null, freeEq: null, multiband: null,
     analysers: { ctx: context, main, left, right }, splitter,
     passiveTaps: new Set(), sourceCreated: true,
   };
@@ -339,6 +362,23 @@ export function setFreeEqBands(media: HTMLMediaElement, bands: ParametricEqBand[
   g.freeEq?.applyBands(bands);
   // Routing only needs to flip when the active-vs-bypassed state of free EQ
   // might have changed.  isActive() already reflects the post-applyBands state.
+  rerouteBus(g);
+}
+
+/**
+ * Set the multiband-compressor config for an element's preview chain.  Lazily
+ * creates the WebAudio multiband approximation on first active call and
+ * re-routes the bus to include it.  When the config is unity / bypassed and no
+ * chain exists yet, this is a cheap no-op (no routing change, no coloration).
+ */
+export function setMultibandConfig(media: HTMLMediaElement, cfg: MultibandConfig): void {
+  const g = graphs.get(media);
+  if (!g) return;
+  const willBeActive = !isMultibandUnity(cfg);
+  // Fast path: stayed off and was never created — no routing change.
+  if (!willBeActive && !g.multiband) return;
+  if (!g.multiband) g.multiband = createMultibandChain(g.ctx);
+  g.multiband.apply(cfg);
   rerouteBus(g);
 }
 
