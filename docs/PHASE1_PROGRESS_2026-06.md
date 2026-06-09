@@ -56,10 +56,10 @@
 - 차단: 드래그 EQ UI 추가는 가치 있으나 **헤드리스에서 시각 검증 불가**. 모델→`setFreeEqBands` 매핑 셀프테스트 + 최소 컨트롤로 다음 세션 진행 권장.
 
 ### C-2. 엔진 일원화(Rust를 기본 export로 승격)
-- (a) **결과 형태 동등화 → 완료**(A-2 참조). 더 이상 차단 아님.
-- (b) **렌더러 export 라우팅 스위치** (🟡 다음) — MasteringPage/HomePage가 `isRustOfflineRenderEnabled()`(기본 OFF로 변경 권장)일 때 `audio:master-rust-experimental`로 라우팅 + Python 폴백. 헤드리스에서 핸들러/라우팅 단위 검증 가능.
-- (c) **톤/EQ 파리티 + 실기기 A/B QA** (출시 전) — 안전·라우드니스 셀프테스트는 통과하나 Python과의 음색 A/B는 헤드리스 불가.
-- (d) **support-matrix/test:export-support** 갱신(정직성 게이트) — 승격 시.
+- (a) **결과 형태 동등화 → 완료**(A-2 참조).
+- (b) **렌더러 export 라우팅 스위치 → 완료** — `audio/export-backend.ts`의 `masterWithPreferredBackend()`가 `isRustOfflineRenderEnabled()` 시 `audio:master-rust-experimental`로 라우팅 + Python 폴백(throw/unusable). MasteringPage(단일)·HomePage(배치) 연결. `optionsToChainConfig`를 공유 정본으로 통합(ResultPage가 import). 플래그 **기본 ON→OFF**(라우팅이 살아났으므로 실기기 QA 전 default-on 금지). `export-backend-selftest`(24 checks). **기본 OFF → 프로덕션 export는 여전히 Python(무회귀).**
+- (c) **톤/EQ 파리티 + 실기기 A/B QA** (🔴 출시 전, 헤드리스 불가) — 플래그 ON 후 실파일 Rust vs Python A/B.
+- (d) **support-matrix/test:export-support** 갱신(정직성 게이트) — 승격(기본 ON) 시.
 
 ### C-3. 렌더러 단위테스트 도입 (🟡)
 - 현재 렌더러 테스트는 `tsx` 셀프테스트들(이번에 1종 추가). 정식 `vitest` 도입은 별도 작업으로 권장(저위험).
