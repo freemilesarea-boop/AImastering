@@ -35,12 +35,25 @@
 - **테스트**: multiband-config(5)+MultibandPanel(5)+export-backend 첨부(2). **vitest 36/36**, 전체 pnpm test 그린, typecheck 0.
 - **런타임 활성화**: wasm/node 아티팩트 **재빌드** + Rust export 플래그 ON(C-2b, opt-in) 필요 → 빌드/디바이스 단계. 기본 경로 무변경(무회귀).
 
+### P2-3. 멀티밴드 실시간 프리뷰 (WebAudio 근사 + worklet) ✅
+**커밋**: `feat(multiband): realtime preview — WebAudio approx + worklet message (Phase 2)`
+- **`multiband-chain.ts`**: WebAudio 4밴드 근사(cascaded LP/HP 크로스오버 → 밴드별 DynamicsCompressorNode → makeup → 합산), free EQ처럼 spliceable. idle(unity/bypass)이면 미삽입 → 무착색.
+- **shared-audio-graph**: `rerouteBus`에 insert tail↔masterGain 사이 옵션 멀티밴드 단계 스레딩 + `setMultibandConfig(media,cfg)`(lazy-create+reroute, unity면 no-op).
+- **worklet**: `'multiband'` 메시지 → 가드된 `chain.setMultibandConfig`(미재빌드 아티팩트에선 no-op).
+- **ResultPage**: 멀티밴드 변경 시 native 근사 적용 + worklet에 packed 멀티밴드 post(변경/연결 시).
+- **테스트**: multiband-chain mock-AudioContext(4). **vitest 40/40**, 전체 pnpm test 그린, typecheck 0.
+- 기본 프리뷰 = WebAudio **근사**(출력 파일 = Rust 렌더가 정답). worklet 경로는 재빌드+활성 시 고정밀.
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| 멀티밴드 프리뷰(worklet 메시지) + native-dsp 근사 | P1 | 현재 Export만 적용, 프리뷰 미반영 |
 | 멀티밴드 프리셋(스타일별 기본값) | P2 | |
+| 멀티밴드 Stereo Imager (4밴드 M/S) | P1 | imager.rs 확장 |
+| Saturation/Exciter (멀티밴드, 캐릭터) | P1 | 신규 모듈 |
+| Transient/Impact | P1 | 신규 모듈 |
+| Dynamic EQ 완전 파라메트릭화 (Rust) | P1 | |
+| De-esser 적응형 / 멀티밴드 GR 메터 연결 | P2 | |
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 2~4 캐릭터) | P1 | 신규 모듈 |
 | Transient/Impact (멀티밴드 attack/sustain) | P1 | 신규 모듈 |
