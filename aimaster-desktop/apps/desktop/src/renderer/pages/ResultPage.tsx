@@ -13,7 +13,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
-import type { MasteringOptions, RealtimeDspOverrides } from '../stores/audioStore.js';
+import type { MasteringOptions } from '../stores/audioStore.js';
 import {
   installNativeDsp,
   applyNativeDspConfig,
@@ -21,7 +21,7 @@ import {
   ensureElementGraph,
   setRealtimeInsert,
 } from '../audio/shared-audio-graph.js';
-import type { RealtimeChainConfig } from '../audio/realtime-mastering-chain.js';
+import { optionsToChainConfig } from '../audio/export-backend.js';
 import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
 import { createMetricsSink, type WorkletMetrics } from '../audio/realtime-metrics-sink.js';
@@ -950,43 +950,6 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
       )}
     </div>
   );
-}
-
-// ── Realtime DSP wiring ──────────────────────────────────────────────────────
-
-/**
- * Build a RealtimeChainConfig from a MasteringOptions object.  This is the
- * single source of truth for how store options map to the live WebAudio
- * DSP chain — used by the audio-element effect to push parameter changes
- * to the chain in real time.  Falls back to sensible defaults so the chain
- * never receives NaN even before the user touches a slider.
- */
-function optionsToChainConfig(opts: MasteringOptions): RealtimeChainConfig {
-  const rt: RealtimeDspOverrides = opts.rt ?? {};
-  return {
-    inputGainDb:    0,
-    eqLowCutHz:     rt.eqLowCutHz     ?? 20,
-    eqLowShelfDb:   rt.eqLowShelfDb   ?? 0,
-    eqPresenceDb:   rt.eqPresenceDb   ?? 0,
-    eqAirDb:        rt.eqAirDb        ?? 0,
-    eqAdaptive:     opts.applyAiCorrections,
-    eqBypass:       rt.eqBypass       ?? false,
-    dynThresholdDb: rt.dynThresholdDb ?? -18,
-    dynRatio:       rt.dynRatio       ?? 2,
-    dynAttackMs:    rt.dynAttackMs    ?? 10,
-    dynReleaseMs:   rt.dynReleaseMs   ?? 120,
-    dynMixPct:      rt.dynMixPct      ?? 100,
-    dynBypass:      rt.dynBypass      ?? false,
-    imgWidthPct:    rt.imgWidthPct    ?? (opts.stereoWidth != null ? opts.stereoWidth * 100 : 100),
-    imgLowMonoHz:   rt.imgLowMonoHz   ?? 120,
-    imgBypass:      rt.imgBypass      ?? false,
-    limCeilingDbtp: rt.limCeilingDbtp ?? opts.targetTp ?? -1,
-    limLookaheadMs: 2.5,
-    limIsp:         true,
-    limBypass:      rt.limBypass      ?? false,
-    outputGainDb:   opts.outputGainDb ?? 0,
-    masterBypass:   rt.masterBypass   ?? false,
-  };
 }
 
 // ── Slider row (right panel helper) ──────────────────────────────────────────

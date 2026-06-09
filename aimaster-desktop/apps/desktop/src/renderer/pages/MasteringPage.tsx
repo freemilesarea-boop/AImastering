@@ -11,6 +11,7 @@ import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore, toStructuredError } from '../stores/audioStore.js';
 import type { StructuredError } from '../stores/audioStore.js';
 import type { MasteringResult, AudioAnalysisResult } from '@aimaster/shared-types';
+import { masterWithPreferredBackend } from '../audio/export-backend.js';
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
 
@@ -229,11 +230,11 @@ export default function MasteringPage() {
       // eslint-disable-next-line no-console
       console.log('[MasteringPage] ipc invoke start — audio:master');
       const result = await Promise.race([
-        window.electronAPI!.invoke(
-          'audio:master',
-          selectedFile,
-          '',
-          {
+        masterWithPreferredBackend({
+          invoke: window.electronAPI!.invoke,
+          sourcePath: selectedFile,
+          options,
+          pythonOptions: {
             style:              options.style,
             targetLufs:         options.targetLufs,
             targetTp:           options.targetTp,
@@ -247,8 +248,8 @@ export default function MasteringPage() {
             dynamicEqIntensity: options.dynamicEqIntensity,
             aiDetections:       analysisToUse?.aiDetection ?? {},
           },
-          { preLoudness: analysisToUse?.loudness },
-        ) as Promise<MasteringResult>,
+          pythonExtras: { preLoudness: analysisToUse?.loudness },
+        }) as Promise<MasteringResult>,
         timeoutPromise,
       ]);
       // eslint-disable-next-line no-console

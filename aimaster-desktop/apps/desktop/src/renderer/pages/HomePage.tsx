@@ -37,6 +37,7 @@ import { LouiPresetSlideOver } from '../components/product/LouiPresetSlideOver.j
 import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
 import { louiPresetToMasteringOptions } from '../audio/presets/preset-to-options.js';
 import { getLastUsedPreset, setLastUsedPreset } from '../audio/presets/preset-storage.js';
+import { masterWithPreferredBackend } from '../audio/export-backend.js';
 import { LouiHomeHero } from '../components/home/LouiHomeHero.js';
 import { loui, louiAlpha } from '../theme/loui-home.js';
 
@@ -906,11 +907,11 @@ export default function HomePage() {
           ? louiPresetToMasteringOptions(getPreset(item.presetId)!)
           : null;
         const itemOptions = presetOverride ? { ...options, ...presetOverride } : options;
-        const result = await window.electronAPI!.invoke(
-          'audio:master',
-          item.filePath,
-          '',
-          {
+        const result = await masterWithPreferredBackend({
+          invoke: window.electronAPI!.invoke,
+          sourcePath: item.filePath,
+          options: itemOptions,
+          pythonOptions: {
             style:              itemOptions.style,
             targetLufs:         itemOptions.targetLufs,
             targetTp:           itemOptions.targetTp,
@@ -923,10 +924,8 @@ export default function HomePage() {
             outputGainDb:       itemOptions.outputGainDb,
             aiDetections:       analysis.aiDetection ?? {},
           },
-          {
-            preLoudness: analysis.loudness,
-          },
-        ) as MasteringResult;
+          pythonExtras: { preLoudness: analysis.loudness },
+        }) as MasteringResult;
 
         cleanupProgress();
         updateQueueItem(item.id, { masteringResult: result, status: 'done', progress: 100 });
