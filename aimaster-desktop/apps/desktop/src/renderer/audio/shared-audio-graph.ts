@@ -27,9 +27,11 @@
 import { createNativeDspChain, type NativeDspChain } from './native-dsp-chain.js';
 import { createParametricEqChain, type ParametricEqChain } from './parametric-eq-chain.js';
 import { createMultibandChain, type MultibandChain } from './multiband-chain.js';
+import { createImagerMultibandChain, type ImagerMultibandChain } from './imager-multiband-chain.js';
 import type { ParametricEqBand } from './modules/parametric-eq-model.js';
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
 import { isMultibandUnity, type MultibandConfig } from './multiband-config.js';
+import { isImagerMultibandUnity, type ImagerMultibandConfig } from './imager-config.js';
 
 export type AudioGraphEventKind =
   | 'audio-element-mounted'
@@ -154,6 +156,8 @@ interface ElementGraph {
   freeEq: ParametricEqChain | null;
   /** WebAudio multiband-compressor approximation — sits after the insert. */
   multiband: MultibandChain | null;
+  /** WebAudio 4-band M/S imager approximation — sits after the multiband. */
+  imagerMb: ImagerMultibandChain | null;
   analysers: NativeAnalysers;
   splitter: ChannelSplitterNode;
   /** External passive taps (e.g. WASM analyzer-tap worklet). */
@@ -182,6 +186,10 @@ function rerouteBus(g: ElementGraph): void {
     try { g.multiband.input.disconnect(); } catch { /* ignore */ }
     try { g.multiband.output.disconnect(); } catch { /* ignore */ }
   }
+  if (g.imagerMb) {
+    try { g.imagerMb.input.disconnect(); } catch { /* ignore */ }
+    try { g.imagerMb.output.disconnect(); } catch { /* ignore */ }
+  }
 
   // Pick the upstream-of-insert node: source itself, or freeEq's output when active.
   const useFreeEq = !!g.freeEq && g.freeEq.isActive();
@@ -205,16 +213,25 @@ function rerouteBus(g: ElementGraph): void {
     label = useFreeEq ? 'source → freeEQ' : 'source';
   }
 
-  // Optional multiband stage between the insert tail and masterGain.
-  const useMultiband = !!g.multiband && g.multiband.isActive();
-  if (useMultiband) {
-    insertTail.connect(g.multiband!.input);
-    g.multiband!.output.connect(g.masterGain);
-    logAudioEvent('dsp-chain-connected', `${label} → multiband → master`);
-  } else {
-    insertTail.connect(g.masterGain);
-    logAudioEvent(g.wasmInsert ? 'dsp-chain-connected' : g.nativeDsp ? 'fallback-activated' : 'dsp-chain-removed', `${label} → master`);
+  // Optional post-insert stages (in order), spliced between the insert tail
+  // and masterGain.  Each is included only when active, so an idle stage adds
+  // no nodes to the signal path.
+  const stages: Array<{ input: AudioNode; output: AudioNode; name: string }> = [];
+  if (g.multiband && g.multiband.isActive()) stages.push({ input: g.multiband.input, output: g.multiband.output, name: 'multiband' });
+  if (g.imagerMb && g.imagerMb.isActive()) stages.push({ input: g.imagerMb.input, output: g.imagerMb.output, name: 'imagerMS' });
+
+  let tail = insertTail;
+  for (const st of stages) {
+    tail.connect(st.input);
+    tail = st.output;
   }
+  tail.connect(g.masterGain);
+
+  const suffix = stages.length ? ` → ${stages.map((s) => s.name).join(' → ')}` : '';
+  logAudioEvent(
+    g.wasmInsert ? 'dsp-chain-connected' : g.nativeDsp ? 'fallback-activated' : 'dsp-chain-removed',
+    `${label}${suffix} → master`,
+  );
 }
 
 const graphs = new WeakMap<HTMLMediaElement, ElementGraph>();
@@ -278,7 +295,7 @@ export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000)
 
   const graph: ElementGraph = {
     ctx: context, source, masterGain, silentSink,
-    wasmInsert: null, nativeDsp: null, freeEq: null, multiband: null,
+    wasmInsert: null, nativeDsp: null, freeEq: null, multiband: null, imagerMb: null,
     analysers: { ctx: context, main, left, right }, splitter,
     passiveTaps: new Set(), sourceCreated: true,
   };
@@ -379,6 +396,21 @@ export function setMultibandConfig(media: HTMLMediaElement, cfg: MultibandConfig
   if (!willBeActive && !g.multiband) return;
   if (!g.multiband) g.multiband = createMultibandChain(g.ctx);
   g.multiband.apply(cfg);
+  rerouteBus(g);
+}
+
+/**
+ * Set the 4-band M/S imager config for an element's preview chain.  Lazily
+ * creates the WebAudio approximation on first active call; unity / disabled is
+ * a cheap no-op (no routing change, no coloration).
+ */
+export function setImagerMultibandConfig(media: HTMLMediaElement, cfg: ImagerMultibandConfig): void {
+  const g = graphs.get(media);
+  if (!g) return;
+  const willBeActive = !isImagerMultibandUnity(cfg);
+  if (!willBeActive && !g.imagerMb) return;
+  if (!g.imagerMb) g.imagerMb = createImagerMultibandChain(g.ctx);
+  g.imagerMb.apply(cfg);
   rerouteBus(g);
 }
 

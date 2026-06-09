@@ -478,10 +478,13 @@ impl LouiMasteringChain {
         output_gain_db: f64,
         master_bypass: bool,
     ) {
-        // Preserve the multiband config across flat-arg setConfig calls (the
-        // realtime preview pushes this on every slider move); multiband is set
-        // separately via setMultibandConfig.
-        let preserved_multiband = self.inner.config().multiband;
+        // Preserve config set via the dedicated setters across flat-arg
+        // setConfig calls (the realtime preview pushes setConfig on every
+        // slider move): multiband (setMultibandConfig) + the imager's 4-band
+        // M/S fields (setImagerMultiband).
+        let prev = self.inner.config();
+        let preserved_multiband = prev.multiband;
+        let preserved_imager = prev.imager;
         self.inner.set_config(MasteringChainConfig {
             input_gain_db,
             eq: EqConfig {
@@ -499,8 +502,12 @@ impl LouiMasteringChain {
             multiband: preserved_multiband,
             imager: ImagerConfig {
                 width_pct: img_width_pct, low_mono_hz: img_low_mono_hz, bypass: img_bypass,
-                // 4-band M/S is configured separately; default it (single-band).
-                ..ImagerConfig::default()
+                // 4-band M/S is configured via setImagerMultiband; preserve it.
+                multiband_enabled: preserved_imager.multiband_enabled,
+                band_widths_pct: preserved_imager.band_widths_pct,
+                xover_lo_hz: preserved_imager.xover_lo_hz,
+                xover_mid_hz: preserved_imager.xover_mid_hz,
+                xover_hi_hz: preserved_imager.xover_hi_hz,
             },
             limiter: LimiterConfig {
                 ceiling_dbtp: lim_ceiling_dbtp, lookahead_ms: lim_lookahead_ms,
@@ -539,6 +546,31 @@ impl LouiMasteringChain {
             band.makeup_db = makeups_db.get(b).copied().unwrap_or(band.makeup_db);
         }
         cfg.multiband = MultibandConfig { xover_lo_hz, xover_mid_hz, xover_hi_hz, bands, bypass };
+        self.inner.set_config(cfg);
+    }
+
+    /// Configure the imager's 4-band M/S width.  Independent of `setConfig`
+    /// (which carries the single-band width).  `widths_pct` is positional
+    /// [low, low-mid, high-mid, high]; missing entries keep the current value.
+    #[wasm_bindgen(js_name = setImagerMultiband)]
+    pub fn set_imager_multiband(
+        &mut self,
+        enabled: bool,
+        xover_lo_hz: f64,
+        xover_mid_hz: f64,
+        xover_hi_hz: f64,
+        widths_pct: &[f64],
+    ) {
+        let mut cfg = self.inner.config();
+        let mut w = cfg.imager.band_widths_pct;
+        for (i, x) in w.iter_mut().enumerate() {
+            *x = widths_pct.get(i).copied().unwrap_or(*x);
+        }
+        cfg.imager.multiband_enabled = enabled;
+        cfg.imager.band_widths_pct = w;
+        cfg.imager.xover_lo_hz = xover_lo_hz;
+        cfg.imager.xover_mid_hz = xover_mid_hz;
+        cfg.imager.xover_hi_hz = xover_hi_hz;
         self.inner.set_config(cfg);
     }
 

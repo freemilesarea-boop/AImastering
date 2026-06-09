@@ -22,10 +22,13 @@ import {
   setRealtimeInsert,
   setFreeEqBands,
   setMultibandConfig,
+  setImagerMultibandConfig,
 } from '../audio/shared-audio-graph.js';
 import { packMultibandArrays, sanitizeMultiband } from '../audio/multiband-config.js';
+import { packImagerWidths, sanitizeImagerMultiband } from '../audio/imager-config.js';
 import ParametricEqPanel from '../components/ParametricEqPanel.js';
 import MultibandPanel from '../components/MultibandPanel.js';
+import ImagerMultibandPanel from '../components/ImagerMultibandPanel.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
 import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
@@ -234,6 +237,13 @@ function PreviewPlayer({
             bypass: s.bypass, lo: s.xoverLoHz, mid: s.xoverMidHz, hi: s.xoverHiHz,
             thresholds: p.thresholds, ratios: p.ratios, attacks: p.attacks, releases: p.releases, makeups: p.makeups,
           });
+          const im = useAudioStore.getState().imagerMultiband;
+          const ims = sanitizeImagerMultiband(im);
+          node.port.postMessage({
+            type: 'imagerMultiband',
+            enabled: ims.enabled, lo: ims.xoverLoHz, mid: ims.xoverMidHz, hi: ims.xoverHiHz,
+            widths: packImagerWidths(im),
+          });
         }
         setRealtimeInsert(a, node); // worklet becomes the active insert
       } catch (err) {
@@ -297,6 +307,26 @@ function PreviewPlayer({
       });
     } catch { /* ignore */ }
   }, [multiband]);
+
+  // ── 4-band M/S imager — preview (native approx + worklet, when active) ──
+  const imagerMultiband = useAudioStore((s) => s.imagerMultiband);
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try { setImagerMultibandConfig(a, imagerMultiband); } catch { /* ignore */ }
+  }, [imagerMultiband, meterReady]);
+  useEffect(() => {
+    const node = workletNodeRef.current;
+    if (!node) return;
+    try {
+      const s = sanitizeImagerMultiband(imagerMultiband);
+      node.port.postMessage({
+        type: 'imagerMultiband',
+        enabled: s.enabled, lo: s.xoverLoHz, mid: s.xoverMidHz, hi: s.xoverHiHz,
+        widths: packImagerWidths(imagerMultiband),
+      });
+    } catch { /* ignore */ }
+  }, [imagerMultiband]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -1263,6 +1293,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Multiband compressor (4-band, export) ──────────────────────────── */}
       <Section title="멀티밴드 컴프레서" defaultOpen={false}>
         <MultibandPanel />
+      </Section>
+
+      {/* ── 4-band M/S stereo imager ───────────────────────────────────────── */}
+      <Section title="멀티밴드 스테레오 폭" defaultOpen={false}>
+        <ImagerMultibandPanel />
       </Section>
 
       {/* ── Format ─────────────────────────────────────────────────────────── */}

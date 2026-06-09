@@ -92,6 +92,12 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
             );
           } catch (e) { /* keep audio alive */ }
         }
+      } else if (msg.type === 'imagerMultiband') {
+        if (this._ready && this._chain && typeof this._chain.setImagerMultiband === 'function') {
+          try {
+            this._chain.setImagerMultiband(!!msg.enabled, msg.lo, msg.mid, msg.hi, msg.widths);
+          } catch (e) { /* keep audio alive */ }
+        }
       }
     };
   }

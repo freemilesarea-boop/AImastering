@@ -912,6 +912,7 @@ export default function HomePage() {
           sourcePath: item.filePath,
           options: itemOptions,
           multiband: useAudioStore.getState().multiband,
+          imagerMultiband: useAudioStore.getState().imagerMultiband,
           pythonOptions: {
             style:              itemOptions.style,
             targetLufs:         itemOptions.targetLufs,

@@ -32,6 +32,13 @@ export interface OfflineMultibandConfig {
   bands: OfflineMultibandBand[];
 }
 
+/** 4-band M/S imager config (structural — matches `ImagerMultibandConfig`). */
+export interface OfflineImagerMultibandConfig {
+  enabled: boolean;
+  xoverLoHz: number; xoverMidHz: number; xoverHiHz: number;
+  widthsPct: number[];
+}
+
 /** The flat config passed to the WASM chain's `setConfig` (same order as the
  *  realtime preview's `RealtimeChainConfig`). */
 export interface OfflineChainConfig {
@@ -48,6 +55,8 @@ export interface OfflineChainConfig {
   parametricBands?: OfflineParametricBand[];
   /** Optional 4-band multiband compressor.  Absent = none. */
   multiband?: OfflineMultibandConfig;
+  /** Optional 4-band M/S stereo imager.  Absent = single-band width only. */
+  imagerMultiband?: OfflineImagerMultibandConfig;
 }
 
 /** Structural type of the WASM chain (avoids a hard dep on the typings). */
@@ -74,6 +83,12 @@ export interface WasmMasteringChain {
     xoverLoHz: number, xoverMidHz: number, xoverHiHz: number,
     thresholdsDb: Float64Array, ratios: Float64Array, attacksMs: Float64Array,
     releasesMs: Float64Array, makeupsDb: Float64Array,
+  ): void;
+  /** 4-band M/S imager (optional — present only on rebuilt artifacts). */
+  setImagerMultiband?(
+    enabled: boolean,
+    xoverLoHz: number, xoverMidHz: number, xoverHiHz: number,
+    widthsPct: Float64Array,
   ): void;
   processStereo(left: Float32Array, right: Float32Array): void;
   limiterGrDb(): number;
@@ -192,6 +207,15 @@ export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineChainCon
       mb.xoverLoHz, mb.xoverMidHz, mb.xoverHiHz,
       arr((b) => b.thresholdDb), arr((b) => b.ratio), arr((b) => b.attackMs),
       arr((b) => b.releaseMs), arr((b) => b.makeupDb),
+    );
+  }
+
+  // 4-band M/S imager — guarded, same rebuilt-artifact contract as above.
+  if (c.imagerMultiband && typeof chain.setImagerMultiband === 'function') {
+    const im = c.imagerMultiband;
+    chain.setImagerMultiband(
+      !!im.enabled, im.xoverLoHz, im.xoverMidHz, im.xoverHiHz,
+      Float64Array.from((im.widthsPct ?? []).slice(0, 4)),
     );
   }
 }

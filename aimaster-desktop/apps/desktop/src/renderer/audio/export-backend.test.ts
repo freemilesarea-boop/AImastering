@@ -7,6 +7,7 @@ import {
 } from './export-backend.js';
 import type { MasteringOptions } from '../stores/audioStore.js';
 import { defaultMultibandConfig, type MultibandConfig } from './multiband-config.js';
+import { defaultImagerMultiband, type ImagerMultibandConfig } from './imager-config.js';
 
 const options: MasteringOptions = {
   style: 'balanced', targetLufs: -12, targetTp: -1, sampleRate: 48000,
@@ -108,6 +109,17 @@ describe('multiband attach on the rust export request', () => {
     await masterWithPreferredBackend({ invoke: c.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, multiband: defaultMultibandConfig() });
     const chainConfig = c.getReq()?.['chainConfig'] as Record<string, unknown>;
     expect(chainConfig['multiband']).toBeUndefined();
+  });
+
+  it('attaches imagerMultiband when active, omits when unity', async () => {
+    const active: ImagerMultibandConfig = { ...defaultImagerMultiband(), enabled: true, widthsPct: [0, 100, 100, 200] };
+    const c1 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c1.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, imagerMultiband: active });
+    expect((c1.getReq()?.['chainConfig'] as Record<string, unknown>)['imagerMultiband']).toBeDefined();
+
+    const c2 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c2.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, imagerMultiband: defaultImagerMultiband() });
+    expect((c2.getReq()?.['chainConfig'] as Record<string, unknown>)['imagerMultiband']).toBeUndefined();
   });
 });
 

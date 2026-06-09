@@ -21,6 +21,8 @@ import type { MasteringOptions, RealtimeDspOverrides } from '../stores/audioStor
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
 import type { MultibandConfig } from './multiband-config.js';
 import { isMultibandUnity } from './multiband-config.js';
+import type { ImagerMultibandConfig } from './imager-config.js';
+import { isImagerMultibandUnity } from './imager-config.js';
 import { isRustOfflineRenderEnabled } from './rust-offline-render-flag.js';
 
 /**
@@ -87,6 +89,8 @@ export interface MasterExportArgs {
   pythonExtras?: Record<string, unknown>;
   /** Optional 4-band multiband compressor — applied on the Rust export path. */
   multiband?: MultibandConfig;
+  /** Optional 4-band M/S imager — applied on the Rust export path. */
+  imagerMultiband?: ImagerMultibandConfig;
   requestId?: number;
   /** Override the flag (tests).  Defaults to isRustOfflineRenderEnabled(). */
   rustEnabled?: boolean;
@@ -103,9 +107,12 @@ export async function masterWithPreferredBackend(args: MasterExportArgs): Promis
   if (rustEnabled) {
     try {
       const chainConfig: Record<string, unknown> = { ...optionsToChainConfig(options) };
-      // Only attach multiband when it would actually do something.
+      // Only attach the optional stages when they would actually do something.
       if (args.multiband && !isMultibandUnity(args.multiband)) {
         chainConfig['multiband'] = args.multiband;
+      }
+      if (args.imagerMultiband && !isImagerMultibandUnity(args.imagerMultiband)) {
+        chainConfig['imagerMultiband'] = args.imagerMultiband;
       }
       const res = await invoke('audio:master-rust-experimental', {
         sourcePath,

@@ -26,6 +26,11 @@ import {
   defaultMultibandConfig,
   sanitizeMultiband,
 } from '../audio/multiband-config.js';
+import {
+  type ImagerMultibandConfig,
+  defaultImagerMultiband,
+  sanitizeImagerMultiband,
+} from '../audio/imager-config.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -285,6 +290,15 @@ interface AudioStore {
   setMultiband: (cfg: MultibandConfig) => void;
   /** Reset multiband to the bypassed default. */
   resetMultiband: () => void;
+
+  // ── 4-band M/S stereo imager (C-Phase2) ────────────────────────────────
+  imagerMultiband: ImagerMultibandConfig;
+  /** Patch top-level imager-multiband fields (enabled / crossovers). */
+  updateImagerMultiband: (patch: Partial<Omit<ImagerMultibandConfig, 'widthsPct'>>) => void;
+  /** Set one band's width % (index 0..3). */
+  updateImagerBandWidth: (index: number, widthPct: number) => void;
+  setImagerMultiband: (cfg: ImagerMultibandConfig) => void;
+  resetImagerMultiband: () => void;
 }
 
 function baseName(p: string): string {
@@ -399,4 +413,15 @@ export const useAudioStore = create<AudioStore>((set) => ({
   }),
   setMultiband: (cfg) => set({ multiband: sanitizeMultiband(cfg) }),
   resetMultiband: () => set({ multiband: defaultMultibandConfig() }),
+
+  // ── 4-band M/S stereo imager ───────────────────────────────────────────
+  imagerMultiband: defaultImagerMultiband(),
+  updateImagerMultiband: (patch) => set((s) => ({ imagerMultiband: sanitizeImagerMultiband({ ...s.imagerMultiband, ...patch }) })),
+  updateImagerBandWidth: (index, widthPct) => set((s) => {
+    if (index < 0 || index > 3) return s;
+    const widthsPct = s.imagerMultiband.widthsPct.map((w, i) => (i === index ? widthPct : w)) as ImagerMultibandConfig['widthsPct'];
+    return { imagerMultiband: sanitizeImagerMultiband({ ...s.imagerMultiband, widthsPct }) };
+  }),
+  setImagerMultiband: (cfg) => set({ imagerMultiband: sanitizeImagerMultiband(cfg) }),
+  resetImagerMultiband: () => set({ imagerMultiband: defaultImagerMultiband() }),
 }));
