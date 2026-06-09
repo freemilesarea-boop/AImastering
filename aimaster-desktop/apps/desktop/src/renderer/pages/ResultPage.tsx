@@ -18,8 +18,13 @@ import {
   installNativeDsp,
   applyNativeDspConfig,
   uninstallNativeDsp,
+  ensureElementGraph,
+  setRealtimeInsert,
 } from '../audio/shared-audio-graph.js';
 import type { RealtimeChainConfig } from '../audio/realtime-mastering-chain.js';
+import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
+import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
+import { createMetricsSink, type WorkletMetrics } from '../audio/realtime-metrics-sink.js';
 import type {
   AnalysisReport as AnalysisReportType,
   MasteringMeta,
@@ -184,6 +189,64 @@ function PreviewPlayer({
       applyNativeDspConfig(a, optionsToChainConfig(options));
     } catch { /* invalid config — skip */ }
   }, [options, meterReady]);
+
+  // ── Realtime Rust preview (opt-in) ───────────────────────────────────
+  // Splice the WASM mastering worklet in front of the native fallback when
+  // the realtime-preview flag is on (OFF by default).  The SAME
+  // RealtimeChainConfig drives it, so preview matches the export intent more
+  // closely than the WebAudio approximation.  ANY load/attach failure falls
+  // back to the already-installed native DSP chain — audio is never cut.
+  // Worklet metrics are coalesced (≤10 Hz) via a sink so they NEVER drive a
+  // per-block React re-render (the original renderer-crash root cause).
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const metricsSinkRef = useRef(createMetricsSink());
+  useEffect(() => {
+    if (!isRealtimePreviewEnabled()) return;
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    let cancelled = false;
+    let node: AudioWorkletNode | null = null;
+    const sink = metricsSinkRef.current;
+    void (async () => {
+      try {
+        const ctx = ensureElementGraph(a).ctx;
+        const loaded = await loadMasteringWorklet(ctx, { sampleRate: ctx.sampleRate });
+        if (cancelled) { try { loaded.node.disconnect(); } catch { /* ignore */ } return; }
+        node = loaded.node;
+        workletNodeRef.current = node;
+        node.port.onmessage = (ev: MessageEvent) => {
+          const msg = ev.data as { type?: string };
+          if (msg && msg.type === 'metrics') sink.push(msg as unknown as WorkletMetrics);
+        };
+        node.port.postMessage({ type: 'config', config: optionsToChainConfig(options) });
+        setRealtimeInsert(a, node); // worklet becomes the active insert
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[RealtimePreview] worklet load failed — native fallback:', err);
+        try { setRealtimeInsert(a, null); } catch { /* ignore */ }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      try { setRealtimeInsert(a, null); } catch { /* ignore */ }
+      if (node) {
+        try { node.port.onmessage = null; } catch { /* ignore */ }
+        try { node.disconnect(); } catch { /* ignore */ }
+      }
+      workletNodeRef.current = null;
+      sink.reset();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meterReady]);
+
+  // Mirror config changes into the worklet (when active), like the native path.
+  useEffect(() => {
+    const node = workletNodeRef.current;
+    if (!node) return;
+    try {
+      node.port.postMessage({ type: 'config', config: optionsToChainConfig(options) });
+    } catch { /* invalid config — skip */ }
+  }, [options]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
