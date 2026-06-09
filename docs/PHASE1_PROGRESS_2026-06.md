@@ -73,8 +73,10 @@
 - `test:unit`(vitest run)·`test:unit:watch` 스크립트 + `test` 체인에 편입.
 - **검증**: typecheck 0(테스트 포함), 전체 스위트 그린. → **P1 "렌더러 단위테스트 0" 해소.**
 
-### C-4. 레거시 `/python` 제거 (⏸ 보류 — 의도 충돌)
-- `/python`은 빌드/앱에서 **완전 미참조** 확인. 그러나 `python/LEGACY.md`가 명시적으로 **"참조 가능 / 향후 별도 브랜치로 archive 예정"**(즉시 삭제 아님)이라고 기록. 팀이 참조용으로 보존하기로 한 자료를 일방적으로 하드 삭제하지 않고 **보류 + 보고**. 사용자가 삭제를 원하면 진행.
+### C-4. 레거시 `/python` 제거 → 완료 ✅ (사용자 승인)
+**커밋**: `chore(legacy): remove pre-monorepo legacy Python engine (/python)`
+- `/python`(v3.1, 19개 파일) 제거. 활성 `aimaster-desktop` 빌드는 미참조였고, 유일한 참조였던 루트 `/src/main/utils/pathUtils.ts`도 동일한 레거시 트리. git 이력에서 복구 가능. 활성 빌드 typecheck 0.
+- **남은 레거시(별도 후속)**: 루트 `package.json`(설명에 "legacy root, see aimaster-desktop/" 명시) + 루트 `/src` + 루트 `vite.config.ts`/`tsconfig*`/`requirements.txt`/`scripts/`/`tests/` = 모노레포 이전 앱 전체. 원하면 일괄 제거 가능.
 
 ---
 
@@ -89,6 +91,8 @@
 - ✅ C-2(b) 렌더러 export backend 스위치 (기본 OFF + 폴백)
 - ✅ C-1 ResultPage 라이브 파라메트릭 EQ + 셀프테스트
 - ✅ C-3 렌더러 vitest 도입 (24 tests)
-- ⏸ C-4 레거시 `/python` 제거 (LEGACY.md 의도 충돌 — 사용자 승인 시)
+- ✅ C-4 레거시 `/python` 제거 (사용자 승인)
 - 🔴 (출시 전, 헤드리스 불가) 실기기 A/B QA → worklet 프리뷰 / Rust export 기본 ON 전환
 - ⏳ 이후 Phase 2~4 → 결제/서명/정식 출시
+
+**→ 헤드리스에서 가능한 Phase 1 코드 작업 전부 완료.** 남은 것은 실기기 오디오 QA(출시 전 단계)와, 선택적 후속(루트 레거시 앱 일괄 제거).
