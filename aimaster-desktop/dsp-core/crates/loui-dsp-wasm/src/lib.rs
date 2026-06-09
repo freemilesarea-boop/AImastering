@@ -478,6 +478,10 @@ impl LouiMasteringChain {
         output_gain_db: f64,
         master_bypass: bool,
     ) {
+        // Preserve the multiband config across flat-arg setConfig calls (the
+        // realtime preview pushes this on every slider move); multiband is set
+        // separately via setMultibandConfig.
+        let preserved_multiband = self.inner.config().multiband;
         self.inner.set_config(MasteringChainConfig {
             input_gain_db,
             eq: EqConfig {
@@ -490,10 +494,9 @@ impl LouiMasteringChain {
                 attack_ms: dyn_attack_ms, release_ms: dyn_release_ms,
                 mix_pct: dyn_mix_pct, bypass: dyn_bypass,
             },
-            // Multiband compressor is not yet exposed via the flat preview
-            // setConfig args — defaults to bypassed (no-op) so preview/export
-            // behaviour is unchanged until a dedicated binding lands.
-            multiband: MultibandConfig::default(),
+            // Multiband is configured via setMultibandConfig; preserve it here
+            // so a flat-arg setConfig (slider move) doesn't reset it.
+            multiband: preserved_multiband,
             imager: ImagerConfig {
                 width_pct: img_width_pct, low_mono_hz: img_low_mono_hz, bypass: img_bypass,
             },
@@ -504,6 +507,37 @@ impl LouiMasteringChain {
             output_gain_db,
             bypass: master_bypass,
         });
+    }
+
+    /// Configure the 4-band multiband compressor.  Independent of `setConfig`
+    /// so the frequent flat-arg slider updates don't reset it.  The five
+    /// per-band arrays are read positionally [low, low-mid, high-mid, high];
+    /// missing entries keep the current value.
+    #[wasm_bindgen(js_name = setMultibandConfig)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_multiband_config(
+        &mut self,
+        bypass: bool,
+        xover_lo_hz: f64,
+        xover_mid_hz: f64,
+        xover_hi_hz: f64,
+        thresholds_db: &[f64],
+        ratios: &[f64],
+        attacks_ms: &[f64],
+        releases_ms: &[f64],
+        makeups_db: &[f64],
+    ) {
+        let mut cfg = self.inner.config();
+        let mut bands = cfg.multiband.bands;
+        for (b, band) in bands.iter_mut().enumerate() {
+            band.threshold_db = thresholds_db.get(b).copied().unwrap_or(band.threshold_db);
+            band.ratio = ratios.get(b).copied().unwrap_or(band.ratio);
+            band.attack_ms = attacks_ms.get(b).copied().unwrap_or(band.attack_ms);
+            band.release_ms = releases_ms.get(b).copied().unwrap_or(band.release_ms);
+            band.makeup_db = makeups_db.get(b).copied().unwrap_or(band.makeup_db);
+        }
+        cfg.multiband = MultibandConfig { xover_lo_hz, xover_mid_hz, xover_hi_hz, bands, bypass };
+        self.inner.set_config(cfg);
     }
 
     /// Process one block of planar stereo audio in place.  The mutations

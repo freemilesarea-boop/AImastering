@@ -23,6 +23,7 @@ import {
   setFreeEqBands,
 } from '../audio/shared-audio-graph.js';
 import ParametricEqPanel from '../components/ParametricEqPanel.js';
+import MultibandPanel from '../components/MultibandPanel.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
 import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
@@ -1221,6 +1222,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Parametric EQ (free bands, live) ───────────────────────────────── */}
       <Section title="파라메트릭 EQ" defaultOpen={false}>
         <ParametricEqPanel />
+      </Section>
+
+      {/* ── Multiband compressor (4-band, export) ──────────────────────────── */}
+      <Section title="멀티밴드 컴프레서" defaultOpen={false}>
+        <MultibandPanel />
       </Section>
 
       {/* ── Format ─────────────────────────────────────────────────────────── */}

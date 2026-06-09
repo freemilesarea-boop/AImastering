@@ -911,6 +911,7 @@ export default function HomePage() {
           invoke: window.electronAPI!.invoke,
           sourcePath: item.filePath,
           options: itemOptions,
+          multiband: useAudioStore.getState().multiband,
           pythonOptions: {
             style:              itemOptions.style,
             targetLufs:         itemOptions.targetLufs,

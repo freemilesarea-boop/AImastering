@@ -19,6 +19,19 @@ export interface OfflineParametricBand {
   enabled: boolean;
 }
 
+/** One band of the multiband compressor (structural — matches the renderer's
+ *  `MultibandBand` so the IPC payload deserialises 1:1). */
+export interface OfflineMultibandBand {
+  thresholdDb: number; ratio: number; attackMs: number; releaseMs: number; makeupDb: number;
+}
+
+/** Multiband compressor config (structural — matches `MultibandConfig`). */
+export interface OfflineMultibandConfig {
+  bypass: boolean;
+  xoverLoHz: number; xoverMidHz: number; xoverHiHz: number;
+  bands: OfflineMultibandBand[];
+}
+
 /** The flat config passed to the WASM chain's `setConfig` (same order as the
  *  realtime preview's `RealtimeChainConfig`). */
 export interface OfflineChainConfig {
@@ -33,6 +46,8 @@ export interface OfflineChainConfig {
   masterBypass: boolean;
   /** Optional free parametric EQ bands.  Absent / empty = no parametric EQ. */
   parametricBands?: OfflineParametricBand[];
+  /** Optional 4-band multiband compressor.  Absent = none. */
+  multiband?: OfflineMultibandConfig;
 }
 
 /** Structural type of the WASM chain (avoids a hard dep on the typings). */
@@ -52,6 +67,14 @@ export interface WasmMasteringChain {
     types: Uint8Array, freqs: Float64Array, gains: Float64Array, qs: Float64Array, enableds: Uint8Array,
   ): void;
   parametricEqBandCount(): number;
+  /** 4-band multiband compressor (optional — present only on rebuilt artifacts).
+   *  Per-band arrays are positional [low, low-mid, high-mid, high]. */
+  setMultibandConfig?(
+    bypass: boolean,
+    xoverLoHz: number, xoverMidHz: number, xoverHiHz: number,
+    thresholdsDb: Float64Array, ratios: Float64Array, attacksMs: Float64Array,
+    releasesMs: Float64Array, makeupsDb: Float64Array,
+  ): void;
   processStereo(left: Float32Array, right: Float32Array): void;
   limiterGrDb(): number;
   reset(): void;
@@ -156,4 +179,19 @@ export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineChainCon
   const bands = c.parametricBands ?? [];
   const packed = packParametricBands(bands);
   chain.setParametricEqBands(packed.types, packed.freqs, packed.gains, packed.qs, packed.enableds);
+
+  // Multiband compressor — guarded: the method exists only on WASM artifacts
+  // rebuilt after the binding landed.  On older artifacts this is a no-op
+  // (multiband simply not applied) so the render still succeeds.
+  if (c.multiband && typeof chain.setMultibandConfig === 'function') {
+    const mb = c.multiband;
+    const arr = (sel: (b: OfflineMultibandBand) => number): Float64Array =>
+      Float64Array.from((mb.bands ?? []).slice(0, 4).map(sel));
+    chain.setMultibandConfig(
+      !!mb.bypass,
+      mb.xoverLoHz, mb.xoverMidHz, mb.xoverHiHz,
+      arr((b) => b.thresholdDb), arr((b) => b.ratio), arr((b) => b.attackMs),
+      arr((b) => b.releaseMs), arr((b) => b.makeupDb),
+    );
+  }
 }

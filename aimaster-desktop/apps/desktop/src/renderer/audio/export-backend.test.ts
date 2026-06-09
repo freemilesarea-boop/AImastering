@@ -6,6 +6,7 @@ import {
   type InvokeFn,
 } from './export-backend.js';
 import type { MasteringOptions } from '../stores/audioStore.js';
+import { defaultMultibandConfig, type MultibandConfig } from './multiband-config.js';
 
 const options: MasteringOptions = {
   style: 'balanced', targetLufs: -12, targetTp: -1, sampleRate: 48000,
@@ -78,6 +79,35 @@ describe('masterWithPreferredBackend routing', () => {
     const res = await masterWithPreferredBackend({ invoke: m.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true });
     expect(m.calls).toContain('audio:master');
     expect(res.outputPath).toBe('/py.wav');
+  });
+});
+
+describe('multiband attach on the rust export request', () => {
+  function capturedChainConfig(scriptRust: () => unknown): { invoke: InvokeFn; getReq: () => Record<string, unknown> | null } {
+    let req: Record<string, unknown> | null = null;
+    const invoke: InvokeFn = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === 'audio:master-rust-experimental') { req = payload as Record<string, unknown>; return scriptRust(); }
+      return pyOk;
+    });
+    return { invoke, getReq: () => req };
+  }
+
+  it('attaches multiband when active (non-unity)', async () => {
+    const active: MultibandConfig = {
+      ...defaultMultibandConfig(), bypass: false,
+      bands: defaultMultibandConfig().bands.map((b) => ({ ...b, ratio: 3 })) as MultibandConfig['bands'],
+    };
+    const c = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, multiband: active });
+    const chainConfig = c.getReq()?.['chainConfig'] as Record<string, unknown>;
+    expect(chainConfig['multiband']).toBeDefined();
+  });
+
+  it('omits multiband when bypassed / unity', async () => {
+    const c = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, multiband: defaultMultibandConfig() });
+    const chainConfig = c.getReq()?.['chainConfig'] as Record<string, unknown>;
+    expect(chainConfig['multiband']).toBeUndefined();
   });
 });
 

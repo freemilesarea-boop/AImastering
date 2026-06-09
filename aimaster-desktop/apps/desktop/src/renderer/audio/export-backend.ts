@@ -19,6 +19,8 @@
 import type { MasteringResult } from '@aimaster/shared-types';
 import type { MasteringOptions, RealtimeDspOverrides } from '../stores/audioStore.js';
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
+import type { MultibandConfig } from './multiband-config.js';
+import { isMultibandUnity } from './multiband-config.js';
 import { isRustOfflineRenderEnabled } from './rust-offline-render-flag.js';
 
 /**
@@ -83,6 +85,8 @@ export interface MasterExportArgs {
   pythonOptions: Record<string, unknown>;
   /** The python `audio:master` extras (e.g. { preLoudness }). */
   pythonExtras?: Record<string, unknown>;
+  /** Optional 4-band multiband compressor — applied on the Rust export path. */
+  multiband?: MultibandConfig;
   requestId?: number;
   /** Override the flag (tests).  Defaults to isRustOfflineRenderEnabled(). */
   rustEnabled?: boolean;
@@ -98,9 +102,14 @@ export async function masterWithPreferredBackend(args: MasterExportArgs): Promis
 
   if (rustEnabled) {
     try {
+      const chainConfig: Record<string, unknown> = { ...optionsToChainConfig(options) };
+      // Only attach multiband when it would actually do something.
+      if (args.multiband && !isMultibandUnity(args.multiband)) {
+        chainConfig['multiband'] = args.multiband;
+      }
       const res = await invoke('audio:master-rust-experimental', {
         sourcePath,
-        chainConfig: optionsToChainConfig(options),
+        chainConfig,
         options,
         requestId,
       });

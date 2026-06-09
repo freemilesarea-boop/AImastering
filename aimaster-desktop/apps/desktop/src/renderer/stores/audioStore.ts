@@ -20,6 +20,12 @@ import {
   defaultBand,
   MAX_BANDS,
 } from '../audio/modules/parametric-eq-model.js';
+import {
+  type MultibandConfig,
+  type MultibandBand,
+  defaultMultibandConfig,
+  sanitizeMultiband,
+} from '../audio/multiband-config.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -267,6 +273,18 @@ interface AudioStore {
   removeParametricBand: (id: string) => void;
   /** Clear all parametric bands. */
   resetParametricEq: () => void;
+
+  // ── 4-band multiband compressor (C-Phase2) ─────────────────────────────
+  /** Multiband compressor config; applied to the offline render + worklet preview. */
+  multiband: MultibandConfig;
+  /** Patch top-level multiband fields (bypass / crossovers). */
+  updateMultiband: (patch: Partial<Omit<MultibandConfig, 'bands'>>) => void;
+  /** Patch one band (0..3) by index. */
+  updateMultibandBand: (index: number, patch: Partial<MultibandBand>) => void;
+  /** Replace the whole multiband config (sanitised). */
+  setMultiband: (cfg: MultibandConfig) => void;
+  /** Reset multiband to the bypassed default. */
+  resetMultiband: () => void;
 }
 
 function baseName(p: string): string {
@@ -370,4 +388,15 @@ export const useAudioStore = create<AudioStore>((set) => ({
     parametricEqBands: s.parametricEqBands.filter((b) => b.id !== id),
   })),
   resetParametricEq: () => set({ parametricEqBands: [] }),
+
+  // ── Multiband compressor ───────────────────────────────────────────────
+  multiband: defaultMultibandConfig(),
+  updateMultiband: (patch) => set((s) => ({ multiband: sanitizeMultiband({ ...s.multiband, ...patch }) })),
+  updateMultibandBand: (index, patch) => set((s) => {
+    if (index < 0 || index > 3) return s;
+    const bands = s.multiband.bands.map((b, i) => (i === index ? { ...b, ...patch } : b)) as MultibandConfig['bands'];
+    return { multiband: sanitizeMultiband({ ...s.multiband, bands }) };
+  }),
+  setMultiband: (cfg) => set({ multiband: sanitizeMultiband(cfg) }),
+  resetMultiband: () => set({ multiband: defaultMultibandConfig() }),
 }));

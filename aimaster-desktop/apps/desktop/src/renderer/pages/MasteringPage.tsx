@@ -145,6 +145,7 @@ export default function MasteringPage() {
   const selectedFile    = useAudioStore((s) => s.selectedFile);
   const analysis        = useAudioStore((s) => s.analysis);
   const options         = useAudioStore((s) => s.options);
+  const multiband       = useAudioStore((s) => s.multiband);
   const progress        = useAudioStore((s) => s.progress);
   const isMastering     = useAudioStore((s) => s.isMastering);
   const error           = useAudioStore((s) => s.error);
@@ -234,6 +235,7 @@ export default function MasteringPage() {
           invoke: window.electronAPI!.invoke,
           sourcePath: selectedFile,
           options,
+          multiband,
           pythonOptions: {
             style:              options.style,
             targetLufs:         options.targetLufs,
