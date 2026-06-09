@@ -23,11 +23,24 @@
 
 ---
 
+### P2-2. 멀티밴드 컴프 노출 (바인딩 → UI → Export) ✅
+**커밋**: `feat(multiband): expose 4-band multiband comp through binding → UI → export (Phase 2)`
+
+- **Rust(`loui-dsp-wasm`)**: `setMultibandConfig`(bypass·3 크로스오버·밴드별 5개 Float64Array) 추가. 플랫-arg `setConfig`가 멀티밴드를 **보존**(슬라이더 갱신 시 리셋 안 함). browser(프리뷰)+node(오프라인) wasm 양쪽 커버. `cargo check --workspace` 0.
+- **공유 `multiband-config.ts`** (default/sanitize/pack/unity) — Rust config 미러, 단일 소스.
+- **오프라인 바인딩**: `OfflineChainConfig.multiband?` + `applyOfflineConfig`가 `setMultibandConfig`를 **가드 호출**(typeof) → 구 아티팩트에선 안전 no-op, 재빌드 시 활성.
+- **audioStore**: `multiband` 상태 + update/updateBand/set/reset.
+- **export-backend**: 활성(non-unity)일 때만 rust 렌더 요청에 multiband 첨부; Mastering/HomePage가 스토어에서 전달.
+- **`MultibandPanel`** UI(ResultPage): enable·크로스오버·밴드별 thr/ratio/makeup.
+- **테스트**: multiband-config(5)+MultibandPanel(5)+export-backend 첨부(2). **vitest 36/36**, 전체 pnpm test 그린, typecheck 0.
+- **런타임 활성화**: wasm/node 아티팩트 **재빌드** + Rust export 플래그 ON(C-2b, opt-in) 필요 → 빌드/디바이스 단계. 기본 경로 무변경(무회귀).
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| **멀티밴드 컴프 노출** (WASM 플랫-arg 확장 + UI 패널 + 프리셋) | P0 후속 | DSP는 완료, 사용자 제어 연결만 남음 |
+| 멀티밴드 프리뷰(worklet 메시지) + native-dsp 근사 | P1 | 현재 Export만 적용, 프리뷰 미반영 |
+| 멀티밴드 프리셋(스타일별 기본값) | P2 | |
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 2~4 캐릭터) | P1 | 신규 모듈 |
 | Transient/Impact (멀티밴드 attack/sustain) | P1 | 신규 모듈 |
