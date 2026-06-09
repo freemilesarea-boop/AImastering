@@ -25,6 +25,17 @@
 **검증**: `typecheck` 0, 신규 게이트 셀프테스트 12/12, 기존 `native-dsp`/`realtime-config`/`loudness` 셀프테스트 회귀 없음.
 **잔여(출시 전)**: 기본값 ON 전환은 **실기기 오디오 검증** 후. 현재 기본 OFF라 사용자 동작 무변경(무회귀).
 
+### A-2. 엔진 일원화 C-2(a) — Rust 렌더 출력에 QC/분석 래핑 ✅
+**커밋**: `feat(engine-unify): wrap Rust offline render with QC/analysis → MasteringResult parity (C-2a)`
+
+엔진 일원화의 **핵심 차단(결과 형태 불일치)** 해소:
+- **신규 `main/offline/assemble-rust-result.ts`** (순수 함수) — Rust 렌더 + Python `analyze`(source/output) + `qc_check`(output)를 합쳐 **MasteringResult 호환 객체** 생성. `analysisReport`(eq/dyn/limiter/loudnorm)는 체인 config에서 합성, 12-item `QCResult`→`QualityCheckReport` 매핑, before/after `metricComparison`·`appliedCorrections` 도출. 파생 불가 optional(gainStaging/suspectSegments 등)은 미정의(UI 안전).
+- **`audio:master-rust-experimental` 핸들러** — Rust 경로는 조립된 MasteringResult 반환, Python 폴백도 전체 masterFile 결과 반환. 슬림 형태 제거.
+- **헤드리스 셀프테스트** `rust-result-assembly-selftest.ts`(22 checks) + `test` 등록.
+
+**검증**: typecheck 0, 전체 셀프테스트 스위트 그린.
+**잔여**: 렌더러 export 라우팅 스위치(C-2b) + 실기기 A/B QA. 프로덕션 `audio:master`는 불변(무회귀).
+
 ---
 
 ## B. 점검 중 정정된 사실 (기존 보고서 갱신)
@@ -44,12 +55,11 @@
 - 사실: 실제 **파라메트릭 EQ 체인**(`audio/parametric-eq-chain.ts` + `setFreeEqBands`)이 이미 신호경로에 스플라이스되도록 존재하고 `eq-drag-selftest`도 있으나, **ResultPage/TweakPage에 이를 구동하는 UI가 없다**.
 - 차단: 드래그 EQ UI 추가는 가치 있으나 **헤드리스에서 시각 검증 불가**. 모델→`setFreeEqBands` 매핑 셀프테스트 + 최소 컨트롤로 다음 세션 진행 권장.
 
-### C-2. 엔진 일원화(Rust를 기본 export로 승격) (🔴 더 큰 마일스톤으로 판명)
-- 단순 플래그 플립이 **아님**. 차단 요인:
-  1. **결과 형태 불일치** — 실험 채널은 `{ok,backend,outputPath,previewPath,metrics,...}`만 반환. 프로덕션 `audio:master`가 주는 `qualityCheck/gainStaging/suspectSegments/modeRecommendations/analysis/metricComparison`이 **없어** ResultPage가 깨진다. → **Rust 출력에 QC/분석 래핑**(예: 렌더된 WAV에 Python QC를 실행)이 선행되어야 함.
-  2. **톤/EQ 파리티 미검증** — 안전·라우드니스 셀프테스트는 통과하나 Python과의 **음색 A/B는 헤드리스 불가**(승격 플랜 게이트 #2).
-  3. **support-matrix/test:export-support** 갱신 필요(정직성 게이트).
-- 권장 경로(승격 플랜 일치): (a) Rust 출력 QC 래핑 추가 → 결과 형태 동등화, (b) 렌더러에 backend 선택(플래그 OFF 기본)으로 라우팅 추가, (c) 실기기 A/B 후 기본 ON.
+### C-2. 엔진 일원화(Rust를 기본 export로 승격)
+- (a) **결과 형태 동등화 → 완료**(A-2 참조). 더 이상 차단 아님.
+- (b) **렌더러 export 라우팅 스위치** (🟡 다음) — MasteringPage/HomePage가 `isRustOfflineRenderEnabled()`(기본 OFF로 변경 권장)일 때 `audio:master-rust-experimental`로 라우팅 + Python 폴백. 헤드리스에서 핸들러/라우팅 단위 검증 가능.
+- (c) **톤/EQ 파리티 + 실기기 A/B QA** (출시 전) — 안전·라우드니스 셀프테스트는 통과하나 Python과의 음색 A/B는 헤드리스 불가.
+- (d) **support-matrix/test:export-support** 갱신(정직성 게이트) — 승격 시.
 
 ### C-3. 렌더러 단위테스트 도입 (🟡)
 - 현재 렌더러 테스트는 `tsx` 셀프테스트들(이번에 1종 추가). 정식 `vitest` 도입은 별도 작업으로 권장(저위험).
