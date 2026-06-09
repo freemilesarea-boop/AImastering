@@ -21,6 +21,7 @@ import type {
   PreviewRenderRequest,
   PreviewRenderResponse,
 } from '@aimaster/shared-types';
+import { assembleRustMasteringResult } from '../offline/assemble-rust-result.js';
 import { log } from '../utils/logger.js';
 import { recordFailure } from '../utils/failureLog.js';
 import { recordPipelineWarning } from '../utils/supportBundle.js';
@@ -406,25 +407,53 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         ...(typeof options?.targetTp === 'number' ? { targetTp: options.targetTp } : {}),
       });
       await encodePreviewMp3(wavTempPath, mp3Path);
-      return {
-        requestId, ok: true, backend: 'rust' as const, fallbackUsed: false,
+
+      // Wrap the Rust output with Python analysis + QC so the result shape
+      // matches the production `audio:master` MasteringResult (engine
+      // unification C-2a).  analyze(output) is required for loudnessAfter;
+      // if it fails we throw → the Python fallback below produces a full
+      // result instead.
+      const b = getBridge();
+      const targetLufs = typeof options?.targetLufs === 'number' ? options.targetLufs : -14;
+      const targetTp = typeof options?.targetTp === 'number' ? options.targetTp : -1;
+      const outputAnalysis = await analyzeFile(b, rendered.outputPath);
+      const sourceAnalysis = await analyzeFile(b, safeSourcePath).catch(() => null);
+      const outputQc = await runQC(b, rendered.outputPath, targetLufs, targetTp).catch(() => null);
+
+      const mastering = assembleRustMasteringResult({
+        outputPath: rendered.outputPath,
+        previewPath: mp3Path,
+        processingTimeSec: (Date.now() - t0) / 1000,
         loudnessNormalized: rendered.loudnessNormalized,
-        outputPath: rendered.outputPath, previewPath: mp3Path,
-        metrics: rendered.metrics, renderMs: Date.now() - t0,
+        chainConfig,
+        options,
+        sourceAnalysis,
+        outputAnalysis,
+        outputQc,
+        extraWarnings: rendered.loudnessNormalized
+          ? []
+          : [{ code: 'rust_no_loudnorm', level: 'info', userMessage: 'Rust 렌더에서 라우드니스 정규화가 적용되지 않았습니다.' }],
+      });
+
+      return {
+        ...mastering,
+        requestId, ok: true, backend: 'rust' as const, fallbackUsed: false,
+        renderMs: Date.now() - t0,
       };
     } catch (rustErr) {
       log.warn('[audio:master-rust-experimental] rust render failed, falling back to Python', {
         err: (rustErr as Error).message,
       });
       recordPipelineWarning({ code: 'rust_offline_fallback', level: 'warning', userMessage: `rust offline render fell back to Python: ${(rustErr as Error).message}` });
-      // Fallback: the proven Python path.
+      // Fallback: the proven Python path returns a full MasteringResult.
       try {
         const b = getBridge();
         const result = await masterFile(b, safeSourcePath, wavTempPath, options, {});
         return {
+          ...result,
+          previewPath: result.previewPath || mp3Path,
           requestId, ok: true, backend: 'python' as const, fallbackUsed: true,
-          outputPath: result.outputPath, previewPath: result.previewPath || mp3Path,
-          metrics: result.loudnessAfter, renderMs: Date.now() - t0,
+          renderMs: Date.now() - t0,
         };
       } catch (pyErr) {
         return {
