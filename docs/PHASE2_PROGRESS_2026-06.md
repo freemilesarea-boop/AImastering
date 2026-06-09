@@ -62,14 +62,21 @@
 - **테스트**: imager-config(4)+chain mock(3)+패널(5)+export(1). **vitest 53/53**, 전체 pnpm test 그린, typecheck 0.
 - 기본 disabled → 무회귀. 런타임 활성화는 멀티밴드 컴프와 동일 게이트(wasm 재빌드 + Rust export 플래그).
 
+### P2-6. Saturation / Exciter 모듈 (DSP) ✅
+**커밋**: `feat(dsp): saturation/exciter module — 4 characters + multiband (Phase 2)`
+- **`saturation.rs`**: drive → waveshaper → dry/wet mix. 캐릭터 4종(Warm 소프트 / Tape tanh / Tube 비대칭+DC블록 / Modern 하드 odd) + 옵션 4밴드(밴드별 drive, 공유 크로스오버). drive 0 / mix 0 / bypass → 정확 passthrough.
+- config: `SaturationCharacter` enum + `SaturationConfig`(기본 bypass·drive 0) → 체인(멀티밴드 컴프 뒤, 이미저 앞)·set_config·reset·재익스포트, WASM setConfig 보존.
+- 테스트 8종. **`cargo test -p loui-dsp` 84/84** + 하니스, `cargo check --workspace` 0. 기본 bypass → 무회귀.
+- 노출(WASM setter + UI + 프리뷰)은 후속(컴프/이미저 동일 패턴).
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| 멀티밴드/이미저 프리셋(스타일별 기본값) | P2 | |
-| Saturation/Exciter (멀티밴드, 캐릭터) | P1 | 신규 모듈 |
+| Saturation **노출**(WASM/UI/프리뷰) | P1 후속 | DSP 완료 |
 | Transient/Impact | P1 | 신규 모듈 |
 | Dynamic EQ 완전 파라메트릭화 (Rust) | P1 | |
+| 멀티밴드/이미저/새추 프리셋(스타일별) | P2 | |
 | De-esser 적응형 / 멀티밴드 GR 메터 연결 | P2 | |
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 2~4 캐릭터) | P1 | 신규 모듈 |
