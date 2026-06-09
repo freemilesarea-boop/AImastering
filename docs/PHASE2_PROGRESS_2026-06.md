@@ -53,12 +53,20 @@
 - **검증**: `cargo test -p loui-dsp` 76/76 + 하니스, `cargo check --workspace` 0.
 - 노출(WASM setter + UI + 프리뷰)은 멀티밴드 컴프와 동일 패턴의 후속.
 
+### P2-5. 4밴드 M/S 이미저 노출 (바인딩→UI→Export+프리뷰) ✅
+**커밋**: `feat(imager): expose 4-band M/S imager — binding → UI → export + preview (Phase 2)`
+- **Rust(`loui-dsp-wasm`)**: `setImagerMultiband` 추가 + 플랫-arg `setConfig`가 이미저 4밴드 필드 보존. `cargo check --workspace` 0.
+- 공유 `imager-config.ts`, 오프라인 바인딩(`OfflineChainConfig.imagerMultiband?` + 가드 호출), audioStore 상태/액션, export-backend 첨부(활성 시), Mastering/HomePage 전달.
+- 프리뷰: **`imager-multiband-chain.ts`**(WebAudio M/S 4밴드 근사) — `rerouteBus`를 N개 post-insert 스테이지 체이닝으로 일반화해 멀티밴드+이미저 동시 삽입. worklet `'imagerMultiband'` 메시지 + ResultPage native 효과 + worklet 시드.
+- **`ImagerMultibandPanel`** UI(ResultPage): enable·크로스오버·밴드별 폭.
+- **테스트**: imager-config(4)+chain mock(3)+패널(5)+export(1). **vitest 53/53**, 전체 pnpm test 그린, typecheck 0.
+- 기본 disabled → 무회귀. 런타임 활성화는 멀티밴드 컴프와 동일 게이트(wasm 재빌드 + Rust export 플래그).
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| 4밴드 이미저 **노출**(WASM/UI/프리뷰) | P1 후속 | DSP 완료 |
-| 멀티밴드 프리셋(스타일별 기본값) | P2 | |
+| 멀티밴드/이미저 프리셋(스타일별 기본값) | P2 | |
 | Saturation/Exciter (멀티밴드, 캐릭터) | P1 | 신규 모듈 |
 | Transient/Impact | P1 | 신규 모듈 |
 | Dynamic EQ 완전 파라메트릭화 (Rust) | P1 | |
