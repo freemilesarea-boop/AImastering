@@ -259,7 +259,7 @@ mod tests {
             input_gain_db: 3.0,
             eq: EqConfig { low_shelf_db: 2.0, presence_db: -1.0, air_db: 3.0, adaptive: true, ..EqConfig::default() },
             dynamics: DynamicsConfig { threshold_db: -18.0, ratio: 3.0, ..DynamicsConfig::default() },
-            imager: ImagerConfig { width_pct: 130.0, low_mono_hz: 120.0, bypass: false },
+            imager: ImagerConfig { width_pct: 130.0, low_mono_hz: 120.0, bypass: false, ..ImagerConfig::default() },
             limiter: LimiterConfig { ceiling_dbtp: -0.8, lookahead_ms: 2.0, isp: true, bypass: false },
             output_gain_db: -1.0,
             bypass: false,
@@ -307,7 +307,7 @@ mod tests {
     fn extreme_imager_width_stays_finite_and_bounded() {
         // Wide width + hot input → must stay finite and under the safety peak.
         let cfg = MasteringChainConfig {
-            imager: ImagerConfig { width_pct: 200.0, low_mono_hz: 120.0, bypass: false },
+            imager: ImagerConfig { width_pct: 200.0, low_mono_hz: 120.0, bypass: false, ..ImagerConfig::default() },
             ..MasteringChainConfig::default()
         };
         let mut chain = MasteringChain::new(48_000.0, cfg);

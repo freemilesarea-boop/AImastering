@@ -50,19 +50,38 @@ impl Default for DynamicsConfig {
     }
 }
 
-/// Stereo imager parameters.
+/// Stereo imager parameters (single-band width + low-mono, plus an optional
+/// 4-band M/S width mode).
 #[derive(Debug, Clone, Copy)]
 pub struct ImagerConfig {
     /// Width as a percentage: 0 = mono, 100 = unchanged, 200 = extra wide.
+    /// Used when `multiband_enabled` is false.
     pub width_pct: f64,
     /// Sum to mono below this frequency (Hz).
     pub low_mono_hz: f64,
     pub bypass: bool,
+    /// When true, apply per-band Side width instead of the single `width_pct`.
+    pub multiband_enabled: bool,
+    /// Per-band Side width %, [low, low-mid, high-mid, high].  100 = unchanged.
+    pub band_widths_pct: [f64; 4],
+    /// Crossover frequencies for the 4-band M/S split (Hz).
+    pub xover_lo_hz: f64,
+    pub xover_mid_hz: f64,
+    pub xover_hi_hz: f64,
 }
 
 impl Default for ImagerConfig {
     fn default() -> Self {
-        Self { width_pct: 100.0, low_mono_hz: 20.0, bypass: false }
+        Self {
+            width_pct: 100.0,
+            low_mono_hz: 20.0,
+            bypass: false,
+            multiband_enabled: false,
+            band_widths_pct: [100.0; 4],
+            xover_lo_hz: 120.0,
+            xover_mid_hz: 1000.0,
+            xover_hi_hz: 6000.0,
+        }
     }
 }
 

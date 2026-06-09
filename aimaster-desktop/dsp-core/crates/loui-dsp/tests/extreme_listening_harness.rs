@@ -86,7 +86,7 @@ fn transparent() -> MasteringChainConfig {
         input_gain_db: 0.0,
         eq: EqConfig { low_cut_hz: 10.0, low_shelf_db: 0.0, presence_db: 0.0, air_db: 0.0, adaptive: false, bypass: false },
         dynamics: DynamicsConfig { threshold_db: 0.0, ratio: 1.0, attack_ms: 10.0, release_ms: 120.0, mix_pct: 100.0, bypass: true },
-        imager: ImagerConfig { width_pct: 100.0, low_mono_hz: 20.0, bypass: false },
+        imager: ImagerConfig { width_pct: 100.0, low_mono_hz: 20.0, bypass: false, ..ImagerConfig::default() },
         limiter: LimiterConfig { ceiling_dbtp: -1.0, lookahead_ms: 2.5, isp: true, bypass: true },
         output_gain_db: 0.0,
         bypass: false,

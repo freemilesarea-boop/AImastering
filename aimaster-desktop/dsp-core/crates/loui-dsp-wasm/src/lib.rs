@@ -499,6 +499,8 @@ impl LouiMasteringChain {
             multiband: preserved_multiband,
             imager: ImagerConfig {
                 width_pct: img_width_pct, low_mono_hz: img_low_mono_hz, bypass: img_bypass,
+                // 4-band M/S is configured separately; default it (single-band).
+                ..ImagerConfig::default()
             },
             limiter: LimiterConfig {
                 ceiling_dbtp: lim_ceiling_dbtp, lookahead_ms: lim_lookahead_ms,

@@ -20,12 +20,10 @@
 //! constructor, no allocation / locks / I/O in `process_stereo`.
 
 use super::config::{db_to_lin, MultibandBandConfig, MultibandConfig};
+use super::crossover::{ordered_xovers3, Lr4Lowpass};
 use super::StereoModule;
-use crate::biquad::{Biquad, BiquadCoeffs};
 
 const KNEE_DB: f64 = 6.0;
-/// Butterworth Q (cascade of two ⇒ Linkwitz-Riley 4th order).
-const LR_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
 const N_BANDS: usize = 4;
 const N_XOVER: usize = 3;
 
@@ -36,49 +34,10 @@ fn time_coeff(ms: f64, sr: f64) -> f64 {
     (-1.0 / (ms * 0.001 * sr)).exp()
 }
 
-/// Clamp + order the three crossover frequencies so lo < mid < hi and each
-/// stays safely below Nyquist.  Returns `[lo, mid, hi]`.
+/// Clamp + order the three crossover frequencies (delegates to the shared
+/// crossover helper).  Returns `[lo, mid, hi]`.
 fn ordered_xovers(cfg: &MultibandConfig, sr: f64) -> [f64; N_XOVER] {
-    let nyq = sr * 0.5;
-    let hi_max = (nyq * 0.9).max(40.0);
-    let lo = cfg.xover_lo_hz.clamp(20.0, hi_max);
-    let mut mid = cfg.xover_mid_hz.clamp(20.0, hi_max);
-    let mut hi = cfg.xover_hi_hz.clamp(20.0, hi_max);
-    // Enforce strict ascending order with a small margin.
-    if mid <= lo {
-        mid = (lo * 1.5).min(hi_max);
-    }
-    if hi <= mid {
-        hi = (mid * 1.5).min(hi_max);
-    }
-    [lo, mid, hi]
-}
-
-/// 4th-order Linkwitz-Riley lowpass = two cascaded Butterworth biquads.
-#[derive(Clone, Copy)]
-struct Lr4Lowpass {
-    a: Biquad,
-    b: Biquad,
-}
-
-impl Lr4Lowpass {
-    fn new(sr: f64, f: f64) -> Self {
-        let c = BiquadCoeffs::low_pass(sr, f, LR_Q);
-        Self { a: Biquad::new(c), b: Biquad::new(c) }
-    }
-    fn set(&mut self, sr: f64, f: f64) {
-        let c = BiquadCoeffs::low_pass(sr, f, LR_Q);
-        self.a.set_coeffs(c);
-        self.b.set_coeffs(c);
-    }
-    #[inline]
-    fn process(&mut self, x: f64) -> f64 {
-        self.b.process(self.a.process(x))
-    }
-    fn reset(&mut self) {
-        self.a.reset();
-        self.b.reset();
-    }
+    ordered_xovers3(cfg.xover_lo_hz, cfg.xover_mid_hz, cfg.xover_hi_hz, sr)
 }
 
 /// Per-band envelope follower + cached time coefficients.

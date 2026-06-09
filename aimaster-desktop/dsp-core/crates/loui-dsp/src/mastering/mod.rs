@@ -26,6 +26,7 @@ mod config;
 mod gain;
 mod eq;
 mod parametric_eq;
+mod crossover;
 mod dynamics;
 mod multiband;
 mod imager;
