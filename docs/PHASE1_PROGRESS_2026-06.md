@@ -51,9 +51,14 @@
 
 ## C. 미완 Phase-1 항목 + 정확한 차단 사유
 
-### C-1. ResultPage 파라메트릭 EQ 노출 (🟡 다음 작업)
-- 사실: 실제 **파라메트릭 EQ 체인**(`audio/parametric-eq-chain.ts` + `setFreeEqBands`)이 이미 신호경로에 스플라이스되도록 존재하고 `eq-drag-selftest`도 있으나, **ResultPage/TweakPage에 이를 구동하는 UI가 없다**.
-- 차단: 드래그 EQ UI 추가는 가치 있으나 **헤드리스에서 시각 검증 불가**. 모델→`setFreeEqBands` 매핑 셀프테스트 + 최소 컨트롤로 다음 세션 진행 권장.
+### C-1. ResultPage 파라메트릭 EQ 노출 → 완료 ✅
+**커밋**: `feat(eq): live parametric EQ control on ResultPage + model selftest (C-1)`
+- **`ParametricEqPanel`** (밴드 리스트: 타입/주파수/게인/Q/사용/삭제 + 추가, MAX_BANDS 캡)을 canonical ResultPage에 추가, `setFreeEqBands`에 라이브 연결 → 재생 중 즉시 들림(휴면 product-suite 의존 없음).
+- `audioStore.parametricEqBands` 상태 + add/update/remove/reset/set 액션(sanitize+cap), ResultPage 효과가 변경 시 라이브 버스에 splice.
+- `parametric-eq-model`에 순수 `sanitizeBands`(클램프+캡) 추가.
+- **셀프테스트** `parametric-eq-selftest`(mock-AudioContext로 모델→applyBands DSP 경로 + sanitizeBands 검증) + `test` 등록.
+- **검증**: typecheck 0, 전체 스위트 그린. 빈 밴드 리스트 = no-op(무회귀).
+- **잔여**: 드래그-캔버스 편집기는 product 모듈 스위트(후속 마일스톤). 현재는 슬라이더 기반 컨트롤.
 
 ### C-2. 엔진 일원화(Rust를 기본 export로 승격)
 - (a) **결과 형태 동등화 → 완료**(A-2 참조).
@@ -74,9 +79,12 @@
 
 ---
 
-## E. 다음 세션 권장 순서
-1. **C-2(a)**: Rust 실험 렌더 출력에 QC/분석 래핑 추가 → 결과 형태 Python과 동등화 (헤드리스에서 핸들러 단위 검증 가능).
-2. **C-2(b)**: 렌더러 export 라우팅에 backend 스위치 추가(기본 OFF) + 폴백.
-3. **C-1**: ResultPage 파라메트릭 EQ 컨트롤 + 모델→체인 셀프테스트.
-4. **C-3**: vitest 도입.
-5. (출시 전) 실기기 A/B QA → worklet 프리뷰/ Rust export 기본 ON 전환 → 이후 Phase 4 → 결제/서명/정식 출시.
+## E. 진행 현황 / 남은 작업
+- ✅ A-1 worklet 게이트 안전 재개방
+- ✅ A-2 / C-2(a) Rust 렌더 QC/분석 래핑 (결과 형태 동등화)
+- ✅ C-2(b) 렌더러 export backend 스위치 (기본 OFF + 폴백)
+- ✅ C-1 ResultPage 라이브 파라메트릭 EQ + 셀프테스트
+- 🟡 C-3 렌더러 vitest 도입 (저위험)
+- ⏸ C-4 레거시 `/python` 제거 (LEGACY.md 의도 충돌 — 사용자 승인 시)
+- 🔴 (출시 전, 헤드리스 불가) 실기기 A/B QA → worklet 프리뷰 / Rust export 기본 ON 전환
+- ⏳ 이후 Phase 2~4 → 결제/서명/정식 출시
