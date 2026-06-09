@@ -84,6 +84,55 @@ impl Default for LimiterConfig {
     }
 }
 
+/// One band of the 4-band multiband compressor.
+#[derive(Debug, Clone, Copy)]
+pub struct MultibandBandConfig {
+    pub threshold_db: f64,
+    /// Compression ratio.  1.0 = no compression (clean passthrough).
+    pub ratio: f64,
+    pub attack_ms: f64,
+    pub release_ms: f64,
+    /// Per-band makeup gain (dB) applied after compression.
+    pub makeup_db: f64,
+}
+
+impl Default for MultibandBandConfig {
+    fn default() -> Self {
+        // ratio 1.0 + 0 dB makeup → the band is a bit-exact passthrough.
+        Self { threshold_db: -24.0, ratio: 1.0, attack_ms: 20.0, release_ms: 150.0, makeup_db: 0.0 }
+    }
+}
+
+/// 4-band multiband compressor parameters.
+///
+/// Three crossover frequencies split the signal into low / low-mid /
+/// high-mid / high.  Defaults to `bypass: true` with unity bands, so the
+/// stage is a no-op until the UI/preset explicitly enables it.
+#[derive(Debug, Clone, Copy)]
+pub struct MultibandConfig {
+    /// Low | low-mid crossover (Hz).
+    pub xover_lo_hz: f64,
+    /// Low-mid | high-mid crossover (Hz).
+    pub xover_mid_hz: f64,
+    /// High-mid | high crossover (Hz).
+    pub xover_hi_hz: f64,
+    /// Per-band settings: [low, low-mid, high-mid, high].
+    pub bands: [MultibandBandConfig; 4],
+    pub bypass: bool,
+}
+
+impl Default for MultibandConfig {
+    fn default() -> Self {
+        Self {
+            xover_lo_hz: 120.0,
+            xover_mid_hz: 1000.0,
+            xover_hi_hz: 6000.0,
+            bands: [MultibandBandConfig::default(); 4],
+            bypass: true,
+        }
+    }
+}
+
 /// Full mastering-chain configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct MasteringChainConfig {
@@ -91,6 +140,8 @@ pub struct MasteringChainConfig {
     pub input_gain_db: f64,
     pub eq: EqConfig,
     pub dynamics: DynamicsConfig,
+    /// 4-band multiband compressor (after the glue compressor; off by default).
+    pub multiband: MultibandConfig,
     pub imager: ImagerConfig,
     pub limiter: LimiterConfig,
     /// Output gain (dB) applied after the chain.
@@ -105,6 +156,7 @@ impl Default for MasteringChainConfig {
             input_gain_db: 0.0,
             eq: EqConfig::default(),
             dynamics: DynamicsConfig::default(),
+            multiband: MultibandConfig::default(),
             imager: ImagerConfig::default(),
             limiter: LimiterConfig::default(),
             output_gain_db: 0.0,

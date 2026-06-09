@@ -5,6 +5,7 @@ use super::gain::Gain;
 use super::eq::Eq;
 use super::parametric_eq::{ParametricBand, ParametricEq};
 use super::dynamics::Dynamics;
+use super::multiband::Multiband;
 use super::imager::Imager;
 use super::limiter::Limiter;
 use super::StereoModule;
@@ -42,6 +43,7 @@ pub struct MasteringChain {
     parametric_eq: ParametricEq,
     eq: Eq,
     dynamics: Dynamics,
+    multiband: Multiband,
     imager: Imager,
     limiter: Limiter,
     output_gain: Gain,
@@ -61,6 +63,7 @@ impl MasteringChain {
             parametric_eq: ParametricEq::new(sample_rate),
             eq: Eq::new(sample_rate, cfg.eq),
             dynamics: Dynamics::new(sample_rate, cfg.dynamics),
+            multiband: Multiband::new(sample_rate, cfg.multiband),
             imager: Imager::new(sample_rate, cfg.imager),
             limiter: Limiter::new(sample_rate, cfg.limiter),
             output_gain: Gain::from_db(cfg.output_gain_db),
@@ -96,6 +99,7 @@ impl MasteringChain {
         self.input_gain.set_db(cfg.input_gain_db);
         self.eq.set_config(cfg.eq);
         self.dynamics.set_config(cfg.dynamics);
+        self.multiband.set_config(cfg.multiband);
         self.imager.set_config(cfg.imager);
         self.limiter.set_config(cfg.limiter);
         self.output_gain.set_db(cfg.output_gain_db);
@@ -132,6 +136,7 @@ impl MasteringChain {
         self.parametric_eq.process_stereo(left, right);
         self.eq.process_stereo(left, right);
         self.dynamics.process_stereo(left, right);
+        self.multiband.process_stereo(left, right);
         self.imager.process_stereo(left, right);
         self.limiter.process_stereo(left, right);
         self.output_gain.process_stereo(left, right);
@@ -184,6 +189,7 @@ impl MasteringChain {
         self.parametric_eq.reset();
         self.eq.reset();
         self.dynamics.reset();
+        self.multiband.reset();
         self.imager.reset();
         self.limiter.reset();
         self.safety_events = 0;
@@ -257,6 +263,7 @@ mod tests {
             limiter: LimiterConfig { ceiling_dbtp: -0.8, lookahead_ms: 2.0, isp: true, bypass: false },
             output_gain_db: -1.0,
             bypass: false,
+            ..MasteringChainConfig::default()
         });
         let mut l2 = sine(512, 440.0, 48_000.0, 0.4);
         let mut r2 = l2.clone();

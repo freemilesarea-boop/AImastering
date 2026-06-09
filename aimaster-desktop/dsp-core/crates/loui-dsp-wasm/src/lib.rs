@@ -435,7 +435,7 @@ impl LouiSpectrumAnalyzer {
 
 use loui_dsp::{
     MasteringChain, MasteringChainConfig,
-    EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
+    EqConfig, DynamicsConfig, MultibandConfig, ImagerConfig, LimiterConfig,
     ParametricBand, ParametricBandType,
 };
 
@@ -490,6 +490,10 @@ impl LouiMasteringChain {
                 attack_ms: dyn_attack_ms, release_ms: dyn_release_ms,
                 mix_pct: dyn_mix_pct, bypass: dyn_bypass,
             },
+            // Multiband compressor is not yet exposed via the flat preview
+            // setConfig args — defaults to bypassed (no-op) so preview/export
+            // behaviour is unchanged until a dedicated binding lands.
+            multiband: MultibandConfig::default(),
             imager: ImagerConfig {
                 width_pct: img_width_pct, low_mono_hz: img_low_mono_hz, bypass: img_bypass,
             },

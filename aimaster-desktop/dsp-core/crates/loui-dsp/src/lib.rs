@@ -104,6 +104,6 @@ pub use analyzer::{AnalyzerGraph, AnalyzerOptions};
 pub use buffer::{AudioBlockMut, AudioBlockRef, AudioBuffer};
 pub use mastering::{
     MasteringChain, MasteringChainConfig, GainReduction,
-    EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
+    EqConfig, DynamicsConfig, MultibandConfig, MultibandBandConfig, ImagerConfig, LimiterConfig,
     ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS,
 };

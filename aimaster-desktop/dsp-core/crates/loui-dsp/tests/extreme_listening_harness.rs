@@ -90,6 +90,7 @@ fn transparent() -> MasteringChainConfig {
         limiter: LimiterConfig { ceiling_dbtp: -1.0, lookahead_ms: 2.5, isp: true, bypass: true },
         output_gain_db: 0.0,
         bypass: false,
+        ..MasteringChainConfig::default()
     }
 }
 
