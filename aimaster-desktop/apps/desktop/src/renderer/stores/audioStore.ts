@@ -14,6 +14,12 @@ import {
   renameRevision as renameInGroup,
   toggleFavorite as toggleFavoriteInGroup,
 } from '../audio/revisions/revision-logic.js';
+import {
+  type ParametricEqBand,
+  sanitizeBands,
+  defaultBand,
+  MAX_BANDS,
+} from '../audio/modules/parametric-eq-model.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -247,6 +253,20 @@ interface AudioStore {
   toggleRevisionFavorite: (id: string) => void;
   /** Clear the revision group (e.g. on new source / queue clear). */
   clearRevisions: () => void;
+
+  // ── Free parametric EQ (C-1) ───────────────────────────────────────────
+  /** User-defined parametric EQ bands, spliced live into the preview chain. */
+  parametricEqBands: ParametricEqBand[];
+  /** Replace the whole band list (sanitised + capped to MAX_BANDS). */
+  setParametricEqBands: (bands: ParametricEqBand[]) => void;
+  /** Append a new band (default bell @ given freq).  No-op past MAX_BANDS. */
+  addParametricBand: (frequencyHz?: number) => void;
+  /** Patch one band by id (sanitised). */
+  updateParametricBand: (id: string, patch: Partial<Omit<ParametricEqBand, 'id'>>) => void;
+  /** Remove a band by id. */
+  removeParametricBand: (id: string) => void;
+  /** Clear all parametric bands. */
+  resetParametricEq: () => void;
 }
 
 function baseName(p: string): string {
@@ -332,4 +352,22 @@ export const useAudioStore = create<AudioStore>((set) => ({
   renameRevision:       (id, l)    => set((s) => ({ revisionGroup: s.revisionGroup ? renameInGroup(s.revisionGroup, id, l) : s.revisionGroup })),
   toggleRevisionFavorite: (id)     => set((s) => ({ revisionGroup: s.revisionGroup ? toggleFavoriteInGroup(s.revisionGroup, id) : s.revisionGroup })),
   clearRevisions:       ()         => set({ revisionGroup: null }),
+
+  // ── Free parametric EQ ─────────────────────────────────────────────────
+  parametricEqBands: [],
+  setParametricEqBands: (bands) => set({ parametricEqBands: sanitizeBands(bands) }),
+  addParametricBand: (frequencyHz = 1000) => set((s) => (
+    s.parametricEqBands.length >= MAX_BANDS
+      ? s
+      : { parametricEqBands: [...s.parametricEqBands, defaultBand(frequencyHz)] }
+  )),
+  updateParametricBand: (id, patch) => set((s) => ({
+    parametricEqBands: sanitizeBands(
+      s.parametricEqBands.map((b) => (b.id === id ? { ...b, ...patch, id: b.id } : b)),
+    ),
+  })),
+  removeParametricBand: (id) => set((s) => ({
+    parametricEqBands: s.parametricEqBands.filter((b) => b.id !== id),
+  })),
+  resetParametricEq: () => set({ parametricEqBands: [] }),
 }));

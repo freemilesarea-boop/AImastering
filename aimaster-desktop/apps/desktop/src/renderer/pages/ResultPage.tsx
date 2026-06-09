@@ -20,7 +20,9 @@ import {
   uninstallNativeDsp,
   ensureElementGraph,
   setRealtimeInsert,
+  setFreeEqBands,
 } from '../audio/shared-audio-graph.js';
+import ParametricEqPanel from '../components/ParametricEqPanel.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
 import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
@@ -247,6 +249,17 @@ function PreviewPlayer({
       node.port.postMessage({ type: 'config', config: optionsToChainConfig(options) });
     } catch { /* invalid config — skip */ }
   }, [options]);
+
+  // ── Free parametric EQ — splice user bands into the live preview chain ──
+  // setFreeEqBands lazily creates the EQ chain and re-routes the bus only
+  // when an enabled band exists, so an empty list is a cheap no-op.  Edits
+  // are heard immediately while the file plays.
+  const parametricEqBands = useAudioStore((s) => s.parametricEqBands);
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try { setFreeEqBands(a, parametricEqBands); } catch { /* ignore */ }
+  }, [parametricEqBands, meterReady]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -1203,6 +1216,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
             />
           </button>
         </div>
+      </Section>
+
+      {/* ── Parametric EQ (free bands, live) ───────────────────────────────── */}
+      <Section title="파라메트릭 EQ" defaultOpen={false}>
+        <ParametricEqPanel />
       </Section>
 
       {/* ── Format ─────────────────────────────────────────────────────────── */}

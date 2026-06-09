@@ -63,6 +63,22 @@ export function clampQ(q: number): number {
   return Math.max(MIN_Q, Math.min(MAX_Q, q));
 }
 
+/**
+ * Clamp + cap a band list so it is always safe to hand to the DSP chain:
+ * every freq/gain/Q is finite + in range, and the list never exceeds
+ * MAX_BANDS.  Disabled bands are kept (the chain skips them).  Pure.
+ */
+export function sanitizeBands(bands: ParametricEqBand[]): ParametricEqBand[] {
+  return bands.slice(0, MAX_BANDS).map((b) => ({
+    id: b.id,
+    type: b.type,
+    frequencyHz: clampFrequency(b.frequencyHz),
+    gainDb: clampGainDb(b.gainDb),
+    q: clampQ(b.q),
+    enabled: !!b.enabled,
+  }));
+}
+
 // ── RBJ cookbook biquad magnitude (mirrors eq-curve-model.ts) ──────────
 //
 // Kept local so this model has no dependency on the legacy 5-band model.
