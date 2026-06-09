@@ -31,8 +31,8 @@ Python 인터프리터, numpy, soundfile, FFmpeg 모두 내장 — 사용자 별
 ### 빌드 명령
 
 ```bash
-# 저장소 루트에서 실행
-bash scripts/build-mac.sh
+cd aimaster-desktop/apps/desktop
+pnpm dist:mac
 ```
 
 ### 출력물
@@ -63,8 +63,8 @@ apps/desktop/out/
 ### 빌드 명령
 
 ```bat
-:: PowerShell 또는 cmd에서 저장소 루트
-scripts\build-win.bat
+cd aimaster-desktop\apps\desktop
+pnpm dist:win
 ```
 
 ### 출력물

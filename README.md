@@ -2,14 +2,18 @@
 
 음악 파일을 업로드하면 AI가 자동으로 마스터링하여 스트리밍 플랫폼에 최적화된 음원을 생성합니다.
 
-## ⚠️ 코드 위치 (v3.2 부터)
+## ⚠️ 코드 위치
 
-| 디렉토리 | 상태 | 용도 |
-|---|---|---|
-| `aimaster-desktop/` | **활성** | Electron 앱 + 활성 Python 엔진 (`services/python-audio/`) |
-| `python/`           | **legacy** | v3.1 이하 모듈, **신규 변경 금지**.  자세한 내용 → `python/LEGACY.md` |
+모든 활성 코드는 **`aimaster-desktop/`** 모노레포에 있습니다.
 
-신기능 / 버그 수정은 모두 `aimaster-desktop/services/python-audio/` 에서.
+| 경로 | 용도 |
+|---|---|
+| `aimaster-desktop/apps/desktop/` | Electron 앱 (React 렌더러 + main/preload) |
+| `aimaster-desktop/services/python-audio/` | 활성 Python 마스터링 엔진 (FFmpeg + NumPy) |
+| `aimaster-desktop/dsp-core/` | Rust DSP 코어 (실시간 프리뷰 + 오프라인 렌더, WASM) |
+| `aimaster-desktop/packages/` | 공유 패키지 (audio-engine / shared-types / dsp-wasm / license-core) |
+
+> 모노레포 이전의 레거시 앱(루트 `src/`, `python/`)은 v3.6에서 제거되었습니다 (git 이력에 보존).
 
 ## 주요 기능
 
@@ -63,52 +67,48 @@ sudo apt install nodejs ffmpeg python3 python3-pip python3-venv
 
 ```bash
 # 1. 저장소 클론
-git clone https://github.com/your-org/aimastering.git
-cd aimastering
+git clone https://github.com/freemilesarea-boop/AImastering.git
+cd AImastering/aimaster-desktop
 
-# 2. Node.js 의존성 설치
-npm install
+# 2. 의존성 설치 (pnpm 워크스페이스)
+pnpm install
 
 # 3. Python 환경 설정
-npm run setup:python
-# 또는: bash scripts/setup-python.sh
+bash scripts/setup-python.sh
 
 # 4. 개발 모드 실행
-npm run dev
+pnpm --filter @aimaster/desktop dev
 ```
 
 ### 빌드 및 패키징
 
 ```bash
-# macOS DMG 빌드
-npm run dist:mac
+cd aimaster-desktop/apps/desktop
+pnpm dist:mac   # macOS (zip, x64+arm64)
+pnpm dist:win   # Windows (portable)
+```
 
-# Windows NSIS 인스톨러 빌드
-npm run dist:win
+### 테스트
+
+```bash
+cd aimaster-desktop/apps/desktop
+pnpm typecheck       # tsc (renderer + main)
+pnpm test            # tsx 셀프테스트 스위트 + vitest
+pnpm test:unit       # 렌더러 단위/컴포넌트 테스트 (vitest)
 ```
 
 ## 폴더 구조
 
 ```
 AImastering/
-├── src/
-│   ├── main/           # Electron 메인 프로세스
-│   │   ├── ipc/        # IPC 핸들러
-│   │   ├── services/   # 비즈니스 로직 서비스
-│   │   └── utils/      # 유틸리티
-│   ├── preload/        # contextBridge API
-│   └── renderer/       # React UI
-│       ├── components/ # UI 컴포넌트
-│       ├── pages/      # 페이지 단위 뷰
-│       ├── store/      # Zustand 스토어
-│       └── hooks/      # 커스텀 훅
-├── python/
-│   ├── main.py         # JSON-RPC 서버 진입점
-│   ├── pipeline/       # 마스터링 파이프라인
-│   ├── analysis/       # QC 분석
-│   └── utils/          # FFmpeg 래퍼, 오디오 I/O
-├── docs/               # 설계 문서
-└── scripts/            # 빌드/설정 스크립트
+├── aimaster-desktop/                  # 활성 모노레포 (pnpm + turbo)
+│   ├── apps/desktop/                  # Electron 앱
+│   │   └── src/renderer/              #   React UI (pages / components / audio / stores)
+│   │   └── src/main/                  #   Electron main + IPC 핸들러 + offline 렌더
+│   ├── services/python-audio/         # Python 마스터링 엔진 (FFmpeg + NumPy)
+│   ├── dsp-core/                      # Rust DSP 코어 (loui-dsp) + WASM/Node 바인딩
+│   └── packages/                      # 공유 패키지 (shared-types / audio-engine / …)
+└── docs/                              # 설계·로드맵·점검 문서
 ```
 
 ## 오디오 처리 파이프라인
