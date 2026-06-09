@@ -66,8 +66,12 @@
 - (c) **톤/EQ 파리티 + 실기기 A/B QA** (🔴 출시 전, 헤드리스 불가) — 플래그 ON 후 실파일 Rust vs Python A/B.
 - (d) **support-matrix/test:export-support** 갱신(정직성 게이트) — 승격(기본 ON) 시.
 
-### C-3. 렌더러 단위테스트 도입 (🟡)
-- 현재 렌더러 테스트는 `tsx` 셀프테스트들(이번에 1종 추가). 정식 `vitest` 도입은 별도 작업으로 권장(저위험).
+### C-3. 렌더러 단위테스트(vitest) 도입 → 완료 ✅
+**커밋**: `test(renderer): introduce vitest unit/component harness (C-3)`
+- `vitest` + `jsdom` + `@testing-library/react/dom/jest-dom` 도입, `vitest.config.ts`(jsdom env, `@` alias, `src/**/*.test.*`) + `vitest.setup.ts`(RTL cleanup, AudioContext stub).
+- 렌더러 단위/컴포넌트 테스트 **24개 통과**: realtime-metrics-sink(코얼레싱), export-backend(라우팅+매핑), parametric-eq-model(sanitize+curve), **`ParametricEqPanel` 실제 렌더 + zustand 상호작용**(추가/삭제/토글/타입변경/캡).
+- `test:unit`(vitest run)·`test:unit:watch` 스크립트 + `test` 체인에 편입.
+- **검증**: typecheck 0(테스트 포함), 전체 스위트 그린. → **P1 "렌더러 단위테스트 0" 해소.**
 
 ### C-4. 레거시 `/python` 제거 (⏸ 보류 — 의도 충돌)
 - `/python`은 빌드/앱에서 **완전 미참조** 확인. 그러나 `python/LEGACY.md`가 명시적으로 **"참조 가능 / 향후 별도 브랜치로 archive 예정"**(즉시 삭제 아님)이라고 기록. 팀이 참조용으로 보존하기로 한 자료를 일방적으로 하드 삭제하지 않고 **보류 + 보고**. 사용자가 삭제를 원하면 진행.
@@ -84,7 +88,7 @@
 - ✅ A-2 / C-2(a) Rust 렌더 QC/분석 래핑 (결과 형태 동등화)
 - ✅ C-2(b) 렌더러 export backend 스위치 (기본 OFF + 폴백)
 - ✅ C-1 ResultPage 라이브 파라메트릭 EQ + 셀프테스트
-- 🟡 C-3 렌더러 vitest 도입 (저위험)
+- ✅ C-3 렌더러 vitest 도입 (24 tests)
 - ⏸ C-4 레거시 `/python` 제거 (LEGACY.md 의도 충돌 — 사용자 승인 시)
 - 🔴 (출시 전, 헤드리스 불가) 실기기 A/B QA → worklet 프리뷰 / Rust export 기본 ON 전환
 - ⏳ 이후 Phase 2~4 → 결제/서명/정식 출시
