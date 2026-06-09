@@ -500,6 +500,8 @@ impl LouiMasteringChain {
             // Multiband is configured via setMultibandConfig; preserve it here
             // so a flat-arg setConfig (slider move) doesn't reset it.
             multiband: preserved_multiband,
+            // Saturation is configured separately; preserve it across setConfig.
+            saturation: prev.saturation,
             imager: ImagerConfig {
                 width_pct: img_width_pct, low_mono_hz: img_low_mono_hz, bypass: img_bypass,
                 // 4-band M/S is configured via setImagerMultiband; preserve it.

@@ -152,6 +152,60 @@ impl Default for MultibandConfig {
     }
 }
 
+/// Saturation / exciter character (waveshaper family).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaturationCharacter {
+    /// Gentle soft saturation (few harmonics).
+    Warm,
+    /// Smooth odd harmonics (tanh).
+    Tape,
+    /// Asymmetric — even + odd harmonics (DC-blocked).
+    Tube,
+    /// Harder odd soft-clip.
+    Modern,
+}
+
+impl Default for SaturationCharacter {
+    fn default() -> Self {
+        SaturationCharacter::Tape
+    }
+}
+
+/// Saturation / exciter parameters.  `drive`/`mix_pct` are percentages.
+/// Default = bypassed, drive 0 → no-op until enabled.
+#[derive(Debug, Clone, Copy)]
+pub struct SaturationConfig {
+    pub bypass: bool,
+    pub character: SaturationCharacter,
+    /// Drive 0..100 (% → pre-gain into the shaper).  0 = clean passthrough.
+    pub drive: f64,
+    /// Dry/wet mix 0..100 (% wet).
+    pub mix_pct: f64,
+    /// When true, scale drive per band via `band_drives_pct`.
+    pub multiband_enabled: bool,
+    /// Per-band drive scaling %, [low, low-mid, high-mid, high].
+    pub band_drives_pct: [f64; 4],
+    pub xover_lo_hz: f64,
+    pub xover_mid_hz: f64,
+    pub xover_hi_hz: f64,
+}
+
+impl Default for SaturationConfig {
+    fn default() -> Self {
+        Self {
+            bypass: true,
+            character: SaturationCharacter::default(),
+            drive: 0.0,
+            mix_pct: 100.0,
+            multiband_enabled: false,
+            band_drives_pct: [100.0; 4],
+            xover_lo_hz: 120.0,
+            xover_mid_hz: 1000.0,
+            xover_hi_hz: 6000.0,
+        }
+    }
+}
+
 /// Full mastering-chain configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct MasteringChainConfig {
@@ -161,6 +215,8 @@ pub struct MasteringChainConfig {
     pub dynamics: DynamicsConfig,
     /// 4-band multiband compressor (after the glue compressor; off by default).
     pub multiband: MultibandConfig,
+    /// Saturation / exciter (after the multiband comp; off by default).
+    pub saturation: SaturationConfig,
     pub imager: ImagerConfig,
     pub limiter: LimiterConfig,
     /// Output gain (dB) applied after the chain.
@@ -176,6 +232,7 @@ impl Default for MasteringChainConfig {
             eq: EqConfig::default(),
             dynamics: DynamicsConfig::default(),
             multiband: MultibandConfig::default(),
+            saturation: SaturationConfig::default(),
             imager: ImagerConfig::default(),
             limiter: LimiterConfig::default(),
             output_gain_db: 0.0,

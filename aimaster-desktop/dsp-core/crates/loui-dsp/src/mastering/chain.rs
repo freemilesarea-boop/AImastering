@@ -6,6 +6,7 @@ use super::eq::Eq;
 use super::parametric_eq::{ParametricBand, ParametricEq};
 use super::dynamics::Dynamics;
 use super::multiband::Multiband;
+use super::saturation::Saturation;
 use super::imager::Imager;
 use super::limiter::Limiter;
 use super::StereoModule;
@@ -44,6 +45,7 @@ pub struct MasteringChain {
     eq: Eq,
     dynamics: Dynamics,
     multiband: Multiband,
+    saturation: Saturation,
     imager: Imager,
     limiter: Limiter,
     output_gain: Gain,
@@ -64,6 +66,7 @@ impl MasteringChain {
             eq: Eq::new(sample_rate, cfg.eq),
             dynamics: Dynamics::new(sample_rate, cfg.dynamics),
             multiband: Multiband::new(sample_rate, cfg.multiband),
+            saturation: Saturation::new(sample_rate, cfg.saturation),
             imager: Imager::new(sample_rate, cfg.imager),
             limiter: Limiter::new(sample_rate, cfg.limiter),
             output_gain: Gain::from_db(cfg.output_gain_db),
@@ -100,6 +103,7 @@ impl MasteringChain {
         self.eq.set_config(cfg.eq);
         self.dynamics.set_config(cfg.dynamics);
         self.multiband.set_config(cfg.multiband);
+        self.saturation.set_config(cfg.saturation);
         self.imager.set_config(cfg.imager);
         self.limiter.set_config(cfg.limiter);
         self.output_gain.set_db(cfg.output_gain_db);
@@ -137,6 +141,7 @@ impl MasteringChain {
         self.eq.process_stereo(left, right);
         self.dynamics.process_stereo(left, right);
         self.multiband.process_stereo(left, right);
+        self.saturation.process_stereo(left, right);
         self.imager.process_stereo(left, right);
         self.limiter.process_stereo(left, right);
         self.output_gain.process_stereo(left, right);
@@ -190,6 +195,7 @@ impl MasteringChain {
         self.eq.reset();
         self.dynamics.reset();
         self.multiband.reset();
+        self.saturation.reset();
         self.imager.reset();
         self.limiter.reset();
         self.safety_events = 0;

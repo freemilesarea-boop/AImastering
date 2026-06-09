@@ -29,13 +29,14 @@ mod parametric_eq;
 mod crossover;
 mod dynamics;
 mod multiband;
+mod saturation;
 mod imager;
 mod limiter;
 mod chain;
 
 pub use config::{
     MasteringChainConfig, EqConfig, DynamicsConfig, MultibandConfig, MultibandBandConfig,
-    ImagerConfig, LimiterConfig,
+    SaturationConfig, SaturationCharacter, ImagerConfig, LimiterConfig,
 };
 pub use parametric_eq::{ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS};
 pub use chain::{MasteringChain, GainReduction};
