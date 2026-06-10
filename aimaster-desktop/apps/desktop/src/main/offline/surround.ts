@@ -22,6 +22,29 @@ export const LAYOUT_CHANNELS: Record<SurroundLayout, ChannelRole[]> = {
   '7.1': ['FL', 'FR', 'FC', 'LFE', 'BL', 'BR', 'SL', 'SR'],
 };
 
+/**
+ * Group a layout's channels into processing units for the per-bed full chain:
+ * L/R surround pairs run as stereo, the centre as mono, LFE passes through
+ * untouched (band-limited — no tone/dynamics shaping).
+ */
+export interface ProcessingUnit { kind: 'stereo' | 'mono' | 'lfe'; indices: number[] }
+
+export function surroundProcessingUnits(layout: SurroundLayout): ProcessingUnit[] {
+  const roles = LAYOUT_CHANNELS[layout];
+  const idx = (r: ChannelRole): number => roles.indexOf(r);
+  const units: ProcessingUnit[] = [];
+  const pair = (l: ChannelRole, r: ChannelRole): void => {
+    const li = idx(l), ri = idx(r);
+    if (li >= 0 && ri >= 0) units.push({ kind: 'stereo', indices: [li, ri] });
+  };
+  pair('FL', 'FR');
+  if (idx('FC') >= 0) units.push({ kind: 'mono', indices: [idx('FC')] });
+  if (idx('LFE') >= 0) units.push({ kind: 'lfe', indices: [idx('LFE')] });
+  pair('BL', 'BR');
+  pair('SL', 'SR');
+  return units;
+}
+
 /** Detect a known layout from a raw channel count (else null). */
 export function layoutForChannelCount(n: number): SurroundLayout | null {
   if (n === 2) return 'stereo';

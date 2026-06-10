@@ -24,6 +24,7 @@ export function defaultSurroundOptions(): SurroundOptions {
     mode: 'foldDown',
     masterGainDb: 0,
     ceilingDb: -1,
+    perChannelChain: false,
   };
 }
 
@@ -44,5 +45,6 @@ export function sanitizeSurround(s: SurroundOptions): SurroundOptions {
     mode: s.mode === 'multichannel' ? 'multichannel' : 'foldDown',
     masterGainDb: clamp(s.masterGainDb ?? 0, MASTER_GAIN_RANGE.min, MASTER_GAIN_RANGE.max, 0),
     ceilingDb: clamp(s.ceilingDb ?? -1, CEILING_RANGE.min, CEILING_RANGE.max, -1),
+    perChannelChain: !!s.perChannelChain,
   };
 }

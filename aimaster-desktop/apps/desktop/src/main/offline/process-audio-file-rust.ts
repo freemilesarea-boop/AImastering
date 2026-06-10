@@ -18,7 +18,7 @@ import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-
 import { applyPreciseRebalance, type PreciseRebalanceOptions } from './precise-rebalance.js';
 import { applySectionPlan } from './section-mastering.js';
 import { applyVocalRiding } from './vocal-riding.js';
-import { deinterleaveN, foldDownToStereo, layoutForChannelCount } from './surround.js';
+import { deinterleaveN, foldDownToStereo, layoutForChannelCount, surroundProcessingUnits } from './surround.js';
 import { masterSurroundOutput, interleaveN } from './surround-render.js';
 import { integratedLoudnessLufs, loudnessNormGainDb } from './surround-loudness.js';
 import type { SectionMasteringPlan, VocalRidingPlan, SurroundTrims, SurroundOptions } from '@aimaster/shared-types';
@@ -206,12 +206,31 @@ export async function processAudioFileRust(
     const dec = await decodeSurroundChannels(inputPath, options.sampleRate).catch(() => null);
     if (dec) {
       const sr = options.surround;
+      // Optional per-bed full chain (EQ/comp/sat) — reuse the Rust stereo chain
+      // per processing unit with its limiter bypassed; the global linked limiter
+      // + loudness-match below handle peaks/loudness across all channels.
+      let chans = dec.channels;
+      if (sr.perChannelChain) {
+        const tone: OfflineChainConfig = { ...config, limBypass: true, outputGainDb: 0 };
+        const processed = dec.channels.slice();
+        for (const u of surroundProcessingUnits(dec.layout)) {
+          if (u.kind === 'stereo') {
+            const r = renderStereoBuffer(dec.channels[u.indices[0]!]!, dec.channels[u.indices[1]!]!, tone, options.sampleRate);
+            processed[u.indices[0]!] = r.left; processed[u.indices[1]!] = r.right;
+          } else if (u.kind === 'mono') {
+            const ch = dec.channels[u.indices[0]!]!;
+            const r = renderStereoBuffer(ch, ch, tone, options.sampleRate);
+            processed[u.indices[0]!] = r.left;
+          } // 'lfe' → left untouched
+        }
+        chans = processed;
+      }
       // Loudness auto-match: normalize the multichannel program to the target
       // LUFS (BS.1770), then apply the manual gain trim on top.
       const normGainDb = typeof options.targetLufs === 'number'
-        ? loudnessNormGainDb(integratedLoudnessLufs(dec.channels, dec.layout, options.sampleRate), options.targetLufs, options.maxBoostDb ?? 12)
+        ? loudnessNormGainDb(integratedLoudnessLufs(chans, dec.layout, options.sampleRate), options.targetLufs, options.maxBoostDb ?? 12)
         : 0;
-      const mastered = masterSurroundOutput(dec.channels, options.sampleRate, {
+      const mastered = masterSurroundOutput(chans, options.sampleRate, {
         masterGainDb: normGainDb + sr.masterGainDb, ceilingDb: sr.ceilingDb,
       });
       const nc = mastered.channels.length;

@@ -44,8 +44,20 @@
 - **렌더 연결**: 멀티채널 모드에서 `options.targetLufs`로 프로그램을 목표 LUFS 자동매칭 → 마스터 게인 트림 가산 → 링크드 리미터. `loudnessNormalized=true` 반영.
 - **검증**: surround-loudness(6 — 무음 게이팅·**+6dB→+6LU**·서라운드 가중·LFE 제외·norm 게인 clamp). **vitest 284/284**, typecheck 0.
 
+### P4-2c. 베드별 풀 체인 (per-bed EQ/컴프/새추레이션)
+
+**커밋**: `feat(surround): per-bed full chain for multichannel (Phase 4)`
+
+멀티채널 모드에 **베드별 풀 체인**(옵션) 추가 — 검증된 Rust 스테레오 체인을 처리 단위별로 재사용(DSP 중복 없음).
+
+- **`surroundProcessingUnits(layout)`**(순수): 레이아웃→처리 단위(L/R 서라운드 페어=stereo, 센터=mono, LFE=passthrough). 5.1/7.1/stereo 그룹핑 테스트.
+- **렌더 연결**: `surround.perChannelChain` 시 각 단위를 `renderStereoBuffer`(리미터 바이패스·출력게인 0 = tone-only config)로 통과 → EQ/컴프/새추레이션/이미저 적용. 이후 전역 링크드 라우드니스매칭+TP 리미터가 피크/라우드니스를 채널 횡단 처리. LFE는 미가공(대역 제한).
+- **`SurroundOptions.perChannelChain`**(기본 false) + `SurroundPanel` 토글.
+- **검증**: surroundProcessingUnits(3). **vitest 287/287**, typecheck 0.
+
 ### 정직성/한계
-- 멀티채널 모드는 **라우드니스 자동매칭(BS.1770) + 게인 트림 + 링크드 리미터**. 풀 체인 EQ/컴프는 여전히 채널별 미적용(서라운드 딜리버리는 라우드니스+TP 스펙 중심이라 우선순위 낮음).
+- 멀티채널 모드: **(옵션)베드별 풀 체인 → 라우드니스 자동매칭(BS.1770) → 게인 트림 → 링크드 TP 리미터**. EQ/컴프는 검증된 Rust 엔진을 베드별 재사용(중복 없음).
+- 베드별 체인은 같은 설정을 모든 베드에 적용(베드마다 다른 설정 UI는 미제공 — 향후). LFE는 톤/다이내믹스 미적용.
 - 멀티채널 WAV 인코딩(ffmpeg `-ac N`)·채널 마스크·플레이어 호환은 실제 서라운드 파일/장치로만 종단 검증 → 출시 전 QA. K-weighting 계수는 비-48k에서도 산출식 적용(정확). 단위테스트는 라우드니스/리미터/피크/폴드다운 DSP 수학만 보장.
 
 ## 🟡 Phase 4 남은 후보(대규모·범위 밖)
@@ -53,6 +65,6 @@
 | 항목 | 비고 |
 |------|------|
 | 객체 기반 Atmos 오서링(ADM BWF/Dolby/바이노럴) | 전용 인코더·메타데이터 체인 필요 |
-| 멀티채널 풀 체인(per-channel EQ/컴프) | Rust 체인 멀티채널화 대규모 |
+| ~~멀티채널 풀 체인(per-bed EQ/컴프)~~ | ✅ P4-2c (베드별 재사용). 베드마다 다른 설정은 향후 |
 | DAW 플러그인(VST3/AU, JUCE/nih-plug) | C++/플러그인 SDK·DAW 검증 필요 |
 | Cloud / Mobile | 별도 플랫폼 |

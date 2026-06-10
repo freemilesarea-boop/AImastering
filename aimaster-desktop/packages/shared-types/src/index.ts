@@ -186,6 +186,8 @@ export interface SurroundOptions {
   masterGainDb: number;
   /** Multichannel mode: linked true-peak ceiling (dBTP). */
   ceilingDb: number;
+  /** Multichannel mode: run the full chain (EQ/comp/sat) per bed group. */
+  perChannelChain: boolean;
 }
 
 /** Precise stem rebalance — per-stem gain applied on the offline (Rust) export. */

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   layoutForChannelCount, deinterleaveN, foldDownToStereo, bs1770Weight,
-  channelWeightedLoudnessDb, sanitizeSurroundTrims, LAYOUT_CHANNELS, DEFAULT_SURROUND_TRIMS,
+  channelWeightedLoudnessDb, sanitizeSurroundTrims, surroundProcessingUnits,
+  LAYOUT_CHANNELS, DEFAULT_SURROUND_TRIMS,
 } from './surround.js';
 
 const M3DB = Math.SQRT1_2;
@@ -62,6 +63,28 @@ describe('foldDownToStereo (BS.775)', () => {
     const out = foldDownToStereo(ch([0, 0, 0, 0, 1, 0, 1, 0]), '7.1'); // BL + SL
     expect(out.left[0]!).toBeCloseTo(M3DB * 2, 5);
     expect(out.right[0]!).toBeCloseTo(0, 6);
+  });
+});
+
+describe('surroundProcessingUnits', () => {
+  it('groups 5.1 into FL/FR stereo, FC mono, LFE passthrough, BL/BR stereo', () => {
+    const u = surroundProcessingUnits('5.1');
+    expect(u).toEqual([
+      { kind: 'stereo', indices: [0, 1] },
+      { kind: 'mono', indices: [2] },
+      { kind: 'lfe', indices: [3] },
+      { kind: 'stereo', indices: [4, 5] },
+    ]);
+  });
+  it('adds the side-surround stereo pair for 7.1', () => {
+    const u = surroundProcessingUnits('7.1');
+    expect(u.some((x) => x.kind === 'stereo' && x.indices[0] === 6 && x.indices[1] === 7)).toBe(true);
+    // every channel index 0..7 is covered exactly once
+    const covered = u.flatMap((x) => x.indices).sort((a, b) => a - b);
+    expect(covered).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+  it('stereo layout → a single stereo unit', () => {
+    expect(surroundProcessingUnits('stereo')).toEqual([{ kind: 'stereo', indices: [0, 1] }]);
   });
 });
 

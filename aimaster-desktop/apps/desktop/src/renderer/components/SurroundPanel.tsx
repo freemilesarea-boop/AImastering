@@ -57,7 +57,11 @@ export default function SurroundPanel(): React.ReactElement {
               display={`${s.masterGainDb > 0 ? '+' : ''}${s.masterGainDb.toFixed(1)} dB`} onChange={(v) => update({ masterGainDb: v })} />
             <Slider label="트루피크 실링" value={s.ceilingDb} min={CEILING_RANGE.min} max={CEILING_RANGE.max} step={0.1}
               display={`${s.ceilingDb.toFixed(1)} dBTP`} onChange={(v) => update({ ceilingDb: v })} />
-            <p className="text-[10px] text-zinc-600">레이아웃 보존 · 목표 LUFS 자동매칭(BS.1770) + 마스터 게인 트림 + 채널 링크드 트루피크 리미터(이미징 보존). 출력은 멀티채널 WAV.</p>
+            <label className="flex items-center gap-2 text-[10px] text-zinc-400">
+              <input type="checkbox" checked={s.perChannelChain} onChange={(e) => update({ perChannelChain: e.target.checked })} aria-label="베드별 풀 체인" />
+              베드별 풀 체인 (EQ/컴프/새추레이션)
+            </label>
+            <p className="text-[10px] text-zinc-600">레이아웃 보존 · (옵션) 베드별 풀 체인 → 목표 LUFS 자동매칭(BS.1770) + 마스터 게인 트림 + 채널 링크드 트루피크 리미터(이미징 보존). 출력은 멀티채널 WAV.</p>
           </div>
         )}
       </div>
