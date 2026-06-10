@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectAiMusic, buildAiMusicFeatures, type AiMusicFeatures } from './ai-music.js';
+import { detectAiMusic, buildAiMusicFeatures, refineWithSpectrum, type AiMusicFeatures } from './ai-music.js';
 import { isDynamicEqUnity } from './dyneq-config.js';
 import { isDeesserActive } from './deesser-config.js';
 import { isTransientUnity } from './transient-config.js';
@@ -66,6 +66,28 @@ describe('detectAiMusic', () => {
   it('optional spectral refinements trigger findings without booleans', () => {
     const r = detectAiMusic(clean({ highToMidDb: -8, lowToMidDb: -6, lrCorrelation: 0.1 }));
     expect(r.detected).toBe(true);
+  });
+
+  it('spectral metallicScore triggers the metallic finding (no boolean)', () => {
+    expect(detectAiMusic(clean({ metallicScore: 0.8 })).findings.some((f) => f.id === 'metallicHighMid')).toBe(true);
+  });
+
+  it('spectral aliasingScore triggers the brittle-highs finding', () => {
+    expect(detectAiMusic(clean({ aliasingScore: 0.8 })).findings.some((f) => f.id === 'brittleHighs')).toBe(true);
+  });
+
+  it('strong scores increase the corrective dynamic-EQ range', () => {
+    const wBand = detectAiMusic(clean({ metallicScore: 0.6 })).correction.dynamicEq.bands.find((b) => Math.round(b.freqHz) === 3800)!;
+    const sBand = detectAiMusic(clean({ metallicScore: 0.9, harshnessScore: 0.8 })).correction.dynamicEq.bands.find((b) => Math.round(b.freqHz) === 3800)!;
+    expect(sBand.rangeDb).toBeGreaterThanOrEqual(wBand.rangeDb);
+  });
+});
+
+describe('refineWithSpectrum', () => {
+  it('adds spectral scores from a usable frame; no-op on null', () => {
+    const refined = refineWithSpectrum(clean(), { magsDb: new Float32Array(256).fill(-30), sampleRate: 48000 });
+    expect(typeof refined.metallicScore).toBe('number');
+    expect(refineWithSpectrum(clean(), null).metallicScore).toBeUndefined();
   });
 });
 

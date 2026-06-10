@@ -428,6 +428,20 @@ export function getActiveMultibandReductions(): [number, number, number, number]
 }
 
 /**
+ * Snapshot the active element's main analyser as a dB-per-bin spectrum frame
+ * (for AI-music spectral feature extraction).  Null when no graph exists.
+ * Carries real data only while audio is flowing through the analyser.
+ */
+export function getActiveSpectrumSnapshot(): { magsDb: Float32Array; sampleRate: number } | null {
+  const g = activeGraph;
+  if (!g) return null;
+  const a = g.analysers.main;
+  const mags = new Float32Array(a.frequencyBinCount);
+  a.getFloatFrequencyData(mags);
+  return { magsDb: mags, sampleRate: g.ctx.sampleRate };
+}
+
+/**
  * Set the 4-band M/S imager config for an element's preview chain.  Lazily
  * creates the WebAudio approximation on first active call; unity / disabled is
  * a cheap no-op (no routing change, no coloration).

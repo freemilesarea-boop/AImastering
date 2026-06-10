@@ -8,6 +8,7 @@
 // one click.  Pure + rule-based → headless-testable; no ML model.
 
 import type { AudioAnalysisResult } from '@aimaster/shared-types';
+import { type SpectrumFrame, computeAiSpectralFeatures, isUsableSpectrum } from './ai-music-spectral.js';
 import { type MultibandConfig, defaultMultibandConfig } from './multiband-config.js';
 import { type ImagerMultibandConfig, defaultImagerMultiband } from './imager-config.js';
 import { type SaturationConfig, defaultSaturationConfig } from './saturation-config.js';
@@ -32,6 +33,10 @@ export interface AiMusicFeatures {
   lrCorrelation?: number;
   highToMidDb?: number;
   lowToMidDb?: number;
+  /** Optional precise spectral scores (0..1) from the renderer FFT. */
+  metallicScore?: number;
+  harshnessScore?: number;
+  aliasingScore?: number;
 }
 
 export type AiMusicSeverity = 'ok' | 'info' | 'warn';
@@ -81,6 +86,24 @@ export function buildAiMusicFeatures(
   };
 }
 
+/**
+ * Refine the feature set with precise spectral scores from an FFT frame.
+ * No-op when the frame carries no real signal — keeps the boolean-only path.
+ */
+export function refineWithSpectrum(features: AiMusicFeatures, frame: SpectrumFrame | null): AiMusicFeatures {
+  if (!isUsableSpectrum(frame)) return features;
+  const s = computeAiSpectralFeatures(frame);
+  return {
+    ...features,
+    metallicScore: s.metallicScore,
+    harshnessScore: s.harshnessScore,
+    aliasingScore: s.aliasingScore,
+    // Prefer measured tilt over any caller-supplied estimate.
+    highToMidDb: s.highToMidDb,
+    lowToMidDb: s.lowToMidDb,
+  };
+}
+
 function dynBand(over: Partial<Omit<DynEqBand, 'id'>> & { freqHz: number }): DynEqBand {
   return { ...defaultDynEqBand(over.freqHz), ...over };
 }
@@ -99,25 +122,37 @@ export function detectAiMusic(f: AiMusicFeatures): AiMusicReport {
   const multiband: MultibandConfig = defaultMultibandConfig();
   const saturation: SaturationConfig = defaultSaturationConfig();
 
+  // Spectral scores (when the renderer FFT refined the features) sharpen the
+  // boolean rules; a strong score scales the corrective range.
+  const metallic = f.harshHighMid
+    || (typeof f.metallicScore === 'number' && f.metallicScore > 0.55)
+    || (typeof f.highToMidDb === 'number' && f.highToMidDb > -14);
+  const aliasing = f.upsampleSuspected
+    || (typeof f.aliasingScore === 'number' && f.aliasingScore > 0.55)
+    || (typeof f.highToMidDb === 'number' && f.highToMidDb > -10);
+  const harsh = (typeof f.harshnessScore === 'number' && f.harshnessScore > 0.6);
+
   // 1) Metallic / harsh high-mid (Suno/Udio vocals + synths).
-  if (f.harshHighMid || (typeof f.highToMidDb === 'number' && f.highToMidDb > -14)) {
+  if (metallic || harsh) {
+    const sev = (f.metallicScore ?? 0) > 0.7 || harsh ? 6 : 5;
     findings.push({
       id: 'metallicHighMid', severity: 'warn',
       label: '금속성 고중역',
       detail: 'AI 보컬/신스 특유의 3–5 kHz 금속성·거친 질감. 다이내믹 EQ로 라우드 시에만 완화합니다.',
     });
-    dynBands.push(dynBand({ freqHz: 3800, filterType: 'bell', q: 3, thresholdDb: -26, ratio: 4, rangeDb: 5, mode: 'downcut' }));
+    dynBands.push(dynBand({ freqHz: 3800, filterType: 'bell', q: 3, thresholdDb: -26, ratio: 4, rangeDb: sev, mode: 'downcut' }));
     deesser = { ...deesser, enabled: true, freqHz: 7000, thresholdDb: -28, rangeDb: 5, q: 3.5, filterType: 'bell' };
   }
 
   // 2) Brittle / aliased highs (upsample-suspected / harsh top).
-  if (f.upsampleSuspected || (typeof f.highToMidDb === 'number' && f.highToMidDb > -10)) {
+  if (aliasing) {
+    const sev = (f.aliasingScore ?? 0) > 0.75 ? 5 : 4;
     findings.push({
       id: 'brittleHighs', severity: 'warn',
       label: '고역 브리틀/에일리어싱',
       detail: '업샘플·합성 특유의 부서지는 고역. 8 kHz 이상 하이셸프를 동적으로 눌러 정리합니다.',
     });
-    dynBands.push(dynBand({ freqHz: 9000, filterType: 'highshelf', q: 0.7, thresholdDb: -28, ratio: 3, rangeDb: 4, mode: 'downcut' }));
+    dynBands.push(dynBand({ freqHz: 9000, filterType: 'highshelf', q: 0.7, thresholdDb: -28, ratio: 3, rangeDb: sev, mode: 'downcut' }));
   }
 
   // 3) Over-compressed source (brickwall / low LRA) — restore punch instead of
