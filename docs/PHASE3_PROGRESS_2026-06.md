@@ -6,6 +6,29 @@
 
 ---
 
+## ✅ Phase 3 완료 (전부)
+
+| # | 기능 | 검증 |
+|---|------|------|
+| P3-1 | AI 생성곡 전용 모드 (감지 + 원클릭 보정) | ✅ headless |
+| P3-2 | AI 음악 감지 스펙트럴 정밀화 | ✅ headless |
+| P3-3 | 자동 장르 감지 + 아시아 레퍼런스 라이브러리 | ✅ headless |
+| P3-4 | 스템 리밸런스 (근사 라이브 + 정밀 티어 스켈레톤) | ✅ headless |
+| P3-5 | 정밀 스템 분리 런타임 (ONNX Demucs WOLA + 모델 매니저) | ✅ headless (모델 핀 전 게이트 OFF) |
+| P3-6 | 매니페스트 핀 인프라 (사이드카 + pin:stem-model) | ✅ headless |
+| P3-7 | 마스터링 이력 (durable, 세션간) | ✅ headless |
+| P3-8 | 구간별 마스터링 (per-section 게인, export) | ✅ headless |
+| P3-9 | 멀티-보컬 → 보컬 라이딩 (센터 M/S, export) | ✅ headless |
+
+**전체 검증**: vitest **252/252** 그린 · typecheck 0 (renderer + main + shared-types) · 모든 기능 기본 OFF/무변경 → **무회귀**.
+
+**출시 전(헤드리스 불가) 잔여**:
+- 정밀 스템 티어 ON — 스위치 3개(① 모델 export·호스팅·매니페스트 핀 ② `onnxruntime-node` 번들 ③ `PRECISE_AVAILABLE=true`). 런타임/툴링 완료, `docs/STEM_SEPARATION_PLAN.md`.
+- 청취 품질 QA — 구간 경계 자연스러움·보컬 라이딩 펌핑·정밀 분리 품질은 실 오디오/장치 A/B 필요.
+- → 이후 **Phase 4 / 출시 준비**(프리뷰 플래그 ON + 디바이스 QA, macOS 공증 + Windows EV 서명 = 결제 단계).
+
+---
+
 ## ✅ P3-1. AI 생성곡 전용 모드
 
 **커밋**: `feat(ai-music): AI-generated music mode — detect + one-click correct (Phase 3)`
