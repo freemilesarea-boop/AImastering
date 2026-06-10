@@ -16,6 +16,8 @@ import {
 } from './rust-offline-render-core.js';
 import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-node.js';
 import { applyPreciseRebalance, type PreciseRebalanceOptions } from './precise-rebalance.js';
+import { applySectionPlan } from './section-mastering.js';
+import type { SectionMasteringPlan } from '@aimaster/shared-types';
 
 export interface RustRenderOptions {
   sampleRate: number;
@@ -29,6 +31,8 @@ export interface RustRenderOptions {
   maxBoostDb?: number;
   /** Optional precise stem rebalance (no-op unless a model is installed). */
   rebalance?: PreciseRebalanceOptions;
+  /** Optional per-section gain automation (no-op when unity). */
+  sectionPlan?: SectionMasteringPlan;
   onProgress?: (frac: number) => void;
 }
 
@@ -116,6 +120,12 @@ export async function processAudioFileRust(
   if (options.rebalance?.enabled) {
     const rb = await applyPreciseRebalance(left, right, options.sampleRate, options.rebalance, options.onProgress);
     left = rb.left; right = rb.right;
+  }
+
+  // Per-section gain automation — pre-chain so the chain glues the sections.
+  if (options.sectionPlan?.enabled) {
+    const sec = applySectionPlan(left, right, options.sampleRate, options.sectionPlan);
+    left = sec.left; right = sec.right;
   }
 
   const normalized = typeof options.targetLufs === 'number';

@@ -13,6 +13,7 @@ import type { StructuredError } from '../stores/audioStore.js';
 import type { MasteringResult, AudioAnalysisResult } from '@aimaster/shared-types';
 import { masterWithPreferredBackend } from '../audio/export-backend.js';
 import { isPreciseRebalanceActive } from '../audio/rebalance-config.js';
+import { isSectionPlanUnity } from '../audio/section-plan.js';
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
 
@@ -153,6 +154,7 @@ export default function MasteringPage() {
   const dynamicEq       = useAudioStore((s) => s.dynamicEq);
   const deesser         = useAudioStore((s) => s.deesser);
   const rebalance       = useAudioStore((s) => s.rebalance);
+  const sectionPlan     = useAudioStore((s) => s.sectionPlan);
   const progress        = useAudioStore((s) => s.progress);
   const isMastering     = useAudioStore((s) => s.isMastering);
   const error           = useAudioStore((s) => s.error);
@@ -238,11 +240,15 @@ export default function MasteringPage() {
 
       // eslint-disable-next-line no-console
       console.log('[MasteringPage] ipc invoke start — audio:master');
-      // Attach precise stem rebalance only when the user opted in with non-zero
-      // stem gains; otherwise the export options are byte-for-byte unchanged.
-      const exportOptions = isPreciseRebalanceActive(rebalance)
-        ? { ...options, rebalance: { enabled: true, gainsDb: rebalance.stemGainsDb } }
-        : options;
+      // Attach precise stem rebalance + per-section gain only when actually
+      // active; otherwise the export options are byte-for-byte unchanged.
+      let exportOptions = options;
+      if (isPreciseRebalanceActive(rebalance)) {
+        exportOptions = { ...exportOptions, rebalance: { enabled: true, gainsDb: rebalance.stemGainsDb } };
+      }
+      if (!isSectionPlanUnity(sectionPlan)) {
+        exportOptions = { ...exportOptions, sectionPlan };
+      }
       const result = await Promise.race([
         masterWithPreferredBackend({
           invoke: window.electronAPI!.invoke,
@@ -307,7 +313,7 @@ export default function MasteringPage() {
       setIsMastering(false);
       inFlightRef.current = false;
     }
-  }, [selectedFile, analysis, options, rebalance, setIsMastering, setError, setProgress, setMasteringResult, pushHistoryEntry, setAnalysis, setPage, notify, sendCancel]);
+  }, [selectedFile, analysis, options, rebalance, sectionPlan, setIsMastering, setError, setProgress, setMasteringResult, pushHistoryEntry, setAnalysis, setPage, notify, sendCancel]);
 
   // Navigation-away cleanup: if the user leaves MasteringPage while an
   // IPC is still pending (e.g. ESC + 새 파일, back-to-home, app quit

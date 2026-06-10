@@ -116,11 +116,29 @@ iZotope "Master Rebalance"를 대체하는 **2-티어** 스템 컨트롤. 백엔
 - 마스터 WAV/MP3는 temp(세션간 purge)라 **오디오는 보관 안 함** — 이력은 "무엇을 했는지 + 설정 복원해 재마스터". 엔트리는 파일 존재에 의존하지 않음.
 - 영속은 best-effort(디스크/IPC 실패 시 무시) — UX 보조이지 손실 불가 데이터 아님.
 
+## ✅ P3-8 (P2-b). 구간별 마스터링 (per-section 게인 자동화)
+
+**커밋**: `feat(section): per-section gain automation on export (P2)`
+
+"코러스 올리고 브릿지 누르기" — 구간 타임라인(벌스/코러스…)별 게인을 익스포트 시 **시변 게인 엔벨로프**로 적용.
+
+- **`section-mastering.ts`**(메인, 순수): `synthesizeGainEnvelope`(구간 시간범위→per-sample 선형 게인, 경계는 **raised-cosine 크로스페이드**로 연속, 구간 밖은 unity), `applyGainEnvelope`(샘플별 곱), `applySectionPlan`(unity면 no-op), `sanitizeSectionPlan`/`isSectionPlanUnity`. 완전 헤드리스 테스트.
+- **렌더 연결**: `process-audio-file-rust`가 체인 **직전**에 적용(컴프/리미터/loudnorm이 구간을 자연 결합) · `MasteringOptions.sectionPlan`(shared-types) · `audioHandlers`가 enabled일 때만 전달.
+- **렌더러 모델**(`section-plan.ts`): `buildSectionPlanFromAnalysis`(검출 구간→0dB 게인, **기존 게인 보존**), `setSectionGain`(±12dB clamp), sanitize/isUnity.
+- **`SectionMasteringPanel`**(ResultPage): `masteringResult.sectionAnalysis.sections` 미러 → 구간별 게인 슬라이더 + 사용 토글. 정밀 티어처럼 **익스포트 전용**(라이브 프리뷰 무변경).
+- **MasteringPage**: `isSectionPlanUnity` 아닐 때만 옵션 첨부(아니면 무변경).
+- **검증**: section-mastering(10 — 엔벨로프 연속성·경계 ramp·적용·sanitize)+section-plan(8)+패널(4). **vitest 239/239**, typecheck 0(renderer+main+shared-types). 무회귀.
+
+### 정직성/한계
+- **게인 자동화**이지 풀 체인의 per-section 재마스터가 아님(체인 내부 stateful 다이내믹스는 구간 분할 불가). 가장 tractable·결정적·헤드리스 검증 가능한 코어.
+- 익스포트 전용(라이브 프리뷰엔 미반영) — 정밀 리밸런스 정밀 티어와 동일 패턴.
+- 청취 품질(경계 자연스러움)은 실 오디오/장치 필요 → 출시 전 QA. 단위테스트는 엔벨로프 수학(연속성·게인·경계)만 보장.
+
 ## 🟡 남은 Phase 3 후보
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
 | 정밀 티어 ON(모델 export·핀·번들) | 출시 전 | 런타임 완료 → 스위치 3개만 남음 |
-| 섹션별 마스터링 (per-section 적용) | P2 | 분석·UI 존재 → 렌더 시밀화 DSP 남음(큰 작업) |
-| 멀티-보컬 | P2 | 스코프 미정 |
-| ~~마스터링 이력~~ | ✅ | P3-7 완료 (durable) |
+| 멀티-보컬 | P2 | 스코프 미정(요구사항 정의 필요) |
+| ~~마스터링 이력~~ | ✅ | P3-7 (durable) |
+| ~~구간별 마스터링~~ | ✅ | P3-8 (per-section 게인, export) |

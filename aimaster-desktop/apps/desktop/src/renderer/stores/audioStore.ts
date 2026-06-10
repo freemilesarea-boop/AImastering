@@ -21,6 +21,11 @@ import {
   toggleFavorite as toggleHistoryFavoritePure, getEntry as getHistoryEntry,
   serializeHistory, deserializeHistory,
 } from '../audio/mastering-history.js';
+import type { SectionMasteringPlan, SectionSegment, RebalancePreciseOptions } from '@aimaster/shared-types';
+import {
+  defaultSectionPlan, buildSectionPlanFromAnalysis,
+  sanitizeSectionPlan, setSectionGain as setSectionGainPure,
+} from '../audio/section-plan.js';
 import {
   type ParametricEqBand,
   sanitizeBands,
@@ -202,6 +207,10 @@ export interface MasteringOptions {
   quickPreset?: string | undefined;
   /** Live DSP overrides — applied to the WebAudio preview chain. */
   rt?: RealtimeDspOverrides;
+  /** Phase 3 — precise stem rebalance (applied on the offline export). */
+  rebalance?: RebalancePreciseOptions;
+  /** P2 — per-section gain automation (applied on the offline export). */
+  sectionPlan?: SectionMasteringPlan;
 }
 
 const defaultRtOverrides: RealtimeDspOverrides = {
@@ -314,6 +323,15 @@ interface AudioStore {
   toggleHistoryFavorite: (id: string) => void;
   /** Restore an entry's options snapshot back into the active options. */
   restoreHistoryEntry: (id: string) => void;
+
+  // ── Per-section mastering (P2) ─────────────────────────────────────────
+  /** Editable per-section gain plan (applied on export). */
+  sectionPlan: SectionMasteringPlan;
+  /** Rebuild the plan from detected sections (preserves existing gains). */
+  syncSectionPlan: (sections: SectionSegment[] | undefined | null) => void;
+  setSectionGain: (index: number, gainDb: number) => void;
+  toggleSectionPlan: (enabled: boolean) => void;
+  resetSectionPlan: () => void;
 
   // ── Free parametric EQ (C-1) ───────────────────────────────────────────
   /** User-defined parametric EQ bands, spliced live into the preview chain. */
@@ -526,6 +544,13 @@ export const useAudioStore = create<AudioStore>((set) => ({
     const entry = getHistoryEntry(s.history, id);
     return entry ? { options: { ...s.options, ...entry.optionsSnapshot } } : s;
   }),
+
+  // ── Per-section mastering (P2) ─────────────────────────────────────────
+  sectionPlan: defaultSectionPlan(),
+  syncSectionPlan: (sections) => set((s) => ({ sectionPlan: buildSectionPlanFromAnalysis(sections, s.sectionPlan) })),
+  setSectionGain: (index, gainDb) => set((s) => ({ sectionPlan: setSectionGainPure(s.sectionPlan, index, gainDb) })),
+  toggleSectionPlan: (enabled) => set((s) => ({ sectionPlan: sanitizeSectionPlan({ ...s.sectionPlan, enabled }) })),
+  resetSectionPlan: () => set({ sectionPlan: defaultSectionPlan() }),
 
   // ── Free parametric EQ ─────────────────────────────────────────────────
   parametricEqBands: [],

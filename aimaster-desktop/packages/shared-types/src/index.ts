@@ -152,12 +152,32 @@ export interface MasteringOptions {
   dynamicEqIntensity?: number;
   /** Phase 3 — precise (Demucs/ONNX) stem rebalance. No-op unless a model is installed. */
   rebalance?: RebalancePreciseOptions;
+  /** P2 — per-section gain automation, applied on the offline (Rust) export. */
+  sectionPlan?: SectionMasteringPlan;
 }
 
 /** Precise stem rebalance — per-stem gain applied on the offline (Rust) export. */
 export interface RebalancePreciseOptions {
   enabled: boolean;
   gainsDb: { vocals: number; drums: number; bass: number; other: number };
+}
+
+/** One section's gain adjustment (time range in seconds). */
+export interface SectionGain {
+  startSec: number;
+  endSec: number;
+  gainDb: number;
+}
+
+/**
+ * Per-section gain automation — lift the chorus, tame the bridge, etc.  Applied
+ * as a smooth (raised-cosine crossfaded) time-varying gain on the export.
+ */
+export interface SectionMasteringPlan {
+  enabled: boolean;
+  /** Boundary crossfade length in ms (smooths section transitions). */
+  crossfadeMs: number;
+  gains: SectionGain[];
 }
 
 export interface EqMoveReport {

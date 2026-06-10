@@ -409,6 +409,8 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         ...(options?.rebalance?.enabled
           ? { rebalance: { enabled: true, gainsDb: options.rebalance.gainsDb, userDataDir: app.getPath('userData') } }
           : {}),
+        // Per-section gain automation — no-op when unity.
+        ...(options?.sectionPlan?.enabled ? { sectionPlan: options.sectionPlan } : {}),
       });
       await encodePreviewMp3(wavTempPath, mp3Path);
 
