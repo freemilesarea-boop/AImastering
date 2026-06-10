@@ -69,11 +69,19 @@
 - 테스트 8종. **`cargo test -p loui-dsp` 84/84** + 하니스, `cargo check --workspace` 0. 기본 bypass → 무회귀.
 - 노출(WASM setter + UI + 프리뷰)은 후속(컴프/이미저 동일 패턴).
 
+### P2-7. Saturation/Exciter 노출 (바인딩→UI→Export+프리뷰) ✅
+**커밋**: `feat(saturation): expose saturation/exciter — binding → UI → export + preview (Phase 2)`
+- **Rust(`loui-dsp-wasm`)**: `setSaturation`(bypass·character u8·drive·mix·멀티밴드·크로스오버·bandDrives[4]) + setConfig 보존. `cargo check` 0.
+- 공유 `saturation-config.ts`: config + default/sanitize/pack/unity, **셰이퍼 수식(Rust와 동일) + `makeSaturationCurve`**(WebAudio 프리뷰 곡선), 캐릭터↔코드.
+- 오프라인 바인딩(`OfflineChainConfig.saturation?` + 가드 호출, characterCode 와이어), audioStore 상태/액션, export-backend 첨부(활성 시·문자열→코드), Mastering/HomePage 전달.
+- 프리뷰: **`saturation-chain.ts`**(WebAudio WaveShaper 4밴드 + DC블록) — `rerouteBus` 스테이지 순서 multiband→**saturation**→imager. worklet `'saturation'` 메시지 + ResultPage native 효과 + 시드.
+- **`SaturationPanel`** UI: enable·캐릭터·drive·mix·옵션 밴드별 드라이브.
+- **테스트**: config(7)+chain mock(4)+패널(6)+export(1). **vitest 71/71**, 전체 pnpm test 그린, typecheck 0. 기본 bypass → 무회귀.
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| Saturation **노출**(WASM/UI/프리뷰) | P1 후속 | DSP 완료 |
 | Transient/Impact | P1 | 신규 모듈 |
 | Dynamic EQ 완전 파라메트릭화 (Rust) | P1 | |
 | 멀티밴드/이미저/새추 프리셋(스타일별) | P2 | |
