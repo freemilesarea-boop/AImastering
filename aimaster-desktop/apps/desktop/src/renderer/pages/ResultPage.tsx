@@ -24,6 +24,7 @@ import {
   setMultibandConfig,
   setImagerMultibandConfig,
   setSaturationConfig,
+  getActiveMultibandReductions,
 } from '../audio/shared-audio-graph.js';
 import { packMultibandArrays, sanitizeMultiband } from '../audio/multiband-config.js';
 import { packImagerWidths, sanitizeImagerMultiband } from '../audio/imager-config.js';
@@ -39,6 +40,7 @@ import TransientPanel from '../components/TransientPanel.js';
 import DynamicEqPanel from '../components/DynamicEqPanel.js';
 import ModulePresetBar from '../components/ModulePresetBar.js';
 import DeesserPanel from '../components/DeesserPanel.js';
+import MultibandGrMeter from '../components/MultibandGrMeter.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
 import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
@@ -1384,6 +1386,8 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
 
       {/* ── Multiband compressor (4-band, export) ──────────────────────────── */}
       <Section title="멀티밴드 컴프레서" defaultOpen={false}>
+        <MultibandGrMeter getReductions={getActiveMultibandReductions} />
+        <div className="h-2" />
         <MultibandPanel />
       </Section>
 

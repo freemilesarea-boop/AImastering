@@ -37,6 +37,11 @@ export interface MultibandChain {
   apply(cfg: MultibandConfig): void;
   /** True when at least one band would alter the signal. */
   isActive(): boolean;
+  /**
+   * Current per-band gain reduction in dB (≤ 0), [low, low-mid, high-mid,
+   * high] — read live from each band's DynamicsCompressorNode for metering.
+   */
+  bandReductionsDb(): [number, number, number, number];
   dispose(): void;
 }
 
@@ -110,5 +115,14 @@ export function createMultibandChain(ctx: BaseAudioContext): MultibandChain {
     for (const n of all) { try { n.disconnect(); } catch { /* ignore */ } }
   };
 
-  return { input, output, apply, isActive: () => active, dispose };
+  const bandReductionsDb = (): [number, number, number, number] => {
+    // DynamicsCompressorNode.reduction is the current GR in dB (≤ 0).
+    const r = (b: BandNodes): number => {
+      const v = (b.comp as unknown as { reduction?: number }).reduction;
+      return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+    };
+    return [r(bands[0]!), r(bands[1]!), r(bands[2]!), r(bands[3]!)];
+  };
+
+  return { input, output, apply, isActive: () => active, bandReductionsDb, dispose };
 }

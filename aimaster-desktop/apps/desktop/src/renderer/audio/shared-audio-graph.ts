@@ -410,6 +410,24 @@ export function setMultibandConfig(media: HTMLMediaElement, cfg: MultibandConfig
 }
 
 /**
+ * Live per-band gain reduction (dB, ≤ 0) of the native multiband compressor,
+ * or null when it isn't installed/active.  Drives the multiband GR meter.
+ */
+export function getMultibandReductions(media: HTMLMediaElement | null): [number, number, number, number] | null {
+  if (!media) return null;
+  const g = graphs.get(media);
+  if (!g || !g.multiband || !g.multiband.isActive()) return null;
+  return g.multiband.bandReductionsDb();
+}
+
+/** Same, for the most-recently-active element graph (no element handle). */
+export function getActiveMultibandReductions(): [number, number, number, number] | null {
+  const g = activeGraph;
+  if (!g || !g.multiband || !g.multiband.isActive()) return null;
+  return g.multiband.bandReductionsDb();
+}
+
+/**
  * Set the 4-band M/S imager config for an element's preview chain.  Lazily
  * creates the WebAudio approximation on first active call; unity / disabled is
  * a cheap no-op (no routing change, no coloration).

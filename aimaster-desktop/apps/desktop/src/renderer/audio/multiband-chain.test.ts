@@ -5,7 +5,7 @@ import { defaultMultibandConfig, type MultibandConfig } from './multiband-config
 // Self-contained WebAudio mock (jsdom has no AudioContext nodes).
 class P { value = 0; }
 class FakeBiquad { type = ''; frequency = new P(); Q = new P(); connect() {} disconnect() {} }
-class FakeComp { threshold = new P(); ratio = new P(); attack = new P(); release = new P(); knee = new P(); connect() {} disconnect() {} }
+class FakeComp { threshold = new P(); ratio = new P(); attack = new P(); release = new P(); knee = new P(); reduction = 0; connect() {} disconnect() {} }
 class FakeGain { gain = new P(); connect() {} disconnect() {} }
 
 let biquads = 0; let comps = 0;
@@ -58,6 +58,23 @@ describe('multiband-chain (WebAudio preview approximation)', () => {
     // the compressor; just assert threshold is in range.
     expect(created[0]!.threshold.value).toBeLessThanOrEqual(0);
     expect(created[0]!.threshold.value).toBeGreaterThanOrEqual(-100);
+  });
+
+  it('bandReductionsDb reads each compressor reduction (≤ 0)', () => {
+    const comps: FakeComp[] = [];
+    const recCtx = {
+      createGain: () => new FakeGain(),
+      createBiquadFilter: () => new FakeBiquad(),
+      createDynamicsCompressor: () => { const c = new FakeComp(); comps.push(c); return c; },
+    } as unknown as BaseAudioContext;
+    const chain = createMultibandChain(recCtx);
+    comps[0]!.reduction = -4.5;
+    comps[3]!.reduction = -1.0;
+    const r = chain.bandReductionsDb();
+    expect(r).toHaveLength(4);
+    expect(r[0]).toBe(-4.5);
+    expect(r[3]).toBe(-1.0);
+    expect(r[1]).toBe(0);
   });
 
   it('dispose does not throw', () => {
