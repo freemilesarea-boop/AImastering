@@ -39,6 +39,7 @@ import SaturationPanel from '../components/SaturationPanel.js';
 import TransientPanel from '../components/TransientPanel.js';
 import DynamicEqPanel from '../components/DynamicEqPanel.js';
 import ModulePresetBar from '../components/ModulePresetBar.js';
+import AiMusicPanel from '../components/AiMusicPanel.js';
 import DeesserPanel from '../components/DeesserPanel.js';
 import MultibandGrMeter from '../components/MultibandGrMeter.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
@@ -1362,6 +1363,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
             />
           </button>
         </div>
+      </Section>
+
+      {/* ── AI-generated music mode (Phase 3 differentiator) ───────────────── */}
+      <Section title="AI 생성곡 모드" defaultOpen={false}>
+        <AiMusicPanel />
       </Section>
 
       {/* ── Module presets (one-click, sets all 5 modules) ─────────────────── */}

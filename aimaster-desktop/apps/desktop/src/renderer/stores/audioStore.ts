@@ -363,6 +363,12 @@ interface AudioStore {
     multiband: MultibandConfig; imagerMultiband: ImagerMultibandConfig;
     saturation: SatConfig; transient: TransConfig; dynamicEq: DynEqConfig;
   }) => void;
+
+  /** Apply an AI-music correction bundle (5 modules + de-esser). */
+  applyAiMusicCorrection: (c: {
+    multiband: MultibandConfig; imagerMultiband: ImagerMultibandConfig;
+    saturation: SatConfig; transient: TransConfig; dynamicEq: DynEqConfig; deesser: DeesserConfig;
+  }) => void;
 }
 
 function baseName(p: string): string {
@@ -537,5 +543,14 @@ export const useAudioStore = create<AudioStore>((set) => ({
     saturation: sanitizeSaturation(c.saturation),
     transient: sanitizeTransient(c.transient),
     dynamicEq: sanitizeDynamicEq(c.dynamicEq),
+  }),
+
+  applyAiMusicCorrection: (c) => set({
+    multiband: sanitizeMultiband(c.multiband),
+    imagerMultiband: sanitizeImagerMultiband(c.imagerMultiband),
+    saturation: sanitizeSaturation(c.saturation),
+    transient: sanitizeTransient(c.transient),
+    dynamicEq: sanitizeDynamicEq(c.dynamicEq),
+    deesser: sanitizeDeesser(c.deesser),
   }),
 }));
