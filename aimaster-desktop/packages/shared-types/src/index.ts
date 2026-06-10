@@ -156,6 +156,29 @@ export interface MasteringOptions {
   sectionPlan?: SectionMasteringPlan;
   /** P2 — automatic vocal level riding (centre), applied on the offline export. */
   vocalRiding?: VocalRidingPlan;
+  /** Phase 4 — surround (5.1/7.1) fold-down mastering, applied on the export. */
+  surround?: SurroundOptions;
+}
+
+/** Channel-based surround layouts supported for fold-down mastering. */
+export type SurroundLayout = 'stereo' | '5.1' | '7.1';
+
+/** Fold-down trims (dB) applied to grouped channels before the stereo sum. */
+export interface SurroundTrims {
+  centerDb: number;
+  surroundDb: number;
+  /** LFE level in the fold-down; ≈ −120 dB means excluded (the default). */
+  lfeDb: number;
+}
+
+/**
+ * Surround source mastering: when a >2-channel source is fed, fold it down to
+ * stereo with the standard ITU-R BS.775 matrix (+ trims) and master the
+ * fold-down.  Channel-based surround — not object-based Atmos authoring.
+ */
+export interface SurroundOptions {
+  foldDownEnabled: boolean;
+  trims: SurroundTrims;
 }
 
 /** Precise stem rebalance — per-stem gain applied on the offline (Rust) export. */

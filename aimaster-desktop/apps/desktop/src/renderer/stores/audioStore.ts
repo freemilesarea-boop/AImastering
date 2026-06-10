@@ -21,12 +21,13 @@ import {
   toggleFavorite as toggleHistoryFavoritePure, getEntry as getHistoryEntry,
   serializeHistory, deserializeHistory,
 } from '../audio/mastering-history.js';
-import type { SectionMasteringPlan, SectionSegment, RebalancePreciseOptions, VocalRidingPlan } from '@aimaster/shared-types';
+import type { SectionMasteringPlan, SectionSegment, RebalancePreciseOptions, VocalRidingPlan, SurroundOptions } from '@aimaster/shared-types';
 import {
   defaultSectionPlan, buildSectionPlanFromAnalysis,
   sanitizeSectionPlan, setSectionGain as setSectionGainPure,
 } from '../audio/section-plan.js';
 import { defaultVocalRiding, sanitizeVocalRiding } from '../audio/vocal-riding-config.js';
+import { defaultSurroundOptions, sanitizeSurround } from '../audio/surround-config.js';
 import {
   type ParametricEqBand,
   sanitizeBands,
@@ -214,6 +215,8 @@ export interface MasteringOptions {
   sectionPlan?: SectionMasteringPlan;
   /** P2 — automatic vocal level riding (applied on the offline export). */
   vocalRiding?: VocalRidingPlan;
+  /** Phase 4 — surround (5.1/7.1) fold-down (applied on the offline export). */
+  surround?: SurroundOptions;
 }
 
 const defaultRtOverrides: RealtimeDspOverrides = {
@@ -341,6 +344,13 @@ interface AudioStore {
   vocalRiding: VocalRidingPlan;
   updateVocalRiding: (patch: Partial<VocalRidingPlan>) => void;
   resetVocalRiding: () => void;
+
+  // ── Surround fold-down (Phase 4) ───────────────────────────────────────
+  /** Surround (5.1/7.1) source fold-down mastering (applied on export). */
+  surround: SurroundOptions;
+  updateSurround: (patch: Partial<SurroundOptions>) => void;
+  updateSurroundTrim: (key: 'centerDb' | 'surroundDb' | 'lfeDb', db: number) => void;
+  resetSurround: () => void;
 
   // ── Free parametric EQ (C-1) ───────────────────────────────────────────
   /** User-defined parametric EQ bands, spliced live into the preview chain. */
@@ -565,6 +575,12 @@ export const useAudioStore = create<AudioStore>((set) => ({
   vocalRiding: defaultVocalRiding(),
   updateVocalRiding: (patch) => set((s) => ({ vocalRiding: sanitizeVocalRiding({ ...s.vocalRiding, ...patch }) })),
   resetVocalRiding: () => set({ vocalRiding: defaultVocalRiding() }),
+
+  // ── Surround fold-down (Phase 4) ───────────────────────────────────────
+  surround: defaultSurroundOptions(),
+  updateSurround: (patch) => set((s) => ({ surround: sanitizeSurround({ ...s.surround, ...patch }) })),
+  updateSurroundTrim: (key, db) => set((s) => ({ surround: sanitizeSurround({ ...s.surround, trims: { ...s.surround.trims, [key]: db } }) })),
+  resetSurround: () => set({ surround: defaultSurroundOptions() }),
 
   // ── Free parametric EQ ─────────────────────────────────────────────────
   parametricEqBands: [],

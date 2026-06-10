@@ -15,6 +15,7 @@ import { masterWithPreferredBackend } from '../audio/export-backend.js';
 import { isPreciseRebalanceActive } from '../audio/rebalance-config.js';
 import { isSectionPlanUnity } from '../audio/section-plan.js';
 import { isVocalRidingUnity } from '../audio/vocal-riding-config.js';
+import { isSurroundUnity } from '../audio/surround-config.js';
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
 
@@ -157,6 +158,7 @@ export default function MasteringPage() {
   const rebalance       = useAudioStore((s) => s.rebalance);
   const sectionPlan     = useAudioStore((s) => s.sectionPlan);
   const vocalRiding     = useAudioStore((s) => s.vocalRiding);
+  const surround        = useAudioStore((s) => s.surround);
   const progress        = useAudioStore((s) => s.progress);
   const isMastering     = useAudioStore((s) => s.isMastering);
   const error           = useAudioStore((s) => s.error);
@@ -254,6 +256,9 @@ export default function MasteringPage() {
       if (!isVocalRidingUnity(vocalRiding)) {
         exportOptions = { ...exportOptions, vocalRiding };
       }
+      if (!isSurroundUnity(surround)) {
+        exportOptions = { ...exportOptions, surround };
+      }
       const result = await Promise.race([
         masterWithPreferredBackend({
           invoke: window.electronAPI!.invoke,
@@ -318,7 +323,7 @@ export default function MasteringPage() {
       setIsMastering(false);
       inFlightRef.current = false;
     }
-  }, [selectedFile, analysis, options, rebalance, sectionPlan, vocalRiding, setIsMastering, setError, setProgress, setMasteringResult, pushHistoryEntry, setAnalysis, setPage, notify, sendCancel]);
+  }, [selectedFile, analysis, options, rebalance, sectionPlan, vocalRiding, surround, setIsMastering, setError, setProgress, setMasteringResult, pushHistoryEntry, setAnalysis, setPage, notify, sendCancel]);
 
   // Navigation-away cleanup: if the user leaves MasteringPage while an
   // IPC is still pending (e.g. ESC + 새 파일, back-to-home, app quit

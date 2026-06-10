@@ -413,6 +413,8 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         ...(options?.sectionPlan?.enabled ? { sectionPlan: options.sectionPlan } : {}),
         // Automatic vocal level riding — no-op when unity.
         ...(options?.vocalRiding?.enabled ? { vocalRiding: options.vocalRiding } : {}),
+        // Surround source fold-down — no-op for stereo sources.
+        ...(options?.surround?.foldDownEnabled ? { surround: options.surround } : {}),
       });
       await encodePreviewMp3(wavTempPath, mp3Path);
 

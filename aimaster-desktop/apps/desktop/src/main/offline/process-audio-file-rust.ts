@@ -9,7 +9,7 @@
 // validates the DSP core headlessly).
 
 import { spawn } from 'node:child_process';
-import { resolveFFmpegPath } from '@aimaster/audio-engine';
+import { resolveFFmpegPath, resolveFFprobePath } from '@aimaster/audio-engine';
 import {
   renderStereoBuffer, renderStereoBufferNormalized, deinterleave, interleave,
   type RenderMetrics, type NormalizedRenderMetrics,
@@ -18,7 +18,8 @@ import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-
 import { applyPreciseRebalance, type PreciseRebalanceOptions } from './precise-rebalance.js';
 import { applySectionPlan } from './section-mastering.js';
 import { applyVocalRiding } from './vocal-riding.js';
-import type { SectionMasteringPlan, VocalRidingPlan } from '@aimaster/shared-types';
+import { deinterleaveN, foldDownToStereo, layoutForChannelCount } from './surround.js';
+import type { SectionMasteringPlan, VocalRidingPlan, SurroundTrims } from '@aimaster/shared-types';
 
 export interface RustRenderOptions {
   sampleRate: number;
@@ -36,6 +37,8 @@ export interface RustRenderOptions {
   sectionPlan?: SectionMasteringPlan;
   /** Optional automatic vocal level riding (no-op when unity). */
   vocalRiding?: VocalRidingPlan;
+  /** Optional surround fold-down (5.1/7.1 → stereo) before the chain. */
+  surround?: { foldDownEnabled: boolean; trims: SurroundTrims };
   onProgress?: (frac: number) => void;
 }
 
@@ -84,6 +87,54 @@ async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promi
   return new Float32Array(buf.buffer, buf.byteOffset, usable / 4);
 }
 
+/** Probe the channel count of the first audio stream via ffprobe (default 2). */
+async function probeChannelCount(inputPath: string): Promise<number> {
+  return new Promise((resolve) => {
+    let bin: string;
+    try { bin = resolveFFprobePath(); } catch { resolve(2); return; }
+    const child = spawn(bin, [
+      '-v', 'error', '-select_streams', 'a:0',
+      '-show_entries', 'stream=channels', '-of', 'csv=p=0', inputPath,
+    ], { shell: false, windowsHide: true });
+    const out: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => out.push(c));
+    child.on('error', () => resolve(2));
+    child.on('close', () => {
+      const n = parseInt(Buffer.concat(out).toString().trim(), 10);
+      resolve(Number.isFinite(n) && n > 0 ? n : 2);
+    });
+  });
+}
+
+/** Decode any input → interleaved f32le with its native channel count. */
+async function decodeToFloatN(inputPath: string, channels: number, sampleRate: number): Promise<Float32Array> {
+  const buf = await runFfmpeg([
+    '-hide_banner', '-loglevel', 'error',
+    '-i', inputPath,
+    '-f', 'f32le', '-acodec', 'pcm_f32le', '-ac', String(channels), '-ar', String(sampleRate),
+    'pipe:1',
+  ]);
+  const usable = buf.byteLength - (buf.byteLength % 4);
+  return new Float32Array(buf.buffer, buf.byteOffset, usable / 4);
+}
+
+/**
+ * Fold a surround source down to stereo (BS.775 + trims).  Returns null when the
+ * source is stereo / an unsupported channel count → caller decodes stereo
+ * normally.
+ */
+async function foldDownSurroundSource(
+  inputPath: string,
+  sampleRate: number,
+  trims: SurroundTrims,
+): Promise<{ left: Float32Array; right: Float32Array } | null> {
+  const channels = await probeChannelCount(inputPath);
+  const layout = layoutForChannelCount(channels);
+  if (!layout || layout === 'stereo') return null;
+  const interleaved = await decodeToFloatN(inputPath, channels, sampleRate);
+  return foldDownToStereo(deinterleaveN(interleaved, channels), layout, trims);
+}
+
 /** Encode interleaved f32le stereo → WAV at the target bit depth. */
 async function encodeWav(interleaved: Float32Array, sampleRate: number, bitDepth: 16 | 24, outputPath: string): Promise<void> {
   const codec = bitDepth === 16 ? 'pcm_s16le' : 'pcm_s24le';
@@ -113,10 +164,24 @@ export async function processAudioFileRust(
   options: RustRenderOptions,
 ): Promise<RustRenderFileResult> {
   if (!isRustOfflineAvailable()) throw new Error('rust offline backend unavailable (node WASM not built)');
-  const interleavedIn = await decodeToFloatStereo(inputPath, options.sampleRate);
-  const deint = deinterleave(interleavedIn, 2);
-  let left = deint.left;
-  let right = deint.right;
+
+  let left: Float32Array;
+  let right: Float32Array;
+
+  // Surround (5.1 / 7.1) source → standard BS.775 fold-down to stereo, then the
+  // normal stereo chain.  Falls back to plain stereo decode when disabled, when
+  // the source is already stereo, or when the channel probe fails.
+  const folded = options.surround?.foldDownEnabled
+    ? await foldDownSurroundSource(inputPath, options.sampleRate, options.surround.trims).catch(() => null)
+    : null;
+  if (folded) {
+    left = folded.left; right = folded.right;
+  } else {
+    const interleavedIn = await decodeToFloatStereo(inputPath, options.sampleRate);
+    const deint = deinterleave(interleavedIn, 2);
+    left = deint.left;
+    right = deint.right;
+  }
 
   // Precise stem rebalance (Demucs/ONNX) — runs BEFORE the mastering chain.
   // No-op (and no model download) unless explicitly enabled with a model present.

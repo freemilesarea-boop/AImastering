@@ -46,6 +46,7 @@ import StemRebalancePanel from '../components/StemRebalancePanel.js';
 import MasteringHistoryPanel from '../components/MasteringHistoryPanel.js';
 import SectionMasteringPanel from '../components/SectionMasteringPanel.js';
 import VocalRidingPanel from '../components/VocalRidingPanel.js';
+import SurroundPanel from '../components/SurroundPanel.js';
 import DeesserPanel from '../components/DeesserPanel.js';
 import MultibandGrMeter from '../components/MultibandGrMeter.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
@@ -1397,6 +1398,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Automatic vocal (centre) level riding (export) ─────────────────── */}
       <Section title="보컬 라이딩" defaultOpen={false}>
         <VocalRidingPanel />
+      </Section>
+
+      {/* ── Surround (5.1/7.1) fold-down mastering (export) ─────────────────── */}
+      <Section title="서라운드 폴드다운" defaultOpen={false}>
+        <SurroundPanel />
       </Section>
 
       {/* ── Durable mastering history (cross-session) ──────────────────────── */}
