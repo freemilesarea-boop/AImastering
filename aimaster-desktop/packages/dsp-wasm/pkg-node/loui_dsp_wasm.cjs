@@ -242,6 +242,88 @@ class LouiMasteringChain {
         wasm.louimasteringchain_setConfig(this.__wbg_ptr, input_gain_db, eq_low_cut_hz, eq_low_shelf_db, eq_presence_db, eq_air_db, eq_adaptive, eq_bypass, dyn_threshold_db, dyn_ratio, dyn_attack_ms, dyn_release_ms, dyn_mix_pct, dyn_bypass, img_width_pct, img_low_mono_hz, img_bypass, lim_ceiling_dbtp, lim_lookahead_ms, lim_isp, lim_bypass, output_gain_db, master_bypass);
     }
     /**
+     * Configure the fully-parametric dynamic EQ.  Parallel arrays, one entry
+     * per band (up to MAX_DYNEQ_BANDS).  `types`: 0=Bell 1=LowShelf 2=HighShelf.
+     * `modes`: 0=DownCut 1=UpBoost.  `enableds`: 0/1.
+     * @param {boolean} bypass
+     * @param {Uint8Array} enableds
+     * @param {Uint8Array} types
+     * @param {Float64Array} freqs
+     * @param {Float64Array} qs
+     * @param {Float64Array} thresholds
+     * @param {Float64Array} ratios
+     * @param {Float64Array} attacks
+     * @param {Float64Array} releases
+     * @param {Float64Array} ranges
+     * @param {Uint8Array} modes
+     */
+    setDynamicEqBands(bypass, enableds, types, freqs, qs, thresholds, ratios, attacks, releases, ranges, modes) {
+        const ptr0 = passArray8ToWasm0(enableds, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(types, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(freqs, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayF64ToWasm0(qs, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArrayF64ToWasm0(thresholds, wasm.__wbindgen_malloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ptr5 = passArrayF64ToWasm0(ratios, wasm.__wbindgen_malloc);
+        const len5 = WASM_VECTOR_LEN;
+        const ptr6 = passArrayF64ToWasm0(attacks, wasm.__wbindgen_malloc);
+        const len6 = WASM_VECTOR_LEN;
+        const ptr7 = passArrayF64ToWasm0(releases, wasm.__wbindgen_malloc);
+        const len7 = WASM_VECTOR_LEN;
+        const ptr8 = passArrayF64ToWasm0(ranges, wasm.__wbindgen_malloc);
+        const len8 = WASM_VECTOR_LEN;
+        const ptr9 = passArray8ToWasm0(modes, wasm.__wbindgen_malloc);
+        const len9 = WASM_VECTOR_LEN;
+        wasm.louimasteringchain_setDynamicEqBands(this.__wbg_ptr, bypass, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6, ptr7, len7, ptr8, len8, ptr9, len9);
+    }
+    /**
+     * Configure the imager's 4-band M/S width.  Independent of `setConfig`
+     * (which carries the single-band width).  `widths_pct` is positional
+     * [low, low-mid, high-mid, high]; missing entries keep the current value.
+     * @param {boolean} enabled
+     * @param {number} xover_lo_hz
+     * @param {number} xover_mid_hz
+     * @param {number} xover_hi_hz
+     * @param {Float64Array} widths_pct
+     */
+    setImagerMultiband(enabled, xover_lo_hz, xover_mid_hz, xover_hi_hz, widths_pct) {
+        const ptr0 = passArrayF64ToWasm0(widths_pct, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.louimasteringchain_setImagerMultiband(this.__wbg_ptr, enabled, xover_lo_hz, xover_mid_hz, xover_hi_hz, ptr0, len0);
+    }
+    /**
+     * Configure the 4-band multiband compressor.  Independent of `setConfig`
+     * so the frequent flat-arg slider updates don't reset it.  The five
+     * per-band arrays are read positionally [low, low-mid, high-mid, high];
+     * missing entries keep the current value.
+     * @param {boolean} bypass
+     * @param {number} xover_lo_hz
+     * @param {number} xover_mid_hz
+     * @param {number} xover_hi_hz
+     * @param {Float64Array} thresholds_db
+     * @param {Float64Array} ratios
+     * @param {Float64Array} attacks_ms
+     * @param {Float64Array} releases_ms
+     * @param {Float64Array} makeups_db
+     */
+    setMultibandConfig(bypass, xover_lo_hz, xover_mid_hz, xover_hi_hz, thresholds_db, ratios, attacks_ms, releases_ms, makeups_db) {
+        const ptr0 = passArrayF64ToWasm0(thresholds_db, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(ratios, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF64ToWasm0(attacks_ms, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArrayF64ToWasm0(releases_ms, wasm.__wbindgen_malloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArrayF64ToWasm0(makeups_db, wasm.__wbindgen_malloc);
+        const len4 = WASM_VECTOR_LEN;
+        wasm.louimasteringchain_setMultibandConfig(this.__wbg_ptr, bypass, xover_lo_hz, xover_mid_hz, xover_hi_hz, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
+    }
+    /**
      * Replace the free parametric EQ band list.  Bands are passed as five
      * parallel typed arrays so JS can populate them without per-band JS
      * object overhead (single zero-copy pass into WASM memory):
@@ -275,6 +357,46 @@ class LouiMasteringChain {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * Configure the saturation / exciter.  `character`: 0=Warm 1=Tape 2=Tube
+     * 3=Modern.  `band_drives_pct` is positional [low, low-mid, high-mid,
+     * high]; missing entries keep the current value.
+     * @param {boolean} bypass
+     * @param {number} character
+     * @param {number} drive
+     * @param {number} mix_pct
+     * @param {boolean} multiband_enabled
+     * @param {number} xover_lo_hz
+     * @param {number} xover_mid_hz
+     * @param {number} xover_hi_hz
+     * @param {Float64Array} band_drives_pct
+     */
+    setSaturation(bypass, character, drive, mix_pct, multiband_enabled, xover_lo_hz, xover_mid_hz, xover_hi_hz, band_drives_pct) {
+        const ptr0 = passArrayF64ToWasm0(band_drives_pct, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.louimasteringchain_setSaturation(this.__wbg_ptr, bypass, character, drive, mix_pct, multiband_enabled, xover_lo_hz, xover_mid_hz, xover_hi_hz, ptr0, len0);
+    }
+    /**
+     * Configure the transient / impact shaper.  `band_attacks_pct` /
+     * `band_sustains_pct` are positional [low, low-mid, high-mid, high];
+     * missing entries keep the current value.
+     * @param {boolean} bypass
+     * @param {number} attack_pct
+     * @param {number} sustain_pct
+     * @param {boolean} multiband_enabled
+     * @param {number} xover_lo_hz
+     * @param {number} xover_mid_hz
+     * @param {number} xover_hi_hz
+     * @param {Float64Array} band_attacks_pct
+     * @param {Float64Array} band_sustains_pct
+     */
+    setTransient(bypass, attack_pct, sustain_pct, multiband_enabled, xover_lo_hz, xover_mid_hz, xover_hi_hz, band_attacks_pct, band_sustains_pct) {
+        const ptr0 = passArrayF64ToWasm0(band_attacks_pct, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(band_sustains_pct, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.louimasteringchain_setTransient(this.__wbg_ptr, bypass, attack_pct, sustain_pct, multiband_enabled, xover_lo_hz, xover_mid_hz, xover_hi_hz, ptr0, len0, ptr1, len1);
     }
 }
 if (Symbol.dispose) LouiMasteringChain.prototype[Symbol.dispose] = LouiMasteringChain.prototype.free;
@@ -677,14 +799,14 @@ exports.start = start;
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
-        __wbg_Error_bce6d499ff0a4aff: function(arg0, arg1) {
+        __wbg_Error_9dc85fe1bc224456: function(arg0, arg1) {
             const ret = Error(getStringFromWasm0(arg0, arg1));
             return ret;
         },
-        __wbg___wbindgen_copy_to_typed_array_787746aeb47818bc: function(arg0, arg1, arg2) {
+        __wbg___wbindgen_copy_to_typed_array_caa344bd6a9e2ba2: function(arg0, arg1, arg2) {
             new Uint8Array(arg2.buffer, arg2.byteOffset, arg2.byteLength).set(getArrayU8FromWasm0(arg0, arg1));
         },
-        __wbg___wbindgen_throw_9c31b086c2b26051: function(arg0, arg1) {
+        __wbg___wbindgen_throw_bbadd78c1bac3a77: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
         __wbg_error_a6fa202b58aa1cd3: function(arg0, arg1) {

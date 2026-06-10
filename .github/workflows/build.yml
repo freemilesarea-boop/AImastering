@@ -82,6 +82,15 @@ jobs:
         working-directory: aimaster-desktop
         run: pnpm -s typecheck
 
+      # Guard: CI ships the COMMITTED wasm/node/worklet artifacts (it does not
+      # rebuild them).  This fails loudly if a Rust binding setter was added
+      # without rebuilding + committing the artifacts, or if the generated
+      # worklet copy drifted from its source.  Rebuild: pnpm --filter
+      # @loui/dsp-wasm run build:all.
+      - name: Guard — committed WASM artifacts are fresh
+        working-directory: aimaster-desktop/apps/desktop
+        run: pnpm -s test:wasm-fresh
+
       # v3.4.5 — bake AUTO_UPDATE_ENABLED into the main bundle.
       # Tag push (refs/tags/v*) → true → installer will check GitHub Releases.
       # Branch / workflow_dispatch artefact → false → updater stays silent.

@@ -81,6 +81,48 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
         this._bypass = !!msg.bypass;
       } else if (msg.type === 'reset') {
         if (this._ready && this._chain && this._chain.reset) this._chain.reset();
+      } else if (msg.type === 'multiband') {
+        if (this._ready && this._chain && typeof this._chain.setMultibandConfig === 'function') {
+          try {
+            this._chain.setMultibandConfig(
+              !!msg.bypass, msg.lo, msg.mid, msg.hi,
+              msg.thresholds, msg.ratios, msg.attacks, msg.releases, msg.makeups,
+            );
+          } catch (e) { /* keep audio alive */ }
+        }
+      } else if (msg.type === 'imagerMultiband') {
+        if (this._ready && this._chain && typeof this._chain.setImagerMultiband === 'function') {
+          try {
+            this._chain.setImagerMultiband(!!msg.enabled, msg.lo, msg.mid, msg.hi, msg.widths);
+          } catch (e) { /* keep audio alive */ }
+        }
+      } else if (msg.type === 'saturation') {
+        if (this._ready && this._chain && typeof this._chain.setSaturation === 'function') {
+          try {
+            this._chain.setSaturation(
+              !!msg.bypass, msg.character | 0, msg.drive, msg.mix, !!msg.multiband,
+              msg.lo, msg.mid, msg.hi, msg.bandDrives,
+            );
+          } catch (e) { /* keep audio alive */ }
+        }
+      } else if (msg.type === 'transient') {
+        if (this._ready && this._chain && typeof this._chain.setTransient === 'function') {
+          try {
+            this._chain.setTransient(
+              !!msg.bypass, msg.attack, msg.sustain, !!msg.multiband,
+              msg.lo, msg.mid, msg.hi, msg.bandAttacks, msg.bandSustains,
+            );
+          } catch (e) { /* keep audio alive */ }
+        }
+      } else if (msg.type === 'dyneq') {
+        if (this._ready && this._chain && typeof this._chain.setDynamicEqBands === 'function') {
+          try {
+            this._chain.setDynamicEqBands(
+              !!msg.bypass, msg.enableds, msg.types, msg.freqs, msg.qs,
+              msg.thresholds, msg.ratios, msg.attacks, msg.releases, msg.ranges, msg.modes,
+            );
+          } catch (e) { /* keep audio alive */ }
+        }
       }
     };
   }

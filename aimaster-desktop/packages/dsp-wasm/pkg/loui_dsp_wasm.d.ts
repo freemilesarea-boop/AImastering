@@ -109,6 +109,25 @@ export class LouiMasteringChain {
      */
     setConfig(input_gain_db: number, eq_low_cut_hz: number, eq_low_shelf_db: number, eq_presence_db: number, eq_air_db: number, eq_adaptive: boolean, eq_bypass: boolean, dyn_threshold_db: number, dyn_ratio: number, dyn_attack_ms: number, dyn_release_ms: number, dyn_mix_pct: number, dyn_bypass: boolean, img_width_pct: number, img_low_mono_hz: number, img_bypass: boolean, lim_ceiling_dbtp: number, lim_lookahead_ms: number, lim_isp: boolean, lim_bypass: boolean, output_gain_db: number, master_bypass: boolean): void;
     /**
+     * Configure the fully-parametric dynamic EQ.  Parallel arrays, one entry
+     * per band (up to MAX_DYNEQ_BANDS).  `types`: 0=Bell 1=LowShelf 2=HighShelf.
+     * `modes`: 0=DownCut 1=UpBoost.  `enableds`: 0/1.
+     */
+    setDynamicEqBands(bypass: boolean, enableds: Uint8Array, types: Uint8Array, freqs: Float64Array, qs: Float64Array, thresholds: Float64Array, ratios: Float64Array, attacks: Float64Array, releases: Float64Array, ranges: Float64Array, modes: Uint8Array): void;
+    /**
+     * Configure the imager's 4-band M/S width.  Independent of `setConfig`
+     * (which carries the single-band width).  `widths_pct` is positional
+     * [low, low-mid, high-mid, high]; missing entries keep the current value.
+     */
+    setImagerMultiband(enabled: boolean, xover_lo_hz: number, xover_mid_hz: number, xover_hi_hz: number, widths_pct: Float64Array): void;
+    /**
+     * Configure the 4-band multiband compressor.  Independent of `setConfig`
+     * so the frequent flat-arg slider updates don't reset it.  The five
+     * per-band arrays are read positionally [low, low-mid, high-mid, high];
+     * missing entries keep the current value.
+     */
+    setMultibandConfig(bypass: boolean, xover_lo_hz: number, xover_mid_hz: number, xover_hi_hz: number, thresholds_db: Float64Array, ratios: Float64Array, attacks_ms: Float64Array, releases_ms: Float64Array, makeups_db: Float64Array): void;
+    /**
      * Replace the free parametric EQ band list.  Bands are passed as five
      * parallel typed arrays so JS can populate them without per-band JS
      * object overhead (single zero-copy pass into WASM memory):
@@ -123,6 +142,18 @@ export class LouiMasteringChain {
      * all bands (chain becomes a parametric-EQ passthrough).
      */
     setParametricEqBands(types: Uint8Array, freqs: Float64Array, gains: Float64Array, qs: Float64Array, enableds: Uint8Array): void;
+    /**
+     * Configure the saturation / exciter.  `character`: 0=Warm 1=Tape 2=Tube
+     * 3=Modern.  `band_drives_pct` is positional [low, low-mid, high-mid,
+     * high]; missing entries keep the current value.
+     */
+    setSaturation(bypass: boolean, character: number, drive: number, mix_pct: number, multiband_enabled: boolean, xover_lo_hz: number, xover_mid_hz: number, xover_hi_hz: number, band_drives_pct: Float64Array): void;
+    /**
+     * Configure the transient / impact shaper.  `band_attacks_pct` /
+     * `band_sustains_pct` are positional [low, low-mid, high-mid, high];
+     * missing entries keep the current value.
+     */
+    setTransient(bypass: boolean, attack_pct: number, sustain_pct: number, multiband_enabled: boolean, xover_lo_hz: number, xover_mid_hz: number, xover_hi_hz: number, band_attacks_pct: Float64Array, band_sustains_pct: Float64Array): void;
 }
 
 /**
@@ -321,7 +352,12 @@ export interface InitOutput {
     readonly louimasteringchain_reset: (a: number) => void;
     readonly louimasteringchain_safetyEvents: (a: number) => number;
     readonly louimasteringchain_setConfig: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number) => void;
+    readonly louimasteringchain_setDynamicEqBands: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number) => void;
+    readonly louimasteringchain_setImagerMultiband: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly louimasteringchain_setMultibandConfig: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => void;
     readonly louimasteringchain_setParametricEqBands: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
+    readonly louimasteringchain_setSaturation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
+    readonly louimasteringchain_setTransient: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => void;
     readonly louispectrumanalyzer_binCentresHz: (a: number) => [number, number];
     readonly louispectrumanalyzer_binCount: (a: number) => number;
     readonly louispectrumanalyzer_fftSize: (a: number) => number;
