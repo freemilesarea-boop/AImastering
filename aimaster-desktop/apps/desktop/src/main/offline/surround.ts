@@ -66,6 +66,34 @@ export function layoutForChannelCount(n: number): SurroundLayout | null {
   return null;
 }
 
+/**
+ * Resolve a source's surround layout from the ffprobe `channel_layout` string +
+ * count, returning null when it CANNOT be mapped safely to our canonical
+ * roles (so the caller falls back to a stereo decode).
+ *
+ *   • '5.1' / '5.1(side)' → '5.1'  — FL FR FC LFE + 2 surrounds; back vs side are
+ *     interchangeable here (both fold to their side / the surround bed).
+ *   • '7.1'               → '7.1'  — …+ BL BR SL SR (all surround).
+ *   • '7.1(wide)' etc.    → null   — slots 6/7 are FLC/FRC (front), NOT surround.
+ *   • untagged/unknown    → best-effort by count (assume canonical order).
+ */
+export function surroundLayoutFromFfmpeg(layoutStr: string, channels: number): SurroundLayout | null {
+  const s = (layoutStr || '').trim().toLowerCase();
+  if (s === 'stereo' || s === 'mono') return s === 'stereo' ? 'stereo' : null;
+  if (s === '5.1' || s === '5.1(side)') return '5.1';
+  if (s === '7.1') return '7.1';
+  // Known layouts whose channel roles/order do NOT match ours → don't guess.
+  const unsupported = new Set([
+    'quad', 'quad(side)', '4.0', '5.0', '5.0(side)', '6.0', '6.0(front)', '6.1',
+    '6.1(back)', '6.1(front)', '7.1(wide)', '7.1(wide-side)', 'hexagonal',
+    'octagonal', 'downmix', '3.0', '3.0(back)', '2.1',
+  ]);
+  if (unsupported.has(s)) return null;
+  // Untagged → assume canonical order for the common counts.
+  if (s === '' || s === 'unknown') return layoutForChannelCount(channels);
+  return null;
+}
+
 export const DEFAULT_SURROUND_TRIMS: SurroundTrims = { centerDb: 0, surroundDb: 0, lfeDb: -120 };
 
 export function sanitizeSurroundTrims(t: SurroundTrims | undefined | null): SurroundTrims {

@@ -80,7 +80,22 @@
 ### 정직성/한계
 - 멀티채널 모드: **(옵션)베드별 풀 체인 + 베드별 톤/레벨 → 라우드니스 자동매칭(BS.1770) → 게인 트림 → 링크드 TP 리미터**. EQ/컴프는 검증된 Rust 엔진을 베드별 재사용(중복 없음).
 - 베드별 톤은 게인 + 저/고역 셸프(공유 체인 위 오프셋). 베드별 완전 독립 체인은 향후. LFE는 게인만.
-- **WAV 채널 마스크/채널수는 이제 번들 ffmpeg로 헤드리스 검증됨**(`test:surround-encode`). 남은 device-QA: 실제 플레이어/DAW에서의 재생·청취 품질, 멀티채널 디코드 순서(소스별 레이아웃 변형).
+- **WAV 채널 마스크/채널수는 이제 번들 ffmpeg로 헤드리스 검증됨**(`test:surround-encode`).
+
+### P4-2f. 비표준 소스 레이아웃 안전 처리
+
+**커밋**: `feat(surround): map source layout from ffprobe, reject unmappable variants (Phase 4)`
+
+채널 수만으로 추측하지 않고 **실제 레이아웃을 ffprobe로 읽어** 매핑 — 잘못 매핑될 변형은 스테레오 폴백.
+
+- **`surroundLayoutFromFfmpeg(layoutStr, channels)`**(순수): `5.1`/`5.1(side)`→`5.1`(서라운드는 백/사이드 동일 슬롯·동일 취급이라 안전), `7.1`→`7.1`. **`7.1(wide)`(슬롯 6/7=FLC/FRC 프론트)·`6.1`·`quad`·`hexagonal` 등 역할 불일치 변형 → null → 스테레오 폴백**. 무태그('unknown') → 카운트 기반 best-effort.
+- **`probeAudioStream`**: ffprobe로 채널수 **+ channel_layout** 동시 조회. `decodeSurroundChannels`가 카운트 대신 실제 레이아웃으로 판정.
+- **검증**: surroundLayoutFromFfmpeg(4 — 5.1 변형·역할 불일치 거부·스테레오/모노·무태그 best-effort). **vitest 299/299**, typecheck 0, 인코드 셀프테스트 그린.
+
+### 정직성/한계
+- 멀티채널 모드: **(옵션)베드별 풀 체인 + 베드별 톤/레벨 → 라우드니스 자동매칭(BS.1770) → 게인 트림 → 링크드 TP 리미터**. EQ/컴프는 검증된 Rust 엔진을 베드별 재사용(중복 없음).
+- 베드별 톤은 게인 + 저/고역 셸프(공유 체인 위 오프셋). 베드별 완전 독립 체인은 향후. LFE는 게인만.
+- WAV 채널 마스크·채널수·소스 레이아웃 매핑은 헤드리스 검증됨. 남은 device-QA: 실제 플레이어/DAW 재생·청취 품질(마스크는 맞지만 실제 사운드 체감).
 - 멀티채널 WAV 인코딩(ffmpeg `-ac N`)·채널 마스크·플레이어 호환은 실제 서라운드 파일/장치로만 종단 검증 → 출시 전 QA. K-weighting 계수는 비-48k에서도 산출식 적용(정확). 단위테스트는 라우드니스/리미터/피크/폴드다운 DSP 수학만 보장.
 
 ## 🟡 Phase 4 남은 후보(대규모·범위 밖)

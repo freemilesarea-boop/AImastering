@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   layoutForChannelCount, deinterleaveN, foldDownToStereo, bs1770Weight,
   channelWeightedLoudnessDb, sanitizeSurroundTrims, surroundProcessingUnits, ffmpegLayoutName,
-  LAYOUT_CHANNELS, DEFAULT_SURROUND_TRIMS,
+  surroundLayoutFromFfmpeg, LAYOUT_CHANNELS, DEFAULT_SURROUND_TRIMS,
 } from './surround.js';
 
 const M3DB = Math.SQRT1_2;
@@ -63,6 +63,30 @@ describe('foldDownToStereo (BS.775)', () => {
     const out = foldDownToStereo(ch([0, 0, 0, 0, 1, 0, 1, 0]), '7.1'); // BL + SL
     expect(out.left[0]!).toBeCloseTo(M3DB * 2, 5);
     expect(out.right[0]!).toBeCloseTo(0, 6);
+  });
+});
+
+describe('surroundLayoutFromFfmpeg', () => {
+  it('maps 5.1 and its side variant to our 5.1 (surrounds interchangeable)', () => {
+    expect(surroundLayoutFromFfmpeg('5.1', 6)).toBe('5.1');
+    expect(surroundLayoutFromFfmpeg('5.1(side)', 6)).toBe('5.1');
+    expect(surroundLayoutFromFfmpeg('7.1', 8)).toBe('7.1');
+  });
+  it('rejects layouts whose roles do not match (front-wide etc.) → null', () => {
+    expect(surroundLayoutFromFfmpeg('7.1(wide)', 8)).toBeNull();
+    expect(surroundLayoutFromFfmpeg('7.1(wide-side)', 8)).toBeNull();
+    expect(surroundLayoutFromFfmpeg('6.1', 7)).toBeNull();
+    expect(surroundLayoutFromFfmpeg('quad', 4)).toBeNull();
+    expect(surroundLayoutFromFfmpeg('hexagonal', 6)).toBeNull(); // 6ch but wrong roles
+  });
+  it('stereo → stereo, mono → null', () => {
+    expect(surroundLayoutFromFfmpeg('stereo', 2)).toBe('stereo');
+    expect(surroundLayoutFromFfmpeg('mono', 1)).toBeNull();
+  });
+  it('untagged → best-effort by count', () => {
+    expect(surroundLayoutFromFfmpeg('', 6)).toBe('5.1');
+    expect(surroundLayoutFromFfmpeg('unknown', 8)).toBe('7.1');
+    expect(surroundLayoutFromFfmpeg('unknown', 5)).toBeNull();
   });
 });
 

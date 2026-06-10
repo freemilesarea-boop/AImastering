@@ -18,7 +18,7 @@ import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-
 import { applyPreciseRebalance, type PreciseRebalanceOptions } from './precise-rebalance.js';
 import { applySectionPlan } from './section-mastering.js';
 import { applyVocalRiding } from './vocal-riding.js';
-import { deinterleaveN, foldDownToStereo, layoutForChannelCount, surroundProcessingUnits, LAYOUT_CHANNELS, ffmpegLayoutName } from './surround.js';
+import { deinterleaveN, foldDownToStereo, surroundLayoutFromFfmpeg, surroundProcessingUnits, LAYOUT_CHANNELS, ffmpegLayoutName } from './surround.js';
 import { bedForRole, bedAdjustedConfig, sanitizeSurroundBeds } from './surround-beds.js';
 import { masterSurroundOutput, interleaveN } from './surround-render.js';
 import { integratedLoudnessLufs, loudnessNormGainDb } from './surround-loudness.js';
@@ -95,21 +95,22 @@ async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promi
   return new Float32Array(buf.buffer, buf.byteOffset, usable / 4);
 }
 
-/** Probe the channel count of the first audio stream via ffprobe (default 2). */
-async function probeChannelCount(inputPath: string): Promise<number> {
+/** Probe channel count + layout of the first audio stream via ffprobe. */
+async function probeAudioStream(inputPath: string): Promise<{ channels: number; layout: string }> {
   return new Promise((resolve) => {
     let bin: string;
-    try { bin = resolveFFprobePath(); } catch { resolve(2); return; }
+    try { bin = resolveFFprobePath(); } catch { resolve({ channels: 2, layout: '' }); return; }
     const child = spawn(bin, [
       '-v', 'error', '-select_streams', 'a:0',
-      '-show_entries', 'stream=channels', '-of', 'csv=p=0', inputPath,
+      '-show_entries', 'stream=channels,channel_layout', '-of', 'csv=p=0', inputPath,
     ], { shell: false, windowsHide: true });
     const out: Buffer[] = [];
     child.stdout.on('data', (c: Buffer) => out.push(c));
-    child.on('error', () => resolve(2));
+    child.on('error', () => resolve({ channels: 2, layout: '' }));
     child.on('close', () => {
-      const n = parseInt(Buffer.concat(out).toString().trim(), 10);
-      resolve(Number.isFinite(n) && n > 0 ? n : 2);
+      const [chStr, layoutStr] = Buffer.concat(out).toString().trim().split(',');
+      const n = parseInt(chStr ?? '', 10);
+      resolve({ channels: Number.isFinite(n) && n > 0 ? n : 2, layout: (layoutStr ?? '').trim() });
     });
   });
 }
@@ -134,8 +135,10 @@ async function decodeSurroundChannels(
   inputPath: string,
   sampleRate: number,
 ): Promise<{ channels: Float32Array[]; layout: 'stereo' | '5.1' | '7.1' } | null> {
-  const count = await probeChannelCount(inputPath);
-  const layout = layoutForChannelCount(count);
+  const { channels: count, layout: layoutStr } = await probeAudioStream(inputPath);
+  // Map the ACTUAL source layout (not just the count) → null for stereo or any
+  // layout we can't map to our canonical roles (e.g. 7.1(wide)) → stereo decode.
+  const layout = surroundLayoutFromFfmpeg(layoutStr, count);
   if (!layout || layout === 'stereo') return null;
   const interleaved = await decodeToFloatN(inputPath, count, sampleRate);
   return { channels: deinterleaveN(interleaved, count), layout };
