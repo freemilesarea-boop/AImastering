@@ -43,6 +43,66 @@ export function isModelConfigured(m: StemModelManifest = HTDEMUCS_MANIFEST): boo
   return m.url.length > 0 && m.sha256.length === 64;
 }
 
+// ── Sidecar manifest (pin without a code edit) ──────────────────────────────
+//
+// The bundled HTDEMUCS_MANIFEST is a placeholder.  Rather than editing source to
+// pin a real model, a `stem-model.manifest.json` sidecar (written by the
+// `pin:stem-model` script) overrides it at runtime.  This keeps the pinned
+// url/sha256/bytes out of the code and lets ops re-pin without a rebuild.
+
+/** Conventional sidecar location under userData. */
+export function manifestSidecarPath(userDataDir: string): string {
+  return join(userDataDir, 'models', 'stem-model.manifest.json');
+}
+
+/** Validate an untrusted object into a StemModelManifest, or null if invalid. */
+export function parseManifest(raw: unknown): StemModelManifest | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const id = str(o.id), fileName = str(o.fileName), url = str(o.url), sha256 = str(o.sha256);
+  const bytes = num(o.bytes), modelSampleRate = num(o.modelSampleRate);
+  if (id === null || fileName === null || url === null || sha256 === null || bytes === null || modelSampleRate === null) return null;
+  if (id.length === 0 || fileName.length === 0) return null;
+  if (sha256.length > 0 && !/^[0-9a-f]{64}$/i.test(sha256)) return null; // empty = intentionally unpinned
+  if (bytes < 0 || modelSampleRate <= 0) return null;
+  // Path-traversal safety: fileName is joined under the model dir.
+  if (fileName.includes('/') || fileName.includes('\\') || fileName.includes('..')) return null;
+  return { id, fileName, url, sha256: sha256.toLowerCase(), bytes, modelSampleRate };
+}
+
+export interface ManifestSource {
+  /** Read a text file, or null when it does not exist / is unreadable. */
+  readText(path: string): Promise<string | null>;
+}
+
+/**
+ * Resolve the active manifest: a valid JSON sidecar overrides the bundled
+ * placeholder.  Any problem (missing, malformed, invalid shape) falls back to
+ * the placeholder so a bad sidecar can never break the app — it just leaves the
+ * precise tier disabled.
+ */
+export async function resolveManifest(sidecarPath: string | null, src: ManifestSource): Promise<StemModelManifest> {
+  if (!sidecarPath) return HTDEMUCS_MANIFEST;
+  let text: string | null = null;
+  try { text = await src.readText(sidecarPath); } catch { return HTDEMUCS_MANIFEST; }
+  if (!text) return HTDEMUCS_MANIFEST;
+  try { return parseManifest(JSON.parse(text)) ?? HTDEMUCS_MANIFEST; } catch { return HTDEMUCS_MANIFEST; }
+}
+
+/** Real fs source for the sidecar (returns null when absent). */
+export function nodeManifestSource(): ManifestSource {
+  return {
+    async readText(path) {
+      try {
+        const { readFile } = await import('node:fs/promises');
+        return await readFile(path, 'utf8');
+      } catch { return null; }
+    },
+  };
+}
+
 /** Directory under userData where model weights are cached. */
 export function modelDir(userDataDir: string, m: StemModelManifest = HTDEMUCS_MANIFEST): string {
   return join(userDataDir, 'models', m.id);

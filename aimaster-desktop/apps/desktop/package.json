@@ -16,6 +16,7 @@
     "build": "pnpm build:renderer && pnpm build:main",
     "build:renderer": "vite build",
     "build:main": "node esbuild.main.cjs",
+    "pin:stem-model": "node scripts/pin-stem-model.mjs",
     "prebuild:ffmpeg": "node scripts/prebuild.cjs",
     "dist": "node scripts/prebuild.cjs && pnpm build && electron-builder",
     "dist:mac": "node scripts/prebuild.cjs && pnpm build && electron-builder --mac zip --x64 --arm64 --publish never",

@@ -17,6 +17,7 @@ import {
 } from './stem-inference.js';
 import {
   HTDEMUCS_MANIFEST, isModelConfigured, nodeModelFsDeps, ensureModel,
+  resolveManifest, manifestSidecarPath, nodeManifestSource,
   type StemModelManifest,
 } from './stem-model-manager.js';
 
@@ -180,7 +181,10 @@ export class OnnxStemSeparator implements StemSeparator {
  * precise tier is strictly opt-in and additive.
  */
 export async function getStemSeparator(userDataDir: string): Promise<StemSeparator | null> {
-  const sep = new OnnxStemSeparator(userDataDir);
+  // A pinned sidecar manifest (written by `pin:stem-model`) overrides the
+  // bundled placeholder, so the model can be enabled without a code change.
+  const manifest = await resolveManifest(manifestSidecarPath(userDataDir), nodeManifestSource());
+  const sep = new OnnxStemSeparator(userDataDir, manifest);
   return (await sep.isReady()) ? sep : null;
 }
 

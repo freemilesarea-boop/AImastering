@@ -108,13 +108,42 @@ approximation tier — so the whole feature degrades gracefully.
 The whole precise path is built and tested; it is gated by exactly **three**
 switches, all OFF today:
 
-1. **Manifest** — pin `url` + `sha256` + `bytes` in `HTDEMUCS_MANIFEST`
-   (`stem-model-manager.ts`). Until then `isModelConfigured()` is false and
-   `getStemSeparator()` returns null.
+1. **Manifest** — pin a real `url` + `sha256` + `bytes`. Until then
+   `isModelConfigured()` is false and `getStemSeparator()` returns null.
 2. **Runtime** — add `onnxruntime-node` (optionalDependency) + lockfile +
    electron-builder native-addon packaging. `loadOrt()` already lazy-loads it
    and degrades gracefully when absent.
 3. **UI** — flip `PRECISE_AVAILABLE = true` in `StemRebalancePanel.tsx`.
+
+### Pinning the manifest (switch 1) — no code edit required
+
+The bundled `HTDEMUCS_MANIFEST` is a placeholder with an empty `sha256`. A
+**sidecar** `stem-model.manifest.json` overrides it at runtime
+(`resolveManifest` → `manifestSidecarPath` = `userData/models/`), validated by
+`parseManifest` (rejects malformed shapes / path-traversal filenames; an empty
+sha256 stays intentionally unpinned). Generate it with one command:
+
+```bash
+# hash a local export (records the runtime download URL too):
+pnpm --filter @aimaster/desktop pin:stem-model \
+  --file ./htdemucs.onnx \
+  --url  https://<host>/htdemucs.onnx \
+  --out  ./stem-model.manifest.json
+
+# or download + hash in one shot:
+pnpm --filter @aimaster/desktop pin:stem-model --url https://<host>/htdemucs.onnx
+```
+
+The script prints (and writes) `id/fileName/url/sha256/bytes/modelSampleRate`.
+Drop the sidecar at `userData/models/stem-model.manifest.json` (or paste the
+values into `HTDEMUCS_MANIFEST`). `sha256`/`bytes` are computed from the real
+bytes — they are never hand-written.
+
+> **Hosting is a maintainer decision.** The `url` must point at a stable public
+> host the app downloads from at runtime (e.g. a GitHub Release asset or a CDN).
+> This sandbox cannot reach the upstream Demucs weight hosts (HuggingFace and
+> `dl.fbaipublicfiles.com` both return HTTP 403 under the network policy), so the
+> export + first pin must run where those (or your mirror) are reachable.
 
 ## Status checklist
 
@@ -127,6 +156,8 @@ switches, all OFF today:
 - [x] Precise rebalance wired into `process-audio-file-rust` → behind `options.rebalance`
 - [x] Renderer → export plumbing (`MasteringOptions.rebalance`, `MasteringPage`)
 - [x] UI: two-tier `StemRebalancePanel` (precise gated by `PRECISE_AVAILABLE`)
-- [ ] HT-Demucs ONNX export + quantization + **pin manifest** (switch 1)
+- [x] Sidecar manifest mechanism (`resolveManifest`/`parseManifest`, validated) + tests
+- [x] `pin:stem-model` script — computes real sha256/bytes, writes the sidecar
+- [ ] HT-Demucs ONNX export + host the `.onnx` + run `pin:stem-model` (switch 1) — needs a reachable weight host
 - [ ] `onnxruntime-node` optionalDependency + lockfile + electron-builder packaging (switch 2)
 - [ ] Flip `PRECISE_AVAILABLE = true` (switch 3) + pre-launch listening QA

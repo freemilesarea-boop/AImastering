@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   HTDEMUCS_MANIFEST, isModelConfigured, modelPath, modelDir,
-  verifyCachedModel, ensureModel, type StemModelManifest, type ModelFsDeps,
+  verifyCachedModel, ensureModel, parseManifest, resolveManifest,
+  manifestSidecarPath, type StemModelManifest, type ModelFsDeps, type ManifestSource,
 } from './stem-model-manager.js';
 
 const PINNED: StemModelManifest = {
@@ -69,5 +70,52 @@ describe('stem-model-manager', () => {
 
   it('ensureModel rejects a size mismatch', async () => {
     await expect(ensureModel('/u', fakeFs({ download: async () => new Uint8Array([1, 2]) }), PINNED)).rejects.toThrow(/size/);
+  });
+});
+
+describe('sidecar manifest (pin without a code edit)', () => {
+  const validJson = JSON.stringify(PINNED);
+
+  it('parseManifest accepts a well-formed manifest and lowercases the hash', () => {
+    const m = parseManifest({ ...PINNED, sha256: 'A'.repeat(64) });
+    expect(m).not.toBeNull();
+    expect(m!.sha256).toBe('a'.repeat(64));
+  });
+
+  it('parseManifest rejects malformed shapes', () => {
+    expect(parseManifest(null)).toBeNull();
+    expect(parseManifest({ ...PINNED, bytes: 'x' })).toBeNull();           // wrong type
+    expect(parseManifest({ ...PINNED, sha256: 'zz' })).toBeNull();          // not 64-hex
+    expect(parseManifest({ ...PINNED, modelSampleRate: 0 })).toBeNull();    // non-positive rate
+    expect(parseManifest({ ...PINNED, fileName: '../evil.onnx' })).toBeNull(); // path traversal
+  });
+
+  it('parseManifest allows an intentionally-empty sha256 (unpinned)', () => {
+    const m = parseManifest({ ...PINNED, sha256: '' });
+    expect(m).not.toBeNull();
+    expect(isModelConfigured(m!)).toBe(false);
+  });
+
+  it('manifestSidecarPath lives under the model cache dir', () => {
+    expect(manifestSidecarPath('/u').endsWith('models/stem-model.manifest.json')).toBe(true);
+  });
+
+  it('resolveManifest returns the bundled placeholder when no sidecar present', async () => {
+    const src: ManifestSource = { readText: async () => null };
+    expect(await resolveManifest('/u/x.json', src)).toEqual(HTDEMUCS_MANIFEST);
+    expect(await resolveManifest(null, src)).toEqual(HTDEMUCS_MANIFEST);
+  });
+
+  it('resolveManifest applies a valid sidecar override', async () => {
+    const src: ManifestSource = { readText: async () => validJson };
+    const m = await resolveManifest('/u/x.json', src);
+    expect(isModelConfigured(m)).toBe(true);
+    expect(m.sha256).toBe(PINNED.sha256);
+  });
+
+  it('resolveManifest falls back to placeholder on malformed JSON / bad shape', async () => {
+    expect(await resolveManifest('/u/x.json', { readText: async () => '{not json' })).toEqual(HTDEMUCS_MANIFEST);
+    expect(await resolveManifest('/u/x.json', { readText: async () => '{"id":"x"}' })).toEqual(HTDEMUCS_MANIFEST);
+    expect(await resolveManifest('/u/x.json', { readText: async () => { throw new Error('io'); } })).toEqual(HTDEMUCS_MANIFEST);
   });
 });
