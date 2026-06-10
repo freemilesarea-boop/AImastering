@@ -18,7 +18,7 @@ import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-
 import { applyPreciseRebalance, type PreciseRebalanceOptions } from './precise-rebalance.js';
 import { applySectionPlan } from './section-mastering.js';
 import { applyVocalRiding } from './vocal-riding.js';
-import { deinterleaveN, foldDownToStereo, layoutForChannelCount, surroundProcessingUnits, LAYOUT_CHANNELS } from './surround.js';
+import { deinterleaveN, foldDownToStereo, layoutForChannelCount, surroundProcessingUnits, LAYOUT_CHANNELS, ffmpegLayoutName } from './surround.js';
 import { bedForRole, bedAdjustedConfig, sanitizeSurroundBeds } from './surround-beds.js';
 import { masterSurroundOutput, interleaveN } from './surround-render.js';
 import { integratedLoudnessLufs, loudnessNormGainDb } from './surround-loudness.js';
@@ -167,13 +167,20 @@ async function encodeWav(interleaved: Float32Array, sampleRate: number, bitDepth
   ], stdin);
 }
 
-/** Encode interleaved f32le N-channel → WAV at the target bit depth. */
-async function encodeWavN(interleaved: Float32Array, channels: number, sampleRate: number, bitDepth: 16 | 24, outputPath: string): Promise<void> {
+/**
+ * Encode interleaved f32le N-channel → WAV at the target bit depth.  Pinning the
+ * input `channel_layout` makes ffmpeg write the correct WAVE_FORMAT_EXTENSIBLE
+ * channel mask (so players map FL/FR/FC/LFE/BL/BR… correctly).
+ */
+async function encodeWavN(interleaved: Float32Array, channels: number, sampleRate: number, bitDepth: 16 | 24, outputPath: string, layoutName?: string): Promise<void> {
   const codec = bitDepth === 16 ? 'pcm_s16le' : 'pcm_s24le';
   const stdin = Buffer.from(interleaved.buffer, interleaved.byteOffset, interleaved.byteLength);
   await runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y',
     '-f', 'f32le', '-ar', String(sampleRate), '-ac', String(channels), '-i', 'pipe:0',
+    // Output-side -ch_layout makes the WAV muxer write WAVE_FORMAT_EXTENSIBLE
+    // with the correct dwChannelMask (ffmpeg ≥ 7).
+    ...(layoutName ? ['-ch_layout', layoutName] : []),
     '-c:a', codec, outputPath,
   ], stdin);
 }
@@ -245,7 +252,7 @@ export async function processAudioFileRust(
         masterGainDb: normGainDb + sr.masterGainDb, ceilingDb: sr.ceilingDb,
       });
       const nc = mastered.channels.length;
-      await encodeWavN(interleaveN(mastered.channels), nc, options.sampleRate, options.bitDepth, options.outputPath);
+      await encodeWavN(interleaveN(mastered.channels), nc, options.sampleRate, options.bitDepth, options.outputPath, ffmpegLayoutName(dec.layout));
       // Stereo fold-down (of the mastered channels) for analysis / preview.
       const fd = foldDownToStereo(mastered.channels, dec.layout, sr.trims);
       const analysisPath = options.outputPath.replace(/\.wav$/i, '') + '.stereo.wav';

@@ -48,6 +48,7 @@
     "test:eq-curve": "tsx scripts/eq-curve-selftest.ts",
     "test:gr-meter": "tsx scripts/gr-meter-selftest.ts",
     "test:export-support": "tsx scripts/export-support-selftest.ts",
+    "test:surround-encode": "tsx scripts/surround-encode-selftest.ts",
     "test:rust-offline": "tsx scripts/rust-offline-parity-selftest.ts",
     "test:rust-loudness": "tsx scripts/rust-loudness-selftest.ts",
     "test:eq-drag": "tsx scripts/eq-drag-selftest.ts",

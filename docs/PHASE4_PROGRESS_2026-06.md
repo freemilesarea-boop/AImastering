@@ -66,9 +66,21 @@
 - **`SurroundOptions.beds`**(기본 neutral) + 스토어 `updateSurroundBed`/`updateSurroundLfeGain` + `SurroundPanel` 베드별 에디터(프론트/센터/서라운드: 게인·저역·고역, LFE: 게인).
 - **검증**: surround-beds(7 — 역할 매핑·sanitize·neutral·config 합성). **vitest 294/294**, typecheck 0.
 
+### P4-2e. 멀티채널 WAV 채널 마스크 — 헤드리스 검증
+
+**커밋**: `feat(surround): correct WAV channel mask + headless encode selftest (Phase 4)`
+
+"WAV 인코딩·채널 마스크"를 device-QA에서 **CI 검증**으로 이동.
+
+- **`ffmpegLayoutName`**(순수): 레이아웃→ffmpeg 표준 레이아웃명(`5.1`/`7.1`). ffmpeg `-layouts`와 정확히 일치(5.1=FL+FR+FC+LFE+BL+BR, 7.1=…+SL+SR) → 우리 `LAYOUT_CHANNELS`와 동일 검증.
+- **`encodeWavN`**: 출력측 `-ch_layout`(ffmpeg 7) 지정 → WAV가 **WAVE_FORMAT_EXTENSIBLE + 올바른 dwChannelMask** 기록.
+- **`test:surround-encode`** 셀프테스트(번들 ffmpeg 실행): 5.1/7.1 인코딩 → WAV fmt 청크 파싱 → formatTag=0xFFFE·channels·mask(5.1→0x3f, 7.1→0x63f) 단언. **실제 ffmpeg로 종단 검증 통과**.
+- **검증**: surround(ffmpegLayoutName 1) + 셀프테스트(실 ffmpeg 마스크). **vitest 295/295**, typecheck 0.
+
 ### 정직성/한계
 - 멀티채널 모드: **(옵션)베드별 풀 체인 + 베드별 톤/레벨 → 라우드니스 자동매칭(BS.1770) → 게인 트림 → 링크드 TP 리미터**. EQ/컴프는 검증된 Rust 엔진을 베드별 재사용(중복 없음).
-- 베드별 톤은 게인 + 저/고역 셸프(공유 체인 위 오프셋). 베드별 완전 독립 체인(컴프 임계 등 전 파라미터)은 미제공 — 향후. LFE는 게인만.
+- 베드별 톤은 게인 + 저/고역 셸프(공유 체인 위 오프셋). 베드별 완전 독립 체인은 향후. LFE는 게인만.
+- **WAV 채널 마스크/채널수는 이제 번들 ffmpeg로 헤드리스 검증됨**(`test:surround-encode`). 남은 device-QA: 실제 플레이어/DAW에서의 재생·청취 품질, 멀티채널 디코드 순서(소스별 레이아웃 변형).
 - 멀티채널 WAV 인코딩(ffmpeg `-ac N`)·채널 마스크·플레이어 호환은 실제 서라운드 파일/장치로만 종단 검증 → 출시 전 QA. K-weighting 계수는 비-48k에서도 산출식 적용(정확). 단위테스트는 라우드니스/리미터/피크/폴드다운 DSP 수학만 보장.
 
 ## 🟡 Phase 4 남은 후보(대규모·범위 밖)

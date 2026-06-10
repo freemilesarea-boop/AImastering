@@ -45,6 +45,19 @@ export function surroundProcessingUnits(layout: SurroundLayout): ProcessingUnit[
   return units;
 }
 
+/**
+ * FFmpeg canonical channel-layout name for a layout.  These match FFmpeg's
+ * `-layouts` exactly (5.1 = FL+FR+FC+LFE+BL+BR, 7.1 = …+SL+SR), so passing this
+ * on encode writes the correct WAVE_FORMAT_EXTENSIBLE channel mask.
+ */
+export function ffmpegLayoutName(layout: SurroundLayout): string {
+  switch (layout) {
+    case '5.1': return '5.1';
+    case '7.1': return '7.1';
+    default: return 'stereo';
+  }
+}
+
 /** Detect a known layout from a raw channel count (else null). */
 export function layoutForChannelCount(n: number): SurroundLayout | null {
   if (n === 2) return 'stereo';

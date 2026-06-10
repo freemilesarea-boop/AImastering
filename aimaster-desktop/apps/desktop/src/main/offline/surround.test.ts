@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   layoutForChannelCount, deinterleaveN, foldDownToStereo, bs1770Weight,
-  channelWeightedLoudnessDb, sanitizeSurroundTrims, surroundProcessingUnits,
+  channelWeightedLoudnessDb, sanitizeSurroundTrims, surroundProcessingUnits, ffmpegLayoutName,
   LAYOUT_CHANNELS, DEFAULT_SURROUND_TRIMS,
 } from './surround.js';
 
@@ -63,6 +63,14 @@ describe('foldDownToStereo (BS.775)', () => {
     const out = foldDownToStereo(ch([0, 0, 0, 0, 1, 0, 1, 0]), '7.1'); // BL + SL
     expect(out.left[0]!).toBeCloseTo(M3DB * 2, 5);
     expect(out.right[0]!).toBeCloseTo(0, 6);
+  });
+});
+
+describe('ffmpegLayoutName', () => {
+  it('matches ffmpeg canonical layout names', () => {
+    expect(ffmpegLayoutName('5.1')).toBe('5.1');
+    expect(ffmpegLayoutName('7.1')).toBe('7.1');
+    expect(ffmpegLayoutName('stereo')).toBe('stereo');
   });
 });
 
