@@ -30,13 +30,15 @@ mod crossover;
 mod dynamics;
 mod multiband;
 mod saturation;
+mod transient;
 mod imager;
 mod limiter;
 mod chain;
 
 pub use config::{
     MasteringChainConfig, EqConfig, DynamicsConfig, MultibandConfig, MultibandBandConfig,
-    SaturationConfig, SaturationCharacter, ImagerConfig, LimiterConfig,
+    SaturationConfig, SaturationCharacter, TransientConfig, TransientBandConfig,
+    ImagerConfig, LimiterConfig,
 };
 pub use parametric_eq::{ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS};
 pub use chain::{MasteringChain, GainReduction};

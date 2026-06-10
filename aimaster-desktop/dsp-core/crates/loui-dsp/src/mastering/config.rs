@@ -206,6 +206,51 @@ impl Default for SaturationConfig {
     }
 }
 
+/// One band of the transient/impact shaper.
+#[derive(Debug, Clone, Copy)]
+pub struct TransientBandConfig {
+    /// Attack emphasis %, [-100, 100].  > 0 = punchier, < 0 = softer.
+    pub attack_pct: f64,
+    /// Sustain emphasis %, [-100, 100].  > 0 = more body, < 0 = tighter.
+    pub sustain_pct: f64,
+}
+
+impl Default for TransientBandConfig {
+    fn default() -> Self {
+        Self { attack_pct: 0.0, sustain_pct: 0.0 }
+    }
+}
+
+/// Transient / impact shaper parameters.  Default = bypassed (no-op).
+#[derive(Debug, Clone, Copy)]
+pub struct TransientConfig {
+    pub bypass: bool,
+    /// Single-band attack/sustain (used when `multiband_enabled` is false).
+    pub attack_pct: f64,
+    pub sustain_pct: f64,
+    pub multiband_enabled: bool,
+    /// Per-band settings, [low, low-mid, high-mid, high].
+    pub bands: [TransientBandConfig; 4],
+    pub xover_lo_hz: f64,
+    pub xover_mid_hz: f64,
+    pub xover_hi_hz: f64,
+}
+
+impl Default for TransientConfig {
+    fn default() -> Self {
+        Self {
+            bypass: true,
+            attack_pct: 0.0,
+            sustain_pct: 0.0,
+            multiband_enabled: false,
+            bands: [TransientBandConfig::default(); 4],
+            xover_lo_hz: 120.0,
+            xover_mid_hz: 1000.0,
+            xover_hi_hz: 6000.0,
+        }
+    }
+}
+
 /// Full mastering-chain configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct MasteringChainConfig {
@@ -217,6 +262,8 @@ pub struct MasteringChainConfig {
     pub multiband: MultibandConfig,
     /// Saturation / exciter (after the multiband comp; off by default).
     pub saturation: SaturationConfig,
+    /// Transient / impact shaper (after saturation; off by default).
+    pub transient: TransientConfig,
     pub imager: ImagerConfig,
     pub limiter: LimiterConfig,
     /// Output gain (dB) applied after the chain.
@@ -233,6 +280,7 @@ impl Default for MasteringChainConfig {
             dynamics: DynamicsConfig::default(),
             multiband: MultibandConfig::default(),
             saturation: SaturationConfig::default(),
+            transient: TransientConfig::default(),
             imager: ImagerConfig::default(),
             limiter: LimiterConfig::default(),
             output_gain_db: 0.0,

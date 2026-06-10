@@ -503,6 +503,8 @@ impl LouiMasteringChain {
             multiband: preserved_multiband,
             // Saturation is configured separately; preserve it across setConfig.
             saturation: prev.saturation,
+            // Transient shaper is configured separately; preserve it.
+            transient: prev.transient,
             imager: ImagerConfig {
                 width_pct: img_width_pct, low_mono_hz: img_low_mono_hz, bypass: img_bypass,
                 // 4-band M/S is configured via setImagerMultiband; preserve it.
