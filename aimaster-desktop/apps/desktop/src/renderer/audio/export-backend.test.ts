@@ -10,6 +10,7 @@ import { defaultMultibandConfig, type MultibandConfig } from './multiband-config
 import { defaultImagerMultiband, type ImagerMultibandConfig } from './imager-config.js';
 import { defaultSaturationConfig, CHARACTER_CODE, type SaturationConfig } from './saturation-config.js';
 import { defaultTransientConfig, type TransientConfig } from './transient-config.js';
+import { defaultDynamicEqConfig, defaultDynEqBand, FILTER_CODE, type DynamicEqConfig } from './dyneq-config.js';
 
 const options: MasteringOptions = {
   style: 'balanced', targetLufs: -12, targetTp: -1, sampleRate: 48000,
@@ -151,6 +152,20 @@ describe('multiband attach on the rust export request', () => {
     const c2 = capturedChainConfig(() => rustOk);
     await masterWithPreferredBackend({ invoke: c2.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, transient: defaultTransientConfig() });
     expect((c2.getReq()?.['chainConfig'] as Record<string, unknown>)['transient']).toBeUndefined();
+  });
+
+  it('attaches dynamicEq (band list with codes) when active, omits when unity', async () => {
+    const de: DynamicEqConfig = { bypass: false, bands: [{ ...defaultDynEqBand(3000), filterType: 'highshelf' }] };
+    const c1 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c1.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, dynamicEq: de });
+    const wire = (c1.getReq()?.['chainConfig'] as Record<string, unknown>)['dynamicEq'] as { bands: Array<Record<string, unknown>> } | undefined;
+    expect(wire).toBeDefined();
+    expect(wire!.bands[0]!['typeCode']).toBe(FILTER_CODE.highshelf);
+    expect(wire!.bands[0]!['filterType']).toBeUndefined(); // wire uses codes
+
+    const c2 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c2.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, dynamicEq: defaultDynamicEqConfig() });
+    expect((c2.getReq()?.['chainConfig'] as Record<string, unknown>)['dynamicEq']).toBeUndefined();
   });
 });
 

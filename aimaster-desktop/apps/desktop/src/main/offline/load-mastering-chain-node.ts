@@ -62,6 +62,20 @@ export interface OfflineTransientConfig {
   xoverLoHz: number; xoverMidHz: number; xoverHiHz: number;
 }
 
+/** One dynamic-EQ band (structural).  typeCode: 0=Bell 1=LowShelf 2=HighShelf.
+ *  modeCode: 0=DownCut 1=UpBoost. */
+export interface OfflineDynEqBand {
+  enabled: boolean; typeCode: number; freqHz: number; q: number;
+  thresholdDb: number; ratio: number; attackMs: number; releaseMs: number;
+  rangeDb: number; modeCode: number;
+}
+
+/** Dynamic-EQ config (structural). */
+export interface OfflineDynamicEqConfig {
+  bypass: boolean;
+  bands: OfflineDynEqBand[];
+}
+
 /** The flat config passed to the WASM chain's `setConfig` (same order as the
  *  realtime preview's `RealtimeChainConfig`). */
 export interface OfflineChainConfig {
@@ -84,6 +98,8 @@ export interface OfflineChainConfig {
   saturation?: OfflineSaturationConfig;
   /** Optional transient / impact shaper.  Absent = none. */
   transient?: OfflineTransientConfig;
+  /** Optional fully-parametric dynamic EQ.  Absent = none. */
+  dynamicEq?: OfflineDynamicEqConfig;
 }
 
 /** Structural type of the WASM chain (avoids a hard dep on the typings). */
@@ -136,6 +152,14 @@ export interface WasmMasteringChain {
     xoverLoHz: number, xoverMidHz: number, xoverHiHz: number,
     bandAttacksPct: Float64Array,
     bandSustainsPct: Float64Array,
+  ): void;
+  /** Dynamic EQ (optional — present only on rebuilt artifacts).  Parallel
+   *  arrays, one entry per band. */
+  setDynamicEqBands?(
+    bypass: boolean,
+    enableds: Uint8Array, types: Uint8Array, freqs: Float64Array, qs: Float64Array,
+    thresholds: Float64Array, ratios: Float64Array, attacks: Float64Array,
+    releases: Float64Array, ranges: Float64Array, modes: Uint8Array,
   ): void;
   processStereo(left: Float32Array, right: Float32Array): void;
   limiterGrDb(): number;
@@ -285,5 +309,35 @@ export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineChainCon
       Float64Array.from((t.bandAttacksPct ?? []).slice(0, 4)),
       Float64Array.from((t.bandSustainsPct ?? []).slice(0, 4)),
     );
+  }
+
+  // Dynamic EQ — guarded.  Pack the structural band list into parallel arrays.
+  if (c.dynamicEq && typeof chain.setDynamicEqBands === 'function') {
+    const bands = (c.dynamicEq.bands ?? []).slice(0, 6);
+    const n = bands.length;
+    const enableds = new Uint8Array(n);
+    const types = new Uint8Array(n);
+    const freqs = new Float64Array(n);
+    const qs = new Float64Array(n);
+    const thresholds = new Float64Array(n);
+    const ratios = new Float64Array(n);
+    const attacks = new Float64Array(n);
+    const releases = new Float64Array(n);
+    const ranges = new Float64Array(n);
+    const modes = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const b = bands[i]!;
+      enableds[i] = b.enabled ? 1 : 0;
+      types[i] = b.typeCode;
+      freqs[i] = b.freqHz;
+      qs[i] = b.q;
+      thresholds[i] = b.thresholdDb;
+      ratios[i] = b.ratio;
+      attacks[i] = b.attackMs;
+      releases[i] = b.releaseMs;
+      ranges[i] = b.rangeDb;
+      modes[i] = b.modeCode;
+    }
+    chain.setDynamicEqBands(!!c.dynamicEq.bypass, enableds, types, freqs, qs, thresholds, ratios, attacks, releases, ranges, modes);
   }
 }

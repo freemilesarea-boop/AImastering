@@ -915,6 +915,7 @@ export default function HomePage() {
           imagerMultiband: useAudioStore.getState().imagerMultiband,
           saturation: useAudioStore.getState().saturation,
           transient: useAudioStore.getState().transient,
+          dynamicEq: useAudioStore.getState().dynamicEq,
           pythonOptions: {
             style:              itemOptions.style,
             targetLufs:         itemOptions.targetLufs,

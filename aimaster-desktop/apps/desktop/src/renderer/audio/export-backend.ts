@@ -27,6 +27,8 @@ import type { SaturationConfig } from './saturation-config.js';
 import { isSaturationUnity, sanitizeSaturation, CHARACTER_CODE } from './saturation-config.js';
 import type { TransientConfig } from './transient-config.js';
 import { isTransientUnity, sanitizeTransient } from './transient-config.js';
+import type { DynamicEqConfig } from './dyneq-config.js';
+import { isDynamicEqUnity, sanitizeDynamicEq, FILTER_CODE, MODE_CODE } from './dyneq-config.js';
 import { isRustOfflineRenderEnabled } from './rust-offline-render-flag.js';
 
 /**
@@ -99,6 +101,8 @@ export interface MasterExportArgs {
   saturation?: SaturationConfig;
   /** Optional transient / impact shaper — applied on the Rust export path. */
   transient?: TransientConfig;
+  /** Optional fully-parametric dynamic EQ — applied on the Rust export path. */
+  dynamicEq?: DynamicEqConfig;
   requestId?: number;
   /** Override the flag (tests).  Defaults to isRustOfflineRenderEnabled(). */
   rustEnabled?: boolean;
@@ -140,6 +144,17 @@ export async function masterWithPreferredBackend(args: MasterExportArgs): Promis
           bandAttacksPct: t.bands.map((b) => b.attackPct),
           bandSustainsPct: t.bands.map((b) => b.sustainPct),
           xoverLoHz: t.xoverLoHz, xoverMidHz: t.xoverMidHz, xoverHiHz: t.xoverHiHz,
+        };
+      }
+      if (args.dynamicEq && !isDynamicEqUnity(args.dynamicEq)) {
+        const d = sanitizeDynamicEq(args.dynamicEq);
+        chainConfig['dynamicEq'] = {
+          bypass: d.bypass,
+          bands: d.bands.map((b) => ({
+            enabled: b.enabled, typeCode: FILTER_CODE[b.filterType], freqHz: b.freqHz, q: b.q,
+            thresholdDb: b.thresholdDb, ratio: b.ratio, attackMs: b.attackMs, releaseMs: b.releaseMs,
+            rangeDb: b.rangeDb, modeCode: MODE_CODE[b.mode],
+          })),
         };
       }
       const res = await invoke('audio:master-rust-experimental', {

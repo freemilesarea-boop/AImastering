@@ -437,6 +437,7 @@ use loui_dsp::{
     MasteringChain, MasteringChainConfig,
     EqConfig, DynamicsConfig, MultibandConfig, ImagerConfig, LimiterConfig,
     SaturationConfig, SaturationCharacter, TransientConfig,
+    DynamicEqConfig, DynEqBandConfig, DynEqFilterType, DynEqMode, MAX_DYNEQ_BANDS,
     ParametricBand, ParametricBandType,
 };
 
@@ -644,6 +645,55 @@ impl LouiMasteringChain {
             bypass, attack_pct, sustain_pct, multiband_enabled, bands,
             xover_lo_hz, xover_mid_hz, xover_hi_hz,
         };
+        self.inner.set_config(cfg);
+    }
+
+    /// Configure the fully-parametric dynamic EQ.  Parallel arrays, one entry
+    /// per band (up to MAX_DYNEQ_BANDS).  `types`: 0=Bell 1=LowShelf 2=HighShelf.
+    /// `modes`: 0=DownCut 1=UpBoost.  `enableds`: 0/1.
+    #[wasm_bindgen(js_name = setDynamicEqBands)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_dynamic_eq_bands(
+        &mut self,
+        bypass: bool,
+        enableds: &[u8],
+        types: &[u8],
+        freqs: &[f64],
+        qs: &[f64],
+        thresholds: &[f64],
+        ratios: &[f64],
+        attacks: &[f64],
+        releases: &[f64],
+        ranges: &[f64],
+        modes: &[u8],
+    ) {
+        let mut cfg = self.inner.config();
+        let mut bands = [DynEqBandConfig::default(); MAX_DYNEQ_BANDS];
+        let n = enableds.len().min(MAX_DYNEQ_BANDS);
+        for (i, band) in bands.iter_mut().enumerate().take(n) {
+            let filter_type = match types.get(i).copied().unwrap_or(0) {
+                1 => DynEqFilterType::LowShelf,
+                2 => DynEqFilterType::HighShelf,
+                _ => DynEqFilterType::Bell,
+            };
+            let mode = match modes.get(i).copied().unwrap_or(0) {
+                1 => DynEqMode::UpBoost,
+                _ => DynEqMode::DownCut,
+            };
+            *band = DynEqBandConfig {
+                enabled: enableds.get(i).copied().unwrap_or(0) != 0,
+                filter_type,
+                freq_hz: freqs.get(i).copied().unwrap_or(1000.0),
+                q: qs.get(i).copied().unwrap_or(2.0),
+                threshold_db: thresholds.get(i).copied().unwrap_or(-24.0),
+                ratio: ratios.get(i).copied().unwrap_or(2.0),
+                attack_ms: attacks.get(i).copied().unwrap_or(5.0),
+                release_ms: releases.get(i).copied().unwrap_or(80.0),
+                range_db: ranges.get(i).copied().unwrap_or(6.0),
+                mode,
+            };
+        }
+        cfg.dynamic_eq = DynamicEqConfig { bypass, bands };
         self.inner.set_config(cfg);
     }
 

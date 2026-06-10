@@ -42,6 +42,14 @@ import {
   defaultTransientConfig,
   sanitizeTransient,
 } from '../audio/transient-config.js';
+import {
+  type DynamicEqConfig as DynEqConfig,
+  type DynEqBand,
+  defaultDynamicEqConfig,
+  defaultDynEqBand,
+  sanitizeDynamicEq,
+  MAX_DYNEQ_BANDS,
+} from '../audio/dyneq-config.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -326,6 +334,19 @@ interface AudioStore {
   updateTransientBand: (index: number, patch: Partial<TransientBand>) => void;
   setTransient: (cfg: TransConfig) => void;
   resetTransient: () => void;
+
+  // ── Dynamic EQ (C-Phase2) ──────────────────────────────────────────────
+  dynamicEq: DynEqConfig;
+  /** Patch top-level dynamic-EQ fields (bypass). */
+  updateDynamicEq: (patch: Partial<Omit<DynEqConfig, 'bands'>>) => void;
+  /** Append a band (default bell @ freq).  No-op past MAX_DYNEQ_BANDS. */
+  addDynEqBand: (freqHz?: number) => void;
+  /** Patch one band by id. */
+  updateDynEqBand: (id: string, patch: Partial<Omit<DynEqBand, 'id'>>) => void;
+  /** Remove a band by id. */
+  removeDynEqBand: (id: string) => void;
+  setDynamicEq: (cfg: DynEqConfig) => void;
+  resetDynamicEq: () => void;
 }
 
 function baseName(p: string): string {
@@ -473,4 +494,19 @@ export const useAudioStore = create<AudioStore>((set) => ({
   }),
   setTransient: (cfg) => set({ transient: sanitizeTransient(cfg) }),
   resetTransient: () => set({ transient: defaultTransientConfig() }),
+
+  // ── Dynamic EQ ─────────────────────────────────────────────────────────
+  dynamicEq: defaultDynamicEqConfig(),
+  updateDynamicEq: (patch) => set((s) => ({ dynamicEq: sanitizeDynamicEq({ ...s.dynamicEq, ...patch }) })),
+  addDynEqBand: (freqHz = 1000) => set((s) => (
+    s.dynamicEq.bands.length >= MAX_DYNEQ_BANDS
+      ? s
+      : { dynamicEq: sanitizeDynamicEq({ ...s.dynamicEq, bands: [...s.dynamicEq.bands, defaultDynEqBand(freqHz)] }) }
+  )),
+  updateDynEqBand: (id, patch) => set((s) => ({
+    dynamicEq: sanitizeDynamicEq({ ...s.dynamicEq, bands: s.dynamicEq.bands.map((b) => (b.id === id ? { ...b, ...patch, id: b.id } : b)) }),
+  })),
+  removeDynEqBand: (id) => set((s) => ({ dynamicEq: { ...s.dynamicEq, bands: s.dynamicEq.bands.filter((b) => b.id !== id) } })),
+  setDynamicEq: (cfg) => set({ dynamicEq: sanitizeDynamicEq(cfg) }),
+  resetDynamicEq: () => set({ dynamicEq: defaultDynamicEqConfig() }),
 }));

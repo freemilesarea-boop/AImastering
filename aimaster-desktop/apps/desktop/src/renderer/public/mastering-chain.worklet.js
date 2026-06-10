@@ -116,6 +116,15 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
             );
           } catch (e) { /* keep audio alive */ }
         }
+      } else if (msg.type === 'dyneq') {
+        if (this._ready && this._chain && typeof this._chain.setDynamicEqBands === 'function') {
+          try {
+            this._chain.setDynamicEqBands(
+              !!msg.bypass, msg.enableds, msg.types, msg.freqs, msg.qs,
+              msg.thresholds, msg.ratios, msg.attacks, msg.releases, msg.ranges, msg.modes,
+            );
+          } catch (e) { /* keep audio alive */ }
+        }
       }
     };
   }
