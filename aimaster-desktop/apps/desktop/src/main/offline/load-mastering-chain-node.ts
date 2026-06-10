@@ -39,6 +39,18 @@ export interface OfflineImagerMultibandConfig {
   widthsPct: number[];
 }
 
+/** Saturation/exciter config (structural).  `characterCode`: 0=Warm 1=Tape
+ *  2=Tube 3=Modern. */
+export interface OfflineSaturationConfig {
+  bypass: boolean;
+  characterCode: number;
+  drive: number;
+  mixPct: number;
+  multibandEnabled: boolean;
+  bandDrivesPct: number[];
+  xoverLoHz: number; xoverMidHz: number; xoverHiHz: number;
+}
+
 /** The flat config passed to the WASM chain's `setConfig` (same order as the
  *  realtime preview's `RealtimeChainConfig`). */
 export interface OfflineChainConfig {
@@ -57,6 +69,8 @@ export interface OfflineChainConfig {
   multiband?: OfflineMultibandConfig;
   /** Optional 4-band M/S stereo imager.  Absent = single-band width only. */
   imagerMultiband?: OfflineImagerMultibandConfig;
+  /** Optional saturation / exciter.  Absent = none. */
+  saturation?: OfflineSaturationConfig;
 }
 
 /** Structural type of the WASM chain (avoids a hard dep on the typings). */
@@ -89,6 +103,16 @@ export interface WasmMasteringChain {
     enabled: boolean,
     xoverLoHz: number, xoverMidHz: number, xoverHiHz: number,
     widthsPct: Float64Array,
+  ): void;
+  /** Saturation / exciter (optional — present only on rebuilt artifacts). */
+  setSaturation?(
+    bypass: boolean,
+    character: number,
+    drive: number,
+    mixPct: number,
+    multibandEnabled: boolean,
+    xoverLoHz: number, xoverMidHz: number, xoverHiHz: number,
+    bandDrivesPct: Float64Array,
   ): void;
   processStereo(left: Float32Array, right: Float32Array): void;
   limiterGrDb(): number;
@@ -216,6 +240,16 @@ export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineChainCon
     chain.setImagerMultiband(
       !!im.enabled, im.xoverLoHz, im.xoverMidHz, im.xoverHiHz,
       Float64Array.from((im.widthsPct ?? []).slice(0, 4)),
+    );
+  }
+
+  // Saturation / exciter — guarded.
+  if (c.saturation && typeof chain.setSaturation === 'function') {
+    const s = c.saturation;
+    chain.setSaturation(
+      !!s.bypass, s.characterCode, s.drive, s.mixPct, !!s.multibandEnabled,
+      s.xoverLoHz, s.xoverMidHz, s.xoverHiHz,
+      Float64Array.from((s.bandDrivesPct ?? []).slice(0, 4)),
     );
   }
 }

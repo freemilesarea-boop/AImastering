@@ -8,6 +8,7 @@ import {
 import type { MasteringOptions } from '../stores/audioStore.js';
 import { defaultMultibandConfig, type MultibandConfig } from './multiband-config.js';
 import { defaultImagerMultiband, type ImagerMultibandConfig } from './imager-config.js';
+import { defaultSaturationConfig, CHARACTER_CODE, type SaturationConfig } from './saturation-config.js';
 
 const options: MasteringOptions = {
   style: 'balanced', targetLufs: -12, targetTp: -1, sampleRate: 48000,
@@ -120,6 +121,20 @@ describe('multiband attach on the rust export request', () => {
     const c2 = capturedChainConfig(() => rustOk);
     await masterWithPreferredBackend({ invoke: c2.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, imagerMultiband: defaultImagerMultiband() });
     expect((c2.getReq()?.['chainConfig'] as Record<string, unknown>)['imagerMultiband']).toBeUndefined();
+  });
+
+  it('attaches saturation with a numeric character code when active, omits when unity', async () => {
+    const sat: SaturationConfig = { ...defaultSaturationConfig(), bypass: false, character: 'tube', drive: 60 };
+    const c1 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c1.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, saturation: sat });
+    const wire = (c1.getReq()?.['chainConfig'] as Record<string, unknown>)['saturation'] as Record<string, unknown> | undefined;
+    expect(wire).toBeDefined();
+    expect(wire!['characterCode']).toBe(CHARACTER_CODE.tube);
+    expect(wire!['character']).toBeUndefined(); // wire uses code, not string
+
+    const c2 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c2.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, saturation: defaultSaturationConfig() });
+    expect((c2.getReq()?.['chainConfig'] as Record<string, unknown>)['saturation']).toBeUndefined();
   });
 });
 

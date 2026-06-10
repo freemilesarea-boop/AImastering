@@ -28,10 +28,12 @@ import { createNativeDspChain, type NativeDspChain } from './native-dsp-chain.js
 import { createParametricEqChain, type ParametricEqChain } from './parametric-eq-chain.js';
 import { createMultibandChain, type MultibandChain } from './multiband-chain.js';
 import { createImagerMultibandChain, type ImagerMultibandChain } from './imager-multiband-chain.js';
+import { createSaturationChain, type SaturationChain } from './saturation-chain.js';
 import type { ParametricEqBand } from './modules/parametric-eq-model.js';
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
 import { isMultibandUnity, type MultibandConfig } from './multiband-config.js';
 import { isImagerMultibandUnity, type ImagerMultibandConfig } from './imager-config.js';
+import { isSaturationUnity, type SaturationConfig } from './saturation-config.js';
 
 export type AudioGraphEventKind =
   | 'audio-element-mounted'
@@ -158,6 +160,8 @@ interface ElementGraph {
   multiband: MultibandChain | null;
   /** WebAudio 4-band M/S imager approximation — sits after the multiband. */
   imagerMb: ImagerMultibandChain | null;
+  /** WebAudio saturation/exciter approximation — sits after the imager. */
+  saturation: SaturationChain | null;
   analysers: NativeAnalysers;
   splitter: ChannelSplitterNode;
   /** External passive taps (e.g. WASM analyzer-tap worklet). */
@@ -190,6 +194,10 @@ function rerouteBus(g: ElementGraph): void {
     try { g.imagerMb.input.disconnect(); } catch { /* ignore */ }
     try { g.imagerMb.output.disconnect(); } catch { /* ignore */ }
   }
+  if (g.saturation) {
+    try { g.saturation.input.disconnect(); } catch { /* ignore */ }
+    try { g.saturation.output.disconnect(); } catch { /* ignore */ }
+  }
 
   // Pick the upstream-of-insert node: source itself, or freeEq's output when active.
   const useFreeEq = !!g.freeEq && g.freeEq.isActive();
@@ -216,8 +224,10 @@ function rerouteBus(g: ElementGraph): void {
   // Optional post-insert stages (in order), spliced between the insert tail
   // and masterGain.  Each is included only when active, so an idle stage adds
   // no nodes to the signal path.
+  // Order mirrors the Rust chain: multiband comp → saturation → imager.
   const stages: Array<{ input: AudioNode; output: AudioNode; name: string }> = [];
   if (g.multiband && g.multiband.isActive()) stages.push({ input: g.multiband.input, output: g.multiband.output, name: 'multiband' });
+  if (g.saturation && g.saturation.isActive()) stages.push({ input: g.saturation.input, output: g.saturation.output, name: 'saturation' });
   if (g.imagerMb && g.imagerMb.isActive()) stages.push({ input: g.imagerMb.input, output: g.imagerMb.output, name: 'imagerMS' });
 
   let tail = insertTail;
@@ -295,7 +305,7 @@ export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000)
 
   const graph: ElementGraph = {
     ctx: context, source, masterGain, silentSink,
-    wasmInsert: null, nativeDsp: null, freeEq: null, multiband: null, imagerMb: null,
+    wasmInsert: null, nativeDsp: null, freeEq: null, multiband: null, imagerMb: null, saturation: null,
     analysers: { ctx: context, main, left, right }, splitter,
     passiveTaps: new Set(), sourceCreated: true,
   };
@@ -411,6 +421,21 @@ export function setImagerMultibandConfig(media: HTMLMediaElement, cfg: ImagerMul
   if (!willBeActive && !g.imagerMb) return;
   if (!g.imagerMb) g.imagerMb = createImagerMultibandChain(g.ctx);
   g.imagerMb.apply(cfg);
+  rerouteBus(g);
+}
+
+/**
+ * Set the saturation/exciter config for an element's preview chain.  Lazily
+ * creates the WebAudio approximation on first active call; unity / bypassed is
+ * a cheap no-op (no routing change, no coloration).
+ */
+export function setSaturationConfig(media: HTMLMediaElement, cfg: SaturationConfig): void {
+  const g = graphs.get(media);
+  if (!g) return;
+  const willBeActive = !isSaturationUnity(cfg);
+  if (!willBeActive && !g.saturation) return;
+  if (!g.saturation) g.saturation = createSaturationChain(g.ctx);
+  g.saturation.apply(cfg);
   rerouteBus(g);
 }
 

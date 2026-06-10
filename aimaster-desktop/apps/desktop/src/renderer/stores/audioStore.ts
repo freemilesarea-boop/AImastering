@@ -31,6 +31,11 @@ import {
   defaultImagerMultiband,
   sanitizeImagerMultiband,
 } from '../audio/imager-config.js';
+import {
+  type SaturationConfig as SatConfig,
+  defaultSaturationConfig,
+  sanitizeSaturation,
+} from '../audio/saturation-config.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -299,6 +304,15 @@ interface AudioStore {
   updateImagerBandWidth: (index: number, widthPct: number) => void;
   setImagerMultiband: (cfg: ImagerMultibandConfig) => void;
   resetImagerMultiband: () => void;
+
+  // ── Saturation / exciter (C-Phase2) ────────────────────────────────────
+  saturation: SatConfig;
+  /** Patch top-level saturation fields. */
+  updateSaturation: (patch: Partial<Omit<SatConfig, 'bandDrivesPct'>>) => void;
+  /** Set one band's drive % (index 0..3). */
+  updateSaturationBandDrive: (index: number, drivePct: number) => void;
+  setSaturation: (cfg: SatConfig) => void;
+  resetSaturation: () => void;
 }
 
 function baseName(p: string): string {
@@ -424,4 +438,15 @@ export const useAudioStore = create<AudioStore>((set) => ({
   }),
   setImagerMultiband: (cfg) => set({ imagerMultiband: sanitizeImagerMultiband(cfg) }),
   resetImagerMultiband: () => set({ imagerMultiband: defaultImagerMultiband() }),
+
+  // ── Saturation / exciter ───────────────────────────────────────────────
+  saturation: defaultSaturationConfig(),
+  updateSaturation: (patch) => set((s) => ({ saturation: sanitizeSaturation({ ...s.saturation, ...patch }) })),
+  updateSaturationBandDrive: (index, drivePct) => set((s) => {
+    if (index < 0 || index > 3) return s;
+    const bandDrivesPct = s.saturation.bandDrivesPct.map((d, i) => (i === index ? drivePct : d)) as SatConfig['bandDrivesPct'];
+    return { saturation: sanitizeSaturation({ ...s.saturation, bandDrivesPct }) };
+  }),
+  setSaturation: (cfg) => set({ saturation: sanitizeSaturation(cfg) }),
+  resetSaturation: () => set({ saturation: defaultSaturationConfig() }),
 }));

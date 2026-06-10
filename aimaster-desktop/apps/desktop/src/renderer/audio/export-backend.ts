@@ -23,6 +23,8 @@ import type { MultibandConfig } from './multiband-config.js';
 import { isMultibandUnity } from './multiband-config.js';
 import type { ImagerMultibandConfig } from './imager-config.js';
 import { isImagerMultibandUnity } from './imager-config.js';
+import type { SaturationConfig } from './saturation-config.js';
+import { isSaturationUnity, sanitizeSaturation, CHARACTER_CODE } from './saturation-config.js';
 import { isRustOfflineRenderEnabled } from './rust-offline-render-flag.js';
 
 /**
@@ -91,6 +93,8 @@ export interface MasterExportArgs {
   multiband?: MultibandConfig;
   /** Optional 4-band M/S imager — applied on the Rust export path. */
   imagerMultiband?: ImagerMultibandConfig;
+  /** Optional saturation / exciter — applied on the Rust export path. */
+  saturation?: SaturationConfig;
   requestId?: number;
   /** Override the flag (tests).  Defaults to isRustOfflineRenderEnabled(). */
   rustEnabled?: boolean;
@@ -113,6 +117,16 @@ export async function masterWithPreferredBackend(args: MasterExportArgs): Promis
       }
       if (args.imagerMultiband && !isImagerMultibandUnity(args.imagerMultiband)) {
         chainConfig['imagerMultiband'] = args.imagerMultiband;
+      }
+      if (args.saturation && !isSaturationUnity(args.saturation)) {
+        const s = sanitizeSaturation(args.saturation);
+        // Wire shape uses a numeric character code (main process stays string-free).
+        chainConfig['saturation'] = {
+          bypass: s.bypass, characterCode: CHARACTER_CODE[s.character],
+          drive: s.drive, mixPct: s.mixPct, multibandEnabled: s.multibandEnabled,
+          bandDrivesPct: s.bandDrivesPct,
+          xoverLoHz: s.xoverLoHz, xoverMidHz: s.xoverMidHz, xoverHiHz: s.xoverHiHz,
+        };
       }
       const res = await invoke('audio:master-rust-experimental', {
         sourcePath,

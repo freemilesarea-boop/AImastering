@@ -98,6 +98,15 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
             this._chain.setImagerMultiband(!!msg.enabled, msg.lo, msg.mid, msg.hi, msg.widths);
           } catch (e) { /* keep audio alive */ }
         }
+      } else if (msg.type === 'saturation') {
+        if (this._ready && this._chain && typeof this._chain.setSaturation === 'function') {
+          try {
+            this._chain.setSaturation(
+              !!msg.bypass, msg.character | 0, msg.drive, msg.mix, !!msg.multiband,
+              msg.lo, msg.mid, msg.hi, msg.bandDrives,
+            );
+          } catch (e) { /* keep audio alive */ }
+        }
       }
     };
   }

@@ -436,6 +436,7 @@ impl LouiSpectrumAnalyzer {
 use loui_dsp::{
     MasteringChain, MasteringChainConfig,
     EqConfig, DynamicsConfig, MultibandConfig, ImagerConfig, LimiterConfig,
+    SaturationConfig, SaturationCharacter,
     ParametricBand, ParametricBandType,
 };
 
@@ -573,6 +574,41 @@ impl LouiMasteringChain {
         cfg.imager.xover_lo_hz = xover_lo_hz;
         cfg.imager.xover_mid_hz = xover_mid_hz;
         cfg.imager.xover_hi_hz = xover_hi_hz;
+        self.inner.set_config(cfg);
+    }
+
+    /// Configure the saturation / exciter.  `character`: 0=Warm 1=Tape 2=Tube
+    /// 3=Modern.  `band_drives_pct` is positional [low, low-mid, high-mid,
+    /// high]; missing entries keep the current value.
+    #[wasm_bindgen(js_name = setSaturation)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_saturation(
+        &mut self,
+        bypass: bool,
+        character: u8,
+        drive: f64,
+        mix_pct: f64,
+        multiband_enabled: bool,
+        xover_lo_hz: f64,
+        xover_mid_hz: f64,
+        xover_hi_hz: f64,
+        band_drives_pct: &[f64],
+    ) {
+        let ch = match character {
+            0 => SaturationCharacter::Warm,
+            2 => SaturationCharacter::Tube,
+            3 => SaturationCharacter::Modern,
+            _ => SaturationCharacter::Tape,
+        };
+        let mut cfg = self.inner.config();
+        let mut bd = cfg.saturation.band_drives_pct;
+        for (i, x) in bd.iter_mut().enumerate() {
+            *x = band_drives_pct.get(i).copied().unwrap_or(*x);
+        }
+        cfg.saturation = SaturationConfig {
+            bypass, character: ch, drive, mix_pct, multiband_enabled,
+            band_drives_pct: bd, xover_lo_hz, xover_mid_hz, xover_hi_hz,
+        };
         self.inner.set_config(cfg);
     }
 

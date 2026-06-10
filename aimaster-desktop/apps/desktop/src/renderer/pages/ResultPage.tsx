@@ -23,12 +23,15 @@ import {
   setFreeEqBands,
   setMultibandConfig,
   setImagerMultibandConfig,
+  setSaturationConfig,
 } from '../audio/shared-audio-graph.js';
 import { packMultibandArrays, sanitizeMultiband } from '../audio/multiband-config.js';
 import { packImagerWidths, sanitizeImagerMultiband } from '../audio/imager-config.js';
+import { packSaturationBandDrives, sanitizeSaturation, CHARACTER_CODE } from '../audio/saturation-config.js';
 import ParametricEqPanel from '../components/ParametricEqPanel.js';
 import MultibandPanel from '../components/MultibandPanel.js';
 import ImagerMultibandPanel from '../components/ImagerMultibandPanel.js';
+import SaturationPanel from '../components/SaturationPanel.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
 import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
@@ -244,6 +247,14 @@ function PreviewPlayer({
             enabled: ims.enabled, lo: ims.xoverLoHz, mid: ims.xoverMidHz, hi: ims.xoverHiHz,
             widths: packImagerWidths(im),
           });
+          const sat = useAudioStore.getState().saturation;
+          const sats = sanitizeSaturation(sat);
+          node.port.postMessage({
+            type: 'saturation',
+            bypass: sats.bypass, character: CHARACTER_CODE[sats.character], drive: sats.drive, mix: sats.mixPct,
+            multiband: sats.multibandEnabled, lo: sats.xoverLoHz, mid: sats.xoverMidHz, hi: sats.xoverHiHz,
+            bandDrives: packSaturationBandDrives(sat),
+          });
         }
         setRealtimeInsert(a, node); // worklet becomes the active insert
       } catch (err) {
@@ -327,6 +338,27 @@ function PreviewPlayer({
       });
     } catch { /* ignore */ }
   }, [imagerMultiband]);
+
+  // ── Saturation / exciter — preview (native approx + worklet) ──────────
+  const saturation = useAudioStore((s) => s.saturation);
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try { setSaturationConfig(a, saturation); } catch { /* ignore */ }
+  }, [saturation, meterReady]);
+  useEffect(() => {
+    const node = workletNodeRef.current;
+    if (!node) return;
+    try {
+      const s = sanitizeSaturation(saturation);
+      node.port.postMessage({
+        type: 'saturation',
+        bypass: s.bypass, character: CHARACTER_CODE[s.character], drive: s.drive, mix: s.mixPct,
+        multiband: s.multibandEnabled, lo: s.xoverLoHz, mid: s.xoverMidHz, hi: s.xoverHiHz,
+        bandDrives: packSaturationBandDrives(saturation),
+      });
+    } catch { /* ignore */ }
+  }, [saturation]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -1293,6 +1325,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Multiband compressor (4-band, export) ──────────────────────────── */}
       <Section title="멀티밴드 컴프레서" defaultOpen={false}>
         <MultibandPanel />
+      </Section>
+
+      {/* ── Saturation / exciter ───────────────────────────────────────────── */}
+      <Section title="새추레이션 / 엑사이터" defaultOpen={false}>
+        <SaturationPanel />
       </Section>
 
       {/* ── 4-band M/S stereo imager ───────────────────────────────────────── */}

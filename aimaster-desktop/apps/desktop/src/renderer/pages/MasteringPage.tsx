@@ -147,6 +147,7 @@ export default function MasteringPage() {
   const options         = useAudioStore((s) => s.options);
   const multiband       = useAudioStore((s) => s.multiband);
   const imagerMultiband = useAudioStore((s) => s.imagerMultiband);
+  const saturation      = useAudioStore((s) => s.saturation);
   const progress        = useAudioStore((s) => s.progress);
   const isMastering     = useAudioStore((s) => s.isMastering);
   const error           = useAudioStore((s) => s.error);
@@ -238,6 +239,7 @@ export default function MasteringPage() {
           options,
           multiband,
           imagerMultiband,
+          saturation,
           pythonOptions: {
             style:              options.style,
             targetLufs:         options.targetLufs,

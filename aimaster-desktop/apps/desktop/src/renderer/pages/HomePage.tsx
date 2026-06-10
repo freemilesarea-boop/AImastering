@@ -913,6 +913,7 @@ export default function HomePage() {
           options: itemOptions,
           multiband: useAudioStore.getState().multiband,
           imagerMultiband: useAudioStore.getState().imagerMultiband,
+          saturation: useAudioStore.getState().saturation,
           pythonOptions: {
             style:              itemOptions.style,
             targetLufs:         itemOptions.targetLufs,
