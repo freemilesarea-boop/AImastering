@@ -89,3 +89,47 @@ export function isUsableSpectrum(frame: SpectrumFrame | null): frame is Spectrum
   }
   return false;
 }
+
+/** 7-band power profile (dB), used by genre detection + reference matching. */
+export interface SpectralBands {
+  subDb: number;     // 20–60
+  lowDb: number;     // 60–200
+  lowMidDb: number;  // 200–800
+  midDb: number;     // 800–2500 (reference)
+  highMidDb: number; // 2500–6000
+  highDb: number;    // 6000–12000
+  airDb: number;     // 12000–18000
+}
+
+export function spectralBandsDb(frame: SpectrumFrame): SpectralBands {
+  const nyq = frame.sampleRate / 2;
+  const cap = (hz: number): number => Math.min(hz, nyq);
+  return {
+    subDb: bandPowerDb(frame, 20, 60),
+    lowDb: bandPowerDb(frame, 60, 200),
+    lowMidDb: bandPowerDb(frame, 200, 800),
+    midDb: bandPowerDb(frame, 800, 2500),
+    highMidDb: bandPowerDb(frame, 2500, 6000),
+    highDb: bandPowerDb(frame, cap(6000), cap(12000)),
+    airDb: bandPowerDb(frame, cap(12000), cap(18000)),
+  };
+}
+
+/** Band levels relative to the mid band (dB) — tonal tilt fingerprint. */
+export interface TonalTilt {
+  bassRel: number;   // low - mid
+  subRel: number;    // sub - mid
+  presenceRel: number; // highMid - mid
+  brightRel: number; // high - mid
+  airRel: number;    // air - mid
+}
+
+export function tonalTilt(b: SpectralBands): TonalTilt {
+  return {
+    bassRel: b.lowDb - b.midDb,
+    subRel: b.subDb - b.midDb,
+    presenceRel: b.highMidDb - b.midDb,
+    brightRel: b.highDb - b.midDb,
+    airRel: b.airDb - b.midDb,
+  };
+}

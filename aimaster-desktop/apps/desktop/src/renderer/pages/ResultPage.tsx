@@ -40,6 +40,7 @@ import TransientPanel from '../components/TransientPanel.js';
 import DynamicEqPanel from '../components/DynamicEqPanel.js';
 import ModulePresetBar from '../components/ModulePresetBar.js';
 import AiMusicPanel from '../components/AiMusicPanel.js';
+import GenreReferencePanel from '../components/GenreReferencePanel.js';
 import DeesserPanel from '../components/DeesserPanel.js';
 import MultibandGrMeter from '../components/MultibandGrMeter.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
@@ -1363,6 +1364,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
             />
           </button>
         </div>
+      </Section>
+
+      {/* ── Auto genre + Asian reference library (Phase 3) ─────────────────── */}
+      <Section title="장르 감지 · 아시아 레퍼런스" defaultOpen={false}>
+        <GenreReferencePanel />
       </Section>
 
       {/* ── AI-generated music mode (Phase 3 differentiator) ───────────────── */}
