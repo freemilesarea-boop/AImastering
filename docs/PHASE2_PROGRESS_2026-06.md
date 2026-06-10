@@ -119,11 +119,16 @@
 | Transient/Impact | ✅ | ✅ | worklet only |
 | Dynamic EQ | ✅ | ✅ | worklet only |
 
+### P2-12. 모듈 프리셋 (5종 원클릭) ✅
+**커밋**: `feat(presets): one-click module presets for the 5 Phase-2 modules`
+- **`module-presets.ts`**: 6종(끄기/Punchy/Warm/Wide/Clean/Loud) — `build()`가 5종 모듈 config 전체를 sanitize해 반환(다이내믹 EQ 밴드 id는 매번 새로).
+- `audioStore.applyModulePreset`: 5종 슬라이스 일괄 세팅. **`ModulePresetBar`** UI(원클릭, 적용 후 패널 세부조정 가능).
+- **테스트**: presets(7)+bar(3). **vitest 101/101**, 전체 pnpm test 그린, typecheck 0. 순수 렌더러(Rust 무변경) — 이미 노출된 모듈 config를 구동하므로 export+worklet에 그대로 적용.
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| 모듈 프리셋(스타일별 기본값) | P2 | 5종 모듈 묶음 원클릭 |
 | De-esser 적응형 / 멀티밴드 GR 메터 연결 | P2 | |
 | (출시 전) wasm 아티팩트 재빌드 + 실기기 A/B QA → 기본 ON | 🔴 | 헤드리스 불가 |
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
