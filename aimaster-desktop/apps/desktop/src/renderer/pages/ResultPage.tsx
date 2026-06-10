@@ -30,6 +30,7 @@ import { packImagerWidths, sanitizeImagerMultiband } from '../audio/imager-confi
 import { packSaturationBandDrives, sanitizeSaturation, CHARACTER_CODE } from '../audio/saturation-config.js';
 import { packTransientBands, sanitizeTransient } from '../audio/transient-config.js';
 import { packDynamicEq, sanitizeDynamicEq } from '../audio/dyneq-config.js';
+import { combineDynamicEqWithDeesser } from '../audio/deesser-config.js';
 import ParametricEqPanel from '../components/ParametricEqPanel.js';
 import MultibandPanel from '../components/MultibandPanel.js';
 import ImagerMultibandPanel from '../components/ImagerMultibandPanel.js';
@@ -37,6 +38,7 @@ import SaturationPanel from '../components/SaturationPanel.js';
 import TransientPanel from '../components/TransientPanel.js';
 import DynamicEqPanel from '../components/DynamicEqPanel.js';
 import ModulePresetBar from '../components/ModulePresetBar.js';
+import DeesserPanel from '../components/DeesserPanel.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
 import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
@@ -268,8 +270,8 @@ function PreviewPlayer({
             bypass: trs.bypass, attack: trs.attackPct, sustain: trs.sustainPct, multiband: trs.multibandEnabled,
             lo: trs.xoverLoHz, mid: trs.xoverMidHz, hi: trs.xoverHiHz, bandAttacks: trp.attacks, bandSustains: trp.sustains,
           });
-          const de = useAudioStore.getState().dynamicEq;
-          node.port.postMessage({ type: 'dyneq', bypass: sanitizeDynamicEq(de).bypass, ...packDynamicEq(de) });
+          const de = combineDynamicEqWithDeesser(useAudioStore.getState().dynamicEq, useAudioStore.getState().deesser);
+          node.port.postMessage({ type: 'dyneq', bypass: de.bypass, ...packDynamicEq(de) });
         }
         setRealtimeInsert(a, node); // worklet becomes the active insert
       } catch (err) {
@@ -391,16 +393,17 @@ function PreviewPlayer({
     } catch { /* ignore */ }
   }, [transient]);
 
-  // ── Dynamic EQ — preview via worklet only (no WebAudio approx) ─────────
+  // ── Dynamic EQ (+ de-esser) — preview via worklet only ────────────────
   const dynamicEq = useAudioStore((s) => s.dynamicEq);
+  const deesser = useAudioStore((s) => s.deesser);
   useEffect(() => {
     const node = workletNodeRef.current;
     if (!node) return;
     try {
-      const p = packDynamicEq(dynamicEq);
-      node.port.postMessage({ type: 'dyneq', bypass: sanitizeDynamicEq(dynamicEq).bypass, ...p });
+      const combined = combineDynamicEqWithDeesser(dynamicEq, deesser);
+      node.port.postMessage({ type: 'dyneq', bypass: combined.bypass, ...packDynamicEq(combined) });
     } catch { /* ignore */ }
-  }, [dynamicEq]);
+  }, [dynamicEq, deesser]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -1372,6 +1375,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Dynamic EQ (threshold-driven, export/worklet) ──────────────────── */}
       <Section title="다이내믹 EQ" defaultOpen={false}>
         <DynamicEqPanel />
+      </Section>
+
+      {/* ── De-esser (sibilance control, built on the dynamic EQ) ──────────── */}
+      <Section title="디에서" defaultOpen={false}>
+        <DeesserPanel />
       </Section>
 
       {/* ── Multiband compressor (4-band, export) ──────────────────────────── */}

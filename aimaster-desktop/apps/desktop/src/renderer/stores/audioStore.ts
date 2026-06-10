@@ -50,6 +50,11 @@ import {
   sanitizeDynamicEq,
   MAX_DYNEQ_BANDS,
 } from '../audio/dyneq-config.js';
+import {
+  type DeesserConfig,
+  defaultDeesserConfig,
+  sanitizeDeesser,
+} from '../audio/deesser-config.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -348,6 +353,11 @@ interface AudioStore {
   setDynamicEq: (cfg: DynEqConfig) => void;
   resetDynamicEq: () => void;
 
+  // ── De-esser (built on the Dynamic EQ) ─────────────────────────────────
+  deesser: DeesserConfig;
+  updateDeesser: (patch: Partial<DeesserConfig>) => void;
+  resetDeesser: () => void;
+
   /** Apply a one-click module preset (sets all 5 module slices at once). */
   applyModulePreset: (configs: {
     multiband: MultibandConfig; imagerMultiband: ImagerMultibandConfig;
@@ -515,6 +525,11 @@ export const useAudioStore = create<AudioStore>((set) => ({
   removeDynEqBand: (id) => set((s) => ({ dynamicEq: { ...s.dynamicEq, bands: s.dynamicEq.bands.filter((b) => b.id !== id) } })),
   setDynamicEq: (cfg) => set({ dynamicEq: sanitizeDynamicEq(cfg) }),
   resetDynamicEq: () => set({ dynamicEq: defaultDynamicEqConfig() }),
+
+  // ── De-esser ───────────────────────────────────────────────────────────
+  deesser: defaultDeesserConfig(),
+  updateDeesser: (patch) => set((s) => ({ deesser: sanitizeDeesser({ ...s.deesser, ...patch }) })),
+  resetDeesser: () => set({ deesser: defaultDeesserConfig() }),
 
   applyModulePreset: (c) => set({
     multiband: sanitizeMultiband(c.multiband),

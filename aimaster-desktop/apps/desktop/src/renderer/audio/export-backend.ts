@@ -28,7 +28,9 @@ import { isSaturationUnity, sanitizeSaturation, CHARACTER_CODE } from './saturat
 import type { TransientConfig } from './transient-config.js';
 import { isTransientUnity, sanitizeTransient } from './transient-config.js';
 import type { DynamicEqConfig } from './dyneq-config.js';
-import { isDynamicEqUnity, sanitizeDynamicEq, FILTER_CODE, MODE_CODE } from './dyneq-config.js';
+import { isDynamicEqUnity, sanitizeDynamicEq, defaultDynamicEqConfig, FILTER_CODE, MODE_CODE } from './dyneq-config.js';
+import type { DeesserConfig } from './deesser-config.js';
+import { defaultDeesserConfig, combineDynamicEqWithDeesser } from './deesser-config.js';
 import { isRustOfflineRenderEnabled } from './rust-offline-render-flag.js';
 
 /**
@@ -103,6 +105,8 @@ export interface MasterExportArgs {
   transient?: TransientConfig;
   /** Optional fully-parametric dynamic EQ — applied on the Rust export path. */
   dynamicEq?: DynamicEqConfig;
+  /** Optional de-esser — merged into the dynamic EQ as a sibilance band. */
+  deesser?: DeesserConfig;
   requestId?: number;
   /** Override the flag (tests).  Defaults to isRustOfflineRenderEnabled(). */
   rustEnabled?: boolean;
@@ -146,8 +150,13 @@ export async function masterWithPreferredBackend(args: MasterExportArgs): Promis
           xoverLoHz: t.xoverLoHz, xoverMidHz: t.xoverMidHz, xoverHiHz: t.xoverHiHz,
         };
       }
-      if (args.dynamicEq && !isDynamicEqUnity(args.dynamicEq)) {
-        const d = sanitizeDynamicEq(args.dynamicEq);
+      // Dynamic EQ + de-esser are merged into one band list for the engine.
+      const combinedDynEq = combineDynamicEqWithDeesser(
+        args.dynamicEq ?? defaultDynamicEqConfig(),
+        args.deesser ?? defaultDeesserConfig(),
+      );
+      if (!isDynamicEqUnity(combinedDynEq)) {
+        const d = sanitizeDynamicEq(combinedDynEq);
         chainConfig['dynamicEq'] = {
           bypass: d.bypass,
           bands: d.bands.map((b) => ({

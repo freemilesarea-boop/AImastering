@@ -916,6 +916,7 @@ export default function HomePage() {
           saturation: useAudioStore.getState().saturation,
           transient: useAudioStore.getState().transient,
           dynamicEq: useAudioStore.getState().dynamicEq,
+          deesser: useAudioStore.getState().deesser,
           pythonOptions: {
             style:              itemOptions.style,
             targetLufs:         itemOptions.targetLufs,

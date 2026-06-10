@@ -11,6 +11,7 @@ import { defaultImagerMultiband, type ImagerMultibandConfig } from './imager-con
 import { defaultSaturationConfig, CHARACTER_CODE, type SaturationConfig } from './saturation-config.js';
 import { defaultTransientConfig, type TransientConfig } from './transient-config.js';
 import { defaultDynamicEqConfig, defaultDynEqBand, FILTER_CODE, type DynamicEqConfig } from './dyneq-config.js';
+import { defaultDeesserConfig, type DeesserConfig } from './deesser-config.js';
 
 const options: MasteringOptions = {
   style: 'balanced', targetLufs: -12, targetTp: -1, sampleRate: 48000,
@@ -165,6 +166,20 @@ describe('multiband attach on the rust export request', () => {
 
     const c2 = capturedChainConfig(() => rustOk);
     await masterWithPreferredBackend({ invoke: c2.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, dynamicEq: defaultDynamicEqConfig() });
+    expect((c2.getReq()?.['chainConfig'] as Record<string, unknown>)['dynamicEq']).toBeUndefined();
+  });
+
+  it('de-esser alone is merged into the dynamicEq band list on export', async () => {
+    const deess: DeesserConfig = { ...defaultDeesserConfig(), enabled: true, freqHz: 7000, rangeDb: 6 };
+    const c1 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c1.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, deesser: deess });
+    const wire = (c1.getReq()?.['chainConfig'] as Record<string, unknown>)['dynamicEq'] as { bands: Array<Record<string, unknown>> } | undefined;
+    expect(wire).toBeDefined();
+    expect(wire!.bands.length).toBe(1);
+    expect(wire!.bands[0]!['modeCode']).toBe(0); // downcut
+
+    const c2 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c2.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, deesser: defaultDeesserConfig() });
     expect((c2.getReq()?.['chainConfig'] as Record<string, unknown>)['dynamicEq']).toBeUndefined();
   });
 });
