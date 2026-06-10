@@ -36,6 +36,7 @@ import ImagerMultibandPanel from '../components/ImagerMultibandPanel.js';
 import SaturationPanel from '../components/SaturationPanel.js';
 import TransientPanel from '../components/TransientPanel.js';
 import DynamicEqPanel from '../components/DynamicEqPanel.js';
+import ModulePresetBar from '../components/ModulePresetBar.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
 import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
@@ -1356,6 +1357,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
             />
           </button>
         </div>
+      </Section>
+
+      {/* ── Module presets (one-click, sets all 5 modules) ─────────────────── */}
+      <Section title="모듈 프리셋" defaultOpen={false}>
+        <ModulePresetBar />
       </Section>
 
       {/* ── Parametric EQ (free bands, live) ───────────────────────────────── */}

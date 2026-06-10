@@ -347,6 +347,12 @@ interface AudioStore {
   removeDynEqBand: (id: string) => void;
   setDynamicEq: (cfg: DynEqConfig) => void;
   resetDynamicEq: () => void;
+
+  /** Apply a one-click module preset (sets all 5 module slices at once). */
+  applyModulePreset: (configs: {
+    multiband: MultibandConfig; imagerMultiband: ImagerMultibandConfig;
+    saturation: SatConfig; transient: TransConfig; dynamicEq: DynEqConfig;
+  }) => void;
 }
 
 function baseName(p: string): string {
@@ -509,4 +515,12 @@ export const useAudioStore = create<AudioStore>((set) => ({
   removeDynEqBand: (id) => set((s) => ({ dynamicEq: { ...s.dynamicEq, bands: s.dynamicEq.bands.filter((b) => b.id !== id) } })),
   setDynamicEq: (cfg) => set({ dynamicEq: sanitizeDynamicEq(cfg) }),
   resetDynamicEq: () => set({ dynamicEq: defaultDynamicEqConfig() }),
+
+  applyModulePreset: (c) => set({
+    multiband: sanitizeMultiband(c.multiband),
+    imagerMultiband: sanitizeImagerMultiband(c.imagerMultiband),
+    saturation: sanitizeSaturation(c.saturation),
+    transient: sanitizeTransient(c.transient),
+    dynamicEq: sanitizeDynamicEq(c.dynamicEq),
+  }),
 }));
