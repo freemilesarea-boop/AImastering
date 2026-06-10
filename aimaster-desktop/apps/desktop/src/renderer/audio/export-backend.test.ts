@@ -9,6 +9,7 @@ import type { MasteringOptions } from '../stores/audioStore.js';
 import { defaultMultibandConfig, type MultibandConfig } from './multiband-config.js';
 import { defaultImagerMultiband, type ImagerMultibandConfig } from './imager-config.js';
 import { defaultSaturationConfig, CHARACTER_CODE, type SaturationConfig } from './saturation-config.js';
+import { defaultTransientConfig, type TransientConfig } from './transient-config.js';
 
 const options: MasteringOptions = {
   style: 'balanced', targetLufs: -12, targetTp: -1, sampleRate: 48000,
@@ -135,6 +136,21 @@ describe('multiband attach on the rust export request', () => {
     const c2 = capturedChainConfig(() => rustOk);
     await masterWithPreferredBackend({ invoke: c2.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, saturation: defaultSaturationConfig() });
     expect((c2.getReq()?.['chainConfig'] as Record<string, unknown>)['saturation']).toBeUndefined();
+  });
+
+  it('attaches transient (parallel band arrays) when active, omits when unity', async () => {
+    const tr: TransientConfig = { ...defaultTransientConfig(), bypass: false, attackPct: 40, sustainPct: -20 };
+    const c1 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c1.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, transient: tr });
+    const wire = (c1.getReq()?.['chainConfig'] as Record<string, unknown>)['transient'] as Record<string, unknown> | undefined;
+    expect(wire).toBeDefined();
+    expect(wire!['attackPct']).toBe(40);
+    expect(Array.isArray(wire!['bandAttacksPct'])).toBe(true);
+    expect((wire!['bandAttacksPct'] as number[]).length).toBe(4);
+
+    const c2 = capturedChainConfig(() => rustOk);
+    await masterWithPreferredBackend({ invoke: c2.invoke, sourcePath: '/in.wav', options, pythonOptions, rustEnabled: true, transient: defaultTransientConfig() });
+    expect((c2.getReq()?.['chainConfig'] as Record<string, unknown>)['transient']).toBeUndefined();
   });
 });
 

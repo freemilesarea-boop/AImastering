@@ -436,7 +436,7 @@ impl LouiSpectrumAnalyzer {
 use loui_dsp::{
     MasteringChain, MasteringChainConfig,
     EqConfig, DynamicsConfig, MultibandConfig, ImagerConfig, LimiterConfig,
-    SaturationConfig, SaturationCharacter,
+    SaturationConfig, SaturationCharacter, TransientConfig,
     ParametricBand, ParametricBandType,
 };
 
@@ -610,6 +610,36 @@ impl LouiMasteringChain {
         cfg.saturation = SaturationConfig {
             bypass, character: ch, drive, mix_pct, multiband_enabled,
             band_drives_pct: bd, xover_lo_hz, xover_mid_hz, xover_hi_hz,
+        };
+        self.inner.set_config(cfg);
+    }
+
+    /// Configure the transient / impact shaper.  `band_attacks_pct` /
+    /// `band_sustains_pct` are positional [low, low-mid, high-mid, high];
+    /// missing entries keep the current value.
+    #[wasm_bindgen(js_name = setTransient)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_transient(
+        &mut self,
+        bypass: bool,
+        attack_pct: f64,
+        sustain_pct: f64,
+        multiband_enabled: bool,
+        xover_lo_hz: f64,
+        xover_mid_hz: f64,
+        xover_hi_hz: f64,
+        band_attacks_pct: &[f64],
+        band_sustains_pct: &[f64],
+    ) {
+        let mut cfg = self.inner.config();
+        let mut bands = cfg.transient.bands;
+        for (i, b) in bands.iter_mut().enumerate() {
+            b.attack_pct = band_attacks_pct.get(i).copied().unwrap_or(b.attack_pct);
+            b.sustain_pct = band_sustains_pct.get(i).copied().unwrap_or(b.sustain_pct);
+        }
+        cfg.transient = TransientConfig {
+            bypass, attack_pct, sustain_pct, multiband_enabled, bands,
+            xover_lo_hz, xover_mid_hz, xover_hi_hz,
         };
         self.inner.set_config(cfg);
     }

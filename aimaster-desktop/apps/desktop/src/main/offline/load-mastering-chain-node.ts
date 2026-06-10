@@ -51,6 +51,17 @@ export interface OfflineSaturationConfig {
   xoverLoHz: number; xoverMidHz: number; xoverHiHz: number;
 }
 
+/** Transient/impact shaper config (structural). */
+export interface OfflineTransientConfig {
+  bypass: boolean;
+  attackPct: number;
+  sustainPct: number;
+  multibandEnabled: boolean;
+  bandAttacksPct: number[];
+  bandSustainsPct: number[];
+  xoverLoHz: number; xoverMidHz: number; xoverHiHz: number;
+}
+
 /** The flat config passed to the WASM chain's `setConfig` (same order as the
  *  realtime preview's `RealtimeChainConfig`). */
 export interface OfflineChainConfig {
@@ -71,6 +82,8 @@ export interface OfflineChainConfig {
   imagerMultiband?: OfflineImagerMultibandConfig;
   /** Optional saturation / exciter.  Absent = none. */
   saturation?: OfflineSaturationConfig;
+  /** Optional transient / impact shaper.  Absent = none. */
+  transient?: OfflineTransientConfig;
 }
 
 /** Structural type of the WASM chain (avoids a hard dep on the typings). */
@@ -113,6 +126,16 @@ export interface WasmMasteringChain {
     multibandEnabled: boolean,
     xoverLoHz: number, xoverMidHz: number, xoverHiHz: number,
     bandDrivesPct: Float64Array,
+  ): void;
+  /** Transient / impact shaper (optional — present only on rebuilt artifacts). */
+  setTransient?(
+    bypass: boolean,
+    attackPct: number,
+    sustainPct: number,
+    multibandEnabled: boolean,
+    xoverLoHz: number, xoverMidHz: number, xoverHiHz: number,
+    bandAttacksPct: Float64Array,
+    bandSustainsPct: Float64Array,
   ): void;
   processStereo(left: Float32Array, right: Float32Array): void;
   limiterGrDb(): number;
@@ -250,6 +273,17 @@ export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineChainCon
       !!s.bypass, s.characterCode, s.drive, s.mixPct, !!s.multibandEnabled,
       s.xoverLoHz, s.xoverMidHz, s.xoverHiHz,
       Float64Array.from((s.bandDrivesPct ?? []).slice(0, 4)),
+    );
+  }
+
+  // Transient / impact — guarded.
+  if (c.transient && typeof chain.setTransient === 'function') {
+    const t = c.transient;
+    chain.setTransient(
+      !!t.bypass, t.attackPct, t.sustainPct, !!t.multibandEnabled,
+      t.xoverLoHz, t.xoverMidHz, t.xoverHiHz,
+      Float64Array.from((t.bandAttacksPct ?? []).slice(0, 4)),
+      Float64Array.from((t.bandSustainsPct ?? []).slice(0, 4)),
     );
   }
 }

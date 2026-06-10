@@ -25,6 +25,8 @@ import type { ImagerMultibandConfig } from './imager-config.js';
 import { isImagerMultibandUnity } from './imager-config.js';
 import type { SaturationConfig } from './saturation-config.js';
 import { isSaturationUnity, sanitizeSaturation, CHARACTER_CODE } from './saturation-config.js';
+import type { TransientConfig } from './transient-config.js';
+import { isTransientUnity, sanitizeTransient } from './transient-config.js';
 import { isRustOfflineRenderEnabled } from './rust-offline-render-flag.js';
 
 /**
@@ -95,6 +97,8 @@ export interface MasterExportArgs {
   imagerMultiband?: ImagerMultibandConfig;
   /** Optional saturation / exciter — applied on the Rust export path. */
   saturation?: SaturationConfig;
+  /** Optional transient / impact shaper — applied on the Rust export path. */
+  transient?: TransientConfig;
   requestId?: number;
   /** Override the flag (tests).  Defaults to isRustOfflineRenderEnabled(). */
   rustEnabled?: boolean;
@@ -126,6 +130,16 @@ export async function masterWithPreferredBackend(args: MasterExportArgs): Promis
           drive: s.drive, mixPct: s.mixPct, multibandEnabled: s.multibandEnabled,
           bandDrivesPct: s.bandDrivesPct,
           xoverLoHz: s.xoverLoHz, xoverMidHz: s.xoverMidHz, xoverHiHz: s.xoverHiHz,
+        };
+      }
+      if (args.transient && !isTransientUnity(args.transient)) {
+        const t = sanitizeTransient(args.transient);
+        chainConfig['transient'] = {
+          bypass: t.bypass, attackPct: t.attackPct, sustainPct: t.sustainPct,
+          multibandEnabled: t.multibandEnabled,
+          bandAttacksPct: t.bands.map((b) => b.attackPct),
+          bandSustainsPct: t.bands.map((b) => b.sustainPct),
+          xoverLoHz: t.xoverLoHz, xoverMidHz: t.xoverMidHz, xoverHiHz: t.xoverHiHz,
         };
       }
       const res = await invoke('audio:master-rust-experimental', {

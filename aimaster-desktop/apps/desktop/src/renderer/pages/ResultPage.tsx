@@ -28,10 +28,12 @@ import {
 import { packMultibandArrays, sanitizeMultiband } from '../audio/multiband-config.js';
 import { packImagerWidths, sanitizeImagerMultiband } from '../audio/imager-config.js';
 import { packSaturationBandDrives, sanitizeSaturation, CHARACTER_CODE } from '../audio/saturation-config.js';
+import { packTransientBands, sanitizeTransient } from '../audio/transient-config.js';
 import ParametricEqPanel from '../components/ParametricEqPanel.js';
 import MultibandPanel from '../components/MultibandPanel.js';
 import ImagerMultibandPanel from '../components/ImagerMultibandPanel.js';
 import SaturationPanel from '../components/SaturationPanel.js';
+import TransientPanel from '../components/TransientPanel.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
 import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
 import { loadMasteringWorklet } from '../audio/mastering-worklet-loader.js';
@@ -255,6 +257,14 @@ function PreviewPlayer({
             multiband: sats.multibandEnabled, lo: sats.xoverLoHz, mid: sats.xoverMidHz, hi: sats.xoverHiHz,
             bandDrives: packSaturationBandDrives(sat),
           });
+          const tr = useAudioStore.getState().transient;
+          const trs = sanitizeTransient(tr);
+          const trp = packTransientBands(tr);
+          node.port.postMessage({
+            type: 'transient',
+            bypass: trs.bypass, attack: trs.attackPct, sustain: trs.sustainPct, multiband: trs.multibandEnabled,
+            lo: trs.xoverLoHz, mid: trs.xoverMidHz, hi: trs.xoverHiHz, bandAttacks: trp.attacks, bandSustains: trp.sustains,
+          });
         }
         setRealtimeInsert(a, node); // worklet becomes the active insert
       } catch (err) {
@@ -359,6 +369,22 @@ function PreviewPlayer({
       });
     } catch { /* ignore */ }
   }, [saturation]);
+
+  // ── Transient / impact — preview via worklet only (no WebAudio approx) ──
+  const transient = useAudioStore((s) => s.transient);
+  useEffect(() => {
+    const node = workletNodeRef.current;
+    if (!node) return;
+    try {
+      const t = sanitizeTransient(transient);
+      const p = packTransientBands(transient);
+      node.port.postMessage({
+        type: 'transient',
+        bypass: t.bypass, attack: t.attackPct, sustain: t.sustainPct, multiband: t.multibandEnabled,
+        lo: t.xoverLoHz, mid: t.xoverMidHz, hi: t.xoverHiHz, bandAttacks: p.attacks, bandSustains: p.sustains,
+      });
+    } catch { /* ignore */ }
+  }, [transient]);
 
   const toggle = useCallback(() => {
     const a = audioRef.current;
@@ -1330,6 +1356,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Saturation / exciter ───────────────────────────────────────────── */}
       <Section title="새추레이션 / 엑사이터" defaultOpen={false}>
         <SaturationPanel />
+      </Section>
+
+      {/* ── Transient / impact ─────────────────────────────────────────────── */}
+      <Section title="트랜지언트 / 임팩트" defaultOpen={false}>
+        <TransientPanel />
       </Section>
 
       {/* ── 4-band M/S stereo imager ───────────────────────────────────────── */}

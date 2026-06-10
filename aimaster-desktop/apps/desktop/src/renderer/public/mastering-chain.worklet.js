@@ -107,6 +107,15 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
             );
           } catch (e) { /* keep audio alive */ }
         }
+      } else if (msg.type === 'transient') {
+        if (this._ready && this._chain && typeof this._chain.setTransient === 'function') {
+          try {
+            this._chain.setTransient(
+              !!msg.bypass, msg.attack, msg.sustain, !!msg.multiband,
+              msg.lo, msg.mid, msg.hi, msg.bandAttacks, msg.bandSustains,
+            );
+          } catch (e) { /* keep audio alive */ }
+        }
       }
     };
   }

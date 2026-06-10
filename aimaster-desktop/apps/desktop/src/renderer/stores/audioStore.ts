@@ -36,6 +36,12 @@ import {
   defaultSaturationConfig,
   sanitizeSaturation,
 } from '../audio/saturation-config.js';
+import {
+  type TransientConfig as TransConfig,
+  type TransientBand,
+  defaultTransientConfig,
+  sanitizeTransient,
+} from '../audio/transient-config.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -313,6 +319,13 @@ interface AudioStore {
   updateSaturationBandDrive: (index: number, drivePct: number) => void;
   setSaturation: (cfg: SatConfig) => void;
   resetSaturation: () => void;
+
+  // ── Transient / impact (C-Phase2) ──────────────────────────────────────
+  transient: TransConfig;
+  updateTransient: (patch: Partial<Omit<TransConfig, 'bands'>>) => void;
+  updateTransientBand: (index: number, patch: Partial<TransientBand>) => void;
+  setTransient: (cfg: TransConfig) => void;
+  resetTransient: () => void;
 }
 
 function baseName(p: string): string {
@@ -449,4 +462,15 @@ export const useAudioStore = create<AudioStore>((set) => ({
   }),
   setSaturation: (cfg) => set({ saturation: sanitizeSaturation(cfg) }),
   resetSaturation: () => set({ saturation: defaultSaturationConfig() }),
+
+  // ── Transient / impact ─────────────────────────────────────────────────
+  transient: defaultTransientConfig(),
+  updateTransient: (patch) => set((s) => ({ transient: sanitizeTransient({ ...s.transient, ...patch }) })),
+  updateTransientBand: (index, patch) => set((s) => {
+    if (index < 0 || index > 3) return s;
+    const bands = s.transient.bands.map((b, i) => (i === index ? { ...b, ...patch } : b)) as TransConfig['bands'];
+    return { transient: sanitizeTransient({ ...s.transient, bands }) };
+  }),
+  setTransient: (cfg) => set({ transient: sanitizeTransient(cfg) }),
+  resetTransient: () => set({ transient: defaultTransientConfig() }),
 }));
