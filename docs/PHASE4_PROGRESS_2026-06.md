@@ -23,11 +23,26 @@
 - ffprobe 채널 탐지 + 멀티채널 디코드 wiring은 실제 멀티채널 파일/장치로만 종단 검증 가능 → 출시 전 QA. 단위테스트는 폴드다운·라우드니스 DSP 수학만 보장.
 - 출력은 스테레오(폴드다운). 멀티채널 출력 렌더는 향후 작업.
 
+## ✅ P4-2. 서라운드 멀티채널 출력 마스터 (채널 보존)
+
+**커밋**: `feat(surround): multichannel output master — linked true-peak limiter (Phase 4)`
+
+폴드다운(P4-1)의 짝 — 레이아웃을 접지 않고 보존한 채 마스터 게인 + **채널 링크드 트루피크 리미터**(공유 게인리덕션 → 채널 간 밸런스/이미징 보존)를 적용. 서라운드 딜리버리의 핵심 안전장치.
+
+- **`surround-render.ts`**(메인, 순수): `multichannelPeakDb`, `applyLinkedGain`, `linkedLimiter`(채널 최대값 기반 룩어헤드 min-hold + 릴리즈, 전 채널 동일 게인 → 출력 ≤ 실링·이미징 보존), `masterSurroundOutput`(게인→리미터, 메트릭), `interleaveN`.
+- **렌더 연결**: `surround.mode === 'multichannel'` 시 N채널 디코드 → `masterSurroundOutput` → **멀티채널 WAV 출력**. 동시에 마스터된 채널의 **스테레오 폴드다운**을 별도 작성(`analysisPath`) → 기존 스테레오 analyze/QC/preview 경로 그대로(멀티채널 분석 위험 회피). `audioHandlers`는 `analysisPath ?? outputPath`로 분석.
+- **`SurroundOptions`**: `mode('foldDown'|'multichannel')` + `masterGainDb` + `ceilingDb`. `SurroundPanel`에 모드 토글 + (멀티채널) 마스터 게인/트루피크 실링.
+- **검증**: surround-render(8 — 실링 초과 없음·채널 비율 보존·무리덕션·마스터 메트릭)+패널(6, 모드 토글). **vitest 278/278**, typecheck 0(renderer+main+shared-types). 무회귀(mode 기본 foldDown).
+
+### 정직성/한계
+- 멀티채널 모드는 게인+링크드 리미터만(풀 체인 EQ/컴프는 채널별 미적용). 라우드니스 자동매칭은 폴드다운 경로(실 loudnorm)가 담당; 멀티채널 라우드니스는 상대치(BS.1770 채널 가중).
+- 멀티채널 WAV 인코딩(ffmpeg `-ac N`)·채널 마스크·플레이어 호환은 실제 서라운드 파일/장치로만 종단 검증 → 출시 전 QA. 단위테스트는 리미터/피크/폴드다운 DSP 수학만 보장.
+
 ## 🟡 Phase 4 남은 후보(대규모·범위 밖)
 
 | 항목 | 비고 |
 |------|------|
-| 객체 기반 Atmos 오서링(ADM BWF/Dolby/바이노럴) | 전용 인코더·멀티채널 출력 체인 필요 |
-| 멀티채널 출력 렌더(5.1/7.1 그대로) | Rust 체인 멀티채널화 + ffmpeg I/O 대규모 |
+| 객체 기반 Atmos 오서링(ADM BWF/Dolby/바이노럴) | 전용 인코더·메타데이터 체인 필요 |
+| 멀티채널 풀 체인(per-channel EQ/컴프) | Rust 체인 멀티채널화 대규모 |
 | DAW 플러그인(VST3/AU, JUCE/nih-plug) | C++/플러그인 SDK·DAW 검증 필요 |
 | Cloud / Mobile | 별도 플랫폼 |

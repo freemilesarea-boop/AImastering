@@ -9,6 +9,8 @@ import type { SurroundOptions, SurroundTrims } from '@aimaster/shared-types';
 
 export const SURROUND_TRIM_RANGE = { min: -12, max: 12 } as const;
 export const LFE_RANGE = { min: -120, max: 12 } as const;
+export const MASTER_GAIN_RANGE = { min: -12, max: 12 } as const;
+export const CEILING_RANGE = { min: -6, max: 0 } as const;
 
 const clamp = (v: number, lo: number, hi: number, fb: number): number => {
   const x = Number.isFinite(v) ? v : fb;
@@ -16,10 +18,16 @@ const clamp = (v: number, lo: number, hi: number, fb: number): number => {
 };
 
 export function defaultSurroundOptions(): SurroundOptions {
-  return { foldDownEnabled: false, trims: { centerDb: 0, surroundDb: 0, lfeDb: -120 } };
+  return {
+    foldDownEnabled: false,
+    trims: { centerDb: 0, surroundDb: 0, lfeDb: -120 },
+    mode: 'foldDown',
+    masterGainDb: 0,
+    ceilingDb: -1,
+  };
 }
 
-/** True when surround processing would not run (fold-down disabled). */
+/** True when surround processing would not run (disabled). */
 export function isSurroundUnity(s: SurroundOptions | undefined | null): boolean {
   return !s || !s.foldDownEnabled;
 }
@@ -30,5 +38,11 @@ export function sanitizeSurround(s: SurroundOptions): SurroundOptions {
     surroundDb: clamp(s.trims?.surroundDb ?? 0, SURROUND_TRIM_RANGE.min, SURROUND_TRIM_RANGE.max, 0),
     lfeDb: clamp(s.trims?.lfeDb ?? -120, LFE_RANGE.min, LFE_RANGE.max, -120),
   };
-  return { foldDownEnabled: !!s.foldDownEnabled, trims: t };
+  return {
+    foldDownEnabled: !!s.foldDownEnabled,
+    trims: t,
+    mode: s.mode === 'multichannel' ? 'multichannel' : 'foldDown',
+    masterGainDb: clamp(s.masterGainDb ?? 0, MASTER_GAIN_RANGE.min, MASTER_GAIN_RANGE.max, 0),
+    ceilingDb: clamp(s.ceilingDb ?? -1, CEILING_RANGE.min, CEILING_RANGE.max, -1),
+  };
 }

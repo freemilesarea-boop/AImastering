@@ -19,7 +19,8 @@ import { applyPreciseRebalance, type PreciseRebalanceOptions } from './precise-r
 import { applySectionPlan } from './section-mastering.js';
 import { applyVocalRiding } from './vocal-riding.js';
 import { deinterleaveN, foldDownToStereo, layoutForChannelCount } from './surround.js';
-import type { SectionMasteringPlan, VocalRidingPlan, SurroundTrims } from '@aimaster/shared-types';
+import { masterSurroundOutput, interleaveN } from './surround-render.js';
+import type { SectionMasteringPlan, VocalRidingPlan, SurroundTrims, SurroundOptions } from '@aimaster/shared-types';
 
 export interface RustRenderOptions {
   sampleRate: number;
@@ -37,8 +38,8 @@ export interface RustRenderOptions {
   sectionPlan?: SectionMasteringPlan;
   /** Optional automatic vocal level riding (no-op when unity). */
   vocalRiding?: VocalRidingPlan;
-  /** Optional surround fold-down (5.1/7.1 → stereo) before the chain. */
-  surround?: { foldDownEnabled: boolean; trims: SurroundTrims };
+  /** Optional surround handling (5.1/7.1 fold-down or multichannel output). */
+  surround?: SurroundOptions;
   onProgress?: (frac: number) => void;
 }
 
@@ -47,6 +48,11 @@ export interface RustRenderFileResult {
   metrics: RenderMetrics | NormalizedRenderMetrics;
   backend: 'rust';
   loudnessNormalized: boolean;
+  /** Multichannel output: the layout-preserving WAV is `outputPath`; a stereo
+   *  fold-down for analysis/QC/preview is written here. */
+  analysisPath?: string;
+  /** True when `outputPath` is a multichannel (non-stereo) deliverable. */
+  multichannel?: boolean;
 }
 
 /** Whether the Rust offline backend is usable (node WASM present). */
@@ -119,6 +125,21 @@ async function decodeToFloatN(inputPath: string, channels: number, sampleRate: n
 }
 
 /**
+ * Decode a surround source into de-interleaved channels + its layout.  Returns
+ * null when the source is stereo / an unsupported channel count.
+ */
+async function decodeSurroundChannels(
+  inputPath: string,
+  sampleRate: number,
+): Promise<{ channels: Float32Array[]; layout: 'stereo' | '5.1' | '7.1' } | null> {
+  const count = await probeChannelCount(inputPath);
+  const layout = layoutForChannelCount(count);
+  if (!layout || layout === 'stereo') return null;
+  const interleaved = await decodeToFloatN(inputPath, count, sampleRate);
+  return { channels: deinterleaveN(interleaved, count), layout };
+}
+
+/**
  * Fold a surround source down to stereo (BS.775 + trims).  Returns null when the
  * source is stereo / an unsupported channel count → caller decodes stereo
  * normally.
@@ -128,11 +149,9 @@ async function foldDownSurroundSource(
   sampleRate: number,
   trims: SurroundTrims,
 ): Promise<{ left: Float32Array; right: Float32Array } | null> {
-  const channels = await probeChannelCount(inputPath);
-  const layout = layoutForChannelCount(channels);
-  if (!layout || layout === 'stereo') return null;
-  const interleaved = await decodeToFloatN(inputPath, channels, sampleRate);
-  return foldDownToStereo(deinterleaveN(interleaved, channels), layout, trims);
+  const dec = await decodeSurroundChannels(inputPath, sampleRate);
+  if (!dec) return null;
+  return foldDownToStereo(dec.channels, dec.layout, trims);
 }
 
 /** Encode interleaved f32le stereo → WAV at the target bit depth. */
@@ -142,6 +161,17 @@ async function encodeWav(interleaved: Float32Array, sampleRate: number, bitDepth
   await runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y',
     '-f', 'f32le', '-ar', String(sampleRate), '-ac', '2', '-i', 'pipe:0',
+    '-c:a', codec, outputPath,
+  ], stdin);
+}
+
+/** Encode interleaved f32le N-channel → WAV at the target bit depth. */
+async function encodeWavN(interleaved: Float32Array, channels: number, sampleRate: number, bitDepth: 16 | 24, outputPath: string): Promise<void> {
+  const codec = bitDepth === 16 ? 'pcm_s16le' : 'pcm_s24le';
+  const stdin = Buffer.from(interleaved.buffer, interleaved.byteOffset, interleaved.byteLength);
+  await runFfmpeg([
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'f32le', '-ar', String(sampleRate), '-ac', String(channels), '-i', 'pipe:0',
     '-c:a', codec, outputPath,
   ], stdin);
 }
@@ -164,6 +194,39 @@ export async function processAudioFileRust(
   options: RustRenderOptions,
 ): Promise<RustRenderFileResult> {
   if (!isRustOfflineAvailable()) throw new Error('rust offline backend unavailable (node WASM not built)');
+
+  // ── Multichannel output (preserve 5.1/7.1) ────────────────────────────────
+  // Master gain + linked true-peak limiter, channels intact.  A stereo
+  // fold-down of the mastered program is also written for analysis/QC/preview
+  // (keeps the stereo result path unchanged).  Falls through to the stereo
+  // pipeline when the source isn't a supported surround layout.
+  if (options.surround?.foldDownEnabled && options.surround.mode === 'multichannel') {
+    const t0 = Date.now();
+    const dec = await decodeSurroundChannels(inputPath, options.sampleRate).catch(() => null);
+    if (dec) {
+      const sr = options.surround;
+      const mastered = masterSurroundOutput(dec.channels, options.sampleRate, {
+        masterGainDb: sr.masterGainDb, ceilingDb: sr.ceilingDb,
+      });
+      const nc = mastered.channels.length;
+      await encodeWavN(interleaveN(mastered.channels), nc, options.sampleRate, options.bitDepth, options.outputPath);
+      // Stereo fold-down (of the mastered channels) for analysis / preview.
+      const fd = foldDownToStereo(mastered.channels, dec.layout, sr.trims);
+      const analysisPath = options.outputPath.replace(/\.wav$/i, '') + '.stereo.wav';
+      await encodeWav(interleave(fd.left, fd.right), options.sampleRate, options.bitDepth, analysisPath);
+      const samples = mastered.channels[0]?.length ?? 0;
+      const metrics: RenderMetrics = {
+        samplePeak: Math.pow(10, mastered.metrics.peakAfterDb / 20),
+        samplePeakDb: mastered.metrics.peakAfterDb,
+        limiterGrDb: mastered.metrics.limiterReductionDb,
+        samples,
+        durationSec: samples / options.sampleRate,
+        renderMs: Date.now() - t0,
+      };
+      return { outputPath: options.outputPath, analysisPath, multichannel: true, metrics, backend: 'rust', loudnessNormalized: false };
+    }
+    // not a surround source → fall through to the stereo pipeline below
+  }
 
   let left: Float32Array;
   let right: Float32Array;

@@ -172,13 +172,20 @@ export interface SurroundTrims {
 }
 
 /**
- * Surround source mastering: when a >2-channel source is fed, fold it down to
- * stereo with the standard ITU-R BS.775 matrix (+ trims) and master the
- * fold-down.  Channel-based surround — not object-based Atmos authoring.
+ * Surround source mastering: when a >2-channel source is fed, either fold it
+ * down to stereo (BS.775 + trims) and master with the stereo chain, OR keep the
+ * channel layout and apply a master gain + linked true-peak limiter
+ * (multichannel output).  Channel-based surround — not object-based Atmos.
  */
 export interface SurroundOptions {
   foldDownEnabled: boolean;
   trims: SurroundTrims;
+  /** 'foldDown' = stereo master (default); 'multichannel' = preserve layout. */
+  mode: 'foldDown' | 'multichannel';
+  /** Multichannel mode: master gain (dB) applied before the linked limiter. */
+  masterGainDb: number;
+  /** Multichannel mode: linked true-peak ceiling (dBTP). */
+  ceilingDb: number;
 }
 
 /** Precise stem rebalance — per-stem gain applied on the offline (Rust) export. */

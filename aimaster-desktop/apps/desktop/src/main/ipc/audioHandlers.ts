@@ -416,7 +416,11 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         // Surround source fold-down — no-op for stereo sources.
         ...(options?.surround?.foldDownEnabled ? { surround: options.surround } : {}),
       });
-      await encodePreviewMp3(wavTempPath, mp3Path);
+      // For a multichannel deliverable, analyse/preview the stereo fold-down
+      // (the stereo analyzer/QC assume 2 channels); the multichannel WAV stays
+      // the actual output file.
+      const analyzeTarget = rendered.analysisPath ?? rendered.outputPath;
+      await encodePreviewMp3(analyzeTarget, mp3Path);
 
       // Wrap the Rust output with Python analysis + QC so the result shape
       // matches the production `audio:master` MasteringResult (engine
@@ -426,9 +430,9 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       const b = getBridge();
       const targetLufs = typeof options?.targetLufs === 'number' ? options.targetLufs : -14;
       const targetTp = typeof options?.targetTp === 'number' ? options.targetTp : -1;
-      const outputAnalysis = await analyzeFile(b, rendered.outputPath);
+      const outputAnalysis = await analyzeFile(b, analyzeTarget);
       const sourceAnalysis = await analyzeFile(b, safeSourcePath).catch(() => null);
-      const outputQc = await runQC(b, rendered.outputPath, targetLufs, targetTp).catch(() => null);
+      const outputQc = await runQC(b, analyzeTarget, targetLufs, targetTp).catch(() => null);
 
       const mastering = assembleRustMasteringResult({
         outputPath: rendered.outputPath,
