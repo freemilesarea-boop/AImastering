@@ -78,13 +78,20 @@
 - **`SaturationPanel`** UI: enable·캐릭터·drive·mix·옵션 밴드별 드라이브.
 - **테스트**: config(7)+chain mock(4)+패널(6)+export(1). **vitest 71/71**, 전체 pnpm test 그린, typecheck 0. 기본 bypass → 무회귀.
 
+### P2-8. Transient / Impact 셰이퍼 (DSP) ✅
+**커밋**: `feat(dsp): transient/impact shaper — multiband attack/sustain (Phase 2)`
+- **`transient.rs`**: 차분 엔벨로프(fast/slow follower) → `gain_db = attack%·relu(fast−slow) + sustain%·relu(slow−fast)`(±12dB 클램프·노이즈게이트). attack>0 펀치, sustain>0 바디. 옵션 4밴드(밴드별 attack/sustain, 공유 크로스오버). 0/bypass → passthrough.
+- config: `TransientBandConfig` + `TransientConfig`(기본 bypass) → 체인(새추레이션 뒤, 이미저 앞)·set_config·reset·재익스포트, WASM setConfig 보존.
+- 테스트 6종. **`cargo test -p loui-dsp` 90/90** + 하니스, `cargo check --workspace` 0. 기본 bypass → 무회귀.
+- 노출(WASM setter + UI + 프리뷰)은 후속.
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| Transient/Impact | P1 | 신규 모듈 |
+| Transient **노출**(WASM/UI/프리뷰) | P1 후속 | DSP 완료 |
 | Dynamic EQ 완전 파라메트릭화 (Rust) | P1 | |
-| 멀티밴드/이미저/새추 프리셋(스타일별) | P2 | |
+| 멀티밴드/이미저/새추/트랜지언트 프리셋(스타일별) | P2 | |
 | De-esser 적응형 / 멀티밴드 GR 메터 연결 | P2 | |
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 2~4 캐릭터) | P1 | 신규 모듈 |
