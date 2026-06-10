@@ -132,12 +132,24 @@
 - **`DeesserPanel`**: enable·필터(벨/하이셸프)·주파수·threshold·range·Q + **'보컬 디에스' 퀵 프리셋**. 기본 native 프리뷰 미반영(노치라 worklet/export).
 - **테스트**: config(6)+패널(4)+export 합성(1). **vitest 112/112**, 전체 pnpm test 그린, typecheck 0. Rust 재사용·기본 disabled → 무회귀.
 
-## 🟡 남은 Phase 2 항목
+### P2-14. 멀티밴드 GR 메터링 UI ✅
+**커밋**: `feat(meter): live multiband gain-reduction meter (Phase 2)`
+- 핵심: **native WebAudio `DynamicsCompressorNode.reduction`** 을 읽어 **재빌드 없이 기본 프리뷰에서 밴드별 GR 실시간 시각화**.
+- `multiband-chain.bandReductionsDb()` + `shared-audio-graph.getActiveMultibandReductions()`.
+- **`MultibandGrMeter`**: 4밴드 하향 바 + 피크홀드(~30fps rAF), idle 시 '—'. ResultPage 멀티밴드 섹션에 렌더.
+- **테스트**: chain GR(1)+메터 컴포넌트(3). **vitest 116/116**, 전체 pnpm test 그린, typecheck 0. 순수 렌더러.
+- 잔여: worklet 경로 per-band GR(Rust 체인에서) — 후속.
 
-| 항목 | 우선순위 | 비고 |
-|------|:--------:|------|
-| 멀티밴드 GR 메터 UI 연결 | P2 | |
-| (출시 전) wasm 아티팩트 재빌드 + 실기기 A/B QA → 기본 ON | 🔴 | 헤드리스 불가 |
+## ✅ Phase 2 완료 — Ozone 기본기 모듈 스위트 구축
+
+- **모듈 6종**: 멀티밴드 컴프 · 4밴드 M/S 이미저 · Saturation/Exciter · Transient/Impact · 완전 파라메트릭 Dynamic EQ · 적응형 De-esser
+- **인프라**: 원클릭 모듈 프리셋(6) · 멀티밴드 GR 메터 · 공유 crossover · post-insert 스테이지 체이닝 · 가드 바인딩 패턴
+- **검증**: cargo 96/96 + 하니스 · vitest 116/116 · 전체 pnpm test 그린 · 모든 모듈 기본 bypass(무회귀)
+
+## 🔴 출시 전 (헤드리스 불가)
+- wasm/node 아티팩트 **재빌드**(신규 setter 6종 반영) + Rust export 플래그 ON + worklet 게이트
+- 실기기 **오디오 A/B QA** → 기본 ON 전환
+- 이후 Phase 3(차별화: 스템분리/AI생성곡/아시아 레퍼런스) 진입 가능
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 2~4 캐릭터) | P1 | 신규 모듈 |
 | Transient/Impact (멀티밴드 attack/sustain) | P1 | 신규 모듈 |
