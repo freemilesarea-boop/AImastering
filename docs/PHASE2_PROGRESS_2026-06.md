@@ -93,12 +93,20 @@
 - **`TransientPanel`** UI: enable·attack·sustain·옵션 4밴드.
 - **테스트**: config(4)+패널(5)+export(1). **vitest 81/81**, 전체 pnpm test 그린, typecheck 0. 기본 bypass → 무회귀.
 
+### P2-10. 완전 파라메트릭 Dynamic EQ (DSP) ✅
+**커밋**: `feat(dsp): fully-parametric dynamic EQ — threshold-driven per-band (Phase 2)`
+- **`dynamic_eq.rs`**: 최대 6밴드, 각 밴드 = bell/low-shelf/high-shelf 필터 + **밴드패스 사이드체인 검출 → 임계값 대비 동적 게인**. mode `DownCut`(라우드 시 컷, 디에스/제어) / `UpBoost`(콰이엇 시 부스트). ±range 클램프, 게인 0.05dB 이상 변할 때만 계수 재계산(고정주파수 precompute → 저비용). 비활성/range0/bypass → passthrough.
+- biquad에 RBJ `band_pass`(검출용) 추가.
+- config: `DynEqFilterType`+`DynEqMode` enum + `DynEqBandConfig`+`DynamicEqConfig`(MAX 6, 기본 bypass) → 체인(정적 EQ 뒤, 글루컴프 앞)·재익스포트, WASM setConfig 보존.
+- 테스트 6종(passthrough / 비활성 / in-band 컷 / out-of-band 보존 / quiet 부스트 / range0). **`cargo test -p loui-dsp` 96/96** + 하니스, `cargo check --workspace` 0. 기본 bypass → 무회귀.
+- 노출(WASM setter + UI)은 후속.
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| Dynamic EQ 완전 파라메트릭화 (Rust) | P1 | |
-| 모듈 프리셋(스타일별 기본값) | P2 | 4종 모듈 묶음 |
+| Dynamic EQ **노출**(WASM/UI) | P1 후속 | DSP 완료 |
+| 모듈 프리셋(스타일별 기본값) | P2 | 5종 모듈 묶음 |
 | De-esser 적응형 / 멀티밴드 GR 메터 연결 | P2 | |
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 2~4 캐릭터) | P1 | 신규 모듈 |
