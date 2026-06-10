@@ -134,11 +134,26 @@ iZotope "Master Rebalance"를 대체하는 **2-티어** 스템 컨트롤. 백엔
 - 익스포트 전용(라이브 프리뷰엔 미반영) — 정밀 리밸런스 정밀 티어와 동일 패턴.
 - 청취 품질(경계 자연스러움)은 실 오디오/장치 필요 → 출시 전 QA. 단위테스트는 엔벨로프 수학(연속성·게인·경계)만 보장.
 
+## ✅ P3-9 (P2-c). 멀티-보컬 → 보컬 라이딩
+
+**커밋**: `feat(vocal): automatic vocal level riding on export (P2)`
+
+멀티-보컬 스코프를 단일 스테레오 마스터에 맞게 **보컬 라이딩**(센터 보컬 레벨 자동 라이딩)으로 확정·구현. 익스포트 전용·M/S 센터만.
+
+- **`vocal-riding.ts`**(메인, 순수): `vocalBandEnvelope`(센터의 프레즌스 대역 ~200–5kHz를 one-pole 밴드패스+정류+스무딩 → 레벨 엔벨로프), `computeRidingGain`(트랙 중앙값 기준 레벨로 끌어올리는 per-sample 게인, `amount` 스케일·±maxBoost/Cut clamp·responseMs 스무딩, 무음은 unity로), `applyVocalRiding`(M/S 분해 → 미드만 라이딩 → 재합, **사이드 정확 보존** L′−R′=L−R), sanitize/isUnity.
+- **렌더 연결**: `process-audio-file-rust`가 구간 게인 다음·체인 직전 적용 · `MasteringOptions.vocalRiding`(shared-types) · `audioHandlers` enabled 시만 전달.
+- **렌더러**(`vocal-riding-config.ts` + audioStore 슬라이스 + `VocalRidingPanel`): 강도/최대부스트/최대컷/반응 슬라이더 + 사용 토글. 익스포트 전용(라이브 프리뷰 무변경). MasteringPage는 non-unity일 때만 첨부.
+- **검증**: vocal-riding(9 — 인밴드 엔벨로프>서브베이스·부스트/컷 방향·clamp·게인 스무딩·**사이드 보존**·레벨 평준화·sanitize)+패널(4). **vitest 252/252**, typecheck 0(renderer+main+shared-types). 무회귀.
+
+### 정직성/한계
+- **센터 대역 레벨 라이더**이지 분리된 보컬 처리(=게이트된 ONNX 보컬 스템)가 아님. 센터에 보컬이 지배적이라는 가정 — 센터의 비보컬(킥/스네어)도 일부 영향. 가장 tractable·결정적·헤드리스 검증 가능.
+- 익스포트 전용. 라이딩 자연스러움/펌핑 여부는 실 오디오/장치 QA 필요 → 단위테스트는 DSP 수학(방향·clamp·연속성·M/S 보존)만 보장.
+
 ## 🟡 남은 Phase 3 후보
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
 | 정밀 티어 ON(모델 export·핀·번들) | 출시 전 | 런타임 완료 → 스위치 3개만 남음 |
-| 멀티-보컬 | P2 | 스코프 미정(요구사항 정의 필요) |
+| ~~마스터링 이력 / 구간별 / 멀티-보컬~~ | ✅ | P3-7/8/9 완료 — **P2 전부 완료** |
 | ~~마스터링 이력~~ | ✅ | P3-7 (durable) |
 | ~~구간별 마스터링~~ | ✅ | P3-8 (per-section 게인, export) |

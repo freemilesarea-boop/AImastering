@@ -21,11 +21,12 @@ import {
   toggleFavorite as toggleHistoryFavoritePure, getEntry as getHistoryEntry,
   serializeHistory, deserializeHistory,
 } from '../audio/mastering-history.js';
-import type { SectionMasteringPlan, SectionSegment, RebalancePreciseOptions } from '@aimaster/shared-types';
+import type { SectionMasteringPlan, SectionSegment, RebalancePreciseOptions, VocalRidingPlan } from '@aimaster/shared-types';
 import {
   defaultSectionPlan, buildSectionPlanFromAnalysis,
   sanitizeSectionPlan, setSectionGain as setSectionGainPure,
 } from '../audio/section-plan.js';
+import { defaultVocalRiding, sanitizeVocalRiding } from '../audio/vocal-riding-config.js';
 import {
   type ParametricEqBand,
   sanitizeBands,
@@ -211,6 +212,8 @@ export interface MasteringOptions {
   rebalance?: RebalancePreciseOptions;
   /** P2 — per-section gain automation (applied on the offline export). */
   sectionPlan?: SectionMasteringPlan;
+  /** P2 — automatic vocal level riding (applied on the offline export). */
+  vocalRiding?: VocalRidingPlan;
 }
 
 const defaultRtOverrides: RealtimeDspOverrides = {
@@ -332,6 +335,12 @@ interface AudioStore {
   setSectionGain: (index: number, gainDb: number) => void;
   toggleSectionPlan: (enabled: boolean) => void;
   resetSectionPlan: () => void;
+
+  // ── Vocal riding (P2) ──────────────────────────────────────────────────
+  /** Automatic vocal (centre) level riding (applied on export). */
+  vocalRiding: VocalRidingPlan;
+  updateVocalRiding: (patch: Partial<VocalRidingPlan>) => void;
+  resetVocalRiding: () => void;
 
   // ── Free parametric EQ (C-1) ───────────────────────────────────────────
   /** User-defined parametric EQ bands, spliced live into the preview chain. */
@@ -551,6 +560,11 @@ export const useAudioStore = create<AudioStore>((set) => ({
   setSectionGain: (index, gainDb) => set((s) => ({ sectionPlan: setSectionGainPure(s.sectionPlan, index, gainDb) })),
   toggleSectionPlan: (enabled) => set((s) => ({ sectionPlan: sanitizeSectionPlan({ ...s.sectionPlan, enabled }) })),
   resetSectionPlan: () => set({ sectionPlan: defaultSectionPlan() }),
+
+  // ── Vocal riding (P2) ──────────────────────────────────────────────────
+  vocalRiding: defaultVocalRiding(),
+  updateVocalRiding: (patch) => set((s) => ({ vocalRiding: sanitizeVocalRiding({ ...s.vocalRiding, ...patch }) })),
+  resetVocalRiding: () => set({ vocalRiding: defaultVocalRiding() }),
 
   // ── Free parametric EQ ─────────────────────────────────────────────────
   parametricEqBands: [],

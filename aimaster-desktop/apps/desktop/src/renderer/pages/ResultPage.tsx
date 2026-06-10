@@ -45,6 +45,7 @@ import GenreReferencePanel from '../components/GenreReferencePanel.js';
 import StemRebalancePanel from '../components/StemRebalancePanel.js';
 import MasteringHistoryPanel from '../components/MasteringHistoryPanel.js';
 import SectionMasteringPanel from '../components/SectionMasteringPanel.js';
+import VocalRidingPanel from '../components/VocalRidingPanel.js';
 import DeesserPanel from '../components/DeesserPanel.js';
 import MultibandGrMeter from '../components/MultibandGrMeter.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
@@ -1391,6 +1392,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Per-section gain automation (export) ───────────────────────────── */}
       <Section title="구간별 마스터링" defaultOpen={false}>
         <SectionMasteringPanel />
+      </Section>
+
+      {/* ── Automatic vocal (centre) level riding (export) ─────────────────── */}
+      <Section title="보컬 라이딩" defaultOpen={false}>
+        <VocalRidingPanel />
       </Section>
 
       {/* ── Durable mastering history (cross-session) ──────────────────────── */}

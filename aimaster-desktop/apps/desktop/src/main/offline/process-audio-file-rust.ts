@@ -17,7 +17,8 @@ import {
 import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-node.js';
 import { applyPreciseRebalance, type PreciseRebalanceOptions } from './precise-rebalance.js';
 import { applySectionPlan } from './section-mastering.js';
-import type { SectionMasteringPlan } from '@aimaster/shared-types';
+import { applyVocalRiding } from './vocal-riding.js';
+import type { SectionMasteringPlan, VocalRidingPlan } from '@aimaster/shared-types';
 
 export interface RustRenderOptions {
   sampleRate: number;
@@ -33,6 +34,8 @@ export interface RustRenderOptions {
   rebalance?: PreciseRebalanceOptions;
   /** Optional per-section gain automation (no-op when unity). */
   sectionPlan?: SectionMasteringPlan;
+  /** Optional automatic vocal level riding (no-op when unity). */
+  vocalRiding?: VocalRidingPlan;
   onProgress?: (frac: number) => void;
 }
 
@@ -126,6 +129,12 @@ export async function processAudioFileRust(
   if (options.sectionPlan?.enabled) {
     const sec = applySectionPlan(left, right, options.sampleRate, options.sectionPlan);
     left = sec.left; right = sec.right;
+  }
+
+  // Automatic vocal (centre) level riding — pre-chain, sides preserved.
+  if (options.vocalRiding?.enabled) {
+    const vr = applyVocalRiding(left, right, options.sampleRate, options.vocalRiding);
+    left = vr.left; right = vr.right;
   }
 
   const normalized = typeof options.targetLufs === 'number';

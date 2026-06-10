@@ -154,6 +154,8 @@ export interface MasteringOptions {
   rebalance?: RebalancePreciseOptions;
   /** P2 — per-section gain automation, applied on the offline (Rust) export. */
   sectionPlan?: SectionMasteringPlan;
+  /** P2 — automatic vocal level riding (centre), applied on the offline export. */
+  vocalRiding?: VocalRidingPlan;
 }
 
 /** Precise stem rebalance — per-stem gain applied on the offline (Rust) export. */
@@ -178,6 +180,23 @@ export interface SectionMasteringPlan {
   /** Boundary crossfade length in ms (smooths section transitions). */
   crossfadeMs: number;
   gains: SectionGain[];
+}
+
+/**
+ * Automatic vocal level riding — tracks the centre (vocal) band level and
+ * applies a smooth, range-limited gain to the centre so the vocal stays
+ * consistent.  Applied on the offline export (M/S, centre only).
+ */
+export interface VocalRidingPlan {
+  enabled: boolean;
+  /** 0 = no correction … 1 = full correction toward the reference level. */
+  amount: number;
+  /** Max upward ride (dB, positive magnitude). */
+  maxBoostDb: number;
+  /** Max downward ride (dB, positive magnitude → applied as a cut). */
+  maxCutDb: number;
+  /** Gain smoothing time constant in ms (how fast the rider reacts). */
+  responseMs: number;
 }
 
 export interface EqMoveReport {
