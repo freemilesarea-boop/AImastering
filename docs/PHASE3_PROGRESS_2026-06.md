@@ -26,11 +26,19 @@ AI 음악(Suno/Udio/Stable Audio) 마스터링 시장이 폭발 중이고 Ozone�
 
 ---
 
+## ✅ P3-2. AI 음악 감지 스펙트럴 정밀화
+
+**커밋**: `feat(ai-music): precise spectral features from the renderer FFT (Phase 3)`
+
+- **`ai-music-spectral.ts`**(순수): FFT 매그니튜드 스펙트럼 → `bandPowerDb` + **metallicScore**(3–5kHz 집중) · **harshnessScore**(5–9kHz) · **aliasingScore**(Nyquist 근처 비롤오프 에너지) · 틸트. `isUsableSpectrum` 가드.
+- `detectAiMusic`이 스코어를 사용(boolean보다 정밀) + 심각도로 보정 range 스케일. `refineWithSpectrum`(live FFT 병합, 무신호 시 no-op).
+- `shared-audio-graph.getActiveSpectrumSnapshot()`(active 메인 AnalyserNode dB/bin), `AiMusicPanel`이 라이브 스펙트럼으로 정밀화('스펙트럼 정밀' 배지 + '정밀 재검사' 버튼).
+- **검증**: spectral(8 — 합성 metallic/aliased/harsh/natural) + score 규칙 + refine(5). **vitest 140/140**, 전체 그린(ALL FRESH), typecheck 0. 순수·boolean 경로 보존(무회귀).
+
 ## 🟡 남은 Phase 3 후보
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| AI 음악 감지 스펙트럴 피처 강화 | P1 후속 | 렌더러 WASM 스펙트럼으로 metallic/aliasing 정밀화 |
 | 스템 분리 (Demucs) → Master Rebalance 대체 | P0(차별화 최대) | 거대 ML 모델·런타임·번들 결정 필요(사용자 결정) |
 | 자동 장르 감지 (룰→경량 CNN) | P1 | |
 | 한국/아시아 레퍼런스 라이브러리(fingerprint) | P1 | 큐레이션 동반 |
