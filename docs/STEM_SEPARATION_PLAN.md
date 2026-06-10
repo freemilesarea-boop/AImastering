@@ -105,15 +105,21 @@ approximation tier — so the whole feature degrades gracefully.
 
 ## What flips it ON
 
-The whole precise path is built and tested; it is gated by exactly **three**
-switches, all OFF today:
+The whole precise path is built and tested.  Switches ② and ③ are now DONE —
+only ① (the model itself) remains, and it is the one step that needs a
+weights-reachable host:
 
-1. **Manifest** — pin a real `url` + `sha256` + `bytes`. Until then
-   `isModelConfigured()` is false and `getStemSeparator()` returns null.
-2. **Runtime** — add `onnxruntime-node` (optionalDependency) + lockfile +
-   electron-builder native-addon packaging. `loadOrt()` already lazy-loads it
-   and degrades gracefully when absent.
-3. **UI** — flip `PRECISE_AVAILABLE = true` in `StemRebalancePanel.tsx`.
+1. **Manifest** — pin a real `url` + `sha256` + `bytes` (+ `segmentSamples`).
+   Until then `isModelConfigured()` is false and `getStemSeparator()` returns
+   null.  ⟵ **the only remaining switch.**
+2. ✅ **Runtime** — `onnxruntime-node` is an `optionalDependency` (lockfile
+   pinned) and electron-builder unpacks its native addon from asar
+   (`asarUnpack: **/node_modules/onnxruntime-node/**`).  `loadOrt()` lazy-loads
+   it and degrades gracefully when absent.
+3. ✅ **UI gate is automatic** — `StemRebalancePanel` queries
+   `stem:precise-available` (main → `getStemPreciseAvailability`, which checks
+   the resolved manifest + runtime).  The precise tier lights up by itself the
+   moment a model is pinned — no code edit, no rebuild.
 
 ### Pinning the manifest (switch 1) — no code edit required
 
@@ -196,7 +202,9 @@ before publishing — the runtime contract it must satisfy is
 - [x] `pin:stem-model` script — computes real sha256/bytes, writes the sidecar
 - [x] Fixed-segment (pad/crop) inference + injectable runtime → end-to-end loop tested (fake ort reconstructs the mix)
 - [x] `export-demucs-onnx.py` maintainer export script + `stem-model-v1` release URL convention
+- [x] **Switch ② done** — `onnxruntime-node` optionalDependency + lockfile + electron-builder asarUnpack
+- [x] **Switch ③ removed** — UI auto-detects via `stem:precise-available` (no flag to flip)
 - [ ] Create the `stem-model-v1` Release (maintainer — no API/`gh` access from this environment)
-- [ ] Run the runbook on a weights-reachable host: export → upload asset → `pin:stem-model` → publish (switch 1)
+- [ ] **Switch ① (only remaining)** — run the runbook on a weights-reachable host: export → upload asset → `pin:stem-model` → publish
 - [ ] `onnxruntime-node` optionalDependency + lockfile + electron-builder packaging (switch 2)
 - [ ] Flip `PRECISE_AVAILABLE = true` (switch 3) + pre-launch listening QA

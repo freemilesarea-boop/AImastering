@@ -57,6 +57,10 @@ asarUnpack:
   - "dist/renderer/assets/*.wasm"
   - "dist/renderer/*.worklet.js"
   - "dist/renderer/assets/*.worklet.js"
+  # onnxruntime-node is a native addon — its .node binaries cannot be dlopen'd
+  # from inside app.asar, so unpack them.  Harmless when the optional dependency
+  # isn't installed (nothing matches).  Precise stem tier (P3-5).
+  - "**/node_modules/onnxruntime-node/**"
 
 extraMetadata:
   main: dist-electron/main/index.js

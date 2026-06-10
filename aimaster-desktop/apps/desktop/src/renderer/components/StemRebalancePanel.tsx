@@ -9,15 +9,22 @@ import React from 'react';
 import { useAudioStore } from '../stores/audioStore.js';
 import { REBAL_RANGES, STEMS, STEM_LABEL } from '../audio/rebalance-config.js';
 
-// The ONNX Demucs model isn't bundled yet → precise tier is unavailable.
-// Flipped on once the model ships (see docs/STEM_SEPARATION_PLAN.md).
-const PRECISE_AVAILABLE = false;
-
 export default function StemRebalancePanel(): React.ReactElement {
   const r = useAudioStore((s) => s.rebalance);
   const update = useAudioStore((s) => s.updateRebalance);
   const updateStem = useAudioStore((s) => s.updateStemGain);
   const reset = useAudioStore((s) => s.resetRebalance);
+
+  // The precise tier auto-enables when a real model is pinned AND the ONNX
+  // runtime loads (main: stem:precise-available) — no code edit / rebuild.
+  const [preciseAvailable, setPreciseAvailable] = React.useState(false);
+  React.useEffect(() => {
+    let alive = true;
+    void window.electronAPI?.invoke('stem:precise-available')
+      .then((res) => { if (alive) setPreciseAvailable(!!(res as { available?: boolean } | undefined)?.available); })
+      .catch(() => { /* unavailable → stays gated */ });
+    return () => { alive = false; };
+  }, []);
 
   return (
     <div className="space-y-3">
@@ -36,19 +43,19 @@ export default function StemRebalancePanel(): React.ReactElement {
       </div>
 
       {/* ── Precise tier (Demucs/ONNX) ─────────────────────────────────── */}
-      <div className={`space-y-2 ${PRECISE_AVAILABLE ? '' : 'opacity-50'}`}>
+      <div className={`space-y-2 ${preciseAvailable ? '' : 'opacity-50'}`}>
         <div className="flex items-center justify-between">
           <p className="text-[10px] text-zinc-600 uppercase tracking-wider">정밀 (Demucs · Export)</p>
-          {!PRECISE_AVAILABLE && <span className="text-[9px] px-1 rounded bg-zinc-800 text-zinc-500">모델 필요 (추후)</span>}
+          {!preciseAvailable && <span className="text-[9px] px-1 rounded bg-zinc-800 text-zinc-500">모델 필요 (추후)</span>}
         </div>
         <label className="flex items-center gap-2 text-[10px] text-zinc-400">
-          <input type="checkbox" disabled={!PRECISE_AVAILABLE} checked={r.preciseEnabled} onChange={(e) => update({ preciseEnabled: e.target.checked })} aria-label="정밀 분리 사용" />
+          <input type="checkbox" disabled={!preciseAvailable} checked={r.preciseEnabled} onChange={(e) => update({ preciseEnabled: e.target.checked })} aria-label="정밀 분리 사용" />
           정밀 4-스템 분리 사용 (Export)
         </label>
         <div className={r.preciseEnabled ? 'space-y-1.5' : 'opacity-50 pointer-events-none space-y-1.5'}>
           {STEMS.map((s) => (
             <Slider key={s} label={STEM_LABEL[s]} value={r.stemGainsDb[s]} min={REBAL_RANGES.stemDb.min} max={REBAL_RANGES.stemDb.max} unit="dB"
-              onChange={(v) => updateStem(s, v)} disabled={!PRECISE_AVAILABLE} />
+              onChange={(v) => updateStem(s, v)} disabled={!preciseAvailable} />
           ))}
         </div>
       </div>

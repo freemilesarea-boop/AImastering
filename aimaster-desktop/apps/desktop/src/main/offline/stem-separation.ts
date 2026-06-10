@@ -213,4 +213,22 @@ export async function getStemSeparator(userDataDir: string): Promise<StemSeparat
   return (await sep.isReady()) ? sep : null;
 }
 
+/** Whether the precise tier can run — drives the UI gate (replaces a const). */
+export interface StemPreciseAvailability {
+  /** A real model manifest is pinned (sidecar or bundled). */
+  modelConfigured: boolean;
+  /** onnxruntime-node loads in this build. */
+  runtimeAvailable: boolean;
+  /** Both → the precise tier is usable (model downloads on first use). */
+  available: boolean;
+}
+
+export async function getStemPreciseAvailability(userDataDir: string): Promise<StemPreciseAvailability> {
+  const manifest = await resolveManifest(manifestSidecarPath(userDataDir), nodeManifestSource());
+  const modelConfigured = isModelConfigured(manifest);
+  // Only probe the (optional, possibly heavy) runtime once a model is pinned.
+  const runtimeAvailable = modelConfigured ? (await loadOrt()) !== null : false;
+  return { modelConfigured, runtimeAvailable, available: modelConfigured && runtimeAvailable };
+}
+
 export type { Segment };

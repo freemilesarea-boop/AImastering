@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getStemSeparator, OnnxStemSeparator, STEM_ORDER, type OnnxDeps } from './stem-separation.js';
+import { getStemSeparator, getStemPreciseAvailability, OnnxStemSeparator, STEM_ORDER, type OnnxDeps } from './stem-separation.js';
 import type { StemModelManifest } from './stem-model-manager.js';
 
 describe('stem-separation (gating)', () => {
@@ -15,6 +15,14 @@ describe('stem-separation (gating)', () => {
     const sep = new OnnxStemSeparator('/tmp/userData');
     expect(sep.id).toBe('onnx-demucs-v4');
     expect(await sep.isReady()).toBe(false);
+  });
+
+  it('getStemPreciseAvailability reports unavailable while the model is unpinned', async () => {
+    const a = await getStemPreciseAvailability('/tmp/userData');
+    expect(a.modelConfigured).toBe(false);
+    expect(a.available).toBe(false);
+    // Runtime is not even probed until a model is configured.
+    expect(a.runtimeAvailable).toBe(false);
   });
 });
 

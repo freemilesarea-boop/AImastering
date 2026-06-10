@@ -29,6 +29,8 @@ const INVOKE_CHANNELS = [
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // Mastering history (durable, cross-session)
   'history:get', 'history:set',
+  // Stem separation (precise tier availability)
+  'stem:precise-available',
   // System
   'system:ffmpeg-status',
   // Worklet/WASM asset reader (packaged file:// + asar safe)

@@ -23,7 +23,7 @@
 **전체 검증**: vitest **252/252** 그린 · typecheck 0 (renderer + main + shared-types) · 모든 기능 기본 OFF/무변경 → **무회귀**.
 
 **출시 전(헤드리스 불가) 잔여**:
-- 정밀 스템 티어 ON — 스위치 3개(① 모델 export·호스팅·매니페스트 핀 ② `onnxruntime-node` 번들 ③ `PRECISE_AVAILABLE=true`). 런타임/툴링 완료, `docs/STEM_SEPARATION_PLAN.md`.
+- 정밀 스템 티어 ON — ②(`onnxruntime-node` optionalDep+lockfile+asarUnpack)·③(UI 자동 감지 `stem:precise-available`로 전환 → 플래그 제거) **완료**. 남은 건 **①(모델 export·호스팅·매니페스트 핀)뿐** — 가중치 접근 가능 머신 필요. 핀 즉시 자동 활성. `docs/STEM_SEPARATION_PLAN.md`.
 - 청취 품질 QA — 구간 경계 자연스러움·보컬 라이딩 펌핑·정밀 분리 품질은 실 오디오/장치 A/B 필요.
 - → 이후 **Phase 4 / 출시 준비**(프리뷰 플래그 ON + 디바이스 QA, macOS 공증 + Windows EV 서명 = 결제 단계).
 
