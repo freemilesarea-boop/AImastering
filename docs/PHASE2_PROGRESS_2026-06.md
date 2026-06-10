@@ -85,13 +85,20 @@
 - 테스트 6종. **`cargo test -p loui-dsp` 90/90** + 하니스, `cargo check --workspace` 0. 기본 bypass → 무회귀.
 - 노출(WASM setter + UI + 프리뷰)은 후속.
 
+### P2-9. Transient / Impact 노출 (바인딩→UI→Export+worklet) ✅
+**커밋**: `feat(transient): expose transient/impact — binding → UI → export + worklet (Phase 2)`
+- **Rust(`loui-dsp-wasm`)**: `setTransient`(bypass·attack·sustain·멀티밴드·크로스오버·bandAttacks[4]·bandSustains[4]) + setConfig 보존. `cargo check` 0.
+- 공유 `transient-config.ts`, 오프라인 바인딩(가드 호출), audioStore 상태/액션, export-backend 첨부(활성 시·밴드 2배열), Mastering/HomePage 전달.
+- 프리뷰: **worklet `'transient'` 메시지만** (트랜지언트 디자이너는 WebAudio 노드 근사가 불가 → 기본 native 프리뷰 미반영, 패널에 명시). ResultPage post/seed.
+- **`TransientPanel`** UI: enable·attack·sustain·옵션 4밴드.
+- **테스트**: config(4)+패널(5)+export(1). **vitest 81/81**, 전체 pnpm test 그린, typecheck 0. 기본 bypass → 무회귀.
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| Transient **노출**(WASM/UI/프리뷰) | P1 후속 | DSP 완료 |
 | Dynamic EQ 완전 파라메트릭화 (Rust) | P1 | |
-| 멀티밴드/이미저/새추/트랜지언트 프리셋(스타일별) | P2 | |
+| 모듈 프리셋(스타일별 기본값) | P2 | 4종 모듈 묶음 |
 | De-esser 적응형 / 멀티밴드 GR 메터 연결 | P2 | |
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 2~4 캐릭터) | P1 | 신규 모듈 |
