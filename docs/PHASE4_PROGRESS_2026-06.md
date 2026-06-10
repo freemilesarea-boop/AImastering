@@ -34,9 +34,19 @@
 - **`SurroundOptions`**: `mode('foldDown'|'multichannel')` + `masterGainDb` + `ceilingDb`. `SurroundPanel`에 모드 토글 + (멀티채널) 마스터 게인/트루피크 실링.
 - **검증**: surround-render(8 — 실링 초과 없음·채널 비율 보존·무리덕션·마스터 메트릭)+패널(6, 모드 토글). **vitest 278/278**, typecheck 0(renderer+main+shared-types). 무회귀(mode 기본 foldDown).
 
+### P4-2b. 멀티채널 라우드니스 자동매칭 (BS.1770)
+
+**커밋**: `feat(surround): BS.1770 multichannel loudness auto-match (Phase 4)`
+
+멀티채널 출력이 **자체 라우드니스 정규화**를 갖도록 보강 — 더 이상 폴드다운 경로에만 의존하지 않음.
+
+- **`surround-loudness.ts`**(메인, 순수): BS.1770-4 통합 라우드니스 — K-weighting(2단 biquad, **샘플레이트별 계수 산출**) → 채널 가중(프론트 0dB·서라운드 +1.5dB·LFE 제외) 400ms 블록 → 절대(−70 LUFS)+상대(−10 LU) 게이팅. `loudnessNormGainDb`(목표−측정, clamp).
+- **렌더 연결**: 멀티채널 모드에서 `options.targetLufs`로 프로그램을 목표 LUFS 자동매칭 → 마스터 게인 트림 가산 → 링크드 리미터. `loudnessNormalized=true` 반영.
+- **검증**: surround-loudness(6 — 무음 게이팅·**+6dB→+6LU**·서라운드 가중·LFE 제외·norm 게인 clamp). **vitest 284/284**, typecheck 0.
+
 ### 정직성/한계
-- 멀티채널 모드는 게인+링크드 리미터만(풀 체인 EQ/컴프는 채널별 미적용). 라우드니스 자동매칭은 폴드다운 경로(실 loudnorm)가 담당; 멀티채널 라우드니스는 상대치(BS.1770 채널 가중).
-- 멀티채널 WAV 인코딩(ffmpeg `-ac N`)·채널 마스크·플레이어 호환은 실제 서라운드 파일/장치로만 종단 검증 → 출시 전 QA. 단위테스트는 리미터/피크/폴드다운 DSP 수학만 보장.
+- 멀티채널 모드는 **라우드니스 자동매칭(BS.1770) + 게인 트림 + 링크드 리미터**. 풀 체인 EQ/컴프는 여전히 채널별 미적용(서라운드 딜리버리는 라우드니스+TP 스펙 중심이라 우선순위 낮음).
+- 멀티채널 WAV 인코딩(ffmpeg `-ac N`)·채널 마스크·플레이어 호환은 실제 서라운드 파일/장치로만 종단 검증 → 출시 전 QA. K-weighting 계수는 비-48k에서도 산출식 적용(정확). 단위테스트는 라우드니스/리미터/피크/폴드다운 DSP 수학만 보장.
 
 ## 🟡 Phase 4 남은 후보(대규모·범위 밖)
 

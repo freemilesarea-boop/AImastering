@@ -20,6 +20,7 @@ import { applySectionPlan } from './section-mastering.js';
 import { applyVocalRiding } from './vocal-riding.js';
 import { deinterleaveN, foldDownToStereo, layoutForChannelCount } from './surround.js';
 import { masterSurroundOutput, interleaveN } from './surround-render.js';
+import { integratedLoudnessLufs, loudnessNormGainDb } from './surround-loudness.js';
 import type { SectionMasteringPlan, VocalRidingPlan, SurroundTrims, SurroundOptions } from '@aimaster/shared-types';
 
 export interface RustRenderOptions {
@@ -205,8 +206,13 @@ export async function processAudioFileRust(
     const dec = await decodeSurroundChannels(inputPath, options.sampleRate).catch(() => null);
     if (dec) {
       const sr = options.surround;
+      // Loudness auto-match: normalize the multichannel program to the target
+      // LUFS (BS.1770), then apply the manual gain trim on top.
+      const normGainDb = typeof options.targetLufs === 'number'
+        ? loudnessNormGainDb(integratedLoudnessLufs(dec.channels, dec.layout, options.sampleRate), options.targetLufs, options.maxBoostDb ?? 12)
+        : 0;
       const mastered = masterSurroundOutput(dec.channels, options.sampleRate, {
-        masterGainDb: sr.masterGainDb, ceilingDb: sr.ceilingDb,
+        masterGainDb: normGainDb + sr.masterGainDb, ceilingDb: sr.ceilingDb,
       });
       const nc = mastered.channels.length;
       await encodeWavN(interleaveN(mastered.channels), nc, options.sampleRate, options.bitDepth, options.outputPath);
@@ -223,7 +229,7 @@ export async function processAudioFileRust(
         durationSec: samples / options.sampleRate,
         renderMs: Date.now() - t0,
       };
-      return { outputPath: options.outputPath, analysisPath, multichannel: true, metrics, backend: 'rust', loudnessNormalized: false };
+      return { outputPath: options.outputPath, analysisPath, multichannel: true, metrics, backend: 'rust', loudnessNormalized: normGainDb !== 0 || typeof options.targetLufs === 'number' };
     }
     // not a surround source → fall through to the stereo pipeline below
   }
