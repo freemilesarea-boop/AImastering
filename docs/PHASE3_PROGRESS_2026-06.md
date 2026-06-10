@@ -45,11 +45,27 @@ AI 음악(Suno/Udio/Stable Audio) 마스터링 시장이 폭발 중이고 Ozone�
 - **`GenreReferencePanel`**(ResultPage): 추정 장르·후보 표시 + 원클릭 '추천 모드 적용'(style+타겟 LUFS) + 가까운 레퍼런스 행 + per-ref '타겟 적용'. 라이브 FFT로 정밀화.
 - **검증**: genre(5)+reference(4, 저작권안전 형태 포함)+패널(3). **vitest 152/152**, 전체 그린(ALL FRESH), typecheck 0. 순수·적용 전 무변경.
 
+## ✅ P3-4. 스템 리밸런스 (근사 즉시 · Demucs/ONNX 정밀 추후)
+
+**커밋**: `feat(rebalance): two-tier stem rebalance — live M/S approximation + ONNX-local skeleton (Phase 3)`
+
+iZotope "Master Rebalance"를 대체하는 **2-티어** 스템 컨트롤. 백엔드(ONNX 로컬)는 사용자 결정.
+
+- **근사 티어(지금 동작, ML 불필요)** — `rebalance-config.ts`(순수) + `rebalance-chain.ts`(WebAudio M/S):
+  - `M=½(L+R), S=½(L−R)` → 미드 버스에 보컬 피킹(~1.6kHz)·베이스 로우셸프(120Hz), 사이드 폭 `sidePct/100`. unity(보컬0·베이스0·폭100%)에서 정확 패스스루 → idle 시 무착색(graph에서 splice-out).
+  - `shared-audio-graph` rerouteBus에 `rebalance` 스테이지 prepend(rebalance→multiband→saturation→imagerMS) + `setRebalanceConfig`. `audioStore` rebalance 슬라이스 + ResultPage 네이티브 프리뷰 effect.
+- **정밀 티어(opt-in, export, 추후)** — 백엔드-무관 `StemSeparator` 인터페이스 + `OnnxStemSeparator` 스켈레톤(`main/offline/stem-separation.ts`, 모델 없으면 `getStemSeparator()`→null → 근사로 graceful fallback). 순수 `remixStems`(0dB 합 = 원본 재구성, per-stem dB).
+- **`StemRebalancePanel`**(ResultPage): 근사 슬라이더(보컬/베이스/공간, 라이브) + 정밀 per-stem 게인(`PRECISE_AVAILABLE=false`로 gate, "모델 필요" 배지).
+- **설계 문서**: `docs/STEM_SEPARATION_PLAN.md` — ONNX 로컬(onnxruntime-node optionalDep · HT-Demucs ONNX · 다운로드-온-퍼스트유즈 · WOLA 윈도 추론) 아키텍처/체크리스트.
+- **검증**: rebalance-config(7 — remix 가산성/sanitize/unity)+rebalance-chain(5 — M/S 매핑·정밀 비활성·dispose)+패널(3). **vitest 167/167**, typecheck 0(renderer+main). 적용 전 무변경(무회귀).
+
+### 정직성/한계
+- 근사 티어는 진짜 스템 분리가 아님(M/S 근사). 진짜 4스템 분리는 정밀 티어(ONNX Demucs)이며 모델 번들/다운로드·런타임 검증은 출시 전 청취 QA에서 확정(헤드리스 불가).
+- 스켈레톤은 native 의존성 미포함 — import-safe, `isReady()`는 항상 false.
+
 ## 🟡 남은 Phase 3 후보
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| 스템 분리 (Demucs) → Master Rebalance 대체 | P0(차별화 최대) | 거대 ML 모델·런타임·번들 결정 필요(사용자 결정) |
-| 자동 장르 감지 (룰→경량 CNN) | P1 | |
-| 한국/아시아 레퍼런스 라이브러리(fingerprint) | P1 | 큐레이션 동반 |
+| 스템 분리 정밀 티어 마무리(ONNX Demucs 런타임/모델) | P0 | 설계·스켈레톤 완료 → 모델 export·다운로드·WOLA 추론·번들 남음 |
 | 섹션별 마스터링 / 멀티-보컬 / 마스터링 이력 | P2 | |

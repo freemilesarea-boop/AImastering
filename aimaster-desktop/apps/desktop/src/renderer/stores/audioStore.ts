@@ -55,6 +55,12 @@ import {
   defaultDeesserConfig,
   sanitizeDeesser,
 } from '../audio/deesser-config.js';
+import {
+  type RebalanceConfig,
+  type StemId,
+  defaultRebalanceConfig,
+  sanitizeRebalance,
+} from '../audio/rebalance-config.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -358,6 +364,12 @@ interface AudioStore {
   updateDeesser: (patch: Partial<DeesserConfig>) => void;
   resetDeesser: () => void;
 
+  // ── Stem rebalance (approximation + Demucs/ONNX precise) ────────────────
+  rebalance: RebalanceConfig;
+  updateRebalance: (patch: Partial<Omit<RebalanceConfig, 'stemGainsDb'>>) => void;
+  updateStemGain: (stem: StemId, db: number) => void;
+  resetRebalance: () => void;
+
   /** Apply a one-click module preset (sets all 5 module slices at once). */
   applyModulePreset: (configs: {
     multiband: MultibandConfig; imagerMultiband: ImagerMultibandConfig;
@@ -536,6 +548,12 @@ export const useAudioStore = create<AudioStore>((set) => ({
   deesser: defaultDeesserConfig(),
   updateDeesser: (patch) => set((s) => ({ deesser: sanitizeDeesser({ ...s.deesser, ...patch }) })),
   resetDeesser: () => set({ deesser: defaultDeesserConfig() }),
+
+  // ── Stem rebalance ─────────────────────────────────────────────────────
+  rebalance: defaultRebalanceConfig(),
+  updateRebalance: (patch) => set((s) => ({ rebalance: sanitizeRebalance({ ...s.rebalance, ...patch }) })),
+  updateStemGain: (stem, db) => set((s) => ({ rebalance: sanitizeRebalance({ ...s.rebalance, stemGainsDb: { ...s.rebalance.stemGainsDb, [stem]: db } }) })),
+  resetRebalance: () => set({ rebalance: defaultRebalanceConfig() }),
 
   applyModulePreset: (c) => set({
     multiband: sanitizeMultiband(c.multiband),

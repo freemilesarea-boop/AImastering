@@ -24,6 +24,7 @@ import {
   setMultibandConfig,
   setImagerMultibandConfig,
   setSaturationConfig,
+  setRebalanceConfig,
   getActiveMultibandReductions,
 } from '../audio/shared-audio-graph.js';
 import { packMultibandArrays, sanitizeMultiband } from '../audio/multiband-config.js';
@@ -41,6 +42,7 @@ import DynamicEqPanel from '../components/DynamicEqPanel.js';
 import ModulePresetBar from '../components/ModulePresetBar.js';
 import AiMusicPanel from '../components/AiMusicPanel.js';
 import GenreReferencePanel from '../components/GenreReferencePanel.js';
+import StemRebalancePanel from '../components/StemRebalancePanel.js';
 import DeesserPanel from '../components/DeesserPanel.js';
 import MultibandGrMeter from '../components/MultibandGrMeter.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
@@ -316,6 +318,14 @@ function PreviewPlayer({
     if (!a || !meterReady) return;
     try { setFreeEqBands(a, parametricEqBands); } catch { /* ignore */ }
   }, [parametricEqBands, meterReady]);
+
+  // ── Stem rebalance (approximation) — native preview only ──────────────
+  const rebalance = useAudioStore((s) => s.rebalance);
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try { setRebalanceConfig(a, rebalance); } catch { /* ignore */ }
+  }, [rebalance, meterReady]);
 
   // ── Multiband compressor — preview (native approx + worklet, when active) ──
   const multiband = useAudioStore((s) => s.multiband);
@@ -1369,6 +1379,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Auto genre + Asian reference library (Phase 3) ─────────────────── */}
       <Section title="장르 감지 · 아시아 레퍼런스" defaultOpen={false}>
         <GenreReferencePanel />
+      </Section>
+
+      {/* ── Stem rebalance (approximation now · Demucs/ONNX later) ──────────── */}
+      <Section title="스템 리밸런스" defaultOpen={false}>
+        <StemRebalancePanel />
       </Section>
 
       {/* ── AI-generated music mode (Phase 3 differentiator) ───────────────── */}
