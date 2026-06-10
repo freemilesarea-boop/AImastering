@@ -1,24 +1,23 @@
 // surround-encode-selftest — verify the multichannel WAV encode end-to-end with
-// the BUNDLED ffmpeg.  Moves "WAV channel mask / channel count" from device-only
-// QA to a headless, CI-runnable check.
+// the BUNDLED ffmpeg.  Moves the OBJECTIVE parts of "player playback" from
+// device-only QA to a headless, CI-runnable check:
+//   1) channel mask — WAVE_FORMAT_EXTENSIBLE + dwChannelMask (5.1→0x3f, 7.1→0x63f)
+//   2) channel integrity — a per-channel constant survives an encode→decode
+//      round-trip in the right channel + level (catches swaps / drops / level
+//      errors without listening).
+// The subjective part (does it SOUND right) remains human QA.
 //
 //   pnpm --filter @aimaster/desktop test:surround-encode
-//
-// Builds a 5.1 + 7.1 interleaved f32le buffer (a distinct tone per channel),
-// encodes a WAV with the pinned -ch_layout (as encodeWavN does), then parses the
-// WAV fmt chunk and asserts WAVE_FORMAT_EXTENSIBLE + channel count + dwChannelMask
-// (5.1 → 0x3f, 7.1 → 0x63f).
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ffmpegStatic from 'ffmpeg-static';
-import { ffmpegLayoutName, LAYOUT_CHANNELS, type SurroundLayout } from '../src/main/offline/surround.js';
-
-const FFMPEG = (ffmpegStatic as unknown as string) || 'ffmpeg';
+import { ffmpegLayoutName, deinterleaveN, LAYOUT_CHANNELS, type SurroundLayout } from '../src/main/offline/surround.js';
 import { interleaveN } from '../src/main/offline/surround-render.js';
 
+const FFMPEG = (ffmpegStatic as unknown as string) || 'ffmpeg';
 const SR = 48000;
 
 // WAVE_FORMAT_EXTENSIBLE channel masks (dwChannelMask) we expect ffmpeg to write.
@@ -76,13 +75,62 @@ async function checkLayout(layout: SurroundLayout, dir: string): Promise<boolean
   return ok;
 }
 
+/** Run ffmpeg, capturing stdout (for decode-back). */
+function runFfmpegCapture(args: string[], stdin?: Buffer): Promise<{ code: number; out: Buffer }> {
+  return new Promise((resolve) => {
+    const child = spawn(FFMPEG, args, { shell: false });
+    const out: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => out.push(c));
+    child.stderr.resume();
+    child.stdin.on('error', () => { /* ignore EPIPE */ });
+    child.on('error', () => resolve({ code: 1, out: Buffer.alloc(0) }));
+    child.on('close', (code) => resolve({ code: code ?? 1, out: Buffer.concat(out) }));
+    if (stdin) { child.stdin.write(stdin); child.stdin.end(); }
+  });
+}
+
+/** Encode a per-channel constant, decode it back, assert order + level survive. */
+async function roundTrip(layout: SurroundLayout, dir: string): Promise<boolean> {
+  const nc = LAYOUT_CHANNELS[layout].length;
+  const frames = 2048;
+  const expected = (c: number) => (c + 1) * 0.05; // distinct constant per channel
+  const chans = Array.from({ length: nc }, (_, c) => new Float32Array(frames).fill(expected(c)));
+  const wav = join(dir, `rt-${layout}.wav`);
+  const enc = await runFfmpegCapture([
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'f32le', '-ar', String(SR), '-ac', String(nc), '-i', 'pipe:0',
+    '-ch_layout', ffmpegLayoutName(layout), '-c:a', 'pcm_s24le', wav,
+  ], Buffer.from(interleaveN(chans).buffer));
+  if (enc.code !== 0) { console.error(`  ✗ ${layout} round-trip: encode failed`); return false; }
+  // Decode back to f32le with the same channel count.
+  const dec = await runFfmpegCapture([
+    '-hide_banner', '-loglevel', 'error',
+    '-i', wav, '-f', 'f32le', '-acodec', 'pcm_f32le', '-ac', String(nc), '-ar', String(SR), 'pipe:1',
+  ]);
+  if (dec.code !== 0) { console.error(`  ✗ ${layout} round-trip: decode failed`); return false; }
+  const usable = dec.out.byteLength - (dec.out.byteLength % 4);
+  const back = deinterleaveN(new Float32Array(dec.out.buffer, dec.out.byteOffset, usable / 4), nc);
+  let ok = true;
+  for (let c = 0; c < nc; c++) {
+    const mid = back[c]![Math.floor(frames / 2)] ?? NaN; // avoid edge ramps
+    if (Math.abs(mid - expected(c)) > 1e-3) {
+      console.error(`  ✗ ${layout} ch${c}: got ${mid.toFixed(4)} expected ${expected(c).toFixed(4)} (swap/drop/level)`);
+      ok = false;
+    }
+  }
+  console.log(`  ${ok ? '✓' : '✗'} ${layout} round-trip: ${nc} channels preserved in order + level`);
+  return ok;
+}
+
 async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'surround-enc-'));
   try {
-    console.log('[surround-encode-selftest] verifying multichannel WAV mask via bundled ffmpeg/ffprobe');
-    const results = await Promise.all((['5.1', '7.1'] as SurroundLayout[]).map((l) => checkLayout(l, dir)));
-    if (results.every(Boolean)) { console.log('PASS — multichannel WAV channel mask correct'); }
-    else { console.error('FAIL — channel mask mismatch'); process.exit(1); }
+    console.log('[surround-encode-selftest] WAV mask + channel-integrity round-trip via bundled ffmpeg');
+    const layouts: SurroundLayout[] = ['5.1', '7.1'];
+    const mask = await Promise.all(layouts.map((l) => checkLayout(l, dir)));
+    const rt = await Promise.all(layouts.map((l) => roundTrip(l, dir)));
+    if ([...mask, ...rt].every(Boolean)) { console.log('PASS — channel mask + channel integrity correct'); }
+    else { console.error('FAIL — surround encode/round-trip mismatch'); process.exit(1); }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
