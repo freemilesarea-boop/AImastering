@@ -101,13 +101,31 @@
 - 테스트 6종(passthrough / 비활성 / in-band 컷 / out-of-band 보존 / quiet 부스트 / range0). **`cargo test -p loui-dsp` 96/96** + 하니스, `cargo check --workspace` 0. 기본 bypass → 무회귀.
 - 노출(WASM setter + UI)은 후속.
 
+### P2-11. Dynamic EQ 노출 (바인딩→밴드리스트 UI→Export+worklet) ✅
+**커밋**: `feat(dyneq): expose dynamic EQ — binding → band-list UI → export + worklet (Phase 2)`
+- **Rust(`loui-dsp-wasm`)**: `setDynamicEqBands`(bypass + 10개 병렬 배열, 밴드당 1엔트리, type/mode u8 코드) + setConfig 보존. `cargo check` 0.
+- 공유 `dyneq-config.ts`(밴드 모델 + sanitize/unity + 병렬배열 pack + 코드맵), 오프라인 바인딩(구조적 밴드+코드, 가드 호출), audioStore(밴드 add/update/remove), export-backend 첨부(활성 시·코드), Mastering/HomePage 전달.
+- 프리뷰: **worklet `'dyneq'` 메시지만** (트랜지언트처럼 WebAudio 근사 불가 → 기본 프리뷰 미반영). post/seed.
+- **`DynamicEqPanel`** 밴드 리스트 편집기: 추가/삭제 + 밴드별 type/mode/freq/Q/threshold/ratio/range.
+- **테스트**: config(4)+패널(5)+export(1). **vitest 91/91**, 전체 pnpm test 그린, typecheck 0. 기본 bypass → 무회귀.
+
+## ✅ Phase 2 Ozone 핵심 5종 모듈 — DSP + 전 경로 노출 완료
+
+| 모듈 | DSP | 노출(바인딩/UI/Export) | 프리뷰 |
+|------|:---:|:---:|------|
+| 멀티밴드 컴프 | ✅ | ✅ | native+worklet |
+| 4밴드 M/S 이미저 | ✅ | ✅ | native+worklet |
+| Saturation/Exciter | ✅ | ✅ | native+worklet |
+| Transient/Impact | ✅ | ✅ | worklet only |
+| Dynamic EQ | ✅ | ✅ | worklet only |
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| Dynamic EQ **노출**(WASM/UI) | P1 후속 | DSP 완료 |
-| 모듈 프리셋(스타일별 기본값) | P2 | 5종 모듈 묶음 |
+| 모듈 프리셋(스타일별 기본값) | P2 | 5종 모듈 묶음 원클릭 |
 | De-esser 적응형 / 멀티밴드 GR 메터 연결 | P2 | |
+| (출시 전) wasm 아티팩트 재빌드 + 실기기 A/B QA → 기본 ON | 🔴 | 헤드리스 불가 |
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 2~4 캐릭터) | P1 | 신규 모듈 |
 | Transient/Impact (멀티밴드 attack/sustain) | P1 | 신규 모듈 |
