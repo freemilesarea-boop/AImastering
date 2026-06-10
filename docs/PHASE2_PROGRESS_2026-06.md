@@ -125,11 +125,18 @@
 - `audioStore.applyModulePreset`: 5종 슬라이스 일괄 세팅. **`ModulePresetBar`** UI(원클릭, 적용 후 패널 세부조정 가능).
 - **테스트**: presets(7)+bar(3). **vitest 101/101**, 전체 pnpm test 그린, typecheck 0. 순수 렌더러(Rust 무변경) — 이미 노출된 모듈 config를 구동하므로 export+worklet에 그대로 적용.
 
+### P2-13. 적응형 De-esser (Dynamic EQ 기반) ✅
+**커밋**: `feat(deesser): adaptive de-esser built on the Dynamic EQ`
+- 새 DSP 없이 — **시빌런스 대역 빠른 DownCut 다이내믹EQ 밴드**로 구현, 엔진 전송 시 다이내믹EQ 밴드 리스트에 합성(export + worklet).
+- `deesser-config.ts`(sanitize/isActive + `deesserToDynEqBand`(fast downcut) + `combineDynamicEqWithDeesser`(유저밴드+디에스, cap6; 바이패스 유저밴드 제외하되 디에스 유지)), audioStore 슬라이스, export-backend+ResultPage 합성 전송, 두 페이지 전달.
+- **`DeesserPanel`**: enable·필터(벨/하이셸프)·주파수·threshold·range·Q + **'보컬 디에스' 퀵 프리셋**. 기본 native 프리뷰 미반영(노치라 worklet/export).
+- **테스트**: config(6)+패널(4)+export 합성(1). **vitest 112/112**, 전체 pnpm test 그린, typecheck 0. Rust 재사용·기본 disabled → 무회귀.
+
 ## 🟡 남은 Phase 2 항목
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| De-esser 적응형 / 멀티밴드 GR 메터 연결 | P2 | |
+| 멀티밴드 GR 메터 UI 연결 | P2 | |
 | (출시 전) wasm 아티팩트 재빌드 + 실기기 A/B QA → 기본 ON | 🔴 | 헤드리스 불가 |
 | 멀티밴드 Stereo Imager (4밴드 M/S) + M/S EQ | P1 | imager.rs 확장 |
 | Saturation/Exciter (멀티밴드, 2~4 캐릭터) | P1 | 신규 모듈 |
