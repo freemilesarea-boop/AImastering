@@ -64,6 +64,10 @@ export default function SurroundPanel(): React.ReactElement {
               <input type="checkbox" checked={s.perChannelChain} onChange={(e) => update({ perChannelChain: e.target.checked })} aria-label="베드별 풀 체인" />
               베드별 풀 체인 (EQ/컴프/새추레이션)
             </label>
+            <label className="flex items-center gap-2 text-[10px] text-zinc-400">
+              <input type="checkbox" checked={!!s.admBwf} onChange={(e) => update({ admBwf: e.target.checked })} aria-label="ADM BWF 출력" />
+              ADM BWF 출력 (Atmos/ADM 도구용 베드)
+            </label>
 
             {s.perChannelChain && (
               <div className="space-y-2 rounded border border-zinc-800 p-2">

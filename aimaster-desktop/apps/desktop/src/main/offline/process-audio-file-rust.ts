@@ -256,6 +256,15 @@ export async function processAudioFileRust(
       });
       const nc = mastered.channels.length;
       await encodeWavN(interleaveN(mastered.channels), nc, options.sampleRate, options.bitDepth, options.outputPath, ffmpegLayoutName(dec.layout));
+      // Optional ADM BWF authoring: append chna + axml so Atmos/ADM tools can
+      // ingest the bed.  Best-effort — a failure leaves the plain WAV intact.
+      if (sr.admBwf) {
+        try {
+          const { readFile, writeFile } = await import('node:fs/promises');
+          const { wrapAdmBwf } = await import('./adm.js');
+          await writeFile(options.outputPath, wrapAdmBwf(await readFile(options.outputPath), dec.layout));
+        } catch { /* keep the plain multichannel WAV */ }
+      }
       // Stereo fold-down (of the mastered channels) for analysis / preview.
       const fd = foldDownToStereo(mastered.channels, dec.layout, sr.trims);
       const analysisPath = options.outputPath.replace(/\.wav$/i, '') + '.stereo.wav';

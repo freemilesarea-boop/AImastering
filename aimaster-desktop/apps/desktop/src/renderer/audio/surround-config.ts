@@ -33,6 +33,7 @@ export function defaultSurroundOptions(): SurroundOptions {
     ceilingDb: -1,
     perChannelChain: false,
     beds: defaultSurroundBeds(),
+    admBwf: false,
   };
 }
 
@@ -55,6 +56,7 @@ export function sanitizeSurround(s: SurroundOptions): SurroundOptions {
     ceilingDb: clamp(s.ceilingDb ?? -1, CEILING_RANGE.min, CEILING_RANGE.max, -1),
     perChannelChain: !!s.perChannelChain,
     beds: sanitizeBeds(s.beds),
+    admBwf: !!s.admBwf,
   };
 }
 

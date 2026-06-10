@@ -98,11 +98,25 @@
 - WAV 채널 마스크·채널수·소스 레이아웃 매핑은 헤드리스 검증됨. 남은 device-QA: 실제 플레이어/DAW 재생·청취 품질(마스크는 맞지만 실제 사운드 체감).
 - 멀티채널 WAV 인코딩(ffmpeg `-ac N`)·채널 마스크·플레이어 호환은 실제 서라운드 파일/장치로만 종단 검증 → 출시 전 QA. K-weighting 계수는 비-48k에서도 산출식 적용(정확). 단위테스트는 라우드니스/리미터/피크/폴드다운 DSP 수학만 보장.
 
+## ✅ P4-3. ADM BWF 오서링 (객체 Atmos — 베드 기반)
+
+**커밋**: `feat(surround): ADM BWF (chna + axml) bed authoring (Phase 4)`
+
+객체 기반 Atmos 오서링의 표준 산출물인 **ADM BWF**(베드 기반) 생성. 멀티채널 WAV에 `chna`+`axml`(ADM XML) 청크를 붙여 Atmos/ADM 도구가 인제스트 가능하게.
+
+- **`adm.ts`**(메인, 순수): `buildAdmXml(layout)`(DirectSpeakers 베드 — 채널별 표준 방위/고도 position, LFE는 lowPass frequency, audioProgramme→Content→Object→PackFormat→ChannelFormat/Stream/Track/UID 계층), `buildChnaPayload`(BWF chna: 트랙→UID/track/pack, 40바이트 레코드), `wrapAdmBwf`(WAV에 chna+axml append + RIFF 크기 보정).
+- **렌더 연결**: 멀티채널 + `surround.admBwf` 시 인코드 후 WAV를 ADM BWF로 래핑(best-effort, 실패 시 평범한 WAV 유지). `SurroundOptions.admBwf` + `SurroundPanel` 체크박스.
+- **검증**: adm(6 — XML well-formed·채널수·LFE lowPass·chna 크기/인덱스·wrap RIFF 보정·non-RIFF 거부). **vitest 305/305**, typecheck 0.
+
+### 정직성/한계
+- **베드 기반** ADM(채널을 DirectSpeakers 베드로 기술). **동적 객체(위치 자동화)·바이노럴 렌더·Dolby 인코딩은 범위 밖** — 자체 정의(common definitions 미참조)라 ADM 도구 인제스트는 되지만, 실제 Atmos 렌더러 호환은 도구 검증 필요(출시 전 QA). XML 스키마 완전 검증(XSD)은 미수행.
+
 ## 🟡 Phase 4 남은 후보(대규모·범위 밖)
 
 | 항목 | 비고 |
 |------|------|
-| 객체 기반 Atmos 오서링(ADM BWF/Dolby/바이노럴) | 전용 인코더·메타데이터 체인 필요 |
-| ~~멀티채널 풀 체인(per-bed EQ/컴프)~~ | ✅ P4-2c (베드별 재사용). 베드마다 다른 설정은 향후 |
+| ADM 동적 객체(위치 자동화)·바이노럴·Dolby 인코딩 | 전용 렌더러/인코더 필요 |
+| ~~ADM BWF 베드 오서링~~ | ✅ P4-3 (chna+axml) |
+| ~~멀티채널 풀 체인(per-bed EQ/컴프)~~ | ✅ P4-2c/d |
 | DAW 플러그인(VST3/AU, JUCE/nih-plug) | C++/플러그인 SDK·DAW 검증 필요 |
 | Cloud / Mobile | 별도 플랫폼 |

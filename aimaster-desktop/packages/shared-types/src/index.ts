@@ -190,6 +190,8 @@ export interface SurroundOptions {
   perChannelChain: boolean;
   /** Per-bed tone/level offsets (applied on top of the shared chain). */
   beds?: SurroundBeds;
+  /** Multichannel mode: write an ADM BWF (chna + axml) for Atmos/ADM tools. */
+  admBwf?: boolean;
 }
 
 /** Per-bed tone + level offsets, layered on the shared chain config. */
