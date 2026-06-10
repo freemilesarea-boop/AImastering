@@ -63,9 +63,28 @@ iZotope "Master Rebalance"를 대체하는 **2-티어** 스템 컨트롤. 백엔
 - 근사 티어는 진짜 스템 분리가 아님(M/S 근사). 진짜 4스템 분리는 정밀 티어(ONNX Demucs)이며 모델 번들/다운로드·런타임 검증은 출시 전 청취 QA에서 확정(헤드리스 불가).
 - 스켈레톤은 native 의존성 미포함 — import-safe, `isReady()`는 항상 false.
 
+## ✅ P3-5. 스템 분리 정밀 티어 런타임 (ONNX Demucs)
+
+**커밋**: `feat(rebalance): precise stem separation runtime — ONNX Demucs WOLA + model manager (Phase 3)`
+
+정밀 티어의 **실제 런타임**을 전부 구현(헤드리스 검증 가능 부분 단위 테스트). 3개의 스위치만 OFF로 남기고 게이트.
+
+- **`stem-inference.ts`**(순수): `planSegments`(오버랩 세그먼트), `hannWindow`, `overlapAddWeighted`(가중 WOLA — partition-of-unity 정확 재구성), `resampleLinear`. Demucs식 세그먼트 추론의 결정적 코어.
+- **`stem-model-manager.ts`**: 핀 매니페스트(url+sha256+bytes·modelSampleRate) + userData 캐시 경로 + **download-on-first-use**(체크섬·크기 검증, 손상 시 거부). 모든 부수효과(fs/crypto/fetch) 주입형 → 헤드리스 테스트. 현재 매니페스트 placeholder(sha256 빈값) → `isModelConfigured()=false`.
+- **`stem-separation.ts`**: 실제 `OnnxStemSeparator` — `onnxruntime-node` lazy `import`(런타임 조립 specifier, 부재 시 graceful), 세그먼트별 `[1,2,len]` 텐서 추론 → `[1,4,2,len]` 4스템 분해 → 스템·채널별 WOLA. `getStemSeparator()`는 매니페스트 미핀 시 null.
+- **`precise-rebalance.ts`**: `applyPreciseRebalance` — 분리 → 모델레이트→렌더레이트 리샘플 → per-stem dB 재합. 비활성/모델없음 시 입력 그대로(applied=false, graceful fallback). separator 주입형.
+- **연결**: `process-audio-file-rust`가 체인 직전에 정밀 리밸런스 적용 · `MasteringOptions.rebalance`(shared-types) · `audioHandlers`가 `app.getPath('userData')` 주입 · `MasteringPage`가 `isPreciseRebalanceActive`일 때만 옵션 첨부(아니면 옵션 무변경).
+- **ON 스위치 3개**(전부 OFF): ① 매니페스트 핀(sha256), ② `onnxruntime-node` optionalDep+번들, ③ `PRECISE_AVAILABLE=true`. 상세 `docs/STEM_SEPARATION_PLAN.md`.
+- **검증**: stem-inference(10)+model-manager(8)+separation(3)+precise-rebalance(5 — 0dB 원본재구성·+6dB 2배·리샘플·fallback). **vitest 193/193**, typecheck 0(renderer+main+shared-types). 무회귀(게이트 OFF·옵션 무변경).
+
+### 정직성/한계
+- 분리 **품질·실시간 동작**은 모델+onnxruntime-node+오디오 장치 필요 → 출시 전 청취 QA(헤드리스 불가). 단위 테스트는 파이프라인 정확성(가산 재구성·게인·리샘플·WOLA·캐시/체크섬)만 보장.
+- 리샘플은 선형(1차) — 추후 폴리페이즈 업그레이드 가능(인터페이스 불변).
+- 모델 미핀 상태라 현재 정밀 분리는 동작하지 않음(설계대로 근사 티어로 폴백).
+
 ## 🟡 남은 Phase 3 후보
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
-| 스템 분리 정밀 티어 마무리(ONNX Demucs 런타임/모델) | P0 | 설계·스켈레톤 완료 → 모델 export·다운로드·WOLA 추론·번들 남음 |
+| 정밀 티어 ON(모델 export·핀·번들) | 출시 전 | 런타임 완료 → 스위치 3개만 남음 |
 | 섹션별 마스터링 / 멀티-보컬 / 마스터링 이력 | P2 | |

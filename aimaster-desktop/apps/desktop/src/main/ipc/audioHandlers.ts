@@ -405,6 +405,10 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
         // Two-pass loudness-normalize toward the same target the UI requests.
         ...(typeof options?.targetLufs === 'number' ? { targetLufs: options.targetLufs } : {}),
         ...(typeof options?.targetTp === 'number' ? { targetTp: options.targetTp } : {}),
+        // Precise stem rebalance — no-op unless enabled AND a model is installed.
+        ...(options?.rebalance?.enabled
+          ? { rebalance: { enabled: true, gainsDb: options.rebalance.gainsDb, userDataDir: app.getPath('userData') } }
+          : {}),
       });
       await encodePreviewMp3(wavTempPath, mp3Path);
 

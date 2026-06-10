@@ -15,6 +15,7 @@ import {
   type RenderMetrics, type NormalizedRenderMetrics,
 } from './rust-offline-render-core.js';
 import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-node.js';
+import { applyPreciseRebalance, type PreciseRebalanceOptions } from './precise-rebalance.js';
 
 export interface RustRenderOptions {
   sampleRate: number;
@@ -26,6 +27,8 @@ export interface RustRenderOptions {
   targetTp?: number;
   /** Max upward loudness gain (dB).  Default +12. */
   maxBoostDb?: number;
+  /** Optional precise stem rebalance (no-op unless a model is installed). */
+  rebalance?: PreciseRebalanceOptions;
   onProgress?: (frac: number) => void;
 }
 
@@ -104,7 +107,16 @@ export async function processAudioFileRust(
 ): Promise<RustRenderFileResult> {
   if (!isRustOfflineAvailable()) throw new Error('rust offline backend unavailable (node WASM not built)');
   const interleavedIn = await decodeToFloatStereo(inputPath, options.sampleRate);
-  const { left, right } = deinterleave(interleavedIn, 2);
+  const deint = deinterleave(interleavedIn, 2);
+  let left = deint.left;
+  let right = deint.right;
+
+  // Precise stem rebalance (Demucs/ONNX) — runs BEFORE the mastering chain.
+  // No-op (and no model download) unless explicitly enabled with a model present.
+  if (options.rebalance?.enabled) {
+    const rb = await applyPreciseRebalance(left, right, options.sampleRate, options.rebalance, options.onProgress);
+    left = rb.left; right = rb.right;
+  }
 
   const normalized = typeof options.targetLufs === 'number';
   let outL: Float32Array, outR: Float32Array;

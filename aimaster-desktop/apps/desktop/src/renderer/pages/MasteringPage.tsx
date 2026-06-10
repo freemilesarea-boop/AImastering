@@ -12,6 +12,7 @@ import { useAudioStore, toStructuredError } from '../stores/audioStore.js';
 import type { StructuredError } from '../stores/audioStore.js';
 import type { MasteringResult, AudioAnalysisResult } from '@aimaster/shared-types';
 import { masterWithPreferredBackend } from '../audio/export-backend.js';
+import { isPreciseRebalanceActive } from '../audio/rebalance-config.js';
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
 
@@ -151,6 +152,7 @@ export default function MasteringPage() {
   const transient       = useAudioStore((s) => s.transient);
   const dynamicEq       = useAudioStore((s) => s.dynamicEq);
   const deesser         = useAudioStore((s) => s.deesser);
+  const rebalance       = useAudioStore((s) => s.rebalance);
   const progress        = useAudioStore((s) => s.progress);
   const isMastering     = useAudioStore((s) => s.isMastering);
   const error           = useAudioStore((s) => s.error);
@@ -235,11 +237,16 @@ export default function MasteringPage() {
 
       // eslint-disable-next-line no-console
       console.log('[MasteringPage] ipc invoke start — audio:master');
+      // Attach precise stem rebalance only when the user opted in with non-zero
+      // stem gains; otherwise the export options are byte-for-byte unchanged.
+      const exportOptions = isPreciseRebalanceActive(rebalance)
+        ? { ...options, rebalance: { enabled: true, gainsDb: rebalance.stemGainsDb } }
+        : options;
       const result = await Promise.race([
         masterWithPreferredBackend({
           invoke: window.electronAPI!.invoke,
           sourcePath: selectedFile,
-          options,
+          options: exportOptions,
           multiband,
           imagerMultiband,
           saturation,

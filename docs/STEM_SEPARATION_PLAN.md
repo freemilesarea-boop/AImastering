@@ -92,21 +92,41 @@ approximation tier — so the whole feature degrades gracefully.
 
 ## Headless verifiability
 
-- ✅ `remixStems` (additive reconstruction, per-stem dB) — unit tested.
+- ✅ `remixStems` / `applyPreciseRebalance` (additive reconstruction, per-stem
+  dB, model-rate → render-rate resample) — unit tested with a fake separator.
 - ✅ approximation chain (`rebalance-chain`) M/S mapping — unit tested.
-- ✅ `getStemSeparator()` returns `null` with no model (graceful fallback).
-- ❌ real separation quality / runtime — requires the model + audio device,
-  validated in pre-launch QA (same bucket as flag-flip A/B listening).
+- ✅ WOLA core — `planSegments` coverage, Hann partition-of-unity reconstruction,
+  `resampleLinear` — unit tested.
+- ✅ model manager — `ensureModel` download/verify/cache, checksum + size
+  rejection, unconfigured → null (no download) — unit tested with injected fs.
+- ✅ `getStemSeparator()` returns `null` while unpinned (graceful fallback).
+- ❌ real separation quality / runtime — requires the model + onnxruntime-node +
+  audio device, validated in pre-launch QA (same bucket as flag-flip A/B).
+
+## What flips it ON
+
+The whole precise path is built and tested; it is gated by exactly **three**
+switches, all OFF today:
+
+1. **Manifest** — pin `url` + `sha256` + `bytes` in `HTDEMUCS_MANIFEST`
+   (`stem-model-manager.ts`). Until then `isModelConfigured()` is false and
+   `getStemSeparator()` returns null.
+2. **Runtime** — add `onnxruntime-node` (optionalDependency) + lockfile +
+   electron-builder native-addon packaging. `loadOrt()` already lazy-loads it
+   and degrades gracefully when absent.
+3. **UI** — flip `PRECISE_AVAILABLE = true` in `StemRebalancePanel.tsx`.
 
 ## Status checklist
 
 - [x] Approximation tier (live, no ML) — `rebalance-config.ts`, `rebalance-chain.ts`
-- [x] Backend-agnostic `StemSeparator` interface + ONNX skeleton (gated OFF)
-- [x] Pure `remixStems` additive remix + tests
+- [x] Backend-agnostic `StemSeparator` interface + real `OnnxStemSeparator`
+- [x] Pure `remixStems` + `applyPreciseRebalance` (separate → resample → re-sum) + tests
+- [x] WOLA inference core (`stem-inference.ts`: segments, Hann, overlap-add, resample) + tests
+- [x] Model manager (`stem-model-manager.ts`: download-on-first-use, checksum, cache) + tests
+- [x] Lazy `onnxruntime-node` loader (`loadOrt`, graceful when absent)
+- [x] Precise rebalance wired into `process-audio-file-rust` → behind `options.rebalance`
+- [x] Renderer → export plumbing (`MasteringOptions.rebalance`, `MasteringPage`)
 - [x] UI: two-tier `StemRebalancePanel` (precise gated by `PRECISE_AVAILABLE`)
-- [ ] `onnxruntime-node` optionalDependency + lazy loader
-- [ ] HT-Demucs ONNX export + quantization + pinned manifest
-- [ ] Download-on-first-use to userData + checksum + progress
-- [ ] Windowed inference (WOLA) wired into `process-audio-file-rust`
-- [ ] electron-builder native-addon packaging per platform
-- [ ] Flip `PRECISE_AVAILABLE = true` + pre-launch listening QA
+- [ ] HT-Demucs ONNX export + quantization + **pin manifest** (switch 1)
+- [ ] `onnxruntime-node` optionalDependency + lockfile + electron-builder packaging (switch 2)
+- [ ] Flip `PRECISE_AVAILABLE = true` (switch 3) + pre-launch listening QA

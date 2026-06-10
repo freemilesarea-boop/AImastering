@@ -150,6 +150,14 @@ export interface MasteringOptions {
   outputGainDb?: number;
   /** v3 — dynamic EQ intensity (0=off, 1=full). 누락 시 1.0. */
   dynamicEqIntensity?: number;
+  /** Phase 3 — precise (Demucs/ONNX) stem rebalance. No-op unless a model is installed. */
+  rebalance?: RebalancePreciseOptions;
+}
+
+/** Precise stem rebalance — per-stem gain applied on the offline (Rust) export. */
+export interface RebalancePreciseOptions {
+  enabled: boolean;
+  gainsDb: { vocals: number; drums: number; bass: number; other: number };
 }
 
 export interface EqMoveReport {
