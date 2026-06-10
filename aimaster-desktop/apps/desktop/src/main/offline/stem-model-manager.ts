@@ -26,6 +26,13 @@ export interface StemModelManifest {
   bytes: number;
   /** Sample rate the model expects (Demucs = 44.1 kHz). */
   modelSampleRate: number;
+  /**
+   * Fixed segment length (samples) the ONNX graph requires.  Demucs exports are
+   * usually fixed-length: the runtime pads each segment to this and crops the
+   * output back.  0 / omitted ⇒ the graph accepts the native segment length
+   * (dynamic time axis).
+   */
+  segmentSamples?: number;
 }
 
 /** Pinned HT-Demucs (v4) manifest.  url/sha256/bytes TBD — see plan doc. */
@@ -36,6 +43,7 @@ export const HTDEMUCS_MANIFEST: StemModelManifest = {
   sha256: '', // TODO: pin SHA-256 once exported
   bytes: 0,
   modelSampleRate: 44100,
+  segmentSamples: 0, // 0 = dynamic time axis; export script fills the real value
 };
 
 /** A manifest is usable once it has both a source and a checksum pinned. */
@@ -69,7 +77,14 @@ export function parseManifest(raw: unknown): StemModelManifest | null {
   if (bytes < 0 || modelSampleRate <= 0) return null;
   // Path-traversal safety: fileName is joined under the model dir.
   if (fileName.includes('/') || fileName.includes('\\') || fileName.includes('..')) return null;
-  return { id, fileName, url, sha256: sha256.toLowerCase(), bytes, modelSampleRate };
+  // segmentSamples is optional; when present it must be a non-negative integer.
+  let segmentSamples = 0;
+  if (o.segmentSamples !== undefined) {
+    const seg = num(o.segmentSamples);
+    if (seg === null || seg < 0 || !Number.isInteger(seg)) return null;
+    segmentSamples = seg;
+  }
+  return { id, fileName, url, sha256: sha256.toLowerCase(), bytes, modelSampleRate, segmentSamples };
 }
 
 export interface ManifestSource {

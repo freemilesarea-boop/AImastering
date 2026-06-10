@@ -18,6 +18,7 @@
 //   --id   <id>        model id / cache subdir            (default htdemucs-v4)
 //   --name <fileName>  cached filename                    (default htdemucs.onnx)
 //   --rate <hz>        model sample rate                  (default 44100)
+//   --segment <n>      fixed segment length in samples    (default 0 = dynamic)
 //   --out  <path>      sidecar output path  (default ./stem-model.manifest.json)
 
 import { createHash } from 'node:crypto';
@@ -38,8 +39,8 @@ async function fetchBytes(url) {
   return new Uint8Array(await res.arrayBuffer());
 }
 
-function buildManifest({ id, fileName, url, bytes, sha256, modelSampleRate }) {
-  return { id, fileName, url, sha256, bytes, modelSampleRate };
+function buildManifest({ id, fileName, url, bytes, sha256, modelSampleRate, segmentSamples }) {
+  return { id, fileName, url, sha256, bytes, modelSampleRate, segmentSamples };
 }
 
 async function main() {
@@ -59,6 +60,7 @@ async function main() {
     bytes: data.byteLength,
     sha256,
     modelSampleRate: a.rate ? Number(a.rate) : 44100,
+    segmentSamples: a.segment ? Number(a.segment) : 0,
   });
 
   const out = typeof a.out === 'string' ? a.out : './stem-model.manifest.json';

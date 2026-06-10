@@ -78,6 +78,22 @@ async function loadOrt(): Promise<OrtLike | null> {
   }
 }
 
+/** Side effects the separator needs — injectable so `separate()` is testable. */
+export interface OnnxDeps {
+  loadOrt(): Promise<OrtLike | null>;
+  ensureModelPath(
+    userDataDir: string,
+    manifest: StemModelManifest,
+    onProgress?: (frac: number) => void,
+  ): Promise<string | null>;
+}
+
+const defaultDeps: OnnxDeps = {
+  loadOrt,
+  ensureModelPath: (userDataDir, manifest, onProgress) =>
+    ensureModel(userDataDir, nodeModelFsDeps(), manifest, onProgress),
+};
+
 export class OnnxStemSeparator implements StemSeparator {
   readonly id = 'onnx-demucs-v4';
   private session: OrtSessionLike | null = null;
@@ -86,26 +102,27 @@ export class OnnxStemSeparator implements StemSeparator {
   constructor(
     private readonly userDataDir: string,
     private readonly manifest: StemModelManifest = HTDEMUCS_MANIFEST,
+    private readonly deps: OnnxDeps = defaultDeps,
   ) {}
 
   async isReady(): Promise<boolean> {
     if (!isModelConfigured(this.manifest)) return false; // weights not pinned yet
-    if (!this.ort) this.ort = await loadOrt();
+    if (!this.ort) this.ort = await this.deps.loadOrt();
     return this.ort !== null;
   }
 
   private async ensureSession(onProgress?: (frac: number) => void): Promise<OrtSessionLike> {
     if (this.session) return this.session;
-    const ort = this.ort ?? (this.ort = await loadOrt());
+    const ort = this.ort ?? (this.ort = await this.deps.loadOrt());
     if (!ort) throw new Error('onnxruntime-node not available');
-    const path = await ensureModel(this.userDataDir, nodeModelFsDeps(), this.manifest, onProgress);
+    const path = await this.deps.ensureModelPath(this.userDataDir, this.manifest, onProgress);
     if (!path) throw new Error('stem model not configured');
     this.session = await ort.InferenceSession.create(path);
     return this.session;
   }
 
   async separate(input: StereoBuffer, onProgress?: (frac: number) => void): Promise<SeparatedStems> {
-    const ort = this.ort ?? (this.ort = await loadOrt());
+    const ort = this.ort ?? (this.ort = await this.deps.loadOrt());
     if (!ort) throw new Error('onnxruntime-node not available');
     const session = await this.ensureSession(onProgress);
 
@@ -115,11 +132,14 @@ export class OnnxStemSeparator implements StemSeparator {
     const R = resampleLinear(input.right, input.sampleRate, sr);
     const total = Math.min(L.length, R.length);
 
-    const segLen = Math.max(1, Math.round(SEGMENT_SECONDS * sr));
+    // Fixed-segment models (Demucs default) need every input padded to exactly
+    // `segmentSamples`; a 0/omitted value means the graph accepts native lengths.
+    const fixed = this.manifest.segmentSamples && this.manifest.segmentSamples > 0
+      ? this.manifest.segmentSamples : 0;
+    const segLen = fixed || Math.max(1, Math.round(SEGMENT_SECONDS * sr));
     const hop = Math.max(1, Math.round(segLen * (1 - OVERLAP)));
     const segments = planSegments(total, segLen, hop);
 
-    // Per-stem, per-channel accumulators (data + window weights).
     const segOut: Record<StemId, { l: Float32Array[]; r: Float32Array[] }> = {
       vocals: { l: [], r: [] }, drums: { l: [], r: [] }, bass: { l: [], r: [] }, other: { l: [], r: [] },
     };
@@ -133,16 +153,17 @@ export class OnnxStemSeparator implements StemSeparator {
       const win = hannWindow(seg.length);
       weights.push(win);
 
-      // Build [1, 2, length] interleaved-by-channel input.
-      const buf = new Float32Array(2 * seg.length);
+      // Feed [1, 2, modelLen]; pad short segments with zeros for fixed graphs.
+      const modelLen = fixed || seg.length;
+      const buf = new Float32Array(2 * modelLen);
       buf.set(L.subarray(seg.start, seg.start + seg.length), 0);
-      buf.set(R.subarray(seg.start, seg.start + seg.length), seg.length);
-      const tensor = new ort.Tensor('float32', buf, [1, 2, seg.length]);
+      buf.set(R.subarray(seg.start, seg.start + seg.length), modelLen);
+      const tensor = new ort.Tensor('float32', buf, [1, 2, modelLen]);
 
       const result = await session.run({ [inName]: tensor });
       const out = result[outName] ?? Object.values(result)[0]!;
-      // Expected dims [1, 4, 2, length] (sources, channels, samples).
-      this.scatterStems(out.data, seg.length, segOut);
+      // Output [1, 4, 2, modelLen] (sources, channels, samples) — crop to seg.length.
+      this.scatterStems(out.data, modelLen, seg.length, segOut);
 
       onProgress?.((s + 1) / segments.length);
     }
@@ -158,19 +179,23 @@ export class OnnxStemSeparator implements StemSeparator {
     };
   }
 
-  /** Split a [1,4,2,length] flat output into per-stem L/R segment slices. */
+  /**
+   * Split a [1,4,2,modelLen] flat output into per-stem L/R slices, cropped to
+   * the segment's real length (`cropLen` ≤ `modelLen` for padded segments).
+   */
   private scatterStems(
     data: Float32Array,
-    length: number,
+    modelLen: number,
+    cropLen: number,
     segOut: Record<StemId, { l: Float32Array[]; r: Float32Array[] }>,
   ): void {
-    const chStride = length;
-    const srcStride = 2 * length;
+    const chStride = modelLen;
+    const srcStride = 2 * modelLen;
     for (let src = 0; src < STEM_ORDER.length; src++) {
       const base = src * srcStride;
       const stem = STEM_ORDER[src]!;
-      segOut[stem].l.push(data.slice(base, base + chStride));
-      segOut[stem].r.push(data.slice(base + chStride, base + srcStride));
+      segOut[stem].l.push(data.slice(base, base + cropLen));
+      segOut[stem].r.push(data.slice(base + chStride, base + chStride + cropLen));
     }
   }
 }

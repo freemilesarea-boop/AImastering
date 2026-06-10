@@ -145,6 +145,42 @@ bytes — they are never hand-written.
 > `dl.fbaipublicfiles.com` both return HTTP 403 under the network policy), so the
 > export + first pin must run where those (or your mirror) are reachable.
 
+### Chosen path: GitHub Release asset
+
+The model ships as a Release asset on `freemilesarea-boop/aimastering` under the
+tag **`stem-model-v1`**, giving the deterministic runtime URL:
+
+```
+https://github.com/freemilesarea-boop/aimastering/releases/download/stem-model-v1/htdemucs.onnx
+```
+
+End-to-end runbook (run on a machine with the Demucs weights reachable):
+
+```bash
+# 1) export HT-Demucs → ONNX (prints samplerate + segment_samples)
+pip install "torch>=2.1" "demucs>=4.0" onnx
+python apps/desktop/scripts/export-demucs-onnx.py --out htdemucs.onnx
+
+# 2) create the release (once) and upload the asset
+gh release create stem-model-v1 --draft --title "Stem model v1" --notes "HT-Demucs ONNX"
+gh release upload stem-model-v1 htdemucs.onnx
+
+# 3) pin: compute real sha256/bytes from the file + record the release URL
+pnpm --filter @aimaster/desktop pin:stem-model \
+  --file htdemucs.onnx \
+  --url  https://github.com/freemilesarea-boop/aimastering/releases/download/stem-model-v1/htdemucs.onnx \
+  --rate 44100 --segment <segment_samples printed in step 1> \
+  --out  stem-model.manifest.json
+
+# 4) publish the release, then either commit stem-model.manifest.json as a
+#    packaged resource or drop it at userData/models/stem-model.manifest.json
+```
+
+`apps/desktop/scripts/export-demucs-onnx.py` is maintainer-only tooling (not run
+in CI, not imported by the app). Validate separation quality on real material
+before publishing — the runtime contract it must satisfy is
+`mix [1,2,seg] → stems [1,4,2,seg]` (vocals, drums, bass, other) at 44.1 kHz.
+
 ## Status checklist
 
 - [x] Approximation tier (live, no ML) — `rebalance-config.ts`, `rebalance-chain.ts`
@@ -158,6 +194,9 @@ bytes — they are never hand-written.
 - [x] UI: two-tier `StemRebalancePanel` (precise gated by `PRECISE_AVAILABLE`)
 - [x] Sidecar manifest mechanism (`resolveManifest`/`parseManifest`, validated) + tests
 - [x] `pin:stem-model` script — computes real sha256/bytes, writes the sidecar
-- [ ] HT-Demucs ONNX export + host the `.onnx` + run `pin:stem-model` (switch 1) — needs a reachable weight host
+- [x] Fixed-segment (pad/crop) inference + injectable runtime → end-to-end loop tested (fake ort reconstructs the mix)
+- [x] `export-demucs-onnx.py` maintainer export script + `stem-model-v1` release URL convention
+- [ ] Create the `stem-model-v1` Release (maintainer — no API/`gh` access from this environment)
+- [ ] Run the runbook on a weights-reachable host: export → upload asset → `pin:stem-model` → publish (switch 1)
 - [ ] `onnxruntime-node` optionalDependency + lockfile + electron-builder packaging (switch 2)
 - [ ] Flip `PRECISE_AVAILABLE = true` (switch 3) + pre-launch listening QA

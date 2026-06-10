@@ -82,6 +82,23 @@ iZotope "Master Rebalance"를 대체하는 **2-티어** 스템 컨트롤. 백엔
 - 리샘플은 선형(1차) — 추후 폴리페이즈 업그레이드 가능(인터페이스 불변).
 - 모델 미핀 상태라 현재 정밀 분리는 동작하지 않음(설계대로 근사 티어로 폴백).
 
+## ✅ P3-6. 매니페스트 핀 인프라 + GitHub Release 경로
+
+**커밋**: `feat(rebalance): pin-by-sidecar + ONNX export script + injectable runtime (Phase 3)`
+
+핀을 "코드 수정 없는 1-command"로 만들고, GitHub Release 호스팅 경로 확정. **실제 sha256/bytes는 실 바이트에서 계산**(조작 불가).
+
+- **사이드카 매니페스트**: `userData/models/stem-model.manifest.json`이 placeholder를 런타임 오버라이드. `parseManifest`(타입·64-hex·경로traversal·rate 검증, 빈 sha256=미핀 허용), 문제 시 폴백(나쁜 사이드카가 앱을 안 깨뜨림). `getStemSeparator`가 사이드카 resolve → 리빌드 없이 활성화.
+- **`pnpm pin:stem-model`**(`pin-stem-model.mjs`): 로컬 .onnx 해시 또는 URL 다운로드+해시 → sha256/bytes/segmentSamples 기록한 사이드카 작성. 스모크 테스트(해시=sha256sum 일치).
+- **고정 세그먼트 지원**: 매니페스트 `segmentSamples`(Demucs 기본=고정). 런타임이 세그먼트를 zero-pad → 출력 crop. **주입형 런타임(OnnxDeps)**으로 fake ort 기반 **추론 루프 전체(세그먼트·패딩·scatter·crop·WOLA)를 헤드리스 검증** — fake 모델이 mix/4×4스템 반환 → 가산 합이 원본 mix 재구성.
+- **`export-demucs-onnx.py`**: 메인테이너용 HT-Demucs→ONNX export(torch+demucs 필요, CI 미실행·앱 비import). `mix[1,2,seg]→stems[1,4,2,seg]` 계약·`segment_samples` 출력.
+- **GitHub Release 경로 확정**: 태그 `stem-model-v1` 자산 → 결정적 URL. export→`gh release upload`→`pin:stem-model`→publish 런북(`docs/STEM_SEPARATION_PLAN.md`).
+- **검증**: +18(model-manager 사이드카 7·separation 추론루프 4·기존). **vitest 204/204**, typecheck 0.
+
+### 정직성/한계 (추가)
+- 이 환경에선 Demucs 가중치 호스트(HuggingFace·`dl.fbaipublicfiles.com`) **HTTP 403 차단** + torch 미설치 → 실제 .onnx export/획득 불가. 그래서 sha256/url을 지어내지 않고 **핀 도구**로 전환(가중치 접근 가능한 머신에서 1-command).
+- GitHub MCP에 release 생성 도구 없음 + `gh`/API 미가용 → **Release 생성은 메인테이너 수동**(런북 제공).
+
 ## 🟡 남은 Phase 3 후보
 
 | 항목 | 우선순위 | 비고 |
