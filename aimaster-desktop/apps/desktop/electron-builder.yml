@@ -67,6 +67,14 @@ extraResources:
     to:   "bin"
     filter:
       - "**/*"
+  # node-target WASM MasteringChain (Rust offline export render).  The main
+  # process resolves it at `process.resourcesPath/dsp-wasm-node` (see
+  # load-mastering-chain-node.ts candidatePaths()).  Without this, the packaged
+  # app cannot run the Rust export path and silently falls back to Python.
+  - from: "../../packages/dsp-wasm/pkg-node"
+    to:   "dsp-wasm-node"
+    filter:
+      - "**/*"
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
 # v3.4.3 — DMG + ZIP both built.  electron-updater on macOS reads the .zip
