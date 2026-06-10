@@ -18,7 +18,8 @@ import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-
 import { applyPreciseRebalance, type PreciseRebalanceOptions } from './precise-rebalance.js';
 import { applySectionPlan } from './section-mastering.js';
 import { applyVocalRiding } from './vocal-riding.js';
-import { deinterleaveN, foldDownToStereo, layoutForChannelCount, surroundProcessingUnits } from './surround.js';
+import { deinterleaveN, foldDownToStereo, layoutForChannelCount, surroundProcessingUnits, LAYOUT_CHANNELS } from './surround.js';
+import { bedForRole, bedAdjustedConfig, sanitizeSurroundBeds } from './surround-beds.js';
 import { masterSurroundOutput, interleaveN } from './surround-render.js';
 import { integratedLoudnessLufs, loudnessNormGainDb } from './surround-loudness.js';
 import type { SectionMasteringPlan, VocalRidingPlan, SurroundTrims, SurroundOptions } from '@aimaster/shared-types';
@@ -212,16 +213,26 @@ export async function processAudioFileRust(
       let chans = dec.channels;
       if (sr.perChannelChain) {
         const tone: OfflineChainConfig = { ...config, limBypass: true, outputGainDb: 0 };
+        const beds = sanitizeSurroundBeds(sr.beds);
+        const roles = LAYOUT_CHANNELS[dec.layout];
+        const lfeGain = Math.pow(10, beds.lfeGainDb / 20);
         const processed = dec.channels.slice();
         for (const u of surroundProcessingUnits(dec.layout)) {
+          const bed = bedForRole(roles[u.indices[0]!]!);
           if (u.kind === 'stereo') {
-            const r = renderStereoBuffer(dec.channels[u.indices[0]!]!, dec.channels[u.indices[1]!]!, tone, options.sampleRate);
+            const cfg = bedAdjustedConfig(tone, bed === 'front' ? beds.front : beds.surround);
+            const r = renderStereoBuffer(dec.channels[u.indices[0]!]!, dec.channels[u.indices[1]!]!, cfg, options.sampleRate);
             processed[u.indices[0]!] = r.left; processed[u.indices[1]!] = r.right;
           } else if (u.kind === 'mono') {
             const ch = dec.channels[u.indices[0]!]!;
-            const r = renderStereoBuffer(ch, ch, tone, options.sampleRate);
+            const r = renderStereoBuffer(ch, ch, bedAdjustedConfig(tone, beds.center), options.sampleRate);
             processed[u.indices[0]!] = r.left;
-          } // 'lfe' → left untouched
+          } else if (u.kind === 'lfe' && lfeGain !== 1) {
+            const ch = dec.channels[u.indices[0]!]!;
+            const out = new Float32Array(ch.length);
+            for (let i = 0; i < ch.length; i++) out[i] = ch[i]! * lfeGain;
+            processed[u.indices[0]!] = out;
+          }
         }
         chans = processed;
       }

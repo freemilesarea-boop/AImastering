@@ -55,9 +55,20 @@
 - **`SurroundOptions.perChannelChain`**(기본 false) + `SurroundPanel` 토글.
 - **검증**: surroundProcessingUnits(3). **vitest 287/287**, typecheck 0.
 
+### P4-2d. 베드별 개별 톤/레벨 설정
+
+**커밋**: `feat(surround): per-bed distinct tone/level offsets (Phase 4)`
+
+베드(프론트/센터/서라운드/LFE)마다 **다른 톤/레벨**을 줄 수 있도록 — 공유 체인 위에 베드별 오프셋을 접어 넣음.
+
+- **`surround-beds.ts`**(메인, 순수, 타입 전용 의존): `bedForRole`(역할→베드), `bedAdjustedConfig`(게인→inputGain, 저역셸프→eqLowShelfDb, 고역셸프→eqAirDb, 셸프 있으면 EQ 언바이패스), sanitize/neutral.
+- **렌더 연결**: per-bed 루프가 유닛의 베드를 판정해 `bedAdjustedConfig`로 베드별 config 생성 후 `renderStereoBuffer`. LFE는 게인만(톤/다이내믹스 없음).
+- **`SurroundOptions.beds`**(기본 neutral) + 스토어 `updateSurroundBed`/`updateSurroundLfeGain` + `SurroundPanel` 베드별 에디터(프론트/센터/서라운드: 게인·저역·고역, LFE: 게인).
+- **검증**: surround-beds(7 — 역할 매핑·sanitize·neutral·config 합성). **vitest 294/294**, typecheck 0.
+
 ### 정직성/한계
-- 멀티채널 모드: **(옵션)베드별 풀 체인 → 라우드니스 자동매칭(BS.1770) → 게인 트림 → 링크드 TP 리미터**. EQ/컴프는 검증된 Rust 엔진을 베드별 재사용(중복 없음).
-- 베드별 체인은 같은 설정을 모든 베드에 적용(베드마다 다른 설정 UI는 미제공 — 향후). LFE는 톤/다이내믹스 미적용.
+- 멀티채널 모드: **(옵션)베드별 풀 체인 + 베드별 톤/레벨 → 라우드니스 자동매칭(BS.1770) → 게인 트림 → 링크드 TP 리미터**. EQ/컴프는 검증된 Rust 엔진을 베드별 재사용(중복 없음).
+- 베드별 톤은 게인 + 저/고역 셸프(공유 체인 위 오프셋). 베드별 완전 독립 체인(컴프 임계 등 전 파라미터)은 미제공 — 향후. LFE는 게인만.
 - 멀티채널 WAV 인코딩(ffmpeg `-ac N`)·채널 마스크·플레이어 호환은 실제 서라운드 파일/장치로만 종단 검증 → 출시 전 QA. K-weighting 계수는 비-48k에서도 산출식 적용(정확). 단위테스트는 라우드니스/리미터/피크/폴드다운 DSP 수학만 보장.
 
 ## 🟡 Phase 4 남은 후보(대규모·범위 밖)

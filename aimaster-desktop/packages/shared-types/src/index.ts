@@ -188,6 +188,23 @@ export interface SurroundOptions {
   ceilingDb: number;
   /** Multichannel mode: run the full chain (EQ/comp/sat) per bed group. */
   perChannelChain: boolean;
+  /** Per-bed tone/level offsets (applied on top of the shared chain). */
+  beds?: SurroundBeds;
+}
+
+/** Per-bed tone + level offsets, layered on the shared chain config. */
+export interface SurroundBedAdjust {
+  gainDb: number;
+  lowShelfDb: number;
+  highShelfDb: number;
+}
+
+export interface SurroundBeds {
+  front: SurroundBedAdjust;
+  center: SurroundBedAdjust;
+  surround: SurroundBedAdjust;
+  /** LFE is band-limited → gain only (no tone/dynamics). */
+  lfeGainDb: number;
 }
 
 /** Precise stem rebalance — per-stem gain applied on the offline (Rust) export. */

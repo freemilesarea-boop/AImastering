@@ -21,13 +21,13 @@ import {
   toggleFavorite as toggleHistoryFavoritePure, getEntry as getHistoryEntry,
   serializeHistory, deserializeHistory,
 } from '../audio/mastering-history.js';
-import type { SectionMasteringPlan, SectionSegment, RebalancePreciseOptions, VocalRidingPlan, SurroundOptions } from '@aimaster/shared-types';
+import type { SectionMasteringPlan, SectionSegment, RebalancePreciseOptions, VocalRidingPlan, SurroundOptions, SurroundBedAdjust } from '@aimaster/shared-types';
 import {
   defaultSectionPlan, buildSectionPlanFromAnalysis,
   sanitizeSectionPlan, setSectionGain as setSectionGainPure,
 } from '../audio/section-plan.js';
 import { defaultVocalRiding, sanitizeVocalRiding } from '../audio/vocal-riding-config.js';
-import { defaultSurroundOptions, sanitizeSurround } from '../audio/surround-config.js';
+import { defaultSurroundOptions, sanitizeSurround, defaultSurroundBeds } from '../audio/surround-config.js';
 import {
   type ParametricEqBand,
   sanitizeBands,
@@ -350,6 +350,8 @@ interface AudioStore {
   surround: SurroundOptions;
   updateSurround: (patch: Partial<SurroundOptions>) => void;
   updateSurroundTrim: (key: 'centerDb' | 'surroundDb' | 'lfeDb', db: number) => void;
+  updateSurroundBed: (bed: 'front' | 'center' | 'surround', patch: Partial<SurroundBedAdjust>) => void;
+  updateSurroundLfeGain: (db: number) => void;
   resetSurround: () => void;
 
   // ── Free parametric EQ (C-1) ───────────────────────────────────────────
@@ -580,6 +582,14 @@ export const useAudioStore = create<AudioStore>((set) => ({
   surround: defaultSurroundOptions(),
   updateSurround: (patch) => set((s) => ({ surround: sanitizeSurround({ ...s.surround, ...patch }) })),
   updateSurroundTrim: (key, db) => set((s) => ({ surround: sanitizeSurround({ ...s.surround, trims: { ...s.surround.trims, [key]: db } }) })),
+  updateSurroundBed: (bed, patch) => set((s) => {
+    const beds = s.surround.beds ?? defaultSurroundBeds();
+    return { surround: sanitizeSurround({ ...s.surround, beds: { ...beds, [bed]: { ...beds[bed], ...patch } } }) };
+  }),
+  updateSurroundLfeGain: (db) => set((s) => {
+    const beds = s.surround.beds ?? defaultSurroundBeds();
+    return { surround: sanitizeSurround({ ...s.surround, beds: { ...beds, lfeGainDb: db } }) };
+  }),
   resetSurround: () => set({ surround: defaultSurroundOptions() }),
 
   // ── Free parametric EQ ─────────────────────────────────────────────────
