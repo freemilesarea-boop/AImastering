@@ -99,9 +99,28 @@ iZotope "Master Rebalance"를 대체하는 **2-티어** 스템 컨트롤. 백엔
 - 이 환경에선 Demucs 가중치 호스트(HuggingFace·`dl.fbaipublicfiles.com`) **HTTP 403 차단** + torch 미설치 → 실제 .onnx export/획득 불가. 그래서 sha256/url을 지어내지 않고 **핀 도구**로 전환(가중치 접근 가능한 머신에서 1-command).
 - GitHub MCP에 release 생성 도구 없음 + `gh`/API 미가용 → **Release 생성은 메인테이너 수동**(런북 제공).
 
+## ✅ P3-7 (P2-a). 마스터링 이력 (durable · 세션간 영속)
+
+**커밋**: `feat(history): durable cross-session mastering history (P2)`
+
+메모리에만 있던 revisions를 넘어, 과거 마스터(설정 스냅샷+측정값)를 **재시작 후에도** 보존하는 영속 라이브러리.
+
+- **`mastering-history.ts`**(순수): `MasteringHistory{version,entries}` + `HistoryEntry`(옵션 스냅샷·LUFS/TP/LRA·소스·시각·즐겨찾기). `addEntry`(prepend), `pruneHistory`(HISTORY_MAX=100 cap, **즐겨찾기는 cap 넘겨도 보존**), remove/rename/toggleFavorite(불변), `serialize`/`deserialize`(버전드·검증 — 잘못된 버전/엔트리 드롭, 손상 blob→빈 이력, 앱 안 깨짐).
+- **메인 영속**(`historyHandlers.ts`): electron-store `mastering-history`. 렌더러가 스키마 소유, 메인은 **검증된 바운디드 blob 저장소**(plain object·JSON 직렬화·2MB cap). `history:get`/`history:set` IPC + preload 화이트리스트.
+- **렌더러**: audioStore `history` 슬라이스 — `hydrateHistory`(App 마운트 1회 로드), `pushHistoryEntry`(마스터 완료 시 자동 기록 + write-through), remove/rename/toggleFavorite/`restoreHistoryEntry`(설정 스냅샷→활성 옵션). 영속은 best-effort(throw 안 함, jsdom/무API 안전).
+- **연결**: MasteringPage 마스터 완료 시점에 자동 기록(소스·옵션·측정값·포맷).
+- **`MasteringHistoryPanel`**(ResultPage): 최신순+즐겨찾기 상단, 행별 측정값·설정 요약·`설정 복원`·★·이름변경·삭제.
+- **검증**: history(8 — prune 즐겨찾기 보존·직렬화 라운드트립·손상 폴백)+패널(5 — 복원/즐겨찾기/삭제). **vitest 217/217**, typecheck 0(renderer+main+shared-types). 무회귀(추가적·기록 전 무변경).
+
+### 정직성/한계
+- 마스터 WAV/MP3는 temp(세션간 purge)라 **오디오는 보관 안 함** — 이력은 "무엇을 했는지 + 설정 복원해 재마스터". 엔트리는 파일 존재에 의존하지 않음.
+- 영속은 best-effort(디스크/IPC 실패 시 무시) — UX 보조이지 손실 불가 데이터 아님.
+
 ## 🟡 남은 Phase 3 후보
 
 | 항목 | 우선순위 | 비고 |
 |------|:--------:|------|
 | 정밀 티어 ON(모델 export·핀·번들) | 출시 전 | 런타임 완료 → 스위치 3개만 남음 |
-| 섹션별 마스터링 / 멀티-보컬 / 마스터링 이력 | P2 | |
+| 섹션별 마스터링 (per-section 적용) | P2 | 분석·UI 존재 → 렌더 시밀화 DSP 남음(큰 작업) |
+| 멀티-보컬 | P2 | 스코프 미정 |
+| ~~마스터링 이력~~ | ✅ | P3-7 완료 (durable) |

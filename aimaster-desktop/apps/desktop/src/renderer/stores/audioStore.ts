@@ -14,6 +14,13 @@ import {
   renameRevision as renameInGroup,
   toggleFavorite as toggleFavoriteInGroup,
 } from '../audio/revisions/revision-logic.js';
+import type { MasteringHistory } from '../audio/mastering-history.js';
+import {
+  emptyHistory, entryFromRevision, addEntry as addHistoryEntry,
+  removeEntry as removeHistoryEntryPure, renameEntry as renameHistoryEntryPure,
+  toggleFavorite as toggleHistoryFavoritePure, getEntry as getHistoryEntry,
+  serializeHistory, deserializeHistory,
+} from '../audio/mastering-history.js';
 import {
   type ParametricEqBand,
   sanitizeBands,
@@ -295,6 +302,19 @@ interface AudioStore {
   /** Clear the revision group (e.g. on new source / queue clear). */
   clearRevisions: () => void;
 
+  // ── Durable mastering history (P2) ─────────────────────────────────────
+  /** Cross-session library of past masters (settings + metrics). */
+  history: MasteringHistory;
+  /** Load persisted history from the main process (call once on startup). */
+  hydrateHistory: () => Promise<void>;
+  /** Record a master into durable history (write-through to disk). */
+  pushHistoryEntry: (input: RevisionInput) => void;
+  removeHistoryEntry: (id: string) => void;
+  renameHistoryEntry: (id: string, label: string) => void;
+  toggleHistoryFavorite: (id: string) => void;
+  /** Restore an entry's options snapshot back into the active options. */
+  restoreHistoryEntry: (id: string) => void;
+
   // ── Free parametric EQ (C-1) ───────────────────────────────────────────
   /** User-defined parametric EQ bands, spliced live into the preview chain. */
   parametricEqBands: ParametricEqBand[];
@@ -387,6 +407,13 @@ function baseName(p: string): string {
   return p.split('/').pop()?.split('\\').pop() ?? p;
 }
 
+/** Fire-and-forget write-through of history to the main process (never throws). */
+function persistHistory(history: MasteringHistory): void {
+  try {
+    void window.electronAPI?.invoke('history:set', serializeHistory(history));
+  } catch { /* persistence is best-effort */ }
+}
+
 export const useAudioStore = create<AudioStore>((set) => ({
   // ── Queue ──────────────────────────────────────────────────────────────
   queue: [],
@@ -466,6 +493,39 @@ export const useAudioStore = create<AudioStore>((set) => ({
   renameRevision:       (id, l)    => set((s) => ({ revisionGroup: s.revisionGroup ? renameInGroup(s.revisionGroup, id, l) : s.revisionGroup })),
   toggleRevisionFavorite: (id)     => set((s) => ({ revisionGroup: s.revisionGroup ? toggleFavoriteInGroup(s.revisionGroup, id) : s.revisionGroup })),
   clearRevisions:       ()         => set({ revisionGroup: null }),
+
+  // ── Durable mastering history (P2) ─────────────────────────────────────
+  history: emptyHistory(),
+  hydrateHistory: async () => {
+    try {
+      const raw = await window.electronAPI?.invoke('history:get');
+      set({ history: deserializeHistory(raw) });
+    } catch { /* corrupt / unavailable → keep empty */ }
+  },
+  pushHistoryEntry: (input) => set((s) => {
+    const next = addHistoryEntry(s.history, entryFromRevision(input));
+    persistHistory(next);
+    return { history: next };
+  }),
+  removeHistoryEntry: (id) => set((s) => {
+    const next = removeHistoryEntryPure(s.history, id);
+    persistHistory(next);
+    return { history: next };
+  }),
+  renameHistoryEntry: (id, label) => set((s) => {
+    const next = renameHistoryEntryPure(s.history, id, label);
+    persistHistory(next);
+    return { history: next };
+  }),
+  toggleHistoryFavorite: (id) => set((s) => {
+    const next = toggleHistoryFavoritePure(s.history, id);
+    persistHistory(next);
+    return { history: next };
+  }),
+  restoreHistoryEntry: (id) => set((s) => {
+    const entry = getHistoryEntry(s.history, id);
+    return entry ? { options: { ...s.options, ...entry.optionsSnapshot } } : s;
+  }),
 
   // ── Free parametric EQ ─────────────────────────────────────────────────
   parametricEqBands: [],

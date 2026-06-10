@@ -6,6 +6,7 @@ import { checkFFmpeg } from '@aimaster/audio-engine';
 import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
+import { registerHistoryHandlers } from './ipc/historyHandlers.js';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
 import { recordFailure } from './utils/failureLog.js';
@@ -268,6 +269,7 @@ app.whenReady().then(() => {
     registerAudioHandlers(ipcMain, mainWindow);
     registerFileHandlers(ipcMain, mainWindow);
     registerSettingsHandlers(ipcMain, mainWindow);
+    registerHistoryHandlers(ipcMain);
   } catch (err) {
     log.error('IPC handler registration failed:', err);
   }

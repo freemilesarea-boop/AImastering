@@ -43,6 +43,7 @@ import ModulePresetBar from '../components/ModulePresetBar.js';
 import AiMusicPanel from '../components/AiMusicPanel.js';
 import GenreReferencePanel from '../components/GenreReferencePanel.js';
 import StemRebalancePanel from '../components/StemRebalancePanel.js';
+import MasteringHistoryPanel from '../components/MasteringHistoryPanel.js';
 import DeesserPanel from '../components/DeesserPanel.js';
 import MultibandGrMeter from '../components/MultibandGrMeter.js';
 import { optionsToChainConfig } from '../audio/export-backend.js';
@@ -1384,6 +1385,11 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Stem rebalance (approximation now · Demucs/ONNX later) ──────────── */}
       <Section title="스템 리밸런스" defaultOpen={false}>
         <StemRebalancePanel />
+      </Section>
+
+      {/* ── Durable mastering history (cross-session) ──────────────────────── */}
+      <Section title="마스터링 이력" defaultOpen={false}>
+        <MasteringHistoryPanel />
       </Section>
 
       {/* ── AI-generated music mode (Phase 3 differentiator) ───────────────── */}

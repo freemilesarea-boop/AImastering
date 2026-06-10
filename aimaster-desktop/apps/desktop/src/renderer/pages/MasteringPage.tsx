@@ -160,6 +160,7 @@ export default function MasteringPage() {
   const setProgress     = useAudioStore((s) => s.setProgress);
   const setError        = useAudioStore((s) => s.setError);
   const setMasteringResult = useAudioStore((s) => s.setMasteringResult);
+  const pushHistoryEntry = useAudioStore((s) => s.pushHistoryEntry);
   const setAnalysis     = useAudioStore((s) => s.setAnalysis);
 
   const fileName = analysis?.fileInfo.name ?? selectedFile?.split('/').pop() ?? '…';
@@ -275,6 +276,23 @@ export default function MasteringPage() {
       console.log('[MasteringPage] ipc success — master done, outputPath:', result.outputPath);
 
       setMasteringResult(result);
+      // Record into durable, cross-session history (settings + metrics).
+      try {
+        pushHistoryEntry({
+          sourceFilePath: selectedFile,
+          sourceFileName: selectedFile.split(/[\\/]/).pop() ?? selectedFile,
+          optionsSnapshot: options,
+          outputPath: result.outputPath,
+          previewPath: result.previewPath,
+          metrics: {
+            integratedLufs: result.loudnessAfter.integratedLufs,
+            truePeakDbtp: result.loudnessAfter.truePeakDbtp,
+            lra: result.loudnessAfter.lra,
+          },
+          formatSummary: `${(options.sampleRate / 1000)} kHz · ${options.bitDepth}-bit`,
+          renderDurationMs: Math.round((result.processingTimeSec ?? 0) * 1000),
+        });
+      } catch { /* history is best-effort */ }
       setProgress(100, '완료');
       setPage('result');
     } catch (err) {
@@ -289,7 +307,7 @@ export default function MasteringPage() {
       setIsMastering(false);
       inFlightRef.current = false;
     }
-  }, [selectedFile, analysis, options, setIsMastering, setError, setProgress, setMasteringResult, setAnalysis, setPage, notify, sendCancel]);
+  }, [selectedFile, analysis, options, rebalance, setIsMastering, setError, setProgress, setMasteringResult, pushHistoryEntry, setAnalysis, setPage, notify, sendCancel]);
 
   // Navigation-away cleanup: if the user leaves MasteringPage while an
   // IPC is still pending (e.g. ESC + 새 파일, back-to-home, app quit

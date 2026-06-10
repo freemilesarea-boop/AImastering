@@ -225,6 +225,8 @@ function AppInner() {
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
+    // Load durable mastering history once on startup.
+    void useAudioStore.getState().hydrateHistory();
   }, []);
 
   // Defensive redirects — bounce to home when a page is reached without
