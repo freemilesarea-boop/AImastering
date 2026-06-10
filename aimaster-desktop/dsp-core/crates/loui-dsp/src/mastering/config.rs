@@ -251,12 +251,87 @@ impl Default for TransientConfig {
     }
 }
 
+/// Max dynamic-EQ bands.
+pub const MAX_DYNEQ_BANDS: usize = 6;
+
+/// Dynamic-EQ band filter type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynEqFilterType {
+    Bell,
+    LowShelf,
+    HighShelf,
+}
+impl Default for DynEqFilterType {
+    fn default() -> Self { DynEqFilterType::Bell }
+}
+
+/// Dynamic-EQ band mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynEqMode {
+    /// Cut when the band is LOUDER than threshold (downward / de-ess style).
+    DownCut,
+    /// Boost when the band is QUIETER than threshold (upward).
+    UpBoost,
+}
+impl Default for DynEqMode {
+    fn default() -> Self { DynEqMode::DownCut }
+}
+
+/// One dynamic-EQ band.
+#[derive(Debug, Clone, Copy)]
+pub struct DynEqBandConfig {
+    pub enabled: bool,
+    pub filter_type: DynEqFilterType,
+    pub freq_hz: f64,
+    pub q: f64,
+    pub threshold_db: f64,
+    pub ratio: f64,
+    pub attack_ms: f64,
+    pub release_ms: f64,
+    /// Max dynamic gain change magnitude (dB).  0 = the band does nothing.
+    pub range_db: f64,
+    pub mode: DynEqMode,
+}
+
+impl Default for DynEqBandConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            filter_type: DynEqFilterType::Bell,
+            freq_hz: 1000.0,
+            q: 2.0,
+            threshold_db: -24.0,
+            ratio: 2.0,
+            attack_ms: 5.0,
+            release_ms: 80.0,
+            range_db: 6.0,
+            mode: DynEqMode::DownCut,
+        }
+    }
+}
+
+/// Fully-parametric dynamic EQ (threshold-driven per-band gain).
+/// Default = bypassed with all bands disabled → no-op.
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicEqConfig {
+    pub bypass: bool,
+    pub bands: [DynEqBandConfig; MAX_DYNEQ_BANDS],
+}
+
+impl Default for DynamicEqConfig {
+    fn default() -> Self {
+        Self { bypass: true, bands: [DynEqBandConfig::default(); MAX_DYNEQ_BANDS] }
+    }
+}
+
 /// Full mastering-chain configuration.
 #[derive(Debug, Clone, Copy)]
 pub struct MasteringChainConfig {
     /// Input gain (dB) applied before the chain.
     pub input_gain_db: f64,
     pub eq: EqConfig,
+    /// Fully-parametric dynamic EQ (after the static EQ; off by default).
+    pub dynamic_eq: DynamicEqConfig,
     pub dynamics: DynamicsConfig,
     /// 4-band multiband compressor (after the glue compressor; off by default).
     pub multiband: MultibandConfig,
@@ -277,6 +352,7 @@ impl Default for MasteringChainConfig {
         Self {
             input_gain_db: 0.0,
             eq: EqConfig::default(),
+            dynamic_eq: DynamicEqConfig::default(),
             dynamics: DynamicsConfig::default(),
             multiband: MultibandConfig::default(),
             saturation: SaturationConfig::default(),

@@ -27,6 +27,7 @@ mod gain;
 mod eq;
 mod parametric_eq;
 mod crossover;
+mod dynamic_eq;
 mod dynamics;
 mod multiband;
 mod saturation;
@@ -38,6 +39,7 @@ mod chain;
 pub use config::{
     MasteringChainConfig, EqConfig, DynamicsConfig, MultibandConfig, MultibandBandConfig,
     SaturationConfig, SaturationCharacter, TransientConfig, TransientBandConfig,
+    DynamicEqConfig, DynEqBandConfig, DynEqFilterType, DynEqMode, MAX_DYNEQ_BANDS,
     ImagerConfig, LimiterConfig,
 };
 pub use parametric_eq::{ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS};

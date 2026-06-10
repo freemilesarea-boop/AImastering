@@ -486,6 +486,7 @@ impl LouiMasteringChain {
         let prev = self.inner.config();
         let preserved_multiband = prev.multiband;
         let preserved_imager = prev.imager;
+        let preserved_dyn_eq = prev.dynamic_eq;
         self.inner.set_config(MasteringChainConfig {
             input_gain_db,
             eq: EqConfig {
@@ -493,6 +494,8 @@ impl LouiMasteringChain {
                 presence_db: eq_presence_db, air_db: eq_air_db,
                 adaptive: eq_adaptive, bypass: eq_bypass,
             },
+            // Dynamic EQ is configured via setDynamicEqBand; preserve it.
+            dynamic_eq: preserved_dyn_eq,
             dynamics: DynamicsConfig {
                 threshold_db: dyn_threshold_db, ratio: dyn_ratio,
                 attack_ms: dyn_attack_ms, release_ms: dyn_release_ms,

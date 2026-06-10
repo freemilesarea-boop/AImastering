@@ -3,6 +3,7 @@
 use super::config::MasteringChainConfig;
 use super::gain::Gain;
 use super::eq::Eq;
+use super::dynamic_eq::DynamicEq;
 use super::parametric_eq::{ParametricBand, ParametricEq};
 use super::dynamics::Dynamics;
 use super::multiband::Multiband;
@@ -44,6 +45,7 @@ pub struct MasteringChain {
     input_gain: Gain,
     parametric_eq: ParametricEq,
     eq: Eq,
+    dynamic_eq: DynamicEq,
     dynamics: Dynamics,
     multiband: Multiband,
     saturation: Saturation,
@@ -66,6 +68,7 @@ impl MasteringChain {
             input_gain: Gain::from_db(cfg.input_gain_db),
             parametric_eq: ParametricEq::new(sample_rate),
             eq: Eq::new(sample_rate, cfg.eq),
+            dynamic_eq: DynamicEq::new(sample_rate, cfg.dynamic_eq),
             dynamics: Dynamics::new(sample_rate, cfg.dynamics),
             multiband: Multiband::new(sample_rate, cfg.multiband),
             saturation: Saturation::new(sample_rate, cfg.saturation),
@@ -104,6 +107,7 @@ impl MasteringChain {
         self.cfg = cfg;
         self.input_gain.set_db(cfg.input_gain_db);
         self.eq.set_config(cfg.eq);
+        self.dynamic_eq.set_config(cfg.dynamic_eq);
         self.dynamics.set_config(cfg.dynamics);
         self.multiband.set_config(cfg.multiband);
         self.saturation.set_config(cfg.saturation);
@@ -143,6 +147,7 @@ impl MasteringChain {
         self.input_gain.process_stereo(left, right);
         self.parametric_eq.process_stereo(left, right);
         self.eq.process_stereo(left, right);
+        self.dynamic_eq.process_stereo(left, right);
         self.dynamics.process_stereo(left, right);
         self.multiband.process_stereo(left, right);
         self.saturation.process_stereo(left, right);
@@ -198,6 +203,7 @@ impl MasteringChain {
     pub fn reset(&mut self) {
         self.parametric_eq.reset();
         self.eq.reset();
+        self.dynamic_eq.reset();
         self.dynamics.reset();
         self.multiband.reset();
         self.saturation.reset();

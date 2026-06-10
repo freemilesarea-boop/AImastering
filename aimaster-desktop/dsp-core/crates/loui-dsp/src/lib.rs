@@ -106,6 +106,7 @@ pub use mastering::{
     MasteringChain, MasteringChainConfig, GainReduction,
     EqConfig, DynamicsConfig, MultibandConfig, MultibandBandConfig,
     SaturationConfig, SaturationCharacter, TransientConfig, TransientBandConfig,
+    DynamicEqConfig, DynEqBandConfig, DynEqFilterType, DynEqMode, MAX_DYNEQ_BANDS,
     ImagerConfig, LimiterConfig,
     ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS,
 };
