@@ -35,6 +35,16 @@ AI 음악(Suno/Udio/Stable Audio) 마스터링 시장이 폭발 중이고 Ozone�
 - `shared-audio-graph.getActiveSpectrumSnapshot()`(active 메인 AnalyserNode dB/bin), `AiMusicPanel`이 라이브 스펙트럼으로 정밀화('스펙트럼 정밀' 배지 + '정밀 재검사' 버튼).
 - **검증**: spectral(8 — 합성 metallic/aliased/harsh/natural) + score 규칙 + refine(5). **vitest 140/140**, 전체 그린(ALL FRESH), typecheck 0. 순수·boolean 경로 보존(무회귀).
 
+## ✅ P3-3. 자동 장르 감지 + 아시아 레퍼런스 라이브러리
+
+**커밋**: `feat(genre+ref): auto genre detection + Asian reference library (Phase 3)`
+
+- **`ai-music-spectral`**: `spectralBandsDb`(7대역) + `tonalTilt`(mid 기준 상대 dB) — 두 기능 공유 피처.
+- **`genre-detect.ts`**: 라우드니스 + 톤 틸트 센트로이드 룰분류 → top 장르 + 신뢰도 + 후보3 + 추천 `MasteringStyle` + 타겟 LUFS/LRA. 스펙트럼 없으면 라우드니스만으로 동작.
+- **`reference-library.ts`**: 저작권 안전 아시아 fingerprint 10종(숫자 톤/라우드니스만 · 오디오·곡명 없음) KR/JP/ASIA×장르. `matchReferences`(최근접 랭킹 + region/genre 필터).
+- **`GenreReferencePanel`**(ResultPage): 추정 장르·후보 표시 + 원클릭 '추천 모드 적용'(style+타겟 LUFS) + 가까운 레퍼런스 행 + per-ref '타겟 적용'. 라이브 FFT로 정밀화.
+- **검증**: genre(5)+reference(4, 저작권안전 형태 포함)+패널(3). **vitest 152/152**, 전체 그린(ALL FRESH), typecheck 0. 순수·적용 전 무변경.
+
 ## 🟡 남은 Phase 3 후보
 
 | 항목 | 우선순위 | 비고 |
