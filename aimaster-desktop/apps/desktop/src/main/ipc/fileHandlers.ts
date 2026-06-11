@@ -9,6 +9,7 @@ import {
   supportBundleToJson,
 } from '../utils/supportBundle.js';
 import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
+import { copyDolbySidecars } from '../utils/dolby-sidecar.js';
 import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
 
 const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
@@ -71,6 +72,15 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       if (result.canceled || !result.filePath) return null;
 
       fs.copyFileSync(safeSrc, result.filePath);
+
+      // Surround multichannel: copy any Dolby codec sidecar (AC-3 / E-AC-3 /
+      // TrueHD) sitting next to the temp WAV to the chosen folder too.
+      if (isWav) {
+        copyDolbySidecars(safeSrc, result.filePath, {
+          exists: (p) => fs.existsSync(p),
+          copy: (s, d) => fs.copyFileSync(s, d),
+        });
+      }
       return result.filePath;
     } catch (err) {
       recordFailure('export', `file:save-wav failed: ${(err as Error).message}`, {
