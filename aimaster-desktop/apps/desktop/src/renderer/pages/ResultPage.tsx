@@ -25,6 +25,8 @@ import {
   setImagerMultibandConfig,
   setSaturationConfig,
   setRebalanceConfig,
+  setDynEqConfig,
+  setTransientConfig,
   getActiveMultibandReductions,
 } from '../audio/shared-audio-graph.js';
 import { packMultibandArrays, sanitizeMultiband } from '../audio/multiband-config.js';
@@ -395,8 +397,15 @@ function PreviewPlayer({
     } catch { /* ignore */ }
   }, [saturation]);
 
-  // ── Transient / impact — preview via worklet only (no WebAudio approx) ──
+  // ── Transient / impact — native WebAudio approx (default) + worklet ─────
   const transient = useAudioStore((s) => s.transient);
+  // Native approximation (default preview).
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try { setTransientConfig(a, transient); } catch { /* ignore */ }
+  }, [transient, meterReady]);
+  // High-fidelity worklet path (opt-in).
   useEffect(() => {
     const node = workletNodeRef.current;
     if (!node) return;
@@ -411,9 +420,16 @@ function PreviewPlayer({
     } catch { /* ignore */ }
   }, [transient]);
 
-  // ── Dynamic EQ (+ de-esser) — preview via worklet only ────────────────
+  // ── Dynamic EQ (+ de-esser) — native WebAudio approx (default) + worklet ─
   const dynamicEq = useAudioStore((s) => s.dynamicEq);
   const deesser = useAudioStore((s) => s.deesser);
+  // Native approximation (static EQ; default preview).
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try { setDynEqConfig(a, combineDynamicEqWithDeesser(dynamicEq, deesser)); } catch { /* ignore */ }
+  }, [dynamicEq, deesser, meterReady]);
+  // High-fidelity worklet path (opt-in).
   useEffect(() => {
     const node = workletNodeRef.current;
     if (!node) return;

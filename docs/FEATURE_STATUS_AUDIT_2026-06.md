@@ -67,7 +67,14 @@
 
 ## 🔍 2차 전수 점검 (모든 패널·마운트 대조) — 추가 발견
 
-### 발견 A — Transient / Dynamic EQ / De-esser: **라이브 프리뷰 전무**
+### ✅ 발견 A — 해소됨 (Transient/DynEq/Deesser 라이브 프리뷰 추가)
+**커밋**: `feat(preview): live WebAudio approx for transient / dynamic-EQ / de-esser`
+- `dyneq-chain.ts`(정적 EQ 근사 — 밴드별 고정 biquad, range의 절반을 방향대로; 디에서 포함) + `transient-chain.ts`(DynamicsCompressor 근사 — sustain↓→압축↑, attack↑→느린 어택+메이크업).
+- `shared-audio-graph`에 splice(순서: rebalance→**dyneq**→multiband→saturation→**transient**→imagerMS) + `setDynEqConfig`/`setTransientConfig`. ResultPage가 네이티브 프리뷰 effect 추가(워클릿과 병행).
+- 이제 세 모듈 슬라이더가 **프리뷰에서 즉시 들림**. (vitest +8, 320/320)
+- 한계: 정적 근사(실제 threshold 구동 동작은 Rust 익스포트/워클릿). 방향성·체감용.
+
+### (원본) 발견 A — Transient / Dynamic EQ / De-esser: **라이브 프리뷰 전무**
 `shared-audio-graph` 네이티브 셋터: `setFreeEqBands·setMultibandConfig·setImagerMultibandConfig·setSaturationConfig·setRebalanceConfig`만 존재.
 **Transient·DynamicEq·Deesser는 네이티브 프리뷰도, 워클릿 메시지도 없음** → 사용자가 슬라이더를 움직여도 **프리뷰가 전혀 안 바뀜**. (Rust 익스포트에선 동작 — `test:module-effect`가 Transient·DynamicEQ 변화 증명. Deesser는 DynEq로 병합.) → **플래그 OFF인 지금은 프리뷰·익스포트 둘 다 무반응**(이중 휴면). 다른 모듈(EQ·멀티밴드·이미저·새추레이션·리밸런스·파라메트릭)은 라이브 프리뷰 있음.
 

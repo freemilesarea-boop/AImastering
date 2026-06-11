@@ -29,6 +29,8 @@ import { createParametricEqChain, type ParametricEqChain } from './parametric-eq
 import { createMultibandChain, type MultibandChain } from './multiband-chain.js';
 import { createImagerMultibandChain, type ImagerMultibandChain } from './imager-multiband-chain.js';
 import { createSaturationChain, type SaturationChain } from './saturation-chain.js';
+import { createDynEqChain, type DynEqChain } from './dyneq-chain.js';
+import { createTransientChain, type TransientChain } from './transient-chain.js';
 import { createRebalanceChain, type RebalanceChain } from './rebalance-chain.js';
 import type { ParametricEqBand } from './modules/parametric-eq-model.js';
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
@@ -36,6 +38,8 @@ import { isMultibandUnity, type MultibandConfig } from './multiband-config.js';
 import { isImagerMultibandUnity, type ImagerMultibandConfig } from './imager-config.js';
 import { isSaturationUnity, type SaturationConfig } from './saturation-config.js';
 import { isApproxRebalanceUnity, type RebalanceConfig } from './rebalance-config.js';
+import { isDynamicEqUnity, type DynamicEqConfig } from './dyneq-config.js';
+import { isTransientUnity, type TransientConfig } from './transient-config.js';
 
 export type AudioGraphEventKind =
   | 'audio-element-mounted'
@@ -166,6 +170,10 @@ interface ElementGraph {
   saturation: SaturationChain | null;
   /** WebAudio rebalance approximation (M/S vocal/bass/side) — sits first. */
   rebalance: RebalanceChain | null;
+  /** WebAudio dynamic-EQ approximation (static) — sits before the multiband. */
+  dyneq: DynEqChain | null;
+  /** WebAudio transient/impact approximation — sits after saturation. */
+  transient: TransientChain | null;
   analysers: NativeAnalysers;
   splitter: ChannelSplitterNode;
   /** External passive taps (e.g. WASM analyzer-tap worklet). */
@@ -206,6 +214,14 @@ function rerouteBus(g: ElementGraph): void {
     try { g.rebalance.input.disconnect(); } catch { /* ignore */ }
     try { g.rebalance.output.disconnect(); } catch { /* ignore */ }
   }
+  if (g.dyneq) {
+    try { g.dyneq.input.disconnect(); } catch { /* ignore */ }
+    try { g.dyneq.output.disconnect(); } catch { /* ignore */ }
+  }
+  if (g.transient) {
+    try { g.transient.input.disconnect(); } catch { /* ignore */ }
+    try { g.transient.output.disconnect(); } catch { /* ignore */ }
+  }
 
   // Pick the upstream-of-insert node: source itself, or freeEq's output when active.
   const useFreeEq = !!g.freeEq && g.freeEq.isActive();
@@ -235,8 +251,10 @@ function rerouteBus(g: ElementGraph): void {
   // Rebalance (source balance) first, then multiband comp → saturation → imager.
   const stages: Array<{ input: AudioNode; output: AudioNode; name: string }> = [];
   if (g.rebalance && g.rebalance.isActive()) stages.push({ input: g.rebalance.input, output: g.rebalance.output, name: 'rebalance' });
+  if (g.dyneq && g.dyneq.isActive()) stages.push({ input: g.dyneq.input, output: g.dyneq.output, name: 'dyneq' });
   if (g.multiband && g.multiband.isActive()) stages.push({ input: g.multiband.input, output: g.multiband.output, name: 'multiband' });
   if (g.saturation && g.saturation.isActive()) stages.push({ input: g.saturation.input, output: g.saturation.output, name: 'saturation' });
+  if (g.transient && g.transient.isActive()) stages.push({ input: g.transient.input, output: g.transient.output, name: 'transient' });
   if (g.imagerMb && g.imagerMb.isActive()) stages.push({ input: g.imagerMb.input, output: g.imagerMb.output, name: 'imagerMS' });
 
   let tail = insertTail;
@@ -314,7 +332,7 @@ export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000)
 
   const graph: ElementGraph = {
     ctx: context, source, masterGain, silentSink,
-    wasmInsert: null, nativeDsp: null, freeEq: null, multiband: null, imagerMb: null, saturation: null, rebalance: null,
+    wasmInsert: null, nativeDsp: null, freeEq: null, multiband: null, imagerMb: null, saturation: null, rebalance: null, dyneq: null, transient: null,
     analysers: { ctx: context, main, left, right }, splitter,
     passiveTaps: new Set(), sourceCreated: true,
   };
@@ -461,6 +479,36 @@ export function setRebalanceConfig(media: HTMLMediaElement, cfg: RebalanceConfig
   if (!willBeActive && !g.rebalance) return;
   if (!g.rebalance) g.rebalance = createRebalanceChain(g.ctx);
   g.rebalance.apply(cfg);
+  rerouteBus(g);
+}
+
+/**
+ * Set the dynamic-EQ (static approximation, incl. de-esser) config for an
+ * element's preview chain.  Lazily creates the chain on first active call;
+ * unity / bypass is a cheap no-op (no routing change, no coloration).
+ */
+export function setDynEqConfig(media: HTMLMediaElement, cfg: DynamicEqConfig): void {
+  const g = graphs.get(media);
+  if (!g) return;
+  const willBeActive = !isDynamicEqUnity(cfg);
+  if (!willBeActive && !g.dyneq) return;
+  if (!g.dyneq) g.dyneq = createDynEqChain(g.ctx);
+  g.dyneq.apply(cfg);
+  rerouteBus(g);
+}
+
+/**
+ * Set the transient/impact (compressor approximation) config for an element's
+ * preview chain.  Lazily creates the chain on first active call; unity is a
+ * cheap no-op.
+ */
+export function setTransientConfig(media: HTMLMediaElement, cfg: TransientConfig): void {
+  const g = graphs.get(media);
+  if (!g) return;
+  const willBeActive = !isTransientUnity(cfg);
+  if (!willBeActive && !g.transient) return;
+  if (!g.transient) g.transient = createTransientChain(g.ctx);
+  g.transient.apply(cfg);
   rerouteBus(g);
 }
 
