@@ -13,6 +13,8 @@ import {
   saveCustomPreset,
   deleteCustomPreset,
   sanitisePresetName,
+  exportPresetJson,
+  importPresetJson,
   type CustomPreset,
 } from '../../audio/presets/custom-preset-storage.js';
 
@@ -67,6 +69,21 @@ export function LouiCustomPresetSection(props: LouiCustomPresetSectionProps) {
     setItems(listCustomPresets());
   };
 
+  // Share: export a preset to a .louipreset file the user can send to others.
+  const handleExport = async (p: CustomPreset) => {
+    try { await window.electronAPI?.invoke('preset:export-file', exportPresetJson(p), p.name); } catch { /* ignore */ }
+  };
+
+  // Share: import a .louipreset file into the local preset list.
+  const handleImport = async () => {
+    try {
+      const json = await window.electronAPI?.invoke('preset:import-file');
+      if (typeof json !== 'string') return;
+      if (importPresetJson(json)) { setItems(listCustomPresets()); setError(null); }
+      else setError('가져오기 실패: 올바른 프리셋 파일이 아닙니다.');
+    } catch { setError('가져오기 중 오류가 발생했습니다.'); }
+  };
+
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', gap: space['2'],
@@ -84,20 +101,36 @@ export function LouiCustomPresetSection(props: LouiCustomPresetSectionProps) {
           내 프리셋
         </span>
         {!composing && (
-          <button
-            type="button"
-            onClick={() => { setComposing(true); setError(null); }}
-            style={{
-              fontFamily: typography.family.sans, fontSize: typography.size.xs,
-              fontWeight: typography.weight.medium,
-              padding: '4px 10px', borderRadius: radius.chip,
-              border: `1px solid ${meter.accent.foreground}`,
-              background: 'rgba(167,139,250,0.10)', color: text.primary,
-              cursor: 'pointer',
-            }}
-          >
-            현재 설정 저장
-          </button>
+          <div style={{ display: 'flex', gap: space['2'] }}>
+            <button
+              type="button"
+              onClick={() => { void handleImport(); }}
+              style={{
+                fontFamily: typography.family.sans, fontSize: typography.size.xs,
+                fontWeight: typography.weight.medium,
+                padding: '4px 10px', borderRadius: radius.chip,
+                border: `1px solid ${surface.border}`,
+                background: 'transparent', color: text.secondary,
+                cursor: 'pointer',
+              }}
+            >
+              가져오기
+            </button>
+            <button
+              type="button"
+              onClick={() => { setComposing(true); setError(null); }}
+              style={{
+                fontFamily: typography.family.sans, fontSize: typography.size.xs,
+                fontWeight: typography.weight.medium,
+                padding: '4px 10px', borderRadius: radius.chip,
+                border: `1px solid ${meter.accent.foreground}`,
+                background: 'rgba(167,139,250,0.10)', color: text.primary,
+                cursor: 'pointer',
+              }}
+            >
+              현재 설정 저장
+            </button>
+          </div>
         )}
       </div>
 
@@ -196,6 +229,21 @@ export function LouiCustomPresetSection(props: LouiCustomPresetSectionProps) {
                   {fmtDate(it.createdAt)}
                 </span>
               </div>
+              <button
+                type="button"
+                onClick={() => { void handleExport(it); }}
+                aria-label={`${it.name} 공유`}
+                title="파일로 내보내기 (공유)"
+                style={{
+                  fontFamily: typography.family.sans, fontSize: typography.size.xs,
+                  padding: '4px 10px', borderRadius: radius.chip,
+                  border: `1px solid ${surface.border}`,
+                  background: 'transparent', color: text.secondary,
+                  cursor: 'pointer',
+                }}
+              >
+                공유
+              </button>
               <button
                 type="button"
                 onClick={() => props.onApply(it.state, it.name)}

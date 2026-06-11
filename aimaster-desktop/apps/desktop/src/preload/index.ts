@@ -29,6 +29,8 @@ const INVOKE_CHANNELS = [
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // Mastering history (durable, cross-session)
   'history:get', 'history:set',
+  // Custom preset sharing (.louipreset file)
+  'preset:export-file', 'preset:import-file',
   // Stem separation (precise tier availability)
   'stem:precise-available',
   // System

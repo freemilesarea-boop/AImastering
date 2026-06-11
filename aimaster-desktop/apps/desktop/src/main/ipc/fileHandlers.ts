@@ -295,6 +295,40 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   // ── Recent files (v1 stub) ────────────────────────────────────────────
   ipc.handle('file:get-recent', () => []);
 
+  // ── Custom preset sharing (.louipreset) ───────────────────────────────
+  // Thin file I/O: the renderer serializes/validates the preset JSON
+  // (custom-preset-storage); these just write/read the chosen file.
+  ipc.handle('preset:export-file', async (_e, presetJson: unknown, defaultName: unknown) => {
+    if (!win) return null;
+    if (typeof presetJson !== 'string' || presetJson.length > 2 * 1024 * 1024) {
+      throw new Error('preset:export-file: invalid payload');
+    }
+    const name = typeof defaultName === 'string' && defaultName ? defaultName : 'preset';
+    const safeName = name.replace(/[^\w가-힣 .-]/g, '_').slice(0, 80);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `${safeName}.louipreset`,
+      filters: [{ name: 'Loui Preset', extensions: ['louipreset'] }, { name: 'JSON', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try { fs.writeFileSync(result.filePath, presetJson, 'utf8'); return result.filePath; } catch (err) {
+      recordFailure('export', `preset:export-file failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('preset:import-file', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [{ name: 'Loui Preset', extensions: ['louipreset', 'json'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    try { return fs.readFileSync(result.filePaths[0], 'utf8'); } catch (err) {
+      recordFailure('export', `preset:import-file failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
   // ── Session save / load (.louisession) ────────────────────────────────
 
   ipc.handle('session:save', async (_e, sessionData: string) => {

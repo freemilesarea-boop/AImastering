@@ -132,3 +132,51 @@ export function renameCustomPreset(id: string, nextName: string): CustomPreset |
   writeEnvelope(env);
   return env.items[idx]!;
 }
+
+// ── Sharing: portable preset file (export / import) ─────────────────────────
+
+/** Magic tag in the shared file so we can validate + reject foreign JSON. */
+export const PRESET_FILE_FORMAT = 'loui-preset';
+export const PRESET_FILE_EXT = 'louipreset';
+
+interface PresetFile {
+  format: typeof PRESET_FILE_FORMAT;
+  version: number;
+  name: string;
+  state: AllModulesParameterState;
+}
+
+/** Serialize a preset to a portable, shareable JSON string. */
+export function exportPresetJson(preset: { name: string; state: AllModulesParameterState }): string {
+  const file: PresetFile = {
+    format: PRESET_FILE_FORMAT,
+    version: SCHEMA_VERSION,
+    name: sanitisePresetName(preset.name) || 'Preset',
+    state: preset.state,
+  };
+  return JSON.stringify(file, null, 2);
+}
+
+/**
+ * Parse a shared preset file.  Returns { name, state } or null when the JSON is
+ * not a valid loui-preset (wrong format tag / version / missing state).
+ */
+export function parsePresetJson(json: string): { name: string; state: AllModulesParameterState } | null {
+  let raw: unknown;
+  try { raw = JSON.parse(json); } catch { return null; }
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Partial<PresetFile>;
+  if (o.format !== PRESET_FILE_FORMAT || o.version !== SCHEMA_VERSION) return null;
+  if (typeof o.name !== 'string' || !o.state || typeof o.state !== 'object') return null;
+  return { name: sanitisePresetName(o.name) || 'Preset', state: o.state as AllModulesParameterState };
+}
+
+/**
+ * Import a shared preset file into local storage (generates a fresh id +
+ * timestamp).  Returns the stored entry, or null when the JSON is invalid.
+ */
+export function importPresetJson(json: string): CustomPreset | null {
+  const parsed = parsePresetJson(json);
+  if (!parsed) return null;
+  return saveCustomPreset(parsed.name, parsed.state);
+}
