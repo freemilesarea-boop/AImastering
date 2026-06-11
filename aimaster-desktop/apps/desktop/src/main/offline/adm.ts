@@ -28,6 +28,35 @@ const SPEAKER: Record<ChannelRole, SpeakerDef> = {
 
 const id4 = (n: number): string => n.toString(16).toUpperCase().padStart(4, '0');
 
+export interface AdmValidation { ok: boolean; errors: string[] }
+
+/**
+ * Structural + reference-integrity validation of an ADM XML (NOT a full XSD
+ * check): required elements present, every *IDRef resolves to a declared ID,
+ * and tags are balanced.  A headless substitute for "will an ADM tool accept
+ * it" — catches broken references / missing elements without the tool.
+ */
+export function validateAdm(xml: string): AdmValidation {
+  const errors: string[] = [];
+  for (const tag of ['audioProgramme', 'audioContent', 'audioObject', 'audioPackFormat', 'audioChannelFormat', 'audioTrackUID']) {
+    if (!new RegExp(`<${tag}[ >]`).test(xml)) errors.push(`missing <${tag}>`);
+  }
+  // Declared IDs: attributes ending in `ID` + audioTrackUID's UID attribute.
+  const ids = new Set<string>();
+  for (const m of xml.matchAll(/\b\w+ID="([^"]+)"/g)) ids.add(m[1]!);
+  for (const m of xml.matchAll(/<audioTrackUID\b[^>]*\bUID="([^"]+)"/g)) ids.add(m[1]!);
+  // Every *IDRef / audioTrackUIDRef must resolve.
+  for (const m of xml.matchAll(/<(\w*IDRef|audioTrackUIDRef)>([^<]+)<\/\1>/g)) {
+    const ref = m[2]!.trim();
+    if (!ids.has(ref)) errors.push(`unresolved reference: ${ref}`);
+  }
+  // Rough tag balance for the ADM container.
+  const open = (xml.match(/<audioChannelFormat\b/g) ?? []).length;
+  const close = (xml.match(/<\/audioChannelFormat>/g) ?? []).length;
+  if (open !== close) errors.push(`unbalanced audioChannelFormat (${open}/${close})`);
+  return { ok: errors.length === 0, errors };
+}
+
 /** Build the ADM XML for a channel bed.  Deterministic, well-formed UTF-8. */
 export function buildAdmXml(layout: SurroundLayout): string {
   const roles = LAYOUT_CHANNELS[layout];

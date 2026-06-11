@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildAdmXml, buildChnaPayload, wrapAdmBwf } from './adm.js';
+import { buildAdmXml, buildChnaPayload, wrapAdmBwf, validateAdm } from './adm.js';
 import { LAYOUT_CHANNELS } from './surround.js';
 
 // Minimal valid RIFF/WAVE buffer (header + tiny fmt + data) for wrapping tests.
@@ -34,6 +34,23 @@ describe('buildAdmXml', () => {
     const xml = buildAdmXml('7.1');
     expect((xml.match(/<audioChannelFormat /g) ?? []).length).toBe(8);
     expect((xml.match(/<audioTrackUID /g) ?? []).length).toBe(8);
+  });
+});
+
+describe('validateAdm', () => {
+  it('passes for generated 5.1 and 7.1 ADM (all refs resolve)', () => {
+    expect(validateAdm(buildAdmXml('5.1'))).toEqual({ ok: true, errors: [] });
+    expect(validateAdm(buildAdmXml('7.1')).ok).toBe(true);
+  });
+  it('fails when a reference is broken', () => {
+    const broken = buildAdmXml('5.1').replace('ACO_1001</audioContentIDRef>', 'ACO_9999</audioContentIDRef>');
+    const v = validateAdm(broken);
+    expect(v.ok).toBe(false);
+    expect(v.errors.some((e) => e.includes('ACO_9999'))).toBe(true);
+  });
+  it('fails when a required element is missing', () => {
+    const noObj = buildAdmXml('5.1').replace(/<audioObject\b[\s\S]*?<\/audioObject>/, '');
+    expect(validateAdm(noObj).ok).toBe(false);
   });
 });
 

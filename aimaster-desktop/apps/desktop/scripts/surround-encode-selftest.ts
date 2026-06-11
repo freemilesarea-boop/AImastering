@@ -14,8 +14,10 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ffmpegStatic from 'ffmpeg-static';
+import { writeFileSync } from 'node:fs';
 import { ffmpegLayoutName, deinterleaveN, LAYOUT_CHANNELS, type SurroundLayout } from '../src/main/offline/surround.js';
 import { interleaveN } from '../src/main/offline/surround-render.js';
+import { wrapAdmBwf, buildAdmXml, validateAdm } from '../src/main/offline/adm.js';
 
 const FFMPEG = (ffmpegStatic as unknown as string) || 'ffmpeg';
 const SR = 48000;
@@ -122,14 +124,34 @@ async function roundTrip(layout: SurroundLayout, dir: string): Promise<boolean> 
   return ok;
 }
 
+/** Wrap a real WAV as ADM BWF, confirm ffmpeg still reads it + the ADM validates. */
+async function admBwf(layout: SurroundLayout, dir: string): Promise<boolean> {
+  const adm = validateAdm(buildAdmXml(layout));
+  if (!adm.ok) { console.error(`  ✗ ${layout} ADM: ${adm.errors.join('; ')}`); return false; }
+  const nc = LAYOUT_CHANNELS[layout].length;
+  const chans = Array.from({ length: nc }, () => new Float32Array(4096).fill(0.1));
+  const wav = join(dir, `bwf-src-${layout}.wav`);
+  const enc = await runFfmpegCapture(['-hide_banner', '-loglevel', 'error', '-y', '-f', 'f32le', '-ar', String(SR), '-ac', String(nc), '-i', 'pipe:0', '-ch_layout', ffmpegLayoutName(layout), '-c:a', 'pcm_s24le', wav], Buffer.from(interleaveN(chans).buffer));
+  if (enc.code !== 0) return false;
+  const bwf = join(dir, `bwf-${layout}.wav`);
+  writeFileSync(bwf, wrapAdmBwf(readFileSync(wav), layout));
+  // ffmpeg must still read the ADM BWF (extra chunks didn't corrupt the WAV).
+  const dec = await runFfmpegCapture(['-hide_banner', '-loglevel', 'error', '-i', bwf, '-f', 'f32le', '-ac', String(nc), '-ar', String(SR), 'pipe:1']);
+  const frames = (dec.out.byteLength / 4) / nc;
+  const ok = dec.code === 0 && frames > 1000;
+  console.log(`  ${ok ? '✓' : '✗'} ${layout} ADM BWF: validates + ffmpeg reads it back (${Math.round(frames)} frames)`);
+  return ok;
+}
+
 async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'surround-enc-'));
   try {
-    console.log('[surround-encode-selftest] WAV mask + channel-integrity round-trip via bundled ffmpeg');
+    console.log('[surround-encode-selftest] WAV mask + channel-integrity + ADM BWF via bundled ffmpeg');
     const layouts: SurroundLayout[] = ['5.1', '7.1'];
     const mask = await Promise.all(layouts.map((l) => checkLayout(l, dir)));
     const rt = await Promise.all(layouts.map((l) => roundTrip(l, dir)));
-    if ([...mask, ...rt].every(Boolean)) { console.log('PASS — channel mask + channel integrity correct'); }
+    const adm = await Promise.all(layouts.map((l) => admBwf(l, dir)));
+    if ([...mask, ...rt, ...adm].every(Boolean)) { console.log('PASS — channel mask + integrity + ADM BWF correct'); }
     else { console.error('FAIL — surround encode/round-trip mismatch'); process.exit(1); }
   } finally {
     rmSync(dir, { recursive: true, force: true });
