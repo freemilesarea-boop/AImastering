@@ -35,6 +35,9 @@
 
 → **플래그 ON + 디바이스 A/B QA**로 활성화. (wasm·셋터 준비 완료 확인.)
 
+> **객관적 증거(`test:module-effect`)**: node wasm으로 동일 신호를 모듈 ON/OFF 렌더 비교 — **8개 모듈(EQ·Dynamics·Imager·Limiter·Multiband·Saturation·Transient·DynamicEQ) 전부 출력을 실제로 변경**(Δrms 측정, NaN 없음). 즉 "구현 안 됨"이 아니라 라우팅만 OFF.
+> (점검 중 발견: DynamicEQ는 `rangeDb`가 양수 크기 + `mode`가 방향. 음수 range는 Rust가 비활성 처리 — 렌더러 UI는 0~24 양수로 올바르게 전달하므로 정상.)
+
 ## ⏸ 3. 외부 아티팩트 대기
 
 - **정밀 스템 분리(ONNX Demucs)**: 런타임·번들·자동감지 완료, **모델 미핀** → `getStemSeparator()`=null → 근사로 폴백. 모델 핀(`pin:stem-model`)하면 자동 ON. (가중치 호스트가 이 환경에서 차단되어 여기선 핀 불가.)
