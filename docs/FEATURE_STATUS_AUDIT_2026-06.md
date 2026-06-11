@@ -78,7 +78,13 @@
 `shared-audio-graph` 네이티브 셋터: `setFreeEqBands·setMultibandConfig·setImagerMultibandConfig·setSaturationConfig·setRebalanceConfig`만 존재.
 **Transient·DynamicEq·Deesser는 네이티브 프리뷰도, 워클릿 메시지도 없음** → 사용자가 슬라이더를 움직여도 **프리뷰가 전혀 안 바뀜**. (Rust 익스포트에선 동작 — `test:module-effect`가 Transient·DynamicEQ 변화 증명. Deesser는 DynEq로 병합.) → **플래그 OFF인 지금은 프리뷰·익스포트 둘 다 무반응**(이중 휴면). 다른 모듈(EQ·멀티밴드·이미저·새추레이션·리밸런스·파라메트릭)은 라이브 프리뷰 있음.
 
-### 발견 B — 미사용/죽은 UI (기능 수만 부풀림)
+### ✅ 발견 B — 정리됨 (죽은 UI 제거)
+**커밋**: `chore: remove 9 dead UI files (audit finding B)`
+- 제거(참조 0, 엄밀 재검증): `LouiSnapshotSlots·LouiRealtimeToggle(+story)·LouiPlaybackBar·LouiAudioDebugPanel·LouiShortcutHelp` + 표준 `ABComparePanel·MasteringReportPanel·PreviewPanel`.
+- **보존**(실제 참조 있어 후보에서 제외): `LouiMasteringVisualizer`(live-visualizer-flag.ts가 사용), `LouiModuleChain`(스토리가 사용).
+- 삭제 후 typecheck 0 · vitest 320/320 — 죽은 코드였음 확인.
+
+### (원본) 발견 B — 미사용/죽은 UI (기능 수만 부풀림)
 실제 앱에서 어디서도 렌더 안 되는 컴포넌트:
 - 완전 미사용 Loui 7종: `LouiSnapshotSlots·LouiRealtimeToggle·LouiModuleChain·LouiMasteringVisualizer·LouiPlaybackBar·LouiAudioDebugPanel·LouiShortcutHelp`
 - 미사용 표준 패널 3종: `ABComparePanel·MasteringReportPanel·PreviewPanel`
