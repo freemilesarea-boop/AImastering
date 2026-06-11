@@ -23,30 +23,31 @@
  * Elevation ladder:  background < panel < well < overlay
  */
 export const surface = {
-  /** Page background — charcoal, never pure black. */
-  background: '#13131A',
+  /** Page background — lifted from near-black charcoal to a lighter slate so
+   *  the UI reads brighter + less oppressive (readability pass 2026-06). */
+  background: '#23232E',
   /** Card / panel background (main panel). */
-  panel:      '#1A1A24',
-  /** Panel border (hairline). */
-  border:     'rgba(255,255,255,0.08)',
+  panel:      '#2C2C38',
+  /** Panel border (hairline) — a touch stronger for separation on lighter bg. */
+  border:     'rgba(255,255,255,0.12)',
   /** Stronger border for elevated / focused surfaces. */
-  borderElevated: 'rgba(255,255,255,0.14)',
+  borderElevated: 'rgba(255,255,255,0.20)',
   /** Inset wells / raised secondary surfaces. */
-  well:       '#222230',
+  well:       '#363644',
   /** Tooltip / hover overlay — the lightest surface step. */
-  overlay:    '#2A2A36',
+  overlay:    '#424252',
 } as const;
 
 /**
- * Text scale.  Alpha-on-charcoal so emphasis reads as hierarchy, not as
- * harsh pure-white — comfortable for long late-night sessions.
+ * Text scale.  Alpha-on-slate so emphasis reads as hierarchy.  Opacities raised
+ * (readability pass 2026-06) so secondary/tertiary/muted text is legible.
  */
 export const text = {
-  primary:   'rgba(255,255,255,0.92)',
-  secondary: 'rgba(255,255,255,0.70)',
-  tertiary:  'rgba(255,255,255,0.55)',
-  muted:     'rgba(255,255,255,0.42)',
-  disabled:  'rgba(255,255,255,0.30)',
+  primary:   'rgba(255,255,255,0.96)',
+  secondary: 'rgba(255,255,255,0.82)',
+  tertiary:  'rgba(255,255,255,0.68)',
+  muted:     'rgba(255,255,255,0.56)',
+  disabled:  'rgba(255,255,255,0.38)',
 } as const;
 
 /**

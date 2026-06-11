@@ -143,10 +143,10 @@ export function LoudnessMeterPanelV2(props: LoudnessMeterPanelV2Props = {}) {
   }, [tick]);
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+    <div className="rounded-xl border border-zinc-800 bg-zinc-800/50 p-4">
       <div className="mb-3 flex items-baseline justify-between">
         <div className="text-sm font-medium text-zinc-200">Loudness · stream</div>
-        <div className="text-xs text-zinc-500 font-mono tabular-nums">
+        <div className="text-xs text-zinc-300 font-mono tabular-nums">
           {isRunning ? `${tickRate} · ${(tick?.samplesProcessed ?? 0).toLocaleString()} sm` : 'starting…'}
         </div>
       </div>
@@ -158,14 +158,14 @@ export function LoudnessMeterPanelV2(props: LoudnessMeterPanelV2Props = {}) {
           return (
             <div key={r.key} className="flex items-center gap-3 text-xs">
               <div className="w-24 shrink-0 text-zinc-400">{r.label}</div>
-              <div className="relative h-3 flex-1 overflow-hidden rounded-sm bg-zinc-800">
+              <div className="relative h-3 flex-1 overflow-hidden rounded-sm bg-zinc-700">
                 <div
                   className="absolute inset-y-0 left-0 transition-[width] duration-100 ease-linear"
                   style={{ width: `${fill * 100}%`, background: colour }}
                 />
               </div>
               <div className="w-20 shrink-0 text-right font-mono tabular-nums text-zinc-200">
-                {fmtDb(r.value)} <span className="text-zinc-500">{r.unit}</span>
+                {fmtDb(r.value)} <span className="text-zinc-300">{r.unit}</span>
               </div>
             </div>
           );
@@ -175,11 +175,11 @@ export function LoudnessMeterPanelV2(props: LoudnessMeterPanelV2Props = {}) {
       {tick && (
         <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 border-t border-zinc-800 pt-3 text-xs font-mono tabular-nums">
           <div className="flex justify-between">
-            <span className="text-zinc-500">correlation</span>
+            <span className="text-zinc-300">correlation</span>
             <span className="text-zinc-200">{tick.correlation.toFixed(3)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-zinc-500">M/S ratio</span>
+            <span className="text-zinc-300">M/S ratio</span>
             <span className="text-zinc-200">{fmtDb(tick.msRatioDb)} dB</span>
           </div>
         </div>

@@ -13,7 +13,7 @@ export default function ModulePresetBar(): React.ReactElement {
 
   return (
     <div className="space-y-2">
-      <p className="text-[10px] text-zinc-600 uppercase tracking-wider">모듈 프리셋 (원클릭)</p>
+      <p className="text-[11px] text-zinc-400 uppercase tracking-wider">모듈 프리셋 (원클릭)</p>
       <div className="grid grid-cols-3 gap-2">
         {MODULE_PRESETS.map((p) => (
           <button
@@ -22,15 +22,15 @@ export default function ModulePresetBar(): React.ReactElement {
             title={p.hint}
             onClick={() => apply(p.build())}
             className="no-drag py-1.5 px-2 rounded-lg text-[11px] font-medium text-left
-                       bg-zinc-800/60 border border-zinc-700 text-zinc-300
+                       bg-zinc-700/60 border border-zinc-700 text-zinc-300
                        hover:border-zinc-500 hover:text-zinc-100 transition-colors"
           >
             <div>{p.name}</div>
-            <div className="text-[9px] text-zinc-500 mt-0.5 leading-tight">{p.hint}</div>
+            <div className="text-[11px] text-zinc-300 mt-0.5 leading-tight">{p.hint}</div>
           </button>
         ))}
       </div>
-      <p className="text-[10px] text-zinc-600">프리셋 적용 후 아래 모듈에서 세부 조정 가능. Export에 적용됩니다.</p>
+      <p className="text-[11px] text-zinc-400">프리셋 적용 후 아래 모듈에서 세부 조정 가능. Export에 적용됩니다.</p>
     </div>
   );
 }

@@ -107,7 +107,7 @@ export function UpdateToast(): React.ReactElement | null {
             {working ? '시작 중…' : '지금 받기'}
           </button>
           <button onClick={() => setDismissed(true)}
-                  className="text-[11px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300">
+                  className="text-[11px] px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300">
             나중에
           </button>
         </div>
@@ -122,11 +122,11 @@ export function UpdateToast(): React.ReactElement | null {
           <span className="text-[11px] text-zinc-300">다운로드 중</span>
           <span className="text-[11px] font-mono text-zinc-400">{pct.toFixed(0)}%</span>
         </div>
-        <div className="h-1.5 bg-zinc-800 rounded overflow-hidden">
+        <div className="h-1.5 bg-zinc-700 rounded overflow-hidden">
           <div className="h-full bg-emerald-500 transition-all"
                style={{ width: `${pct}%` }} />
         </div>
-        <div className="flex justify-between text-[10px] text-zinc-500 font-mono">
+        <div className="flex justify-between text-[11px] text-zinc-300 font-mono">
           <span>{fmtSize(status.progress.transferred)} / {fmtSize(status.progress.total)}</span>
           <span>{fmtSize(status.progress.bytesPerSecond)}/s</span>
         </div>
@@ -148,7 +148,7 @@ export function UpdateToast(): React.ReactElement | null {
             {working ? '재시작 중…' : '지금 재시작'}
           </button>
           <button onClick={() => setDismissed(true)}
-                  className="text-[11px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300">
+                  className="text-[11px] px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300">
             닫기
           </button>
         </div>
@@ -164,7 +164,7 @@ export function UpdateToast(): React.ReactElement | null {
         </div>
         <p className="text-[11px] text-zinc-400 break-all">{status.message}</p>
         <button onClick={() => setDismissed(true)}
-                className="text-[11px] px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300">
+                className="text-[11px] px-2 py-1 rounded bg-zinc-700 hover:bg-zinc-600 text-zinc-300">
           닫기
         </button>
       </div>
@@ -174,10 +174,10 @@ export function UpdateToast(): React.ReactElement | null {
   }
 
   const toneStyle = {
-    info:     'border-zinc-700  bg-zinc-900/95',
-    success:  'border-emerald-700/50 bg-zinc-900/95',
-    progress: 'border-emerald-700/50 bg-zinc-900/95',
-    error:    'border-red-700/50  bg-zinc-900/95',
+    info:     'border-zinc-700  bg-zinc-800/95',
+    success:  'border-emerald-700/50 bg-zinc-800/95',
+    progress: 'border-emerald-700/50 bg-zinc-800/95',
+    error:    'border-red-700/50  bg-zinc-800/95',
   }[tone];
 
   return (

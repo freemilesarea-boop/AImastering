@@ -81,10 +81,10 @@ function FindingCard({
   const sev = finding.severity ?? 'warn';
   const border = SEVERITY_BORDER[sev] ?? SEVERITY_BORDER.warn;
   return (
-    <div className={`rounded-md border ${border} bg-zinc-950/40 px-3 py-2`}>
+    <div className={`rounded-md border ${border} bg-zinc-900/40 px-3 py-2`}>
       <div className="flex items-center justify-between gap-2 mb-1">
         <p className="text-[12px] text-zinc-200">{descriptor.title}</p>
-        <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wider ${SEVERITY_CHIP[sev]}`}>
+        <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wider ${SEVERITY_CHIP[sev]}`}>
           {SEVERITY_LABEL[sev]}
         </span>
       </div>
@@ -92,7 +92,7 @@ function FindingCard({
         {finding.message?.trim() ? finding.message : descriptor.fallback}
       </p>
       {typeof finding.confidence === 'number' && Number.isFinite(finding.confidence) && (
-        <p className="text-[9px] text-zinc-600 mt-1 font-mono">
+        <p className="text-[11px] text-zinc-400 mt-1 font-mono">
           신뢰도 ~{Math.round(Math.max(0, Math.min(1, finding.confidence)) * 100)}%
         </p>
       )}
@@ -114,10 +114,10 @@ export function AIArtifactWarningPanel({ check }: Props) {
   if (items.length === 0) return null;
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4 space-y-2">
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 p-4 space-y-2">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-zinc-600 uppercase tracking-wider">AI 아티팩트 감지</p>
-        <span className="text-[10px] text-zinc-700">
+        <p className="text-xs text-zinc-400 uppercase tracking-wider">AI 아티팩트 감지</p>
+        <span className="text-[11px] text-zinc-400">
           {items.length}건 가능성
           {check.analyzerVersion ? ` · v${check.analyzerVersion}` : ''}
         </span>
@@ -127,7 +127,7 @@ export function AIArtifactWarningPanel({ check }: Props) {
           <FindingCard key={descriptor.key} descriptor={descriptor} finding={finding} />
         ))}
       </div>
-      <p className="text-[10px] text-zinc-600 leading-snug pt-1 border-t border-zinc-800">
+      <p className="text-[11px] text-zinc-400 leading-snug pt-1 border-t border-zinc-800">
         ※ 위 항목들은 감지된 패턴일 뿐이며, 자동 보정은 수행하지 않습니다.
       </p>
     </div>

@@ -47,7 +47,7 @@ export default function MultibandGrMeter({ getReductions }: MultibandGrMeterProp
           const peakPct = Math.min(100, (peak / FS_DB) * 100);
           return (
             <div key={label} className="flex-1 flex flex-col items-center gap-1">
-              <div className="relative w-full h-16 bg-zinc-900 rounded-sm border border-zinc-800 overflow-hidden">
+              <div className="relative w-full h-16 bg-zinc-800 rounded-sm border border-zinc-800 overflow-hidden">
                 {/* GR bar grows downward from the top. */}
                 <div
                   className="absolute top-0 left-0 right-0 bg-gradient-to-b from-amber-400 to-amber-600"
@@ -58,13 +58,13 @@ export default function MultibandGrMeter({ getReductions }: MultibandGrMeterProp
                   <div className="absolute left-0 right-0 h-px bg-amber-200" style={{ top: `${peakPct}%` }} />
                 )}
               </div>
-              <span className="text-[9px] text-zinc-500">{label}</span>
-              <span className="text-[9px] font-mono text-zinc-400">{vals ? `-${mag.toFixed(1)}` : '—'}</span>
+              <span className="text-[11px] text-zinc-300">{label}</span>
+              <span className="text-[11px] font-mono text-zinc-400">{vals ? `-${mag.toFixed(1)}` : '—'}</span>
             </div>
           );
         })}
       </div>
-      <p className="text-[9px] text-zinc-600 text-center">밴드별 게인 리덕션 (dB) · 미리듣기 재생 중</p>
+      <p className="text-[11px] text-zinc-400 text-center">밴드별 게인 리덕션 (dB) · 미리듣기 재생 중</p>
     </div>
   );
 }

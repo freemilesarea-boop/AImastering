@@ -32,26 +32,26 @@ export default function ParametricEqPanel(): React.ReactElement {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">파라메트릭 EQ (실시간)</p>
+        <p className="text-[11px] text-zinc-400 uppercase tracking-wider">파라메트릭 EQ (실시간)</p>
         <div className="flex gap-2">
           {bands.length > 0 && (
             <button
               type="button"
               onClick={resetEq}
-              className="text-[10px] text-zinc-500 hover:text-zinc-300"
+              className="text-[11px] text-zinc-300 hover:text-zinc-300"
             >초기화</button>
           )}
           <button
             type="button"
             onClick={() => addBand(1000)}
             disabled={bands.length >= MAX_BANDS}
-            className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-40"
+            className="text-[11px] px-2 py-0.5 rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600 disabled:opacity-40"
           >밴드 추가 ({bands.length}/{MAX_BANDS})</button>
         </div>
       </div>
 
       {bands.length === 0 && (
-        <p className="text-[11px] text-zinc-600">밴드를 추가하면 재생 중 즉시 들립니다.</p>
+        <p className="text-[11px] text-zinc-400">밴드를 추가하면 재생 중 즉시 들립니다.</p>
       )}
 
       <div className="space-y-2">
@@ -67,7 +67,7 @@ export default function ParametricEqPanel(): React.ReactElement {
               <select
                 value={b.type}
                 onChange={(e) => updateBand(b.id, { type: e.target.value as ParametricBandType })}
-                className="bg-zinc-900 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700"
+                className="bg-zinc-800 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700"
               >
                 {TYPES.map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
               </select>
@@ -75,7 +75,7 @@ export default function ParametricEqPanel(): React.ReactElement {
               <button
                 type="button"
                 onClick={() => removeBand(b.id)}
-                className="text-[11px] text-zinc-600 hover:text-red-400"
+                className="text-[11px] text-zinc-400 hover:text-red-400"
                 aria-label="밴드 삭제"
               >✕</button>
             </div>
@@ -105,8 +105,8 @@ function EqSlider({
   return (
     <div className={disabled ? 'opacity-40' : ''}>
       <div className="flex justify-between items-baseline">
-        <span className="text-[10px] text-zinc-600">{label}</span>
-        <span className="text-[10px] font-mono text-zinc-400">{display}</span>
+        <span className="text-[11px] text-zinc-400">{label}</span>
+        <span className="text-[11px] font-mono text-zinc-400">{display}</span>
       </div>
       <input
         type="range" min={min} max={max} step={step} value={value} disabled={disabled}

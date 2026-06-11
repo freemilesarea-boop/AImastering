@@ -52,11 +52,11 @@ export default function SupportBundleButton() {
       disabled={busy}
       title="지원 진단을 JSON 파일로 내보냅니다 (개인정보 / 절대 경로 미포함)"
       className={`no-drag flex items-center gap-1.5 px-2 py-1 rounded-md
-                  text-[10px] uppercase tracking-wider font-medium
+                  text-[11px] uppercase tracking-wider font-medium
                   border transition-colors
                   ${busy
-                    ? 'bg-zinc-900 text-zinc-600 border-zinc-800 cursor-wait'
-                    : 'bg-zinc-800/60 text-zinc-400 border-zinc-700/60 hover:text-zinc-200 hover:border-zinc-600'
+                    ? 'bg-zinc-800 text-zinc-400 border-zinc-800 cursor-wait'
+                    : 'bg-zinc-700/60 text-zinc-400 border-zinc-700/60 hover:text-zinc-200 hover:border-zinc-600'
                   }`}
     >
       <span aria-hidden="true">ⓘ</span>

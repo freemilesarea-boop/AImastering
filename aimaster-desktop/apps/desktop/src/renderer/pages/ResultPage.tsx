@@ -104,7 +104,7 @@ function fmt(n: number, d = 1) { return n.toFixed(d); }
 function Delta({ before, after, unit }: { before: number; after: number; unit: string }) {
   const diff   = after - before;
   const absStr = Math.abs(diff).toFixed(1);
-  const color  = diff > 0 ? 'text-emerald-400' : diff < 0 ? 'text-amber-400' : 'text-zinc-500';
+  const color  = diff > 0 ? 'text-emerald-400' : diff < 0 ? 'text-amber-400' : 'text-zinc-300';
   const sign   = diff > 0 ? '+' : diff < 0 ? '−' : '';
   return (
     <span className={`text-xs font-mono ${color}`}>
@@ -142,23 +142,23 @@ function BeforeAfterCard() {
   ];
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 overflow-hidden">
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 overflow-hidden">
       {/* Header */}
       <div className="grid grid-cols-4 px-4 pt-3 pb-2 border-b border-zinc-800">
-        <span className="col-span-2 text-[10px] text-zinc-600 uppercase tracking-wider">항목</span>
-        <span className="text-[10px] text-zinc-600 uppercase tracking-wider text-right">이전</span>
-        <span className="text-[10px] text-zinc-500 uppercase tracking-wider text-right">이후</span>
+        <span className="col-span-2 text-[11px] text-zinc-400 uppercase tracking-wider">항목</span>
+        <span className="text-[11px] text-zinc-400 uppercase tracking-wider text-right">이전</span>
+        <span className="text-[11px] text-zinc-300 uppercase tracking-wider text-right">이후</span>
       </div>
       {rows.map(({ label, before, after, unit }) => (
         <div key={label}
              className="grid grid-cols-4 items-center px-4 py-2.5 border-b border-zinc-800/60 last:border-0">
-          <span className="col-span-2 text-xs text-zinc-500">{label}</span>
-          <span className="font-mono text-xs text-zinc-600 text-right">
-            {fmt(before)} <span className="text-zinc-700">{unit}</span>
+          <span className="col-span-2 text-xs text-zinc-300">{label}</span>
+          <span className="font-mono text-xs text-zinc-400 text-right">
+            {fmt(before)} <span className="text-zinc-400">{unit}</span>
           </span>
           <div className="text-right space-y-0.5">
             <div className="font-mono text-sm text-zinc-200">
-              {fmt(after)} <span className="text-zinc-600 text-xs">{unit}</span>
+              {fmt(after)} <span className="text-zinc-400 text-xs">{unit}</span>
             </div>
             <Delta before={before} after={after} unit={unit} />
           </div>
@@ -461,10 +461,10 @@ function PreviewPlayer({
   if (!src) return null;
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 p-4">
       <div className="flex items-center justify-between mb-3">
-        <p className="text-xs text-zinc-600 uppercase tracking-wider">프리뷰 (MP3)</p>
-        <span className="flex items-center gap-1.5 text-[10px] text-zinc-600">
+        <p className="text-xs text-zinc-400 uppercase tracking-wider">프리뷰 (MP3)</p>
+        <span className="flex items-center gap-1.5 text-[11px] text-zinc-400">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
           실시간 DSP
         </span>
@@ -536,7 +536,7 @@ function PreviewPlayer({
         {/* Seek bar */}
         <div className="flex-1 space-y-1">
           <div
-            className="h-1.5 rounded-full bg-zinc-800 cursor-pointer overflow-hidden"
+            className="h-1.5 rounded-full bg-zinc-700 cursor-pointer overflow-hidden"
             onClick={handleSeek}
           >
             <div
@@ -545,10 +545,10 @@ function PreviewPlayer({
             />
           </div>
           <div className="flex justify-between">
-            <span className="text-[10px] font-mono text-zinc-600">
+            <span className="text-[11px] font-mono text-zinc-400">
               {formatTime(progress * duration)}
             </span>
-            <span className="text-[10px] font-mono text-zinc-700">
+            <span className="text-[11px] font-mono text-zinc-400">
               {duration ? formatTime(duration) : '--:--'}
             </span>
           </div>
@@ -585,7 +585,7 @@ class WasmAnalyzerSafe extends React.Component<
   render() {
     if (this.state.failed) {
       return (
-        <div className="mt-3 text-[10px] text-zinc-700 font-mono">
+        <div className="mt-3 text-[11px] text-zinc-400 font-mono">
           실시간 분석 비활성 (WASM 오류)
         </div>
       );
@@ -633,16 +633,16 @@ function SaveButtons() {
         onClick={handleSaveWav}
         disabled={!masteringResult?.outputPath}
         className="no-drag w-full flex items-center justify-between px-4 py-3
-                   rounded-xl border border-zinc-700 bg-zinc-900/40
-                   hover:border-zinc-600 hover:bg-zinc-900/60 transition-colors group
+                   rounded-xl border border-zinc-700 bg-zinc-800/40
+                   hover:border-zinc-600 hover:bg-zinc-800/60 transition-colors group
                    disabled:opacity-40 disabled:cursor-not-allowed"
       >
         <div className="flex items-center gap-2.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
           <span className="text-sm text-zinc-300">마스터 WAV 저장</span>
-          <span className="text-xs text-zinc-700">24-bit</span>
+          <span className="text-xs text-zinc-400">24-bit</span>
         </div>
-        <span className="text-xs text-zinc-500 group-hover:text-zinc-400 transition-colors">저장</span>
+        <span className="text-xs text-zinc-300 group-hover:text-zinc-400 transition-colors">저장</span>
       </button>
 
       {/* MP3 preview */}
@@ -650,16 +650,16 @@ function SaveButtons() {
         onClick={handleSaveMp3}
         disabled={!masteringResult?.previewPath}
         className="no-drag w-full flex items-center justify-between px-4 py-3
-                   rounded-xl border border-zinc-700 bg-zinc-900/40
-                   hover:border-zinc-600 hover:bg-zinc-900/60 transition-colors group
+                   rounded-xl border border-zinc-700 bg-zinc-800/40
+                   hover:border-zinc-600 hover:bg-zinc-800/60 transition-colors group
                    disabled:opacity-40 disabled:cursor-not-allowed"
       >
         <div className="flex items-center gap-2.5">
           <span className="w-1.5 h-1.5 rounded-full bg-zinc-500 shrink-0" />
           <span className="text-sm text-zinc-300">프리뷰 MP3 저장</span>
-          <span className="text-xs text-zinc-700">320 kbps</span>
+          <span className="text-xs text-zinc-400">320 kbps</span>
         </div>
-        <span className="text-xs text-zinc-500 group-hover:text-zinc-400 transition-colors">저장</span>
+        <span className="text-xs text-zinc-300 group-hover:text-zinc-400 transition-colors">저장</span>
       </button>
     </div>
   );
@@ -687,8 +687,8 @@ function QCSummary() {
   ];
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
-      <p className="text-xs text-zinc-600 uppercase tracking-wider mb-3">QC 결과</p>
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 p-4">
+      <p className="text-xs text-zinc-400 uppercase tracking-wider mb-3">QC 결과</p>
       <div className="space-y-2">
         {items.map(({ label, ok, note }) => (
           <div key={label} className="flex items-center justify-between">
@@ -696,12 +696,12 @@ function QCSummary() {
               <div className={`w-1.5 h-1.5 rounded-full ${ok ? 'bg-emerald-400' : 'bg-amber-400'}`} />
               <span className="text-xs text-zinc-400">{label}</span>
             </div>
-            <span className="font-mono text-xs text-zinc-600">{note}</span>
+            <span className="font-mono text-xs text-zinc-400">{note}</span>
           </div>
         ))}
       </div>
       {/* YouTube Music note */}
-      <p className="mt-3 pt-3 border-t border-zinc-800 text-[11px] text-zinc-700 leading-snug">
+      <p className="mt-3 pt-3 border-t border-zinc-800 text-[11px] text-zinc-400 leading-snug">
         YouTube Music · Spotify · Apple Music 기본 타깃 −14 LUFS / −1 dBTP 기준 적용
       </p>
     </div>
@@ -728,7 +728,7 @@ function MasteringMetaCard({ meta }: { meta: MasteringMeta }) {
                      }`}>
       <div className="flex items-center justify-between">
         <span className="text-xs uppercase tracking-wider text-zinc-400">마스터링 리포트</span>
-        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded
+        <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded
                           ${meta.targetReached
                             ? 'bg-emerald-900/40 text-emerald-300'
                             : 'bg-amber-900/40 text-amber-300'
@@ -739,8 +739,8 @@ function MasteringMetaCard({ meta }: { meta: MasteringMeta }) {
 
       <div className="grid grid-cols-2 gap-2">
         {cells.map((c) => (
-          <div key={c.label} className="bg-zinc-950/60 rounded-md px-2.5 py-1.5">
-            <div className="text-[10px] text-zinc-600">{c.label}</div>
+          <div key={c.label} className="bg-zinc-900/60 rounded-md px-2.5 py-1.5">
+            <div className="text-[11px] text-zinc-400">{c.label}</div>
             <div className="text-xs font-mono text-zinc-200">{c.value}</div>
           </div>
         ))}
@@ -770,44 +770,44 @@ function WaveformCompareCard({ result }: { result: MasteringResult }) {
   if (!compare && !before && !after) return null;
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 p-4">
       <div className="flex items-center justify-between mb-3">
-        <p className="text-xs text-zinc-600 uppercase tracking-wider">파형 비교</p>
-        <span className="text-[10px] text-zinc-700">
+        <p className="text-xs text-zinc-400 uppercase tracking-wider">파형 비교</p>
+        <span className="text-[11px] text-zinc-400">
           {compare && !imgError.compare ? '상: 원본 · 하: 마스터' : '원본 / 마스터'}
         </span>
       </div>
 
       {!anyImage ? (
-        <div className="bg-zinc-950/60 border border-dashed border-zinc-800 rounded-md py-8
-                        text-center text-[11px] text-zinc-600">
+        <div className="bg-zinc-900/60 border border-dashed border-zinc-800 rounded-md py-8
+                        text-center text-[11px] text-zinc-400">
           파형 이미지를 불러올 수 없습니다
         </div>
       ) : compare && !imgError.compare ? (
         <img
           src={compare}
           alt="원본/마스터 비교 파형"
-          className="w-full rounded-md bg-zinc-950"
+          className="w-full rounded-md bg-zinc-900"
           onError={() => setImgError((e) => ({ ...e, compare: true }))}
         />
       ) : (
         <div className="space-y-2">
           {before && !imgError.before && (
             <div>
-              <p className="text-[10px] text-zinc-700 mb-1">원본</p>
+              <p className="text-[11px] text-zinc-400 mb-1">원본</p>
               <img
                 src={before} alt="원본 파형"
-                className="w-full rounded-md bg-zinc-950"
+                className="w-full rounded-md bg-zinc-900"
                 onError={() => setImgError((e) => ({ ...e, before: true }))}
               />
             </div>
           )}
           {after && !imgError.after && (
             <div>
-              <p className="text-[10px] text-zinc-500 mb-1">마스터</p>
+              <p className="text-[11px] text-zinc-300 mb-1">마스터</p>
               <img
                 src={after} alt="마스터 파형"
-                className="w-full rounded-md bg-zinc-950"
+                className="w-full rounded-md bg-zinc-900"
                 onError={() => setImgError((e) => ({ ...e, after: true }))}
               />
             </div>
@@ -851,10 +851,10 @@ function MetricComparisonTable({ rows }: { rows: MetricComparisonRow[] }) {
   if (!rows.length) return null;
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 overflow-hidden">
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 overflow-hidden">
       <div className="px-4 py-2.5 border-b border-zinc-800 flex items-center justify-between">
-        <p className="text-xs text-zinc-600 uppercase tracking-wider">상세 비교</p>
-        <span className="text-[10px] text-zinc-700">{rows.length}개 지표</span>
+        <p className="text-xs text-zinc-400 uppercase tracking-wider">상세 비교</p>
+        <span className="text-[11px] text-zinc-400">{rows.length}개 지표</span>
       </div>
       <div className="divide-y divide-zinc-800/60">
         {rows.map((r) => {
@@ -867,10 +867,10 @@ function MetricComparisonTable({ rows }: { rows: MetricComparisonRow[] }) {
                   <span className="text-xs text-zinc-300 truncate">{r.label}</span>
                 </div>
                 <div className="flex items-center gap-1.5 font-mono text-[11px] shrink-0 whitespace-nowrap">
-                  <span className="text-zinc-600">{fmtCell(r.before)}</span>
-                  <span className="text-zinc-700">→</span>
+                  <span className="text-zinc-400">{fmtCell(r.before)}</span>
+                  <span className="text-zinc-400">→</span>
                   <span className="text-zinc-200">{fmtCell(r.after)}</span>
-                  {r.unit && <span className="text-zinc-700">{r.unit}</span>}
+                  {r.unit && <span className="text-zinc-400">{r.unit}</span>}
                   {r.delta !== null && r.delta !== undefined && Number.isFinite(r.delta) && (
                     <span className={STATUS_TEXT[sev]}>
                       ({r.delta >= 0 ? '+' : ''}{r.delta.toFixed(1)})
@@ -879,7 +879,7 @@ function MetricComparisonTable({ rows }: { rows: MetricComparisonRow[] }) {
                 </div>
               </div>
               {r.hint && (
-                <p className="text-[10px] text-zinc-700 mt-1 ml-3.5 leading-snug">{r.hint}</p>
+                <p className="text-[11px] text-zinc-400 mt-1 ml-3.5 leading-snug">{r.hint}</p>
               )}
             </div>
           );
@@ -917,7 +917,7 @@ function QualityCheckCard({ report }: { report: QualityCheckReport }) {
     <div className={`rounded-xl border p-4 space-y-3 ${QC_BG[overall]}`}>
       <div className="flex items-center justify-between">
         <span className="text-xs uppercase tracking-wider text-zinc-400">자동 품질 검사</span>
-        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${QC_BADGE[overall]}`}>
+        <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${QC_BADGE[overall]}`}>
           {QC_LABEL[overall]}
         </span>
       </div>
@@ -931,11 +931,11 @@ function QualityCheckCard({ report }: { report: QualityCheckReport }) {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs text-zinc-300">{it.name}</p>
-                  <span className={`text-[10px] font-mono uppercase ${STATUS_TEXT[sev]}`}>
+                  <span className={`text-[11px] font-mono uppercase ${STATUS_TEXT[sev]}`}>
                     {sev}
                   </span>
                 </div>
-                <p className="text-[10px] text-zinc-600 leading-snug">{it.message}</p>
+                <p className="text-[11px] text-zinc-400 leading-snug">{it.message}</p>
               </div>
             </div>
           );
@@ -961,17 +961,17 @@ function DynamicEqCard({ report }: { report: DynamicEqReport }) {
       : '비활성';
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <p className="text-xs text-zinc-600 uppercase tracking-wider">Dynamic EQ</p>
+          <p className="text-xs text-zinc-400 uppercase tracking-wider">Dynamic EQ</p>
           {report.preset && (
-            <span className="text-[9px] text-zinc-700 border border-zinc-800 rounded px-1">
+            <span className="text-[11px] text-zinc-400 border border-zinc-800 rounded px-1">
               {report.preset}
             </span>
           )}
         </div>
-        <span className="text-[10px] text-zinc-700">{engineLabel} · {report.bands.length}밴드</span>
+        <span className="text-[11px] text-zinc-400">{engineLabel} · {report.bands.length}밴드</span>
       </div>
       <div className="space-y-1.5">
         {report.bands.map((b, i) => (
@@ -983,7 +983,7 @@ function DynamicEqCard({ report }: { report: DynamicEqReport }) {
               <span className="text-zinc-400 truncate">{b.label || b.name}</span>
             </div>
             <div className="flex items-center gap-2 font-mono shrink-0 whitespace-nowrap">
-              <span className="text-zinc-700">{fmtFreq(b.freq)}</span>
+              <span className="text-zinc-400">{fmtFreq(b.freq)}</span>
               <span className={b.mode === 'cut' ? 'text-amber-400' : 'text-emerald-400'}>
                 {b.mode === 'cut' ? '−' : '+'}{Number.isFinite(b.reduction) ? b.reduction.toFixed(1) : '0'} dB
               </span>
@@ -1028,10 +1028,10 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
     if (before == null || after == null) return null;
     const diff = after - before;
     const sign = diff > 0 ? '+' : '';
-    const color = diff > 0.5 ? 'text-emerald-400' : diff < -0.5 ? 'text-amber-400' : 'text-zinc-500';
+    const color = diff > 0.5 ? 'text-emerald-400' : diff < -0.5 ? 'text-amber-400' : 'text-zinc-300';
     return (
       <div key={label} className="flex justify-between">
-        <span className="text-zinc-600">{label}</span>
+        <span className="text-zinc-400">{label}</span>
         <span className={`font-mono text-xs ${color}`}>
           {before.toFixed(1)} → {after.toFixed(1)} ({sign}{diff.toFixed(1)} dB)
         </span>
@@ -1040,13 +1040,13 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
   };
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 overflow-hidden">
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 overflow-hidden">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="no-drag w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-800/30 transition-colors"
+        className="no-drag w-full flex items-center justify-between px-4 py-3 text-left hover:bg-zinc-700/30 transition-colors"
       >
-        <span className="text-xs text-zinc-500 uppercase tracking-wider">분석 리포트</span>
-        <span className="text-[10px] text-zinc-700">{open ? '접기 ▲' : '펼치기 ▼'}</span>
+        <span className="text-xs text-zinc-300 uppercase tracking-wider">분석 리포트</span>
+        <span className="text-[11px] text-zinc-400">{open ? '접기 ▲' : '펼치기 ▼'}</span>
       </button>
 
       {open && (
@@ -1054,17 +1054,17 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
 
           {/* EQ Moves */}
           <div>
-            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mt-3 mb-1.5">EQ 적용 밴드</p>
+            <p className="text-[11px] text-zinc-400 uppercase tracking-wider mt-3 mb-1.5">EQ 적용 밴드</p>
             <div className="space-y-1">
               {report.eqMoves.map((m, i) => (
                 <div key={i} className="flex items-center justify-between text-[11px]">
                   <div className="flex items-center gap-1.5">
                     <span className={`w-1 h-1 rounded-full shrink-0 ${m.gainDb >= 0 ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                    <span className="text-zinc-500">{m.band}</span>
-                    {m.adaptive && <span className="text-[9px] text-zinc-700 border border-zinc-800 rounded px-1">적응형</span>}
+                    <span className="text-zinc-300">{m.band}</span>
+                    {m.adaptive && <span className="text-[11px] text-zinc-400 border border-zinc-800 rounded px-1">적응형</span>}
                   </div>
                   <div className="flex items-center gap-2 font-mono">
-                    <span className="text-zinc-700">{m.freqHz >= 1000 ? `${m.freqHz / 1000}kHz` : `${m.freqHz}Hz`}</span>
+                    <span className="text-zinc-400">{m.freqHz >= 1000 ? `${m.freqHz / 1000}kHz` : `${m.freqHz}Hz`}</span>
                     <span className={m.gainDb >= 0 ? 'text-emerald-400' : 'text-amber-400'}>{m.gainStr} dB</span>
                   </div>
                 </div>
@@ -1074,7 +1074,7 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
 
           {/* Compressor */}
           <div>
-            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">컴프레서</p>
+            <p className="text-[11px] text-zinc-400 uppercase tracking-wider mb-1.5">컴프레서</p>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
               {[
                 ['Threshold', `${report.compressor.thresholdDb} dBFS`],
@@ -1085,7 +1085,7 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
                 ['Est. GR', `−${report.compressor.estimatedGrDb} dB`],
               ].map(([k, v]) => (
                 <div key={k} className="flex justify-between">
-                  <span className="text-zinc-600">{k}</span>
+                  <span className="text-zinc-400">{k}</span>
                   <span className="font-mono text-zinc-400">{v}</span>
                 </div>
               ))}
@@ -1094,7 +1094,7 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
 
           {/* Limiter */}
           <div>
-            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">리미터</p>
+            <p className="text-[11px] text-zinc-400 uppercase tracking-wider mb-1.5">리미터</p>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
               {[
                 ['Ceiling', `${report.limiter.ceilingDbtp} dBTP`],
@@ -1103,7 +1103,7 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
                 ['Pre-lim LUFS', `${report.limiter.preLimLufs.toFixed(1)} LUFS`],
               ].map(([k, v]) => (
                 <div key={k} className="flex justify-between">
-                  <span className="text-zinc-600">{k}</span>
+                  <span className="text-zinc-400">{k}</span>
                   <span className="font-mono text-zinc-400">{v}</span>
                 </div>
               ))}
@@ -1112,7 +1112,7 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
 
           {/* Loudnorm */}
           <div>
-            <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">라우드니스 정규화</p>
+            <p className="text-[11px] text-zinc-400 uppercase tracking-wider mb-1.5">라우드니스 정규화</p>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
               {[
                 ['Target', `${report.loudnorm.targetLufs} LUFS`],
@@ -1120,7 +1120,7 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
                 ['Gain Applied', `${report.loudnorm.gainAppliedDb > 0 ? '+' : ''}${report.loudnorm.gainAppliedDb} dB`],
               ].map(([k, v]) => (
                 <div key={k} className="flex justify-between">
-                  <span className="text-zinc-600">{k}</span>
+                  <span className="text-zinc-400">{k}</span>
                   <span className="font-mono text-zinc-400">{v}</span>
                 </div>
               ))}
@@ -1130,7 +1130,7 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
           {/* Spectral before/after */}
           {report.spectralBefore && report.spectralAfter && (
             <div>
-              <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">스펙트럴 밸런스 변화</p>
+              <p className="text-[11px] text-zinc-400 uppercase tracking-wider mb-1.5">스펙트럴 밸런스 변화</p>
               <div className="space-y-1 text-[11px]">
                 {specDelta(report.spectralBefore.lowToMidDb, report.spectralAfter.lowToMidDb, 'Low / Mid 비율')}
                 {specDelta(report.spectralBefore.highToMidDb, report.spectralAfter.highToMidDb, 'High / Mid 비율')}
@@ -1159,7 +1159,7 @@ function SliderRow({
   return (
     <div className="space-y-1.5">
       <div className="flex justify-between items-baseline">
-        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">{label}</p>
+        <p className="text-[11px] text-zinc-400 uppercase tracking-wider">{label}</p>
         <span className="text-[11px] font-mono text-zinc-400">{display}</span>
       </div>
       <input
@@ -1195,13 +1195,13 @@ function Section({
 }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="border border-zinc-800 rounded-lg bg-zinc-900/30 overflow-hidden">
+    <div className="border border-zinc-800 rounded-lg bg-zinc-800/30 overflow-hidden">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="no-drag w-full flex items-center justify-between px-3 py-2 hover:bg-zinc-800/30 transition-colors"
+        className="no-drag w-full flex items-center justify-between px-3 py-2 hover:bg-zinc-700/30 transition-colors"
       >
-        <span className="text-[10px] uppercase tracking-[0.14em] text-zinc-400 font-semibold">{title}</span>
-        <span className="text-[9px] text-zinc-600">{open ? '▼' : '▶'}</span>
+        <span className="text-[11px] uppercase tracking-[0.14em] text-zinc-400 font-semibold">{title}</span>
+        <span className="text-[11px] text-zinc-400">{open ? '▼' : '▶'}</span>
       </button>
       {open && <div className="px-3 pb-3 pt-1 space-y-3 border-t border-zinc-800/60">{children}</div>}
     </div>
@@ -1227,7 +1227,7 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* Header */}
       <div>
         <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-300 font-semibold">세밀 조정</p>
-        <p className="text-[10px] text-zinc-600 mt-0.5">슬라이더 조정 → 즉시 들립니다 (실시간 DSP)</p>
+        <p className="text-[11px] text-zinc-400 mt-0.5">슬라이더 조정 → 즉시 들립니다 (실시간 DSP)</p>
       </div>
 
       {/* ── Style preset ───────────────────────────────────────────────────── */}
@@ -1240,15 +1240,15 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
               className={`no-drag px-2 py-1.5 rounded-md text-left transition-colors ${
                 options.style === id
                   ? 'bg-indigo-600/25 border border-indigo-500/50 text-indigo-300'
-                  : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-400 hover:border-zinc-600'
+                  : 'bg-zinc-700/60 border border-zinc-700/60 text-zinc-400 hover:border-zinc-600'
               }`}
             >
               <span className="block text-[11px] font-medium">{label}</span>
-              <span className="block text-[9px] opacity-60 mt-0.5">{hint}</span>
+              <span className="block text-[11px] opacity-60 mt-0.5">{hint}</span>
             </button>
           ))}
         </div>
-        <p className="text-[9px] text-zinc-700 leading-snug pt-1">
+        <p className="text-[11px] text-zinc-400 leading-snug pt-1">
           저장 시 엔진은 스타일 프리셋 + 아래 슬라이더를 적용합니다.
         </p>
       </Section>
@@ -1316,7 +1316,7 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
           onChange={(v) => updateRt({ dynReleaseMs: v })}
         />
         <div className="space-y-1.5 pt-1">
-          <p className="text-[10px] text-zinc-600 uppercase tracking-wider">리미터 강도 (저장용)</p>
+          <p className="text-[11px] text-zinc-400 uppercase tracking-wider">리미터 강도 (저장용)</p>
           <div className="flex gap-1">
             {LIMITERS.map(({ id, label }) => (
               <button
@@ -1325,7 +1325,7 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
                 className={`no-drag flex-1 py-1.5 rounded-md text-[11px] transition-colors ${
                   options.limiterStrength === id
                     ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
-                    : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-500 hover:border-zinc-600 hover:text-zinc-400'
+                    : 'bg-zinc-700/60 border border-zinc-700/60 text-zinc-300 hover:border-zinc-600 hover:text-zinc-400'
                 }`}
               >
                 {label}
@@ -1384,7 +1384,7 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
           <button
             onClick={() => updateOptions({ applyAiCorrections: !options.applyAiCorrections })}
             className={`no-drag relative w-9 h-5 rounded-full transition-colors ${
-              options.applyAiCorrections ? 'bg-indigo-600' : 'bg-zinc-700'
+              options.applyAiCorrections ? 'bg-indigo-600' : 'bg-zinc-600'
             }`}
           >
             <span
@@ -1476,16 +1476,16 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
       {/* ── Format ─────────────────────────────────────────────────────────── */}
       <Section title="Format" defaultOpen={false}>
         <div className="flex items-center justify-between">
-          <span className="text-[11px] text-zinc-500">샘플레이트</span>
+          <span className="text-[11px] text-zinc-300">샘플레이트</span>
           <div className="flex gap-1">
             {([44100, 48000, 96000] as const).map((sr) => (
               <button
                 key={sr}
                 onClick={() => updateOptions({ sampleRate: sr })}
-                className={`no-drag px-2 py-1 rounded text-[10px] transition-colors ${
+                className={`no-drag px-2 py-1 rounded text-[11px] transition-colors ${
                   options.sampleRate === sr
                     ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
-                    : 'bg-zinc-800 border border-zinc-700 text-zinc-600 hover:border-zinc-600 hover:text-zinc-400'
+                    : 'bg-zinc-700 border border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-400'
                 }`}
               >
                 {sr === 44100 ? '44.1k' : sr === 48000 ? '48k' : '96k'}
@@ -1494,16 +1494,16 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
           </div>
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-[11px] text-zinc-500">비트 심도</span>
+          <span className="text-[11px] text-zinc-300">비트 심도</span>
           <div className="flex gap-1">
             {([16, 24] as const).map((bd) => (
               <button
                 key={bd}
                 onClick={() => updateOptions({ bitDepth: bd })}
-                className={`no-drag px-2.5 py-1 rounded text-[10px] transition-colors ${
+                className={`no-drag px-2.5 py-1 rounded text-[11px] transition-colors ${
                   options.bitDepth === bd
                     ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
-                    : 'bg-zinc-800 border border-zinc-700 text-zinc-600 hover:border-zinc-600 hover:text-zinc-400'
+                    : 'bg-zinc-700 border border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-400'
                 }`}
               >
                 {bd}-bit
@@ -1629,7 +1629,7 @@ export default function ResultPage() {
         actions={
           <button
             onClick={handleNewFile}
-            className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+            className="text-xs text-zinc-400 hover:text-zinc-400 transition-colors"
           >
             새 파일
           </button>
@@ -1651,7 +1651,7 @@ export default function ResultPage() {
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-emerald-300">마스터링 완료</p>
               {inputFileName && (
-                <p className="text-xs text-zinc-500 truncate mt-0.5" title={selectedFile ?? ''}>
+                <p className="text-xs text-zinc-300 truncate mt-0.5" title={selectedFile ?? ''}>
                   {inputFileName}
                 </p>
               )}
@@ -1660,8 +1660,8 @@ export default function ResultPage() {
 
           {/* ── 출력 파일 정보 + 열기 버튼 ──────────────── */}
           {masteringResult?.outputPath && (
-            <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 px-4 py-3 space-y-2">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-zinc-600">출력 파일</p>
+            <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 px-4 py-3 space-y-2">
+              <p className="text-[11px] uppercase tracking-[0.16em] text-zinc-400">출력 파일</p>
               <p className="text-xs font-mono text-zinc-400 break-all leading-relaxed">
                 {outputFileName}
               </p>
@@ -1669,7 +1669,7 @@ export default function ResultPage() {
                 <button
                   onClick={handleOpenInFinder}
                   className="no-drag px-3 py-1.5 rounded-lg text-xs font-medium
-                             bg-zinc-800 border border-zinc-700 text-zinc-300
+                             bg-zinc-700 border border-zinc-700 text-zinc-300
                              hover:border-zinc-600 hover:text-zinc-100 transition-colors"
                 >
                   파일 위치 열기
@@ -1677,7 +1677,7 @@ export default function ResultPage() {
                 <button
                   onClick={handleReMaster}
                   className="no-drag px-3 py-1.5 rounded-lg text-xs font-medium
-                             bg-zinc-800 border border-zinc-700 text-zinc-300
+                             bg-zinc-700 border border-zinc-700 text-zinc-300
                              hover:border-zinc-600 hover:text-zinc-100 transition-colors"
                 >
                   다시 마스터링
@@ -1769,7 +1769,7 @@ export default function ResultPage() {
         </div>{/* end left scroll */}
 
         {/* ── Right: fine-tuning panel (scrollable) ──────────────────────── */}
-        <div className="w-64 shrink-0 border-l border-zinc-800 bg-zinc-900/20 overflow-y-auto">
+        <div className="w-64 shrink-0 border-l border-zinc-800 bg-zinc-800/20 overflow-y-auto">
           <TweakPanel onReMaster={handleReMaster} />
         </div>
       </div>

@@ -20,7 +20,7 @@ export default function VocalRidingPanel(): React.ReactElement {
           <input type="checkbox" checked={vr.enabled} onChange={(e) => update({ enabled: e.target.checked })} aria-label="보컬 라이딩 사용" />
           보컬 라이딩 사용 (Export)
         </label>
-        <button type="button" onClick={reset} className="text-[10px] text-zinc-500 hover:text-zinc-300">초기화</button>
+        <button type="button" onClick={reset} className="text-[11px] text-zinc-300 hover:text-zinc-300">초기화</button>
       </div>
 
       <div className={vr.enabled ? 'space-y-1.5' : 'space-y-1.5 opacity-50 pointer-events-none'}>
@@ -33,7 +33,7 @@ export default function VocalRidingPanel(): React.ReactElement {
         <Slider label="반응" value={vr.responseMs} min={VOCAL_RIDING_RANGES.responseMs.min} max={VOCAL_RIDING_RANGES.responseMs.max} step={10} unit="ms"
           display={`${Math.round(vr.responseMs)} ms`} onChange={(v) => update({ responseMs: v })} />
       </div>
-      <p className="text-[10px] text-zinc-600">센터(보컬) 대역 레벨을 추적해 일정하게 라이딩합니다. 사이드(악기·공간감)는 보존됩니다.</p>
+      <p className="text-[11px] text-zinc-400">센터(보컬) 대역 레벨을 추적해 일정하게 라이딩합니다. 사이드(악기·공간감)는 보존됩니다.</p>
     </div>
   );
 }
@@ -44,8 +44,8 @@ function Slider({ label, value, min, max, step, display, onChange }: {
   return (
     <div>
       <div className="flex justify-between items-baseline">
-        <span className="text-[10px] text-zinc-500">{label}</span>
-        <span className="text-[10px] font-mono text-zinc-400">{display}</span>
+        <span className="text-[11px] text-zinc-300">{label}</span>
+        <span className="text-[11px] font-mono text-zinc-400">{display}</span>
       </div>
       <input type="range" min={min} max={max} step={step} value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))} aria-label={label} className="w-full" />

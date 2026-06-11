@@ -48,7 +48,7 @@ function TrialBadge({ remaining, total }: { remaining: number; total: number }) 
     : 'bg-emerald-500';
 
   return (
-    <div className="rounded-lg bg-zinc-800 border border-zinc-700 p-3 mb-5">
+    <div className="rounded-lg bg-zinc-700 border border-zinc-700 p-3 mb-5">
       <div className="flex justify-between items-center mb-1.5">
         <span className="text-xs text-zinc-400">무료 체험 사용 현황</span>
         <span className="text-xs font-medium text-zinc-200">
@@ -57,7 +57,7 @@ function TrialBadge({ remaining, total }: { remaining: number; total: number }) 
             : `${remaining}회 남음 (총 ${total}회)`}
         </span>
       </div>
-      <div className="h-1.5 rounded-full bg-zinc-700 overflow-hidden">
+      <div className="h-1.5 rounded-full bg-zinc-600 overflow-hidden">
         <div
           className={`h-full rounded-full transition-all duration-300 ${barColor}`}
           style={{ width: `${pct}%` }}
@@ -125,7 +125,7 @@ export default function LicenseModal() {
     >
       {/* Dialog */}
       <div
-        className="w-full max-w-md mx-4 rounded-2xl bg-zinc-900 border border-zinc-700
+        className="w-full max-w-md mx-4 rounded-2xl bg-zinc-800 border border-zinc-700
                    shadow-2xl overflow-hidden"
         role="dialog"
         aria-modal="true"
@@ -138,7 +138,7 @@ export default function LicenseModal() {
           </h2>
           <button
             onClick={() => setShowModal(false)}
-            className="p-1 rounded-md text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800
+            className="p-1 rounded-md text-zinc-300 hover:text-zinc-300 hover:bg-zinc-700
                        transition-colors"
             aria-label="닫기"
           >
@@ -162,7 +162,7 @@ export default function LicenseModal() {
                 라이선스가 활성화되어 있습니다.
               </p>
               {licenseInfo?.key && (
-                <p className="mt-1 text-xs text-zinc-500 font-mono">
+                <p className="mt-1 text-xs text-zinc-300 font-mono">
                   {licenseInfo.key}
                 </p>
               )}
@@ -194,7 +194,7 @@ export default function LicenseModal() {
                     autoComplete="off"
                     maxLength={22}   // PREFIX(9) + 3×4 + 2 dashes = 22
                     className="w-full px-3 py-2.5 rounded-lg text-sm font-mono
-                               bg-zinc-800 border border-zinc-700 text-zinc-100
+                               bg-zinc-700 border border-zinc-700 text-zinc-100
                                placeholder-zinc-600 outline-none
                                focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500/50
                                transition-colors"
@@ -213,7 +213,7 @@ export default function LicenseModal() {
                     disabled={!isComplete(key) || isLoading}
                     className="mt-4 w-full py-2.5 rounded-lg text-sm font-medium
                                bg-zinc-100 text-zinc-900
-                               disabled:bg-zinc-700 disabled:text-zinc-500 disabled:cursor-not-allowed
+                               disabled:bg-zinc-600 disabled:text-zinc-300 disabled:cursor-not-allowed
                                hover:bg-white active:bg-zinc-200
                                transition-colors"
                   >
@@ -223,7 +223,7 @@ export default function LicenseModal() {
               )}
 
               {/* Subtle upgrade CTA — one line, no pressure */}
-              <p className="mt-4 text-center text-xs text-zinc-600">
+              <p className="mt-4 text-center text-xs text-zinc-400">
                 라이선스 키가 없으신가요?{' '}
                 <a
                   href="https://aimaster.io"

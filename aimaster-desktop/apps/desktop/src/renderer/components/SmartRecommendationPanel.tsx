@@ -49,7 +49,7 @@ function Row({ rec }: { rec: SmartRecommendation }) {
       <span className={`mt-1.5 inline-block w-1.5 h-1.5 rounded-full shrink-0 ${SEV_DOT[rec.severity]}`} />
       <div className="flex-1 min-w-0">
         <p className="text-xs text-zinc-200 leading-snug">{rec.text}</p>
-        <span className={`text-[9px] uppercase tracking-wider font-mono ${SEV_TEXT[rec.severity]}`}>
+        <span className={`text-[11px] uppercase tracking-wider font-mono ${SEV_TEXT[rec.severity]}`}>
           {SEV_LABEL[rec.severity]}
         </span>
       </div>
@@ -61,16 +61,16 @@ export function SmartRecommendationPanel(props: Props) {
   const recs = buildSmartRecommendations(props);
 
   return (
-    <div className={`rounded-xl bg-zinc-900/50 border border-zinc-800 p-4 ${props.className ?? ''}`}>
+    <div className={`rounded-xl bg-zinc-800/50 border border-zinc-800 p-4 ${props.className ?? ''}`}>
       <div className="flex items-center justify-between mb-2">
-        <p className="text-xs text-zinc-600 uppercase tracking-wider">스마트 권장 사항</p>
-        <span className="text-[10px] text-zinc-700">
+        <p className="text-xs text-zinc-400 uppercase tracking-wider">스마트 권장 사항</p>
+        <span className="text-[11px] text-zinc-400">
           {recs.length > 0 ? `${recs.length}개` : '0개'}
         </span>
       </div>
 
       {recs.length === 0 ? (
-        <p className="text-[11px] text-zinc-500 leading-snug">
+        <p className="text-[11px] text-zinc-300 leading-snug">
           특별히 권장 사항이 없습니다. 곡 자체를 더 잘 이해하기 위한 추가 분석은
           다음 마스터링 시 다시 시도됩니다.
         </p>

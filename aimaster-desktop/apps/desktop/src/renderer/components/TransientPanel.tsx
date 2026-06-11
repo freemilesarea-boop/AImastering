@@ -27,10 +27,10 @@ export default function TransientPanel(): React.ReactElement {
           />
           트랜지언트 / 임팩트 사용
         </label>
-        <button type="button" onClick={reset} className="text-[10px] text-zinc-500 hover:text-zinc-300">초기화</button>
+        <button type="button" onClick={reset} className="text-[11px] text-zinc-300 hover:text-zinc-300">초기화</button>
       </div>
 
-      <p className="text-[10px] text-zinc-600">Export + 실시간 worklet에 적용. 기본 미리듣기에는 반영되지 않습니다.</p>
+      <p className="text-[11px] text-zinc-400">Export + 실시간 worklet에 적용. 기본 미리듣기에는 반영되지 않습니다.</p>
 
       <div className={tr.bypass ? 'opacity-40 pointer-events-none space-y-2' : 'space-y-2'}>
         {!tr.multibandEnabled && (
@@ -40,14 +40,14 @@ export default function TransientPanel(): React.ReactElement {
           </>
         )}
 
-        <label className="flex items-center gap-2 text-[10px] text-zinc-400 pt-1">
+        <label className="flex items-center gap-2 text-[11px] text-zinc-400 pt-1">
           <input type="checkbox" checked={tr.multibandEnabled} onChange={(e) => update({ multibandEnabled: e.target.checked })} aria-label="멀티밴드 트랜지언트" />
           멀티밴드
         </label>
 
         {tr.multibandEnabled && tr.bands.map((b, i) => (
           <div key={i} className="rounded border border-zinc-800 p-2 space-y-1.5">
-            <p className="text-[10px] text-zinc-500 uppercase tracking-wider">{TR_BAND_LABELS[i]}</p>
+            <p className="text-[11px] text-zinc-300 uppercase tracking-wider">{TR_BAND_LABELS[i]}</p>
             <Slider label="Attack" value={b.attackPct} onChange={(v) => updateBand(i, { attackPct: v })} />
             <Slider label="Sustain" value={b.sustainPct} onChange={(v) => updateBand(i, { sustainPct: v })} />
           </div>
@@ -61,8 +61,8 @@ function Slider({ label, value, onChange }: { label: string; value: number; onCh
   return (
     <div>
       <div className="flex justify-between items-baseline">
-        <span className="text-[10px] text-zinc-600">{label}</span>
-        <span className="text-[10px] font-mono text-zinc-400">{value > 0 ? '+' : ''}{Math.round(value)}%</span>
+        <span className="text-[11px] text-zinc-400">{label}</span>
+        <span className="text-[11px] font-mono text-zinc-400">{value > 0 ? '+' : ''}{Math.round(value)}%</span>
       </div>
       <input type="range" min={TR_RANGES.amountPct.min} max={TR_RANGES.amountPct.max} step={1} value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full" />

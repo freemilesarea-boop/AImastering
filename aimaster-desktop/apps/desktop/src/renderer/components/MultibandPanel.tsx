@@ -30,10 +30,10 @@ export default function MultibandPanel(): React.ReactElement {
           />
           멀티밴드 컴프레서 사용
         </label>
-        <button type="button" onClick={reset} className="text-[10px] text-zinc-500 hover:text-zinc-300">초기화</button>
+        <button type="button" onClick={reset} className="text-[11px] text-zinc-300 hover:text-zinc-300">초기화</button>
       </div>
 
-      <p className="text-[10px] text-zinc-600">
+      <p className="text-[11px] text-zinc-400">
         Export(Rust 렌더)에 적용됩니다. 미리듣기(WebAudio 근사)에는 반영되지 않을 수 있습니다.
       </p>
 
@@ -51,7 +51,7 @@ export default function MultibandPanel(): React.ReactElement {
         {/* Per-band controls */}
         {mb.bands.map((b, i) => (
           <div key={i} className="rounded border border-zinc-800 p-2 space-y-1.5">
-            <p className="text-[10px] text-zinc-500 uppercase tracking-wider">{BAND_LABELS[i]}</p>
+            <p className="text-[11px] text-zinc-300 uppercase tracking-wider">{BAND_LABELS[i]}</p>
             <BandSlider label="Threshold" value={b.thresholdDb} min={MB_RANGES.thresholdDb.min} max={MB_RANGES.thresholdDb.max} step={0.5} unit="dB"
               onChange={(v) => updateBand(i, { thresholdDb: v })} />
             <BandSlider label="Ratio" value={b.ratio} min={MB_RANGES.ratio.min} max={MB_RANGES.ratio.max} step={0.1} unit=":1"
@@ -72,11 +72,11 @@ function XoverInput({ label, value, min, max, onChange }: {
 }): React.ReactElement {
   return (
     <label className="block">
-      <span className="text-[9px] text-zinc-600 block">{label}</span>
+      <span className="text-[11px] text-zinc-400 block">{label}</span>
       <input
         type="number" min={min} max={max} value={Math.round(value)}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="w-full bg-zinc-900 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700"
+        className="w-full bg-zinc-800 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700"
       />
     </label>
   );
@@ -89,8 +89,8 @@ function BandSlider({ label, value, min, max, step, unit, onChange }: {
   return (
     <div>
       <div className="flex justify-between items-baseline">
-        <span className="text-[10px] text-zinc-600">{label}</span>
-        <span className="text-[10px] font-mono text-zinc-400">{display}</span>
+        <span className="text-[11px] text-zinc-400">{label}</span>
+        <span className="text-[11px] font-mono text-zinc-400">{display}</span>
       </div>
       <input type="range" min={min} max={max} step={step} value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full" />

@@ -29,16 +29,16 @@ export default function DynamicEqPanel(): React.ReactElement {
           다이내믹 EQ 사용
         </label>
         <div className="flex gap-2">
-          {cfg.bands.length > 0 && <button type="button" onClick={reset} className="text-[10px] text-zinc-500 hover:text-zinc-300">초기화</button>}
+          {cfg.bands.length > 0 && <button type="button" onClick={reset} className="text-[11px] text-zinc-300 hover:text-zinc-300">초기화</button>}
           <button type="button" onClick={() => addBand(1000)} disabled={cfg.bands.length >= MAX_DYNEQ_BANDS}
-            className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-40">
+            className="text-[11px] px-2 py-0.5 rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600 disabled:opacity-40">
             밴드 추가 ({cfg.bands.length}/{MAX_DYNEQ_BANDS})
           </button>
         </div>
       </div>
 
-      <p className="text-[10px] text-zinc-600">Export + 실시간 worklet에 적용. 기본 미리듣기에는 반영되지 않습니다.</p>
-      {cfg.bands.length === 0 && <p className="text-[11px] text-zinc-600">밴드를 추가하세요.</p>}
+      <p className="text-[11px] text-zinc-400">Export + 실시간 worklet에 적용. 기본 미리듣기에는 반영되지 않습니다.</p>
+      {cfg.bands.length === 0 && <p className="text-[11px] text-zinc-400">밴드를 추가하세요.</p>}
 
       <div className={cfg.bypass ? 'opacity-40 pointer-events-none space-y-2' : 'space-y-2'}>
         {cfg.bands.map((b) => (
@@ -46,15 +46,15 @@ export default function DynamicEqPanel(): React.ReactElement {
             <div className="flex items-center gap-2">
               <input type="checkbox" checked={b.enabled} onChange={(e) => updateBand(b.id, { enabled: e.target.checked })} aria-label="밴드 사용" />
               <select value={b.filterType} onChange={(e) => updateBand(b.id, { filterType: e.target.value as DynEqFilterType })}
-                className="bg-zinc-900 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700">
+                className="bg-zinc-800 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700">
                 {FILTER_TYPES.map((t) => <option key={t} value={t}>{FILTER_LABEL[t]}</option>)}
               </select>
               <select value={b.mode} onChange={(e) => updateBand(b.id, { mode: e.target.value as DynEqMode })}
-                className="bg-zinc-900 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700">
+                className="bg-zinc-800 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700">
                 {(['downcut', 'upboost'] as DynEqMode[]).map((m) => <option key={m} value={m}>{MODE_LABEL[m]}</option>)}
               </select>
               <span className="ml-auto text-[11px] font-mono text-zinc-400">{Math.round(b.freqHz)} Hz</span>
-              <button type="button" onClick={() => removeBand(b.id)} className="text-[11px] text-zinc-600 hover:text-red-400" aria-label="밴드 삭제">✕</button>
+              <button type="button" onClick={() => removeBand(b.id)} className="text-[11px] text-zinc-400 hover:text-red-400" aria-label="밴드 삭제">✕</button>
             </div>
             <Row label="주파수" value={b.freqHz} min={DYNEQ_RANGES.freqHz.min} max={DYNEQ_RANGES.freqHz.max} step={1} unit="Hz" onChange={(v) => updateBand(b.id, { freqHz: v })} />
             <Row label="Q" value={b.q} min={DYNEQ_RANGES.q.min} max={DYNEQ_RANGES.q.max} step={0.1} unit="" onChange={(v) => updateBand(b.id, { q: v })} />
@@ -75,8 +75,8 @@ function Row({ label, value, min, max, step, unit, onChange }: {
   return (
     <div>
       <div className="flex justify-between items-baseline">
-        <span className="text-[10px] text-zinc-600">{label}</span>
-        <span className="text-[10px] font-mono text-zinc-400">{disp}</span>
+        <span className="text-[11px] text-zinc-400">{label}</span>
+        <span className="text-[11px] font-mono text-zinc-400">{disp}</span>
       </div>
       <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full" />
     </div>

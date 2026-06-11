@@ -28,18 +28,18 @@ export default function SaturationPanel(): React.ReactElement {
           />
           새추레이션 / 엑사이터 사용
         </label>
-        <button type="button" onClick={reset} className="text-[10px] text-zinc-500 hover:text-zinc-300">초기화</button>
+        <button type="button" onClick={reset} className="text-[11px] text-zinc-300 hover:text-zinc-300">초기화</button>
       </div>
 
-      <p className="text-[10px] text-zinc-600">Export에 적용, 미리듣기는 WaveShaper 근사.</p>
+      <p className="text-[11px] text-zinc-400">Export에 적용, 미리듣기는 WaveShaper 근사.</p>
 
       <div className={sat.bypass ? 'opacity-40 pointer-events-none space-y-2' : 'space-y-2'}>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-zinc-600">캐릭터</span>
+          <span className="text-[11px] text-zinc-400">캐릭터</span>
           <select
             value={sat.character}
             onChange={(e) => update({ character: e.target.value as SaturationCharacter })}
-            className="bg-zinc-900 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700"
+            className="bg-zinc-800 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700"
           >
             {CHARACTERS.map((c) => <option key={c} value={c}>{CHARACTER_LABEL[c]}</option>)}
           </select>
@@ -50,7 +50,7 @@ export default function SaturationPanel(): React.ReactElement {
         <Slider label="Mix" value={sat.mixPct} min={SAT_RANGES.mixPct.min} max={SAT_RANGES.mixPct.max} step={1} unit="%"
           onChange={(v) => update({ mixPct: v })} />
 
-        <label className="flex items-center gap-2 text-[10px] text-zinc-400 pt-1">
+        <label className="flex items-center gap-2 text-[11px] text-zinc-400 pt-1">
           <input type="checkbox" checked={sat.multibandEnabled} onChange={(e) => update({ multibandEnabled: e.target.checked })} aria-label="멀티밴드 드라이브" />
           멀티밴드 드라이브
         </label>
@@ -73,8 +73,8 @@ function Slider({ label, value, min, max, step, unit, onChange }: {
   return (
     <div>
       <div className="flex justify-between items-baseline">
-        <span className="text-[10px] text-zinc-600">{label}</span>
-        <span className="text-[10px] font-mono text-zinc-400">{Math.round(value)}{unit}</span>
+        <span className="text-[11px] text-zinc-400">{label}</span>
+        <span className="text-[11px] font-mono text-zinc-400">{Math.round(value)}{unit}</span>
       </div>
       <input type="range" min={min} max={max} step={step} value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full" />

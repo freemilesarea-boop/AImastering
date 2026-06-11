@@ -74,10 +74,10 @@ export function ExportReportPanel({ result, selectedMode, onExported }: Props) {
   }, [result, selectedMode, onExported]);
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 p-4">
       <div className="flex items-center justify-between mb-3">
-        <p className="text-xs text-zinc-600 uppercase tracking-wider">리포트 내보내기</p>
-        <span className="text-[10px] text-zinc-700">TXT · JSON</span>
+        <p className="text-xs text-zinc-400 uppercase tracking-wider">리포트 내보내기</p>
+        <span className="text-[11px] text-zinc-400">TXT · JSON</span>
       </div>
 
       <div className="grid grid-cols-2 gap-2">
@@ -85,7 +85,7 @@ export function ExportReportPanel({ result, selectedMode, onExported }: Props) {
           type="button"
           onClick={handleTxt}
           className="no-drag w-full px-3 py-2.5 rounded-lg border border-zinc-700
-                     bg-zinc-900/40 hover:border-zinc-600 hover:bg-zinc-900/60
+                     bg-zinc-800/40 hover:border-zinc-600 hover:bg-zinc-800/60
                      transition-colors text-xs text-zinc-300"
         >
           TXT 저장
@@ -94,14 +94,14 @@ export function ExportReportPanel({ result, selectedMode, onExported }: Props) {
           type="button"
           onClick={handleJson}
           className="no-drag w-full px-3 py-2.5 rounded-lg border border-zinc-700
-                     bg-zinc-900/40 hover:border-zinc-600 hover:bg-zinc-900/60
+                     bg-zinc-800/40 hover:border-zinc-600 hover:bg-zinc-800/60
                      transition-colors text-xs text-zinc-300"
         >
           JSON 저장
         </button>
       </div>
 
-      <p className="text-[10px] text-zinc-600 leading-snug mt-2">
+      <p className="text-[11px] text-zinc-400 leading-snug mt-2">
         구간 분석, AI 아티팩트 검사, 보컬·번역 분석 결과까지 포함된 단일 리포트입니다.
       </p>
     </div>

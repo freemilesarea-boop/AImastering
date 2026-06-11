@@ -76,7 +76,7 @@ function classify(frame: StereoAggregateFrame): Verdict {
   return {
     label: 'Stereo Balanced',
     description: 'Healthy stereo image with safe mono compatibility.',
-    classes: 'bg-zinc-800 text-zinc-300 border-zinc-700',
+    classes: 'bg-zinc-700 text-zinc-300 border-zinc-700',
   };
 }
 
@@ -152,29 +152,29 @@ export function StereoScopePanel(props: StereoScopePanelProps = {}) {
   const baselineFill = 1 / 4;
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3">
+    <div className="rounded-xl border border-zinc-800 bg-zinc-800/50 p-3">
       <div className="mb-2 flex items-baseline justify-between">
         <div className="text-sm font-medium text-zinc-200">Stereo · scope</div>
         {verdict ? (
           <span
-            className={`rounded-md border px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider ${verdict.classes}`}
+            className={`rounded-md border px-2 py-0.5 text-[11px] font-mono uppercase tracking-wider ${verdict.classes}`}
             title={verdict.description}
           >
             {verdict.label}
           </span>
         ) : (
-          <span className="text-xs text-zinc-500 font-mono">awaiting frames…</span>
+          <span className="text-xs text-zinc-300 font-mono">awaiting frames…</span>
         )}
       </div>
 
       {/* Correlation bar -1..+1 */}
       <div className="mb-3">
-        <div className="mb-0.5 flex justify-between text-[10px] text-zinc-500">
+        <div className="mb-0.5 flex justify-between text-[11px] text-zinc-300">
           <span>-1 (anti-phase)</span>
           <span>0</span>
           <span>+1 (mono)</span>
         </div>
-        <div className="relative h-3 overflow-hidden rounded-sm bg-zinc-800">
+        <div className="relative h-3 overflow-hidden rounded-sm bg-zinc-700">
           {/* Phase-risk red band on the left half */}
           <div className="absolute inset-y-0 left-0 w-[40%] bg-red-900/30" />
           {/* Centre tick (zero correlation) */}
@@ -192,14 +192,14 @@ export function StereoScopePanel(props: StereoScopePanelProps = {}) {
 
       {/* Width index bar */}
       <div className="mb-1">
-        <div className="mb-0.5 flex justify-between text-[10px] text-zinc-500">
+        <div className="mb-0.5 flex justify-between text-[11px] text-zinc-300">
           <span>narrow</span>
           <span className="-translate-x-1/2" style={{ marginLeft: `${baselineFill * 100}%` }}>
             balanced
           </span>
           <span>wide</span>
         </div>
-        <div className="relative h-3 overflow-hidden rounded-sm bg-zinc-800">
+        <div className="relative h-3 overflow-hidden rounded-sm bg-zinc-700">
           {/* Baseline tick at widthIndex=1 (= 25 % since max = 4) */}
           <div
             className="absolute inset-y-0 w-px bg-zinc-600"
@@ -217,7 +217,7 @@ export function StereoScopePanel(props: StereoScopePanelProps = {}) {
 
       {/* M/S ratio for engineers — small footer line */}
       {isAggregate(stereo) && (
-        <div className="border-t border-zinc-800 pt-2 text-[10px] font-mono tabular-nums text-zinc-500">
+        <div className="border-t border-zinc-800 pt-2 text-[11px] font-mono tabular-nums text-zinc-300">
           M/S ratio: {Number.isFinite(stereo.msRatioDb) ? `${stereo.msRatioDb.toFixed(2)} dB` : '+∞ (mono)'}
         </div>
       )}

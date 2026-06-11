@@ -34,7 +34,7 @@ export function MasteringModeSelector(props: Props) {
         const stateClass = selected
           ? 'border-emerald-500 bg-emerald-500/10 text-emerald-100 '
             + 'shadow-[0_0_24px_rgba(16,185,129,0.25)]'
-          : 'border-zinc-700 bg-zinc-900/40 text-zinc-400 '
+          : 'border-zinc-700 bg-zinc-800/40 text-zinc-400 '
             + 'hover:border-zinc-500 hover:text-zinc-200';
         const disabledClass = disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer';
 
@@ -52,11 +52,11 @@ export function MasteringModeSelector(props: Props) {
             <span className="mt-1.5 text-[11px] text-center leading-snug">
               {cfg.description}
             </span>
-            <span className={`mt-1 text-[10px] tabular-nums ${selected ? 'text-emerald-300/80' : 'text-zinc-500'}`}>
+            <span className={`mt-1 text-[11px] tabular-nums ${selected ? 'text-emerald-300/80' : 'text-zinc-300'}`}>
               target {cfg.targetLufs} LUFS
             </span>
             {selected && (
-              <span className="absolute top-2 right-3 text-[9px] tracking-widest text-emerald-300/70">
+              <span className="absolute top-2 right-3 text-[11px] tracking-widest text-emerald-300/70">
                 ◉ ACTIVE
               </span>
             )}

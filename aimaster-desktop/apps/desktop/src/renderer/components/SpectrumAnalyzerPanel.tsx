@@ -237,10 +237,10 @@ export function SpectrumAnalyzerPanel(props: SpectrumAnalyzerPanelProps = {}) {
   }, [dbRange.min, dbRange.max, hzRange.min, hzRange.max, showPeakHold]);
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3">
+    <div className="rounded-xl border border-zinc-800 bg-zinc-800/50 p-3">
       <div className="mb-2 flex items-baseline justify-between">
         <div className="text-sm font-medium text-zinc-200">Spectrum · live FFT</div>
-        <div className="text-xs text-zinc-500 font-mono tabular-nums">
+        <div className="text-xs text-zinc-300 font-mono tabular-nums">
           {fft ? `${fft.fftSize} pts · ${fft.binCentresHz.length} bins` : 'awaiting frames…'}
         </div>
       </div>

@@ -30,25 +30,25 @@ export default function StemRebalancePanel(): React.ReactElement {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-[11px] text-zinc-300">스템 리밸런스</p>
-        <button type="button" onClick={reset} className="text-[10px] text-zinc-500 hover:text-zinc-300">초기화</button>
+        <button type="button" onClick={reset} className="text-[11px] text-zinc-300 hover:text-zinc-300">초기화</button>
       </div>
 
       {/* ── Approximation tier (live) ──────────────────────────────────── */}
       <div className="space-y-2">
-        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">근사 (실시간 · 미리듣기 적용)</p>
+        <p className="text-[11px] text-zinc-400 uppercase tracking-wider">근사 (실시간 · 미리듣기 적용)</p>
         <Slider label="보컬 (센터)" value={r.vocalDb} min={REBAL_RANGES.vocalDb.min} max={REBAL_RANGES.vocalDb.max} unit="dB" onChange={(v) => update({ vocalDb: v })} />
         <Slider label="베이스" value={r.bassDb} min={REBAL_RANGES.bassDb.min} max={REBAL_RANGES.bassDb.max} unit="dB" onChange={(v) => update({ bassDb: v })} />
         <Slider label="공간 (사이드)" value={r.sidePct} min={REBAL_RANGES.sidePct.min} max={REBAL_RANGES.sidePct.max} unit="%" onChange={(v) => update({ sidePct: v })} />
-        <p className="text-[10px] text-zinc-600">M/S 기반 근사 — 센터 보컬·베이스·폭을 즉시 조정합니다.</p>
+        <p className="text-[11px] text-zinc-400">M/S 기반 근사 — 센터 보컬·베이스·폭을 즉시 조정합니다.</p>
       </div>
 
       {/* ── Precise tier (Demucs/ONNX) ─────────────────────────────────── */}
       <div className={`space-y-2 ${preciseAvailable ? '' : 'opacity-50'}`}>
         <div className="flex items-center justify-between">
-          <p className="text-[10px] text-zinc-600 uppercase tracking-wider">정밀 (Demucs · Export)</p>
-          {!preciseAvailable && <span className="text-[9px] px-1 rounded bg-zinc-800 text-zinc-500">모델 필요 (추후)</span>}
+          <p className="text-[11px] text-zinc-400 uppercase tracking-wider">정밀 (Demucs · Export)</p>
+          {!preciseAvailable && <span className="text-[11px] px-1 rounded bg-zinc-700 text-zinc-300">모델 필요 (추후)</span>}
         </div>
-        <label className="flex items-center gap-2 text-[10px] text-zinc-400">
+        <label className="flex items-center gap-2 text-[11px] text-zinc-400">
           <input type="checkbox" disabled={!preciseAvailable} checked={r.preciseEnabled} onChange={(e) => update({ preciseEnabled: e.target.checked })} aria-label="정밀 분리 사용" />
           정밀 4-스템 분리 사용 (Export)
         </label>
@@ -70,8 +70,8 @@ function Slider({ label, value, min, max, unit, onChange, disabled }: {
   return (
     <div className={disabled ? 'opacity-40' : ''}>
       <div className="flex justify-between items-baseline">
-        <span className="text-[10px] text-zinc-600">{label}</span>
-        <span className="text-[10px] font-mono text-zinc-400">{disp}</span>
+        <span className="text-[11px] text-zinc-400">{label}</span>
+        <span className="text-[11px] font-mono text-zinc-400">{disp}</span>
       </div>
       <input type="range" min={min} max={max} step={unit === '%' ? 1 : 0.5} value={value} disabled={disabled}
         onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full" />

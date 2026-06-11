@@ -27,10 +27,10 @@ export default function ImagerMultibandPanel(): React.ReactElement {
           />
           4밴드 스테레오 폭 사용
         </label>
-        <button type="button" onClick={reset} className="text-[10px] text-zinc-500 hover:text-zinc-300">초기화</button>
+        <button type="button" onClick={reset} className="text-[11px] text-zinc-300 hover:text-zinc-300">초기화</button>
       </div>
 
-      <p className="text-[10px] text-zinc-600">
+      <p className="text-[11px] text-zinc-400">
         밴드별 Side 폭(0% 모노 · 100% 그대로 · 200% 확장). Export에 적용, 미리듣기는 근사.
       </p>
 
@@ -46,8 +46,8 @@ export default function ImagerMultibandPanel(): React.ReactElement {
         {im.widthsPct.map((w, i) => (
           <div key={i}>
             <div className="flex justify-between items-baseline">
-              <span className="text-[10px] text-zinc-600">{IMG_BAND_LABELS[i]} 폭</span>
-              <span className="text-[10px] font-mono text-zinc-400">{Math.round(w)}%</span>
+              <span className="text-[11px] text-zinc-400">{IMG_BAND_LABELS[i]} 폭</span>
+              <span className="text-[11px] font-mono text-zinc-400">{Math.round(w)}%</span>
             </div>
             <input type="range" min={IMG_RANGES.widthPct.min} max={IMG_RANGES.widthPct.max} step={1} value={w}
               onChange={(e) => updateWidth(i, parseFloat(e.target.value))} className="w-full" />
@@ -63,10 +63,10 @@ function XoverInput({ label, value, min, max, onChange }: {
 }): React.ReactElement {
   return (
     <label className="block">
-      <span className="text-[9px] text-zinc-600 block">{label}</span>
+      <span className="text-[11px] text-zinc-400 block">{label}</span>
       <input type="number" min={min} max={max} value={Math.round(value)}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="w-full bg-zinc-900 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700" />
+        className="w-full bg-zinc-800 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700" />
     </label>
   );
 }

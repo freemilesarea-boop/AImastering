@@ -23,8 +23,8 @@ export default function TopBar({ subtitle, actions }: TopBarProps) {
 
       {subtitle && (
         <>
-          <span className="text-zinc-700 select-none">/</span>
-          <span className="text-xs text-zinc-500 select-none">{subtitle}</span>
+          <span className="text-zinc-400 select-none">/</span>
+          <span className="text-xs text-zinc-300 select-none">{subtitle}</span>
         </>
       )}
 

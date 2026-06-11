@@ -25,19 +25,19 @@ export default function DeesserPanel(): React.ReactElement {
           <button
             type="button"
             onClick={() => update({ enabled: true, freqHz: 6500, thresholdDb: -28, rangeDb: 6, q: 3.5, filterType: 'bell' })}
-            className="text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
+            className="text-[11px] px-2 py-0.5 rounded bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
           >보컬 디에스</button>
-          <button type="button" onClick={reset} className="text-[10px] text-zinc-500 hover:text-zinc-300">초기화</button>
+          <button type="button" onClick={reset} className="text-[11px] text-zinc-300 hover:text-zinc-300">초기화</button>
         </div>
       </div>
 
-      <p className="text-[10px] text-zinc-600">치찰음(4–10 kHz)이 임계값을 넘을 때만 동적으로 감쇠. Export + worklet 적용.</p>
+      <p className="text-[11px] text-zinc-400">치찰음(4–10 kHz)이 임계값을 넘을 때만 동적으로 감쇠. Export + worklet 적용.</p>
 
       <div className={d.enabled ? 'space-y-2' : 'opacity-40 pointer-events-none space-y-2'}>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-zinc-600">필터</span>
+          <span className="text-[11px] text-zinc-400">필터</span>
           <select value={d.filterType} onChange={(e) => update({ filterType: e.target.value as 'bell' | 'highshelf' })}
-            className="bg-zinc-900 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700">
+            className="bg-zinc-800 text-zinc-300 text-[11px] rounded px-1 py-0.5 border border-zinc-700">
             <option value="bell">벨 (좁은 노치)</option>
             <option value="highshelf">하이셸프 (전체 고역)</option>
           </select>
@@ -58,8 +58,8 @@ function Row({ label, value, min, max, step, unit, onChange }: {
   return (
     <div>
       <div className="flex justify-between items-baseline">
-        <span className="text-[10px] text-zinc-600">{label}</span>
-        <span className="text-[10px] font-mono text-zinc-400">{disp}</span>
+        <span className="text-[11px] text-zinc-400">{label}</span>
+        <span className="text-[11px] font-mono text-zinc-400">{disp}</span>
       </div>
       <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full" />
     </div>

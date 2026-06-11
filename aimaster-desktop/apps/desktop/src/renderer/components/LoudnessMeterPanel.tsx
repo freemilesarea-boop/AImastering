@@ -56,7 +56,7 @@ function Bar({
   return (
     <div className="flex items-center gap-3 text-xs">
       <span className="w-14 shrink-0 text-zinc-400 uppercase tracking-wider">{label}</span>
-      <div className="flex-1 h-3 bg-zinc-800 rounded overflow-hidden border border-zinc-700/40">
+      <div className="flex-1 h-3 bg-zinc-700 rounded overflow-hidden border border-zinc-700/40">
         <div
           className={`h-full transition-[width] duration-100 ${color}`}
           style={{ width: `${w}%` }}
@@ -120,14 +120,14 @@ export function LoudnessMeterPanel(props: Props) {
 
   // Colour for the M/S/I bars.  Green if reasonable, amber if hot, red if clipping.
   const lufsColor = (v: number): string => {
-    if (!isFinite(v))   return 'bg-zinc-700';
+    if (!isFinite(v))   return 'bg-zinc-600';
     if (v > -1)         return 'bg-red-500';
     if (v > -6)         return 'bg-amber-500';
     return 'bg-emerald-500';
   };
 
   const tpColor = (v: number): string => {
-    if (!isFinite(v))   return 'bg-zinc-700';
+    if (!isFinite(v))   return 'bg-zinc-600';
     if (v >  -1)        return 'bg-red-500';
     if (v >  -3)        return 'bg-amber-500';
     return 'bg-emerald-500';
@@ -143,12 +143,12 @@ export function LoudnessMeterPanel(props: Props) {
   })();
 
   return (
-    <div className={`rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 ${className ?? ''}`}>
+    <div className={`rounded-xl border border-zinc-800 bg-zinc-800/60 p-4 ${className ?? ''}`}>
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-zinc-300">
           Loudness · BS.1770-4
         </h3>
-        <span className="text-[10px] text-zinc-500 tabular-nums">
+        <span className="text-[11px] text-zinc-300 tabular-nums">
           {m.durationSec > 0 ? `${m.durationSec.toFixed(1)} s · ${m.blocksAnalyzed} blk` : 'idle'}
         </span>
       </div>
@@ -178,7 +178,7 @@ export function LoudnessMeterPanel(props: Props) {
 
       {/* Per-channel TP — only render when there's data and >1 ch */}
       {m.perChannelTpDb.length > 1 && (
-        <div className="mt-3 border-t border-zinc-800 pt-2 text-[10px] text-zinc-400">
+        <div className="mt-3 border-t border-zinc-800 pt-2 text-[11px] text-zinc-400">
           <span className="mr-2 uppercase tracking-wider">Per-ch TP</span>
           {m.perChannelTpDb.map((v, i) => (
             <span key={i} className="mr-3 tabular-nums">
@@ -189,13 +189,13 @@ export function LoudnessMeterPanel(props: Props) {
       )}
 
       {typeof targetLufs === 'number' && isFinite(m.integratedLufs) && (
-        <div className="mt-2 text-[10px] text-zinc-500">
+        <div className="mt-2 text-[11px] text-zinc-300">
           target {targetLufs.toFixed(1)} LUFS · Δ {(m.integratedLufs - targetLufs).toFixed(2)} LU
         </div>
       )}
 
       {error && (
-        <div className="mt-2 rounded border border-red-700/50 bg-red-900/30 px-2 py-1 text-[10px] text-red-300">
+        <div className="mt-2 rounded border border-red-700/50 bg-red-900/30 px-2 py-1 text-[11px] text-red-300">
           {error}
         </div>
       )}

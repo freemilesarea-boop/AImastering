@@ -66,10 +66,10 @@ function Timeline({ sections }: { sections: SectionSegment[] }) {
 
   return (
     <div>
-      <p className="text-[10px] text-zinc-600 uppercase tracking-wider mb-1.5">
+      <p className="text-[11px] text-zinc-400 uppercase tracking-wider mb-1.5">
         구간 타임라인
       </p>
-      <div className="relative h-7 rounded-md overflow-hidden bg-zinc-950/80 flex">
+      <div className="relative h-7 rounded-md overflow-hidden bg-zinc-900/80 flex">
         {sections.map((s, i) => {
           const width = Math.max(0, ((s.end - s.start) / total) * 100);
           if (width <= 0) return null;
@@ -83,7 +83,7 @@ function Timeline({ sections }: { sections: SectionSegment[] }) {
               title={`${label} · ${fmtTime(s.start)}–${fmtTime(s.end)} · 에너지 ${ENERGY_LABEL[energy]}`}
             >
               {width > 8 && (
-                <span className="text-[9px] uppercase tracking-wider text-zinc-100/90 truncate px-1">
+                <span className="text-[11px] uppercase tracking-wider text-zinc-100/90 truncate px-1">
                   {label}
                 </span>
               )}
@@ -91,7 +91,7 @@ function Timeline({ sections }: { sections: SectionSegment[] }) {
           );
         })}
       </div>
-      <div className="flex justify-between text-[9px] text-zinc-700 mt-1 font-mono">
+      <div className="flex justify-between text-[11px] text-zinc-400 mt-1 font-mono">
         <span>0:00</span>
         <span>{fmtTime(total)}</span>
       </div>
@@ -101,10 +101,10 @@ function Timeline({ sections }: { sections: SectionSegment[] }) {
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="bg-zinc-950/60 rounded-md px-2.5 py-1.5">
-      <div className="text-[10px] text-zinc-600">{label}</div>
+    <div className="bg-zinc-900/60 rounded-md px-2.5 py-1.5">
+      <div className="text-[11px] text-zinc-400">{label}</div>
       <div className="text-xs font-mono text-zinc-200">{value}</div>
-      {hint && <div className="text-[9px] text-zinc-700 mt-0.5">{hint}</div>}
+      {hint && <div className="text-[11px] text-zinc-400 mt-0.5">{hint}</div>}
     </div>
   );
 }
@@ -133,10 +133,10 @@ export function SectionAnalysisPanel({ analysis, currentMode }: Props) {
   if (!hasAnyData) return null;
 
   return (
-    <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4 space-y-3">
+    <div className="rounded-xl bg-zinc-800/50 border border-zinc-800 p-4 space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-zinc-600 uppercase tracking-wider">구간 분석</p>
-        <span className="text-[10px] text-zinc-700">
+        <p className="text-xs text-zinc-400 uppercase tracking-wider">구간 분석</p>
+        <span className="text-[11px] text-zinc-400">
           {sections.length > 0 ? `${sections.length}개 구간` : '구간 미검출'}
         </span>
       </div>
@@ -166,15 +166,15 @@ export function SectionAnalysisPanel({ analysis, currentMode }: Props) {
           <p className="text-[11px] text-violet-300 font-medium">
             권장 모드 가능성: <span className="font-mono">{mode.suggestedMode}</span>
             {currentMode && (
-              <span className="text-zinc-600">
+              <span className="text-zinc-400">
                 {' '}· 현재 <span className="font-mono">{currentMode}</span>
               </span>
             )}
           </p>
           {mode.reason && (
-            <p className="text-[10px] text-violet-200/80 leading-snug mt-0.5">{mode.reason}</p>
+            <p className="text-[11px] text-violet-200/80 leading-snug mt-0.5">{mode.reason}</p>
           )}
-          <p className="text-[9px] text-violet-300/50 mt-1">
+          <p className="text-[11px] text-violet-300/50 mt-1">
             ※ 곡 분석에서 감지된 패턴이며, 자동 변경되지 않습니다.
           </p>
         </div>

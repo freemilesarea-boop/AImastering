@@ -32,7 +32,7 @@ export default function AiMusicPanel(): React.ReactElement {
   }, [analysis, masteringResult, scanTick]);
 
   if (!analysis) {
-    return <p className="text-[11px] text-zinc-600">먼저 파일을 분석/마스터링하면 AI 음악 아티팩트를 검사합니다.</p>;
+    return <p className="text-[11px] text-zinc-400">먼저 파일을 분석/마스터링하면 AI 음악 아티팩트를 검사합니다.</p>;
   }
   if (!report) return <span />;
 
@@ -45,11 +45,11 @@ export default function AiMusicPanel(): React.ReactElement {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <p className="text-[11px] text-zinc-300">AI 생성곡 아티팩트 검사</p>
-          <span className={`text-[9px] px-1 rounded ${refined ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-700/40 text-zinc-500'}`}>
+          <span className={`text-[11px] px-1 rounded ${refined ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-600/40 text-zinc-300'}`}>
             {refined ? '스펙트럼 정밀' : '기본'}
           </span>
         </div>
-        <span className={`text-[10px] px-2 py-0.5 rounded border ${badge}`}>
+        <span className={`text-[11px] px-2 py-0.5 rounded border ${badge}`}>
           {report.detected ? `${report.findings.length}건 검출` : '아티팩트 없음'}
         </span>
       </div>
@@ -57,24 +57,24 @@ export default function AiMusicPanel(): React.ReactElement {
       <button
         type="button"
         onClick={() => setScanTick((n) => n + 1)}
-        className="text-[10px] text-zinc-500 hover:text-zinc-300"
+        className="text-[11px] text-zinc-300 hover:text-zinc-300"
         title="미리듣기 재생 중에 누르면 FFT 스펙트럼으로 정밀 재검사합니다"
       >↻ 스펙트럼 정밀 재검사 (재생 중)</button>
 
       {!report.detected && (
-        <p className="text-[11px] text-zinc-500">AI 음악 특유의 아티팩트가 감지되지 않았습니다. (일반 마스터링 권장)</p>
+        <p className="text-[11px] text-zinc-300">AI 음악 특유의 아티팩트가 감지되지 않았습니다. (일반 마스터링 권장)</p>
       )}
 
       <div className="space-y-1.5">
         {report.findings.map((fnd) => (
           <div key={fnd.id} className="rounded border border-zinc-800 p-2">
             <div className="flex items-center gap-2">
-              <span className={`text-[9px] px-1 rounded ${fnd.severity === 'warn' ? 'bg-amber-500/15 text-amber-400' : 'bg-sky-500/15 text-sky-400'}`}>
+              <span className={`text-[11px] px-1 rounded ${fnd.severity === 'warn' ? 'bg-amber-500/15 text-amber-400' : 'bg-sky-500/15 text-sky-400'}`}>
                 {fnd.severity === 'warn' ? '주의' : '정보'}
               </span>
               <span className="text-[11px] text-zinc-200">{fnd.label}</span>
             </div>
-            <p className="text-[10px] text-zinc-500 mt-1 leading-tight">{fnd.detail}</p>
+            <p className="text-[11px] text-zinc-300 mt-1 leading-tight">{fnd.detail}</p>
           </div>
         ))}
       </div>
@@ -89,7 +89,7 @@ export default function AiMusicPanel(): React.ReactElement {
           AI 음악 보정 적용 (다이내믹EQ·디에서·트랜지언트·이미저 설정)
         </button>
       )}
-      <p className="text-[10px] text-zinc-600">보정 적용 후 각 모듈 패널에서 세부 조정 가능. Export에 적용됩니다.</p>
+      <p className="text-[11px] text-zinc-400">보정 적용 후 각 모듈 패널에서 세부 조정 가능. Export에 적용됩니다.</p>
     </div>
   );
 }
