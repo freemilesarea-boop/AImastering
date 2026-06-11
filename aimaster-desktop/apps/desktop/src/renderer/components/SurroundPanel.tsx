@@ -68,6 +68,15 @@ export default function SurroundPanel(): React.ReactElement {
               <input type="checkbox" checked={!!s.admBwf} onChange={(e) => update({ admBwf: e.target.checked })} aria-label="ADM BWF 출력" />
               ADM BWF 출력 (Atmos/ADM 도구용 베드)
             </label>
+            <label className="flex items-center justify-between gap-2 text-[10px] text-zinc-400">
+              <span>Dolby 코덱 출력</span>
+              <select value={s.dolbyCodec ?? 'none'} onChange={(e) => update({ dolbyCodec: e.target.value as 'none' })} aria-label="Dolby 코덱" className="bg-zinc-800 rounded px-1 py-0.5 text-[10px]">
+                <option value="none">없음</option>
+                <option value="ac3">Dolby Digital (AC-3)</option>
+                <option value="eac3">Dolby Digital Plus (E-AC-3)</option>
+                <option value="truehd">Dolby TrueHD</option>
+              </select>
+            </label>
 
             {s.perChannelChain && (
               <div className="space-y-2 rounded border border-zinc-800 p-2">

@@ -34,6 +34,7 @@ export function defaultSurroundOptions(): SurroundOptions {
     perChannelChain: false,
     beds: defaultSurroundBeds(),
     admBwf: false,
+    dolbyCodec: 'none',
   };
 }
 
@@ -57,6 +58,7 @@ export function sanitizeSurround(s: SurroundOptions): SurroundOptions {
     perChannelChain: !!s.perChannelChain,
     beds: sanitizeBeds(s.beds),
     admBwf: !!s.admBwf,
+    dolbyCodec: (['ac3', 'eac3', 'truehd'] as const).includes(s.dolbyCodec as 'ac3') ? (s.dolbyCodec ?? 'none') : 'none',
   };
 }
 

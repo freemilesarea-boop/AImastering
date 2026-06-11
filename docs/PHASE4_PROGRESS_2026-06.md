@@ -111,12 +111,28 @@
 ### 정직성/한계
 - **베드 기반** ADM(채널을 DirectSpeakers 베드로 기술). **동적 객체(위치 자동화)·바이노럴 렌더·Dolby 인코딩은 범위 밖** — 자체 정의(common definitions 미참조)라 ADM 도구 인제스트는 되지만, 실제 Atmos 렌더러 호환은 도구 검증 필요(출시 전 QA). XML 스키마 완전 검증(XSD)은 미수행.
 
+## ✅ P4-4. Dolby 코덱 출력 (AC-3 / E-AC-3 / TrueHD)
+
+**커밋**: `feat(surround): Dolby AC-3/E-AC-3/TrueHD export + headless selftest (Phase 4)`
+
+번들 ffmpeg에 `ac3`·`eac3`·`truehd` 인코더가 있어 멀티채널 출력을 **실제 Dolby 코덱**으로 내보냄. (Dolby ATMOS=E-AC-3+JOC 객체 메타데이터는 Dolby 독점 인코더 필요 → 범위 밖; ADM BWF가 오픈 오서링 경로.)
+
+- **`dolby.ts`**(메인, 순수): `dolbyEncodeArgs`(ac3 640k·eac3 448k·truehd lossless[experimental]) `dolbyExt`·`dolbyLabel`·`isDolbyEnabled`.
+- **렌더 연결**: 멀티채널 + `surround.dolbyCodec`!=none 시 WAV → Dolby 사이드카(`.ac3`/`.eac3`/`.thd`) 인코드(best-effort), `dolbyPath` 반환. `SurroundPanel` 코덱 셀렉터.
+- **검증**: dolby 순수(4) + `test:dolby-encode` 셀프테스트(**번들 ffmpeg로 5.1→AC-3/E-AC-3/TrueHD 인코드 후 ffprobe로 codec·채널 검증, 3종 모두 통과**). **vitest 309/309**, typecheck 0.
+
+### 정직성/한계
+- 표준 Dolby 코덱(AC-3/E-AC-3/TrueHD)만. **Dolby Atmos(JOC) 인코딩은 Dolby 독점 인코더 필요 → 범위 밖**. TrueHD는 ffmpeg 실험 인코더(`-strict experimental`).
+- AC-3는 5.1 max(7.1 소스는 다운믹스). 사이드카 파일을 사용자 저장 폴더로 노출하는 save-flow 연결은 후속(현재 temp 옆에 생성·`dolbyPath` 반환).
+
 ## 🟡 Phase 4 남은 후보(대규모·범위 밖)
 
 | 항목 | 비고 |
 |------|------|
-| ADM 동적 객체(위치 자동화)·바이노럴·Dolby 인코딩 | 전용 렌더러/인코더 필요 |
-| ~~ADM BWF 베드 오서링~~ | ✅ P4-3 (chna+axml) |
+| ADM 동적 객체(위치 자동화)·바이노럴 HRTF 렌더 | 전용 렌더러/HRTF 데이터셋 필요 |
+| Dolby Atmos(JOC) 인코딩 | Dolby 독점 인코더 |
+| ~~Dolby 코덱(AC-3/E-AC-3/TrueHD)~~ | ✅ P4-4 |
+| ~~ADM BWF 베드 오서링~~ | ✅ P4-3 |
 | ~~멀티채널 풀 체인(per-bed EQ/컴프)~~ | ✅ P4-2c/d |
 | DAW 플러그인(VST3/AU, JUCE/nih-plug) | C++/플러그인 SDK·DAW 검증 필요 |
 | Cloud / Mobile | 별도 플랫폼 |

@@ -192,6 +192,8 @@ export interface SurroundOptions {
   beds?: SurroundBeds;
   /** Multichannel mode: write an ADM BWF (chna + axml) for Atmos/ADM tools. */
   admBwf?: boolean;
+  /** Multichannel mode: also export a Dolby codec (AC-3 / E-AC-3 / TrueHD). */
+  dolbyCodec?: 'none' | 'ac3' | 'eac3' | 'truehd';
 }
 
 /** Per-bed tone + level offsets, layered on the shared chain config. */

@@ -55,6 +55,8 @@ export interface RustRenderFileResult {
   analysisPath?: string;
   /** True when `outputPath` is a multichannel (non-stereo) deliverable. */
   multichannel?: boolean;
+  /** Optional Dolby codec sidecar (AC-3 / E-AC-3 / TrueHD). */
+  dolbyPath?: string;
 }
 
 /** Whether the Rust offline backend is usable (node WASM present). */
@@ -265,6 +267,16 @@ export async function processAudioFileRust(
           await writeFile(options.outputPath, wrapAdmBwf(await readFile(options.outputPath), dec.layout));
         } catch { /* keep the plain multichannel WAV */ }
       }
+      // Optional Dolby codec sidecar (AC-3 / E-AC-3 / TrueHD) via bundled ffmpeg.
+      let dolbyPath: string | undefined;
+      const { isDolbyEnabled, dolbyExt, dolbyEncodeArgs } = await import('./dolby.js');
+      if (isDolbyEnabled(sr.dolbyCodec)) {
+        const target = options.outputPath.replace(/\.wav$/i, '') + dolbyExt(sr.dolbyCodec!);
+        try {
+          await runFfmpeg(['-hide_banner', '-loglevel', 'error', '-y', '-i', options.outputPath, ...dolbyEncodeArgs(sr.dolbyCodec!), target]);
+          dolbyPath = target;
+        } catch { /* keep the WAV; Dolby export is best-effort */ }
+      }
       // Stereo fold-down (of the mastered channels) for analysis / preview.
       const fd = foldDownToStereo(mastered.channels, dec.layout, sr.trims);
       const analysisPath = options.outputPath.replace(/\.wav$/i, '') + '.stereo.wav';
@@ -278,7 +290,7 @@ export async function processAudioFileRust(
         durationSec: samples / options.sampleRate,
         renderMs: Date.now() - t0,
       };
-      return { outputPath: options.outputPath, analysisPath, multichannel: true, metrics, backend: 'rust', loudnessNormalized: normGainDb !== 0 || typeof options.targetLufs === 'number' };
+      return { outputPath: options.outputPath, analysisPath, multichannel: true, metrics, backend: 'rust', loudnessNormalized: normGainDb !== 0 || typeof options.targetLufs === 'number', ...(dolbyPath ? { dolbyPath } : {}) };
     }
     // not a surround source → fall through to the stereo pipeline below
   }
