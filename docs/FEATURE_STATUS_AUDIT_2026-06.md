@@ -62,3 +62,26 @@
 ## 정직한 결론
 
 "구현이 안 된" 게 아니라 **"구현됐지만 안전을 위해 기본 OFF"** 가 정확합니다. 다만 그 결과가 *프리뷰엔 들리는데 익스포트엔 없는* 불일치라 사용자가 "안 됨"으로 체감하는 게 타당함. 출시 준비의 본질 = 위 1~4(대부분 장치/사람/라이선스 의존).
+
+---
+
+## 🔍 2차 전수 점검 (모든 패널·마운트 대조) — 추가 발견
+
+### 발견 A — Transient / Dynamic EQ / De-esser: **라이브 프리뷰 전무**
+`shared-audio-graph` 네이티브 셋터: `setFreeEqBands·setMultibandConfig·setImagerMultibandConfig·setSaturationConfig·setRebalanceConfig`만 존재.
+**Transient·DynamicEq·Deesser는 네이티브 프리뷰도, 워클릿 메시지도 없음** → 사용자가 슬라이더를 움직여도 **프리뷰가 전혀 안 바뀜**. (Rust 익스포트에선 동작 — `test:module-effect`가 Transient·DynamicEQ 변화 증명. Deesser는 DynEq로 병합.) → **플래그 OFF인 지금은 프리뷰·익스포트 둘 다 무반응**(이중 휴면). 다른 모듈(EQ·멀티밴드·이미저·새추레이션·리밸런스·파라메트릭)은 라이브 프리뷰 있음.
+
+### 발견 B — 미사용/죽은 UI (기능 수만 부풀림)
+실제 앱에서 어디서도 렌더 안 되는 컴포넌트:
+- 완전 미사용 Loui 7종: `LouiSnapshotSlots·LouiRealtimeToggle·LouiModuleChain·LouiMasteringVisualizer·LouiPlaybackBar·LouiAudioDebugPanel·LouiShortcutHelp`
+- 미사용 표준 패널 3종: `ABComparePanel·MasteringReportPanel·PreviewPanel`
+- → "기능 많아 보이는데 안 됨" 체감의 일부. (제품 `components/product` 클러스터 46개는 HomePage가 일부 사용 — 전부 죽은 건 아님.)
+
+### 검증 완료(정상 동작)
+- 마운트 페이지: Home·Mastering·Result·Tweak·QC·Settings·DevAnalyzer.
+- ResultPage 피처 섹션 전부 스토어에 배선. 미터/분석(Analyzer·LoudnessV2·Spectrum·StereoScope·MultibandGr·ExportReport·SmartRecommendation·AIArtifactWarning) 렌더됨.
+- 라이브 프리뷰 근사(EQ·멀티밴드·이미저·새추레이션·리밸런스·파라메트릭) 동작.
+
+### 권장 후속(헤드리스 가능)
+1. **Transient/DynamicEq/Deesser 라이브 프리뷰 추가**(WebAudio 근사) — 발견 A 해소. 사용자 체감 직접 개선.
+2. **죽은 컴포넌트 정리**(발견 B) — 혼선·번들 정리.
