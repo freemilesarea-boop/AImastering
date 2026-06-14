@@ -34,10 +34,16 @@
 | 단계적 출시 | 어려움(전부 ON) | 쉬움(플랫폼/채널별) |
 | 실수 위험 | 낮음(한 곳) | 중간(빌드 경로마다 env 누락 주의) |
 
-**권장: 1차 = B(프로덕션 env 주입).**
+**권장: 1차 = B(프로덕션 env 주입). — 이미 배선됨.**
 - 이유: 롤백이 **코드 변경 없이 env 토글**로 가능 → 사고 시 가장 빠르고 안전. dev는 영향 없음. 채널/플랫폼별 점진 ON 가능.
-- 구현(전환 시): Windows `Build Electron app` 스텝 env에 `VITE_LOUI_GUIDED_FLOW: 'true'` 추가(기존 LICENSE_*/PADDLE_CHECKOUT_URL 옆). renderer(Vite)가 `import.meta.env`로 읽음.
-- **2차(안정화 후)**: 한 릴리스 주기 무사고 시 A(코드 기본값 ON)로 단순화 — dev/배포 일원화. 그때 env 주입 제거.
+- **구현 상태**: `.github/workflows/build.yml`의 3개 플랫폼 빌드 스텝(linux/mac/win) `Build Electron app` env에 다음이 추가됨:
+  ```yaml
+  VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+  ```
+  → **태그(`v*`) 푸시 = 프로덕션 릴리스 빌드에서만 ON**. 브랜치/`workflow_dispatch` 아티팩트는 OFF(레거시 Home). `AUTO_UPDATE_ENABLED`와 동일 조건. renderer(Vite)가 `import.meta.env.VITE_LOUI_GUIDED_FLOW`로 읽음.
+- **로컬 dev**: 기본 OFF. ON 검증은 `VITE_LOUI_GUIDED_FLOW=true pnpm --filter @aimaster/desktop dev` 로만.
+- **코드 기본값 불변**: `guided-flow-flag.ts`는 여전히 `return false`(기본 OFF). 코드 기본값 ON 변경 없음.
+- **2차(안정화 후, 선택)**: 한 릴리스 주기 무사고 시 A(코드 기본값 ON)로 단순화 — 그때 env 주입 제거.
 
 > 런타임 킬스위치: `window.__LOUI_GUIDED_FLOW__`가 최우선이라 디버그/지원 시 콘솔로 즉시 토글 가능(패키지 앱에선 DevTools 필요).
 
@@ -45,7 +51,7 @@
 
 ## 3. 롤백 방식 (빠른 순)
 
-1. **(최속) env 플래그 OFF** — 방식 B로 켰다면 CI에서 `VITE_LOUI_GUIDED_FLOW` 제거 → 재빌드. 코드 변경 0.
+1. **(최속) 릴리스 빌드 OFF** — `build.yml`의 3개 `VITE_LOUI_GUIDED_FLOW` 값을 `'false'`로 바꾸거나 라인 제거 후 재태그/재빌드. (현재는 태그 시 자동 ON 구조이므로, 긴급 시엔 비-태그 핫픽스 빌드로 배포하면 OFF.) 코드 로직 변경 0.
 2. **기본값 되돌림** — 방식 A로 켰다면 `guided-flow-flag.ts` 기본 `return false`로 1줄 revert.
 3. **커밋 revert** — 문제 원인이 특정 티켓(T6 라우팅, T8 ResultPage, T9 MasteringPage)일 때 해당 커밋만 `git revert`(가산/조건 분기 구조라 부분 롤백 안전).
 4. **Release hotfix** — 이미 배포된 설치본 대상: 패치 버전 태그 → 서명 빌드 → draft → publish → 자동 업데이트로 배포. (mac은 공증 전제 → 현재 Windows 우선.)
@@ -120,8 +126,8 @@
 ## 권장 전환 시퀀스 (요약)
 1. QA 체크리스트로 P0 0건 확인(+실음원 3종).
 2. (P1) 경량 텔레메트리/ Sentry breadcrumb 최소 계측 추가 — 가능하면 ON 전.
-3. **방식 B**: 프로덕션 Windows 빌드 env에 `VITE_LOUI_GUIDED_FLOW=true` 주입 → 서명/배포.
-4. 배포 후 5절 모니터링. 임계 초과 시 **env 제거(즉시 롤백)**.
+3. **방식 B (배선 완료)**: 태그(`v*`) 푸시 → 3개 플랫폼 릴리스 빌드가 자동으로 `VITE_LOUI_GUIDED_FLOW=true` → 서명/배포. (별도 작업 불필요, 태그만 푸시.)
+4. 배포 후 5절 모니터링. 임계 초과 시 **3절-1 롤백**.
 5. 한 릴리스 주기 무사고 → **방식 A**(코드 기본값 ON)로 단순화, env 정리.
 
 **판정 양식**: ☐ Go(기본 ON) / ☐ No-Go(보류) / ☐ 조건부(베타 채널만)

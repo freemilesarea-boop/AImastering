@@ -89,6 +89,9 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         env:
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # Guided "three picks" flow — ON only for production release (tag)
+          # builds; branch / workflow_dispatch artefacts stay OFF (legacy Home).
+          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
         run: pnpm build
 
       # v3.4.3 — auto-update.  On tag push (refs/tags/v*) electron-builder
@@ -231,6 +234,8 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         env:
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # Guided flow — ON only for production release (tag) builds.
+          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
         run: pnpm build
 
       # ── Sanity: verify the artefacts electron-builder will package exist ──
@@ -486,6 +491,8 @@ jobs:
       - name: Build Electron app
         env:
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # Guided flow — ON only for production release (tag) builds.
+          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
           # License/billing config baked into the bundle (esbuild + vite).
           # Empty when the secret is unset → app falls back to dev mode
           # (LocalValidator) so CI stays green; set the secrets to ship a
