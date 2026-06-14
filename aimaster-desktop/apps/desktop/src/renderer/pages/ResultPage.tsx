@@ -35,6 +35,10 @@ import SectionAnalysisPanel from '../components/SectionAnalysisPanel.js';
 import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
 import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
 import ExportReportPanel from '../components/ExportReportPanel.js';
+import AchievementHeader from '../components/result/AchievementHeader.js';
+import LoudnessDeltaBars from '../components/result/LoudnessDeltaBars.js';
+import BeforeAfterWaveform from '../components/result/BeforeAfterWaveform.js';
+import { isGuidedFlowEnabled } from '../audio/guided-flow-flag.js';
 import { AnalyzerPanelStack } from '../components/AnalyzerPanelStack.js';
 import { reportFailure } from '../utils/reportFailure.js';
 import { toFileUrl } from '../utils/fileUrl.js';
@@ -1334,6 +1338,14 @@ export default function ResultPage() {
     ? (masteringResult.outputPath.split('/').pop()?.split('\\').pop() ?? masteringResult.outputPath)
     : null;
 
+  // ── Guided flow result viz (T8) — real loudness metrics, flag-gated ──────
+  const guided = isGuidedFlowEnabled();
+  const guidedStyleKey = (options?.style ?? 'balanced') as string;
+  const guidedIsKpop = guidedStyleKey === 'kpop_loud';
+  const guidedGainLu = masteringResult
+    ? (masteringResult.loudnessAfter.integratedLufs - masteringResult.loudnessBefore.integratedLufs)
+    : 0;
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <TopBar
@@ -1353,7 +1365,27 @@ export default function ResultPage() {
         <div className="flex-1 min-w-0 overflow-y-auto">
         <div className="px-6 py-5 space-y-4 animate-in">
 
+          {/* ── Guided flow: achievement + evidence (T8, flag-gated) ───────── */}
+          {guided && masteringResult && (
+            <div className="space-y-4">
+              <AchievementHeader
+                gainLu={guidedGainLu}
+                styleKey={guidedStyleKey}
+                title={guidedIsKpop ? 'KPOP LOUD 완성' : '더 커졌어요'}
+                sub={guidedIsKpop ? '스트리밍에서 밀리지 않는 음압 완성' : '마스터링이 끝났어요'}
+              />
+              <LoudnessDeltaBars
+                origLufs={masteringResult.loudnessBefore.integratedLufs}
+                mastLufs={masteringResult.loudnessAfter.integratedLufs}
+                targetLufs={options.targetLufs}
+                styleKey={guidedStyleKey}
+              />
+              <BeforeAfterWaveform styleKey={guidedStyleKey} />
+            </div>
+          )}
+
           {/* ── 완료 메시지 ──────────────────────────────── */}
+          {!guided && (
           <div className="rounded-xl bg-emerald-950/20 border border-emerald-900/40 px-4 py-3 flex items-center gap-3">
             <svg className="w-5 h-5 text-emerald-400 shrink-0" viewBox="0 0 20 20" fill="none"
                  stroke="currentColor" strokeWidth={1.75} strokeLinecap="round">
@@ -1369,6 +1401,7 @@ export default function ResultPage() {
               )}
             </div>
           </div>
+          )}
 
           {/* ── 출력 파일 정보 + 열기 버튼 ──────────────── */}
           {masteringResult?.outputPath && (
