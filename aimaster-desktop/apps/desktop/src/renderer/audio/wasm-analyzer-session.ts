@@ -72,9 +72,27 @@ import { loadModuleUrl } from './worklet-asset-source.js';
 // lifetime.  See investigate report for the full mechanism.
 let _wasmReadyPromise: Promise<void> | null = null;
 
+// ── WASM lifecycle telemetry (DIAG: dlmalloc psize assertion hunt) ───────────
+// Always-on counters (not gated by RT_DEBUG) so we can see, in any console,
+// whether the heap is created more than once (→ two heaps) and whether
+// LouiAnalyzer/LouiSpectrumAnalyzer frees are balanced with creates
+// (imbalance / negative live = double-free or use-after-free source).
+let _wasmInitCount = 0;
+let _analyzerCreated = 0, _analyzerFreed = 0;
+let _spectrumCreated = 0, _spectrumFreed = 0;
+let _loggedLenMismatch = false;
+function _lcLog(tag: string): void {
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[wasm-analyzer-lifecycle] ${tag} | wasmInit=${_wasmInitCount} ` +
+    `analyzer(created/freed/live)=${_analyzerCreated}/${_analyzerFreed}/${_analyzerCreated - _analyzerFreed} ` +
+    `spectrum(created/freed/live)=${_spectrumCreated}/${_spectrumFreed}/${_spectrumCreated - _spectrumFreed}`,
+  );
+}
+
 function ensureWasmReady(): Promise<void> {
   if (!_wasmReadyPromise) {
-    _wasmReadyPromise = init().then(() => undefined);
+    _wasmReadyPromise = init().then(() => { _wasmInitCount++; _lcLog('wasm-init'); });
   }
   return _wasmReadyPromise;
 }
@@ -224,13 +242,15 @@ class WasmAnalyzerSession implements AnalyzerSession {
         .setPeakHoldDecayDb(1.5)
         .useLog(128, 20, 20_000),
     );
+    _analyzerCreated++; _spectrumCreated++; _lcLog('alloc');
     if (this._stopRequested) {
       // Caller asked us to stop after the allocation finished — free
       // here so the WASM heap doesn't leak the just-built objects.
-      try { this.analyzer.free(); } catch { /* ignore */ }
-      try { this.spectrum.free(); } catch { /* ignore */ }
+      try { this.analyzer.free(); _analyzerFreed++; } catch { /* ignore */ }
+      try { this.spectrum.free(); _spectrumFreed++; } catch { /* ignore */ }
       this.analyzer = null;
       this.spectrum = null;
+      _lcLog('free(start-aborted)');
       return;
     }
 
@@ -302,13 +322,14 @@ class WasmAnalyzerSession implements AnalyzerSession {
     this.ctx = null;
     rtLog('session stop (shared context + routing kept alive)');
     if (this.analyzer) {
-      try { this.analyzer.free(); } catch { /* ignore */ }
+      try { this.analyzer.free(); _analyzerFreed++; } catch { /* ignore */ }
       this.analyzer = null;
     }
     if (this.spectrum) {
-      try { this.spectrum.free(); } catch { /* ignore */ }
+      try { this.spectrum.free(); _spectrumFreed++; } catch { /* ignore */ }
       this.spectrum = null;
     }
+    _lcLog('free(stop)');
     this.isRunning = false;
     this.samplesProcessed = 0;
     this.lastFftFrameRef = null;
@@ -476,7 +497,11 @@ class WasmAnalyzerSession implements AnalyzerSession {
   // ── Audio block processing (called from worklet port onmessage) ──────────
 
   private processBlock(left: Float32Array, right?: Float32Array): void {
+    // Use-after-free guard: never touch the WASM analyzers once the session
+    // has been told to stop (the heap objects are freed in stop()).
+    if (this._stopped || this._stopRequested) return;
     if (!this.analyzer || !this.spectrum) return;
+    if (!left || left.length === 0) return;
 
     // Dev frame-flow telemetry — logs the first block and then every ~1 s
     // worth of blocks so the console proves frames are arriving.
@@ -486,10 +511,20 @@ class WasmAnalyzerSession implements AnalyzerSession {
       rtLog('analyser frames', { blocks: this.blockCount, samples: this.samplesProcessed, len: left.length, stereo: !!right });
     }
 
-    if (right && this.options.channels === 2) {
+    // L/R length-mismatch guard: passing unequal-length channels into the
+    // WASM processStereo reads out of bounds in linear memory → heap
+    // corruption (a candidate for the dlmalloc psize assertion).  Only take
+    // the stereo path when both channels exist AND match length; otherwise
+    // fall back to mono (and log once for diagnosis).
+    if (right && right.length === left.length && this.options.channels === 2) {
       this.analyzer.processStereo(left, right);
       this.spectrum.processStereo(left, right);
     } else {
+      if (right && right.length !== left.length && !_loggedLenMismatch) {
+        _loggedLenMismatch = true;
+        // eslint-disable-next-line no-console
+        console.warn(`[wasm-analyzer] L/R length mismatch left=${left.length} right=${right.length} → mono fallback`);
+      }
       this.analyzer.processMono(left);
       this.spectrum.processMono(left);
     }
