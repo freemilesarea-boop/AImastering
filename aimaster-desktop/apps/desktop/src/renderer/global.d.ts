@@ -3,6 +3,8 @@
 /** Vite-injected build-time constants (see vite.config.ts `define`). */
 declare const __APP_VERSION__: string;
 declare const __APP_NAME__:    string;
+/** Paddle checkout URL for the in-app "구매하기" link (CI: PADDLE_CHECKOUT_URL). */
+declare const __PADDLE_CHECKOUT_URL__: string;
 
 /**
  * Electron preload API exposed via contextBridge.

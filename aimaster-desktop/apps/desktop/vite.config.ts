@@ -15,6 +15,10 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
     __APP_NAME__:    JSON.stringify(pkg.name),
+    // Paddle checkout URL for the in-app purchase link.  CI injects
+    // PADDLE_CHECKOUT_URL for production builds; falls back to the marketing
+    // site when unset so the link is never broken.
+    __PADDLE_CHECKOUT_URL__: JSON.stringify(process.env.PADDLE_CHECKOUT_URL || 'https://aimaster.io'),
   },
   resolve: {
     alias: {

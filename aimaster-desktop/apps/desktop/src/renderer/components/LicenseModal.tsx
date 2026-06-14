@@ -226,7 +226,7 @@ export default function LicenseModal() {
               <p className="mt-4 text-center text-xs text-zinc-600">
                 라이선스 키가 없으신가요?{' '}
                 <a
-                  href="https://aimaster.io"
+                  href={__PADDLE_CHECKOUT_URL__}
                   target="_blank"
                   rel="noreferrer"
                   className="text-zinc-400 underline underline-offset-2 hover:text-zinc-200
