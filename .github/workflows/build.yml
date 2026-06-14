@@ -486,6 +486,14 @@ jobs:
       - name: Build Electron app
         env:
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # License/billing config baked into the bundle (esbuild + vite).
+          # Empty when the secret is unset → app falls back to dev mode
+          # (LocalValidator) so CI stays green; set the secrets to ship a
+          # protected production installer.
+          LICENSE_API_URL:      ${{ secrets.LICENSE_API_URL }}
+          LICENSE_API_KEY:      ${{ secrets.LICENSE_API_KEY }}
+          LICENSE_HMAC_SECRET:  ${{ secrets.LICENSE_HMAC_SECRET }}
+          PADDLE_CHECKOUT_URL:  ${{ secrets.PADDLE_CHECKOUT_URL }}
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
           pnpm build
