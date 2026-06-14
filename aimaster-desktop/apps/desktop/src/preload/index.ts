@@ -16,9 +16,10 @@ const INVOKE_CHANNELS = [
   // rust-offline flag is ON (default).  Free parametric EQ bands flow
   // through here (Phase 3b).
   'audio:master-rust-experimental',
-  // License IPC channels REMOVED (v3.6.0-rc.1+1) — license gate disabled
-  // for the internal RC test cycle; the renderer no longer invokes these
-  // and the main process no longer registers them.
+  // License IPC channels (v3.6 — re-enabled for commercial release).
+  'license:status', 'license:can-process', 'license:get-remaining',
+  'license:activate', 'license:deactivate', 'license:decrement-trial',
+  'license:revalidate',
   // Files
   'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
   'file:batch-save-wav',
