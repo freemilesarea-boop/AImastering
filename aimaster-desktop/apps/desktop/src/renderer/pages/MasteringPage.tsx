@@ -163,6 +163,12 @@ export default function MasteringPage() {
   // The main process tears down the Python bridge; the next attempt
   // respawns it.
   const inFlightRef = useRef(false);
+  // Deferred-cancel timer for the navigation-away cleanup.  Used to tell a
+  // StrictMode (dev) fake-unmount apart from a real navigation: a real
+  // unmount lets the macrotask fire (→ cancel); a StrictMode remount clears
+  // it in the effect setup before it runs (→ no spurious cancel that would
+  // kill the just-started first analyze).
+  const navCancelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sendCancel = useCallback((reason: string) => {
     if (!inFlightRef.current) return;
     inFlightRef.current = false;
@@ -278,8 +284,21 @@ export default function MasteringPage() {
   // mid-mastering) tell the main process to kill the Python engine so it
   // doesn't keep working on a result nobody will use.
   useEffect(() => {
+    // (Re)mounted — if a pending "unmount cancel" was scheduled by a
+    // StrictMode fake-unmount that immediately remounted, abort it so the
+    // first analyze isn't killed.
+    if (navCancelTimer.current) {
+      clearTimeout(navCancelTimer.current);
+      navCancelTimer.current = null;
+    }
     return () => {
-      sendCancel('unmount');
+      // Defer the cancel by one macrotask.  A REAL navigation-away unmount
+      // lets it fire (kills the abandoned engine job); a StrictMode
+      // unmount→remount clears it in the setup above before it runs.
+      navCancelTimer.current = setTimeout(() => {
+        navCancelTimer.current = null;
+        sendCancel('unmount');
+      }, 0);
     };
   }, [sendCancel]);
 
