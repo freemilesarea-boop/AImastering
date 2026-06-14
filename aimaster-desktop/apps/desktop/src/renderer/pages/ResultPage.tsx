@@ -39,6 +39,7 @@ import AchievementHeader from '../components/result/AchievementHeader.js';
 import LoudnessDeltaBars from '../components/result/LoudnessDeltaBars.js';
 import BeforeAfterWaveform from '../components/result/BeforeAfterWaveform.js';
 import { isGuidedFlowEnabled } from '../audio/guided-flow-flag.js';
+import { resumeSharedContext } from '../audio/shared-audio-graph.js';
 import { AnalyzerPanelStack } from '../components/AnalyzerPanelStack.js';
 import { reportFailure } from '../utils/reportFailure.js';
 import { toFileUrl } from '../utils/fileUrl.js';
@@ -193,7 +194,19 @@ function PreviewPlayer({
   const toggle = useCallback(() => {
     const a = audioRef.current;
     if (!a) return;
-    if (a.paused) { void a.play(); } else { a.pause(); }
+    if (a.paused) {
+      // Resume the shared WebAudio context INSIDE this user gesture.  Once the
+      // element is captured by createMediaElementSource, its audio only flows
+      // through the shared AudioContext — which starts 'suspended'.  Relying on
+      // the provider's effect-based resume can miss the gesture window, leaving
+      // the context suspended → no sound and the analyzer tap never receives
+      // samples ("awaiting frames").  Resuming here, in the click handler,
+      // guarantees a gesture-initiated resume.
+      void resumeSharedContext();
+      void a.play();
+    } else {
+      a.pause();
+    }
   }, []);
 
   const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
