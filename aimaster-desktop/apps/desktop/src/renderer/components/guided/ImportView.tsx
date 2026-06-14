@@ -16,9 +16,11 @@ function isAudioPath(p: string): boolean {
 interface Props {
   /** Called after a file is selected (GuidedHome advances to Choose). */
   onPicked: () => void;
+  /** Optional: open the legacy multi-file batch screen. */
+  onBatch?: () => void;
 }
 
-export default function ImportView({ onPicked }: Props) {
+export default function ImportView({ onPicked, onBatch }: Props) {
   const setFile = useAudioStore((s) => s.setFile);
   const [dragging, setDragging] = useState(false);
 
@@ -71,6 +73,16 @@ export default function ImportView({ onPicked }: Props) {
       </div>
 
       <p className="text-center text-[12px] text-zinc-600 mt-[14px]">업로드 없이 · 내 컴퓨터에서 처리</p>
+
+      {onBatch && (
+        <p className="text-center text-[13px] text-zinc-500 mt-auto pt-6">
+          여러 곡을 한 번에 처리하려면{' '}
+          <button type="button" onClick={onBatch} className="text-zinc-300 underline underline-offset-2 hover:text-zinc-100">
+            배치 모드
+          </button>
+          {' '}사용
+        </p>
+      )}
     </div>
   );
 }
