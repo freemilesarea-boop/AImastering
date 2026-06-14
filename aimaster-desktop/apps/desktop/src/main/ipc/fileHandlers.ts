@@ -9,6 +9,7 @@ import {
   supportBundleToJson,
 } from '../utils/supportBundle.js';
 import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
+import { licenseService } from './licenseHandlers.js';
 import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
 
 const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
@@ -18,6 +19,23 @@ const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] 
   aiff: { name: 'AIFF Audio', extensions: ['aiff', 'aif'] },
   ogg:  { name: 'OGG Audio',  extensions: ['ogg'] },
 };
+
+// ── Commercial paywall (v3.6) ────────────────────────────────────────────────
+// Master-quality exports (lossless: wav / flac / aiff) require a paid license.
+// The MP3 preview stays free so trial users still hear the result.  Enforced
+// here in the MAIN process so it can't be bypassed from the renderer/devtools.
+// Renderer detects the `LICENSE_REQUIRED:` prefix and opens the activation modal.
+const LICENSE_REQUIRED = 'LICENSE_REQUIRED: 마스터 음원(WAV/FLAC/AIFF) 저장은 라이선스가 필요합니다. 라이선스를 활성화해 주세요.';
+const FREE_EXPORT_EXTS = new Set(['mp3', 'ogg']);
+
+function isPaidNow(): boolean {
+  try { return licenseService.canProcess().isPaid; } catch { return false; }
+}
+
+/** True when the given extension/format is a paid (lossless master) export. */
+function isMasterExport(extOrFormat: string): boolean {
+  return !FREE_EXPORT_EXTS.has(extOrFormat.toLowerCase().replace('.', ''));
+}
 
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   // ── Open file picker (single) ─────────────────────────────────────────
@@ -59,6 +77,12 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
     const ext      = path.extname(safeSrc).toLowerCase().replace('.', '');
     const isWav    = ext === 'wav';
+
+    // Paywall: lossless master export requires a paid license.
+    if (isMasterExport(ext) && !isPaidNow()) {
+      throw new Error(LICENSE_REQUIRED);
+    }
+
     const filters  = isWav
       ? [{ name: 'WAV Audio', extensions: ['wav'] }]
       : [{ name: 'MP3 Audio', extensions: ['mp3'] }];
@@ -92,6 +116,11 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
     const filter = FORMAT_FILTERS[req.format];
     if (!filter) return { savedPath: null, error: `unsupported format: ${req.format}` };
+
+    // Paywall: lossless master export requires a paid license.
+    if (isMasterExport(req.format) && !isPaidNow()) {
+      return { savedPath: null, error: LICENSE_REQUIRED };
+    }
 
     const sourceExt = path.extname(req.sourcePath).replace('.', '');
     const spec = {
@@ -258,6 +287,11 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       }
     }
     if (!validSrcs.length) return null;
+
+    // Paywall: if the batch contains any lossless master file, require paid.
+    if (!isPaidNow() && validSrcs.some((p) => isMasterExport(path.extname(p)))) {
+      throw new Error(LICENSE_REQUIRED);
+    }
 
     const folderResult = await dialog.showOpenDialog(win, {
       title: '저장할 폴더 선택',

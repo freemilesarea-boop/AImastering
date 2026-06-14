@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from './stores/appStore.js';
-// License gate disabled for the internal RC (v3.6.0-rc.1+1) — license
-// store / modal imports removed.  See main/index.ts header.
+// License gate re-enabled (v3.6 — commercial release).
+import LicenseModal from './components/LicenseModal.js';
+import { useLicenseStore } from './stores/licenseStore.js';
 import HomePage     from './pages/HomePage.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
@@ -222,10 +223,13 @@ function AppInner() {
   const setPage = useAppStore((s) => s.setPage);
   const selectedFile = useAudioStore((s) => s.selectedFile);
   const masteringResult = useAudioStore((s) => s.masteringResult);
+  const loadLicense = useLicenseStore((s) => s.load);
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
-  }, []);
+    // Load license state on startup (main process also re-validates online).
+    void loadLicense();
+  }, [loadLicense]);
 
   // Defensive redirects — bounce to home when a page is reached without
   // the data it requires.  Runs synchronously after every render so the
@@ -285,7 +289,8 @@ function AppInner() {
         </span>
       </div>
 
-      {/* License modal removed — license gate disabled for internal RC. */}
+      {/* License activation modal (v3.6 — commercial release). */}
+      <LicenseModal />
 
       {/* Toast notifications */}
       <Toast />
