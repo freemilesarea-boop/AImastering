@@ -81,14 +81,25 @@ let _wasmInitCount = 0;
 let _analyzerCreated = 0, _analyzerFreed = 0;
 let _spectrumCreated = 0, _spectrumFreed = 0;
 let _loggedLenMismatch = false;
+let _diagFirstMsg = false;
+let _diagFirstBlock = false;
 function _lcLog(tag: string): void {
+  // console.error so it is visible at the DEFAULT console level (warn/debug
+  // can be filtered out); cannot be hidden by level settings.
   // eslint-disable-next-line no-console
-  console.warn(
+  console.error(
     `[wasm-analyzer-lifecycle] ${tag} | wasmInit=${_wasmInitCount} ` +
     `analyzer(created/freed/live)=${_analyzerCreated}/${_analyzerFreed}/${_analyzerCreated - _analyzerFreed} ` +
     `spectrum(created/freed/live)=${_spectrumCreated}/${_spectrumFreed}/${_spectrumCreated - _spectrumFreed}`,
   );
 }
+
+// Module-evaluation marker — proves the running bundle actually contains
+// THIS (instrumented) build.  If you do NOT see this line in the console,
+// you are running a STALE bundle: git pull the branch, restart `pnpm dev`,
+// and hard-reload the window.
+// eslint-disable-next-line no-console
+console.error('[wasm-analyzer-session] DIAG build v3 loaded');
 
 function ensureWasmReady(): Promise<void> {
   if (!_wasmReadyPromise) {
@@ -226,6 +237,8 @@ class WasmAnalyzerSession implements AnalyzerSession {
   }
 
   async start(): Promise<void> {
+    // eslint-disable-next-line no-console
+    console.error('[wasm-analyzer] start() called');
     if (this.isRunning || this._stopRequested || this._stopped) return;
 
     // ① WASM init — collapses onto a shared singleton so concurrent
@@ -288,6 +301,7 @@ class WasmAnalyzerSession implements AnalyzerSession {
 
     // Receive audio blocks from worklet → push to WASM analyzers on main.
     this.tapNode.port.onmessage = (event: MessageEvent) => {
+      if (!_diagFirstMsg) { _diagFirstMsg = true; /* eslint-disable-next-line no-console */ console.error('[wasm-analyzer] FIRST tapNode.port.onmessage'); }
       const data = event.data as { left: Float32Array; right?: Float32Array };
       if (!data || !data.left) return;
       this.processBlock(data.left, data.right);
@@ -497,6 +511,11 @@ class WasmAnalyzerSession implements AnalyzerSession {
   // ── Audio block processing (called from worklet port onmessage) ──────────
 
   private processBlock(left: Float32Array, right?: Float32Array): void {
+    if (!_diagFirstBlock) {
+      _diagFirstBlock = true;
+      // eslint-disable-next-line no-console
+      console.error(`[wasm-analyzer] FIRST processBlock entered | stopped=${this._stopped} stopReq=${this._stopRequested} hasAnalyzer=${!!this.analyzer} hasSpectrum=${!!this.spectrum} leftLen=${left?.length} rightLen=${right?.length ?? 'none'} channels=${this.options.channels}`);
+    }
     // Use-after-free guard: never touch the WASM analyzers once the session
     // has been told to stop (the heap objects are freed in stop()).
     if (this._stopped || this._stopRequested) return;
