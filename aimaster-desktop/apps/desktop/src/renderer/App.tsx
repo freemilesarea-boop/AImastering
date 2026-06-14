@@ -4,6 +4,8 @@ import { useAppStore } from './stores/appStore.js';
 import LicenseModal from './components/LicenseModal.js';
 import { useLicenseStore } from './stores/licenseStore.js';
 import HomePage     from './pages/HomePage.js';
+import GuidedHome from './components/guided/GuidedHome.js';
+import { isGuidedFlowEnabled } from './audio/guided-flow-flag.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
@@ -258,16 +260,20 @@ function AppInner() {
   // ProductPage / ProductPageErrorBoundary / isProductLayoutEnabled used to
   // gate this slot but were retired when ResultPage became the canonical
   // result screen — see the WASM panic recovery in the redesign branch.
+  // Guided "three picks" flow (T6) — gated by a flag (default OFF).  When OFF
+  // the legacy HomePage stays the route exactly as before (one-switch rollback).
+  const homeEl = isGuidedFlowEnabled() ? <GuidedHome /> : <HomePage />;
+
   const hasResultData = Boolean(selectedFile && masteringResult?.outputPath);
-  const resultSlot = hasResultData ? <ResultPage /> : <HomePage />;
+  const resultSlot = hasResultData ? <ResultPage /> : homeEl;
 
   // tweak: source-only preview — selectedFile required, masteringResult NOT required.
   // TweakPage is a dedicated lightweight component; it never loads the heavy
   // ProductPage audio graph so it can't crash on null masteringResult.
-  const tweakSlot = Boolean(selectedFile) ? <TweakPage /> : <HomePage />;
+  const tweakSlot = Boolean(selectedFile) ? <TweakPage /> : homeEl;
 
   const pages: Record<string, React.ReactNode> = {
-    home:      <HomePage />,
+    home:      homeEl,
     mastering: <MasteringPage />,
     result:    resultSlot,
     tweak:     tweakSlot,
