@@ -21,6 +21,64 @@ function EntitlementRow() {
   );
 }
 
+// ClaimSection (Phase D1) — link an existing license key to the account.
+// Reuses the existing license key (server validates against license_keys);
+// does NOT remove the key or change the license/export flow.
+function ClaimSection() {
+  const claim = useEntitlementStore((s) => s.claim);
+  const [key, setKey] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const codeMessage = (code?: string): string => {
+    switch (code) {
+      case 'not_found':      return '존재하지 않는 라이선스 키입니다.';
+      case 'already_claimed':return '이미 다른 계정에 연결된 키입니다.';
+      case 'expired':        return '만료된 라이선스 키입니다.';
+      case 'invalid_status': return '사용할 수 없는 키입니다 (환불/해제됨).';
+      case 'unconfigured':   return '인증 서버가 설정되지 않았습니다.';
+      default:               return '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.';
+    }
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy || !key.trim()) return;
+    setBusy(true); setMsg(null);
+    const r = await claim(key);
+    setBusy(false);
+    if (r.ok) { setMsg({ ok: true, text: '라이선스가 계정에 연결되었습니다.' }); setKey(''); }
+    else setMsg({ ok: false, text: codeMessage(r.code) });
+  };
+
+  return (
+    <form onSubmit={submit} className="rounded-lg bg-zinc-800/60 border border-zinc-700 p-3 space-y-2">
+      <p className="text-[11px] text-zinc-500 uppercase tracking-wider">기존 라이선스 연결</p>
+      <input
+        value={key}
+        onChange={(e) => setKey(e.target.value.toUpperCase())}
+        placeholder="AIMASTER-XXXX-XXXX-XXXX"
+        spellCheck={false} autoComplete="off" maxLength={22}
+        className="w-full min-h-[44px] px-3 py-2 rounded-lg text-[15px] font-mono
+                   bg-zinc-900 border border-zinc-700 text-zinc-100 placeholder-zinc-600
+                   outline-none focus:border-zinc-500"
+      />
+      {msg && (
+        <p className={`text-xs leading-snug break-words ${msg.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+          {msg.text}
+        </p>
+      )}
+      <button
+        type="submit" disabled={busy || !key.trim()}
+        className="w-full min-h-[44px] py-2 rounded-lg text-[15px] font-medium
+                   bg-zinc-700 text-zinc-100 hover:bg-zinc-600 disabled:opacity-50"
+      >
+        {busy ? '연결 중…' : '키 연결'}
+      </button>
+    </form>
+  );
+}
+
 // AccountAuthModal (Phase A) — Supabase Auth login / signup / signed-in.
 //
 // Email/password + Google OAuth.  Phase A scope: account + session only; this
@@ -85,6 +143,7 @@ export default function AccountAuthModal() {
                 <p className="mt-1 text-xs text-zinc-500 break-all">{user!.email}</p>
               </div>
               <EntitlementRow />
+              <ClaimSection />
               <button
                 onClick={() => void signOut()}
                 disabled={busy}

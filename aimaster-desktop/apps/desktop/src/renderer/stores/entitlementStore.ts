@@ -36,6 +36,8 @@ interface EntitlementStore {
   refresh: () => Promise<void>;
   /** Clear on sign-out. */
   clear: () => void;
+  /** Claim an existing license key into the signed-in account (D1). */
+  claim: (key: string) => Promise<{ ok: boolean; code?: string }>;
 }
 
 export const useEntitlementStore = create<EntitlementStore>((set) => ({
@@ -70,4 +72,26 @@ export const useEntitlementStore = create<EntitlementStore>((set) => ({
   },
 
   clear: () => { set({ entitlement: null, status: 'idle', error: null }); writeCache(null); },
+
+  claim: async (key: string) => {
+    const sb = getSupabase();
+    if (!sb) return { ok: false, code: 'unconfigured' };
+    try {
+      // User-facing failures (not_found / already_claimed / expired /
+      // invalid_status) return HTTP 200 → arrive as `data`; server/auth errors
+      // arrive as `error`.
+      const { data, error } = await sb.functions.invoke('aimaster-claim-license', {
+        body: { key: key.trim().toUpperCase() },
+      });
+      if (error) return { ok: false, code: 'server_error' };
+      const res = (data ?? {}) as { ok?: boolean; code?: string };
+      if (res.ok) {
+        await useEntitlementStore.getState().refresh();
+        return { ok: true };
+      }
+      return { ok: false, code: res.code ?? 'server_error' };
+    } catch {
+      return { ok: false, code: 'server_error' };
+    }
+  },
 }));
