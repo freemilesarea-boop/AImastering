@@ -3,13 +3,24 @@
 `apps/mobile` 단계형 플로우(서버 설정 → 파일 → 분석 → 마스터링 → 결과)의
 실기/웹 수동 검증 항목. 서버는 M0 API(`services/mastering-api`, Render 등) 사용.
 
-## 0. 준비
+## 0. 사전 조건 / 환경 제약
+> ⚠️ 이 저장소의 원격 컨테이너에서는 **APK 빌드/에뮬레이터 구동 불가**
+> (Google `dl.google.com`/`maven.google.com`가 네트워크 정책상 차단, Android SDK 부재).
+> 아래 빌드/설치/탭 QA는 **로컬 머신(Android Studio 설치 환경)** 에서 수행해야 합니다.
+
+- [ ] **서버 HTTPS 필수**: Android targetSdk 34는 cleartext(http) 통신을 기본 차단.
+      `VITE_MASTERING_API_URL`은 반드시 `https://`(Render는 기본 https).
+- [ ] **서버 CORS**: M0 서버에 CORS 활성화됨(기본 `*`, 운영 시 `CORS_ALLOW_ORIGINS`로 제한).
+      WebView origin `https://localhost`에서 `X-API-Key` 프리플라이트 통과 확인됨.
 - [ ] 서버 API 배포됨(`/healthz` 200). 키 사용 시 `MASTERING_API_KEY` 설정.
 - [ ] 웹 미리보기: `pnpm --filter @aimaster/mobile dev` → 브라우저에서 플로우 점검.
-- [ ] Android 실기:
-  - [ ] `apps/mobile/.env` 에 `VITE_MASTERING_API_URL`(+ 필요 시 `_API_KEY`) 설정.
+- [ ] Android 실기(로컬 머신):
+  - [ ] `apps/mobile/.env` 에 `VITE_MASTERING_API_URL`(+ 필요 시 `_API_KEY`) 설정. (.env는 gitignore)
+  - [ ] Android SDK 설치(Android Studio) + `ANDROID_HOME`/`local.properties` 설정.
   - [ ] `pnpm --filter @aimaster/mobile build && npx cap sync android`
-  - [ ] `cd android && ./gradlew assembleDebug` → APK 사이드로드 또는 Android Studio 실행.
+  - [ ] 빌드: `cd android && ./gradlew assembleDebug` → `android/app/build/outputs/apk/debug/app-debug.apk`.
+  - [ ] 설치(실기기): USB 디버깅 ON → `adb install -r app-debug.apk` (또는 Android Studio ▶ Run).
+  - [ ] 설치(에뮬레이터): AVD 부팅 후 동일 `adb install` 또는 Android Studio 실행.
 
 ## 1. 서버 설정 화면
 - [ ] env 미설정 시 노란 경고(“서버 주소가 설정되지 않았습니다”)가 보인다.

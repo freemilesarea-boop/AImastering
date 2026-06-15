@@ -705,7 +705,13 @@ function ErrorBox({ message, onRetry, retryLabel }: { message: string; onRetry?:
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 function msg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  const raw = e instanceof Error ? e.message : String(e);
+  // WebView/browser network failures surface as terse strings ("Failed to
+  // fetch" etc.) — translate to something actionable during on-device QA.
+  if (/failed to fetch|load failed|networkerror|network request failed/i.test(raw)) {
+    return '서버에 연결할 수 없습니다. 서버 주소·네트워크 상태, 그리고 서버 CORS/HTTPS 설정을 확인하세요.';
+  }
+  return raw;
 }
 
 // Top-level primitive fields of the analysis dict → label/value rows.

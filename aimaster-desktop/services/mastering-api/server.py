@@ -31,8 +31,15 @@ from fastapi import (                                     # noqa: E402
     FastAPI, File, Form, Header, HTTPException, UploadFile, BackgroundTasks,
 )
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware         # noqa: E402
 
 API_KEY = os.environ.get("MASTERING_API_KEY", "")
+# CORS: the mobile app runs in a Capacitor WebView (origin https://localhost on
+# Android) and sends an X-API-Key header → cross-origin requests are preflighted.
+# Without CORS the WebView blocks every call. Auth is header-based (not cookies),
+# so a permissive origin is safe; override via CORS_ALLOW_ORIGINS (comma list).
+_origins_env = os.environ.get("CORS_ALLOW_ORIGINS", "*").strip()
+CORS_ORIGINS = ["*"] if _origins_env in ("", "*") else [o.strip() for o in _origins_env.split(",") if o.strip()]
 WORK_ROOT = os.path.join(os.environ.get("WORK_DIR", tempfile.gettempdir()), "aimaster_jobs")
 JOB_TTL = int(os.environ.get("JOB_TTL_SECONDS", "3600"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "60"))
@@ -42,6 +49,14 @@ _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 
 app = FastAPI(title="AImastering Mastering API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,  # auth is via X-API-Key header, not cookies
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
