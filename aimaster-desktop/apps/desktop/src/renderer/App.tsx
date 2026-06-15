@@ -38,7 +38,8 @@ function Toast() {
   return (
     <div className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-50
                      px-4 py-2.5 rounded-xl border shadow-xl
-                     text-sm animate-in-fast whitespace-nowrap
+                     text-sm animate-in-fast text-center break-words
+                     max-w-[calc(100vw-2rem)]
                      ${colors[notif.type] ?? colors.info}`}>
       {notif.message}
     </div>

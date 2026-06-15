@@ -123,10 +123,11 @@ export default function LicenseModal() {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
       onClick={handleBackdropClick}
     >
-      {/* Dialog */}
+      {/* Dialog — mobile-safe: width = min(28rem, 100vw−2rem), height capped
+          to the viewport with internal scroll so nothing is clipped at 390px. */}
       <div
-        className="w-full max-w-md mx-4 rounded-2xl bg-zinc-900 border border-zinc-700
-                   shadow-2xl overflow-hidden"
+        className="w-full max-w-md mx-4 max-h-[calc(100vh-2rem)] overflow-y-auto
+                   rounded-2xl bg-zinc-900 border border-zinc-700 shadow-2xl"
         role="dialog"
         aria-modal="true"
         aria-labelledby="license-modal-title"

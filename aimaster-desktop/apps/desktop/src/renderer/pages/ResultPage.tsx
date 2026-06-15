@@ -38,6 +38,7 @@ import ExportReportPanel from '../components/ExportReportPanel.js';
 import AchievementHeader from '../components/result/AchievementHeader.js';
 import LoudnessDeltaBars from '../components/result/LoudnessDeltaBars.js';
 import BeforeAfterWaveform from '../components/result/BeforeAfterWaveform.js';
+import MobilePreview from '../components/result/MobilePreview.js';
 import { isGuidedFlowEnabled } from '../audio/guided-flow-flag.js';
 import { resumeSharedContext } from '../audio/shared-audio-graph.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
@@ -1380,6 +1381,13 @@ export default function ResultPage() {
           targetLufs={options.targetLufs}
           styleKey={guidedStyleKey}
         />
+        {(masteringResult.previewPath || masteringResult.outputPath) && selectedFile && (
+          <MobilePreview
+            originalSrc={toFileUrl(selectedFile)}
+            masterSrc={toFileUrl(masteringResult.previewPath || masteringResult.outputPath)}
+            styleKey={guidedStyleKey}
+          />
+        )}
         <BeforeAfterWaveform styleKey={guidedStyleKey} />
         <SaveButtons />
         <button
