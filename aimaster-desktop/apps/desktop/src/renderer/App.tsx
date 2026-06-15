@@ -6,6 +6,7 @@ import { useLicenseStore } from './stores/licenseStore.js';
 import HomePage     from './pages/HomePage.js';
 import GuidedHome from './components/guided/GuidedHome.js';
 import { isGuidedFlowEnabled } from './audio/guided-flow-flag.js';
+import { useIsMobile } from './hooks/useIsMobile.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
@@ -226,6 +227,8 @@ function AppInner() {
   const selectedFile = useAudioStore((s) => s.selectedFile);
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const loadLicense = useLicenseStore((s) => s.load);
+  // Mobile width (<640px) = Guided Flow only (no Pro controls / TweakPage).
+  const isMobile = useIsMobile();
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
@@ -247,7 +250,12 @@ function AppInner() {
       console.warn('[AppInner] page=tweak with no selectedFile — redirecting to home');
       setPage('home');
     }
-  }, [page, selectedFile, masteringResult, setPage]);
+    // Mobile policy: never enter the Pro fine-tuning page.  Bounce tweak to
+    // the result (if a master exists) or home.
+    if (isMobile && page === 'tweak') {
+      setPage(selectedFile && masteringResult?.outputPath ? 'result' : 'home');
+    }
+  }, [page, selectedFile, masteringResult, setPage, isMobile]);
 
   // Dev-only: route via URL query so the analyzer-stream smoke page can
   // be reached without touching the appStore page enum.  Production
@@ -262,7 +270,8 @@ function AppInner() {
   // result screen — see the WASM panic recovery in the redesign branch.
   // Guided "three picks" flow (T6) — gated by a flag (default OFF).  When OFF
   // the legacy HomePage stays the route exactly as before (one-switch rollback).
-  const homeEl = isGuidedFlowEnabled() ? <GuidedHome /> : <HomePage />;
+  // Mobile width forces the Guided flow regardless of the desktop flag.
+  const homeEl = (isMobile || isGuidedFlowEnabled()) ? <GuidedHome /> : <HomePage />;
 
   const hasResultData = Boolean(selectedFile && masteringResult?.outputPath);
   const resultSlot = hasResultData ? <ResultPage /> : homeEl;
@@ -270,7 +279,8 @@ function AppInner() {
   // tweak: source-only preview — selectedFile required, masteringResult NOT required.
   // TweakPage is a dedicated lightweight component; it never loads the heavy
   // ProductPage audio graph so it can't crash on null masteringResult.
-  const tweakSlot = Boolean(selectedFile) ? <TweakPage /> : homeEl;
+  // On mobile the Pro fine-tuning page is never shown (guard above redirects).
+  const tweakSlot = isMobile ? homeEl : (Boolean(selectedFile) ? <TweakPage /> : homeEl);
 
   const pages: Record<string, React.ReactNode> = {
     home:      homeEl,
