@@ -40,6 +40,7 @@ import LoudnessDeltaBars from '../components/result/LoudnessDeltaBars.js';
 import BeforeAfterWaveform from '../components/result/BeforeAfterWaveform.js';
 import { isGuidedFlowEnabled } from '../audio/guided-flow-flag.js';
 import { resumeSharedContext } from '../audio/shared-audio-graph.js';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 import { AnalyzerPanelStack } from '../components/AnalyzerPanelStack.js';
 import { reportFailure } from '../utils/reportFailure.js';
 import { toFileUrl } from '../utils/fileUrl.js';
@@ -1269,6 +1270,7 @@ export default function ResultPage() {
   const selectedFile    = useAudioStore((s) => s.selectedFile);
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
+  const isMobile        = useIsMobile();
 
   // previewSrc is derived from masteringResult; live DSP edits are applied
   // to the <audio> element via the WebAudio native chain (see PreviewPlayer).
@@ -1358,6 +1360,46 @@ export default function ResultPage() {
   const guidedGainLu = masteringResult
     ? (masteringResult.loudnessAfter.integratedLufs - masteringResult.loudnessBefore.integratedLufs)
     : 0;
+
+  // ── Mobile (<640px) result — summary + save only (M3) ────────────────────
+  // Pro controls (TweakPanel, advanced analysis cards, live analyzer) are
+  // hidden; the user sees only the achievement summary, LUFS/Waveform cards,
+  // save, and re-master.  Desktop width keeps the full layout below.
+  if (isMobile && masteringResult) {
+    return (
+      <div className="h-screen overflow-y-auto bg-[#13131A] text-zinc-100 px-5 py-7 space-y-4">
+        <AchievementHeader
+          gainLu={guidedGainLu}
+          styleKey={guidedStyleKey}
+          title={guidedIsKpop ? 'KPOP LOUD 완성' : '더 커졌어요'}
+          sub={guidedIsKpop ? '스트리밍에서 밀리지 않는 음압 완성' : '마스터링 완료'}
+        />
+        <LoudnessDeltaBars
+          origLufs={masteringResult.loudnessBefore.integratedLufs}
+          mastLufs={masteringResult.loudnessAfter.integratedLufs}
+          targetLufs={options.targetLufs}
+          styleKey={guidedStyleKey}
+        />
+        <BeforeAfterWaveform styleKey={guidedStyleKey} />
+        <SaveButtons />
+        <button
+          onClick={handleReMaster}
+          className="w-full py-3 rounded-xl text-[15px] font-semibold text-zinc-400
+                     border border-zinc-700 bg-transparent"
+        >
+          다시 마스터링
+        </button>
+        <button
+          onClick={handleNewFile}
+          className="w-full py-3 rounded-xl text-[14px] font-medium text-zinc-500
+                     border border-zinc-800 bg-transparent"
+        >
+          새 파일
+        </button>
+        <div className="h-4" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
