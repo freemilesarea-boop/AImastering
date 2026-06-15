@@ -1,36 +1,50 @@
-// Entitlement bridge (Phase C) — main-process cache of the renderer's
-// entitlement GATE decision.
+// Entitlement bridge (Phase C/D2) — main-process cache of the renderer's
+// entitlement + device gate decision.
 //
-// The entitlement itself is fetched in the renderer (Supabase + user JWT).
-// The renderer pushes ONLY a derived, non-sensitive snapshot here via the
-// `entitlement:set` IPC — { paid, plan, status } — and ONLY when both feature
-// flags are ON and the plan is an active pro plan.  No JWT / email / token
+// The renderer pushes ONLY a derived, non-sensitive snapshot via the
+// `entitlement:set` IPC — { paid(entitlementPaid), deviceAllowed, plan,
+// status } — and ONLY when both feature flags are ON.  No JWT / email / token
 // ever crosses this boundary.
 //
-// Default state is `paid:false`, so when nothing is pushed (flags OFF, signed
-// out, fetch failed) the export gate degrades to license-only — a paying
-// license user is never blocked by an entitlement outage.
+// Gate value = entitlementPaid && deviceAllowed (D2).  Defaults to false, so
+// when nothing is pushed (flags OFF, signed out, fetch/register failed) the
+// export gate degrades to license-only — a paying license user is never
+// blocked by an entitlement or device-limit outage.
 
 export interface EntitlementSnapshot {
-  paid: boolean;
-  plan: string;    // non-sensitive ('free' | 'pro_monthly' | 'pro_lifetime')
-  status: string;  // non-sensitive ('free' | 'active' | ...)
+  entitlementPaid: boolean;  // active pro plan
+  deviceAllowed: boolean;    // current device registered within the <=2 limit
+  plan: string;              // non-sensitive ('free' | 'pro_monthly' | 'pro_lifetime')
+  status: string;            // non-sensitive ('free' | 'active' | ...)
 }
 
-let _state: EntitlementSnapshot = { paid: false, plan: 'free', status: 'free' };
+let _state: EntitlementSnapshot = {
+  entitlementPaid: false,
+  deviceAllowed: false,
+  plan: 'free',
+  status: 'free',
+};
 
-/** Replace the cached entitlement snapshot (called from the entitlement:set IPC). */
-export function setEntitlement(next: Partial<EntitlementSnapshot>): void {
+/** Replace the cached snapshot (called from the entitlement:set IPC). */
+export function setEntitlement(next: {
+  paid?: unknown; deviceAllowed?: unknown; plan?: unknown; status?: unknown;
+}): void {
   _state = {
-    paid: next.paid === true,
+    entitlementPaid: next.paid === true,
+    deviceAllowed: next.deviceAllowed === true,
     plan: typeof next.plan === 'string' ? next.plan : 'free',
     status: typeof next.status === 'string' ? next.status : 'free',
   };
 }
 
-/** True only when the renderer pushed an active-pro entitlement. Default false. */
+/**
+ * The entitlement contribution to the export gate:
+ *   entitlementPaid && deviceAllowed
+ * Default false.  fileHandlers does `license || getEntitlementPaid()`, so the
+ * full gate is `paid = licensePaid || (entitlementPaid && deviceAllowed)`.
+ */
 export function getEntitlementPaid(): boolean {
-  return _state.paid === true;
+  return _state.entitlementPaid === true && _state.deviceAllowed === true;
 }
 
 /** Non-sensitive snapshot for diagnostics. */

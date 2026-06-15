@@ -10,6 +10,7 @@ import { useIsMobile } from './hooks/useIsMobile.js';
 import AccountAuthModal from './components/auth/AccountAuthModal.js';
 import { useAuthStore } from './stores/authStore.js';
 import { useEntitlementStore } from './stores/entitlementStore.js';
+import { useDeviceStore } from './stores/deviceStore.js';
 import { isAccountAuthEnabled, isEntitlementGateEnabled } from './audio/account-auth-flag.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
@@ -277,8 +278,10 @@ function AppInner() {
     if (authStatus === 'signed-in') {
       useEntitlementStore.getState().loadCache();
       void useEntitlementStore.getState().refresh();
+      void useDeviceStore.getState().registerCurrent();   // Phase D2
     } else if (authStatus === 'signed-out') {
       useEntitlementStore.getState().clear();
+      useDeviceStore.getState().clear();
     }
   }, [accountAuth, authStatus]);
 
@@ -289,6 +292,7 @@ function AppInner() {
   // false → export gate is exactly license-only.
   const entitlement = useEntitlementStore((s) => s.entitlement);
   const entStatus = useEntitlementStore((s) => s.status);
+  const deviceAllowed = useDeviceStore((s) => s.deviceAllowed);   // Phase D2
   useEffect(() => {
     if (!accountAuth) return;
     const gateOn = isEntitlementGateEnabled();
@@ -301,8 +305,9 @@ function AppInner() {
       const notExpired = !entitlement.expiresAt || new Date(entitlement.expiresAt).getTime() > Date.now();
       paid = status === 'active' && (plan === 'pro_monthly' || plan === 'pro_lifetime') && notExpired;
     }
-    void window.electronAPI?.invoke('entitlement:set', { paid, plan, status });
-  }, [accountAuth, authStatus, entStatus, entitlement]);
+    // Gate value = paid (entitlementPaid) && deviceAllowed (folded in main).
+    void window.electronAPI?.invoke('entitlement:set', { paid, deviceAllowed, plan, status });
+  }, [accountAuth, authStatus, entStatus, entitlement, deviceAllowed]);
 
   // Defensive redirects — bounce to home when a page is reached without
   // the data it requires.  Runs synchronously after every render so the

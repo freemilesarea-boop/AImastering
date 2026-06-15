@@ -22,6 +22,8 @@ const INVOKE_CHANNELS = [
   'license:revalidate',
   // Entitlement bridge (Phase C) — renderer pushes a non-sensitive gate snapshot.
   'entitlement:set',
+  // Device id for account device registration (Phase D2).
+  'device:get-id',
   // Files
   'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
   'file:batch-save-wav',

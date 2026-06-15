@@ -21,6 +21,65 @@ function EntitlementRow() {
   );
 }
 
+// DevicesSection (Phase D2) — account device management (<=2 active).
+// Shows registered devices, marks the current one, and revokes others.
+function DevicesSection() {
+  const devices = useDeviceStore((s) => s.devices);
+  const currentId = useDeviceStore((s) => s.currentDeviceId);
+  const deviceAllowed = useDeviceStore((s) => s.deviceAllowed);
+  const lastCode = useDeviceStore((s) => s.lastCode);
+  const revoke = useDeviceStore((s) => s.revoke);
+  const list = useDeviceStore((s) => s.list);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  useEffect(() => { void list(); }, [list]);
+
+  const onRevoke = async (id: string) => {
+    setBusyId(id);
+    await revoke(id);
+    setBusyId(null);
+  };
+
+  return (
+    <div className="rounded-lg bg-zinc-800/60 border border-zinc-700 p-3 space-y-2">
+      <p className="text-[11px] text-zinc-500 uppercase tracking-wider">기기 (최대 2대)</p>
+      {!deviceAllowed && lastCode === 'device_limit_exceeded' && (
+        <p className="text-xs text-amber-400 leading-snug break-words">
+          기기 한도(2대)를 초과했습니다. 사용하지 않는 기기를 해제해 주세요.
+        </p>
+      )}
+      {devices.length === 0 ? (
+        <p className="text-xs text-zinc-600">등록된 기기가 없습니다.</p>
+      ) : devices.map((d) => {
+        const isCurrent = d.device_id === currentId;
+        return (
+          <div key={d.device_id} className="flex items-center gap-2 py-1">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm text-zinc-200 truncate">
+                {d.device_name || d.device_id.slice(0, 8)}
+                {isCurrent && <span className="ml-1.5 text-[10px] text-emerald-400">(현재 기기)</span>}
+              </p>
+              <p className="text-[10px] text-zinc-600">
+                {(d.platform ?? '').toString()} · {new Date(d.last_seen_at).toLocaleDateString()}
+              </p>
+            </div>
+            {!isCurrent && (
+              <button
+                onClick={() => void onRevoke(d.device_id)}
+                disabled={busyId === d.device_id}
+                className="text-[12px] px-2.5 min-h-[36px] rounded-lg bg-zinc-700 text-zinc-200
+                           hover:bg-zinc-600 disabled:opacity-50"
+              >
+                {busyId === d.device_id ? '…' : '해제'}
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ClaimSection (Phase D1) — link an existing license key to the account.
 // Reuses the existing license key (server validates against license_keys);
 // does NOT remove the key or change the license/export flow.
@@ -84,9 +143,10 @@ function ClaimSection() {
 // Email/password + Google OAuth.  Phase A scope: account + session only; this
 // modal does NOT show or change any paid-feature state.  Mobile-safe sizing
 // (mirrors LicenseModal: width min(28rem,100vw-2rem), height-capped scroll).
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAuthStore } from '../../stores/authStore.js';
 import { useEntitlementStore } from '../../stores/entitlementStore.js';
+import { useDeviceStore } from '../../stores/deviceStore.js';
 
 export default function AccountAuthModal() {
   const { status, user, busy, error, modalOpen, setModalOpen, signIn, signUp, signInWithGoogle, signOut } =
@@ -143,6 +203,7 @@ export default function AccountAuthModal() {
                 <p className="mt-1 text-xs text-zinc-500 break-all">{user!.email}</p>
               </div>
               <EntitlementRow />
+              <DevicesSection />
               <ClaimSection />
               <button
                 onClick={() => void signOut()}
