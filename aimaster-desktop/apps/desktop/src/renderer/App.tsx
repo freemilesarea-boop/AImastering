@@ -36,10 +36,11 @@ function Toast() {
   };
 
   return (
-    <div className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-50
-                     px-4 py-2.5 rounded-xl border shadow-xl
-                     text-sm animate-in-fast text-center break-words
-                     max-w-[calc(100vw-2rem)]
+    <div className={`fixed z-50 animate-in-fast border
+                     bottom-4 left-4 right-4 px-4 py-3 rounded-xl shadow-lg
+                     text-[15px] text-center whitespace-nowrap overflow-hidden text-ellipsis
+                     sm:bottom-5 sm:left-1/2 sm:right-auto sm:-translate-x-1/2
+                     sm:px-4 sm:py-2.5 sm:shadow-xl sm:text-sm sm:text-left sm:overflow-visible
                      ${colors[notif.type] ?? colors.info}`}>
       {notif.message}
     </div>
