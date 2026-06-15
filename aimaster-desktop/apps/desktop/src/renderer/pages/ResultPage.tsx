@@ -1272,6 +1272,9 @@ export default function ResultPage() {
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
   const isMobile        = useIsMobile();
+  // Mobile Result: advanced info (LUFS/Waveform) is collapsed by default so
+  // the core flow stays 확인 → 미리듣기 → 저장.
+  const [mobileAdvanced, setMobileAdvanced] = useState(false);
 
   // previewSrc is derived from masteringResult; live DSP edits are applied
   // to the <audio> element via the WebAudio native chain (see PreviewPlayer).
@@ -1375,12 +1378,6 @@ export default function ResultPage() {
           title={guidedIsKpop ? 'KPOP LOUD 완성' : '더 커졌어요'}
           sub={guidedIsKpop ? '스트리밍에서 밀리지 않는 음압 완성' : '마스터링 완료'}
         />
-        <LoudnessDeltaBars
-          origLufs={masteringResult.loudnessBefore.integratedLufs}
-          mastLufs={masteringResult.loudnessAfter.integratedLufs}
-          targetLufs={options.targetLufs}
-          styleKey={guidedStyleKey}
-        />
         {(masteringResult.previewPath || masteringResult.outputPath) && selectedFile && (
           <MobilePreview
             originalSrc={toFileUrl(selectedFile)}
@@ -1388,8 +1385,32 @@ export default function ResultPage() {
             styleKey={guidedStyleKey}
           />
         )}
-        <BeforeAfterWaveform styleKey={guidedStyleKey} />
         <SaveButtons />
+
+        {/* Advanced info collapsed by default — action first. */}
+        <button
+          type="button"
+          onClick={() => setMobileAdvanced((v) => !v)}
+          aria-expanded={mobileAdvanced}
+          className="w-full min-h-[48px] py-3 rounded-xl text-[15px] font-medium text-zinc-400
+                     border border-zinc-800 bg-transparent flex items-center justify-center gap-1.5"
+        >
+          <span>{mobileAdvanced ? '고급 정보 숨기기' : '고급 정보 보기'}</span>
+          <span className={`transition-transform ${mobileAdvanced ? 'rotate-180' : ''}`}>▾</span>
+        </button>
+
+        {mobileAdvanced && (
+          <>
+            <LoudnessDeltaBars
+              origLufs={masteringResult.loudnessBefore.integratedLufs}
+              mastLufs={masteringResult.loudnessAfter.integratedLufs}
+              targetLufs={options.targetLufs}
+              styleKey={guidedStyleKey}
+            />
+            <BeforeAfterWaveform styleKey={guidedStyleKey} />
+          </>
+        )}
+
         <button
           onClick={handleReMaster}
           className="w-full min-h-[48px] py-3 rounded-xl text-[16px] font-semibold text-zinc-300
