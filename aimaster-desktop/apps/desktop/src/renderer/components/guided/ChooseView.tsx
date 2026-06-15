@@ -94,6 +94,9 @@ export default function ChooseView({ onBack }: Props) {
             styleKey={c.key}
             selected={style === c.key}
             onClick={() => setStyle(c.key)}
+            // KPOP Loud spans the full row on mobile so it reads as the hero;
+            // desktop keeps the original 1-column placement.
+            className={c.key === 'kpop_loud' ? 'col-span-2 sm:col-span-1' : ''}
           />
         ))}
       </div>
@@ -106,7 +109,7 @@ export default function ChooseView({ onBack }: Props) {
       />
 
       <div className="text-[12px] text-zinc-500 font-bold tracking-[.14em] uppercase mt-5 mb-[10px]">Target</div>
-      <div className="grid grid-cols-4 gap-[10px]">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-[10px]">
         {TARGETS.map((t) => (
           <TargetCard
             key={t.key}
@@ -119,7 +122,11 @@ export default function ChooseView({ onBack }: Props) {
         ))}
       </div>
 
-      <div className="mt-6">
+      {/* Mobile: keep the primary action reachable as a sticky footer so the
+          user never has to hunt for it after scrolling.  Desktop (sm+) keeps
+          the original inline placement. */}
+      <div className="mt-6 sticky bottom-0 sm:static -mx-7 px-7 sm:mx-0 sm:px-0
+                      py-3 sm:py-0 bg-[#13131A] sm:bg-transparent">
         <CtaButton accentStyle={style} disabled={!style} onClick={start}>
           {style ? '마스터링 시작' : '스타일을 선택하세요'}
         </CtaButton>

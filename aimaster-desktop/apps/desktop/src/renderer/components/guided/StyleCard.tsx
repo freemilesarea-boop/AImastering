@@ -10,10 +10,12 @@ interface Props {
   styleKey: string;
   selected: boolean;
   onClick: () => void;
+  /** Extra classes for grid placement (e.g. mobile col-span). */
+  className?: string;
 }
 
 /** Tappable style card.  KPOP Loud renders the signature gradient + badge. */
-export default function StyleCard({ name, caption, icon, styleKey, selected, onClick }: Props) {
+export default function StyleCard({ name, caption, icon, styleKey, selected, onClick, className }: Props) {
   const accent = styleAccent(styleKey);
   const isKpop = accent.isKpop;
 
@@ -21,8 +23,8 @@ export default function StyleCard({ name, caption, icon, styleKey, selected, onC
     <button
       type="button"
       onClick={onClick}
-      className="relative text-left rounded-2xl p-4 min-h-[96px] flex flex-col justify-between
-                 border transition-all"
+      className={`relative text-left rounded-2xl p-4 min-h-[96px] flex flex-col justify-between
+                 border transition-all ${className ?? ''}`}
       style={{
         background: isKpop
           ? 'radial-gradient(120% 140% at 0% 0%, rgba(255,61,119,.22), rgba(255,138,61,.08) 55%, #1A1A22 78%)'
