@@ -10,7 +10,7 @@ import { useIsMobile } from './hooks/useIsMobile.js';
 import AccountAuthModal from './components/auth/AccountAuthModal.js';
 import { useAuthStore } from './stores/authStore.js';
 import { useEntitlementStore } from './stores/entitlementStore.js';
-import { isAccountAuthEnabled } from './audio/account-auth-flag.js';
+import { isAccountAuthEnabled, isEntitlementGateEnabled } from './audio/account-auth-flag.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
@@ -269,8 +269,8 @@ function AppInner() {
     if (accountAuth) void useAuthStore.getState().init();
   }, [accountAuth]);
 
-  // Phase B — fetch the account entitlement on sign-in (query/cache only,
-  // NOT connected to the export gate).  Clears on sign-out.
+  // Phase B — fetch the account entitlement on sign-in (query/cache only).
+  // Clears on sign-out.
   const authStatus = useAuthStore((s) => s.status);
   useEffect(() => {
     if (!accountAuth) return;
@@ -281,6 +281,28 @@ function AppInner() {
       useEntitlementStore.getState().clear();
     }
   }, [accountAuth, authStatus]);
+
+  // Phase C — push the (additive) entitlement gate decision to the main
+  // process.  Only true when BOTH flags are ON AND the plan is active pro;
+  // fetch failure / no session / non-pro → false → license-only fallback.
+  // When account auth is OFF we never touch the bridge → main stays default
+  // false → export gate is exactly license-only.
+  const entitlement = useEntitlementStore((s) => s.entitlement);
+  const entStatus = useEntitlementStore((s) => s.status);
+  useEffect(() => {
+    if (!accountAuth) return;
+    const gateOn = isEntitlementGateEnabled();
+    let paid = false;
+    let plan = 'free';
+    let status = 'free';
+    if (gateOn && authStatus === 'signed-in' && entStatus === 'loaded' && entitlement) {
+      plan = entitlement.plan;
+      status = entitlement.status;
+      const notExpired = !entitlement.expiresAt || new Date(entitlement.expiresAt).getTime() > Date.now();
+      paid = status === 'active' && (plan === 'pro_monthly' || plan === 'pro_lifetime') && notExpired;
+    }
+    void window.electronAPI?.invoke('entitlement:set', { paid, plan, status });
+  }, [accountAuth, authStatus, entStatus, entitlement]);
 
   // Defensive redirects — bounce to home when a page is reached without
   // the data it requires.  Runs synchronously after every render so the

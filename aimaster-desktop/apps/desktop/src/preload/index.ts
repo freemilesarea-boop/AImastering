@@ -20,6 +20,8 @@ const INVOKE_CHANNELS = [
   'license:status', 'license:can-process', 'license:get-remaining',
   'license:activate', 'license:deactivate', 'license:decrement-trial',
   'license:revalidate',
+  // Entitlement bridge (Phase C) — renderer pushes a non-sensitive gate snapshot.
+  'entitlement:set',
   // Files
   'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
   'file:batch-save-wav',

@@ -14,9 +14,11 @@
 declare global {
   interface Window {
     __LOUI_ACCOUNT_AUTH__?: boolean;
+    __LOUI_ENTITLEMENT_GATE__?: boolean;
   }
   interface ImportMetaEnv {
     readonly VITE_LOUI_ACCOUNT_AUTH?: string;
+    readonly VITE_LOUI_ENTITLEMENT_GATE?: string;
   }
 }
 
@@ -27,4 +29,16 @@ export function isAccountAuthEnabled(): boolean {
   const env = (import.meta.env?.VITE_LOUI_ACCOUNT_AUTH ?? '').toString().toLowerCase();
   if (env === 'true' || env === '1') return true;
   return false; // off by default — no effect on existing license/export flow
+}
+
+// Phase C — when ON (AND account auth ON), the entitlement result is included
+// in the export gate additively: paid = licensePaid || entitlementPaid.
+// DEFAULT OFF → gate stays license-only.
+export function isEntitlementGateEnabled(): boolean {
+  if (typeof window !== 'undefined' && typeof window.__LOUI_ENTITLEMENT_GATE__ === 'boolean') {
+    return window.__LOUI_ENTITLEMENT_GATE__;
+  }
+  const env = (import.meta.env?.VITE_LOUI_ENTITLEMENT_GATE ?? '').toString().toLowerCase();
+  if (env === 'true' || env === '1') return true;
+  return false;
 }

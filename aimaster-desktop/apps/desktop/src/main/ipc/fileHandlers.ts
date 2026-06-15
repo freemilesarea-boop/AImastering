@@ -10,6 +10,8 @@ import {
 } from '../utils/supportBundle.js';
 import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
 import { licenseService } from './licenseHandlers.js';
+import { getEntitlementPaid } from '../services/entitlementBridge.js';
+import { log } from '../utils/logger.js';
 import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
 
 const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
@@ -28,8 +30,29 @@ const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] 
 const LICENSE_REQUIRED = 'LICENSE_REQUIRED: 마스터 음원(WAV/FLAC/AIFF) 저장은 라이선스가 필요합니다. 라이선스를 활성화해 주세요.';
 const FREE_EXPORT_EXTS = new Set(['mp3', 'ogg']);
 
-function isPaidNow(): boolean {
+function licensePaid(): boolean {
   try { return licenseService.canProcess().isPaid; } catch { return false; }
+}
+
+type GateSource = 'license' | 'entitlement' | 'license+entitlement' | 'none';
+
+/**
+ * Phase C — ADDITIVE gate: `paid = licensePaid || entitlementPaid`.
+ *
+ * `entitlementPaid` (entitlementBridge) defaults to false and is only true
+ * when the renderer pushed an active-pro snapshot under BOTH feature flags.
+ * So with the flags off (default) this is exactly the prior license-only
+ * behavior, and an entitlement outage (→ false) can never block a paying
+ * license user.  No license logic changed; the free policy is unchanged.
+ */
+function paidStatus(): { paid: boolean; source: GateSource } {
+  const lic = licensePaid();
+  const ent = getEntitlementPaid();
+  const paid = lic || ent;
+  const source: GateSource = !paid
+    ? 'none'
+    : (lic && ent ? 'license+entitlement' : (lic ? 'license' : 'entitlement'));
+  return { paid, source };
 }
 
 /** True when the given extension/format is a paid (lossless master) export. */
@@ -78,9 +101,11 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     const ext      = path.extname(safeSrc).toLowerCase().replace('.', '');
     const isWav    = ext === 'wav';
 
-    // Paywall: lossless master export requires a paid license.
-    if (isMasterExport(ext) && !isPaidNow()) {
-      throw new Error(LICENSE_REQUIRED);
+    // Paywall: lossless master export requires paid (license OR entitlement).
+    if (isMasterExport(ext)) {
+      const gate = paidStatus();
+      log.info(`[export-gate] save-wav ext=${ext} paid=${gate.paid} source=${gate.source}`);
+      if (!gate.paid) throw new Error(LICENSE_REQUIRED);
     }
 
     const filters  = isWav
@@ -117,9 +142,11 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     const filter = FORMAT_FILTERS[req.format];
     if (!filter) return { savedPath: null, error: `unsupported format: ${req.format}` };
 
-    // Paywall: lossless master export requires a paid license.
-    if (isMasterExport(req.format) && !isPaidNow()) {
-      return { savedPath: null, error: LICENSE_REQUIRED };
+    // Paywall: lossless master export requires paid (license OR entitlement).
+    if (isMasterExport(req.format)) {
+      const gate = paidStatus();
+      log.info(`[export-gate] save-audio fmt=${req.format} paid=${gate.paid} source=${gate.source}`);
+      if (!gate.paid) return { savedPath: null, error: LICENSE_REQUIRED };
     }
 
     const sourceExt = path.extname(req.sourcePath).replace('.', '');
@@ -289,8 +316,10 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     if (!validSrcs.length) return null;
 
     // Paywall: if the batch contains any lossless master file, require paid.
-    if (!isPaidNow() && validSrcs.some((p) => isMasterExport(path.extname(p)))) {
-      throw new Error(LICENSE_REQUIRED);
+    if (validSrcs.some((p) => isMasterExport(path.extname(p)))) {
+      const gate = paidStatus();
+      log.info(`[export-gate] batch-save-wav paid=${gate.paid} source=${gate.source}`);
+      if (!gate.paid) throw new Error(LICENSE_REQUIRED);
     }
 
     const folderResult = await dialog.showOpenDialog(win, {

@@ -7,6 +7,7 @@ import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { registerLicenseHandlers, licenseService } from './ipc/licenseHandlers.js';
+import { registerEntitlementHandlers } from './ipc/entitlementHandlers.js';
 import { isLicenseSecretProductionReady, LICENSE_API_URL } from '@aimaster/license-core';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
@@ -276,6 +277,7 @@ app.whenReady().then(() => {
     registerFileHandlers(ipcMain, mainWindow);
     registerSettingsHandlers(ipcMain, mainWindow);
     registerLicenseHandlers(ipcMain);
+    registerEntitlementHandlers(ipcMain);
   } catch (err) {
     log.error('IPC handler registration failed:', err);
   }
