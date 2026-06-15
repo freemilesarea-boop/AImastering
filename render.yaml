@@ -1,0 +1,24 @@
+# Render Blueprint for the AImastering mastering API (M0).
+# Deploys services/mastering-api (FastAPI) which reuses services/python-audio.
+#
+# Setup: Render → New → Blueprint → connect this repo. Set MASTERING_API_KEY
+# (a strong random string) in the dashboard. The mobile app uses the same key.
+services:
+  - type: web
+    name: aimaster-mastering-api
+    runtime: docker
+    # Paths are relative to the REPO ROOT. The build context must be
+    # aimaster-desktop/ so the Dockerfile's `COPY services/...` lines resolve
+    # (both services/python-audio and services/mastering-api live under it).
+    dockerfilePath: aimaster-desktop/services/mastering-api/Dockerfile
+    dockerContext: aimaster-desktop
+    plan: starter               # bump if CPU/RAM bound during mastering
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      - key: MASTERING_API_KEY  # set in dashboard (sync:false = secret)
+        sync: false
+      - key: JOB_TTL_SECONDS
+        value: "3600"
+      - key: MAX_UPLOAD_MB
+        value: "60"
