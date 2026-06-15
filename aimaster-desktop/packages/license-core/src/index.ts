@@ -44,6 +44,15 @@ const KEY_REGEX   = /^AIMASTER-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 const TRIAL_MAX   = 3;
 
 /**
+ * Remote license server (Supabase edge function) — injected at build time via
+ * esbuild `define` (see apps/desktop/esbuild.main.cjs).  When both are present
+ * the host wires a {@link RemoteValidator}; otherwise it falls back to the
+ * dev-only {@link LocalValidator}.
+ */
+export const LICENSE_API_URL = process.env.LICENSE_API_URL ?? '';
+export const LICENSE_API_KEY = process.env.LICENSE_API_KEY ?? '';
+
+/**
  * Dev-only fallback HMAC secret.  NEVER usable from a packaged production
  * build — `assertLicenseSecretReady()` (called by the host on app start
  * when `app.isPackaged === true`) refuses this value.
@@ -56,7 +65,7 @@ const TRIAL_MAX   = 3;
  */
 export const DEV_FALLBACK_HMAC_SECRET = 'aimaster-local-secret-v1';
 
-const HMAC_SECRET = process.env['LICENSE_HMAC_SECRET'] ?? DEV_FALLBACK_HMAC_SECRET;
+const HMAC_SECRET = process.env.LICENSE_HMAC_SECRET || DEV_FALLBACK_HMAC_SECRET;
 
 /**
  * Returns true iff the active HMAC secret is a real production secret —
@@ -97,7 +106,9 @@ export interface StoredLicense {
   activatedAt: string;
   expiresAt?: string;
   machineId: string;
-  /** HMAC-SHA256 over key|tier|activatedAt|machineId */
+  /** Last successful server validation (ISO).  Used for offline reasoning. */
+  lastValidated?: string;
+  /** HMAC-SHA256 over key|tier|activatedAt|machineId|expiresAt */
   hmac: string;
 }
 
@@ -112,18 +123,18 @@ interface TrialRecord {
 // ── HMAC helpers ──────────────────────────────────────────────────────────────
 
 function signLicense(
-  key: string, tier: LicenseTier, activatedAt: string, machineId: string
+  key: string, tier: LicenseTier, activatedAt: string, machineId: string, expiresAt = ''
 ): string {
   return crypto
     .createHmac('sha256', HMAC_SECRET)
-    .update(`${key}|${tier}|${activatedAt}|${machineId}`)
+    .update(`${key}|${tier}|${activatedAt}|${machineId}|${expiresAt}`)
     .digest('hex');
 }
 
 function verifyLicense(stored: StoredLicense): boolean {
   try {
     const expected = Buffer.from(
-      signLicense(stored.key, stored.tier, stored.activatedAt, stored.machineId)
+      signLicense(stored.key, stored.tier, stored.activatedAt, stored.machineId, stored.expiresAt ?? '')
     );
     const actual = Buffer.from(stored.hmac);
     if (expected.length !== actual.length) return false;
@@ -193,7 +204,7 @@ export interface LicenseValidator {
 
 /**
  * v1 LocalValidator — any correctly formatted key activates as Pro.
- * Replace with a server-side validator before production launch.
+ * DEV ONLY.  Production builds must use {@link RemoteValidator}.
  */
 export class LocalValidator implements LicenseValidator {
   async validate(key: string): Promise<ValidatorResponse> {
@@ -206,6 +217,98 @@ export class LocalValidator implements LicenseValidator {
     }
     return { valid: true, tier: 'pro' };
   }
+}
+
+/** Server rejection reason → Korean user message. */
+function reasonToKorean(reason?: string): string {
+  switch (reason) {
+    case 'not_found':    return '등록되지 않은 라이선스 키입니다. 키를 다시 확인해주세요.';
+    case 'expired':      return '구독이 만료되었습니다. 구독을 갱신하면 계속 사용할 수 있습니다.';
+    case 'refunded':     return '환불된 라이선스입니다. 더 이상 사용할 수 없습니다.';
+    case 'revoked':      return '해제된 라이선스입니다. 고객지원에 문의해주세요.';
+    case 'device_limit': return '이 라이선스의 기기 등록 한도를 초과했습니다. 다른 기기에서 먼저 해제해주세요.';
+    case 'missing_fields':
+    case 'bad_request':  return '라이선스 요청이 올바르지 않습니다. 앱을 다시 시작해주세요.';
+    default:             return '유효하지 않은 라이선스 키입니다.';
+  }
+}
+
+/**
+ * RemoteValidator — calls the Supabase edge function (aimaster-validate) which
+ * checks the license against Paddle-synced state (status / expiry / device
+ * limit) server-side.
+ *
+ * Semantics:
+ *   - Network / server (5xx) failure → THROWS (caller must NOT treat as a
+ *     definitive answer; activation fails with a retry message, re-validation
+ *     keeps the existing license = offline grace).
+ *   - A reachable server returning { valid:false } IS definitive → caller
+ *     rejects activation or revokes the stored license.
+ */
+export class RemoteValidator implements LicenseValidator {
+  constructor(
+    private readonly baseUrl: string,
+    private readonly apiKey: string,
+  ) {}
+
+  async validate(key: string, machineId: string): Promise<ValidatorResponse> {
+    if (!KEY_REGEX.test(key)) {
+      return {
+        valid:  false,
+        tier:   'free',
+        reason: '올바른 라이선스 키 형식이 아닙니다. (AIMASTER-XXXX-XXXX-XXXX)',
+      };
+    }
+
+    const endpoint = `${this.baseUrl.replace(/\/+$/, '')}/functions/v1/aimaster-validate`;
+
+    let resp: Response;
+    try {
+      resp = await fetch(endpoint, {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'apikey':        this.apiKey,
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({ key, machineId }),
+      });
+    } catch (err) {
+      // Network unreachable — NOT a definitive rejection.
+      throw new Error('LICENSE_NETWORK: 라이선스 서버에 연결할 수 없습니다. 인터넷 연결을 확인한 뒤 다시 시도해주세요.');
+    }
+
+    if (!resp.ok) {
+      throw new Error(`LICENSE_NETWORK: 라이선스 서버 오류 (${resp.status}). 잠시 후 다시 시도해주세요.`);
+    }
+
+    let data: { valid?: boolean; tier?: string; expiresAt?: string; reason?: string };
+    try {
+      data = (await resp.json()) as { valid?: boolean; tier?: string; expiresAt?: string; reason?: string };
+    } catch {
+      throw new Error('LICENSE_NETWORK: 라이선스 서버 응답을 해석할 수 없습니다. 잠시 후 다시 시도해주세요.');
+    }
+
+    if (!data.valid) {
+      return {
+        valid:  false,
+        tier:   'free',
+        ...(data.expiresAt ? { expiresAt: data.expiresAt } : {}),
+        reason: reasonToKorean(data.reason),
+      };
+    }
+
+    return {
+      valid: true,
+      tier:  data.tier === 'pro' ? 'pro' : 'free',
+      ...(data.expiresAt ? { expiresAt: data.expiresAt } : {}),
+    };
+  }
+}
+
+/** True if a definitive (non-network) validator error. */
+export function isNetworkValidatorError(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith('LICENSE_NETWORK');
 }
 
 // ── Store interface ───────────────────────────────────────────────────────────
@@ -316,27 +419,50 @@ export class LicenseService {
     this.store.set('trial', record);
   }
 
+  /**
+   * True if the stored license has not lapsed.  Lifetime licenses have no
+   * `expiresAt` and never expire.  Monthly licenses carry the subscription
+   * period end; once past, the license behaves as free until re-validation
+   * picks up a renewal.
+   */
+  private _notExpired(stored: StoredLicense): boolean {
+    if (!stored.expiresAt) return true;
+    const end = Date.parse(stored.expiresAt);
+    if (Number.isNaN(end)) return true;   // unparseable → don't lock the user out
+    return Date.now() < end;
+  }
+
+  /** Effective paid state: pro tier AND not lapsed. */
+  private _isPaid(stored: StoredLicense | null): boolean {
+    return !!stored && stored.tier === 'pro' && this._notExpired(stored);
+  }
+
   private _buildInfo(stored: StoredLicense | null, trialUsed: number): LicenseInfo {
-    if (!stored) {
+    const paid = this._isPaid(stored);
+    if (!paid) {
+      // No license, or an expired one.  Surface key/expiry so the UI can show
+      // a "renew" prompt, but keep tier='free' so all gates fall back to trial.
       return {
         tier: 'free',
         trialUsed,
         trialMax: TRIAL_MAX,
+        ...(stored?.key ? { key: stored.key } : {}),
+        ...(stored?.expiresAt ? { expiresAt: stored.expiresAt } : {}),
         canSaveMasterWav: false,
         canExportReport:  false,
         canUseAllPresets: false,
       };
     }
     return {
-      tier:          stored.tier,
+      tier:          stored!.tier,
       trialUsed,
       trialMax:      TRIAL_MAX,
-      key:           stored.key,
-      activatedAt:   stored.activatedAt,
-      ...(stored.expiresAt ? { expiresAt: stored.expiresAt } : {}),
-      canSaveMasterWav: stored.tier === 'pro',
-      canExportReport:  stored.tier === 'pro',
-      canUseAllPresets: stored.tier === 'pro',
+      key:           stored!.key,
+      activatedAt:   stored!.activatedAt,
+      ...(stored!.expiresAt ? { expiresAt: stored!.expiresAt } : {}),
+      canSaveMasterWav: true,
+      canExportReport:  true,
+      canUseAllPresets: true,
     };
   }
 
@@ -374,7 +500,8 @@ export class LicenseService {
       activatedAt,
       ...(result.expiresAt ? { expiresAt: result.expiresAt } : {}),
       machineId,
-      hmac:        signLicense(normalized, result.tier, activatedAt, machineId),
+      lastValidated: activatedAt,
+      hmac:        signLicense(normalized, result.tier, activatedAt, machineId, result.expiresAt ?? ''),
     };
 
     this.store.set('license', stored);
@@ -410,7 +537,7 @@ export class LicenseService {
     const stored    = this._readLicense();
     const trialUsed = this._readTrialUsed();
 
-    if (stored?.tier === 'pro') {
+    if (this._isPaid(stored)) {
       return { allowed: true, isPaid: true, remaining: Infinity };
     }
 
@@ -433,8 +560,51 @@ export class LicenseService {
    */
   getRemainingTrials(): number {
     const stored = this._readLicense();
-    if (stored?.tier === 'pro') return Infinity;
+    if (this._isPaid(stored)) return Infinity;
     return Math.max(0, TRIAL_MAX - this._readTrialUsed());
+  }
+
+  /**
+   * Re-validate the stored license against the server.  Call on app startup
+   * (online) to pick up subscription renewals and to enforce refunds /
+   * revocations / device removals.
+   *
+   *   - Server says valid  → refresh tier / expiresAt / lastValidated.
+   *   - Server says invalid → remove the stored license (revert to free).
+   *   - Network error       → keep the stored license unchanged (offline
+   *                           grace; monthly still self-expires at expiresAt).
+   */
+  async revalidate(): Promise<LicenseInfo> {
+    const stored = this._readLicense();
+    if (!stored) return this.getLicenseState();
+
+    const machineId = getMachineId();
+    try {
+      const result = await this.validator.validate(stored.key, machineId);
+      if (!result.valid) {
+        // Definitive server rejection → revoke locally.
+        this.store.delete('license');
+        return this.getLicenseState();
+      }
+      const activatedAt = stored.activatedAt;
+      const refreshed: StoredLicense = {
+        key:           stored.key,
+        tier:          result.tier,
+        activatedAt,
+        ...(result.expiresAt ? { expiresAt: result.expiresAt } : {}),
+        machineId,
+        lastValidated: new Date().toISOString(),
+        hmac:          signLicense(stored.key, result.tier, activatedAt, machineId, result.expiresAt ?? ''),
+      };
+      this.store.set('license', refreshed);
+      return this._buildInfo(refreshed, this._readTrialUsed());
+    } catch (err) {
+      if (isNetworkValidatorError(err)) {
+        // Offline — keep working; don't punish a transient network failure.
+        return this.getLicenseState();
+      }
+      throw err;
+    }
   }
 
   // ── Additional helpers ─────────────────────────────────────────────────────

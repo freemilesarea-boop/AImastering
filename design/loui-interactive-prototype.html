@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Loui Mastering — Interactive Prototype</title>
+<style>
+:root{
+  --bg:#0C0C10;--bg2:#13131A;--card:#1A1A22;--card2:#20202A;--line:#2B2B36;--line2:#3A3A48;
+  --text:#ECECF1;--muted:#9A9AA8;--dim:#6A6A78;
+  --accent:#6C5CE7;--accent2:#8B7BFF;--kpopA:#FF3D77;--kpopB:#FF8A3D;--ok:#34D399;--target:#7C8AFF;
+  --mono:"SF Mono",ui-monospace,Menlo,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Pretendard",system-ui,sans-serif;
+  --ac:var(--accent);--ac2:var(--accent2); /* active accent, swapped to KPOP when chosen */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#070709;color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased;
+  display:flex;flex-direction:column;align-items:center;padding:22px 16px 60px}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:18px;flex-wrap:wrap;justify-content:center}
+.toolbar .t{font-size:13px;color:var(--dim);margin-right:6px}
+.tg{border:1px solid var(--line);background:var(--bg2);color:var(--muted);padding:8px 14px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer}
+.tg.on{color:#fff;border-color:var(--ac2);background:var(--card2)}
+
+/* device frame */
+.device{width:920px;max-width:96vw;background:var(--bg2);border:1px solid var(--line);border-radius:18px;overflow:hidden;
+  box-shadow:0 30px 80px rgba(0,0,0,.55);transition:width .35s ease}
+.device.mobile{width:390px;border-radius:40px;padding:0}
+.chrome{height:38px;display:flex;align-items:center;gap:8px;padding:0 14px;background:#101016;border-bottom:1px solid var(--line)}
+.device.mobile .chrome{display:none}
+.dot{width:11px;height:11px;border-radius:50%}.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+.chrome .ttl{margin-left:10px;color:var(--dim);font-size:12px}
+.notch{display:none}
+.device.mobile .notch{display:block;height:30px;background:#000;border-radius:0 0 18px 18px;width:150px;margin:0 auto}
+
+.viewport{position:relative;height:760px}
+.device.mobile .viewport{height:760px}
+.screen{position:absolute;inset:0;padding:30px 30px;opacity:0;pointer-events:none;transform:translateY(8px);
+  transition:opacity .35s ease,transform .35s ease;overflow:auto}
+.device.mobile .screen{padding:22px 20px}
+.screen.active{opacity:1;pointer-events:auto;transform:none}
+
+.brandRow{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.brandMark{width:26px;height:26px;border-radius:8px;background:conic-gradient(from 220deg,var(--accent),var(--accent2),var(--kpopA),var(--accent))}
+.brandName{font-weight:700;font-size:15px}
+.step{font-size:13px;color:var(--dim);font-weight:600;margin-left:auto}
+.h2{font-size:25px;font-weight:700;letter-spacing:-.02em;margin-top:10px}
+.lead{font-size:16px;color:var(--muted);line-height:1.6;margin-top:4px}
+.miniLabel{font-size:12px;color:var(--dim);font-weight:700;letter-spacing:.14em;text-transform:uppercase;margin:20px 0 10px}
+
+/* import */
+.drop{margin-top:18px;border:2px dashed var(--line2);border-radius:18px;min-height:230px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:14px;cursor:pointer;transition:.2s;background:radial-gradient(120% 120% at 50% 0%,rgba(108,92,231,.06),transparent)}
+.drop:hover{border-color:var(--ac2)}
+.drop.drag{border-color:var(--ac2);background:radial-gradient(120% 120% at 50% 0%,rgba(108,92,231,.18),transparent);transform:scale(1.01)}
+.drop .ic{font-size:42px}
+.drop .big{font-size:18px;font-weight:600}
+.note{font-size:13px;color:var(--dim)}
+.demoRow{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.pill{font-size:13px;color:var(--muted);background:#17171f;border:1px solid var(--line);border-radius:999px;padding:8px 13px;cursor:pointer}
+.pill:hover{border-color:var(--ac2);color:var(--text)}
+
+/* choose */
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.styleCard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;min-height:96px;cursor:pointer;
+  display:flex;flex-direction:column;justify-content:space-between;position:relative;transition:.15s}
+.styleCard:hover{border-color:var(--line2)}
+.styleCard.sel{border-color:var(--ac2);box-shadow:0 0 0 3px rgba(124,92,255,.16) inset}
+.styleCard .nm{font-size:18px;font-weight:700}
+.styleCard .cap{font-size:13px;color:var(--muted)}
+.icon{width:32px;height:32px;border-radius:9px;background:#262633;display:flex;align-items:center;justify-content:center;font-size:16px}
+.kpop{background:radial-gradient(120% 140% at 0% 0%,rgba(255,61,119,.22),rgba(255,138,61,.08) 55%,var(--card) 78%);border-color:rgba(255,90,130,.5)}
+.kpop.sel{box-shadow:0 0 0 3px rgba(255,61,119,.2) inset;border-color:var(--kpopA)}
+.badge{position:absolute;top:12px;right:12px;font-size:10px;font-weight:800;letter-spacing:.08em;padding:5px 8px;border-radius:999px;background:linear-gradient(90deg,var(--kpopA),var(--kpopB));color:#1a0a10}
+.kpopName{background:linear-gradient(90deg,#fff,#ffd9c2);-webkit-background-clip:text;background-clip:text;color:transparent}
+.seg{display:flex;background:#15151D;border:1px solid var(--line);border-radius:14px;padding:5px;gap:5px}
+.seg .opt{flex:1;text-align:center;padding:14px 0;border-radius:10px;font-size:16px;font-weight:600;color:var(--muted);cursor:pointer}
+.seg .opt.on{background:var(--card2);color:var(--text);box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.target{display:flex;flex-direction:column;align-items:center;gap:6px;padding:13px 6px;border:1px solid var(--line);border-radius:13px;background:var(--card);cursor:pointer}
+.target.on{border-color:var(--ac2);background:var(--card2)}
+.target .pi{width:28px;height:28px;border-radius:8px;background:#2a2a36;display:flex;align-items:center;justify-content:center;font-size:14px}
+.target .nm{font-size:13px;font-weight:600}.target .lufs{font-family:var(--mono);font-size:11px;color:var(--dim)}
+
+.cta{display:block;width:100%;text-align:center;padding:18px;border-radius:16px;font-size:18px;font-weight:700;border:none;cursor:pointer;
+  background:linear-gradient(180deg,var(--ac2),var(--ac));color:#fff;box-shadow:0 10px 30px rgba(108,92,231,.32);transition:.15s}
+.cta:disabled{filter:grayscale(.8);opacity:.45;cursor:not-allowed;box-shadow:none}
+.cta.kpop{background:linear-gradient(90deg,var(--kpopA),var(--kpopB));color:#1a0a10;box-shadow:0 10px 30px rgba(255,61,119,.3)}
+.ghost{display:block;width:100%;text-align:center;padding:15px;border-radius:14px;font-size:15px;font-weight:600;color:var(--muted);background:transparent;border:1px solid var(--line);cursor:pointer}
+.foot{margin-top:22px}
+
+/* mastering */
+.mastWrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.ring{position:relative;width:220px;height:220px;border-radius:50%;display:flex;align-items:center;justify-content:center}
+.ring .inner{width:172px;height:172px;border-radius:50%;background:#0d0d12;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ring .pct{font-family:var(--mono);font-size:40px;font-weight:800}
+.stageTxt{font-size:19px;font-weight:700;margin-top:30px}
+.stageSub{font-size:15px;color:var(--muted);margin-top:6px}
+.gauge{width:260px;max-width:80%;height:10px;background:#16161E;border:1px solid var(--line);border-radius:6px;margin-top:24px;position:relative;overflow:hidden}
+.gauge .gf{position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,var(--ac),var(--ac2));transition:width .2s linear}
+.gauge .gt{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--target)}
+
+/* result */
+.center{text-align:center}
+.doneBadge{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;font-weight:800;font-size:13px;letter-spacing:.05em;
+  background:linear-gradient(90deg,var(--kpopA),var(--kpopB));color:#1a0a10}
+.doneBadge.plain{background:var(--card2);color:var(--muted)}
+.trophy{font-family:var(--mono);font-size:58px;font-weight:800;letter-spacing:-.02em;line-height:1;
+  background:linear-gradient(90deg,#fff,#cdbcff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.trophy.k{background:linear-gradient(90deg,#fff,#ffd0b0);-webkit-background-clip:text;background-clip:text;color:transparent}
+.abtoggle{display:flex;background:#15151D;border:1px solid var(--line);border-radius:14px;padding:5px;gap:5px;margin-top:16px}
+.abtoggle .opt{flex:1;text-align:center;padding:13px 0;border-radius:10px;font-size:15px;font-weight:700;color:var(--muted);cursor:pointer}
+.abtoggle .opt.on{background:var(--card2);color:var(--text)}
+.abtoggle .opt.on.k{background:linear-gradient(90deg,var(--kpopA),var(--kpopB));color:#1a0a10}
+.play{display:flex;align-items:center;gap:12px;margin-top:12px}
+.playBtn{width:46px;height:46px;border-radius:50%;background:var(--card2);border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;font-size:15px;cursor:pointer}
+.scrub{flex:1;height:6px;background:#16161E;border-radius:4px;position:relative;overflow:hidden}
+.scrub .p{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ac2);border-radius:4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-top:14px}
+.lufsRow{display:flex;align-items:center;gap:12px;margin:9px 0}
+.lufsRow .lab{width:54px;font-size:14px;color:var(--muted)}
+.lufsBar{flex:1;height:14px;background:#16161E;border-radius:8px;position:relative;overflow:hidden;border:1px solid var(--line)}
+.lufsBar .fill{position:absolute;left:0;top:0;bottom:0;border-radius:8px;width:0;transition:width 1s cubic-bezier(.2,.7,.2,1)}
+.fill.orig{background:#4a4a58}.fill.mast{background:linear-gradient(90deg,var(--ac),var(--ac2))}
+.fill.mast.k{background:linear-gradient(90deg,var(--kpopA),var(--kpopB))}
+.tmark{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--target)}
+.lufsRow .val{width:92px;text-align:right;font-family:var(--mono);font-size:14px}
+.wfBox .wfLab{font-size:12px;color:var(--dim);margin:6px 0;display:flex;justify-content:space-between}
+.wf{display:flex;align-items:center;gap:2px;height:50px}
+.wf .b{flex:1;border-radius:2px;height:6%;transition:height .5s cubic-bezier(.2,.7,.2,1)}
+.wf.before .b{background:#4a4a58}
+.wf.after .b{background:linear-gradient(180deg,var(--ac2),var(--ac))}
+.wf.after.k .b{background:linear-gradient(180deg,var(--kpopA),var(--kpopB))}
+.tpwrap{position:relative}.tpline{position:absolute;left:0;right:0;top:4px;border-top:1px dashed rgba(255,255,255,.18)}
+
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(20px);background:#1c1c26;border:1px solid var(--line2);
+  color:#fff;padding:13px 20px;border-radius:14px;font-size:14px;opacity:0;transition:.3s;z-index:50;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.hint{text-align:center;color:var(--dim);font-size:12px;margin-top:14px}
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <span class="t">화면</span>
+    <button class="tg on" id="dDesk">🖥 Desktop</button>
+    <button class="tg" id="dMob">📱 Mobile</button>
+    <span class="t" style="margin-left:14px">클릭하여 흐름을 체험하세요 →</span>
+  </div>
+
+  <div class="device" id="device">
+    <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="ttl">Loui Mastering</span></div>
+    <div class="notch"></div>
+    <div class="viewport">
+
+      <!-- IMPORT -->
+      <section class="screen active" id="s-import">
+        <div class="brandRow"><span class="brandMark"></span><span class="brandName">Loui Mastering</span></div>
+        <div class="h2">트랙을 올리면, 마스터가 됩니다.</div>
+        <div class="lead">파일을 끌어다 놓거나 선택하세요.</div>
+        <div class="drop" id="drop">
+          <div class="ic">⤓</div>
+          <div class="big">오디오 파일 올리기</div>
+          <div class="note">WAV · MP3 · FLAC · M4A</div>
+        </div>
+        <input type="file" id="file" accept="audio/*" style="display:none"/>
+        <div class="miniLabel">데모로 체험</div>
+        <div class="demoRow">
+          <span class="pill" data-demo="demo_vocal_01.wav">🎤 demo_vocal_01.wav</span>
+          <span class="pill" data-demo="kpop_beat_final.mp3">🎧 kpop_beat_final.mp3</span>
+        </div>
+        <div class="hint">업로드 없이 · 내 기기에서 처리 (프로토타입)</div>
+      </section>
+
+      <!-- CHOOSE -->
+      <section class="screen" id="s-choose">
+        <div class="brandRow"><span class="step" id="chStep">1 / 3 · 스타일</span></div>
+        <div class="h2">어떤 느낌으로 만들까요?</div>
+        <div class="lead" id="fileLead">세 가지만 고르면 끝.</div>
+
+        <div class="miniLabel">Style</div>
+        <div class="grid2">
+          <div class="styleCard kpop" data-style="KPOP Loud">
+            <div class="badge">⚡ SIGNATURE</div>
+            <div class="icon" style="background:linear-gradient(135deg,var(--kpopA),var(--kpopB))">★</div>
+            <div><div class="nm kpopName">KPOP LOUD</div><div class="cap">체감 볼륨 최대, 보컬은 살림</div></div>
+          </div>
+          <div class="styleCard" data-style="Balanced"><div class="icon">◎</div><div><div class="nm">Balanced</div><div class="cap">어디서나 무난한 표준</div></div></div>
+          <div class="styleCard" data-style="Loud"><div class="icon">▲</div><div><div class="nm">Loud</div><div class="cap">강한 음압</div></div></div>
+        </div>
+
+        <div class="miniLabel">Intensity</div>
+        <div class="seg" id="segIntensity">
+          <div class="opt on" data-int="Standard">Standard</div>
+          <div class="opt" data-int="Strong">Strong</div>
+        </div>
+
+        <div class="miniLabel">Target</div>
+        <div class="grid4" id="targets">
+          <div class="target on" data-target="Universal" data-lufs="-14"><div class="pi">∞</div><div class="nm">Universal</div><div class="lufs">−14</div></div>
+          <div class="target" data-target="Spotify" data-lufs="-14"><div class="pi">S</div><div class="nm">Spotify</div><div class="lufs">−14</div></div>
+          <div class="target" data-target="YouTube" data-lufs="-14"><div class="pi">▶</div><div class="nm">YouTube</div><div class="lufs">−14</div></div>
+          <div class="target" data-target="Apple Music" data-lufs="-16"><div class="pi"></div><div class="nm">Apple</div><div class="lufs">−16</div></div>
+        </div>
+
+        <div class="foot">
+          <button class="cta" id="startBtn" disabled>스타일을 선택하세요</button>
+          <button class="ghost" id="backImport" style="margin-top:8px">← 파일 다시 선택</button>
+        </div>
+      </section>
+
+      <!-- MASTERING -->
+      <section class="screen" id="s-mast">
+        <div class="mastWrap">
+          <div class="doneBadge plain" id="mastBadge" style="margin-bottom:26px">처리 중</div>
+          <div class="ring" id="ring">
+            <div class="inner"><div class="pct" id="pct">0%</div><div class="note" id="ringSub">시작</div></div>
+          </div>
+          <div class="stageTxt" id="stageTxt">분석</div>
+          <div class="stageSub" id="stageSub">트랙을 분석하고 있어요</div>
+          <div class="gauge"><div class="gf" id="gaugeFill"></div><div class="gt" id="gaugeTarget"></div></div>
+          <button class="ghost" id="cancelBtn" style="width:auto;padding:12px 28px;margin-top:26px">취소</button>
+        </div>
+      </section>
+
+      <!-- RESULT -->
+      <section class="screen" id="s-result">
+        <div class="center">
+          <span class="doneBadge" id="resBadge">완료 ✓</span>
+          <div class="trophy" id="trophy" style="margin-top:16px">+0.0<span style="font-size:24px">&nbsp;LU</span></div>
+          <div style="font-size:19px;font-weight:800;margin-top:10px" id="resTitle">더 커졌어요</div>
+          <div class="lead" id="resSub" style="font-size:14px">마스터링이 끝났어요.</div>
+        </div>
+
+        <div class="abtoggle" id="ab">
+          <div class="opt" data-ab="orig">원본</div>
+          <div class="opt on" data-ab="mast">마스터</div>
+        </div>
+        <div class="play"><div class="playBtn" id="playBtn">▶</div><div class="scrub"><div class="p" id="scrubP"></div></div></div>
+
+        <div class="card">
+          <div class="miniLabel" style="margin:0 0 8px">Loudness</div>
+          <div class="lufsRow"><span class="lab">원본</span><div class="lufsBar"><div class="fill orig" id="barOrig"></div><div class="tmark" id="tmark1"></div></div><span class="val" id="valOrig">−15.2</span></div>
+          <div class="lufsRow"><span class="lab">마스터</span><div class="lufsBar"><div class="fill mast" id="barMast"></div><div class="tmark" id="tmark2"></div></div><span class="val" id="valMast">−9.0</span></div>
+          <div class="note" id="tpNote" style="margin-top:2px">점선 = 목표 · True Peak −1.0 dB (안전)</div>
+        </div>
+
+        <div class="card wfBox">
+          <div class="miniLabel" style="margin:0">Waveform</div>
+          <div class="wfLab"><span>원본</span></div>
+          <div class="wf before" id="wfBefore"></div>
+          <div class="wfLab"><span>마스터</span><span style="font-family:var(--mono)">TP −1.0 ✓</span></div>
+          <div class="tpwrap"><div class="tpline"></div><div class="wf after" id="wfAfter"></div></div>
+        </div>
+
+        <div class="foot">
+          <button class="cta" id="saveBtn">저장 / 공유하기</button>
+          <button class="ghost" id="restartBtn" style="margin-top:8px">다시 마스터링</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  var device=document.getElementById('device');
+  var screens={import:gid('s-import'),choose:gid('s-choose'),mast:gid('s-mast'),result:gid('s-result')};
+  var state={file:null,style:null,intensity:'Standard',target:'Universal',targetLufs:-14};
+  var ORIG_LUFS=-15.2;
+  var mastTimer=null;
+
+  function gid(id){return document.getElementById(id);}
+  function show(name){for(var k in screens){screens[k].classList.toggle('active',k===name);} screens[name].scrollTop=0;}
+  function toast(msg){var t=gid('toast');t.textContent=msg;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(function(){t.classList.remove('show');},2200);}
+  function isKpop(){return state.style==='KPOP Loud';}
+  function setAccent(){ // swap CSS accent to KPOP when chosen
+    var r=document.documentElement.style;
+    if(isKpop()){r.setProperty('--ac','var(--kpopA)');r.setProperty('--ac2','var(--kpopB)');}
+    else{r.setProperty('--ac','#6C5CE7');r.setProperty('--ac2','#8B7BFF');}
+  }
+
+  /* ---------- device toggle ---------- */
+  gid('dDesk').onclick=function(){device.classList.remove('mobile');this.classList.add('on');gid('dMob').classList.remove('on');};
+  gid('dMob').onclick=function(){device.classList.add('mobile');this.classList.add('on');gid('dDesk').classList.remove('on');};
+
+  /* ---------- IMPORT ---------- */
+  var drop=gid('drop'),fileInput=gid('file');
+  drop.onclick=function(){fileInput.click();};
+  fileInput.onchange=function(){ if(fileInput.files&&fileInput.files[0]) pickFile(fileInput.files[0].name); };
+  ['dragenter','dragover'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.add('drag');});});
+  ['dragleave','drop'].forEach(function(e){drop.addEventListener(e,function(ev){ev.preventDefault();drop.classList.remove('drag');});});
+  drop.addEventListener('drop',function(ev){var f=ev.dataTransfer&&ev.dataTransfer.files[0];pickFile(f?f.name:'dropped_track.wav');});
+  Array.prototype.forEach.call(document.querySelectorAll('[data-demo]'),function(el){el.onclick=function(){pickFile(el.getAttribute('data-demo'));};});
+  function pickFile(name){state.file=name;gid('fileLead').textContent=name+' · 세 가지만 고르면 끝.';show('choose');}
+
+  gid('backImport').onclick=function(){show('import');};
+
+  /* ---------- CHOOSE ---------- */
+  Array.prototype.forEach.call(document.querySelectorAll('#s-choose [data-style]'),function(el){
+    el.onclick=function(){
+      document.querySelectorAll('#s-choose [data-style]').forEach(function(x){x.classList.remove('sel');});
+      el.classList.add('sel');state.style=el.getAttribute('data-style');setAccent();updateStart();
+    };
+  });
+  gid('segIntensity').addEventListener('click',function(e){var o=e.target.closest('[data-int]');if(!o)return;
+    this.querySelectorAll('.opt').forEach(function(x){x.classList.remove('on');});o.classList.add('on');state.intensity=o.getAttribute('data-int');});
+  gid('targets').addEventListener('click',function(e){var o=e.target.closest('[data-target]');if(!o)return;
+    this.querySelectorAll('.target').forEach(function(x){x.classList.remove('on');});o.classList.add('on');
+    state.target=o.getAttribute('data-target');state.targetLufs=parseFloat(o.getAttribute('data-lufs'));});
+
+  function updateStart(){
+    var b=gid('startBtn');
+    if(state.style){b.disabled=false;b.textContent='마스터링 시작';b.classList.toggle('kpop',isKpop());}
+    else{b.disabled=true;b.textContent='스타일을 선택하세요';b.classList.remove('kpop');}
+  }
+  gid('startBtn').onclick=function(){ if(!state.style)return; startMastering(); };
+
+  /* ---------- MASTERING ---------- */
+  var STAGES=[
+    {to:25,txt:'분석',sub:'트랙을 분석하고 있어요'},
+    {to:50,txt:'톤 보정',sub:'주파수 균형을 맞추는 중'},
+    {to:80,txt:'음압 강화',sub:'체감 볼륨을 끌어올리는 중'},
+    {to:100,txt:'트루피크 보호',sub:'깨지지 않게 안전 처리'}
+  ];
+  function startMastering(){
+    setAccent();
+    var badge=gid('mastBadge');badge.textContent=isKpop()?'KPOP LOUD':(state.style||'처리 중');
+    badge.className='doneBadge'+(isKpop()?'':' plain');badge.style.marginBottom='26px';
+    gid('gaugeTarget').style.left=lufsPct(state.targetLufs)+'%';
+    show('mast');
+    var p=0;clearInterval(mastTimer);
+    mastTimer=setInterval(function(){
+      p+=1.2+Math.random()*1.4; if(p>=100)p=100;
+      var pr=Math.round(p);
+      gid('pct').textContent=pr+'%';
+      var col=isKpop()?'var(--kpopA)':'var(--accent)';
+      gid('ring').style.background='conic-gradient('+col+' 0% '+pr+'%, #1d1d27 '+pr+'% 100%)';
+      gid('gaugeFill').style.width=pr+'%';
+      var st=STAGES.find(function(s){return p<=s.to;})||STAGES[3];
+      gid('stageTxt').textContent=st.txt;gid('stageSub').textContent=st.sub;gid('ringSub').textContent=st.txt;
+      if(p>=100){clearInterval(mastTimer);setTimeout(showResult,420);}
+    },55);
+  }
+  gid('cancelBtn').onclick=function(){clearInterval(mastTimer);show('choose');};
+
+  /* ---------- RESULT ---------- */
+  function masterLufsFor(){
+    var base; if(state.style==='KPOP Loud')base=-9; else if(state.style==='Loud')base=-11; else base=state.targetLufs;
+    if(state.intensity==='Strong')base+=0.7; // louder = closer to 0
+    return Math.round(base*10)/10;
+  }
+  function lufsPct(l){ var v=(l+24)/18*100; return Math.max(2,Math.min(98,v)); } // map -24..-6 → 2..98%
+
+  function showResult(){
+    var k=isKpop();
+    var mast=masterLufsFor();
+    var gain=Math.round((mast-ORIG_LUFS)*10)/10;
+    // header
+    gid('resBadge').textContent=k?'KPOP LOUD ✓':(state.style+' ✓');
+    gid('resBadge').className='doneBadge'+(k?'':' plain');
+    gid('trophy').className='trophy'+(k?' k':'');
+    gid('resTitle').textContent=k?'KPOP LOUD 완성':'더 커졌어요';
+    gid('resSub').textContent=k?'스트리밍에서 밀리지 않는 음압 완성':(state.target+' 타깃으로 마스터링 완료');
+    // A/B + bars setup
+    gid('valOrig').textContent=ORIG_LUFS.toFixed(1);
+    gid('valMast').textContent=mast.toFixed(1);
+    gid('tmark1').style.left=lufsPct(state.targetLufs)+'%';
+    gid('tmark2').style.left=lufsPct(state.targetLufs)+'%';
+    gid('barMast').className='fill mast'+(k?' k':'');
+    document.querySelector('#ab .opt[data-ab="mast"]').classList.toggle('k',k);
+    gid('wfAfter').className='wf after'+(k?' k':'');
+    gid('saveBtn').className='cta'+(k?' kpop':'');
+    buildWave(gid('wfBefore'),64,'before');buildWave(gid('wfAfter'),64,'after');
+    // reset anim
+    gid('barOrig').style.width='0';gid('barMast').style.width='0';
+    flatWave(gid('wfBefore'));flatWave(gid('wfAfter'));
+    gid('scrubP').style.width='0';
+    setAB('mast');
+    show('result');
+    // animate
+    countUp(gid('trophy'),gain,k);
+    setTimeout(function(){
+      gid('barOrig').style.width=lufsPct(ORIG_LUFS)+'%';
+      gid('barMast').style.width=lufsPct(mast)+'%';
+      growWave(gid('wfBefore'),'before');growWave(gid('wfAfter'),'after');
+    },180);
+  }
+  function setAB(which){
+    var k=isKpop();
+    document.querySelectorAll('#ab .opt').forEach(function(o){o.classList.toggle('on',o.getAttribute('data-ab')===which);});
+    // emphasize the active waveform
+    gid('wfBefore').style.opacity = which==='orig'?'1':'.35';
+    gid('wfAfter').style.opacity  = which==='mast'?'1':'.35';
+  }
+  document.getElementById('ab').addEventListener('click',function(e){var o=e.target.closest('[data-ab]');if(o)setAB(o.getAttribute('data-ab'));});
+
+  // mock play (no audio): animate scrub
+  var playT=null,playing=false;
+  gid('playBtn').onclick=function(){
+    playing=!playing;this.textContent=playing?'▮▮':'▶';
+    if(playing){var w=parseFloat(gid('scrubP').style.width)||0;
+      playT=setInterval(function(){w+=0.8;if(w>=100){w=0;}gid('scrubP').style.width=w+'%';},40);
+    } else clearInterval(playT);
+  };
+
+  gid('saveBtn').onclick=function(){ toast('데모: 저장/공유 흐름 (실제 저장·결제 미연결)'); };
+  gid('restartBtn').onclick=function(){ resetAll(); };
+
+  function resetAll(){
+    clearInterval(mastTimer);clearInterval(playT);playing=false;gid('playBtn').textContent='▶';
+    state={file:null,style:null,intensity:'Standard',target:'Universal',targetLufs:-14};
+    setAccent();
+    document.querySelectorAll('#s-choose [data-style]').forEach(function(x){x.classList.remove('sel');});
+    gid('segIntensity').querySelectorAll('.opt').forEach(function(x,i){x.classList.toggle('on',i===0);});
+    gid('targets').querySelectorAll('.target').forEach(function(x,i){x.classList.toggle('on',i===0);});
+    updateStart();show('import');
+  }
+
+  /* ---------- waveform + countup helpers ---------- */
+  function buildWave(el,n,kind){ el.innerHTML='';el._kind=kind;el._n=n;
+    var seed=kind==='before'?7:13;
+    el._heights=[];
+    for(var i=0;i<n;i++){ seed=(seed*9301+49297)%233280;var rnd=seed/233280;
+      var t=i/n,env=Math.sin(t*Math.PI);var h;
+      if(kind==='before')h=(0.16+0.55*env*rnd)*100; else h=(0.45+0.5*(0.6+0.4*env)*(0.6+0.4*rnd))*100;
+      h=Math.max(6,Math.min(100,h));el._heights.push(h);
+      var b=document.createElement('div');b.className='b';el.appendChild(b);
+    }
+  }
+  function flatWave(el){Array.prototype.forEach.call(el.children,function(b){b.style.height='6%';});}
+  function growWave(el){var hs=el._heights||[];Array.prototype.forEach.call(el.children,function(b,i){
+    setTimeout(function(){b.style.height=(hs[i]||6)+'%';}, i*4);});}
+
+  function countUp(el,val,k){
+    var start=null,dur=900;
+    function frame(ts){ if(!start)start=ts;var p=Math.min(1,(ts-start)/dur);
+      var e=1-Math.pow(1-p,3);var cur=(val*e).toFixed(1);
+      el.innerHTML='+'+cur+'<span style="font-size:24px">&nbsp;LU</span>';
+      if(p<1)requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // init
+  setAccent();updateStart();
+})();
+</script>
+</body>
+</html>

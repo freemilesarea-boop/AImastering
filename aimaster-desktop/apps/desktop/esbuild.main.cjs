@@ -24,6 +24,15 @@ const isDev = process.argv.includes('--dev');
 // "No published versions on GitHub" toast).  See src/main/updater.ts.
 const AUTO_UPDATE_ENABLED = process.env.AUTO_UPDATE_ENABLED === 'true';
 
+// v3.6 — License backend config baked at build time.  CI injects these for
+// production installers (LICENSE_API_URL + LICENSE_API_KEY → RemoteValidator;
+// LICENSE_HMAC_SECRET → tamper-resistant local binding).  When absent (dev /
+// branch builds) license-core falls back to LocalValidator + the dev HMAC
+// secret, and the packaged-only assertLicenseSecretReady() gate stays off.
+const LICENSE_API_URL     = process.env.LICENSE_API_URL || '';
+const LICENSE_API_KEY     = process.env.LICENSE_API_KEY || '';
+const LICENSE_HMAC_SECRET = process.env.LICENSE_HMAC_SECRET || '';
+
 const shared = {
   bundle:    true,
   platform:  'node',
@@ -33,7 +42,10 @@ const shared = {
   minify:    !isDev,
   external:  ['electron', 'node-machine-id'],
   define: {
-    '__AUTO_UPDATE_ENABLED__': JSON.stringify(AUTO_UPDATE_ENABLED),
+    '__AUTO_UPDATE_ENABLED__':        JSON.stringify(AUTO_UPDATE_ENABLED),
+    'process.env.LICENSE_API_URL':     JSON.stringify(LICENSE_API_URL),
+    'process.env.LICENSE_API_KEY':     JSON.stringify(LICENSE_API_KEY),
+    'process.env.LICENSE_HMAC_SECRET': JSON.stringify(LICENSE_HMAC_SECRET),
   },
 };
 

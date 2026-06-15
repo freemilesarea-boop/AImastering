@@ -6,6 +6,9 @@ import { checkFFmpeg } from '@aimaster/audio-engine';
 import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
+import { registerLicenseHandlers, licenseService } from './ipc/licenseHandlers.js';
+import { registerEntitlementHandlers } from './ipc/entitlementHandlers.js';
+import { isLicenseSecretProductionReady, LICENSE_API_URL } from '@aimaster/license-core';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
 import { recordFailure } from './utils/failureLog.js';
@@ -260,17 +263,32 @@ app.whenReady().then(() => {
   }
 
   // ── 3. IPC 핸들러 등록 (mainWindow가 이미 생성된 뒤) ─────────────────────
-  // License IPC handlers intentionally NOT registered — license gate
-  // disabled for the internal RC test cycle.  See main/index.ts header
-  // comment.  licenseHandlers.ts is left in the tree as dead code so a
-  // future re-enable doesn't require fishing it out of git history.
+  // v3.6 — License gate RE-ENABLED for commercial release (Paddle + Supabase
+  // RemoteValidator).  When LICENSE_API_URL is injected the app validates
+  // keys server-side; otherwise it runs in dev mode (LocalValidator).
+  if (app.isPackaged && LICENSE_API_URL && !isLicenseSecretProductionReady()) {
+    // Production license mode is on but no strong HMAC secret was injected.
+    // Not fatal (server is the source of truth + startup revalidation), but
+    // local tamper-resistance is weakened — make it loud so CI gets fixed.
+    log.error('[license] PRODUCTION build with LICENSE_API_URL but weak/missing LICENSE_HMAC_SECRET. Inject a strong secret in CI.');
+  }
   try {
     registerAudioHandlers(ipcMain, mainWindow);
     registerFileHandlers(ipcMain, mainWindow);
     registerSettingsHandlers(ipcMain, mainWindow);
+    registerLicenseHandlers(ipcMain);
+    registerEntitlementHandlers(ipcMain);
   } catch (err) {
     log.error('IPC handler registration failed:', err);
   }
+
+  // ── 3b. Startup license re-validation (online refresh) ───────────────────
+  // Picks up subscription renewals and enforces refunds / revocations /
+  // device removals.  Fire-and-forget: offline failures keep the cached
+  // license (monthly still self-expires at expiresAt).
+  licenseService.revalidate().catch((err) => {
+    log.warn('[license] startup revalidate failed (continuing):', err?.message ?? err);
+  });
 
   // ── 4. Auto-updater (프로덕션 빌드에서만 실제로 체크) ─────────────────────
   // dev 빌드에선 IPC 핸들러는 등록되지만 checkForUpdates() 호출이 no-op.

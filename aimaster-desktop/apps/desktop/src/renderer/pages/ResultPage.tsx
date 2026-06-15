@@ -13,6 +13,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
+import { handleLicenseRequired } from '../stores/licenseStore.js';
 import type { MasteringOptions, RealtimeDspOverrides } from '../stores/audioStore.js';
 import {
   installNativeDsp,
@@ -34,6 +35,13 @@ import SectionAnalysisPanel from '../components/SectionAnalysisPanel.js';
 import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
 import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
 import ExportReportPanel from '../components/ExportReportPanel.js';
+import AchievementHeader from '../components/result/AchievementHeader.js';
+import LoudnessDeltaBars from '../components/result/LoudnessDeltaBars.js';
+import BeforeAfterWaveform from '../components/result/BeforeAfterWaveform.js';
+import MobilePreview from '../components/result/MobilePreview.js';
+import { isGuidedFlowEnabled } from '../audio/guided-flow-flag.js';
+import { resumeSharedContext } from '../audio/shared-audio-graph.js';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 import { AnalyzerPanelStack } from '../components/AnalyzerPanelStack.js';
 import { reportFailure } from '../utils/reportFailure.js';
 import { toFileUrl } from '../utils/fileUrl.js';
@@ -188,7 +196,19 @@ function PreviewPlayer({
   const toggle = useCallback(() => {
     const a = audioRef.current;
     if (!a) return;
-    if (a.paused) { void a.play(); } else { a.pause(); }
+    if (a.paused) {
+      // Resume the shared WebAudio context INSIDE this user gesture.  Once the
+      // element is captured by createMediaElementSource, its audio only flows
+      // through the shared AudioContext — which starts 'suspended'.  Relying on
+      // the provider's effect-based resume can miss the gesture window, leaving
+      // the context suspended → no sound and the analyzer tap never receives
+      // samples ("awaiting frames").  Resuming here, in the click handler,
+      // guarantees a gesture-initiated resume.
+      void resumeSharedContext();
+      void a.play();
+    } else {
+      a.pause();
+    }
   }, []);
 
   const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -365,11 +385,16 @@ function SaveButtons() {
 
   const handleSaveWav = useCallback(async () => {
     if (!masteringResult?.outputPath) return;
-    const dest = await window.electronAPI.invoke(
-      'file:save-wav',
-      masteringResult.outputPath,
-    ) as string | null;
-    if (dest) notify('WAV 저장 완료', 'success');
+    try {
+      const dest = await window.electronAPI.invoke(
+        'file:save-wav',
+        masteringResult.outputPath,
+      ) as string | null;
+      if (dest) notify('WAV 저장 완료', 'success');
+    } catch (err) {
+      if (handleLicenseRequired(err)) notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
+      else notify('WAV 저장 실패', 'error');
+    }
   }, [masteringResult, notify]);
 
   return (
@@ -1246,6 +1271,10 @@ export default function ResultPage() {
   const selectedFile    = useAudioStore((s) => s.selectedFile);
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
+  const isMobile        = useIsMobile();
+  // Mobile Result: advanced info (LUFS/Waveform) is collapsed by default so
+  // the core flow stays 확인 → 미리듣기 → 저장.
+  const [mobileAdvanced, setMobileAdvanced] = useState(false);
 
   // previewSrc is derived from masteringResult; live DSP edits are applied
   // to the <audio> element via the WebAudio native chain (see PreviewPlayer).
@@ -1328,6 +1357,79 @@ export default function ResultPage() {
     ? (masteringResult.outputPath.split('/').pop()?.split('\\').pop() ?? masteringResult.outputPath)
     : null;
 
+  // ── Guided flow result viz (T8) — real loudness metrics, flag-gated ──────
+  const guided = isGuidedFlowEnabled();
+  const guidedStyleKey = (options?.style ?? 'balanced') as string;
+  const guidedIsKpop = guidedStyleKey === 'kpop_loud';
+  const guidedGainLu = masteringResult
+    ? (masteringResult.loudnessAfter.integratedLufs - masteringResult.loudnessBefore.integratedLufs)
+    : 0;
+
+  // ── Mobile (<640px) result — summary + save only (M3) ────────────────────
+  // Pro controls (TweakPanel, advanced analysis cards, live analyzer) are
+  // hidden; the user sees only the achievement summary, LUFS/Waveform cards,
+  // save, and re-master.  Desktop width keeps the full layout below.
+  if (isMobile && masteringResult) {
+    return (
+      <div className="h-screen overflow-y-auto bg-[#13131A] text-zinc-100 px-5 py-7 space-y-4">
+        <AchievementHeader
+          gainLu={guidedGainLu}
+          styleKey={guidedStyleKey}
+          title={guidedIsKpop ? 'KPOP LOUD 완성' : '더 커졌어요'}
+          sub={guidedIsKpop ? '스트리밍에서 밀리지 않는 음압 완성' : '마스터링 완료'}
+        />
+        {(masteringResult.previewPath || masteringResult.outputPath) && selectedFile && (
+          <MobilePreview
+            originalSrc={toFileUrl(selectedFile)}
+            masterSrc={toFileUrl(masteringResult.previewPath || masteringResult.outputPath)}
+            styleKey={guidedStyleKey}
+          />
+        )}
+        <SaveButtons />
+
+        {/* Advanced info collapsed by default — action first. */}
+        <button
+          type="button"
+          onClick={() => setMobileAdvanced((v) => !v)}
+          aria-expanded={mobileAdvanced}
+          className="w-full min-h-[48px] py-3 rounded-xl text-[15px] font-medium text-zinc-400
+                     border border-zinc-800 bg-transparent flex items-center justify-center gap-1.5"
+        >
+          <span>{mobileAdvanced ? '고급 정보 숨기기' : '고급 정보 보기'}</span>
+          <span className={`transition-transform ${mobileAdvanced ? 'rotate-180' : ''}`}>▾</span>
+        </button>
+
+        {mobileAdvanced && (
+          <>
+            <LoudnessDeltaBars
+              origLufs={masteringResult.loudnessBefore.integratedLufs}
+              mastLufs={masteringResult.loudnessAfter.integratedLufs}
+              targetLufs={options.targetLufs}
+              styleKey={guidedStyleKey}
+            />
+            <BeforeAfterWaveform styleKey={guidedStyleKey} />
+          </>
+        )}
+
+        <button
+          onClick={handleReMaster}
+          className="w-full min-h-[48px] py-3 rounded-xl text-[16px] font-semibold text-zinc-300
+                     border border-zinc-700 bg-transparent"
+        >
+          다시 마스터링
+        </button>
+        <button
+          onClick={handleNewFile}
+          className="w-full min-h-[48px] py-3 rounded-xl text-[15px] font-medium text-zinc-500
+                     border border-zinc-800 bg-transparent"
+        >
+          새 파일
+        </button>
+        <div className="h-4" />
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <TopBar
@@ -1347,7 +1449,27 @@ export default function ResultPage() {
         <div className="flex-1 min-w-0 overflow-y-auto">
         <div className="px-6 py-5 space-y-4 animate-in">
 
+          {/* ── Guided flow: achievement + evidence (T8, flag-gated) ───────── */}
+          {guided && masteringResult && (
+            <div className="space-y-4">
+              <AchievementHeader
+                gainLu={guidedGainLu}
+                styleKey={guidedStyleKey}
+                title={guidedIsKpop ? 'KPOP LOUD 완성' : '더 커졌어요'}
+                sub={guidedIsKpop ? '스트리밍에서 밀리지 않는 음압 완성' : '마스터링이 끝났어요'}
+              />
+              <LoudnessDeltaBars
+                origLufs={masteringResult.loudnessBefore.integratedLufs}
+                mastLufs={masteringResult.loudnessAfter.integratedLufs}
+                targetLufs={options.targetLufs}
+                styleKey={guidedStyleKey}
+              />
+              <BeforeAfterWaveform styleKey={guidedStyleKey} />
+            </div>
+          )}
+
           {/* ── 완료 메시지 ──────────────────────────────── */}
+          {!guided && (
           <div className="rounded-xl bg-emerald-950/20 border border-emerald-900/40 px-4 py-3 flex items-center gap-3">
             <svg className="w-5 h-5 text-emerald-400 shrink-0" viewBox="0 0 20 20" fill="none"
                  stroke="currentColor" strokeWidth={1.75} strokeLinecap="round">
@@ -1363,6 +1485,7 @@ export default function ResultPage() {
               )}
             </div>
           </div>
+          )}
 
           {/* ── 출력 파일 정보 + 열기 버튼 ──────────────── */}
           {masteringResult?.outputPath && (
