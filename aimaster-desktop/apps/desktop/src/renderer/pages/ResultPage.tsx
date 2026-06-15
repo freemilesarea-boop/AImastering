@@ -1392,14 +1392,14 @@ export default function ResultPage() {
         <SaveButtons />
         <button
           onClick={handleReMaster}
-          className="w-full py-3 rounded-xl text-[15px] font-semibold text-zinc-400
+          className="w-full min-h-[48px] py-3 rounded-xl text-[16px] font-semibold text-zinc-300
                      border border-zinc-700 bg-transparent"
         >
           다시 마스터링
         </button>
         <button
           onClick={handleNewFile}
-          className="w-full py-3 rounded-xl text-[14px] font-medium text-zinc-500
+          className="w-full min-h-[48px] py-3 rounded-xl text-[15px] font-medium text-zinc-500
                      border border-zinc-800 bg-transparent"
         >
           새 파일
