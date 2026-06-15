@@ -1,3 +1,26 @@
+// Entitlement display (Phase B) — READ-ONLY.  Shows the account's plan/status
+// purely for visibility; it is NOT connected to the WAV-export gate.
+function EntitlementRow() {
+  const ent = useEntitlementStore((s) => s.entitlement);
+  const status = useEntitlementStore((s) => s.status);
+  if (status === 'loading' && !ent) {
+    return <p className="text-center text-xs text-zinc-600">구독 상태 확인 중…</p>;
+  }
+  if (!ent) return null;
+  return (
+    <div className="rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 text-center">
+      <p className="text-[11px] text-zinc-500 uppercase tracking-wider">구독 상태</p>
+      <p className="mt-0.5 text-sm text-zinc-200">
+        {ent.isPro ? `Pro · ${ent.plan}` : '무료'}{ent.status !== 'free' ? ` (${ent.status})` : ''}
+      </p>
+      {ent.expiresAt && (
+        <p className="text-[11px] text-zinc-600 mt-0.5">만료 {new Date(ent.expiresAt).toLocaleDateString()}</p>
+      )}
+      <p className="text-[10px] text-zinc-700 mt-1">Phase B · Export 권한과 무관(표시 전용)</p>
+    </div>
+  );
+}
+
 // AccountAuthModal (Phase A) — Supabase Auth login / signup / signed-in.
 //
 // Email/password + Google OAuth.  Phase A scope: account + session only; this
@@ -5,6 +28,7 @@
 // (mirrors LicenseModal: width min(28rem,100vw-2rem), height-capped scroll).
 import React, { useState } from 'react';
 import { useAuthStore } from '../../stores/authStore.js';
+import { useEntitlementStore } from '../../stores/entitlementStore.js';
 
 export default function AccountAuthModal() {
   const { status, user, busy, error, modalOpen, setModalOpen, signIn, signUp, signInWithGoogle, signOut } =
@@ -60,6 +84,7 @@ export default function AccountAuthModal() {
                 <p className="text-sm text-zinc-300">로그인됨</p>
                 <p className="mt-1 text-xs text-zinc-500 break-all">{user!.email}</p>
               </div>
+              <EntitlementRow />
               <button
                 onClick={() => void signOut()}
                 disabled={busy}

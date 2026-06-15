@@ -9,6 +9,7 @@ import { isGuidedFlowEnabled } from './audio/guided-flow-flag.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
 import AccountAuthModal from './components/auth/AccountAuthModal.js';
 import { useAuthStore } from './stores/authStore.js';
+import { useEntitlementStore } from './stores/entitlementStore.js';
 import { isAccountAuthEnabled } from './audio/account-auth-flag.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
@@ -267,6 +268,19 @@ function AppInner() {
   useEffect(() => {
     if (accountAuth) void useAuthStore.getState().init();
   }, [accountAuth]);
+
+  // Phase B — fetch the account entitlement on sign-in (query/cache only,
+  // NOT connected to the export gate).  Clears on sign-out.
+  const authStatus = useAuthStore((s) => s.status);
+  useEffect(() => {
+    if (!accountAuth) return;
+    if (authStatus === 'signed-in') {
+      useEntitlementStore.getState().loadCache();
+      void useEntitlementStore.getState().refresh();
+    } else if (authStatus === 'signed-out') {
+      useEntitlementStore.getState().clear();
+    }
+  }, [accountAuth, authStatus]);
 
   // Defensive redirects — bounce to home when a page is reached without
   // the data it requires.  Runs synchronously after every render so the
