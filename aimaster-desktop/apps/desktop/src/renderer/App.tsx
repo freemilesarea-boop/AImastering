@@ -7,6 +7,9 @@ import HomePage     from './pages/HomePage.js';
 import GuidedHome from './components/guided/GuidedHome.js';
 import { isGuidedFlowEnabled } from './audio/guided-flow-flag.js';
 import { useIsMobile } from './hooks/useIsMobile.js';
+import AccountAuthModal from './components/auth/AccountAuthModal.js';
+import { useAuthStore } from './stores/authStore.js';
+import { isAccountAuthEnabled } from './audio/account-auth-flag.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
@@ -203,6 +206,26 @@ function GlobalDropOverlay() {
   );
 }
 
+// ── Account auth trigger (Phase A, flag-gated) ────────────────────────────────
+// Small fixed entry point to open the account modal.  Rendered only when the
+// account-auth flag is ON, so it never appears in the shipping (flag-OFF) app.
+function AccountButton() {
+  const status = useAuthStore((s) => s.status);
+  const user = useAuthStore((s) => s.user);
+  const setModalOpen = useAuthStore((s) => s.setModalOpen);
+  const name = user?.email ? user.email.split('@')[0] : '계정';
+  return (
+    <button
+      onClick={() => setModalOpen(true)}
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      className="fixed top-2.5 right-4 z-40 text-[12px] px-3 py-1.5 rounded-lg
+                 bg-zinc-900/70 border border-zinc-700 text-zinc-300 hover:text-zinc-100"
+    >
+      {status === 'signed-in' ? `● ${name}` : '로그인'}
+    </button>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -237,6 +260,13 @@ function AppInner() {
     // Load license state on startup (main process also re-validates online).
     void loadLicense();
   }, [loadLicense]);
+
+  // Phase A — account auth (flag-gated).  Restores any persisted session;
+  // does NOT affect license/export/payment decisions.
+  const accountAuth = isAccountAuthEnabled();
+  useEffect(() => {
+    if (accountAuth) void useAuthStore.getState().init();
+  }, [accountAuth]);
 
   // Defensive redirects — bounce to home when a page is reached without
   // the data it requires.  Runs synchronously after every render so the
@@ -309,6 +339,11 @@ function AppInner() {
 
       {/* License activation modal (v3.6 — commercial release). */}
       <LicenseModal />
+
+      {/* Phase A — account auth UI (flag-gated, default OFF).  Additive only:
+          no effect on the license/export/payment flow. */}
+      {accountAuth && <AccountButton />}
+      {accountAuth && <AccountAuthModal />}
 
       {/* Toast notifications */}
       <Toast />

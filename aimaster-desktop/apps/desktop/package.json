@@ -52,6 +52,7 @@
     "@aimaster/license-core": "workspace:*",
     "@aimaster/shared-types": "workspace:*",
     "@loui/dsp-wasm": "workspace:*",
+    "@supabase/supabase-js": "^2.108.1",
     "electron-log": "^5.2.0",
     "electron-store": "^10.0.0",
     "electron-updater": "^6.3.9",
