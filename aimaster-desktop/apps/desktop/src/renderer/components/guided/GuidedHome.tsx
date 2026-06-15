@@ -6,6 +6,7 @@
 // the guided-flow flag is ON (see App.tsx, T6).
 import React, { useState } from 'react';
 import { useAudioStore } from '../../stores/audioStore.js';
+import { useIsMobile } from '../../hooks/useIsMobile.js';
 import ImportView from './ImportView.js';
 import ChooseView from './ChooseView.js';
 import HomePage from '../../pages/HomePage.js';
@@ -13,6 +14,8 @@ import HomePage from '../../pages/HomePage.js';
 export default function GuidedHome() {
   // Preserve a selected file when returning from Mastering (cancel/back).
   const hasFile = useAudioStore((s) => s.selectedFile != null);
+  // Mobile (<640px) = Guided only: batch mode (legacy HomePage) is hidden.
+  const isMobile = useIsMobile();
   const [step, setStep] = useState<'import' | 'choose' | 'batch'>(hasFile ? 'choose' : 'import');
 
   // Batch (legacy multi-file) is preserved as a secondary entry (T10).
@@ -35,7 +38,10 @@ export default function GuidedHome() {
   return (
     <div className="h-screen overflow-hidden bg-[#13131A] text-zinc-100">
       {step === 'import'
-        ? <ImportView onPicked={() => setStep('choose')} onBatch={() => setStep('batch')} />
+        ? <ImportView
+            onPicked={() => setStep('choose')}
+            {...(isMobile ? {} : { onBatch: () => setStep('batch') })}
+          />
         : <ChooseView onBack={() => setStep('import')} />}
     </div>
   );
