@@ -7,9 +7,11 @@ services:
   - type: web
     name: aimaster-mastering-api
     runtime: docker
-    rootDir: aimaster-desktop
-    dockerfilePath: ./services/mastering-api/Dockerfile
-    dockerContext: .            # = aimaster-desktop (so the engine is copied too)
+    # Paths are relative to the REPO ROOT. The build context must be
+    # aimaster-desktop/ so the Dockerfile's `COPY services/...` lines resolve
+    # (both services/python-audio and services/mastering-api live under it).
+    dockerfilePath: aimaster-desktop/services/mastering-api/Dockerfile
+    dockerContext: aimaster-desktop
     plan: starter               # bump if CPU/RAM bound during mastering
     healthCheckPath: /healthz
     autoDeploy: false

@@ -17,8 +17,8 @@ env 표 · 배포 후 curl 테스트 · **앱에 URL/KEY 넣는 법** · 무료 
 ## 1. 배포 전 체크리스트 (정적 검증 결과)
 | # | 항목 | 상태 | 근거 |
 |---|---|---|---|
-| 1 | `render.yaml` 경로/rootDir | ✅ | `rootDir: aimaster-desktop`, `dockerfilePath: ./services/mastering-api/Dockerfile` |
-| 2 | Dockerfile build context | ✅ | `dockerContext: .`(= aimaster-desktop) → `COPY services/python-audio`,`services/mastering-api` 유효 |
+| 1 | `render.yaml` 경로 | ✅ | 리포 루트 기준: `dockerfilePath: aimaster-desktop/services/mastering-api/Dockerfile` |
+| 2 | Dockerfile build context | ✅ | `dockerContext: aimaster-desktop`(리포 루트 상대) → `COPY services/python-audio`,`services/mastering-api` 유효 |
 | 3 | server 실행 경로 | ✅ | WORKDIR `/srv/mastering-api`, `CMD uvicorn server:app --port ${PORT}` |
 | 4 | python-audio import | ✅ | `ENGINE_DIR=/srv/python-audio` → `from app.analyzers.analyzer`, `from app.mastering.mastering` 해석됨 |
 | 5 | ffmpeg/ffprobe | ✅ | apt `ffmpeg`(+probe) PATH 설치, 엔진 기본값 `ffmpeg`/`ffprobe` 사용. `libsndfile1`도 설치(soundfile용) |

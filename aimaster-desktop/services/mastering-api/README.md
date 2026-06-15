@@ -66,6 +66,8 @@ docker run -p 8080:8080 -e MASTERING_API_KEY=dev aimaster-api
 
 ## Render
 Use the repo-root `render.yaml` (Blueprint) or configure manually:
-runtime Docker, rootDir `aimaster-desktop`, dockerfilePath
-`./services/mastering-api/Dockerfile`, dockerContext `.`, healthCheck
-`/healthz`, secret `MASTERING_API_KEY`.
+runtime Docker, dockerfilePath
+`aimaster-desktop/services/mastering-api/Dockerfile`, dockerContext
+`aimaster-desktop` (both relative to the repo root, so the Dockerfile's
+`COPY services/...` lines resolve), healthCheck `/healthz`, secret
+`MASTERING_API_KEY`.
