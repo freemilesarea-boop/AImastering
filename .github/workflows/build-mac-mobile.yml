@@ -46,9 +46,30 @@ jobs:
           cache: pnpm
           cache-dependency-path: aimaster-desktop/pnpm-lock.yaml
 
-      - name: Install dependencies
+      - name: Install dependencies (clean — materializes electron-builder binaries)
         working-directory: aimaster-desktop
-        run: pnpm install --frozen-lockfile
+        # A clean tree + --no-frozen-lockfile is required so pnpm's hoisted linker
+        # fully materializes electron-builder's platform binaries (7zip-bin,
+        # app-builder-bin). --frozen-lockfile left 7zip-bin/mac/* missing → the
+        # `Package` step failed with `ENOENT chmod .../7zip-bin/mac/arm64/7za`.
+        # Mirrors the working recipe in build.yml's build-mac job.
+        run: |
+          rm -rf node_modules apps/*/node_modules packages/*/node_modules
+          pnpm install --no-frozen-lockfile
+
+      - name: Verify 7zip-bin macOS binaries (electron-builder dependency)
+        working-directory: aimaster-desktop
+        run: |
+          SZ=node_modules/7zip-bin
+          if [ ! -e "$SZ/mac/arm64/7za" ] || [ ! -e "$SZ/mac/x64/7za" ]; then
+            echo "::error::7zip-bin macOS binaries missing — electron-builder dmg/zip packaging will fail."
+            echo "Expected: $(pwd)/$SZ/mac/{arm64,x64}/7za"
+            ls -laR "$SZ" 2>/dev/null | head -60 || echo "(7zip-bin not installed at all)"
+            exit 1
+          fi
+          chmod +x "$SZ/mac/arm64/7za" "$SZ/mac/x64/7za" || true
+          echo "OK — 7zip-bin macOS binaries present:"
+          ls -la "$SZ/mac/arm64/7za" "$SZ/mac/x64/7za"
 
       - name: Build mobile SPA (Vite)
         working-directory: aimaster-desktop/apps/mobile
