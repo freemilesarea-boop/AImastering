@@ -22,6 +22,15 @@ on:
       - 'aimaster-desktop/apps/mobile/**'
       - '.github/workflows/build-mobile-android.yml'
   workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'versionName (e.g. 1.0.0) for the release build'
+        required: false
+        default: '1.0.0'
+      version_code:
+        description: 'versionCode (integer). Defaults to the run number.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -69,6 +78,8 @@ jobs:
           # URL can be a repo Variable (non-secret) or a Secret; key is a Secret.
           VITE_MASTERING_API_URL: ${{ vars.VITE_MASTERING_API_URL || secrets.VITE_MASTERING_API_URL }}
           VITE_MASTERING_API_KEY: ${{ secrets.VITE_MASTERING_API_KEY }}
+          # Surfaced in error reports (reportError → app_version).
+          VITE_APP_VERSION: ${{ github.event.inputs.version_name || '1.0.0' }}
         run: pnpm run build
 
       - name: Add Android platform (android/ is gitignored — regenerate)
@@ -78,6 +89,17 @@ jobs:
       - name: Sync Capacitor (web assets + plugins)
         working-directory: ${{ env.MOBILE_DIR }}
         run: pnpm exec cap sync android
+
+      - name: Set Android version (android/ is regenerated each build)
+        working-directory: ${{ env.MOBILE_DIR }}/android
+        env:
+          VNAME: ${{ github.event.inputs.version_name || '1.0.0' }}
+          VCODE: ${{ github.event.inputs.version_code || github.run_number }}
+        run: |
+          sed -i -E "s/versionCode .*/versionCode ${VCODE}/" app/build.gradle
+          sed -i -E "s/versionName \".*\"/versionName \"${VNAME}\"/" app/build.gradle
+          echo "version: ${VNAME} (${VCODE})"
+          grep -E "versionCode|versionName" app/build.gradle
 
       - name: Accept Android SDK licenses
         run: yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
