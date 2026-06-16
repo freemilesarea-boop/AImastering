@@ -196,7 +196,8 @@ export default function App() {
   function fileNameFor(which: 'master' | 'preview'): string {
     const d = new Date();
     const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-    return which === 'master' ? `LouiMaster_${ymd}.wav` : `LouiPreview_${ymd}.mp3`;
+    const base = safeBaseName(file?.name || 'audio');
+    return which === 'master' ? `${base}_Mastering_${ymd}.wav` : `${base}_Preview_${ymd}.mp3`;
   }
 
   async function doSave() {
@@ -327,6 +328,18 @@ export default function App() {
       )}
     </div>
   );
+}
+
+// Derive a safe file-name base from the user's original file name: strip the
+// last extension, replace illegal chars (/ \ : * ? " < > |) with _, keep
+// spaces, and truncate. e.g. "test.audio.final.wav" → "test.audio.final".
+function safeBaseName(name: string): string {
+  const dot = name.lastIndexOf('.');
+  let base = dot > 0 ? name.slice(0, dot) : name; // strip only the last extension
+  base = base.replace(/[/\\:*?"<>|]/g, '_'); // illegal filename chars → _
+  base = base.replace(/\s+/g, ' ').trim(); // collapse/trim whitespace (spaces kept)
+  if (base.length > 80) base = base.slice(0, 80).trim();
+  return base || 'audio';
 }
 
 // ── Stepper ─────────────────────────────────────────────────────────────────
