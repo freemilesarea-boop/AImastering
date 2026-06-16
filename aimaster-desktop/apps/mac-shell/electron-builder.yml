@@ -30,6 +30,7 @@ extraMetadata:
 # warning; right-click → Open (once). See docs/MACOS_MOBILE_APP.md.
 mac:
   category: public.app-category.music
+  icon: icon.png
   target:
     - target: dmg
       arch:

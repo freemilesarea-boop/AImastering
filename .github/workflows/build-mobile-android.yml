@@ -98,6 +98,12 @@ jobs:
         working-directory: ${{ env.MOBILE_DIR }}
         run: pnpm exec cap sync android
 
+      - name: Generate app icons (adaptive + launcher) — android/ is regenerated each build
+        working-directory: ${{ env.MOBILE_DIR }}
+        run: |
+          pnpm exec capacitor-assets generate --android
+          node fix-adaptive-bg.cjs   # full-bleed gradient background (no inset)
+
       - name: Set Android version (android/ is regenerated each build)
         working-directory: ${{ env.MOBILE_DIR }}/android
         env:
