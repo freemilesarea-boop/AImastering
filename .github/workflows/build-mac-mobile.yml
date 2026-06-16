@@ -15,6 +15,12 @@ on:
       - '.github/workflows/build-mac-mobile.yml'
   workflow_dispatch:
     inputs:
+      build_type:
+        description: 'test (server settings shown) or release (settings hidden, env-injected)'
+        required: false
+        type: choice
+        options: [test, release]
+        default: test
       version_name:
         description: 'app version (e.g. 1.0.0)'
         required: false
@@ -74,7 +80,10 @@ jobs:
       - name: Build mobile SPA (Vite)
         working-directory: aimaster-desktop/apps/mobile
         env:
-          VITE_MASTERING_API_URL: ${{ vars.VITE_MASTERING_API_URL || secrets.VITE_MASTERING_API_URL }}
+          # release: hide settings UI + inject server from env. test (default):
+          # settings UI shown. Key is ALWAYS a Secret. (mac-shell loads this dist)
+          VITE_RELEASE_MODE: ${{ github.event.inputs.build_type == 'release' && 'true' || 'false' }}
+          VITE_MASTERING_API_URL: ${{ github.event.inputs.build_type == 'release' && 'https://aimastering.onrender.com' || (vars.VITE_MASTERING_API_URL || secrets.VITE_MASTERING_API_URL) }}
           VITE_MASTERING_API_KEY: ${{ secrets.VITE_MASTERING_API_KEY }}
           VITE_APP_VERSION: ${{ github.event.inputs.version_name || '1.0.0' }}
         run: pnpm run build

@@ -14,6 +14,8 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ENV_API_URL,
   ENV_API_KEY,
+  RELEASE_BUILD,
+  hasServerConfig,
   setApiConfig,
   isNative,
   pickAudioFile,
@@ -48,12 +50,15 @@ async function toUserError(step: string, e: unknown, ctx?: ErrorContext): Promis
 // ── Flow model ──────────────────────────────────────────────────────────────
 type StepKey = 'settings' | 'pick' | 'master' | 'result';
 
-const STEPS: { key: StepKey; label: string }[] = [
+// Release builds drop the "서버" settings step entirely (env-injected server).
+const ALL_STEPS: { key: StepKey; label: string }[] = [
   { key: 'settings', label: '서버' },
   { key: 'pick', label: '파일' },
   { key: 'master', label: '마스터' },
   { key: 'result', label: '결과' },
 ];
+const STEPS = RELEASE_BUILD ? ALL_STEPS.filter((s) => s.key !== 'settings') : ALL_STEPS;
+const FIRST_STEP: StepKey = STEPS[0].key; // 'pick' in release, 'settings' in test
 
 // Sub-state of the mastering run, so we can reassure the user during long uploads.
 type RunPhase = 'idle' | 'uploading' | 'processing' | 'downloading' | 'done' | 'error';
@@ -67,7 +72,7 @@ interface PlayableResult {
 
 export default function App() {
   // step / navigation
-  const [step, setStep] = useState<StepKey>('settings');
+  const [step, setStep] = useState<StepKey>(FIRST_STEP);
 
   // 1) server settings (env is the source of truth; fields allow runtime override)
   const [apiUrl, setApiUrl] = useState(ENV_API_URL);
@@ -270,13 +275,35 @@ export default function App() {
     if (target <= stepIndex && !busy) setStep(key); // only jump back, and not mid-run
   }
 
+  // Release build with no server injected → a self-contained config-error screen
+  // (never exposes the env/key). Test/dev builds guide the user to the settings.
+  if (RELEASE_BUILD && !hasServerConfig()) {
+    return (
+      <div className="app">
+        <header className="hdr">
+          <div className="hdr-row">
+            <h1>Loui Mastering</h1>
+          </div>
+        </header>
+        <main className="content">
+          <section className="card">
+            <div className="notice error">
+              <strong>앱 설정 오류가 발생했습니다.</strong>
+              <p>고객센터에 문의해 주세요.</p>
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   // ── render ───────────────────────────────────────────────────────────────────
   return (
     <div className="app">
       <header className="hdr">
         <div className="hdr-row">
           <h1>Loui Mastering</h1>
-          <span className="badge">{isNative() ? 'Android' : 'Web'} · test</span>
+          <span className="badge">{isNative() ? 'Android' : 'Web'} · {RELEASE_BUILD ? 'release' : 'test'}</span>
         </div>
         <Stepper current={stepIndex} onJump={goTo} />
       </header>
@@ -336,7 +363,8 @@ export default function App() {
           hasFile={Boolean(file)}
           runPhase={runPhase}
           hasResult={Boolean(master)}
-          goBack={() => goTo(STEPS[stepIndex - 1]?.key ?? 'settings')}
+          canBack={stepIndex > 0}
+          goBack={() => goTo(STEPS[stepIndex - 1]?.key ?? FIRST_STEP)}
           next={(k) => setStep(k)}
           onMaster={onMaster}
           restart={restart}
@@ -651,12 +679,13 @@ function ActionBar(props: {
   hasFile: boolean;
   runPhase: RunPhase;
   hasResult: boolean;
+  canBack: boolean;
   goBack: () => void;
   next: (k: StepKey) => void;
   onMaster: () => void;
   restart: () => void;
 }) {
-  const { step, busy, urlLooksValid, hasFile, runPhase, hasResult, goBack, next, onMaster, restart } = props;
+  const { step, busy, urlLooksValid, hasFile, runPhase, hasResult, canBack, goBack, next, onMaster, restart } = props;
   const running = runPhase === 'uploading' || runPhase === 'processing' || runPhase === 'downloading';
 
   if (step === 'settings') {
@@ -667,7 +696,8 @@ function ActionBar(props: {
     );
   }
   if (step === 'pick') {
-    return (
+    // In release builds 'pick' is the first step → no back button.
+    return canBack ? (
       <div className="bar-row">
         <button className="btn ghost" onClick={goBack}>
           뒤로
@@ -676,6 +706,10 @@ function ActionBar(props: {
           마스터링으로
         </button>
       </div>
+    ) : (
+      <button className="btn block" disabled={!hasFile} onClick={() => next('master')}>
+        마스터링으로
+      </button>
     );
   }
   if (step === 'master') {

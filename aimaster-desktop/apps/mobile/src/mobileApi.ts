@@ -21,6 +21,15 @@ import { Share } from '@capacitor/share';
 export const ENV_API_URL: string = (import.meta.env.VITE_MASTERING_API_URL ?? '').replace(/\/+$/, '');
 export const ENV_API_KEY: string = import.meta.env.VITE_MASTERING_API_KEY ?? '';
 
+// Release build (Play / App Store): server settings UI is hidden and the
+// server comes from env only. Test/dev build (default): settings UI is shown.
+export const RELEASE_BUILD: boolean = import.meta.env.VITE_RELEASE_MODE === 'true';
+
+// True when a usable server URL is configured. Never exposes the URL/key.
+export function hasServerConfig(): boolean {
+  return /^https?:\/\/.+/i.test(config.url);
+}
+
 const config = { url: ENV_API_URL, key: ENV_API_KEY };
 
 export function setApiConfig(url: string, key: string): void {
