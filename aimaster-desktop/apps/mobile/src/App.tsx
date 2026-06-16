@@ -24,9 +24,11 @@ import {
   shareFile,
   reportError,
   JobInterruptedError,
+  CancelledError,
   type PickedAudio,
   type MasterOptions,
   type ErrorContext,
+  type RetrySignal,
 } from './mobileApi';
 
 // User-facing copy: never expose raw technical errors; the detail is auto-filed.
@@ -85,6 +87,7 @@ export default function App() {
   const [fastMode, setFastMode] = useState(true); // test app default: fast
 
   const [runPhase, setRunPhase] = useState<RunPhase>('idle');
+  const [retrying, setRetrying] = useState(false); // auto-retry in progress
   const [percent, setPercent] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [masterError, setMasterError] = useState('');
@@ -151,38 +154,53 @@ export default function App() {
       mode: fastMode ? 'fast' : 'quality',
     };
 
+    // Auto-retry transient failures; only surface a red error on final failure.
+    setRetrying(false);
+    const sig: RetrySignal = {
+      cancelled: stale,
+      onRetry: () => {
+        if (!stale()) setRetrying(true);
+      },
+    };
+
     let step = 'master';
     let jobId = '';
     try {
-      jobId = await startMaster(file, options); // upload happens here
+      jobId = await startMaster(file, options, sig); // upload happens here
       if (stale()) return;
       setRunPhase('processing');
 
       step = 'poll';
       const final = await pollMaster(jobId, (p) => {
-        if (!stale()) setPercent(p);
-      });
+        if (!stale()) {
+          setPercent(p);
+          setRetrying(false); // a successful poll means the server responded
+        }
+      }, {}, sig);
       if (stale()) return;
       if (final.status === 'error') throw new Error(final.error || 'server mastering failed');
 
       step = 'download';
       setRunPhase('downloading');
-      const m = await downloadPlayable(jobId, 'master');
+      const m = await downloadPlayable(jobId, 'master', sig);
       if (stale()) return;
       let p: PlayableResult | null = null;
       try {
-        p = await downloadPlayable(jobId, 'preview');
+        p = await downloadPlayable(jobId, 'preview', sig);
       } catch {
         /* preview optional */
       }
       if (stale()) return;
 
+      setRetrying(false);
       setMaster(m);
       setPreview(p);
       setRunPhase('done');
       setStep('result');
     } catch (e) {
-      if (stale()) return;
+      if (stale() || e instanceof CancelledError) return; // cancelled → no error UI
+      setRetrying(false);
+      // Final failure only: one error report + user-friendly message.
       setMasterError(await toUserError(step, e, { file, jobId }));
       setRunPhase('error');
     }
@@ -190,6 +208,7 @@ export default function App() {
 
   function cancelRun() {
     runRef.current++; // invalidate the in-flight run; stale guards stop UI updates
+    setRetrying(false);
     setRunPhase('idle');
   }
 
@@ -292,6 +311,7 @@ export default function App() {
             runPhase={runPhase}
             percent={percent}
             elapsed={elapsed}
+            retrying={retrying}
             error={masterError}
             onMaster={onMaster}
             onCancel={cancelRun}
@@ -467,13 +487,14 @@ function MasterStep(props: {
   runPhase: RunPhase;
   percent: number;
   elapsed: number;
+  retrying: boolean;
   error: string;
   onMaster: () => void;
   onCancel: () => void;
 }) {
   const {
     file, style, setStyle, targetLufs, setTargetLufs, targetTp, setTargetTp,
-    fastMode, setFastMode, runPhase, percent, elapsed, error, onMaster, onCancel,
+    fastMode, setFastMode, runPhase, percent, elapsed, retrying, error, onMaster, onCancel,
   } = props;
 
   const running = runPhase === 'uploading' || runPhase === 'processing' || runPhase === 'downloading';
@@ -551,6 +572,12 @@ function MasterStep(props: {
             </>
           )}
           {runPhase === 'downloading' && <Spinner label="결과 준비 중" />}
+          {retrying && (
+            <div className="notice warn">
+              <strong>서버 응답이 지연되고 있어요. 자동으로 다시 확인 중입니다.</strong>
+              <p>마스터링은 계속 진행 중일 수 있습니다. 잠시만 기다려 주세요.</p>
+            </div>
+          )}
           <p className="elapsed">경과 {elapsed}s</p>
           <button className="btn ghost block" onClick={onCancel}>
             취소
