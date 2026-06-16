@@ -536,6 +536,12 @@ def run_pipeline(
     # When provided, the pipeline skips its own raw loudnorm pass1
     # (saves ~20% of master time).
     pre_loudness: dict[str, float] | None = None,
+    # Fast-mode skips (mobile test app). Default False = unchanged behavior, so
+    # the desktop pipeline path stays byte-identical. Each flag removes one or
+    # more full-file ffmpeg passes that the mobile result does not need.
+    skip_preview: bool = False,
+    skip_correction: bool = False,
+    skip_post_analysis: bool = False,
     # debug-quality system (v3.3): override settings produced by safe_modes
     # build_safe_mode_overrides().  When present, the pipeline clamps a
     # subset of parameters before running.
@@ -1153,7 +1159,7 @@ def run_pipeline(
     # ── Correction pass (목표 LUFS / TP 미달 시 자동 보정) ──────────────
     correction_applied = False
     correction_gain_db = 0.0
-    if post_lufs > -90.0:
+    if post_lufs > -90.0 and not skip_correction:
         lufs_delta = target_lufs - post_lufs   # 양수 = 더 키워야 함
         tp_over    = post_tp - target_tp        # 양수 = TP 초과
         if abs(lufs_delta) > _LUFS_TOLERANCE or tp_over > _TP_GUARD_DB:
@@ -1305,19 +1311,23 @@ def run_pipeline(
                 f"TP={post_tp:.1f}, LRA={post_lra:.1f}")
 
     # ── MP3 preview ───────────────────────────────────────────────────────
-    progress(job_id, 88, "프리뷰 MP3 생성 중")
-    preview_path = os.path.splitext(output_path)[0] + "_preview.mp3"
-    try:
-        export_preview_mp3(output_path, preview_path)
-        log("INFO", f"[pipeline] preview: {preview_path}")
-    except FFmpegError as exc:
-        log("ERROR", f"MP3 preview export failed: {exc}")
-        preview_path = ""
-        pipeline_warnings.append({
-            "code": "PREVIEW_EXPORT_FAILED",
-            "level": "warning",
-            "userMessage": "MP3 프리뷰 생성에 실패했습니다. WAV 파일은 정상적으로 저장되었습니다.",
-        })
+    preview_path = ""
+    if skip_preview:
+        log("INFO", "[pipeline] preview skipped (fast mode)")
+    else:
+        progress(job_id, 88, "프리뷰 MP3 생성 중")
+        preview_path = os.path.splitext(output_path)[0] + "_preview.mp3"
+        try:
+            export_preview_mp3(output_path, preview_path)
+            log("INFO", f"[pipeline] preview: {preview_path}")
+        except FFmpegError as exc:
+            log("ERROR", f"MP3 preview export failed: {exc}")
+            preview_path = ""
+            pipeline_warnings.append({
+                "code": "PREVIEW_EXPORT_FAILED",
+                "level": "warning",
+                "userMessage": "MP3 프리뷰 생성에 실패했습니다. WAV 파일은 정상적으로 저장되었습니다.",
+            })
 
     # ── v3.2 P2 — Waveform PNG 생성 (before / after / compare) ─────────────
     before_wave_path: str = ""
@@ -1371,11 +1381,12 @@ def run_pipeline(
             "truePeakDbtp":   post_tp,
             "lra":            post_lra,
         }
-        input_metrics  = compute_metrics(input_path,  before_loudness)
-        output_metrics = compute_metrics(output_path, after_loudness)
-        metric_comparison = build_metric_comparison(
-            input_metrics, output_metrics, target_true_peak=target_tp
-        )
+        if not skip_post_analysis:
+            input_metrics  = compute_metrics(input_path,  before_loudness)
+            output_metrics = compute_metrics(output_path, after_loudness)
+            metric_comparison = build_metric_comparison(
+                input_metrics, output_metrics, target_true_peak=target_tp
+            )
     except Exception as exc:
         log("WARN", f"[pipeline] metric_comparison 실패: {exc}")
         pipeline_warnings.append({
@@ -1384,15 +1395,17 @@ def run_pipeline(
         })
 
     # ── v3.2 P2 — Quality check (마스터링 결과 자동 검사) ──────────────────
-    progress(job_id, 96, "품질 자동 검사 중")
+    if not skip_post_analysis:
+        progress(job_id, 96, "품질 자동 검사 중")
     try:
-        quality_check_report = run_quality_check(
-            output_path,
-            output_metrics,
-            target_true_peak=target_tp,
-            target_lufs=target_lufs,
-            input_metrics=input_metrics,
-        )
+        if not skip_post_analysis:
+            quality_check_report = run_quality_check(
+                output_path,
+                output_metrics,
+                target_true_peak=target_tp,
+                target_lufs=target_lufs,
+                input_metrics=input_metrics,
+            )
     except Exception as exc:
         log("WARN", f"[pipeline] quality_check 실패: {exc}")
         pipeline_warnings.append({
@@ -1403,17 +1416,18 @@ def run_pipeline(
     # ── v3.3 P1 — Limiter excess check ─────────────────────────────────────
     limiter_check_report: dict[str, Any] | None = None
     try:
-        recorder.stage("limiter_check")
-        limiter_check_report = run_limiter_check(
-            output_path,
-            target_lufs=target_lufs,
-            target_tp=target_tp,
-            input_metrics=input_metrics,
-            output_metrics=output_metrics,
-            isp_correction_db=isp_correction_db,
-            limiter_strength=limiter_strength,
-        )
-        recorder.set_limiter_qc(limiter_check_report)
+        if not skip_post_analysis:
+            recorder.stage("limiter_check")
+            limiter_check_report = run_limiter_check(
+                output_path,
+                target_lufs=target_lufs,
+                target_tp=target_tp,
+                input_metrics=input_metrics,
+                output_metrics=output_metrics,
+                isp_correction_db=isp_correction_db,
+                limiter_strength=limiter_strength,
+            )
+            recorder.set_limiter_qc(limiter_check_report)
     except Exception as exc:
         log("WARN", f"[pipeline] limiter_check 실패: {exc}")
         pipeline_warnings.append({
@@ -1425,11 +1439,12 @@ def run_pipeline(
     segment_report: dict[str, Any] = {"windowSec": 0.5, "windows": [], "suspectSegments": [], "summary": None}
     try:
         recorder.stage("segment_analysis")
-        segment_report = compute_segment_timeseries(
-            output_path,
-            window_sec=0.5,
-            ceiling_dbtp=target_tp,
-        )
+        if not skip_post_analysis:
+            segment_report = compute_segment_timeseries(
+                output_path,
+                window_sec=0.5,
+                ceiling_dbtp=target_tp,
+            )
         for seg in segment_report.get("suspectSegments", []):
             recorder.add_suspect_segment(**seg)
         # When debug mode is on, dump the per-window time series to disk so
@@ -1451,7 +1466,7 @@ def run_pipeline(
     gain_staging_report: dict[str, Any] | None = None
     try:
         recorder.stage("gain_staging_report")
-        gain_staging_report = build_gain_staging_report(
+        gain_staging_report = {} if skip_post_analysis else build_gain_staging_report(
             input_metrics  = input_metrics,
             output_metrics = output_metrics,
             input_path     = input_path,

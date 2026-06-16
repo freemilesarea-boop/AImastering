@@ -130,9 +130,11 @@ jobs:
           retention-days: 30
 
 
-  # ── macOS (arm64 + x64 zip) ──────────────────────────────────────────────────
-  # DMG is intentionally disabled on this branch — the macOS runner has been
-  # failing on `hdiutil attach` during DMG packaging.  zip is reliable.
+  # ── macOS (dmg + zip, arm64 + x64) ───────────────────────────────────────────
+  # Builds .dmg (drag-to-Applications) and .zip (electron-updater delta) for both
+  # Apple Silicon (arm64) and Intel (x64). If `hdiutil` DMG packaging flakes on
+  # the runner, the next step falls back to zip-only. App is NOT code-signed /
+  # notarized yet (see electron-builder.yml mac.identity TODO + docs/MACOS-RELEASE.md).
   build-mac:
     runs-on: macos-14   # Apple Silicon runner
     steps:

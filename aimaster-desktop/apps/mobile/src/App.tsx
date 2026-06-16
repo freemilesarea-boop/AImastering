@@ -17,23 +17,33 @@ import {
   setApiConfig,
   isNative,
   pickAudioFile,
-  analyze,
   startMaster,
   pollMaster,
   downloadPlayable,
   saveToDownloads,
   shareFile,
+  reportError,
   type PickedAudio,
   type MasterOptions,
+  type ErrorContext,
 } from './mobileApi';
 
+// User-facing copy: never expose raw technical errors; the detail is auto-filed.
+const GENERIC_ERR =
+  '처리 중 오류가 발생했습니다. 오류 내용은 자동으로 접수되었습니다. 잠시 후 다시 시도해 주세요.';
+
+// Report the error and return a user-safe message (generic + receipt number).
+async function toUserError(step: string, e: unknown, ctx?: ErrorContext): Promise<string> {
+  const receipt = await reportError(step, e, ctx);
+  return receipt ? `${GENERIC_ERR}\n오류 접수번호: ${receipt}` : GENERIC_ERR;
+}
+
 // ── Flow model ──────────────────────────────────────────────────────────────
-type StepKey = 'settings' | 'pick' | 'analyze' | 'master' | 'result';
+type StepKey = 'settings' | 'pick' | 'master' | 'result';
 
 const STEPS: { key: StepKey; label: string }[] = [
   { key: 'settings', label: '서버' },
   { key: 'pick', label: '파일' },
-  { key: 'analyze', label: '분석' },
   { key: 'master', label: '마스터' },
   { key: 'result', label: '결과' },
 ];
@@ -61,21 +71,16 @@ export default function App() {
 
   // 2) file
   const [file, setFile] = useState<PickedAudio | null>(null);
+  const [pickError, setPickError] = useState('');
 
-  // 3) analysis
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analysis, setAnalysis] = useState<Record<string, unknown> | null>(null);
-  const [analyzeError, setAnalyzeError] = useState('');
-  const [showRawAnalysis, setShowRawAnalysis] = useState(false);
-
-  // 4) mastering options + run
+  // mastering options + run
   const [style, setStyle] = useState('balanced');
   const [targetLufs, setTargetLufs] = useState(-14);
   const [targetTp, setTargetTp] = useState(-1);
+  const [fastMode, setFastMode] = useState(true); // test app default: fast
 
   const [runPhase, setRunPhase] = useState<RunPhase>('idle');
   const [percent, setPercent] = useState(0);
-  const [stage, setStage] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const [masterError, setMasterError] = useState('');
 
@@ -102,36 +107,21 @@ export default function App() {
 
   const effectiveUrl = (apiUrl || ENV_API_URL).replace(/\/+$/, '');
   const urlLooksValid = /^https?:\/\/.+/i.test(effectiveUrl);
-  const busy = analyzing || runPhase === 'uploading' || runPhase === 'processing' || runPhase === 'downloading';
+  const busy = runPhase === 'uploading' || runPhase === 'processing' || runPhase === 'downloading';
 
   // ── actions ────────────────────────────────────────────────────────────────
   async function onPick() {
     try {
+      setPickError('');
       const picked = await pickAudioFile();
       if (!picked) return;
       setFile(picked);
       // reset downstream state for the new file
-      setAnalysis(null);
-      setAnalyzeError('');
       setMaster(null);
       setPreview(null);
       setRunPhase('idle');
     } catch (e) {
-      setAnalyzeError(msg(e));
-    }
-  }
-
-  async function onAnalyze() {
-    if (!file) return;
-    setAnalyzing(true);
-    setAnalyzeError('');
-    try {
-      const a = await analyze(file);
-      setAnalysis(a);
-    } catch (e) {
-      setAnalyzeError(msg(e));
-    } finally {
-      setAnalyzing(false);
+      setPickError(await toUserError('select', e, { file }));
     }
   }
 
@@ -144,26 +134,33 @@ export default function App() {
     setMaster(null);
     setPreview(null);
     setPercent(0);
-    setStage('');
     setElapsed(0);
     setRunPhase('uploading');
 
-    const options: MasterOptions = { style, targetLufs, targetTp, applyAiCorrections: true };
+    const options: MasterOptions = {
+      style,
+      targetLufs,
+      targetTp,
+      // Fast mode = server preconverts the input to stereo PCM up front (handles
+      // 6ch/EAC3, marginal speed). AI corrections stay on (no speed cost).
+      mode: fastMode ? 'fast' : 'quality',
+    };
 
+    let step = 'master';
+    let jobId = '';
     try {
-      const jobId = await startMaster(file, options); // upload happens here
+      jobId = await startMaster(file, options); // upload happens here
       if (stale()) return;
       setRunPhase('processing');
 
-      const final = await pollMaster(jobId, (p, s) => {
-        if (!stale()) {
-          setPercent(p);
-          setStage(s);
-        }
+      step = 'poll';
+      const final = await pollMaster(jobId, (p) => {
+        if (!stale()) setPercent(p);
       });
       if (stale()) return;
-      if (final.status === 'error') throw new Error(final.error || '서버 마스터링 실패');
+      if (final.status === 'error') throw new Error(final.error || 'server mastering failed');
 
+      step = 'download';
       setRunPhase('downloading');
       const m = await downloadPlayable(jobId, 'master');
       if (stale()) return;
@@ -181,7 +178,7 @@ export default function App() {
       setStep('result');
     } catch (e) {
       if (stale()) return;
-      setMasterError(msg(e));
+      setMasterError(await toUserError(step, e, { file, jobId }));
       setRunPhase('error');
     }
   }
@@ -199,7 +196,8 @@ export default function App() {
   function fileNameFor(which: 'master' | 'preview'): string {
     const d = new Date();
     const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-    return which === 'master' ? `LouiMaster_${ymd}.wav` : `LouiPreview_${ymd}.mp3`;
+    const base = safeBaseName(file?.name || 'audio');
+    return which === 'master' ? `${base}_Mastering_${ymd}.wav` : `${base}_Preview_${ymd}.mp3`;
   }
 
   async function doSave() {
@@ -212,7 +210,7 @@ export default function App() {
       const where = await saveToDownloads(r.blob, fileNameFor(which));
       setActionMsg({ ok: true, text: `저장 완료: ${where}` });
     } catch (e) {
-      setActionMsg({ ok: false, text: msg(e) });
+      setActionMsg({ ok: false, text: await toUserError('save', e, { file }) });
     }
   }
 
@@ -226,15 +224,14 @@ export default function App() {
       const title = which === 'master' ? 'Loui 마스터 (WAV)' : 'Loui 프리뷰 (MP3)';
       await shareFile(r.blob, fileNameFor(which), title);
     } catch (e) {
-      setActionMsg({ ok: false, text: msg(e) });
+      setActionMsg({ ok: false, text: await toUserError('share', e, { file }) });
     }
   }
 
   function restart() {
     runRef.current++;
     setFile(null);
-    setAnalysis(null);
-    setAnalyzeError('');
+    setPickError('');
     setMaster(null);
     setPreview(null);
     setMasterError('');
@@ -274,19 +271,7 @@ export default function App() {
           />
         )}
 
-        {step === 'pick' && <PickStep file={file} onPick={onPick} />}
-
-        {step === 'analyze' && (
-          <AnalyzeStep
-            file={file}
-            analyzing={analyzing}
-            analysis={analysis}
-            error={analyzeError}
-            onAnalyze={onAnalyze}
-            showRaw={showRawAnalysis}
-            toggleRaw={() => setShowRawAnalysis((v) => !v)}
-          />
-        )}
+        {step === 'pick' && <PickStep file={file} onPick={onPick} error={pickError} />}
 
         {step === 'master' && (
           <MasterStep
@@ -297,9 +282,10 @@ export default function App() {
             setTargetLufs={setTargetLufs}
             targetTp={targetTp}
             setTargetTp={setTargetTp}
+            fastMode={fastMode}
+            setFastMode={setFastMode}
             runPhase={runPhase}
             percent={percent}
-            stage={stage}
             elapsed={elapsed}
             error={masterError}
             onMaster={onMaster}
@@ -323,7 +309,6 @@ export default function App() {
           busy={busy}
           urlLooksValid={urlLooksValid}
           hasFile={Boolean(file)}
-          analyzing={analyzing}
           runPhase={runPhase}
           hasResult={Boolean(master)}
           goBack={() => goTo(STEPS[stepIndex - 1]?.key ?? 'settings')}
@@ -343,6 +328,18 @@ export default function App() {
       )}
     </div>
   );
+}
+
+// Derive a safe file-name base from the user's original file name: strip the
+// last extension, replace illegal chars (/ \ : * ? " < > |) with _, keep
+// spaces, and truncate. e.g. "test.audio.final.wav" → "test.audio.final".
+function safeBaseName(name: string): string {
+  const dot = name.lastIndexOf('.');
+  let base = dot > 0 ? name.slice(0, dot) : name; // strip only the last extension
+  base = base.replace(/[/\\:*?"<>|]/g, '_'); // illegal filename chars → _
+  base = base.replace(/\s+/g, ' ').trim(); // collapse/trim whitespace (spaces kept)
+  if (base.length > 80) base = base.slice(0, 80).trim();
+  return base || 'audio';
 }
 
 // ── Stepper ─────────────────────────────────────────────────────────────────
@@ -425,11 +422,11 @@ function SettingsStep(props: {
 }
 
 // ── Step 2: Pick ──────────────────────────────────────────────────────────────
-function PickStep({ file, onPick }: { file: PickedAudio | null; onPick: () => void }) {
+function PickStep({ file, onPick, error }: { file: PickedAudio | null; onPick: () => void; error: string }) {
   return (
     <section className="card">
       <h2>오디오 파일 선택</h2>
-      <p className="hint">wav · mp3 · flac · m4a 등. 선택한 파일은 서버로 업로드되어 마스터링됩니다.</p>
+      <p className="hint">wav · mp3 · flac · m4a 등. 선택하면 바로 마스터링 단계로 진행합니다.</p>
       <button className="btn block" onClick={onPick}>
         {file ? '다른 파일 선택' : '파일 선택'}
       </button>
@@ -446,58 +443,12 @@ function PickStep({ file, onPick }: { file: PickedAudio | null; onPick: () => vo
       ) : (
         <p className="empty">아직 선택된 파일이 없습니다.</p>
       )}
+      {error && <ErrorBox message={error} />}
     </section>
   );
 }
 
-// ── Step 3: Analyze ───────────────────────────────────────────────────────────
-function AnalyzeStep(props: {
-  file: PickedAudio | null;
-  analyzing: boolean;
-  analysis: Record<string, unknown> | null;
-  error: string;
-  onAnalyze: () => void;
-  showRaw: boolean;
-  toggleRaw: () => void;
-}) {
-  const { file, analyzing, analysis, error, onAnalyze, showRaw, toggleRaw } = props;
-  const rows = analysis ? scalarRows(analysis) : [];
-  return (
-    <section className="card">
-      <h2>분석 결과</h2>
-      <p className="hint">서버가 원본을 분석합니다. 선택 사항이며, 바로 마스터링으로 넘어가도 됩니다.</p>
-
-      <button className="btn ghost block" onClick={onAnalyze} disabled={!file || analyzing}>
-        {analyzing ? '분석 중…' : analysis ? '다시 분석' : '분석 실행'}
-      </button>
-
-      {analyzing && <Spinner label="원본 분석 중…" />}
-
-      {error && <ErrorBox message={error} onRetry={onAnalyze} retryLabel="분석 다시 시도" />}
-
-      {analysis && !analyzing && (
-        <>
-          {rows.length > 0 && (
-            <ul className="kv">
-              {rows.map(([k, v]) => (
-                <li key={k}>
-                  <span className="k">{k}</span>
-                  <span className="v">{v}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <button className="link" onClick={toggleRaw}>
-            {showRaw ? '원본 JSON 숨기기' : '원본 JSON 보기'}
-          </button>
-          {showRaw && <pre className="json">{JSON.stringify(analysis, null, 2)}</pre>}
-        </>
-      )}
-    </section>
-  );
-}
-
-// ── Step 4: Master ────────────────────────────────────────────────────────────
+// ── Step 3: Master ────────────────────────────────────────────────────────────
 function MasterStep(props: {
   file: PickedAudio | null;
   style: string;
@@ -506,9 +457,10 @@ function MasterStep(props: {
   setTargetLufs: (v: number) => void;
   targetTp: number;
   setTargetTp: (v: number) => void;
+  fastMode: boolean;
+  setFastMode: (v: boolean) => void;
   runPhase: RunPhase;
   percent: number;
-  stage: string;
   elapsed: number;
   error: string;
   onMaster: () => void;
@@ -516,7 +468,7 @@ function MasterStep(props: {
 }) {
   const {
     file, style, setStyle, targetLufs, setTargetLufs, targetTp, setTargetTp,
-    runPhase, percent, stage, elapsed, error, onMaster, onCancel,
+    fastMode, setFastMode, runPhase, percent, elapsed, error, onMaster, onCancel,
   } = props;
 
   const running = runPhase === 'uploading' || runPhase === 'processing' || runPhase === 'downloading';
@@ -560,6 +512,16 @@ function MasterStep(props: {
               />
             </div>
           </div>
+
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={fastMode}
+              onChange={(e) => setFastMode(e.target.checked)}
+            />
+            <span>빠른 처리 (테스트) — 입력 사전변환(6ch/EAC3 호환)</span>
+          </label>
+
           {!file && <p className="inline-err">먼저 파일을 선택하세요.</p>}
         </>
       )}
@@ -568,7 +530,7 @@ function MasterStep(props: {
         <div className="runpanel">
           {runPhase === 'uploading' && (
             <>
-              <Spinner label="파일 업로드 중…" />
+              <Spinner label="업로드 중" />
               <p className="hint center">큰 파일은 시간이 걸릴 수 있어요. 앱을 닫지 말고 기다려주세요.</p>
             </>
           )}
@@ -576,14 +538,11 @@ function MasterStep(props: {
             <>
               <div className="progress">
                 <div className="bar" style={{ width: `${Math.max(percent, 3)}%` }} />
-                <span className="ptext">
-                  {percent}% · {stage || '처리 중'}
-                </span>
+                <span className="ptext">마스터링 중 {percent}%</span>
               </div>
-              <p className="hint center">서버에서 마스터링 중…</p>
             </>
           )}
-          {runPhase === 'downloading' && <Spinner label="결과 내려받는 중…" />}
+          {runPhase === 'downloading' && <Spinner label="결과 준비 중" />}
           <p className="elapsed">경과 {elapsed}s</p>
           <button className="btn ghost block" onClick={onCancel}>
             취소
@@ -636,7 +595,7 @@ function ResultStep(props: {
           </button>
         </div>
       ) : (
-        master && <p className="hint">프리뷰(MP3)는 제공되지 않았습니다.</p>
+        master && <p className="hint">빠른 처리에서는 마스터(WAV)만 제공됩니다.</p>
       )}
 
       {actionMsg &&
@@ -655,7 +614,6 @@ function ActionBar(props: {
   busy: boolean;
   urlLooksValid: boolean;
   hasFile: boolean;
-  analyzing: boolean;
   runPhase: RunPhase;
   hasResult: boolean;
   goBack: () => void;
@@ -674,18 +632,6 @@ function ActionBar(props: {
     );
   }
   if (step === 'pick') {
-    return (
-      <div className="bar-row">
-        <button className="btn ghost" onClick={goBack}>
-          뒤로
-        </button>
-        <button className="btn grow" disabled={!hasFile} onClick={() => next('analyze')}>
-          다음
-        </button>
-      </div>
-    );
-  }
-  if (step === 'analyze') {
     return (
       <div className="bar-row">
         <button className="btn ghost" onClick={goBack}>
@@ -772,24 +718,3 @@ function ErrorBox({ message, onRetry, retryLabel }: { message: string; onRetry?:
   );
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-function msg(e: unknown): string {
-  const raw = e instanceof Error ? e.message : String(e);
-  // WebView/browser network failures surface as terse strings ("Failed to
-  // fetch" etc.) — translate to something actionable during on-device QA.
-  if (/failed to fetch|load failed|networkerror|network request failed/i.test(raw)) {
-    return '서버에 연결할 수 없습니다. 서버 주소·네트워크 상태, 그리고 서버 CORS/HTTPS 설정을 확인하세요.';
-  }
-  return raw;
-}
-
-// Top-level primitive fields of the analysis dict → label/value rows.
-function scalarRows(obj: Record<string, unknown>): [string, string][] {
-  const out: [string, string][] = [];
-  for (const [k, v] of Object.entries(obj)) {
-    if (v === null) continue;
-    if (typeof v === 'number') out.push([k, Number.isInteger(v) ? String(v) : v.toFixed(2)]);
-    else if (typeof v === 'string' || typeof v === 'boolean') out.push([k, String(v)]);
-  }
-  return out;
-}
