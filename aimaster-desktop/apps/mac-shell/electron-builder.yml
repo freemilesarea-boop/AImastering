@@ -9,6 +9,14 @@ electronVersion: 28.3.3
 directories:
   output: out
 
+# This app has NO runtime node dependencies (pure web SPA in www/ + a tiny
+# main.cjs using only built-in electron modules). Skip electron-builder's
+# "install production dependencies" step — under pnpm it runs a prod install
+# that prunes the workspace's devDeps (incl. electron-builder's own 7zip-bin),
+# which then breaks dmg/zip packaging with `ENOENT chmod .../7zip-bin/...`.
+npmRebuild: false
+nodeGypRebuild: false
+
 # Pure web + tiny main process — no node deps to bundle.
 files:
   - main.cjs
