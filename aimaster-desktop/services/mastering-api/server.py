@@ -309,6 +309,12 @@ def _run_master(job_id: str, in_path: str, out_path: str, opts: dict) -> None:
             ),
             "ai_detections": opts.get("ai_detections", opts.get("aiDetections", {})),
             "generate_waveforms": False,
+            # Fast mode (mobile): skip the passes the app doesn't need — preview
+            # MP3 (generated lazily by the engine), the loudness correction pass,
+            # and all post-master analysis/QC. Quality mode keeps full behavior.
+            "skip_preview": fast,
+            "skip_correction": fast,
+            "skip_post_analysis": fast,
         }
         result = master_file(params, job_id, progress)
         # close out the final stage's timing

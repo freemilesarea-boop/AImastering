@@ -78,3 +78,40 @@
 - `mode=fast`: 입력을 **44.1k 스테레오 24-bit PCM으로 preconvert**(6ch/EAC3 호환).
 - `[profile]` 단계별 타이밍 로그(상시).
 - 음질 영향 없음(AI 보정 유지, 다운믹스는 비표준 입력에만 실질 영향).
+
+---
+
+## v2 — 엔진 최소 파라미터 fast mode (이후 추가, 측정 갱신)
+"엔진 최소 파라미터 추가 허용" 결정에 따라, **하위호환(default=False → 데스크톱 경로
+바이트 동일)** 인 skip 플래그 3종을 엔진에 추가:
+| 플래그 | 효과 | 제거 패스 |
+|---|---|---|
+| `skip_preview` | 프리뷰 MP3 생략(결과는 WAV만) | preview 인코드 |
+| `skip_correction` | 라우드니스 보정 패스 생략(속도>음질) | 보정 풀패스 |
+| `skip_post_analysis` | metrics/품질검사/limiter검사/segment/gain-staging 생략 | 다수 재디코드 패스 |
+
+`mode=fast`는 위 3종 + `generate_waveforms=False` + preconvert를 적용.
+
+### 측정 (90초 클립, 워밍업 후, 동일 런)
+| 모드 | 시간 | master |
+|---|---|---|
+| quality (skip 없음) | 30.5s | preview 포함, loudnessAfter 정확 |
+| **fast (3 skip)** | **22.4s** | WAV만(preview 없음), loudnessAfter=-12.5 |
+→ **1.36x, −26% (−8s)**. 제거된 건 correction(~3.8s)+preview(~2s)+post-analysis(~수초).
+
+### 불가/미적용 (조사 결과)
+- `skip_loudnorm_second_pass`: pass2가 **실제 정규화 출력**을 생성 → 생략 불가.
+- `use_single_pass_limiter`: 리미터는 **이미 단일 패스**. 중복은 correction 패스였고
+  `skip_correction`이 그걸 제거함.
+- `pre_loudness`(pass1 측정 생략, ~20%): 측정값을 재사용할 곳이 필요. 모바일이 analyze를
+  더 이상 호출하지 않으므로(분석탭 제거) 무료 재사용처 없음 → 미적용.
+
+### 데스크톱/품질 안전성
+- 모든 skip은 default False → 데스크톱(master_file에 플래그 미전달)은 **동일 코드 경로**.
+- 회귀 확인: quality 모드 master에 **preview 생성·loudnessAfter 정확·full result** 유지.
+
+### 목표 대비 (요구사항 3)
+- fast(−26%) + **Render Standard(1 vCPU, ~2x)** 조합:
+  - 30초~2분 파일: Starter fast ~70–90s → **Standard fast ~40–60s** (목표 60초 이내 근접/달성)
+  - 3분 곡: Standard fast ~70–90s (목표 90초 이내 근접)
+- 추가 단축은 pass1(측정) 생략 등 더 깊은 엔진 변경 필요(별도 티켓).

@@ -88,6 +88,10 @@ def master_file(
         "generate_waveforms": gen_waveforms,
         "pre_loudness": (dict(pre_loudness) if isinstance(pre_loudness, dict) else None),
         "debug_logging": (None if debug_logging is None else bool(debug_logging)),
+        # Fast-mode skips (mobile API). Default False → desktop path unchanged.
+        "skip_preview": bool(params.get("skip_preview", False)),
+        "skip_correction": bool(params.get("skip_correction", False)),
+        "skip_post_analysis": bool(params.get("skip_post_analysis", False)),
     }
 
     overrides = build_safe_mode_overrides(list(safe_modes_raw))
