@@ -1,0 +1,16 @@
+{
+  "name": "@aimaster/mac-shell",
+  "version": "1.0.0",
+  "private": true,
+  "description": "macOS Electron wrapper for the apps/mobile server-mastering app. Loads the mobile Vite build (web fallbacks) and talks to the Render API — NO local python engine, NO engine IPC.",
+  "main": "main.cjs",
+  "scripts": {
+    "copy:web": "rm -rf www && cp -r ../mobile/dist www",
+    "dist:mac": "pnpm run copy:web && electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "start": "pnpm run copy:web && electron ."
+  },
+  "devDependencies": {
+    "electron": "28.3.3",
+    "electron-builder": "24.13.3"
+  }
+}

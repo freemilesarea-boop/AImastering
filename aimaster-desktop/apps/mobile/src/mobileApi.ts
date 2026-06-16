@@ -21,6 +21,15 @@ import { Share } from '@capacitor/share';
 export const ENV_API_URL: string = (import.meta.env.VITE_MASTERING_API_URL ?? '').replace(/\/+$/, '');
 export const ENV_API_KEY: string = import.meta.env.VITE_MASTERING_API_KEY ?? '';
 
+// Release build (Play / App Store): server settings UI is hidden and the
+// server comes from env only. Test/dev build (default): settings UI is shown.
+export const RELEASE_BUILD: boolean = import.meta.env.VITE_RELEASE_MODE === 'true';
+
+// True when a usable server URL is configured. Never exposes the URL/key.
+export function hasServerConfig(): boolean {
+  return /^https?:\/\/.+/i.test(config.url);
+}
+
 const config = { url: ENV_API_URL, key: ENV_API_KEY };
 
 export function setApiConfig(url: string, key: string): void {
@@ -112,6 +121,67 @@ export async function pickAudioFile(): Promise<PickedAudio | null> {
   });
 }
 
+// ── Retry (transient server/network errors) ──────────────────────────────────
+// Transient = worth auto-retrying: network/fetch failures, 502/503/504, timeouts.
+// Permanent = surface immediately: 401, 413, 400, 500, etc.
+const RETRY_BACKOFFS_MS = [2000, 5000, 10000]; // 2s → 5s → 10s
+
+export class HttpError extends Error {
+  constructor(public status: number, public bodySnippet = '') {
+    super(`http ${status}`);
+    this.name = 'HttpError';
+  }
+}
+export class CancelledError extends Error {
+  constructor() {
+    super('cancelled');
+    this.name = 'CancelledError';
+  }
+}
+
+// Caller-provided cancellation + retry-notice hooks (App wires these to the
+// run-id guard and the "재시도 중" UI). All fields optional.
+export interface RetrySignal {
+  cancelled?: () => boolean;
+  onRetry?: (info: { op: string; attempt: number; max: number; delayMs: number }) => void;
+}
+
+function isTransient(e: unknown): boolean {
+  if (e instanceof HttpError) return e.status === 502 || e.status === 503 || e.status === 504;
+  if (e instanceof CancelledError) return false;
+  const m = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  return /failed to fetch|networkerror|load failed|network request failed|timed out|timeout|ETIMEDOUT|ECONNRESET|ECONNREFUSED/i.test(m);
+}
+
+async function sleepCancellable(ms: number, sig: RetrySignal): Promise<void> {
+  const step = 200;
+  for (let t = 0; t < ms; t += step) {
+    if (sig.cancelled?.()) throw new CancelledError();
+    await sleep(Math.min(step, ms - t));
+  }
+}
+
+// Run fn, retrying up to `max` times on transient errors with backoff.
+async function withRetry<T>(
+  op: string,
+  max: number,
+  fn: () => Promise<T>,
+  sig: RetrySignal = {},
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    if (sig.cancelled?.()) throw new CancelledError();
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof CancelledError) throw e;
+      if (attempt >= max || !isTransient(e)) throw e;
+      const delayMs = RETRY_BACKOFFS_MS[Math.min(attempt, RETRY_BACKOFFS_MS.length - 1)];
+      sig.onRetry?.({ op, attempt: attempt + 1, max, delayMs });
+      await sleepCancellable(delayMs, sig);
+    }
+  }
+}
+
 // ── Server calls ────────────────────────────────────────────────────────────────
 export async function analyze(audio: PickedAudio): Promise<Record<string, unknown>> {
   const fd = new FormData();
@@ -121,45 +191,107 @@ export async function analyze(audio: PickedAudio): Promise<Record<string, unknow
   return r.json();
 }
 
-export async function startMaster(audio: PickedAudio, options: MasterOptions): Promise<string> {
-  const fd = new FormData();
-  fd.append('audio', audio.blob, audio.name);
-  fd.append('options', JSON.stringify(options));
-  const r = await fetch(`${baseUrl()}/v1/master`, { method: 'POST', headers: authHeaders(), body: fd });
-  if (!r.ok) throw new Error(`master failed: ${r.status} ${await safeText(r)}`);
-  const j = (await r.json()) as { job_id: string };
-  return j.job_id;
+// master start: retry up to 2× on transient errors (re-uploads the same file).
+export async function startMaster(
+  audio: PickedAudio,
+  options: MasterOptions,
+  sig: RetrySignal = {},
+): Promise<string> {
+  return withRetry('master', 2, async () => {
+    const fd = new FormData();
+    fd.append('audio', audio.blob, audio.name);
+    fd.append('options', JSON.stringify(options));
+    const r = await fetch(`${baseUrl()}/v1/master`, { method: 'POST', headers: authHeaders(), body: fd });
+    if (!r.ok) throw new HttpError(r.status, await safeText(r));
+    return ((await r.json()) as { job_id: string }).job_id;
+  }, sig);
+}
+
+// Thrown when a job that was being processed disappears (HTTP 404) — i.e. the
+// server restarted / OOM-killed mid-job and lost its in-memory job + temp files.
+export class JobInterruptedError extends Error {
+  constructor() {
+    super('server interrupted (job lost after restart)');
+    this.name = 'JobInterruptedError';
+  }
 }
 
 export async function getJob(jobId: string): Promise<JobStatus> {
   const r = await fetch(`${baseUrl()}/v1/jobs/${jobId}`, { headers: authHeaders() });
-  if (!r.ok) throw new Error(`job status failed: ${r.status} ${await safeText(r)}`);
+  if (r.status === 404) throw new JobInterruptedError();
+  if (!r.ok) throw new HttpError(r.status, await safeText(r));
   return r.json();
 }
 
-// Poll until done/error. Resolves with the final status.
+// Poll until done/error. Tolerant of transient errors:
+//  - network / 502·503·504 → up to 3 consecutive retries (resets on success)
+//  - 404 → up to 2 retries (brief propagation gap / restart blip), then treated
+//    as JobInterruptedError (server restarted and lost the job).
+// onRetry fires while retrying so the UI can show "자동으로 다시 확인 중".
 export async function pollMaster(
   jobId: string,
   onProgress: ProgressFn,
   opts: { intervalMs?: number; timeoutMs?: number } = {},
+  sig: RetrySignal = {},
 ): Promise<JobStatus> {
   const interval = opts.intervalMs ?? 1500;
   const timeout = opts.timeoutMs ?? 10 * 60 * 1000;
+  const MAX_TRANSIENT = 3;
+  const MAX_NOTFOUND = 2;
   const start = Date.now();
+  let sawAlive = false;
+  let transientFails = 0;
+  let notFound = 0;
   for (;;) {
-    const s = await getJob(jobId);
+    if (sig.cancelled?.()) throw new CancelledError();
+    let s: JobStatus;
+    try {
+      s = await getJob(jobId);
+    } catch (e) {
+      if (e instanceof CancelledError) throw e;
+      const timedOut = Date.now() - start > timeout;
+      if (e instanceof JobInterruptedError) {
+        notFound++;
+        // Brief gap right after creation, or a restart blip → retry a couple times.
+        if (timedOut || (sawAlive && notFound > MAX_NOTFOUND) || (!sawAlive && notFound > MAX_NOTFOUND + 2)) {
+          throw e;
+        }
+        const delayMs = RETRY_BACKOFFS_MS[Math.min(notFound - 1, RETRY_BACKOFFS_MS.length - 1)];
+        sig.onRetry?.({ op: 'poll', attempt: notFound, max: MAX_NOTFOUND, delayMs });
+        await sleepCancellable(delayMs, sig);
+        continue;
+      }
+      if (isTransient(e) && !timedOut) {
+        transientFails++;
+        if (transientFails > MAX_TRANSIENT) throw e;
+        const delayMs = RETRY_BACKOFFS_MS[Math.min(transientFails - 1, RETRY_BACKOFFS_MS.length - 1)];
+        sig.onRetry?.({ op: 'poll', attempt: transientFails, max: MAX_TRANSIENT, delayMs });
+        await sleepCancellable(delayMs, sig);
+        continue;
+      }
+      throw e; // permanent (401/…) or timed out
+    }
+    sawAlive = true;
+    transientFails = 0;
+    notFound = 0;
     onProgress(s.percent ?? 0, s.stage ?? '');
     if (s.status === 'done' || s.status === 'error') return s;
     if (Date.now() - start > timeout) throw new Error('mastering timed out');
-    await sleep(interval);
+    await sleepCancellable(interval, sig);
   }
 }
 
-// Download a result file as a blob. file = 'master' | 'preview'.
-export async function downloadResult(jobId: string, file: 'master' | 'preview'): Promise<Blob> {
-  const r = await fetch(`${baseUrl()}/v1/jobs/${jobId}/download?file=${file}`, { headers: authHeaders() });
-  if (!r.ok) throw new Error(`download ${file} failed: ${r.status} ${await safeText(r)}`);
-  return r.blob();
+// Download a result file as a blob. Retries up to 2× on transient errors.
+export async function downloadResult(
+  jobId: string,
+  file: 'master' | 'preview',
+  sig: RetrySignal = {},
+): Promise<Blob> {
+  return withRetry('download', 2, async () => {
+    const r = await fetch(`${baseUrl()}/v1/jobs/${jobId}/download?file=${file}`, { headers: authHeaders() });
+    if (!r.ok) throw new HttpError(r.status, await safeText(r));
+    return r.blob();
+  }, sig);
 }
 
 // Download + make a playable URL for <audio>.
@@ -167,8 +299,9 @@ export async function downloadResult(jobId: string, file: 'master' | 'preview'):
 export async function downloadPlayable(
   jobId: string,
   file: 'master' | 'preview',
+  sig: RetrySignal = {},
 ): Promise<{ url: string; blob: Blob; localPath?: string }> {
-  const blob = await downloadResult(jobId, file);
+  const blob = await downloadResult(jobId, file, sig);
   if (isNative()) {
     const ext = file === 'master' ? 'wav' : 'mp3';
     const path = `aimaster_${jobId}_${file}.${ext}`;

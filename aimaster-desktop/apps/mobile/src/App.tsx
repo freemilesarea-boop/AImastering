@@ -14,6 +14,8 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ENV_API_URL,
   ENV_API_KEY,
+  RELEASE_BUILD,
+  hasServerConfig,
   setApiConfig,
   isNative,
   pickAudioFile,
@@ -23,30 +25,40 @@ import {
   saveToDownloads,
   shareFile,
   reportError,
+  JobInterruptedError,
+  CancelledError,
   type PickedAudio,
   type MasterOptions,
   type ErrorContext,
+  type RetrySignal,
 } from './mobileApi';
 
 // User-facing copy: never expose raw technical errors; the detail is auto-filed.
 const GENERIC_ERR =
   '처리 중 오류가 발생했습니다. 오류 내용은 자동으로 접수되었습니다. 잠시 후 다시 시도해 주세요.';
+// Shown when the server restarted mid-job (e.g. OOM) and lost the job.
+const INTERRUPTED_ERR =
+  '서버 작업이 중단되어 자동으로 접수되었습니다. 잠시 후 다시 시도해 주세요.';
 
 // Report the error and return a user-safe message (generic + receipt number).
 async function toUserError(step: string, e: unknown, ctx?: ErrorContext): Promise<string> {
   const receipt = await reportError(step, e, ctx);
-  return receipt ? `${GENERIC_ERR}\n오류 접수번호: ${receipt}` : GENERIC_ERR;
+  const base = e instanceof JobInterruptedError ? INTERRUPTED_ERR : GENERIC_ERR;
+  return receipt ? `${base}\n오류 접수번호: ${receipt}` : base;
 }
 
 // ── Flow model ──────────────────────────────────────────────────────────────
 type StepKey = 'settings' | 'pick' | 'master' | 'result';
 
-const STEPS: { key: StepKey; label: string }[] = [
+// Release builds drop the "서버" settings step entirely (env-injected server).
+const ALL_STEPS: { key: StepKey; label: string }[] = [
   { key: 'settings', label: '서버' },
   { key: 'pick', label: '파일' },
   { key: 'master', label: '마스터' },
   { key: 'result', label: '결과' },
 ];
+const STEPS = RELEASE_BUILD ? ALL_STEPS.filter((s) => s.key !== 'settings') : ALL_STEPS;
+const FIRST_STEP: StepKey = STEPS[0].key; // 'pick' in release, 'settings' in test
 
 // Sub-state of the mastering run, so we can reassure the user during long uploads.
 type RunPhase = 'idle' | 'uploading' | 'processing' | 'downloading' | 'done' | 'error';
@@ -60,7 +72,7 @@ interface PlayableResult {
 
 export default function App() {
   // step / navigation
-  const [step, setStep] = useState<StepKey>('settings');
+  const [step, setStep] = useState<StepKey>(FIRST_STEP);
 
   // 1) server settings (env is the source of truth; fields allow runtime override)
   const [apiUrl, setApiUrl] = useState(ENV_API_URL);
@@ -80,6 +92,7 @@ export default function App() {
   const [fastMode, setFastMode] = useState(true); // test app default: fast
 
   const [runPhase, setRunPhase] = useState<RunPhase>('idle');
+  const [retrying, setRetrying] = useState(false); // auto-retry in progress
   const [percent, setPercent] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [masterError, setMasterError] = useState('');
@@ -146,38 +159,53 @@ export default function App() {
       mode: fastMode ? 'fast' : 'quality',
     };
 
+    // Auto-retry transient failures; only surface a red error on final failure.
+    setRetrying(false);
+    const sig: RetrySignal = {
+      cancelled: stale,
+      onRetry: () => {
+        if (!stale()) setRetrying(true);
+      },
+    };
+
     let step = 'master';
     let jobId = '';
     try {
-      jobId = await startMaster(file, options); // upload happens here
+      jobId = await startMaster(file, options, sig); // upload happens here
       if (stale()) return;
       setRunPhase('processing');
 
       step = 'poll';
       const final = await pollMaster(jobId, (p) => {
-        if (!stale()) setPercent(p);
-      });
+        if (!stale()) {
+          setPercent(p);
+          setRetrying(false); // a successful poll means the server responded
+        }
+      }, {}, sig);
       if (stale()) return;
       if (final.status === 'error') throw new Error(final.error || 'server mastering failed');
 
       step = 'download';
       setRunPhase('downloading');
-      const m = await downloadPlayable(jobId, 'master');
+      const m = await downloadPlayable(jobId, 'master', sig);
       if (stale()) return;
       let p: PlayableResult | null = null;
       try {
-        p = await downloadPlayable(jobId, 'preview');
+        p = await downloadPlayable(jobId, 'preview', sig);
       } catch {
         /* preview optional */
       }
       if (stale()) return;
 
+      setRetrying(false);
       setMaster(m);
       setPreview(p);
       setRunPhase('done');
       setStep('result');
     } catch (e) {
-      if (stale()) return;
+      if (stale() || e instanceof CancelledError) return; // cancelled → no error UI
+      setRetrying(false);
+      // Final failure only: one error report + user-friendly message.
       setMasterError(await toUserError(step, e, { file, jobId }));
       setRunPhase('error');
     }
@@ -185,6 +213,7 @@ export default function App() {
 
   function cancelRun() {
     runRef.current++; // invalidate the in-flight run; stale guards stop UI updates
+    setRetrying(false);
     setRunPhase('idle');
   }
 
@@ -246,13 +275,35 @@ export default function App() {
     if (target <= stepIndex && !busy) setStep(key); // only jump back, and not mid-run
   }
 
+  // Release build with no server injected → a self-contained config-error screen
+  // (never exposes the env/key). Test/dev builds guide the user to the settings.
+  if (RELEASE_BUILD && !hasServerConfig()) {
+    return (
+      <div className="app">
+        <header className="hdr">
+          <div className="hdr-row">
+            <h1>Loui Mastering</h1>
+          </div>
+        </header>
+        <main className="content">
+          <section className="card">
+            <div className="notice error">
+              <strong>앱 설정 오류가 발생했습니다.</strong>
+              <p>고객센터에 문의해 주세요.</p>
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   // ── render ───────────────────────────────────────────────────────────────────
   return (
     <div className="app">
       <header className="hdr">
         <div className="hdr-row">
           <h1>Loui Mastering</h1>
-          <span className="badge">{isNative() ? 'Android' : 'Web'} · test</span>
+          <span className="badge">{isNative() ? 'Android' : 'Web'} · {RELEASE_BUILD ? 'release' : 'test'}</span>
         </div>
         <Stepper current={stepIndex} onJump={goTo} />
       </header>
@@ -287,6 +338,7 @@ export default function App() {
             runPhase={runPhase}
             percent={percent}
             elapsed={elapsed}
+            retrying={retrying}
             error={masterError}
             onMaster={onMaster}
             onCancel={cancelRun}
@@ -311,7 +363,8 @@ export default function App() {
           hasFile={Boolean(file)}
           runPhase={runPhase}
           hasResult={Boolean(master)}
-          goBack={() => goTo(STEPS[stepIndex - 1]?.key ?? 'settings')}
+          canBack={stepIndex > 0}
+          goBack={() => goTo(STEPS[stepIndex - 1]?.key ?? FIRST_STEP)}
           next={(k) => setStep(k)}
           onMaster={onMaster}
           restart={restart}
@@ -462,13 +515,14 @@ function MasterStep(props: {
   runPhase: RunPhase;
   percent: number;
   elapsed: number;
+  retrying: boolean;
   error: string;
   onMaster: () => void;
   onCancel: () => void;
 }) {
   const {
     file, style, setStyle, targetLufs, setTargetLufs, targetTp, setTargetTp,
-    fastMode, setFastMode, runPhase, percent, elapsed, error, onMaster, onCancel,
+    fastMode, setFastMode, runPhase, percent, elapsed, retrying, error, onMaster, onCancel,
   } = props;
 
   const running = runPhase === 'uploading' || runPhase === 'processing' || runPhase === 'downloading';
@@ -540,9 +594,18 @@ function MasterStep(props: {
                 <div className="bar" style={{ width: `${Math.max(percent, 3)}%` }} />
                 <span className="ptext">마스터링 중 {percent}%</span>
               </div>
+              {elapsed >= 45 && (
+                <p className="hint center">긴 곡(3분 이상)은 조금 오래 걸릴 수 있어요. 잠시만 기다려주세요.</p>
+              )}
             </>
           )}
           {runPhase === 'downloading' && <Spinner label="결과 준비 중" />}
+          {retrying && (
+            <div className="notice warn">
+              <strong>서버 응답이 지연되고 있어요. 자동으로 다시 확인 중입니다.</strong>
+              <p>마스터링은 계속 진행 중일 수 있습니다. 잠시만 기다려 주세요.</p>
+            </div>
+          )}
           <p className="elapsed">경과 {elapsed}s</p>
           <button className="btn ghost block" onClick={onCancel}>
             취소
@@ -616,12 +679,13 @@ function ActionBar(props: {
   hasFile: boolean;
   runPhase: RunPhase;
   hasResult: boolean;
+  canBack: boolean;
   goBack: () => void;
   next: (k: StepKey) => void;
   onMaster: () => void;
   restart: () => void;
 }) {
-  const { step, busy, urlLooksValid, hasFile, runPhase, hasResult, goBack, next, onMaster, restart } = props;
+  const { step, busy, urlLooksValid, hasFile, runPhase, hasResult, canBack, goBack, next, onMaster, restart } = props;
   const running = runPhase === 'uploading' || runPhase === 'processing' || runPhase === 'downloading';
 
   if (step === 'settings') {
@@ -632,7 +696,8 @@ function ActionBar(props: {
     );
   }
   if (step === 'pick') {
-    return (
+    // In release builds 'pick' is the first step → no back button.
+    return canBack ? (
       <div className="bar-row">
         <button className="btn ghost" onClick={goBack}>
           뒤로
@@ -641,6 +706,10 @@ function ActionBar(props: {
           마스터링으로
         </button>
       </div>
+    ) : (
+      <button className="btn block" disabled={!hasFile} onClick={() => next('master')}>
+        마스터링으로
+      </button>
     );
   }
   if (step === 'master') {

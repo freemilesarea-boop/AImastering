@@ -311,11 +311,16 @@ def _run_master(job_id: str, in_path: str, out_path: str, opts: dict) -> None:
             "generate_waveforms": False,
             # Fast mode (mobile): skip the passes the app doesn't need — preview
             # MP3 (generated lazily by the engine), the loudness correction pass,
-            # and all post-master analysis/QC. Quality mode keeps full behavior.
+            # all post-master analysis/QC, and the ISP-safety pass (the pipeline's
+            # memory peak — loads the whole output into RAM; OOM risk on small
+            # servers). The stage-6 alimiter keeps true peak in check without it.
+            # Quality mode keeps full behavior.
             "skip_preview": fast,
             "skip_correction": fast,
             "skip_post_analysis": fast,
+            "skip_isp_safety": fast,
         }
+        print(f"[job] {job_id} master_file start mode={'fast' if fast else 'quality'}", flush=True)
         result = master_file(params, job_id, progress)
         # close out the final stage's timing
         prof[state["last_stage"]] = prof.get(state["last_stage"], 0.0) + (time.time() - state["last_t"])
@@ -323,6 +328,8 @@ def _run_master(job_id: str, in_path: str, out_path: str, opts: dict) -> None:
 
         master_path = result.get("outputPath") or out_path
         preview_path = result.get("previewPath")
+        print(f"[job] {job_id} master_file done in {total:.1f}s master={os.path.basename(master_path)} "
+              f"preview={'yes' if preview_path else 'no'} — storing status=done", flush=True)
         with _lock:
             j = _jobs[job_id]
             j.update(
@@ -331,6 +338,7 @@ def _run_master(job_id: str, in_path: str, out_path: str, opts: dict) -> None:
                 loudnessAfter=result.get("loudnessAfter"),
                 processingTimeSec=result.get("processingTimeSec"),
             )
+        print(f"[job] {job_id} status=done stored (in-memory + local disk)", flush=True)
         stages = {k: round(v, 1) for k, v in prof.items() if v >= 0.05}
         print(
             f"[profile] job={job_id} mode={'fast' if fast else 'quality'} "

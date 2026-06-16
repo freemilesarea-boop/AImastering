@@ -1,0 +1,4 @@
+node_modules/
+out/
+# Built mobile SPA is copied here at build time from ../mobile/dist (not committed).
+www/

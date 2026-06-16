@@ -151,6 +151,15 @@ importers:
         specifier: ^4.5.0
         version: 4.5.7(@types/react@18.3.28)(react@18.3.1)
 
+  apps/mac-shell:
+    devDependencies:
+      electron:
+        specifier: 28.3.3
+        version: 28.3.3
+      electron-builder:
+        specifier: 24.13.3
+        version: 24.13.3(electron-builder-squirrel-windows@24.13.3(dmg-builder@24.13.3))
+
   apps/mobile:
     dependencies:
       '@capacitor/android':
