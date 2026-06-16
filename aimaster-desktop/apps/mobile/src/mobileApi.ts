@@ -70,6 +70,12 @@ export interface MasterOptions {
   sampleRate?: number;
   bitDepth?: number;
   applyAiCorrections?: boolean;
+  mode?: 'fast' | 'quality';
+}
+
+export interface ErrorContext {
+  jobId?: string;
+  file?: { name: string; size: number; mimeType: string } | null;
 }
 
 export type ProgressFn = (percent: number, stage: string) => void;
@@ -258,6 +264,65 @@ function triggerWebDownload(blob: Blob, fileName: string): void {
   a.download = fileName;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+// ── Error auto-reporting ────────────────────────────────────────────────────────
+const APP_VERSION: string = (import.meta.env.VITE_APP_VERSION as string) || '0.1.0';
+
+// Best-effort: POST a sanitized error report to the server and return a receipt
+// id (e.g. ERR-20260616-AB12). NEVER throws — a failed report must not break the
+// user flow. No API key / original filename / PII is sent.
+export async function reportError(
+  step: string,
+  err: unknown,
+  ctx?: ErrorContext,
+): Promise<string | null> {
+  try {
+    const { url, key } = getApiConfig();
+    if (!url) return null;
+    const sane = sanitizeError(err, key);
+    const file = ctx?.file;
+    const body = {
+      app_version: APP_VERSION,
+      platform: isNative() ? 'android' : 'web',
+      step,
+      job_id: ctx?.jobId ?? '',
+      error_code: sane.code,
+      sanitized_message: sane.message,
+      file_meta: file ? { ext: extOf(file.name), mime: file.mimeType, sizeBytes: file.size } : undefined,
+      timestamp: new Date().toISOString(),
+    };
+    const r = await fetch(`${url}/v1/error-reports`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(key ? { 'X-API-Key': key } : {}) },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { receipt_id?: string };
+    return j.receipt_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function extOf(name: string): string {
+  const i = name.lastIndexOf('.');
+  return i >= 0 ? name.slice(i + 1).toLowerCase().slice(0, 8) : '';
+}
+
+// Reduce a raw error to a short code + truncated message, stripping the API key
+// and collapsing HTML error pages (e.g. a 502 from the proxy).
+function sanitizeError(err: unknown, key: string): { code: string; message: string } {
+  let raw = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  if (key && raw.includes(key)) raw = raw.split(key).join('***');
+  if (/<html|<!doctype/i.test(raw)) raw = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const httpCode = raw.match(/\b([45]\d{2})\b/);
+  const code = /failed to fetch|networkerror|load failed|network request failed/i.test(raw)
+    ? 'network'
+    : httpCode
+      ? `http_${httpCode[1]}`
+      : (err instanceof Error ? err.name : 'error').slice(0, 40);
+  return { code, message: raw.slice(0, 500) };
 }
 
 // ── Utils ─────────────────────────────────────────────────────────────────────

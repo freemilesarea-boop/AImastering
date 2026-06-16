@@ -15,18 +15,28 @@ mobile test app. The engine is reused **unchanged** (`analyze_file`,
 | POST | `/v1/master` | multipart `audio` + `options` (JSON string) → `{ job_id }` |
 | GET | `/v1/jobs/{id}` | `{ status, percent, stage[, error] }` |
 | GET | `/v1/jobs/{id}/download?file=master\|preview` | WAV / MP3 |
+| POST | `/v1/error-reports` | sanitized error report → `{ receipt_id }` (see below) |
 
 Auth: send header `X-API-Key: $MASTERING_API_KEY` (enforced only when the env
 var is set; unset = open, for local dev).
 
 `options` mirrors the desktop `audio:master` params (camelCase or snake_case):
 `style, targetLufs, targetTp, lra, sampleRate, bitDepth, applyAiCorrections,
-aiDetections`.
+aiDetections`, plus `mode` (`fast`|`quality`). `fast` preconverts the input to
+44.1k stereo PCM (handles 6ch/EAC3); see `PERF_PROFILE.md`.
+
+`/v1/error-reports` body: `app_version, platform, step, job_id, error_code,
+sanitized_message, file_meta{ext,mime,sizeBytes}, timestamp`. The server redacts
+the API key, drops any original filename, logs `[error-report] receipt_id=…`,
+and (if `ERROR_WEBHOOK_URL` is set) posts an admin alert. No original
+file/PII/key is stored.
 
 ## Env
 | Var | Default | Use |
 |---|---|---|
 | `MASTERING_API_KEY` | (unset) | API key; unset = no auth |
+| `CORS_ALLOW_ORIGINS` | `*` | comma list; `*` = allow all |
+| `ERROR_WEBHOOK_URL` | (unset) | Slack/Discord webhook for error alerts (optional) |
 | `ENGINE_DIR` | `../python-audio` | engine package dir |
 | `WORK_DIR` | system temp | job scratch root |
 | `JOB_TTL_SECONDS` | 3600 | result retention |

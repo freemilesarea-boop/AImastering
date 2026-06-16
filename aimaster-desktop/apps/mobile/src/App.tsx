@@ -23,9 +23,21 @@ import {
   downloadPlayable,
   saveToDownloads,
   shareFile,
+  reportError,
   type PickedAudio,
   type MasterOptions,
+  type ErrorContext,
 } from './mobileApi';
+
+// User-facing copy: never expose raw technical errors; the detail is auto-filed.
+const GENERIC_ERR =
+  '처리 중 오류가 발생했습니다. 오류 내용은 자동으로 접수되었습니다. 잠시 후 다시 시도해 주세요.';
+
+// Report the error and return a user-safe message (generic + receipt number).
+async function toUserError(step: string, e: unknown, ctx?: ErrorContext): Promise<string> {
+  const receipt = await reportError(step, e, ctx);
+  return receipt ? `${GENERIC_ERR}\n오류 접수번호: ${receipt}` : GENERIC_ERR;
+}
 
 // ── Flow model ──────────────────────────────────────────────────────────────
 type StepKey = 'settings' | 'pick' | 'analyze' | 'master' | 'result';
@@ -72,6 +84,7 @@ export default function App() {
   const [style, setStyle] = useState('balanced');
   const [targetLufs, setTargetLufs] = useState(-14);
   const [targetTp, setTargetTp] = useState(-1);
+  const [fastMode, setFastMode] = useState(true); // test app default: fast
 
   const [runPhase, setRunPhase] = useState<RunPhase>('idle');
   const [percent, setPercent] = useState(0);
@@ -117,7 +130,7 @@ export default function App() {
       setPreview(null);
       setRunPhase('idle');
     } catch (e) {
-      setAnalyzeError(msg(e));
+      setAnalyzeError(await toUserError('select', e, { file }));
     }
   }
 
@@ -129,7 +142,7 @@ export default function App() {
       const a = await analyze(file);
       setAnalysis(a);
     } catch (e) {
-      setAnalyzeError(msg(e));
+      setAnalyzeError(await toUserError('analyze', e, { file }));
     } finally {
       setAnalyzing(false);
     }
@@ -148,13 +161,23 @@ export default function App() {
     setElapsed(0);
     setRunPhase('uploading');
 
-    const options: MasterOptions = { style, targetLufs, targetTp, applyAiCorrections: true };
+    const options: MasterOptions = {
+      style,
+      targetLufs,
+      targetTp,
+      // Fast mode = server preconverts the input to stereo PCM up front (handles
+      // 6ch/EAC3, marginal speed). AI corrections stay on (no speed cost).
+      mode: fastMode ? 'fast' : 'quality',
+    };
 
+    let step = 'master';
+    let jobId = '';
     try {
-      const jobId = await startMaster(file, options); // upload happens here
+      jobId = await startMaster(file, options); // upload happens here
       if (stale()) return;
       setRunPhase('processing');
 
+      step = 'poll';
       const final = await pollMaster(jobId, (p, s) => {
         if (!stale()) {
           setPercent(p);
@@ -162,8 +185,9 @@ export default function App() {
         }
       });
       if (stale()) return;
-      if (final.status === 'error') throw new Error(final.error || '서버 마스터링 실패');
+      if (final.status === 'error') throw new Error(final.error || 'server mastering failed');
 
+      step = 'download';
       setRunPhase('downloading');
       const m = await downloadPlayable(jobId, 'master');
       if (stale()) return;
@@ -181,7 +205,7 @@ export default function App() {
       setStep('result');
     } catch (e) {
       if (stale()) return;
-      setMasterError(msg(e));
+      setMasterError(await toUserError(step, e, { file, jobId }));
       setRunPhase('error');
     }
   }
@@ -212,7 +236,7 @@ export default function App() {
       const where = await saveToDownloads(r.blob, fileNameFor(which));
       setActionMsg({ ok: true, text: `저장 완료: ${where}` });
     } catch (e) {
-      setActionMsg({ ok: false, text: msg(e) });
+      setActionMsg({ ok: false, text: await toUserError('save', e, { file }) });
     }
   }
 
@@ -226,7 +250,7 @@ export default function App() {
       const title = which === 'master' ? 'Loui 마스터 (WAV)' : 'Loui 프리뷰 (MP3)';
       await shareFile(r.blob, fileNameFor(which), title);
     } catch (e) {
-      setActionMsg({ ok: false, text: msg(e) });
+      setActionMsg({ ok: false, text: await toUserError('share', e, { file }) });
     }
   }
 
@@ -297,6 +321,8 @@ export default function App() {
             setTargetLufs={setTargetLufs}
             targetTp={targetTp}
             setTargetTp={setTargetTp}
+            fastMode={fastMode}
+            setFastMode={setFastMode}
             runPhase={runPhase}
             percent={percent}
             stage={stage}
@@ -506,6 +532,8 @@ function MasterStep(props: {
   setTargetLufs: (v: number) => void;
   targetTp: number;
   setTargetTp: (v: number) => void;
+  fastMode: boolean;
+  setFastMode: (v: boolean) => void;
   runPhase: RunPhase;
   percent: number;
   stage: string;
@@ -516,7 +544,7 @@ function MasterStep(props: {
 }) {
   const {
     file, style, setStyle, targetLufs, setTargetLufs, targetTp, setTargetTp,
-    runPhase, percent, stage, elapsed, error, onMaster, onCancel,
+    fastMode, setFastMode, runPhase, percent, stage, elapsed, error, onMaster, onCancel,
   } = props;
 
   const running = runPhase === 'uploading' || runPhase === 'processing' || runPhase === 'downloading';
@@ -560,6 +588,16 @@ function MasterStep(props: {
               />
             </div>
           </div>
+
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={fastMode}
+              onChange={(e) => setFastMode(e.target.checked)}
+            />
+            <span>빠른 처리 (테스트) — 입력 사전변환(6ch/EAC3 호환)</span>
+          </label>
+
           {!file && <p className="inline-err">먼저 파일을 선택하세요.</p>}
         </>
       )}
@@ -773,16 +811,6 @@ function ErrorBox({ message, onRetry, retryLabel }: { message: string; onRetry?:
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-function msg(e: unknown): string {
-  const raw = e instanceof Error ? e.message : String(e);
-  // WebView/browser network failures surface as terse strings ("Failed to
-  // fetch" etc.) — translate to something actionable during on-device QA.
-  if (/failed to fetch|load failed|networkerror|network request failed/i.test(raw)) {
-    return '서버에 연결할 수 없습니다. 서버 주소·네트워크 상태, 그리고 서버 CORS/HTTPS 설정을 확인하세요.';
-  }
-  return raw;
-}
-
 // Top-level primitive fields of the analysis dict → label/value rows.
 function scalarRows(obj: Record<string, unknown>): [string, string][] {
   const out: [string, string][] = [];
