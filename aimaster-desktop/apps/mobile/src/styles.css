@@ -549,3 +549,90 @@ code {
 .player {
   width: 100%;
 }
+
+.save-ok {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ok);
+  background: rgba(67, 211, 158, 0.1);
+  border: 1px solid rgba(67, 211, 158, 0.4);
+  border-radius: 10px;
+  padding: 10px 12px;
+  word-break: break-all;
+}
+
+/* ── Action sheet (bottom sheet) ─────────────────────────────────────────────── */
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 50;
+  animation: fade 0.15s ease;
+}
+
+.sheet {
+  width: 100%;
+  max-width: 600px;
+  background: var(--card);
+  border-top-left-radius: 16px;
+  border-top-right-radius: 16px;
+  border: 1px solid var(--line);
+  padding: 10px 14px calc(var(--sa-bottom) + 14px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: slideup 0.2s ease;
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes slideup {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-backdrop,
+  .sheet {
+    animation: none;
+  }
+}
+
+.sheet-title {
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 8px 0 4px;
+}
+
+.sheet-item {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--card-2);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  min-height: var(--tap);
+  border-radius: 12px;
+  padding: 13px 16px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sheet-item:active {
+  background: var(--line);
+}
+
+.sheet-item.cancel {
+  color: var(--muted);
+  font-weight: 500;
+  margin-top: 4px;
+}
