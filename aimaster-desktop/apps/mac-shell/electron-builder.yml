@@ -1,0 +1,39 @@
+# macOS packaging for the mobile-style server-mastering app (apps/mac-shell).
+# Separate appId from the desktop engine app (com.louver.mastering) and the
+# Android app (com.louver.mastering.mobile) to avoid collisions.
+appId: com.louver.mastering.mac
+productName: Loui Mastering
+copyright: Copyright © 2026 루베르
+electronVersion: 28.3.3
+
+directories:
+  output: out
+
+# Pure web + tiny main process — no node deps to bundle.
+files:
+  - main.cjs
+  - www/**/*
+
+extraMetadata:
+  main: main.cjs
+
+# ── macOS: dmg (drag-to-Applications) + zip, Apple Silicon (arm64) + Intel (x64).
+# NOT code-signed / notarized yet → Gatekeeper shows an "unidentified developer"
+# warning; right-click → Open (once). See docs/MACOS_MOBILE_APP.md.
+mac:
+  category: public.app-category.music
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+  # identity: "Developer ID Application: <NAME> (<TEAM_ID>)"   # TODO when signing
+
+dmg:
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
+artifactName: "${productName}-${version}-${arch}.${ext}"

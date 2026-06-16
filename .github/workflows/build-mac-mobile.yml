@@ -1,0 +1,72 @@
+# Packages the apps/mobile server-mastering app as a macOS .dmg/.zip via the
+# apps/mac-shell Electron wrapper (no local python engine).
+#
+# Scope: mobile-style macOS app only. Does NOT touch the desktop engine app
+# (apps/desktop / build.yml), the Android workflow, the server, or python-audio.
+name: Build macOS Mobile App
+
+on:
+  push:
+    branches:
+      - claude/gifted-babbage-6bd4gc
+    paths:
+      - 'aimaster-desktop/apps/mobile/**'
+      - 'aimaster-desktop/apps/mac-shell/**'
+      - '.github/workflows/build-mac-mobile.yml'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'app version (e.g. 1.0.0)'
+        required: false
+        default: '1.0.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-mac-mobile:
+    name: macOS app (dmg + zip, arm64 + x64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: aimaster-desktop/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: aimaster-desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Build mobile SPA (Vite)
+        working-directory: aimaster-desktop/apps/mobile
+        env:
+          VITE_MASTERING_API_URL: ${{ vars.VITE_MASTERING_API_URL || secrets.VITE_MASTERING_API_URL }}
+          VITE_MASTERING_API_KEY: ${{ secrets.VITE_MASTERING_API_KEY }}
+          VITE_APP_VERSION: ${{ github.event.inputs.version_name || '1.0.0' }}
+        run: pnpm run build
+
+      - name: Package macOS app (.dmg + .zip)
+        working-directory: aimaster-desktop/apps/mac-shell
+        run: pnpm run dist:mac
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: loui-mastering-mac
+          path: |
+            aimaster-desktop/apps/mac-shell/out/*.dmg
+            aimaster-desktop/apps/mac-shell/out/*.zip
+          if-no-files-found: error
