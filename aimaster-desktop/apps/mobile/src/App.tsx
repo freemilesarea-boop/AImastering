@@ -21,7 +21,8 @@ import {
   startMaster,
   pollMaster,
   downloadPlayable,
-  saveOrShare,
+  saveToDownloads,
+  shareFile,
   type PickedAudio,
   type MasterOptions,
 } from './mobileApi';
@@ -81,7 +82,9 @@ export default function App() {
   // 5) result
   const [master, setMaster] = useState<PlayableResult | null>(null);
   const [preview, setPreview] = useState<PlayableResult | null>(null);
-  const [shareError, setShareError] = useState('');
+  // save/share action sheet target + last action result message
+  const [sheetFor, setSheetFor] = useState<'master' | 'preview' | null>(null);
+  const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   // run-id guard: lets the user cancel an in-flight run (we ignore stale results)
   const runRef = useRef(0);
@@ -188,16 +191,42 @@ export default function App() {
     setRunPhase('idle');
   }
 
-  async function onShare(which: 'master' | 'preview') {
+  function openSheet(which: 'master' | 'preview') {
+    setActionMsg(null);
+    setSheetFor(which);
+  }
+
+  function fileNameFor(which: 'master' | 'preview'): string {
+    const d = new Date();
+    const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    return which === 'master' ? `LouiMaster_${ymd}.wav` : `LouiPreview_${ymd}.mp3`;
+  }
+
+  async function doSave() {
+    const which = sheetFor;
+    setSheetFor(null);
+    if (!which) return;
     const r = which === 'master' ? master : preview;
     if (!r) return;
-    setShareError('');
     try {
-      const ext = which === 'master' ? 'wav' : 'mp3';
-      const base = (file?.name || 'audio').replace(/\.[^.]+$/, '');
-      await saveOrShare(r.blob, `${base}_${which}.${ext}`);
+      const where = await saveToDownloads(r.blob, fileNameFor(which));
+      setActionMsg({ ok: true, text: `저장 완료: ${where}` });
     } catch (e) {
-      setShareError(msg(e));
+      setActionMsg({ ok: false, text: msg(e) });
+    }
+  }
+
+  async function doShare() {
+    const which = sheetFor;
+    setSheetFor(null);
+    if (!which) return;
+    const r = which === 'master' ? master : preview;
+    if (!r) return;
+    try {
+      const title = which === 'master' ? 'Loui 마스터 (WAV)' : 'Loui 프리뷰 (MP3)';
+      await shareFile(r.blob, fileNameFor(which), title);
+    } catch (e) {
+      setActionMsg({ ok: false, text: msg(e) });
     }
   }
 
@@ -282,8 +311,8 @@ export default function App() {
           <ResultStep
             master={master}
             preview={preview}
-            shareError={shareError}
-            onShare={onShare}
+            actionMsg={actionMsg}
+            onOpenSheet={openSheet}
           />
         )}
       </main>
@@ -303,6 +332,15 @@ export default function App() {
           restart={restart}
         />
       </footer>
+
+      {sheetFor && (
+        <ActionSheet
+          title={sheetFor === 'master' ? '마스터 (WAV)' : '프리뷰 (MP3)'}
+          onSave={doSave}
+          onShare={doShare}
+          onCancel={() => setSheetFor(null)}
+        />
+      )}
     </div>
   );
 }
@@ -564,10 +602,10 @@ function MasterStep(props: {
 function ResultStep(props: {
   master: PlayableResult | null;
   preview: PlayableResult | null;
-  shareError: string;
-  onShare: (which: 'master' | 'preview') => void;
+  actionMsg: { ok: boolean; text: string } | null;
+  onOpenSheet: (which: 'master' | 'preview') => void;
 }) {
-  const { master, preview, shareError, onShare } = props;
+  const { master, preview, actionMsg, onOpenSheet } = props;
   return (
     <section className="card">
       <h2>결과</h2>
@@ -580,7 +618,7 @@ function ResultStep(props: {
             <span className="tag ok">완료</span>
           </div>
           <audio src={master.url} controls className="player" preload="metadata" />
-          <button className="btn block" onClick={() => onShare('master')}>
+          <button className="btn block" onClick={() => onOpenSheet('master')}>
             저장 / 공유
           </button>
         </div>
@@ -593,7 +631,7 @@ function ResultStep(props: {
             <span className="tag">참고용</span>
           </div>
           <audio src={preview.url} controls className="player" preload="metadata" />
-          <button className="btn ghost block" onClick={() => onShare('preview')}>
+          <button className="btn ghost block" onClick={() => onOpenSheet('preview')}>
             프리뷰 저장 / 공유
           </button>
         </div>
@@ -601,7 +639,12 @@ function ResultStep(props: {
         master && <p className="hint">프리뷰(MP3)는 제공되지 않았습니다.</p>
       )}
 
-      {shareError && <ErrorBox message={shareError} />}
+      {actionMsg &&
+        (actionMsg.ok ? (
+          <p className="save-ok">✓ {actionMsg.text}</p>
+        ) : (
+          <ErrorBox message={actionMsg.text} />
+        ))}
     </section>
   );
 }
@@ -675,6 +718,32 @@ function ActionBar(props: {
       <button className="btn grow" disabled={!hasResult} onClick={restart}>
         새 파일로 다시
       </button>
+    </div>
+  );
+}
+
+// ── Action sheet (custom bottom sheet — no extra Capacitor plugin) ────────────
+function ActionSheet(props: {
+  title: string;
+  onSave: () => void;
+  onShare: () => void;
+  onCancel: () => void;
+}) {
+  const { title, onSave, onShare, onCancel } = props;
+  return (
+    <div className="sheet-backdrop" onClick={onCancel} role="presentation">
+      <div className="sheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-label={title}>
+        <div className="sheet-title">{title}</div>
+        <button className="sheet-item" onClick={onSave}>
+          파일에 저장
+        </button>
+        <button className="sheet-item" onClick={onShare}>
+          공유하기
+        </button>
+        <button className="sheet-item cancel" onClick={onCancel}>
+          취소
+        </button>
+      </div>
     </div>
   );
 }

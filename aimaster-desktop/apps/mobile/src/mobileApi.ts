@@ -174,19 +174,84 @@ export async function downloadPlayable(
 }
 
 // ── Save / share ────────────────────────────────────────────────────────────────
-// Native: write to Documents then open the share sheet.
-// Web: trigger a browser download.
-export async function saveOrShare(
-  blob: Blob,
-  fileName: string,
-  title = 'Mastered with Loui',
-): Promise<void> {
-  if (isNative()) {
-    const base64 = await blobToBase64(blob);
-    const w = await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Documents });
-    await Share.share({ title, url: w.uri });
+// Two distinct actions, each writing the blob to a real file first.
+
+// Save to the device's public Downloads folder. On Android 11+ public-dir
+// writes need no runtime permission; we fall back gracefully if a location is
+// blocked by scoped storage. Returns a human-readable saved location.
+export async function saveToDownloads(blob: Blob, fileName: string): Promise<string> {
+  if (!isNative()) {
+    triggerWebDownload(blob, fileName);
+    return `Downloads/${fileName}`;
+  }
+  const base64 = await blobToBase64(blob);
+  try {
+    await Filesystem.requestPermissions(); // no-op / auto-granted on API 30+
+  } catch {
+    /* ignore */
+  }
+
+  // 1) Public Downloads — visible in the Files/Downloads app.
+  try {
+    const w = await Filesystem.writeFile({
+      path: `Download/${fileName}`,
+      data: base64,
+      directory: Directory.ExternalStorage,
+      recursive: true,
+    });
+    return uriToLabel(w.uri, `Download/${fileName}`);
+  } catch {
+    /* fall through */
+  }
+  // 2) Public Documents.
+  try {
+    const w = await Filesystem.writeFile({
+      path: fileName,
+      data: base64,
+      directory: Directory.Documents,
+      recursive: true,
+    });
+    return uriToLabel(w.uri, `Documents/${fileName}`);
+  } catch {
+    /* fall through */
+  }
+  // 3) App external storage (always writable, no permission).
+  const w = await Filesystem.writeFile({
+    path: fileName,
+    data: base64,
+    directory: Directory.External,
+    recursive: true,
+  });
+  return uriToLabel(w.uri, fileName);
+}
+
+// Open the Android share sheet (KakaoTalk, SMS, Gmail, Drive, Telegram, …).
+// The file is written to the app cache (covered by the FileProvider) and shared.
+export async function shareFile(blob: Blob, fileName: string, title: string): Promise<void> {
+  if (!isNative()) {
+    const file = new File([blob], fileName, { type: blob.type || undefined });
+    const nav = navigator as Navigator & { canShare?: (d: unknown) => boolean };
+    if (typeof nav.share === 'function' && nav.canShare?.({ files: [file] })) {
+      await nav.share({ files: [file], title });
+      return;
+    }
+    triggerWebDownload(blob, fileName);
     return;
   }
+  const base64 = await blobToBase64(blob);
+  const w = await Filesystem.writeFile({ path: fileName, data: base64, directory: Directory.Cache });
+  await Share.share({ title, url: w.uri, dialogTitle: title });
+}
+
+function uriToLabel(uri: string, fallback: string): string {
+  try {
+    return decodeURIComponent(uri.replace(/^file:\/\//, '')) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function triggerWebDownload(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
