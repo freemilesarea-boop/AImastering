@@ -7,6 +7,20 @@ on:
       - 'claude/**'
     tags:
       - 'v*'           # v3.5.0, v3.5.1 등 — release 빌드 트리거
+    # This is the DESKTOP Electron build. Don't run it for app-only work
+    # (Capacitor mobile app / macOS mobile-style wrapper / server API / docs /
+    # their own workflows) — those have their own workflows. Desktop-relevant
+    # changes (apps/desktop, packages/*, python-audio, lockfile) still trigger.
+    # Tag pushes / workflow_dispatch remain the reliable release triggers.
+    paths-ignore:
+      - 'aimaster-desktop/apps/mobile/**'
+      - 'aimaster-desktop/apps/mac-shell/**'
+      - 'aimaster-desktop/services/mastering-api/**'
+      - '.github/workflows/build-mobile-android.yml'
+      - '.github/workflows/build-mac-mobile.yml'
+      - 'docs/**'
+      - 'render.yaml'
+      - '**/*.md'
   workflow_dispatch:
     inputs:
       release_tag:
