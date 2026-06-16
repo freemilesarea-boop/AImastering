@@ -23,6 +23,7 @@ import {
   saveToDownloads,
   shareFile,
   reportError,
+  JobInterruptedError,
   type PickedAudio,
   type MasterOptions,
   type ErrorContext,
@@ -31,11 +32,15 @@ import {
 // User-facing copy: never expose raw technical errors; the detail is auto-filed.
 const GENERIC_ERR =
   '처리 중 오류가 발생했습니다. 오류 내용은 자동으로 접수되었습니다. 잠시 후 다시 시도해 주세요.';
+// Shown when the server restarted mid-job (e.g. OOM) and lost the job.
+const INTERRUPTED_ERR =
+  '서버 작업이 중단되어 자동으로 접수되었습니다. 잠시 후 다시 시도해 주세요.';
 
 // Report the error and return a user-safe message (generic + receipt number).
 async function toUserError(step: string, e: unknown, ctx?: ErrorContext): Promise<string> {
   const receipt = await reportError(step, e, ctx);
-  return receipt ? `${GENERIC_ERR}\n오류 접수번호: ${receipt}` : GENERIC_ERR;
+  const base = e instanceof JobInterruptedError ? INTERRUPTED_ERR : GENERIC_ERR;
+  return receipt ? `${base}\n오류 접수번호: ${receipt}` : base;
 }
 
 // ── Flow model ──────────────────────────────────────────────────────────────
@@ -540,6 +545,9 @@ function MasterStep(props: {
                 <div className="bar" style={{ width: `${Math.max(percent, 3)}%` }} />
                 <span className="ptext">마스터링 중 {percent}%</span>
               </div>
+              {elapsed >= 45 && (
+                <p className="hint center">긴 곡(3분 이상)은 조금 오래 걸릴 수 있어요. 잠시만 기다려주세요.</p>
+              )}
             </>
           )}
           {runPhase === 'downloading' && <Spinner label="결과 준비 중" />}

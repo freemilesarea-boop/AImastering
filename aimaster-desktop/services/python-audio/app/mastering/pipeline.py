@@ -542,6 +542,7 @@ def run_pipeline(
     skip_preview: bool = False,
     skip_correction: bool = False,
     skip_post_analysis: bool = False,
+    skip_isp_safety: bool = False,
     # debug-quality system (v3.3): override settings produced by safe_modes
     # build_safe_mode_overrides().  When present, the pipeline clamps a
     # subset of parameters before running.
@@ -1242,8 +1243,16 @@ def run_pipeline(
     # ffmpeg alimiter is not oversampled, so inter-sample peaks can overshoot
     # the ceiling even when sample peak is inside.  Apply a static gain
     # reduction (envelope-free) when ISP exceeds the ceiling.
+    #
+    # skip_isp_safety (fast mode): the ISP pass loads the whole output into RAM,
+    # which is the pipeline's memory peak (OOM risk on small servers for long
+    # tracks). The stage-6 alimiter already targets ceiling-0.3 dB to leave
+    # inter-sample headroom, so true peak stays controlled without this pass.
+    if skip_isp_safety:
+        log("INFO", "[pipeline] ISP safety skipped (fast mode); alimiter margin retained")
     try:
-        isp_gain = apply_isp_safety(output_path, ceiling_dbtp=target_tp, headroom_db=0.1)
+        isp_gain = None if skip_isp_safety else apply_isp_safety(
+            output_path, ceiling_dbtp=target_tp, headroom_db=0.1)
         if isp_gain is not None and abs(isp_gain) > 0.01:
             isp_correction_db = isp_gain
             gain_stages["ispCorrectionDb"] = round(float(isp_gain), 3)

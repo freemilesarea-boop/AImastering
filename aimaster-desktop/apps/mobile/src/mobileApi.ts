@@ -131,13 +131,25 @@ export async function startMaster(audio: PickedAudio, options: MasterOptions): P
   return j.job_id;
 }
 
+// Thrown when a job that was being processed disappears (HTTP 404) — i.e. the
+// server restarted / OOM-killed mid-job and lost its in-memory job + temp files.
+export class JobInterruptedError extends Error {
+  constructor() {
+    super('server interrupted (job lost after restart)');
+    this.name = 'JobInterruptedError';
+  }
+}
+
 export async function getJob(jobId: string): Promise<JobStatus> {
   const r = await fetch(`${baseUrl()}/v1/jobs/${jobId}`, { headers: authHeaders() });
+  if (r.status === 404) throw new JobInterruptedError();
   if (!r.ok) throw new Error(`job status failed: ${r.status} ${await safeText(r)}`);
   return r.json();
 }
 
 // Poll until done/error. Resolves with the final status.
+// A 404 after the job was seen alive ⇒ JobInterruptedError (server restart) so
+// the client stops polling immediately instead of looping forever.
 export async function pollMaster(
   jobId: string,
   onProgress: ProgressFn,
@@ -146,8 +158,23 @@ export async function pollMaster(
   const interval = opts.intervalMs ?? 1500;
   const timeout = opts.timeoutMs ?? 10 * 60 * 1000;
   const start = Date.now();
+  let sawAlive = false;
   for (;;) {
-    const s = await getJob(jobId);
+    let s: JobStatus;
+    try {
+      s = await getJob(jobId);
+    } catch (e) {
+      // A 404 right after creation can be a brief propagation gap; only treat
+      // it as an interruption once we've confirmed the job existed.
+      if (e instanceof JobInterruptedError && sawAlive) throw e;
+      if (e instanceof JobInterruptedError) {
+        if (Date.now() - start > timeout) throw e;
+        await sleep(interval);
+        continue;
+      }
+      throw e;
+    }
+    sawAlive = true;
     onProgress(s.percent ?? 0, s.stage ?? '');
     if (s.status === 'done' || s.status === 'error') return s;
     if (Date.now() - start > timeout) throw new Error('mastering timed out');

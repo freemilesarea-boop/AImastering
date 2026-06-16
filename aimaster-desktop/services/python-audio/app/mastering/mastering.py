@@ -92,6 +92,7 @@ def master_file(
         "skip_preview": bool(params.get("skip_preview", False)),
         "skip_correction": bool(params.get("skip_correction", False)),
         "skip_post_analysis": bool(params.get("skip_post_analysis", False)),
+        "skip_isp_safety": bool(params.get("skip_isp_safety", False)),
     }
 
     overrides = build_safe_mode_overrides(list(safe_modes_raw))

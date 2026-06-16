@@ -16,6 +16,7 @@ Usage:
 """
 from __future__ import annotations
 
+import gc
 from typing import Optional
 
 try:
@@ -100,7 +101,9 @@ def apply_isp_safety(
         return None
 
     try:
-        data, sr = sf.read(file_path, always_2d=True, dtype="float64")
+        # float32 (not float64) halves peak RAM and is lossless for ≤24-bit PCM
+        # (float32 mantissa = 24 bits). dBTP measurement is unaffected.
+        data, sr = sf.read(file_path, always_2d=True, dtype="float32")
     except Exception as exc:
         log("WARN", f"[isp_safety] read failed {file_path}: {exc}")
         return None
@@ -112,10 +115,13 @@ def apply_isp_safety(
     audio = data.T
     isp_db = measure_inter_sample_peak_dbtp(audio, sample_rate=sr)
     safe_ceiling = ceiling_dbtp - headroom_db
+    del audio  # drop the transpose view before any further allocation
 
     if isp_db <= safe_ceiling + 0.01:
         log("INFO", f"[isp_safety] ISP={isp_db:+.2f} dBTP <= "
                     f"{safe_ceiling:+.2f} (no action)")
+        del data
+        gc.collect()
         return 0.0
 
     gain_db = safe_ceiling - isp_db
@@ -123,12 +129,15 @@ def apply_isp_safety(
     log("INFO", f"[isp_safety] ISP={isp_db:+.2f} dBTP > {safe_ceiling:+.2f} "
                 f"→ applying {gain_db:+.2f} dB")
 
-    data = data * gain_lin
+    data *= gain_lin  # in-place: avoid allocating a second full-size array
     info = sf.info(file_path)
     try:
         sf.write(file_path, data, sr, subtype=info.subtype, format=info.format)
     except Exception as exc:
         log("WARN", f"[isp_safety] write failed: {exc}")
         return None
+    finally:
+        del data
+        gc.collect()
 
     return round(float(gain_db), 3)

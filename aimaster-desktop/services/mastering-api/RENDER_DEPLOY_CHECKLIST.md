@@ -89,6 +89,31 @@ curl -s -o /dev/null -w "%{http_code}\n" -H "X-API-Key: $KEY" "$API/v1/jobs/nope
 
 ---
 
+## 3.5 메모리 / OOM (Starter 512MB) — 플랜 권장
+**증상**: 3~4분 트랙에서 master.wav 생성 후 post-verification/ISP 단계 직후 인스턴스
+restart(OOM). 서버는 in-memory job + 로컬 임시디스크라 restart 시 결과 유실.
+
+**원인(코드 증거)**: ISP-safety가 출력 전체를 RAM에 적재(예전 float64 → 3.5분 ≈ 148MB,
+보정 시 ×2 ≈ 296MB) → 파이프라인 메모리 피크.
+
+**적용한 완화(엔진/서버, 음질 무영향)**:
+- ISP 적재를 **float32**로(≤24-bit 무손실, dBTP 오차 0.000 dB) + **in-place 게인** +
+  `del`/`gc` → 3분 트랙 피크 **134→71 MB(−47%)**, 보정 시 추가 절감.
+- **fast mode는 ISP-safety 자체를 스킵**(`skip_isp_safety`) → ISP 적재 0. 트루피크는
+  stage-6 alimiter(ceiling−0.3 dB 마진)가 유지. (모바일 앱 기본 fast)
+- 완료 전후 `[job] ... status=done stored` 로그 강화. 클라이언트는 restart로 job이
+  사라지면(404) **"서버 작업이 중단되어 자동 접수되었습니다"** 표시(무한폴링 방지).
+
+**플랜 권장**:
+| 플랜 | RAM | 3분+ 트랙 |
+|---|---|---|
+| Starter | 512MB | quality 모드 OOM 위험. **fast 모드 권장** |
+| **Standard** | **2GB** | **3분+ 트랙 안전. quality 모드도 여유** |
+> 3분 이상 트랙을 quality 모드로 자주 쓰면 **Standard(2GB) 승격 권장**. fast 모드만
+> 쓰면 Starter에서도 ISP 스킵으로 OOM 위험이 크게 낮아짐.
+
+---
+
 ## 4. Android 앱에 API URL / API KEY 넣는 법
 두 가지 방법 — **첫 실기 테스트는 (A) 런타임 입력**이 가장 빠름(재빌드 불필요).
 
