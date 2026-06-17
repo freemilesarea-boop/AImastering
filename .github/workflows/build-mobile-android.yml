@@ -29,13 +29,13 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'versionName (e.g. 1.0.0) for the release build'
+        description: 'versionName (e.g. 1.0.1) for the release build'
         required: false
-        default: '1.0.0'
+        default: '1.0.1'
       version_code:
-        description: 'versionCode (integer). Defaults to the run number.'
+        description: 'versionCode (integer, must exceed Play Console value 29).'
         required: false
-        default: ''
+        default: '30'
 
 permissions:
   contents: read
@@ -82,7 +82,7 @@ jobs:
         env:
           # Mastering is on-device (Web Audio API) — NO server/Render env is
           # injected. The app works with no network and no backend.
-          VITE_APP_VERSION: ${{ github.event.inputs.version_name || '1.0.0' }}
+          VITE_APP_VERSION: ${{ github.event.inputs.version_name || '1.0.1' }}
         run: pnpm run build
 
       - name: Add Android platform (android/ is gitignored — regenerate)
@@ -102,8 +102,11 @@ jobs:
       - name: Set Android version (android/ is regenerated each build)
         working-directory: ${{ env.MOBILE_DIR }}/android
         env:
-          VNAME: ${{ github.event.inputs.version_name || '1.0.0' }}
-          VCODE: ${{ github.event.inputs.version_code || github.run_number }}
+          # Release 1.0.1 — versionCode 30 (must exceed the 29 already in Play
+          # Console). On push there are no dispatch inputs, so these literals are
+          # the source of truth; workflow_dispatch can still override per-run.
+          VNAME: ${{ github.event.inputs.version_name || '1.0.1' }}
+          VCODE: ${{ github.event.inputs.version_code || '30' }}
         run: |
           sed -i -E "s/versionCode .*/versionCode ${VCODE}/" app/build.gradle
           sed -i -E "s/versionName \".*\"/versionName \"${VNAME}\"/" app/build.gradle
