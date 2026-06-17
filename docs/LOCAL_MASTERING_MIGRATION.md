@@ -1,5 +1,20 @@
 # 로컬 마스터링 / Render 의존 감사 (데스크톱 출시 기준)
 
+## 0. 최종 결정 (Phase 1) — 승인됨
+
+- **Render P0는 데스크톱 출시 기준으로 해제(RELEASED)** 한다. 근거: 데스크톱은 이미 로컬
+  마스터링이며 Render 의존이 0(아래 §1 증명) → Render 상태와 무관하게 출시 가능.
+- **`apps/desktop`은 코드 변경하지 않는다**(이미 로컬). 회귀 테스트만 수행(§7, 통과).
+- **`apps/mobile` / `apps/mac-shell`은 Phase 1 출시 범위에서 제외**한다 — Render 마스터링 API
+  의존 때문이며, 로컬 엔진 전환(= Phase 3) 이전까지 배포 대상이 아니다. **Phase 1 release
+  blocker 아님.**
+- **삭제하지 않는다**: `apps/mobile`, `apps/mac-shell`, `render.yaml`, `services/mastering-api`.
+  (모바일 백엔드 + Play 내부테스트 AAB가 의존. 운영자가 Render 대시보드에서 직접 Suspend 예정.)
+- 변경 범위: **문서 + release checklist만.** 코드/엔진/모바일 무수정.
+
+---
+
+
 > 결론 먼저: **데스크톱 앱(`apps/desktop`)은 이미 100% 로컬 마스터링이며 Render 의존이 0**이다.
 > Render 사용량은 전적으로 **모바일 앱(`apps/mobile`, Play AAB 포함) + `mac-shell`** 에서 발생한다.
 > 따라서 **Render는 데스크톱 출시의 P0가 아니다.**
