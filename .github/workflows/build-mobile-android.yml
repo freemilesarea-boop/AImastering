@@ -136,6 +136,11 @@ jobs:
       - name: Detect optional secrets
         id: flags
         run: |
+          # Diagnostic: which signing secrets are visible (booleans only, no values).
+          echo "ANDROID_KEYSTORE_BASE64 set:   ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}"
+          echo "ANDROID_KEYSTORE_PASSWORD set: ${{ secrets.ANDROID_KEYSTORE_PASSWORD != '' }}"
+          echo "ANDROID_KEY_ALIAS set:         ${{ secrets.ANDROID_KEY_ALIAS != '' }}"
+          echo "ANDROID_KEY_PASSWORD set:      ${{ secrets.ANDROID_KEY_PASSWORD != '' }}"
           echo "sign=${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}" >> "$GITHUB_OUTPUT"
           echo "firebase=${{ secrets.FIREBASE_APP_ID != '' && secrets.FIREBASE_SERVICE_ACCOUNT != '' }}" >> "$GITHUB_OUTPUT"
 
