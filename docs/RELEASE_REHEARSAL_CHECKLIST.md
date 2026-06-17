@@ -21,6 +21,8 @@
 | 1-3 | Guided Flow **OFF/ON 빌드 통과** | `build` / `VITE_LOUI_GUIDED_FLOW=true build` 둘 다 성공 | [ ] |
 | 1-4 | typecheck | `pnpm --filter @aimaster/desktop typecheck` 0 에러 | [ ] |
 | 1-5 | **License/Paddle 시크릿 준비** | GitHub Secrets: `LICENSE_API_URL`/`LICENSE_API_KEY`/`LICENSE_HMAC_SECRET`/`PADDLE_CHECKOUT_URL` 등록 여부 확인 | [ ] |
+| 1-6 | **Render 서버 상태 무관 (마스터링 로컬)** | `apps/desktop`은 Render 의존 0 — Render가 다운/과금초과/Suspend여도 desktop **build/release/마스터링 정상**. (근거: `docs/LOCAL_MASTERING_MIGRATION.md`) | [ ] |
+| 1-7 | **출시 범위 = apps/desktop만** | `apps/mobile`/`apps/mac-shell`은 Render 의존으로 Phase 1 제외(blocker 아님) | [ ] |
 | 1-6 | 시크릿 미설정 시 영향 인지 | 미설정 = dev LocalValidator 번들(무보호) → **유료 배포는 반드시 설정** | [ ] |
 | 1-7 | Windows installer 생성 가능 | `build-win` job 최근 green(NSIS `.exe` 산출 이력) | [ ] |
 | 1-8 | 서명 정책 인지 | Windows 미서명(SmartScreen) — 출시 비차단으로 합의됨 | [ ] |

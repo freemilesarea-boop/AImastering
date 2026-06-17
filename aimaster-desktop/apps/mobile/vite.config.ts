@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Server API config is injected via env (VITE_MASTERING_API_URL / _API_KEY).
+// Mastering is on-device (Web Audio API). No server/API env is used.
 export default defineConfig({
   plugins: [react()],
   base: './',

@@ -1,12 +1,17 @@
-# Builds the apps/mobile (Capacitor) Android test app.
+# Builds the apps/mobile (Capacitor) Android app.
+#
+# Mastering is 100% ON-DEVICE (Web Audio API) — no server, no Render, works
+# fully offline / airplane-mode. The debug APK is the fast on-device
+# verification artifact: it installs on any device (adb install / sideload),
+# needs NO secrets, and exercises the exact local mastering pipeline.
 #
 # Always: web build -> regenerate android/ (it is gitignored) -> assembleDebug
 #         -> upload the debug APK as an artifact (no secrets required).
 # Optional (only when the matching secrets exist):
-#   - signed release APK + AAB (ANDROID_KEYSTORE_* secrets)
+#   - signed release APK + AAB for Play internal test (ANDROID_KEYSTORE_* secrets)
 #   - Firebase App Distribution (FIREBASE_APP_ID + FIREBASE_SERVICE_ACCOUNT)
 #
-# Scope: mobile test app only. Does NOT touch the desktop build (build.yml),
+# Scope: mobile app only. Does NOT touch the desktop build (build.yml),
 # the python-audio engine, the server API, or any payment/account/iOS code.
 name: Build Mobile Android (test app)
 
@@ -23,12 +28,6 @@ on:
       - '.github/workflows/build-mobile-android.yml'
   workflow_dispatch:
     inputs:
-      build_type:
-        description: 'test (server settings shown) or release (settings hidden, env-injected)'
-        required: false
-        type: choice
-        options: [test, release]
-        default: test
       version_name:
         description: 'versionName (e.g. 1.0.0) for the release build'
         required: false
@@ -81,12 +80,8 @@ jobs:
       - name: Build web assets (Vite)
         working-directory: ${{ env.MOBILE_DIR }}
         env:
-          # release: hide settings UI + inject server from env. test (default):
-          # settings UI shown, server typed in-app. Key is ALWAYS a Secret.
-          VITE_RELEASE_MODE: ${{ github.event.inputs.build_type == 'release' && 'true' || 'false' }}
-          VITE_MASTERING_API_URL: ${{ github.event.inputs.build_type == 'release' && 'https://aimastering.onrender.com' || (vars.VITE_MASTERING_API_URL || secrets.VITE_MASTERING_API_URL) }}
-          VITE_MASTERING_API_KEY: ${{ secrets.VITE_MASTERING_API_KEY }}
-          # Surfaced in error reports (reportError → app_version).
+          # Mastering is on-device (Web Audio API) — NO server/Render env is
+          # injected. The app works with no network and no backend.
           VITE_APP_VERSION: ${{ github.event.inputs.version_name || '1.0.0' }}
         run: pnpm run build
 
@@ -97,6 +92,12 @@ jobs:
       - name: Sync Capacitor (web assets + plugins)
         working-directory: ${{ env.MOBILE_DIR }}
         run: pnpm exec cap sync android
+
+      - name: Generate app icons (adaptive + launcher) — android/ is regenerated each build
+        working-directory: ${{ env.MOBILE_DIR }}
+        run: |
+          pnpm exec capacitor-assets generate --android
+          node fix-adaptive-bg.cjs   # full-bleed gradient background (no inset)
 
       - name: Set Android version (android/ is regenerated each build)
         working-directory: ${{ env.MOBILE_DIR }}/android
@@ -109,8 +110,17 @@ jobs:
           echo "version: ${VNAME} (${VCODE})"
           grep -E "versionCode|versionName" app/build.gradle
 
-      - name: Accept Android SDK licenses
-        run: yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+      - name: Bump Android SDK to 35 (Play targetSdk policy)
+        working-directory: ${{ env.MOBILE_DIR }}
+        run: |
+          node patch-android-sdk.cjs
+          grep -E "compileSdkVersion|targetSdkVersion|minSdkVersion" android/variables.gradle
+
+      - name: Accept Android SDK licenses + ensure API 35
+        run: |
+          SDK="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDK" --licenses > /dev/null 2>&1 || true
+          yes | "$SDK" "platforms;android-35" "build-tools;35.0.0" > /dev/null 2>&1 || true
 
       # ── Debug APK (always) ──────────────────────────────────────────────────
       - name: Build debug APK
@@ -130,6 +140,11 @@ jobs:
       - name: Detect optional secrets
         id: flags
         run: |
+          # Diagnostic: which signing secrets are visible (booleans only, no values).
+          echo "ANDROID_KEYSTORE_BASE64 set:   ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}"
+          echo "ANDROID_KEYSTORE_PASSWORD set: ${{ secrets.ANDROID_KEYSTORE_PASSWORD != '' }}"
+          echo "ANDROID_KEY_ALIAS set:         ${{ secrets.ANDROID_KEY_ALIAS != '' }}"
+          echo "ANDROID_KEY_PASSWORD set:      ${{ secrets.ANDROID_KEY_PASSWORD != '' }}"
           echo "sign=${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}" >> "$GITHUB_OUTPUT"
           echo "firebase=${{ secrets.FIREBASE_APP_ID != '' && secrets.FIREBASE_SERVICE_ACCOUNT != '' }}" >> "$GITHUB_OUTPUT"
 
