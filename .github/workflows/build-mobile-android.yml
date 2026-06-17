@@ -115,8 +115,17 @@ jobs:
           echo "version: ${VNAME} (${VCODE})"
           grep -E "versionCode|versionName" app/build.gradle
 
-      - name: Accept Android SDK licenses
-        run: yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+      - name: Bump Android SDK to 35 (Play targetSdk policy)
+        working-directory: ${{ env.MOBILE_DIR }}
+        run: |
+          node patch-android-sdk.cjs
+          grep -E "compileSdkVersion|targetSdkVersion|minSdkVersion" android/variables.gradle
+
+      - name: Accept Android SDK licenses + ensure API 35
+        run: |
+          SDK="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDK" --licenses > /dev/null 2>&1 || true
+          yes | "$SDK" "platforms;android-35" "build-tools;35.0.0" > /dev/null 2>&1 || true
 
       # ── Debug APK (always) ──────────────────────────────────────────────────
       - name: Build debug APK
