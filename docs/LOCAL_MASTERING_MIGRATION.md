@@ -1,6 +1,42 @@
-# 로컬 마스터링 / Render 의존 감사 (데스크톱 출시 기준)
+# 로컬 마스터링 / Render 의존 감사
 
-## 0. 최종 결정 (Phase 1) — 승인됨
+## 0-A. 모바일(`apps/mobile`) — Render → 온디바이스 로컬 전환 (완료)
+
+> 출시/테스트 대상은 **모바일 앱(`apps/mobile`, Play 내부테스트 AAB)**. 이 앱의 마스터링을
+> Render 서버 호출에서 **기기 내부(WebView) 로컬 처리**로 전환했다. 목표는 고품질 완성형이
+> 아니라 **Render 서버비 0원 구조**(서버 job 생성/polling 제거).
+
+- **새 로컬 엔진**: `apps/mobile/src/localMobileMastering.ts` — Web Audio `OfflineAudioContext`
+  기반. 파이프라인: decode → 분석 → EQ(highpass/shelf/presence) → 글루 컴프 → 라우드니스 정규화
+  → 트루피크 리미터 → WAV(16-bit) export → 미리듣기 URL. 업로드/네트워크/서버 **없음**.
+- **제거된 Render 의존** (`apps/mobile/src/mobileApi.ts`):
+  - `fetch(/v1/analyze)`, `fetch(/v1/master)`, job polling `fetch(/v1/jobs/{id})`,
+    `fetch(/v1/jobs/{id}/download)`, `fetch(/v1/error-reports)` — **전부 삭제**.
+  - 서버 설정/키(`ENV_API_URL`/`ENV_API_KEY`/`RELEASE_BUILD`/`baseUrl`/`authHeaders`/
+    `setApiConfig`), 재시도 프리미티브(`withRetry`/`HttpError`/`JobInterruptedError`/
+    `pollMaster`/`startMaster`/…) — **삭제**. `reportError`는 로컬 콘솔 로그 no-op로 대체.
+  - 남긴 것: `pickAudioFile`/`saveToDownloads`/`shareFile`(네이티브) + 타입.
+- **App.tsx**: 서버 설정 단계 제거 → 단계 = `파일 → 마스터 → 결과`. `onMaster`는
+  `runLocalMastering(...)` 호출. 서버 지연/자동 재확인 문구 제거 → 로컬 진행률 문구
+  ("오디오를 분석하고 있습니다" / "로컬 엔진으로 마스터링 중입니다" / "라우드니스 정규화 중" /
+  "리미터 적용 중" / "Export 준비 중"). 동시 실행 1개 제한, 큰 파일 경고,
+  백그라운드 전환 시 중단+재시도 안내.
+- **빌드 env**: `.github/workflows/build-mobile-android.yml` + `apps/mobile/.env.example`에서
+  `VITE_MASTERING_API_URL` / `VITE_MASTERING_API_KEY` / `VITE_RELEASE_MODE` 제거. AAB는
+  서버 없이 빌드/동작.
+- **검증**: `pnpm --filter @aimaster/mobile build`(tsc+vite) 통과, `cap sync android`(3 플러그인)
+  통과, `apps/mobile/src`에 Render fetch 0건(주석 1건은 설명용).
+- **남은 서버 의존(모바일)**: 없음. (결제/계정/구독 검증 서버를 붙일 경우 그 경로만 유지 — 현재
+  모바일 앱엔 결제 코드 없음.)
+- **다음 단계(품질 업그레이드, 별도 작업)**: `packages/dsp-wasm`(Rust DSP) 를 WebView에서
+  재사용해 EQ/리미터 품질 향상. 현재 MVP는 Web Audio 노드만 사용.
+
+> `apps/mac-shell`은 `apps/mobile/dist`를 감싸는 macOS 래퍼다. 본 전환으로 mac-shell도
+> 자동으로 로컬 처리가 되지만, **이번 작업 범위에서 직접 손대지 않았다**(별도 검증 필요).
+
+---
+
+## 0. 최종 결정 (Phase 1, 데스크톱 기준) — 승인됨
 
 - **Render P0는 데스크톱 출시 기준으로 해제(RELEASED)** 한다. 근거: 데스크톱은 이미 로컬
   마스터링이며 Render 의존이 0(아래 §1 증명) → Render 상태와 무관하게 출시 가능.

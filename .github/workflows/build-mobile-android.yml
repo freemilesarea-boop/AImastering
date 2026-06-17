@@ -23,12 +23,6 @@ on:
       - '.github/workflows/build-mobile-android.yml'
   workflow_dispatch:
     inputs:
-      build_type:
-        description: 'test (server settings shown) or release (settings hidden, env-injected)'
-        required: false
-        type: choice
-        options: [test, release]
-        default: test
       version_name:
         description: 'versionName (e.g. 1.0.0) for the release build'
         required: false
@@ -81,12 +75,8 @@ jobs:
       - name: Build web assets (Vite)
         working-directory: ${{ env.MOBILE_DIR }}
         env:
-          # release: hide settings UI + inject server from env. test (default):
-          # settings UI shown, server typed in-app. Key is ALWAYS a Secret.
-          VITE_RELEASE_MODE: ${{ github.event.inputs.build_type == 'release' && 'true' || 'false' }}
-          VITE_MASTERING_API_URL: ${{ github.event.inputs.build_type == 'release' && 'https://aimastering.onrender.com' || (vars.VITE_MASTERING_API_URL || secrets.VITE_MASTERING_API_URL) }}
-          VITE_MASTERING_API_KEY: ${{ secrets.VITE_MASTERING_API_KEY }}
-          # Surfaced in error reports (reportError → app_version).
+          # Mastering is on-device (Web Audio API) — NO server/Render env is
+          # injected. The app works with no network and no backend.
           VITE_APP_VERSION: ${{ github.event.inputs.version_name || '1.0.0' }}
         run: pnpm run build
 
