@@ -47,8 +47,15 @@ export class LocalMasteringError extends Error {
   }
 }
 
-const LARGE_DURATION_SEC = 8 * 60;   // warn beyond ~8 min
-const MAX_DURATION_SEC = 20 * 60;    // hard guard (memory)
+// MVP limits — tuned for Android WebView (Chromium) memory. Decoding to PCM
+// float32 + the 3 offline render buffers (input/shaped/mastered) + the WAV
+// output multiply memory use: a 5-min stereo 44.1k buffer is ~50MB, ×4 stages.
+// Conservative caps keep low-RAM devices from OOM-crashing the WebView.
+export const RECOMMENDED_DURATION_SEC = 6 * 60; // 권장: 6분 이하
+export const MAX_FILE_BYTES = 150 * 1024 * 1024; // 하드 거부: 150MB 초과
+export const LARGE_FILE_BYTES = 60 * 1024 * 1024; // 경고: 60MB 초과
+const LARGE_DURATION_SEC = 6 * 60;   // warn beyond ~6 min
+const MAX_DURATION_SEC = 15 * 60;    // hard guard (memory)
 
 function checkCancel(sig?: LocalSignal): void {
   if (sig?.cancelled?.()) throw new LocalMasteringError('CANCELLED', 'cancelled');
@@ -166,7 +173,14 @@ async function renderGraph(
   input: AudioBuffer,
   build: (oac: OfflineAudioContext, src: AudioBufferSourceNode) => AudioNode,
 ): Promise<AudioBuffer> {
-  const oac = new OACtor(input.numberOfChannels, input.length, input.sampleRate);
+  let oac: OfflineAudioContext;
+  try {
+    // Allocating the offline buffer can throw RangeError on low-memory devices
+    // when the length is large → surface a clear "insufficient memory" message.
+    oac = new OACtor(input.numberOfChannels, input.length, input.sampleRate);
+  } catch (e) {
+    throw new LocalMasteringError('INSUFFICIENT_MEMORY', `이 기기의 메모리로는 이 파일을 처리할 수 없습니다. 더 짧은 음원을 사용해 주세요. (${(e as Error)?.message ?? e})`);
+  }
   const src = oac.createBufferSource();
   src.buffer = input;
   const tail = build(oac, src);
@@ -187,6 +201,15 @@ export async function runLocalMastering(
   sig?: LocalSignal,
 ): Promise<LocalMasterResult> {
   const warnings: string[] = [];
+
+  // 0) size guard (before we ever read the whole file into memory)
+  if (blob.size > MAX_FILE_BYTES) {
+    throw new LocalMasteringError('INSUFFICIENT_MEMORY', `${Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB가 넘는 파일은 기기에서 처리할 수 없습니다. 더 작은 파일을 사용해 주세요.`);
+  }
+  if (blob.size > LARGE_FILE_BYTES) {
+    warnings.push('큰 파일이라 처리에 시간이 더 걸리고 메모리를 많이 사용할 수 있습니다.');
+  }
+
   const { AC, OAC: OACtor } = getAudioCtor();
 
   // 1) decode
@@ -196,9 +219,14 @@ export async function runLocalMastering(
   try {
     const arr = await blob.arrayBuffer();
     input = await ac.decodeAudioData(arr.slice(0));
-  } catch {
+  } catch (e) {
     try { await ac.close(); } catch { /* noop */ }
-    throw new LocalMasteringError('UNSUPPORTED_FORMAT', '이 파일 형식은 기기에서 디코딩할 수 없습니다. WAV/MP3/M4A를 사용해 주세요.');
+    // RangeError / allocation failures while reading or decoding a large file →
+    // treat as out-of-memory rather than an unsupported format.
+    if (e instanceof RangeError || /allocation|memory|out of memory/i.test((e as Error)?.message ?? '')) {
+      throw new LocalMasteringError('INSUFFICIENT_MEMORY', '이 기기의 메모리로는 이 파일을 처리할 수 없습니다. 더 짧은 음원을 사용해 주세요.');
+    }
+    throw new LocalMasteringError('FILE_DECODE_FAILED', '이 파일 형식은 기기에서 디코딩할 수 없습니다. WAV/MP3/M4A를 사용해 주세요.');
   }
   try { await ac.close(); } catch { /* noop */ }
 

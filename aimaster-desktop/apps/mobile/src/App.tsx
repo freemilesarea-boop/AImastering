@@ -23,6 +23,8 @@ import {
 import {
   runLocalMastering,
   LocalMasteringError,
+  LARGE_FILE_BYTES,
+  MAX_FILE_BYTES,
   type LocalMasterResult,
   type LocalSignal,
 } from './localMobileMastering';
@@ -148,6 +150,12 @@ export default function App() {
     // Concurrency: only one local mastering at a time (CPU/memory heavy).
     if (busy) {
       setMasterError('현재 마스터링이 진행 중입니다. 완료된 후 다시 시도해 주세요.');
+      return;
+    }
+    // Hard size cap (before allocating any memory).
+    if (file.size > MAX_FILE_BYTES) {
+      setMasterError(`${Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB가 넘는 파일은 기기에서 처리할 수 없습니다. 더 작은 파일을 선택해 주세요.`);
+      setRunPhase('error');
       return;
     }
 
@@ -408,7 +416,8 @@ function MasterStep(props: {
   } = props;
 
   const running = runPhase === 'running';
-  const big = file ? file.size > 60 * 1024 * 1024 : false; // ~60MB → warn
+  const big = file ? file.size > LARGE_FILE_BYTES : false; // 60MB → warn
+  const tooBig = file ? file.size > MAX_FILE_BYTES : false; // 150MB → block
 
   return (
     <section className="card">
@@ -450,12 +459,17 @@ function MasterStep(props: {
             </div>
           </div>
 
-          {big && (
+          {tooBig ? (
+            <div className="notice error">
+              <strong>파일이 너무 큽니다.</strong>
+              <p>{Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB 이하의 파일만 기기에서 처리할 수 있어요. 더 작은 파일을 선택해 주세요.</p>
+            </div>
+          ) : big ? (
             <div className="notice warn">
               <strong>큰 파일입니다.</strong>
-              <p>기기에서 처리하는 데 시간이 오래 걸리고 메모리를 많이 사용할 수 있어요.</p>
+              <p>기기에서 처리하는 데 시간이 오래 걸리고 메모리를 많이 사용할 수 있어요. (권장: 6분 이하)</p>
             </div>
-          )}
+          ) : null}
 
           {!file && <p className="inline-err">먼저 파일을 선택하세요.</p>}
         </>

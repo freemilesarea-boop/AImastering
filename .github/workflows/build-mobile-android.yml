@@ -1,12 +1,17 @@
-# Builds the apps/mobile (Capacitor) Android test app.
+# Builds the apps/mobile (Capacitor) Android app.
+#
+# Mastering is 100% ON-DEVICE (Web Audio API) — no server, no Render, works
+# fully offline / airplane-mode. The debug APK is the fast on-device
+# verification artifact: it installs on any device (adb install / sideload),
+# needs NO secrets, and exercises the exact local mastering pipeline.
 #
 # Always: web build -> regenerate android/ (it is gitignored) -> assembleDebug
 #         -> upload the debug APK as an artifact (no secrets required).
 # Optional (only when the matching secrets exist):
-#   - signed release APK + AAB (ANDROID_KEYSTORE_* secrets)
+#   - signed release APK + AAB for Play internal test (ANDROID_KEYSTORE_* secrets)
 #   - Firebase App Distribution (FIREBASE_APP_ID + FIREBASE_SERVICE_ACCOUNT)
 #
-# Scope: mobile test app only. Does NOT touch the desktop build (build.yml),
+# Scope: mobile app only. Does NOT touch the desktop build (build.yml),
 # the python-audio engine, the server API, or any payment/account/iOS code.
 name: Build Mobile Android (test app)
 
