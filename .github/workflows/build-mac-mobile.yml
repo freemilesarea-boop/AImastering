@@ -1,28 +1,20 @@
-# Packages the apps/mobile server-mastering app as a macOS .dmg/.zip via the
-# apps/mac-shell Electron wrapper (no local python engine).
+# DEPRECATED — apps/mac-shell is NOT a shipping target.
 #
-# Scope: mobile-style macOS app only. Does NOT touch the desktop engine app
-# (apps/desktop / build.yml), the Android workflow, the server, or python-audio.
-name: Build macOS Mobile App
+# The mac-shell wrapper runs the mobile SPA's on-device Web Audio mastering in a
+# Chromium renderer, which SIGSEGVs on macOS (render-process-gone exitCode:11,
+# GPU on/off). That cannot be fixed in JS and cannot be moved off the renderer
+# (Node has no Web Audio). macOS ships via apps/desktop (build.yml). This
+# workflow is kept manual-only (workflow_dispatch) for archival/diagnostics and
+# NO LONGER auto-builds on push. Does NOT touch apps/desktop, the Android
+# workflow, the server, or python-audio.
+name: Build macOS Mobile App (DEPRECATED — manual only)
 
 on:
-  push:
-    branches:
-      - claude/gifted-babbage-6bd4gc
-    paths:
-      - 'aimaster-desktop/apps/mobile/**'
-      - 'aimaster-desktop/apps/mac-shell/**'
-      - '.github/workflows/build-mac-mobile.yml'
+  # Auto (push) triggers removed: mac-shell is deprecated and must not ship.
   workflow_dispatch:
     inputs:
-      build_type:
-        description: 'test (server settings shown) or release (settings hidden, env-injected)'
-        required: false
-        type: choice
-        options: [test, release]
-        default: test
       version_name:
-        description: 'app version (e.g. 1.0.0)'
+        description: 'app version (e.g. 1.0.0) — diagnostics build only'
         required: false
         default: '1.0.0'
 
@@ -80,11 +72,7 @@ jobs:
       - name: Build mobile SPA (Vite)
         working-directory: aimaster-desktop/apps/mobile
         env:
-          # release: hide settings UI + inject server from env. test (default):
-          # settings UI shown. Key is ALWAYS a Secret. (mac-shell loads this dist)
-          VITE_RELEASE_MODE: ${{ github.event.inputs.build_type == 'release' && 'true' || 'false' }}
-          VITE_MASTERING_API_URL: ${{ github.event.inputs.build_type == 'release' && 'https://aimastering.onrender.com' || (vars.VITE_MASTERING_API_URL || secrets.VITE_MASTERING_API_URL) }}
-          VITE_MASTERING_API_KEY: ${{ secrets.VITE_MASTERING_API_KEY }}
+          # On-device mastering (Web Audio) — NO server/Render env injected.
           VITE_APP_VERSION: ${{ github.event.inputs.version_name || '1.0.0' }}
         run: pnpm run build
 
