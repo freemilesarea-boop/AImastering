@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ExportOptions for `xcodebuild -exportArchive` → App Store IPA.
+  Replace YOUR_TEAM_ID with your Apple Developer Team ID (App Store Connect →
+  Membership → Team ID, e.g. ABCDE12345). method=app-store uploads to ASC.
+  See docs/IOS_BUILD.md.
+-->
+<plist version="1.0">
+<dict>
+  <key>method</key>
+  <string>app-store</string>
+  <key>teamID</key>
+  <string>YOUR_TEAM_ID</string>
+  <key>signingStyle</key>
+  <string>automatic</string>
+  <key>uploadSymbols</key>
+  <true/>
+  <key>uploadBitcode</key>
+  <false/>
+  <key>destination</key>
+  <string>export</string>
+</dict>
+</plist>

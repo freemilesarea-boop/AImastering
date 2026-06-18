@@ -4,7 +4,9 @@ const config: CapacitorConfig = {
   appId: 'com.louver.mastering.mobile',
   appName: 'Loui Mastering',
   webDir: 'dist',
-  // Android-only test app. iOS not configured (out of scope).
+  // appId above = the ANDROID applicationId. iOS uses a DISTINCT bundle id
+  // (com.louver.mastering.ios) set after `cap add ios` via set-ios-bundle-id.cjs
+  // — see docs/IOS_BUILD.md. ios/ is gitignored + regenerated like android/.
   plugins: {
     // Route fetch/XHR through the native HTTP layer. CapacitorHttp is built
     // into @capacitor/core (NOT a new plugin); enabling it makes cross-origin
