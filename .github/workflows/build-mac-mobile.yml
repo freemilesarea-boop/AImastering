@@ -1,20 +1,27 @@
-# DEPRECATED — apps/mac-shell is NOT a shipping target.
+# Packages the apps/mobile on-device mastering SPA as a macOS .dmg/.zip via the
+# apps/mac-shell Electron wrapper. NOTE: under active investigation — the SPA's
+# Web Audio mastering SIGSEGVs the macOS renderer (render-process-gone
+# exitCode:11). mac-shell now ships a DIAGNOSTIC preload (diag-preload.cjs) that
+# instruments OfflineAudioContext / decodeAudioData / Blob / createObjectURL and
+# writes the last call to disk before the crash. NOT deprecated — we are finding
+# the root cause. No server/Render env (on-device).
 #
-# The mac-shell wrapper runs the mobile SPA's on-device Web Audio mastering in a
-# Chromium renderer, which SIGSEGVs on macOS (render-process-gone exitCode:11,
-# GPU on/off). That cannot be fixed in JS and cannot be moved off the renderer
-# (Node has no Web Audio). macOS ships via apps/desktop (build.yml). This
-# workflow is kept manual-only (workflow_dispatch) for archival/diagnostics and
-# NO LONGER auto-builds on push. Does NOT touch apps/desktop, the Android
-# workflow, the server, or python-audio.
-name: Build macOS Mobile App (DEPRECATED — manual only)
+# Scope: mobile-style macOS app only. Does NOT touch the desktop engine app
+# (apps/desktop / build.yml), the Android workflow, the server, or python-audio.
+name: Build macOS Mobile App
 
 on:
-  # Auto (push) triggers removed: mac-shell is deprecated and must not ship.
+  push:
+    branches:
+      - claude/gifted-babbage-6bd4gc
+    paths:
+      - 'aimaster-desktop/apps/mobile/**'
+      - 'aimaster-desktop/apps/mac-shell/**'
+      - '.github/workflows/build-mac-mobile.yml'
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'app version (e.g. 1.0.0) — diagnostics build only'
+        description: 'app version (e.g. 1.0.0)'
         required: false
         default: '1.0.0'
 

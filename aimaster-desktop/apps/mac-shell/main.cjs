@@ -97,33 +97,17 @@ code{opacity:.6;font-size:12px;word-break:break-all}</style>
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
 }
 
-// ── DEPRECATION NOTICE (default) ──────────────────────────────────────────────
-// The mobile SPA masters audio in the renderer via the Web Audio API
-// (OfflineAudioContext + manual WAV encode). On macOS that path SIGSEGVs the
-// renderer (render-process-gone reason:"crashed" exitCode:11), with HW accel on
-// OR off — a native crash that cannot be fixed from JS and cannot be moved off
-// the renderer (Node main/worker/utility processes have no Web Audio). The
-// macOS product is apps/desktop (Louver Mastering AI — local Python/FFmpeg
-// engine). So mac-shell defaults to a notice and does NOT run the crashing
-// engine. Set LOUI_RUN_SPA=1 to force-load the SPA (diagnostics only).
-const RUN_SPA = process.env.LOUI_RUN_SPA === '1';
-function noticeUrl() {
-  const html = `<!doctype html><meta charset="utf-8">
-<style>html,body{margin:0;height:100%;background:#0b0d12;color:#e6e9ef;
-font:15px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;display:flex;
-align-items:center;justify-content:center}.b{max-width:360px;padding:28px;text-align:center}
-h1{font-size:18px;margin:0 0 10px}p{opacity:.8;margin:0 0 12px}
-.s{opacity:.55;font-size:12px;margin-top:18px}</style>
-<div class="b"><h1>macOS는 데스크톱 앱을 사용해 주세요</h1>
-<p>이 macOS 빌드는 더 이상 마스터링을 실행하지 않습니다. macOS 마스터링은
-<b>Louver Mastering AI</b> 데스크톱 앱을 이용해 주세요.</p>
-<p class="s">(mac-shell deprecated — on-device Web Audio mastering crashes the
-macOS renderer. See apps/mac-shell/README.md)</p></div>`;
-  return 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
-}
-// The URL the window should show on launch and recover to after a crash.
+// ── Root-cause mode ───────────────────────────────────────────────────────────
+// We load the REAL mobile SPA (app://localhost/) and attach a diagnostic preload
+// that instruments the Web Audio / Blob / object-URL path IN THE PAGE'S MAIN
+// WORLD and writes each checkpoint synchronously to disk, so the LAST line
+// before the SIGSEGV survives. To monkey-patch the globals the SPA actually
+// uses, the preload must run in the main world: contextIsolation:false +
+// sandbox:false (diagnostic build only). No SPA / mobile source is modified.
+const DIAG_PRELOAD = path.join(__dirname, 'diag-preload.cjs');
+// URL shown on launch and recovered to after a crash — the real SPA.
 function startUrl() {
-  return RUN_SPA ? 'app://localhost/' : noticeUrl();
+  return 'app://localhost/';
 }
 
 function createWindow() {
@@ -135,9 +119,11 @@ function createWindow() {
     title: 'Loui Mastering',
     backgroundColor: '#0b0d12',
     webPreferences: {
-      contextIsolation: true,
+      preload: DIAG_PRELOAD,
+      // Main-world access so the preload can wrap the SPA's own globals.
+      contextIsolation: false,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false,
     },
   });
 
@@ -174,7 +160,7 @@ function createWindow() {
       log('render-process-gone: too many crashes — showing error screen');
       win.loadURL(errorScreen(details && details.reason));
     } else {
-      log('render-process-gone: recovering →', RUN_SPA ? 'app://localhost/' : 'notice');
+      log('render-process-gone: recovering → app://localhost/');
       win.loadURL(startUrl());
     }
   });
@@ -188,8 +174,8 @@ function createWindow() {
   if (DEBUG) wc.openDevTools({ mode: 'detach' });
 
   win.loadURL(startUrl());
-  log('window created; mode:', RUN_SPA ? 'SPA (LOUI_RUN_SPA=1)' : 'deprecation-notice',
-    '· log file:', logPath());
+  log('window created; loading SPA app://localhost/ with diag-preload · main log:',
+    logPath());
 }
 
 app.whenReady().then(() => {

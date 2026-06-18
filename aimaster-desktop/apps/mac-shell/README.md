@@ -1,14 +1,14 @@
 # apps/mac-shell — macOS mobile-style app
 
-> ⚠️ **DEPRECATED — not a shipping target.** The mobile SPA masters audio in the
-> renderer via the Web Audio API (OfflineAudioContext + WAV encode). On macOS
-> that **SIGSEGVs the Chromium renderer** (`render-process-gone reason:"crashed"
-> exitCode:11`, with GPU accel on **and** off) — a native crash that can't be
-> fixed in JS and can't be moved off the renderer (Node main/worker/utility have
-> no Web Audio). **macOS ships via `apps/desktop` (Louver Mastering AI — local
-> Python/FFmpeg engine).** This app now defaults to a notice screen and does NOT
-> run mastering; set `LOUI_RUN_SPA=1` only to reproduce the crash for diagnostics.
-> The CI workflow (`build-mac-mobile.yml`) is manual-only and no longer auto-builds.
+> 🔬 **Under investigation (NOT deprecated).** The mobile SPA masters audio in the
+> renderer via the Web Audio API (OfflineAudioContext + WAV encode). On macOS that
+> **SIGSEGVs the Chromium renderer** (`render-process-gone reason:"crashed"
+> exitCode:11`, GPU accel on **and** off). We are finding the root cause: the app
+> loads the real SPA and a **diagnostic preload** (`diag-preload.cjs`) instruments
+> `OfflineAudioContext` / `decodeAudioData` / `Blob` / `URL.createObjectURL` /
+> media playback and writes the **last call before the crash** to
+> `~/loui-diag.log` (synchronously, so it survives the SIGSEGV). See "Logs / crash
+> diagnostics" below.
 
 A minimal **Electron wrapper** that ships the **same `apps/mobile`** on-device
 mastering app (3-step flow: 파일 → 마스터 → 결과) as a macOS `.dmg`/`.zip`.

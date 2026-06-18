@@ -20,6 +20,7 @@ nodeGypRebuild: false
 # Pure web + tiny main process — no node deps to bundle.
 files:
   - main.cjs
+  - diag-preload.cjs   # diagnostic instrument (root-cause of macOS renderer crash)
   - www/**/*
 
 extraMetadata:
