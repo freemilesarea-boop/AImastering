@@ -32,6 +32,18 @@ import {
 // User-facing copy: never expose raw technical errors.
 const GENERIC_ERR = '처리 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
 
+// mac-shell = the macOS Electron wrapper (apps/mac-shell). It serves this SPA
+// over the app:// scheme and its preload sets window.__LOUI_MAC_SHELL__.
+// Mastering + WAV export work there, but attaching the result Blob URL to an
+// <audio> element SIGSEGVs the macOS renderer. So on mac-shell ONLY we skip
+// preview playback (save/export still work). Android (capacitor/https) and the
+// web build never match this flag → their behavior is unchanged.
+const IS_MAC_SHELL: boolean =
+  typeof window !== 'undefined' &&
+  (((window as unknown as { __LOUI_MAC_SHELL__?: boolean }).__LOUI_MAC_SHELL__ === true) ||
+    (typeof window.location !== 'undefined' && window.location.protocol === 'app:'));
+
+
 // Map a local engine error to a clear, user-friendly Korean message.
 function toUserError(step: string, e: unknown, ctx?: ErrorContext): string {
   reportError(step, e, ctx); // local console log only (no server)
@@ -516,7 +528,13 @@ function ResultStep(props: {
             <span className="ri-title">마스터 (WAV)</span>
             <span className="tag ok">완료</span>
           </div>
-          <audio src={master.url} controls className="player" preload="metadata" />
+          {IS_MAC_SHELL ? (
+            <p className="hint">
+              macOS 미리듣기는 현재 비활성화되어 있습니다. 저장 후 Finder에서 재생해 주세요.
+            </p>
+          ) : (
+            <audio src={master.url} controls className="player" preload="metadata" />
+          )}
           {metrics && (
             <p className="hint small">
               측정값(근사): LUFS {metrics.lufs ?? '—'} · True Peak {metrics.truePeak ?? '—'} dBFS

@@ -31,6 +31,11 @@ try {
 
   const W = window;
 
+  // Authoritative mac-shell marker the SPA reads (App.tsx IS_MAC_SHELL) to skip
+  // the result <audio> preview that SIGSEGVs the macOS renderer. Set before any
+  // SPA script runs. Android / web never get this preload → flag stays unset.
+  try { W.__LOUI_MAC_SHELL__ = true; } catch { /* ignore */ }
+
   // ── 1) OfflineAudioContext: construction + startRendering ───────────────────
   function wrapOAC(name) {
     const Orig = W[name];
