@@ -25,14 +25,20 @@ pnpm install
 pnpm --filter @aimaster/mobile build      # → apps/mobile/dist (Render env 없음)
 ```
 
-## 2. Capacitor iOS 프로젝트 생성 + 번들 ID 설정
+## 2. Capacitor iOS 프로젝트 생성 + 번들 ID + 앱 아이콘
 ```bash
 cd aimaster-desktop/apps/mobile
-pnpm exec cap add ios                      # ios/ 생성 (gitignored)
-node set-ios-bundle-id.cjs                 # PRODUCT_BUNDLE_IDENTIFIER → com.louver.mastering.ios
-pnpm exec cap sync ios                     # 웹 자산 + 플러그인 동기화
+pnpm exec cap add ios                       # ios/ 생성 (gitignored)
+node set-ios-bundle-id.cjs                  # PRODUCT_BUNDLE_IDENTIFIER → com.louver.mastering.ios
+pnpm exec capacitor-assets generate --ios   # AppIcon.appiconset 생성(= Android와 동일 소스 assets/icon.png)
+pnpm exec cap sync ios                      # 웹 자산 + 플러그인 + 아이콘 동기화
 ```
-- 확인: `grep PRODUCT_BUNDLE_IDENTIFIER ios/App/App.xcodeproj/project.pbxproj` → `com.louver.mastering.ios`.
+- 확인(번들 ID): `grep PRODUCT_BUNDLE_IDENTIFIER ios/App/App.xcodeproj/project.pbxproj` → `com.louver.mastering.ios`.
+- 확인(아이콘): `ls ios/App/App/Assets.xcassets/AppIcon.appiconset` → `AppIcon-512@2x.png`(1024×1024) + `Contents.json`.
+  - 소스 = `apps/mobile/assets/icon.png`(1024×1024) — **Android launcher 아이콘과 동일 소스**. iOS는
+    이 단일 1024 아이콘을 홈 화면/설정/Spotlight/App Store에서 자동 스케일해 사용(Xcode single-size AppIcon).
+  - `cap:assets:ios` 스크립트로도 실행 가능: `pnpm --filter @aimaster/mobile cap:assets:ios`
+    (단, `cap add ios` 후 ios/ 가 있어야 함).
 
 ## 3. CocoaPods
 ```bash
@@ -51,6 +57,10 @@ pnpm exec cap open ios                     # 또는: open ios/App/App.xcworkspac
   - Bundle Identifier = `com.louver.mastering.ios` (자동 표시되어야 함).
   - "Automatically manage signing" 체크 → App Store 프로비저닝 자동 생성.
 - 일반: Version(CFBundleShortVersionString)=`1.0.0`, Build(CFBundleVersion)=`1` 설정.
+
+> 🎯 **아이콘이 기본 아이콘으로 보일 때**: Xcode에서 **Product → Clean Build Folder**(⇧⌘K) 후
+> 기기에서 앱을 **삭제 → 재설치**. iOS는 아이콘을 적극 캐싱하므로 클린/재설치 없이는 옛 아이콘이
+> 남을 수 있음. (`capacitor-assets generate --ios` + `cap sync ios`가 선행됐는지도 확인.)
 
 ## 5. Archive 생성
 
@@ -95,7 +105,9 @@ xcodebuild -exportArchive \
 ## 빠른 체크리스트
 - [ ] `pnpm --filter @aimaster/mobile build` 성공
 - [ ] `cap add ios` → `node set-ios-bundle-id.cjs` (번들 ID = com.louver.mastering.ios)
-- [ ] `pod install` → `ios/App/App.xcworkspace` 존재
+- [ ] `capacitor-assets generate --ios` → AppIcon.appiconset(1024) 생성(Android와 동일 소스)
+- [ ] `cap sync ios` → 아이콘/웹자산 반영, `pod install` → `App.xcworkspace` 존재
+- [ ] (아이콘 캐시) Clean Build Folder + 앱 삭제 후 재설치
 - [ ] Xcode Signing: Team + Automatic signing
 - [ ] Product → Archive 성공
 - [ ] ExportOptions(teamID 기입) → `App.ipa` 생성
