@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   isNative,
   pickAudioFile,
+  isAllowedAudio,
   saveToDownloads,
   shareFile,
   reportError,
@@ -146,6 +147,11 @@ export default function App() {
       setPickError('');
       const picked = await pickAudioFile();
       if (!picked) return;
+      // The picker filter is unreliable on iOS, so gate the type here.
+      if (!isAllowedAudio(picked.name, picked.mimeType)) {
+        setPickError('지원하지 않는 형식입니다. mp3 / wav / m4a / aac / flac 파일을 선택해 주세요.');
+        return;
+      }
       setFile(picked);
       // reset downstream state for the new file
       setMaster(null);

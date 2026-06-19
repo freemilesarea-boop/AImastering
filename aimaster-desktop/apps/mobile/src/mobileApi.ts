@@ -45,12 +45,29 @@ export class CancelledError extends Error {
 // ── File selection ─────────────────────────────────────────────────────────────
 // Native: @capawesome/capacitor-file-picker → read back as blob.
 // Web (vite preview / desktop browser): <input type="file"> fallback.
+
+// JS-side type gate (don't rely on the picker's filter — see pickAudioFile).
+export const ALLOWED_AUDIO_EXTS = ['mp3', 'wav', 'm4a', 'aac', 'flac'] as const;
+
+export function isAllowedAudio(name: string, mimeType?: string): boolean {
+  const dot = name.lastIndexOf('.');
+  const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+  if ((ALLOWED_AUDIO_EXTS as readonly string[]).includes(ext)) return true;
+  // Fallback: trust an audio/* mime when the name lacks a known extension
+  // (e.g. some Android content:// URIs report no extension).
+  return !!mimeType && /^audio\//i.test(mimeType);
+}
+
 export async function pickAudioFile(): Promise<PickedAudio | null> {
   if (isNative()) {
-    const res = await FilePicker.pickFiles({
-      types: ['audio/*'],
-      readData: true, // base64 in `data` — avoids content:// read restrictions
-    });
+    // iOS Files picker GREYS OUT .mp3 when the mime filter doesn't map to a
+    // concrete UTI — the 'audio/*' wildcard disables MP3/M4A. So on iOS we do
+    // NOT restrict types (all files selectable) and validate the pick in JS
+    // (isAllowedAudio, enforced in App.onPick). Android maps 'audio/*'
+    // correctly, so it keeps the nicer audio-only filter.
+    const opts: { readData: boolean; types?: string[] } = { readData: true };
+    if (Capacitor.getPlatform() === 'android') opts.types = ['audio/*'];
+    const res = await FilePicker.pickFiles(opts);
     const f = res.files?.[0];
     if (!f) return null;
     const mime = f.mimeType || 'audio/*';
@@ -60,11 +77,12 @@ export async function pickAudioFile(): Promise<PickedAudio | null> {
     return { name: f.name || 'audio', mimeType: mime, blob, size: f.size ?? blob.size };
   }
 
-  // Web fallback
+  // Web fallback. Broad accept (incl. explicit exts) so iOS Safari / pickers
+  // don't disable audio files; the JS gate is the real filter.
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'audio/*,.wav,.mp3,.flac,.m4a,.aac,.ogg';
+    input.accept = 'audio/*,.mp3,.wav,.m4a,.aac,.flac,audio/mpeg';
     input.onchange = () => {
       const file = input.files?.[0];
       if (!file) return resolve(null);
