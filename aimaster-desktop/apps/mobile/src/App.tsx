@@ -11,7 +11,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  isNative,
   pickAudioFile,
   saveToDownloads,
   shareFile,
@@ -266,7 +265,7 @@ export default function App() {
       <header className="hdr">
         <div className="hdr-row">
           <h1>Loui Mastering</h1>
-          <span className="badge">{isNative() ? 'Android' : 'Web'} · 로컬</span>
+          <span className="badge">로컬 엔진</span>
         </div>
         <Stepper current={stepIndex} onJump={goTo} />
       </header>
