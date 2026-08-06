@@ -136,8 +136,12 @@ jobs:
   # Macs.  PyInstaller cannot cross-compile and ffmpeg-static /
   # @ffprobe-installer resolve to the host arch, so the only robust fix is to
   # build each arch on a runner OF that arch:
-  #     x64   → macos-13 (Intel)          → native x86_64 engine/ffmpeg/ffprobe
+  #     x64   → macos-15-intel (Intel)    → native x86_64 engine/ffmpeg/ffprobe
   #     arm64 → macos-14 (Apple Silicon)  → native arm64
+  # NOTE: macos-13 (the previous Intel label) was retired 2025-12-04.  GitHub's
+  # official x86_64 migration label is macos-15-intel — a STANDARD (free for
+  # public repos) Intel runner, supported until the x86_64 image is retired in
+  # Fall 2027.  See github.blog/changelog/2025-09-19 (macos-13 closing down).
   # A hard architecture gate (scripts/verify-macos-binary-arch.sh) runs both
   # BEFORE packaging (on public/bin) and AFTER packaging (on the .app's
   # Contents/Resources/bin + main executable) and FAILS the build if any
@@ -149,7 +153,7 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runner: macos-13   # Intel runner
+            runner: macos-15-intel   # Intel (x86_64) — macos-13 retired 2025-12-04
           - arch: arm64
             runner: macos-14   # Apple Silicon runner
     runs-on: ${{ matrix.runner }}
