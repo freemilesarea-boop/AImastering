@@ -26,6 +26,7 @@ from .curve_builder import CurveBuilder
 from .mapping_calibrator import MappingCalibrator
 from .no_action_auditor import NoActionAuditor
 from .confidence import ConfidenceCalculator, CalibrationConfidence
+from .output_validator import build_validation_report
 from app.mastering.decision_engine.mapping_registry import get_mapping_registry
 from app.utils.logger import log
 
@@ -232,8 +233,8 @@ class CalibrationEngine:
         repro_result = self._run_reproducibility_test(track_paths[:1] if track_paths else [])
         self._save_json("14_reproducibility.json", repro_result)
 
-        # Schema validation (placeholder)
-        schema_validation = {"valid": True, "errors": []}
+        # Schema validation (reads the emitted artifacts, mutates nothing)
+        schema_validation = build_validation_report(self.output_dir)
         self._save_json("15_schema_validation.json", schema_validation)
 
         # Build final report
@@ -254,7 +255,7 @@ class CalibrationEngine:
             no_action_audits=no_action_audits,
             reproducibility_passed=repro_result.get("passed", False),
             reproducibility_details=repro_result,
-            schema_valid=True,
+            schema_valid=schema_validation["valid"],
             runtime_safe=True,
             production_affected=False,
         )
