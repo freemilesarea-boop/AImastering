@@ -27,6 +27,7 @@ from .mapping_calibrator import MappingCalibrator
 from .no_action_auditor import NoActionAuditor
 from .confidence import ConfidenceCalculator, CalibrationConfidence
 from .output_validator import build_validation_report
+from .runtime_validator import build_runtime_safety_report
 from app.mastering.decision_engine.mapping_registry import get_mapping_registry
 from app.utils.logger import log
 
@@ -216,14 +217,8 @@ class CalibrationEngine:
         feature_report = self._generate_feature_response_report(results)
         self._save_json("04_feature_response_results.json", feature_report)
 
-        # Runtime safety
-        runtime_safety = {
-            "production_affected": False,
-            "existing_registry_modified": False,
-            "mastering_path_modified": False,
-            "ui_modified": False,
-            "user_output_affected": False,
-        }
+        # Runtime safety (computed from git diff + static import graph)
+        runtime_safety = build_runtime_safety_report()
         self._save_json("17_runtime_safety.json", runtime_safety)
 
         # ═══════════════════════════════════════════════════════════════════
@@ -256,8 +251,8 @@ class CalibrationEngine:
             reproducibility_passed=repro_result.get("passed", False),
             reproducibility_details=repro_result,
             schema_valid=schema_validation["valid"],
-            runtime_safe=True,
-            production_affected=False,
+            runtime_safe=runtime_safety["runtime_safe"],
+            production_affected=runtime_safety["production_affected"],
         )
 
         log("INFO", "[calibration] Calibration complete")
