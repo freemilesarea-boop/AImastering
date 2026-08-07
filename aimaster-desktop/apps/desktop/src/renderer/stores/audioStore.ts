@@ -144,6 +144,11 @@ export interface MasteringOptions {
   outputGainDb?: number | undefined;         // undefined = 0
   /** Dynamic EQ intensity (0=off, 1=full).  undefined = 1.0 (full). */
   dynamicEqIntensity?: number | undefined;
+  /**
+   * RC — 'rc' 선택 시 Decision Engine 자문 pre-correction 을 거친 뒤
+   * 기존 파이프라인이 그대로 실행된다.  기본은 'stable' (기존 동작).
+   */
+  engineMode?: 'stable' | 'rc' | undefined;
   /** UI 상태: 어떤 빠른 프리셋이 선택되어 있는지 */
   quickPreset?: string | undefined;
   /** Live DSP overrides — applied to the WebAudio preview chain. */
@@ -178,6 +183,7 @@ const defaultOptions: MasteringOptions = {
   bitDepth:           24,
   applyAiCorrections: true,
   limiterStrength:    'medium',
+  engineMode:         'stable',
   rt:                 defaultRtOverrides,
 };
 

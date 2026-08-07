@@ -17,6 +17,7 @@ Phase: AI-MASTERING-CLOSED-LOOP-RENDER-P0-1
 """
 
 import os
+import tempfile
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
@@ -60,7 +61,7 @@ class ClosedLoopEngine:
 
     def __init__(
         self,
-        output_dir: str = "/Users/theblank/Desktop/Closed-Loop-Render-P0-Output",
+        output_dir: str = "",
         sample_rate: int = 44100,
         bit_depth: int = 24,
     ):
@@ -72,6 +73,10 @@ class ClosedLoopEngine:
             sample_rate: Output sample rate
             bit_depth: Output bit depth
         """
+        # Empty default → temp dir. This module is reachable from the packaged
+        # desktop engine, so no developer path may be baked in.
+        if not output_dir:
+            output_dir = os.path.join(tempfile.gettempdir(), "closed-loop-render-output")
         self.output_dir = output_dir
         self.sample_rate = sample_rate
         self.bit_depth = bit_depth
@@ -461,8 +466,10 @@ class ClosedLoopEngine:
         }
 
 
-def create_engine(
-    output_dir: str = "/Users/theblank/Desktop/Closed-Loop-Render-P0-Output",
-) -> ClosedLoopEngine:
-    """Factory function to create engine instance."""
+def create_engine(output_dir: str = "") -> ClosedLoopEngine:
+    """Factory function to create engine instance.
+
+    ``output_dir`` defaults to a temp directory — this module is reachable from
+    the packaged desktop engine, so it must not embed a developer path.
+    """
     return ClosedLoopEngine(output_dir=output_dir)

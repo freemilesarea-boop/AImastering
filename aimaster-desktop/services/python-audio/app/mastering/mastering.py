@@ -10,10 +10,17 @@ Error handling:
 """
 from __future__ import annotations
 
+import os
+import shutil
 import traceback
 from typing import Any, Callable
 
 from app.mastering.pipeline import run_pipeline
+from app.mastering.rc_engine import (
+    apply_precorrection,
+    is_rc_enabled,
+    log_engine_banner,
+)
 from app.mastering.iterative import run_iterative_mastering
 from app.mastering.safe_modes import (
     apply_overrides_to_pipeline_args,
@@ -103,9 +110,29 @@ def master_file(
                 f"sr={sample_rate}, bits={bit_depth}, ai={apply_ai}, "
                 f"safe_modes={safe_modes_raw}")
 
+    # ── RC engine (opt-in) ───────────────────────────────────────────────────
+    # Adds one advisory pre-correction pass on a COPY of the input; the stable
+    # pipeline below then runs unchanged, so every output safety stage still
+    # applies. Falls back to the original input on any failure.
+    rc_enabled = is_rc_enabled(params)
+    rc_outcome: dict[str, Any] | None = None
+    pipeline_input = input_path
+
+    if rc_enabled:
+        rc_outcome = apply_precorrection(
+            input_path,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            file_name=os.path.basename(input_path),
+        )
+        pipeline_input = rc_outcome["path"]
+        log_engine_banner(True, rc_outcome.get("plan"))
+    else:
+        log_engine_banner(False)
+
     try:
         result = run_pipeline(
-            input_path,
+            pipeline_input,
             output_path,
             job_id=job_id,
             progress=send_progress,
@@ -115,6 +142,11 @@ def master_file(
         # display the resulting chip / banner.
         if safe_modes_raw:
             result["appliedSafeModes"] = list(safe_modes_raw)
+        if rc_enabled:
+            plan = (rc_outcome or {}).get("plan") or {}
+            result["engineMode"] = "rc"
+            result["rcPreCorrectionApplied"] = bool((rc_outcome or {}).get("applied"))
+            result["rcRecommendations"] = plan.get("recommendations", [])
         return result
 
     except FFmpegError as exc:
@@ -129,6 +161,13 @@ def master_file(
         raise RuntimeError(
             f"마스터링 중 예상치 못한 오류가 발생했습니다: {type(exc).__name__}"
         ) from exc
+
+    finally:
+        # RC writes its pre-corrected copy to a temp dir; the original input is
+        # never touched, so this only ever removes RC's own scratch space.
+        temp_dir = (rc_outcome or {}).get("temp_dir")
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def master_with_reference(

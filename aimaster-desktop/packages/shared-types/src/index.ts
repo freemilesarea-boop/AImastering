@@ -150,7 +150,18 @@ export interface MasteringOptions {
   outputGainDb?: number;
   /** v3 — dynamic EQ intensity (0=off, 1=full). 누락 시 1.0. */
   dynamicEqIntensity?: number;
+  /**
+   * RC — mastering engine 선택.
+   *   'stable' (기본) : 기존 파이프라인 그대로.
+   *   'rc'            : Decision Engine 자문 pre-correction 1패스를 입력 사본에
+   *                     적용한 뒤 기존 파이프라인을 그대로 실행 (A/B 청취용).
+   * 누락 시 Python 쪽에서 'stable' 로 처리된다.
+   */
+  engineMode?: MasteringEngineMode;
 }
+
+/** RC — 마스터링 엔진 모드. */
+export type MasteringEngineMode = 'stable' | 'rc';
 
 export interface EqMoveReport {
   band: string;

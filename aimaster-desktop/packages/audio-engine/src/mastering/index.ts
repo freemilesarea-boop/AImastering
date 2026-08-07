@@ -36,6 +36,8 @@ export async function masterFile(
   if (options.stereoWidth != null)      params['stereo_width']      = options.stereoWidth;
   if (options.outputGainDb != null)     params['output_gain_db']    = options.outputGainDb;
   if (options.dynamicEqIntensity != null) params['dynamic_eq_intensity'] = options.dynamicEqIntensity;
+  // RC — 미지정 시 Python 이 'stable' 로 처리하므로 기존 동작은 그대로.
+  if (options.engineMode)               params['engine_mode']       = options.engineMode;
 
   if (extras.preLoudness) {
     params['pre_loudness'] = {

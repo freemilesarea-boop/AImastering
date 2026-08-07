@@ -253,6 +253,7 @@ export default function MasteringPage() {
             stereoWidth:        options.stereoWidth,
             outputGainDb:       options.outputGainDb,
             dynamicEqIntensity: options.dynamicEqIntensity,
+            engineMode:         options.engineMode,
             aiDetections:       analysisToUse?.aiDetection ?? {},
           },
           { preLoudness: analysisToUse?.loudness },

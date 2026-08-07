@@ -316,6 +316,39 @@ function AdvancedSettingsPanel({ disabled }: { disabled: boolean }) {
             onChange={(v) => updateOptions({ limiterStrength: v, quickPreset: undefined })}
           />
 
+          {/* RC — Decision Engine 자문 pre-correction. 기본은 Stable(기존 동작).
+              A/B 청취 검증용이며, 켜도 기존 안전 단계는 그대로 적용된다. */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-zinc-400">Mastering Engine</span>
+              <div className="flex gap-1">
+                {(['stable', 'rc'] as const).map((mode) => {
+                  const active = (options.engineMode ?? 'stable') === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      disabled={disabled}
+                      aria-pressed={active}
+                      onClick={() => updateOptions({ engineMode: mode })}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors
+                        ${active
+                          ? 'bg-zinc-700 text-zinc-100 border border-zinc-600'
+                          : 'bg-[#13131A] text-zinc-500 border border-white/[0.06] hover:text-zinc-300'}
+                        disabled:opacity-40 disabled:cursor-not-allowed`}
+                    >
+                      {mode === 'stable' ? 'Stable' : 'RC'}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <p className="text-[10px] text-zinc-600 leading-relaxed">
+              RC = Decision Engine 자문 보정을 1패스 적용한 뒤 기존 파이프라인 실행.
+              안전 클램프·리미터는 그대로 유지됩니다. A/B 청취 검증용.
+            </p>
+          </div>
+
           <details className="rounded-lg bg-[#13131A] border border-white/[0.06]">
             <summary className="px-2.5 py-1.5 text-[11px] text-zinc-500 cursor-pointer hover:text-zinc-300 select-none">
               선택 옵션 — Output Gain · Stereo Width · Saturation
@@ -932,6 +965,7 @@ export default function HomePage() {
             saturationAmount:   itemOptions.saturationAmount,
             stereoWidth:        itemOptions.stereoWidth,
             outputGainDb:       itemOptions.outputGainDb,
+            engineMode:         itemOptions.engineMode,
             aiDetections:       analysis.aiDetection ?? {},
           },
           {
