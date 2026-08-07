@@ -15,6 +15,7 @@ from .constants import CalibrationStatus, REPRODUCIBILITY_RUNS
 from .schema import (
     CalibrationReport,
     CandidateResult,
+    SweepCandidate,
     ResponseCurve,
     MappingCalibrationResult,
     NoActionAuditResult,
@@ -28,6 +29,7 @@ from .no_action_auditor import NoActionAuditor
 from .confidence import ConfidenceCalculator, CalibrationConfidence
 from .output_validator import build_validation_report
 from .runtime_validator import build_runtime_safety_report
+from .reproducibility import check_reproducibility
 from app.mastering.decision_engine.mapping_registry import get_mapping_registry
 from app.utils.logger import log
 
@@ -225,7 +227,7 @@ class CalibrationEngine:
         # Step 9: Reproducibility Test
         # ═══════════════════════════════════════════════════════════════════
         log("INFO", "[calibration] Step 9: Running reproducibility test...")
-        repro_result = self._run_reproducibility_test(track_paths[:1] if track_paths else [])
+        repro_result = self._run_reproducibility_test(candidates)
         self._save_json("14_reproducibility.json", repro_result)
 
         # Schema validation (reads the emitted artifacts, mutates nothing)
@@ -325,18 +327,17 @@ class CalibrationEngine:
             "total_valid_responses": sum(len(v) for v in responses_by_feature.values()),
         }
 
-    def _run_reproducibility_test(self, track_paths: List[str]) -> Dict:
-        """Run reproducibility test."""
-        if not track_paths:
-            return {"passed": True, "note": "No tracks for reproducibility test"}
+    def _run_reproducibility_test(self, candidates: List[SweepCandidate]) -> Dict:
+        """Prove determinism by re-rendering sampled candidates and comparing.
 
-        # For now, simplified reproducibility check
-        # Full implementation would run same render multiple times
-        return {
-            "passed": True,
-            "runs": REPRODUCIBILITY_RUNS,
-            "note": "Reproducibility test passed (simplified)",
-        }
+        Renders go to a temporary directory; the archived renders under
+        output_dir are read for comparison only and never overwritten.
+        """
+        return check_reproducibility(
+            candidates,
+            runs=REPRODUCIBILITY_RUNS,
+            archived_renders_dir=os.path.join(self.output_dir, "renders"),
+        )
 
 
 def create_calibration_engine(
