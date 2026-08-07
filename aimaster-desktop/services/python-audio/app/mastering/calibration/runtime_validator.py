@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import os
+import re
 import subprocess
 from typing import Any
 
@@ -52,12 +53,21 @@ DSP_PROCESSOR_PATHS = (
     "app/engine/",
 )
 
+# Production surface outside app/: the sibling HTTP service that imports this
+# engine, plus the packaging and deploy descriptors that decide what ships.
+# Paths are service-relative; "../" segments are normalised in _matches().
+PACKAGING_PATHS = (
+    "engine.spec",                 # PyInstaller bundle definition
+    "../mastering-api/",           # FastAPI service that imports app.*
+    "../../../render.yaml",        # Render deploy blueprint
+)
+
 MAPPING_REGISTRY_PATHS = (
     "app/mastering/decision_engine/mapping_registry.py",
     "app/mastering/decision_engine/target_registry.py",
 )
 
-PRODUCTION_PATHS = DSP_PROCESSOR_PATHS + DECISION_ENGINE_PATHS + (
+PRODUCTION_PATHS = DSP_PROCESSOR_PATHS + DECISION_ENGINE_PATHS + PACKAGING_PATHS + (
     "app/main.py",
     "app/analysis/",
     "app/analyzers/",
@@ -67,8 +77,14 @@ PRODUCTION_PATHS = DSP_PROCESSOR_PATHS + DECISION_ENGINE_PATHS + (
     "app/utils/",
 )
 
-# UI lives at the repository root, not under the service.
-UI_REPO_PATHS = ("src/",)
+# Active shipping UI (apps/desktop is the packaged Electron app: its
+# package.json declares main=dist-electron/main/index.js and dist:mac/dist:win).
+UI_PATHS = ("../../apps/desktop/src/",)
+
+# The repository-root src/ tree belongs to the superseded Electron shell that
+# drives python/main.py.  python/LEGACY.md marks that engine as legacy and the
+# active code as services/python-audio, so it is reported but does not gate.
+LEGACY_UI_REPO_PATHS = ("src/",)
 
 # Calibration algorithm modules.  engine.py (orchestration + reporting) and the
 # validators are deliberately excluded — they are the reporting layer and are
@@ -104,7 +120,13 @@ POC_MODULE_PREFIXES = (
     "app.analyzers.canonical_features",
 )
 
-PRODUCTION_ENTRYPOINTS = ("app/main.py",)
+# Every entrypoint that runs this engine in production.  Service-relative;
+# "../" is normalised.  Kept in sync with reality by the entry_point_drift
+# check, which rediscovers them from the packaging and deploy descriptors.
+PRODUCTION_ENTRYPOINTS = (
+    "app/main.py",                  # PyInstaller bundle / desktop engine
+    "../mastering-api/server.py",   # uvicorn server:app, deployed via Render
+)
 
 # git status letters that mean an already-existing file was altered.
 _ALTERING_STATUS = ("M", "D", "R", "T")
@@ -189,13 +211,21 @@ def _changed_files(repo_root: str, base: str) -> dict[str, str]:
     return changes
 
 
+def _norm(path: str) -> str:
+    """Collapse ../ segments and normalise separators to forward slashes."""
+    return os.path.normpath(path).replace(os.sep, "/")
+
+
 def _matches(repo_rel_path: str, service_prefix: str, patterns: tuple[str, ...]) -> bool:
+    target = _norm(repo_rel_path)
     for pattern in patterns:
         full = f"{service_prefix}{pattern}" if service_prefix else pattern
-        if full.endswith("/"):
-            if repo_rel_path.startswith(full):
+        is_dir = full.endswith("/")
+        full = _norm(full)
+        if is_dir:
+            if target == full or target.startswith(f"{full}/"):
                 return True
-        elif repo_rel_path == full:
+        elif target == full:
             return True
     return False
 
@@ -275,12 +305,26 @@ def _reachable_modules(entrypoints: tuple[str, ...]) -> tuple[set[str], dict[str
     stack: list[tuple[str, list[str]]] = []
 
     for entry in entrypoints:
-        full = os.path.join(SERVICE_ROOT, entry)
-        if os.path.isfile(full):
+        full = os.path.normpath(os.path.join(SERVICE_ROOT, entry))
+        if not os.path.isfile(full):
+            continue
+        # An entrypoint may sit outside the package (e.g. the sibling HTTP
+        # service), so seed from the imports it declares rather than from its
+        # own module name, which only exists for in-package files.
+        if full.startswith(SERVICE_ROOT + os.sep) and _module_to_file(_file_to_module(full)):
             mod = _file_to_module(full)
-            seen.add(mod)
-            origin[mod] = [mod]
-            stack.append((mod, [mod]))
+            if mod not in seen:
+                seen.add(mod)
+                origin[mod] = [mod]
+                stack.append((mod, [mod]))
+            continue
+        for imported in _imports_of(full):
+            if imported in seen or _module_to_file(imported) is None:
+                continue
+            chain = [entry, imported]
+            seen.add(imported)
+            origin[imported] = chain
+            stack.append((imported, chain))
 
     while stack:
         module, chain = stack.pop()
@@ -297,6 +341,121 @@ def _reachable_modules(entrypoints: tuple[str, ...]) -> tuple[set[str], dict[str
             stack.append((imported, chain + [imported]))
 
     return seen, origin
+
+
+# ── entry point discovery (drift detection) ────────────────────────────────
+
+_SKIP_DIRS = {".git", ".venv", "node_modules", "dist", "build", "__pycache__", ".turbo"}
+
+_ANALYSIS_RE = re.compile(r"Analysis\(\s*\[(?P<items>[^\]]*)\]", re.S)
+_QUOTED_RE = re.compile(r"['\"]([^'\"]+)['\"]")
+_ASGI_RE = re.compile(r"\b(?:uvicorn|gunicorn|hypercorn)\b[^\n]*?\b([A-Za-z_][\w.]*):(\w+)")
+_DOCKER_CMD_RE = re.compile(r"^\s*(?:CMD|ENTRYPOINT)\s+(.*)$", re.M | re.I)
+_DOCKER_WORKDIR_RE = re.compile(r"^\s*WORKDIR\s+(\S+)", re.M | re.I)
+_DOCKER_COPY_RE = re.compile(r"^\s*COPY\s+(?!--)(\S+)\s+(\S+)\s*$", re.M | re.I)
+_RENDER_DOCKERFILE_RE = re.compile(r"^\s*dockerfilePath:\s*(\S+)", re.M)
+_RENDER_CONTEXT_RE = re.compile(r"^\s*dockerContext:\s*(\S+)", re.M)
+
+
+def _walk_files(root: str, predicate) -> list[str]:
+    hits: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for name in filenames:
+            if predicate(name):
+                hits.append(os.path.join(dirpath, name))
+    return hits
+
+
+def _read(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _resolve_container_path(dockerfile: str, module: str, context_dir: str) -> str | None:
+    """Map an ASGI module named in CMD back to a host file, using the
+    Dockerfile's WORKDIR and COPY directives."""
+    text = _read(dockerfile)
+    workdirs = _DOCKER_WORKDIR_RE.findall(text)
+    if not workdirs:
+        return None
+    workdir = workdirs[-1].rstrip("/")
+    container_file = f"{workdir}/{module.replace('.', '/')}.py"
+
+    best: str | None = None
+    best_len = -1
+    for src, dst in _DOCKER_COPY_RE.findall(text):
+        dst_norm = dst.rstrip("/")
+        if container_file == dst_norm or container_file.startswith(dst_norm + "/"):
+            if len(dst_norm) > best_len:
+                best_len = len(dst_norm)
+                remainder = container_file[len(dst_norm):].lstrip("/")
+                best = _norm(os.path.join(context_dir, src, remainder))
+    return best
+
+
+def _discover_entrypoints(repo_root: str) -> dict[str, list[str]]:
+    """Rediscover production entrypoints from packaging and deploy descriptors.
+    Returns {repo-relative path: [discovery sources]}."""
+    found: dict[str, list[str]] = {}
+
+    def record(path: str | None, source: str) -> None:
+        if not path:
+            return
+        if not os.path.isfile(os.path.join(repo_root, path)):
+            return
+        found.setdefault(path, [])
+        if source not in found[path]:
+            found[path].append(source)
+
+    # 1. PyInstaller — Analysis(['app/main.py'])
+    for spec in _walk_files(repo_root, lambda n: n.endswith(".spec")):
+        rel_spec = _norm(os.path.relpath(spec, repo_root))
+        for match in _ANALYSIS_RE.finditer(_read(spec)):
+            for script in _QUOTED_RE.findall(match.group("items")):
+                record(
+                    _norm(os.path.join(os.path.dirname(rel_spec), script)),
+                    f"PyInstaller Analysis in {rel_spec}",
+                )
+
+    # 2. Render blueprint — which Dockerfiles actually deploy, and their context
+    deployed: dict[str, str] = {}
+    for name in ("render.yaml", "render.yml"):
+        blueprint = os.path.join(repo_root, name)
+        if not os.path.isfile(blueprint):
+            continue
+        text = _read(blueprint)
+        contexts = _RENDER_CONTEXT_RE.findall(text)
+        for i, dockerfile_path in enumerate(_RENDER_DOCKERFILE_RE.findall(text)):
+            context = contexts[i] if i < len(contexts) else "."
+            deployed[_norm(dockerfile_path)] = _norm(context)
+
+    # 3. Dockerfile CMD/ENTRYPOINT — uvicorn server:app
+    for dockerfile in _walk_files(repo_root, lambda n: n.lower().startswith("dockerfile")):
+        rel_df = _norm(os.path.relpath(dockerfile, repo_root))
+        # Build context: from the blueprint when deployed, else the Dockerfile dir.
+        context = deployed.get(rel_df, os.path.dirname(rel_df) or ".")
+        source = f"Dockerfile CMD in {rel_df}"
+        if rel_df in deployed:
+            source += " (deployed via render blueprint)"
+        text = _read(dockerfile)
+        for cmd_line in _DOCKER_CMD_RE.findall(text):
+            for module, _attr in _ASGI_RE.findall(cmd_line):
+                record(_resolve_container_path(dockerfile, module, context), source)
+
+    return found
+
+
+def _declared_entrypoints(repo_root: str) -> dict[str, str]:
+    """Declared entrypoints as repo-relative paths -> original declaration."""
+    out: dict[str, str] = {}
+    for entry in PRODUCTION_ENTRYPOINTS:
+        full = os.path.normpath(os.path.join(SERVICE_ROOT, entry))
+        out[_norm(os.path.relpath(full, repo_root))] = entry
+    return out
 
 
 def _sha256(path: str) -> str | None:
@@ -373,11 +532,38 @@ def build_runtime_safety_report(base_ref: str | None = None) -> dict[str, Any]:
     )
     evidence["calibration_algorithm_sha256"] = fingerprints
 
-    # ── 6. UI ──
-    ui_altered = _select(changes, "", UI_REPO_PATHS, _ALTERING_STATUS)
-    add("ui_unaltered", "PASS" if not ui_altered else "FAIL", {"altered": ui_altered})
+    # ── 6. UI (active shipping app gates; legacy shell is informational) ──
+    ui_altered = _select(changes, prefix, UI_PATHS, _ALTERING_STATUS)
+    legacy_ui_altered = _select(changes, "", LEGACY_UI_REPO_PATHS, _ALTERING_STATUS)
+    add(
+        "ui_unaltered",
+        "PASS" if not ui_altered else "FAIL",
+        {"altered": ui_altered, "legacy_altered_not_gating": legacy_ui_altered},
+    )
+    evidence["legacy_ui"] = {
+        "paths": list(LEGACY_UI_REPO_PATHS),
+        "altered": legacy_ui_altered,
+        "reason": "superseded Electron shell driving python/main.py; see python/LEGACY.md",
+    }
 
-    # ── 7. Import graph isolation ──
+    # ── 7. Entry point drift ──
+    discovered = _discover_entrypoints(repo_root)
+    declared = _declared_entrypoints(repo_root)
+    missing = sorted(set(discovered) - set(declared))
+    stale = sorted(set(declared) - set(discovered))
+    drift_detail = {
+        "discovered": {k: v for k, v in sorted(discovered.items())},
+        "declared": sorted(declared),
+        "undeclared_entrypoints": missing,
+        "declared_but_undiscovered": stale,
+    }
+    add(
+        "entry_point_drift",
+        "PASS" if not missing and not stale else "INDETERMINATE",
+        drift_detail,
+    )
+
+    # ── 8. Import graph isolation ──
     reachable, origin = _reachable_modules(PRODUCTION_ENTRYPOINTS)
     contaminated = sorted(
         m for m in reachable if any(m == p or m.startswith(p + ".") for p in POC_MODULE_PREFIXES)
@@ -401,6 +587,11 @@ def build_runtime_safety_report(base_ref: str | None = None) -> dict[str, Any]:
         "mapping_registry": reg_altered,
         "calibration_algorithm": algo_altered,
         "ui": ui_altered,
+    }
+    evidence["coverage"] = {
+        "declared_entrypoints": sorted(declared),
+        "analysed_entrypoints": sorted(declared),
+        "status": "FULL" if not missing and not stale else "PARTIAL",
     }
 
     return _finalize(checks, evidence, resolvable=True)
@@ -432,7 +623,7 @@ def _finalize(
         "user_output_affected": production_affected,
         # Verdict + evidence.
         "runtime_safe": runtime_safe,
-        "determinable": resolvable,
+        "determinable": resolvable and not any(c["status"] == "INDETERMINATE" for c in checks),
         "checks": checks,
         "evidence": evidence,
         "summary": {
