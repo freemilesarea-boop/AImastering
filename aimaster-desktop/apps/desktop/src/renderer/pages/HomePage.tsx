@@ -299,7 +299,7 @@ function AdvancedSettingsPanel({ disabled }: { disabled: boolean }) {
             unit="LUFS"
             disabled={disabled}
             hint="-14 = YouTube/Spotify · -11 = streaming loud · -9 = KPOP · -8 = EDM"
-            onChange={(v) => updateOptions({ targetLufs: v, quickPreset: undefined })}
+            onChange={(v) => updateOptions({ targetLufs: v, targetLufsExplicit: true, quickPreset: undefined })}
           />
           <Slider
             label="True Peak Ceiling"
@@ -956,7 +956,7 @@ export default function HomePage() {
           '',
           {
             style:              itemOptions.style,
-            targetLufs:         itemOptions.targetLufs,
+            ...(itemOptions.targetLufsExplicit ? { targetLufs: itemOptions.targetLufs } : {}),
             targetTp:           itemOptions.targetTp,
             sampleRate:         itemOptions.sampleRate,
             bitDepth:           itemOptions.bitDepth,
@@ -1150,6 +1150,7 @@ export default function HomePage() {
                     quickPreset:     p.id,
                     style:           p.style,
                     targetLufs:      p.targetLufs,
+                    targetLufsExplicit: true,
                     targetTp:        p.targetTp,
                     limiterStrength: p.limiterStrength,
                   })}

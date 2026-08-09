@@ -15,6 +15,7 @@ import shutil
 import traceback
 from typing import Any, Callable
 
+from app.mastering.loudness_policy import AUTO_TARGET_FLOOR_LUFS
 from app.mastering.pipeline import run_pipeline
 from app.mastering.rc_engine import (
     apply_precorrection,
@@ -53,7 +54,12 @@ def master_file(
     input_path  = params["input_path"]
     output_path = params["output_path"]
     style       = str(params.get("style", "balanced"))
-    target_lufs = float(params.get("target_lufs", -14.0))
+    # An absent target_lufs means AUTO — the commercial loudness policy resolves
+    # it from the measured input. A supplied value is explicit caller intent and
+    # is passed through untouched.
+    _target_raw = params.get("target_lufs")
+    explicit_target_lufs = _target_raw is not None
+    target_lufs = float(_target_raw) if explicit_target_lufs else AUTO_TARGET_FLOOR_LUFS
     target_tp   = float(params.get("target_tp", -1.0))
     lra         = float(params.get("lra", 11.0))
     sample_rate = int(params.get("sample_rate", 44100))
@@ -81,6 +87,7 @@ def master_file(
     pipeline_kwargs: dict[str, Any] = {
         "style": style,
         "target_lufs": target_lufs,
+        "explicit_target_lufs": explicit_target_lufs,
         "target_tp": target_tp,
         "lra": lra,
         "sample_rate": sample_rate,

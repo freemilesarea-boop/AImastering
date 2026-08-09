@@ -71,6 +71,7 @@ from app.analysis.segment_analysis import compute_segment_timeseries
 from app.qc.quality_check import run_quality_check
 from app.qc.limiter_check import run_limiter_check
 from app.qc.gain_staging import build_gain_staging_report
+from app.mastering.loudness_policy import resolve_target_lufs
 from app.utils.logger import log
 
 # ── Quality-check thresholds ──────────────────────────────────────────────────
@@ -517,6 +518,9 @@ def run_pipeline(
     *,
     style: str = "balanced",
     target_lufs: float = _TARGET_LUFS,
+    # True when the caller deliberately chose target_lufs (user slider, preset,
+    # API). False → the commercial loudness policy resolves it from the input.
+    explicit_target_lufs: bool = True,
     target_tp: float = _TARGET_TP,
     lra: float = 11.0,
     sample_rate: int = 44100,
@@ -818,6 +822,31 @@ def run_pipeline(
         pre_lra  = float(pass1_raw.get("input_lra", 0.0))
     log("INFO", f"[pipeline] pre-master (raw): LUFS={pre_lufs:.1f}, "
                 f"TP={pre_tp:.1f}, LRA={pre_lra:.1f}")
+
+    # ── Commercial loudness policy ───────────────────────────────────────────
+    # Resolve the loudness target from the measured input. Placed here because
+    # pre_lufs is now known and nothing above consumed target_lufs for DSP —
+    # the EQ/compressor chain is target-independent, and loudnorm pass1 only
+    # measures (its measured_* values do not depend on the target passed in).
+    # Peak safety downstream is unchanged and may still attenuate further.
+    _target_decision = resolve_target_lufs(
+        pre_lufs=pre_lufs,
+        pre_lra=pre_lra,
+        requested_target=target_lufs,
+        explicit_target=explicit_target_lufs,
+        style=style,
+    )
+    if abs(_target_decision.target_lufs - target_lufs) > 1e-6:
+        log("INFO", f"[pipeline] loudness policy: target {target_lufs:.1f} → "
+                    f"{_target_decision.target_lufs:.1f} LUFS "
+                    f"({_target_decision.reason})")
+    else:
+        log("INFO", f"[pipeline] loudness policy: target {target_lufs:.1f} LUFS "
+                    f"({_target_decision.reason})")
+    target_lufs = _target_decision.target_lufs
+    gain_stages["loudnessPolicyReason"] = _target_decision.reason
+    # target_lufs changed → the linear/dynamic loudnorm choice must follow it.
+    use_linear_loudnorm = target_lufs <= _LOUDNORM_DYNAMIC_THRESHOLD
 
     if pre_lra < 2.5:
         pipeline_warnings.append({
