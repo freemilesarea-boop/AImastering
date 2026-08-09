@@ -146,7 +146,10 @@ class CalibrationEngine:
         # Step 5: Calibrate Mappings
         # ═══════════════════════════════════════════════════════════════════
         log("INFO", "[calibration] Step 5: Calibrating mappings...")
-        calibrations = self.mapping_calibrator.calibrate_mappings(curves)
+        # Candidate results are passed alongside the curves: regression needs the
+        # before/after features of individual renders, which curve aggregation
+        # has already averaged away.
+        calibrations = self.mapping_calibrator.calibrate_mappings(curves, results)
 
         # Save original and calibrated registries
         original_registry = get_mapping_registry().generate_audit_report()
@@ -167,6 +170,11 @@ class CalibrationEngine:
                     "direction_correctness": c.direction_correctness,
                     "safety_pass_rate": c.safety_pass_rate,
                     "overshoot_rate": c.overshoot_rate,
+                    "regression_rate": c.regression_rate,
+                    "regression_measured": c.regression_measured,
+                    "r1_rate": c.r1_rate,
+                    "r3_rate": c.r3_rate,
+                    "r2_violation_count": c.r2_violation_count,
                     "confidence_score": c.confidence_score,
                     "promotion_eligible": c.promotion_eligible,
                     "notes": c.notes,

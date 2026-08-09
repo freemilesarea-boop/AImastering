@@ -209,7 +209,16 @@ class MappingCalibrationResult:
     direction_correctness: float = 0.0
     safety_pass_rate: float = 0.0
     overshoot_rate: float = 0.0
+
+    # Regression axes. regression_rate is max(r1_rate, r3_rate); r2 is counted
+    # separately because a safety violation is disqualifying rather than
+    # averageable. regression_measured distinguishes "measured, and clean" from
+    # "never measured" - both of which would otherwise read as 0.0.
     regression_rate: float = 0.0
+    regression_measured: bool = False
+    r1_rate: float = 0.0
+    r3_rate: float = 0.0
+    r2_violation_count: int = 0
 
     confidence_score: float = 0.0
     promotion_eligible: bool = False

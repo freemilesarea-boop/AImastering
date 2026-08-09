@@ -6,7 +6,7 @@ Calibrates mapping rules based on response curves.
 Phase: AI-MASTERING-CLOSED-LOOP-CALIBRATION-P1-1
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import (
     MappingChangeType,
@@ -17,6 +17,12 @@ from .constants import (
     SAFETY_PASS_RATE_MIN,
     OVERSHOOT_RATE_MAX,
     REGRESSION_RATE_MAX,
+)
+from .regression import (
+    RuleRegression,
+    evaluate_candidate_regression,
+    aggregate_rule_regression,
+    sweep_profile_for_parameter,
 )
 from .schema import (
     ResponseCurve,
@@ -44,17 +50,24 @@ class MappingCalibrator:
     def calibrate_mappings(
         self,
         curves: List[ResponseCurve],
+        candidate_results: Optional[List[Any]] = None,
     ) -> List[MappingCalibrationResult]:
         """
         Calibrate mapping rules based on response curves.
 
         Args:
             curves: List of ResponseCurve objects
+            candidate_results: CandidateResult objects the curves were built
+                from. Regression is measured per candidate (it needs the
+                before/after features of an individual render, which a curve has
+                already averaged away), so without them the regression axis is
+                unmeasured and every rule stays promotion-ineligible.
 
         Returns:
             List of MappingCalibrationResult objects
         """
         results: List[MappingCalibrationResult] = []
+        regression_by_rule = self._regression_by_rule(candidate_results or [])
 
         # Get all existing mapping rules
         audit = self.mapping_registry.generate_audit_report()
@@ -106,6 +119,7 @@ class MappingCalibrator:
                 safe_max=safe_max,
                 source=source,
                 curves=matching_curves,
+                regression=regression_by_rule.get((processor, profile)),
             )
             results.append(calibration)
 
@@ -122,6 +136,7 @@ class MappingCalibrator:
         safe_max: float,
         source: str,
         curves: List[ResponseCurve],
+        regression: Optional[RuleRegression] = None,
     ) -> MappingCalibrationResult:
         """Calibrate a single mapping rule."""
         # Aggregate statistics from all curves
@@ -188,10 +203,21 @@ class MappingCalibrator:
             overshoot_rate=overshoot_rate,
         )
 
-        # Promotion eligibility
+        # Regression axis. An absent measurement is not a pass: a rule whose
+        # regression was never measured must not be promotable, so the unmeasured
+        # case is represented explicitly rather than defaulting to zero.
+        regression_measured = regression is not None and regression.candidate_count > 0
+        regression_rate = regression.regression_rate if regression_measured else 0.0
+        r2_violation_count = regression.r2_violation_count if regression_measured else 0
+
+        # Promotion eligibility. The pre-existing conditions are unchanged; the
+        # regression conditions are added on top of them.
         promotion_eligible = (
             source_candidate == MappingSourceCandidate.DATA_DERIVED_CANDIDATE and
-            confidence >= 0.70
+            confidence >= 0.70 and
+            regression_measured and
+            regression_rate <= REGRESSION_RATE_MAX and
+            r2_violation_count == 0
         )
 
         notes = self._build_notes(
@@ -200,6 +226,7 @@ class MappingCalibrator:
             safety_rate=safety_rate,
             overshoot_rate=overshoot_rate,
             change_type=change_type,
+            regression=regression if regression_measured else None,
         )
 
         return MappingCalibrationResult(
@@ -215,11 +242,46 @@ class MappingCalibrator:
             direction_correctness=direction_correct_rate,
             safety_pass_rate=safety_rate,
             overshoot_rate=overshoot_rate,
-            regression_rate=0.0,  # TODO: implement regression tracking
+            regression_rate=regression_rate,
+            regression_measured=regression_measured,
+            r1_rate=regression.r1_rate if regression_measured else 0.0,
+            r3_rate=regression.r3_rate if regression_measured else 0.0,
+            r2_violation_count=r2_violation_count,
             confidence_score=confidence,
             promotion_eligible=promotion_eligible,
             notes=notes,
         )
+
+    def _regression_by_rule(
+        self,
+        candidate_results: List[Any],
+    ) -> Dict[Tuple[str, str], RuleRegression]:
+        """Group candidates by (processor, profile) and aggregate regression.
+
+        Rules are matched on the profile the swept parameter belongs to rather
+        than on the parameter string. The sweep registry names bell sweeps
+        ``bell_gain_db_warmth`` / ``bell_gain_db_presence`` while the mapping
+        rules both call the parameter ``bell_gain_db``, so a string match would
+        credit WARMTH candidates to the PRESENCE rule and vice versa.
+        """
+        grouped: Dict[Tuple[str, str], List[Any]] = {}
+
+        for result in candidate_results:
+            candidate = getattr(result, "candidate", None)
+            if candidate is None:
+                continue
+            profile = sweep_profile_for_parameter(getattr(candidate, "parameter", ""))
+            if not profile:
+                continue
+            key = (getattr(candidate, "processor", ""), profile)
+            grouped.setdefault(key, []).append(result)
+
+        return {
+            key: aggregate_rule_regression(
+                [evaluate_candidate_regression(r) for r in results]
+            )
+            for key, results in grouped.items()
+        }
 
     def _determine_source_promotion(
         self,
@@ -278,6 +340,7 @@ class MappingCalibrator:
         safety_rate: float,
         overshoot_rate: float,
         change_type: MappingChangeType,
+        regression: Optional[RuleRegression] = None,
     ) -> str:
         """Build human-readable notes."""
         parts = []
@@ -288,6 +351,16 @@ class MappingCalibrator:
 
         if overshoot_rate > 0.05:
             parts.append(f"overshoot={overshoot_rate:.1%}")
+
+        if regression is None:
+            parts.append("regression=UNMEASURED")
+        else:
+            parts.append(
+                f"regression={regression.regression_rate:.1%}"
+                f" (R1={regression.r1_rate:.1%}, R3={regression.r3_rate:.1%})"
+            )
+            if regression.r2_violation_count:
+                parts.append(f"R2_SAFETY_VIOLATIONS={regression.r2_violation_count}")
 
         if change_type == MappingChangeType.NARROWED:
             parts.append("RANGE_NARROWED")
