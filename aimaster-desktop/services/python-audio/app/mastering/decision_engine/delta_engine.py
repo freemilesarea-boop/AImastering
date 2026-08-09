@@ -7,8 +7,32 @@ Calculates differences between AI track features and commercial targets.
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, List
 
-from .constants import Direction, Severity
+from .constants import Direction, InterventionTier, Severity
 from .target_registry import get_target_registry, TargetStatistics
+
+
+def resolve_intervention_tier(
+    direction: Direction,
+    severity: Severity,
+) -> InterventionTier:
+    """Classify how far a deviation may travel toward a real correction.
+
+    Pure and total: every (direction, severity) pair maps to exactly one tier,
+    and the direction value itself is never modified. A SLIGHTLY_* deviation
+    stays SLIGHTLY_* — it is only ever classified, never promoted to TOO_*.
+    """
+    if direction in (Direction.IN_RANGE, Direction.UNKNOWN):
+        return InterventionTier.NONE
+
+    if direction in (Direction.TOO_LOW, Direction.TOO_HIGH):
+        return InterventionTier.ACT
+
+    # SLIGHTLY_LOW / SLIGHTLY_HIGH: inside P5-P95, so only a large deviation
+    # relative to the spread is even a candidate.
+    if severity in (Severity.HIGH, Severity.CRITICAL):
+        return InterventionTier.CANDIDATE
+
+    return InterventionTier.WATCH
 
 
 @dataclass
@@ -65,6 +89,9 @@ class ProfileDelta:
     has_data_derived_target: bool
     missing_features: List[str]
     confidence_factor: float  # 0-1 based on feature completeness
+    # Derived from (primary_direction, overall_severity); carries no new
+    # measurement and never alters either of them.
+    intervention_tier: InterventionTier = InterventionTier.NONE
 
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
@@ -76,6 +103,7 @@ class ProfileDelta:
             "has_data_derived_target": self.has_data_derived_target,
             "missing_features": self.missing_features,
             "confidence_factor": self.confidence_factor,
+            "intervention_tier": self.intervention_tier.value,
         }
 
 
@@ -302,6 +330,9 @@ class DeltaEngine:
             has_data_derived_target=has_data_derived,
             missing_features=missing_features,
             confidence_factor=round(confidence_factor, 2),
+            intervention_tier=resolve_intervention_tier(
+                primary_direction, overall_severity
+            ),
         )
 
     def _aggregate_direction(self, directions: List[Direction]) -> Direction:

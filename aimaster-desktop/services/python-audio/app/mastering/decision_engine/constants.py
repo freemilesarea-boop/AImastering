@@ -61,6 +61,37 @@ CONFIDENCE_THRESHOLD_CONDITIONAL = 0.50
 CONFIDENCE_THRESHOLD_WEAK = 0.01
 
 
+class InterventionTier(str, Enum):
+    """How far a measured deviation is allowed to travel toward real DSP.
+
+    Deliberately separate from ``Direction``: Direction says *where* a value sits
+    relative to the commercial percentiles and is a pure measurement, while the
+    tier says *what we are permitted to do about it*. Keeping them apart is what
+    lets a SLIGHTLY_* deviation stay SLIGHTLY_* while still being classified as
+    non-correctable — no direction is ever re-labelled as a stronger one.
+    """
+    NONE = "NONE"            # In range, or nothing measurable — never correctable
+    WATCH = "WATCH"          # Small deviation — report only, never correctable
+    CANDIDATE = "CANDIDATE"  # Large deviation inside P5-P95 — correctable only with evidence
+    ACT = "ACT"              # Outside P5-P95 — correctable only with evidence
+
+
+# Tiers that are even allowed to ask for a correction. NONE/WATCH never are.
+# Being in this set is necessary, never sufficient: the evidence gate applies on
+# top of it, which is why ACT does not mean "apply automatically".
+CORRECTABLE_INTERVENTION_TIERS = frozenset({
+    InterventionTier.CANDIDATE.value,
+    InterventionTier.ACT.value,
+})
+
+
+# Mapping sources whose provenance is strong enough to touch real audio.
+# DESIGN_CANDIDATE and HEURISTIC may still produce advisory recommendations;
+# they may not be rendered. Promotion into this set requires measured
+# calibration evidence, not a code edit.
+EVIDENCE_MAPPING_SOURCES = frozenset({MappingSource.DATA_DERIVED.value})
+
+
 # Profile order (same as Audio Profile Engine)
 PROFILE_ORDER: List[str] = [
     "LOUDNESS",

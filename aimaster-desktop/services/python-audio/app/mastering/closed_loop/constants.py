@@ -10,6 +10,12 @@ Phase: AI-MASTERING-CLOSED-LOOP-RENDER-P0-1
 from enum import Enum
 from typing import Dict, List, Tuple
 
+from app.mastering.decision_engine.constants import (
+    CONFIDENCE_THRESHOLD_RECOMMEND,
+    CORRECTABLE_INTERVENTION_TIERS,
+    EVIDENCE_MAPPING_SOURCES,
+)
+
 
 class RenderStatus(Enum):
     """Closed loop render final status."""
@@ -59,8 +65,34 @@ MAX_RECOMMENDATIONS_PER_PASS = 3
 MAX_PASSES = 2
 
 # Confidence thresholds
-MIN_CONFIDENCE_FOR_APPLY = 0.40
+#
+# The apply gate is DERIVED from the recommend gate rather than restated as a
+# literal. Stating it twice is what let the two drift apart: the apply gate sat
+# at 0.40 while the recommend gate was 0.75, so a mapping that could never reach
+# RECOMMEND still reached real audio through CONDITIONAL. Deriving it makes that
+# class of defect unrepresentable — the apply gate cannot be lowered without
+# lowering the recommend gate it is defined from.
+MIN_CONFIDENCE_FOR_APPLY = CONFIDENCE_THRESHOLD_RECOMMEND
 MIN_CONFIDENCE_FOR_RECOMMEND = 0.60
+
+# Tiers permitted to reach real audio. IN_RANGE (NONE) and small deviations
+# (WATCH) are never correctable, regardless of anything downstream.
+APPLICABLE_INTERVENTION_TIERS = CORRECTABLE_INTERVENTION_TIERS
+
+# Mapping sources permitted to reach real audio. Advisory recommendations are
+# still generated for the others; they are simply never rendered.
+APPLY_REQUIRES_MAPPING_SOURCES = EVIDENCE_MAPPING_SOURCES
+
+# Import-time invariant. Deliberately a raise and not an ``assert`` so that
+# running under ``python -O`` cannot strip the one check that keeps an
+# unvalidated correction away from a user's audio.
+if MIN_CONFIDENCE_FOR_APPLY < CONFIDENCE_THRESHOLD_RECOMMEND:
+    raise RuntimeError(
+        "Apply gate is looser than the recommend gate: "
+        f"MIN_CONFIDENCE_FOR_APPLY={MIN_CONFIDENCE_FOR_APPLY} < "
+        f"CONFIDENCE_THRESHOLD_RECOMMEND={CONFIDENCE_THRESHOLD_RECOMMEND}. "
+        "A recommendation that cannot be recommended must never be applied."
+    )
 
 # Safety thresholds
 SAFETY_TRUE_PEAK_MAX_DBTP = -1.0

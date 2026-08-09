@@ -19,6 +19,8 @@ from .constants import (
     MIN_CONFIDENCE_FOR_APPLY,
     SUPPORTED_PROCESSORS,
     ANALYSIS_ONLY_PROFILES,
+    APPLICABLE_INTERVENTION_TIERS,
+    APPLY_REQUIRES_MAPPING_SOURCES,
 )
 from .schema import SelectedRecommendation
 
@@ -41,11 +43,16 @@ class RecommendationSelector:
 
     P0 Rules:
     - Only RECOMMEND or allowed CONDITIONAL states
-    - Confidence >= MIN_CONFIDENCE_FOR_APPLY
-    - Mapping source != UNSUPPORTED
+    - Intervention tier in APPLICABLE_INTERVENTION_TIERS (never NONE/WATCH)
+    - Confidence >= MIN_CONFIDENCE_FOR_APPLY (derived from the recommend gate)
+    - Mapping source in APPLY_REQUIRES_MAPPING_SOURCES (measured evidence only)
     - Max MAX_RECOMMENDATIONS_PER_PASS per pass
     - Respect conflict blocks
     - Prioritize by PROFILE_PRIORITY_ORDER
+
+    This class is the single choke point where an advisory recommendation turns
+    into something that will be rendered, so every gate that protects a user's
+    audio is enforced here rather than in the callers.
     """
 
     def select_recommendations(
@@ -101,6 +108,17 @@ class RecommendationSelector:
                 })
                 continue
 
+            # Check intervention tier. Absent tier is treated as NONE: a producer
+            # that does not state a tier cannot implicitly earn permission.
+            tier = profile_rec.get("intervention_tier", "NONE")
+            if tier not in APPLICABLE_INTERVENTION_TIERS:
+                skipped.append({
+                    "profile": profile,
+                    "reason": f"Intervention tier {tier} is not correctable",
+                    "intervention_tier": tier,
+                })
+                continue
+
             # Check confidence
             confidence = float(profile_rec.get("confidence", 0.0))
             if confidence < MIN_CONFIDENCE_FOR_APPLY:
@@ -141,6 +159,21 @@ class RecommendationSelector:
                         "profile": profile,
                         "rule_id": rule_id,
                         "reason": "Unsupported mapping source",
+                    })
+                    continue
+
+                # Evidence gate. DESIGN_CANDIDATE and HEURISTIC mappings remain
+                # available as advisory output; they are never rendered, because
+                # nothing has measured what they actually do to audio.
+                if mapping_source not in APPLY_REQUIRES_MAPPING_SOURCES:
+                    skipped.append({
+                        "profile": profile,
+                        "rule_id": rule_id,
+                        "mapping_source": mapping_source,
+                        "reason": (
+                            f"Mapping source {mapping_source} lacks calibration "
+                            "evidence - advisory only"
+                        ),
                     })
                     continue
 

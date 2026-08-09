@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 from .constants import (
-    DecisionState, Direction, Severity, MappingSource,
+    DecisionState, Direction, Severity, MappingSource, InterventionTier,
     MAPPING_CONFIDENCE_CEILING,
     CONFIDENCE_THRESHOLD_RECOMMEND,
     CONFIDENCE_THRESHOLD_CONDITIONAL,
@@ -106,6 +106,9 @@ class ProfileRecommendation:
     recommendations: List[DSPRecommendation]
     safety: SafetyInfo
     state_reason: str = ""
+    # Advisory classification only — it never changes ``state``. Consumers that
+    # render audio use it as one of the gates that must all pass.
+    intervention_tier: InterventionTier = InterventionTier.NONE
 
     def to_dict(self) -> Dict:
         return {
@@ -113,6 +116,7 @@ class ProfileRecommendation:
             "state": self.state.value,
             "confidence": self.confidence,
             "state_reason": self.state_reason,
+            "intervention_tier": self.intervention_tier.value,
             "reason": self.reason.to_dict() if self.reason else None,
             "recommendations": [r.to_dict() for r in self.recommendations],
             "safety": self.safety.to_dict(),
@@ -158,13 +162,19 @@ class RecommendationEngine:
         # Calculate profile delta
         profile_delta = self.delta_engine.calculate_profile_delta(profile, features)
 
+        tier = profile_delta.intervention_tier
+
         # Check for insufficient data
         if profile_delta.confidence_factor == 0:
-            return self._make_insufficient_data(profile, profile_delta.missing_features)
+            return self._make_insufficient_data(
+                profile, profile_delta.missing_features, tier
+            )
 
         # Check for no data-derived targets
         if not profile_delta.has_data_derived_target:
-            return self._make_uncalibrated(profile, "No data-derived targets available")
+            return self._make_uncalibrated(
+                profile, "No data-derived targets available", tier
+            )
 
         # Check if in normal range (NO_ACTION)
         if profile_delta.primary_direction == Direction.IN_RANGE:
@@ -177,7 +187,7 @@ class RecommendationEngine:
 
         # Check for unsupported mapping
         if not rules or all(r.source == MappingSource.UNSUPPORTED for r in rules):
-            return self._make_uncalibrated(profile, "No supported mapping rules")
+            return self._make_uncalibrated(profile, "No supported mapping rules", tier)
 
         # Generate recommendations from rules
         recommendations = []
@@ -257,10 +267,14 @@ class RecommendationEngine:
             recommendations=recommendations,
             safety=safety,
             state_reason=state_reason,
+            intervention_tier=profile_delta.intervention_tier,
         )
 
     def _make_insufficient_data(
-        self, profile: str, missing: List[str]
+        self,
+        profile: str,
+        missing: List[str],
+        tier: InterventionTier = InterventionTier.NONE,
     ) -> ProfileRecommendation:
         """Create INSUFFICIENT_DATA recommendation."""
         return ProfileRecommendation(
@@ -271,10 +285,14 @@ class RecommendationEngine:
             recommendations=[],
             safety=SafetyInfo(clamped=False, blocked_by=[], requires_reanalysis=False),
             state_reason=f"Missing features: {', '.join(missing)}",
+            intervention_tier=tier,
         )
 
     def _make_uncalibrated(
-        self, profile: str, reason: str
+        self,
+        profile: str,
+        reason: str,
+        tier: InterventionTier = InterventionTier.NONE,
     ) -> ProfileRecommendation:
         """Create UNCALIBRATED recommendation."""
         return ProfileRecommendation(
@@ -285,6 +303,7 @@ class RecommendationEngine:
             recommendations=[],
             safety=SafetyInfo(clamped=False, blocked_by=[], requires_reanalysis=False),
             state_reason=reason,
+            intervention_tier=tier,
         )
 
     def _make_no_action(
