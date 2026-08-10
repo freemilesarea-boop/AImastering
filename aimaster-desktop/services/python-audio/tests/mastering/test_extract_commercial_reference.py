@@ -340,12 +340,25 @@ def test_t17_target_registry_values_unchanged_by_extraction(corpus, out_root):
     assert snapshot() == before
 
 
+def _repo_root() -> Path:
+    """Repository root, located by walking up to the .git marker.
+
+    Found rather than assumed: an absolute path or a fixed parents[] index
+    resolves to nothing on any other checkout, and this test would then error
+    instead of checking what it claims to check.
+    """
+    for parent in Path(__file__).resolve().parents:
+        if (parent / ".git").exists():
+            return parent
+    pytest.skip("not inside a git checkout")
+
+
 def test_t17_target_registry_source_file_not_modified():
     """The tool reads commercial_n; it must never write the registry."""
     proc = subprocess.run(
         ["git", "status", "--porcelain",
          "aimaster-desktop/services/python-audio/app/mastering/decision_engine/target_registry.py"],
-        cwd="/Users/theblank/Desktop/AImastering", capture_output=True, text=True,
+        cwd=str(_repo_root()), capture_output=True, text=True,
     )
     assert proc.stdout.strip() == "", f"target_registry.py was modified: {proc.stdout}"
 
