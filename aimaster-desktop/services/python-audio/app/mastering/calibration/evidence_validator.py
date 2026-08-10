@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
+from app.analyzers.canonical_features import CANONICAL_ANALYSIS_SR
+
 from .evidence import (
     ALL_STATUSES,
     EVIDENCE_SCHEMA_VERSION,
@@ -218,8 +220,58 @@ def validate_run(
     if not manifest.deterministic_config_hash:
         _err(errors, "manifest.deterministic_config_hash", "config hash is missing")
 
+    errors.extend(_provenance_errors(manifest))
+
     for record in records:
         errors.extend(validate_record(record))
+
+    return errors
+
+
+def _provenance_errors(manifest: RunManifest) -> List[Error]:
+    """Canonical analysis provenance must be complete, or the run is unusable.
+
+    Not advisory. A target set whose analysis conditions are unknown cannot be
+    compared against anything later, which is precisely how the previous
+    reference statistics became unusable.
+    """
+    errors: List[Error] = []
+
+    required_text = (
+        "preprocessing_policy_version",
+        "numpy_version",
+        "decoder_implementation",
+        "decoder_version",
+        "decoder_binary_sha256",
+        "resampler_implementation",
+        "resampler_version",
+        "resampler_binary_sha256",
+        "resampler_parameters",
+        "dither_policy",
+        "analyzer_source_sha256",
+        "python_version",
+    )
+    for field_name in required_text:
+        if not (getattr(manifest, field_name, "") or "").strip():
+            _err(
+                errors,
+                f"manifest.{field_name}",
+                f"canonical analysis provenance is incomplete: {field_name} is missing",
+            )
+
+    if not manifest.canonical_analysis_sr:
+        _err(
+            errors,
+            "manifest.canonical_analysis_sr",
+            "canonical analysis provenance is incomplete: canonical_analysis_sr is missing",
+        )
+    elif manifest.canonical_analysis_sr != CANONICAL_ANALYSIS_SR:
+        _err(
+            errors,
+            "manifest.canonical_analysis_sr",
+            f"canonical_analysis_sr {manifest.canonical_analysis_sr} does not match "
+            f"the canonical rate {CANONICAL_ANALYSIS_SR}",
+        )
 
     return errors
 

@@ -103,13 +103,31 @@ def make_manifest(expected=2, completed=1, failed=1, missing=0, run_id="run-0001
         source_track_count=25,
         expected_candidate_count=expected,
         created_at_utc=WHEN,
-        ffmpeg_version="7.1",
-        python_version="3.14.0",
+        ffmpeg_version="6.0",
+        python_version="3.11.9",
         platform="darwin-arm64",
         completed_record_count=completed,
         failed_record_count=failed,
         missing_record_count=missing,
         deterministic_config_hash=config_hash({"sweeps": 56}),
+        # Canonical analysis provenance. Required: a target set whose analysis
+        # conditions are unknown cannot be compared against anything later.
+        preprocessing_policy_version="1.0.0",
+        canonical_analysis_sr=44100,
+        numpy_version="1.26.4",
+        decoder_implementation="ffmpeg",
+        decoder_version="6.0",
+        decoder_binary_sha256="e" * 64,
+        resampler_implementation="ffmpeg-aresample-swr",
+        resampler_version="6.0",
+        resampler_binary_sha256="e" * 64,
+        resampler_parameters=(
+            "aresample=osr=44100:resampler=swr:filter_size=32:phase_shift=10:"
+            "linear_interp=1:exact_rational=1:filter_type=kaiser:kaiser_beta=9:"
+            "cutoff=0:dither_method=0:async=0"
+        ),
+        dither_policy="none",
+        analyzer_source_sha256="f" * 64,
     )
 
 
@@ -542,3 +560,101 @@ def test_summary_is_derived_not_asserted(tmp_path):
     assert summary["missing_count"] == 4
     assert summary["valid"] is False
     assert summary["error_count"] > 0
+
+
+# ══ canonical analysis provenance (RUN_LEVEL) ════════════════════════════════
+
+def test_provenance_complete_manifest_is_valid():
+    """Guard against the provenance checks being vacuously satisfiable."""
+    assert validate_run(make_manifest(expected=1, completed=1, failed=0),
+                        [make_record()]) == []
+
+
+@pytest.mark.parametrize("field", [
+    "preprocessing_policy_version",
+    "numpy_version",
+    "decoder_implementation",
+    "decoder_version",
+    "decoder_binary_sha256",
+    "resampler_implementation",
+    "resampler_version",
+    "resampler_binary_sha256",
+    "resampler_parameters",
+    "dither_policy",
+    "analyzer_source_sha256",
+    "python_version",
+])
+def test_missing_provenance_field_is_detected(field):
+    """Each field is independently required.
+
+    The previous reference statistics were unusable because nobody could say
+    what produced them; any one of these going missing recreates that.
+    """
+    manifest = make_manifest(expected=1, completed=1, failed=0)
+    setattr(manifest, field, "")
+    errors = validate_run(manifest, [make_record()])
+    assert any(field in e["path"] for e in errors), f"{field} not required"
+
+
+def test_missing_canonical_analysis_sr_is_detected():
+    manifest = make_manifest(expected=1, completed=1, failed=0)
+    manifest.canonical_analysis_sr = None
+    errors = validate_run(manifest, [make_record()])
+    assert any("canonical_analysis_sr" in e["path"] for e in errors)
+
+
+def test_wrong_canonical_analysis_sr_is_detected():
+    """A run analysed at 48 kHz must not pass as canonical."""
+    manifest = make_manifest(expected=1, completed=1, failed=0)
+    manifest.canonical_analysis_sr = 48000
+    errors = validate_run(manifest, [make_record()])
+    assert any("does not match" in e["message"] for e in errors)
+
+
+def test_provenance_round_trip_is_lossless():
+    original = make_manifest()
+    restored = RunManifest.from_dict(json.loads(json.dumps(original.to_dict())))
+    assert restored == original
+    assert restored.canonical_analysis_sr == 44100
+    assert restored.numpy_version == "1.26.4"
+    assert restored.decoder_binary_sha256 == "e" * 64
+
+
+def test_analysis_resampled_round_trips_per_record():
+    record = make_record()
+    record.source.analysis_resampled = True
+    restored = CalibrationRecord.from_dict(record.to_dict())
+    assert restored.source.analysis_resampled is True
+    assert restored == record
+
+
+def test_old_manifest_without_provenance_still_parses():
+    """Schema growth must not make existing evidence unreadable.
+
+    An older manifest is missing the new keys, not carrying wrong ones: it must
+    still load (so it can be inspected) while failing validation (so it is not
+    mistaken for provenanced evidence).
+    """
+    data = make_manifest().to_dict()
+    for key in ("preprocessing_policy_version", "canonical_analysis_sr",
+                "numpy_version", "decoder_implementation", "decoder_version",
+                "decoder_binary_sha256", "resampler_implementation",
+                "resampler_version", "resampler_binary_sha256",
+                "resampler_parameters", "dither_policy",
+                "analyzer_source_sha256"):
+        del data[key]
+
+    restored = RunManifest.from_dict(data)          # readable
+    assert restored.run_id == "run-0001"
+    assert restored.canonical_analysis_sr is None
+
+    errors = validate_run(restored, [make_record()])  # but not valid
+    assert errors
+
+
+def test_old_record_without_analysis_resampled_still_parses():
+    data = make_record().to_dict()
+    del data["source"]["analysis_resampled"]
+    restored = CalibrationRecord.from_dict(data)
+    assert restored.source.analysis_resampled is None
+    assert validate_record(restored) == []

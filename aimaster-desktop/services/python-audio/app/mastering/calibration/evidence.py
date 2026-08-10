@@ -192,9 +192,16 @@ class SourceInfo:
     track_path_relative: str = ""
     track_sha256: str = ""
     track_duration_s: Optional[float] = None
+    # Rate of the file as delivered. The rate the analysis ran at is a run-level
+    # constant (RunManifest.canonical_analysis_sr); this is per-track because it
+    # is what determines whether the resampler was involved at all.
     sample_rate: Optional[int] = None
     channels: Optional[int] = None
     bit_depth: Optional[int] = None
+    # Whether reaching the canonical analysis rate required the resampler.
+    # Recorded per record so a natively-canonical reference track and a resampled
+    # runtime input stay distinguishable after the fact.
+    analysis_resampled: Optional[bool] = None
 
 
 @dataclass
@@ -376,6 +383,33 @@ class RunManifest:
     # Hash of the sweep/threshold configuration the run used, so a run cannot be
     # silently compared against another produced under different settings.
     deterministic_config_hash: str = ""
+
+    # ── Canonical analysis provenance ────────────────────────────────────────
+    #
+    # The previous target set could not be trusted because nobody could say what
+    # had produced it: the statistics file was gone, and the analyzer that could
+    # have made it did not exist yet when its numbers were committed. These
+    # fields exist so that question is answerable from the evidence alone.
+    #
+    # Run-level rather than per-record: they are constant for a run, and copying
+    # them onto every candidate would add bulk without adding information.
+    preprocessing_policy_version: str = ""
+    canonical_analysis_sr: Optional[int] = None
+    numpy_version: str = ""
+    decoder_implementation: str = ""
+    decoder_version: str = ""
+    decoder_binary_sha256: str = ""
+    resampler_implementation: str = ""
+    resampler_version: str = ""
+    resampler_binary_sha256: str = ""
+    # Full parameter string as passed, not a summary: an unrecorded parameter is
+    # indistinguishable from one that never mattered.
+    resampler_parameters: str = ""
+    dither_policy: str = ""
+    # Hash of the analyzer source itself. engine_commit_sha moves whenever any
+    # file in the repository changes; this isolates the code that defines what
+    # the features mean.
+    analyzer_source_sha256: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -69,9 +69,16 @@ class CanonicalFeatures:
     """Complete set of canonical features for a track."""
     file_path: str
     file_name: str
+    # Rate of the source file. Describes the input, not the measurement.
     sample_rate: int
     channels: int
     duration_sec: float
+
+    # Rate the analysis actually ran at, and whether reaching it required the
+    # resampler. Kept separate from sample_rate so a consumer can tell a
+    # natively-canonical file from a resampled one.
+    analysis_sample_rate: Optional[int] = None
+    analysis_resampled: Optional[bool] = None
 
     # Loudness (from FFmpeg ebur128)
     integrated_lufs: Optional[float] = None
@@ -127,6 +134,8 @@ class CanonicalFeatures:
         result = {
             "file": self.file_name,
             "sample_rate": self.sample_rate,
+            "analysis_sample_rate": self.analysis_sample_rate,
+            "analysis_resampled": self.analysis_resampled,
             "channels": self.channels,
             "duration_sec": round(self.duration_sec, 3),
 
@@ -195,6 +204,34 @@ CANONICAL_PARAMS = {
     "epsilon": 1e-12,
 }
 
+# ── Canonical analysis conditions ────────────────────────────────────────────
+#
+# Every spectral feature here is a statistic over FFT bins that run up to
+# Nyquist, so its value depends on the sample rate it was measured at:
+# spectral_flatness is a geometric mean over all bins, hf_ratio and the band
+# ratios divide by total power to Nyquist, and n_fft is fixed in samples so the
+# bin width itself moves with the rate. Measuring a 44.1 kHz reference and a
+# 48 kHz input natively therefore produces numbers that cannot be compared, and
+# scaling n_fft with the rate does not fix it — the bin sets still end at
+# different frequencies.
+#
+# So analysis is pinned to one rate. This is an analysis-only decision: the DSP,
+# render and output sample rates are untouched, and loudness/true-peak/LRA keep
+# coming from ffmpeg against the original file path.
+CANONICAL_ANALYSIS_SR = 44100
+
+# Version of the whole preprocessing contract (rate, decoder, resampler,
+# dither, trim). Recorded in evidence so a target set and a runtime measurement
+# can be checked for having been produced under the same rules.
+PREPROCESSING_POLICY_VERSION = "1.0.0"
+
+# No trim and no silence removal. Stated as constants because "we do not do it"
+# is a policy that has to be recorded, not an absence: introducing a trim later
+# would move spectral_flux, onset_density, flatness_temporal_std and
+# crest_factor, and its threshold would be a new unvalidated parameter.
+CANONICAL_TRIM_POLICY = "none"
+CANONICAL_SILENCE_POLICY = "none"
+
 # Band definitions for frequency analysis
 BAND_DEFINITIONS = {
     "20-60Hz": (20, 60),
@@ -245,13 +282,110 @@ def _validate_value(value: float) -> Optional[float]:
     return round(value, 6)
 
 
+def _as_positive_float(value: Any) -> Optional[float]:
+    """Coerce a probe field to a positive float, or None when unusable."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if result != result or result <= 0.0:  # NaN or non-positive
+        return None
+    return result
+
+
+def _load_canonical_signal(file_path: str) -> tuple["np.ndarray", int, int, bool]:
+    """Decode ``file_path`` under the canonical analysis conditions.
+
+    Returns ``(data, analysis_sr, source_sr, resampled)`` where ``data`` is
+    ``(samples, channels)`` float32 with nominal full scale +/-1.0.
+
+    One decoder for every input. Splitting it — libsndfile for the 44.1 kHz
+    reference, ffmpeg for everything else — would leave the reference and the
+    runtime measured through different code, which is the same class of
+    asymmetry as measuring them at different rates.
+
+    Raises rather than returning partial data: see the fail-closed note in
+    ``extract``.
+    """
+    from app.utils.ffmpeg_wrapper import (
+        CanonicalProvenanceError,
+        decode_canonical_pcm_f32le,
+        ffprobe_info,
+        resolve_canonical_ffmpeg,
+    )
+
+    binary = resolve_canonical_ffmpeg()
+
+    info = ffprobe_info(file_path)
+    audio_streams = [
+        s for s in (info.get("streams") or []) if s.get("codec_type") == "audio"
+    ]
+    if not audio_streams:
+        raise CanonicalProvenanceError(f"no audio stream in {file_path}")
+    stream = audio_streams[0]
+
+    try:
+        source_sr = int(stream.get("sample_rate") or 0)
+        channels = int(stream.get("channels") or 0)
+    except (TypeError, ValueError) as exc:
+        raise CanonicalProvenanceError(f"unreadable stream metadata: {exc}")
+
+    if source_sr <= 0:
+        raise CanonicalProvenanceError(f"invalid source sample rate: {source_sr}")
+    if channels <= 0:
+        raise CanonicalProvenanceError(f"invalid channel count: {channels}")
+
+    # Only attach the resampler when the rate actually differs. At 44.1 kHz the
+    # filter is absent from the graph entirely rather than present as a no-op.
+    resampled = source_sr != CANONICAL_ANALYSIS_SR
+    raw = decode_canonical_pcm_f32le(
+        file_path,
+        channels=channels,
+        binary=binary,
+        target_sr=CANONICAL_ANALYSIS_SR if resampled else None,
+    )
+
+    data = np.frombuffer(raw, dtype="<f4").reshape(-1, channels)
+    if data.shape[0] <= 0:
+        raise CanonicalProvenanceError(f"canonical decode yielded no frames: {file_path}")
+    if data.shape[1] != channels:
+        raise CanonicalProvenanceError(
+            f"channel count changed during decode: expected {channels}, "
+            f"got {data.shape[1]}"
+        )
+
+    analysis_sr = CANONICAL_ANALYSIS_SR
+
+    # The decode is raw f32le, which carries no header to state its rate, so the
+    # rate is checked indirectly: the frame count has to agree with the duration
+    # ffprobe reported for the source. A resampler that silently produced some
+    # other rate would show up here as the wrong number of frames. The tolerance
+    # is loose because container durations are approximate; it is sized to catch
+    # a wrong rate (a 8.8% error between 44.1 and 48 kHz), not to police rounding.
+    probed_duration = _as_positive_float((info.get("format") or {}).get("duration"))
+    if probed_duration is None:
+        probed_duration = _as_positive_float(stream.get("duration"))
+    if probed_duration is not None:
+        decoded_duration = data.shape[0] / analysis_sr
+        if abs(decoded_duration - probed_duration) > max(0.5, probed_duration * 0.02):
+            raise CanonicalProvenanceError(
+                f"decoded length {decoded_duration:.3f}s at {analysis_sr} Hz does not "
+                f"match the probed duration {probed_duration:.3f}s — the analysis rate "
+                f"is not {CANONICAL_ANALYSIS_SR} Hz"
+            )
+
+    # np.frombuffer returns a read-only view of the pipe bytes; downstream
+    # extractors only read, but copy so no consumer can be surprised by it.
+    return np.array(data, dtype="float32"), analysis_sr, source_sr, resampled
+
+
 class CanonicalFeatureExtractor:
     """
     Extracts canonical features from audio files.
 
     Uses:
     - FFmpeg ebur128 for loudness (via existing loudnorm_pass1)
-    - soundfile + numpy for waveform analysis
+    - the bundled FFmpeg for canonical decode/resample, then numpy for analysis
     - scipy for transient detection (optional)
     """
 
@@ -291,21 +425,28 @@ class CanonicalFeatureExtractor:
             )
             return features
 
-        try:
-            data, sr = sf.read(file_path, always_2d=True, dtype="float32")
-        except Exception as e:
-            features.feature_status["_load"] = FeatureResult(
-                feature="_load",
-                status=FeatureStatus.MEASUREMENT_FAILED,
-                value=None,
-                unit="",
-                method="soundfile",
-                error=str(e),
-            )
-            return features
+        # Fail closed. A canonical load that cannot be completed under the
+        # canonical conditions must not degrade into a measurement taken under
+        # different ones — features measured at the source rate would compare
+        # against the targets as if they were commensurate, which is the failure
+        # this contract exists to prevent. Callers that must survive (RC) already
+        # catch and fall back to the stable path.
+        data, sr, source_sr, resampled = _load_canonical_signal(file_path)
+        features.analysis_sample_rate = sr
+        features.analysis_resampled = resampled
+        features.feature_status["_load"] = FeatureResult(
+            feature="_load",
+            status=FeatureStatus.AVAILABLE,
+            value=float(sr),
+            unit="Hz",
+            method="ffmpeg_f32le",
+        )
 
         n_samples, n_channels = data.shape
-        features.sample_rate = sr
+        # sample_rate stays the SOURCE rate: it describes the file, and callers
+        # and existing tests read it that way. The rate the analysis actually ran
+        # at is analysis_sample_rate.
+        features.sample_rate = source_sr
         features.channels = n_channels
         features.duration_sec = n_samples / sr
 
