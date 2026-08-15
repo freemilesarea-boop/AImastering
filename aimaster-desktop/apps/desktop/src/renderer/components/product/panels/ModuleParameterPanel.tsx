@@ -29,6 +29,7 @@ import type {
   ParameterDef,
   ParameterValue,
 } from '../../../audio/parameters/index.js';
+import { glossaryFor } from '../../../audio/parameters/parameter-glossary.js';
 import { LouiSectionCard } from '../controls/LouiSectionCard.js';
 import { LouiSliderRow } from '../controls/LouiSliderRow.js';
 import { LouiTogglePill } from '../controls/LouiTogglePill.js';
@@ -38,6 +39,8 @@ import { surface, text, typography, space, radius } from '../../../theme/loui-th
 
 interface ChipRowProps {
   label: string;
+  /** Korean name, shown beside the English one. */
+  ko?: string | undefined;
   hint?: string;
   values: readonly string[];
   labels?: Readonly<Record<string, string>>;
@@ -59,6 +62,11 @@ function ChipRow(props: ChipRowProps) {
           fontWeight: typography.weight.medium,
         }}>
           {props.label}
+          {props.ko && (
+            <span style={{ color: text.tertiary, fontWeight: typography.weight.normal }}>
+              {`  ${props.ko}`}
+            </span>
+          )}
         </span>
         {props.hint && (
           <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: text.muted }}>
@@ -146,11 +154,11 @@ export function groupParameters(
 
   const sections: Section[] = [];
   if (general.length > 0) {
-    sections.push({ title: bands.size > 0 ? 'Module' : 'Parameters', params: general });
+    sections.push({ title: bands.size > 0 ? 'Module  공통' : 'Parameters  설정', params: general });
   }
   for (const idx of [...bands.keys()].sort((a, b) => a - b)) {
     sections.push({
-      title: bandLabels?.[idx] ?? `Band ${idx + 1}`,
+      title: bandLabels?.[idx] ?? `Band ${idx + 1}  ${idx + 1}번 밴드`,
       params: bands.get(idx)!,
     });
   }
@@ -162,7 +170,9 @@ export function groupParameters(
  * Naming them "Low / Low mid / High mid / High" is the difference between
  * a panel you can read at a glance and one you have to decode.
  */
-const FREQ_BAND_LABELS = ['Low', 'Low mid', 'High mid', 'High'] as const;
+const FREQ_BAND_LABELS = [
+  'Low  저역', 'Low mid  중저역', 'High mid  중고역', 'High  고역',
+] as const;
 const FREQ_BAND_MODULES = new Set<ModuleId>(['multiband', 'impact', 'exciter']);
 
 // ── Panel ────────────────────────────────────────────────────────────────
@@ -273,13 +283,18 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
         <LouiSectionCard key={section.title} title={section.title} dimmed={disabled}>
           {section.params.map((p) => {
             const raw = props.values[p.id];
+            // English label, Korean name, and one plain sentence.  The
+            // sentence REPLACES the English hint rather than joining it:
+            // two explanations of the same control is not twice as clear.
+            const g = glossaryFor(props.moduleId, p.id);
+            const hint = g?.plain ?? p.hint;
 
             if (p.kind === 'boolean') {
               return (
                 <LouiTogglePill
                   key={p.id}
-                  label={p.label}
-                  {...(p.hint ? { hint: p.hint } : {})}
+                  label={g ? `${p.label}  ${g.ko}` : p.label}
+                  {...(hint ? { hint } : {})}
                   {...(p.offLabel ? { offLabel: p.offLabel } : {})}
                   {...(p.onLabel ? { onLabel: p.onLabel } : {})}
                   value={typeof raw === 'boolean' ? raw : p.default}
@@ -294,7 +309,8 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
                 <ChipRow
                   key={p.id}
                   label={p.label}
-                  {...(p.hint ? { hint: p.hint } : {})}
+                  {...(g ? { ko: g.ko } : {})}
+                  {...(hint ? { hint } : {})}
                   {...(p.labels ? { labels: p.labels } : {})}
                   {...(p.hints ? { hints: p.hints } : {})}
                   values={p.values}
@@ -308,8 +324,8 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
             return (
               <LouiSliderRow
                 key={p.id}
-                label={p.label}
-                {...(p.hint ? { hint: p.hint } : {})}
+                label={g ? `${p.label}  ${g.ko}` : p.label}
+                {...(hint ? { hint } : {})}
                 {...(p.unit ? { unit: p.unit } : {})}
                 {...(p.format ? { format: p.format } : {})}
                 value={typeof raw === 'number' ? raw : p.default}

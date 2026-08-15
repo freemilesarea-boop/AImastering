@@ -98,6 +98,42 @@ Pass filters send no gain. The engine ignores gain on high-pass and low-pass
 bands, so forwarding a band's leftover gain would draw a boost the audio
 never applies.
 
+### §8 — Two audiences, one panel
+
+This app is used by mastering engineers and by people taking a course who
+have never met the word "ratio". They cannot be split into two builds, so
+every control carries three things:
+
+```
+Ratio  비율
+기준을 넘은 만큼을 얼마로 줄일지입니다. 4:1이면 4 dB 넘어온 것이
+1 dB만 넘게 만듭니다.
+```
+
+The English term stays first, because it is what every other tool and every
+tutorial calls it — a learner who only ever sees "비율" cannot follow
+anything else they read. The Korean name sits beside it, and one plain
+sentence replaces the English hint rather than joining it: two explanations
+of the same control is not twice as clear.
+
+The rule for that sentence is **say what moving it does, not what it is**.
+"Threshold: the level above which compression starts" is a definition;
+"이 레벨보다 커진 소리부터 눌러 줄입니다" is an instruction. Where a number
+has an intuitive reading, give it — 4:1 meaning 4 dB in, 1 dB out beats any
+adjective.
+
+Translations live in `parameter-glossary.ts`, not on the definitions, so
+they can be reviewed together for tone and so a missing one is obvious.
+Band-repeated parameters collapse: `band0ThresholdDb` through
+`band3ThresholdDb` share one entry, because they are one idea. That takes
+203 parameters down to 120 written entries.
+
+Coverage is a test. `test:glossary` fails the build if any parameter or
+module lacks an entry, if an entry is orphaned, or if a "plain" sentence is
+short enough to be a placeholder. It also asserts that **every module in the
+rack draws something** — a module with no display is one a beginner cannot
+learn from, so that is checked rather than intended.
+
 ### §7 — The restoration displays
 
 De-hum, de-noise, de-essing and tonal matching all work in the frequency

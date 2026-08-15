@@ -29,6 +29,7 @@ import {
   type ModuleCategory,
 } from '../../audio/modules/loui-module-suite.js';
 import type { ModuleId } from '../../audio/parameters/index.js';
+import { MODULE_GLOSSARY } from '../../audio/parameters/parameter-glossary.js';
 import { surface, text, typography, space, radius, meter } from '../../theme/loui-theme.js';
 
 /** Live readout for one module, supplied by the caller's metering. */
@@ -161,6 +162,19 @@ function ModuleRow(props: RowProps) {
           textOverflow: 'ellipsis',
         }}>
           {m.displayName}
+        </span>
+        {/* The Korean name sits under the English one rather than replacing
+            it: an engineer looks for "Multiband", a learner looks for
+            "멀티밴드 컴프레서", and both are reading the same row. */}
+        <span style={{
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          color: props.bypassed ? text.disabled : text.tertiary,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}>
+          {m.paramModuleId ? MODULE_GLOSSARY[m.paramModuleId]?.ko ?? '' : ''}
         </span>
         <span style={{
           fontFamily: typography.family.sans,

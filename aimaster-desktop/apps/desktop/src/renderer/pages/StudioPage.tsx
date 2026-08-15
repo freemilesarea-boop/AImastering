@@ -42,6 +42,10 @@ import {
   ToneDynamicsView,
   TONE_DYN_VIEW_MODULES,
 } from '../components/product/modules/LouiToneDynamicsViews.js';
+import {
+  CharacterView,
+  CHARACTER_VIEW_MODULES,
+} from '../components/product/modules/LouiCharacterViews.js';
 import { buildDynamicsGraph } from '../audio/modules/dynamics-graph-model.js';
 import {
   buildGraphBands,
@@ -63,6 +67,7 @@ import {
   type ParameterValue,
 } from '../audio/parameters/index.js';
 import { getModule } from '../audio/modules/loui-module-suite.js';
+import { MODULE_GLOSSARY } from '../audio/parameters/parameter-glossary.js';
 import {
   buildChainConfig, activeModuleIds, MASTER_NATIVE_BIT_DEPTH, MAX_PARAMETRIC_BANDS,
   DEFAULT_MONITOR, monitorAltersOutput, type MonitorSettings,
@@ -499,11 +504,27 @@ export default function StudioPage() {
                     color: text.primary,
                   }}>
                     {registryEntry.displayName}
+                    <span style={{ color: text.tertiary, fontWeight: typography.weight.normal }}>
+                      {MODULE_GLOSSARY[paramModule] ? `  ${MODULE_GLOSSARY[paramModule].ko}` : ''}
+                    </span>
+                  </span>
+                  {/* The plain-Korean sentence leads, because the person
+                      who needs an explanation reads it first; the English
+                      description follows for the person who wants the
+                      precise wording. */}
+                  <span style={{
+                    fontFamily: typography.family.sans,
+                    fontSize: typography.size.sm,
+                    color: text.secondary,
+                    lineHeight: 1.6,
+                    maxWidth: '60ch',
+                  }}>
+                    {MODULE_GLOSSARY[paramModule]?.plain ?? ''}
                   </span>
                   <span style={{
                     fontFamily: typography.family.sans,
                     fontSize: typography.size.xs,
-                    color: text.tertiary,
+                    color: text.muted,
                     lineHeight: 1.5,
                     maxWidth: '60ch',
                   }}>
@@ -519,6 +540,18 @@ export default function StudioPage() {
                 values={state[paramModule].parameters}
                 bypass={state[paramModule].bypass}
                 onChange={(id, value) => setParam(paramModule, id, value)}
+                {...(CHARACTER_VIEW_MODULES.has(paramModule)
+                  ? {
+                    editor: (
+                      <CharacterView
+                        moduleId={paramModule}
+                        values={state[paramModule].parameters}
+                        metrics={preview.metrics}
+                        disabled={state[paramModule].bypass}
+                      />
+                    ),
+                  }
+                  : {})}
                 {...(TONE_DYN_VIEW_MODULES.has(paramModule)
                   ? {
                     editor: (
