@@ -444,5 +444,54 @@ if (!Chain) {
   }
 }
 
+// ── The rulers ───────────────────────────────────────────────────────────
+//
+// A curve without a labelled axis has a shape and no scale: "is that dip at
+// 200 Hz or 400?" cannot be answered by looking. These render the real
+// component and assert the ruler is actually in the output — cheap, and it
+// catches a padding change that pushes the edge labels out of the viewport
+// as surely as it catches a deleted `<text>`.
+
+console.log('\n=== EQ GRAPH — the rulers ===\n');
+
+{
+  const React = require_('react') as typeof import('react');
+  const { renderToStaticMarkup } = require_('react-dom/server') as typeof import('react-dom/server');
+  const { LouiEqGraph } = require_(
+    '../src/renderer/components/product/modules/LouiEqGraph.js',
+  ) as typeof import('../src/renderer/components/product/modules/LouiEqGraph.js');
+
+  const bands = freeBandsToGraph([makeFreeBand(1000, 3)]);
+  const html = renderToStaticMarkup(
+    React.createElement(LouiEqGraph, { bands, onBandChange: () => { /* read-only */ } }),
+  );
+
+  const wanted = ['>20<', '>50<', '>100<', '>200<', '>500<', '>1k<', '>2k<', '>5k<', '>10k<', '>20k<'];
+  const missing = wanted.filter((w) => !html.includes(w));
+  check(
+    'the frequency ruler names every decade and half-decade',
+    missing.length === 0,
+    missing.length === 0 ? wanted.map((w) => w.slice(1, -1)).join(' · ') : `missing ${missing.join(', ')}`,
+  );
+
+  const dbWanted = ['>+12<', '>+6<', '>-6<', '>-12<'];
+  const dbMissing = dbWanted.filter((w) => !html.includes(w));
+  check(
+    'the gain ruler is labelled every 6 dB',
+    dbMissing.length === 0,
+    dbMissing.length === 0 ? '+12 · +6 · -6 · -12' : `missing ${dbMissing.join(', ')}`,
+  );
+
+  // Every tick has to land inside the drawn area.  A label at x < 0 is
+  // invisible, which is the same as not having drawn it.
+  const xs = [...html.matchAll(/<text x="([-\d.]+)" y="[\d.]+" text-anchor/g)]
+    .map((m) => Number(m[1]));
+  check(
+    'no frequency label sits outside the plot',
+    xs.length > 0 && xs.every((x) => x >= 0 && x <= 720),
+    `${xs.length} labels, x from ${Math.min(...xs).toFixed(0)} to ${Math.max(...xs).toFixed(0)}`,
+  );
+}
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 if (failed > 0) process.exit(1);

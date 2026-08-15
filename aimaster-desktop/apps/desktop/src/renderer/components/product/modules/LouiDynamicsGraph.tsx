@@ -36,9 +36,12 @@ export interface LouiDynamicsGraphProps {
   disabled?: boolean;
 }
 
-const SIZE = 168;
-const PAD = 22;
+const SIZE = 176;
+const PAD = 24;
 const GRID = [-60, -48, -36, -24, -12, 0];
+/** Ruler ticks.  Every 20 dB — enough to place the threshold, few enough
+ *  to stay legible in a cell this size. */
+const LABELLED_DB = [-60, -40, -20, 0];
 /** Full scale of the reduction meter, in dB. */
 const METER_MAX_DB = 20;
 
@@ -102,12 +105,34 @@ function CurveCell(props: {
             <g key={db}>
               <line
                 x1={toX(db)} x2={toX(db)} y1={PAD} y2={SIZE - PAD}
-                stroke="rgba(255,255,255,0.05)" strokeWidth={1}
+                stroke={db === LABELLED_DB[1] ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.05)'}
+                strokeWidth={1}
               />
               <line
                 x1={PAD} x2={SIZE - PAD} y1={toY(db)} y2={toY(db)}
                 stroke="rgba(255,255,255,0.05)" strokeWidth={1}
               />
+            </g>
+          ))}
+          {/* Both rulers.  Without them the curve has a shape but no scale,
+              and "how loud does it start working" is unanswerable. */}
+          {LABELLED_DB.map((db) => (
+            <g key={`lab${db}`}>
+              <text
+                x={toX(db)} y={SIZE - PAD + 9}
+                textAnchor={db === DYN_MIN_DB ? 'start' : db === DYN_MAX_DB ? 'end' : 'middle'}
+                fill="rgba(255,255,255,0.32)"
+                style={{ fontFamily: typography.family.mono, fontSize: 7 }}
+              >
+                {db}
+              </text>
+              <text
+                x={PAD - 3} y={toY(db) + 2} textAnchor="end"
+                fill="rgba(255,255,255,0.32)"
+                style={{ fontFamily: typography.family.mono, fontSize: 7 }}
+              >
+                {db}
+              </text>
             </g>
           ))}
           {/* Unity — where the curve would sit doing nothing.  Without it a
@@ -133,11 +158,11 @@ function CurveCell(props: {
             />
           )}
           <text
-            x={SIZE / 2} y={SIZE - 6} textAnchor="middle"
-            fill="rgba(255,255,255,0.28)"
-            style={{ fontFamily: typography.family.mono, fontSize: 8 }}
+            x={SIZE - PAD} y={11} textAnchor="end"
+            fill="rgba(255,255,255,0.24)"
+            style={{ fontFamily: typography.family.mono, fontSize: 7 }}
           >
-            in dBFS
+            out ↑ / in → dBFS
           </text>
         </svg>
 

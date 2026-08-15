@@ -72,11 +72,28 @@ const MAX_HZ = 20_000;
 const DB_RANGE = 18;
 const CURVE_POINTS = 320;
 
-const GRID_HZ = [30, 50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 10_000, 15_000];
-const LABEL_HZ = new Set([100, 1000, 10_000]);
+/**
+ * The frequency ruler.
+ *
+ * Two tiers, the way every mastering EQ draws them. The MAJOR decade and
+ * half-decade points carry a brighter line and a number; the MINOR points
+ * in between carry a faint line only. Three labels across ten octaves — the
+ * first attempt — leaves you counting gridlines to find 200 Hz, which is
+ * exactly the frequency you are usually looking for.
+ */
+const MAJOR_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10_000, 20_000];
+const MINOR_HZ = [
+  30, 40, 60, 70, 80, 90,
+  300, 400, 600, 700, 800, 900,
+  3000, 4000, 6000, 7000, 8000, 9000,
+  15_000,
+];
+/** dB gridlines, labelled every 6 dB down the right margin. */
 const GRID_DB = [-18, -12, -6, 0, 6, 12, 18];
+const LABEL_DB = new Set([-12, -6, 6, 12]);
 
-const PAD = { left: 8, right: 8, top: 10, bottom: 18 };
+// `right` leaves room for the dB ruler; `bottom` for the frequency one.
+const PAD = { left: 10, right: 30, top: 12, bottom: 20 };
 
 function hzToX(hz: number, w: number): number {
   const t = Math.log(Math.max(hz, MIN_HZ) / MIN_HZ) / Math.log(MAX_HZ / MIN_HZ);
@@ -95,8 +112,14 @@ function yToDb(y: number, h: number): number {
   return DB_RANGE - Math.min(1, Math.max(0, t)) * 2 * DB_RANGE;
 }
 
+/** Readout formatting — keeps a decimal, because 1.2k and 1.9k differ. */
 function fmtHz(hz: number): string {
   return hz >= 1000 ? `${(hz / 1000).toFixed(hz >= 10_000 ? 0 : 1)}k` : `${Math.round(hz)}`;
+}
+
+/** Ruler formatting — terse, because the tick already says where it is. */
+function fmtAxisHz(hz: number): string {
+  return hz >= 1000 ? `${hz / 1000}k` : `${hz}`;
 }
 
 /** Sample the summed response across the visible range. */
@@ -403,25 +426,36 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
           onContextMenu={(e) => { if (free) e.preventDefault(); }}
           style={{ position: 'relative', display: 'block', cursor: dragRef.current ? 'grabbing' : 'default' }}
         >
-          {/* Grid */}
+          {/* Grid + rulers */}
           <g>
-            {GRID_HZ.map((hz) => {
+            {MINOR_HZ.map((hz) => {
               const x = hzToX(hz, width);
+              return (
+                <line
+                  key={`m${hz}`}
+                  x1={x} x2={x} y1={PAD.top} y2={height - PAD.bottom}
+                  stroke="rgba(255,255,255,0.04)" strokeWidth={1}
+                />
+              );
+            })}
+            {MAJOR_HZ.map((hz) => {
+              const x = hzToX(hz, width);
+              // The first and last labels would hang off the plot; anchor
+              // them inwards instead of letting them clip.
+              const anchor = hz === MIN_HZ ? 'start' : hz === MAX_HZ ? 'end' : 'middle';
               return (
                 <g key={hz}>
                   <line
                     x1={x} x2={x} y1={PAD.top} y2={height - PAD.bottom}
-                    stroke="rgba(255,255,255,0.06)" strokeWidth={1}
+                    stroke="rgba(255,255,255,0.10)" strokeWidth={1}
                   />
-                  {LABEL_HZ.has(hz) && (
-                    <text
-                      x={x} y={height - 5} textAnchor="middle"
-                      fill="rgba(255,255,255,0.30)"
-                      style={{ fontFamily: typography.family.mono, fontSize: 9 }}
-                    >
-                      {fmtHz(hz)}
-                    </text>
-                  )}
+                  <text
+                    x={x} y={height - 6} textAnchor={anchor}
+                    fill="rgba(255,255,255,0.38)"
+                    style={{ fontFamily: typography.family.mono, fontSize: 9 }}
+                  >
+                    {fmtAxisHz(hz)}
+                  </text>
                 </g>
               );
             })}
@@ -431,13 +465,13 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
                 <g key={db}>
                   <line
                     x1={PAD.left} x2={width - PAD.right} y1={y} y2={y}
-                    stroke={db === 0 ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.05)'}
+                    stroke={db === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.05)'}
                     strokeWidth={1}
                   />
-                  {(db === 12 || db === -12) && (
+                  {LABEL_DB.has(db) && (
                     <text
-                      x={PAD.left + 3} y={y - 3}
-                      fill="rgba(255,255,255,0.26)"
+                      x={width - PAD.right + 4} y={y + 3}
+                      fill="rgba(255,255,255,0.34)"
                       style={{ fontFamily: typography.family.mono, fontSize: 9 }}
                     >
                       {db > 0 ? `+${db}` : db}
@@ -446,6 +480,15 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
                 </g>
               );
             })}
+            {/* Scale marker — the range the vertical axis covers, so a
+                curve is never read against an axis you have to guess. */}
+            <text
+              x={width - PAD.right + 4} y={PAD.top + 8}
+              fill="rgba(255,255,255,0.22)"
+              style={{ fontFamily: typography.family.mono, fontSize: 8 }}
+            >
+              dB
+            </text>
           </g>
 
           {/* Per-band regions — only for the band under the cursor, so the
