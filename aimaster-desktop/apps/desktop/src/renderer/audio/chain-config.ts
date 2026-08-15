@@ -91,8 +91,14 @@ export interface ChainConfigWire {
     highBandwidth?: number; bypass?: boolean;
   };
   eq?: {
-    lowCutHz?: number; lowShelfDb?: number; presenceDb?: number;
-    airDb?: number; adaptive?: boolean; bypass?: boolean;
+    // Frequency and Q travel with every band: the graph editor drags a node
+    // in two axes and sets its width on the wheel.  Omitting them keeps the
+    // classic 120 Hz / 3 kHz / 12 kHz layout.
+    lowCutHz?: number; lowCutQ?: number;
+    lowShelfHz?: number; lowShelfDb?: number; lowShelfQ?: number;
+    presenceHz?: number; presenceDb?: number; presenceQ?: number;
+    airHz?: number; airDb?: number; airQ?: number;
+    adaptive?: boolean; bypass?: boolean;
   };
   dynamicEq?: { bands?: DynEqBandWire[]; bypass?: boolean };
 
@@ -221,6 +227,26 @@ const LIMITER_CHARACTER: Record<string, NonNullable<NonNullable<ChainConfigWire[
  * nothing, rather than offering a choice that has no effect.
  */
 export const MASTER_NATIVE_BIT_DEPTH = 24;
+
+/**
+ * The EQ's classic band layout, and the single place it is written down on
+ * this side of the wire.
+ *
+ * These MUST match `EqConfig::default()` in `dsp-core/.../mastering/eq.rs`.
+ * They are sent explicitly rather than left to the Rust defaults so a state
+ * that has never touched a frequency still round-trips to the same numbers
+ * the graph editor is drawing — a curve drawn at 3 kHz while the DSP filters
+ * at some other frequency is worse than no curve at all.
+ */
+export const EQ_BAND_DEFAULTS = {
+  lowCutQ: 0.707,
+  lowShelfHz: 120,
+  lowShelfQ: 0.707,
+  presenceHz: 3000,
+  presenceQ: 1.1,
+  airHz: 12_000,
+  airQ: 0.707,
+} as const;
 
 // ── Reading state ────────────────────────────────────────────────────────
 
@@ -410,9 +436,16 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
   if (engaged(eq, eqActive)) {
     cfg.eq = {
       lowCutHz: num(eq, 'lowCutHz', 20),
+      lowCutQ: num(eq, 'lowCutQ', EQ_BAND_DEFAULTS.lowCutQ),
+      lowShelfHz: num(eq, 'lowShelfHz', EQ_BAND_DEFAULTS.lowShelfHz),
       lowShelfDb: num(eq, 'lowShelfDb', 0),
+      lowShelfQ: num(eq, 'lowShelfQ', EQ_BAND_DEFAULTS.lowShelfQ),
+      presenceHz: num(eq, 'presenceHz', EQ_BAND_DEFAULTS.presenceHz),
       presenceDb: num(eq, 'presenceDb', 0),
+      presenceQ: num(eq, 'presenceQ', EQ_BAND_DEFAULTS.presenceQ),
+      airHz: num(eq, 'airHz', EQ_BAND_DEFAULTS.airHz),
       airDb: num(eq, 'airDb', 0),
+      airQ: num(eq, 'airQ', EQ_BAND_DEFAULTS.airQ),
       adaptive: bool(eq, 'adaptive', false),
       bypass: eq!.bypass,
     };

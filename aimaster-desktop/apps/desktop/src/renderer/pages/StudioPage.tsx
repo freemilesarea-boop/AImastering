@@ -31,6 +31,9 @@ import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { LouiModuleRack, type ModuleReadout } from '../components/product/LouiModuleRack.js';
 import { ModuleParameterPanel } from '../components/product/panels/ModuleParameterPanel.js';
+import { LouiEqGraph } from '../components/product/modules/LouiEqGraph.js';
+import { buildGraphBands, bandEdits } from '../audio/modules/eq-graph-model.js';
+import { getNativeAnalysers } from '../audio/shared-audio-graph.js';
 import {
   ALL_MODULE_PARAMETER_DEFS,
   MODULE_IDS,
@@ -113,6 +116,22 @@ export default function StudioPage() {
         parameters: { ...prev[moduleId].parameters, [parameterId]: value },
       },
     }));
+  }, []);
+
+  /**
+   * Several parameters at once, in ONE state update.
+   *
+   * A graph drag moves frequency and gain together; writing them through
+   * two `setParam` calls would push two configs per pointer event, and the
+   * intermediate one describes a band that was never asked for.
+   */
+  const setParams = useCallback((moduleId: ModuleId, edits: Array<[string, ParameterValue]>) => {
+    if (edits.length === 0) return;
+    setState((prev) => {
+      const params = { ...prev[moduleId].parameters };
+      for (const [id, value] of edits) params[id] = value;
+      return { ...prev, [moduleId]: { ...prev[moduleId], parameters: params } };
+    });
   }, []);
 
   const setBypass = useCallback((moduleId: ModuleId, bypass: boolean) => {
@@ -254,6 +273,20 @@ export default function StudioPage() {
 
   const registryEntry = getModule(selected);
   const def = paramModule ? ALL_MODULE_PARAMETER_DEFS[paramModule] : undefined;
+
+  // ── EQ curve editor ──────────────────────────────────────────────────
+  // The EQ modules are edited on a graph rather than a stack of sliders.
+  // The bands are derived from the same parameter values the sliders read,
+  // and a drag writes those parameters back — so the two views can never
+  // disagree, and the graph inherits the realtime push for free.
+  const graphBands = paramModule ? buildGraphBands(paramModule, state[paramModule].parameters) : null;
+  const wantsGraph = graphBands !== null;
+  // The post-chain analyser, for the trace behind the curve.  Only asked
+  // for when a graph is on screen, so no analyser is built otherwise.
+  const analyser = useMemo(
+    () => (media && wantsGraph ? getNativeAnalysers(media).main : null),
+    [media, wantsGraph],
+  );
 
   return (
     <div style={{
@@ -397,6 +430,19 @@ export default function StudioPage() {
                 values={state[paramModule].parameters}
                 bypass={state[paramModule].bypass}
                 onChange={(id, value) => setParam(paramModule, id, value)}
+                {...(graphBands
+                  ? {
+                    editor: (
+                      <LouiEqGraph
+                        bands={graphBands}
+                        analyser={analyser}
+                        disabled={state[paramModule].bypass}
+                        editsFor={bandEdits}
+                        onEdit={(edits) => setParams(paramModule, edits)}
+                      />
+                    ),
+                  }
+                  : {})}
                 {...(paramModule === 'denoise' || SPECTRAL_MODULE_IDS.has(paramModule)
                   ? { note: '이 모듈은 STFT 기반이라 켜면 지연이 추가됩니다 (2048 샘플 ≈ 43 ms @ 48 kHz). 실시간 모니터링 시 참고하세요.' }
                   : {})}

@@ -1,11 +1,17 @@
-//! Tone-shaping EQ — a small fixed band layout driven by the UI params.
+//! Tone-shaping EQ — four bands the UI can drag anywhere.
 //!
 //! Bands (per channel):
-//!   * high-pass  @ low_cut_hz   (Q 0.707)
-//!   * low shelf  @ 120 Hz       (Q 0.707, low_shelf_db)
-//!   * presence   @ 3 kHz peak   (Q 1.1, presence_db)
-//!   * air shelf  @ 12 kHz       (Q 0.707, air_db)
-//!   * harshness  @ 4 kHz peak   (Q 1.4, −1.5 dB when `adaptive` on)
+//!   * high-pass  @ low_cut_hz    (low_cut_q)
+//!   * low shelf  @ low_shelf_hz  (low_shelf_q, low_shelf_db)
+//!   * presence   @ presence_hz   (peak, presence_q, presence_db)
+//!   * air shelf  @ air_hz        (air_q, air_db)
+//!   * harshness  @ 4 kHz peak    (Q 1.4, −1.5 dB when `adaptive` on)
+//!
+//! Frequency and Q are parameters rather than constants because the graph
+//! editor drags a node in two axes and sets its bandwidth on the wheel; a
+//! fixed-frequency band would ignore two thirds of that gesture.  The
+//! defaults reproduce the old fixed layout, so a config that sets only the
+//! gains behaves exactly as it did before.
 //!
 //! NOT a full adaptive/AI EQ — `adaptive` is a gentle harshness control,
 //! documented so the curve preview and the audible result stay close.
@@ -19,14 +25,29 @@ use crate::biquad::{Biquad, BiquadCoeffs};
 use super::config::EqConfig;
 use super::StereoModule;
 
-const LOW_SHELF_HZ: f64 = 120.0;
-const PRESENCE_HZ: f64 = 3000.0;
-const AIR_HZ: f64 = 12_000.0;
 const HARSH_HZ: f64 = 4000.0;
 const HARSH_DIP_DB: f64 = -1.5;
 
 /// At or below this cutoff the high-pass is treated as switched off.
 const LOW_CUT_OFF_HZ: f64 = 20.0;
+
+/// Q floor.  A biquad with Q at or below zero produces NaN coefficients, and
+/// the wire config is user data — clamp rather than trust it.
+const MIN_Q: f64 = 0.1;
+const MAX_Q: f64 = 24.0;
+
+/// Keep a band's centre inside the representable band.  Above Nyquist the
+/// cookbook formulas fold over and the curve stops matching what is heard.
+fn clamp_hz(hz: f64, sr: f64) -> f64 {
+    let nyq = sr * 0.5;
+    if !hz.is_finite() { return 1000.0; }
+    hz.clamp(10.0, nyq * 0.98)
+}
+
+fn clamp_q(q: f64) -> f64 {
+    if !q.is_finite() { return 0.707; }
+    q.clamp(MIN_Q, MAX_Q)
+}
 
 struct ChannelBands {
     hp: Biquad,
@@ -40,23 +61,35 @@ struct ChannelBands {
 
 impl ChannelBands {
     fn new(sr: f64, cfg: &EqConfig) -> Self {
-        Self {
-            hp: Biquad::new(BiquadCoeffs::high_pass(sr, cfg.low_cut_hz.max(LOW_CUT_OFF_HZ), 0.707)),
-            hp_active: cfg.low_cut_hz > LOW_CUT_OFF_HZ,
-            low_shelf: Biquad::new(BiquadCoeffs::low_shelf(sr, LOW_SHELF_HZ, 0.707, cfg.low_shelf_db)),
-            presence: Biquad::new(BiquadCoeffs::peaking(sr, PRESENCE_HZ, 1.1, cfg.presence_db)),
-            air: Biquad::new(BiquadCoeffs::high_shelf(sr, AIR_HZ, 0.707, cfg.air_db)),
-            harsh: Biquad::new(BiquadCoeffs::peaking(sr, HARSH_HZ, 1.4, if cfg.adaptive { HARSH_DIP_DB } else { 0.0 })),
-        }
+        let mut b = Self {
+            hp: Biquad::new(BiquadCoeffs::peaking(sr, 1000.0, 1.0, 0.0)),
+            hp_active: false,
+            low_shelf: Biquad::new(BiquadCoeffs::peaking(sr, 1000.0, 1.0, 0.0)),
+            presence: Biquad::new(BiquadCoeffs::peaking(sr, 1000.0, 1.0, 0.0)),
+            air: Biquad::new(BiquadCoeffs::peaking(sr, 1000.0, 1.0, 0.0)),
+            harsh: Biquad::new(BiquadCoeffs::peaking(sr, 1000.0, 1.0, 0.0)),
+        };
+        b.set(sr, cfg);
+        b
     }
 
     fn set(&mut self, sr: f64, cfg: &EqConfig) {
-        self.hp.set_coeffs(BiquadCoeffs::high_pass(sr, cfg.low_cut_hz.max(LOW_CUT_OFF_HZ), 0.707));
+        self.hp.set_coeffs(BiquadCoeffs::high_pass(
+            sr, clamp_hz(cfg.low_cut_hz.max(LOW_CUT_OFF_HZ), sr), clamp_q(cfg.low_cut_q),
+        ));
         self.hp_active = cfg.low_cut_hz > LOW_CUT_OFF_HZ;
-        self.low_shelf.set_coeffs(BiquadCoeffs::low_shelf(sr, LOW_SHELF_HZ, 0.707, cfg.low_shelf_db));
-        self.presence.set_coeffs(BiquadCoeffs::peaking(sr, PRESENCE_HZ, 1.1, cfg.presence_db));
-        self.air.set_coeffs(BiquadCoeffs::high_shelf(sr, AIR_HZ, 0.707, cfg.air_db));
-        self.harsh.set_coeffs(BiquadCoeffs::peaking(sr, HARSH_HZ, 1.4, if cfg.adaptive { HARSH_DIP_DB } else { 0.0 }));
+        self.low_shelf.set_coeffs(BiquadCoeffs::low_shelf(
+            sr, clamp_hz(cfg.low_shelf_hz, sr), clamp_q(cfg.low_shelf_q), cfg.low_shelf_db,
+        ));
+        self.presence.set_coeffs(BiquadCoeffs::peaking(
+            sr, clamp_hz(cfg.presence_hz, sr), clamp_q(cfg.presence_q), cfg.presence_db,
+        ));
+        self.air.set_coeffs(BiquadCoeffs::high_shelf(
+            sr, clamp_hz(cfg.air_hz, sr), clamp_q(cfg.air_q), cfg.air_db,
+        ));
+        self.harsh.set_coeffs(BiquadCoeffs::peaking(
+            sr, HARSH_HZ, 1.4, if cfg.adaptive { HARSH_DIP_DB } else { 0.0 },
+        ));
     }
 
     fn reset(&mut self) {
@@ -128,7 +161,7 @@ mod tests {
     use super::*;
 
     fn flat_cfg() -> EqConfig {
-        EqConfig { low_cut_hz: 20.0, low_shelf_db: 0.0, presence_db: 0.0, air_db: 0.0, adaptive: false, bypass: false }
+        EqConfig { low_cut_hz: 20.0, low_shelf_db: 0.0, presence_db: 0.0, air_db: 0.0, adaptive: false, bypass: false, ..EqConfig::default() }
     }
 
     #[test]
@@ -167,5 +200,86 @@ mod tests {
         eq.process_stereo(&mut l, &mut r);
         // DC should be strongly attenuated by the high-pass after settling.
         assert!(l[2047].abs() < 0.1, "DC not attenuated: {}", l[2047]);
+    }
+
+    /// Gain of the EQ at one frequency, measured rather than derived, so a
+    /// coefficient mistake cannot pass.
+    fn gain_db_at(cfg: EqConfig, hz: f64) -> f64 {
+        let sr = 48_000.0;
+        let mut eq = Eq::new(sr, cfg);
+        let n = 16_384;
+        let mut l: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f64::consts::PI * hz * i as f64 / sr).sin() as f32 * 0.25)
+            .collect();
+        let mut r = l.clone();
+        eq.process_stereo(&mut l, &mut r);
+        // Second half only: the first half is filter warm-up.
+        let tail = &l[n / 2..];
+        let out = (tail.iter().map(|x| (x * x) as f64).sum::<f64>() / tail.len() as f64).sqrt();
+        20.0 * (out / (0.25 / 2f64.sqrt())).log10()
+    }
+
+    #[test]
+    fn a_band_moves_to_the_frequency_it_is_given() {
+        // The graph editor drags a band along the frequency axis.  If the DSP
+        // ignored the frequency, the curve on screen would be fiction — so
+        // assert the boost lands where it was put and not where it used to be.
+        let cfg = EqConfig { presence_hz: 800.0, presence_db: 9.0, presence_q: 3.0, ..flat_cfg() };
+        let at_800 = gain_db_at(cfg, 800.0);
+        let at_3k = gain_db_at(cfg, 3000.0);
+        assert!((at_800 - 9.0).abs() < 0.7, "boost not at 800 Hz: {at_800:.2} dB");
+        assert!(at_3k.abs() < 1.0, "old fixed 3 kHz centre still boosting: {at_3k:.2} dB");
+    }
+
+    #[test]
+    fn q_sets_how_wide_the_band_is() {
+        // The wheel gesture sets Q.  A high-Q band must be narrow: same gain
+        // at centre, far less a half-octave away.
+        let narrow = EqConfig { presence_hz: 1000.0, presence_db: 12.0, presence_q: 8.0, ..flat_cfg() };
+        let wide = EqConfig { presence_q: 0.5, ..narrow };
+        assert!((gain_db_at(narrow, 1000.0) - 12.0).abs() < 0.7, "narrow centre gain wrong");
+        assert!((gain_db_at(wide, 1000.0) - 12.0).abs() < 0.7, "wide centre gain wrong");
+        let narrow_off = gain_db_at(narrow, 1414.0);
+        let wide_off = gain_db_at(wide, 1414.0);
+        assert!(
+            wide_off > narrow_off + 3.0,
+            "Q had little effect on width: narrow {narrow_off:.2} dB vs wide {wide_off:.2} dB",
+        );
+    }
+
+    #[test]
+    fn omitting_frequency_and_q_keeps_the_classic_layout() {
+        // An older config that sets only gains must behave as it always did:
+        // the low shelf at 120 Hz, the bell at 3 kHz, the air shelf at 12 kHz.
+        let d = EqConfig::default();
+        assert_eq!((d.low_shelf_hz, d.presence_hz, d.air_hz), (120.0, 3000.0, 12_000.0));
+        let cfg = EqConfig { presence_db: 6.0, ..flat_cfg() };
+        assert!((gain_db_at(cfg, 3000.0) - 6.0).abs() < 0.7, "default bell moved off 3 kHz");
+    }
+
+    #[test]
+    fn a_hostile_q_does_not_produce_nan() {
+        // The wire config is user data; zero or negative Q would divide by
+        // zero in the cookbook formulas.
+        for q in [0.0, -1.0, f64::NAN, 1e9] {
+            let cfg = EqConfig { presence_q: q, presence_db: 6.0, low_cut_hz: 100.0, low_cut_q: q, ..flat_cfg() };
+            let mut eq = Eq::new(48_000.0, cfg);
+            let mut l = [0.4f32; 512];
+            let mut r = [0.4f32; 512];
+            eq.process_stereo(&mut l, &mut r);
+            assert!(l.iter().all(|x| x.is_finite()), "Q={q} produced non-finite output");
+        }
+    }
+
+    #[test]
+    fn a_frequency_above_nyquist_does_not_produce_nan() {
+        for hz in [0.0, -100.0, 96_000.0, f64::INFINITY] {
+            let cfg = EqConfig { air_hz: hz, air_db: 6.0, ..flat_cfg() };
+            let mut eq = Eq::new(48_000.0, cfg);
+            let mut l = [0.4f32; 512];
+            let mut r = [0.4f32; 512];
+            eq.process_stereo(&mut l, &mut r);
+            assert!(l.iter().all(|x| x.is_finite()), "f={hz} produced non-finite output");
+        }
     }
 }

@@ -52,9 +52,24 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       },
     },
     {
+      kind: 'number', id: 'lowCutQ', label: 'Low Cut Q',
+      hint: 'Resonance at the corner',
+      min: 0.3, max: 6, default: 0.707, step: 0.01,
+      format: fmt.ratio, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[lowCut].q', status: 'pending' },
+    },
+    {
+      kind: 'number', id: 'lowShelfHz', label: 'Low Shelf Freq',
+      unit: 'Hz', min: 20, max: 1000, default: 120, step: 1,
+      format: fmt.integer, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[lowShelf].freqHz', status: 'pending' },
+    },
+    {
       kind: 'number', id: 'lowShelfDb', label: 'Low Shelf',
-      hint: '120 Hz / Q=0.7',
-      unit: 'dB', min: -6, max: 6, default: 1.2, step: 0.1,
+      // The gain range is ±18 rather than ±6: a graph you can drag is only
+      // as expressive as the axis it is drawn on, and ±6 makes every move
+      // look identical.
+      unit: 'dB', min: -18, max: 18, default: 1.2, step: 0.1,
       format: fmt.signedDb, automatable: true,
       binding: {
         moduleType: 'adaptive-eq',
@@ -63,9 +78,20 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       },
     },
     {
+      kind: 'number', id: 'lowShelfQ', label: 'Low Shelf Slope',
+      min: 0.3, max: 2, default: 0.707, step: 0.01,
+      format: fmt.ratio, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[lowShelf].q', status: 'pending' },
+    },
+    {
+      kind: 'number', id: 'presenceHz', label: 'Presence Freq',
+      unit: 'Hz', min: 100, max: 16_000, default: 3000, step: 1,
+      format: fmt.integer, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[presence].freqHz', status: 'pending' },
+    },
+    {
       kind: 'number', id: 'presenceDb', label: 'Presence',
-      hint: '3 kHz peak / Q=1.1',
-      unit: 'dB', min: -6, max: 6, default: 1.4, step: 0.1,
+      unit: 'dB', min: -18, max: 18, default: 1.4, step: 0.1,
       format: fmt.signedDb, automatable: true,
       binding: {
         moduleType: 'adaptive-eq',
@@ -74,15 +100,33 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       },
     },
     {
+      kind: 'number', id: 'presenceQ', label: 'Presence Q',
+      hint: 'Higher is narrower',
+      min: 0.3, max: 12, default: 1.1, step: 0.01,
+      format: fmt.ratio, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[presence].q', status: 'pending' },
+    },
+    {
+      kind: 'number', id: 'airHz', label: 'Air Freq',
+      unit: 'Hz', min: 2000, max: 20_000, default: 12_000, step: 10,
+      format: fmt.integer, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[air].freqHz', status: 'pending' },
+    },
+    {
       kind: 'number', id: 'airDb', label: 'Air',
-      hint: '12 kHz shelf',
-      unit: 'dB', min: -6, max: 6, default: 2.0, step: 0.1,
+      unit: 'dB', min: -18, max: 18, default: 2.0, step: 0.1,
       format: fmt.signedDb, automatable: true,
       binding: {
         moduleType: 'adaptive-eq',
         path: 'bands[air].gainDb',
         status: 'pending',
       },
+    },
+    {
+      kind: 'number', id: 'airQ', label: 'Air Slope',
+      min: 0.3, max: 2, default: 0.707, step: 0.01,
+      format: fmt.ratio, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[air].q', status: 'pending' },
     },
     {
       kind: 'number', id: 'outputGainDb', label: 'Output Gain',

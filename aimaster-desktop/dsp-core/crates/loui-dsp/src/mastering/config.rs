@@ -621,15 +621,33 @@ impl Default for MonitorConfig {
 /// EQ (gentle tone shaping) parameters.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
+/// Frequency + Q are per-band, not constants, so a graph editor can drag a
+/// band anywhere instead of only up and down.  The defaults are the classic
+/// fixed layout (120 Hz / 3 kHz / 12 kHz), which is what a config that omits
+/// them still gets — an older wire message keeps its old meaning.
 pub struct EqConfig {
     /// High-pass cutoff (Hz).  20 ≈ off.
     pub low_cut_hz: f64,
-    /// Low-shelf gain (dB) at 120 Hz.
+    /// High-pass Q.  0.707 is Butterworth; above ~1 puts a bump at the corner.
+    pub low_cut_q: f64,
+    /// Low-shelf corner (Hz).
+    pub low_shelf_hz: f64,
+    /// Low-shelf gain (dB).
     pub low_shelf_db: f64,
-    /// Presence peak gain (dB) at 3 kHz.
+    /// Low-shelf slope.
+    pub low_shelf_q: f64,
+    /// Presence bell centre (Hz).
+    pub presence_hz: f64,
+    /// Presence bell gain (dB).
     pub presence_db: f64,
-    /// Air high-shelf gain (dB) at 12 kHz.
+    /// Presence bell Q.
+    pub presence_q: f64,
+    /// Air high-shelf corner (Hz).
+    pub air_hz: f64,
+    /// Air high-shelf gain (dB).
     pub air_db: f64,
+    /// Air high-shelf slope.
+    pub air_q: f64,
     /// Gentle harshness control (the "adaptive" flag) — a small 3-5 kHz dip.
     pub adaptive: bool,
     /// Module bypass.
@@ -638,7 +656,13 @@ pub struct EqConfig {
 
 impl Default for EqConfig {
     fn default() -> Self {
-        Self { low_cut_hz: 20.0, low_shelf_db: 0.0, presence_db: 0.0, air_db: 0.0, adaptive: false, bypass: false }
+        Self {
+            low_cut_hz: 20.0,   low_cut_q: 0.707,
+            low_shelf_hz: 120.0, low_shelf_db: 0.0, low_shelf_q: 0.707,
+            presence_hz: 3000.0, presence_db: 0.0,  presence_q: 1.1,
+            air_hz: 12_000.0,    air_db: 0.0,       air_q: 0.707,
+            adaptive: false, bypass: false,
+        }
     }
 }
 

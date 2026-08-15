@@ -491,6 +491,9 @@ impl LouiMasteringChain {
                 low_cut_hz: eq_low_cut_hz, low_shelf_db: eq_low_shelf_db,
                 presence_db: eq_presence_db, air_db: eq_air_db,
                 adaptive: eq_adaptive, bypass: eq_bypass,
+                // Positional setConfig predates per-band frequency/Q; it keeps
+                // the classic fixed layout.
+                ..EqConfig::default()
             },
             dynamics: DynamicsConfig {
                 threshold_db: dyn_threshold_db, ratio: dyn_ratio,

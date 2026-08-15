@@ -167,6 +167,36 @@ const FREQ_BAND_MODULES = new Set<ModuleId>(['multiband', 'impact', 'exciter']);
 
 // ── Panel ────────────────────────────────────────────────────────────────
 
+/** Collapsed-by-default wrapper for the numeric controls under a graph. */
+function NumericDisclosure(props: { count: number; children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space['3'] }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          appearance: 'none',
+          cursor: 'pointer',
+          alignSelf: 'flex-start',
+          paddingInline: space['3'],
+          paddingBlock: space['1'],
+          borderRadius: radius.chip,
+          border: `1px solid ${surface.border}`,
+          background: surface.well,
+          color: text.tertiary,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+        }}
+      >
+        {open ? '숫자 조정 닫기' : `숫자로 조정 (${props.count})`}
+      </button>
+      {open && props.children}
+    </div>
+  );
+}
+
 export interface ModuleParameterPanelProps {
   moduleId: ModuleId;
   def: ModuleParameterDefinitions;
@@ -180,6 +210,13 @@ export interface ModuleParameterPanelProps {
    * parameters cannot say themselves, e.g. "adds 43 ms of latency".
    */
   note?: React.ReactNode;
+  /**
+   * Optional editor rendered above the sections.  The EQ modules put their
+   * curve here: the graph is the primary control and the sliders below it
+   * become the numeric readout for the same values, rather than a second,
+   * competing way to set them.
+   */
+  editor?: React.ReactNode;
 }
 
 export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
@@ -210,7 +247,25 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
         </div>
       )}
 
-      {sections.map((section) => (
+      {props.editor}
+
+      {/* When a module has a graph, the graph IS the control surface and the
+          numbers are a second opinion — eleven sliders stacked under a curve
+          is the wall of controls the graph was built to replace.  They stay
+          one click away rather than gone, because typing an exact frequency
+          is a real thing engineers do. */}
+      {props.editor ? (
+        <NumericDisclosure count={sections.reduce((n, s) => n + s.params.length, 0)}>
+          {renderSections()}
+        </NumericDisclosure>
+      ) : renderSections()}
+    </div>
+  );
+
+  function renderSections() {
+    return (
+      <>
+        {sections.map((section) => (
         <LouiSectionCard key={section.title} title={section.title} dimmed={disabled}>
           {section.params.map((p) => {
             const raw = props.values[p.id];
@@ -263,7 +318,8 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
             );
           })}
         </LouiSectionCard>
-      ))}
-    </div>
-  );
+        ))}
+      </>
+    );
+  }
 }

@@ -50,11 +50,45 @@ there is one place that decides what a parameter means.
 | **Spectral Shaper** | Per frame, pulls down any bin sitting above its own spectral neighbourhood | Tames resonances that only appear on some notes |
 | **Stabilizer** | Pulls the long-term curve towards a target tilt | No reference needed |
 | **Vintage EQ** | Passive program EQ | Low boost is a shelf, low attenuation is a *bell* above it — so running both gives the lift with a scooped upper bass instead of cancelling. See §4 |
+| **EQ** | Four bands: high-pass, low shelf, bell, air shelf | Edited on a curve, not sliders. Frequency, gain and Q are all parameters. See §5 |
 | **Dynamic EQ** | Six bands of level-dependent bell/shelf | Down (cut the loud) and Up (lift the quiet); per-band range clamp |
 
 The three spectral features **share one STFT pass** — one transform and one
 frame of latency for all three, instead of four. Their per-bin gains
 multiply, so the moves add in dB rather than fighting over one filter.
+
+### §5 — The EQ graph
+
+The EQ and Vintage EQ are edited on a Pro-Q-style graph: drag a node for
+frequency and gain, wheel or shift-drag for bandwidth, double-click to flatten
+it. Arrow keys move a focused node, so the graph is not mouse-only.
+
+Two things made this more than a drawing:
+
+**Frequency and Q became parameters.** The EQ's bands used to be nailed to
+120 Hz / 3 kHz / 12 kHz, which makes two thirds of a drag gesture a no-op.
+`EqConfig` now carries `*_hz` and `*_q` per band, defaulting to the old
+constants — a config that sets only gains behaves exactly as it did, so saved
+presets did not shift.
+
+**A derived node still writes a real parameter.** The Pultec's attenuation
+bell sits a fixed 1.6 octaves above its boost shelf and has no frequency
+control of its own. Dragging it sideways moves the shared low frequency —
+which is what the hardware does — via the `toParam` inverse in
+`eq-graph-model.ts`.
+
+The curve is drawn from the same RBJ coefficients the Rust modules run, and
+`test:eq-graph` holds them together: for each case it measures the real WASM
+chain's gain at a set of frequencies and fails if the drawn curve disagrees by
+more than 0.4 dB (worst observed: 0.06 dB). A curve computed from a different
+model than the one processing audio is a lie that looks like a feature.
+
+The analyser trace behind the curve is the post-chain spectrum, drawn on its
+own canvas from an animation frame. It is deliberately not React state: a
+spectrum that re-rendered the panel thirty times a second would drag every
+curve recomputation with it. It is also faint and filled, because it is a
+*level* display (dBFS) sharing a panel with a *gain* display (dB of EQ), and
+those are not the same scale.
 
 ### Dynamics
 

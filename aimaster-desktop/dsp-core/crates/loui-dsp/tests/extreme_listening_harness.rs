@@ -84,7 +84,7 @@ fn run(cfg: MasteringChainConfig, left_in: &[f32], right_in: &[f32]) -> (Vec<f32
 fn transparent() -> MasteringChainConfig {
     MasteringChainConfig {
         input_gain_db: 0.0,
-        eq: EqConfig { low_cut_hz: 10.0, low_shelf_db: 0.0, presence_db: 0.0, air_db: 0.0, adaptive: false, bypass: false },
+        eq: EqConfig { low_cut_hz: 10.0, low_shelf_db: 0.0, presence_db: 0.0, air_db: 0.0, adaptive: false, bypass: false, ..EqConfig::default() },
         dynamics: DynamicsConfig { threshold_db: 0.0, ratio: 1.0, attack_ms: 10.0, release_ms: 120.0, mix_pct: 100.0, bypass: true },
         imager: ImagerConfig { width_pct: 100.0, low_mono_hz: 20.0, bypass: false, ..Default::default() },
         limiter: LimiterConfig { ceiling_dbtp: -1.0, lookahead_ms: 2.5, isp: true, bypass: true, ..Default::default() },
