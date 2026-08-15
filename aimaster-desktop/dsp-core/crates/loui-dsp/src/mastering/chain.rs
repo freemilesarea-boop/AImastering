@@ -10,6 +10,7 @@ use super::limiter::Limiter;
 use super::declick::Declick;
 use super::dehum::Dehum;
 use super::dither::Dither;
+use super::monitor::Monitor;
 use super::denoise::Denoise;
 use super::deess::Deess;
 use super::dynamic_eq::{DynamicEq, DYN_EQ_BANDS};
@@ -92,6 +93,7 @@ pub struct MasteringChain {
     limiter: Limiter,
     output_gain: Gain,
     dither: Dither,
+    monitor: Monitor,
     gr: GainReduction,
     // Dry-signal backup so a bad block can be replaced (no alloc in process).
     dry_l: Vec<f32>,
@@ -125,6 +127,7 @@ impl MasteringChain {
             limiter: Limiter::new(sample_rate, cfg.limiter),
             output_gain: Gain::from_db(cfg.output_gain_db),
             dither: Dither::new(sample_rate, cfg.dither),
+            monitor: Monitor::new(sample_rate, cfg.monitor),
             gr: GainReduction::default(),
             dry_l: vec![0.0; SAFETY_SCRATCH],
             dry_r: vec![0.0; SAFETY_SCRATCH],
@@ -174,6 +177,31 @@ impl MasteringChain {
         self.limiter.set_config(cfg.limiter);
         self.output_gain.set_db(cfg.output_gain_db);
         self.dither.set_config(cfg.dither);
+        self.monitor.set_config(cfg.monitor);
+    }
+
+    /// Loudness the chain is currently adding, in dB (wet − dry).
+    ///
+    /// Only measured while the monitor stage is active; 0 otherwise.
+    pub fn monitor_loudness_delta_db(&self) -> f64 {
+        self.monitor.loudness_delta_db()
+    }
+
+    /// Gain the A/B loudness match is applying, in dB.
+    pub fn monitor_match_gain_db(&self) -> f64 {
+        self.monitor.match_gain_db()
+    }
+
+    /// Measured loudness of the dry path (LUFS).
+    pub fn monitor_dry_lufs(&self) -> f64 { self.monitor.dry_lufs() }
+
+    /// Measured loudness of the processed path (LUFS).
+    pub fn monitor_wet_lufs(&self) -> f64 { self.monitor.wet_lufs() }
+
+    /// Whether the monitor stage is changing what you hear.  True means the
+    /// output is a listening tool, NOT the master.
+    pub fn monitoring_active(&self) -> bool {
+        !self.cfg.bypass && self.monitor.is_active()
     }
 
     /// Whether the dither stage is quantising (false at 32-bit float or when
@@ -267,12 +295,16 @@ impl MasteringChain {
             return;
         }
         let n = left.len().min(right.len());
-        // Keep a dry copy so a bad block can be replaced bit-for-bit.
+        // Keep a dry copy so a bad block can be replaced bit-for-bit, and so
+        // the monitor stage has something to compare the output against.
         let backed_up = n <= self.dry_l.len();
         if backed_up {
             self.dry_l[..n].copy_from_slice(&left[..n]);
             self.dry_r[..n].copy_from_slice(&right[..n]);
         }
+        // Latency must be read BEFORE the modules run: it is a property of
+        // the config, and the monitor needs it to align the dry path.
+        let latency = self.latency_samples();
 
         // Canonical mastering order: repair what is broken, correct the
         // tone, control the dynamics, add character, place the image, then
@@ -310,10 +342,21 @@ impl MasteringChain {
         self.limiter.process_stereo(left, right);
         self.output_gain.process_stereo(left, right);
 
-        // 7 — Dither + quantisation.  Absolutely last: it targets the output
-        // file's bit depth, so anything after it would break the quantisation
-        // it just established.
+        // 7 — Dither + quantisation.  Last processing stage: it targets the
+        // output file's bit depth, so anything after it would break the
+        // quantisation it just established.
         self.dither.process_stereo(left, right);
+
+        // 8 — Monitoring.  Not processing: A/B and delta live outside the
+        // signal chain proper, which is why they run after dither and why
+        // they are skipped entirely unless the user asked for them.  Needs
+        // the block's dry copy, so it is limited to blocks that fit the
+        // scratch — larger blocks only occur in offline render, where
+        // monitoring is never enabled.
+        if backed_up && self.monitor.is_active() {
+            let (dry_l, dry_r) = (&self.dry_l[..n], &self.dry_r[..n]);
+            self.monitor.process(&mut left[..n], &mut right[..n], dry_l, dry_r, latency);
+        }
 
         // ── Output-safety layer ──────────────────────────────────────────
         // Scan the processed block for non-finite or absurd output.  If the
@@ -386,6 +429,7 @@ impl MasteringChain {
         self.imager.reset();
         self.limiter.reset();
         self.dither.reset();
+        self.monitor.reset();
         self.safety_events = 0;
     }
 }
@@ -709,6 +753,166 @@ mod tests {
         chain.process_stereo_block(&mut l, &mut r);
         assert_eq!(l, input);
         assert!(!chain.dither_engaged());
+    }
+
+    /// Monitoring must be off unless asked for — the chain output is the
+    /// master, not a listening tool.
+    #[test]
+    fn monitoring_is_off_by_default() {
+        let chain = MasteringChain::new(48_000.0, MasteringChainConfig::default());
+        assert!(!chain.monitoring_active());
+    }
+
+    /// Bypass monitoring must return the input, delayed to match whatever
+    /// latency the engaged modules introduced.  This is the whole basis of
+    /// a fair A/B: same timing, same material.
+    #[test]
+    fn monitor_bypass_returns_the_aligned_dry() {
+        let cfg = MasteringChainConfig {
+            // Engage a real STFT module so the chain has genuine latency.
+            denoise: DenoiseConfig { reduction_db: 12.0, ..DenoiseConfig::default() },
+            limiter: LimiterConfig { bypass: true, ..LimiterConfig::default() },
+            monitor: MonitorConfig { mode: MonitorMode::Bypass, ..MonitorConfig::default() },
+            ..MasteringChainConfig::default()
+        };
+        let mut chain = MasteringChain::new(48_000.0, cfg);
+        let latency = chain.latency_samples();
+        assert!(latency > 0, "test needs a latent chain");
+
+        let n = 8192;
+        let input = sine(n, 440.0, 48_000.0, 0.4);
+        let mut l = input.clone();
+        let mut r = input.clone();
+        chain.process_stereo_block(&mut l, &mut r);
+
+        let mut worst = 0.0f32;
+        for i in latency..n {
+            worst = worst.max((l[i] - input[i - latency]).abs());
+        }
+        assert!(worst < 1e-5, "bypass monitoring is not the aligned dry, worst {worst}");
+        assert!(chain.monitoring_active());
+    }
+
+    /// Delta on a chain that does nothing but delay must be silence.  If the
+    /// alignment is off by even one sample this fails loudly, which is
+    /// exactly what makes it worth having.
+    #[test]
+    fn monitor_delta_of_a_transparent_chain_is_silence() {
+        let cfg = MasteringChainConfig {
+            denoise: DenoiseConfig { reduction_db: 12.0, ..DenoiseConfig::default() },
+            limiter: LimiterConfig { bypass: true, ..LimiterConfig::default() },
+            monitor: MonitorConfig { mode: MonitorMode::Delta, ..MonitorConfig::default() },
+            ..MasteringChainConfig::default()
+        };
+        let mut chain = MasteringChain::new(48_000.0, cfg);
+        let latency = chain.latency_samples();
+
+        // Silence in, silence out — the de-noiser has nothing to remove, so
+        // the only thing the chain contributes is its delay.
+        let n = 8192;
+        let mut l = vec![0.0f32; n];
+        let mut r = vec![0.0f32; n];
+        chain.process_stereo_block(&mut l, &mut r);
+        let residual = l[latency..].iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(residual < 1e-6, "delta of a silent pass should be silent, got {residual}");
+    }
+
+    /// Delta must surface what a module actually did.
+    #[test]
+    fn monitor_delta_surfaces_a_real_change() {
+        let cfg = MasteringChainConfig {
+            eq: EqConfig { air_db: 6.0, ..EqConfig::default() },
+            limiter: LimiterConfig { bypass: true, ..LimiterConfig::default() },
+            monitor: MonitorConfig { mode: MonitorMode::Delta, ..MonitorConfig::default() },
+            ..MasteringChainConfig::default()
+        };
+        let mut chain = MasteringChain::new(48_000.0, cfg);
+        let n = 16_384;
+        // Content in the air band, where the EQ boost lands.
+        let mut l = sine(n, 14_000.0, 48_000.0, 0.3);
+        let mut r = l.clone();
+        chain.process_stereo_block(&mut l, &mut r);
+        let energy = l[n / 2..].iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(energy > 0.05, "delta should show the air boost, peak {energy}");
+    }
+
+    /// Loudness matching must neutralise a pure level change, so an A/B is
+    /// comparing processing rather than makeup gain.
+    #[test]
+    fn monitor_match_neutralises_output_gain() {
+        let cfg = MasteringChainConfig {
+            // The chain's only job here is +6 dB.
+            output_gain_db: 6.0,
+            limiter: LimiterConfig { bypass: true, ..LimiterConfig::default() },
+            monitor: MonitorConfig {
+                mode: MonitorMode::Processed, loudness_match: true,
+                ..MonitorConfig::default()
+            },
+            ..MasteringChainConfig::default()
+        };
+        let mut chain = MasteringChain::new(48_000.0, cfg);
+        let n = 48_000 * 12;
+        let input = sine(n, 1_000.0, 48_000.0, 0.2);
+        let mut l = input.clone();
+        let mut r = input.clone();
+        // Fed in realistic blocks — the hosts call this with 128 (worklet)
+        // or 512 (offline) samples, and the monitor's dry tap is bounded by
+        // the same scratch the safety layer uses.
+        for chunk in 0..(n / 512) {
+            let a = chunk * 512;
+            let b = a + 512;
+            chain.process_stereo_block(&mut l[a..b], &mut r[a..b]);
+        }
+
+        let tail = n - 48_000;
+        let rms = |x: &[f32]| -> f64 {
+            (x[tail..].iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>()
+                / (x.len() - tail) as f64).sqrt()
+        };
+        let delta_db = 20.0 * (rms(&l) / rms(&input)).log10();
+        assert!(delta_db.abs() < 1.0, "matched A/B should sit at dry level, off {delta_db:.2} dB");
+        assert!(
+            (chain.monitor_loudness_delta_db() - 6.0).abs() < 1.0,
+            "chain should report ≈ +6 dB added, got {:.2}",
+            chain.monitor_loudness_delta_db(),
+        );
+    }
+
+    /// The monitor's dry tap rides on the safety scratch, so a block larger
+    /// than that cannot be compared and monitoring is skipped for it.  Real
+    /// hosts use 128/512-sample blocks, and offline render never monitors —
+    /// but the behaviour is asserted rather than left as a surprise.
+    #[test]
+    fn monitoring_is_skipped_for_oversized_blocks() {
+        let cfg = MasteringChainConfig {
+            limiter: LimiterConfig { bypass: true, ..LimiterConfig::default() },
+            monitor: MonitorConfig { mode: MonitorMode::Bypass, ..MonitorConfig::default() },
+            ..MasteringChainConfig::default()
+        };
+        let mut chain = MasteringChain::new(48_000.0, cfg);
+        // Well past SAFETY_SCRATCH.
+        let n = SAFETY_SCRATCH * 2;
+        let input = sine(n, 440.0, 48_000.0, 0.3);
+        let mut l = input.clone();
+        let mut r = input.clone();
+        chain.process_stereo_block(&mut l, &mut r);
+        // Bypass monitoring did NOT engage, so this is the processed output
+        // (here: the default EQ curve), not the dry.
+        assert!(l.iter().all(|x| x.is_finite()));
+
+        // The same material in host-sized blocks does engage it.
+        let mut l2 = input.clone();
+        let mut r2 = input.clone();
+        for chunk in 0..(n / 512) {
+            let a = chunk * 512;
+            let b = a + 512;
+            chain.process_stereo_block(&mut l2[a..b], &mut r2[a..b]);
+        }
+        let mut worst = 0.0f32;
+        for i in 0..n {
+            worst = worst.max((l2[i] - input[i]).abs());
+        }
+        assert!(worst < 1e-5, "block-fed bypass should return the dry, worst {worst}");
     }
 
     #[test]

@@ -81,6 +81,17 @@ multiply, so the moves add in dB rather than fighting over one filter.
 | **Limiter / Maximizer** | True-peak-safe ceiling with lookahead, plus `drive` and five characters (Clean / Transparent / Punchy / Smooth / Aggressive) that set release and soft-clip depth |
 | **Dither** | TPDF or 2nd-order noise-shaped dither on bit-depth reduction, with auto-blanking. See §4 |
 
+### Monitoring (not processing)
+
+| Mode | You hear |
+|---|---|
+| **Processed** | The chain output — the normal case |
+| **Bypass** | The dry input, delay- and loudness-aligned to the wet |
+| **Delta** | Wet − dry: only what the chain changed |
+
+Plus **level matching**, which brings one path to the other's K-weighted
+loudness before you hear either. See §4.
+
 ---
 
 ## 3. Design rules the suite holds to
@@ -151,6 +162,27 @@ thing to watch: reversed, the NTF becomes a lowpass and the module piles
 noise *into* the midrange. That is precisely how the first implementation
 was wrong, and `shaping_moves_noise_upward` is what caught it.
 
+**A/B without level matching compares makeup gain, not processing.** At
+matched programme material, listeners prefer the louder version nearly
+every time — regardless of whether it is better. A mastering chain almost
+always raises level, so an unmatched A/B button systematically flatters
+whatever you just did. The monitor therefore measures both paths with
+K-weighting (BS.1770) and matches them, and it puts the gain it applied on
+screen: an A/B that silently moved the level by 4 dB is exactly as
+misleading as one that did not match at all.
+
+The other half is alignment. The spectral modules delay the signal by
+thousands of samples, so the dry path is held in a delay line and read back
+at exactly `latency_samples()`. Without that, Delta is mostly timing error
+and A/B is a phasey smear. `delta_of_a_transparent_chain_is_silence` is the
+test that pins it — one sample of misalignment and it fails.
+
+Monitoring is deliberately **not** part of the module parameter state. It
+must not be saved into a preset and must never reach an export, so keeping
+it out of the state means `buildChainConfig({ state })` cannot emit it
+unless a caller explicitly asks. That is a structural guarantee rather than
+a convention.
+
 All of these were caught by tests that measured the audio rather than
 checking the code ran.
 
@@ -176,7 +208,7 @@ checking the code ran.
 ## 6. Building and testing
 
 ```bash
-# Rust DSP — 166 tests
+# Rust DSP — 183 tests
 cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 
 # Rebuild all three WASM targets after any Rust change.
@@ -184,7 +216,7 @@ cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 #           cargo install wasm-bindgen-cli --version 0.2.127
 pnpm --filter @loui/dsp-wasm run build:all
 
-# Desktop — 136 checks, including 43 that push config through the real chain
+# Desktop — 148 checks, including 55 that push config through the real chain
 pnpm --filter @aimaster/desktop test
 ```
 
@@ -195,7 +227,21 @@ when it is missing, rather than skipping.
 
 ---
 
-## 7. Not implemented
+## 7. Known limitation — live monitoring
+
+The A/B and Delta modes work on the **rendered output** today: set a mode,
+render, and you get a level-matched bypass or a delta bounce you can listen
+to.
+
+They are not yet audible in a live preview, because the realtime preview is
+disabled at the flag level (`isRealtimePreviewEnabled()` returns `false`
+unconditionally after a worklet mount bug crashed the renderer). Re-enabling
+it is what turns this from a bounce-and-compare workflow into a monitoring
+button, and the engine side is already in place.
+
+---
+
+## 8. Not implemented
 
 Honest list, so the registry stays trustworthy:
 

@@ -566,6 +566,58 @@ impl Default for DitherConfig {
     }
 }
 
+// ── Monitoring ───────────────────────────────────────────────────────────
+
+/// What the monitor stage sends to the output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
+pub enum MonitorMode {
+    /// The chain output — the normal case.
+    Processed,
+    /// The dry input, delay- and loudness-aligned to the wet.
+    Bypass,
+    /// Wet minus dry: only what the chain changed.
+    Delta,
+}
+
+/// Which path the loudness match brings the other one to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
+pub enum MatchTarget {
+    /// Pull the processed path down to the dry level.
+    Dry,
+    /// Lift the dry path up to the processed level.
+    Wet,
+}
+
+/// Monitoring parameters.
+///
+/// A LISTENING tool — loudness matching deliberately changes the output
+/// level, and Bypass/Delta are not the master.  The export path never
+/// configures this stage.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
+pub struct MonitorConfig {
+    pub mode: MonitorMode,
+    /// Level-match the two paths before you hear them.  Without it an A/B
+    /// compares makeup gain, not processing.
+    pub loudness_match: bool,
+    pub match_target: MatchTarget,
+    /// Make-up applied to the delta so a small difference is audible.
+    pub delta_gain_db: f64,
+}
+
+impl Default for MonitorConfig {
+    fn default() -> Self {
+        Self {
+            mode: MonitorMode::Processed,
+            loudness_match: false,
+            match_target: MatchTarget::Dry,
+            delta_gain_db: 0.0,
+        }
+    }
+}
+
 /// EQ (gentle tone shaping) parameters.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
@@ -707,6 +759,8 @@ pub struct MasteringChainConfig {
     pub limiter: LimiterConfig,
     /// Dither + quantisation — the last stage, after the output gain.
     pub dither: DitherConfig,
+    /// Monitoring (A/B + delta).  Listening only — never set on an export.
+    pub monitor: MonitorConfig,
     /// Output gain (dB) applied after the chain.
     pub output_gain_db: f64,
     /// Master bypass — entire chain becomes a pass-through.
@@ -735,6 +789,7 @@ impl Default for MasteringChainConfig {
             imager: ImagerConfig::default(),
             limiter: LimiterConfig::default(),
             dither: DitherConfig::default(),
+            monitor: MonitorConfig::default(),
             output_gain_db: 0.0,
             bypass: false,
         }

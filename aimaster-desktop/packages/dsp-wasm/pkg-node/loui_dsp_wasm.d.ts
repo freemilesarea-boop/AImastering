@@ -138,6 +138,28 @@ export class LouiMasteringChain {
      */
     lowEndFocusMoveDb(): number;
     /**
+     * Measured loudness of the dry path, in LUFS.
+     */
+    monitorDryLufs(): number;
+    /**
+     * Loudness the chain is adding, in dB (processed − dry).  This is the
+     * number that answers "is it only better because it got louder?".
+     */
+    monitorLoudnessDeltaDb(): number;
+    /**
+     * Gain the A/B loudness match is applying, in dB.
+     */
+    monitorMatchGainDb(): number;
+    /**
+     * Measured loudness of the processed path, in LUFS.
+     */
+    monitorWetLufs(): number;
+    /**
+     * Whether the monitor stage is changing what you hear.  True means the
+     * output is a listening tool (A/B or delta), NOT the master.
+     */
+    monitoringActive(): boolean;
+    /**
      * Multiband dynamics gain reduction per band, low → high (dB, ≥ 0).
      */
     multibandGrDb(): Float64Array;

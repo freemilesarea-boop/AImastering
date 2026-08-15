@@ -534,6 +534,38 @@ impl LouiMasteringChain {
         Ok(())
     }
 
+    /// Whether the monitor stage is changing what you hear.  True means the
+    /// output is a listening tool (A/B or delta), NOT the master.
+    #[wasm_bindgen(js_name = monitoringActive)]
+    pub fn monitoring_active(&self) -> bool {
+        self.inner.monitoring_active()
+    }
+
+    /// Loudness the chain is adding, in dB (processed − dry).  This is the
+    /// number that answers "is it only better because it got louder?".
+    #[wasm_bindgen(js_name = monitorLoudnessDeltaDb)]
+    pub fn monitor_loudness_delta_db(&self) -> f64 {
+        self.inner.monitor_loudness_delta_db()
+    }
+
+    /// Gain the A/B loudness match is applying, in dB.
+    #[wasm_bindgen(js_name = monitorMatchGainDb)]
+    pub fn monitor_match_gain_db(&self) -> f64 {
+        self.inner.monitor_match_gain_db()
+    }
+
+    /// Measured loudness of the dry path, in LUFS.
+    #[wasm_bindgen(js_name = monitorDryLufs)]
+    pub fn monitor_dry_lufs(&self) -> f64 {
+        self.inner.monitor_dry_lufs()
+    }
+
+    /// Measured loudness of the processed path, in LUFS.
+    #[wasm_bindgen(js_name = monitorWetLufs)]
+    pub fn monitor_wet_lufs(&self) -> f64 {
+        self.inner.monitor_wet_lufs()
+    }
+
     /// Whether the dither stage is quantising.
     ///
     /// The export path reads this to decide whether the file writer should

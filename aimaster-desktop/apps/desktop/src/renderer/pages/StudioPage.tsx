@@ -40,7 +40,11 @@ import {
   type ParameterValue,
 } from '../audio/parameters/index.js';
 import { getModule } from '../audio/modules/loui-module-suite.js';
-import { buildChainConfig, activeModuleIds, MASTER_NATIVE_BIT_DEPTH } from '../audio/chain-config.js';
+import {
+  buildChainConfig, activeModuleIds, MASTER_NATIVE_BIT_DEPTH,
+  DEFAULT_MONITOR, monitorAltersOutput, type MonitorSettings,
+} from '../audio/chain-config.js';
+import { LouiMonitorBar } from '../components/product/LouiMonitorBar.js';
 import { surface, text, typography, space, radius, meter } from '../theme/loui-theme.js';
 
 /** Modules whose engagement is decided by the shared spectral stage. */
@@ -82,6 +86,9 @@ export default function StudioPage() {
   );
   const [selected, setSelected] = useState<string>('eq');
   const [masterBypass, setMasterBypass] = useState(false);
+  // Monitoring is session state, not module state — it must never end up in
+  // a preset or an export.  See `MonitorSettings`.
+  const [monitor, setMonitor] = useState<MonitorSettings>(DEFAULT_MONITOR);
 
   const paramModule = paramModuleFor(selected);
 
@@ -102,6 +109,7 @@ export default function StudioPage() {
   const resetAll = useCallback(() => {
     setState(defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS));
     setMasterBypass(false);
+    setMonitor(DEFAULT_MONITOR);
   }, []);
 
   const resetModule = useCallback((moduleId: ModuleId) => {
@@ -115,8 +123,8 @@ export default function StudioPage() {
   // edit — it is a pure function over state and cheap enough that
   // memoising on `state` is all the debouncing this view needs.
   const config = useMemo(
-    () => buildChainConfig({ state, masterBypass }),
-    [state, masterBypass],
+    () => buildChainConfig({ state, masterBypass, monitor }),
+    [state, masterBypass, monitor],
   );
 
   /**
@@ -251,10 +259,28 @@ export default function StudioPage() {
             active={!masterBypass}
             onClick={() => setMasterBypass((v) => !v)}
           />
+          {monitorAltersOutput(monitor) && (
+            <span style={{
+              fontFamily: typography.family.sans,
+              fontSize: typography.size.xs,
+              color: meter.warn.foreground,
+              whiteSpace: 'nowrap',
+            }}>
+              비교 모드
+            </span>
+          )}
           <HeaderButton label="Reset all" onClick={resetAll} />
           <HeaderButton label="Back" onClick={() => setPage('home')} />
         </div>
       </header>
+
+      <div style={{ paddingInline: space['4'], paddingTop: space['3'] }}>
+        <LouiMonitorBar
+          value={monitor}
+          onChange={setMonitor}
+          appliesTo="render"
+        />
+      </div>
 
       <div style={{
         flex: 1,

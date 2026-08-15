@@ -90,10 +90,10 @@ export function stateToSuiteConfig(
   state: AllModulesParameterState,
   opts?: { matchTargetCurveDb?: readonly number[]; masterBypass?: boolean },
 ): ChainConfigWire {
-  const outputGainDb = num(state.eq?.parameters['outputGainDb'], 0);
+  // `outputGainDb` is not passed: the builder reads the EQ module's knob
+  // itself, so every caller gets the same behaviour.
   return buildChainConfig({
     state,
-    outputGainDb,
     ...(opts?.masterBypass ? { masterBypass: true } : {}),
     ...(opts?.matchTargetCurveDb ? { matchTargetCurveDb: opts.matchTargetCurveDb } : {}),
   });

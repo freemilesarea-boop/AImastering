@@ -24,6 +24,9 @@ import {
   activeModuleIds,
   chainDithersOutput,
   MASTER_NATIVE_BIT_DEPTH,
+  DEFAULT_MONITOR,
+  monitorAltersOutput,
+  type MonitorSettings,
 } from '../src/renderer/audio/chain-config.js';
 import { buildTranscodePlan, needsTranscode } from '../src/main/utils/audioTranscode.js';
 import { createRequire } from 'node:module';
@@ -299,12 +302,55 @@ console.log('\n=== DITHER — config + export-path interlock ===\n');
   );
 }
 
+// ── 1c. Monitoring ───────────────────────────────────────────────────────
+
+console.log('\n=== MONITORING — A/B match + delta ===\n');
+
+{
+  // The structural guarantee: an export config cannot carry a monitor block,
+  // because monitoring is not part of the module state at all.
+  const cfg = buildChainConfig({ state: baseState() });
+  check('an export config carries no monitor block', cfg.monitor === undefined, `monitor=${cfg.monitor}`);
+
+  const neutral = buildChainConfig({ state: baseState(), monitor: DEFAULT_MONITOR });
+  check(
+    'neutral monitoring is not emitted either',
+    neutral.monitor === undefined,
+    `monitor=${JSON.stringify(neutral.monitor)}`,
+  );
+  check('monitorAltersOutput agrees', !monitorAltersOutput(DEFAULT_MONITOR), 'false');
+}
+
+{
+  const m: MonitorSettings = { ...DEFAULT_MONITOR, mode: 'delta', deltaGainDb: 12 };
+  const cfg = buildChainConfig({ state: baseState(), monitor: m });
+  check(
+    'delta monitoring is emitted',
+    cfg.monitor?.mode === 'delta' && cfg.monitor?.deltaGainDb === 12,
+    `${cfg.monitor?.mode} +${cfg.monitor?.deltaGainDb} dB`,
+  );
+  check('monitorAltersOutput flags it', monitorAltersOutput(m), 'true');
+}
+
+{
+  const m: MonitorSettings = { ...DEFAULT_MONITOR, loudnessMatch: true };
+  const cfg = buildChainConfig({ state: baseState(), monitor: m });
+  check(
+    'level matching alone engages the stage',
+    cfg.monitor?.loudnessMatch === true && cfg.monitor?.mode === 'processed',
+    'processed + match',
+  );
+}
+
 // ── 2. Through the real engine ───────────────────────────────────────────
 
 console.log('\n=== MODULE SUITE — config → Rust chain (node WASM) ===\n');
 
 interface WasmChain {
   setConfigJson(json: string): void;
+  monitoringActive(): boolean;
+  monitorLoudnessDeltaDb(): number;
+  monitorMatchGainDb(): number;
   processStereo(left: Float32Array, right: Float32Array): void;
   latencySamples(): number;
   multibandGrDb(): Float64Array | number[];
@@ -336,18 +382,28 @@ if (!Chain) {
   console.error('       pnpm --filter @loui/dsp-wasm run build:node');
   failed++;
 } else {
-  /** Push a config through the chain and hand back the processed audio. */
+  /**
+   * Push a config through the chain and hand back the processed audio.
+   *
+   * Fed in 512-sample blocks, the way the real hosts call it — the monitor's
+   * dry tap is bounded by the chain's block scratch, so a single giant call
+   * would skip monitoring entirely and quietly pass tests that should fail.
+   */
   function render(
     state: AllModulesParameterState,
     input: Float32Array,
-    opts?: { matchTargetCurveDb?: number[] },
+    opts?: { matchTargetCurveDb?: number[]; monitor?: MonitorSettings },
   ): { left: Float32Array; latency: number; safety: number; chain: WasmChain } {
     const chain = new Chain!(SR);
     const cfg = buildChainConfig({ state, ...(opts ?? {}) });
     chain.setConfigJson(chainConfigToJson(cfg));
     const left = Float32Array.from(input);
     const right = Float32Array.from(input);
-    chain.processStereo(left, right);
+    const BLK = 512;
+    for (let off = 0; off < left.length; off += BLK) {
+      const end = Math.min(off + BLK, left.length);
+      chain.processStereo(left.subarray(off, end), right.subarray(off, end));
+    }
     return { left, latency: chain.latencySamples(), safety: chain.safetyEvents(), chain };
   }
 
@@ -502,6 +558,77 @@ if (!Chain) {
       worst = Math.max(worst, Math.abs(floatRes.left[i]! - input[i]!));
     }
     check('32-bit float render is untouched', worst < 1e-6, `worst delta ${worst.toExponential(2)}`);
+  }
+
+  {
+    // Bypass monitoring must give back the input, delayed to match whatever
+    // latency the engaged modules introduced.  Anything else and the A/B is
+    // comparing two different moments in the song.
+    const state = withParam(neutralState(), 'denoise', 'reductionDb', 12);
+    const input = sine(SR, 440, 0.4);
+    const res = render(state, input, {
+      monitor: { ...DEFAULT_MONITOR, mode: 'bypass' },
+    });
+    let worst = 0;
+    for (let i = res.latency; i < input.length; i++) {
+      worst = Math.max(worst, Math.abs(res.left[i]! - input[i - res.latency]!));
+    }
+    check(
+      'bypass monitoring returns the latency-aligned dry',
+      worst < 1e-5,
+      `latency ${res.latency}, worst delta ${worst.toExponential(2)}`,
+    );
+  }
+
+  {
+    // Delta of a chain that only delays must be silence.  One sample of
+    // misalignment and this fails, which is the point of having it.
+    const state = withParam(neutralState(), 'denoise', 'reductionDb', 12);
+    const res = render(state, new Float32Array(SR), {
+      monitor: { ...DEFAULT_MONITOR, mode: 'delta' },
+    });
+    let peakVal = 0;
+    for (let i = res.latency; i < res.left.length; i++) {
+      peakVal = Math.max(peakVal, Math.abs(res.left[i]!));
+    }
+    check('delta of a silent pass is silent', peakVal < 1e-6, `residual ${peakVal.toExponential(2)}`);
+  }
+
+  {
+    // The headline behaviour: a chain whose only effect is level must A/B as
+    // near-identical once matched.
+    const base = neutralState();
+    const state: AllModulesParameterState = {
+      ...base,
+      eq: { ...base.eq, bypass: false, parameters: { ...base.eq.parameters, outputGainDb: 6 } },
+    };
+    const input = sine(SR * 12, 1_000, 0.2);
+    const res = render(state, input, {
+      monitor: { ...DEFAULT_MONITOR, loudnessMatch: true },
+    });
+    const tail = input.length - SR;
+    const deltaDb = 20 * Math.log10(rms(res.left, tail) / rms(input, tail));
+    check(
+      'level matching neutralises a pure gain change',
+      Math.abs(deltaDb) < 1.0,
+      `${deltaDb.toFixed(2)} dB from dry`,
+    );
+    check(
+      'the chain reports what it added',
+      Math.abs(res.chain.monitorLoudnessDeltaDb() - 6) < 1.0,
+      `${res.chain.monitorLoudnessDeltaDb().toFixed(2)} dB`,
+    );
+    check(
+      'the match gain is reported for the UI',
+      Math.abs(res.chain.monitorMatchGainDb() + 6) < 1.0,
+      `${res.chain.monitorMatchGainDb().toFixed(2)} dB`,
+    );
+  }
+
+  {
+    // Monitoring must be inert unless asked for.
+    const res = render(neutralState(), sine(SR / 4, 1_000, 0.3));
+    check('monitoring is off without a monitor config', !res.chain.monitoringActive(), 'inactive');
   }
 
   {

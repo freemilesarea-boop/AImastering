@@ -33,6 +33,7 @@ mod dynamic_eq;
 mod exciter;
 mod impact;
 mod low_end_focus;
+mod monitor;
 mod multiband;
 mod spectral;
 mod vintage;
@@ -54,7 +55,9 @@ pub use config::{
     SpectralConfig, SPECTRAL_CURVE_BANDS,
     VintageEqConfig, VintageCompressorConfig, VintageTapeConfig, TapeSpeed,
     DitherConfig, DitherMode,
+    MonitorConfig, MonitorMode, MatchTarget,
 };
+pub use monitor::{Monitor, MAX_ALIGN_SAMPLES};
 pub use dither::Dither;
 pub use spectral::{Spectral, CURVE_BANDS, curve_band_hz};
 pub use vintage::{VintageEq, VintageCompressor, VintageTape};

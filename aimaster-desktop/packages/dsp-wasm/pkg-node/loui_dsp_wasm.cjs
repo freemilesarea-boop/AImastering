@@ -279,6 +279,48 @@ class LouiMasteringChain {
         return ret;
     }
     /**
+     * Measured loudness of the dry path, in LUFS.
+     * @returns {number}
+     */
+    monitorDryLufs() {
+        const ret = wasm.louimasteringchain_monitorDryLufs(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Loudness the chain is adding, in dB (processed − dry).  This is the
+     * number that answers "is it only better because it got louder?".
+     * @returns {number}
+     */
+    monitorLoudnessDeltaDb() {
+        const ret = wasm.louimasteringchain_monitorLoudnessDeltaDb(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Gain the A/B loudness match is applying, in dB.
+     * @returns {number}
+     */
+    monitorMatchGainDb() {
+        const ret = wasm.louimasteringchain_monitorMatchGainDb(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Measured loudness of the processed path, in LUFS.
+     * @returns {number}
+     */
+    monitorWetLufs() {
+        const ret = wasm.louimasteringchain_monitorWetLufs(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Whether the monitor stage is changing what you hear.  True means the
+     * output is a listening tool (A/B or delta), NOT the master.
+     * @returns {boolean}
+     */
+    monitoringActive() {
+        const ret = wasm.louimasteringchain_monitoringActive(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * Multiband dynamics gain reduction per band, low → high (dB, ≥ 0).
      * @returns {Float64Array}
      */

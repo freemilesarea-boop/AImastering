@@ -138,6 +138,57 @@ export interface ChainConfigWire {
     autoBlank?: boolean;
     bypass?: boolean;
   };
+  monitor?: {
+    mode?: MonitorMode;
+    loudnessMatch?: boolean;
+    matchTarget?: MatchTarget;
+    deltaGainDb?: number;
+  };
+}
+
+// ── Monitoring ───────────────────────────────────────────────────────────
+
+/** What the monitor stage sends to the output. */
+export type MonitorMode = 'processed' | 'bypass' | 'delta';
+
+/** Which path the loudness match brings the other one to. */
+export type MatchTarget = 'dry' | 'wet';
+
+/**
+ * Monitoring settings.
+ *
+ * Deliberately NOT part of the module parameter state.  Monitoring is a
+ * judgement tool, not a processing decision: it belongs to the session, it
+ * must not be saved into a preset, and — most importantly — it must never
+ * reach an export by accident.  Keeping it out of the state means
+ * `buildChainConfig({ state })` cannot emit it unless a caller explicitly
+ * asks, which is a structural guarantee rather than a convention.
+ */
+export interface MonitorSettings {
+  mode: MonitorMode;
+  /**
+   * Level-match the two paths before comparing.  Without this an A/B
+   * compares makeup gain, not processing — the louder version wins almost
+   * every time regardless of whether it is better.
+   */
+  loudnessMatch: boolean;
+  matchTarget: MatchTarget;
+  /** Make-up on the delta so a small difference is audible. */
+  deltaGainDb: number;
+}
+
+/** Neutral monitoring — hear the master, unaltered. */
+export const DEFAULT_MONITOR: MonitorSettings = {
+  mode: 'processed',
+  loudnessMatch: false,
+  matchTarget: 'dry',
+  deltaGainDb: 0,
+};
+
+/** Whether a monitor setting would change what comes out of the chain. */
+export function monitorAltersOutput(m: MonitorSettings | undefined): boolean {
+  if (!m) return false;
+  return m.mode !== 'processed' || m.loudnessMatch;
 }
 
 /**
@@ -208,7 +259,13 @@ export interface ChainConfigInput {
   state: Partial<AllModulesParameterState>;
   /** Input trim ahead of the chain, in dB. */
   inputGainDb?: number;
-  /** Output trim after the chain, in dB. */
+  /**
+   * Output trim after the chain, in dB.
+   *
+   * Optional: when omitted the builder reads the EQ module's `outputGainDb`,
+   * which is where the UI's Output Gain knob lives.  Passing it explicitly
+   * overrides that — used by callers that stage gain themselves.
+   */
   outputGainDb?: number;
   /** Master bypass — the whole chain becomes a pass-through. */
   masterBypass?: boolean;
@@ -218,6 +275,11 @@ export interface ChainConfigInput {
    * that would still cost an STFT.
    */
   matchTargetCurveDb?: readonly number[];
+  /**
+   * Monitoring (A/B + delta).  Omit for an export — the result would not be
+   * the master.
+   */
+  monitor?: MonitorSettings;
 }
 
 /**
@@ -232,7 +294,12 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
   const cfg: ChainConfigWire = {};
 
   if (input.inputGainDb) cfg.inputGainDb = input.inputGainDb;
-  if (input.outputGainDb) cfg.outputGainDb = input.outputGainDb;
+  // The EQ panel's Output Gain is the chain's output trim.  Reading it here
+  // rather than in one caller means every path behaves the same — it was
+  // previously only applied by the realtime bridge, so the same knob did
+  // nothing when the config was built directly.
+  const outputGainDb = input.outputGainDb ?? num(s.eq, 'outputGainDb', 0);
+  if (outputGainDb) cfg.outputGainDb = outputGainDb;
   if (input.masterBypass) cfg.bypass = true;
 
   // ── Restoration ────────────────────────────────────────────────────────
@@ -554,6 +621,19 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
       mode: str(exp, 'dither', 'tpdf'),
       autoBlank: bool(exp, 'ditherAutoBlank', true),
       bypass: exp.bypass,
+    };
+  }
+
+  // ── Monitoring ─────────────────────────────────────────────────────────
+  // Emitted only when it would actually do something, so an export config
+  // never carries a monitor block at all.
+  if (monitorAltersOutput(input.monitor)) {
+    const m = input.monitor!;
+    cfg.monitor = {
+      mode: m.mode,
+      loudnessMatch: m.loudnessMatch,
+      matchTarget: m.matchTarget,
+      deltaGainDb: m.deltaGainDb,
     };
   }
 
