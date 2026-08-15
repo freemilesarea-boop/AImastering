@@ -204,6 +204,47 @@ aimaster-desktop/
 
 ## 구현 상태
 
+> 이 표는 v3.2 시점 기준으로 작성되어 한동안 갱신되지 않았습니다.
+> 아래 "모듈 스위트" 절이 현재 상태이며, 표에서 미구현으로 적힌 자동
+> 업데이트 / 배치 저장 / 앱 아이콘은 이후 구현되었습니다.
+
+### 🎛 모듈 스위트 (전체 목록 → `docs/redesign/loui-mastering-v2/module-suite/`)
+
+체인은 20개 모듈이며, **실시간 프리뷰와 오프라인 익스포트가 동일한 Rust
+엔진**(`dsp-core/crates/loui-dsp`)을 사용합니다. 설정은 하나의
+`ChainConfigWire` 객체로 양쪽에 전달되므로 미리듣기와 결과물이 갈라지지
+않습니다.
+
+| 단계 | 모듈 |
+|---|---|
+| 복원 | De-click · De-hum · De-noise · De-esser |
+| 보정 | Parametric EQ · Match EQ · Spectral Shaper · Stabilizer |
+| 톤 | Vintage EQ · EQ · Dynamic EQ |
+| 다이내믹스 | Multiband · Glue Comp · Vintage Comp · Impact · Low End Focus |
+| 캐릭터 | Exciter · Tape |
+| 출력 | Imager · Limiter / Maximizer |
+
+- 모든 모듈은 중립 설정에서 **비트 단위로 투명**합니다 — 크로스오버조차
+  타지 않으므로 CPU도 지연도 0입니다.
+- STFT 기반 모듈(De-noise, 스펙트럴 3종)만 지연을 만들며, 그 값은 랙 하단에
+  ms 단위로 표시됩니다.
+- 리미터 실링 클램프는 어떤 설정에서도 무조건 적용됩니다.
+
+**UI**: 홈 큐의 "스튜디오" 버튼 → 좌측 시그널 체인 랙, 우측 선택 모듈 패널.
+
+```bash
+# Rust DSP 테스트 (151개)
+cd dsp-core && cargo test -p loui-dsp --release
+
+# Rust를 수정했다면 WASM 3개 타깃을 반드시 다시 빌드 (아티팩트가 커밋되어 있음)
+#   사전 준비: rustup target add wasm32-unknown-unknown
+#             cargo install wasm-bindgen-cli --version 0.2.127
+pnpm --filter @loui/dsp-wasm run build:all
+
+# 데스크톱 셀프테스트 (122개 — 29개는 실제 WASM 엔진을 통과시켜 오디오를 측정)
+pnpm --filter @aimaster/desktop test
+```
+
 ### ✅ 완전히 동작하는 기능
 
 | 기능 | 확인 방법 |
@@ -244,10 +285,7 @@ aimaster-desktop/
 | 기능 | 비고 |
 |------|------|
 | 서버 라이선스 검증 | `LocalValidator` (포맷 체크만) → `RemoteValidator`로 교체 필요 |
-| 자동 업데이트 | `electron-updater` 설정 없음 |
 | 최근 파일 목록 | `file:get-recent` 핸들러가 `[]` 반환하는 스텁 |
-| 배치 처리 | 단일 파일만 지원 |
-| 앱 아이콘 | `public/icon.icns`, `public/icon.ico` 없음 → 빌드 시 기본 아이콘 |
 
 ---
 
