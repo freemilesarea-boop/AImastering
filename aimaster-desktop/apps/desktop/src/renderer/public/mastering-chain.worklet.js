@@ -42,7 +42,6 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     this._chain = null;
     this._bypass = true;          // safe default until configured
     this._pendingConfigJson = null;
-    this._configJsonUnsupported = false;
     this._pendingConfig = null;
 
     // Metrics state.
@@ -81,8 +80,8 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
         this._pendingConfigJson = null;
         this._bypass = !!msg.config && msg.config.masterBypass === true;
       } else if (msg.type === 'configJson') {
-        // Full module suite.  Sent as a string so the audio thread never
-        // has to walk an object graph; the chain parses it in Rust.
+        // Full module suite.  Sent as a string so the audio thread never has
+        // to walk an object graph — the chain parses it in Rust.
         this._pendingConfigJson = msg.json;
         this._pendingConfig = null;
         this._bypass = !!msg.masterBypass;
@@ -97,18 +96,16 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
   _applyPendingConfig() {
     if (!this._ready || !this._chain) return;
 
-    // JSON path first — it can address every module.
+    // JSON path first — it is the only one that can address every module.
     if (this._pendingConfigJson) {
       const json = this._pendingConfigJson;
       this._pendingConfigJson = null;
       try {
         if (typeof this._chain.setConfigJson === 'function') {
           this._chain.setConfigJson(json);
-          return;
         }
-        // An older WASM build without the JSON path: stay on the previous
+        // On an older WASM build without the JSON path we keep the previous
         // config rather than pretending the new one took effect.
-        this._configJsonUnsupported = true;
       } catch (e) {
         // A bad config must never crash the audio thread → drop to bypass.
         this._bypass = true;
