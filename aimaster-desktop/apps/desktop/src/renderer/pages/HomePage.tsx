@@ -579,7 +579,7 @@ function QueueRow({
             조절하며 듣기
           </button>
         )}
-        {(item.status === 'pending' || item.status === 'error') && (
+        {item.status !== 'analyzing' && item.status !== 'mastering' && (
           <button
             onClick={(e) => { e.stopPropagation(); onStudio(item); }}
             className="no-drag shrink-0 text-[11px] font-medium rounded-md px-2 py-1 transition-colors"

@@ -1121,6 +1121,28 @@ function Section({
   );
 }
 
+/**
+ * Route to the Studio rack.  The quick set here covers five things; the
+ * restoration and tone modules are only in the Studio, so this panel has to
+ * say so rather than leaving the user to conclude they were never built.
+ */
+function StudioRackLink() {
+  const setPage = useAppStore((s) => s.setPage);
+  return (
+    <button
+      onClick={() => setPage('studio')}
+      className="no-drag w-full text-left rounded-lg px-3 py-2 border border-indigo-500/40
+                 bg-indigo-600/15 hover:bg-indigo-600/25 transition-colors"
+    >
+      <span className="block text-[11px] font-medium text-indigo-300">전체 모듈 랙 열기 →</span>
+      <span className="block text-[9px] text-zinc-500 mt-0.5 leading-relaxed">
+        De-noise · De-hum · De-click · De-esser · Dynamic EQ · Multiband ·
+        Exciter · Tape · Dither 등 20개
+      </span>
+    </button>
+  );
+}
+
 function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
   const options       = useAudioStore((s) => s.options);
   const setStyle      = useAudioStore((s) => s.setStyle);
@@ -1142,6 +1164,12 @@ function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
         <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-300 font-semibold">세밀 조정</p>
         <p className="text-[10px] text-zinc-600 mt-0.5">슬라이더 조정 → 즉시 들립니다 (실시간 DSP)</p>
       </div>
+
+      {/* The panel below is the quick set — style, EQ, dynamics, imager,
+          loudness.  The full twenty-module chain (de-noise, de-hum, de-esser,
+          dynamic EQ, multiband, exciter, tape, dither…) lives in the Studio,
+          and there was no way to find it from here. */}
+      <StudioRackLink />
 
       {/* ── Style preset ───────────────────────────────────────────────────── */}
       <Section title="Style">
