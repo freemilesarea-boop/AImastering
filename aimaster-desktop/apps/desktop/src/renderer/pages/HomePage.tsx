@@ -475,6 +475,7 @@ function QueueRow({
   onRemove,
   onViewResult,
   onTweak,
+  onStudio,
   onSetPreset,
   notify,
 }: {
@@ -484,6 +485,7 @@ function QueueRow({
   onRemove: (id: string) => void;
   onViewResult: (item: QueueItem) => void;
   onTweak: (item: QueueItem) => void;
+  onStudio: (item: QueueItem) => void;
   onSetPreset: (id: string, presetId: string | undefined) => void;
   notify: (msg: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }) {
@@ -575,6 +577,16 @@ function QueueRow({
             title="원본을 들으며 설정을 조절하고 버전을 만듭니다"
           >
             조절하며 듣기
+          </button>
+        )}
+        {(item.status === 'pending' || item.status === 'error') && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onStudio(item); }}
+            className="no-drag shrink-0 text-[11px] font-medium rounded-md px-2 py-1 transition-colors"
+            style={{ color: loui.softLavender, border: `1px solid ${louiAlpha.lav(0.3)}`, background: louiAlpha.lav(0.08) }}
+            title="전체 모듈 랙에서 체인을 직접 구성합니다 (De-noise · Dynamic EQ · Multiband · Exciter · Tape …)"
+          >
+            스튜디오
           </button>
         )}
         {(item.status === 'pending' || item.status === 'error') && (
@@ -892,6 +904,18 @@ export default function HomePage() {
     setPage('tweak');
   }, [setFile, setAnalysis, setMasteringResult, setPage]);
 
+  // ── Studio — the full module rack.  Same file plumbing as tweak; the
+  // difference is the destination, which is a chain editor rather than a
+  // source-preview player.
+  const handleStudio = useCallback((item: QueueItem) => {
+    if (item.filePath) {
+      setFile(item.filePath);
+      setAnalysis(item.analysis ?? null);
+      setMasteringResult(item.masteringResult ?? null);
+    }
+    setPage('studio');
+  }, [setFile, setAnalysis, setMasteringResult, setPage]);
+
   // ── Batch processing ──────────────────────────────────────────────────
   const handleStartBatch = useCallback(async () => {
     const pending = queue.filter((i) => i.status === 'pending' || i.status === 'error');
@@ -1080,6 +1104,7 @@ export default function HomePage() {
                     onRemove={removeFromQueue}
                     onViewResult={handleViewResult}
                     onTweak={handleTweakListen}
+                    onStudio={handleStudio}
                     onSetPreset={(id, presetId) => updateQueueItem(id, { presetId })}
                     notify={notify}
                   />

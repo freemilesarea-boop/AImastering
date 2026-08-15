@@ -173,6 +173,15 @@ export interface ModuleParameterDefinitions {
   moduleId: ModuleId;
   /** Module-level engine binding (used for `bypass`). */
   bypassBinding: EngineBindingTarget;
+  /**
+   * Whether the module starts bypassed.
+   *
+   * Needed by modules whose parameters have useful non-zero defaults but
+   * which must NOT be running until asked for — the spectral trio would
+   * otherwise cost an STFT on every session just because their "amount"
+   * defaults to a sensible starting value.  Defaults to `false`.
+   */
+  defaultBypass?: boolean;
   parameters: readonly ParameterDef[];
 }
 
@@ -196,7 +205,7 @@ export function defaultStateForModule(def: ModuleParameterDefinitions): ModulePa
   for (const p of def.parameters) {
     parameters[p.id] = p.default;
   }
-  return { moduleId: def.moduleId, bypass: false, parameters };
+  return { moduleId: def.moduleId, bypass: def.defaultBypass === true, parameters };
 }
 
 /**

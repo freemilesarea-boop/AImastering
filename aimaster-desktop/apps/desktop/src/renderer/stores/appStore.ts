@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export type Page = 'home' | 'mastering' | 'result' | 'tweak' | 'qc' | 'settings';
+export type Page = 'home' | 'mastering' | 'result' | 'tweak' | 'studio' | 'qc' | 'settings';
 
 interface Notification {
   message: string;

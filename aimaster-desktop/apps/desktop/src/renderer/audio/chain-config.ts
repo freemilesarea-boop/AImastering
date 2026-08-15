@@ -133,6 +133,28 @@ export interface ChainConfigWire {
   };
 }
 
+/**
+ * The limiter's UI character vocabulary predates the engine's.
+ *
+ * The panel offers Transparent / Glue / Aggressive / Classic — names users
+ * have been choosing from since before the maximizer existed.  The engine
+ * speaks Clean / Transparent / Punchy / Smooth / Aggressive.  Passing the UI
+ * string straight through would make the engine reject the config, so the
+ * two vocabularies are mapped here rather than renaming either side out
+ * from under its users.
+ */
+const LIMITER_CHARACTER: Record<string, NonNullable<NonNullable<ChainConfigWire['limiter']>['character']>> = {
+  transparent: 'transparent',
+  glue: 'smooth',        // "warms transients" → the slow-release character
+  aggressive: 'aggressive',
+  classic: 'punchy',     // "vintage, soft saturation" → soft clip + fast release
+  // The engine's own names pass through untouched, so a preset authored
+  // against the engine vocabulary keeps working.
+  clean: 'clean',
+  punchy: 'punchy',
+  smooth: 'smooth',
+};
+
 // ── Reading state ────────────────────────────────────────────────────────
 
 function num(m: ModuleParameterState | undefined, id: string, fallback: number): number {
@@ -491,7 +513,7 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
     lookaheadMs: num(lim, 'lookaheadMs', 2.5),
     isp: bool(lim, 'isp', true),
     driveDb: num(lim, 'driveDb', 0),
-    character: str(lim, 'character', 'clean'),
+    character: LIMITER_CHARACTER[str(lim, 'character', 'clean')] ?? 'clean',
     bypass: lim?.bypass ?? false,
   };
 

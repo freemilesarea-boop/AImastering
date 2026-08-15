@@ -121,6 +121,9 @@ const DEHUM_DEFS: ModuleParameterDefinitions = {
 const DECLICK_DEFS: ModuleParameterDefinitions = {
   moduleId: 'declick',
   bypassBinding: wired('declick.bypass'),
+  // Repair is opt-in: most material has no clicks, and a detector
+  // running on clean audio is pure cost.
+  defaultBypass: true,
   parameters: [
     {
       kind: 'number', id: 'sensitivity', label: 'Sensitivity',
@@ -308,6 +311,9 @@ const VINTAGE_EQ_DEFS: ModuleParameterDefinitions = {
 const MATCH_EQ_DEFS: ModuleParameterDefinitions = {
   moduleId: 'match-eq',
   bypassBinding: wired('spectral.matchEnabled'),
+  // The spectral trio each cost an STFT frame of latency, so they stay
+  // off until asked for even though their amounts have useful defaults.
+  defaultBypass: true,
   parameters: [
     {
       kind: 'number', id: 'amountPct', label: 'Amount',
@@ -333,6 +339,7 @@ const MATCH_EQ_DEFS: ModuleParameterDefinitions = {
 const SPECTRAL_SHAPER_DEFS: ModuleParameterDefinitions = {
   moduleId: 'spectral-shaper',
   bypassBinding: wired('spectral.shaperEnabled'),
+  defaultBypass: true,
   parameters: [
     {
       kind: 'number', id: 'amountPct', label: 'Amount',
@@ -368,6 +375,7 @@ const SPECTRAL_SHAPER_DEFS: ModuleParameterDefinitions = {
 const STABILIZER_DEFS: ModuleParameterDefinitions = {
   moduleId: 'stabilizer',
   bypassBinding: wired('spectral.stabilizerEnabled'),
+  defaultBypass: true,
   parameters: [
     {
       kind: 'number', id: 'amountPct', label: 'Amount',
