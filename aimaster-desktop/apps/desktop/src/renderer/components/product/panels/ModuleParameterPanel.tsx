@@ -254,11 +254,15 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
           is the wall of controls the graph was built to replace.  They stay
           one click away rather than gone, because typing an exact frequency
           is a real thing engineers do. */}
-      {props.editor ? (
-        <NumericDisclosure count={sections.reduce((n, s) => n + s.params.length, 0)}>
-          {renderSections()}
-        </NumericDisclosure>
-      ) : renderSections()}
+      {(() => {
+        const count = sections.reduce((n, s) => n + s.params.length, 0);
+        // A module whose whole state is its editor has nothing to disclose;
+        // offering "adjust numerically (0)" would be a button that opens
+        // nothing.
+        if (count === 0) return null;
+        if (!props.editor) return renderSections();
+        return <NumericDisclosure count={count}>{renderSections()}</NumericDisclosure>;
+      })()}
     </div>
   );
 

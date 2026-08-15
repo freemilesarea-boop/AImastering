@@ -33,6 +33,7 @@ import { LouiModuleRack, type ModuleReadout } from '../components/product/LouiMo
 import { ModuleParameterPanel } from '../components/product/panels/ModuleParameterPanel.js';
 import { LouiEqGraph } from '../components/product/modules/LouiEqGraph.js';
 import { LouiDynamicsGraph } from '../components/product/modules/LouiDynamicsGraph.js';
+import { LouiFreeEqBandList } from '../components/product/modules/LouiFreeEqBandList.js';
 import { buildDynamicsGraph } from '../audio/modules/dynamics-graph-model.js';
 import {
   buildGraphBands,
@@ -356,6 +357,11 @@ export default function StudioPage() {
     })),
     atCapacity: freeBands.length >= MAX_PARAMETRIC_BANDS,
   }), [freeBands.length]);
+
+  /** A typed edit from the band list.  Same state the graph writes. */
+  const patchFreeBand = useCallback((id: string, patch: Partial<FreeEqBand>) => {
+    setFreeBands((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  }, []);
   // The post-chain analyser, for the trace behind the curve.  Only asked
   // for when a graph is on screen, so no analyser is built otherwise.
   const analyser = useMemo(
@@ -520,13 +526,27 @@ export default function StudioPage() {
                 {...(graphBands
                   ? {
                     editor: (
-                      <LouiEqGraph
-                        bands={graphBands}
-                        analyser={analyser}
-                        disabled={state[paramModule].bypass}
-                        onBandChange={handleBandChange}
-                        {...(isFreeEq ? { free: freeGestures } : {})}
-                      />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: space['3'] }}>
+                        <LouiEqGraph
+                          bands={graphBands}
+                          analyser={analyser}
+                          disabled={state[paramModule].bypass}
+                          onBandChange={handleBandChange}
+                          {...(isFreeEq ? { free: freeGestures } : {})}
+                        />
+                        {isFreeEq && (
+                          // The graph is the fast way to work; typing is the
+                          // exact one.  Both edit the same bands.
+                          <LouiFreeEqBandList
+                            bands={freeBands}
+                            disabled={state[paramModule].bypass}
+                            onChange={patchFreeBand}
+                            onRemove={freeGestures.onRemove}
+                            onAdd={() => freeGestures.onAdd(1000, 0)}
+                            atCapacity={freeGestures.atCapacity}
+                          />
+                        )}
+                      </div>
                     ),
                   }
                   : {})}

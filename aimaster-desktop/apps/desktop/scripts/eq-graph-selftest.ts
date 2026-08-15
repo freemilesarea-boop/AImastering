@@ -317,6 +317,25 @@ if (!Chain) {
       `${heardWith([one], 1000).toFixed(2)} dB at 1 kHz`,
     );
 
+    // A cut is not a special mode — it is a negative gain — but the graph
+    // has to make that obvious, so the audio side is pinned here.
+    const cut: FreeEqBand = { ...makeFreeBand(1000, -9), q: 4 };
+    check(
+      'a cut cuts',
+      Math.abs(heardWith([cut], 1000) - -9) < 0.5,
+      `${heardWith([cut], 1000).toFixed(2)} dB at 1 kHz`,
+    );
+    check(
+      'a very wide cut spreads instead of digging',
+      // Q 0.1 is legal and is what a wheel run to the stop produces; at
+      // that width the band is nearly a tilt, which is worth knowing
+      // rather than mistaking for a cut that did not apply.
+      Math.abs(heardWith([{ ...cut, q: 0.1 }], 1000) - -9) < 0.6
+      && heardWith([{ ...cut, q: 0.1 }], 8000) < -2,
+      `centre ${heardWith([{ ...cut, q: 0.1 }], 1000).toFixed(2)} dB, `
+      + `8 kHz ${heardWith([{ ...cut, q: 0.1 }], 8000).toFixed(2)} dB`,
+    );
+
     const drawn = combinedGainDbAt(freeBandsToGraph([one]), 1000, SR);
     check(
       'the free curve matches the free audio',
