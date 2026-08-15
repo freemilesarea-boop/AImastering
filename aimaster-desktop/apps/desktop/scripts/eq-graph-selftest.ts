@@ -34,7 +34,11 @@ import {
   combinedGainDbAt,
   bandwidthToQ,
   qToBandwidth,
+  freeBandsToGraph,
+  freeBandToWire,
+  makeFreeBand,
   type GraphBand,
+  type FreeEqBand,
 } from '../src/renderer/audio/modules/eq-graph-model.js';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
@@ -276,6 +280,95 @@ if (!Chain) {
       'a scoop drawn negative is written as a positive cut',
       edits.get('lowCutDb') === 9,
       `lowCutDb=${edits.get('lowCutDb')}`,
+    );
+  }
+
+  // ── Free parametric EQ ─────────────────────────────────────────────────
+
+  console.log('\n=== EQ GRAPH — the free band list ===\n');
+
+  {
+    const base = neutralState();
+    const mk = (bands: FreeEqBand[]) =>
+      buildChainConfig({ state: base, parametricBands: bands.map(freeBandToWire) });
+
+    /** Measure the chain with a free band list. */
+    const heardWith = (bands: FreeEqBand[], hz: number): number => {
+      const chain = new Chain!(SR);
+      chain.setConfigJson(chainConfigToJson(mk(bands)));
+      const n = 1 << 15;
+      const amp = 0.2;
+      const left = new Float32Array(n);
+      for (let i = 0; i < n; i++) left[i] = Math.sin((2 * Math.PI * hz * i) / SR) * amp;
+      const right = Float32Array.from(left);
+      for (let off = 0; off < n; off += 512) {
+        const end = Math.min(off + 512, n);
+        chain.processStereo(left.subarray(off, end), right.subarray(off, end));
+      }
+      let acc = 0;
+      for (let i = n / 2; i < n; i++) acc += left[i]! * left[i]!;
+      return 20 * Math.log10(Math.sqrt(acc / (n / 2)) / (amp / Math.SQRT2));
+    };
+
+    const one: FreeEqBand = { ...makeFreeBand(1000, 9), q: 4 };
+    check(
+      'a hand-drawn band reaches the audio',
+      Math.abs(heardWith([one], 1000) - 9) < 0.5,
+      `${heardWith([one], 1000).toFixed(2)} dB at 1 kHz`,
+    );
+
+    const drawn = combinedGainDbAt(freeBandsToGraph([one]), 1000, SR);
+    check(
+      'the free curve matches the free audio',
+      Math.abs(drawn - heardWith([one], 1000)) < 0.4,
+      `drawn ${drawn.toFixed(2)} / heard ${heardWith([one], 1000).toFixed(2)} dB`,
+    );
+
+    // Many bands, because "unlimited" is the whole point of this module.
+    const many: FreeEqBand[] = Array.from({ length: 10 }, () => ({ ...makeFreeBand(1000, 1), q: 2 }));
+    const stacked = heardWith(many, 1000);
+    check(
+      'ten stacked bands all run',
+      Math.abs(stacked - 10) < 0.6,
+      `${stacked.toFixed(2)} dB from ten +1 dB bells`,
+    );
+
+    // Over capacity: the engine drops the surplus silently, so the builder
+    // must cap rather than let bands vanish without anyone noticing.
+    const over: FreeEqBand[] = Array.from({ length: 24 }, () => ({ ...makeFreeBand(1000, 1), q: 2 }));
+    check(
+      'the band list is capped at what the engine runs',
+      (mk(over).parametricEq?.bands?.length ?? 0) === 16,
+      `${mk(over).parametricEq?.bands?.length} bands sent for 24 drawn`,
+    );
+
+    const disabled: FreeEqBand = { ...makeFreeBand(1000, 9), enabled: false };
+    check(
+      'a disabled band is left out of the config',
+      mk([disabled]).parametricEq === undefined,
+      JSON.stringify(mk([disabled]).parametricEq ?? null),
+    );
+
+    // A pass filter has no gain in the engine.  If the UI sent its leftover
+    // gain the drawn curve would show a boost the audio never applies.
+    const hp: FreeEqBand = { ...makeFreeBand(500, 12), kind: 'highpass' };
+    check(
+      'a pass filter sends no gain',
+      freeBandToWire(hp).gainDb === 0 && freeBandToWire(hp).kind === 'highPass',
+      JSON.stringify(freeBandToWire(hp)),
+    );
+    const hpDrawn = combinedGainDbAt(freeBandsToGraph([hp]), 125, SR);
+    const hpHeard = heardWith([hp], 125);
+    check(
+      'a hand-drawn high-pass is drawn where it filters',
+      Math.abs(hpDrawn - hpHeard) < 0.4,
+      `drawn ${hpDrawn.toFixed(2)} / heard ${hpHeard.toFixed(2)} dB at 125 Hz`,
+    );
+
+    check(
+      'no bands means no parametric stage at all',
+      mk([]).parametricEq === undefined,
+      'absent',
     );
   }
 

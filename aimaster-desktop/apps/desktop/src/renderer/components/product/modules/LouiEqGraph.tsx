@@ -29,14 +29,30 @@ import {
   bandGainDbAt,
   combinedGainDbAt,
 } from '../../../audio/modules/eq-graph-model.js';
-import { surface, text, typography, space, radius } from '../../../theme/loui-theme.js';
+import { surface, text, typography, space, radius, meter } from '../../../theme/loui-theme.js';
 
 export interface LouiEqGraphProps {
   bands: readonly GraphBand[];
-  /** Applies parameter writes.  Called continuously during a drag. */
-  onEdit: (edits: Array<[string, number]>) => void;
-  /** Node → parameter writes, from `bandEdits`. */
-  editsFor: (band: GraphBand, next: { hz?: number; gainDb?: number; q?: number }) => Array<[string, number]>;
+  /**
+   * A node moved.  Called continuously during a drag, with only the axes
+   * that moved.  What a move *means* is the caller's business: a fixed
+   * module turns it into parameter writes, the free EQ edits its band list.
+   */
+  onBandChange: (band: GraphBand, next: { hz?: number; gainDb?: number; q?: number }) => void;
+  /**
+   * Free-EQ gestures.  Supplying these turns on adding, deleting and
+   * retyping bands; without them the graph edits a fixed set of nodes.
+   */
+  free?: {
+    /** Double-click on empty canvas. */
+    onAdd: (hz: number, gainDb: number) => void;
+    /** Alt-click or right-click a node. */
+    onRemove: (bandId: string) => void;
+    /** Double-click a node — walks the filter shapes. */
+    onCycleType: (bandId: string) => void;
+    /** True when no more bands will fit; adding is refused and says so. */
+    atCapacity?: boolean;
+  };
   /**
    * Live analyser for the trace behind the curve.  Read on an animation
    * frame and drawn to a canvas — deliberately NOT React state, because a
@@ -170,6 +186,7 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
   const height = props.height ?? 260;
   const sr = props.sampleRate ?? 48_000;
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const svgRef = useRef<SVGSVGElement | null>(null);
   const [width, setWidth] = useState(720);
   const [selected, setSelected] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -188,7 +205,7 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
     return () => ro.disconnect();
   }, []);
 
-  const { onEdit, editsFor, disabled } = props;
+  const { onBandChange, disabled, free } = props;
   const bands = props.bands;
 
   const bandById = useCallback(
@@ -204,18 +221,23 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
     const next: { hz?: number; gainDb?: number } = {};
     if (band.freq) next.hz = xToHz(x, rect.width);
     if (band.gain) next.gainDb = yToDb(y, height);
-    const edits = editsFor(band, next);
-    if (edits.length > 0) onEdit(edits);
-  }, [editsFor, onEdit, height]);
+    onBandChange(band, next);
+  }, [onBandChange, height]);
 
   const onNodeDown = useCallback((e: React.PointerEvent, band: GraphBand) => {
     if (disabled || band.readOnly) return;
     e.preventDefault();
     e.stopPropagation();
     setSelected(band.id);
-    // Capture on the SVG root, not the circle: the pointer routinely
-    // outruns a 7 px target during a fast drag.
-    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    // Capture on the SVG ROOT, not on the circle.  Two reasons, and the
+    // second one is a bug that cost a whole module:
+    //   • the pointer routinely outruns a 7 px target during a fast drag;
+    //   • the move and up handlers live on the root, so capturing on the
+    //     circle and releasing on the root threw InvalidStateError on every
+    //     mouse-up — which React surfaces as a render error, losing the
+    //     edit that had just been made.  Capture and release must name the
+    //     same element.
+    svgRef.current?.setPointerCapture?.(e.pointerId);
     const qDrag = e.shiftKey && !!band.qAxis;
     dragRef.current = { bandId: band.id, kind: qDrag ? 'q' : 'move', startY: e.clientY, startQ: band.q };
     if (!qDrag) applyPointer(band, e.clientX, e.clientY);
@@ -229,38 +251,58 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
     if (drag.kind === 'q') {
       // Upward drag narrows, the way a bell gets pointier as it rises.
       const dy = drag.startY - e.clientY;
-      const q = drag.startQ * Math.pow(2, dy / 80);
-      const edits = editsFor(band, { q });
-      if (edits.length > 0) onEdit(edits);
+      onBandChange(band, { q: drag.startQ * Math.pow(2, dy / 80) });
       return;
     }
     applyPointer(band, e.clientX, e.clientY);
-  }, [bandById, applyPointer, editsFor, onEdit]);
+  }, [bandById, applyPointer, onBandChange]);
 
   const endDrag = useCallback((e: React.PointerEvent) => {
     if (!dragRef.current) return;
     dragRef.current = null;
-    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
+    const svg = svgRef.current;
+    // Releasing a capture the element does not hold throws; the guard is
+    // not defensive padding, it is the contract of the API.
+    if (svg?.hasPointerCapture?.(e.pointerId)) svg.releasePointerCapture(e.pointerId);
   }, []);
 
   const onWheel = useCallback((e: React.WheelEvent, band: GraphBand) => {
     if (disabled || band.readOnly || !band.qAxis) return;
     e.preventDefault();
     e.stopPropagation();
-    const q = band.q * Math.pow(2, -e.deltaY / 400);
-    const edits = editsFor(band, { q });
-    if (edits.length > 0) onEdit(edits);
-  }, [disabled, editsFor, onEdit]);
+    onBandChange(band, { q: band.q * Math.pow(2, -e.deltaY / 400) });
+  }, [disabled, onBandChange]);
 
-  /** Double-click flattens the band — the fastest way to undo a move. */
+  /**
+   * Double-click a node.  On the free EQ it walks the filter shapes (the
+   * Pro-Q gesture); on a fixed module there is no shape to change, so it
+   * flattens the band instead — the fastest way to undo a move.
+   */
   const onNodeDoubleClick = useCallback((e: React.MouseEvent, band: GraphBand) => {
-    if (disabled || band.readOnly || !band.gain) return;
+    if (disabled || band.readOnly) return;
     e.preventDefault();
     e.stopPropagation();
+    if (band.free && free) { free.onCycleType(band.id); return; }
+    if (!band.gain) return;
     const flat = band.gain.min <= 0 && band.gain.max >= 0 ? 0 : band.gain.min;
-    const edits = editsFor(band, { gainDb: flat });
-    if (edits.length > 0) onEdit(edits);
-  }, [disabled, editsFor, onEdit]);
+    onBandChange(band, { gainDb: flat });
+  }, [disabled, onBandChange, free]);
+
+  /** Alt-click or right-click removes a free band. */
+  const onNodeRemove = useCallback((e: React.MouseEvent, band: GraphBand) => {
+    if (disabled || !band.free || !free) return;
+    e.preventDefault();
+    e.stopPropagation();
+    free.onRemove(band.id);
+  }, [disabled, free]);
+
+  /** Double-click on empty canvas adds a band where the pointer is. */
+  const onCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (disabled || !free || free.atCapacity) return;
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    free.onAdd(xToHz(e.clientX - rect.left, rect.width), yToDb(e.clientY - rect.top, height));
+  }, [disabled, free, height]);
 
   /** Arrow keys on a focused node, so the graph is not mouse-only. */
   const onNodeKeyDown = useCallback((e: React.KeyboardEvent, band: GraphBand) => {
@@ -271,11 +313,15 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
     else if (e.key === 'ArrowDown') next = { gainDb: band.gainDb - 0.5 * coarse };
     else if (e.key === 'ArrowRight') next = { hz: band.hz * Math.pow(2, 0.05 * coarse) };
     else if (e.key === 'ArrowLeft') next = { hz: band.hz * Math.pow(2, -0.05 * coarse) };
+    else if ((e.key === 'Delete' || e.key === 'Backspace') && band.free && free) {
+      e.preventDefault();
+      free.onRemove(band.id);
+      return;
+    }
     if (!next) return;
     e.preventDefault();
-    const edits = editsFor(band, next);
-    if (edits.length > 0) onEdit(edits);
-  }, [disabled, editsFor, onEdit]);
+    onBandChange(band, next);
+  }, [disabled, onBandChange, free]);
 
   const curve = useMemo(() => curvePath(bands, width, height, sr), [bands, width, height, sr]);
 
@@ -347,11 +393,14 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
           }}
         />
         <svg
+          ref={svgRef}
           width={width}
           height={height}
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
+          onDoubleClick={onCanvasDoubleClick}
+          onContextMenu={(e) => { if (free) e.preventDefault(); }}
           style={{ position: 'relative', display: 'block', cursor: dragRef.current ? 'grabbing' : 'default' }}
         >
           {/* Grid */}
@@ -427,7 +476,13 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
                   aria-valuemin={b.gain?.min ?? 0}
                   aria-valuemax={b.gain?.max ?? 0}
                   aria-valuenow={Number(b.gainDb.toFixed(1))}
-                  onPointerDown={(e) => onNodeDown(e, b)}
+                  onPointerDown={(e) => {
+                    // Alt-click deletes rather than drags, so a removal
+                    // cannot leave a half-applied move behind it.
+                    if (b.free && free && (e.altKey || e.button === 2)) { onNodeRemove(e, b); return; }
+                    onNodeDown(e, b);
+                  }}
+                  onContextMenu={(e) => onNodeRemove(e, b)}
                   onDoubleClick={(e) => onNodeDoubleClick(e, b)}
                   onWheel={(e) => onWheel(e, b)}
                   onPointerEnter={() => setHover(b.id)}
@@ -462,14 +517,20 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
         }}>
           {focus
             ? `${focus.label} · ${fmtHz(focus.hz)} Hz · ${focus.gainDb >= 0 ? '+' : ''}${focus.gainDb.toFixed(1)} dB${focus.qAxis ? ` · Q ${focus.q.toFixed(2)}` : ''}`
-            : '노드를 드래그 — 좌우 주파수 · 상하 게인'}
+            : free
+              ? `밴드 ${bands.length}개 — 빈 곳 더블클릭으로 추가`
+              : '노드를 드래그 — 좌우 주파수 · 상하 게인'}
         </span>
         <span style={{
           fontFamily: typography.family.sans,
           fontSize: typography.size.xs,
-          color: text.muted,
+          color: free?.atCapacity ? meter.warn.foreground : text.muted,
         }}>
-          휠 = 대역폭 · Shift+드래그 = 대역폭 · 더블클릭 = 0 dB
+          {free
+            ? free.atCapacity
+              ? '밴드 한도에 도달 — 추가하려면 하나 삭제하세요'
+              : '휠 = Q · 더블클릭(노드) = 필터 종류 · Alt+클릭 = 삭제'
+            : '휠 = 대역폭 · Shift+드래그 = 대역폭 · 더블클릭 = 0 dB'}
         </span>
       </div>
     </div>

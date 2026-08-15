@@ -23,7 +23,7 @@
 import { EQ_BAND_DEFAULTS } from '../chain-config.js';
 import type { ParameterValue } from '../parameters/index.js';
 
-export type GraphBandType = 'highpass' | 'lowshelf' | 'bell' | 'highshelf';
+export type GraphBandType = 'highpass' | 'lowpass' | 'lowshelf' | 'bell' | 'highshelf';
 
 /**
  * One draggable axis of a node.  `min`/`max` are in DISPLAY units (what the
@@ -59,6 +59,8 @@ export interface GraphBand {
   active: boolean;
   /** Not draggable and not listed; drawn so the curve stays honest. */
   readOnly?: boolean;
+  /** A band of the free EQ — can be added, deleted and retyped. */
+  free?: boolean;
 }
 
 // Band accents, shared with the legacy curve overlay so the two never
@@ -108,7 +110,102 @@ function bool(values: Record<string, ParameterValue>, id: string, fallback: bool
 // ── Adapters ─────────────────────────────────────────────────────────────
 
 /** Module ids this editor can drive. */
-export const GRAPH_EQ_MODULES = new Set(['eq', 'vintage-eq']);
+export const GRAPH_EQ_MODULES = new Set(['eq', 'vintage-eq', 'parametric-eq']);
+
+// ── Free parametric bands ────────────────────────────────────────────────
+
+/**
+ * A band of the free EQ, as the UI holds it.
+ *
+ * Unlike the fixed modules there are no parameter names here — a band is
+ * identified by `id` and edited as a whole — so these bands carry no
+ * `AxisMap`.  The editor reports moves through `onBandChange` and the page
+ * decides what a move means; see `LouiEqGraph`.
+ */
+export interface FreeEqBand {
+  id: string;
+  kind: GraphBandType | 'lowpass';
+  frequencyHz: number;
+  gainDb: number;
+  q: number;
+  enabled: boolean;
+}
+
+/** Wire `kind` strings, matching the Rust enum's camelCase renames. */
+const FREE_KIND_TO_WIRE = {
+  highpass: 'highPass',
+  lowpass: 'lowPass',
+  bell: 'bell',
+  lowshelf: 'lowShelf',
+  highshelf: 'highShelf',
+} as const;
+
+const FREE_KIND_COLOR: Record<string, string> = {
+  highpass: '#60A5FA',
+  lowpass: '#F87171',
+  bell: '#A78BFA',
+  lowshelf: '#FBBF24',
+  highshelf: '#22D3EE',
+};
+
+const FREE_KIND_SHORT: Record<string, string> = {
+  highpass: 'HP', lowpass: 'LP', bell: 'PK', lowshelf: 'LS', highshelf: 'HS',
+};
+
+/** The order double-clicking a node walks through. */
+export const FREE_KIND_CYCLE = ['bell', 'lowshelf', 'highshelf', 'highpass', 'lowpass'] as const;
+
+export function freeBandToWire(b: FreeEqBand): {
+  kind: (typeof FREE_KIND_TO_WIRE)[keyof typeof FREE_KIND_TO_WIRE];
+  frequencyHz: number; gainDb: number; q: number; enabled: boolean;
+} {
+  return {
+    kind: FREE_KIND_TO_WIRE[b.kind],
+    frequencyHz: clamp(b.frequencyHz, 10, 22_000),
+    // The pass filters ignore gain in the engine; sending the slider's
+    // leftover value would make the drawn curve disagree with the audio.
+    gainDb: b.kind === 'highpass' || b.kind === 'lowpass' ? 0 : clamp(b.gainDb, -30, 30),
+    q: clamp(b.q, 0.1, 18),
+    enabled: b.enabled,
+  };
+}
+
+let freeBandSeq = 0;
+export function makeFreeBand(frequencyHz: number, gainDb = 0): FreeEqBand {
+  freeBandSeq += 1;
+  return {
+    id: `feq-${freeBandSeq}`,
+    kind: 'bell',
+    frequencyHz: clamp(frequencyHz, 20, 20_000),
+    gainDb: clamp(gainDb, -30, 30),
+    q: 1.0,
+    enabled: true,
+  };
+}
+
+/** Free bands → graph nodes.  Pass filters get no gain axis. */
+export function freeBandsToGraph(bands: readonly FreeEqBand[]): GraphBand[] {
+  return bands.map((b) => {
+    const isPass = b.kind === 'highpass' || b.kind === 'lowpass';
+    return {
+      id: b.id,
+      label: FREE_KIND_SHORT[b.kind] ?? 'PK',
+      short: FREE_KIND_SHORT[b.kind] ?? 'PK',
+      // 'lowpass' is not one of the fixed-module shapes; the curve maths
+      // below handles it, and the cast keeps one band type everywhere.
+      type: b.kind as GraphBandType,
+      color: FREE_KIND_COLOR[b.kind] ?? '#A78BFA',
+      hz: b.frequencyHz,
+      gainDb: isPass ? 0 : b.gainDb,
+      q: b.q,
+      freq: { param: 'frequencyHz', min: 20, max: 20_000 },
+      ...(isPass ? {} : { gain: { param: 'gainDb', min: -30, max: 30 } }),
+      qAxis: { param: 'q', min: 0.1, max: 18 },
+      active: b.enabled && (isPass || Math.abs(b.gainDb) > 0.01),
+      free: true,
+    };
+  });
+}
 
 function eqBands(v: Record<string, ParameterValue>): GraphBand[] {
   const lowCutHz = num(v, 'lowCutHz', 20);
@@ -258,6 +355,8 @@ function coeffsFor(type: GraphBandType, fs: number, f0: number, q: number, gainD
   switch (type) {
     case 'highpass':
       return { b0: (1 + cw) / 2, b1: -(1 + cw), b2: (1 + cw) / 2, a0: 1 + alpha, a1: -2 * cw, a2: 1 - alpha };
+    case 'lowpass':
+      return { b0: (1 - cw) / 2, b1: 1 - cw, b2: (1 - cw) / 2, a0: 1 + alpha, a1: -2 * cw, a2: 1 - alpha };
     case 'lowshelf':
       return {
         b0: A * ((A + 1) - (A - 1) * cw + 2 * sqA * alpha),

@@ -308,6 +308,21 @@ const VINTAGE_EQ_DEFS: ModuleParameterDefinitions = {
 // Spectral (Match EQ / Shaper / Stabilizer share one STFT stage)
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Free parametric EQ.
+ *
+ * Deliberately empty of parameters: its state is a variable-length band
+ * list, which the flat `id → scalar` parameter model cannot hold. The bands
+ * live in the Studio page and reach the chain through
+ * `ChainConfigInput.parametricBands`. What this entry buys is everything
+ * else a module gets for free — a rack row, a bypass switch, a reset.
+ */
+const PARAMETRIC_EQ_DEFS: ModuleParameterDefinitions = {
+  moduleId: 'parametric-eq',
+  bypassBinding: wired('parametricEq.bypass'),
+  parameters: [],
+};
+
 const MATCH_EQ_DEFS: ModuleParameterDefinitions = {
   moduleId: 'match-eq',
   bypassBinding: wired('spectral.matchEnabled'),
@@ -670,6 +685,7 @@ export const SUITE_PARAMETER_DEFS = {
   deess: DEESS_DEFS,
   'dynamic-eq': DYNAMIC_EQ_DEFS,
   'vintage-eq': VINTAGE_EQ_DEFS,
+  'parametric-eq': PARAMETRIC_EQ_DEFS,
   'match-eq': MATCH_EQ_DEFS,
   'spectral-shaper': SPECTRAL_SHAPER_DEFS,
   stabilizer: STABILIZER_DEFS,

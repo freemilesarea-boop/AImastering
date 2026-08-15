@@ -28,7 +28,8 @@ export type ModuleId =
   // Restoration
   | 'declick' | 'dehum' | 'denoise' | 'deess'
   // Tone / spectral
-  | 'eq' | 'match-eq' | 'spectral-shaper' | 'stabilizer' | 'vintage-eq' | 'dynamic-eq'
+  | 'parametric-eq' | 'eq' | 'match-eq' | 'spectral-shaper' | 'stabilizer'
+  | 'vintage-eq' | 'dynamic-eq'
   // Dynamics
   | 'multiband' | 'dynamics' | 'vintage-comp' | 'impact' | 'low-end-focus'
   // Character
@@ -38,7 +39,7 @@ export type ModuleId =
 
 export const MODULE_IDS: readonly ModuleId[] = [
   'declick', 'dehum', 'denoise', 'deess',
-  'eq', 'match-eq', 'spectral-shaper', 'stabilizer', 'vintage-eq', 'dynamic-eq',
+  'parametric-eq', 'eq', 'match-eq', 'spectral-shaper', 'stabilizer', 'vintage-eq', 'dynamic-eq',
   'multiband', 'dynamics', 'vintage-comp', 'impact', 'low-end-focus',
   'exciter', 'tape',
   'imager', 'limiter', 'export',

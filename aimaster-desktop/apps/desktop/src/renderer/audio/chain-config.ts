@@ -56,6 +56,25 @@ export interface MultibandBandWire {
   bypass?: boolean;
 }
 
+/** Filter shapes the free parametric EQ can run.  Matches the Rust enum. */
+export type ParametricBandKind = 'highPass' | 'lowPass' | 'bell' | 'lowShelf' | 'highShelf';
+
+/** One band of the free parametric EQ, as it crosses the wire. */
+export interface ParametricBandWire {
+  kind: ParametricBandKind;
+  frequencyHz: number;
+  gainDb: number;
+  q: number;
+  enabled: boolean;
+}
+
+/**
+ * How many bands the engine runs.  `MAX_PARAMETRIC_BANDS` in
+ * `dsp-core/.../mastering/parametric_eq.rs` — surplus bands are dropped
+ * silently there, so the UI must not offer more than this.
+ */
+export const MAX_PARAMETRIC_BANDS = 16;
+
 export interface ChainConfigWire {
   inputGainDb?: number;
   outputGainDb?: number;
@@ -90,6 +109,7 @@ export interface ChainConfigWire {
     highFrequencyHz?: number; highBoostDb?: number; highCutDb?: number;
     highBandwidth?: number; bypass?: boolean;
   };
+  parametricEq?: { bands?: ParametricBandWire[]; bypass?: boolean };
   eq?: {
     // Frequency and Q travel with every band: the graph editor drags a node
     // in two axes and sets its width on the wheel.  Omitting them keeps the
@@ -306,6 +326,14 @@ export interface ChainConfigInput {
    * the master.
    */
   monitor?: MonitorSettings;
+  /**
+   * Free parametric EQ bands.
+   *
+   * Passed alongside the parameter state rather than inside it: the state
+   * is a flat map of named scalars per module, and this list has no fixed
+   * length or fixed names.  Same reason `matchTargetCurveDb` lives here.
+   */
+  parametricBands?: readonly ParametricBandWire[];
 }
 
 /**
@@ -426,6 +454,17 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
       highBandwidth: num(veq, 'highBandwidth', 0.5),
       bypass: veq!.bypass,
     };
+  }
+
+  // Free parametric EQ.  Disabled bands are dropped rather than sent: the
+  // engine caps at MAX_PARAMETRIC_BANDS and drops the surplus silently, so
+  // sending sixteen mutes to use band seventeen would lose it.
+  const peq = s['parametric-eq'];
+  const freeBands = (input.parametricBands ?? [])
+    .filter((b) => b.enabled && Number.isFinite(b.frequencyHz))
+    .slice(0, MAX_PARAMETRIC_BANDS);
+  if (freeBands.length > 0 && !(peq?.bypass ?? false)) {
+    cfg.parametricEq = { bands: freeBands.map((b) => ({ ...b })), bypass: false };
   }
 
   const eq = s.eq;

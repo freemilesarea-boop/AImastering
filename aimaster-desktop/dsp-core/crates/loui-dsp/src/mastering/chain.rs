@@ -111,7 +111,15 @@ impl MasteringChain {
             dehum: Dehum::new(sample_rate, cfg.dehum),
             denoise: Denoise::new(sample_rate, cfg.denoise),
             deess: Deess::new(sample_rate, cfg.deess),
-            parametric_eq: ParametricEq::new(sample_rate),
+            // Built from the config like every other module.  Leaving it
+            // empty here would mean a chain constructed with bands went
+            // silent on them until the first `set_config` — the offline
+            // render constructs once and never calls it.
+            parametric_eq: {
+                let mut p = ParametricEq::new(sample_rate);
+                p.set_bands(if cfg.parametric_eq.bypass { &[] } else { &cfg.parametric_eq.bands[..] });
+                p
+            },
             spectral: Spectral::new(sample_rate, cfg.spectral),
             vintage_eq: VintageEq::new(sample_rate, cfg.vintage_eq),
             eq: Eq::new(sample_rate, cfg.eq),
@@ -135,11 +143,22 @@ impl MasteringChain {
         }
     }
 
-    /// Replace the free parametric EQ band list (independent of `set_config`,
-    /// since the band list is variable-length and lives outside the flat
-    /// `MasteringChainConfig` value type).  Empty list = bypass.
+    /// Replace the free parametric EQ band list directly.
+    ///
+    /// `set_config` also carries the band list, and it is the path the UI
+    /// uses.  This one remains for hosts driving the chain positionally —
+    /// but the two are not independent: a later `set_config` replaces
+    /// whatever this wrote.  One source of truth, and it is the config.
     pub fn set_parametric_eq_bands(&mut self, bands: &[ParametricBand]) {
         self.parametric_eq.set_bands(bands);
+        // Keep the stored config in step, so a subsequent `set_config`
+        // built from `self.cfg` does not silently undo this call.
+        for (slot, b) in self.cfg.parametric_eq.bands.iter_mut().zip(bands.iter()) {
+            *slot = *b;
+        }
+        for slot in self.cfg.parametric_eq.bands.iter_mut().skip(bands.len()) {
+            *slot = ParametricBand::default();
+        }
     }
 
     /// Number of enabled parametric-EQ bands currently active.
@@ -162,6 +181,9 @@ impl MasteringChain {
         self.dehum.set_config(cfg.dehum);
         self.denoise.set_config(cfg.denoise);
         self.deess.set_config(cfg.deess);
+        self.parametric_eq.set_bands(
+            if cfg.parametric_eq.bypass { &[] } else { &cfg.parametric_eq.bands[..] },
+        );
         self.spectral.set_config(cfg.spectral);
         self.vintage_eq.set_config(cfg.vintage_eq);
         self.eq.set_config(cfg.eq);
@@ -913,6 +935,73 @@ mod tests {
             worst = worst.max((l2[i] - input[i]).abs());
         }
         assert!(worst < 1e-5, "block-fed bypass should return the dry, worst {worst}");
+    }
+
+    /// Measured gain of the chain at one frequency, in dB.
+    fn chain_gain_db_at(cfg: MasteringChainConfig, hz: f64) -> f64 {
+        let sr = 48_000.0;
+        let mut chain = MasteringChain::new(sr, cfg);
+        let n = 1 << 14;
+        let amp = 0.2f32;
+        let mut l: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f64::consts::PI * hz * i as f64 / sr).sin() as f32 * amp)
+            .collect();
+        let mut r = l.clone();
+        for a in (0..n).step_by(512) {
+            let b = (a + 512).min(n);
+            chain.process_stereo_block(&mut l[a..b], &mut r[a..b]);
+        }
+        let tail = &l[n / 2..];
+        let out = (tail.iter().map(|x| (x * x) as f64).sum::<f64>() / tail.len() as f64).sqrt();
+        20.0 * (out / (amp as f64 / 2f64.sqrt())).log10()
+    }
+
+    #[test]
+    fn parametric_bands_arrive_through_the_config() {
+        // The band list used to be reachable only by a side-channel setter,
+        // which meant the JSON config — the one object the preview and the
+        // export share — could not describe a user-drawn EQ at all.
+        let mut cfg = MasteringChainConfig::default();
+        cfg.limiter.bypass = true;
+        cfg.eq.bypass = true;
+        cfg.dynamics.bypass = true;
+        cfg.imager.bypass = true;
+        cfg.parametric_eq.bands[0] = ParametricBand {
+            kind: super::super::parametric_eq::ParametricBandType::Bell,
+            frequency_hz: 1000.0,
+            gain_db: 9.0,
+            q: 4.0,
+            enabled: true,
+        };
+        let at_1k = chain_gain_db_at(cfg, 1000.0);
+        assert!((at_1k - 9.0).abs() < 0.6, "config band not applied: {at_1k:.2} dB");
+
+        // …and bypass must actually take it out of the path.
+        cfg.parametric_eq.bypass = true;
+        let bypassed = chain_gain_db_at(cfg, 1000.0);
+        assert!(bypassed.abs() < 0.1, "bypassed parametric EQ still filtering: {bypassed:.2} dB");
+    }
+
+    #[test]
+    fn many_parametric_bands_stack() {
+        // "Unlimited bands" in the UI is sixteen here; the cascade must
+        // actually run all of them rather than quietly keeping the first few.
+        let mut cfg = MasteringChainConfig::default();
+        cfg.limiter.bypass = true;
+        cfg.eq.bypass = true;
+        cfg.dynamics.bypass = true;
+        cfg.imager.bypass = true;
+        for i in 0..8 {
+            cfg.parametric_eq.bands[i] = ParametricBand {
+                kind: super::super::parametric_eq::ParametricBandType::Bell,
+                frequency_hz: 1000.0,
+                gain_db: 1.0,
+                q: 2.0,
+                enabled: true,
+            };
+        }
+        let g = chain_gain_db_at(cfg, 1000.0);
+        assert!((g - 8.0).abs() < 0.6, "eight stacked +1 dB bells gave {g:.2} dB");
     }
 
     #[test]

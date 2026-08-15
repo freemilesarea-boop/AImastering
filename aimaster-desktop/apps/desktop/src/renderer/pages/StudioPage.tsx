@@ -32,7 +32,16 @@ import { useAudioStore } from '../stores/audioStore.js';
 import { LouiModuleRack, type ModuleReadout } from '../components/product/LouiModuleRack.js';
 import { ModuleParameterPanel } from '../components/product/panels/ModuleParameterPanel.js';
 import { LouiEqGraph } from '../components/product/modules/LouiEqGraph.js';
-import { buildGraphBands, bandEdits } from '../audio/modules/eq-graph-model.js';
+import {
+  buildGraphBands,
+  bandEdits,
+  freeBandsToGraph,
+  freeBandToWire,
+  makeFreeBand,
+  FREE_KIND_CYCLE,
+  type FreeEqBand,
+  type GraphBand,
+} from '../audio/modules/eq-graph-model.js';
 import { getNativeAnalysers } from '../audio/shared-audio-graph.js';
 import {
   ALL_MODULE_PARAMETER_DEFS,
@@ -44,9 +53,14 @@ import {
 } from '../audio/parameters/index.js';
 import { getModule } from '../audio/modules/loui-module-suite.js';
 import {
-  buildChainConfig, activeModuleIds, MASTER_NATIVE_BIT_DEPTH,
+  buildChainConfig, activeModuleIds, MASTER_NATIVE_BIT_DEPTH, MAX_PARAMETRIC_BANDS,
   DEFAULT_MONITOR, monitorAltersOutput, type MonitorSettings,
 } from '../audio/chain-config.js';
+
+/** Keep a dragged value inside its range. */
+function clampRange(v: number, lo: number, hi: number): number {
+  return !Number.isFinite(v) ? lo : v < lo ? lo : v > hi ? hi : v;
+}
 import { LouiMonitorBar } from '../components/product/LouiMonitorBar.js';
 import { LouiPreviewTransport } from '../components/product/LouiPreviewTransport.js';
 import type { MonitorReadout } from '../components/product/LouiMonitorBar.js';
@@ -101,6 +115,10 @@ export default function StudioPage() {
   // the preview hook re-attaches when the player mounts — but it is set
   // exactly once per element, so it cannot churn.
   const [media, setMedia] = useState<HTMLMediaElement | null>(null);
+  // The free EQ's bands.  Not in `state` because that is a flat map of
+  // named scalars per module and this list has neither fixed length nor
+  // fixed names; it reaches the chain through `parametricBands`.
+  const [freeBands, setFreeBands] = useState<FreeEqBand[]>([]);
 
   const src = selectedFile ? toFileUrl(selectedFile) : null;
   // Read once per mount: the flag is a kill switch, not a live toggle.
@@ -155,8 +173,11 @@ export default function StudioPage() {
   // edit — it is a pure function over state and cheap enough that
   // memoising on `state` is all the debouncing this view needs.
   const config = useMemo(
-    () => buildChainConfig({ state, masterBypass, monitor }),
-    [state, masterBypass, monitor],
+    () => buildChainConfig({
+      state, masterBypass, monitor,
+      parametricBands: freeBands.map(freeBandToWire),
+    }),
+    [state, masterBypass, monitor, freeBands],
   );
 
   /**
@@ -279,8 +300,42 @@ export default function StudioPage() {
   // The bands are derived from the same parameter values the sliders read,
   // and a drag writes those parameters back — so the two views can never
   // disagree, and the graph inherits the realtime push for free.
-  const graphBands = paramModule ? buildGraphBands(paramModule, state[paramModule].parameters) : null;
+  const isFreeEq = paramModule === 'parametric-eq';
+  const graphBands = isFreeEq
+    ? freeBandsToGraph(freeBands)
+    : paramModule ? buildGraphBands(paramModule, state[paramModule].parameters) : null;
   const wantsGraph = graphBands !== null;
+
+  /** A node moved.  Fixed modules write parameters; the free EQ edits its list. */
+  const handleBandChange = useCallback((
+    band: GraphBand,
+    next: { hz?: number; gainDb?: number; q?: number },
+  ) => {
+    if (band.free) {
+      setFreeBands((prev) => prev.map((b) => (b.id !== band.id ? b : {
+        ...b,
+        ...(next.hz !== undefined ? { frequencyHz: clampRange(next.hz, 20, 20_000) } : {}),
+        ...(next.gainDb !== undefined ? { gainDb: clampRange(next.gainDb, -30, 30) } : {}),
+        ...(next.q !== undefined ? { q: clampRange(next.q, 0.1, 18) } : {}),
+      })));
+      return;
+    }
+    if (!paramModule) return;
+    setParams(paramModule, bandEdits(band, next));
+  }, [paramModule, setParams]);
+
+  const freeGestures = useMemo(() => ({
+    onAdd: (hz: number, gainDb: number) => setFreeBands((prev) => (
+      prev.length >= MAX_PARAMETRIC_BANDS ? prev : [...prev, makeFreeBand(hz, gainDb)]
+    )),
+    onRemove: (id: string) => setFreeBands((prev) => prev.filter((b) => b.id !== id)),
+    onCycleType: (id: string) => setFreeBands((prev) => prev.map((b) => {
+      if (b.id !== id) return b;
+      const i = FREE_KIND_CYCLE.indexOf(b.kind as (typeof FREE_KIND_CYCLE)[number]);
+      return { ...b, kind: FREE_KIND_CYCLE[(i + 1) % FREE_KIND_CYCLE.length]! };
+    })),
+    atCapacity: freeBands.length >= MAX_PARAMETRIC_BANDS,
+  }), [freeBands.length]);
   // The post-chain analyser, for the trace behind the curve.  Only asked
   // for when a graph is on screen, so no analyser is built otherwise.
   const analyser = useMemo(
@@ -437,8 +492,8 @@ export default function StudioPage() {
                         bands={graphBands}
                         analyser={analyser}
                         disabled={state[paramModule].bypass}
-                        editsFor={bandEdits}
-                        onEdit={(edits) => setParams(paramModule, edits)}
+                        onBandChange={handleBandChange}
+                        {...(isFreeEq ? { free: freeGestures } : {})}
                       />
                     ),
                   }

@@ -19,6 +19,8 @@
 #[cfg(feature = "serde")]
 use serde::Deserialize;
 
+use super::parametric_eq::{ParametricBand, MAX_PARAMETRIC_BANDS};
+
 /// Deserialise a band list into a fixed-size array, padding the tail with
 /// neutral defaults.
 ///
@@ -618,6 +620,27 @@ impl Default for MonitorConfig {
     }
 }
 
+/// Free parametric EQ — a user-authored band list.
+///
+/// The band array is fixed-size so the whole config stays `Copy` and the
+/// audio thread never sees an allocation; a shorter list from the host is
+/// padded with disabled bands by [`de_padded_bands`].
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
+pub struct ParametricEqConfig {
+    /// Bands, in series.  Disabled bands cost nothing.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "de_padded_bands"))]
+    pub bands: [ParametricBand; MAX_PARAMETRIC_BANDS],
+    /// Module bypass.
+    pub bypass: bool,
+}
+
+impl Default for ParametricEqConfig {
+    fn default() -> Self {
+        Self { bands: [ParametricBand::default(); MAX_PARAMETRIC_BANDS], bypass: false }
+    }
+}
+
 /// EQ (gentle tone shaping) parameters.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
@@ -764,6 +787,7 @@ pub struct MasteringChainConfig {
     pub denoise: DenoiseConfig,
     pub deess: DeessConfig,
     // Corrective / spectral.
+    pub parametric_eq: ParametricEqConfig,
     pub spectral: SpectralConfig,
     // Tone.
     pub vintage_eq: VintageEqConfig,
@@ -799,6 +823,7 @@ impl Default for MasteringChainConfig {
             dehum: DehumConfig::default(),
             denoise: DenoiseConfig::default(),
             deess: DeessConfig::default(),
+            parametric_eq: ParametricEqConfig::default(),
             spectral: SpectralConfig::default(),
             vintage_eq: VintageEqConfig::default(),
             eq: EqConfig::default(),

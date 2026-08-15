@@ -18,10 +18,12 @@ use super::StereoModule;
 pub const MAX_PARAMETRIC_BANDS: usize = 16;
 
 /// Filter type for one band.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize), serde(rename_all = "camelCase"))]
 pub enum ParametricBandType {
     HighPass,
     LowPass,
+    #[default]
     Bell,
     LowShelf,
     HighShelf,
@@ -29,11 +31,17 @@ pub enum ParametricBandType {
 
 /// One band's parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize), serde(rename_all = "camelCase", default))]
 pub struct ParametricBand {
+    /// Filter shape.
     pub kind: ParametricBandType,
+    /// Centre / corner frequency (Hz).
     pub frequency_hz: f64,
+    /// Gain (dB).  Ignored by the pass filters.
     pub gain_db: f64,
+    /// Bandwidth (peaking Q, or shelf slope).
     pub q: f64,
+    /// False leaves the band out of the cascade entirely.
     pub enabled: bool,
 }
 

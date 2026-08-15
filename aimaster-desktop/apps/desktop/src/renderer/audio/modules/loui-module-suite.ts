@@ -141,6 +141,12 @@ const SUITE: LouiModule[] = [
     description: 'Spectral Shaper — pulls down any bin sitting above its own spectral neighbourhood, so resonances and harshness are tamed without a static notch.',
   },
   {
+    id: 'parametric-eq', displayName: 'Parametric EQ', category: 'tone', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
+    visual: 'spectrum', paramModuleId: 'parametric-eq', algorithmName: 'Loui Free EQ',
+    description: 'A free band list you draw on the curve — bell, shelf or cut, anywhere, up to sixteen bands. Double-click the graph to add one.',
+  },
+  {
     id: 'reference-match', displayName: 'Reference Match', category: 'reference', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'high',
     visual: 'spectrum', paramModuleId: 'match-eq',
@@ -276,6 +282,7 @@ export function getModule(id: string): LouiModule | undefined { return BY_ID.get
  */
 export const CHAIN_MODULE_IDS: readonly string[] = [
   'declick', 'dehum', 'denoise', 'deess',
+  'parametric-eq',
   'reference-match', 'harshness-control', 'stabilizer', 'spectral-shaper',
   'vintage-eq', 'eq', 'dynamic-eq',
   'multiband', 'dynamics', 'vintage-comp', 'impact', 'low-end-focus', 'bass-control',

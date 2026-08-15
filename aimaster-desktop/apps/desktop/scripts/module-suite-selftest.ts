@@ -211,7 +211,14 @@ console.log('\n=== MODULE SUITE — state → chain config ===\n');
   const missing = MODULE_IDS.filter((id) => !ALL_MODULE_PARAMETER_DEFS[id]);
   check('every module id has parameter definitions', missing.length === 0, `missing=[${missing.join(', ')}]`);
 
-  const emptyDefs = MODULE_IDS.filter((id) => ALL_MODULE_PARAMETER_DEFS[id].parameters.length === 0);
+  // An empty parameter list is normally a definitions mistake — the panel
+  // would render nothing.  The free parametric EQ is the one legitimate
+  // exception: its state is a variable-length band list that the flat
+  // `id → scalar` model cannot express, and its panel is the graph.
+  const PARAMETERLESS = new Set<ModuleId>(['parametric-eq']);
+  const emptyDefs = MODULE_IDS.filter(
+    (id) => !PARAMETERLESS.has(id) && ALL_MODULE_PARAMETER_DEFS[id].parameters.length === 0,
+  );
   check('no module has an empty parameter list', emptyDefs.length === 0, `empty=[${emptyDefs.join(', ')}]`);
 
   // A suite binding must name a dotted chain-config path — a bare field
