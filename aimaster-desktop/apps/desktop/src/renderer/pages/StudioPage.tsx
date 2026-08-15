@@ -38,6 +38,10 @@ import {
   RestorationView,
   RESTORATION_VIEW_MODULES,
 } from '../components/product/modules/LouiRestorationViews.js';
+import {
+  ToneDynamicsView,
+  TONE_DYN_VIEW_MODULES,
+} from '../components/product/modules/LouiToneDynamicsViews.js';
 import { buildDynamicsGraph } from '../audio/modules/dynamics-graph-model.js';
 import {
   buildGraphBands,
@@ -515,6 +519,19 @@ export default function StudioPage() {
                 values={state[paramModule].parameters}
                 bypass={state[paramModule].bypass}
                 onChange={(id, value) => setParam(paramModule, id, value)}
+                {...(TONE_DYN_VIEW_MODULES.has(paramModule)
+                  ? {
+                    editor: (
+                      <ToneDynamicsView
+                        moduleId={paramModule}
+                        registryId={selected}
+                        values={state[paramModule].parameters}
+                        metrics={preview.metrics}
+                        disabled={state[paramModule].bypass}
+                      />
+                    ),
+                  }
+                  : {})}
                 {...(RESTORATION_VIEW_MODULES.has(paramModule)
                   ? {
                     editor: (
@@ -572,7 +589,20 @@ export default function StudioPage() {
               />
             </div>
           ) : (
-            <EmptyPanel />
+            // A registry row with no parameter module is normally an
+            // unfinished entry.  Bass Control is the deliberate case: it has
+            // no DSP, and its view says so rather than drawing a panel that
+            // would be indistinguishable from a working one.
+            selected === 'bass-control'
+              ? (
+                <ToneDynamicsView
+                  moduleId="bass-control"
+                  registryId="bass-control"
+                  values={{}}
+                  metrics={preview.metrics}
+                />
+              )
+              : <EmptyPanel />
           )}
         </div>
       </div>

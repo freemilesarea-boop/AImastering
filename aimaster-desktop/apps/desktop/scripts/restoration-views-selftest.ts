@@ -257,5 +257,61 @@ console.log('\n=== RESTORATION VIEWS — engine readouts reach the UI ===\n');
   );
 }
 
+// ── Every live module is reachable ───────────────────────────────────────
+//
+// A rack row without `paramModuleId` opens an empty panel and renders no
+// bypass switch — the module is present in the engine, listed in the rack,
+// and completely unusable. Dynamic EQ, Exciter and Low End Focus all
+// shipped that way, and nothing failed: the definitions existed, the DSP
+// existed, only the pointer between them was missing.
+
+console.log('\n=== MODULE REGISTRY — every live module opens its panel ===\n');
+
+{
+  const { LOUI_MODULES } = require_(
+    '../src/renderer/audio/modules/loui-module-suite.js',
+  ) as typeof import('../src/renderer/audio/modules/loui-module-suite.js');
+
+  // Registry rows that deliberately share another module's parameters.
+  const SHARED: Record<string, string> = {
+    maximizer: 'limiter',
+    'harshness-control': 'spectral-shaper',
+    'reference-match': 'match-eq',
+    'ai-harshness-guard': 'dynamic-eq',
+    dither: 'export',
+  };
+
+  const live = LOUI_MODULES.filter((m) => m.status === 'live');
+  const orphans = live.filter((m) => !m.paramModuleId && !SHARED[m.id]);
+  check(
+    'every live module points at a parameter module',
+    orphans.length === 0,
+    orphans.length === 0
+      ? `${live.length} live modules all reachable`
+      : `unreachable: ${orphans.map((m) => m.id).join(', ')}`,
+  );
+
+  const badTargets = live
+    .filter((m) => m.paramModuleId)
+    .filter((m) => !ALL_MODULE_PARAMETER_DEFS[m.paramModuleId!]);
+  check(
+    'every pointer resolves to real definitions',
+    badTargets.length === 0,
+    badTargets.length === 0 ? 'all resolve' : badTargets.map((m) => m.id).join(', '),
+  );
+
+  // A module with a panel but no parameters is the other half of the same
+  // failure; the free EQ is the one intentional case.
+  const PARAMETERLESS = new Set(['parametric-eq']);
+  const empty = live
+    .filter((m) => m.paramModuleId && !PARAMETERLESS.has(m.paramModuleId))
+    .filter((m) => (ALL_MODULE_PARAMETER_DEFS[m.paramModuleId!]?.parameters.length ?? 0) === 0);
+  check(
+    'no live module opens an empty panel',
+    empty.length === 0,
+    empty.length === 0 ? 'none' : empty.map((m) => m.id).join(', '),
+  );
+}
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 if (failed > 0) process.exit(1);

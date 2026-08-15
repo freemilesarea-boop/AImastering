@@ -89,7 +89,7 @@ const SUITE: LouiModule[] = [
   {
     id: 'dynamic-eq', displayName: 'Dynamic EQ', category: 'tone', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'medium',
-    visual: 'eq-curve',
+    visual: 'eq-curve', paramModuleId: 'dynamic-eq',
     description: 'Six bands of level-dependent EQ. Down mode cuts what only gets loud; Up mode lifts what only gets quiet. Live in preview and export.',
   },
   {
@@ -119,7 +119,7 @@ const SUITE: LouiModule[] = [
   {
     id: 'exciter', displayName: 'Exciter', category: 'character', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'medium',
-    visual: 'spectrum',
+    visual: 'spectrum', paramModuleId: 'exciter',
     description: 'Four-band harmonic exciter — Warm / Retro / Tape / Tube / Triode. Level-matched per band, so drive changes colour rather than volume.',
   },
   {
@@ -131,7 +131,7 @@ const SUITE: LouiModule[] = [
   {
     id: 'low-end-focus', displayName: 'Low End Focus', category: 'lowend', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'medium',
-    visual: 'lowend-meter',
+    visual: 'lowend-meter', paramModuleId: 'low-end-focus',
     description: 'Punchy separates low transients; Smooth evens the bottom out. Plus a low-band-only trim.',
   },
   {

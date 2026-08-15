@@ -280,6 +280,7 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     // is the one place on the audio thread that is already rate-limited to
     // ten calls a second.
     let multibandGrDb = null, deessGrDb = 0, dehumDepthDb = 0;
+    let dynamicEqGainsDb = null, impactMoveDb = 0, lowEndFocusMoveDb = 0;
     // Curves for the restoration displays.  Same reasoning as the band GR:
     // these cross the WASM boundary as fresh arrays, so they are read here
     // and nowhere else on the audio thread.
@@ -296,6 +297,9 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
         if (c.multibandGrDb) multibandGrDb = Array.from(c.multibandGrDb());
         if (c.deessGrDb) deessGrDb = c.deessGrDb();
         if (c.dehumDepthDb) dehumDepthDb = c.dehumDepthDb();
+        if (c.dynamicEqGainsDb) dynamicEqGainsDb = Array.from(c.dynamicEqGainsDb());
+        if (c.impactMoveDb) impactMoveDb = c.impactMoveDb();
+        if (c.lowEndFocusMoveDb) lowEndFocusMoveDb = c.lowEndFocusMoveDb();
         if (c.tonalCurveDb) tonalCurveDb = Array.from(c.tonalCurveDb());
         if (c.denoiseProfileDb) {
           // 1025 FFT bins is far more than a 700 px display can show, and
@@ -318,6 +322,9 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       multibandGrDb,
       deessGrDb,
       dehumDepthDb,
+      dynamicEqGainsDb,
+      impactMoveDb,
+      lowEndFocusMoveDb,
       tonalCurveDb,
       denoiseProfileDb,
       safetyEvents: this._safetyEvents,

@@ -46,6 +46,12 @@ export interface RealtimePreviewMetrics {
   deessGrDb: number;
   /** Deepest hum notch currently applied. */
   dehumDepthDb: number;
+  /** Signed gain each Dynamic EQ band is applying right now. */
+  dynamicEqGainsDb: readonly number[];
+  /** Signed gain Impact is applying to the transient. */
+  impactMoveDb: number;
+  /** Signed gain Low End Focus is applying. */
+  lowEndFocusMoveDb: number;
   /** Measured long-term tonal curve, 32 log bands. */
   tonalCurveDb: readonly number[];
   /** Learned noise floor, folded onto 48 log bands.  Empty until learned. */
@@ -75,6 +81,9 @@ export const EMPTY_METRICS: RealtimePreviewMetrics = {
   multibandGrDb: [0, 0, 0, 0],
   deessGrDb: 0,
   dehumDepthDb: 0,
+  dynamicEqGainsDb: [0, 0, 0, 0, 0, 0],
+  impactMoveDb: 0,
+  lowEndFocusMoveDb: 0,
   tonalCurveDb: [],
   denoiseProfileDb: [],
   latencySamples: 0,
@@ -150,6 +159,9 @@ export function ingestWorkletMetrics(msg: Record<string, unknown>): void {
       : EMPTY_METRICS.multibandGrDb,
     deessGrDb: n('deessGrDb'),
     dehumDepthDb: n('dehumDepthDb'),
+    dynamicEqGainsDb: numArray(msg['dynamicEqGainsDb'], EMPTY_METRICS.dynamicEqGainsDb),
+    impactMoveDb: n('impactMoveDb'),
+    lowEndFocusMoveDb: n('lowEndFocusMoveDb'),
     tonalCurveDb: numArray(msg['tonalCurveDb'], EMPTY_METRICS.tonalCurveDb),
     denoiseProfileDb: numArray(msg['denoiseProfileDb'], EMPTY_METRICS.denoiseProfileDb),
     latencySamples: n('latencySamples'),
