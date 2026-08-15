@@ -110,6 +110,15 @@ export interface ChainConfigWire {
     highBandwidth?: number; bypass?: boolean;
   };
   parametricEq?: { bands?: ParametricBandWire[]; bypass?: boolean };
+  delay?: {
+    mixPct?: number; timeMs?: number; stereoOffsetPct?: number;
+    feedbackPct?: number; dampingHz?: number; lowCutHz?: number;
+    pingPong?: boolean; bypass?: boolean;
+  };
+  reverb?: {
+    mixPct?: number; sizePct?: number; dampingPct?: number; widthPct?: number;
+    preDelayMs?: number; lowCutHz?: number; bypass?: boolean;
+  };
   eq?: {
     // Frequency and Q travel with every band: the graph editor drags a node
     // in two axes and sets its width on the wheel.  Omitting them keeps the
@@ -634,6 +643,37 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
       wowFlutterPct: num(tape, 'wowFlutterPct', 0),
       mixPct: num(tape, 'mixPct', 0),
       bypass: tape!.bypass,
+    };
+  }
+
+  // ── Space ──────────────────────────────────────────────────────────────
+  // Both are silent at mix 0, and both are omitted entirely in that case:
+  // a reverb sending its config with 0 % wet still costs the engine eight
+  // comb filters per channel for a result nobody can hear.
+  const dly = s.delay;
+  if (engaged(dly, num(dly, 'mixPct', 0) > 0)) {
+    cfg.delay = {
+      mixPct: num(dly, 'mixPct', 0),
+      timeMs: num(dly, 'timeMs', 220),
+      stereoOffsetPct: num(dly, 'stereoOffsetPct', 12),
+      feedbackPct: num(dly, 'feedbackPct', 25),
+      dampingHz: num(dly, 'dampingHz', 6000),
+      lowCutHz: num(dly, 'lowCutHz', 300),
+      pingPong: bool(dly, 'pingPong', false),
+      bypass: dly!.bypass,
+    };
+  }
+
+  const rev = s.reverb;
+  if (engaged(rev, num(rev, 'mixPct', 0) > 0)) {
+    cfg.reverb = {
+      mixPct: num(rev, 'mixPct', 0),
+      sizePct: num(rev, 'sizePct', 55),
+      dampingPct: num(rev, 'dampingPct', 50),
+      widthPct: num(rev, 'widthPct', 100),
+      preDelayMs: num(rev, 'preDelayMs', 20),
+      lowCutHz: num(rev, 'lowCutHz', 250),
+      bypass: rev!.bypass,
     };
   }
 

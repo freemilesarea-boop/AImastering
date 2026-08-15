@@ -635,6 +635,109 @@ const EXCITER_DEFS: ModuleParameterDefinitions = {
   ],
 };
 
+// ─────────────────────────────────────────────────────────────────────────
+// Space — delay and reverb
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Both ship with Mix at 0 and are engaged by raising it.
+ *
+ * On a mastering bus these are spatial tools, not effects: the useful range
+ * is a few percent, and a default that made noise would be wrong for every
+ * session.  Mix at 0 also keeps the chain bit-transparent, since the engine
+ * returns before touching the samples.
+ */
+const DELAY_DEFS: ModuleParameterDefinitions = {
+  moduleId: 'delay',
+  bypassBinding: wired('delay.bypass'),
+  defaultBypass: true,
+  parameters: [
+    {
+      kind: 'number', id: 'mixPct', label: 'Mix',
+      hint: 'How much of the echo is heard',
+      unit: '%', min: 0, max: 50, default: 0, step: 0.5,
+      format: fmt.pct, automatable: true, binding: wired('delay.mixPct'),
+    },
+    {
+      kind: 'number', id: 'timeMs', label: 'Time',
+      unit: 'ms', min: 1, max: 2000, default: 220, step: 1,
+      format: fmt.integer, automatable: true, binding: wired('delay.timeMs'),
+    },
+    {
+      kind: 'number', id: 'stereoOffsetPct', label: 'Stereo offset',
+      hint: 'How far the right side lags the left',
+      unit: '%', min: -50, max: 50, default: 12, step: 1,
+      format: fmt.pct, automatable: true, binding: wired('delay.stereoOffsetPct'),
+    },
+    {
+      kind: 'number', id: 'feedbackPct', label: 'Feedback',
+      hint: 'How many times the echo repeats',
+      unit: '%', min: 0, max: 95, default: 25, step: 1,
+      format: fmt.pct, automatable: true, binding: wired('delay.feedbackPct'),
+    },
+    {
+      kind: 'number', id: 'dampingHz', label: 'Damping',
+      hint: 'Repeats lose everything above this',
+      unit: 'Hz', min: 500, max: 20000, default: 6000, step: 50,
+      format: fmt.hz, automatable: true, binding: wired('delay.dampingHz'),
+    },
+    {
+      kind: 'number', id: 'lowCutHz', label: 'Low cut',
+      hint: 'Keeps repeats out of the bass',
+      unit: 'Hz', min: 20, max: 2000, default: 300, step: 5,
+      format: fmt.hz, automatable: true, binding: wired('delay.lowCutHz'),
+    },
+    {
+      kind: 'boolean', id: 'pingPong', label: 'Ping-pong',
+      hint: 'Repeats alternate left and right',
+      default: false, automatable: false, binding: wired('delay.pingPong'),
+    },
+  ],
+};
+
+const REVERB_DEFS: ModuleParameterDefinitions = {
+  moduleId: 'reverb',
+  bypassBinding: wired('reverb.bypass'),
+  defaultBypass: true,
+  parameters: [
+    {
+      kind: 'number', id: 'mixPct', label: 'Mix',
+      hint: 'On a master this belongs near 2-8 %',
+      unit: '%', min: 0, max: 50, default: 0, step: 0.5,
+      format: fmt.pct, automatable: true, binding: wired('reverb.mixPct'),
+    },
+    {
+      kind: 'number', id: 'sizePct', label: 'Size',
+      hint: 'How long the tail rings',
+      unit: '%', min: 0, max: 100, default: 55, step: 1,
+      format: fmt.pct, automatable: true, binding: wired('reverb.sizePct'),
+    },
+    {
+      kind: 'number', id: 'dampingPct', label: 'Damping',
+      hint: 'How fast the top of the tail goes',
+      unit: '%', min: 0, max: 100, default: 50, step: 1,
+      format: fmt.pct, automatable: true, binding: wired('reverb.dampingPct'),
+    },
+    {
+      kind: 'number', id: 'widthPct', label: 'Width',
+      unit: '%', min: 0, max: 100, default: 100, step: 1,
+      format: fmt.pct, automatable: true, binding: wired('reverb.widthPct'),
+    },
+    {
+      kind: 'number', id: 'preDelayMs', label: 'Pre-delay',
+      hint: 'Gap before the tail starts',
+      unit: 'ms', min: 0, max: 250, default: 20, step: 1,
+      format: fmt.integer, automatable: true, binding: wired('reverb.preDelayMs'),
+    },
+    {
+      kind: 'number', id: 'lowCutHz', label: 'Low cut',
+      hint: 'Keeps the tail out of the bass',
+      unit: 'Hz', min: 20, max: 2000, default: 250, step: 5,
+      format: fmt.hz, automatable: true, binding: wired('reverb.lowCutHz'),
+    },
+  ],
+};
+
 const TAPE_DEFS: ModuleParameterDefinitions = {
   moduleId: 'tape',
   bypassBinding: wired('tape.bypass'),
@@ -695,4 +798,6 @@ export const SUITE_PARAMETER_DEFS = {
   'low-end-focus': LOW_END_FOCUS_DEFS,
   exciter: EXCITER_DEFS,
   tape: TAPE_DEFS,
+  delay: DELAY_DEFS,
+  reverb: REVERB_DEFS,
 } as const;

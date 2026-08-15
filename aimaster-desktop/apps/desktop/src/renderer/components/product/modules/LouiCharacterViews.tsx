@@ -526,10 +526,209 @@ export function ExportView(props: {
   );
 }
 
+// ── 6. Delay ─────────────────────────────────────────────────────────────
+
+const TIME_VIEW_MS = 2400;
+
+/** Time ruler shared by the two space modules. */
+function TimeGrid(props: { width: number; height: number; spanMs: number }) {
+  const ticks = props.spanMs > 1500 ? [0, 500, 1000, 1500, 2000] : [0, 100, 200, 300, 400, 500];
+  const xFor = (ms: number) =>
+    PAD.left + (ms / props.spanMs) * (props.width - PAD.left - PAD.right);
+  return (
+    <>
+      {ticks.filter((t) => t <= props.spanMs).map((ms) => (
+        <g key={ms}>
+          <line x1={xFor(ms)} x2={xFor(ms)} y1={PAD.top} y2={props.height - PAD.bottom}
+            stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
+          <text x={xFor(ms)} y={props.height - 6} textAnchor={ms === 0 ? 'start' : 'middle'}
+            fill="rgba(255,255,255,0.38)"
+            style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
+            {ms === 0 ? '0' : `${ms}ms`}
+          </text>
+        </g>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Where the repeats land, and how loud each one is.
+ *
+ * A delay is a time effect, so the axis is time. Each repeat is drawn at
+ * its own arrival and its own level — feedback and the loop's filtering
+ * both show up as the stems getting shorter, which is the thing you are
+ * actually setting. The two channels are drawn separately, because the
+ * stereo offset is what makes this a width tool rather than an echo.
+ */
+export function DelayView(props: {
+  values: Record<string, ParameterValue>;
+  width: number;
+  disabled?: boolean | undefined;
+}) {
+  const v = props.values;
+  const mix = num(v, 'mixPct', 0);
+  const timeMs = num(v, 'timeMs', 220);
+  const offset = num(v, 'stereoOffsetPct', 12);
+  const fbPct = num(v, 'feedbackPct', 25);
+  const damping = num(v, 'dampingHz', 6000);
+  const lowCut = num(v, 'lowCutHz', 300);
+  const pingPong = boolOf(v, 'pingPong', false);
+
+  const H = 180;
+  const mid = H / 2;
+  const rightMs = timeMs * (1 + Math.max(-50, Math.min(50, offset)) / 100);
+  const fb = Math.min(0.95, Math.max(0, fbPct / 100));
+  const wet = Math.min(1, Math.max(0, mix / 100));
+  const xFor = (ms: number) => PAD.left + (ms / TIME_VIEW_MS) * (props.width - PAD.left - PAD.right);
+
+  // Stems until they fall below audibility or leave the window.
+  const stems: Array<{ ms: number; level: number; side: 'l' | 'r' }> = [];
+  for (let n = 1; n <= 24; n++) {
+    const level = wet * Math.pow(fb, n - 1);
+    if (level < 0.004) break;
+    const lMs = timeMs * n;
+    const rMs = rightMs * n;
+    // Ping-pong alternates which side each repeat lands on.
+    if (lMs <= TIME_VIEW_MS) stems.push({ ms: lMs, level, side: pingPong && n % 2 === 0 ? 'r' : 'l' });
+    if (rMs <= TIME_VIEW_MS) stems.push({ ms: rMs, level, side: pingPong && n % 2 === 0 ? 'l' : 'r' });
+  }
+
+  return (
+    <Shell disabled={props.disabled}>
+      <Box width={props.width} height={H}>
+        <TimeGrid width={props.width} height={H} spanMs={TIME_VIEW_MS} />
+        <line x1={PAD.left} x2={props.width - PAD.right} y1={mid} y2={mid}
+          stroke="rgba(255,255,255,0.16)" strokeWidth={1} />
+        {/* The dry hit, at full height, so the repeats have a reference. */}
+        <line x1={xFor(0)} x2={xFor(0)} y1={mid - (mid - PAD.top - 6)} y2={mid}
+          stroke="rgba(255,255,255,0.55)" strokeWidth={2} />
+        <text x={xFor(0) + 4} y={PAD.top + 10}
+          fill="rgba(255,255,255,0.45)"
+          style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
+          원음
+        </text>
+        {stems.map((st, i) => {
+          const h = st.level * (mid - PAD.top - 10);
+          const up = st.side === 'l';
+          return (
+            <line
+              key={i}
+              x1={xFor(st.ms)} x2={xFor(st.ms)}
+              y1={up ? mid - h : mid} y2={up ? mid : mid + h}
+              stroke={up ? '#A78BFA' : '#38BDF8'} strokeWidth={2}
+            />
+          );
+        })}
+        <text x={props.width - PAD.right - 2} y={PAD.top + 10} textAnchor="end"
+          fill="#A78BFA" style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
+          위 = L
+        </text>
+        <text x={props.width - PAD.right - 2} y={H - PAD.bottom - 4} textAnchor="end"
+          fill="#38BDF8" style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
+          아래 = R
+        </text>
+      </Box>
+      <Caption>
+        {mix <= 0.001
+          ? '섞는 양이 0이라 메아리가 들리지 않습니다 — Mix를 올리면 막대가 나타납니다. '
+          : `첫 메아리가 ${timeMs.toFixed(0)} ms(오른쪽은 ${rightMs.toFixed(0)} ms) 뒤에 오고, 반복마다 ${fbPct.toFixed(0)}% 만큼 남습니다. `}
+        막대 높이가 그 메아리의 크기입니다.
+        {` 반복될 때마다 ${fmtHz(damping)} Hz 위와 ${fmtHz(lowCut)} Hz 아래가 깎여 점점 어둡고 가벼워집니다.`}
+        {pingPong ? ' 핑퐁이 켜져 있어 좌우를 번갈아 튑니다.' : ''}
+      </Caption>
+    </Shell>
+  );
+}
+
+// ── 7. Reverb ────────────────────────────────────────────────────────────
+
+/**
+ * The tail's shape in time — pre-delay, then a decay set by size.
+ *
+ * The envelope is drawn from the same numbers the engine derives its comb
+ * feedback from, so a longer size visibly stretches the tail. It is an
+ * envelope, not a measured impulse response: the label says "shape", and
+ * what it is honestly for is seeing where the tail starts and roughly how
+ * long it lasts, which are the two decisions this module asks for.
+ */
+export function ReverbView(props: {
+  values: Record<string, ParameterValue>;
+  width: number;
+  disabled?: boolean | undefined;
+}) {
+  const v = props.values;
+  const mix = num(v, 'mixPct', 0);
+  const size = num(v, 'sizePct', 55);
+  const damping = num(v, 'dampingPct', 50);
+  const width = num(v, 'widthPct', 100);
+  const pre = num(v, 'preDelayMs', 20);
+  const lowCut = num(v, 'lowCutHz', 250);
+
+  const H = 180;
+  const base = H - PAD.bottom;
+  const xFor = (ms: number) => PAD.left + (ms / TIME_VIEW_MS) * (props.width - PAD.left - PAD.right);
+
+  // Comb feedback → decay, mirroring `Reverb::set_config`.
+  const feedback = Math.min(0.98, 0.70 + Math.min(1, Math.max(0, size / 100)) * 0.28);
+  // Roughly how long the tail takes to fall 60 dB, from that feedback and
+  // the mean comb length.  Approximate, and labelled as such.
+  const meanCombMs = 1350 / 44.1;
+  const rt60Ms = feedback >= 1 ? TIME_VIEW_MS
+    : (Math.log(0.001) / Math.log(feedback)) * meanCombMs;
+  const wet = Math.min(1, Math.max(0, mix / 100));
+
+  const path = React.useMemo(() => {
+    const pts = 220;
+    let d = `M${xFor(0).toFixed(1)},${base.toFixed(1)}`;
+    for (let i = 0; i <= pts; i++) {
+      const ms = (i / pts) * TIME_VIEW_MS;
+      const t = ms - pre;
+      // Damping shortens the audible tail as well as darkening it.
+      const shorten = 1 - (Math.min(100, Math.max(0, damping)) / 100) * 0.45;
+      const amp = t <= 0 ? 0 : wet * Math.exp((-6.9 * t) / Math.max(1, rt60Ms * shorten));
+      d += `L${xFor(ms).toFixed(1)},${(base - amp * (base - PAD.top - 10)).toFixed(1)}`;
+    }
+    return `${d}L${xFor(TIME_VIEW_MS).toFixed(1)},${base.toFixed(1)}Z`;
+  }, [pre, rt60Ms, damping, wet, props.width]);
+
+  return (
+    <Shell disabled={props.disabled}>
+      <Box width={props.width} height={H}>
+        <TimeGrid width={props.width} height={H} spanMs={TIME_VIEW_MS} />
+        <line x1={PAD.left} x2={props.width - PAD.right} y1={base} y2={base}
+          stroke="rgba(255,255,255,0.16)" strokeWidth={1} />
+        {/* The dry hit and the gap before the tail. */}
+        <line x1={xFor(0)} x2={xFor(0)} y1={PAD.top + 6} y2={base}
+          stroke="rgba(255,255,255,0.55)" strokeWidth={2} />
+        {pre > 0.5 && (
+          <>
+            <rect x={xFor(0)} y={PAD.top} width={Math.max(0, xFor(pre) - xFor(0))}
+              height={base - PAD.top} fill="rgba(255,255,255,0.04)" />
+            <text x={xFor(pre) + 4} y={PAD.top + 11}
+              fill="rgba(255,255,255,0.40)"
+              style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
+              {`시작 지연 ${pre.toFixed(0)} ms`}
+            </text>
+          </>
+        )}
+        <path d={path} fill="rgba(167,139,250,0.22)" stroke="#A78BFA" strokeWidth={1.6} />
+      </Box>
+      <Caption>
+        {mix <= 0.001
+          ? '섞는 양이 0이라 울림이 들리지 않습니다 — Mix를 올리면 꼬리가 나타납니다. '
+          : `원음 뒤 ${pre.toFixed(0)} ms 부터 울림이 시작해 대략 ${(rt60Ms / 1000).toFixed(1)}초에 걸쳐 사라집니다. `}
+        {`공간 크기 ${size.toFixed(0)}% · 고역 감쇠 ${damping.toFixed(0)}% · 울림 폭 ${width.toFixed(0)}% · ${fmtHz(lowCut)} Hz 아래는 울리지 않습니다. `}
+        이 곡선은 <strong style={{ color: text.tertiary }}>꼬리의 대략적인 모양</strong>이며, 측정된 임펄스 응답이 아닙니다.
+      </Caption>
+    </Shell>
+  );
+}
+
 // ── Dispatch ─────────────────────────────────────────────────────────────
 
 export const CHARACTER_VIEW_MODULES = new Set([
-  'declick', 'exciter', 'tape', 'imager', 'export',
+  'declick', 'exciter', 'tape', 'imager', 'export', 'delay', 'reverb',
 ]);
 
 export function CharacterView(props: {
@@ -559,6 +758,8 @@ export function CharacterView(props: {
     case 'exciter': body = <ExciterView {...common} />; break;
     case 'tape': body = <TapeView {...common} />; break;
     case 'imager': body = <ImagerView {...common} />; break;
+    case 'delay': body = <DelayView {...common} />; break;
+    case 'reverb': body = <ReverbView {...common} />; break;
     case 'export': body = <ExportView {...common} metrics={props.metrics} />; break;
     default: break;
   }

@@ -257,6 +257,114 @@ console.log('\n=== RESTORATION VIEWS — engine readouts reach the UI ===\n');
   );
 }
 
+// ── Space modules ────────────────────────────────────────────────────────
+//
+// Reverb and delay are the two modules where "it sounds like nothing" and
+// "it is not wired" are indistinguishable by ear at the levels a master
+// uses. So both are measured through the full state → config → chain path,
+// not just unit-tested in Rust.
+
+console.log('\n=== SPACE — reverb and delay reach the audio ===\n');
+
+if (Chain) {
+  const renderTail = (state: AllModulesParameterState, n: number): Float32Array => {
+    const chain = new Chain!(SR);
+    chain.setConfigJson(chainConfigToJson(buildChainConfig({ state })));
+    const left = new Float32Array(n);
+    const right = new Float32Array(n);
+    left[0] = 1.0;
+    right[0] = 1.0;
+    for (let off = 0; off < n; off += 512) {
+      const end = Math.min(off + 512, n);
+      chain.processStereo(left.subarray(off, end), right.subarray(off, end));
+    }
+    return left;
+  };
+  const peakIn = (x: Float32Array, from: number, to: number): number => {
+    let m = 0;
+    for (let i = from; i < Math.min(to, x.length); i++) m = Math.max(m, Math.abs(x[i]!));
+    return m;
+  };
+
+  {
+    const state = withParams(neutralState(), 'delay', [
+      ['mixPct', 50], ['timeMs', 120], ['feedbackPct', 0], ['stereoOffsetPct', 0],
+    ]);
+    const out = renderTail(state, SR);
+    const at = Math.round(0.120 * SR);
+    check(
+      'a delay repeat arrives at the time it was set to',
+      peakIn(out, at - 40, at + 40) > 0.2 && peakIn(out, 1000, at - 400) < 0.02,
+      `peak at 120 ms = ${peakIn(out, at - 40, at + 40).toFixed(3)}`,
+    );
+  }
+
+  {
+    // Mix 0 must leave the chain bit-transparent, or an unused space module
+    // would quietly cost transparency on every session.
+    const state = withParams(neutralState(), 'delay', [['mixPct', 0], ['timeMs', 120]]);
+    const cfg = buildChainConfig({ state });
+    check(
+      'a silent delay is not even sent to the engine',
+      cfg.delay === undefined,
+      JSON.stringify(cfg.delay ?? null),
+    );
+  }
+
+  {
+    const state = withParams(neutralState(), 'reverb', [
+      ['mixPct', 60], ['sizePct', 80], ['preDelayMs', 0], ['dampingPct', 30],
+    ]);
+    const out = renderTail(state, SR * 2);
+    const early = peakIn(out, Math.round(0.05 * SR), Math.round(0.3 * SR));
+    check(
+      'a reverb tail follows the impulse',
+      early > 0.001,
+      `tail peak ${early.toExponential(2)} between 50 and 300 ms`,
+    );
+
+    const big = renderTail(withParams(neutralState(), 'reverb', [
+      ['mixPct', 60], ['sizePct', 98], ['preDelayMs', 0], ['dampingPct', 0],
+    ]), SR * 3);
+    const small = renderTail(withParams(neutralState(), 'reverb', [
+      ['mixPct', 60], ['sizePct', 5], ['preDelayMs', 0], ['dampingPct', 0],
+    ]), SR * 3);
+    const lateBig = peakIn(big, SR, SR * 2);
+    const lateSmall = peakIn(small, SR, SR * 2);
+    check(
+      'size changes how long the tail lasts',
+      lateBig > lateSmall * 3,
+      `late peak small ${lateSmall.toExponential(2)} vs large ${lateBig.toExponential(2)}`,
+    );
+  }
+
+  {
+    const state = withParams(neutralState(), 'reverb', [['mixPct', 0], ['sizePct', 80]]);
+    check(
+      'a silent reverb is not even sent to the engine',
+      buildChainConfig({ state }).reverb === undefined,
+      'absent',
+    );
+  }
+
+  {
+    // Both modules feed themselves.  A runaway here is not a wrong sound,
+    // it is a burst of noise at whatever the output stage allows.
+    const state = withParams(
+      withParams(neutralState(), 'reverb', [['mixPct', 100], ['sizePct', 100], ['dampingPct', 0]]),
+      'delay', [['mixPct', 100], ['feedbackPct', 95], ['timeMs', 30]],
+    );
+    const out = renderTail(state, SR * 5);
+    const early = peakIn(out, 0, SR);
+    const late = peakIn(out, SR * 4, SR * 5);
+    check(
+      'the two feedback modules together still decay',
+      out.every(Number.isFinite) && late <= early,
+      `${early.toFixed(3)} → ${late.toFixed(3)} over five seconds`,
+    );
+  }
+}
+
 // ── Every live module is reachable ───────────────────────────────────────
 //
 // A rack row without `paramModuleId` opens an empty panel and renders no

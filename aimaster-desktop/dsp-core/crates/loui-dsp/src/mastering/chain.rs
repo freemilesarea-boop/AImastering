@@ -4,6 +4,8 @@ use super::config::MasteringChainConfig;
 use super::gain::Gain;
 use super::eq::Eq;
 use super::parametric_eq::{ParametricBand, ParametricEq};
+use super::delay::Delay;
+use super::reverb::Reverb;
 use super::dynamics::Dynamics;
 use super::imager::Imager;
 use super::limiter::Limiter;
@@ -88,6 +90,8 @@ pub struct MasteringChain {
     // Character.
     exciter: Exciter,
     tape: VintageTape,
+    delay: Delay,
+    reverb: Reverb,
     // Stereo + output.
     imager: Imager,
     limiter: Limiter,
@@ -131,6 +135,8 @@ impl MasteringChain {
             low_end_focus: LowEndFocus::new(sample_rate, cfg.low_end_focus),
             exciter: Exciter::new(sample_rate, cfg.exciter),
             tape: VintageTape::new(sample_rate, cfg.tape),
+            delay: Delay::new(sample_rate, cfg.delay),
+            reverb: Reverb::new(sample_rate, cfg.reverb),
             imager: Imager::new(sample_rate, cfg.imager),
             limiter: Limiter::new(sample_rate, cfg.limiter),
             output_gain: Gain::from_db(cfg.output_gain_db),
@@ -195,6 +201,8 @@ impl MasteringChain {
         self.low_end_focus.set_config(cfg.low_end_focus);
         self.exciter.set_config(cfg.exciter);
         self.tape.set_config(cfg.tape);
+        self.delay.set_config(cfg.delay);
+        self.reverb.set_config(cfg.reverb);
         self.imager.set_config(cfg.imager);
         self.limiter.set_config(cfg.limiter);
         self.output_gain.set_db(cfg.output_gain_db);
@@ -358,6 +366,8 @@ impl MasteringChain {
         // 5 — Character.
         self.exciter.process_stereo(left, right);
         self.tape.process_stereo(left, right);
+        self.delay.process_stereo(left, right);
+        self.reverb.process_stereo(left, right);
 
         // 6 — Image and output stage.
         self.imager.process_stereo(left, right);
@@ -448,6 +458,8 @@ impl MasteringChain {
         self.low_end_focus.reset();
         self.exciter.reset();
         self.tape.reset();
+        self.delay.reset();
+        self.reverb.reset();
         self.imager.reset();
         self.limiter.reset();
         self.dither.reset();

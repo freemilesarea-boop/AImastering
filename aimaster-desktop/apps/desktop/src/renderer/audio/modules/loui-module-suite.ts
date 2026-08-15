@@ -99,6 +99,18 @@ const SUITE: LouiModule[] = [
     description: 'Single-band glue compression (threshold / ratio / attack / release / mix). Live in the preview.',
   },
   {
+    id: 'delay', displayName: 'Delay', category: 'stereo', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'low',
+    visual: 'none', paramModuleId: 'delay', algorithmName: 'Loui Space Echo',
+    description: 'Stereo delay with filtered feedback. On a master this is a spatial tool, not an effect — a few percent widens and deepens without anyone hearing a delay.',
+  },
+  {
+    id: 'reverb', displayName: 'Reverb', category: 'stereo', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'medium',
+    visual: 'none', paramModuleId: 'reverb', algorithmName: 'Loui Room',
+    description: 'Comb + all-pass algorithmic reverb with pre-delay, damping and a low cut on the wet path. Sized for the 2-8 % a master wants.',
+  },
+  {
     id: 'imager', displayName: 'Imager', category: 'stereo', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
     visual: 'vectorscope', paramModuleId: 'imager',
@@ -287,6 +299,7 @@ export const CHAIN_MODULE_IDS: readonly string[] = [
   'vintage-eq', 'eq', 'dynamic-eq',
   'multiband', 'dynamics', 'vintage-comp', 'impact', 'low-end-focus', 'bass-control',
   'exciter', 'tape',
+  'delay', 'reverb',
   'imager', 'limiter', 'maximizer',
   'dither', 'export',
 ];

@@ -641,6 +641,80 @@ impl Default for ParametricEqConfig {
     }
 }
 
+/// Stereo delay parameters.
+///
+/// Defaults are silent: `mix_pct` is 0, so a chain that carries a delay it
+/// was never asked for is still bit-transparent.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
+pub struct DelayConfig {
+    /// Wet blend, 0..100 %.  0 = off.
+    pub mix_pct: f64,
+    /// Left-channel delay, in ms.
+    pub time_ms: f64,
+    /// Right channel's offset from the left, −50..50 %.
+    pub stereo_offset_pct: f64,
+    /// Feedback, 0..100 %.  Clamped below unity by the module.
+    pub feedback_pct: f64,
+    /// Low-pass in the feedback loop, in Hz — each repeat is darker.
+    pub damping_hz: f64,
+    /// High-pass in the feedback loop, in Hz — keeps repeats out of the bass.
+    pub low_cut_hz: f64,
+    /// Route each side's repeats into the other channel.
+    pub ping_pong: bool,
+    pub bypass: bool,
+}
+
+impl Default for DelayConfig {
+    fn default() -> Self {
+        Self {
+            mix_pct: 0.0,
+            time_ms: 220.0,
+            stereo_offset_pct: 12.0,
+            feedback_pct: 25.0,
+            damping_hz: 6_000.0,
+            low_cut_hz: 300.0,
+            ping_pong: false,
+            bypass: false,
+        }
+    }
+}
+
+/// Algorithmic reverb parameters.
+///
+/// Defaults are silent for the same reason as the delay's.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
+pub struct ReverbConfig {
+    /// Wet blend, 0..100 %.  On a master this belongs near 2–8.
+    pub mix_pct: f64,
+    /// Room size, 0..100 % — drives the decay length.
+    pub size_pct: f64,
+    /// High-frequency damping, 0..100 % — how fast the top of the tail goes.
+    pub damping_pct: f64,
+    /// Stereo width of the tail, 0..100 %.  100 = as wide as the algorithm.
+    pub width_pct: f64,
+    /// Gap before the tail starts, in ms — keeps the transient dry.
+    pub pre_delay_ms: f64,
+    /// High-pass on the wet path, in Hz — keeps the tail out of the bass.
+    pub low_cut_hz: f64,
+    pub bypass: bool,
+}
+
+impl Default for ReverbConfig {
+    fn default() -> Self {
+        Self {
+            mix_pct: 0.0,
+            size_pct: 55.0,
+            damping_pct: 50.0,
+            width_pct: 100.0,
+            pre_delay_ms: 20.0,
+            low_cut_hz: 250.0,
+            bypass: false,
+        }
+    }
+}
+
 /// EQ (gentle tone shaping) parameters.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
@@ -802,6 +876,11 @@ pub struct MasteringChainConfig {
     // Character.
     pub exciter: ExciterConfig,
     pub tape: VintageTapeConfig,
+    // Space.  After character, before the imager: the imager should widen
+    // the finished picture, tails included, not a dry mix that later grows
+    // a tail of its own width.
+    pub delay: DelayConfig,
+    pub reverb: ReverbConfig,
     // Stereo + output.
     pub imager: ImagerConfig,
     pub limiter: LimiterConfig,
@@ -835,6 +914,8 @@ impl Default for MasteringChainConfig {
             low_end_focus: LowEndFocusConfig::default(),
             exciter: ExciterConfig::default(),
             tape: VintageTapeConfig::default(),
+            delay: DelayConfig::default(),
+            reverb: ReverbConfig::default(),
             imager: ImagerConfig::default(),
             limiter: LimiterConfig::default(),
             dither: DitherConfig::default(),

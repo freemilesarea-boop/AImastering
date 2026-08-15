@@ -98,6 +98,46 @@ Pass filters send no gain. The engine ignores gain on high-pass and low-pass
 bands, so forwarding a band's leftover gain would draw a boost the audio
 never applies.
 
+### §9 — Space: delay and reverb
+
+Two new DSP modules, placed after the character stage and before the imager
+— the imager should widen the finished picture, tails included, not a dry
+mix that later grows a tail of its own width.
+
+**Delay** is a per-channel line with the feedback filtered *inside* the
+loop. That placement is the whole difference between a tail that decays into
+nothing and one that turns into a resonant drone: each repeat is filtered
+once more than the last, which is what a real room does. A stereo offset
+spreads the two sides, and ping-pong routes each side's repeats into the
+other.
+
+**Reverb** is the Schroeder arrangement — eight damped comb filters per
+channel for density, four series all-passes to smear what is left of the
+echo pattern. Old design, right one here: fixed buffers, no allocation while
+running, decay set rather than measured.
+
+Both are shaped for a mastering bus rather than a send:
+
+- **Mix defaults to 0** and the useful range is a few percent. A default
+  that made noise would be wrong for every session, and mix 0 also keeps the
+  chain bit-transparent — the modules return before touching the samples.
+- **The wet path is filtered.** A tail in the bass is mud and in the top is
+  hiss, so both carry a low cut and the reverb's combs carry damping.
+  Without those, any amount audible enough to help also smears the low end.
+- **Pre-delay keeps the transient dry**, so the mix keeps its attack and
+  gains its space.
+- **Feedback and size are clamped below unity unconditionally.** These are
+  user numbers driving feedback loops; at 1.0 the tail is infinite and no
+  amount of downstream limiting fixes it. Tests drive both to 1e9 and assert
+  the output stays finite and decays.
+
+The displays plot **time**, because that is what these modules work in.
+Delay draws each repeat at its arrival and its level, above the line for
+left and below for right, so the stereo offset and the feedback decay are
+both visible. Reverb draws the tail's envelope after the pre-delay gap,
+derived from the same comb feedback the engine computes — and the caption
+says it is a shape, not a measured impulse response.
+
 ### §8 — Two audiences, one panel
 
 This app is used by mastering engineers and by people taking a course who

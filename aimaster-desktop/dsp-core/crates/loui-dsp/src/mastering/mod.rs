@@ -41,6 +41,8 @@ mod eq;
 mod parametric_eq;
 mod dynamics;
 mod imager;
+mod delay;
+mod reverb;
 mod limiter;
 mod chain;
 
@@ -73,6 +75,8 @@ pub use denoise::{Denoise, DENOISE_FRAME};
 /// Number of FFT bins in a de-noise profile (`DENOISE_FRAME / 2 + 1`).
 pub const DENOISE_PROFILE_BINS: usize = DENOISE_FRAME / 2 + 1;
 pub use deess::Deess;
+pub use delay::{Delay, MAX_DELAY_S};
+pub use reverb::{Reverb, MAX_PREDELAY_S};
 pub use parametric_eq::{ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS};
 pub use chain::{MasteringChain, GainReduction};
 

@@ -34,6 +34,8 @@ export type ModuleId =
   | 'multiband' | 'dynamics' | 'vintage-comp' | 'impact' | 'low-end-focus'
   // Character
   | 'exciter' | 'tape'
+  // Space
+  | 'delay' | 'reverb'
   // Stereo / output
   | 'imager' | 'limiter' | 'export';
 
@@ -42,6 +44,7 @@ export const MODULE_IDS: readonly ModuleId[] = [
   'parametric-eq', 'eq', 'match-eq', 'spectral-shaper', 'stabilizer', 'vintage-eq', 'dynamic-eq',
   'multiband', 'dynamics', 'vintage-comp', 'impact', 'low-end-focus',
   'exciter', 'tape',
+  'delay', 'reverb',
   'imager', 'limiter', 'export',
 ] as const;
 
