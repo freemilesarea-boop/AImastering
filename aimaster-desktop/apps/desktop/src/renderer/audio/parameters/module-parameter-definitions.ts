@@ -14,6 +14,7 @@ import type {
   AllModulesDefinitions,
   ModuleParameterDefinitions,
 } from './parameter-state.js';
+import { SUITE_PARAMETER_DEFS } from './suite-parameter-definitions.js';
 
 // ── Number formatters ────────────────────────────────────────────────────
 
@@ -406,9 +407,13 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
 // ── Aggregate ────────────────────────────────────────────────────────────
 
 export const ALL_MODULE_PARAMETER_DEFS: AllModulesDefinitions = {
+  // The original product-layout five.
   eq:       EQ_DEFS,
   dynamics: DYNAMICS_DEFS,
   imager:   IMAGER_DEFS,
   limiter:  LIMITER_DEFS,
   export:   EXPORT_DEFS,
+  // Everything the Ozone-class suite added — see
+  // `suite-parameter-definitions.ts`.
+  ...SUITE_PARAMETER_DEFS,
 };

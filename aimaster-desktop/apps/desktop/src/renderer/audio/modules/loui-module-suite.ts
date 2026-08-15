@@ -13,14 +13,24 @@
 //   • export-only  — affects the offline export render only (not preview).
 //   • planned      — no DSP yet; UI shell, clearly badged "Coming soon".
 //
-// The status here is GROUNDED in what actually exists: the Rust
-// MasteringChain (EQ/dynamics/imager/limiter) for preview, and the 4
-// export-renderable params (targetLufs / targetTp / stereoWidth /
-// outputGainDb).  Nothing claims "live" without backing.
+// The status here is GROUNDED in what actually exists.  Since the module
+// suite landed, the Rust `MasteringChain` runs BOTH paths — the WASM
+// worklet for the realtime preview and the node-target WASM for the offline
+// export render — driven by the same `ChainConfigWire` object.  A module
+// implemented in that chain is therefore genuinely `live`: the same code
+// produces the preview you hear and the file you get.
+//
+// Modules still marked `preview-only` are the ones the export path cannot
+// carry (preset-backed AI entries, which apply through the preview EQ), and
+// `planned` remains reserved for things with no DSP at all.  Nothing claims
+// "live" without backing.
+
+import type { ModuleId } from '../parameters/parameter-state.js';
 
 export type ModuleStatus = 'live' | 'preview-only' | 'export-only' | 'planned';
 
 export type ModuleCategory =
+  | 'restoration' // repair — runs before anything else in the chain
   | 'tone'        // EQ-family
   | 'dynamics'    // compression / limiting / loudness
   | 'stereo'      // imaging
@@ -49,8 +59,8 @@ export interface LouiModule {
   /** Relative CPU cost estimate for the realtime path (0 = none). */
   cpuCost: 'none' | 'low' | 'medium' | 'high';
   visual: ModuleVisual;
-  /** Maps to an existing ProductPage parameter module (opens its panel). */
-  paramModuleId?: 'eq' | 'dynamics' | 'imager' | 'limiter' | 'export';
+  /** Maps to a parameter module (opens its panel).  See `ModuleId`. */
+  paramModuleId?: ModuleId;
   /** Delivered as a Loui preset rather than a standalone DSP module. */
   presetBacked?: boolean;
   description: string;
@@ -58,33 +68,39 @@ export interface LouiModule {
   algorithmName?: string;
 }
 
-// ── The first official lineup ─────────────────────────────────────────
+// ── The lineup ────────────────────────────────────────────────────────
 //
-// Chain order mirrors the Rust MasteringChain:
-//   input gain → EQ → dynamics → imager → limiter → output
+// Registry order mirrors the Rust MasteringChain's signal flow:
+//   input gain
+//   → de-click → de-hum → de-noise → de-esser          (restoration)
+//   → parametric EQ → match EQ / shaper / stabilizer   (corrective)
+//   → vintage EQ → EQ → dynamic EQ                     (tone)
+//   → multiband → glue → vintage comp → impact → low end focus
+//   → exciter → tape                                   (character)
+//   → imager → limiter/maximizer → output gain
 
 const SUITE: LouiModule[] = [
   {
-    id: 'eq', displayName: 'EQ', category: 'tone', status: 'preview-only',
-    previewSupport: 'full', exportSupport: 'partial', defaultBypass: false, cpuCost: 'low',
+    id: 'eq', displayName: 'EQ', category: 'tone', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
     visual: 'eq-curve', paramModuleId: 'eq',
     description: 'Low cut / low shelf / presence / air tone shaping. Heard live in the preview; output gain is export-renderable.',
   },
   {
-    id: 'dynamic-eq', displayName: 'Dynamic EQ', category: 'tone', status: 'planned',
-    previewSupport: 'none', exportSupport: 'none', defaultBypass: true, cpuCost: 'medium',
+    id: 'dynamic-eq', displayName: 'Dynamic EQ', category: 'tone', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'medium',
     visual: 'eq-curve',
-    description: 'Frequency-conscious dynamics (per-band threshold/gain). No DSP yet — planned.',
+    description: 'Six bands of level-dependent EQ. Down mode cuts what only gets loud; Up mode lifts what only gets quiet. Live in preview and export.',
   },
   {
-    id: 'dynamics', displayName: 'Dynamics', category: 'dynamics', status: 'preview-only',
-    previewSupport: 'full', exportSupport: 'none', defaultBypass: false, cpuCost: 'low',
+    id: 'dynamics', displayName: 'Dynamics', category: 'dynamics', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
     visual: 'gr-meter', paramModuleId: 'dynamics', algorithmName: 'Loui Glue',
     description: 'Single-band glue compression (threshold / ratio / attack / release / mix). Live in the preview.',
   },
   {
     id: 'imager', displayName: 'Imager', category: 'stereo', status: 'live',
-    previewSupport: 'full', exportSupport: 'partial', defaultBypass: false, cpuCost: 'low',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
     visual: 'vectorscope', paramModuleId: 'imager',
     description: 'Stereo width + low-mono fold-down. Width is export-renderable; low-mono is preview-only.',
   },
@@ -101,34 +117,100 @@ const SUITE: LouiModule[] = [
     description: 'Loudness target + push character, true-peak protected. Loudness is export-renderable.',
   },
   {
-    id: 'exciter', displayName: 'Exciter', category: 'character', status: 'planned',
-    previewSupport: 'none', exportSupport: 'none', defaultBypass: true, cpuCost: 'low',
+    id: 'exciter', displayName: 'Exciter', category: 'character', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'medium',
     visual: 'spectrum',
-    description: 'Harmonic excitement / warmth. No DSP yet — planned.',
+    description: 'Four-band harmonic exciter — Warm / Retro / Tape / Tube / Triode. Level-matched per band, so drive changes colour rather than volume.',
   },
   {
     id: 'bass-control', displayName: 'Bass Control', category: 'lowend', status: 'planned',
     previewSupport: 'none', exportSupport: 'none', defaultBypass: true, cpuCost: 'low',
     visual: 'lowend-meter',
-    description: 'Sub balance / punch / mud control. No dedicated DSP yet — planned (low shelf approximates today).',
+    description: 'Sub balance / punch / mud control. Covered today by Low End Focus and the multiband low band; a dedicated module is still planned.',
   },
   {
-    id: 'low-end-focus', displayName: 'Low End Focus', category: 'lowend', status: 'planned',
-    previewSupport: 'none', exportSupport: 'none', defaultBypass: true, cpuCost: 'medium',
+    id: 'low-end-focus', displayName: 'Low End Focus', category: 'lowend', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'medium',
     visual: 'lowend-meter',
-    description: 'Mono-locks + tightens the sub for translation. No DSP yet — planned.',
+    description: 'Punchy separates low transients; Smooth evens the bottom out. Plus a low-band-only trim.',
   },
   {
-    id: 'harshness-control', displayName: 'Harshness Control', category: 'tone', status: 'planned',
-    previewSupport: 'none', exportSupport: 'none', defaultBypass: true, cpuCost: 'medium',
-    visual: 'spectrum',
-    description: '2–5 kHz harshness taming. Today delivered via AI presets (AI Vocal Cleaner / Cymbal Smooth); a dedicated dynamic module is planned.',
+    id: 'harshness-control', displayName: 'Harshness Control', category: 'tone', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'high',
+    visual: 'spectrum', paramModuleId: 'spectral-shaper',
+    description: 'Spectral Shaper — pulls down any bin sitting above its own spectral neighbourhood, so resonances and harshness are tamed without a static notch.',
   },
   {
-    id: 'reference-match', displayName: 'Reference Match', category: 'reference', status: 'planned',
-    previewSupport: 'none', exportSupport: 'none', defaultBypass: true, cpuCost: 'low',
-    visual: 'spectrum',
-    description: 'Tonal guidance from a reference track (NOT a copy). Analysis + delta planned.',
+    id: 'reference-match', displayName: 'Reference Match', category: 'reference', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'high',
+    visual: 'spectrum', paramModuleId: 'match-eq',
+    description: 'Matches the long-term tonal curve towards a reference (NOT a copy of it) on a 32-band log grid, with a per-band ceiling on the move.',
+  },
+  {
+    id: 'declick', displayName: 'De-click', category: 'restoration', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'low',
+    visual: 'none', paramModuleId: 'declick', algorithmName: 'Loui Repair',
+    description: 'Finds impulsive defects against a smoothed local level and repairs them by cubic interpolation across the damage.',
+  },
+  {
+    id: 'dehum', displayName: 'De-hum', category: 'restoration', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
+    visual: 'spectrum', paramModuleId: 'dehum',
+    description: 'Mains hum comb — fundamental plus up to twelve harmonics. Adaptive mode backs off on harmonics that carry music.',
+  },
+  {
+    id: 'denoise', displayName: 'De-noise', category: 'restoration', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'high',
+    visual: 'spectrum', paramModuleId: 'denoise', algorithmName: 'Loui Spectral Clean',
+    description: 'Spectral broadband de-noise with a learned or auto-tracked noise profile. Adds one STFT frame of latency when engaged.',
+  },
+  {
+    id: 'deess', displayName: 'De-esser', category: 'restoration', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
+    visual: 'gr-meter', paramModuleId: 'deess',
+    description: 'Split-band sibilance control applied as a dynamic high shelf, so the body of the mix never moves.',
+  },
+  {
+    id: 'spectral-shaper', displayName: 'Spectral Shaper', category: 'tone', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'high',
+    visual: 'spectrum', paramModuleId: 'spectral-shaper', algorithmName: 'Loui Resonance Tame',
+    description: 'Per-frame spectral smoothing — tames resonances and harshness that only appear on some notes.',
+  },
+  {
+    id: 'stabilizer', displayName: 'Stabilizer', category: 'tone', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'high',
+    visual: 'spectrum', paramModuleId: 'stabilizer',
+    description: 'Pulls the long-term tonal curve towards a target tilt. No reference track needed.',
+  },
+  {
+    id: 'vintage-eq', displayName: 'Vintage EQ', category: 'tone', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
+    visual: 'eq-curve', paramModuleId: 'vintage-eq', algorithmName: 'Loui Program EQ',
+    description: 'Passive program EQ. Low boost and attenuation at the same frequency do not cancel — you get the lift with a scooped upper bass.',
+  },
+  {
+    id: 'multiband', displayName: 'Multiband Dynamics', category: 'dynamics', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'medium',
+    visual: 'gr-meter', paramModuleId: 'multiband', algorithmName: 'Loui Four Band',
+    description: 'Four Linkwitz-Riley bands, each compressing or expanding independently, with makeup, parallel mix and solo.',
+  },
+  {
+    id: 'vintage-comp', displayName: 'Vintage Comp', category: 'dynamics', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
+    visual: 'gr-meter', paramModuleId: 'vintage-comp', algorithmName: 'Loui Vari-Mu',
+    description: 'Vari-mu behaviour: a knee that softens as it works harder, a program-dependent release, and saturation that rides with the gain reduction.',
+  },
+  {
+    id: 'impact', displayName: 'Impact', category: 'dynamics', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'medium',
+    visual: 'gr-meter', paramModuleId: 'impact', algorithmName: 'Loui Transient',
+    description: 'Multiband transient shaper driven by the gap between a fast and a slow envelope, so sustained material is left alone.',
+  },
+  {
+    id: 'tape', displayName: 'Tape', category: 'character', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'medium',
+    visual: 'spectrum', paramModuleId: 'tape', algorithmName: 'Loui Transport',
+    description: 'Tape machine model — record saturation, head bump, gap loss and wow/flutter, selectable at 7.5 / 15 / 30 ips.',
   },
   {
     id: 'export', displayName: 'Dither / Export', category: 'output', status: 'export-only',
@@ -165,10 +247,10 @@ const AI_MODULES: LouiModule[] = [
     description: 'Mobile / Shorts mono-robust master. Preset-backed.',
   },
   {
-    id: 'ai-harshness-guard', displayName: 'AI Harshness Guard', category: 'ai', status: 'planned',
-    previewSupport: 'none', exportSupport: 'none', defaultBypass: true, cpuCost: 'medium',
-    visual: 'spectrum',
-    description: 'Always-on dynamic harshness ceiling for AI material. Planned (needs dynamic EQ DSP).',
+    id: 'ai-harshness-guard', displayName: 'AI Harshness Guard', category: 'ai', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'medium',
+    visual: 'spectrum', paramModuleId: 'dynamic-eq',
+    description: 'Always-on dynamic harshness ceiling for AI material, built on the Dynamic EQ. Live in preview and export.',
   },
 ];
 
@@ -177,10 +259,27 @@ export const LOUI_MODULES: readonly LouiModule[] = [...SUITE, ...AI_MODULES];
 const BY_ID = new Map(LOUI_MODULES.map((m) => [m.id, m]));
 export function getModule(id: string): LouiModule | undefined { return BY_ID.get(id); }
 
-/** Chain-order modules (the signal-flow lineup, excluding AI/preset entries). */
-export const CHAIN_MODULE_IDS: readonly string[] = SUITE.map((m) => m.id);
+/**
+ * Chain-order modules — the signal-flow lineup, excluding AI/preset entries.
+ *
+ * Written out explicitly rather than derived from the registry's array
+ * order: the registry groups modules by when they were added, while this is
+ * the order audio actually passes through them in `MasteringChain`.  A UI
+ * that renders the chain must use this list, or it will show a signal flow
+ * the engine does not have.
+ */
+export const CHAIN_MODULE_IDS: readonly string[] = [
+  'declick', 'dehum', 'denoise', 'deess',
+  'reference-match', 'harshness-control', 'stabilizer', 'spectral-shaper',
+  'vintage-eq', 'eq', 'dynamic-eq',
+  'multiband', 'dynamics', 'vintage-comp', 'impact', 'low-end-focus', 'bass-control',
+  'exciter', 'tape',
+  'imager', 'limiter', 'maximizer',
+  'export',
+];
 
 export const MODULE_CATEGORY_LABEL: Record<ModuleCategory, string> = {
+  restoration: 'Restoration',
   tone: 'Tone', dynamics: 'Dynamics', stereo: 'Stereo', lowend: 'Low End',
   character: 'Character', ai: 'AI Special', reference: 'Reference', output: 'Output',
 };

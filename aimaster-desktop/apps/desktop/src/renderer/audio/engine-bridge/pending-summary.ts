@@ -20,6 +20,7 @@
 import type { MasteringOptions } from '@aimaster/shared-types';
 import {
   ALL_MODULE_PARAMETER_DEFS,
+  MODULE_IDS,
   defaultAllModulesState,
   type AllModulesDefinitions,
   type AllModulesParameterState,
@@ -61,9 +62,10 @@ export interface PendingSummary {
   patchHash: string;
 }
 
-const EMPTY_BY_MODULE: Record<ModuleId, 'renderable' | 'staged' | null> = {
-  eq: null, dynamics: null, imager: null, limiter: null, export: null,
-};
+/** Built from MODULE_IDS so a new suite module cannot leave a hole here. */
+const EMPTY_BY_MODULE: Record<ModuleId, 'renderable' | 'staged' | null> =
+  Object.fromEntries(MODULE_IDS.map((id) => [id, null])) as
+    Record<ModuleId, 'renderable' | 'staged' | null>;
 
 /** The base-master value implied for a renderable MasteringOptions field. */
 function baseValueFor(base: MasteringOptions, optionKey: keyof MasteringOptions): number {

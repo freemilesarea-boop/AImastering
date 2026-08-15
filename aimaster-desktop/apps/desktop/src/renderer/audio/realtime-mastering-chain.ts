@@ -1,7 +1,16 @@
 // Realtime mastering preview — Rust MasteringChain (WASM) wrapper (M2-full).
 //
 // Wraps `LouiMasteringChain` from @loui/dsp-wasm and maps the product
-// UI's parameter state into the chain's flat `setConfig` arguments.
+// UI's parameter state into the chain's config.
+//
+// Two paths exist:
+//
+//   • `stateToChainConfig` / `applyChainConfig` — the original flat,
+//     five-module positional config.  Retained for the legacy worklet
+//     message shape and the tests written against it.
+//   • `stateToSuiteConfig` / `applySuiteConfig` — the full module suite via
+//     `setConfigJson`.  This is what the product uses; it reaches every
+//     module, and the same config object drives the offline export.
 //
 // Scope: this module is the renderer-side bridge.  The AudioWorklet tap
 // that calls `process()` per block (main-thread WASM, mirroring the
@@ -12,6 +21,7 @@
 // the offline render.  Both consume the same parameter values.
 
 import type { AllModulesParameterState } from './parameters/index.js';
+import { buildChainConfig, chainConfigToJson, type ChainConfigWire } from './chain-config.js';
 
 /** Flat config the WASM chain's `setConfig` accepts (UI-space units). */
 export interface RealtimeChainConfig {
@@ -70,6 +80,38 @@ export function stateToChainConfig(state: AllModulesParameterState): RealtimeCha
   };
 }
 
+/**
+ * Build the full-suite chain config from parameter state.
+ *
+ * `eq.outputGainDb` doubles as the chain's output trim, matching the
+ * behaviour the flat config has always had.
+ */
+export function stateToSuiteConfig(
+  state: AllModulesParameterState,
+  opts?: { matchTargetCurveDb?: readonly number[]; masterBypass?: boolean },
+): ChainConfigWire {
+  const outputGainDb = num(state.eq?.parameters['outputGainDb'], 0);
+  return buildChainConfig({
+    state,
+    outputGainDb,
+    ...(opts?.masterBypass ? { masterBypass: true } : {}),
+    ...(opts?.matchTargetCurveDb ? { matchTargetCurveDb: opts.matchTargetCurveDb } : {}),
+  });
+}
+
+/**
+ * Apply a full-suite config to a chain handle.
+ *
+ * Returns false when the chain has no JSON path (an older WASM build) so
+ * the caller can fall back to {@link applyChainConfig} rather than silently
+ * leaving the chain at its previous settings.
+ */
+export function applySuiteConfig(chain: SuiteCapableChain, cfg: ChainConfigWire): boolean {
+  if (typeof chain.setConfigJson !== 'function') return false;
+  chain.setConfigJson(chainConfigToJson(cfg));
+  return true;
+}
+
 /** Minimal structural type for the WASM chain (avoids a hard import here). */
 interface WasmChain {
   setConfig(
@@ -99,6 +141,12 @@ export function applyChainConfig(chain: WasmChain, c: RealtimeChainConfig): void
     c.limCeilingDbtp, c.limLookaheadMs, c.limIsp, c.limBypass,
     c.outputGainDb, c.masterBypass,
   );
+}
+
+/** A chain build that understands the JSON config path. */
+export interface SuiteCapableChain {
+  setConfigJson?(json: string): void;
+  latencySamples?(): number;
 }
 
 export type { WasmChain };

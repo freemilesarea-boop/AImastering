@@ -19,15 +19,29 @@ import type { EngineModuleType } from '@aimaster/shared-types/engine';
 
 // ── Module identification ────────────────────────────────────────────────
 
-/** Modules exposed by the product layout slide-over.  Stable order. */
-export type ModuleId = 'eq' | 'dynamics' | 'imager' | 'limiter' | 'export';
+/**
+ * Modules exposed by the product layout.  Stable order — this is chain
+ * order, so a list rendered straight from `MODULE_IDS` reads the way the
+ * signal actually flows: repair, correct, control, colour, image, output.
+ */
+export type ModuleId =
+  // Restoration
+  | 'declick' | 'dehum' | 'denoise' | 'deess'
+  // Tone / spectral
+  | 'eq' | 'match-eq' | 'spectral-shaper' | 'stabilizer' | 'vintage-eq' | 'dynamic-eq'
+  // Dynamics
+  | 'multiband' | 'dynamics' | 'vintage-comp' | 'impact' | 'low-end-focus'
+  // Character
+  | 'exciter' | 'tape'
+  // Stereo / output
+  | 'imager' | 'limiter' | 'export';
 
 export const MODULE_IDS: readonly ModuleId[] = [
-  'eq',
-  'dynamics',
-  'imager',
-  'limiter',
-  'export',
+  'declick', 'dehum', 'denoise', 'deess',
+  'eq', 'match-eq', 'spectral-shaper', 'stabilizer', 'vintage-eq', 'dynamic-eq',
+  'multiband', 'dynamics', 'vintage-comp', 'impact', 'low-end-focus',
+  'exciter', 'tape',
+  'imager', 'limiter', 'export',
 ] as const;
 
 // ── Engine binding target ────────────────────────────────────────────────
@@ -185,13 +199,16 @@ export function defaultStateForModule(def: ModuleParameterDefinitions): ModulePa
   return { moduleId: def.moduleId, bypass: false, parameters };
 }
 
-/** Build the default all-modules snapshot from definitions. */
+/**
+ * Build the default all-modules snapshot from definitions.
+ *
+ * Driven by `MODULE_IDS` rather than a hand-written literal, so adding a
+ * module to the suite cannot leave a hole in the default state.
+ */
 export function defaultAllModulesState(defs: AllModulesDefinitions): AllModulesParameterState {
-  return {
-    eq:       defaultStateForModule(defs.eq),
-    dynamics: defaultStateForModule(defs.dynamics),
-    imager:   defaultStateForModule(defs.imager),
-    limiter:  defaultStateForModule(defs.limiter),
-    export:   defaultStateForModule(defs.export),
-  };
+  const out = {} as AllModulesParameterState;
+  for (const id of MODULE_IDS) {
+    out[id] = defaultStateForModule(defs[id]);
+  }
+  return out;
 }

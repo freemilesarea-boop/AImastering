@@ -1,0 +1,536 @@
+// Chain config — the single bridge from UI parameter state to the Rust
+// `MasteringChain`.
+//
+// One shape, two consumers:
+//
+//   • the realtime preview (WASM chain inside the AudioWorklet), and
+//   • the offline export render (the same Rust chain via the Node target).
+//
+// That is the whole point of this module: preview and export cannot drift
+// apart, because there is exactly one place that decides what a parameter
+// means.  Add a knob and both paths get it.
+//
+// The config is a DEEP PARTIAL.  `setConfigJson` fills anything absent with
+// the module's neutral default, so this builder only emits the modules the
+// user has actually engaged.  A session with just a limiter on it sends a
+// limiter, not 150 fields — which keeps the per-keystroke message small and
+// makes the JSON readable when it turns up in a support bundle.
+
+import type {
+  AllModulesParameterState,
+  ModuleId,
+  ModuleParameterState,
+  ParameterValue,
+} from './parameters/parameter-state.js';
+import { DYN_EQ_BAND_COUNT, MULTIBAND_BAND_COUNT } from './parameters/suite-parameter-definitions.js';
+
+// ── Wire types ───────────────────────────────────────────────────────────
+//
+// These mirror `MasteringChainConfig` in `dsp-core/crates/loui-dsp`.  Field
+// names are camelCase because that is what the Rust side deserialises.
+
+export interface DynEqBandWire {
+  enabled?: boolean;
+  shape?: 'bell' | 'lowShelf' | 'highShelf';
+  mode?: 'down' | 'up';
+  frequencyHz?: number;
+  q?: number;
+  thresholdDb?: number;
+  ratio?: number;
+  rangeDb?: number;
+  attackMs?: number;
+  releaseMs?: number;
+}
+
+export interface MultibandBandWire {
+  mode?: 'compress' | 'expand';
+  thresholdDb?: number;
+  ratio?: number;
+  attackMs?: number;
+  releaseMs?: number;
+  makeupDb?: number;
+  rangeDb?: number;
+  mixPct?: number;
+  solo?: boolean;
+  mute?: boolean;
+  bypass?: boolean;
+}
+
+export interface ChainConfigWire {
+  inputGainDb?: number;
+  outputGainDb?: number;
+  bypass?: boolean;
+
+  declick?: { sensitivity?: number; maxRunSamples?: number; bypass?: boolean };
+  dehum?: {
+    frequencyHz?: number; harmonics?: number; depthDb?: number;
+    q?: number; adaptive?: boolean; bypass?: boolean;
+  };
+  denoise?: {
+    reductionDb?: number; thresholdDb?: number; sharpness?: number;
+    smoothing?: number; freqSmoothingBins?: number; autoProfile?: boolean; bypass?: boolean;
+  };
+  deess?: {
+    frequencyHz?: number; thresholdDb?: number; ratio?: number; rangeDb?: number;
+    attackMs?: number; releaseMs?: number; wideband?: boolean; bypass?: boolean;
+  };
+
+  spectral?: {
+    matchEnabled?: boolean; matchAmountPct?: number; matchMaxMoveDb?: number;
+    targetCurveDb?: number[];
+    shaperEnabled?: boolean; shaperAmountPct?: number; shaperThresholdDb?: number;
+    shaperLowHz?: number; shaperHighHz?: number; shaperBlurBins?: number;
+    stabilizerEnabled?: boolean; stabilizerAmountPct?: number;
+    stabilizerTiltDbPerOct?: number; stabilizerMaxMoveDb?: number;
+    curveSmoothingBands?: number; analysisOnly?: boolean; bypass?: boolean;
+  };
+
+  vintageEq?: {
+    lowFrequencyHz?: number; lowBoostDb?: number; lowCutDb?: number;
+    highFrequencyHz?: number; highBoostDb?: number; highCutDb?: number;
+    highBandwidth?: number; bypass?: boolean;
+  };
+  eq?: {
+    lowCutHz?: number; lowShelfDb?: number; presenceDb?: number;
+    airDb?: number; adaptive?: boolean; bypass?: boolean;
+  };
+  dynamicEq?: { bands?: DynEqBandWire[]; bypass?: boolean };
+
+  multiband?: { crossoverHz?: number[]; bands?: MultibandBandWire[]; bypass?: boolean };
+  dynamics?: {
+    thresholdDb?: number; ratio?: number; attackMs?: number;
+    releaseMs?: number; mixPct?: number; bypass?: boolean;
+  };
+  vintageComp?: {
+    thresholdDb?: number; ratio?: number; attackMs?: number;
+    makeupDb?: number; characterPct?: number; mixPct?: number; bypass?: boolean;
+  };
+  impact?: { crossoverHz?: number[]; impactPct?: number[]; bypass?: boolean };
+  lowEndFocus?: {
+    mode?: 'punchy' | 'smooth'; frequencyHz?: number;
+    contrastPct?: number; gainDb?: number; bypass?: boolean;
+  };
+
+  exciter?: {
+    mode?: 'warm' | 'retro' | 'tape' | 'tube' | 'triode';
+    crossoverHz?: number[]; bandAmountPct?: number[];
+    driveDb?: number; outputDb?: number; bypass?: boolean;
+  };
+  tape?: {
+    speed?: '7.5ips' | '15ips' | '30ips'; driveDb?: number; bias?: number;
+    wowFlutterPct?: number; mixPct?: number; bypass?: boolean;
+  };
+
+  imager?: {
+    widthPct?: number; lowMonoHz?: number;
+    bandWidthPct?: number[]; crossoverHz?: number[]; bypass?: boolean;
+  };
+  limiter?: {
+    ceilingDbtp?: number; lookaheadMs?: number; isp?: boolean;
+    driveDb?: number;
+    character?: 'clean' | 'transparent' | 'punchy' | 'smooth' | 'aggressive';
+    bypass?: boolean;
+  };
+}
+
+// ── Reading state ────────────────────────────────────────────────────────
+
+function num(m: ModuleParameterState | undefined, id: string, fallback: number): number {
+  const v = m?.parameters[id];
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+}
+
+function bool(m: ModuleParameterState | undefined, id: string, fallback: boolean): boolean {
+  const v = m?.parameters[id];
+  return typeof v === 'boolean' ? v : fallback;
+}
+
+function str<T extends string>(m: ModuleParameterState | undefined, id: string, fallback: T): T {
+  const v: ParameterValue | undefined = m?.parameters[id];
+  return typeof v === 'string' ? (v as T) : fallback;
+}
+
+/**
+ * Whether a module should be emitted at all.
+ *
+ * A module the user has not engaged is simply left out — the chain's own
+ * neutral default is exactly what we would have sent, and leaving it out
+ * keeps the payload (and the debug bundle) readable.  A module that is
+ * *explicitly bypassed* IS emitted, because "off" is a decision the render
+ * has to honour even when the parameters underneath look neutral.
+ */
+function engaged(m: ModuleParameterState | undefined, active: boolean): boolean {
+  if (!m) return false;
+  return active || m.bypass;
+}
+
+// ── Builder ──────────────────────────────────────────────────────────────
+
+export interface ChainConfigInput {
+  state: Partial<AllModulesParameterState>;
+  /** Input trim ahead of the chain, in dB. */
+  inputGainDb?: number;
+  /** Output trim after the chain, in dB. */
+  outputGainDb?: number;
+  /** Master bypass — the whole chain becomes a pass-through. */
+  masterBypass?: boolean;
+  /**
+   * Reference curve for Match EQ, 32 dB values on the shared log grid.
+   * Match EQ stays off without one, since matching to nothing is a no-op
+   * that would still cost an STFT.
+   */
+  matchTargetCurveDb?: readonly number[];
+}
+
+/**
+ * Build the chain config for the current parameter state.
+ *
+ * Only engaged modules appear in the result.  The function is pure and
+ * allocation-light enough to call on every parameter change; the caller
+ * decides how to debounce.
+ */
+export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
+  const s = input.state;
+  const cfg: ChainConfigWire = {};
+
+  if (input.inputGainDb) cfg.inputGainDb = input.inputGainDb;
+  if (input.outputGainDb) cfg.outputGainDb = input.outputGainDb;
+  if (input.masterBypass) cfg.bypass = true;
+
+  // ── Restoration ────────────────────────────────────────────────────────
+  const declick = s.declick;
+  if (engaged(declick, !declick?.bypass)) {
+    // De-click has no "amount" — it is on or off, so its bypass IS its
+    // engagement.  Default state has it bypassed.
+    cfg.declick = {
+      sensitivity: num(declick, 'sensitivity', 6),
+      maxRunSamples: num(declick, 'maxRunSamples', 16),
+      bypass: declick!.bypass,
+    };
+  }
+
+  const dehum = s.dehum;
+  const dehumDepth = num(dehum, 'depthDb', 0);
+  if (engaged(dehum, dehumDepth > 0)) {
+    cfg.dehum = {
+      frequencyHz: Number(str(dehum, 'frequencyHz', '60')),
+      harmonics: num(dehum, 'harmonics', 6),
+      depthDb: dehumDepth,
+      q: num(dehum, 'q', 30),
+      adaptive: bool(dehum, 'adaptive', true),
+      bypass: dehum!.bypass,
+    };
+  }
+
+  const denoise = s.denoise;
+  const denoiseReduction = num(denoise, 'reductionDb', 0);
+  if (engaged(denoise, denoiseReduction > 0)) {
+    cfg.denoise = {
+      reductionDb: denoiseReduction,
+      thresholdDb: num(denoise, 'thresholdDb', 0),
+      sharpness: num(denoise, 'sharpness', 1),
+      smoothing: num(denoise, 'smoothing', 0.6),
+      autoProfile: bool(denoise, 'autoProfile', true),
+      bypass: denoise!.bypass,
+    };
+  }
+
+  const deess = s.deess;
+  const deessRange = num(deess, 'rangeDb', 0);
+  if (engaged(deess, deessRange > 0)) {
+    cfg.deess = {
+      frequencyHz: num(deess, 'frequencyHz', 6500),
+      thresholdDb: num(deess, 'thresholdDb', -30),
+      ratio: num(deess, 'ratio', 4),
+      rangeDb: deessRange,
+      attackMs: num(deess, 'attackMs', 1),
+      releaseMs: num(deess, 'releaseMs', 60),
+      wideband: bool(deess, 'wideband', false),
+      bypass: deess!.bypass,
+    };
+  }
+
+  // ── Spectral stage: three UI modules, one config block ─────────────────
+  const match = s['match-eq'];
+  const shaper = s['spectral-shaper'];
+  const stab = s.stabilizer;
+  const target = input.matchTargetCurveDb;
+  const matchOn = !!match && !match.bypass && num(match, 'amountPct', 0) > 0 && !!target?.length;
+  const shaperOn = !!shaper && !shaper.bypass && num(shaper, 'amountPct', 0) > 0;
+  const stabOn = !!stab && !stab.bypass && num(stab, 'amountPct', 0) > 0;
+
+  if (matchOn || shaperOn || stabOn) {
+    cfg.spectral = {
+      matchEnabled: matchOn,
+      matchAmountPct: num(match, 'amountPct', 50),
+      matchMaxMoveDb: num(match, 'maxMoveDb', 9),
+      ...(target?.length ? { targetCurveDb: [...target] } : {}),
+      shaperEnabled: shaperOn,
+      shaperAmountPct: num(shaper, 'amountPct', 50),
+      shaperThresholdDb: num(shaper, 'thresholdDb', 8),
+      shaperLowHz: num(shaper, 'lowHz', 1000),
+      shaperHighHz: num(shaper, 'highHz', 16000),
+      shaperBlurBins: num(shaper, 'blurBins', 12),
+      stabilizerEnabled: stabOn,
+      stabilizerAmountPct: num(stab, 'amountPct', 40),
+      stabilizerTiltDbPerOct: num(stab, 'tiltDbPerOct', -1.5),
+      stabilizerMaxMoveDb: num(stab, 'maxMoveDb', 6),
+      curveSmoothingBands: num(match, 'smoothingBands', 2),
+    };
+  }
+
+  // ── Tone ───────────────────────────────────────────────────────────────
+  const veq = s['vintage-eq'];
+  const veqActive =
+    num(veq, 'lowBoostDb', 0) > 0 || num(veq, 'lowCutDb', 0) > 0 ||
+    num(veq, 'highBoostDb', 0) > 0 || num(veq, 'highCutDb', 0) > 0;
+  if (engaged(veq, veqActive)) {
+    cfg.vintageEq = {
+      lowFrequencyHz: num(veq, 'lowFrequencyHz', 60),
+      lowBoostDb: num(veq, 'lowBoostDb', 0),
+      lowCutDb: num(veq, 'lowCutDb', 0),
+      highFrequencyHz: num(veq, 'highFrequencyHz', 10000),
+      highBoostDb: num(veq, 'highBoostDb', 0),
+      highCutDb: num(veq, 'highCutDb', 0),
+      highBandwidth: num(veq, 'highBandwidth', 0.5),
+      bypass: veq!.bypass,
+    };
+  }
+
+  const eq = s.eq;
+  const eqActive =
+    num(eq, 'lowCutHz', 20) > 20 || num(eq, 'lowShelfDb', 0) !== 0 ||
+    num(eq, 'presenceDb', 0) !== 0 || num(eq, 'airDb', 0) !== 0 ||
+    bool(eq, 'adaptive', false);
+  if (engaged(eq, eqActive)) {
+    cfg.eq = {
+      lowCutHz: num(eq, 'lowCutHz', 20),
+      lowShelfDb: num(eq, 'lowShelfDb', 0),
+      presenceDb: num(eq, 'presenceDb', 0),
+      airDb: num(eq, 'airDb', 0),
+      adaptive: bool(eq, 'adaptive', false),
+      bypass: eq!.bypass,
+    };
+  }
+
+  const deq = s['dynamic-eq'];
+  if (deq) {
+    const bands: DynEqBandWire[] = [];
+    let any = false;
+    for (let i = 0; i < DYN_EQ_BAND_COUNT; i++) {
+      const on = bool(deq, `band${i}Enabled`, false);
+      if (on) any = true;
+      bands.push({
+        enabled: on,
+        shape: str(deq, `band${i}Shape`, 'bell'),
+        mode: str(deq, `band${i}Mode`, 'down'),
+        frequencyHz: num(deq, `band${i}FrequencyHz`, 1000),
+        q: num(deq, `band${i}Q`, 1),
+        thresholdDb: num(deq, `band${i}ThresholdDb`, -24),
+        ratio: num(deq, `band${i}Ratio`, 3),
+        rangeDb: num(deq, `band${i}RangeDb`, 6),
+        attackMs: num(deq, `band${i}AttackMs`, 10),
+        releaseMs: num(deq, `band${i}ReleaseMs`, 120),
+      });
+    }
+    if (engaged(deq, any)) {
+      cfg.dynamicEq = { bands, bypass: deq.bypass };
+    }
+  }
+
+  // ── Dynamics ───────────────────────────────────────────────────────────
+  const mb = s.multiband;
+  if (mb) {
+    const bands: MultibandBandWire[] = [];
+    let any = false;
+    for (let i = 0; i < MULTIBAND_BAND_COUNT; i++) {
+      const ratio = num(mb, `band${i}Ratio`, 1);
+      const makeup = num(mb, `band${i}MakeupDb`, 0);
+      const solo = bool(mb, `band${i}Solo`, false);
+      const mute = bool(mb, `band${i}Mute`, false);
+      if (ratio > 1 || makeup !== 0 || solo || mute) any = true;
+      bands.push({
+        mode: str(mb, `band${i}Mode`, 'compress'),
+        thresholdDb: num(mb, `band${i}ThresholdDb`, 0),
+        ratio,
+        attackMs: num(mb, `band${i}AttackMs`, 10),
+        releaseMs: num(mb, `band${i}ReleaseMs`, 120),
+        makeupDb: makeup,
+        mixPct: num(mb, `band${i}MixPct`, 100),
+        solo,
+        mute,
+      });
+    }
+    if (engaged(mb, any)) {
+      cfg.multiband = {
+        crossoverHz: [
+          num(mb, 'crossover1Hz', 120),
+          num(mb, 'crossover2Hz', 800),
+          num(mb, 'crossover3Hz', 5000),
+        ],
+        bands,
+        bypass: mb.bypass,
+      };
+    }
+  }
+
+  const dyn = s.dynamics;
+  if (engaged(dyn, num(dyn, 'ratio', 1) > 1)) {
+    cfg.dynamics = {
+      thresholdDb: num(dyn, 'thresholdDb', 0),
+      ratio: num(dyn, 'ratio', 1),
+      attackMs: num(dyn, 'attackMs', 10),
+      releaseMs: num(dyn, 'releaseMs', 120),
+      mixPct: num(dyn, 'mixPct', 100),
+      bypass: dyn!.bypass,
+    };
+  }
+
+  const vc = s['vintage-comp'];
+  if (engaged(vc, num(vc, 'ratio', 1) > 1)) {
+    cfg.vintageComp = {
+      thresholdDb: num(vc, 'thresholdDb', -18),
+      ratio: num(vc, 'ratio', 1),
+      attackMs: num(vc, 'attackMs', 10),
+      makeupDb: num(vc, 'makeupDb', 0),
+      characterPct: num(vc, 'characterPct', 40),
+      mixPct: num(vc, 'mixPct', 100),
+      bypass: vc!.bypass,
+    };
+  }
+
+  const impact = s.impact;
+  if (impact) {
+    const pct = Array.from({ length: MULTIBAND_BAND_COUNT }, (_, i) => num(impact, `band${i}Pct`, 0));
+    if (engaged(impact, pct.some((v) => v !== 0))) {
+      cfg.impact = {
+        crossoverHz: [
+          num(impact, 'crossover1Hz', 120),
+          num(impact, 'crossover2Hz', 800),
+          num(impact, 'crossover3Hz', 5000),
+        ],
+        impactPct: pct,
+        bypass: impact.bypass,
+      };
+    }
+  }
+
+  const lef = s['low-end-focus'];
+  const lefActive = num(lef, 'contrastPct', 0) > 0 || num(lef, 'gainDb', 0) !== 0;
+  if (engaged(lef, lefActive)) {
+    cfg.lowEndFocus = {
+      mode: str(lef, 'mode', 'punchy'),
+      frequencyHz: num(lef, 'frequencyHz', 150),
+      contrastPct: num(lef, 'contrastPct', 0),
+      gainDb: num(lef, 'gainDb', 0),
+      bypass: lef!.bypass,
+    };
+  }
+
+  // ── Character ──────────────────────────────────────────────────────────
+  const exc = s.exciter;
+  if (exc) {
+    const amounts = Array.from({ length: MULTIBAND_BAND_COUNT }, (_, i) => num(exc, `band${i}Pct`, 0));
+    const active = amounts.some((v) => v > 0) || num(exc, 'outputDb', 0) !== 0;
+    if (engaged(exc, active)) {
+      cfg.exciter = {
+        mode: str(exc, 'mode', 'tube'),
+        crossoverHz: [
+          num(exc, 'crossover1Hz', 120),
+          num(exc, 'crossover2Hz', 800),
+          num(exc, 'crossover3Hz', 5000),
+        ],
+        bandAmountPct: amounts,
+        driveDb: num(exc, 'driveDb', 6),
+        outputDb: num(exc, 'outputDb', 0),
+        bypass: exc.bypass,
+      };
+    }
+  }
+
+  const tape = s.tape;
+  if (engaged(tape, num(tape, 'mixPct', 0) > 0)) {
+    cfg.tape = {
+      speed: str(tape, 'speed', '15ips'),
+      driveDb: num(tape, 'driveDb', 0),
+      bias: num(tape, 'bias', 0),
+      wowFlutterPct: num(tape, 'wowFlutterPct', 0),
+      mixPct: num(tape, 'mixPct', 0),
+      bypass: tape!.bypass,
+    };
+  }
+
+  // ── Stereo + output ────────────────────────────────────────────────────
+  const img = s.imager;
+  if (img) {
+    const bandWidths = [
+      num(img, 'bandLowPct', 100),
+      num(img, 'bandMidLowPct', 100),
+      num(img, 'bandMidHighPct', 100),
+      num(img, 'bandHighPct', 100),
+    ];
+    const active =
+      num(img, 'widthPct', 100) !== 100 ||
+      num(img, 'lowMonoHz', 20) > 20 ||
+      bandWidths.some((w) => w !== 100);
+    if (engaged(img, active)) {
+      cfg.imager = {
+        widthPct: num(img, 'widthPct', 100),
+        lowMonoHz: num(img, 'lowMonoHz', 20),
+        bandWidthPct: bandWidths,
+        bypass: img.bypass,
+      };
+    }
+  }
+
+  // The limiter is always emitted: it is the output stage, and a render
+  // without an explicit ceiling is a render that can clip.
+  const lim = s.limiter;
+  cfg.limiter = {
+    ceilingDbtp: num(lim, 'ceilingDbtp', -1),
+    lookaheadMs: num(lim, 'lookaheadMs', 2.5),
+    isp: bool(lim, 'isp', true),
+    driveDb: num(lim, 'driveDb', 0),
+    character: str(lim, 'character', 'clean'),
+    bypass: lim?.bypass ?? false,
+  };
+
+  return cfg;
+}
+
+/** Serialise a config for `LouiMasteringChain.setConfigJson`. */
+export function chainConfigToJson(cfg: ChainConfigWire): string {
+  return JSON.stringify(cfg);
+}
+
+/**
+ * Modules the config actually carries, in chain order.  Used by the UI's
+ * "active chain" readout so the user can see what is really running rather
+ * than what is merely visible on screen.
+ */
+export function activeModuleIds(cfg: ChainConfigWire): ModuleId[] {
+  const out: ModuleId[] = [];
+  const push = (id: ModuleId, block: { bypass?: boolean } | undefined) => {
+    if (block && !block.bypass) out.push(id);
+  };
+  push('declick', cfg.declick);
+  push('dehum', cfg.dehum);
+  push('denoise', cfg.denoise);
+  push('deess', cfg.deess);
+  if (cfg.spectral?.matchEnabled) out.push('match-eq');
+  if (cfg.spectral?.shaperEnabled) out.push('spectral-shaper');
+  if (cfg.spectral?.stabilizerEnabled) out.push('stabilizer');
+  push('vintage-eq', cfg.vintageEq);
+  push('eq', cfg.eq);
+  push('dynamic-eq', cfg.dynamicEq);
+  push('multiband', cfg.multiband);
+  push('dynamics', cfg.dynamics);
+  push('vintage-comp', cfg.vintageComp);
+  push('impact', cfg.impact);
+  push('low-end-focus', cfg.lowEndFocus);
+  push('exciter', cfg.exciter);
+  push('tape', cfg.tape);
+  push('imager', cfg.imager);
+  push('limiter', cfg.limiter);
+  return out;
+}

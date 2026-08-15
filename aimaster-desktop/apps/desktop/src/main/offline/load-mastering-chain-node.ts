@@ -19,8 +19,14 @@ export interface OfflineParametricBand {
   enabled: boolean;
 }
 
-/** The flat config passed to the WASM chain's `setConfig` (same order as the
- *  realtime preview's `RealtimeChainConfig`). */
+/**
+ * The flat config passed to the WASM chain's `setConfig`.
+ *
+ * Covers the original five modules only.  `suiteConfig` carries everything
+ * the Ozone-class suite added; when it is present the render uses the JSON
+ * path instead, which is the same object the realtime preview sends — that
+ * is what keeps preview and export from drifting apart.
+ */
 export interface OfflineChainConfig {
   inputGainDb: number;
   eqLowCutHz: number; eqLowShelfDb: number; eqPresenceDb: number; eqAirDb: number;
@@ -33,6 +39,12 @@ export interface OfflineChainConfig {
   masterBypass: boolean;
   /** Optional free parametric EQ bands.  Absent / empty = no parametric EQ. */
   parametricBands?: OfflineParametricBand[];
+  /**
+   * Full module-suite config (the renderer's `ChainConfigWire`).  When set,
+   * it is applied via `setConfigJson` and the flat fields above are ignored
+   * — the suite config already carries their values.
+   */
+  suiteConfig?: Record<string, unknown>;
 }
 
 /** Structural type of the WASM chain (avoids a hard dep on the typings). */
@@ -52,6 +64,10 @@ export interface WasmMasteringChain {
     types: Uint8Array, freqs: Float64Array, gains: Float64Array, qs: Float64Array, enableds: Uint8Array,
   ): void;
   parametricEqBandCount(): number;
+  /** Full-suite config path.  Absent on WASM builds older than the suite. */
+  setConfigJson?(json: string): void;
+  /** Total processing latency for the current config, in samples. */
+  latencySamples?(): number;
   processStereo(left: Float32Array, right: Float32Array): void;
   limiterGrDb(): number;
   reset(): void;
@@ -139,6 +155,28 @@ export function createOfflineAnalyzer(sampleRate: number, channels = 2): WasmAna
   const mod = loadWasmModule();
   if (!mod) throw new Error('node-target WASM analyzer unavailable (build: pnpm --filter @loui/dsp-wasm run build:node)');
   return new mod.LouiAnalyzer(sampleRate, channels);
+}
+
+/**
+ * Apply a config to a chain.
+ *
+ * Prefers the full-suite JSON path when the config carries one and the WASM
+ * build supports it; otherwise falls back to the flat positional call, which
+ * still covers the original five modules.  Falling back is not silent —
+ * `usedSuiteConfig` in the return value says which path ran, so the caller
+ * can report an old WASM build rather than shipping a render that quietly
+ * dropped half the chain.
+ */
+export function applyChainConfigForRender(
+  chain: WasmMasteringChain,
+  c: OfflineChainConfig,
+): { usedSuiteConfig: boolean } {
+  if (c.suiteConfig && typeof chain.setConfigJson === 'function') {
+    chain.setConfigJson(JSON.stringify(c.suiteConfig));
+    return { usedSuiteConfig: true };
+  }
+  applyOfflineConfig(chain, c);
+  return { usedSuiteConfig: false };
 }
 
 /** Apply a flat config to a chain (spreads the 22 args in setConfig order).
