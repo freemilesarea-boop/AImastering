@@ -44,6 +44,12 @@ export interface RealtimePreviewMetrics {
   multibandGrDb: readonly number[];
   /** De-esser gain reduction. */
   deessGrDb: number;
+  /** Deepest hum notch currently applied. */
+  dehumDepthDb: number;
+  /** Measured long-term tonal curve, 32 log bands. */
+  tonalCurveDb: readonly number[];
+  /** Learned noise floor, folded onto 48 log bands.  Empty until learned. */
+  denoiseProfileDb: readonly number[];
 
   latencySamples: number;
   monitorActive: boolean;
@@ -68,6 +74,9 @@ export const EMPTY_METRICS: RealtimePreviewMetrics = {
   dynamicsGrDb: 0,
   multibandGrDb: [0, 0, 0, 0],
   deessGrDb: 0,
+  dehumDepthDb: 0,
+  tonalCurveDb: [],
+  denoiseProfileDb: [],
   latencySamples: 0,
   monitorActive: false,
   loudnessDeltaDb: 0,
@@ -119,6 +128,11 @@ export function ingestWorkletMetrics(msg: Record<string, unknown>): void {
     return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
   };
   const b = (k: string): boolean => msg[k] === true;
+  const numArray = (v: unknown, fallback: readonly number[]): readonly number[] => (
+    Array.isArray(v)
+      ? (v as unknown[]).map((x) => (typeof x === 'number' && Number.isFinite(x) ? x : -140))
+      : fallback
+  );
 
   pending = {
     updatedAt: Date.now(),
@@ -135,6 +149,9 @@ export function ingestWorkletMetrics(msg: Record<string, unknown>): void {
       ? (msg['multibandGrDb'] as unknown[]).map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0))
       : EMPTY_METRICS.multibandGrDb,
     deessGrDb: n('deessGrDb'),
+    dehumDepthDb: n('dehumDepthDb'),
+    tonalCurveDb: numArray(msg['tonalCurveDb'], EMPTY_METRICS.tonalCurveDb),
+    denoiseProfileDb: numArray(msg['denoiseProfileDb'], EMPTY_METRICS.denoiseProfileDb),
     latencySamples: n('latencySamples'),
     monitorActive: b('monitorActive'),
     loudnessDeltaDb: n('loudnessDeltaDb'),

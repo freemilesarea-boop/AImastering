@@ -98,6 +98,48 @@ Pass filters send no gain. The engine ignores gain on high-pass and low-pass
 bands, so forwarding a band's leftover gain would draw a boost the audio
 never applies.
 
+### §7 — The restoration displays
+
+De-hum, de-noise, de-essing and tonal matching all work in the frequency
+domain, where a row of numbers says nothing: "Frequency 60, Harmonics 8,
+Depth 12" does not answer *is it on my hum, and is it eating my bass?* Each
+now has a display that does.
+
+| Module | What it draws | Where the data comes from |
+|---|---|---|
+| **De-hum** | The notch comb, plus a marker per harmonic | Pure function of the parameters — exact, no live data needed |
+| **De-noise** | The learned noise floor and the threshold line above it | `denoiseProfileDb()`, folded to 48 log bands |
+| **De-esser** | The band it listens to, and a rolling strip of gain reduction | `deessGrDb` |
+| **Reference Match** | Your tonal curve against the reference's, with a match % | `tonalCurveDb()` (32 bands) vs the supplied target |
+| **Harshness Control** | The operating range and how far a peak must stick out | Parameters only — see below |
+
+Three rules these follow.
+
+**When the engine reports nothing, say so.** A noise profile that has not
+been learned is not a flat line at −140 dB, it is an absent measurement, and
+the panel says "프로파일 없음". Same for a missing reference curve.
+
+**Do not draw a result and call it a cause.** The Harshness Control display
+deliberately does *not* show a spectrum with dips in it. The module works on
+per-bin excess inside an FFT frame and the chain does not report that;
+drawing the post-chain spectrum would be a picture of the outcome dressed up
+as a picture of the mechanism. What is drawn is what is known — the band,
+the threshold, the neighbourhood width.
+
+**Read the parameter the way it is stored.** De-hum's mains frequency is an
+enum chip (`'50'` / `'60'`), not a number. Reading it with the numeric
+accessor returned the fallback and drew a 60 Hz comb for a 50 Hz setting —
+convincing, and wrong. `test:restoration-views` measures the real chain at
+50 and 60 Hz to hold that down.
+
+The tonal curve is measured *by* the spectral stage, so it stays empty while
+that stage is bypassed. The Match panel says that rather than telling the
+user to press play, which would not help.
+
+Curves that cross the port are folded to log bands in the worklet, inside
+`_postMetrics` — 1025 raw FFT bins ten times a second is twenty times the
+traffic for a display no wider than 700 px.
+
 ### §6 — The dynamics panels
 
 The compressors show a transfer curve — input level in, output level out,

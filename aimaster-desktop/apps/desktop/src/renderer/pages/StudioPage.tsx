@@ -34,6 +34,10 @@ import { ModuleParameterPanel } from '../components/product/panels/ModuleParamet
 import { LouiEqGraph } from '../components/product/modules/LouiEqGraph.js';
 import { LouiDynamicsGraph } from '../components/product/modules/LouiDynamicsGraph.js';
 import { LouiFreeEqBandList } from '../components/product/modules/LouiFreeEqBandList.js';
+import {
+  RestorationView,
+  RESTORATION_VIEW_MODULES,
+} from '../components/product/modules/LouiRestorationViews.js';
 import { buildDynamicsGraph } from '../audio/modules/dynamics-graph-model.js';
 import {
   buildGraphBands,
@@ -511,6 +515,18 @@ export default function StudioPage() {
                 values={state[paramModule].parameters}
                 bypass={state[paramModule].bypass}
                 onChange={(id, value) => setParam(paramModule, id, value)}
+                {...(RESTORATION_VIEW_MODULES.has(paramModule)
+                  ? {
+                    editor: (
+                      <RestorationView
+                        moduleId={paramModule}
+                        values={state[paramModule].parameters}
+                        metrics={preview.metrics}
+                        disabled={state[paramModule].bypass}
+                      />
+                    ),
+                  }
+                  : {})}
                 {...(dynamicsSpec
                   ? {
                     editor: (

@@ -46,6 +46,37 @@
 // whatever it does with the messages.
 const METRIC_MIN_INTERVAL_S = 0.1;   // ≤ 10 Hz
 
+/** Log bands the noise profile is folded into before it crosses the port. */
+const PROFILE_BANDS = 48;
+const PROFILE_MIN_HZ = 20;
+const PROFILE_MAX_HZ = 20000;
+
+/**
+ * Fold a linear FFT magnitude array (dB) onto a log-frequency grid, taking
+ * the MAXIMUM in each band.
+ *
+ * Maximum rather than mean on purpose: a noise floor display exists to show
+ * what the de-noiser will treat as noise, and averaging a narrow hum spike
+ * with its quiet neighbours hides exactly the thing you are looking for.
+ */
+function foldToLogBands(binsDb, sr) {
+  const out = new Array(PROFILE_BANDS).fill(-140);
+  const n = binsDb.length;
+  if (n < 2) return out;
+  const binHz = (sr / 2) / (n - 1);
+  const ratio = Math.log(PROFILE_MAX_HZ / PROFILE_MIN_HZ);
+  for (let i = 1; i < n; i++) {
+    const hz = i * binHz;
+    if (hz < PROFILE_MIN_HZ || hz > PROFILE_MAX_HZ) continue;
+    let b = Math.floor((Math.log(hz / PROFILE_MIN_HZ) / ratio) * PROFILE_BANDS);
+    if (b < 0) b = 0;
+    if (b >= PROFILE_BANDS) b = PROFILE_BANDS - 1;
+    const v = binsDb[i];
+    if (typeof v === 'number' && v > out[b]) out[b] = v;
+  }
+  return out;
+}
+
 class MasteringChainProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -248,7 +279,11 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     // across the WASM boundary, which is an allocation, and this function
     // is the one place on the audio thread that is already rate-limited to
     // ten calls a second.
-    let multibandGrDb = null, deessGrDb = 0;
+    let multibandGrDb = null, deessGrDb = 0, dehumDepthDb = 0;
+    // Curves for the restoration displays.  Same reasoning as the band GR:
+    // these cross the WASM boundary as fresh arrays, so they are read here
+    // and nowhere else on the audio thread.
+    let tonalCurveDb = null, denoiseProfileDb = null;
     try {
       const c = this._chain;
       if (c) {
@@ -260,6 +295,15 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
         if (c.monitorWetLufs) wetLufs = c.monitorWetLufs();
         if (c.multibandGrDb) multibandGrDb = Array.from(c.multibandGrDb());
         if (c.deessGrDb) deessGrDb = c.deessGrDb();
+        if (c.dehumDepthDb) dehumDepthDb = c.dehumDepthDb();
+        if (c.tonalCurveDb) tonalCurveDb = Array.from(c.tonalCurveDb());
+        if (c.denoiseProfileDb) {
+          // 1025 FFT bins is far more than a 700 px display can show, and
+          // ten times a second it is real traffic.  Fold to log bands here
+          // — the display would do it anyway, and this way the message is
+          // fifty numbers instead of a thousand.
+          denoiseProfileDb = foldToLogBands(c.denoiseProfileDb(), sampleRate);
+        }
       }
     } catch (e) { /* readouts are diagnostics; never fatal */ }
 
@@ -273,6 +317,9 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       dynamicsGrDb: this._dynGrDb,
       multibandGrDb,
       deessGrDb,
+      dehumDepthDb,
+      tonalCurveDb,
+      denoiseProfileDb,
       safetyEvents: this._safetyEvents,
       processCalls: this._processCalls,
       audioBlocks: this._audioBlocks,
