@@ -32,6 +32,8 @@ import { useAudioStore } from '../stores/audioStore.js';
 import { LouiModuleRack, type ModuleReadout } from '../components/product/LouiModuleRack.js';
 import { ModuleParameterPanel } from '../components/product/panels/ModuleParameterPanel.js';
 import { LouiEqGraph } from '../components/product/modules/LouiEqGraph.js';
+import { LouiDynamicsGraph } from '../components/product/modules/LouiDynamicsGraph.js';
+import { buildDynamicsGraph } from '../audio/modules/dynamics-graph-model.js';
 import {
   buildGraphBands,
   bandEdits,
@@ -324,6 +326,24 @@ export default function StudioPage() {
     setParams(paramModule, bandEdits(band, next));
   }, [paramModule, setParams]);
 
+  // ── Dynamics editor ──────────────────────────────────────────────────
+  // The compressor modules get a transfer curve and a live GR meter rather
+  // than a column of numbers.  The reduction comes from the metrics the
+  // audio thread already posts; nothing new is sampled per block.
+  const dynamicsSpec = paramModule
+    ? buildDynamicsGraph(paramModule, state[paramModule].parameters)
+    : null;
+  const dynamicsReduction = useMemo(() => {
+    if (!dynamicsSpec) return [];
+    if (dynamicsSpec.kind === 'multiband') return preview.metrics.multibandGrDb;
+    if (dynamicsSpec.kind === 'vintage-comp') {
+      // The vari-mu has no meter of its own in the chain; saying "0.0"
+      // would be a claim, so the cell shows the idle dash instead.
+      return [0];
+    }
+    return [preview.metrics.dynamicsGrDb];
+  }, [dynamicsSpec, preview.metrics]);
+
   const freeGestures = useMemo(() => ({
     onAdd: (hz: number, gainDb: number) => setFreeBands((prev) => (
       prev.length >= MAX_PARAMETRIC_BANDS ? prev : [...prev, makeFreeBand(hz, gainDb)]
@@ -485,6 +505,18 @@ export default function StudioPage() {
                 values={state[paramModule].parameters}
                 bypass={state[paramModule].bypass}
                 onChange={(id, value) => setParam(paramModule, id, value)}
+                {...(dynamicsSpec
+                  ? {
+                    editor: (
+                      <LouiDynamicsGraph
+                        spec={dynamicsSpec}
+                        reductionDb={dynamicsReduction}
+                        live={preview.metrics.running && !preview.metrics.bypass}
+                        disabled={state[paramModule].bypass}
+                      />
+                    ),
+                  }
+                  : {})}
                 {...(graphBands
                   ? {
                     editor: (

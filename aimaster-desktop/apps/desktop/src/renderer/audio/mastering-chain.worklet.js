@@ -243,6 +243,12 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     // and a missing meter must never take the audio thread down.
     let latency = 0, monitorActive = false;
     let loudnessDeltaDb = 0, matchGainDb = 0, dryLufs = -Infinity, wetLufs = -Infinity;
+    // Per-band gain reduction, for the dynamics meters.  Sampled HERE and
+    // not per block on purpose: `multibandGrDb()` returns a fresh array
+    // across the WASM boundary, which is an allocation, and this function
+    // is the one place on the audio thread that is already rate-limited to
+    // ten calls a second.
+    let multibandGrDb = null, deessGrDb = 0;
     try {
       const c = this._chain;
       if (c) {
@@ -252,6 +258,8 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
         if (c.monitorMatchGainDb) matchGainDb = c.monitorMatchGainDb();
         if (c.monitorDryLufs) dryLufs = c.monitorDryLufs();
         if (c.monitorWetLufs) wetLufs = c.monitorWetLufs();
+        if (c.multibandGrDb) multibandGrDb = Array.from(c.multibandGrDb());
+        if (c.deessGrDb) deessGrDb = c.deessGrDb();
       }
     } catch (e) { /* readouts are diagnostics; never fatal */ }
 
@@ -263,6 +271,8 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       xruns: this._xruns,
       limiterGrDb: this._grDb,
       dynamicsGrDb: this._dynGrDb,
+      multibandGrDb,
+      deessGrDb,
       safetyEvents: this._safetyEvents,
       processCalls: this._processCalls,
       audioBlocks: this._audioBlocks,

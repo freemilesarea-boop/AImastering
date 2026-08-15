@@ -83,7 +83,54 @@ chain's gain at a set of frequencies and fails if the drawn curve disagrees by
 more than 0.4 dB (worst observed: 0.06 dB). A curve computed from a different
 model than the one processing audio is a lie that looks like a feature.
 
-The analyser trace behind the curve is the post-chain spectrum, drawn on its
+**The free EQ.** `Parametric EQ` is a band list rather than a fixed layout:
+double-click empty graph to add a band, double-click a node to walk
+bell → low shelf → high shelf → high-pass → low-pass, alt-click or Delete to
+remove it. Sixteen bands, which is `MAX_PARAMETRIC_BANDS` in the engine; the
+builder caps there rather than letting the seventeenth vanish silently.
+
+Its bands live outside the parameter state and reach the chain through
+`ChainConfigInput.parametricBands`, because the state is a flat map of named
+scalars per module and this list has neither fixed length nor fixed names —
+the same reason the Match EQ reference curve is passed alongside it.
+
+Pass filters send no gain. The engine ignores gain on high-pass and low-pass
+bands, so forwarding a band's leftover gain would draw a boost the audio
+never applies.
+
+### §6 — The dynamics panels
+
+The compressors show a transfer curve — input level in, output level out,
+with the bend at the threshold — plus a live gain-reduction meter, instead of
+a column of numbers. `dynamics-graph-model.ts` mirrors the gain computers in
+`{dynamics,multiband,vintage}.rs`, including the multiband's 24 dB range
+clamp, which the UI does not expose but the curve has to respect.
+
+Three things this had to get right:
+
+**Parallel mix sums signals, not levels.** The wet and dry paths are the same
+signal scaled, so they are perfectly correlated and add in the linear domain.
+The first draft blended the dB values and read 3 dB low; the measured test
+caught it.
+
+**The live marker is the reduction, inverted.** The chain reports how much it
+is reducing but not the level it is reducing. Rather than add a second meter
+to the audio thread for something the curve already determines, the reduction
+is bisected back through the curve. That marker is also the only part of the
+display that shows attack and release: the curve is the steady state, and a
+slow attack appears as a marker that lags the music.
+
+**Per-band GR is sampled at metric rate, not per block.** `multibandGrDb()`
+returns a fresh array across the WASM boundary, which is an allocation; it is
+read inside `_postMetrics`, the one place on the audio thread already limited
+to ten calls a second.
+
+A multiband band's curve describes *that band's* gain computer. Near a
+crossover the band carries less than the whole signal while its neighbour
+carries the rest uncompressed, so the summed output differs from the drawn
+curve there — about 1.5 dB at a crossover, under 0.4 dB well inside a band.
+
+The analyser trace behind the EQ curve is the post-chain spectrum, drawn on its
 own canvas from an animation frame. It is deliberately not React state: a
 spectrum that re-rendered the panel thirty times a second would drag every
 curve recomputation with it. It is also faint and filled, because it is a

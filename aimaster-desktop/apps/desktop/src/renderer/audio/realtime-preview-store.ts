@@ -40,6 +40,10 @@ export interface RealtimePreviewMetrics {
 
   limiterGrDb: number;
   dynamicsGrDb: number;
+  /** Per-band gain reduction of the multiband module, low → high. */
+  multibandGrDb: readonly number[];
+  /** De-esser gain reduction. */
+  deessGrDb: number;
 
   latencySamples: number;
   monitorActive: boolean;
@@ -62,6 +66,8 @@ export const EMPTY_METRICS: RealtimePreviewMetrics = {
   safetyEvents: 0,
   limiterGrDb: 0,
   dynamicsGrDb: 0,
+  multibandGrDb: [0, 0, 0, 0],
+  deessGrDb: 0,
   latencySamples: 0,
   monitorActive: false,
   loudnessDeltaDb: 0,
@@ -125,6 +131,10 @@ export function ingestWorkletMetrics(msg: Record<string, unknown>): void {
     safetyEvents: n('safetyEvents'),
     limiterGrDb: n('limiterGrDb'),
     dynamicsGrDb: n('dynamicsGrDb'),
+    multibandGrDb: Array.isArray(msg['multibandGrDb'])
+      ? (msg['multibandGrDb'] as unknown[]).map((v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0))
+      : EMPTY_METRICS.multibandGrDb,
+    deessGrDb: n('deessGrDb'),
     latencySamples: n('latencySamples'),
     monitorActive: b('monitorActive'),
     loudnessDeltaDb: n('loudnessDeltaDb'),
