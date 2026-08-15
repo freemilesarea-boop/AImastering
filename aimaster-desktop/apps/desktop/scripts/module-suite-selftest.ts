@@ -22,7 +22,10 @@ import {
   buildChainConfig,
   chainConfigToJson,
   activeModuleIds,
+  chainDithersOutput,
+  MASTER_NATIVE_BIT_DEPTH,
 } from '../src/renderer/audio/chain-config.js';
+import { buildTranscodePlan, needsTranscode } from '../src/main/utils/audioTranscode.js';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -221,6 +224,81 @@ console.log('\n=== MODULE SUITE — state → chain config ===\n');
   check('every suite binding names a config path', badPaths.length === 0, `bad=[${badPaths.join(', ')}]`);
 }
 
+// ── 1b. Dither ───────────────────────────────────────────────────────────
+
+console.log('\n=== DITHER — config + export-path interlock ===\n');
+
+{
+  // Only a depth BELOW the master's native 24-bit is a reduction.  At 24 and
+  // at 32-bit float the stage must not be sent — dither must never turn
+  // itself on, and a neutral chain has to stay bit-transparent.
+  for (const depth of ['24', '32']) {
+    const state = withParam(baseState(), 'export', 'bitDepth', depth);
+    const cfg = buildChainConfig({ state });
+    check(`no dither at ${depth}-bit`, cfg.dither === undefined, `dither=${JSON.stringify(cfg.dither)}`);
+    check(`chainDithersOutput is false at ${depth}-bit`, !chainDithersOutput(cfg), 'false');
+  }
+  check(
+    'the native master depth is what the reduction is judged against',
+    MASTER_NATIVE_BIT_DEPTH === 24,
+    `${MASTER_NATIVE_BIT_DEPTH}-bit`,
+  );
+}
+
+{
+  let state = withParam(baseState(), 'export', 'bitDepth', '16');
+  state = withParam(state, 'export', 'dither', 'shaped');
+  const cfg = buildChainConfig({ state });
+  check(
+    'dither is sent for an integer depth',
+    cfg.dither?.bitDepth === 16 && cfg.dither?.mode === 'shaped',
+    `${cfg.dither?.bitDepth}-bit ${cfg.dither?.mode}`,
+  );
+  check('chainDithersOutput is true', chainDithersOutput(cfg), 'true');
+}
+
+{
+  // Even at mode 'none' the stage is engaged, because quantising the
+  // preview is how the user auditions the difference.
+  let state = withParam(baseState(), 'export', 'bitDepth', '16');
+  state = withParam(state, 'export', 'dither', 'none');
+  const cfg = buildChainConfig({ state });
+  check(
+    "mode 'none' still quantises",
+    cfg.dither?.mode === 'none' && chainDithersOutput(cfg),
+    `mode=${cfg.dither?.mode}`,
+  );
+}
+
+{
+  // The interlock: once the engine has dithered, ffmpeg must not do it too.
+  const withoutFlag = buildTranscodePlan({ format: 'wav', bitDepth: 16, dither: 'tpdf' });
+  const withFlag = buildTranscodePlan({
+    format: 'wav', bitDepth: 16, dither: 'tpdf', sourceAlreadyDithered: true,
+  });
+  const hasDitherArg = (args: string[]) => args.some((a) => a.includes('dither_method'));
+  check(
+    'ffmpeg dithers when the engine did not',
+    hasDitherArg(withoutFlag.args),
+    withoutFlag.args.join(' '),
+  );
+  check(
+    'ffmpeg does NOT dither an already-dithered source',
+    !hasDitherArg(withFlag.args),
+    withFlag.args.join(' '),
+  );
+  check(
+    'an already-dithered WAV needs no transcode for dither alone',
+    !needsTranscode('wav', { format: 'wav', dither: 'tpdf', sourceAlreadyDithered: true }),
+    'no transcode',
+  );
+  check(
+    'dither alone still forces a transcode otherwise',
+    needsTranscode('wav', { format: 'wav', dither: 'tpdf' }),
+    'transcode',
+  );
+}
+
 // ── 2. Through the real engine ───────────────────────────────────────────
 
 console.log('\n=== MODULE SUITE — config → Rust chain (node WASM) ===\n');
@@ -402,6 +480,28 @@ if (!Chain) {
       `peak=${peak(res.left).toFixed(4)} ceiling=${ceiling.toFixed(4)}`,
     );
     check('full chain does not trip the safety layer', res.safety === 0, `safetyEvents=${res.safety}`);
+  }
+
+  {
+    // Dither must actually quantise the rendered audio, and must leave a
+    // float master alone.
+    let state = withParam(neutralState(), 'export', 'bitDepth', '16');
+    state = withParam(state, 'export', 'dither', 'tpdf');
+    const res = render(state, sine(SR / 4, 1_000, 0.4));
+    const scale = 32_768;
+    const quantised = Array.from(res.left).every(
+      (s) => Math.abs(s * scale - Math.round(s * scale)) < 1e-6,
+    );
+    check('16-bit dither quantises the render', quantised, 'all samples on a 16-bit step');
+
+    const floatState = withParam(neutralState(), 'export', 'bitDepth', '32');
+    const input = sine(SR / 4, 1_000, 0.4);
+    const floatRes = render(floatState, input);
+    let worst = 0;
+    for (let i = 0; i < input.length; i++) {
+      worst = Math.max(worst, Math.abs(floatRes.left[i]! - input[i]!));
+    }
+    check('32-bit float render is untouched', worst < 1e-6, `worst delta ${worst.toExponential(2)}`);
   }
 
   {

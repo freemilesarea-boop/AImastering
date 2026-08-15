@@ -213,10 +213,16 @@ const SUITE: LouiModule[] = [
     description: 'Tape machine model — record saturation, head bump, gap loss and wow/flutter, selectable at 7.5 / 15 / 30 ips.',
   },
   {
-    id: 'export', displayName: 'Dither / Export', category: 'output', status: 'export-only',
-    previewSupport: 'none', exportSupport: 'partial', defaultBypass: false, cpuCost: 'none',
+    id: 'dither', displayName: 'Dither', category: 'output', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
+    visual: 'none', paramModuleId: 'export', algorithmName: 'Loui Quantise',
+    description: 'TPDF or noise-shaped dither on bit-depth reduction, with auto-blanking. Quantises the preview to the export depth too, so the choice can be auditioned before committing to a file. Inactive at 32-bit float.',
+  },
+  {
+    id: 'export', displayName: 'Export', category: 'output', status: 'export-only',
+    previewSupport: 'none', exportSupport: 'full', defaultBypass: false, cpuCost: 'none',
     visual: 'none', paramModuleId: 'export',
-    description: 'Sample rate + bit depth are applied on export render (not preview). Dither is planned.',
+    description: 'Container format, sample rate and bit depth for the written file. Applied on export render, not in the preview.',
   },
 ];
 
@@ -275,7 +281,7 @@ export const CHAIN_MODULE_IDS: readonly string[] = [
   'multiband', 'dynamics', 'vintage-comp', 'impact', 'low-end-focus', 'bass-control',
   'exciter', 'tape',
   'imager', 'limiter', 'maximizer',
-  'export',
+  'dither', 'export',
 ];
 
 export const MODULE_CATEGORY_LABEL: Record<ModuleCategory, string> = {

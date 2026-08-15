@@ -131,6 +131,13 @@ export interface ChainConfigWire {
     character?: 'clean' | 'transparent' | 'punchy' | 'smooth' | 'aggressive';
     bypass?: boolean;
   };
+  dither?: {
+    /** Target depth.  32 = float, which makes the stage a pass-through. */
+    bitDepth?: number;
+    mode?: 'none' | 'tpdf' | 'shaped';
+    autoBlank?: boolean;
+    bypass?: boolean;
+  };
 }
 
 /**
@@ -154,6 +161,15 @@ const LIMITER_CHARACTER: Record<string, NonNullable<NonNullable<ChainConfigWire[
   punchy: 'punchy',
   smooth: 'smooth',
 };
+
+/**
+ * Bit depth the engine renders its master at.
+ *
+ * Only a target BELOW this counts as a reduction worth dithering.  Exported
+ * so the UI can grey out the dither controls at depths where they would do
+ * nothing, rather than offering a choice that has no effect.
+ */
+export const MASTER_NATIVE_BIT_DEPTH = 24;
 
 // ── Reading state ────────────────────────────────────────────────────────
 
@@ -517,6 +533,30 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
     bypass: lim?.bypass ?? false,
   };
 
+  // ── Dither ─────────────────────────────────────────────────────────────
+  // Driven by the export module: dither only means anything against a
+  // target bit depth, so the two live together.
+  //
+  // Engaged only when the target is BELOW the master's native depth.  The
+  // engine renders at 24-bit, so 24-bit and 32-bit float are not
+  // reductions and need no dither — sending it there would break the
+  // chain's bit-transparency and add noise nobody asked for.  Dither is the
+  // last irreversible step before a file is written; it does not turn
+  // itself on.
+  //
+  // At 16-bit the stage is sent even at mode 'none', because quantising the
+  // preview is how the user hears what their dither choice is buying them.
+  const exp = s.export;
+  const depth = Number(str(exp, 'bitDepth', String(MASTER_NATIVE_BIT_DEPTH)));
+  if (exp && Number.isFinite(depth) && depth < MASTER_NATIVE_BIT_DEPTH) {
+    cfg.dither = {
+      bitDepth: depth,
+      mode: str(exp, 'dither', 'tpdf'),
+      autoBlank: bool(exp, 'ditherAutoBlank', true),
+      bypass: exp.bypass,
+    };
+  }
+
   return cfg;
 }
 
@@ -554,5 +594,20 @@ export function activeModuleIds(cfg: ChainConfigWire): ModuleId[] {
   push('tape', cfg.tape);
   push('imager', cfg.imager);
   push('limiter', cfg.limiter);
+  // Dither lives on the export module, so that is the row that lights up.
+  if (cfg.dither && !cfg.dither.bypass) out.push('export');
   return out;
+}
+
+/**
+ * Whether the chain config quantises to its target bit depth.
+ *
+ * The export's file writer must NOT dither again when this is true: two
+ * independent dither stages give you two noise floors and none of the
+ * benefit of either.
+ */
+export function chainDithersOutput(cfg: ChainConfigWire): boolean {
+  const d = cfg.dither;
+  if (!d || d.bypass || cfg.bypass) return false;
+  return typeof d.bitDepth === 'number' && d.bitDepth < 32;
 }

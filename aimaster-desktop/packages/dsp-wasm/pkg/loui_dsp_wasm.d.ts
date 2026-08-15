@@ -101,6 +101,19 @@ export class LouiMasteringChain {
      */
     denoiseProfileDb(): Float64Array;
     /**
+     * Whether the dither stage is quantising.
+     *
+     * The export path reads this to decide whether the file writer should
+     * dither as well — dithering twice adds a second, uncorrelated noise
+     * floor for no benefit.
+     */
+    ditherEngaged(): boolean;
+    /**
+     * The quantisation step the dither stage targets, in dBFS.
+     * Negative infinity when it is not quantising.
+     */
+    ditherLsbDbfs(): number;
+    /**
      * Signed gain applied by each dynamic-EQ band (dB).
      */
     dynamicEqGainsDb(): Float64Array;
@@ -409,6 +422,8 @@ export interface InitOutput {
     readonly louimasteringchain_denoiseFinishLearn: (a: number) => number;
     readonly louimasteringchain_denoiseHasProfile: (a: number) => number;
     readonly louimasteringchain_denoiseProfileDb: (a: number) => [number, number];
+    readonly louimasteringchain_ditherEngaged: (a: number) => number;
+    readonly louimasteringchain_ditherLsbDbfs: (a: number) => number;
     readonly louimasteringchain_dynamicEqGainsDb: (a: number) => [number, number];
     readonly louimasteringchain_dynamicsGrDb: (a: number) => number;
     readonly louimasteringchain_impactMoveDb: (a: number) => [number, number];

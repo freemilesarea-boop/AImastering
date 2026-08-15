@@ -881,6 +881,12 @@ export interface SaveAudioRequest {
   bitDepth?: number;
   /** Dither applied on integer bit-depth reduction.  Default 'none'. */
   dither?: ExportDither;
+  /**
+   * True when the render engine already dithered and quantised the source
+   * to `bitDepth`.  The file writer then skips its own dither — running two
+   * dither stages leaves two uncorrelated noise floors and helps neither.
+   */
+  sourceAlreadyDithered?: boolean;
   /** Suggested filename (without path) for the save dialog. */
   suggestedName?: string;
 }

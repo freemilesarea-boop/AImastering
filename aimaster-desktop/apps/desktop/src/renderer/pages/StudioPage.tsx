@@ -40,7 +40,7 @@ import {
   type ParameterValue,
 } from '../audio/parameters/index.js';
 import { getModule } from '../audio/modules/loui-module-suite.js';
-import { buildChainConfig, activeModuleIds } from '../audio/chain-config.js';
+import { buildChainConfig, activeModuleIds, MASTER_NATIVE_BIT_DEPTH } from '../audio/chain-config.js';
 import { surface, text, typography, space, radius, meter } from '../theme/loui-theme.js';
 
 /** Modules whose engagement is decided by the shared spectral stage. */
@@ -56,6 +56,9 @@ const REGISTRY_TO_PARAM: Record<string, ModuleId> = {
   'harshness-control': 'spectral-shaper',
   'reference-match': 'match-eq',
   'ai-harshness-guard': 'dynamic-eq',
+  // Dither is its own idea to a user but its parameters only mean anything
+  // against the export's bit depth, so they live on the export module.
+  dither: 'export',
 };
 
 function paramModuleFor(registryId: string): ModuleId | undefined {
@@ -158,6 +161,19 @@ export default function StudioPage() {
     put('limiter', `${n('limiter', 'ceilingDbtp').toFixed(1)} dBTP`, true);
     put('maximizer', `+${n('limiter', 'driveDb').toFixed(1)} dB`, n('limiter', 'driveDb') > 0);
     put('imager', `${n('imager', 'widthPct').toFixed(0)}%`, n('imager', 'widthPct') !== 100);
+
+    // Dither reports the depth it targets.  At or above the master's native
+    // depth there is no reduction to dither, and saying so is more useful
+    // than showing a mode that is not running.
+    const depthStr = state.export.parameters['bitDepth'];
+    const depth = typeof depthStr === 'string' ? Number(depthStr) : MASTER_NATIVE_BIT_DEPTH;
+    const ditherMode = String(state.export.parameters['dither'] ?? 'tpdf');
+    const reduces = depth < MASTER_NATIVE_BIT_DEPTH;
+    put(
+      'dither',
+      reduces ? `${depth}-bit · ${ditherMode}` : `${depth}-bit · 감축 없음`,
+      reduces && !state.export.bypass,
+    );
 
     for (const id of SPECTRAL_MODULE_IDS) {
       const amount = n(id, 'amountPct');

@@ -206,6 +206,27 @@ class LouiMasteringChain {
         return v1;
     }
     /**
+     * Whether the dither stage is quantising.
+     *
+     * The export path reads this to decide whether the file writer should
+     * dither as well — dithering twice adds a second, uncorrelated noise
+     * floor for no benefit.
+     * @returns {boolean}
+     */
+    ditherEngaged() {
+        const ret = wasm.louimasteringchain_ditherEngaged(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * The quantisation step the dither stage targets, in dBFS.
+     * Negative infinity when it is not quantising.
+     * @returns {number}
+     */
+    ditherLsbDbfs() {
+        const ret = wasm.louimasteringchain_ditherLsbDbfs(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * Signed gain applied by each dynamic-EQ band (dB).
      * @returns {Float64Array}
      */

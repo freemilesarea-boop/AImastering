@@ -79,6 +79,7 @@ multiply, so the moves add in dB rather than fighting over one filter.
 |---|---|
 | **Imager** | Global width, low-mono fold, plus per-band widths over a 4-band crossover |
 | **Limiter / Maximizer** | True-peak-safe ceiling with lookahead, plus `drive` and five characters (Clean / Transparent / Punchy / Smooth / Aggressive) that set release and soft-clip depth |
+| **Dither** | TPDF or 2nd-order noise-shaped dither on bit-depth reduction, with auto-blanking. See §4 |
 
 ---
 
@@ -125,8 +126,33 @@ thing the hardware is famous for *not* doing. Modelling the attenuation as
 a bell an octave and a half above the boost reproduces the measured curve:
 a lift at the very bottom with a scooped upper bass.
 
-Both were caught by tests that measured the audio rather than checking the
-code ran.
+**Dither engages only on a real reduction, and only once.** Two things
+here are easy to get wrong and both are load-bearing:
+
+*It must not turn itself on.* The engine renders a 24-bit master, so only a
+target below 24 bits is a reduction worth dithering. Emitting the stage at
+24-bit or 32-bit float would break the chain's bit-transparency and add
+noise nobody asked for — for a step that is irreversible once the file is
+written. `MASTER_NATIVE_BIT_DEPTH` is what that rule is checked against.
+
+*It must not happen twice.* The file writer (`audioTranscode.ts`) can also
+dither, via ffmpeg. If the engine already dithered, ffmpeg dithering again
+leaves two uncorrelated noise floors and the benefit of neither. The render
+result carries `dithered`, `SaveAudioRequest` carries
+`sourceAlreadyDithered`, and the transcode plan drops its own dither when
+that is set.
+
+The module quantises even at mode `none`, deliberately: that is the only
+way to hear what dither is buying you before committing to a file.
+
+The noise shaper is a 2nd-order highpass (`(1 - z⁻¹)²`), not a
+psychoacoustic curve — stable and exactly what it says. Its sign is the
+thing to watch: reversed, the NTF becomes a lowpass and the module piles
+noise *into* the midrange. That is precisely how the first implementation
+was wrong, and `shaping_moves_noise_upward` is what caught it.
+
+All of these were caught by tests that measured the audio rather than
+checking the code ran.
 
 ---
 
@@ -150,7 +176,7 @@ code ran.
 ## 6. Building and testing
 
 ```bash
-# Rust DSP — 151 tests
+# Rust DSP — 166 tests
 cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 
 # Rebuild all three WASM targets after any Rust change.
@@ -158,7 +184,7 @@ cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 #           cargo install wasm-bindgen-cli --version 0.2.127
 pnpm --filter @loui/dsp-wasm run build:all
 
-# Desktop — 122 checks, including 29 that push config through the real chain
+# Desktop — 136 checks, including 43 that push config through the real chain
 pnpm --filter @aimaster/desktop test
 ```
 
@@ -177,8 +203,6 @@ Honest list, so the registry stays trustworthy:
   Not started.
 - **Bass Control** as a distinct module — covered today by Low End Focus and
   the multiband low band.
-- **Dither** — `export` still exposes the algorithm choice with no
-  implementation behind it; unchanged by this work.
 - **Denoise auto profile on stationary material** — minimum statistics
   cannot distinguish a sustained tone from sustained noise. Use a learned
   profile there; the auto tracker is for material with gaps.

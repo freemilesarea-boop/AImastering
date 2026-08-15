@@ -9,6 +9,7 @@ use super::imager::Imager;
 use super::limiter::Limiter;
 use super::declick::Declick;
 use super::dehum::Dehum;
+use super::dither::Dither;
 use super::denoise::Denoise;
 use super::deess::Deess;
 use super::dynamic_eq::{DynamicEq, DYN_EQ_BANDS};
@@ -90,6 +91,7 @@ pub struct MasteringChain {
     imager: Imager,
     limiter: Limiter,
     output_gain: Gain,
+    dither: Dither,
     gr: GainReduction,
     // Dry-signal backup so a bad block can be replaced (no alloc in process).
     dry_l: Vec<f32>,
@@ -122,6 +124,7 @@ impl MasteringChain {
             imager: Imager::new(sample_rate, cfg.imager),
             limiter: Limiter::new(sample_rate, cfg.limiter),
             output_gain: Gain::from_db(cfg.output_gain_db),
+            dither: Dither::new(sample_rate, cfg.dither),
             gr: GainReduction::default(),
             dry_l: vec![0.0; SAFETY_SCRATCH],
             dry_r: vec![0.0; SAFETY_SCRATCH],
@@ -170,6 +173,20 @@ impl MasteringChain {
         self.imager.set_config(cfg.imager);
         self.limiter.set_config(cfg.limiter);
         self.output_gain.set_db(cfg.output_gain_db);
+        self.dither.set_config(cfg.dither);
+    }
+
+    /// Whether the dither stage is quantising (false at 32-bit float or when
+    /// bypassed).  The export path uses it to avoid dithering a second time
+    /// in the file writer.
+    pub fn dither_engaged(&self) -> bool {
+        !self.cfg.bypass && self.dither.is_engaged()
+    }
+
+    /// The quantisation step the dither stage is targeting, in dBFS.
+    /// `-inf` when the stage is not quantising.
+    pub fn dither_lsb_dbfs(&self) -> f64 {
+        if self.cfg.bypass { f64::NEG_INFINITY } else { self.dither.lsb_dbfs() }
     }
 
     /// Total processing latency in samples, summed over the modules that
@@ -293,6 +310,11 @@ impl MasteringChain {
         self.limiter.process_stereo(left, right);
         self.output_gain.process_stereo(left, right);
 
+        // 7 — Dither + quantisation.  Absolutely last: it targets the output
+        // file's bit depth, so anything after it would break the quantisation
+        // it just established.
+        self.dither.process_stereo(left, right);
+
         // ── Output-safety layer ──────────────────────────────────────────
         // Scan the processed block for non-finite or absurd output.  If the
         // chain misbehaved for ANY reason, restore the dry signal (or, when
@@ -363,6 +385,7 @@ impl MasteringChain {
         self.tape.reset();
         self.imager.reset();
         self.limiter.reset();
+        self.dither.reset();
         self.safety_events = 0;
     }
 }
@@ -634,6 +657,58 @@ mod tests {
         let residual = l[n / 2..].iter().fold(0.0f32, |m, &x| m.max(x.abs()));
         assert!(residual > 0.05, "the high band should survive, peak {residual}");
         assert!(l.iter().all(|x| x.is_finite()));
+    }
+
+    /// Dither must be off by default — it is the last irreversible step
+    /// before a file is written and must never appear uninvited.
+    #[test]
+    fn dither_is_off_by_default() {
+        let chain = MasteringChain::new(48_000.0, MasteringChainConfig::default());
+        assert!(!chain.dither_engaged());
+        assert!(chain.dither_lsb_dbfs().is_infinite());
+    }
+
+    /// Engaging it must quantise the chain output to the target depth.
+    #[test]
+    fn dither_quantises_the_chain_output() {
+        let cfg = MasteringChainConfig {
+            limiter: LimiterConfig { bypass: true, ..LimiterConfig::default() },
+            dither: DitherConfig { bit_depth: 16, mode: DitherMode::Tpdf, auto_blank: false, bypass: false },
+            ..MasteringChainConfig::default()
+        };
+        let mut chain = MasteringChain::new(48_000.0, cfg);
+        let mut l = sine(4096, 1_000.0, 48_000.0, 0.4);
+        let mut r = l.clone();
+        chain.process_stereo_block(&mut l, &mut r);
+
+        assert!(chain.dither_engaged());
+        assert!((chain.dither_lsb_dbfs() - (-90.3)).abs() < 0.5);
+        // Every sample must land exactly on a 16-bit step.
+        let scale = 32_768.0f64;
+        assert!(
+            l.iter().all(|&s| {
+                let n = s as f64 * scale;
+                (n - n.round()).abs() < 1e-6
+            }),
+            "chain output is not quantised to 16-bit",
+        );
+    }
+
+    /// Master bypass must skip dither too — a bypassed chain is a wire.
+    #[test]
+    fn master_bypass_skips_dither() {
+        let cfg = MasteringChainConfig {
+            bypass: true,
+            dither: DitherConfig { bit_depth: 16, mode: DitherMode::Tpdf, auto_blank: false, bypass: false },
+            ..MasteringChainConfig::default()
+        };
+        let mut chain = MasteringChain::new(48_000.0, cfg);
+        let input = sine(512, 1_000.0, 48_000.0, 0.3);
+        let mut l = input.clone();
+        let mut r = input.clone();
+        chain.process_stereo_block(&mut l, &mut r);
+        assert_eq!(l, input);
+        assert!(!chain.dither_engaged());
     }
 
     #[test]

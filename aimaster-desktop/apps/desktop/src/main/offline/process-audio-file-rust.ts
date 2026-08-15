@@ -34,6 +34,15 @@ export interface RustRenderFileResult {
   metrics: RenderMetrics | NormalizedRenderMetrics;
   backend: 'rust';
   loudnessNormalized: boolean;
+  /**
+   * True when the chain's dither stage quantised this render to
+   * `options.bitDepth`.
+   *
+   * Callers MUST forward it to `file:save-audio` as `sourceAlreadyDithered`
+   * — otherwise the file writer dithers a second time and the master ends
+   * up with two uncorrelated noise floors.
+   */
+  dithered: boolean;
 }
 
 /** Whether the Rust offline backend is usable (node WASM present). */
@@ -123,5 +132,15 @@ export async function processAudioFileRust(
 
   const interleavedOut = interleave(outL, outR);
   await encodeWav(interleavedOut, options.sampleRate, options.bitDepth, options.outputPath);
-  return { outputPath: options.outputPath, metrics, backend: 'rust', loudnessNormalized: normalized };
+
+  // Whether the chain dithered depends on the suite config it was given —
+  // the flat config has no dither stage at all.
+  const d = (config.suiteConfig as { dither?: { bitDepth?: number; bypass?: boolean } } | undefined)?.dither;
+  const dithered =
+    !!d && d.bypass !== true && typeof d.bitDepth === 'number' && d.bitDepth < 32;
+
+  return {
+    outputPath: options.outputPath, metrics, backend: 'rust',
+    loudnessNormalized: normalized, dithered,
+  };
 }

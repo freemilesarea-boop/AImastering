@@ -530,6 +530,42 @@ impl Default for VintageTapeConfig {
     }
 }
 
+// ── Dither ───────────────────────────────────────────────────────────────
+
+/// Dither algorithm applied on bit-depth reduction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
+pub enum DitherMode {
+    /// Quantise only — no noise added.  Audibly grainy at 16-bit; useful
+    /// for hearing what dither is actually buying you.
+    None,
+    /// Triangular-PDF noise at ±1 LSB.  The safe default.
+    Tpdf,
+    /// TPDF plus 2nd-order error feedback, moving noise out of the midrange.
+    Shaped,
+}
+
+/// Dither + quantiser parameters.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
+pub struct DitherConfig {
+    /// Target bit depth.  32 means float output — the module becomes a
+    /// pass-through, because there is no quantisation step to dither.
+    pub bit_depth: u32,
+    pub mode: DitherMode,
+    /// Stop adding noise during digitally silent passages.
+    pub auto_blank: bool,
+    pub bypass: bool,
+}
+
+impl Default for DitherConfig {
+    fn default() -> Self {
+        // 32-bit float = inactive.  Dither must never appear uninvited: it
+        // is the last irreversible step before the file is written.
+        Self { bit_depth: 32, mode: DitherMode::Tpdf, auto_blank: true, bypass: false }
+    }
+}
+
 /// EQ (gentle tone shaping) parameters.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
@@ -669,6 +705,8 @@ pub struct MasteringChainConfig {
     // Stereo + output.
     pub imager: ImagerConfig,
     pub limiter: LimiterConfig,
+    /// Dither + quantisation — the last stage, after the output gain.
+    pub dither: DitherConfig,
     /// Output gain (dB) applied after the chain.
     pub output_gain_db: f64,
     /// Master bypass — entire chain becomes a pass-through.
@@ -696,6 +734,7 @@ impl Default for MasteringChainConfig {
             tape: VintageTapeConfig::default(),
             imager: ImagerConfig::default(),
             limiter: LimiterConfig::default(),
+            dither: DitherConfig::default(),
             output_gain_db: 0.0,
             bypass: false,
         }

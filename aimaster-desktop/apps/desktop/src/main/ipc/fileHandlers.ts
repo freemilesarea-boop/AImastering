@@ -155,6 +155,7 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       sampleRate: req.sampleRate,
       bitDepth: req.bitDepth,
       dither: req.dither,
+      sourceAlreadyDithered: req.sourceAlreadyDithered,
     };
 
     try {

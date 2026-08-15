@@ -370,9 +370,74 @@ class WasmAnalyzerSafe extends React.Component<
 
 // ── Save buttons ──────────────────────────────────────────────────────────────
 
+/**
+ * Export quality the master-save button applies.
+ *
+ * The engine renders a 24-bit master.  Choosing 16-bit here is a bit-depth
+ * REDUCTION, which is exactly when dither matters — so the two controls sit
+ * together, and the dither selector is disabled at 24-bit and above where
+ * there is nothing to dither.
+ */
+type SaveDepth = '16' | '24' | '32';
+type SaveDither = 'none' | 'tpdf' | 'shaped';
+
+const SAVE_DEPTHS: { id: SaveDepth; label: string; hint: string }[] = [
+  { id: '16', label: '16-bit', hint: 'CD · 일부 배급사' },
+  { id: '24', label: '24-bit', hint: '기본' },
+  { id: '32', label: '32-bit', hint: 'Float · 무손실 보관' },
+];
+
+const SAVE_DITHERS: { id: SaveDither; label: string }[] = [
+  { id: 'none',   label: '없음' },
+  { id: 'tpdf',   label: 'TPDF' },
+  { id: 'shaped', label: '노이즈 셰이핑' },
+];
+
+function OptionChips<T extends string>(props: {
+  options: readonly { id: T; label: string; hint?: string }[];
+  value: T;
+  disabled?: boolean;
+  ariaLabel: string;
+  onChange: (v: T) => void;
+}) {
+  return (
+    <div role="radiogroup" aria-label={props.ariaLabel} className="flex gap-1.5 flex-wrap">
+      {props.options.map((o) => {
+        const on = o.id === props.value;
+        return (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            disabled={props.disabled}
+            title={o.hint}
+            onClick={() => props.onChange(o.id)}
+            className={`no-drag text-[11px] px-2 py-1 rounded-md border transition-colors
+              ${props.disabled
+                ? 'border-zinc-800 text-zinc-700 cursor-not-allowed'
+                : on
+                  ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-200'
+                  : 'border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-400'}`}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function SaveButtons() {
   const masteringResult = useAudioStore((s) => s.masteringResult);
   const notify          = useAppStore((s) => s.notify);
+
+  const [depth, setDepth]   = useState<SaveDepth>('24');
+  const [dither, setDither] = useState<SaveDither>('tpdf');
+
+  // Dither only means something when the depth actually drops below the
+  // rendered master's 24 bits.
+  const ditherApplies = depth === '16';
 
   const handleSaveMp3 = useCallback(async () => {
     if (!masteringResult?.previewPath) return;
@@ -386,16 +451,33 @@ function SaveButtons() {
   const handleSaveWav = useCallback(async () => {
     if (!masteringResult?.outputPath) return;
     try {
-      const dest = await window.electronAPI.invoke(
-        'file:save-wav',
-        masteringResult.outputPath,
-      ) as string | null;
-      if (dest) notify('WAV 저장 완료', 'success');
+      // Routed through `file:save-audio` so the chosen bit depth and dither
+      // reach the written file.  At the default 24-bit / no depth change the
+      // handler still does a plain copy, so this path is byte-identical to
+      // the old `file:save-wav` behaviour.
+      const res = await window.electronAPI.invoke('file:save-audio', {
+        sourcePath: masteringResult.outputPath,
+        format: 'wav',
+        bitDepth: Number(depth),
+        dither: ditherApplies ? dither : 'none',
+      }) as { savedPath: string | null; error?: string; warning?: string };
+
+      if (res?.error) {
+        if (res.error.includes('license') || res.error.includes('라이선스')) {
+          notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
+        } else {
+          notify(`WAV 저장 실패: ${res.error}`, 'error');
+        }
+        return;
+      }
+      if (!res?.savedPath) return;   // user cancelled the dialog
+      if (res.warning) notify(res.warning, 'warning');
+      else notify(`WAV 저장 완료 · ${depth}-bit`, 'success');
     } catch (err) {
       if (handleLicenseRequired(err)) notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
       else notify('WAV 저장 실패', 'error');
     }
-  }, [masteringResult, notify]);
+  }, [masteringResult, notify, depth, dither, ditherApplies]);
 
   return (
     <div className="space-y-2">
@@ -411,10 +493,33 @@ function SaveButtons() {
         <div className="flex items-center gap-2.5">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
           <span className="text-sm text-zinc-300">마스터 WAV 저장</span>
-          <span className="text-xs text-zinc-700">24-bit</span>
+          <span className="text-xs text-zinc-700">{depth}-bit</span>
         </div>
         <span className="text-xs text-zinc-500 group-hover:text-zinc-400 transition-colors">저장</span>
       </button>
+
+      {/* Export quality — the settings the save above actually applies. */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 px-4 py-3 space-y-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[11px] text-zinc-600 uppercase tracking-wider shrink-0">비트뎁스</span>
+          <OptionChips options={SAVE_DEPTHS} value={depth} ariaLabel="비트뎁스" onChange={setDepth} />
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[11px] text-zinc-600 uppercase tracking-wider shrink-0">디더</span>
+          <OptionChips
+            options={SAVE_DITHERS}
+            value={ditherApplies ? dither : 'none'}
+            disabled={!ditherApplies}
+            ariaLabel="디더"
+            onChange={setDither}
+          />
+        </div>
+        <p className="text-[11px] leading-relaxed text-zinc-600">
+          {ditherApplies
+            ? '24-bit 마스터를 16-bit로 줄일 때 발생하는 양자화 왜곡을 노이즈로 바꿔줍니다. 노이즈 셰이핑은 그 노이즈를 귀가 덜 민감한 고역으로 밀어냅니다.'
+            : '디더는 비트뎁스를 낮출 때만 의미가 있습니다 (16-bit 선택 시 활성화).'}
+        </p>
+      </div>
 
       {/* MP3 preview */}
       <button

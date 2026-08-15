@@ -534,6 +534,23 @@ impl LouiMasteringChain {
         Ok(())
     }
 
+    /// Whether the dither stage is quantising.
+    ///
+    /// The export path reads this to decide whether the file writer should
+    /// dither as well — dithering twice adds a second, uncorrelated noise
+    /// floor for no benefit.
+    #[wasm_bindgen(js_name = ditherEngaged)]
+    pub fn dither_engaged(&self) -> bool {
+        self.inner.dither_engaged()
+    }
+
+    /// The quantisation step the dither stage targets, in dBFS.
+    /// Negative infinity when it is not quantising.
+    #[wasm_bindgen(js_name = ditherLsbDbfs)]
+    pub fn dither_lsb_dbfs(&self) -> f64 {
+        self.inner.dither_lsb_dbfs()
+    }
+
     /// Total processing latency in samples for the current config.
     #[wasm_bindgen(js_name = latencySamples)]
     pub fn latency_samples(&self) -> u32 {

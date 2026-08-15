@@ -380,7 +380,7 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
         path: 'export.bitDepth',
         status: 'unavailable',
         exportField: 'bitDepth',
-        note: 'Export-renderable (M3-P-NEXT-5D-2-c) — applied on Re-master & Export, not preview.',
+        note: 'Export-renderable, and now also the target the chain\'s dither stage quantises to — so the preview hears the same bit depth the file will have.',
       },
     },
     {
@@ -396,9 +396,20 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
       automatable: false,
       binding: {
         moduleType: 'dither',
-        path: 'algorithm',
-        status: 'pending',
-        note: 'EngineSchema has a `dither` module but no adapter implements it yet.',
+        path: 'dither.mode',
+        status: 'wired',
+        note: 'Applied by the chain\'s dither stage, against `bitDepth`. Audible in the preview as well as the export, so the choice can be auditioned.',
+      },
+    },
+    {
+      kind: 'boolean', id: 'ditherAutoBlank', label: 'Auto-blank',
+      hint: '무음 구간에서는 디더 노이즈를 멈춥니다',
+      default: true,
+      automatable: false,
+      binding: {
+        moduleType: 'dither',
+        path: 'dither.autoBlank',
+        status: 'wired',
       },
     },
   ],

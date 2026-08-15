@@ -28,6 +28,7 @@ mod declick;
 mod dehum;
 mod denoise;
 mod deess;
+mod dither;
 mod dynamic_eq;
 mod exciter;
 mod impact;
@@ -52,7 +53,9 @@ pub use config::{
     LowEndFocusConfig, LowEndFocusMode,
     SpectralConfig, SPECTRAL_CURVE_BANDS,
     VintageEqConfig, VintageCompressorConfig, VintageTapeConfig, TapeSpeed,
+    DitherConfig, DitherMode,
 };
+pub use dither::Dither;
 pub use spectral::{Spectral, CURVE_BANDS, curve_band_hz};
 pub use vintage::{VintageEq, VintageCompressor, VintageTape};
 pub use dynamic_eq::{DynamicEq, DYN_EQ_BANDS};
