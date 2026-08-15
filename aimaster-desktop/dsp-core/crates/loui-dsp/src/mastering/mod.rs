@@ -24,6 +24,10 @@
 
 mod config;
 mod gain;
+mod declick;
+mod dehum;
+mod denoise;
+mod deess;
 mod eq;
 mod parametric_eq;
 mod dynamics;
@@ -33,7 +37,12 @@ mod chain;
 
 pub use config::{
     MasteringChainConfig, EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
+    DenoiseConfig, DehumConfig, DeclickConfig, DeessConfig,
 };
+pub use declick::Declick;
+pub use dehum::Dehum;
+pub use denoise::Denoise;
+pub use deess::Deess;
 pub use parametric_eq::{ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS};
 pub use chain::{MasteringChain, GainReduction};
 

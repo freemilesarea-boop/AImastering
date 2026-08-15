@@ -9,6 +9,101 @@
 //! comments are omitted where the name + the parameter audit suffice.
 #![allow(missing_docs)]
 
+// ── Restoration ──────────────────────────────────────────────────────────
+
+/// Spectral broadband de-noise parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct DenoiseConfig {
+    /// Maximum attenuation applied to the noise floor (dB, ≥ 0).  0 = off.
+    pub reduction_db: f64,
+    /// Offset applied to the learned noise floor before masking (dB).
+    /// Positive = treat more of the signal as noise (more aggressive).
+    pub threshold_db: f64,
+    /// Mask exponent.  1.0 = plain Wiener; higher cuts harder.
+    pub sharpness: f64,
+    /// Per-bin time smoothing 0..0.95 — higher suppresses musical noise.
+    pub smoothing: f64,
+    /// Half-width (in bins) of the spectral blur applied to the mask.
+    pub freq_smoothing_bins: u32,
+    /// Track the noise floor continuously instead of using a learned profile.
+    pub auto_profile: bool,
+    pub bypass: bool,
+}
+
+impl Default for DenoiseConfig {
+    fn default() -> Self {
+        Self {
+            reduction_db: 0.0, threshold_db: 0.0, sharpness: 1.0, smoothing: 0.6,
+            freq_smoothing_bins: 2, auto_profile: true, bypass: false,
+        }
+    }
+}
+
+/// Mains-hum removal parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct DehumConfig {
+    /// Mains fundamental (50 or 60 Hz, or a measured value).
+    pub frequency_hz: f64,
+    /// Harmonics to notch, including the fundamental (1..=12).
+    pub harmonics: u32,
+    /// Notch depth (dB, ≥ 0).  0 = off.
+    pub depth_db: f64,
+    /// Notch Q — higher is narrower, taking less music with the hum.
+    pub q: f64,
+    /// Scale each notch by how hum-like that partial actually is.
+    pub adaptive: bool,
+    pub bypass: bool,
+}
+
+impl Default for DehumConfig {
+    fn default() -> Self {
+        Self { frequency_hz: 60.0, harmonics: 6, depth_db: 0.0, q: 30.0, adaptive: true, bypass: false }
+    }
+}
+
+/// Click / crackle removal parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct DeclickConfig {
+    /// How far above the local level a sample must sit to count as a click.
+    pub sensitivity: f64,
+    /// Longest defect the repairer interpolates across, in samples.
+    pub max_run_samples: u32,
+    pub bypass: bool,
+}
+
+impl Default for DeclickConfig {
+    fn default() -> Self {
+        Self { sensitivity: 6.0, max_run_samples: 16, bypass: true }
+    }
+}
+
+/// De-esser parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct DeessConfig {
+    /// Split frequency between the untouched low band and the ducked band.
+    pub frequency_hz: f64,
+    /// Detector threshold (dBFS).
+    pub threshold_db: f64,
+    /// Compression ratio applied above the threshold.
+    pub ratio: f64,
+    /// Maximum attenuation (dB, ≥ 0).  0 = off.
+    pub range_db: f64,
+    pub attack_ms: f64,
+    pub release_ms: f64,
+    /// Duck the whole signal instead of only the high band.
+    pub wideband: bool,
+    pub bypass: bool,
+}
+
+impl Default for DeessConfig {
+    fn default() -> Self {
+        Self {
+            frequency_hz: 6_500.0, threshold_db: -30.0, ratio: 4.0, range_db: 0.0,
+            attack_ms: 1.0, release_ms: 60.0, wideband: false, bypass: false,
+        }
+    }
+}
+
 /// EQ (gentle tone shaping) parameters.
 #[derive(Debug, Clone, Copy)]
 pub struct EqConfig {
