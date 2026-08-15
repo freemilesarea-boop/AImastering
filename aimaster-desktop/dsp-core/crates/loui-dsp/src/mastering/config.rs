@@ -104,6 +104,375 @@ impl Default for DeessConfig {
     }
 }
 
+// ── Dynamic EQ ───────────────────────────────────────────────────────────
+
+/// Filter shape for one dynamic-EQ band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynEqBandShape {
+    Bell,
+    LowShelf,
+    HighShelf,
+}
+
+/// Which direction a dynamic-EQ band moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynEqMode {
+    /// Cut when the band exceeds the threshold.
+    Down,
+    /// Boost when the band falls below the threshold.
+    Up,
+}
+
+/// One dynamic-EQ band.
+#[derive(Debug, Clone, Copy)]
+pub struct DynEqBandConfig {
+    pub enabled: bool,
+    pub shape: DynEqBandShape,
+    pub mode: DynEqMode,
+    pub frequency_hz: f64,
+    pub q: f64,
+    pub threshold_db: f64,
+    pub ratio: f64,
+    /// Maximum move (dB, ≥ 0).  0 = the band does nothing.
+    pub range_db: f64,
+    pub attack_ms: f64,
+    pub release_ms: f64,
+}
+
+impl Default for DynEqBandConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, shape: DynEqBandShape::Bell, mode: DynEqMode::Down,
+            frequency_hz: 1_000.0, q: 1.0, threshold_db: -24.0, ratio: 3.0,
+            range_db: 6.0, attack_ms: 10.0, release_ms: 120.0,
+        }
+    }
+}
+
+/// Dynamic EQ parameters — six independent bands.
+#[derive(Debug, Clone, Copy)]
+pub struct DynamicEqConfig {
+    pub bands: [DynEqBandConfig; 6],
+    pub bypass: bool,
+}
+
+impl Default for DynamicEqConfig {
+    fn default() -> Self {
+        Self { bands: [DynEqBandConfig::default(); 6], bypass: false }
+    }
+}
+
+// ── Multiband dynamics ───────────────────────────────────────────────────
+
+/// Direction a multiband band operates in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultibandMode {
+    /// Reduce level above the threshold.
+    Compress,
+    /// Reduce level below the threshold (downward expansion).
+    Expand,
+}
+
+/// One band of the multiband dynamics processor.
+#[derive(Debug, Clone, Copy)]
+pub struct MultibandBandConfig {
+    pub mode: MultibandMode,
+    pub threshold_db: f64,
+    pub ratio: f64,
+    pub attack_ms: f64,
+    pub release_ms: f64,
+    pub makeup_db: f64,
+    /// Maximum gain reduction (dB, ≥ 0).
+    pub range_db: f64,
+    /// Parallel mix 0..100 (% wet).
+    pub mix_pct: f64,
+    pub solo: bool,
+    pub mute: bool,
+    pub bypass: bool,
+}
+
+impl Default for MultibandBandConfig {
+    fn default() -> Self {
+        Self {
+            mode: MultibandMode::Compress, threshold_db: 0.0, ratio: 1.0,
+            attack_ms: 10.0, release_ms: 120.0, makeup_db: 0.0, range_db: 24.0,
+            mix_pct: 100.0, solo: false, mute: false, bypass: false,
+        }
+    }
+}
+
+/// Multiband dynamics parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct MultibandConfig {
+    /// Three crossover points (ascending) splitting the four bands.
+    pub crossover_hz: [f64; 3],
+    pub bands: [MultibandBandConfig; 4],
+    pub bypass: bool,
+}
+
+impl Default for MultibandConfig {
+    fn default() -> Self {
+        Self {
+            crossover_hz: [120.0, 800.0, 5_000.0],
+            bands: [MultibandBandConfig::default(); 4],
+            bypass: false,
+        }
+    }
+}
+
+// ── Exciter ──────────────────────────────────────────────────────────────
+
+/// Harmonic character the exciter generates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExciterMode {
+    Warm,
+    Retro,
+    Tape,
+    Tube,
+    Triode,
+}
+
+/// Multiband exciter parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct ExciterConfig {
+    pub mode: ExciterMode,
+    pub crossover_hz: [f64; 3],
+    /// Dry/wet blend per band, 0..100.
+    pub band_amount_pct: [f64; 4],
+    /// Pre-saturation drive (dB, ≥ 0).
+    pub drive_db: f64,
+    /// Post-module trim (dB).
+    pub output_db: f64,
+    pub bypass: bool,
+}
+
+impl Default for ExciterConfig {
+    fn default() -> Self {
+        Self {
+            mode: ExciterMode::Tube,
+            crossover_hz: [120.0, 800.0, 5_000.0],
+            band_amount_pct: [0.0; 4],
+            drive_db: 6.0,
+            output_db: 0.0,
+            bypass: false,
+        }
+    }
+}
+
+// ── Impact ───────────────────────────────────────────────────────────────
+
+/// Multiband transient-shaper parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct ImpactConfig {
+    pub crossover_hz: [f64; 3],
+    /// Per band: > 0 accentuates attacks, < 0 softens them.  Range -100..100.
+    pub impact_pct: [f64; 4],
+    pub bypass: bool,
+}
+
+impl Default for ImpactConfig {
+    fn default() -> Self {
+        Self { crossover_hz: [120.0, 800.0, 5_000.0], impact_pct: [0.0; 4], bypass: false }
+    }
+}
+
+// ── Low End Focus ────────────────────────────────────────────────────────
+
+/// Which way Low End Focus shapes the low band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LowEndFocusMode {
+    /// Accentuate low transients — tighter, more separated.
+    Punchy,
+    /// Soften low transients — denser, more even.
+    Smooth,
+}
+
+/// Low End Focus parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct LowEndFocusConfig {
+    pub mode: LowEndFocusMode,
+    /// Split between the shaped low band and the untouched rest.
+    pub frequency_hz: f64,
+    /// How hard the contrast is applied, 0..100.
+    pub contrast_pct: f64,
+    /// Trim on the low band, in dB.
+    pub gain_db: f64,
+    pub bypass: bool,
+}
+
+impl Default for LowEndFocusConfig {
+    fn default() -> Self {
+        Self {
+            mode: LowEndFocusMode::Punchy, frequency_hz: 150.0,
+            contrast_pct: 0.0, gain_db: 0.0, bypass: false,
+        }
+    }
+}
+
+// ── Spectral stage (Match EQ / Shaper / Stabilizer / Tonal Balance) ──────
+
+/// Bands in the shared logarithmic curve grid.  Mirrors
+/// [`super::spectral::CURVE_BANDS`]; kept here so the config type is
+/// self-contained.
+pub const SPECTRAL_CURVE_BANDS: usize = 32;
+
+/// Parameters for the shared spectral stage.
+#[derive(Debug, Clone, Copy)]
+pub struct SpectralConfig {
+    // Match EQ.
+    pub match_enabled: bool,
+    /// How much of the source→target difference to apply, 0..100.
+    pub match_amount_pct: f64,
+    /// Per-band ceiling on the Match EQ move, in dB.
+    pub match_max_move_db: f64,
+    /// Reference curve, dB per curve band (absolute level is ignored).
+    pub target_curve_db: [f64; SPECTRAL_CURVE_BANDS],
+
+    // Spectral Shaper.
+    pub shaper_enabled: bool,
+    /// How much of the excess to remove, 0..100.
+    pub shaper_amount_pct: f64,
+    /// How far above its neighbourhood a bin must sit before it is shaped.
+    pub shaper_threshold_db: f64,
+    /// Low edge of the shaped region, Hz.
+    pub shaper_low_hz: f64,
+    /// High edge of the shaped region, Hz.
+    pub shaper_high_hz: f64,
+    /// Half-width, in FFT bins, of the neighbourhood the excess is measured
+    /// against.
+    pub shaper_blur_bins: u32,
+
+    // Stabilizer.
+    pub stabilizer_enabled: bool,
+    /// How much of the source→tilt difference to apply, 0..100.
+    pub stabilizer_amount_pct: f64,
+    /// Target spectral tilt, in dB per octave (negative = darker).
+    pub stabilizer_tilt_db_per_oct: f64,
+    /// Per-band ceiling on the Stabilizer move, in dB.
+    pub stabilizer_max_move_db: f64,
+
+    /// Smoothing applied to the combined correction curve, in bands.
+    pub curve_smoothing_bands: u32,
+    /// Measure the tonal curve but do not process — drives Tonal Balance
+    /// metering when no spectral processing is wanted.
+    pub analysis_only: bool,
+    pub bypass: bool,
+}
+
+impl Default for SpectralConfig {
+    fn default() -> Self {
+        Self {
+            match_enabled: false,
+            match_amount_pct: 50.0,
+            match_max_move_db: 9.0,
+            target_curve_db: [0.0; SPECTRAL_CURVE_BANDS],
+            shaper_enabled: false,
+            shaper_amount_pct: 50.0,
+            shaper_threshold_db: 8.0,
+            shaper_low_hz: 1_000.0,
+            shaper_high_hz: 16_000.0,
+            shaper_blur_bins: 12,
+            stabilizer_enabled: false,
+            stabilizer_amount_pct: 40.0,
+            stabilizer_tilt_db_per_oct: -1.5,
+            stabilizer_max_move_db: 6.0,
+            curve_smoothing_bands: 2,
+            analysis_only: false,
+            bypass: false,
+        }
+    }
+}
+
+// ── Vintage suite ────────────────────────────────────────────────────────
+
+/// Passive program EQ parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct VintageEqConfig {
+    /// Low shelf frequency (the boost and cut are both referenced to it).
+    pub low_frequency_hz: f64,
+    /// Low boost (dB, ≥ 0).
+    pub low_boost_db: f64,
+    /// Low cut (dB, ≥ 0).  Boost and cut together do not cancel.
+    pub low_cut_db: f64,
+    /// High bell frequency.
+    pub high_frequency_hz: f64,
+    /// High boost (dB, ≥ 0).
+    pub high_boost_db: f64,
+    /// High cut (dB, ≥ 0).
+    pub high_cut_db: f64,
+    /// Bandwidth of the high boost, 0 (narrow) .. 1 (wide).
+    pub high_bandwidth: f64,
+    pub bypass: bool,
+}
+
+impl Default for VintageEqConfig {
+    fn default() -> Self {
+        Self {
+            low_frequency_hz: 60.0, low_boost_db: 0.0, low_cut_db: 0.0,
+            high_frequency_hz: 10_000.0, high_boost_db: 0.0, high_cut_db: 0.0,
+            high_bandwidth: 0.5, bypass: false,
+        }
+    }
+}
+
+/// Vari-mu compressor parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct VintageCompressorConfig {
+    pub threshold_db: f64,
+    pub ratio: f64,
+    pub attack_ms: f64,
+    pub makeup_db: f64,
+    /// How much saturation rides with the gain reduction, 0..100.
+    pub character_pct: f64,
+    /// Parallel mix 0..100 (% wet).
+    pub mix_pct: f64,
+    pub bypass: bool,
+}
+
+impl Default for VintageCompressorConfig {
+    fn default() -> Self {
+        Self {
+            threshold_db: -18.0, ratio: 1.0, attack_ms: 10.0, makeup_db: 0.0,
+            character_pct: 40.0, mix_pct: 100.0, bypass: false,
+        }
+    }
+}
+
+/// Tape transport speed — sets the head bump and HF loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapeSpeed {
+    /// 7.5 ips — low, strong head bump, early HF roll-off.
+    Ips7_5,
+    /// 15 ips — the usual mastering speed.
+    Ips15,
+    /// 30 ips — tightest low end, most extended top.
+    Ips30,
+}
+
+/// Tape emulation parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct VintageTapeConfig {
+    pub speed: TapeSpeed,
+    /// Record level into the tape (dB, ≥ 0).  Level-matched on output.
+    pub drive_db: f64,
+    /// Bias, -1 (under) .. +1 (over) — shifts the head bump.
+    pub bias: f64,
+    /// Wow and flutter depth, 0..100.
+    pub wow_flutter_pct: f64,
+    /// Dry/wet mix 0..100.
+    pub mix_pct: f64,
+    pub bypass: bool,
+}
+
+impl Default for VintageTapeConfig {
+    fn default() -> Self {
+        Self {
+            speed: TapeSpeed::Ips15, drive_db: 0.0, bias: 0.0,
+            wow_flutter_pct: 0.0, mix_pct: 0.0, bypass: false,
+        }
+    }
+}
+
 /// EQ (gentle tone shaping) parameters.
 #[derive(Debug, Clone, Copy)]
 pub struct EqConfig {
@@ -152,16 +521,39 @@ pub struct ImagerConfig {
     pub width_pct: f64,
     /// Sum to mono below this frequency (Hz).
     pub low_mono_hz: f64,
+    /// Per-band width (%), low → high.  All 100 = the band splitter is
+    /// skipped entirely and the module stays bit-transparent at width 100.
+    pub band_width_pct: [f64; 4],
+    /// Crossover points for the per-band widths.
+    pub crossover_hz: [f64; 3],
     pub bypass: bool,
 }
 
 impl Default for ImagerConfig {
     fn default() -> Self {
-        Self { width_pct: 100.0, low_mono_hz: 20.0, bypass: false }
+        Self {
+            width_pct: 100.0, low_mono_hz: 20.0,
+            band_width_pct: [100.0; 4], crossover_hz: [120.0, 800.0, 5_000.0],
+            bypass: false,
+        }
     }
 }
 
 /// Lookahead true-peak-safe limiter parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimiterCharacter {
+    /// Neutral release, no soft clip — the safety limiter.
+    Clean,
+    /// Slowest release, gentlest — least audible on dense material.
+    Transparent,
+    /// Fast release with a touch of soft clip — keeps attacks forward.
+    Punchy,
+    /// Slow release, no clip — glues and rides level.
+    Smooth,
+    /// Fastest release with real soft clip — maximum loudness.
+    Aggressive,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct LimiterConfig {
     /// Ceiling in dBTP (sample-peak approximation in preview).
@@ -170,12 +562,19 @@ pub struct LimiterConfig {
     pub lookahead_ms: f64,
     /// True-peak (inter-sample) guard — adds a small extra headroom.
     pub isp: bool,
+    /// Gain driven into the limiter, in dB — the maximizer's "how loud".
+    pub drive_db: f64,
+    /// Release behaviour and soft-clip amount.
+    pub character: LimiterCharacter,
     pub bypass: bool,
 }
 
 impl Default for LimiterConfig {
     fn default() -> Self {
-        Self { ceiling_dbtp: -1.0, lookahead_ms: 2.5, isp: true, bypass: false }
+        Self {
+            ceiling_dbtp: -1.0, lookahead_ms: 2.5, isp: true,
+            drive_db: 0.0, character: LimiterCharacter::Clean, bypass: false,
+        }
     }
 }
 
@@ -184,8 +583,27 @@ impl Default for LimiterConfig {
 pub struct MasteringChainConfig {
     /// Input gain (dB) applied before the chain.
     pub input_gain_db: f64,
+    // Restoration.
+    pub declick: DeclickConfig,
+    pub dehum: DehumConfig,
+    pub denoise: DenoiseConfig,
+    pub deess: DeessConfig,
+    // Corrective / spectral.
+    pub spectral: SpectralConfig,
+    // Tone.
+    pub vintage_eq: VintageEqConfig,
     pub eq: EqConfig,
+    pub dynamic_eq: DynamicEqConfig,
+    // Dynamics.
+    pub multiband: MultibandConfig,
     pub dynamics: DynamicsConfig,
+    pub vintage_comp: VintageCompressorConfig,
+    pub impact: ImpactConfig,
+    pub low_end_focus: LowEndFocusConfig,
+    // Character.
+    pub exciter: ExciterConfig,
+    pub tape: VintageTapeConfig,
+    // Stereo + output.
     pub imager: ImagerConfig,
     pub limiter: LimiterConfig,
     /// Output gain (dB) applied after the chain.
@@ -198,8 +616,21 @@ impl Default for MasteringChainConfig {
     fn default() -> Self {
         Self {
             input_gain_db: 0.0,
+            declick: DeclickConfig::default(),
+            dehum: DehumConfig::default(),
+            denoise: DenoiseConfig::default(),
+            deess: DeessConfig::default(),
+            spectral: SpectralConfig::default(),
+            vintage_eq: VintageEqConfig::default(),
             eq: EqConfig::default(),
+            dynamic_eq: DynamicEqConfig::default(),
+            multiband: MultibandConfig::default(),
             dynamics: DynamicsConfig::default(),
+            vintage_comp: VintageCompressorConfig::default(),
+            impact: ImpactConfig::default(),
+            low_end_focus: LowEndFocusConfig::default(),
+            exciter: ExciterConfig::default(),
+            tape: VintageTapeConfig::default(),
             imager: ImagerConfig::default(),
             limiter: LimiterConfig::default(),
             output_gain_db: 0.0,

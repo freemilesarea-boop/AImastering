@@ -75,6 +75,52 @@ impl Lr4 {
     }
 }
 
+/// Two-band Linkwitz-Riley splitter for one channel.
+///
+/// The simple case of the tree above: one split point, low and high outputs
+/// that sum back to the input with flat magnitude.  Used where a module only
+/// needs to separate one region (Low End Focus, the imager's low-mono).
+#[derive(Debug, Clone, Copy)]
+pub struct Crossover2 {
+    sr: f64,
+    freq: f64,
+    stage: Lr4,
+}
+
+impl Crossover2 {
+    /// Construct with one crossover frequency.
+    pub fn new(sample_rate: f64, freq_hz: f64) -> Self {
+        let f = Self::sanitise(freq_hz, sample_rate);
+        Self { sr: sample_rate, freq: f, stage: Lr4::new(sample_rate, f) }
+    }
+
+    /// Update the crossover frequency (state preserved — no click).
+    pub fn set_freq(&mut self, freq_hz: f64) {
+        let f = Self::sanitise(freq_hz, self.sr);
+        if (f - self.freq).abs() < 1e-9 {
+            return;
+        }
+        self.freq = f;
+        self.stage.set_freq(self.sr, f);
+    }
+
+    /// The active crossover frequency.
+    pub fn freq(&self) -> f64 { self.freq }
+
+    fn sanitise(freq_hz: f64, sr: f64) -> f64 {
+        if freq_hz.is_finite() { freq_hz.clamp(20.0, sr * 0.45) } else { 200.0 }
+    }
+
+    /// Split one sample into `(low, high)`.
+    #[inline]
+    pub fn split(&mut self, x: f64) -> (f64, f64) {
+        self.stage.split(x)
+    }
+
+    /// Clear filter state.
+    pub fn reset(&mut self) { self.stage.reset(); }
+}
+
 /// 4-band Linkwitz-Riley splitter for one channel.
 #[derive(Debug, Clone, Copy)]
 pub struct Crossover4 {

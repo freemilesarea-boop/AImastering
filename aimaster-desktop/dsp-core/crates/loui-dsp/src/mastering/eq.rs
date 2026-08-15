@@ -9,6 +9,11 @@
 //!
 //! NOT a full adaptive/AI EQ — `adaptive` is a gentle harshness control,
 //! documented so the curve preview and the audible result stay close.
+//!
+//! `low_cut_hz` at its minimum (20 Hz) means *off*, and is honoured as off:
+//! the high-pass is skipped rather than run at 20 Hz.  Running it would add
+//! a phase shift across the bottom octave that the user never asked for, and
+//! would stop a neutral EQ from being bit-transparent.
 
 use crate::biquad::{Biquad, BiquadCoeffs};
 use super::config::EqConfig;
@@ -20,8 +25,13 @@ const AIR_HZ: f64 = 12_000.0;
 const HARSH_HZ: f64 = 4000.0;
 const HARSH_DIP_DB: f64 = -1.5;
 
+/// At or below this cutoff the high-pass is treated as switched off.
+const LOW_CUT_OFF_HZ: f64 = 20.0;
+
 struct ChannelBands {
     hp: Biquad,
+    /// False when `low_cut_hz` is at its minimum — the high-pass is skipped.
+    hp_active: bool,
     low_shelf: Biquad,
     presence: Biquad,
     air: Biquad,
@@ -31,7 +41,8 @@ struct ChannelBands {
 impl ChannelBands {
     fn new(sr: f64, cfg: &EqConfig) -> Self {
         Self {
-            hp: Biquad::new(BiquadCoeffs::high_pass(sr, cfg.low_cut_hz.max(20.0), 0.707)),
+            hp: Biquad::new(BiquadCoeffs::high_pass(sr, cfg.low_cut_hz.max(LOW_CUT_OFF_HZ), 0.707)),
+            hp_active: cfg.low_cut_hz > LOW_CUT_OFF_HZ,
             low_shelf: Biquad::new(BiquadCoeffs::low_shelf(sr, LOW_SHELF_HZ, 0.707, cfg.low_shelf_db)),
             presence: Biquad::new(BiquadCoeffs::peaking(sr, PRESENCE_HZ, 1.1, cfg.presence_db)),
             air: Biquad::new(BiquadCoeffs::high_shelf(sr, AIR_HZ, 0.707, cfg.air_db)),
@@ -40,7 +51,8 @@ impl ChannelBands {
     }
 
     fn set(&mut self, sr: f64, cfg: &EqConfig) {
-        self.hp.set_coeffs(BiquadCoeffs::high_pass(sr, cfg.low_cut_hz.max(20.0), 0.707));
+        self.hp.set_coeffs(BiquadCoeffs::high_pass(sr, cfg.low_cut_hz.max(LOW_CUT_OFF_HZ), 0.707));
+        self.hp_active = cfg.low_cut_hz > LOW_CUT_OFF_HZ;
         self.low_shelf.set_coeffs(BiquadCoeffs::low_shelf(sr, LOW_SHELF_HZ, 0.707, cfg.low_shelf_db));
         self.presence.set_coeffs(BiquadCoeffs::peaking(sr, PRESENCE_HZ, 1.1, cfg.presence_db));
         self.air.set_coeffs(BiquadCoeffs::high_shelf(sr, AIR_HZ, 0.707, cfg.air_db));
@@ -57,7 +69,7 @@ impl ChannelBands {
 
     #[inline]
     fn process(&mut self, x: f64) -> f64 {
-        let y = self.hp.process(x);
+        let y = if self.hp_active { self.hp.process(x) } else { x };
         let y = self.low_shelf.process(y);
         let y = self.presence.process(y);
         let y = self.air.process(y);

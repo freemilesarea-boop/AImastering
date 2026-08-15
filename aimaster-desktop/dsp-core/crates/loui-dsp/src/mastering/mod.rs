@@ -28,6 +28,13 @@ mod declick;
 mod dehum;
 mod denoise;
 mod deess;
+mod dynamic_eq;
+mod exciter;
+mod impact;
+mod low_end_focus;
+mod multiband;
+mod spectral;
+mod vintage;
 mod eq;
 mod parametric_eq;
 mod dynamics;
@@ -38,7 +45,21 @@ mod chain;
 pub use config::{
     MasteringChainConfig, EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
     DenoiseConfig, DehumConfig, DeclickConfig, DeessConfig,
+    DynamicEqConfig, DynEqBandConfig, DynEqBandShape, DynEqMode,
+    MultibandConfig, MultibandBandConfig, MultibandMode,
+    ExciterConfig, ExciterMode,
+    ImpactConfig,
+    LowEndFocusConfig, LowEndFocusMode,
+    SpectralConfig, SPECTRAL_CURVE_BANDS,
+    VintageEqConfig, VintageCompressorConfig, VintageTapeConfig, TapeSpeed,
 };
+pub use spectral::{Spectral, CURVE_BANDS, curve_band_hz};
+pub use vintage::{VintageEq, VintageCompressor, VintageTape};
+pub use dynamic_eq::{DynamicEq, DYN_EQ_BANDS};
+pub use exciter::Exciter;
+pub use impact::Impact;
+pub use low_end_focus::LowEndFocus;
+pub use multiband::Multiband;
 pub use declick::Declick;
 pub use dehum::Dehum;
 pub use denoise::Denoise;

@@ -120,9 +120,17 @@ impl Denoise {
         self.cfg = cfg;
     }
 
-    /// Processing latency in samples.
+    /// Processing latency in samples.  Zero when the module is inactive,
+    /// since the STFT is skipped entirely in that case.
     pub fn latency_samples(&self) -> usize {
-        if self.cfg.bypass { 0 } else { self.left.stft.latency_samples() }
+        if self.is_active() { self.left.stft.latency_samples() } else { 0 }
+    }
+
+    /// True when the module would change the signal or needs to observe it.
+    /// An inactive de-noiser is skipped outright — it must not cost a
+    /// transform, and must not impose its frame of latency on the chain.
+    fn is_active(&self) -> bool {
+        !self.cfg.bypass && (self.cfg.reduction_db > 0.0 || self.learning)
     }
 
     /// Begin capturing a noise profile.  Feed a noise-only passage, then
@@ -267,7 +275,7 @@ impl Denoise {
 
 impl StereoModule for Denoise {
     fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
-        if self.cfg.bypass {
+        if !self.is_active() {
             return;
         }
         self.process_channel(left, true);
