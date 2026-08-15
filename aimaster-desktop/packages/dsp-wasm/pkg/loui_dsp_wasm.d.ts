@@ -72,13 +72,62 @@ export class LouiMasteringChain {
     free(): void;
     [Symbol.dispose](): void;
     /**
+     * Samples the de-clicker has repaired since the last reset.
+     */
+    declickRepairCount(): number;
+    /**
+     * De-esser gain reduction (dB, ≥ 0).
+     */
+    deessGrDb(): number;
+    /**
+     * Deepest hum notch currently applied (dB, ≥ 0).
+     */
+    dehumDepthDb(): number;
+    /**
+     * Start capturing a de-noise profile from the audio that follows.
+     */
+    denoiseBeginLearn(): void;
+    /**
+     * Finish a de-noise profile capture.  Returns false (keeping the old
+     * profile) when nothing was captured.
+     */
+    denoiseFinishLearn(): boolean;
+    /**
+     * Whether a usable de-noise profile exists.
+     */
+    denoiseHasProfile(): boolean;
+    /**
+     * The learned noise floor, dBFS per FFT bin.
+     */
+    denoiseProfileDb(): Float64Array;
+    /**
+     * Signed gain applied by each dynamic-EQ band (dB).
+     */
+    dynamicEqGainsDb(): Float64Array;
+    /**
      * Dynamics (compressor) gain reduction (dB, ≥ 0) from the last block.
      */
     dynamicsGrDb(): number;
     /**
+     * Signed gain applied by each Impact band (dB).
+     */
+    impactMoveDb(): Float64Array;
+    /**
+     * Total processing latency in samples for the current config.
+     */
+    latencySamples(): number;
+    /**
      * Limiter gain reduction (dB, ≥ 0) from the last block.
      */
     limiterGrDb(): number;
+    /**
+     * Signed gain Low End Focus applied (dB).
+     */
+    lowEndFocusMoveDb(): number;
+    /**
+     * Multiband dynamics gain reduction per band, low → high (dB, ≥ 0).
+     */
+    multibandGrDb(): Float64Array;
     /**
      * Construct the chain for a sample rate.  Starts at unity (default
      * config = transparent pass-through until the UI sets parameters).
@@ -88,10 +137,6 @@ export class LouiMasteringChain {
      * Count of currently-active parametric EQ bands (for diagnostics).
      */
     parametricEqBandCount(): number;
-    /**
-     * Process one block of planar stereo audio in place.  The mutations
-     * are reflected back into the JS-side Float32Arrays.
-     */
     processStereo(left: Float32Array, right: Float32Array): void;
     /**
      * Clear all module state (transport seek / source swap).
@@ -106,8 +151,30 @@ export class LouiMasteringChain {
      * Update the full configuration from the UI parameters.  Flat
      * argument list keeps the JS binding simple + zero-alloc.  Units are
      * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
+     * Legacy positional configuration — the original five-module chain.
+     *
+     * Kept for hosts built before the full module suite existed.  Modules
+     * it does not mention are reset to their neutral defaults, so calling
+     * it gives exactly the old behaviour.  New hosts should call
+     * [`LouiMasteringChain::set_config_json`], which can address every
+     * module and only needs to send the ones it uses.
      */
     setConfig(input_gain_db: number, eq_low_cut_hz: number, eq_low_shelf_db: number, eq_presence_db: number, eq_air_db: number, eq_adaptive: boolean, eq_bypass: boolean, dyn_threshold_db: number, dyn_ratio: number, dyn_attack_ms: number, dyn_release_ms: number, dyn_mix_pct: number, dyn_bypass: boolean, img_width_pct: number, img_low_mono_hz: number, img_bypass: boolean, lim_ceiling_dbtp: number, lim_lookahead_ms: number, lim_isp: boolean, lim_bypass: boolean, output_gain_db: number, master_bypass: boolean): void;
+    /**
+     * Process one block of planar stereo audio in place.  The mutations
+     * are reflected back into the JS-side Float32Arrays.
+     * Configure the whole chain from a JSON object.
+     *
+     * Keys are camelCase and every one is optional — an absent module (or
+     * an absent field within one) keeps its neutral default.  That is what
+     * lets the UI send only the modules the user has touched instead of
+     * serialising 150 parameters on every knob move.
+     *
+     * Returns an error (leaving the chain untouched) when the JSON does not
+     * parse or a value has the wrong type, so a bad config can never put
+     * the audio thread into a half-applied state.
+     */
+    setConfigJson(json: string): void;
     /**
      * Replace the free parametric EQ band list.  Bands are passed as five
      * parallel typed arrays so JS can populate them without per-band JS
@@ -123,6 +190,28 @@ export class LouiMasteringChain {
      * all bands (chain becomes a parametric-EQ passthrough).
      */
     setParametricEqBands(types: Uint8Array, freqs: Float64Array, gains: Float64Array, qs: Float64Array, enableds: Uint8Array): void;
+    /**
+     * The spectral correction currently applied, per curve band.
+     */
+    spectralCorrectionDb(): Float64Array;
+    /**
+     * Whether the tonal analysis has observed enough audio to be trusted.
+     */
+    tonalAnalysisReady(): boolean;
+    /**
+     * Measured long-term tonal curve, dB per curve band (Tonal Balance).
+     * Bands not yet observed read as a very low value rather than -inf, so
+     * the array survives the trip through JSON.
+     */
+    tonalCurveDb(): Float64Array;
+    /**
+     * Deviation of the tonal curve from the configured target, per band.
+     */
+    tonalDeviationDb(): Float64Array;
+    /**
+     * Vintage compressor gain reduction (dB, ≥ 0).
+     */
+    vintageCompGrDb(): number;
 }
 
 /**
@@ -313,15 +402,33 @@ export interface InitOutput {
     readonly louianalyzer_sampleRate: (a: number) => number;
     readonly louianalyzer_snapshot: (a: number) => number;
     readonly louianalyzer_tickSnapshot: (a: number) => number;
+    readonly louimasteringchain_declickRepairCount: (a: number) => number;
+    readonly louimasteringchain_deessGrDb: (a: number) => number;
+    readonly louimasteringchain_dehumDepthDb: (a: number) => number;
+    readonly louimasteringchain_denoiseBeginLearn: (a: number) => void;
+    readonly louimasteringchain_denoiseFinishLearn: (a: number) => number;
+    readonly louimasteringchain_denoiseHasProfile: (a: number) => number;
+    readonly louimasteringchain_denoiseProfileDb: (a: number) => [number, number];
+    readonly louimasteringchain_dynamicEqGainsDb: (a: number) => [number, number];
     readonly louimasteringchain_dynamicsGrDb: (a: number) => number;
+    readonly louimasteringchain_impactMoveDb: (a: number) => [number, number];
+    readonly louimasteringchain_latencySamples: (a: number) => number;
     readonly louimasteringchain_limiterGrDb: (a: number) => number;
+    readonly louimasteringchain_lowEndFocusMoveDb: (a: number) => number;
+    readonly louimasteringchain_multibandGrDb: (a: number) => [number, number];
     readonly louimasteringchain_new: (a: number) => number;
     readonly louimasteringchain_parametricEqBandCount: (a: number) => number;
     readonly louimasteringchain_processStereo: (a: number, b: number, c: number, d: any, e: number, f: number, g: any) => void;
     readonly louimasteringchain_reset: (a: number) => void;
     readonly louimasteringchain_safetyEvents: (a: number) => number;
     readonly louimasteringchain_setConfig: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number) => void;
+    readonly louimasteringchain_setConfigJson: (a: number, b: number, c: number) => [number, number];
     readonly louimasteringchain_setParametricEqBands: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number];
+    readonly louimasteringchain_spectralCorrectionDb: (a: number) => [number, number];
+    readonly louimasteringchain_tonalAnalysisReady: (a: number) => number;
+    readonly louimasteringchain_tonalCurveDb: (a: number) => [number, number];
+    readonly louimasteringchain_tonalDeviationDb: (a: number) => [number, number];
+    readonly louimasteringchain_vintageCompGrDb: (a: number) => number;
     readonly louispectrumanalyzer_binCentresHz: (a: number) => [number, number];
     readonly louispectrumanalyzer_binCount: (a: number) => number;
     readonly louispectrumanalyzer_fftSize: (a: number) => number;

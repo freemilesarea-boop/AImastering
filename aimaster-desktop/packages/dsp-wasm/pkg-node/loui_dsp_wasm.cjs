@@ -149,6 +149,73 @@ class LouiMasteringChain {
         wasm.__wbg_louimasteringchain_free(ptr, 0);
     }
     /**
+     * Samples the de-clicker has repaired since the last reset.
+     * @returns {number}
+     */
+    declickRepairCount() {
+        const ret = wasm.louimasteringchain_declickRepairCount(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * De-esser gain reduction (dB, ≥ 0).
+     * @returns {number}
+     */
+    deessGrDb() {
+        const ret = wasm.louimasteringchain_deessGrDb(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Deepest hum notch currently applied (dB, ≥ 0).
+     * @returns {number}
+     */
+    dehumDepthDb() {
+        const ret = wasm.louimasteringchain_dehumDepthDb(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Start capturing a de-noise profile from the audio that follows.
+     */
+    denoiseBeginLearn() {
+        wasm.louimasteringchain_denoiseBeginLearn(this.__wbg_ptr);
+    }
+    /**
+     * Finish a de-noise profile capture.  Returns false (keeping the old
+     * profile) when nothing was captured.
+     * @returns {boolean}
+     */
+    denoiseFinishLearn() {
+        const ret = wasm.louimasteringchain_denoiseFinishLearn(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Whether a usable de-noise profile exists.
+     * @returns {boolean}
+     */
+    denoiseHasProfile() {
+        const ret = wasm.louimasteringchain_denoiseHasProfile(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * The learned noise floor, dBFS per FFT bin.
+     * @returns {Float64Array}
+     */
+    denoiseProfileDb() {
+        const ret = wasm.louimasteringchain_denoiseProfileDb(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Signed gain applied by each dynamic-EQ band (dB).
+     * @returns {Float64Array}
+     */
+    dynamicEqGainsDb() {
+        const ret = wasm.louimasteringchain_dynamicEqGainsDb(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
      * Dynamics (compressor) gain reduction (dB, ≥ 0) from the last block.
      * @returns {number}
      */
@@ -157,12 +224,48 @@ class LouiMasteringChain {
         return ret;
     }
     /**
+     * Signed gain applied by each Impact band (dB).
+     * @returns {Float64Array}
+     */
+    impactMoveDb() {
+        const ret = wasm.louimasteringchain_impactMoveDb(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Total processing latency in samples for the current config.
+     * @returns {number}
+     */
+    latencySamples() {
+        const ret = wasm.louimasteringchain_latencySamples(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
      * Limiter gain reduction (dB, ≥ 0) from the last block.
      * @returns {number}
      */
     limiterGrDb() {
         const ret = wasm.louimasteringchain_limiterGrDb(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * Signed gain Low End Focus applied (dB).
+     * @returns {number}
+     */
+    lowEndFocusMoveDb() {
+        const ret = wasm.louimasteringchain_lowEndFocusMoveDb(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Multiband dynamics gain reduction per band, low → high (dB, ≥ 0).
+     * @returns {Float64Array}
+     */
+    multibandGrDb() {
+        const ret = wasm.louimasteringchain_multibandGrDb(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
     }
     /**
      * Construct the chain for a sample rate.  Starts at unity (default
@@ -184,8 +287,6 @@ class LouiMasteringChain {
         return ret >>> 0;
     }
     /**
-     * Process one block of planar stereo audio in place.  The mutations
-     * are reflected back into the JS-side Float32Arrays.
      * @param {Float32Array} left
      * @param {Float32Array} right
      */
@@ -215,6 +316,13 @@ class LouiMasteringChain {
      * Update the full configuration from the UI parameters.  Flat
      * argument list keeps the JS binding simple + zero-alloc.  Units are
      * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
+     * Legacy positional configuration — the original five-module chain.
+     *
+     * Kept for hosts built before the full module suite existed.  Modules
+     * it does not mention are reset to their neutral defaults, so calling
+     * it gives exactly the old behaviour.  New hosts should call
+     * [`LouiMasteringChain::set_config_json`], which can address every
+     * module and only needs to send the ones it uses.
      * @param {number} input_gain_db
      * @param {number} eq_low_cut_hz
      * @param {number} eq_low_shelf_db
@@ -240,6 +348,29 @@ class LouiMasteringChain {
      */
     setConfig(input_gain_db, eq_low_cut_hz, eq_low_shelf_db, eq_presence_db, eq_air_db, eq_adaptive, eq_bypass, dyn_threshold_db, dyn_ratio, dyn_attack_ms, dyn_release_ms, dyn_mix_pct, dyn_bypass, img_width_pct, img_low_mono_hz, img_bypass, lim_ceiling_dbtp, lim_lookahead_ms, lim_isp, lim_bypass, output_gain_db, master_bypass) {
         wasm.louimasteringchain_setConfig(this.__wbg_ptr, input_gain_db, eq_low_cut_hz, eq_low_shelf_db, eq_presence_db, eq_air_db, eq_adaptive, eq_bypass, dyn_threshold_db, dyn_ratio, dyn_attack_ms, dyn_release_ms, dyn_mix_pct, dyn_bypass, img_width_pct, img_low_mono_hz, img_bypass, lim_ceiling_dbtp, lim_lookahead_ms, lim_isp, lim_bypass, output_gain_db, master_bypass);
+    }
+    /**
+     * Process one block of planar stereo audio in place.  The mutations
+     * are reflected back into the JS-side Float32Arrays.
+     * Configure the whole chain from a JSON object.
+     *
+     * Keys are camelCase and every one is optional — an absent module (or
+     * an absent field within one) keeps its neutral default.  That is what
+     * lets the UI send only the modules the user has touched instead of
+     * serialising 150 parameters on every knob move.
+     *
+     * Returns an error (leaving the chain untouched) when the JSON does not
+     * parse or a value has the wrong type, so a bad config can never put
+     * the audio thread into a half-applied state.
+     * @param {string} json
+     */
+    setConfigJson(json) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.louimasteringchain_setConfigJson(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * Replace the free parametric EQ band list.  Bands are passed as five
@@ -275,6 +406,54 @@ class LouiMasteringChain {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * The spectral correction currently applied, per curve band.
+     * @returns {Float64Array}
+     */
+    spectralCorrectionDb() {
+        const ret = wasm.louimasteringchain_spectralCorrectionDb(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Whether the tonal analysis has observed enough audio to be trusted.
+     * @returns {boolean}
+     */
+    tonalAnalysisReady() {
+        const ret = wasm.louimasteringchain_tonalAnalysisReady(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Measured long-term tonal curve, dB per curve band (Tonal Balance).
+     * Bands not yet observed read as a very low value rather than -inf, so
+     * the array survives the trip through JSON.
+     * @returns {Float64Array}
+     */
+    tonalCurveDb() {
+        const ret = wasm.louimasteringchain_tonalCurveDb(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Deviation of the tonal curve from the configured target, per band.
+     * @returns {Float64Array}
+     */
+    tonalDeviationDb() {
+        const ret = wasm.louimasteringchain_tonalDeviationDb(this.__wbg_ptr);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
+    /**
+     * Vintage compressor gain reduction (dB, ≥ 0).
+     * @returns {number}
+     */
+    vintageCompGrDb() {
+        const ret = wasm.louimasteringchain_vintageCompGrDb(this.__wbg_ptr);
+        return ret;
     }
 }
 if (Symbol.dispose) LouiMasteringChain.prototype[Symbol.dispose] = LouiMasteringChain.prototype.free;
@@ -750,6 +929,11 @@ function _assertClass(instance, klass) {
 function getArrayF32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+function getArrayF64FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
 }
 
 function getArrayU8FromWasm0(ptr, len) {

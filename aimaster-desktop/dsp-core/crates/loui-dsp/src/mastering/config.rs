@@ -7,12 +7,44 @@
 //!
 //! Field names map 1:1 to the documented UI parameters; per-field doc
 //! comments are omitted where the name + the parameter audit suffice.
+//! # Serialisation
+//!
+//! With the `serde` feature the config types deserialise from camelCase
+//! JSON, with `#[serde(default)]` on every struct.  That is what lets the
+//! WASM binding accept a partial config object: a host that only knows
+//! about the modules it uses sends those, and everything else falls back to
+//! its neutral default rather than failing to parse.
 #![allow(missing_docs)]
+
+#[cfg(feature = "serde")]
+use serde::Deserialize;
+
+/// Deserialise a band list into a fixed-size array, padding the tail with
+/// neutral defaults.
+///
+/// A host almost never wants to talk about every band — it wants to enable
+/// band 0 and leave the rest alone.  Serde's array impl demands the exact
+/// length, so this accepts any shorter list (and ignores a longer one's
+/// surplus) rather than failing the whole config.
+#[cfg(feature = "serde")]
+fn de_padded_bands<'de, D, T, const N: usize>(d: D) -> Result<[T; N], D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default + Copy,
+{
+    let list: Vec<T> = Vec::deserialize(d)?;
+    let mut out = [T::default(); N];
+    for (slot, item) in out.iter_mut().zip(list.into_iter()) {
+        *slot = item;
+    }
+    Ok(out)
+}
 
 // ── Restoration ──────────────────────────────────────────────────────────
 
 /// Spectral broadband de-noise parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct DenoiseConfig {
     /// Maximum attenuation applied to the noise floor (dB, ≥ 0).  0 = off.
     pub reduction_db: f64,
@@ -41,6 +73,7 @@ impl Default for DenoiseConfig {
 
 /// Mains-hum removal parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct DehumConfig {
     /// Mains fundamental (50 or 60 Hz, or a measured value).
     pub frequency_hz: f64,
@@ -63,6 +96,7 @@ impl Default for DehumConfig {
 
 /// Click / crackle removal parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct DeclickConfig {
     /// How far above the local level a sample must sit to count as a click.
     pub sensitivity: f64,
@@ -79,6 +113,7 @@ impl Default for DeclickConfig {
 
 /// De-esser parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct DeessConfig {
     /// Split frequency between the untouched low band and the ducked band.
     pub frequency_hz: f64,
@@ -108,6 +143,7 @@ impl Default for DeessConfig {
 
 /// Filter shape for one dynamic-EQ band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
 pub enum DynEqBandShape {
     Bell,
     LowShelf,
@@ -116,6 +152,7 @@ pub enum DynEqBandShape {
 
 /// Which direction a dynamic-EQ band moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
 pub enum DynEqMode {
     /// Cut when the band exceeds the threshold.
     Down,
@@ -125,6 +162,7 @@ pub enum DynEqMode {
 
 /// One dynamic-EQ band.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct DynEqBandConfig {
     pub enabled: bool,
     pub shape: DynEqBandShape,
@@ -151,7 +189,9 @@ impl Default for DynEqBandConfig {
 
 /// Dynamic EQ parameters — six independent bands.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct DynamicEqConfig {
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "de_padded_bands"))]
     pub bands: [DynEqBandConfig; 6],
     pub bypass: bool,
 }
@@ -166,6 +206,7 @@ impl Default for DynamicEqConfig {
 
 /// Direction a multiband band operates in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
 pub enum MultibandMode {
     /// Reduce level above the threshold.
     Compress,
@@ -175,6 +216,7 @@ pub enum MultibandMode {
 
 /// One band of the multiband dynamics processor.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct MultibandBandConfig {
     pub mode: MultibandMode,
     pub threshold_db: f64,
@@ -203,9 +245,11 @@ impl Default for MultibandBandConfig {
 
 /// Multiband dynamics parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct MultibandConfig {
     /// Three crossover points (ascending) splitting the four bands.
     pub crossover_hz: [f64; 3],
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "de_padded_bands"))]
     pub bands: [MultibandBandConfig; 4],
     pub bypass: bool,
 }
@@ -224,6 +268,7 @@ impl Default for MultibandConfig {
 
 /// Harmonic character the exciter generates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
 pub enum ExciterMode {
     Warm,
     Retro,
@@ -234,6 +279,7 @@ pub enum ExciterMode {
 
 /// Multiband exciter parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct ExciterConfig {
     pub mode: ExciterMode,
     pub crossover_hz: [f64; 3],
@@ -263,6 +309,7 @@ impl Default for ExciterConfig {
 
 /// Multiband transient-shaper parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct ImpactConfig {
     pub crossover_hz: [f64; 3],
     /// Per band: > 0 accentuates attacks, < 0 softens them.  Range -100..100.
@@ -280,6 +327,7 @@ impl Default for ImpactConfig {
 
 /// Which way Low End Focus shapes the low band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
 pub enum LowEndFocusMode {
     /// Accentuate low transients — tighter, more separated.
     Punchy,
@@ -289,6 +337,7 @@ pub enum LowEndFocusMode {
 
 /// Low End Focus parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct LowEndFocusConfig {
     pub mode: LowEndFocusMode,
     /// Split between the shaped low band and the untouched rest.
@@ -318,6 +367,7 @@ pub const SPECTRAL_CURVE_BANDS: usize = 32;
 
 /// Parameters for the shared spectral stage.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct SpectralConfig {
     // Match EQ.
     pub match_enabled: bool,
@@ -387,6 +437,7 @@ impl Default for SpectralConfig {
 
 /// Passive program EQ parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct VintageEqConfig {
     /// Low shelf frequency (the boost and cut are both referenced to it).
     pub low_frequency_hz: f64,
@@ -417,6 +468,7 @@ impl Default for VintageEqConfig {
 
 /// Vari-mu compressor parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct VintageCompressorConfig {
     pub threshold_db: f64,
     pub ratio: f64,
@@ -440,17 +492,22 @@ impl Default for VintageCompressorConfig {
 
 /// Tape transport speed — sets the head bump and HF loss.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
 pub enum TapeSpeed {
     /// 7.5 ips — low, strong head bump, early HF roll-off.
+    #[cfg_attr(feature = "serde", serde(rename = "7.5ips"))]
     Ips7_5,
     /// 15 ips — the usual mastering speed.
+    #[cfg_attr(feature = "serde", serde(rename = "15ips"))]
     Ips15,
     /// 30 ips — tightest low end, most extended top.
+    #[cfg_attr(feature = "serde", serde(rename = "30ips"))]
     Ips30,
 }
 
 /// Tape emulation parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct VintageTapeConfig {
     pub speed: TapeSpeed,
     /// Record level into the tape (dB, ≥ 0).  Level-matched on output.
@@ -475,6 +532,7 @@ impl Default for VintageTapeConfig {
 
 /// EQ (gentle tone shaping) parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct EqConfig {
     /// High-pass cutoff (Hz).  20 ≈ off.
     pub low_cut_hz: f64,
@@ -498,6 +556,7 @@ impl Default for EqConfig {
 
 /// Single-band glue compressor parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct DynamicsConfig {
     pub threshold_db: f64,
     pub ratio: f64,
@@ -516,6 +575,7 @@ impl Default for DynamicsConfig {
 
 /// Stereo imager parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct ImagerConfig {
     /// Width as a percentage: 0 = mono, 100 = unchanged, 200 = extra wide.
     pub width_pct: f64,
@@ -541,6 +601,7 @@ impl Default for ImagerConfig {
 
 /// Lookahead true-peak-safe limiter parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase"))]
 pub enum LimiterCharacter {
     /// Neutral release, no soft clip — the safety limiter.
     Clean,
@@ -555,6 +616,7 @@ pub enum LimiterCharacter {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct LimiterConfig {
     /// Ceiling in dBTP (sample-peak approximation in preview).
     pub ceiling_dbtp: f64,
@@ -580,6 +642,7 @@ impl Default for LimiterConfig {
 
 /// Full mastering-chain configuration.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
 pub struct MasteringChainConfig {
     /// Input gain (dB) applied before the chain.
     pub input_gain_db: f64,

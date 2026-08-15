@@ -9,9 +9,16 @@ publish = false
 [lib]
 crate-type = ["rlib"]
 
-# ── Zero external runtime dependencies — by design.
+# ── Zero external runtime dependencies in the default build — by design.
 # ── Realtime audio code must not pull in transitive code we don't audit.
+# ── The optional `serde` feature is deserialisation only, used by the WASM
+# ── binding to accept a config object; it never runs on the audio thread.
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]
 
 # Dev-dependencies: WAV I/O for the cross-language parity example, and
 # we do NOT depend on `criterion` (heavy + many transitive deps).  We

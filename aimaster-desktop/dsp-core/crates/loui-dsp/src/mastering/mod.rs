@@ -62,7 +62,10 @@ pub use low_end_focus::LowEndFocus;
 pub use multiband::Multiband;
 pub use declick::Declick;
 pub use dehum::Dehum;
-pub use denoise::Denoise;
+pub use denoise::{Denoise, DENOISE_FRAME};
+
+/// Number of FFT bins in a de-noise profile (`DENOISE_FRAME / 2 + 1`).
+pub const DENOISE_PROFILE_BINS: usize = DENOISE_FRAME / 2 + 1;
 pub use deess::Deess;
 pub use parametric_eq::{ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS};
 pub use chain::{MasteringChain, GainReduction};

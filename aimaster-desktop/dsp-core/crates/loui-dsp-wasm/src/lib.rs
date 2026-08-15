@@ -460,6 +460,13 @@ impl LouiMasteringChain {
     /// argument list keeps the JS binding simple + zero-alloc.  Units are
     /// UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
     #[allow(clippy::too_many_arguments)]
+    /// Legacy positional configuration — the original five-module chain.
+    ///
+    /// Kept for hosts built before the full module suite existed.  Modules
+    /// it does not mention are reset to their neutral defaults, so calling
+    /// it gives exactly the old behaviour.  New hosts should call
+    /// [`LouiMasteringChain::set_config_json`], which can address every
+    /// module and only needs to send the ones it uses.
     #[wasm_bindgen(js_name = setConfig)]
     pub fn set_config(
         &mut self,
@@ -492,18 +499,148 @@ impl LouiMasteringChain {
             },
             imager: ImagerConfig {
                 width_pct: img_width_pct, low_mono_hz: img_low_mono_hz, bypass: img_bypass,
+                ..ImagerConfig::default()
             },
             limiter: LimiterConfig {
                 ceiling_dbtp: lim_ceiling_dbtp, lookahead_ms: lim_lookahead_ms,
                 isp: lim_isp, bypass: lim_bypass,
+                ..LimiterConfig::default()
             },
             output_gain_db,
             bypass: master_bypass,
+            // Everything the legacy positional setter does not name keeps its
+            // neutral default, so an old host gets exactly the old chain.
+            ..MasteringChainConfig::default()
         });
     }
 
     /// Process one block of planar stereo audio in place.  The mutations
     /// are reflected back into the JS-side Float32Arrays.
+    /// Configure the whole chain from a JSON object.
+    ///
+    /// Keys are camelCase and every one is optional — an absent module (or
+    /// an absent field within one) keeps its neutral default.  That is what
+    /// lets the UI send only the modules the user has touched instead of
+    /// serialising 150 parameters on every knob move.
+    ///
+    /// Returns an error (leaving the chain untouched) when the JSON does not
+    /// parse or a value has the wrong type, so a bad config can never put
+    /// the audio thread into a half-applied state.
+    #[wasm_bindgen(js_name = setConfigJson)]
+    pub fn set_config_json(&mut self, json: &str) -> Result<(), JsError> {
+        let cfg: MasteringChainConfig = serde_json::from_str(json)
+            .map_err(|e| JsError::new(&format!("invalid chain config: {e}")))?;
+        self.inner.set_config(cfg);
+        Ok(())
+    }
+
+    /// Total processing latency in samples for the current config.
+    #[wasm_bindgen(js_name = latencySamples)]
+    pub fn latency_samples(&self) -> u32 {
+        self.inner.latency_samples() as u32
+    }
+
+    /// Multiband dynamics gain reduction per band, low → high (dB, ≥ 0).
+    #[wasm_bindgen(js_name = multibandGrDb)]
+    pub fn multiband_gr_db(&self) -> Vec<f64> {
+        self.inner.gain_reduction().multiband_db.to_vec()
+    }
+
+    /// De-esser gain reduction (dB, ≥ 0).
+    #[wasm_bindgen(js_name = deessGrDb)]
+    pub fn deess_gr_db(&self) -> f64 {
+        self.inner.gain_reduction().deess_db
+    }
+
+    /// Vintage compressor gain reduction (dB, ≥ 0).
+    #[wasm_bindgen(js_name = vintageCompGrDb)]
+    pub fn vintage_comp_gr_db(&self) -> f64 {
+        self.inner.gain_reduction().vintage_comp_db
+    }
+
+    /// Signed gain applied by each dynamic-EQ band (dB).
+    #[wasm_bindgen(js_name = dynamicEqGainsDb)]
+    pub fn dynamic_eq_gains_db(&self) -> Vec<f64> {
+        self.inner.gain_reduction().dynamic_eq_db.to_vec()
+    }
+
+    /// Signed gain applied by each Impact band (dB).
+    #[wasm_bindgen(js_name = impactMoveDb)]
+    pub fn impact_move_db(&self) -> Vec<f64> {
+        self.inner.gain_reduction().impact_db.to_vec()
+    }
+
+    /// Signed gain Low End Focus applied (dB).
+    #[wasm_bindgen(js_name = lowEndFocusMoveDb)]
+    pub fn low_end_focus_move_db(&self) -> f64 {
+        self.inner.gain_reduction().low_end_focus_db
+    }
+
+    /// Deepest hum notch currently applied (dB, ≥ 0).
+    #[wasm_bindgen(js_name = dehumDepthDb)]
+    pub fn dehum_depth_db(&self) -> f64 {
+        self.inner.gain_reduction().dehum_db
+    }
+
+    /// Measured long-term tonal curve, dB per curve band (Tonal Balance).
+    /// Bands not yet observed read as a very low value rather than -inf, so
+    /// the array survives the trip through JSON.
+    #[wasm_bindgen(js_name = tonalCurveDb)]
+    pub fn tonal_curve_db(&self) -> Vec<f64> {
+        self.inner.tonal_curve_db().iter().map(|v| if v.is_finite() { *v } else { -140.0 }).collect()
+    }
+
+    /// Deviation of the tonal curve from the configured target, per band.
+    #[wasm_bindgen(js_name = tonalDeviationDb)]
+    pub fn tonal_deviation_db(&self) -> Vec<f64> {
+        self.inner.tonal_deviation_db().to_vec()
+    }
+
+    /// The spectral correction currently applied, per curve band.
+    #[wasm_bindgen(js_name = spectralCorrectionDb)]
+    pub fn spectral_correction_db(&self) -> Vec<f64> {
+        self.inner.spectral_correction_db().to_vec()
+    }
+
+    /// Whether the tonal analysis has observed enough audio to be trusted.
+    #[wasm_bindgen(js_name = tonalAnalysisReady)]
+    pub fn tonal_analysis_ready(&self) -> bool {
+        self.inner.tonal_analysis_ready()
+    }
+
+    /// Samples the de-clicker has repaired since the last reset.
+    #[wasm_bindgen(js_name = declickRepairCount)]
+    pub fn declick_repair_count(&self) -> u32 {
+        self.inner.declick_repair_count()
+    }
+
+    /// Start capturing a de-noise profile from the audio that follows.
+    #[wasm_bindgen(js_name = denoiseBeginLearn)]
+    pub fn denoise_begin_learn(&mut self) {
+        self.inner.denoise_begin_learn();
+    }
+
+    /// Finish a de-noise profile capture.  Returns false (keeping the old
+    /// profile) when nothing was captured.
+    #[wasm_bindgen(js_name = denoiseFinishLearn)]
+    pub fn denoise_finish_learn(&mut self) -> bool {
+        self.inner.denoise_finish_learn()
+    }
+
+    /// Whether a usable de-noise profile exists.
+    #[wasm_bindgen(js_name = denoiseHasProfile)]
+    pub fn denoise_has_profile(&self) -> bool {
+        self.inner.denoise_has_profile()
+    }
+
+    /// The learned noise floor, dBFS per FFT bin.
+    #[wasm_bindgen(js_name = denoiseProfileDb)]
+    pub fn denoise_profile_db(&self) -> Vec<f64> {
+        let mut out = vec![0.0; loui_dsp::mastering::DENOISE_PROFILE_BINS];
+        self.inner.denoise_profile_db(&mut out);
+        out
+    }
+
     #[wasm_bindgen(js_name = processStereo)]
     pub fn process_stereo(&mut self, left: &mut [f32], right: &mut [f32]) {
         self.inner.process_stereo_block(left, right);
