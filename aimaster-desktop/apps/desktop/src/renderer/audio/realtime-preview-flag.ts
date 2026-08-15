@@ -1,10 +1,26 @@
-// Loui Mastering — realtime mastering-preview feature flag (M2-full).
+// Loui Mastering — realtime mastering-preview feature flag.
 //
-// HARD-DISABLED: returns false unconditionally.  The realtime worklet +
-// WASM mastering chain were confirmed as the source of renderer crashes;
-// the worklet's onMetrics callback fired every audio block and the runaway
-// setState loop killed the renderer process.  Until the worklet is
-// rewritten to be mount-safe, this is a compile-time constant = false.
+// History matters here.  This flag was hard-disabled after the realtime
+// worklet was confirmed as the source of renderer crashes: its metrics
+// callback fired every audio block, the host turned each message into a
+// `setState`, and the resulting re-render re-attached the worklet — a
+// feedback loop at audio rate.
+//
+// It is re-enabled because that loop has been removed at the source, not
+// papered over:
+//
+//   • the worklet rate-limits metrics on a wall clock (≤ 10 Hz), so no host
+//     can be driven faster than that whatever it does with the messages;
+//   • `realtime-preview-store` takes messages into a plain object and
+//     notifies React on a fixed timer, so message arrival cannot render;
+//   • `useRealtimePreview` attaches on stable primitives only, and pushes
+//     config through a ref-held node — a parameter change can no longer
+//     re-attach anything.
+//
+// The kill switch is kept, because a crash source earns one: set
+// `VITE_LOUI_REALTIME_PREVIEW=false` at build time, `localStorage`
+// `loui.realtimePreview = 'false'`, or `window.__LOUI_REALTIME_PREVIEW__ =
+// false` at runtime.  Any of them turns it off without a rebuild.
 //
 // Toggling this flag NEVER changes the export path — final export remains
 // the Python/Rust offline render.
@@ -24,17 +40,27 @@ export const REALTIME_PREVIEW_LS_KEY = 'loui.realtimePreview';
 /**
  * Whether the realtime Rust mastering-preview chain is enabled.
  *
- * HARD-DISABLED in this build.  The realtime worklet + WASM mastering
- * chain attach path was the confirmed cause of renderer death when an
- * audio file was loaded into the product page; the worklet's onMetrics
- * callback fires every audio block and the runaway setState loop killed
- * the renderer process.  Until the worklet itself is rewritten to be
- * mount-safe, this returns false unconditionally.  Module edits no
- * longer change the sound in real time, but the offline export path is
- * untouched and produces the same WAV as before.
+ * Resolution order — the most explicit wins, so a user or a QA build can
+ * always switch it off without touching code:
+ *   1. `window.__LOUI_REALTIME_PREVIEW__` (runtime override)
+ *   2. `localStorage['loui.realtimePreview']`
+ *   3. `VITE_LOUI_REALTIME_PREVIEW` ('false' / '0' → off)
+ *   4. default → on
  */
 export function isRealtimePreviewEnabled(): boolean {
-  return false;
+  if (typeof window !== 'undefined' && typeof window.__LOUI_REALTIME_PREVIEW__ === 'boolean') {
+    return window.__LOUI_REALTIME_PREVIEW__;
+  }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const v = localStorage.getItem(REALTIME_PREVIEW_LS_KEY);
+      if (v === 'true' || v === '1') return true;
+      if (v === 'false' || v === '0') return false;
+    }
+  } catch { /* private mode / disabled storage — fall through */ }
+  const env = (import.meta.env?.VITE_LOUI_REALTIME_PREVIEW ?? '').toString().toLowerCase();
+  if (env === 'false' || env === '0') return false;
+  return true;
 }
 
 /**

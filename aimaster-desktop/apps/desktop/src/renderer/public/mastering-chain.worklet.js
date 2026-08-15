@@ -33,7 +33,18 @@
 /* global registerProcessor, AudioWorkletProcessor, sampleRate, currentTime */
 /* eslint-disable */
 
-const METRIC_INTERVAL = 64; // post metrics every N blocks
+// Metrics are posted on a WALL-CLOCK throttle, not a block count.
+//
+// This used to be "every 64 blocks", which is ~6 Hz at 128-sample quanta —
+// fine, until an error path called _postMetrics() directly and the rate
+// became per-block.  A host that turns each message into a React state
+// update then re-renders at audio rate, and the previous integration's
+// re-render re-attached this worklet, which produced more messages: the
+// runaway that got realtime preview disabled in the first place.
+//
+// A hard ceiling here means no host can be driven faster than this,
+// whatever it does with the messages.
+const METRIC_MIN_INTERVAL_S = 0.1;   // ≤ 10 Hz
 
 class MasteringChainProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -42,6 +53,7 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     this._chain = null;
     this._bypass = true;          // safe default until configured
     this._pendingConfigJson = null;
+    this._lastMetricT = 0;
     this._pendingConfig = null;
 
     // Metrics state.
@@ -197,7 +209,7 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
           if (inCh && output[c]) output[c].set(inCh);
         }
         this._bypass = true;
-        this._postMetrics();
+        this._postMetrics(true);
         return true;
       }
       const dtMs = (currentTime - t0) * 1000;
@@ -206,19 +218,46 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       if (dtMs > this._blockPeriodMs) this._xruns++;
     }
 
-    // Post telemetry every window REGARDLESS of passthrough, so the panel
-    // sees process activity even before/without the chain processing.
+    // Post telemetry REGARDLESS of passthrough, so the panel sees process
+    // activity even before/without the chain processing — but never faster
+    // than the wall-clock ceiling.
     this._blockCount++;
-    if (this._blockCount >= METRIC_INTERVAL) this._postMetrics();
+    this._postMetrics();
 
     return true;
   }
 
-  _postMetrics() {
-    if (this._blockCount === 0) return;
+  /**
+   * Post telemetry, rate-limited to METRIC_MIN_INTERVAL_S.
+   *
+   * `force` is honoured only for the interval check being *due*; it never
+   * bypasses the ceiling, because the failure mode this guards against is
+   * precisely an error path firing every block.
+   */
+  _postMetrics(force) {
+    if (this._blockCount === 0 && !force) return;
+    if (currentTime - this._lastMetricT < METRIC_MIN_INTERVAL_S) return;
+    this._lastMetricT = currentTime;
+
+    // Chain readouts are optional: an older WASM build may not have them,
+    // and a missing meter must never take the audio thread down.
+    let latency = 0, monitorActive = false;
+    let loudnessDeltaDb = 0, matchGainDb = 0, dryLufs = -Infinity, wetLufs = -Infinity;
+    try {
+      const c = this._chain;
+      if (c) {
+        if (c.latencySamples) latency = c.latencySamples();
+        if (c.monitoringActive) monitorActive = c.monitoringActive();
+        if (c.monitorLoudnessDeltaDb) loudnessDeltaDb = c.monitorLoudnessDeltaDb();
+        if (c.monitorMatchGainDb) matchGainDb = c.monitorMatchGainDb();
+        if (c.monitorDryLufs) dryLufs = c.monitorDryLufs();
+        if (c.monitorWetLufs) wetLufs = c.monitorWetLufs();
+      }
+    } catch (e) { /* readouts are diagnostics; never fatal */ }
+
     this.port.postMessage({
       type: 'metrics',
-      avgProcessMs: this._sumMs / this._blockCount,
+      avgProcessMs: this._blockCount > 0 ? this._sumMs / this._blockCount : 0,
       peakProcessMs: this._peakMs,
       blockPeriodMs: this._blockPeriodMs,
       xruns: this._xruns,
@@ -228,6 +267,13 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       processCalls: this._processCalls,
       audioBlocks: this._audioBlocks,
       nonSilentBlocks: this._nonSilentBlocks,
+      bypass: this._bypass,
+      latencySamples: latency,
+      monitorActive,
+      loudnessDeltaDb,
+      matchGainDb,
+      dryLufs,
+      wetLufs,
     });
     this._sumMs = 0; this._peakMs = 0; this._xruns = 0; this._blockCount = 0;
   }

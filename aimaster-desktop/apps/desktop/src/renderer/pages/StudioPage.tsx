@@ -45,6 +45,11 @@ import {
   DEFAULT_MONITOR, monitorAltersOutput, type MonitorSettings,
 } from '../audio/chain-config.js';
 import { LouiMonitorBar } from '../components/product/LouiMonitorBar.js';
+import { LouiPreviewTransport } from '../components/product/LouiPreviewTransport.js';
+import type { MonitorReadout } from '../components/product/LouiMonitorBar.js';
+import { useRealtimePreview } from '../hooks/useRealtimePreview.js';
+import { isRealtimePreviewEnabled } from '../audio/realtime-preview-flag.js';
+import { toFileUrl } from '../utils/fileUrl.js';
 import { surface, text, typography, space, radius, meter } from '../theme/loui-theme.js';
 
 /** Modules whose engagement is decided by the shared spectral stage. */
@@ -89,6 +94,14 @@ export default function StudioPage() {
   // Monitoring is session state, not module state — it must never end up in
   // a preset or an export.  See `MonitorSettings`.
   const [monitor, setMonitor] = useState<MonitorSettings>(DEFAULT_MONITOR);
+  // The element the chain is inserted into.  Held in state (not a ref) so
+  // the preview hook re-attaches when the player mounts — but it is set
+  // exactly once per element, so it cannot churn.
+  const [media, setMedia] = useState<HTMLMediaElement | null>(null);
+
+  const src = selectedFile ? toFileUrl(selectedFile) : null;
+  // Read once per mount: the flag is a kill switch, not a live toggle.
+  const [realtimeEnabled] = useState(() => isRealtimePreviewEnabled());
 
   const paramModule = paramModuleFor(selected);
 
@@ -146,6 +159,28 @@ export default function StudioPage() {
     return out;
   }, [state]);
 
+  // The realtime preview.  `config` is the same object the export render
+  // consumes, so what you hear is what you get.
+  const preview = useRealtimePreview({
+    media,
+    enabled: realtimeEnabled,
+    config,
+  });
+
+  // Live monitor figures, but only while the chain is genuinely running —
+  // showing the last numbers from a stopped engine would be a lie the user
+  // could act on.
+  const liveReadout: MonitorReadout = useMemo(() => {
+    const m = preview.metrics;
+    if (preview.phase !== 'running' || !m.running) return {};
+    return {
+      loudnessDeltaDb: m.loudnessDeltaDb,
+      matchGainDb: m.matchGainDb,
+      ...(Number.isFinite(m.dryLufs) ? { dryLufs: m.dryLufs } : {}),
+      ...(Number.isFinite(m.wetLufs) ? { wetLufs: m.wetLufs } : {}),
+    };
+  }, [preview.phase, preview.metrics]);
+
   /**
    * Readouts.  Without a running engine there is no metering to show, so
    * each row reports the setting that decides whether it is doing anything
@@ -166,7 +201,17 @@ export default function StudioPage() {
     put('tape', `${n('tape', 'mixPct').toFixed(0)}%`, n('tape', 'mixPct') > 0);
     put('vintage-comp', `${n('vintage-comp', 'ratio').toFixed(1)}:1`, n('vintage-comp', 'ratio') > 1);
     put('dynamics', `${n('dynamics', 'ratio').toFixed(1)}:1`, n('dynamics', 'ratio') > 1);
-    put('limiter', `${n('limiter', 'ceilingDbtp').toFixed(1)} dBTP`, true);
+    // The limiter and glue compressor have real meters once the chain is
+    // running; fall back to their settings when it is not.
+    const live = preview.phase === 'running' && preview.metrics.running;
+    if (live && preview.metrics.limiterGrDb > 0.05) {
+      put('limiter', `-${preview.metrics.limiterGrDb.toFixed(1)} dB GR`, true);
+    } else {
+      put('limiter', `${n('limiter', 'ceilingDbtp').toFixed(1)} dBTP`, true);
+    }
+    if (live && preview.metrics.dynamicsGrDb > 0.05) {
+      put('dynamics', `-${preview.metrics.dynamicsGrDb.toFixed(1)} dB GR`, true);
+    }
     put('maximizer', `+${n('limiter', 'driveDb').toFixed(1)} dB`, n('limiter', 'driveDb') > 0);
     put('imager', `${n('imager', 'widthPct').toFixed(0)}%`, n('imager', 'widthPct') !== 100);
 
@@ -199,7 +244,7 @@ export default function StudioPage() {
     put('impact', impactPeak === 0 ? '0%' : `${impactPeak > 0 ? '+' : ''}${impactPeak.toFixed(0)}%`, impactPeak !== 0);
 
     return out;
-  }, [state, engagedIds]);
+  }, [state, engagedIds, preview.phase, preview.metrics]);
 
   const handleSelect = useCallback((id: string) => setSelected(id), []);
   const handleToggleBypass = useCallback(
@@ -274,11 +319,25 @@ export default function StudioPage() {
         </div>
       </header>
 
-      <div style={{ paddingInline: space['4'], paddingTop: space['3'] }}>
+      <div style={{
+        paddingInline: space['4'],
+        paddingTop: space['3'],
+        display: 'flex',
+        flexDirection: 'column',
+        gap: space['3'],
+      }}>
+        <LouiPreviewTransport
+          src={src}
+          onMediaRef={setMedia}
+          phase={preview.phase}
+          error={preview.error}
+          metrics={preview.metrics}
+        />
         <LouiMonitorBar
           value={monitor}
           onChange={setMonitor}
-          appliesTo="render"
+          appliesTo={preview.phase === 'running' ? 'live' : 'render'}
+          readout={liveReadout}
         />
       </div>
 
@@ -295,6 +354,8 @@ export default function StudioPage() {
           engagedIds={engagedIds}
           bypassById={bypassById}
           readouts={readouts}
+          latencySamples={preview.metrics.latencySamples}
+          sampleRate={48_000}
           onSelect={handleSelect}
           onToggleBypass={handleToggleBypass}
         />

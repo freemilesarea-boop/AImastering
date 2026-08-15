@@ -24,7 +24,7 @@
     "storybook": "storybook dev -p 6006 --no-open",
     "build-storybook": "storybook build -o storybook-static",
     "lint": "eslint src --ext .ts,.tsx",
-    "test": "pnpm test:phase-e-ui && pnpm test:phase-e-render && pnpm test:phase-e-paths && pnpm test:loudness && pnpm test:native-dsp && pnpm test:export-config && pnpm test:module-suite",
+    "test": "pnpm test:phase-e-ui && pnpm test:phase-e-render && pnpm test:phase-e-paths && pnpm test:loudness && pnpm test:native-dsp && pnpm test:export-config && pnpm test:module-suite && pnpm test:realtime-preview",
     "test:export-config": "tsx scripts/export-config-selftest.ts",
     "test:phase-e-ui": "tsx scripts/phase-e-ui-safety.ts",
     "test:phase-e-render": "tsx scripts/phase-e-render-safety.tsx",
@@ -46,7 +46,8 @@
     "test:release-smoke": "tsx scripts/release-smoke.ts",
     "aggregate-bundles": "tsx scripts/aggregate-support-bundles.ts",
     "clean": "rm -rf dist dist-electron out public/bin",
-    "test:module-suite": "tsx scripts/module-suite-selftest.ts"
+    "test:module-suite": "tsx scripts/module-suite-selftest.ts",
+    "test:realtime-preview": "tsx scripts/realtime-preview-selftest.ts"
   },
   "dependencies": {
     "@aimaster/audio-engine": "workspace:*",
