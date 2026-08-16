@@ -1,4 +1,13 @@
-// LouiModuleRack — the signal chain, top to bottom.
+// LouiModuleRack — every module, grouped by what it is for.
+//
+// The rows used to run in signal-flow order.  They now run in the order a
+// person reaches for things — compressors, EQ, limiter, effects, space,
+// output — which is what `RACK_GROUPS` describes.  The engine's actual
+// order is unchanged and still lives in `CHAIN_MODULE_IDS`.
+//
+// The header no longer says "Signal chain" for exactly that reason: a
+// vertical list under that title is read as the processing order, and this
+// one is not it.
 //
 // The five-card strip worked when there were five modules.  Twenty do not
 // fit in a strip, and cramming them in would lose the one thing a mastering
@@ -21,12 +30,11 @@
 import React, { useMemo } from 'react';
 import {
   LOUI_MODULES,
-  CHAIN_MODULE_IDS,
+  RACK_GROUPS,
   MODULE_CATEGORY_LABEL,
   MODULE_STATUS_LABEL,
   getModule,
   type LouiModule,
-  type ModuleCategory,
 } from '../../audio/modules/loui-module-suite.js';
 import type { ModuleId } from '../../audio/parameters/index.js';
 import { MODULE_GLOSSARY } from '../../audio/parameters/parameter-glossary.js';
@@ -57,30 +65,27 @@ export interface LouiModuleRackProps {
   onToggleBypass?: (paramModuleId: ModuleId, bypass: boolean) => void;
 }
 
-/** Stage headings, in chain order. */
-const STAGES: { key: string; label: string; categories: ModuleCategory[] }[] = [
-  { key: 'restore',   label: 'Restoration', categories: ['restoration'] },
-  { key: 'tone',      label: 'Tone',        categories: ['tone', 'reference'] },
-  { key: 'dynamics',  label: 'Dynamics',    categories: ['dynamics', 'lowend'] },
-  { key: 'character', label: 'Character',   categories: ['character'] },
-  { key: 'output',    label: 'Output',      categories: ['stereo', 'output'] },
-];
-
-function stageFor(m: LouiModule): string {
-  return STAGES.find((s) => s.categories.includes(m.category))?.key ?? 'output';
-}
-
-/** Chain-ordered modules, grouped into stages. */
-function useChainStages() {
-  return useMemo(() => {
-    const ordered = CHAIN_MODULE_IDS
-      .map((id) => getModule(id))
-      .filter((m): m is LouiModule => !!m);
-    return STAGES.map((stage) => ({
-      ...stage,
-      modules: ordered.filter((m) => stageFor(m) === stage.key),
-    })).filter((s) => s.modules.length > 0);
-  }, []);
+/**
+ * The rack is grouped by TASK, not by signal flow.
+ *
+ * `RACK_GROUPS` owns that order — compressors, EQ, limiter, effects, space,
+ * output — because it is the order a person reaches for things. The engine's
+ * actual signal path is `CHAIN_MODULE_IDS` and is different; the header says
+ * so, since a list that looks like a chain and is not one would be read as
+ * one.
+ */
+function useRackGroups() {
+  return useMemo(
+    () => RACK_GROUPS
+      .map((g) => ({
+        ...g,
+        modules: g.moduleIds
+          .map((id) => getModule(id))
+          .filter((m): m is LouiModule => !!m),
+      }))
+      .filter((g) => g.modules.length > 0),
+    [],
+  );
 }
 
 // ── Row ──────────────────────────────────────────────────────────────────
@@ -241,7 +246,7 @@ function ModuleRow(props: RowProps) {
 // ── Rack ─────────────────────────────────────────────────────────────────
 
 export function LouiModuleRack(props: LouiModuleRackProps) {
-  const stages = useChainStages();
+  const stages = useRackGroups();
   const engaged = useMemo(() => new Set(props.engagedIds ?? []), [props.engagedIds]);
 
   const engagedCount = useMemo(
@@ -281,7 +286,11 @@ export function LouiModuleRack(props: LouiModuleRackProps) {
           letterSpacing: '0.16em',
           textTransform: 'uppercase',
         }}>
-          Signal chain
+          {/* Named for what the list IS.  It was "Signal chain" while it
+              was ordered by signal flow; it is now grouped by task, and a
+              list titled "chain" would be read as the processing order it
+              no longer shows. */}
+          Modules  모듈
         </span>
         <span style={{
           fontFamily: typography.family.mono,
@@ -314,6 +323,11 @@ export function LouiModuleRack(props: LouiModuleRackProps) {
               textTransform: 'uppercase',
             }}>
               {stage.label}
+              <span style={{
+                color: text.muted, letterSpacing: 'normal', textTransform: 'none',
+              }}>
+                {`  ${stage.ko}`}
+              </span>
             </span>
             {stage.modules.map((m) => (
               <ModuleRow

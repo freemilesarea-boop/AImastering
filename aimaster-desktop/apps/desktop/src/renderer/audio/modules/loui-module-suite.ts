@@ -304,6 +304,68 @@ export const CHAIN_MODULE_IDS: readonly string[] = [
   'dither', 'export',
 ];
 
+/**
+ * How the rack is ORGANISED, which is not how the audio flows.
+ *
+ * `CHAIN_MODULE_IDS` above is the signal path and stays that way — it is
+ * what the engine does. This list is the order a person reaches for things:
+ * compressors, then EQ, then the limiter, then colour, then space, then the
+ * output decision. Both orders are legitimate and they are different, so
+ * they are two lists rather than one list doing two jobs badly.
+ *
+ * Because the rack no longer reads as a signal path, it must not imply one
+ * — see the note the rack header carries.
+ *
+ * Every module in `CHAIN_MODULE_IDS` must appear in exactly one group here.
+ * A module in neither would vanish from the UI while still processing
+ * audio, which is the worst possible way to lose a module; a test enforces
+ * it.
+ */
+export interface RackGroup {
+  key: string;
+  label: string;
+  /** Korean heading, shown beneath the English one. */
+  ko: string;
+  moduleIds: readonly string[];
+}
+
+export const RACK_GROUPS: readonly RackGroup[] = [
+  {
+    key: 'restore', label: 'Restoration', ko: '복원 · 잡음 제거',
+    // Not in the requested six, but these four have to live somewhere and
+    // they come first for a reason: they repair the source, and every tonal
+    // decision after them is made on the repaired version.
+    moduleIds: ['declick', 'dehum', 'denoise', 'deess'],
+  },
+  {
+    key: 'compressor', label: 'Compressors', ko: '컴프레서 계열',
+    moduleIds: ['multiband', 'dynamics', 'vintage-comp', 'impact', 'low-end-focus', 'bass-control'],
+  },
+  {
+    key: 'eq', label: 'EQ', ko: '이큐',
+    moduleIds: [
+      'parametric-eq', 'eq', 'dynamic-eq', 'vintage-eq',
+      'reference-match', 'harshness-control', 'stabilizer', 'spectral-shaper',
+    ],
+  },
+  {
+    key: 'limiter', label: 'Limiter', ko: '리미터 · 맥시마이저',
+    moduleIds: ['limiter', 'maximizer'],
+  },
+  {
+    key: 'effect', label: 'Effects', ko: '이펙터',
+    moduleIds: ['exciter', 'tape'],
+  },
+  {
+    key: 'space', label: 'Space', ko: '공간계',
+    moduleIds: ['delay', 'reverb', 'imager'],
+  },
+  {
+    key: 'output', label: 'Master output', ko: '마스터링 볼륨 · 출력',
+    moduleIds: ['dither', 'export'],
+  },
+];
+
 export const MODULE_CATEGORY_LABEL: Record<ModuleCategory, string> = {
   restoration: 'Restoration',
   tone: 'Tone', dynamics: 'Dynamics', stereo: 'Stereo', lowend: 'Low End',

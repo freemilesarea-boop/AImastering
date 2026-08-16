@@ -177,5 +177,59 @@ console.log('\n=== VISUALS — every module has a display ===\n');
   );
 }
 
+// ── The rack shows everything ────────────────────────────────────────────
+//
+// The rack is grouped by task now, from an explicit list.  An explicit list
+// is a list that can be missed off: a module absent from every group
+// vanishes from the UI while still processing audio, which is the worst way
+// to lose one — the sound changes and there is nothing on screen to blame.
+
+console.log('\n=== RACK — the task grouping covers the chain ===\n');
+
+{
+  const { CHAIN_MODULE_IDS, RACK_GROUPS, getModule } = require(
+    '../src/renderer/audio/modules/loui-module-suite.js',
+  ) as typeof import('../src/renderer/audio/modules/loui-module-suite.js');
+
+  const grouped = RACK_GROUPS.flatMap((g) => g.moduleIds);
+  const missing = CHAIN_MODULE_IDS.filter((id) => !grouped.includes(id));
+  check(
+    'every module in the chain appears in the rack',
+    missing.length === 0,
+    missing.length === 0 ? `${CHAIN_MODULE_IDS.length} modules grouped` : `absent: ${missing.join(', ')}`,
+  );
+
+  const dupes = grouped.filter((id, i) => grouped.indexOf(id) !== i);
+  check(
+    'no module is listed in two groups',
+    dupes.length === 0,
+    dupes.length === 0 ? 'each appears once' : dupes.join(', '),
+  );
+
+  const unknown = grouped.filter((id) => !getModule(id));
+  check(
+    'every grouped id names a real module',
+    unknown.length === 0,
+    unknown.length === 0 ? 'all resolve' : unknown.join(', '),
+  );
+
+  // The order the user asked for, pinned so a later edit cannot quietly
+  // shuffle it back.
+  const want = ['restore', 'compressor', 'eq', 'limiter', 'effect', 'space', 'output'];
+  const got = RACK_GROUPS.map((g) => g.key);
+  check(
+    'the groups are in the requested order',
+    got.join(',') === want.join(','),
+    got.join(' → '),
+  );
+
+  const unnamed = RACK_GROUPS.filter((g) => !g.ko || g.ko.length === 0);
+  check(
+    'every group has a Korean heading',
+    unnamed.length === 0,
+    unnamed.length === 0 ? RACK_GROUPS.map((g) => g.ko).join(' · ') : unnamed.map((g) => g.key).join(', '),
+  );
+}
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 if (failed > 0) process.exit(1);
