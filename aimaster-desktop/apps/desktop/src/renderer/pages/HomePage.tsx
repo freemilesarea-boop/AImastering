@@ -7,7 +7,7 @@
  * - "모두 마스터링 시작" processes each file sequentially
  * - Per-item inline: progress bar, WAV download, MP3 download, preview player
  */
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
@@ -19,7 +19,6 @@ import {
 import type { QueueItem } from '../stores/audioStore.js';
 import type {
   AudioAnalysisResult,
-  MasteringResult,
   MasteringStyle,
   LimiterStrength,
   MasteringQuickPreset,
@@ -39,6 +38,9 @@ import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
 import { louiPresetToMasteringOptions } from '../audio/presets/preset-to-options.js';
 import { getLastUsedPreset, setLastUsedPreset } from '../audio/presets/preset-storage.js';
 import { LouiHomeHero } from '../components/home/LouiHomeHero.js';
+import { LouiAlbumPresetBar } from '../components/product/LouiAlbumPresetBar.js';
+import { loadSongSettings } from '../audio/session/song-settings.js';
+import { renderSong } from '../audio/session/render-song.js';
 import { loui, louiAlpha } from '../theme/loui-home.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -583,10 +585,22 @@ function QueueRow({
           <button
             onClick={(e) => { e.stopPropagation(); onStudio(item); }}
             className="no-drag shrink-0 text-[11px] font-medium rounded-md px-2 py-1 transition-colors"
-            style={{ color: loui.softLavender, border: `1px solid ${louiAlpha.lav(0.3)}`, background: louiAlpha.lav(0.08) }}
-            title="전체 모듈 랙에서 체인을 직접 구성합니다 (De-noise · Dynamic EQ · Multiband · Exciter · Tape …)"
+            style={item.studioSavedAt !== undefined ? {
+              color: loui.successMint,
+              border: `1px solid ${loui.successMint}55`,
+              background: `${loui.successMint}14`,
+            } : {
+              color: loui.softLavender,
+              border: `1px solid ${louiAlpha.lav(0.3)}`,
+              background: louiAlpha.lav(0.08),
+            }}
+            title={item.studioSavedAt !== undefined
+              // The whole point of saving is that the render will use it,
+              // so the row says so rather than only marking the file.
+              ? `저장된 스튜디오 설정이 있습니다 (${new Date(item.studioSavedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}). 마스터링에 이 설정이 사용됩니다.`
+              : '전체 모듈 랙에서 체인을 직접 구성합니다 (De-noise · Dynamic EQ · Multiband · Exciter · Tape …)'}
           >
-            스튜디오
+            {item.studioSavedAt !== undefined ? '스튜디오 ✓' : '스튜디오'}
           </button>
         )}
         {(item.status === 'pending' || item.status === 'error') && (
@@ -802,6 +816,9 @@ export default function HomePage() {
     clearQueue,
     updateQueueItem,
     setIsBatchRunning,
+    albumPresetId,
+    setAlbumPreset,
+    refreshStudioSaved,
     setStyle,
     updateOptions,
     // single-file compat (for ResultPage navigation)
@@ -811,6 +828,12 @@ export default function HomePage() {
   } = useAudioStore();
 
   const [activePlayerId, setActivePlayerId] = useState<string | null>(null);
+
+  // Which queued songs carry saved Studio work.  Re-read on mount because
+  // the Studio writes to storage, not to this store — coming back from it
+  // is exactly when this display is stale.
+  useEffect(() => { refreshStudioSaved(); }, [refreshStudioSaved, queue.length]);
+  const savedCount = queue.filter((i) => i.studioSavedAt !== undefined).length;
 
   // Official Loui preset browser (quick style selection before mastering).
   const [presetBrowserOpen, setPresetBrowserOpen] = useState(false);
@@ -923,7 +946,11 @@ export default function HomePage() {
 
     setIsBatchRunning(true);
 
+    const albumPreset = albumPresetId ? getPreset(albumPresetId) ?? null : null;
+
     for (const item of pending) {
+      // Declared out here so the catch can release it — see below.
+      let cleanupProgress: (() => void) | undefined;
       try {
         // Step 1: Analyze
         updateQueueItem(item.id, { status: 'analyzing' });
@@ -931,42 +958,44 @@ export default function HomePage() {
         updateQueueItem(item.id, { analysis, status: 'mastering', progress: 0 });
 
         // Step 2: Progress listener for this item
-        const cleanupProgress = window.electronAPI!.on('audio:progress', (msg: unknown) => {
+        cleanupProgress = window.electronAPI!.on('audio:progress', (msg: unknown) => {
           const m = msg as { percent: number; stage: string };
           updateQueueItem(item.id, { progress: m.percent, progressStage: m.stage });
         });
 
-        // Step 3: Master — use per-file preset override when set.
+        // Step 3: Master.
+        //
+        // Three inputs decide what this song becomes, in priority order:
+        // its own saved Studio work, then the album preset chosen for the
+        // whole queue, then the per-file preset override, then the global
+        // options. `renderSong` settles the first two; the rest is the
+        // baseline it starts from.
+        const settings = loadSongSettings(item.filePath);
         const presetOverride = item.presetId
           ? louiPresetToMasteringOptions(getPreset(item.presetId)!)
           : null;
         const itemOptions = presetOverride ? { ...options, ...presetOverride } : options;
-        const result = await window.electronAPI!.invoke(
-          'audio:master',
-          item.filePath,
-          '',
-          {
-            style:              itemOptions.style,
-            targetLufs:         itemOptions.targetLufs,
-            targetTp:           itemOptions.targetTp,
-            sampleRate:         itemOptions.sampleRate,
-            bitDepth:           itemOptions.bitDepth,
-            applyAiCorrections: itemOptions.applyAiCorrections,
-            limiterStrength:    itemOptions.limiterStrength,
-            saturationAmount:   itemOptions.saturationAmount,
-            stereoWidth:        itemOptions.stereoWidth,
-            outputGainDb:       itemOptions.outputGainDb,
-            aiDetections:       analysis.aiDetection ?? {},
-          },
-          {
-            preLoudness: analysis.loudness,
-          },
-        ) as MasteringResult;
+        const rendered = await renderSong({
+          filePath: item.filePath,
+          analysis,
+          options: itemOptions,
+          settings,
+          // A per-file override is a deliberate choice for that song, so it
+          // outranks the album pick rather than fighting it.
+          albumPreset: presetOverride ? null : albumPreset,
+        });
 
         cleanupProgress();
-        updateQueueItem(item.id, { masteringResult: result, status: 'done', progress: 100 });
+        updateQueueItem(item.id, {
+          masteringResult: rendered.result, status: 'done', progress: 100,
+        });
 
       } catch (err) {
+        // Cleanup on the failure path too. `audio:progress` is one global
+        // channel with no request id, so a leaked listener from a failed
+        // song keeps writing its progress into that song's row for the rest
+        // of the batch.
+        cleanupProgress?.();
         updateQueueItem(item.id, { error: toStructuredError(err), status: 'error', progress: 0 });
       }
     }
@@ -974,7 +1003,7 @@ export default function HomePage() {
     setIsBatchRunning(false);
     const doneCount = useAudioStore.getState().queue.filter((i) => i.status === 'done').length;
     if (doneCount > 0) notify(`${doneCount}곡 마스터링 완료`, 'success');
-  }, [queue, isBatchRunning, options, updateQueueItem, setIsBatchRunning, notify]);
+  }, [queue, isBatchRunning, options, albumPresetId, updateQueueItem, setIsBatchRunning, notify]);
 
   // ── Derived state ─────────────────────────────────────────────────────
   const pendingCount  = queue.filter((i) => i.status === 'pending' || i.status === 'error').length;
@@ -1176,6 +1205,19 @@ export default function HomePage() {
 
               {/* Advanced sliders — LUFS / TP / Limiter / 선택 옵션 */}
               <AdvancedSettingsPanel disabled={isBatchRunning} />
+
+              {/* The finishing pass for the whole queue.  Sits directly
+                  above the start button because it is the last thing
+                  decided before the render runs. */}
+              {queue.length > 0 && (
+                <LouiAlbumPresetBar
+                  selectedId={albumPresetId}
+                  onSelect={setAlbumPreset}
+                  savedCount={savedCount}
+                  totalCount={queue.length}
+                  disabled={isBatchRunning}
+                />
+              )}
 
               {/* Start button — primary lavender CTA */}
               {pendingCount > 0 && (

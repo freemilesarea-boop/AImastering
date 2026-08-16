@@ -14,6 +14,7 @@ import {
   renameRevision as renameInGroup,
   toggleFavorite as toggleFavoriteInGroup,
 } from '../audio/revisions/revision-logic.js';
+import { savedSongPaths, loadSongSettings } from '../audio/session/song-settings.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -104,6 +105,15 @@ export interface QueueItem {
   progressStage: string;
   /** Per-file Loui preset override (undefined = use the global options). */
   presetId: string | undefined;
+  /**
+   * Epoch ms of the last Studio save for this file, or undefined.
+   *
+   * A marker only — the settings themselves live in `song-settings`, keyed
+   * by absolute path so they outlive both this queue item and the app
+   * session. This field exists so a queue row can show "저장됨" without
+   * every row parsing storage on every render.
+   */
+  studioSavedAt?: number;
 }
 
 export const MAX_QUEUE_SIZE = 20;
@@ -192,6 +202,18 @@ interface AudioStore {
   clearQueue: () => void;
   updateQueueItem: (id: string, updates: Partial<Omit<QueueItem, 'id'>>) => void;
   setIsBatchRunning: (v: boolean) => void;
+  /**
+   * The one preset the whole batch is finished with, or null.
+   *
+   * Deliberately global rather than per-item: an album is meant to come out
+   * at one loudness, and a per-song copy of this would be twenty chances to
+   * end up with one track 3 LU quieter than the rest. Per-song intent is
+   * carried by the saved Studio settings instead, which win over this.
+   */
+  albumPresetId: string | null;
+  setAlbumPreset: (id: string | null) => void;
+  /** Re-read which queued files have saved Studio settings. */
+  refreshStudioSaved: () => void;
 
   // ── Single-file (used by AnalysisPage / MasteringPage / ResultPage) ────
   selectedFile: string | null;
@@ -289,6 +311,26 @@ export const useAudioStore = create<AudioStore>((set) => ({
   })),
 
   setIsBatchRunning: (v) => set({ isBatchRunning: v }),
+
+  albumPresetId: null,
+  setAlbumPreset: (id) => set({ albumPresetId: id }),
+
+  refreshStudioSaved: () => set((s) => {
+    // One storage read for the whole queue rather than one per row.
+    const saved = new Set(savedSongPaths());
+    let changed = false;
+    const queue = s.queue.map((item) => {
+      const has = saved.has(item.filePath);
+      if (has === (item.studioSavedAt !== undefined)) return item;
+      changed = true;
+      const next = { ...item };
+      if (has) next.studioSavedAt = loadSongSettings(item.filePath)?.savedAt ?? Date.now();
+      else delete next.studioSavedAt;
+      return next;
+    });
+    // Returning the same array when nothing moved keeps subscribers still.
+    return changed ? { queue } : {};
+  }),
 
   // ── Single-file ────────────────────────────────────────────────────────
   selectedFile:    null,

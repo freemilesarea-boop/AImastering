@@ -461,7 +461,7 @@ cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 #           cargo install wasm-bindgen-cli --version 0.2.127
 pnpm --filter @loui/dsp-wasm run build:all
 
-# Desktop — 247 checks, including 55 that push config through the real chain
+# Desktop — 277 checks, including 55 that push config through the real chain
 pnpm --filter @aimaster/desktop test
 ```
 
@@ -534,7 +534,81 @@ translation fails the build rather than shipping as an unlabelled chip.
 
 ---
 
-## 9. Not implemented
+## 9. Per-song settings and the batch
+
+The app was multi-file at both ends and single-file in the middle. The queue
+took twenty songs, `audio:master` rendered them one by one, and
+`file:batch-save-wav` wrote them all to a folder — but the two places a user
+actually shapes the sound were not on that path:
+
+- `StudioPage` held its parameter state in a page-local `useState`. Pressing
+  **Back** discarded it.
+- The only channel that accepts a full suite config,
+  `audio:master-rust-experimental`, was registered in the main process and
+  allowlisted in the preload with **zero renderer callers**. Every export
+  went through `audio:master`, which takes five scalar options and knows
+  nothing about the rack — so a Studio-tuned song rendered to something that
+  did not sound like its preview.
+
+`audio/session/` closes both gaps.
+
+### `song-settings.ts` — the work, kept
+
+Stored per **absolute source path**, not per queue item id: queue ids are
+fresh UUIDs on every import, so keying by them would lose the work the moment
+a file was removed and re-added, which is exactly what someone does when they
+are unhappy with a render. Each entry carries the full all-modules state, the
+free parametric bands, master bypass, and the preset it started from.
+`localStorage`, so it survives a restart. A corrupt store reads as empty
+rather than throwing.
+
+### The layering rule
+
+The last step picks **one** album preset for the whole queue — that is what a
+batch is for, and a per-song loudness choice is twenty chances for one track
+to sit 3 LU below the rest. That preset and the per-song work will disagree,
+and `layerAlbumPreset` settles it:
+
+> **A module the song actually changed is never overwritten. Everything else
+> takes the album preset.**
+
+"Actually changed" is measured against the module defaults, by value — the
+state is rebuilt on every edit, so a reference check would report the whole
+rack as changed. The function returns a `LayerReport` (`applied` / `kept`) as
+well as the state, and `LouiAlbumPresetBar` says the count out loud, because
+a rule the user cannot see is a rule they will not trust.
+
+Repair presets (`ai-special`) are deliberately excluded from the album bar:
+they answer a defect in one recording, so applying one to a whole queue would
+treat every song as if it had that defect.
+
+### `render-song.ts` — the caller that was missing
+
+Layers the song's settings with the album preset, builds the same
+`ChainConfigWire` the preview plays, and sends it on
+`audio:master-rust-experimental`. A song with no saved settings falls through
+to `audio:master` unchanged, so nothing regresses for someone who never opens
+the Studio. Monitor settings are never included — A/B and delta are listening
+aids, and baking one into an export ships a level-matched bypass as the
+master.
+
+### The workflow
+
+1. Drop up to 20 songs on **Home**.
+2. **스튜디오** on any row → shape it → **이 곡 설정 저장**. The row's button
+   turns green with a ✓.
+3. Pick one **최종 마스터링** preset for the queue.
+4. **마스터링 시작** → each song renders through its own saved settings with
+   the album preset filling in the rest → **전체 WAV 저장**.
+
+Covered by `scripts/song-settings-selftest.ts` (30 checks), including that
+the studio path reaches the suite-config channel and the classic path does
+not, that a saved module appears in the config actually sent, and that no
+monitor block leaks into an export.
+
+---
+
+## 10. Not implemented
 
 Honest list, so the registry stays trustworthy:
 

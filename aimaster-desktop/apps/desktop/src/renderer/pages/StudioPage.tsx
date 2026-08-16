@@ -25,7 +25,7 @@
  * the export render consume.
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
@@ -80,6 +80,9 @@ function clampRange(v: number, lo: number, hi: number): number {
 import { LouiMonitorBar } from '../components/product/LouiMonitorBar.js';
 import { LouiStudioPresetBar } from '../components/product/LouiStudioPresetBar.js';
 import { presetApplyPlan } from '../audio/presets/preset-to-state.js';
+import {
+  loadSongSettings, saveSongSettings, clearSongSettings, changedModules,
+} from '../audio/session/song-settings.js';
 import type { LouiPreset } from '../audio/presets/loui-presets.js';
 import { LouiPreviewTransport } from '../components/product/LouiPreviewTransport.js';
 import type { MonitorReadout } from '../components/product/LouiMonitorBar.js';
@@ -115,18 +118,28 @@ function paramModuleFor(registryId: string): ModuleId | undefined {
 
 export default function StudioPage() {
   const setPage = useAppStore((s) => s.setPage);
+  const notify = useAppStore((s) => s.notify);
   const selectedFile = useAudioStore((s) => s.selectedFile);
+  const refreshStudioSaved = useAudioStore((s) => s.refreshStudioSaved);
 
   // Parameter state lives here for now: the provider in
   // `useModuleParameterState` is mounted by the product layout, which this
   // page does not sit inside.  Keeping it local means the Studio works
   // standalone; wiring it to the provider is a drop-in replacement because
   // the shape is identical.
-  const [state, setState] = useState<AllModulesParameterState>(
-    () => defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS),
-  );
+  //
+  // Seeded from whatever was saved for this song, so opening the Studio on
+  // a track that was worked on last week picks it up where it was left
+  // rather than at defaults. `useState`'s initialiser runs once per mount
+  // and the page remounts per song, which is exactly the right cadence.
+  const [state, setState] = useState<AllModulesParameterState>(() => {
+    const saved = selectedFile ? loadSongSettings(selectedFile) : null;
+    return saved?.state ?? defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS);
+  });
   const [selected, setSelected] = useState<string>('eq');
-  const [masterBypass, setMasterBypass] = useState(false);
+  const [masterBypass, setMasterBypass] = useState(
+    () => (selectedFile ? loadSongSettings(selectedFile)?.masterBypass : false) ?? false,
+  );
   // Monitoring is session state, not module state — it must never end up in
   // a preset or an export.  See `MonitorSettings`.
   const [monitor, setMonitor] = useState<MonitorSettings>(DEFAULT_MONITOR);
@@ -137,9 +150,25 @@ export default function StudioPage() {
   // The free EQ's bands.  Not in `state` because that is a flat map of
   // named scalars per module and this list has neither fixed length nor
   // fixed names; it reaches the chain through `parametricBands`.
-  const [freeBands, setFreeBands] = useState<FreeEqBand[]>([]);
+  const [freeBands, setFreeBands] = useState<FreeEqBand[]>(
+    () => (selectedFile ? loadSongSettings(selectedFile)?.freeBands : undefined) ?? [],
+  );
   /** The preset last applied, for the bar's active mark. */
-  const [appliedPreset, setAppliedPreset] = useState<string | null>(null);
+  const [appliedPreset, setAppliedPreset] = useState<string | null>(
+    () => (selectedFile ? loadSongSettings(selectedFile)?.presetId : null) ?? null,
+  );
+  /**
+   * When this song was last saved, and whether it has moved since.
+   *
+   * Tracked rather than diffed: comparing the whole rack against the saved
+   * snapshot on every pointer move during an EQ drag would be the most
+   * expensive thing on the page, and the only question the header needs
+   * answered is "is there anything to save".
+   */
+  const [savedAt, setSavedAt] = useState<number | null>(
+    () => (selectedFile ? loadSongSettings(selectedFile)?.savedAt : null) ?? null,
+  );
+  const [dirty, setDirty] = useState(false);
 
   const src = selectedFile ? toFileUrl(selectedFile) : null;
   // Read once per mount: the flag is a kill switch, not a live toggle.
@@ -210,6 +239,42 @@ export default function StudioPage() {
     setMasterBypass(false);
     setMonitor(DEFAULT_MONITOR);
   }, []);
+
+  // Anything that would change the render marks the song unsaved. One
+  // effect rather than a flag in every setter: the setters are the wide
+  // surface (graph drags, preset bar, band list, bypass rows) and missing
+  // one of them would silently lose work at save time.
+  const firstPass = useRef(true);
+  useEffect(() => {
+    if (firstPass.current) { firstPass.current = false; return; }
+    setDirty(true);
+  }, [state, freeBands, masterBypass]);
+
+  /** Write this song's work down, keyed by its path. */
+  const saveSettings = useCallback(() => {
+    if (!selectedFile) return;
+    const entry = saveSongSettings({
+      filePath: selectedFile,
+      state,
+      freeBands,
+      masterBypass,
+      presetId: appliedPreset,
+    });
+    setSavedAt(entry.savedAt);
+    setDirty(false);
+    refreshStudioSaved();
+    notify(`${changedModules(state).length}개 모듈 설정을 저장했습니다`, 'success');
+  }, [selectedFile, state, freeBands, masterBypass, appliedPreset, refreshStudioSaved, notify]);
+
+  /** Throw this song's saved work away and go back to defaults. */
+  const forgetSettings = useCallback(() => {
+    if (!selectedFile) return;
+    clearSongSettings(selectedFile);
+    setSavedAt(null);
+    setDirty(false);
+    refreshStudioSaved();
+    notify('저장한 설정을 지웠습니다', 'info');
+  }, [selectedFile, refreshStudioSaved, notify]);
 
   const resetModule = useCallback((moduleId: ModuleId) => {
     setState((prev) => ({
@@ -473,6 +538,32 @@ export default function StudioPage() {
             }}>
               비교 모드
             </span>
+          )}
+          {/* Saving is the join between the Studio and the batch: without
+              it the work is heard once and thrown away on Back. */}
+          {selectedFile && (
+            <>
+              <span style={{
+                fontFamily: typography.family.sans,
+                fontSize: typography.size.xs,
+                color: dirty ? meter.warn.foreground : text.muted,
+                whiteSpace: 'nowrap',
+              }}>
+                {dirty
+                  ? '저장 안 됨 (Unsaved)'
+                  : savedAt
+                    ? `저장됨 ${new Date(savedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                    : '저장 기록 없음'}
+              </span>
+              <HeaderButton
+                label={dirty ? '이 곡 설정 저장 ●' : '이 곡 설정 저장'}
+                active={dirty}
+                onClick={saveSettings}
+              />
+              {savedAt !== null && (
+                <HeaderButton label="저장 삭제" onClick={forgetSettings} />
+              )}
+            </>
           )}
           <HeaderButton label="Reset all" onClick={resetAll} />
           <HeaderButton label="Back" onClick={() => setPage('home')} />
