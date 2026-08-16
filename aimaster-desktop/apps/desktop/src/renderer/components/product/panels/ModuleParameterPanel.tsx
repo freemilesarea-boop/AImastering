@@ -33,7 +33,8 @@ import { glossaryFor } from '../../../audio/parameters/parameter-glossary.js';
 import { LouiSectionCard } from '../controls/LouiSectionCard.js';
 import { LouiSliderRow } from '../controls/LouiSliderRow.js';
 import { LouiTogglePill } from '../controls/LouiTogglePill.js';
-import { surface, text, typography, space, radius } from '../../../theme/loui-theme.js';
+import { surface, text, typography, space, radius, meter } from '../../../theme/loui-theme.js';
+import { BASIS_LABEL, type RecommendedEntry } from '../../../audio/presets/recommended-defaults.js';
 
 // ── Chip row (enum control) ──────────────────────────────────────────────
 
@@ -227,6 +228,18 @@ export interface ModuleParameterPanelProps {
    * competing way to set them.
    */
   editor?: React.ReactNode;
+  /**
+   * Apply this module's recommended starting point.
+   *
+   * Every module ships neutral, which is right — a module must be
+   * bit-transparent until asked — and useless to somebody who has never
+   * mastered anything: a panel of numbers that all do nothing, with no
+   * indication of which way is normal. This is the way out, per module,
+   * rather than only as an all-or-nothing preset.
+   */
+  onApplyRecommended?: (() => void) | undefined;
+  /** The recommendation itself, for the explanation line. */
+  recommended?: RecommendedEntry | undefined;
 }
 
 export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
@@ -242,6 +255,69 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space['3'] }}>
+      {props.recommended && (
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: space['3'], flexWrap: 'wrap',
+          background: surface.well,
+          border: `1px solid ${surface.border}`,
+          borderRadius: radius.chip,
+          padding: space['3'],
+        }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: space['2'], marginBottom: 4,
+            }}>
+              <span style={{
+                fontFamily: typography.family.sans, fontSize: 9,
+                letterSpacing: '0.14em', textTransform: 'uppercase', color: text.muted,
+              }}>
+                추천 설정
+              </span>
+              <span style={{
+                fontFamily: typography.family.sans, fontSize: 9,
+                paddingInline: 5, paddingBlock: 1, borderRadius: radius.chip,
+                border: `1px solid ${surface.border}`, color: text.muted,
+              }}>
+                {BASIS_LABEL[props.recommended.basis]}
+              </span>
+              {props.recommended.off && (
+                <span style={{
+                  fontFamily: typography.family.sans, fontSize: 9,
+                  paddingInline: 5, paddingBlock: 1, borderRadius: radius.chip,
+                  border: `1px solid ${surface.border}`, color: text.disabled,
+                }}>
+                  기본은 꺼둠
+                </span>
+              )}
+            </div>
+            <span style={{
+              fontFamily: typography.family.sans, fontSize: typography.size.xs,
+              color: text.tertiary, lineHeight: 1.6,
+            }}>
+              {props.recommended.why}
+            </span>
+          </div>
+          {props.onApplyRecommended && (
+            <button
+              type="button"
+              onClick={props.onApplyRecommended}
+              className="no-drag"
+              style={{
+                appearance: 'none', cursor: 'pointer', whiteSpace: 'nowrap',
+                paddingInline: space['3'], paddingBlock: 5,
+                borderRadius: radius.chip,
+                border: `1px solid ${meter.accent.foreground}77`,
+                background: `${meter.accent.foreground}18`,
+                color: meter.accent.foreground,
+                fontFamily: typography.family.sans, fontSize: typography.size.xs,
+              }}
+            >
+              이 값으로 설정
+            </button>
+          )}
+        </div>
+      )}
+
       {props.note && (
         <div style={{
           background: surface.well,

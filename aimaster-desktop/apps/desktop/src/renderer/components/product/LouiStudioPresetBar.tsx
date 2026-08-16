@@ -19,6 +19,16 @@ export interface LouiStudioPresetBarProps {
   /** Id of the preset last applied, for the active mark. */
   appliedId: string | null;
   onApply: (preset: LouiPreset) => void;
+  /**
+   * Set every module to its recommended starting point.
+   *
+   * Separate from the presets, and first in the row, because it answers a
+   * different question. A preset is "make it sound like X"; this is "I have
+   * never mastered anything — put everything somewhere sensible so I can
+   * hear what each control does from a working position instead of from
+   * neutral."
+   */
+  onApplyRecommended?: (() => void) | undefined;
 }
 
 /** Categories, in the order a person picks from them. */
@@ -57,6 +67,31 @@ export function LouiStudioPresetBar(props: LouiStudioPresetBarProps) {
           Presets
           <span style={{ letterSpacing: 'normal', textTransform: 'none' }}>{'  프리셋'}</span>
         </span>
+
+        {props.onApplyRecommended && (
+          <button
+            type="button"
+            onClick={props.onApplyRecommended}
+            onPointerEnter={() => setHovered('__recommended__')}
+            onPointerLeave={() => setHovered(null)}
+            style={{
+              appearance: 'none',
+              cursor: 'pointer',
+              paddingInline: space['3'],
+              paddingBlock: 3,
+              borderRadius: radius.chip,
+              border: '1px solid rgba(52,211,153,0.55)',
+              background: 'rgba(52,211,153,0.14)',
+              color: '#34D399',
+              fontFamily: typography.family.sans,
+              fontSize: typography.size.xs,
+              fontWeight: typography.weight.medium,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            초심자 추천 설정 전체 적용
+          </button>
+        )}
 
         {GROUPS.map((g) => {
           const items = LOUI_PRESETS.filter((p) => p.category === g.key);
@@ -115,7 +150,16 @@ export function LouiStudioPresetBar(props: LouiStudioPresetBarProps) {
         lineHeight: 1.6,
         minHeight: '2.6em',
       }}>
-        {focusPreset && focusKo
+        {focus === '__recommended__'
+          ? (
+            <>
+              <strong style={{ color: text.secondary }}>초심자 추천 설정</strong>
+              {' — '}
+              모든 모듈을 요즘 상업 음원의 일반적인 값으로 한 번에 맞춥니다. 마스터에 쓰지 않는 기능(리버브·딜레이·테이프)은 꺼진 채로 둡니다.
+              {' '}각 모듈을 열면 그 값을 왜 그렇게 잡았는지 설명이 있습니다.
+            </>
+          )
+          : focusPreset && focusKo
           ? (
             <>
               <strong style={{ color: text.secondary }}>

@@ -827,6 +827,15 @@ export function activeModuleIds(cfg: ChainConfigWire): ModuleId[] {
   push('dehum', cfg.dehum);
   push('denoise', cfg.denoise);
   push('deess', cfg.deess);
+  // Every module added to the chain has to be added here too, or it
+  // processes audio while the rack reports it as idle. These four were
+  // missed when they were built — Top Rebuild, the free EQ, and the two
+  // space modules all ran without ever lighting their row, so the "N
+  // active" count under the rack was wrong by up to four.
+  push('top-rebuild', cfg.topRebuild);
+  push('parametric-eq', cfg.parametricEq);
+  push('delay', cfg.delay);
+  push('reverb', cfg.reverb);
   if (cfg.spectral?.matchEnabled) out.push('match-eq');
   if (cfg.spectral?.shaperEnabled) out.push('spectral-shaper');
   if (cfg.spectral?.stabilizerEnabled) out.push('stabilizer');

@@ -85,6 +85,7 @@ function clampRange(v: number, lo: number, hi: number): number {
 import { LouiMonitorBar } from '../components/product/LouiMonitorBar.js';
 import { LouiStudioPresetBar } from '../components/product/LouiStudioPresetBar.js';
 import { presetApplyPlan } from '../audio/presets/preset-to-state.js';
+import { recommendedFor } from '../audio/presets/recommended-defaults.js';
 import {
   loadSongSettings, saveSongSettings, clearSongSettings, changedModules,
 } from '../audio/session/song-settings.js';
@@ -296,6 +297,56 @@ export default function StudioPage() {
     });
     setAppliedPreset(preset.id);
   }, []);
+
+  /**
+   * Write one module's recommended starting point.
+   *
+   * Bypass moves with the parameters, because half the recommendations are
+   * "leave this off" and applying only the numbers would switch a module on
+   * that the recommendation says should not be.
+   */
+  const applyRecommended = useCallback((moduleId: ModuleId) => {
+    const entry = recommendedFor(moduleId);
+    if (!entry) return;
+    setState((prev) => {
+      const mod = prev[moduleId];
+      return {
+        ...prev,
+        [moduleId]: {
+          ...mod,
+          ...(entry.bypass !== undefined ? { bypass: entry.bypass } : {}),
+          parameters: { ...mod.parameters, ...entry.parameters },
+        },
+      };
+    });
+  }, []);
+
+  /**
+   * The beginner's one button: every module at once.
+   *
+   * Written in a single update so the preview hears one config rather than
+   * twenty-four, and so undoing it is one step.
+   */
+  const applyAllRecommended = useCallback(() => {
+    setState((prev) => {
+      const next = { ...prev };
+      for (const id of MODULE_IDS) {
+        const entry = recommendedFor(id);
+        if (!entry) continue;
+        const mod = next[id];
+        next[id] = {
+          ...mod,
+          ...(entry.bypass !== undefined ? { bypass: entry.bypass } : {}),
+          parameters: { ...mod.parameters, ...entry.parameters },
+        };
+      }
+      return next;
+    });
+    // The free EQ is a band list, not named scalars, and the recommendation
+    // has no opinion on it — clearing it would throw away deliberate work.
+    setAppliedPreset(null);
+    notify('모든 모듈에 추천 설정을 적용했습니다', 'success');
+  }, [notify]);
 
   const setBypass = useCallback((moduleId: ModuleId, bypass: boolean) => {
     setState((prev) => ({ ...prev, [moduleId]: { ...prev[moduleId], bypass } }));
@@ -656,7 +707,11 @@ export default function StudioPage() {
           error={preview.error}
           metrics={preview.metrics}
         />
-        <LouiStudioPresetBar appliedId={appliedPreset} onApply={applyPreset} />
+        <LouiStudioPresetBar
+          appliedId={appliedPreset}
+          onApply={applyPreset}
+          onApplyRecommended={applyAllRecommended}
+        />
 
         <LouiMonitorBar
           value={monitor}
@@ -738,6 +793,8 @@ export default function StudioPage() {
                 values={state[paramModule].parameters}
                 bypass={state[paramModule].bypass}
                 onChange={(id, value) => setParam(paramModule, id, value)}
+                recommended={recommendedFor(paramModule)}
+                onApplyRecommended={() => applyRecommended(paramModule)}
                 {...(CHARACTER_VIEW_MODULES.has(paramModule)
                   ? {
                     editor: (

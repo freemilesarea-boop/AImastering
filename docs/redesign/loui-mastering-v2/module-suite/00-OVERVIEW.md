@@ -461,7 +461,7 @@ cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 #           cargo install wasm-bindgen-cli --version 0.2.127
 pnpm --filter @loui/dsp-wasm run build:all
 
-# Desktop — 310 checks, including 55 that push config through the real chain
+# Desktop — 335 checks, including 55 that push config through the real chain
 pnpm --filter @aimaster/desktop test
 ```
 
@@ -761,7 +761,60 @@ Two consequences worth stating:
 
 ---
 
-## 12. Not implemented
+## 12. Recommended defaults — the beginner's button
+
+Every module ships neutral, which is right and useless to somebody who has
+never mastered anything: twenty-four panels of numbers that all do nothing,
+with no indication of which way is normal. `recommended-defaults.ts` answers
+"what would somebody who does this for a living put here?" for every module,
+with the reason in Korean, reachable two ways — a button on each panel, and
+one that sets the whole rack.
+
+### Where the numbers come from, and where they don't
+
+Each entry declares a `basis`, because the difference is not cosmetic:
+
+- **`spec`** — published, checkable delivery requirements. The −1.0 dBTP
+  ceiling and 24-bit/48 kHz export are in what Spotify, Apple Music and
+  YouTube publish. Not opinions.
+- **`practice`** — how contemporary commercial pop is normally mastered:
+  loudness around −9 to −10 LUFS, bass mono below ~120 Hz, 1–2 dB of bus
+  compression, a brighter top than the source. Documented and taught, still
+  a judgement call.
+- **`ai-repair`** — aimed at generative-audio defects specifically: the
+  reconstructed top octave, smoothed transients, over-wide phasey stereo,
+  sibilance.
+
+**These are not measurements of chart records.** Nothing here analysed the
+Billboard 100 — that audio is not available to this program, and a number
+presented as measured when it was not is the most damaging kind of wrong,
+because it is exactly the claim a user cannot check. The honest route to
+"sound like the records I admire" is already built: load them as **Match EQ
+references**, which measures their real tonal balance on the engine's own
+grid. This table is the sensible default for everyone who has not done that.
+
+### Half the recommendations are "leave it off"
+
+Reverb, delay, tape, the vintage EQ and the vintage compressor are all
+recommended **off**, and the panel says so with the reason. A beginner who
+does not hear that will switch everything on and wonder why it sounds worse —
+master-bus reverb and a third stacked compressor are the two most common ways
+to ruin a master. The `off` flag is marked, tested, and shown.
+
+### What the test found
+
+`recommended-defaults-selftest.ts` (25 checks) holds every value to its own
+parameter's range, checks the chain engages, renders across 33 dB of input
+level for finiteness and ceiling safety, and asserts idempotence. It also
+caught an unrelated live bug: **`activeModuleIds` never checked
+`topRebuild`, `parametricEq`, `delay` or `reverb`** — four modules could
+process audio while the rack reported them idle and the "N active" count was
+wrong by up to four. Fixed, with a test that every emittable module is
+reachable from that function.
+
+---
+
+## 13. Not implemented
 
 Honest list, so the registry stays trustworthy:
 
