@@ -98,6 +98,52 @@ Pass filters send no gain. The engine ignores gain on high-pass and low-pass
 bands, so forwarding a band's leftover gain would draw a boost the audio
 never applies.
 
+### §10 — Top Rebuild: the AI-vocal artefact
+
+Generative music tools decode audio from a learned representation rather
+than recording it, and the top octave is where that shows. Above roughly
+9 kHz the detail is reconstructed, and it arrives as a watery, swirling
+shimmer on consonants and breath. Vocals get it worst, because that is where
+their consonants live. Users describe it as "번들거림" — a sheen the track
+cannot shake.
+
+**An exciter cannot fix this**, and understanding why is the whole design.
+An exciter ADDS harmonics on top of what is already there, so the swirl is
+still underneath — now with a bright layer over it. The only thing that
+removes the artefact is removing the band that carries it, and the only way
+to do that without ending up dull is to put something back.
+
+So the module:
+
+1. **Splits** at the damage frequency (LR4, so the halves sum back flat).
+2. **Fades out** the damaged half by `amount`.
+3. **Fades in** a replacement — a healthy midrange band driven into a
+   waveshaper, filtered into the target range, and **scaled to the envelope
+   the original band had**.
+
+Step 3's last clause decides whether this sounds like a recording or a noise
+generator. Harmonics at a fixed level are constant hiss; harmonics that rise
+and fall with the original top end read as the same performance with its
+detail restored. The test for it measures a progression — 0, then a little,
+then more artefact in — rather than against a floor, because a crossover
+always passes some body through and a threshold drawn near that leakage
+would be testing the filter slope, not the design.
+
+Two arithmetic facts drive the panel. Rectifying doubles a frequency, cubing
+triples it, so a 4.5 kHz source lands at 9 kHz and 13.5 kHz — which is what
+`Character` balances between, and why the default source is 4.5 kHz rather
+than 3 kHz (3 kHz doubled is 6 kHz, below a 9 kHz crossover, where the
+filter discards it and half the module is silently inert). The display draws
+both landing points and says so in words when one falls below the crossover.
+
+Zero added latency: biquads and envelope followers, no FFT. That matters
+here — the STFT modules cost 43 ms and this is meant to be usable while
+listening.
+
+**What it cannot do.** On a two-track master the vocal is already mixed in,
+so rebuilding the top rebuilds it for cymbals and hats too. Treating the
+voice alone needs source separation, which this is not.
+
 ### §9 — Space: delay and reverb
 
 Two new DSP modules, placed after the character stage and before the imager

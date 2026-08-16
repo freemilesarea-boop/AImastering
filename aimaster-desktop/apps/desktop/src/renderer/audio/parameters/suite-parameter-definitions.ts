@@ -140,6 +140,51 @@ const DECLICK_DEFS: ModuleParameterDefinitions = {
   ],
 };
 
+/**
+ * Spectral Top Rebuild.
+ *
+ * Off by default (`amountPct` 0), because it is a repair for a specific
+ * defect and running it on a healthy recording replaces detail that was
+ * never damaged.
+ */
+const TOP_REBUILD_DEFS: ModuleParameterDefinitions = {
+  moduleId: 'top-rebuild',
+  bypassBinding: wired('topRebuild.bypass'),
+  defaultBypass: true,
+  parameters: [
+    {
+      kind: 'number', id: 'amountPct', label: 'Amount',
+      hint: 'How much of the damaged band is replaced',
+      unit: '%', min: 0, max: 100, default: 0, step: 1,
+      format: fmt.pct, automatable: true, binding: wired('topRebuild.amountPct'),
+    },
+    {
+      kind: 'number', id: 'crossoverHz', label: 'Damage from',
+      hint: 'Everything above this is rebuilt',
+      unit: 'Hz', min: 4000, max: 16000, default: 9000, step: 100,
+      format: fmt.hz, automatable: true, binding: wired('topRebuild.crossoverHz'),
+    },
+    {
+      kind: 'number', id: 'sourceHz', label: 'Source',
+      hint: 'The healthy band the harmonics are generated from',
+      unit: 'Hz', min: 1000, max: 8000, default: 4500, step: 100,
+      format: fmt.hz, automatable: true, binding: wired('topRebuild.sourceHz'),
+    },
+    {
+      kind: 'number', id: 'characterPct', label: 'Character',
+      hint: 'Higher reaches further up (3x vs 2x the source)',
+      unit: '%', min: 0, max: 100, default: 60, step: 1,
+      format: fmt.pct, automatable: true, binding: wired('topRebuild.characterPct'),
+    },
+    {
+      kind: 'number', id: 'followMs', label: 'Follow',
+      hint: 'How tightly the replacement tracks the original level',
+      unit: 'ms', min: 1, max: 100, default: 12, step: 1,
+      format: fmt.integer, automatable: true, binding: wired('topRebuild.followMs'),
+    },
+  ],
+};
+
 const DEESS_DEFS: ModuleParameterDefinitions = {
   moduleId: 'deess',
   bypassBinding: wired('deess.bypass'),
@@ -786,6 +831,7 @@ export const SUITE_PARAMETER_DEFS = {
   dehum: DEHUM_DEFS,
   declick: DECLICK_DEFS,
   deess: DEESS_DEFS,
+  'top-rebuild': TOP_REBUILD_DEFS,
   'dynamic-eq': DYNAMIC_EQ_DEFS,
   'vintage-eq': VINTAGE_EQ_DEFS,
   'parametric-eq': PARAMETRIC_EQ_DEFS,

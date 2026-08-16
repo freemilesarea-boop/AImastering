@@ -5,6 +5,7 @@ use super::gain::Gain;
 use super::eq::Eq;
 use super::parametric_eq::{ParametricBand, ParametricEq};
 use super::delay::Delay;
+use super::top_rebuild::TopRebuild;
 use super::reverb::Reverb;
 use super::dynamics::Dynamics;
 use super::imager::Imager;
@@ -74,6 +75,7 @@ pub struct MasteringChain {
     dehum: Dehum,
     denoise: Denoise,
     deess: Deess,
+    top_rebuild: TopRebuild,
     // Corrective / spectral.
     parametric_eq: ParametricEq,
     spectral: Spectral,
@@ -115,6 +117,7 @@ impl MasteringChain {
             dehum: Dehum::new(sample_rate, cfg.dehum),
             denoise: Denoise::new(sample_rate, cfg.denoise),
             deess: Deess::new(sample_rate, cfg.deess),
+            top_rebuild: TopRebuild::new(sample_rate, cfg.top_rebuild),
             // Built from the config like every other module.  Leaving it
             // empty here would mean a chain constructed with bands went
             // silent on them until the first `set_config` — the offline
@@ -187,6 +190,7 @@ impl MasteringChain {
         self.dehum.set_config(cfg.dehum);
         self.denoise.set_config(cfg.denoise);
         self.deess.set_config(cfg.deess);
+        self.top_rebuild.set_config(cfg.top_rebuild);
         self.parametric_eq.set_bands(
             if cfg.parametric_eq.bypass { &[] } else { &cfg.parametric_eq.bands[..] },
         );
@@ -346,6 +350,7 @@ impl MasteringChain {
         self.dehum.process_stereo(left, right);
         self.denoise.process_stereo(left, right);
         self.deess.process_stereo(left, right);
+        self.top_rebuild.process_stereo(left, right);
 
         // 2 — Corrective EQ and the shared spectral stage.
         self.parametric_eq.process_stereo(left, right);
@@ -446,6 +451,7 @@ impl MasteringChain {
         self.dehum.reset();
         self.denoise.reset();
         self.deess.reset();
+        self.top_rebuild.reset();
         self.parametric_eq.reset();
         self.spectral.reset();
         self.vintage_eq.reset();

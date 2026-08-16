@@ -365,6 +365,110 @@ if (Chain) {
   }
 }
 
+// ── Top Rebuild ──────────────────────────────────────────────────────────
+//
+// The claim this module makes is unusually specific: it does not boost the
+// top, it REPLACES it. That is only true if the damaged band actually
+// leaves and something else actually arrives, so both halves are measured
+// at named frequencies rather than as "energy above 9 kHz" — a gentle
+// filter would let a 4.5 kHz body dominate any such measurement.
+
+console.log('\n=== TOP REBUILD — the damaged band is replaced ===\n');
+
+if (Chain) {
+  /** Magnitude at one frequency, by Goertzel, over the settled half. */
+  const magnitudeAt = (x: Float32Array, hz: number): number => {
+    const from = x.length >> 1;
+    const n = x.length - from;
+    const w = (2 * Math.PI * hz) / SR;
+    const coeff = 2 * Math.cos(w);
+    let s1 = 0;
+    let s2 = 0;
+    for (let i = from; i < x.length; i++) {
+      const s0 = x[i]! + coeff * s1 - s2;
+      s2 = s1;
+      s1 = s0;
+    }
+    return Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2)) / (n * 0.5);
+  };
+
+  const renderTones = (state: AllModulesParameterState, tones: Array<[number, number]>): Float32Array => {
+    const chain = new Chain!(SR);
+    chain.setConfigJson(chainConfigToJson(buildChainConfig({ state })));
+    const n = 1 << 15;
+    const left = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let v = 0;
+      for (const [hz, amp] of tones) v += Math.sin((2 * Math.PI * hz * i) / SR) * amp;
+      left[i] = v;
+    }
+    const right = Float32Array.from(left);
+    for (let off = 0; off < n; off += 512) {
+      const end = Math.min(off + 512, n);
+      chain.processStereo(left.subarray(off, end), right.subarray(off, end));
+    }
+    return left;
+  };
+
+  // A healthy 4.5 kHz body plus a quiet 12 kHz stand-in for the artefact.
+  const MATERIAL: Array<[number, number]> = [[4500, 0.5], [12_000, 0.08]];
+  const off = withParams(neutralState(), 'top-rebuild', [['amountPct', 0]]);
+  const on = withParams(neutralState(), 'top-rebuild', [
+    ['amountPct', 100], ['crossoverHz', 9000], ['sourceHz', 4500], ['characterPct', 60],
+  ]);
+
+  const dry = renderTones(off, MATERIAL);
+  const wet = renderTones(on, MATERIAL);
+
+  check(
+    'the damaged band is removed',
+    magnitudeAt(wet, 12_000) < magnitudeAt(dry, 12_000) * 0.5,
+    `12 kHz ${magnitudeAt(dry, 12_000).toFixed(4)} → ${magnitudeAt(wet, 12_000).toFixed(4)}`,
+  );
+  check(
+    'a replacement is built from the healthy band',
+    magnitudeAt(wet, 9000) > magnitudeAt(dry, 9000) * 4 && magnitudeAt(wet, 9000) > 1e-4,
+    `9 kHz ${magnitudeAt(dry, 9000).toFixed(5)} → ${magnitudeAt(wet, 9000).toFixed(5)}`,
+  );
+  check(
+    'the body it was generated from is left alone',
+    Math.abs(20 * Math.log10(magnitudeAt(wet, 4500) / magnitudeAt(dry, 4500))) < 1.0,
+    `4.5 kHz ${(20 * Math.log10(magnitudeAt(wet, 4500) / magnitudeAt(dry, 4500))).toFixed(2)} dB`,
+  );
+
+  {
+    // The distinction from an exciter, measured.  An exciter leaves the
+    // original band in place and adds on top; this must not.
+    const half = renderTones(withParams(neutralState(), 'top-rebuild', [
+      ['amountPct', 50], ['crossoverHz', 9000], ['sourceHz', 4500],
+    ]), MATERIAL);
+    const full = magnitudeAt(wet, 12_000);
+    const partial = magnitudeAt(half, 12_000);
+    check(
+      'amount fades the original out rather than only fading a new layer in',
+      partial > full && partial < magnitudeAt(dry, 12_000),
+      `12 kHz: 0% ${magnitudeAt(dry, 12_000).toFixed(4)} · 50% ${partial.toFixed(4)} · 100% ${full.toFixed(4)}`,
+    );
+  }
+
+  check(
+    'a silent module is not sent to the engine',
+    buildChainConfig({ state: off }).topRebuild === undefined,
+    'absent',
+  );
+
+  {
+    // Nothing may be invented from silence — the failure a listener would
+    // notice first, as a hiss under the quiet parts.
+    const silent = renderTones(on, []);
+    check(
+      'silence produces no synthetic top',
+      silent.every((x) => x === 0),
+      `peak ${Math.max(...Array.from(silent, Math.abs)).toExponential(2)}`,
+    );
+  }
+}
+
 // ── Every live module is reachable ───────────────────────────────────────
 //
 // A rack row without `paramModuleId` opens an empty panel and renders no

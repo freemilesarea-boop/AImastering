@@ -61,6 +61,10 @@ export const MODULE_GLOSSARY: Record<ModuleId, GlossaryEntry> = {
     ko: '치찰음 제거',
     plain: '"ㅅ, ㅊ" 발음에서 쏘는 고음이 튈 때만 잠깐 눌러줍니다.',
   },
+  'top-rebuild': {
+    ko: '고역 재생성',
+    plain: 'AI로 만든 음원에서 번들거리는 고음 구간을 잘라내고, 멀쩡한 중음에서 배음을 만들어 그 자리를 다시 채웁니다.',
+  },
   'parametric-eq': {
     ko: '자유 EQ',
     plain: '원하는 주파수를 원하는 만큼 올리거나 내립니다. 점을 추가해 직접 곡선을 그립니다.',
@@ -226,6 +230,28 @@ const G: Record<string, GlossaryEntry> = {
   'deess.wideband': {
     ko: '전대역 모드',
     plain: '켜면 치찰음이 날 때 소리 전체를 낮춥니다. 끄면 고음만 낮춰 더 자연스럽습니다.',
+  },
+
+  // ── Top Rebuild ──
+  'top-rebuild.amountPct': {
+    ko: '적용량',
+    plain: '망가진 고음을 얼마나 새 소리로 바꿀지입니다. 0이면 꺼짐, 100이면 전부 교체합니다. 보통 60~80% 입니다.',
+  },
+  'top-rebuild.crossoverHz': {
+    ko: '손상 시작',
+    plain: '이 주파수 위가 망가졌다고 보고 새로 만듭니다. 번들거림이 남으면 내리고, 심벌이 이상해지면 올리세요.',
+  },
+  'top-rebuild.sourceHz': {
+    ko: '재료 주파수',
+    plain: '새 고음을 만들 재료가 되는 멀쩡한 중음대입니다. 보컬이면 4~5 kHz 근처가 목소리의 성격을 잘 옮깁니다.',
+  },
+  'top-rebuild.characterPct': {
+    ko: '성격',
+    plain: '높이면 더 높은 곳까지 밝게 채우고, 낮추면 낮은 쪽에 두툼하게 채웁니다. 쏘면 내리세요.',
+  },
+  'top-rebuild.followMs': {
+    ko: '따라가기',
+    plain: '새로 만든 고음이 원래 소리의 크기를 얼마나 빠르게 따라갈지입니다. 짧으면 또렷하고, 길면 부드럽습니다.',
   },
 
   // ── EQ ──

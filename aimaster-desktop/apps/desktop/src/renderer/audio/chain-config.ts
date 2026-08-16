@@ -94,6 +94,11 @@ export interface ChainConfigWire {
     attackMs?: number; releaseMs?: number; wideband?: boolean; bypass?: boolean;
   };
 
+  topRebuild?: {
+    amountPct?: number; crossoverHz?: number; sourceHz?: number;
+    characterPct?: number; followMs?: number; bypass?: boolean;
+  };
+
   spectral?: {
     matchEnabled?: boolean; matchAmountPct?: number; matchMaxMoveDb?: number;
     targetCurveDb?: number[];
@@ -643,6 +648,18 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
       wowFlutterPct: num(tape, 'wowFlutterPct', 0),
       mixPct: num(tape, 'mixPct', 0),
       bypass: tape!.bypass,
+    };
+  }
+
+  const tr = s['top-rebuild'];
+  if (engaged(tr, num(tr, 'amountPct', 0) > 0)) {
+    cfg.topRebuild = {
+      amountPct: num(tr, 'amountPct', 0),
+      crossoverHz: num(tr, 'crossoverHz', 9000),
+      sourceHz: num(tr, 'sourceHz', 4500),
+      characterPct: num(tr, 'characterPct', 60),
+      followMs: num(tr, 'followMs', 12),
+      bypass: tr!.bypass,
     };
   }
 

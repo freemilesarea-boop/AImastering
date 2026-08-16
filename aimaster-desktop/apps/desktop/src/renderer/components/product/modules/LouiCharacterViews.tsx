@@ -725,10 +725,126 @@ export function ReverbView(props: {
   );
 }
 
+// ── 8. Top Rebuild ───────────────────────────────────────────────────────
+
+/**
+ * The band being replaced, and where the replacement comes from.
+ *
+ * Two shaded regions on the frequency ruler: the SOURCE — the healthy
+ * midrange the harmonics are generated from — and the TARGET, above the
+ * damage point, where they land. Arrows between them, because the whole
+ * mental model is "energy moves from here to there", and a user who does
+ * not grasp that will put Source inside the damaged band and wonder why it
+ * still swirls.
+ *
+ * The harmonic marks show the arithmetic: doubling the source lands at 2x,
+ * cubing at 3x, which is exactly what Character balances between. When 2x
+ * falls below the damage point it is discarded by the filter, and the
+ * caption says so rather than leaving half the module silently inert.
+ */
+export function TopRebuildView(props: {
+  values: Record<string, ParameterValue>;
+  width: number;
+  disabled?: boolean | undefined;
+}) {
+  const v = props.values;
+  const amount = num(v, 'amountPct', 0);
+  const cross = num(v, 'crossoverHz', 9000);
+  const src = num(v, 'sourceHz', 4500);
+  const character = num(v, 'characterPct', 60);
+  const follow = num(v, 'followMs', 12);
+
+  const H = 190;
+  const srcLo = Math.max(20, src * 0.5);
+  const srcHi = Math.min(AXIS_MAX_HZ, src * 2);
+  const xSrcLo = hzToX(srcLo, props.width);
+  const xSrcHi = hzToX(srcHi, props.width);
+  const xCross = hzToX(cross, props.width);
+  const xEnd = props.width - PAD.right;
+  const even = Math.min(AXIS_MAX_HZ, src * 2);
+  const odd = Math.min(AXIS_MAX_HZ, src * 3);
+  const mid = (PAD.top + H - PAD.bottom) / 2;
+
+  return (
+    <Shell disabled={props.disabled}>
+      <Box width={props.width} height={H}>
+        <FreqGrid width={props.width} height={H} />
+
+        <rect x={xCross} y={PAD.top} width={Math.max(0, xEnd - xCross)}
+          height={H - PAD.top - PAD.bottom}
+          fill={`rgba(248,113,113,${0.05 + (amount / 100) * 0.14})`} />
+        <line x1={xCross} x2={xCross} y1={PAD.top} y2={H - PAD.bottom}
+          stroke="rgba(248,113,113,0.6)" strokeWidth={1.5} />
+        <text x={xCross + 5} y={PAD.top + 12}
+          fill="rgba(248,113,113,0.9)"
+          style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
+          {`\u21a6 ${fmtHz(cross)} Hz \uc704 \u2014 \uc798\ub77c\ub0b4\uace0 \ub2e4\uc2dc \ub9cc\ub4dc\ub294 \uad6c\uac04`}
+        </text>
+
+        <rect x={xSrcLo} y={PAD.top} width={Math.max(0, xSrcHi - xSrcLo)}
+          height={H - PAD.top - PAD.bottom}
+          fill="rgba(52,211,153,0.14)" />
+        {[xSrcLo, xSrcHi].map((x, i) => (
+          <line key={i} x1={x} x2={x} y1={PAD.top} y2={H - PAD.bottom}
+            stroke="rgba(52,211,153,0.5)" strokeWidth={1} />
+        ))}
+        <text x={(xSrcLo + xSrcHi) / 2} y={H - PAD.bottom - 8} textAnchor="middle"
+          fill="rgba(52,211,153,0.9)"
+          style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
+          {`\uc7ac\ub8cc ${fmtHz(src)} Hz`}
+        </text>
+
+        {amount > 0.5 && [
+          { hz: even, label: 'x2', dim: 1 - character / 100 },
+          { hz: odd, label: 'x3', dim: character / 100 },
+        ].filter((h) => h.hz > cross).map((h) => {
+          const x1 = (xSrcLo + xSrcHi) / 2;
+          const x2 = hzToX(h.hz, props.width);
+          const op = 0.25 + h.dim * 0.6;
+          return (
+            <g key={h.label}>
+              <path
+                d={`M${x1},${mid} Q${(x1 + x2) / 2},${mid - 34} ${x2},${mid}`}
+                fill="none" stroke={`rgba(167,139,250,${op})`} strokeWidth={1.4}
+              />
+              <circle cx={x2} cy={mid} r={3.5} fill={`rgba(167,139,250,${op + 0.2})`} />
+              <text x={x2} y={mid - 8} textAnchor="middle"
+                fill={`rgba(167,139,250,${op + 0.25})`}
+                style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
+                {`${h.label} = ${fmtHz(h.hz)}`}
+              </text>
+            </g>
+          );
+        })}
+
+        {amount <= 0.5 && (
+          <text x={props.width / 2} y={mid + 26} textAnchor="middle"
+            fill="rgba(255,255,255,0.30)"
+            style={{ fontFamily: typography.family.sans, fontSize: 11 }}>
+            {'\uc801\uc6a9\ub7c9\uc774 0\uc785\ub2c8\ub2e4 \u2014 \uc62c\ub9ac\uba74 \uc7ac\ub8cc\uc5d0\uc11c \ud654\uc0b4\ud45c\uac00 \ubed7\uc5b4 \ub098\uac11\ub2c8\ub2e4'}
+          </text>
+        )}
+      </Box>
+      <Caption>
+        {'\ucd08\ub85d \uad6c\uac04(\uc7ac\ub8cc)\uc758 \uc18c\ub9ac\ub85c \ubc30\uc74c\uc744 \ub9cc\ub4e4\uc5b4, \ube68\uac04 \uad6c\uac04(\uc190\uc0c1)\uc744 '}
+        {amount.toFixed(0)}
+        {'% \ub9cc\ud07c \ub300\uccb4\ud569\ub2c8\ub2e4. \uc7ac\ub8cc\ub97c 2\ubc30\u00b73\ubc30 \ud55c \uc790\ub9ac\uc5d0 \uc0c8 \uace0\uc74c\uc774 \uc0dd\uae30\ubbc0\ub85c, \uc7ac\ub8cc\uac00 '}
+        {fmtHz(src)}
+        {' Hz \uba74 '}
+        {fmtHz(even)}\u00b7{fmtHz(odd)}
+        {' Hz \uac00 \ucc44\uc6cc\uc9d1\ub2c8\ub2e4'}
+        {even < cross ? ' (x2\ub294 \uc190\uc0c1 \uad6c\uac04\ubcf4\ub2e4 \ub0ae\uc544 \ubc84\ub824\uc9d1\ub2c8\ub2e4 \u2014 \uc7ac\ub8cc\ub97c \uc62c\ub9ac\uac70\ub098 \uc190\uc0c1 \uc2dc\uc791\uc744 \ub0b4\ub9ac\uc138\uc694)' : ''}
+        {'. \uc131\uaca9 '}{character.toFixed(0)}{'% \ub294 \ub458 \uc0ac\uc774 \ube44\uc911\uc774\uace0, \ub530\ub77c\uac00\uae30 '}{follow.toFixed(0)}
+        {' ms \ub294 \uc0c8 \uace0\uc74c\uc774 \uc6d0\ub798 \uc18c\ub9ac \ud06c\uae30\ub97c \uc880\ub294 \uc18d\ub3c4\uc785\ub2c8\ub2e4. \uc575\uc0ac\uc774\ud130\uc640 \ub2ec\ub9ac \uc6d0\ubcf8 \uc704\uc5d0 \ub354\ud558\ub294 \uac8c \uc544\ub2c8\ub77c \ubc14\uafc9\ub2c8\ub2e4.'}
+      </Caption>
+    </Shell>
+  );
+}
+
 // ── Dispatch ─────────────────────────────────────────────────────────────
 
 export const CHARACTER_VIEW_MODULES = new Set([
-  'declick', 'exciter', 'tape', 'imager', 'export', 'delay', 'reverb',
+  'declick', 'exciter', 'tape', 'imager', 'export', 'delay', 'reverb', 'top-rebuild',
 ]);
 
 export function CharacterView(props: {
@@ -758,6 +874,7 @@ export function CharacterView(props: {
     case 'exciter': body = <ExciterView {...common} />; break;
     case 'tape': body = <TapeView {...common} />; break;
     case 'imager': body = <ImagerView {...common} />; break;
+    case 'top-rebuild': body = <TopRebuildView {...common} />; break;
     case 'delay': body = <DelayView {...common} />; break;
     case 'reverb': body = <ReverbView {...common} />; break;
     case 'export': body = <ExportView {...common} metrics={props.metrics} />; break;

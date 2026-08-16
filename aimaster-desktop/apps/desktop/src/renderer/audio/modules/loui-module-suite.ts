@@ -165,6 +165,12 @@ const SUITE: LouiModule[] = [
     description: 'Matches the long-term tonal curve towards a reference (NOT a copy of it) on a 32-band log grid, with a per-band ceiling on the move.',
   },
   {
+    id: 'top-rebuild', displayName: 'Top Rebuild', category: 'restoration', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'low',
+    visual: 'spectrum', paramModuleId: 'top-rebuild', algorithmName: 'Loui Air Restore',
+    description: 'Replaces a codec-damaged top end instead of boosting it: cuts the band that carries the artefact and rebuilds it from harmonics generated out of a healthy midrange, scaled to the envelope the original had. Zero added latency.',
+  },
+  {
     id: 'declick', displayName: 'De-click', category: 'restoration', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'low',
     visual: 'none', paramModuleId: 'declick', algorithmName: 'Loui Repair',
@@ -293,7 +299,7 @@ export function getModule(id: string): LouiModule | undefined { return BY_ID.get
  * the engine does not have.
  */
 export const CHAIN_MODULE_IDS: readonly string[] = [
-  'declick', 'dehum', 'denoise', 'deess',
+  'declick', 'dehum', 'denoise', 'deess', 'top-rebuild',
   'parametric-eq',
   'reference-match', 'harshness-control', 'stabilizer', 'spectral-shaper',
   'vintage-eq', 'eq', 'dynamic-eq',
@@ -335,7 +341,7 @@ export const RACK_GROUPS: readonly RackGroup[] = [
     // Not in the requested six, but these four have to live somewhere and
     // they come first for a reason: they repair the source, and every tonal
     // decision after them is made on the repaired version.
-    moduleIds: ['declick', 'dehum', 'denoise', 'deess'],
+    moduleIds: ['declick', 'dehum', 'denoise', 'deess', 'top-rebuild'],
   },
   {
     key: 'compressor', label: 'Compressors', ko: '컴프레서 계열',

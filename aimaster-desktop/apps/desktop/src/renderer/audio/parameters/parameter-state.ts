@@ -26,7 +26,7 @@ import type { EngineModuleType } from '@aimaster/shared-types/engine';
  */
 export type ModuleId =
   // Restoration
-  | 'declick' | 'dehum' | 'denoise' | 'deess'
+  | 'declick' | 'dehum' | 'denoise' | 'deess' | 'top-rebuild'
   // Tone / spectral
   | 'parametric-eq' | 'eq' | 'match-eq' | 'spectral-shaper' | 'stabilizer'
   | 'vintage-eq' | 'dynamic-eq'
@@ -40,7 +40,7 @@ export type ModuleId =
   | 'imager' | 'limiter' | 'export';
 
 export const MODULE_IDS: readonly ModuleId[] = [
-  'declick', 'dehum', 'denoise', 'deess',
+  'declick', 'dehum', 'denoise', 'deess', 'top-rebuild',
   'parametric-eq', 'eq', 'match-eq', 'spectral-shaper', 'stabilizer', 'vintage-eq', 'dynamic-eq',
   'multiband', 'dynamics', 'vintage-comp', 'impact', 'low-end-focus',
   'exciter', 'tape',

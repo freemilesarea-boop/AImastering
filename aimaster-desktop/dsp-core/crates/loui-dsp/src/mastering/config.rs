@@ -641,6 +641,39 @@ impl Default for ParametricEqConfig {
     }
 }
 
+/// Spectral Top Rebuild parameters.
+///
+/// Defaults are silent: `amount_pct` is 0, so a chain carrying the module
+/// without being asked for it is still bit-transparent.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
+pub struct TopRebuildConfig {
+    /// How much of the damaged band is replaced, 0..100 %.  0 = off.
+    pub amount_pct: f64,
+    /// Where the damage starts, in Hz — everything above is rebuilt.
+    pub crossover_hz: f64,
+    /// Centre of the healthy band the harmonics are generated from, in Hz.
+    pub source_hz: f64,
+    /// Odd-harmonic share, 0..100 %.  Higher reaches further up (3× vs 2×).
+    pub character_pct: f64,
+    /// How tightly the replacement tracks the original band's level, in ms.
+    pub follow_ms: f64,
+    pub bypass: bool,
+}
+
+impl Default for TopRebuildConfig {
+    fn default() -> Self {
+        Self {
+            amount_pct: 0.0,
+            crossover_hz: 9_000.0,
+            source_hz: 3_000.0,
+            character_pct: 60.0,
+            follow_ms: 12.0,
+            bypass: false,
+        }
+    }
+}
+
 /// Stereo delay parameters.
 ///
 /// Defaults are silent: `mix_pct` is 0, so a chain that carries a delay it
@@ -860,6 +893,9 @@ pub struct MasteringChainConfig {
     pub dehum: DehumConfig,
     pub denoise: DenoiseConfig,
     pub deess: DeessConfig,
+    /// Rebuilds a codec-damaged top end.  Restoration, so it runs before
+    /// any tonal decision is made on what it produces.
+    pub top_rebuild: TopRebuildConfig,
     // Corrective / spectral.
     pub parametric_eq: ParametricEqConfig,
     pub spectral: SpectralConfig,
@@ -902,6 +938,7 @@ impl Default for MasteringChainConfig {
             dehum: DehumConfig::default(),
             denoise: DenoiseConfig::default(),
             deess: DeessConfig::default(),
+            top_rebuild: TopRebuildConfig::default(),
             parametric_eq: ParametricEqConfig::default(),
             spectral: SpectralConfig::default(),
             vintage_eq: VintageEqConfig::default(),
