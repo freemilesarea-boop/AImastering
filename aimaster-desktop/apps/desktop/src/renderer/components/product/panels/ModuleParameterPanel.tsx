@@ -240,6 +240,14 @@ export interface ModuleParameterPanelProps {
   onApplyRecommended?: (() => void) | undefined;
   /** The recommendation itself, for the explanation line. */
   recommended?: RecommendedEntry | undefined;
+  /**
+   * Why this module's recommendation differs for the loaded song.
+   *
+   * Shown beside the generic reason rather than replacing it: the user
+   * needs both "what this control is for" and "why yours says something
+   * different from the book value".
+   */
+  adaptiveNote?: { measured: string; action: string } | undefined;
 }
 
 export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
@@ -296,6 +304,26 @@ export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
             }}>
               {props.recommended.why}
             </span>
+            {props.adaptiveNote && (
+              <div style={{
+                marginTop: space['2'],
+                paddingInline: space['2'],
+                paddingBlock: space['1'],
+                borderRadius: radius.chip,
+                borderLeft: `2px solid ${meter.accent.foreground}`,
+                background: `${meter.accent.foreground}10`,
+                fontFamily: typography.family.sans,
+                fontSize: typography.size.xs,
+                color: text.tertiary,
+                lineHeight: 1.6,
+              }}>
+                <strong style={{ color: meter.accent.foreground }}>이 곡 기준</strong>
+                {' · '}
+                {props.adaptiveNote.measured}
+                {' → '}
+                {props.adaptiveNote.action}
+              </div>
+            )}
           </div>
           {props.onApplyRecommended && (
             <button

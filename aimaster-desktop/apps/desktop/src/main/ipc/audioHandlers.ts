@@ -435,6 +435,24 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     }
   });
 
+  // ── Song profile (adaptive defaults) ───────────────────────────────────
+  // Measures the source so the recommended settings can be about THIS song
+  // rather than about songs in general.  Notably the hiss gate's threshold,
+  // which is a per-bin dBFS level nothing in a static table could know.
+  ipc.handle('audio:song-profile', async (_e, filePath: unknown) => {
+    const safePath = validateAbsoluteFilePath(filePath, 'audio:song-profile');
+    try {
+      const { profileSong } = await import('../offline/song-profile.js');
+      const profile = await profileSong(safePath);
+      return { ok: true as const, profile };
+    } catch (err) {
+      // Returned rather than thrown: failing to analyse is an ordinary
+      // outcome (an odd codec, a very short file) and the Studio should
+      // fall back to the common defaults, not show a stack trace.
+      return { ok: false as const, error: (err as Error).message };
+    }
+  });
+
   // ── Reference curve (Match EQ) ─────────────────────────────────────────
   // Match EQ needs a target curve and there was no way to produce one, so
   // the module could not be switched on at all.  This measures a reference

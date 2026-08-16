@@ -48,6 +48,7 @@ import {
 import { presetApplyPlan } from '../presets/preset-to-state.js';
 import type { LouiPreset } from '../presets/loui-presets.js';
 import type { FreeEqBand } from '../modules/eq-graph-model.js';
+import type { SongProfile } from '../presets/adaptive-defaults.js';
 
 const STORAGE_KEY = 'loui.song.settings';
 const SCHEMA_VERSION = 1;
@@ -76,6 +77,15 @@ export interface SongSettings {
    */
   referencePath?: string | null;
   referenceCurveDb?: number[] | null;
+  /**
+   * What the engine measured about this song.
+   *
+   * Saved because measuring costs a decode and two analysis passes — worth
+   * doing once per file, not once per visit — and because the adapted
+   * settings should be reproducible later without the source being
+   * re-readable.
+   */
+  profile?: SongProfile | null;
 }
 
 interface StoredEnvelope {

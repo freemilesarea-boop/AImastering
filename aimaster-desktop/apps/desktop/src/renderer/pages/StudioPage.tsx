@@ -86,6 +86,7 @@ import { LouiMonitorBar } from '../components/product/LouiMonitorBar.js';
 import { LouiStudioPresetBar } from '../components/product/LouiStudioPresetBar.js';
 import { presetApplyPlan } from '../audio/presets/preset-to-state.js';
 import { recommendedFor } from '../audio/presets/recommended-defaults.js';
+import { adaptRecommended, type SongProfile, type AdaptiveResult } from '../audio/presets/adaptive-defaults.js';
 import {
   loadSongSettings, saveSongSettings, clearSongSettings, changedModules,
 } from '../audio/session/song-settings.js';
@@ -175,6 +176,42 @@ export default function StudioPage() {
     () => (selectedFile ? loadSongSettings(selectedFile)?.savedAt : null) ?? null,
   );
   const [dirty, setDirty] = useState(false);
+
+  /**
+   * What the engine measured about this song.
+   *
+   * Held here and saved with the song, because measuring costs a decode and
+   * two analysis passes — worth doing once per file, not once per visit.
+   */
+  const [profile, setProfile] = useState<SongProfile | null>(
+    () => (selectedFile ? loadSongSettings(selectedFile)?.profile : null) ?? null,
+  );
+  const [profiling, setProfiling] = useState(false);
+
+  /** The recommendation, adjusted for whatever was measured. */
+  const adaptive: AdaptiveResult = useMemo(() => adaptRecommended(profile), [profile]);
+
+  // Measure on arrival, once per file. `selectedFile` is the only dependency
+  // that should retrigger this — anything else would re-decode the track on
+  // an unrelated re-render.
+  useEffect(() => {
+    if (!selectedFile || profile) return;
+    const api = window.electronAPI;
+    if (!api) return;
+    let cancelled = false;
+    setProfiling(true);
+    void (async () => {
+      const res = await api.invoke('audio:song-profile', selectedFile) as
+        { ok: true; profile: SongProfile } | { ok: false; error: string };
+      if (cancelled) return;
+      setProfiling(false);
+      // A failed analysis is not an error state: the common defaults still
+      // work, so the page carries on with them rather than saying nothing
+      // is possible.
+      if (res.ok) setProfile(res.profile);
+    })();
+    return () => { cancelled = true; };
+  }, [selectedFile, profile]);
 
   /**
    * The Match EQ reference.
@@ -306,7 +343,7 @@ export default function StudioPage() {
    * that the recommendation says should not be.
    */
   const applyRecommended = useCallback((moduleId: ModuleId) => {
-    const entry = recommendedFor(moduleId);
+    const entry = adaptive.entries[moduleId] ?? recommendedFor(moduleId);
     if (!entry) return;
     setState((prev) => {
       const mod = prev[moduleId];
@@ -319,7 +356,7 @@ export default function StudioPage() {
         },
       };
     });
-  }, []);
+  }, [adaptive]);
 
   /**
    * The beginner's one button: every module at once.
@@ -331,7 +368,7 @@ export default function StudioPage() {
     setState((prev) => {
       const next = { ...prev };
       for (const id of MODULE_IDS) {
-        const entry = recommendedFor(id);
+        const entry = adaptive.entries[id];
         if (!entry) continue;
         const mod = next[id];
         next[id] = {
@@ -345,8 +382,13 @@ export default function StudioPage() {
     // The free EQ is a band list, not named scalars, and the recommendation
     // has no opinion on it — clearing it would throw away deliberate work.
     setAppliedPreset(null);
-    notify('모든 모듈에 추천 설정을 적용했습니다', 'success');
-  }, [notify]);
+    notify(
+      profile
+        ? `이 곡을 분석한 값으로 ${adaptive.notes.length}개 모듈을 맞췄습니다`
+        : '모든 모듈에 공통 추천 설정을 적용했습니다',
+      'success',
+    );
+  }, [notify, adaptive, profile]);
 
   const setBypass = useCallback((moduleId: ModuleId, bypass: boolean) => {
     setState((prev) => ({ ...prev, [moduleId]: { ...prev[moduleId], bypass } }));
@@ -379,12 +421,13 @@ export default function StudioPage() {
       presetId: appliedPreset,
       referencePath: reference.path,
       referenceCurveDb: reference.curveDb ? [...reference.curveDb] : null,
+      profile,
     });
     setSavedAt(entry.savedAt);
     setDirty(false);
     refreshStudioSaved();
     notify(`${changedModules(state).length}개 모듈 설정을 저장했습니다`, 'success');
-  }, [selectedFile, state, freeBands, masterBypass, appliedPreset, reference, refreshStudioSaved, notify]);
+  }, [selectedFile, state, freeBands, masterBypass, appliedPreset, reference, profile, refreshStudioSaved, notify]);
 
   /** Throw this song's saved work away and go back to defaults. */
   const forgetSettings = useCallback(() => {
@@ -711,6 +754,8 @@ export default function StudioPage() {
           appliedId={appliedPreset}
           onApply={applyPreset}
           onApplyRecommended={applyAllRecommended}
+          analysisSummary={profiling ? '이 곡을 분석하는 중…' : profile ? adaptive.summary : null}
+          adaptedCount={profile ? adaptive.notes.length : 0}
         />
 
         <LouiMonitorBar
@@ -793,7 +838,8 @@ export default function StudioPage() {
                 values={state[paramModule].parameters}
                 bypass={state[paramModule].bypass}
                 onChange={(id, value) => setParam(paramModule, id, value)}
-                recommended={recommendedFor(paramModule)}
+                recommended={adaptive.entries[paramModule]}
+                adaptiveNote={adaptive.notes.find((n) => n.moduleId === paramModule)}
                 onApplyRecommended={() => applyRecommended(paramModule)}
                 {...(CHARACTER_VIEW_MODULES.has(paramModule)
                   ? {

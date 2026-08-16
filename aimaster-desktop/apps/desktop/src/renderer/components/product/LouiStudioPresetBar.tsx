@@ -29,6 +29,10 @@ export interface LouiStudioPresetBarProps {
    * neutral."
    */
   onApplyRecommended?: (() => void) | undefined;
+  /** What was measured about the loaded song, or null before analysis. */
+  analysisSummary?: string | null | undefined;
+  /** How many modules the measurement moved off the common value. */
+  adaptedCount?: number | undefined;
 }
 
 /** Categories, in the order a person picks from them. */
@@ -89,7 +93,7 @@ export function LouiStudioPresetBar(props: LouiStudioPresetBarProps) {
               whiteSpace: 'nowrap',
             }}
           >
-            초심자 추천 설정 전체 적용
+            {props.adaptedCount ? '이 곡 맞춤 설정 전체 적용' : '초심자 추천 설정 전체 적용'}
           </button>
         )}
 
@@ -140,6 +144,24 @@ export function LouiStudioPresetBar(props: LouiStudioPresetBarProps) {
           );
         })}
       </div>
+
+      {/* What the engine measured about this song. Shown as numbers rather
+          than a verdict: they are the reason the settings below differ from
+          the book values, and a user who can read them can argue with them. */}
+      {props.analysisSummary && (
+        <span style={{
+          fontFamily: typography.family.mono,
+          fontSize: typography.size.xs,
+          color: text.muted,
+          lineHeight: 1.6,
+        }}>
+          <span style={{ fontFamily: typography.family.sans, color: '#34D399' }}>
+            {props.adaptedCount ? `곡 분석 완료 · ${props.adaptedCount}개 모듈 맞춤` : '곡 분석'}
+          </span>
+          {'  '}
+          {props.analysisSummary}
+        </span>
+      )}
 
       {/* One line about whatever is under the cursor, or what was applied.
           A grid of unlabelled chips is a guessing game. */}

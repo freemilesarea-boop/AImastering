@@ -461,7 +461,7 @@ cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 #           cargo install wasm-bindgen-cli --version 0.2.127
 pnpm --filter @loui/dsp-wasm run build:all
 
-# Desktop — 348 checks, including 55 that push config through the real chain
+# Desktop — 385 checks, including 55 that push config through the real chain
 pnpm --filter @aimaster/desktop test
 ```
 
@@ -872,7 +872,70 @@ compressor. It now measures with Auto Gain off.
 
 ---
 
-## 14. Not implemented
+## 14. Per-song defaults — measuring the track
+
+`recommended-defaults` is one table for everyone. That beats neutral and it
+is still wrong for any particular record: a dark ballad and a bright trap
+record need opposite EQ moves, and **a compressor threshold in dBFS is a
+guess until somebody knows the programme level** — which is exactly why the
+stock multiband starting point does nothing to a quiet mix.
+
+So the Studio now measures the file on arrival and adjusts.
+
+### `main/offline/song-profile.ts` — the measurement
+
+Loudness and crest (where thresholds go), the 32-band tonal curve from the
+engine's own analysis pass (tilt, sub weight, harshness, air, sibilance),
+the top cutoff, stereo width, low-frequency correlation, and the HF noise
+floor.
+
+**Two windows, deliberately.** The **loudest** span decides tone and
+dynamics, because that is the record. The **quietest** decides the noise
+floor, because that is the only place it is visible. Averaging the whole
+file would put both measurements halfway between and be right for neither.
+
+Getting the tone window right was not optional: the engine's band average is
+an exponential decay with a ~2 second constant, so whatever span it *ends*
+on is most of what it reports. The first version ran to the end of the file
+and came back with a **−210 dBFS curve on every input, dark and bright
+alike**, because both ended in silence. The span now starts at the loudest
+window and extends only while the music stays up.
+
+### `audio/presets/adaptive-defaults.ts` — the rules
+
+Explicit rules with stated reasons, shown to the user beside the value —
+deliberately not a learned model. A beginner cannot audit a number that came
+out of a black box, and the point of this feature is to teach what the
+controls do while it sets them.
+
+| Measured | Sets |
+|---|---|
+| HF floor in the quiet window | **the hiss gate's threshold** — the one value nothing static could know |
+| a hard top cutoff | Top Rebuild's crossover, exactly on it, and its source at half |
+| 2–4 kHz vs the curve mean | presence cut, or a lift if the record is dull |
+| 10–16 kHz | how much air to add, and how much rebuild |
+| sub vs low | the high-pass — a track with real sub keeps it |
+| sibilance | de-esser range |
+| **integrated LUFS** | **every compressor threshold** |
+| crest factor | ratios, and how much transient restoration |
+| side energy, low correlation | width, and how high to sum the bass |
+
+A pristine source switches the gate **off** rather than running it at a
+threshold nothing will cross — it would only cost the spectral stage's
+latency.
+
+### Covered
+
+`song-profile-selftest.ts` (16) writes real WAVs with known properties and
+decodes them through the same ffmpeg path the render uses — measurement, not
+mocks. `adaptive-defaults-selftest.ts` (21) checks the rules move the right
+way and sweeps 540 synthetic profiles asserting every produced value stays
+inside its own slider's range, plus a nonsense profile that must still yield
+legal settings.
+
+---
+
+## 15. Not implemented
 
 Honest list, so the registry stays trustworthy:
 
