@@ -416,11 +416,26 @@ export function DeessView(props: {
  * only worth showing if its definition is written down, which is why it is
  * in this comment and in the caption.
  */
+/** How the reference is loaded, supplied by the page. */
+export interface MatchReferenceControls {
+  /** File name of the loaded reference, or null. */
+  name: string | null;
+  /** Open a picker and measure whatever is chosen. */
+  onChoose: () => void;
+  /** Forget the current reference. */
+  onClear: () => void;
+  /** True while a reference is being decoded and measured. */
+  busy: boolean;
+  /** Why the last attempt failed, if it did. */
+  error: string | null;
+}
+
 export function MatchView(props: {
   values: Record<string, ParameterValue>;
   width: number;
   metrics: RealtimePreviewMetrics;
   targetCurveDb?: readonly number[] | undefined;
+  reference?: MatchReferenceControls | undefined;
   disabled?: boolean | undefined;
 }) {
   const source = props.metrics.tonalCurveDb;
@@ -451,7 +466,77 @@ export function MatchView(props: {
     return c.map((x) => x - m);
   };
 
+  const ref = props.reference;
+
   return (
+    <>
+    {/* Loading a reference is the first step and it had no control at all —
+        the panel said "no reference" and offered no way to supply one. */}
+    {ref && (
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: space['2'], flexWrap: 'wrap',
+        paddingInline: space['3'], paddingBlock: space['2'],
+        marginBottom: space['2'],
+        background: surface.well,
+        border: `1px solid ${hasTarget ? surface.border : `${meter.warn.foreground}44`}`,
+        borderRadius: radius.panel,
+      }}>
+        <button
+          type="button"
+          onClick={ref.onChoose}
+          disabled={ref.busy || props.disabled}
+          className="no-drag"
+          style={{
+            appearance: 'none',
+            cursor: ref.busy || props.disabled ? 'wait' : 'pointer',
+            paddingInline: space['3'], paddingBlock: 5,
+            borderRadius: radius.chip,
+            border: `1px solid ${meter.accent.foreground}77`,
+            background: `${meter.accent.foreground}18`,
+            color: meter.accent.foreground,
+            fontFamily: typography.family.sans, fontSize: typography.size.xs,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {ref.busy
+            ? '분석 중…'
+            : hasTarget ? '레퍼런스 바꾸기' : '레퍼런스 곡 불러오기'}
+        </button>
+        {hasTarget && !ref.busy && (
+          <button
+            type="button"
+            onClick={ref.onClear}
+            className="no-drag"
+            style={{
+              appearance: 'none', cursor: 'pointer',
+              paddingInline: space['2'], paddingBlock: 5,
+              borderRadius: radius.chip,
+              border: `1px solid ${surface.border}`,
+              background: 'transparent',
+              color: text.muted,
+              fontFamily: typography.family.sans, fontSize: typography.size.xs,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            해제
+          </button>
+        )}
+        <span style={{
+          fontFamily: typography.family.sans, fontSize: typography.size.xs,
+          color: ref.error ? meter.warn.foreground : text.muted,
+          lineHeight: 1.6, flex: 1, minWidth: 200,
+        }}>
+          {ref.error
+            ? `레퍼런스를 읽지 못했습니다: ${ref.error}`
+            : ref.busy
+              ? '레퍼런스 곡의 음색 균형을 재고 있습니다. 곡 중간 90초를 분석합니다.'
+              : ref.name
+                ? `기준: ${ref.name}`
+                : '닮고 싶은 완성된 곡을 하나 고르세요 (WAV·MP3·FLAC 등). 그 곡의 음색 균형만 가져오고, 소리를 복사하지는 않습니다.'}
+        </span>
+      </div>
+    )}
+
     <Frame
       width={props.width} minDb={-12} maxDb={12} dbTicks={[-9, -6, -3, 0, 3, 6, 9]}
       disabled={props.disabled}
@@ -493,6 +578,7 @@ export function MatchView(props: {
         </>
       )}
     </Frame>
+    </>
   );
 }
 
@@ -587,6 +673,7 @@ export function RestorationView(props: {
   values: Record<string, ParameterValue>;
   metrics: RealtimePreviewMetrics;
   targetCurveDb?: readonly number[] | undefined;
+  reference?: MatchReferenceControls | undefined;
   disabled?: boolean | undefined;
 }) {
   const wrapRef = React.useRef<HTMLDivElement | null>(null);
@@ -612,6 +699,7 @@ function RestorationViewInner(props: {
   metrics: RealtimePreviewMetrics;
   width: number;
   targetCurveDb?: readonly number[] | undefined;
+  reference?: MatchReferenceControls | undefined;
   disabled?: boolean | undefined;
 }) {
   const common = {
@@ -624,7 +712,7 @@ function RestorationViewInner(props: {
     case 'dehum': return <DehumView {...common} />;
     case 'denoise': return <DenoiseView {...common} />;
     case 'deess': return <DeessView {...common} />;
-    case 'match-eq': return <MatchView {...common} targetCurveDb={props.targetCurveDb} />;
+    case 'match-eq': return <MatchView {...common} targetCurveDb={props.targetCurveDb} reference={props.reference} />;
     case 'spectral-shaper': return <HarshnessView {...common} />;
     default: return null;
   }

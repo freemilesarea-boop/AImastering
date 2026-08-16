@@ -461,7 +461,7 @@ cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 #           cargo install wasm-bindgen-cli --version 0.2.127
 pnpm --filter @loui/dsp-wasm run build:all
 
-# Desktop — 296 checks, including 55 that push config through the real chain
+# Desktop — 310 checks, including 55 that push config through the real chain
 pnpm --filter @aimaster/desktop test
 ```
 
@@ -696,7 +696,72 @@ through the real WASM chain) and 11 Rust tests in `loudness.rs`.
 
 ---
 
-## 11. Not implemented
+## 11. Reference Match, and the compressors
+
+Three things reported from the Studio, all real.
+
+### The compressors were named after the maths
+
+"Multiband Dynamics" tells an engineer what it is and tells everyone else
+nothing — and the Korean glossary already said 멀티밴드 컴프레서, so the two
+halves of the same label disagreed. Renamed: **Multiband Compressor**,
+**Glue Compressor**, **Vintage Compressor**. `Dynamic EQ` keeps its name; it
+is an EQ.
+
+### A compressor doing nothing looked like a broken one
+
+Every multiband band ships at ratio **1:1**, threshold **0 dB** — a straight
+wire. That default is right: modules must be bit-transparent until asked, and
+`chain-config` does not even emit the stage until a band has something to do.
+But it means switching the module on changes nothing, with all four graphs
+reading `off` and the ratio that explains why several screens further down.
+
+Rather than change the default — silently moving parameters when somebody
+flips a toggle is how a session ends up sounding different for reasons nobody
+can point at — the panel now **says** it is inert, in words, and offers
+`compressorStartingPoint()` behind a button. Gentle values (2:1, thresholds
+stepping down with frequency because there is less energy up there): enough
+to hear it working so it can be adjusted, not a decision made on the user's
+behalf.
+
+### Match EQ had no way to load a reference
+
+`matchTargetCurveDb` is a field on `ChainConfigInput` that **no caller ever
+set**. The module drew an empty graph, said "no reference", and could not be
+switched on — the feature was reachable only by writing 32 numbers by hand.
+There was no picker, no drop target, nothing.
+
+`main/offline/reference-curve.ts` measures one. It decodes the reference and
+runs it through the **same spectral stage** Match EQ uses, in `analysisOnly`
+mode so it measures without processing, then reads the long-term curve off
+the chain. Using the engine's own measurement rather than an FFT written
+alongside it is the point: the curve has to live on the engine's 32-band log
+grid with the engine's weighting, or the match is computed against a slightly
+different picture of the same audio and the error shows up as a tilt nobody
+can trace.
+
+Ninety seconds from the middle of the track, skipping the first twenty —
+intros are the least representative part of a record, and a tonal reference
+taken from one describes a section rather than the mix. Bands the analysis
+never observed come back as `-Infinity` and are filled from their nearest
+measured neighbour before normalising, since one would otherwise poison the
+mean and every other band with it.
+
+Two consequences worth stating:
+
+- **Choosing a reference un-bypasses Match EQ.** The module ships bypassed
+  because matching to nothing is a no-op that still costs an STFT frame of
+  latency — but picking a reference *is* the request to match, so leaving it
+  bypassed would mean loading a file and hearing nothing.
+- **The curve is saved with the song, not the path.** The reference file may
+  have moved by the time a batch runs, and a saved song that silently stopped
+  matching would be worse than one that matches a file the user no longer
+  has. `renderSong` passes the stored curve, so the export matches what the
+  preview did.
+
+---
+
+## 12. Not implemented
 
 Honest list, so the registry stays trustworthy:
 

@@ -69,6 +69,9 @@ export interface WasmMasteringChain {
   /** Total processing latency for the current config, in samples. */
   latencySamples?(): number;
   processStereo(left: Float32Array, right: Float32Array): void;
+  /** Measured long-term tonal curve, dB per curve band.  Absent on WASM
+   *  builds older than the spectral stage. */
+  tonalCurveDb?(): Float64Array;
   limiterGrDb(): number;
   reset(): void;
   free?(): void;

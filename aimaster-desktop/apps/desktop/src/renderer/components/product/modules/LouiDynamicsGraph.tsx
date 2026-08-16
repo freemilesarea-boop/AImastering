@@ -34,6 +34,15 @@ export interface LouiDynamicsGraphProps {
   /** True when the preview is running — an idle meter must not read as 0 dB. */
   live: boolean;
   disabled?: boolean;
+  /**
+   * Write a working starting point.
+   *
+   * Offered rather than applied: the neutral defaults are what keep the
+   * module bit-transparent until asked, and silently moving parameters
+   * when somebody flips a toggle is how a session ends up sounding
+   * different for reasons nobody can point at.
+   */
+  onSetUp?: (() => void) | undefined;
 }
 
 const SIZE = 176;
@@ -209,6 +218,12 @@ function CurveCell(props: {
 
 export function LouiDynamicsGraph(props: LouiDynamicsGraphProps) {
   const { spec, reductionDb, live, disabled } = props;
+  // A compressor at 1:1 is a straight wire. Switching the module on and
+  // hearing nothing reads as a broken module rather than as a neutral one,
+  // and the reason is four graphs down the page where the ratio lives —
+  // so it gets said here, where the "off" is.
+  const idle = spec.curves.every((c) => c.curve.ratio <= 1.001);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space['2'], opacity: disabled ? 0.45 : 1 }}>
       <div style={{
@@ -226,6 +241,50 @@ export function LouiDynamicsGraph(props: LouiDynamicsGraphProps) {
           />
         ))}
       </div>
+
+      {idle && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: space['3'], flexWrap: 'wrap',
+          paddingInline: space['3'], paddingBlock: space['2'],
+          background: surface.well,
+          border: `1px solid ${meter.warn.foreground}44`,
+          borderRadius: radius.panel,
+        }}>
+          <span style={{
+            fontFamily: typography.family.sans, fontSize: typography.size.xs,
+            color: text.secondary, lineHeight: 1.6, flex: 1, minWidth: 220,
+          }}>
+            <strong style={{ color: meter.warn.foreground }}>지금은 아무 일도 하지 않습니다.</strong>
+            {' '}
+            {spec.curves.length > 1
+              ? '모든 밴드의 Ratio가 1:1이라 소리가 그대로 지나갑니다.'
+              : 'Ratio가 1:1이라 소리가 그대로 지나갑니다.'}
+            {' '}Ratio를 올리고 Threshold를 신호가 닿는 높이까지 내리면 그때부터 눌리기 시작합니다.
+            <span style={{ color: text.muted }}>
+              {' '}(Ratio 1:1 = 압축 없음. 모듈을 켜도 이 값이면 바뀌는 게 없는 것이 정상입니다.)
+            </span>
+          </span>
+          {props.onSetUp && !disabled && (
+            <button
+              type="button"
+              onClick={props.onSetUp}
+              className="no-drag"
+              style={{
+                appearance: 'none', cursor: 'pointer', whiteSpace: 'nowrap',
+                paddingInline: space['3'], paddingBlock: 5,
+                borderRadius: radius.chip,
+                border: `1px solid ${meter.warn.foreground}77`,
+                background: `${meter.warn.foreground}18`,
+                color: meter.warn.foreground,
+                fontFamily: typography.family.sans, fontSize: typography.size.xs,
+              }}
+            >
+              기본값으로 시작하기
+            </button>
+          )}
+        </div>
+      )}
+
       <span style={{
         fontFamily: typography.family.sans, fontSize: typography.size.xs, color: text.muted,
       }}>

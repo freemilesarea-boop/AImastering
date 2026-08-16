@@ -116,6 +116,13 @@ export async function renderSong(input: RenderSongInput): Promise<RenderSongOutp
     state,
     masterBypass: input.settings.masterBypass,
     parametricBands: input.settings.freeBands.map(freeBandToWire),
+    // The Match EQ reference. Stored with the song rather than re-measured
+    // here: the reference file may have moved since, and a render that
+    // silently stopped matching would be worse than one that matches a file
+    // the user no longer has on disk.
+    ...(input.settings.referenceCurveDb
+      ? { matchTargetCurveDb: input.settings.referenceCurveDb }
+      : {}),
     // No `monitor`: A/B and delta are listening aids. Baking one into an
     // export would ship a level-matched bypass as the master.
   });

@@ -37,6 +37,8 @@ import {
   type ParameterValue,
 } from '../src/renderer/audio/parameters/index.js';
 import { buildChainConfig, chainConfigToJson } from '../src/renderer/audio/chain-config.js';
+import { LOUI_MODULES } from '../src/renderer/audio/modules/loui-module-suite.js';
+import { compressorStartingPoint } from '../src/renderer/audio/modules/dynamics-graph-model.js';
 
 const __dirname_ = path.dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -83,8 +85,15 @@ function material(n: number, amp: number): Float32Array {
  * slow — a fast one is a compressor that flattens the song — so a short
  * render would measure it mid-flight.
  */
-function render(state: AllModulesParameterState, amp = 0.25): { rms: number; peak: number } {
-  const cfg = buildChainConfig({ state, masterBypass: false });
+function render(
+  state: AllModulesParameterState,
+  amp = 0.25,
+  matchTargetCurveDb?: readonly number[],
+): { rms: number; peak: number } {
+  const cfg = buildChainConfig({
+    state, masterBypass: false,
+    ...(matchTargetCurveDb ? { matchTargetCurveDb } : {}),
+  });
   const chain = new Chain(SR);
   chain.setConfigJson(chainConfigToJson(cfg));
   const n = SR * 6;
@@ -341,6 +350,140 @@ console.log('\n=== THE CEILING ITSELF STILL WORKS ===\n');
     'bypassing the limiter also bypasses the ceiling clamp',
     off.peak > on.peak + 3,
     `bypassed ${off.peak.toFixed(1)} dBFS vs limited ${on.peak.toFixed(1)} dBFS`,
+  );
+}
+
+console.log('\n=== COMPRESSORS ARE NAMED AS COMPRESSORS ===\n');
+
+{
+  // "Multiband Dynamics" tells an engineer what it is and tells everyone
+  // else nothing. The Korean glossary already said 멀티밴드 컴프레서; the
+  // English name did not match it.
+  const names = new Map(LOUI_MODULES.map((m) => [m.id, m.displayName]));
+  const want: Array<[string, string]> = [
+    ['multiband', 'Multiband Compressor'],
+    ['dynamics', 'Glue Compressor'],
+    ['vintage-comp', 'Vintage Compressor'],
+  ];
+  for (const [id, expected] of want) {
+    check(
+      `${id} is called a compressor`,
+      names.get(id) === expected,
+      `"${String(names.get(id))}"`,
+    );
+  }
+  const stale = [...names.values()].filter((n) => /Dynamics$/.test(n) && n !== 'Dynamic EQ');
+  check(
+    'no module is still called "… Dynamics"',
+    stale.length === 0,
+    stale.join(', ') || 'none',
+  );
+}
+
+console.log('\n=== A COMPRESSOR THAT DOES NOTHING SAYS SO, AND CAN START ===\n');
+
+{
+  // The reported symptom on the multiband: switch it on, nothing happens.
+  // It was not broken — every band ships at ratio 1:1, which is a straight
+  // wire. That default is right (modules must be bit-transparent until
+  // asked), so the fix is that the panel says so and offers a way out.
+  const fresh = defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS);
+  const before = render(fresh);
+  const cfgBefore = buildChainConfig({ state: fresh, masterBypass: false });
+  check(
+    'a fresh multiband is genuinely inert',
+    cfgBefore.multiband === undefined,
+    'not even emitted into the chain config',
+  );
+
+  const started = defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS);
+  const edits = compressorStartingPoint('multiband');
+  const params = { ...started.multiband.parameters };
+  for (const [k, v] of edits) params[k] = v;
+  started.multiband = { ...started.multiband, parameters: params };
+
+  const cfgAfter = buildChainConfig({ state: started, masterBypass: false });
+  check(
+    'the starting point engages it',
+    cfgAfter.multiband !== undefined && (cfgAfter.multiband.bands?.length ?? 0) === 4,
+    `${cfgAfter.multiband?.bands?.length ?? 0} bands emitted`,
+  );
+
+  const after = render(started);
+  check(
+    'and it audibly changes the sound',
+    Math.abs(after.rms - before.rms) > 0.5,
+    `${before.rms.toFixed(2)} dB → ${after.rms.toFixed(2)} dB`,
+  );
+  check(
+    'every band of the starting point is actually compressing',
+    (cfgAfter.multiband?.bands ?? []).every((b) => (b.ratio ?? 1) > 1),
+    (cfgAfter.multiband?.bands ?? []).map((b) => `${(b.ratio ?? 1).toFixed(1)}:1`).join(' '),
+  );
+}
+
+{
+  for (const id of ['dynamics', 'vintage-comp']) {
+    const s = defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS);
+    const mod = s[id as ModuleId];
+    const params = { ...mod.parameters };
+    for (const [k, v] of compressorStartingPoint(id)) params[k] = v;
+    s[id as ModuleId] = { ...mod, parameters: params };
+    const cfg = buildChainConfig({ state: s, masterBypass: false });
+    const emitted = id === 'dynamics' ? cfg.dynamics : cfg.vintageComp;
+    check(
+      `the ${id} starting point engages it`,
+      emitted !== undefined && (emitted.ratio ?? 1) > 1,
+      `ratio ${(emitted?.ratio ?? 1).toFixed(1)}:1`,
+    );
+  }
+}
+
+console.log('\n=== MATCH EQ CAN BE GIVEN A REFERENCE ===\n');
+
+{
+  // Match EQ has always been able to pull a mix towards a reference and
+  // there was never a way to give it one: `matchTargetCurveDb` was a field
+  // no caller set, so the module drew "no reference" and could not engage.
+  const s = defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS);
+  // Match EQ ships bypassed on purpose — matching to nothing is a no-op
+  // that would still cost an STFT frame. Choosing a reference in the Studio
+  // un-bypasses it, which is what this stands in for.
+  s['match-eq'] = {
+    ...s['match-eq'],
+    bypass: false,
+    parameters: { ...s['match-eq'].parameters, amountPct: 60 },
+  };
+  const without = buildChainConfig({ state: s, masterBypass: false });
+  check(
+    'with no reference the match stays off',
+    !without.spectral?.matchEnabled,
+    'matching to nothing is a no-op that would still cost an STFT',
+  );
+
+  // A tilted reference: darker at the top than the source.
+  const curve = Array.from({ length: 32 }, (_, i) => 6 - (i / 31) * 12);
+  const withRef = buildChainConfig({
+    state: s, masterBypass: false, matchTargetCurveDb: curve,
+  });
+  check(
+    'a reference curve switches the match on',
+    !!withRef.spectral?.matchEnabled,
+    `amount ${String(withRef.spectral?.matchAmountPct)}%`,
+  );
+  check(
+    'and the curve reaches the engine intact',
+    withRef.spectral?.targetCurveDb?.length === 32
+      && withRef.spectral.targetCurveDb[0] === 6,
+    `${withRef.spectral?.targetCurveDb?.length ?? 0} bands`,
+  );
+
+  const flat = render(s);
+  const matched = render(s, 0.25, curve);
+  check(
+    'matching to a darker reference actually changes the sound',
+    Math.abs(matched.rms - flat.rms) > 0.2,
+    `${flat.rms.toFixed(2)} dB → ${matched.rms.toFixed(2)} dB`,
   );
 }
 

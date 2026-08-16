@@ -504,7 +504,7 @@ export function BassControlView() {
       </div>
       <Caption>
         이 자리의 작업은 현재 <strong style={{ color: text.tertiary }}>Low End Focus</strong> 와
-        {' '}<strong style={{ color: text.tertiary }}>Multiband Dynamics</strong> 의 저역 밴드가 담당합니다.
+        {' '}<strong style={{ color: text.tertiary }}>Multiband Compressor</strong> 의 저역 밴드가 담당합니다.
         전용 모듈이 생기기 전까지 그쪽을 쓰세요. 동작하지 않는 화면을 그럴듯하게 그려두면
         없는 기능을 조정하며 시간을 쓰게 되므로 그렇게 하지 않았습니다.
       </Caption>

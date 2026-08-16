@@ -46,7 +46,7 @@ import {
   CharacterView,
   CHARACTER_VIEW_MODULES,
 } from '../components/product/modules/LouiCharacterViews.js';
-import { buildDynamicsGraph } from '../audio/modules/dynamics-graph-model.js';
+import { buildDynamicsGraph, compressorStartingPoint } from '../audio/modules/dynamics-graph-model.js';
 import {
   buildGraphBands,
   bandEdits,
@@ -72,6 +72,11 @@ import {
   buildChainConfig, activeModuleIds, MASTER_NATIVE_BIT_DEPTH, MAX_PARAMETRIC_BANDS,
   DEFAULT_MONITOR, monitorAltersOutput, type MonitorSettings,
 } from '../audio/chain-config.js';
+
+/** Last path segment, for showing which reference is loaded. */
+function baseName(p: string): string {
+  return p.split('/').pop()?.split('\\').pop() ?? p;
+}
 
 /** Keep a dragged value inside its range. */
 function clampRange(v: number, lo: number, hi: number): number {
@@ -170,6 +175,68 @@ export default function StudioPage() {
   );
   const [dirty, setDirty] = useState(false);
 
+  /**
+   * The Match EQ reference.
+   *
+   * Held here rather than in the parameter state because it is 32 measured
+   * numbers plus the path they came from, and that state is a flat map of
+   * named scalars per module — the same reason the free EQ's bands live
+   * outside it. It reaches the chain through `matchTargetCurveDb`.
+   */
+  const [reference, setReference] = useState<{
+    path: string | null;
+    name: string | null;
+    curveDb: readonly number[] | null;
+    busy: boolean;
+    error: string | null;
+  }>(() => {
+    const saved = selectedFile ? loadSongSettings(selectedFile) : null;
+    return {
+      path: saved?.referencePath ?? null,
+      name: saved?.referencePath ? baseName(saved.referencePath) : null,
+      curveDb: saved?.referenceCurveDb ?? null,
+      busy: false,
+      error: null,
+    };
+  });
+
+  const chooseReference = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api) return;
+    const picked = await api.invoke('file:open-dialog') as string | null;
+    if (!picked) return;
+    setReference((r) => ({ ...r, busy: true, error: null }));
+    const res = await api.invoke('audio:reference-curve', picked) as
+      { ok: true; curveDb: number[]; measuredSeconds: number } | { ok: false; error: string };
+    if (!res.ok) {
+      setReference((r) => ({ ...r, busy: false, error: res.error }));
+      return;
+    }
+    setReference({
+      path: picked, name: baseName(picked), curveDb: res.curveDb,
+      busy: false, error: null,
+    });
+    // Match EQ ships bypassed, because matching to nothing is a no-op that
+    // would still cost an STFT frame of latency. Choosing a reference IS
+    // the request to match, so leaving it bypassed here would mean loading
+    // a reference and hearing nothing — the same dead end this whole
+    // feature exists to remove.
+    setState((prev) => ({ ...prev, 'match-eq': { ...prev['match-eq'], bypass: false } }));
+    notify(`레퍼런스 분석 완료 (${res.measuredSeconds.toFixed(0)}초) · 레퍼런스 매칭을 켰습니다`, 'success');
+  }, [notify]);
+
+  const clearReference = useCallback(() => {
+    setReference({ path: null, name: null, curveDb: null, busy: false, error: null });
+  }, []);
+
+  const referenceControls = useMemo(() => ({
+    name: reference.name,
+    onChoose: () => { void chooseReference(); },
+    onClear: clearReference,
+    busy: reference.busy,
+    error: reference.error,
+  }), [reference.name, reference.busy, reference.error, chooseReference, clearReference]);
+
   const src = selectedFile ? toFileUrl(selectedFile) : null;
   // Read once per mount: the flag is a kill switch, not a live toggle.
   const [realtimeEnabled] = useState(() => isRealtimePreviewEnabled());
@@ -248,7 +315,7 @@ export default function StudioPage() {
   useEffect(() => {
     if (firstPass.current) { firstPass.current = false; return; }
     setDirty(true);
-  }, [state, freeBands, masterBypass]);
+  }, [state, freeBands, masterBypass, reference.curveDb]);
 
   /** Write this song's work down, keyed by its path. */
   const saveSettings = useCallback(() => {
@@ -259,12 +326,14 @@ export default function StudioPage() {
       freeBands,
       masterBypass,
       presetId: appliedPreset,
+      referencePath: reference.path,
+      referenceCurveDb: reference.curveDb ? [...reference.curveDb] : null,
     });
     setSavedAt(entry.savedAt);
     setDirty(false);
     refreshStudioSaved();
     notify(`${changedModules(state).length}개 모듈 설정을 저장했습니다`, 'success');
-  }, [selectedFile, state, freeBands, masterBypass, appliedPreset, refreshStudioSaved, notify]);
+  }, [selectedFile, state, freeBands, masterBypass, appliedPreset, reference, refreshStudioSaved, notify]);
 
   /** Throw this song's saved work away and go back to defaults. */
   const forgetSettings = useCallback(() => {
@@ -290,8 +359,11 @@ export default function StudioPage() {
     () => buildChainConfig({
       state, masterBypass, monitor,
       parametricBands: freeBands.map(freeBandToWire),
+      // Without this Match EQ can never engage — it is the target it
+      // compares the mix against, and nothing used to supply one.
+      ...(reference.curveDb ? { matchTargetCurveDb: reference.curveDb } : {}),
     }),
-    [state, masterBypass, monitor, freeBands],
+    [state, masterBypass, monitor, freeBands, reference.curveDb],
   );
 
   /**
@@ -699,6 +771,8 @@ export default function StudioPage() {
                         values={state[paramModule].parameters}
                         metrics={preview.metrics}
                         disabled={state[paramModule].bypass}
+                        {...(reference.curveDb ? { targetCurveDb: reference.curveDb } : {})}
+                        reference={referenceControls}
                       />
                     ),
                   }
@@ -711,6 +785,9 @@ export default function StudioPage() {
                         reductionDb={dynamicsReduction}
                         live={preview.metrics.running && !preview.metrics.bypass}
                         disabled={state[paramModule].bypass}
+                        onSetUp={() => setParams(
+                          paramModule, compressorStartingPoint(paramModule),
+                        )}
                       />
                     ),
                   }

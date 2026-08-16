@@ -124,6 +124,40 @@ export function inputDbForReduction(curve: DynamicsCurve, reductionDb: number): 
 /** Modules that show a transfer curve, and which GR metric belongs to each. */
 export type DynamicsGraphKind = 'dynamics' | 'vintage-comp' | 'multiband';
 
+/**
+ * A working starting point for a compressor that is currently a straight
+ * wire.
+ *
+ * The neutral defaults (ratio 1:1, threshold 0 dB) are what keep every
+ * module bit-transparent until it is asked for something, and that is worth
+ * keeping — but it does mean switching a compressor on does nothing at all,
+ * with the ratio that explains why four graphs further down the page. This
+ * is what the "start from defaults" button writes.
+ *
+ * Gentle on purpose: the point is to make the module audible so it can be
+ * adjusted, not to make a decision on the user's behalf. Thresholds sit
+ * where typical mastering material has some level, and the multiband bands
+ * step down slightly with frequency because there is less energy up there.
+ */
+export function compressorStartingPoint(moduleId: string): Array<[string, number]> {
+  if (moduleId === 'multiband') {
+    const out: Array<[string, number]> = [];
+    // Low bands carry more energy, so they reach a given threshold sooner;
+    // stepping the threshold down with frequency keeps the four bands
+    // working by roughly the same amount rather than only the bass.
+    const thresholds = [-20, -22, -24, -26];
+    for (let i = 0; i < thresholds.length; i++) {
+      out.push([`band${i}ThresholdDb`, thresholds[i]!]);
+      out.push([`band${i}Ratio`, 2]);
+    }
+    return out;
+  }
+  if (moduleId === 'vintage-comp') {
+    return [['thresholdDb', -18], ['ratio', 3]];
+  }
+  return [['thresholdDb', -18], ['ratio', 2]];
+}
+
 export interface DynamicsGraphSpec {
   kind: DynamicsGraphKind;
   /** One curve per column.  Multiband has four; the others have one. */

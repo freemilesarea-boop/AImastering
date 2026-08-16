@@ -435,6 +435,24 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     }
   });
 
+  // ── Reference curve (Match EQ) ─────────────────────────────────────────
+  // Match EQ needs a target curve and there was no way to produce one, so
+  // the module could not be switched on at all.  This measures a reference
+  // track on the engine's own 32-band grid.
+  ipc.handle('audio:reference-curve', async (_e, filePath: unknown) => {
+    const safePath = validateAbsoluteFilePath(filePath, 'audio:reference-curve');
+    try {
+      const { measureReferenceCurve } = await import('../offline/reference-curve.js');
+      const r = await measureReferenceCurve(safePath);
+      return { ok: true as const, ...r };
+    } catch (err) {
+      // Returned rather than thrown: a reference that cannot be read is an
+      // ordinary thing (a corrupt file, an unsupported codec) and the panel
+      // needs to say so, not surface a stack trace.
+      return { ok: false as const, error: (err as Error).message };
+    }
+  });
+
   ipc.handle('audio:qc', async (_e, filePath: unknown, targetLufs: number, targetTp: number) => {
     const safePath = validateAbsoluteFilePath(filePath, 'audio:qc');
     try {

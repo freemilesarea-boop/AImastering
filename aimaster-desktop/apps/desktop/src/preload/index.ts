@@ -11,6 +11,8 @@ const INVOKE_CHANNELS = [
   // with an options override.  Product-layout flag gates the renderer
   // caller; the channel itself is always registered.
   'audio:re-render-preview',
+  // Reference-curve measurement for Match EQ (the target it compares to).
+  'audio:reference-curve',
   // Rust offline render (RUST-OFFLINE-RENDER-1) — same Rust MasteringChain
   // as the realtime preview, used by the "새 버전 만들기" path when the
   // rust-offline flag is ON (default).  Free parametric EQ bands flow

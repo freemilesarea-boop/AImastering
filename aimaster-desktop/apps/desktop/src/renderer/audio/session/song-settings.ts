@@ -65,6 +65,17 @@ export interface SongSettings {
   masterBypass: boolean;
   /** Preset last applied in the Studio, for the queue row's label. */
   presetId: string | null;
+  /**
+   * The Match EQ reference: where it came from, and the 32 numbers measured
+   * from it.
+   *
+   * The curve is stored rather than re-measured from the path, because the
+   * reference file may have moved by the time the batch runs — and a saved
+   * song that silently stopped matching would be worse than one that
+   * matches a file the user no longer has.
+   */
+  referencePath?: string | null;
+  referenceCurveDb?: number[] | null;
 }
 
 interface StoredEnvelope {

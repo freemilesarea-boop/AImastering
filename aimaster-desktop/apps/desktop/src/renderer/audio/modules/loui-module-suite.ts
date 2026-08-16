@@ -93,7 +93,7 @@ const SUITE: LouiModule[] = [
     description: 'Six bands of level-dependent EQ. Down mode cuts what only gets loud; Up mode lifts what only gets quiet. Live in preview and export.',
   },
   {
-    id: 'dynamics', displayName: 'Dynamics', category: 'dynamics', status: 'live',
+    id: 'dynamics', displayName: 'Glue Compressor', category: 'dynamics', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
     visual: 'gr-meter', paramModuleId: 'dynamics', algorithmName: 'Loui Glue',
     description: 'Single-band glue compression (threshold / ratio / attack / release / mix). Live in the preview.',
@@ -213,13 +213,13 @@ const SUITE: LouiModule[] = [
     description: 'Passive program EQ. Low boost and attenuation at the same frequency do not cancel — you get the lift with a scooped upper bass.',
   },
   {
-    id: 'multiband', displayName: 'Multiband Dynamics', category: 'dynamics', status: 'live',
+    id: 'multiband', displayName: 'Multiband Compressor', category: 'dynamics', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'medium',
     visual: 'gr-meter', paramModuleId: 'multiband', algorithmName: 'Loui Four Band',
     description: 'Four Linkwitz-Riley bands, each compressing or expanding independently, with makeup, parallel mix and solo.',
   },
   {
-    id: 'vintage-comp', displayName: 'Vintage Comp', category: 'dynamics', status: 'live',
+    id: 'vintage-comp', displayName: 'Vintage Compressor', category: 'dynamics', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'low',
     visual: 'gr-meter', paramModuleId: 'vintage-comp', algorithmName: 'Loui Vari-Mu',
     description: 'Vari-mu behaviour: a knee that softens as it works harder, a program-dependent release, and saturation that rides with the gain reduction.',

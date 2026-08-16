@@ -71,7 +71,7 @@ function runFfmpeg(args: string[], stdin?: Buffer): Promise<Buffer> {
 }
 
 /** Decode any input → interleaved f32le stereo PCM at `sampleRate`. */
-async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promise<Float32Array> {
+export async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promise<Float32Array> {
   const buf = await runFfmpeg([
     '-hide_banner', '-loglevel', 'error',
     '-i', inputPath,
@@ -143,4 +143,15 @@ export async function processAudioFileRust(
     outputPath: options.outputPath, metrics, backend: 'rust',
     loudnessNormalized: normalized, dithered,
   };
+}
+
+/** Split interleaved stereo into planar left/right.  Exported for the
+ *  reference-curve measurement, which needs the same decode path the render
+ *  uses so a reference is read exactly as a master would be. */
+export function deinterleaveStereo(data: Float32Array): { left: Float32Array; right: Float32Array } {
+  const n = Math.floor(data.length / 2);
+  const left = new Float32Array(n);
+  const right = new Float32Array(n);
+  for (let i = 0; i < n; i++) { left[i] = data[i * 2]!; right[i] = data[i * 2 + 1]!; }
+  return { left, right };
 }
