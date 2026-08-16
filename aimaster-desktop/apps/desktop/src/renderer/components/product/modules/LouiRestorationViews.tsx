@@ -582,6 +582,120 @@ export function MatchView(props: {
   );
 }
 
+// ── 4b. Hiss Gate ────────────────────────────────────────────────────────
+
+/**
+ * The gate's working region, and where its threshold sits.
+ *
+ * What this deliberately does NOT do is draw a spectrum behind the
+ * threshold line. The chain reports a long-term average per curve BAND;
+ * the gate decides per FFT BIN, and a band holds dozens of bins, so the two
+ * numbers differ by however much energy is spread across that band. Drawing
+ * one against the other would put the user's spectrum confidently above a
+ * line it is actually below — the exact class of picture that disagrees
+ * with the audio, which is worse than no picture.
+ *
+ * So it draws what is known exactly: the corner frequency, the region the
+ * gate can act in, how deep it may go, and — in words — that the number is
+ * per bin and therefore far lower than a meter reads.
+ */
+export function HissGateView(props: {
+  values: Record<string, ParameterValue>;
+  width: number;
+  metrics: RealtimePreviewMetrics;
+  disabled?: boolean | undefined;
+}) {
+  const v = props.values;
+  const lowHz = num(v, 'lowHz', 2500);
+  const thresholdDb = num(v, 'thresholdDb', -72);
+  const rangeDb = num(v, 'rangeDb', 18);
+  const amount = num(v, 'amountPct', 60);
+  // The reduction the settings actually allow, so the panel states the real
+  // ceiling rather than the slider's.
+  const maxCut = Math.min(rangeDb, rangeDb) * (amount / 100);
+
+  const minDb = -110;
+  const maxDb = -30;
+
+  return (
+    <Frame
+      width={props.width} minDb={minDb} maxDb={maxDb}
+      dbTicks={[-100, -90, -80, -70, -60, -50, -40]}
+      disabled={props.disabled}
+      caption={
+        <>
+          {`${fmtHz(lowHz)} 위쪽에서만 동작합니다. 한 주파수의 크기가 기준선(${thresholdDb.toFixed(0)} dBFS)보다 `}
+          {`작으면 잡음으로 보고 최대 ${maxCut.toFixed(0)} dB까지 눌러 없앱니다. `}
+          <strong style={{ color: text.tertiary }}>기준선 위로 올라오는 소리는 그대로 둡니다.</strong>
+          {' 이 숫자는 주파수 한 칸당 크기라 음량계보다 훨씬 낮습니다 — 인트로 잡음이 남으면 기준선을 올리고, 여린 소리가 사라지면 내리세요.'}
+        </>
+      }
+    >
+      {(yFor) => {
+        const x0 = hzToX(Math.max(AXIS_MIN_HZ, lowHz), props.width);
+        const xEnd = hzToX(AXIS_MAX_HZ, props.width);
+        const yTh = yFor(thresholdDb);
+        const yFloor = yFor(minDb);
+        const yCut = yFor(thresholdDb - maxCut);
+        return (
+          <>
+            {/* Everything under the threshold, inside the working range —
+                the region the gate can touch at all. */}
+            <rect
+              x={x0} y={yTh} width={Math.max(0, xEnd - x0)} height={Math.max(0, yFloor - yTh)}
+              fill="rgba(248,113,113,0.10)"
+            />
+            {/* How far down it may push, drawn as a depth rather than
+                described, because "18 dB" means nothing against a scale
+                the user cannot see. */}
+            <rect
+              x={x0} y={yTh} width={Math.max(0, xEnd - x0)} height={Math.max(0, yCut - yTh)}
+              fill="rgba(248,113,113,0.18)"
+            />
+            <line
+              x1={x0} x2={xEnd} y1={yTh} y2={yTh}
+              stroke={meter.warn.foreground} strokeWidth={1.5}
+            />
+            <text
+              x={xEnd - 4} y={yTh - 5} textAnchor="end"
+              fill={meter.warn.foreground}
+              style={{ fontFamily: typography.family.mono, fontSize: 9 }}
+            >
+              {`잡음 기준 ${thresholdDb.toFixed(0)} dBFS`}
+            </text>
+            <text
+              x={x0 + 6} y={(yTh + yCut) / 2 + 3}
+              fill="rgba(255,255,255,0.55)"
+              style={{ fontFamily: typography.family.mono, fontSize: 9 }}
+            >
+              {`최대 -${maxCut.toFixed(0)} dB`}
+            </text>
+            {/* The corner: left of it the gate is inert. */}
+            <line
+              x1={x0} x2={x0} y1={PAD.top} y2={HEIGHT - PAD.bottom}
+              stroke="rgba(255,255,255,0.30)" strokeWidth={1} strokeDasharray="4 3"
+            />
+            <text
+              x={x0 + 4} y={PAD.top + 11}
+              fill="rgba(255,255,255,0.5)"
+              style={{ fontFamily: typography.family.mono, fontSize: 9 }}
+            >
+              {`${fmtHz(lowHz)} 위`}
+            </text>
+            <text
+              x={x0 - 6} y={PAD.top + 11} textAnchor="end"
+              fill="rgba(255,255,255,0.32)"
+              style={{ fontFamily: typography.family.sans, fontSize: 9 }}
+            >
+              건드리지 않음
+            </text>
+          </>
+        );
+      }}
+    </Frame>
+  );
+}
+
 // ── 5. Harshness Control (Spectral Shaper) ───────────────────────────────
 
 /**
@@ -660,7 +774,7 @@ export function HarshnessView(props: {
 
 /** Module ids that have a restoration view. */
 export const RESTORATION_VIEW_MODULES = new Set([
-  'dehum', 'denoise', 'deess', 'match-eq', 'spectral-shaper',
+  'dehum', 'denoise', 'deess', 'hiss-gate', 'match-eq', 'spectral-shaper',
 ]);
 
 /**
@@ -713,6 +827,7 @@ function RestorationViewInner(props: {
     case 'denoise': return <DenoiseView {...common} />;
     case 'deess': return <DeessView {...common} />;
     case 'match-eq': return <MatchView {...common} targetCurveDb={props.targetCurveDb} reference={props.reference} />;
+    case 'hiss-gate': return <HissGateView {...common} />;
     case 'spectral-shaper': return <HarshnessView {...common} />;
     default: return null;
   }

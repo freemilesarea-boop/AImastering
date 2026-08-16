@@ -387,8 +387,21 @@ console.log('\n=== A COMPRESSOR THAT DOES NOTHING SAYS SO, AND CAN START ===\n')
   // It was not broken — every band ships at ratio 1:1, which is a straight
   // wire. That default is right (modules must be bit-transparent until
   // asked), so the fix is that the panel says so and offers a way out.
-  const fresh = defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS);
-  const before = render(fresh);
+  // Auto Gain off for this pair. The loop exists to hold the output at a
+  // target, so it compensates for the very level change compression makes —
+  // leaving it on would measure the loop, not the multiband.
+  // Auto Gain off for this pair. The loop exists to hold the output at a
+  // target, so it compensates for the very level change compression makes —
+  // leaving it on would measure the loop, not the multiband. (It did: the
+  // check used to read a 1.28 dB change that was entirely the loop pushing
+  // harder to make up what the compressor had taken.)
+  //
+  // Loud material, too. The starting point puts thresholds at -20 to -26 dB,
+  // and a quiet source never reaches them — which is correct behaviour and
+  // a useless test.
+  const AMP = 0.6;
+  const fresh = withParams([['limiter', { autoGain: false }]]);
+  const before = render(fresh, AMP);
   const cfgBefore = buildChainConfig({ state: fresh, masterBypass: false });
   check(
     'a fresh multiband is genuinely inert',
@@ -396,7 +409,7 @@ console.log('\n=== A COMPRESSOR THAT DOES NOTHING SAYS SO, AND CAN START ===\n')
     'not even emitted into the chain config',
   );
 
-  const started = defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS);
+  const started = withParams([['limiter', { autoGain: false }]]);
   const edits = compressorStartingPoint('multiband');
   const params = { ...started.multiband.parameters };
   for (const [k, v] of edits) params[k] = v;
@@ -409,7 +422,7 @@ console.log('\n=== A COMPRESSOR THAT DOES NOTHING SAYS SO, AND CAN START ===\n')
     `${cfgAfter.multiband?.bands?.length ?? 0} bands emitted`,
   );
 
-  const after = render(started);
+  const after = render(started, AMP);
   check(
     'and it audibly changes the sound',
     Math.abs(after.rms - before.rms) > 0.5,

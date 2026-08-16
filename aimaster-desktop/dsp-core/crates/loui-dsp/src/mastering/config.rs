@@ -394,6 +394,22 @@ pub struct SpectralConfig {
     /// against.
     pub shaper_blur_bins: u32,
 
+    // Noise-floor gate — the AI "tsss" under sparse passages.
+    pub gate_enabled: bool,
+    /// How much of the computed reduction to apply, 0..100.
+    pub gate_amount_pct: f64,
+    /// Per-bin level below which a bin is treated as noise, in dBFS.
+    ///
+    /// Per BIN, not broadband: noise spreads its energy over a thousand
+    /// bins, so a hiss reading -50 dBFS on a meter sits near -80 dBFS in any
+    /// one of them.
+    pub gate_threshold_db: f64,
+    /// Ceiling on the reduction, in dB.
+    pub gate_range_db: f64,
+    /// Low edge of the gated region, Hz.  The hiss lives up top, and gating
+    /// the low end would eat sustain and reverb tails.
+    pub gate_low_hz: f64,
+
     // Stabilizer.
     pub stabilizer_enabled: bool,
     /// How much of the source→tilt difference to apply, 0..100.
@@ -424,6 +440,11 @@ impl Default for SpectralConfig {
             shaper_low_hz: 1_000.0,
             shaper_high_hz: 16_000.0,
             shaper_blur_bins: 12,
+            gate_enabled: false,
+            gate_amount_pct: 60.0,
+            gate_threshold_db: -72.0,
+            gate_range_db: 12.0,
+            gate_low_hz: 2_500.0,
             stabilizer_enabled: false,
             stabilizer_amount_pct: 40.0,
             stabilizer_tilt_db_per_oct: -1.5,
@@ -897,9 +918,16 @@ pub struct LoudnessConfig {
     pub max_boost_db: f64,
     /// Most the loop may take away, in dB.
     pub max_cut_db: f64,
-    /// How fast the gain moves, in milliseconds.  Seconds, not
-    /// milliseconds: anything quick enough to hear reacting is a
-    /// compressor, and would flatten the song's own dynamics.
+    /// How fast the gain moves once acquired, in milliseconds.
+    ///
+    /// Tens of seconds, not seconds. The target is a property of the SONG,
+    /// and the offline render reaches it with one constant gain over the
+    /// whole file; a loop that re-converges within a section is a slow AGC
+    /// pumping against the arrangement instead. Three seconds was the first
+    /// value and it was measurably wrong: across a three-second sparse
+    /// passage it wound the gain up far enough to lift the noise floor by
+    /// several dB, which is the opposite of what a master should do to an
+    /// intro. Acquisition stays fast, so nothing waits for this.
     pub speed_ms: f64,
     pub bypass: bool,
 }
@@ -909,7 +937,7 @@ impl Default for LoudnessConfig {
         Self {
             enabled: false, target_lufs: -14.0,
             max_boost_db: 18.0, max_cut_db: 18.0,
-            speed_ms: 3_000.0, bypass: false,
+            speed_ms: 20_000.0, bypass: false,
         }
     }
 }

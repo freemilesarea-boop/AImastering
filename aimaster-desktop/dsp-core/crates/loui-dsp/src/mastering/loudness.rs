@@ -65,15 +65,19 @@ const WINDOW_MS: f64 = 600.0;
 const MS_FLOOR: f64 = 1e-12;
 /// How long the loop stays in fast acquisition after signal starts.
 ///
-/// Steady-state has to be slow or the loop becomes a compressor, but slow
-/// all the way from the start means the first half-minute of listening
-/// happens at the wrong level — measured at 20 seconds to settle, which is
-/// far too long to wait after pressing play. So the loop acquires quickly
-/// and then hands over to the slow constant, which is how every automatic
-/// gain worth using behaves.
-const ACQUIRE_MS: f64 = 1_200.0;
+/// Steady state has to be very slow, or the loop stops being a loudness
+/// target and becomes an AGC pumping against the arrangement. But slow from
+/// the start means the opening of every track plays at the wrong level. So
+/// the loop acquires over the first few seconds and then hands over, which
+/// is how every automatic gain worth using behaves.
+///
+/// Both numbers are set by convergence, not taste: the measurement window
+/// is 600 ms and the loop corrects against a lagging estimate, so it needs
+/// several window-lengths to settle. 1.2 s at 150 ms was the first attempt
+/// and it left the gain 3.7 dB short once steady state slowed down.
+const ACQUIRE_MS: f64 = 5_000.0;
 /// Time constant during acquisition.
-const ACQUIRE_SPEED_MS: f64 = 150.0;
+const ACQUIRE_SPEED_MS: f64 = 400.0;
 
 fn one_pole(sr: f64, ms: f64) -> f64 {
     if ms <= 0.0 { return 0.0; }

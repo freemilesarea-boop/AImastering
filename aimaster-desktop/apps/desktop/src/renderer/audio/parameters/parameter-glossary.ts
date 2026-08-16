@@ -81,6 +81,10 @@ export const MODULE_GLOSSARY: Record<ModuleId, GlossaryEntry> = {
     ko: '거슬림 제어',
     plain: '주변보다 유난히 튀어나온 성분만 그때그때 찾아 눌러, 특정 음에서만 나는 쏘임을 줄입니다.',
   },
+  'hiss-gate': {
+    ko: '노이즈 게이트',
+    plain: 'AI 음원 인트로에서 들리는 "츠으으" 하는 전자 잡음을 걷어냅니다. 곡이 꽉 찰 때는 안 들리다가 조용한 부분에서만 드러나는 그 소리입니다. 음악이 있는 곳은 건드리지 않고, 음악이 없는 조용한 부분의 고음 잡음만 눌러줍니다.',
+  },
   stabilizer: {
     ko: '음색 안정화',
     plain: '곡 전체의 저음-고음 기울기를 목표에 맞춰 일정하게 유지합니다. 레퍼런스가 필요 없습니다.',
@@ -581,6 +585,24 @@ const G: Record<string, GlossaryEntry> = {
   'imager.bandMidLowPct': { ko: '중저역 폭', plain: '중저음 대역만 따로 넓히거나 좁힙니다.' },
   'imager.bandMidHighPct': { ko: '중고역 폭', plain: '중고음 대역만 따로 넓히거나 좁힙니다.' },
   'imager.bandHighPct': { ko: '고역 폭', plain: '고음 대역만 따로 넓히거나 좁힙니다.' },
+
+  // ── Hiss Gate ──
+  'hiss-gate.amountPct': {
+    ko: '적용량',
+    plain: '잡음을 얼마나 세게 걷어낼지입니다. 100%가 가장 강하고, 낮추면 자연스럽지만 잡음이 조금 남습니다.',
+  },
+  'hiss-gate.thresholdDb': {
+    ko: '잡음 기준선',
+    plain: '이 크기보다 작은 소리는 잡음으로 봅니다. 올릴수록 더 많이 잡아내지만 여린 악기까지 먹을 수 있고, 내릴수록 안전합니다. 소리가 사라지면 내리세요.',
+  },
+  'hiss-gate.rangeDb': {
+    ko: '최대 감쇠',
+    plain: '잡음을 최대 몇 dB까지 눌러 없앨지입니다. 너무 크게 잡으면 조용한 부분이 부자연스럽게 뚝 끊깁니다.',
+  },
+  'hiss-gate.lowHz': {
+    ko: '동작 시작 주파수',
+    plain: '이 주파수보다 높은 곳에서만 동작합니다. "츠" 잡음은 고음에 있고, 저음까지 건드리면 악기 여운이 잘립니다.',
+  },
 
   // ── Limiter / Maximizer ──
   'limiter.targetLufs': {

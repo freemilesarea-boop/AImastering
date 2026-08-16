@@ -55,6 +55,13 @@ const AVG_FRAMES: f64 = 190.0;
 /// so a pathological curve can never turn into a noise blast.
 const MAX_MOVE_DB: f64 = 18.0;
 
+/// Expansion ratio below the gate threshold.
+///
+/// Fixed rather than exposed: the useful control is how far below the band's
+/// own average counts as noise and how much to take off, and a third number
+/// interacting with those two is a knob nobody can predict.
+const GATE_RATIO: f64 = 4.0;
+
 /// Centre frequency of curve band `i`.
 pub fn curve_band_hz(i: usize) -> f64 {
     let t = i as f64 / (CURVE_BANDS - 1) as f64;
@@ -70,6 +77,12 @@ struct ChannelState {
     neighbourhood: Vec<f64>,
     /// Final per-bin gain applied this frame.
     gain: Vec<f64>,
+    /// Persistent per-bin gate reduction, in dB (>= 0).
+    ///
+    /// Persistent because a gate that recomputed from scratch every frame
+    /// would chatter: the reduction has to open quickly and close slowly,
+    /// and both of those are memory.
+    gate_db: Vec<f64>,
 }
 
 impl ChannelState {
@@ -79,6 +92,7 @@ impl ChannelState {
             frame_mag: vec![0.0; BINS],
             neighbourhood: vec![0.0; BINS],
             gain: vec![1.0; BINS],
+            gate_db: vec![0.0; BINS],
         }
     }
 
@@ -87,12 +101,14 @@ impl ChannelState {
         self.frame_mag.fill(0.0);
         self.neighbourhood.fill(0.0);
         self.gain.fill(1.0);
+        self.gate_db.fill(0.0);
     }
 }
 
 /// The shared spectral stage.
 pub struct Spectral {
     cfg: SpectralConfig,
+    sr: f64,
     left: ChannelState,
     right: ChannelState,
     /// Long-term average source level per curve band, in dB.  Shared across
@@ -126,6 +142,7 @@ impl Spectral {
         let bin_band = (0..BINS).map(|k| band_for_hz(k as f64 * bin_width)).collect();
         Self {
             cfg,
+            sr: sample_rate,
             left: ChannelState::new(sample_rate),
             right: ChannelState::new(sample_rate),
             source_db: [f64::NEG_INFINITY; CURVE_BANDS],
@@ -157,6 +174,7 @@ impl Spectral {
         (c.match_enabled && c.match_amount_pct > 0.0)
             || (c.shaper_enabled && c.shaper_amount_pct > 0.0)
             || (c.stabilizer_enabled && c.stabilizer_amount_pct > 0.0)
+            || (c.gate_enabled && c.gate_amount_pct > 0.0)
             || c.analysis_only
     }
 
@@ -300,6 +318,18 @@ impl StereoModule for Spectral {
         let shaper_hi_band = band_for_hz(self.cfg.shaper_high_hz.max(20.0));
         let blur = self.cfg.shaper_blur_bins.clamp(1, 64) as usize;
 
+        let gate_on = self.cfg.gate_enabled && self.cfg.gate_amount_pct > 0.0 && !analysis_only;
+        let gate_amount = (self.cfg.gate_amount_pct / 100.0).clamp(0.0, 1.0);
+        let gate_threshold = self.cfg.gate_threshold_db.clamp(-110.0, -30.0);
+        let gate_range = self.cfg.gate_range_db.clamp(0.0, 36.0);
+        let gate_lo_band = band_for_hz(self.cfg.gate_low_hz.max(20.0));
+        // Per-FRAME coefficients: the STFT hop is the clock this runs on, so
+        // a millisecond figure has to be converted through it or the gate
+        // would move at a different speed at a different sample rate.
+        let hop_s = self.left.stft.hop_size() as f64 / self.sr.max(1.0);
+        let gate_open = (-hop_s / 0.010).exp();
+        let gate_close = (-hop_s / 0.120).exp();
+
         for pass in 0..2 {
             let is_left = pass == 0;
             let buf: &mut [f32] = if is_left { left } else { right };
@@ -308,7 +338,7 @@ impl StereoModule for Spectral {
             if is_left {
                 // Split the borrow: `process_block` needs `&mut stft` while the
                 // closure writes the sibling scratch buffers.
-                let ChannelState { stft, frame_mag, neighbourhood, gain } = &mut self.left;
+                let ChannelState { stft, frame_mag, neighbourhood, gain, gate_db } = &mut self.left;
                 let bin_band = &self.bin_band;
                 let source_db = &mut self.source_db;
                 let band_acc = &mut self.band_acc;
@@ -357,6 +387,19 @@ impl StereoModule for Spectral {
                         );
                     }
 
+                    // ── Per-bin gain: noise-floor gate ───────────────────
+                    // After the shaper, so the two multiply rather than one
+                    // deciding against the other's output.  `source_db` was
+                    // refined above, so the threshold rides this frame's
+                    // best estimate of what the band normally carries.
+                    if gate_on {
+                        apply_gate(
+                            frame_mag, neighbourhood, gate_db, gain, bins, bin_band,
+                            gate_lo_band, gate_threshold, gate_range,
+                            GATE_RATIO, gate_amount, gate_open, gate_close,
+                        );
+                    }
+
                     if !analysis_only {
                         for k in 0..bins {
                             re[k] *= gain[k];
@@ -365,7 +408,7 @@ impl StereoModule for Spectral {
                     }
                 });
             } else {
-                let ChannelState { stft, frame_mag, neighbourhood, gain } = &mut self.right;
+                let ChannelState { stft, frame_mag, neighbourhood, gain, gate_db } = &mut self.right;
                 let bin_band = &self.bin_band;
                 let applied_db = &self.applied_db;
 
@@ -379,6 +422,17 @@ impl StereoModule for Spectral {
                         apply_shaper(
                             frame_mag, neighbourhood, gain, bins, bin_band, blur,
                             shaper_lo_band, shaper_hi_band, shaper_threshold, shaper_amount,
+                        );
+                    }
+                    // The right channel gates against the SAME shared band
+                    // average as the left.  Deciding per channel would gate
+                    // one side and not the other on anything panned, and a
+                    // gate that moves the image is worse than the hiss.
+                    if gate_on {
+                        apply_gate(
+                            frame_mag, neighbourhood, gate_db, gain, bins, bin_band,
+                            gate_lo_band, gate_threshold, gate_range,
+                            GATE_RATIO, gate_amount, gate_open, gate_close,
                         );
                     }
                     if !analysis_only {
@@ -402,6 +456,98 @@ impl StereoModule for Spectral {
         self.source_db = [f64::NEG_INFINITY; CURVE_BANDS];
         self.avg_frames = 0;
         self.applied_db = [0.0; CURVE_BANDS];
+    }
+}
+
+/// Calibration from FFT bin magnitude to dBFS.
+///
+/// Measured, not derived: a full-scale sine through this stage's window and
+/// overlap gives a peak bin magnitude of +54.19 dB, so a threshold the user
+/// types in dBFS has to be shifted by exactly that. Deriving it from the
+/// window's coherent gain would be the same number with more places to be
+/// wrong.
+const GATE_CAL_DB: f64 = 54.19;
+
+/// Push down bins that are quieter than anything musical would be.
+///
+/// # The defect
+///
+/// Generative music tools leave a steady high-frequency hiss under the
+/// programme — the "tsss" listeners notice in intros and outros and nowhere
+/// else. It is there the whole time; the difference is that a full
+/// arrangement masks it and a sparse one does not. Turning the top down
+/// removes the hiss and the record's air with it, which is why an EQ is the
+/// wrong tool for it.
+///
+/// # Why the threshold is absolute
+///
+/// The first design keyed the threshold off the stage's long-term band
+/// average — "far below what this band normally carries" — which reads well
+/// and fails on the exact case that matters. **The hiss the user complains
+/// about is in the intro, and the intro comes first.** At that point the
+/// average has heard nothing but the intro, so the noise floor IS the
+/// average and the gate has nothing to compare against. Worse, the average
+/// adapts over about two seconds, so it follows a long quiet passage down
+/// and quietly stops working partway through.
+///
+/// An absolute threshold has none of that. It works from the first frame,
+/// it does not drift, and it is a number a user can reason about, because a
+/// noise floor really is at a fixed level while the music moves.
+///
+/// It is a **per-bin** level, which is not the same as the broadband level a
+/// meter shows: broadband noise spreads its energy across a thousand bins,
+/// so a hiss measuring -50 dBFS on a meter sits near -80 dBFS in any single
+/// bin. That is the right quantity to compare against here — the gate acts
+/// per bin — and it is why the useful range is so far down.
+///
+/// # Why it does not produce birdies
+///
+/// Gating bins independently is how spectral processing earns its bad name:
+/// isolated bins switching in and out become the warbling "musical noise"
+/// that is more annoying than the hiss it replaced. Two things prevent it —
+/// the decision is made on a **blurred** magnitude so neighbours move
+/// together, and the reduction opens fast but closes slowly, so nothing
+/// flickers.
+#[allow(clippy::too_many_arguments)]
+fn apply_gate(
+    mag: &[f64], smoothed: &mut [f64], gate_db: &mut [f64], gain: &mut [f64],
+    bins: usize, bin_band: &[usize],
+    lo_band: usize, threshold_dbfs: f64, range_db: f64, ratio: f64, amount: f64,
+    open_coeff: f64, close_coeff: f64,
+) {
+    // Blur over three bins: enough that neighbours decide together, narrow
+    // enough that a real narrow partial is still judged on its own level.
+    for k in 0..bins {
+        let lo = k.saturating_sub(1);
+        let hi = (k + 1).min(bins - 1);
+        smoothed[k] = (mag[lo] + mag[k] + mag[hi]) / (hi - lo + 1) as f64;
+    }
+
+    for k in 0..bins {
+        // Below the working range the gate is inert, and its state is wound
+        // back so changing the range cannot reveal a stale reduction.
+        if bin_band[k] < lo_band {
+            gate_db[k] = 0.0;
+            continue;
+        }
+        let level_dbfs = 20.0 * smoothed[k].max(1e-30).log10() - GATE_CAL_DB;
+        // `amount` scales the REDUCTION, not the ceiling. Scaling only the
+        // ceiling made the control do nothing whenever the computed
+        // reduction was already under it, which is most of the time — the
+        // knob moved and the sound did not.
+        let want = if level_dbfs < threshold_dbfs {
+            (((threshold_dbfs - level_dbfs) * (1.0 - 1.0 / ratio)) * amount).min(range_db)
+        } else {
+            0.0
+        };
+        // Opening (reduction falling) is fast so a returning transient is
+        // not clipped; closing (reduction rising) is slow so the noise fades
+        // out rather than being chopped.
+        let c = if want > gate_db[k] { close_coeff } else { open_coeff };
+        gate_db[k] = want + (gate_db[k] - want) * c;
+        if gate_db[k] > 0.001 {
+            gain[k] *= 10f64.powf(-gate_db[k] / 20.0);
+        }
     }
 }
 
@@ -632,5 +778,195 @@ mod tests {
         s.process_stereo(&mut l, &mut r);
         assert!(l.iter().all(|v| v.is_finite()));
         assert!(r.iter().all(|v| v.is_finite()));
+    }
+
+    // ── Noise-floor gate ──────────────────────────────────────────────────
+
+    /// Magnitude at one frequency, by Goertzel.
+    fn mag_at(x: &[f32], hz: f64, sr: f64, from: usize, to: usize) -> f64 {
+        let n = to - from;
+        let w = 2.0 * std::f64::consts::PI * hz / sr;
+        let coeff = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &v in &x[from..to] {
+            let s0 = v as f64 + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        ((s1 * s1 + s2 * s2 - coeff * s1 * s2).max(0.0)).sqrt() / (n as f64 * 0.5)
+    }
+
+    fn gate_cfg() -> SpectralConfig {
+        SpectralConfig {
+            gate_enabled: true, gate_amount_pct: 100.0,
+            gate_threshold_db: -72.0, gate_range_db: 18.0, gate_low_hz: 2_500.0,
+            ..SpectralConfig::default()
+        }
+    }
+
+    /// The dry reference must run the STFT too.
+    ///
+    /// Comparing "gate on" against "stage off" would compare the gate
+    /// against a 2048-sample latency difference, and every number would be
+    /// about the delay rather than the processing. `analysis_only` runs the
+    /// transform and applies nothing, which is the only honest dry here.
+    fn dry_cfg() -> SpectralConfig {
+        SpectralConfig { analysis_only: true, ..gate_cfg() }
+    }
+
+    fn run(c: SpectralConfig, src: &[f32]) -> Vec<f32> {
+        let mut s = Spectral::new(48_000.0, c);
+        let mut l = src.to_vec();
+        let mut r = src.to_vec();
+        for a in (0..l.len()).step_by(512) {
+            let b = (a + 512).min(l.len());
+            s.process_stereo(&mut l[a..b], &mut r[a..b]);
+        }
+        l
+    }
+
+    /// A full arrangement, then a sparse intro carrying only the hiss.
+    ///
+    /// The loud half is deliberately broadband — cymbals, air and consonants
+    /// are what fill the top of a real mix, and the gate learns from exactly
+    /// that. Feeding it a lone tone up there would leave every other band
+    /// with nothing but hiss in its own long-term average, and the gate
+    /// would rightly conclude the hiss IS the programme.
+    fn programme(sr: f64, loud_n: usize, sparse_n: usize, hiss: f32) -> Vec<f32> {
+        let mut state = 0x1234_5678u64;
+        let mut noise = move || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (((state >> 33) as f64 / (1u64 << 30) as f64) - 1.0) as f32
+        };
+        let mut out = Vec::with_capacity(loud_n + sparse_n);
+        for i in 0..loud_n {
+            let t = i as f64 / sr;
+            let music = 0.35 * (2.0 * std::f64::consts::PI * 220.0 * t).sin()
+                + 0.25 * (2.0 * std::f64::consts::PI * 6_000.0 * t).sin();
+            out.push(music as f32 + noise() * 0.20 + noise() * hiss);
+        }
+        for _ in 0..sparse_n {
+            out.push(noise() * hiss);
+        }
+        out
+    }
+
+    #[test]
+    fn the_gate_is_off_by_default() {
+        let s = Spectral::new(48_000.0, SpectralConfig::default());
+        assert!(!s.is_active(), "the gate must not switch the stage on by itself");
+    }
+
+    #[test]
+    fn it_removes_the_hiss_where_the_music_is_sparse() {
+        // The defect, reproduced: a steady noise floor that is inaudible
+        // under a full arrangement and obvious the moment it is alone.
+        let sr = 48_000.0;
+        let loud = 48_000 * 8;
+        let sparse = 48_000 * 3;
+        let src = programme(sr, loud, sparse, 0.0015);
+        let dry = run(dry_cfg(), &src);
+        let wet = run(gate_cfg(), &src);
+
+        // Inside the sparse tail only — the whole point is that this is
+        // where the hiss lives. Skipping the first second of it lets the
+        // gate close.
+        let from = loud + 48_000;
+        let mut d = 0.0f64;
+        let mut w = 0.0f64;
+        for i in from..src.len() {
+            d += dry[i] as f64 * dry[i] as f64;
+            w += wet[i] as f64 * wet[i] as f64;
+        }
+        let reduction = 10.0 * (w / d.max(1e-30)).max(1e-30).log10();
+        println!("  hiss reduction in the sparse passage: {reduction:.2} dB");
+        assert!(
+            reduction < -5.0,
+            "the hiss barely moved: {reduction:.2} dB in the sparse passage",
+        );
+    }
+
+    #[test]
+    fn it_leaves_the_music_alone() {
+        // The other half of the promise, and the one that decides whether
+        // this is usable at all: a 6 kHz musical tone sits well inside the
+        // gated region and must come through the loud passage untouched.
+        let sr = 48_000.0;
+        let loud = 48_000 * 8;
+        let src = programme(sr, loud, 0, 0.0015);
+        let dry = run(dry_cfg(), &src);
+        let wet = run(gate_cfg(), &src);
+        let (from, to) = (loud / 2, loud);
+        let a = mag_at(&dry, 6_000.0, sr, from, to);
+        let b = mag_at(&wet, 6_000.0, sr, from, to);
+        let moved = 20.0 * (b / a.max(1e-12)).max(1e-12).log10();
+        println!("  6 kHz music moved: {moved:.2} dB");
+        assert!(moved.abs() < 1.0, "the gate ate the music: 6 kHz moved {moved:.2} dB");
+    }
+
+    #[test]
+    fn the_low_end_is_never_gated() {
+        // Gating low frequencies would eat sustain and reverb tails, and
+        // the hiss is not down there anyway. Measured on the 220 Hz tone,
+        // which is below `gate_low_hz`.
+        let sr = 48_000.0;
+        let loud = 48_000 * 8;
+        let src = programme(sr, loud, 0, 0.0015);
+        let dry = run(dry_cfg(), &src);
+        let wet = run(gate_cfg(), &src);
+        let (from, to) = (loud / 2, loud);
+        let a = mag_at(&dry, 220.0, sr, from, to);
+        let b = mag_at(&wet, 220.0, sr, from, to);
+        let moved = 20.0 * (b / a.max(1e-12)).max(1e-12).log10();
+        assert!(moved.abs() < 0.3, "a 220 Hz tone was gated: {moved:.2} dB");
+    }
+
+    #[test]
+    fn the_amount_scales_the_reduction() {
+        let sr = 48_000.0;
+        let loud = 48_000 * 8;
+        let sparse = 48_000 * 3;
+        let src = programme(sr, loud, sparse, 0.0015);
+        let at = |amount: f64| {
+            let l = run(SpectralConfig { gate_amount_pct: amount, ..gate_cfg() }, &src);
+            let from = loud + 48_000;
+            let mut acc = 0.0f64;
+            for i in from..l.len() { acc += l[i] as f64 * l[i] as f64; }
+            10.0 * (acc / (l.len() - from) as f64).max(1e-30).log10()
+        };
+        // 0% leaves the stage inactive, so compare the two working settings
+        // against the analysis-only dry.
+        let dry = {
+            let l = run(dry_cfg(), &src);
+            let from = loud + 48_000;
+            let mut acc = 0.0f64;
+            for i in from..l.len() { acc += l[i] as f64 * l[i] as f64; }
+            10.0 * (acc / (l.len() - from) as f64).max(1e-30).log10()
+        };
+        let (half, full) = (at(50.0), at(100.0));
+        println!("  amount sweep: dry {dry:.2} -> 50% {half:.2} -> 100% {full:.2} dB");
+        assert!(
+            half < dry - 1.0 && full < half - 1.0,
+            "amount did not scale: dry {dry:.2} -> 50% {half:.2} -> 100% {full:.2} dB",
+        );
+    }
+
+    #[test]
+    fn a_hostile_gate_config_stays_finite() {
+        for c in [
+            SpectralConfig { gate_enabled: true, gate_amount_pct: 1e9, gate_threshold_db: 1e9,
+                gate_range_db: 1e9, gate_low_hz: -5.0, ..SpectralConfig::default() },
+            SpectralConfig { gate_enabled: true, gate_amount_pct: -50.0, gate_threshold_db: -1e9,
+                gate_range_db: -20.0, gate_low_hz: 1e9, ..SpectralConfig::default() },
+        ] {
+            let mut s = Spectral::new(48_000.0, c);
+            let mut l = tone(48_000, 1_000.0, 48_000.0, 0.4);
+            let mut r = l.clone();
+            for a in (0..l.len()).step_by(512) {
+                let b = (a + 512).min(l.len());
+                s.process_stereo(&mut l[a..b], &mut r[a..b]);
+            }
+            assert!(l.iter().all(|v| v.is_finite()), "non-finite from a hostile gate config");
+        }
     }
 }

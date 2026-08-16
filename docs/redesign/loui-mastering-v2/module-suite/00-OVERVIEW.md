@@ -453,7 +453,7 @@ checking the code ran.
 ## 6. Building and testing
 
 ```bash
-# Rust DSP — 225 tests
+# Rust DSP — 231 tests
 cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 
 # Rebuild all three WASM targets after any Rust change.
@@ -461,7 +461,7 @@ cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 #           cargo install wasm-bindgen-cli --version 0.2.127
 pnpm --filter @loui/dsp-wasm run build:all
 
-# Desktop — 335 checks, including 55 that push config through the real chain
+# Desktop — 348 checks, including 55 that push config through the real chain
 pnpm --filter @aimaster/desktop test
 ```
 
@@ -814,7 +814,65 @@ reachable from that function.
 
 ---
 
-## 13. Not implemented
+## 13. Hiss Gate — the AI intro noise
+
+Reported: a steady electronic "츠으으" under AI-generated tracks, obvious in
+intros and outros and nowhere else. It is there the whole time — a full
+arrangement masks it, a sparse one does not. Turning the top down removes it
+and the record's air with it, which is why an EQ is the wrong tool.
+
+The gate is a **per-bin downward expander** riding the shared spectral STFT,
+so it costs no extra transform and no extra latency beyond what Match EQ /
+Shaper / Stabilizer already pay. Above a corner frequency (2.5 kHz — the
+hiss lives up top, and gating the low end eats sustain and tails), any bin
+below the threshold is pushed down.
+
+### Why the threshold is absolute
+
+The first design keyed it off the stage's long-term band average — "far
+below what this band normally carries" — which reads well and fails on the
+exact case that matters. **The hiss the user hears is in the intro, and the
+intro comes first**: at that point the average has heard nothing but the
+intro, so the noise floor *is* the average. Worse, the average adapts over
+about two seconds, so it follows a long quiet passage down and quietly stops
+working partway through.
+
+An absolute threshold works from the first frame and does not drift. It is a
+**per-bin** level, not the broadband figure a meter shows: noise spreads its
+energy across a thousand bins, so a hiss reading −50 dBFS on a meter sits
+near −80 dBFS in any one of them. The FFT→dBFS calibration (+54.19 dB) was
+measured, not derived.
+
+No birdies: the decision is made on a blurred magnitude so neighbours move
+together, and the reduction opens fast but closes slowly.
+
+Measured through the real chain at the recommended settings (85% / −68 dBFS):
+**−5.19 dB above 4 kHz** in a sparse intro, with a 6 kHz musical tone moving
+**−0.00 dB** while the arrangement plays.
+
+### What building it exposed
+
+**`amount` scaled the ceiling, not the reduction.** Whenever the computed
+reduction was already under the ceiling — most of the time — the control did
+nothing at all. Now it scales the reduction, as the shaper's does.
+
+**The loudness loop was chasing sections, not the song.** Its steady-state
+constant was 3 s, so across a three-second sparse passage it wound the gain
+up far enough to lift the noise floor by several dB — an AGC pumping against
+the arrangement, and the exact opposite of what a master should do to an
+intro. It is now 20 s (acquisition widened to 5 s at 400 ms so nothing waits
+for it): after acquisition the gain effectively holds for the song, which is
+also what the offline two-pass produces. Any loudness loop partially
+compensates for anything that lowers level; holding is what keeps that
+compensation from undoing the gate.
+
+That interaction is why a test measuring "did the multiband change the
+sound" by RMS had been reading **the loop pushing back**, not the
+compressor. It now measures with Auto Gain off.
+
+---
+
+## 14. Not implemented
 
 Honest list, so the registry stays trustworthy:
 

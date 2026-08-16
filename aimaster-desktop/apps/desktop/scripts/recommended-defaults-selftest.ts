@@ -354,5 +354,117 @@ console.log('\n=== IT ACTUALLY DOES SOMETHING, AND STAYS SAFE ===\n');
   );
 }
 
+console.log('\n=== THE HISS GATE REMOVES THE AI INTRO NOISE ===\n');
+
+{
+  // The reported defect: a steady electronic hiss under AI tracks, audible
+  // in intros and outros and masked everywhere else. Reproduced as a full
+  // arrangement followed by a sparse passage carrying only the noise floor,
+  // because "only shows when the music thins out" is the whole character of
+  // it and a steady tone would not test it.
+  const SR2 = 48_000;
+  let seed = 0x2f6f2f6fn;
+  const noise = (): number => {
+    seed = (seed * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn;
+    return Number((seed >> 33n)) / 2 ** 30 - 1;
+  };
+  const loudN = SR2 * 8;
+  const sparseN = SR2 * 3;
+  const src = new Float32Array(loudN + sparseN);
+  for (let i = 0; i < loudN; i++) {
+    const t = i / SR2;
+    src[i] = 0.35 * Math.sin(2 * Math.PI * 220 * t)
+      + 0.25 * Math.sin(2 * Math.PI * 6000 * t)
+      + noise() * 0.20
+      + noise() * 0.0015;
+  }
+  // The sparse passage is an INTRO, not silence: a quiet sustained note
+  // plus the noise floor. That distinction decides the test — with nothing
+  // but hiss, the loudness loop correctly tries to bring the hiss itself up
+  // to the target, which is not a case any real record contains.
+  for (let i = loudN; i < src.length; i++) {
+    const t = i / SR2;
+    src[i] = 0.05 * Math.sin(2 * Math.PI * 330 * t)
+      + 0.03 * Math.sin(2 * Math.PI * 660 * t)
+      + noise() * 0.0015;
+  }
+
+  const run = (state: AllModulesParameterState): Float32Array => {
+    const chain = new Chain(SR);
+    chain.setConfigJson(chainConfigToJson(buildChainConfig({ state, masterBypass: false })));
+    const l = src.slice();
+    const r = src.slice();
+    for (let a = 0; a < l.length; a += 512) {
+      const b = Math.min(a + 512, l.length);
+      chain.processStereo(l.subarray(a, b), r.subarray(a, b));
+    }
+    return l;
+  };
+
+  // Only the gate differs between the two renders — everything else in the
+  // recommended chain is identical, so any change measured is the gate.
+  const withGate = recommendedState();
+  const withoutGate = recommendedState();
+  withoutGate['hiss-gate'] = { ...withoutGate['hiss-gate'], bypass: true };
+
+  const on = run(withGate);
+  const off = run(withoutGate);
+
+  const magAt = (x: Float32Array, hz: number, a: number, b: number): number => {
+    const n = b - a;
+    const w = (2 * Math.PI * hz) / SR2;
+    const coeff = 2 * Math.cos(w);
+    let s1 = 0;
+    let s2 = 0;
+    for (let i = a; i < b; i++) {
+      const s0 = x[i]! + coeff * s1 - s2;
+      s2 = s1;
+      s1 = s0;
+    }
+    return Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2)) / (n * 0.5);
+  };
+  // Measured where the gate acts, not broadband.
+  //
+  // The intro's own notes are at 330 and 660 Hz, below the corner, and they
+  // dominate a broadband figure completely — the first version of this
+  // check read 0.00 dB while the hiss was genuinely going down, because it
+  // was measuring the piano.
+  const from = loudN + SR2 / 2;
+  const probes = [4000, 6000, 8000, 10_000, 12_000, 14_000];
+  let onHf = 0;
+  let offHf = 0;
+  for (const hz of probes) {
+    onHf += magAt(on, hz, from, src.length) ** 2;
+    offHf += magAt(off, hz, from, src.length) ** 2;
+  }
+  const reduction = 10 * Math.log10(Math.max(onHf / offHf, 1e-30));
+  check(
+    'the hiss in the sparse passage is pushed down',
+    reduction < -3,
+    `${reduction.toFixed(2)} dB above 4 kHz, where the "tsss" lives`,
+  );
+
+  const moved = 20 * Math.log10(
+    magAt(on, 6000, loudN / 2, loudN) / Math.max(magAt(off, 6000, loudN / 2, loudN), 1e-12),
+  );
+  check(
+    'and the music in the same range is left alone',
+    Math.abs(moved) < 1,
+    `6 kHz moved ${moved.toFixed(2)} dB while the arrangement is playing`,
+  );
+
+  const cfg = buildChainConfig({ state: withGate, masterBypass: false });
+  check(
+    'the gate rides the spectral stage rather than adding its own',
+    cfg.spectral?.gateEnabled === true,
+    'no extra STFT, no extra latency beyond what the stage already costs',
+  );
+  check(
+    'it does not act below its corner frequency',
+    (cfg.spectral?.gateLowHz ?? 0) >= 1000,
+    `${String(cfg.spectral?.gateLowHz)} Hz — gating the low end would eat sustain and tails`,
+  );
+}
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

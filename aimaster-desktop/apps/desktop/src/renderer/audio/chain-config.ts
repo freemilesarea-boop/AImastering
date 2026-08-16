@@ -104,6 +104,11 @@ export interface ChainConfigWire {
     targetCurveDb?: number[];
     shaperEnabled?: boolean; shaperAmountPct?: number; shaperThresholdDb?: number;
     shaperLowHz?: number; shaperHighHz?: number; shaperBlurBins?: number;
+    gateEnabled?: boolean;
+    gateAmountPct?: number;
+    gateThresholdDb?: number;
+    gateRangeDb?: number;
+    gateLowHz?: number;
     stabilizerEnabled?: boolean; stabilizerAmountPct?: number;
     stabilizerTiltDbPerOct?: number; stabilizerMaxMoveDb?: number;
     curveSmoothingBands?: number; analysisOnly?: boolean; bypass?: boolean;
@@ -446,8 +451,10 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
   const matchOn = !!match && !match.bypass && num(match, 'amountPct', 0) > 0 && !!target?.length;
   const shaperOn = !!shaper && !shaper.bypass && num(shaper, 'amountPct', 0) > 0;
   const stabOn = !!stab && !stab.bypass && num(stab, 'amountPct', 0) > 0;
+  const gate = s['hiss-gate'];
+  const gateOn = !!gate && !gate.bypass && num(gate, 'amountPct', 0) > 0;
 
-  if (matchOn || shaperOn || stabOn) {
+  if (matchOn || shaperOn || stabOn || gateOn) {
     cfg.spectral = {
       matchEnabled: matchOn,
       matchAmountPct: num(match, 'amountPct', 50),
@@ -459,6 +466,11 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
       shaperLowHz: num(shaper, 'lowHz', 1000),
       shaperHighHz: num(shaper, 'highHz', 16000),
       shaperBlurBins: num(shaper, 'blurBins', 12),
+      gateEnabled: gateOn,
+      gateAmountPct: num(gate, 'amountPct', 60),
+      gateThresholdDb: num(gate, 'thresholdDb', -72),
+      gateRangeDb: num(gate, 'rangeDb', 18),
+      gateLowHz: num(gate, 'lowHz', 2500),
       stabilizerEnabled: stabOn,
       stabilizerAmountPct: num(stab, 'amountPct', 40),
       stabilizerTiltDbPerOct: num(stab, 'tiltDbPerOct', -1.5),
@@ -839,6 +851,7 @@ export function activeModuleIds(cfg: ChainConfigWire): ModuleId[] {
   if (cfg.spectral?.matchEnabled) out.push('match-eq');
   if (cfg.spectral?.shaperEnabled) out.push('spectral-shaper');
   if (cfg.spectral?.stabilizerEnabled) out.push('stabilizer');
+  if (cfg.spectral?.gateEnabled) out.push('hiss-gate');
   push('vintage-eq', cfg.vintageEq);
   push('eq', cfg.eq);
   push('dynamic-eq', cfg.dynamicEq);

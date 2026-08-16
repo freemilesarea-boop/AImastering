@@ -432,6 +432,51 @@ const SPECTRAL_SHAPER_DEFS: ModuleParameterDefinitions = {
   ],
 };
 
+/**
+ * Hiss Gate — the AI noise floor under sparse passages.
+ *
+ * Shares the spectral stage's STFT, so it costs nothing beyond what Match
+ * EQ / Shaper / Stabilizer already pay.  Ships bypassed: it is a repair,
+ * and repairs do not switch themselves on.
+ */
+const HISS_GATE_DEFS: ModuleParameterDefinitions = {
+  moduleId: 'hiss-gate',
+  // Bypassed on arrival. It is a repair, and a repair that switches itself
+  // on would engage the whole spectral stage — 43 ms of latency and an STFT
+  // — on every session whether or not the source has any hiss.
+  defaultBypass: true,
+  bypassBinding: wired('spectral.gateEnabled'),
+  parameters: [
+    {
+      kind: 'number', id: 'amountPct', label: 'Amount',
+      hint: 'How much of the computed reduction to apply',
+      unit: '%', min: 0, max: 100, default: 85, step: 1,
+      format: fmt.pct, automatable: true, binding: wired('spectral.gateAmountPct'),
+    },
+    {
+      kind: 'number', id: 'thresholdDb', label: 'Noise Floor',
+      // Per BIN, and the range says so: a hiss reading -50 dBFS on a meter
+      // sits near -80 dBFS in any single bin, because noise spreads its
+      // energy across a thousand of them.
+      hint: 'Per-bin level treated as noise — lower is safer',
+      unit: 'dBFS', min: -100, max: -40, default: -68, step: 1,
+      format: fmt.integer, automatable: true, binding: wired('spectral.gateThresholdDb'),
+    },
+    {
+      kind: 'number', id: 'rangeDb', label: 'Max Reduction',
+      hint: 'Ceiling on how far a bin is pushed down',
+      unit: 'dB', min: 0, max: 36, default: 18, step: 1,
+      format: fmt.integer, automatable: true, binding: wired('spectral.gateRangeDb'),
+    },
+    {
+      kind: 'number', id: 'lowHz', label: 'Above',
+      hint: 'Only acts above this — the hiss lives up top',
+      unit: 'Hz', min: 500, max: 12_000, default: 2_500, step: 50,
+      format: fmt.integer, automatable: true, binding: wired('spectral.gateLowHz'),
+    },
+  ],
+};
+
 const STABILIZER_DEFS: ModuleParameterDefinitions = {
   moduleId: 'stabilizer',
   bypassBinding: wired('spectral.stabilizerEnabled'),
@@ -837,6 +882,7 @@ export const SUITE_PARAMETER_DEFS = {
   'parametric-eq': PARAMETRIC_EQ_DEFS,
   'match-eq': MATCH_EQ_DEFS,
   'spectral-shaper': SPECTRAL_SHAPER_DEFS,
+  'hiss-gate': HISS_GATE_DEFS,
   stabilizer: STABILIZER_DEFS,
   multiband: MULTIBAND_DEFS,
   'vintage-comp': VINTAGE_COMP_DEFS,

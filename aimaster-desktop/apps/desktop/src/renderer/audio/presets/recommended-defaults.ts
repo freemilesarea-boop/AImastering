@@ -130,6 +130,12 @@ export const RECOMMENDED: Record<ModuleId, RecommendedEntry> = {
     why: '특정 음에서만 튀어나오는 쇳소리를 그때그때 눌러줍니다. AI 음원의 금속성 질감에 잘 듣습니다.',
     basis: 'ai-repair',
   },
+  'hiss-gate': {
+    bypass: false,
+    parameters: { amountPct: 85, thresholdDb: -68, rangeDb: 18, lowHz: 2500 },
+    why: 'AI 음원 인트로의 "츠으으" 전자 잡음을 걷어냅니다. 음악이 있는 곳은 그대로 두고 조용한 부분의 고음 잡음만 누르므로, 고음을 깎는 EQ와 달리 곡의 화사함이 남습니다.',
+    basis: 'ai-repair',
+  },
   stabilizer: {
     bypass: false,
     parameters: { amountPct: 25, tiltDbPerOct: -1.5, maxMoveDb: 4 },

@@ -201,6 +201,12 @@ const SUITE: LouiModule[] = [
     description: 'Per-frame spectral smoothing — tames resonances and harshness that only appear on some notes.',
   },
   {
+    id: 'hiss-gate', displayName: 'Hiss Gate', category: 'restoration', status: 'live',
+    previewSupport: 'full', exportSupport: 'full', defaultBypass: true, cpuCost: 'low',
+    visual: 'spectrum', paramModuleId: 'hiss-gate', algorithmName: 'Loui Floor Gate',
+    description: 'Per-bin downward expansion above a corner frequency — removes the steady AI hiss that only shows in sparse passages. Shares the spectral STFT, so it adds no latency of its own.',
+  },
+  {
     id: 'stabilizer', displayName: 'Stabilizer', category: 'tone', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'high',
     visual: 'spectrum', paramModuleId: 'stabilizer',
@@ -341,7 +347,7 @@ export const RACK_GROUPS: readonly RackGroup[] = [
     // Not in the requested six, but these four have to live somewhere and
     // they come first for a reason: they repair the source, and every tonal
     // decision after them is made on the repaired version.
-    moduleIds: ['declick', 'dehum', 'denoise', 'deess', 'top-rebuild'],
+    moduleIds: ['declick', 'dehum', 'denoise', 'hiss-gate', 'deess', 'top-rebuild'],
   },
   {
     key: 'compressor', label: 'Compressors', ko: '컴프레서 계열',
