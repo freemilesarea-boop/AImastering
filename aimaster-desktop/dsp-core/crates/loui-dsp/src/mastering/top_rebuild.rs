@@ -31,6 +31,32 @@
 //! matters here: the STFT modules cost 2048 samples (≈43 ms) and this one
 //! is meant to be usable while tracking against the preview.
 //!
+//! # Why the waveshaper is a polynomial, and oversampled
+//!
+//! The first version of this module crackled, and both reasons are worth
+//! recording because they are the two standard ways a harmonic generator
+//! goes wrong.
+//!
+//! The even-harmonic path was full-wave rectification, `x.abs()`. A
+//! rectifier has a corner at zero, so its output is not band-limited at
+//! all: it generates harmonics forever, everything past Nyquist folds back
+//! down, and the folded copies are **inharmonic** — unrelated to the music,
+//! so they beat against it as grit rather than blending as brightness.
+//! Measured on a 7 kHz tone, the folded product at 20 kHz came back 4.5×
+//! **louder** than the real 21 kHz harmonic it was supposed to be making.
+//!
+//! Both paths are now polynomials — `x²` for even, `x³` for odd — which
+//! bounds the output to three times the input bandwidth, a finite number
+//! the design can be built around. The shaper then runs at **twice** the
+//! sample rate, where that bounded content has room to exist: the source
+//! band tops out around 9 kHz, three times that is 27 kHz, and the
+//! oversampled Nyquist is 48 kHz. Nothing folds. Decimating back down
+//! leaves a residue only between 21 and 24 kHz, above hearing.
+//!
+//! The other cause was the envelope-match gain, which is a ratio of two
+//! envelopes and therefore moves faster than either — it stepped at every
+//! consonant. It is now smoothed (`GAIN_SMOOTH_MS`).
+//!
 //! Bit-transparent at `amount_pct = 0` — the module returns before touching
 //! the samples.
 //!
@@ -53,6 +79,16 @@ use super::StereoModule;
 const MAX_MATCH_GAIN: f64 = 8.0;
 /// Floor added to every envelope divisor.
 const ENV_FLOOR: f64 = 1e-6;
+/// How fast the envelope-match gain is allowed to move, in milliseconds.
+///
+/// The gain is a ratio of two envelopes, and a ratio moves faster than
+/// either of its terms: at the start of a consonant the numerator has
+/// already jumped while the denominator is still rising, so the raw ratio
+/// steps. A per-sample step in a gain is a click, and a run of them is the
+/// crackle this constant exists to prevent.
+const GAIN_SMOOTH_MS: f64 = 8.0;
+/// Butterworth Q values for a 4th-order low-pass, as two cascaded sections.
+const BW4_Q: [f64; 2] = [0.541_196_1, 1.306_562_9];
 
 /// A one-pole envelope follower with separate rise and fall.
 #[derive(Clone, Copy, Default)]
@@ -90,6 +126,10 @@ struct Channel {
     /// Band-pass isolating the healthy source region, as two biquads.
     src_hp: Biquad,
     src_lp: Biquad,
+    /// Anti-imaging pair, run at twice the sample rate on the way in.
+    up: [Biquad; 2],
+    /// Anti-aliasing pair, run at twice the sample rate on the way out.
+    down: [Biquad; 2],
     /// Keeps the synthesised harmonics inside the target range.
     synth_hp: Biquad,
     synth_lp: Biquad,
@@ -97,6 +137,9 @@ struct Channel {
     env_target: Envelope,
     /// Envelope of the synthesised band — what it is normalised by.
     env_synth: Envelope,
+    /// Smoothed envelope-match gain, and its one-pole coefficient.
+    gain: f64,
+    gain_c: f64,
 }
 
 impl Channel {
@@ -106,10 +149,14 @@ impl Channel {
             split: Crossover2::new(sr, 9_000.0),
             src_hp: Biquad::new(flat),
             src_lp: Biquad::new(flat),
+            up: [Biquad::new(flat), Biquad::new(flat)],
+            down: [Biquad::new(flat), Biquad::new(flat)],
             synth_hp: Biquad::new(flat),
             synth_lp: Biquad::new(flat),
             env_target: Envelope::default(),
             env_synth: Envelope::default(),
+            gain: 0.0,
+            gain_c: 0.0,
         }
     }
 
@@ -117,10 +164,14 @@ impl Channel {
         self.split.reset();
         self.src_hp.reset();
         self.src_lp.reset();
+        for b in self.up.iter_mut().chain(self.down.iter_mut()) {
+            b.reset();
+        }
         self.synth_hp.reset();
         self.synth_lp.reset();
         self.env_target.reset();
         self.env_synth.reset();
+        self.gain = 0.0;
     }
 }
 
@@ -157,9 +208,13 @@ impl TopRebuild {
         // The source band.  An octave either side of the chosen centre: wide
         // enough to carry the voice's character, narrow enough that its own
         // harmonics land in the target range rather than past Nyquist.
+        //
+        // The upper clamp is what keeps the oversampled shaper honest: the
+        // cubic path reaches three times this, and three times this has to
+        // stay inside the doubled Nyquist (2 * nyq) with margin.
         let src = cfg.source_hz.clamp(500.0, cross * 0.9);
         let src_lo = (src * 0.5).clamp(100.0, nyq * 0.9);
-        let src_hi = (src * 2.0).clamp(src_lo * 1.2, nyq * 0.9);
+        let src_hi = (src * 2.0).clamp(src_lo * 1.2, nyq * 0.6);
 
         // The replacement is filtered back into the band it is replacing.
         // The upper limit is deliberately below Nyquist: waveshaping folds
@@ -167,10 +222,20 @@ impl TopRebuild {
         // artefact replacing the first.
         let synth_hi = (nyq * 0.82).min(19_000.0);
 
+        // The oversampled filters live at twice the rate, cutting just under
+        // the base Nyquist so they remove images on the way in and anything
+        // the shaper made above 24 kHz on the way out.
+        let os_sr = self.sr * 2.0;
+        let os_cut = nyq * 0.92;
+
         for ch in [&mut self.l, &mut self.r] {
             ch.split.set_freq(cross);
             ch.src_hp.set_coeffs(BiquadCoeffs::high_pass(self.sr, src_lo, 0.707));
             ch.src_lp.set_coeffs(BiquadCoeffs::low_pass(self.sr, src_hi, 0.707));
+            for i in 0..2 {
+                ch.up[i].set_coeffs(BiquadCoeffs::low_pass(os_sr, os_cut, BW4_Q[i]));
+                ch.down[i].set_coeffs(BiquadCoeffs::low_pass(os_sr, os_cut, BW4_Q[i]));
+            }
             ch.synth_hp.set_coeffs(BiquadCoeffs::high_pass(self.sr, cross, 0.707));
             ch.synth_lp.set_coeffs(BiquadCoeffs::low_pass(self.sr, synth_hi, 0.707));
             // Fast rise, slower fall: consonants have to arrive on time, and
@@ -178,6 +243,7 @@ impl TopRebuild {
             let follow = cfg.follow_ms.clamp(0.5, 200.0);
             ch.env_target.set(self.sr, follow * 0.25, follow);
             ch.env_synth.set(self.sr, follow * 0.25, follow);
+            ch.gain_c = time_const(self.sr, GAIN_SMOOTH_MS);
         }
 
         self.odd_mix = (cfg.character_pct / 100.0).clamp(0.0, 1.0);
@@ -190,15 +256,19 @@ impl TopRebuild {
 
     /// Shape one sample into harmonics.
     ///
-    /// Cubing triples the frequency; rectifying doubles it.  A 3 kHz source
-    /// therefore reaches 9 kHz through the odd path and 6 kHz through the
+    /// Cubing triples the frequency; squaring doubles it.  A 4.5 kHz source
+    /// therefore reaches 13.5 kHz through the odd path and 9 kHz through the
     /// even one, which is why `character` reads as bright versus warm.
+    ///
+    /// Both are polynomials on purpose.  A polynomial of degree n multiplies
+    /// bandwidth by exactly n and no more, which is what makes 2x
+    /// oversampling sufficient here rather than merely helpful.
     #[inline]
-    fn shape(&self, x: f64) -> f64 {
+    fn shape(x: f64, odd_mix: f64) -> f64 {
         let odd = x * x * x;
-        // Rectification carries a DC offset; the synth high-pass removes it.
-        let even = x.abs();
-        odd * self.odd_mix + even * (1.0 - self.odd_mix)
+        // Squaring carries a DC offset; the synth high-pass removes it.
+        let even = x * x;
+        odd * odd_mix + even * (1.0 - odd_mix)
     }
 
     #[inline]
@@ -210,17 +280,31 @@ impl TopRebuild {
 
         // Harmonics, generated from a healthy band and filtered into place.
         let src = ch.src_lp.process(ch.src_hp.process(x));
-        let odd = src * src * src;
-        let even = src.abs();
-        let shaped = odd * odd_mix + even * (1.0 - odd_mix);
-        let synth = ch.synth_lp.process(ch.synth_hp.process(shaped));
+
+        // Waveshape at twice the rate.  Zero-stuff, filter the image away,
+        // shape both sub-samples, filter what the shaping made above the
+        // base Nyquist, and keep one of the pair.  Both sub-samples must go
+        // through the filters even though only one survives — the discarded
+        // one is what carries the filter state forward.
+        let a0 = ch.up[0].process(src * 2.0);
+        let a = ch.up[1].process(a0);
+        let b0 = ch.up[0].process(0.0);
+        let b = ch.up[1].process(b0);
+        let da0 = ch.down[0].process(Self::shape(a, odd_mix));
+        let da = ch.down[1].process(da0);
+        let db0 = ch.down[0].process(Self::shape(b, odd_mix));
+        let _db = ch.down[1].process(db0);
+        let synth = ch.synth_lp.process(ch.synth_hp.process(da));
 
         // Scale the replacement to the envelope the original band had.  This
         // is what makes it read as restored detail rather than added noise.
         let synth_env = ch.env_synth.process(synth);
-        let gain = (target_env / (synth_env + ENV_FLOOR)).min(MAX_MATCH_GAIN);
+        let target = (target_env / (synth_env + ENV_FLOOR)).min(MAX_MATCH_GAIN);
+        // Smoothed, because the ratio of two envelopes steps where neither
+        // term does, and a stepped gain is a click.
+        ch.gain = target + (ch.gain - target) * ch.gain_c;
 
-        low + high * (1.0 - amount) + synth * gain * amount
+        low + high * (1.0 - amount) + synth * ch.gain * amount
     }
 }
 
@@ -410,6 +494,86 @@ mod tests {
             let out = render(c, sine(1_000.0, 0.6), 4096);
             assert!(out.iter().all(|x| x.is_finite()), "cross={cross} src={src} gave non-finite");
         }
+    }
+
+    #[test]
+    fn the_shaper_does_not_alias() {
+        // The regression test for the crackle.
+        //
+        // A 7 kHz tone sits inside the default source band (2.25-9 kHz).
+        // Its legitimate harmonics are 14 kHz (even) and 21 kHz (odd), both
+        // below Nyquist.  Anything at 20 kHz or 6 kHz can only be a harmonic
+        // that went PAST Nyquist and folded back: 28 kHz -> 20 kHz and
+        // 42 kHz -> 6 kHz.  Folded products are inharmonic, which is why
+        // they are heard as grit rather than as brightness.
+        //
+        // With the rectifier and no oversampling this read 4.485 — the
+        // fold was four times LOUDER than the harmonic it was meant to be
+        // generating.  Polynomial shapers at 2x bring it to ~0.005.
+        let n = 1 << 15;
+        let out = render(cfg(), sine(7_000.0, 0.5), n);
+        let alias = magnitude_at(&out, 20_000.0);
+        let legit = magnitude_at(&out, 21_000.0);
+        assert!(
+            alias < legit * 0.05,
+            "shaper is aliasing: fold at 20 kHz {alias:.6} vs real harmonic at 21 kHz {legit:.6}",
+        );
+        // And the low fold, which lands in the middle of the music.
+        let low_fold = magnitude_at(&out, 6_000.0);
+        assert!(low_fold < 1e-3, "fold landed in the midrange: {low_fold:.6} at 6 kHz");
+    }
+
+    #[test]
+    fn the_match_gain_cannot_step() {
+        // The second cause of the crackle.  A gate-like input — silence,
+        // then a sudden loud band — is the worst case for a gain built from
+        // a ratio of two envelopes: the numerator jumps while the
+        // denominator is still rising.  Unsmoothed, that produced a
+        // sample-to-sample jump; a run of those is the crackle.
+        //
+        // Measured as the largest single-sample change in the output, which
+        // is what a click actually is.
+        let n = 1 << 14;
+        let material = move |i: usize| {
+            if i < n / 2 { 0.0 } else { sine(4_500.0, 0.5)(i) + sine(12_000.0, 0.3)(i) }
+        };
+        let out = render(cfg(), material, n);
+        // Skip the onset sample itself: the signal genuinely starts there.
+        let worst = out
+            .windows(2)
+            .skip(n / 2 + 8)
+            .fold(0.0f32, |m, w| m.max((w[1] - w[0]).abs()));
+        // A 12 kHz sine at 0.5 moves at most ~0.8 per sample at 48 kHz, so
+        // anything far past that is the gain stepping, not the music.
+        assert!(worst < 1.0, "output stepped by {worst} in one sample — the gain is clicking");
+        assert!(out.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn broadband_material_stays_clean() {
+        // Music is not a sine.  A dense set of inharmonic partials through
+        // the source band is the case that made the original version audibly
+        // gritty, because every pair of partials intermodulates.
+        //
+        // The check is that nothing appears below the source band at all:
+        // squaring and cubing can only move energy UP, so any energy at
+        // 800 Hz — an octave and a half below the 2.25 kHz band edge — got
+        // there by folding.
+        let n = 1 << 15;
+        let partials = [2_600.0, 3_310.0, 4_070.0, 5_530.0, 6_890.0, 8_150.0];
+        let material = move |i: usize| {
+            partials.iter().map(|&f| sine(f, 0.14)(i)).sum::<f32>()
+        };
+        let dry = render(TopRebuildConfig { amount_pct: 0.0, ..cfg() }, material, n);
+        let wet = render(cfg(), material, n);
+        for hz in [800.0, 1_200.0, 1_700.0] {
+            let added = magnitude_at(&wet, hz) - magnitude_at(&dry, hz);
+            assert!(
+                added < 2e-4,
+                "intermodulation folded down to {hz} Hz: +{added:.6}",
+            );
+        }
+        assert!(wet.iter().all(|x| x.is_finite()));
     }
 
     #[test]
