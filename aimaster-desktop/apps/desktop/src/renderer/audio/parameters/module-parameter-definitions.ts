@@ -294,8 +294,43 @@ const LIMITER_DEFS: ModuleParameterDefinitions = {
         moduleType: 'loudness-norm',
         path: 'targetLufs',
         status: 'wired',
-        note: 'Routes to loudness-norm.targetLufs (separate engine module).',
+        note: 'Drives the chain loudness loop: gain at the input from a measurement of the output.',
       },
+    },
+    {
+      // The switch that makes Target LUFS audible while listening.
+      //
+      // It exists because the target has two honest meanings and they are
+      // not the same job: "render the file at this loudness" (a two-pass
+      // measurement, which the export does) and "let me HEAR it at this
+      // loudness now" (a converging loop, which is this). Off leaves the
+      // export behaviour exactly as it was.
+      kind: 'boolean', id: 'autoGain', label: 'Auto Gain',
+      hint: 'Reach Target LUFS while listening',
+      default: true,
+      onLabel: 'Auto', offLabel: 'Manual',
+      automatable: false,
+      binding: { moduleType: 'loudness-norm', path: 'enabled', status: 'wired' },
+    },
+    {
+      kind: 'number', id: 'maxBoostDb', label: 'Max Boost',
+      hint: 'Most Auto Gain may add',
+      unit: 'dB', min: 0, max: 24, default: 12, step: 0.5,
+      format: fmt.oneDec, automatable: false,
+      binding: { moduleType: 'loudness-norm', path: 'maxBoostDb', status: 'wired' },
+    },
+    {
+      // The manual counterpart, and the control that was missing entirely.
+      //
+      // `chain-config.ts` has always read `limiter.driveDb`, and the Rust
+      // limiter has always used it as the maximizer input — but no
+      // parameter defined it, so it read its default of 0 forever. The one
+      // control that makes a master louder was unreachable from the UI.
+      kind: 'number', id: 'driveDb', label: 'Drive',
+      hint: 'Level pushed into the limiter',
+      unit: 'dB', min: 0, max: 12, default: 0, step: 0.1,
+      format: fmt.oneDec, automatable: true,
+      binding: { moduleType: 'limiter', path: 'driveDb', status: 'wired' },
     },
     {
       kind: 'number', id: 'ceilingDbtp', label: 'True-Peak Ceiling',

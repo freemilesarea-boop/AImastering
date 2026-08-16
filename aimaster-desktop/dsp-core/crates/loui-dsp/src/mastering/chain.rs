@@ -1,6 +1,6 @@
 //! The mastering chain — assembles the modules in canonical order.
 
-use super::config::MasteringChainConfig;
+use super::config::{db_to_lin, MasteringChainConfig};
 use super::gain::Gain;
 use super::eq::Eq;
 use super::parametric_eq::{ParametricBand, ParametricEq};
@@ -10,6 +10,7 @@ use super::reverb::Reverb;
 use super::dynamics::Dynamics;
 use super::imager::Imager;
 use super::limiter::Limiter;
+use super::loudness::LoudnessTarget;
 use super::declick::Declick;
 use super::dehum::Dehum;
 use super::dither::Dither;
@@ -98,6 +99,10 @@ pub struct MasteringChain {
     imager: Imager,
     limiter: Limiter,
     output_gain: Gain,
+    /// Automatic gain toward a loudness target.  Corrects at the chain
+    /// INPUT from a measurement of the chain OUTPUT, so the limiter stays
+    /// inside the loop and the ceiling still holds.
+    loudness: LoudnessTarget,
     dither: Dither,
     monitor: Monitor,
     gr: GainReduction,
@@ -142,6 +147,7 @@ impl MasteringChain {
             reverb: Reverb::new(sample_rate, cfg.reverb),
             imager: Imager::new(sample_rate, cfg.imager),
             limiter: Limiter::new(sample_rate, cfg.limiter),
+            loudness: LoudnessTarget::new(sample_rate, cfg.loudness),
             output_gain: Gain::from_db(cfg.output_gain_db),
             dither: Dither::new(sample_rate, cfg.dither),
             monitor: Monitor::new(sample_rate, cfg.monitor),
@@ -209,6 +215,7 @@ impl MasteringChain {
         self.reverb.set_config(cfg.reverb);
         self.imager.set_config(cfg.imager);
         self.limiter.set_config(cfg.limiter);
+        self.loudness.set_config(cfg.loudness);
         self.output_gain.set_db(cfg.output_gain_db);
         self.dither.set_config(cfg.dither);
         self.monitor.set_config(cfg.monitor);
@@ -345,6 +352,24 @@ impl MasteringChain {
         // set the level.  Each stage assumes the ones before it have run.
         self.input_gain.process_stereo(left, right);
 
+        // 0 — Loudness target.
+        //
+        // Applied HERE, at the input, from a measurement taken at the end of
+        // this same function. That ordering is the whole design: the offline
+        // render reaches a loudness target by measuring its own output and
+        // re-rendering with the input gain adjusted, so putting the realtime
+        // correction in the same place makes the two converge on the same
+        // answer instead of being tuned to resemble each other. It also
+        // keeps the limiter inside the loop, so the ceiling still holds
+        // however hard the loop pushes.
+        if self.loudness.is_active() {
+            let g = self.loudness.gain_lin() as f32;
+            for i in 0..n {
+                left[i] *= g;
+                right[i] *= g;
+            }
+        }
+
         // 1 — Restoration.
         self.declick.process_stereo(left, right);
         self.dehum.process_stereo(left, right);
@@ -379,10 +404,42 @@ impl MasteringChain {
         self.limiter.process_stereo(left, right);
         self.output_gain.process_stereo(left, right);
 
+        // The ceiling has to survive the output trim.
+        //
+        // `output_gain` runs after the limiter, so a positive trim walked
+        // straight past the ceiling the limiter had just enforced — the
+        // limiter's own contract says "the output can never exceed the
+        // ceiling", and it could. Easy to miss while the chain ran quiet;
+        // obvious once the loudness loop started delivering material that
+        // actually reaches the ceiling, where +3 dB of trim peaked at
+        // +1.7 dBFS and clipped on the way to the file.
+        //
+        // Clamping rather than reordering keeps the trim meaning what it
+        // says for the ordinary case (a negative trim), and makes the
+        // ceiling the last word in every case.
+        if !self.cfg.limiter.bypass {
+            let ceil = db_to_lin(self.cfg.limiter.ceiling_dbtp) as f32;
+            for i in 0..n {
+                left[i] = left[i].clamp(-ceil, ceil);
+                right[i] = right[i].clamp(-ceil, ceil);
+            }
+        }
+
         // 7 — Dither + quantisation.  Last processing stage: it targets the
         // output file's bit depth, so anything after it would break the
         // quantisation it just established.
         self.dither.process_stereo(left, right);
+
+        // Close the loudness loop.  Measured after every processing stage,
+        // so what it reads is what the listener hears; the correction it
+        // computes lands on the next block's input gain above. One block of
+        // loop delay, which at 128 samples is under 3 ms against a
+        // multi-second time constant.
+        //
+        // Before the monitor, deliberately: A/B and delta replace the
+        // output with a level-matched dry signal, and measuring that would
+        // make the loop chase the comparison rather than the master.
+        self.loudness.observe(&left[..n], &right[..n]);
 
         // 8 — Monitoring.  Not processing: A/B and delta live outside the
         // signal chain proper, which is why they run after dither and why
@@ -468,6 +525,7 @@ impl MasteringChain {
         self.reverb.reset();
         self.imager.reset();
         self.limiter.reset();
+        self.loudness.reset();
         self.dither.reset();
         self.monitor.reset();
         self.safety_events = 0;
@@ -507,6 +565,42 @@ mod tests {
         let lc = l.clone();
         chain.process_stereo_block(&mut l, &mut r);
         assert_eq!(l, lc);
+    }
+
+    #[test]
+    fn a_positive_output_trim_cannot_break_the_ceiling() {
+        // `output_gain` runs AFTER the limiter, so a positive trim used to
+        // walk straight past the ceiling the limiter had just enforced --
+        // the limiter's contract says the output can never exceed it, and
+        // it could.  Measured at +1.7 dBFS with a +3 dB trim once the
+        // loudness loop started delivering material that reaches the
+        // ceiling at all.
+        for trim in [0.0, 3.0, 6.0, 12.0] {
+            let cfg = MasteringChainConfig {
+                limiter: LimiterConfig {
+                    ceiling_dbtp: -1.0, lookahead_ms: 1.0, isp: false, bypass: false,
+                    ..Default::default()
+                },
+                output_gain_db: trim,
+                ..Default::default()
+            };
+            let mut chain = MasteringChain::new(48_000.0, cfg);
+            let n = 4096;
+            let mut l: Vec<f32> = (0..n)
+                .map(|i| 0.9 * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / 48_000.0).sin() as f32)
+                .collect();
+            let mut r = l.clone();
+            for a in (0..n).step_by(512) {
+                let b = (a + 512).min(n);
+                chain.process_stereo_block(&mut l[a..b], &mut r[a..b]);
+            }
+            let peak = l.iter().chain(r.iter()).fold(0.0f32, |m, x| m.max(x.abs()));
+            let ceiling = db_to_lin(-1.0) as f32;
+            assert!(
+                peak <= ceiling + 1e-3,
+                "output trim {trim} dB broke the ceiling: peak {peak} > {ceiling}",
+            );
+        }
     }
 
     #[test]

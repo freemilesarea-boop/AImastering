@@ -882,6 +882,38 @@ impl Default for LimiterConfig {
     }
 }
 
+/// Loudness target — automatic gain toward an integrated-loudness figure.
+///
+/// Disabled by default so a config that does not mention it is unchanged.
+/// The chain enables it when the UI asks for a target.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
+pub struct LoudnessConfig {
+    /// Whether the loop runs at all.
+    pub enabled: bool,
+    /// Integrated loudness to aim for, in LUFS.
+    pub target_lufs: f64,
+    /// Most the loop may add, in dB.
+    pub max_boost_db: f64,
+    /// Most the loop may take away, in dB.
+    pub max_cut_db: f64,
+    /// How fast the gain moves, in milliseconds.  Seconds, not
+    /// milliseconds: anything quick enough to hear reacting is a
+    /// compressor, and would flatten the song's own dynamics.
+    pub speed_ms: f64,
+    pub bypass: bool,
+}
+
+impl Default for LoudnessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false, target_lufs: -14.0,
+            max_boost_db: 18.0, max_cut_db: 18.0,
+            speed_ms: 3_000.0, bypass: false,
+        }
+    }
+}
+
 /// Full mastering-chain configuration.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(Deserialize), serde(rename_all = "camelCase", default))]
@@ -920,6 +952,8 @@ pub struct MasteringChainConfig {
     // Stereo + output.
     pub imager: ImagerConfig,
     pub limiter: LimiterConfig,
+    /// Loudness target — automatic gain toward an integrated-LUFS figure.
+    pub loudness: LoudnessConfig,
     /// Dither + quantisation — the last stage, after the output gain.
     pub dither: DitherConfig,
     /// Monitoring (A/B + delta).  Listening only — never set on an export.
@@ -955,6 +989,7 @@ impl Default for MasteringChainConfig {
             reverb: ReverbConfig::default(),
             imager: ImagerConfig::default(),
             limiter: LimiterConfig::default(),
+            loudness: LoudnessConfig::default(),
             dither: DitherConfig::default(),
             monitor: MonitorConfig::default(),
             output_gain_db: 0.0,

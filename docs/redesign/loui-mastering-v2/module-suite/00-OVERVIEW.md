@@ -453,7 +453,7 @@ checking the code ran.
 ## 6. Building and testing
 
 ```bash
-# Rust DSP — 183 tests
+# Rust DSP — 225 tests
 cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 
 # Rebuild all three WASM targets after any Rust change.
@@ -461,7 +461,7 @@ cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 #           cargo install wasm-bindgen-cli --version 0.2.127
 pnpm --filter @loui/dsp-wasm run build:all
 
-# Desktop — 277 checks, including 55 that push config through the real chain
+# Desktop — 296 checks, including 55 that push config through the real chain
 pnpm --filter @aimaster/desktop test
 ```
 
@@ -608,7 +608,95 @@ monitor block leaks into an export.
 
 ---
 
-## 10. Not implemented
+## 10. Loudness — why the volume controls did nothing
+
+Reported symptom: moving the limiter and the loudness controls in the Studio
+did not audibly change how loud the preview was. It was true, for two
+independent reasons, and neither would have failed any test that existed.
+
+**`limiter.targetLufs` was read by nobody.** `chain-config.ts` never looked
+at it. The panel drew it, the state stored it, and it stopped there. Its
+`binding` metadata even said `status: 'wired'` — that field is
+documentation, not wiring, and nothing checks the claim.
+
+**`limiter.driveDb` had no parameter definition at all.** The config builder
+read it (`num(lim, 'driveDb', 0)`) and the Rust limiter used it as the
+maximizer input, but no definition existed, so it read its default of `0`
+forever. The one control that makes a master louder was unreachable from the
+UI.
+
+Meanwhile the **offline render did honour the target** — it measures the
+rendered output and re-renders with the input gain adjusted, a two-pass
+solve. So the preview was raw chain output while the export was normalised,
+routinely 6–10 dB apart with the preview the quiet one. Every judgement made
+while listening was made at the wrong level.
+
+### `loudness.rs` — the loop
+
+A new stage does in one pass what the offline does in two: measure the
+loudness of the chain's **output**, adjust the gain at its **input**.
+Because it measures after the chain and corrects before it, it settles on
+exactly the fixed point the offline two-pass solves algebraically — they
+agree by construction, not by being tuned to match. Correcting at the input
+is also what keeps it safe: the limiter is inside the loop, so it still sees
+everything the gain pushes at it.
+
+It must not become a compressor, so: K-weighted measurement over a 600 ms
+window, a multi-second gain constant, and a BS.1770 absolute gate so a
+fade-out is not answered by winding the gain into the noise floor. Two bugs
+were caught by its own tests — gating on the *smoothed* figure let silence
+read as quiet-but-present music (gain drifted 4.2 → 8.5 dB across two
+seconds of nothing; it now gates on the block's own level), and a non-finite
+target survived `clamp` (`f64::NAN.clamp(a, b)` is `NAN`) all the way into
+the audio.
+
+A slow loop alone took **20 seconds** to settle, which is far too long after
+pressing play, so it acquires at 150 ms for the first 1.2 s and then hands
+over to the slow constant. Measured: a source 20 dB quieter than another
+lands within 0.87 dB of it after 6 s, 0.01 dB after 20 s.
+
+### New controls
+
+| Control | 한국어 | What it does |
+|---|---|---|
+| Auto Gain | 자동 음량 맞춤 | Runs the loop. Off leaves level alone. |
+| Target LUFS | 목표 음량 | Where the loop aims. |
+| Max Boost | 최대 증폭 한도 | Most the loop may add (default +12 dB). |
+| Drive | 밀어넣기 | Manual push into the limiter — the maximizer. |
+
+### Two consequences worth knowing
+
+**The ceiling now has to survive the output trim.** `output_gain` runs after
+the limiter, so a positive trim walked straight past the ceiling the limiter
+had just enforced — the limiter's own contract says the output can never
+exceed it, and it could. Invisible while the chain ran quiet; +3 dB of trim
+peaked at **+1.70 dBFS** once the loop started delivering material that
+reaches the ceiling at all. There is now a clamp at the ceiling after the
+trim.
+
+**With Auto Gain on, lowering the ceiling does not make the master quieter.**
+The loop targets loudness, so a lower ceiling means the limiter takes more
+away, which means the loop pushes more in. The master gets *more limited*,
+not quieter. That is what a maximizer does and it is the opposite of what
+most people expect the first time they see it, so there is a test asserting
+it — the next person to read the numbers should not "fix" it.
+
+### Export
+
+The loop is switched **off** for the offline render, and the two-pass does
+the job instead. The offline path is not under the realtime constraint: it
+measures the whole file and applies one constant gain, where a converging
+loop would leave the intro at a different level from the rest. Both aim at
+the same number — `renderSong` takes the export's `targetLufs` from the same
+layered state the chain config was built from — so the file lands where the
+preview sounded. The mechanism differs; the result does not.
+
+Covered by `scripts/loudness-controls-selftest.ts` (19 checks, all measured
+through the real WASM chain) and 11 Rust tests in `loudness.rs`.
+
+---
+
+## 11. Not implemented
 
 Honest list, so the registry stays trustworthy:
 

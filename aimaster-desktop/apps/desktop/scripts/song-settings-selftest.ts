@@ -453,6 +453,40 @@ async function renderChecks(): Promise<void> {
     `targetLufs = ${String(opts?.targetLufs)} (baseline was -14)`,
   );
 
+  // Loudness. The chain's loop is switched off for the render and the
+  // offline two-pass does the job instead — it measures the whole file and
+  // applies one constant gain, where a converging loop would leave the
+  // intro at a different level from the rest. Both must aim at the same
+  // number, or the file will not sound like the preview did.
+  calls.length = 0;
+  const tuned = baseState();
+  tuned.limiter = {
+    ...tuned.limiter,
+    parameters: { ...tuned.limiter.parameters, targetLufs: -9 },
+  };
+  await renderSong({
+    filePath: '/songs/loud.wav', analysis, options,
+    settings: {
+      filePath: '/songs/loud.wav', savedAt: 1, state: tuned,
+      freeBands: [], masterBypass: false, presetId: null,
+    },
+    albumPreset: null,
+  });
+  const sent = calls[0]?.args[0] as {
+    options?: { targetLufs?: number };
+    chainConfig?: { suiteConfig?: { loudness?: { enabled?: boolean; targetLufs?: number } } };
+  } | undefined;
+  check(
+    "the Studio's Target LUFS decides the exported file's loudness",
+    sent?.options?.targetLufs === -9,
+    `options.targetLufs = ${String(sent?.options?.targetLufs)}`,
+  );
+  check(
+    'the realtime loudness loop is switched off for the render',
+    sent?.chainConfig?.suiteConfig?.loudness?.enabled === false,
+    'the offline two-pass measures the whole file instead',
+  );
+
   // A hard failure must surface rather than be reported as a done render.
   (globalThis as { window?: { electronAPI: { invoke: unknown } } }).window = {
     electronAPI: {

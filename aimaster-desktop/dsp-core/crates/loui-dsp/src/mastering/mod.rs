@@ -45,10 +45,12 @@ mod delay;
 mod top_rebuild;
 mod reverb;
 mod limiter;
+mod loudness;
 mod chain;
 
 pub use config::{
     MasteringChainConfig, EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
+    LoudnessConfig,
     DenoiseConfig, DehumConfig, DeclickConfig, DeessConfig,
     DynamicEqConfig, DynEqBandConfig, DynEqBandShape, DynEqMode,
     MultibandConfig, MultibandBandConfig, MultibandMode,
@@ -78,6 +80,7 @@ pub const DENOISE_PROFILE_BINS: usize = DENOISE_FRAME / 2 + 1;
 pub use deess::Deess;
 pub use delay::{Delay, MAX_DELAY_S};
 pub use top_rebuild::TopRebuild;
+pub use loudness::LoudnessTarget;
 pub use reverb::{Reverb, MAX_PREDELAY_S};
 pub use parametric_eq::{ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS};
 pub use chain::{MasteringChain, GainReduction};

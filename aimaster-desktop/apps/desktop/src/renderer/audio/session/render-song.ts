@@ -120,10 +120,34 @@ export async function renderSong(input: RenderSongInput): Promise<RenderSongOutp
     // export would ship a level-matched bypass as the master.
   });
 
+  // Loudness is reached differently offline, on purpose.
+  //
+  // The chain's loudness stage is a converging loop — it has to be, because
+  // realtime gets one pass over audio it has not heard yet. The offline
+  // render is not under that constraint: it measures the whole file and
+  // re-renders with a single constant gain, which is strictly better,
+  // because a loop that is still converging during the intro would leave
+  // the first seconds of the file at a different level from the rest.
+  //
+  // So the loop is switched off for the render and the two-pass does the
+  // job. Both aim at the same number, so the file lands where the preview
+  // sounded — the mechanism differs, the result does not.
+  const target = typeof suiteConfig.loudness?.targetLufs === 'number'
+    ? suiteConfig.loudness.targetLufs
+    : options.targetLufs;
+  const exportConfig = {
+    ...suiteConfig,
+    ...(suiteConfig.loudness ? { loudness: { ...suiteConfig.loudness, enabled: false } } : {}),
+  };
+
   const res = await api.invoke('audio:master-rust-experimental', {
     sourcePath: input.filePath,
-    chainConfig: { suiteConfig },
-    options,
+    chainConfig: { suiteConfig: exportConfig },
+    // The Studio's own Target LUFS decides the file's loudness — it is the
+    // number the user was listening to. Layering has already settled who
+    // owns it: a song that did not claim the limiter took the album
+    // preset's value, so a batch still comes out even.
+    options: { ...options, targetLufs: target },
   }) as RustRenderResponse;
 
   if (!res.ok || !res.outputPath) {

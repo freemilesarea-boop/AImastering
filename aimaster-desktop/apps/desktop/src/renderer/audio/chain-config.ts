@@ -171,6 +171,21 @@ export interface ChainConfigWire {
     character?: 'clean' | 'transparent' | 'punchy' | 'smooth' | 'aggressive';
     bypass?: boolean;
   };
+  /**
+   * Loudness target — automatic gain toward an integrated-LUFS figure.
+   *
+   * Sent whenever the user has asked for a target. The engine corrects at
+   * the chain input from a measurement of the chain output, which is the
+   * same fixed point the offline two-pass solves for.
+   */
+  loudness?: {
+    enabled?: boolean;
+    targetLufs?: number;
+    maxBoostDb?: number;
+    maxCutDb?: number;
+    speedMs?: number;
+    bypass?: boolean;
+  };
   dither?: {
     /** Target depth.  32 = float, which makes the stage a pass-through. */
     bitDepth?: number;
@@ -728,6 +743,30 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
     character: LIMITER_CHARACTER[str(lim, 'character', 'clean')] ?? 'clean',
     bypass: lim?.bypass ?? false,
   };
+
+  // ── Loudness target ────────────────────────────────────────────────────
+  // `targetLufs` sat in the parameter state and was read by nobody: the
+  // knob existed, the panel drew it, and moving it changed nothing you
+  // could hear. Meanwhile the offline render DID honour it, by measuring
+  // its output and re-rendering with the input gain adjusted — so the
+  // preview was raw chain output while the export was normalised, routinely
+  // 6-10 dB apart, with the preview the quiet one. Every judgement made
+  // while listening was made at the wrong level.
+  //
+  // Emitting it closes that gap. Off makes the stage an exact
+  // pass-through, so a session that does not want automatic gain is
+  // unchanged.
+  if (lim) {
+    const autoOn = bool(lim, 'autoGain', true) && !lim.bypass;
+    cfg.loudness = {
+      enabled: autoOn,
+      targetLufs: num(lim, 'targetLufs', -14),
+      maxBoostDb: num(lim, 'maxBoostDb', 12),
+      maxCutDb: 18,
+      speedMs: 3000,
+      bypass: false,
+    };
+  }
 
   // ── Dither ─────────────────────────────────────────────────────────────
   // Driven by the export module: dither only means anything against a
