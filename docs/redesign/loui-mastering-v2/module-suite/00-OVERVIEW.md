@@ -461,7 +461,7 @@ cd aimaster-desktop/dsp-core && cargo test -p loui-dsp --release
 #           cargo install wasm-bindgen-cli --version 0.2.127
 pnpm --filter @loui/dsp-wasm run build:all
 
-# Desktop — 148 checks, including 55 that push config through the real chain
+# Desktop — 247 checks, including 55 that push config through the real chain
 pnpm --filter @aimaster/desktop test
 ```
 
@@ -486,7 +486,55 @@ button, and the engine side is already in place.
 
 ---
 
-## 8. Not implemented
+## 8. Presets, and the AI vocal preset
+
+Twenty-three modules and two hundred parameters is the product for an
+engineer and a wall for everybody else. A preset is where a beginner
+starts, so the preset bar sits **above** the rack on the Studio page
+(`LouiStudioPresetBar.tsx`) rather than behind a menu, grouped
+AI fixes → Core → Character, and each chip carries its Korean name with a
+sentence of what picking it does (`audio/presets/preset-glossary.ts`).
+
+Applying a preset is an ordinary edit. `applyPreset` writes the same
+parameter and bypass state a slider writes, so it is heard immediately, it
+is undone by moving anything, and it is not a mode. It also **only touches
+modules the preset names** — tape, reverb, delay, the vintage compressor
+and the multiband are left exactly as the user left them.
+
+### `ai-vocal-texture` — AI 보컬 질감 복구
+
+The one preset written against a specific defect. Vocals from Suno-class
+generators carry a wet, glassy, over-smoothed top: the model reconstructs
+above roughly 8–10 kHz from a lossy representation, so consonants and
+breath come back as a shimmering wash rather than as air. Turning that
+band down alone leaves a dull record, because there is nothing underneath
+it. The fix is to **replace** it, not attenuate it:
+
+| Module | Setting | Why |
+|---|---|---|
+| Top Rebuild | amount 70% | discards the reconstructed top and synthesises a new one from the clean 4.5 kHz voice below it |
+| Spectral Shaper | 60%, 4.5 dB, 8–16 kHz | catches whatever artefact survives the crossover |
+| De-esser | range 5 dB | the resynthesised top makes sibilants honest again, and honest sibilants need controlling |
+| Imager | high band 78% | AI tops are wide and phasey; narrowing only the top keeps the image |
+| Impact | band 2 +18% | restores the transient bite that the smoothing removed |
+
+Loudness is deliberately untouched — the preset repairs a texture, it does
+not decide how loud the record is.
+
+Measured by `scripts/vocal-preset-selftest.ts`, pushing audio through the
+real WASM chain:
+
+- **−21.3 dB at 12 kHz** — the artefact band is genuinely gone.
+- **−1.3 dB at 4.5 kHz** — the voice it was generated from survives.
+
+The same script also holds every preset honest: each preset's parameters
+must exist on the module it names, and each preset must have a Korean name
+and a plain sentence. Both are exhaustive, so a new preset without a
+translation fails the build rather than shipping as an unlabelled chip.
+
+---
+
+## 9. Not implemented
 
 Honest list, so the registry stays trustworthy:
 

@@ -78,6 +78,9 @@ function clampRange(v: number, lo: number, hi: number): number {
   return !Number.isFinite(v) ? lo : v < lo ? lo : v > hi ? hi : v;
 }
 import { LouiMonitorBar } from '../components/product/LouiMonitorBar.js';
+import { LouiStudioPresetBar } from '../components/product/LouiStudioPresetBar.js';
+import { presetApplyPlan } from '../audio/presets/preset-to-state.js';
+import type { LouiPreset } from '../audio/presets/loui-presets.js';
 import { LouiPreviewTransport } from '../components/product/LouiPreviewTransport.js';
 import type { MonitorReadout } from '../components/product/LouiMonitorBar.js';
 import { useRealtimePreview } from '../hooks/useRealtimePreview.js';
@@ -135,6 +138,8 @@ export default function StudioPage() {
   // named scalars per module and this list has neither fixed length nor
   // fixed names; it reaches the chain through `parametricBands`.
   const [freeBands, setFreeBands] = useState<FreeEqBand[]>([]);
+  /** The preset last applied, for the bar's active mark. */
+  const [appliedPreset, setAppliedPreset] = useState<string | null>(null);
 
   const src = selectedFile ? toFileUrl(selectedFile) : null;
   // Read once per mount: the flag is a kill switch, not a live toggle.
@@ -166,6 +171,34 @@ export default function StudioPage() {
       for (const [id, value] of edits) params[id] = value;
       return { ...prev, [moduleId]: { ...prev[moduleId], parameters: params } };
     });
+  }, []);
+
+  /**
+   * Apply a preset.
+   *
+   * Written into the same state a slider writes, in one update: the preview
+   * hears it on the next config push, and moving any control afterwards is
+   * an ordinary edit rather than "leaving preset mode".  Modules the preset
+   * does not mention are left exactly as they are — a preset that silently
+   * reset the rest would throw away work every time one was auditioned.
+   */
+  const applyPreset = useCallback((preset: LouiPreset) => {
+    const plan = presetApplyPlan(preset);
+    setState((prev) => {
+      const next = { ...prev };
+      for (const b of plan.bypasses) {
+        next[b.moduleId] = { ...next[b.moduleId], bypass: b.bypass };
+      }
+      for (const p of plan.parameters) {
+        const mod = next[p.moduleId];
+        next[p.moduleId] = {
+          ...mod,
+          parameters: { ...mod.parameters, [p.parameterId]: p.value },
+        };
+      }
+      return next;
+    });
+    setAppliedPreset(preset.id);
   }, []);
 
   const setBypass = useCallback((moduleId: ModuleId, bypass: boolean) => {
@@ -460,6 +493,8 @@ export default function StudioPage() {
           error={preview.error}
           metrics={preview.metrics}
         />
+        <LouiStudioPresetBar appliedId={appliedPreset} onApply={applyPreset} />
+
         <LouiMonitorBar
           value={monitor}
           onChange={setMonitor}
