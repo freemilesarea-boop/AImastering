@@ -737,7 +737,7 @@ export default function StudioPage() {
           )}
           <HeaderButton label="Reset all" onClick={resetAll} />
           <HeaderButton
-            label={returnTo === 'stems' ? '스템 세션으로' : 'Back'}
+            label={returnTo === 'daw' ? '트랙으로' : returnTo === 'stems' ? '스템 세션으로' : 'Back'}
             onClick={() => {
               const dest = returnTo ?? 'home';
               // Cleared on the way out, or a later visit from the queue

@@ -529,6 +529,19 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     }
   });
 
+  /** Peaks for the arrange window's waveform. Decoded once, cached. */
+  ipc.handle('stem:peaks', async (_e, filePath: unknown) => {
+    const safePath = validateAbsoluteFilePath(filePath, 'stem:peaks');
+    try {
+      const { waveformPeaks } = await import('../offline/waveform-peaks.js');
+      return { ok: true as const, ...(await waveformPeaks(safePath)) };
+    } catch (err) {
+      // Returned, not thrown: a track that cannot be drawn still has to
+      // appear in the arrange window, with its name and its controls.
+      return { ok: false as const, error: (err as Error).message };
+    }
+  });
+
   ipc.handle('stem:preview-clear', async () => {
     const { clearPreviewCache } = await import('../offline/stem-preview.js');
     return { ok: true as const, removed: clearPreviewCache() };

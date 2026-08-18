@@ -1016,11 +1016,11 @@ export default function HomePage() {
           // queue item — a session brings its own files — so it is reached
           // from the header rather than from a track's row menu.
           <button
-            onClick={() => setPage('stems')}
-            className="text-xs text-zinc-600 hover:text-zinc-300 transition-colors"
-            title="파트별 파일을 불러와 악기마다 다른 체인으로 다듬고 하나로 합칩니다"
+            onClick={() => setPage('daw')}
+            className="text-xs text-zinc-400 hover:text-zinc-100 transition-colors"
+            title="트랙·믹스콘솔·마스터 버스가 한 화면에 있는 작업 공간입니다"
           >
-            스템 세션
+            트랙 작업실
           </button>
         }
       />

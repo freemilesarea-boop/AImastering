@@ -41,3 +41,59 @@
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* ── DAW console fader ──────────────────────────────────────────────────────
+   A vertical fader, built by rotating a range input rather than by
+   hand-rolling a drag surface. Rotation keeps the keyboard (arrows,
+   page-up/down), the accessible name and the browser's own pointer capture,
+   all of which a custom control has to reimplement and usually gets wrong.
+
+   `writing-mode: vertical-lr` with `direction: rtl` is the modern way to get
+   a bottom-to-top range; the transform is the fallback for engines that do
+   not honour it. The cap is styled to read as a fader cap — wide, flat, with
+   a centre line — because that is what an engineer's eye looks for. */
+.daw-fader {
+  -webkit-appearance: none;
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 22px;
+  height: 100%;
+  background: transparent;
+  cursor: ns-resize;
+}
+.daw-fader::-webkit-slider-runnable-track {
+  width: 3px;
+  background: transparent;
+}
+.daw-fader::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 11px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #52525b 0%, #27272a 45%, #3f3f46 55%, #18181b 100%);
+  border: 1px solid #09090b;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.daw-fader:focus-visible::-webkit-slider-thumb {
+  border-color: #a1a1aa;
+}
+
+/* Horizontal micro-sliders (pan, track-header trim) — same family, smaller. */
+.daw-mini {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.daw-mini::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #a1a1aa;
+  border: 1px solid #18181b;
+}

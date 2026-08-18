@@ -3,6 +3,7 @@ import { useAppStore } from './stores/appStore.js';
 // License gate re-enabled (v3.6 — commercial release).
 import LicenseModal from './components/LicenseModal.js';
 import StemsPage from './pages/StemsPage.js';
+import DawPage from './pages/DawPage.js';
 import { useLicenseStore } from './stores/licenseStore.js';
 import HomePage     from './pages/HomePage.js';
 import GuidedHome from './components/guided/GuidedHome.js';
@@ -327,7 +328,7 @@ function AppInner() {
     }
     // Mobile policy: never enter the Pro fine-tuning pages.  Bounce tweak
     // and the Studio rack to the result (if a master exists) or home.
-    if (isMobile && (page === 'tweak' || page === 'studio' || page === 'stems')) {
+    if (isMobile && (page === 'tweak' || page === 'studio' || page === 'stems' || page === 'daw')) {
       setPage(selectedFile && masteringResult?.outputPath ? 'result' : 'home');
     }
   }, [page, selectedFile, masteringResult, setPage, isMobile]);
@@ -367,6 +368,12 @@ function AppInner() {
   // twelve-channel mixer does not fit a phone.
   const stemsSlot = isMobile ? homeEl : <StemsPage />;
 
+  // daw: the arrange window, the console and the racks on one screen. Like
+  // the Studio it needs no file and is desktop-only — a mix console does not
+  // fit a phone and pretending otherwise would produce something unusable
+  // rather than something small.
+  const dawSlot = isMobile ? homeEl : <DawPage />;
+
   const pages: Record<string, React.ReactNode> = {
     home:      homeEl,
     mastering: <MasteringPage />,
@@ -374,6 +381,7 @@ function AppInner() {
     tweak:     tweakSlot,
     studio:    studioSlot,
     stems:     stemsSlot,
+    daw:       dawSlot,
     qc:        <QCPage />,
     settings:  <SettingsPage />,
   };

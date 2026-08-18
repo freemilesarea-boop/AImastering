@@ -30,6 +30,11 @@
 import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import StemsPage, { StemRow, Transport } from '../src/renderer/pages/StemsPage.js';
+import DawPage from '../src/renderer/pages/DawPage.js';
+import TrackHeader from '../src/renderer/components/daw/TrackHeader.js';
+import MixerStrip, { faderPosition, faderDb } from '../src/renderer/components/daw/MixerStrip.js';
+import TrackWaveform from '../src/renderer/components/daw/TrackWaveform.js';
+import { trackColor, roleLabel } from '../src/renderer/components/daw/TrackColors.js';
 import type { StemTrackState } from '../src/renderer/stores/stemStore.js';
 import { STEM_ROLES } from '../src/renderer/audio/presets/stem-defaults.js';
 
@@ -268,6 +273,126 @@ const idle = { state: 'idle' as const, position: 0, duration: 0, memoryBytes: 0,
     'preparing disables the button rather than queueing another bake',
     out.includes('준비 중') && out.includes('disabled'),
     '굽는 동안 또 누르지 못하게',
+  );
+}
+
+// ── 4. The DAW shell ─────────────────────────────────────────────────────────
+
+console.log('\n=== THE DAW SHELL ===\n');
+
+{
+  let out = '';
+  let threw = '';
+  try { out = html(React.createElement(DawPage)); } catch (e) { threw = (e as Error).message; }
+  check(
+    'the DAW workspace mounts without throwing',
+    threw === '' && out.length > 0,
+    threw || `${out.length}자`,
+  );
+  check(
+    'every region of the window is there',
+    ['Inspector', 'Tracks', 'Master Bus', 'MixConsole', 'MASTER'].every((r) => out.includes(r)),
+    '인스펙터 · 트랙 · 마스터 버스 · 믹스콘솔 · 마스터 채널',
+  );
+  check(
+    'the transport carries a clock',
+    out.includes('0:00.0') && out.includes('TRACKS') === false,
+    '세션이 없으면 NO SESSION, 시계는 항상',
+  );
+  check(
+    'an empty session explains itself rather than showing an empty grid',
+    out.includes('트랙을 불러오세요') && out.includes('타임라인 편집은 없습니다'),
+    '없는 기능을 있는 척하지 않는다',
+  );
+}
+
+{
+  const header = html(React.createElement(TrackHeader, {
+    name: 'Lead Vox', role: roleLabel('vocal'), color: trackColor('vocal'),
+    gainDb: -2.5, mute: false, solo: true, audible: true, selected: true,
+    height: 68, status: 'ready', warning: undefined,
+    onSelect: () => {}, onGain: () => {}, onMute: () => {}, onSolo: () => {}, onRemove: () => {},
+  }));
+  check(
+    'a track header shows name, instrument, trim and its transport buttons',
+    header.includes('Lead Vox') && header.includes('리드 보컬') &&
+    header.includes('-2.5') && header.includes('>M<') && header.includes('>S<'),
+    '헤더 한 줄에서 트랙을 알아보고 손댈 수 있다',
+  );
+  check(
+    'and a soloed track looks soloed',
+    header.includes('amber'),
+    '솔로가 눌린 것이 눈에 보인다',
+  );
+}
+
+{
+  const strip = html(React.createElement(MixerStrip, {
+    name: 'Bass DI', role: roleLabel('bass'), color: trackColor('bass'),
+    gainDb: 0, pan: -0.5, mute: false, solo: false, audible: true, selected: false,
+    inserts: ['EQ', 'Compressor', 'Low Focus'], level: 0.6,
+    onSelect: () => {}, onGain: () => {}, onPan: () => {}, onMute: () => {},
+    onSolo: () => {}, onOpenInserts: () => {},
+  }));
+  check(
+    'a console strip carries the whole channel',
+    strip.includes('Bass DI') && strip.includes('베이스') && strip.includes('Inserts') &&
+    strip.includes('Compressor') && strip.includes('L50') && strip.includes('daw-fader'),
+    '이름 · 악기 · 인서트 · 팬 · 페이더가 콘솔 순서대로',
+  );
+}
+
+{
+  const many = html(React.createElement(MixerStrip, {
+    name: 'Drums', role: roleLabel('drums'), color: trackColor('drums'),
+    gainDb: 0, pan: 0, mute: false, solo: false, audible: true, selected: false,
+    inserts: ['EQ', 'Compressor', 'Transient', 'Imager', 'De-esser'], level: null,
+    onSelect: () => {}, onGain: () => {}, onPan: () => {}, onMute: () => {},
+    onSolo: () => {}, onOpenInserts: () => {},
+  }));
+  check(
+    'a strip with more inserts than fit says how many are hidden',
+    many.includes('+2'),
+    '5개 중 3개만 보이고 나머지는 수로',
+  );
+}
+
+{
+  // The fader curve is what makes a console fader feel like one: most of the
+  // travel around unity, where the decisions are, and a compressed bottom.
+  const unity = faderPosition(0);
+  const roundTrip = [-60, -30, -12, -6, 0, 6, 12]
+    .every((db) => Math.abs(faderDb(faderPosition(db)) - db) < 0.01);
+  check(
+    'the fader curve round-trips and puts unity high on the throw',
+    roundTrip && unity > 0.8 && unity < 0.95,
+    `0 dB = 페이더 ${(unity * 100).toFixed(0)}% 지점 — 선형이면 83%, 아래쪽이 압축돼 있다`,
+  );
+  check(
+    'and half the travel is spent in the top 20 dB',
+    faderPosition(-20) < 0.75 && faderPosition(-20) > 0.4,
+    `-20 dB = ${(faderPosition(-20) * 100).toFixed(0)}%`,
+  );
+}
+
+{
+  const empty = html(React.createElement(TrackWaveform, {
+    peaks: null, color: '#3b82f6', height: 68, zoom: 1, scroll: 0,
+  }));
+  check(
+    'a lane renders before its waveform has arrived',
+    empty.includes('<canvas'),
+    '피크가 없어도 레인은 그려진다 — 늦게 도착하는 것은 그림뿐',
+  );
+}
+
+{
+  const colors = new Set(['kick', 'bass', 'vocal', 'guitar', 'keys', 'fx'].map((r) =>
+    trackColor(r as never)));
+  check(
+    'instruments are told apart by colour, not by reading',
+    colors.size === 6,
+    `${colors.size}가지 색 — 어레인지 창은 읽는 게 아니라 훑는 것`,
   );
 }
 
