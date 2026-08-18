@@ -30,6 +30,7 @@ import {
 } from '../stores/stemStore.js';
 import { STEM_ROLES, type StemRole } from '../audio/presets/stem-defaults.js';
 import { stemWireFor } from '../audio/presets/stem-chain-config.js';
+import { masterBusChoices, masterWireFor } from '../audio/presets/stem-master.js';
 
 const ROLE_LABEL: Record<StemRole, string> = {
   kick: '킥', snare: '스네어', drums: '드럼/퍼커션', bass: '베이스',
@@ -159,12 +160,80 @@ function StemRow({ track, audible }: { track: StemTrackState; audible: boolean }
   );
 }
 
+// ── Master bus ───────────────────────────────────────────────────────────────
+
+function MasterBus(): React.ReactElement {
+  const { masterPresetId, masterTargetLufs, setMasterPreset, setMasterTargetLufs } = useStemStore();
+  const choices = useMemo(() => masterBusChoices(), []);
+  const active = choices.find((c) => c.id === masterPresetId) ?? null;
+  const effectiveLufs = masterTargetLufs ?? active?.targetLufs ?? null;
+
+  return (
+    <div className="shrink-0 border-t border-zinc-800/60 px-4 py-3 bg-zinc-950/40">
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-[11px] uppercase tracking-widest text-zinc-600 shrink-0">마스터 버스</span>
+
+        <select
+          value={masterPresetId ?? ''}
+          onChange={(e) => setMasterPreset(e.target.value === '' ? null : e.target.value)}
+          className="text-xs bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-zinc-300
+                     focus:outline-none focus:border-zinc-500"
+          title={active?.description ?? '마스터 버스 없이 합산만 합니다'}
+        >
+          <option value="">없음 (합산만)</option>
+          {choices.map((c) => (
+            <option key={c.id} value={c.id}>{c.displayName}</option>
+          ))}
+        </select>
+
+        {active && (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-zinc-600">목표 라우드니스</span>
+              <input
+                type="range" min={-20} max={-6} step={0.5}
+                value={effectiveLufs ?? -14}
+                onChange={(e) => setMasterTargetLufs(Number(e.target.value))}
+                className="w-32 accent-zinc-400"
+                aria-label="목표 라우드니스"
+              />
+              <span className="font-mono text-[11px] text-zinc-400 w-16 tabular-nums">
+                {(effectiveLufs ?? -14).toFixed(1)} LUFS
+              </span>
+              {masterTargetLufs !== null && masterTargetLufs !== active.targetLufs && (
+                <button
+                  onClick={() => setMasterTargetLufs(null)}
+                  className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
+                  title={`프리셋 기본값 ${active.targetLufs} LUFS 로 되돌립니다`}
+                >
+                  기본값
+                </button>
+              )}
+            </div>
+
+            <span className="font-mono text-[11px] text-zinc-600 tabular-nums">
+              실링 {active.ceilingDbtp.toFixed(1)} dBTP
+            </span>
+          </>
+        )}
+      </div>
+
+      <p className="mt-1.5 text-[11px] text-zinc-600 leading-snug">
+        {active
+          ? active.description
+          : '마스터 버스를 끄면 스템 체인과 페이더만 적용된 합산본이 나옵니다 — 다른 곳에서 마스터링할 파일을 만들 때 쓰세요.'}
+      </p>
+    </div>
+  );
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function StemsPage(): React.ReactElement {
   const setPage = useAppStore((s) => s.setPage);
   const {
     tracks, rendering, lastReport, lastOutputPath, renderError,
+    masterPresetId, masterTargetLufs,
     addFiles, clear, analyzePending, setRendering, setRenderResult,
   } = useStemStore();
 
@@ -191,6 +260,14 @@ export default function StemsPage(): React.ReactElement {
     if (!api || tracks.length === 0) return;
     setRendering(true);
     try {
+      // The master bus is one of the app's own mastering presets, applied
+      // to the sum. Its loudness target rides alongside rather than inside
+      // the chain — the renderer normalises in two passes, which lands on
+      // the target instead of near it.
+      const master = masterPresetId
+        ? masterWireFor(masterPresetId, masterTargetLufs ?? undefined)
+        : null;
+
       const res = await api.invoke('stem:render', {
         tracks: tracks.map((t) => ({
           filePath: t.filePath,
@@ -200,10 +277,10 @@ export default function StemsPage(): React.ReactElement {
           solo: t.solo,
           config: { ...baseConfig(), suiteConfig: stemWireFor(t.role) },
         })),
-        // No master chain yet — the sum is written as it is, so what comes
-        // out is exactly the stems plus the mixer and nothing else. The
-        // master bus is the next piece.
-        master: null,
+        master: master
+          ? { ...baseConfig(), limCeilingDbtp: master.ceilingDbtp, suiteConfig: master.wire }
+          : null,
+        ...(master ? { masterTarget: { targetLufs: master.targetLufs } } : {}),
         sampleRate: 48000,
         bitDepth: 24,
       }) as {
@@ -215,7 +292,7 @@ export default function StemsPage(): React.ReactElement {
     } catch (err) {
       setRenderResult(null, null, (err as Error).message);
     }
-  }, [tracks, setRendering, setRenderResult]);
+  }, [tracks, masterPresetId, masterTargetLufs, setRendering, setRenderResult]);
 
   const handleSave = useCallback(async () => {
     const api = window.electronAPI;
@@ -294,6 +371,8 @@ export default function StemsPage(): React.ReactElement {
         )}
       </div>
 
+      <MasterBus />
+
       {/* Report */}
       {(lastReport || renderError || attention.length > 0) && (
         <div className="shrink-0 border-t border-zinc-800/60 px-4 py-2.5 space-y-1.5">
@@ -322,6 +401,27 @@ export default function StemsPage(): React.ReactElement {
                 title="스템마다 체인 지연이 달라 생기는 어긋남을 보정한 양입니다."
               >
                 지연 보정 {lastReport.alignmentSamples} 샘플
+              </span>
+              {lastReport.loudnessNote !== 'not-requested' && (
+                <span
+                  className={`text-[11px] tabular-nums ${
+                    lastReport.loudnessNote === 'ok' ? 'text-zinc-400' : 'text-amber-400'}`}
+                  title={
+                    lastReport.loudnessNote === 'ceiling-limited'
+                      ? '리미터가 실링을 지키느라 더 이상 커지지 않습니다 — 이 소재로는 이 목표에 도달할 수 없습니다. 목표를 낮추거나, 곡의 밀도를 올리세요(스템 컴프레서).'
+                      : lastReport.loudnessNote === 'clamped-boost'
+                      ? '목표까지 올리려면 허용치보다 큰 게인이 필요해 목표에 도달하지 못했습니다. 스템 페이더를 올리세요.'
+                      : lastReport.loudnessNote === 'clamped-cut'
+                      ? '목표까지 내리려면 허용치보다 큰 감쇠가 필요해 목표에 도달하지 못했습니다. 스템 페이더를 내리세요.'
+                      : `파일 전체를 측정해 맞춘 값입니다 (${lastReport.loudnessPasses}회 보정).`
+                  }
+                >
+                  {lastReport.masterLufs.toFixed(1)} LUFS
+                  {lastReport.loudnessNote !== 'ok' && ' · 목표 미달'}
+                </span>
+              )}
+              <span className="text-[11px] text-zinc-600 tabular-nums" title="트루 피크">
+                {lastReport.masterTruePeakDb.toFixed(1)} dBTP
               </span>
               {!lastReport.latencyAvailable && (
                 <span className="text-[11px] text-amber-400">

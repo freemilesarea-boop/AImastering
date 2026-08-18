@@ -61,12 +61,30 @@ export interface StemRenderReport {
   outputPeakDb: number;
   alignmentSamples: number;
   latencyAvailable: boolean;
+  masterLufs: number;
+  masterTruePeakDb: number;
+  loudnessGainDb: number;
+  loudnessNote: 'ok' | 'silence' | 'clamped-boost' | 'clamped-cut' | 'ceiling-limited' | 'not-requested';
+  loudnessPasses: number;
   durationSec: number;
   renderMs: number;
 }
 
+/** Default master bus — the neutral streaming target, not the loudest one. */
+export const DEFAULT_MASTER_PRESET = 'streaming-pro';
+
 interface StemStore {
   tracks: StemTrackState[];
+  /**
+   * Master bus preset id, or null for no master bus at all.
+   *
+   * Null is a real choice, not an unset one: rendering the sum with nothing
+   * on it is how you hear what the stem chains alone did, and how you get a
+   * file to master somewhere else.
+   */
+  masterPresetId: string | null;
+  /** Loudness target, or null to use whatever the preset asks for. */
+  masterTargetLufs: number | null;
   /** Set while a render is running. */
   rendering: boolean;
   lastOutputPath: string | null;
@@ -81,6 +99,8 @@ interface StemStore {
   setPan: (id: string, pan: number) => void;
   toggleMute: (id: string) => void;
   toggleSolo: (id: string) => void;
+  setMasterPreset: (id: string | null) => void;
+  setMasterTargetLufs: (lufs: number | null) => void;
   /** Run the classifier over every stem that has not been analysed yet. */
   analyzePending: () => Promise<void>;
   setRendering: (v: boolean) => void;
@@ -138,8 +158,33 @@ function persist(tracks: StemTrackState[]): void {
   }
 }
 
+const MASTER_KEY = 'loui.stem.master';
+
+function loadMaster(): { masterPresetId: string | null; masterTargetLufs: number | null } {
+  try {
+    const raw = localStorage.getItem(MASTER_KEY);
+    if (!raw) return { masterPresetId: DEFAULT_MASTER_PRESET, masterTargetLufs: null };
+    const p = JSON.parse(raw) as { masterPresetId?: unknown; masterTargetLufs?: unknown };
+    return {
+      masterPresetId: typeof p.masterPresetId === 'string' ? p.masterPresetId
+        : p.masterPresetId === null ? null : DEFAULT_MASTER_PRESET,
+      masterTargetLufs: typeof p.masterTargetLufs === 'number' && Number.isFinite(p.masterTargetLufs)
+        ? p.masterTargetLufs : null,
+    };
+  } catch {
+    return { masterPresetId: DEFAULT_MASTER_PRESET, masterTargetLufs: null };
+  }
+}
+
+function persistMaster(masterPresetId: string | null, masterTargetLufs: number | null): void {
+  try {
+    localStorage.setItem(MASTER_KEY, JSON.stringify({ masterPresetId, masterTargetLufs }));
+  } catch { /* storage full or disabled — not worth taking the mixer down */ }
+}
+
 export const useStemStore = create<StemStore>((set, get) => ({
   tracks: load(),
+  ...loadMaster(),
   rendering: false,
   lastOutputPath: null,
   lastReport: null,
@@ -213,6 +258,17 @@ export const useStemStore = create<StemStore>((set, get) => ({
     const tracks = get().tracks.map((t) => (t.id === id ? { ...t, solo: !t.solo } : t));
     persist(tracks);
     set({ tracks });
+  },
+
+  setMasterPreset: (id) => {
+    persistMaster(id, get().masterTargetLufs);
+    set({ masterPresetId: id });
+  },
+
+  setMasterTargetLufs: (lufs) => {
+    const v = lufs === null ? null : Math.max(-24, Math.min(-6, Number.isFinite(lufs) ? lufs : -14));
+    persistMaster(get().masterPresetId, v);
+    set({ masterTargetLufs: v });
   },
 
   analyzePending: async () => {

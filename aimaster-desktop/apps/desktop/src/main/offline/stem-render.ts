@@ -46,6 +46,7 @@ import {
   type OfflineChainConfig, type WasmMasteringChain,
 } from './load-mastering-chain-node.js';
 import { decodeToFloatStereo, deinterleaveStereo } from './process-audio-file-rust.js';
+import { measureStereoLoudness, solveLoudnessGain } from './offline-loudness.js';
 
 /** One channel of the mixer. */
 export interface StemTrack {
@@ -66,10 +67,31 @@ export interface StemTrack {
   config: OfflineChainConfig | null;
 }
 
+/** Loudness normalisation for the master bus. */
+export interface MasterLoudnessTarget {
+  targetLufs: number;
+  /** Largest upward correction allowed, dB. Defaults to `DEFAULT_MAX_BOOST_DB`. */
+  maxBoostDb?: number;
+  /** Largest downward correction allowed, dB (negative). */
+  maxCutDb?: number;
+}
+
 export interface StemRenderOptions {
   sampleRate: number;
   /** The master bus chain, applied to the sum. Null passes the sum through. */
   master: OfflineChainConfig | null;
+  /**
+   * Normalise the finished master to a loudness target.
+   *
+   * Done as a two-pass measure-then-correct rather than with the chain's
+   * realtime loudness module, for the reason the master render already uses
+   * two passes: an AGC has to guess while it plays, so it moves during quiet
+   * sections and lands near the target; a measurement of the whole file
+   * lands on it. And it is cheap here, because the second pass re-runs only
+   * the MASTER chain over the already-summed buffer — the stems and their
+   * chains are not touched again.
+   */
+  masterTarget?: MasterLoudnessTarget | null;
   blockSize?: number;
   onProgress?: (frac: number, stage: string) => void;
 }
@@ -105,6 +127,22 @@ export interface StemRenderReport {
    * correct mix.
    */
   latencyAvailable: boolean;
+  /** Integrated loudness of the finished master, LUFS. */
+  masterLufs: number;
+  /** True peak of the finished master, dBTP. */
+  masterTruePeakDb: number;
+  /** Loudness correction applied on the second master pass, dB. */
+  loudnessGainDb: number;
+  /**
+   * Why the correction was what it was.
+   *
+   * `clamped-boost` / `clamped-cut` mean the target was further away than
+   * the policy allows, so the master did NOT reach it — the caller has to
+   * say so rather than showing a target the file does not meet.
+   */
+  loudnessNote: 'ok' | 'silence' | 'clamped-boost' | 'clamped-cut' | 'ceiling-limited' | 'not-requested';
+  /** How many master passes the correction took. */
+  loudnessPasses: number;
   samples: number;
   durationSec: number;
   renderMs: number;
@@ -117,6 +155,30 @@ export interface StemRenderResult {
 }
 
 const DEFAULT_BLOCK = 512;
+
+/** How close to the target counts as landing on it, dB. */
+const LOUDNESS_TOLERANCE_DB = 0.3;
+/**
+ * Most correction passes to spend on the master.
+ *
+ * Four is enough for the correction to converge on anything reachable; when
+ * it has not converged by then the target is not reachable through this
+ * chain's ceiling and more passes would only confirm that more slowly.
+ */
+const MAX_LOUDNESS_PASSES = 4;
+/**
+ * Default ceiling on the upward correction, dB.
+ *
+ * Higher than the single-file master render's 12, because a stem session
+ * starts wherever the faders left it. A sum sitting 15 dB under a loud
+ * target is an ordinary result of sensible gain staging, and a 12 dB cap
+ * would refuse it — measured: the loud preset reached only -14.5 LUFS
+ * against a -8 target at 12 dB, and -12.6 at 18.
+ *
+ * It stays bounded rather than unlimited so a nearly-silent session cannot
+ * be amplified by 30 dB into a wall of its own noise floor.
+ */
+const DEFAULT_MAX_BOOST_DB = 18;
 
 function dbToLin(db: number): number {
   return Math.pow(10, db / 20);
@@ -166,6 +228,32 @@ export function chainLatency(config: OfflineChainConfig | null, sampleRate: numb
   } finally {
     chain?.free?.();
   }
+}
+
+/**
+ * Add gain to a config's INPUT stage, wherever that config keeps it.
+ *
+ * This exists because a config has two input-gain fields and only one of
+ * them is ever read. `applyChainConfigForRender` prefers `suiteConfig` and,
+ * when it is present, hands the whole JSON to the engine and never looks at
+ * the flat fields again. So adding the loudness correction to the flat
+ * `inputGainDb` of a suite-configured master is a no-op: the second pass
+ * renders at exactly the level of the first, the render reports the gain it
+ * "applied", and the file misses the target by however much was asked for.
+ *
+ * That is not hypothetical — it is what the first version of the master bus
+ * did, and the loudness test caught it: 12 dB of correction, zero change in
+ * the file.
+ */
+function withInputGain(config: OfflineChainConfig, addDb: number): OfflineChainConfig {
+  if (config.suiteConfig) {
+    const suite = config.suiteConfig as { inputGainDb?: number };
+    return {
+      ...config,
+      suiteConfig: { ...suite, inputGainDb: (suite.inputGainDb ?? 0) + addDb },
+    } as OfflineChainConfig;
+  }
+  return { ...config, inputGainDb: config.inputGainDb + addDb };
 }
 
 /**
@@ -333,6 +421,10 @@ export async function renderStemSession(
   progress?.(0.9, '마스터 버스');
   let outL: Float32Array = sumL;
   let outR: Float32Array = sumR;
+  let loudnessGainDb = 0;
+  let loudnessNote: StemRenderReport['loudnessNote'] = 'not-requested';
+  let loudnessPasses = 0;
+
   if (opts.master) {
     // The master's delay is removed the same way, so the finished file
     // starts where the session starts.
@@ -340,6 +432,78 @@ export async function renderStemSession(
     const out = renderAligned(sumL, sumR, opts.master, sr, masterLat, length, block);
     outL = out.left;
     outR = out.right;
+
+    if (opts.masterTarget) {
+      // Measure what the master chain produced, work out the correction,
+      // and re-run the master with it as INPUT gain. Input, not output:
+      // pushing the level before the limiter is what makes a track louder;
+      // adding it after would just move the ceiling.
+      progress?.(0.95, '라우드니스 맞추기');
+      const target = opts.masterTarget.targetLufs;
+      const policy = {
+        maxBoostDb: opts.masterTarget.maxBoostDb ?? DEFAULT_MAX_BOOST_DB,
+        ...(opts.masterTarget.maxCutDb !== undefined ? { maxCutDb: opts.masterTarget.maxCutDb } : {}),
+      };
+
+      let measured = measureStereoLoudness(outL, outR, sr).integratedLufs;
+      let total = 0;
+      let clamped: 'clamped-boost' | 'clamped-cut' | 'silence' | null = null;
+      let saturated = false;
+
+      // Iterate, because a chain with a limiter in it is not linear in its
+      // input gain. A single measure-and-correct pass assumes +6 dB in gives
+      // +6 dB out; once the limiter is working, most of what is added at the
+      // input is taken straight back off, and a correction computed that way
+      // undershoots — by 7 dB on dense material aiming at a loud target.
+      //
+      // Each pass costs one run of the MASTER chain over the already-summed
+      // buffer. The stems and their chains are not touched again, so this is
+      // a few seconds on a full session, not a re-render.
+      for (loudnessPasses = 1; loudnessPasses <= MAX_LOUDNESS_PASSES; loudnessPasses++) {
+        const solved = solveLoudnessGain(measured, target, policy);
+        if (solved.note === 'silence') { clamped = 'silence'; break; }
+
+        // The policy bounds the TOTAL correction, not each step of it.
+        const wanted = total + solved.appliedGainDb;
+        const bounded = Math.max(policy.maxCutDb ?? -24, Math.min(policy.maxBoostDb ?? 12, wanted));
+        if (bounded !== wanted) clamped = wanted > bounded ? 'clamped-boost' : 'clamped-cut';
+
+        const step = bounded - total;
+        if (Math.abs(step) < 0.05) break;
+
+        const cfgN = withInputGain(opts.master, bounded);
+        const outN = renderAligned(sumL, sumR, cfgN, sr, chainLatency(cfgN, sr) ?? 0, length, block);
+        const after = measureStereoLoudness(outN.left, outN.right, sr).integratedLufs;
+
+        // More gain in, no more loudness out: the ceiling is holding the
+        // level and no further correction will move it. Stopping here and
+        // saying so is the honest outcome — continuing would add another
+        // 12 dB of limiting for nothing.
+        if (Math.abs(step) > 0.5 && (after - measured) < Math.abs(step) * 0.1 && step > 0) {
+          saturated = true;
+          outL = outN.left; outR = outN.right;
+          total = bounded; measured = after;
+          break;
+        }
+
+        outL = outN.left; outR = outN.right;
+        total = bounded;
+        measured = after;
+
+        if (Math.abs(target - measured) <= LOUDNESS_TOLERANCE_DB) break;
+      }
+
+      loudnessPasses = Math.min(loudnessPasses, MAX_LOUDNESS_PASSES);
+      loudnessGainDb = total;
+      loudnessNote = clamped === 'silence' ? 'silence'
+        : saturated ? 'ceiling-limited'
+        : clamped ?? (Math.abs(target - measured) <= LOUDNESS_TOLERANCE_DB ? 'ok' : 'ceiling-limited');
+    }
+  } else if (opts.masterTarget) {
+    // A loudness target with no master chain would have no limiter to hold
+    // the ceiling, so the correction would simply clip. Refused rather than
+    // half-done.
+    throw new Error('라우드니스 목표를 맞추려면 마스터 버스 체인이 필요합니다 (리미터가 피크를 잡아야 합니다).');
   }
 
   let outPeak = 0;
@@ -348,6 +512,7 @@ export async function renderStemSession(
     const b = Math.abs(outR[i]!); if (b > outPeak) outPeak = b;
   }
 
+  const finalMeasure = measureStereoLoudness(outL, outR, sr);
   progress?.(1, '완료');
 
   return {
@@ -361,6 +526,11 @@ export async function renderStemSession(
       alignmentSamples: alignTo,
       latencies,
       latencyAvailable,
+      masterLufs: finalMeasure.integratedLufs,
+      masterTruePeakDb: finalMeasure.truePeakDbtp,
+      loudnessGainDb,
+      loudnessNote,
+      loudnessPasses,
       samples: length,
       durationSec: length / sr,
       renderMs: Date.now() - t0,
