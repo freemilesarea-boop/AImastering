@@ -31,7 +31,7 @@
  *     for it to do.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import {
@@ -49,10 +49,13 @@ import { trackColor, roleLabel } from '../components/daw/TrackColors.js';
 import InsertRack, {
   startingValues, moduleLabel, type InsertState,
 } from '../components/daw/InsertRack.js';
-import { ModuleParameterPanel } from '../components/product/panels/ModuleParameterPanel.js';
-import { ALL_MODULE_PARAMETER_DEFS } from '../audio/parameters/module-parameter-definitions.js';
+import { TrackPluginEditor } from '../components/daw/TrackPluginEditor.js';
 import { MODULE_IDS, type ModuleId, type ParameterValue } from '../audio/parameters/parameter-state.js';
 import { saveSongSettings } from '../audio/session/song-settings.js';
+import type { FreeEqBand } from '../audio/modules/eq-graph-model.js';
+import {
+  subscribeTrackMetrics, getTrackMetricsMap, getTrackMetricsServer, EMPTY_METRICS,
+} from '../audio/track-metrics-store.js';
 import { usePaneSizes } from '../components/daw/usePaneSizes.js';
 
 const LANE_HEIGHT = 68;
@@ -155,6 +158,24 @@ function writeInsert(
       },
     },
   });
+}
+
+/** A track's free-EQ bands, as saved. */
+function readFreeBands(filePath: string, role: StemRole): FreeEqBand[] {
+  return ensureStemChain(filePath, role).freeBands;
+}
+
+/**
+ * Replace a track's free-EQ bands.
+ *
+ * Separate from `writeInsert` because the bands are not parameters: the
+ * parametric EQ's shape is a list whose length the user controls, and
+ * folding it into the module's parameter map would mean inventing sixteen
+ * sets of frequency/gain/Q fields that the engine does not have.
+ */
+function writeFreeBands(filePath: string, role: StemRole, bands: FreeEqBand[]): void {
+  const saved = ensureStemChain(filePath, role);
+  saveSongSettings({ ...saved, freeBands: bands });
 }
 
 // ── Ruler ────────────────────────────────────────────────────────────────────
@@ -289,11 +310,30 @@ export default function DawPage(): React.ReactElement {
     setRackTick((n) => n + 1);
   }, [selected, rack]);
 
-  const editParameter = useCallback((moduleId: ModuleId, parameterId: string, value: ParameterValue) => {
+  /**
+   * Write one module's parameters.
+   *
+   * Takes a patch rather than a single id because a drag on a curve moves
+   * two or three axes in the same gesture, and writing them one at a time
+   * would have each save read a copy of the settings from before the last.
+   */
+  const editParameters = useCallback((moduleId: ModuleId, patch: Record<string, ParameterValue>) => {
     if (!selected) return;
-    writeInsert(selected.filePath, selected.role, moduleId, { parameters: { [parameterId]: value } });
+    writeInsert(selected.filePath, selected.role, moduleId, { parameters: patch });
     setRackTick((n) => n + 1);
   }, [selected]);
+
+  const editFreeBands = useCallback((bands: FreeEqBand[]) => {
+    if (!selected) return;
+    writeFreeBands(selected.filePath, selected.role, bands);
+    setRackTick((n) => n + 1);
+  }, [selected]);
+
+  const freeBands = useMemo(
+    () => (selected ? readFreeBands(selected.filePath, selected.role) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selected, rackTick],
+  );
 
   // ── Analysis ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -372,6 +412,30 @@ export default function DawPage(): React.ReactElement {
     }, 100);
     return () => window.clearInterval(id);
   }, [status.state]);
+
+  /**
+   * The selected track's chain telemetry.
+   *
+   * `useSyncExternalStore` rather than an effect: the store publishes on its
+   * own timer at 10 Hz and never on message arrival, so this cannot become
+   * the audio-rate render loop that once killed the renderer.
+   */
+  const metricsMap = useSyncExternalStore(
+    subscribeTrackMetrics, getTrackMetricsMap, getTrackMetricsServer,
+  );
+  const selectedMetrics = selected ? (metricsMap.get(selected.id) ?? EMPTY_METRICS) : EMPTY_METRICS;
+  /**
+   * The post-plugin spectrum tap, re-read whenever the graph is rebuilt.
+   *
+   * `status.state` is the signal: the engine replaces its analysers when it
+   * loads or when live chains are toggled, and both of those move the
+   * transport state.
+   */
+  const selectedAnalyser = useMemo(
+    () => (selected ? engineRef.current?.analyserFor(selected.id) ?? null : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selected, status.state, liveChains],
+  );
 
   // What a re-bake actually depends on: which files are in the session. The
   // chains are applied live, so a plugin edit or a role change costs nothing
@@ -807,7 +871,7 @@ export default function DawPage(): React.ReactElement {
               sits over the arrange area, which is the same idea without a
               second window to lose behind the first. */}
           {selected && openModule && (
-            <div className="shrink-0 max-h-[46%] overflow-y-auto border-t border-black/60 bg-zinc-900/95">
+            <div className="shrink-0 max-h-[62%] overflow-y-auto border-t border-black/60 bg-zinc-900/95">
               <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5
                               border-b border-black/50 bg-zinc-900/95">
                 <span className="text-[11px] text-zinc-200">
@@ -830,12 +894,15 @@ export default function DawPage(): React.ReactElement {
                 >✕</button>
               </div>
               <div className="px-3 py-2">
-                <ModuleParameterPanel
+                <TrackPluginEditor
                   moduleId={openModule.id}
-                  def={ALL_MODULE_PARAMETER_DEFS[openModule.id]}
                   values={openModule.parameters}
                   bypass={openModule.bypass}
-                  onChange={(pid, v) => editParameter(openModule.id, pid, v)}
+                  metrics={selectedMetrics}
+                  analyser={selectedAnalyser}
+                  freeBands={freeBands}
+                  onChange={(patch) => editParameters(openModule.id, patch)}
+                  onFreeBands={editFreeBands}
                 />
               </div>
             </div>

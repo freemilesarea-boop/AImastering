@@ -53,6 +53,7 @@ import {
 import { loadMasteringWorklet, createChainNode } from './mastering-worklet-loader.js';
 import type { ChainConfigWire } from './chain-config.js';
 import { decodeAudioBytes } from './wav-buffer.js';
+import { ingestTrackMetrics, clearTrackMetrics, resetTrackMetrics } from './track-metrics-store.js';
 
 export interface PreviewStemInput extends StripSettings {
   id: string;
@@ -156,6 +157,23 @@ export class StemPreviewEngine {
   private strips = new Map<string, MixerStrip>();
   private sources = new Map<string, AudioBufferSourceNode>();
   private chains = new Map<string, AudioWorkletNode>();
+  /**
+   * One spectrum tap per track, post-plugin.
+   *
+   * Post rather than pre because the EQ curve is drawn over it: a trace of
+   * the signal BEFORE the EQ would show the user the shape they are trying
+   * to change rather than the shape they have made.
+   */
+  private analysers = new Map<string, AnalyserNode>();
+  /**
+   * Zero-gain node the taps are pulled through.
+   *
+   * An analyser with nothing downstream is not guaranteed to be rendered —
+   * the graph is pulled from the destination. Routing the taps to a muted
+   * sink keeps them running without adding a second copy of the audio to
+   * the output. Same arrangement as `shared-audio-graph`.
+   */
+  private silentSink: GainNode | null = null;
   private wasmModule: WebAssembly.Module | null = null;
   /**
    * The node the loader builds while proving the processor registered.
@@ -314,7 +332,15 @@ export class StemPreviewEngine {
       if (!buffer || !strip) continue;
       const src = ctx.createBufferSource();
       src.buffer = buffer;
-      src.connect(this.chains.get(stem.id) ?? strip.input);
+      const chain = this.chains.get(stem.id);
+      src.connect(chain ?? strip.input);
+      // With no chain there is nothing else feeding the tap, so the source
+      // does — the spectrum is then the raw stem, which is exactly what is
+      // being heard.
+      if (!chain) {
+        const tap = this.analysers.get(stem.id);
+        if (tap) src.connect(tap);
+      }
       src.start(when, offset);
       this.sources.set(stem.id, src);
     }
@@ -363,10 +389,16 @@ export class StemPreviewEngine {
   /** Tear the graph down, keeping the decoded buffers. */
   private teardownGraph(): void {
     this.stopSources();
-    for (const chain of this.chains.values()) {
+    for (const [id, chain] of this.chains) {
+      chain.port.onmessage = null;
+      clearTrackMetrics(id);
       try { chain.disconnect(); } catch { /* already detached */ }
     }
     this.chains.clear();
+    for (const tap of this.analysers.values()) {
+      try { tap.disconnect(); } catch { /* already detached */ }
+    }
+    this.analysers.clear();
     for (const strip of this.strips.values()) strip.disconnect();
     this.strips.clear();
   }
@@ -389,6 +421,11 @@ export class StemPreviewEngine {
       try { this.master.disconnect(); } catch { /* already detached */ }
       this.master = null;
     }
+    if (this.silentSink) {
+      try { this.silentSink.disconnect(); } catch { /* already detached */ }
+      this.silentSink = null;
+    }
+    resetTrackMetrics();
     this.buffers.clear();
     this.stems = [];
     this.duration = 0;
@@ -405,8 +442,12 @@ export class StemPreviewEngine {
     const master = ctx.createGain();
     master.gain.value = 1;
     master.connect(ctx.destination);
+    const sink = ctx.createGain();
+    sink.gain.value = 0;
+    sink.connect(ctx.destination);
     this.ctx = ctx;
     this.master = master;
+    this.silentSink = sink;
     return ctx;
   }
 
@@ -439,13 +480,24 @@ export class StemPreviewEngine {
 
     for (const strip of this.strips.values()) strip.disconnect();
     this.strips.clear();
-    for (const chain of this.chains.values()) {
+    for (const [id, chain] of this.chains) {
+      chain.port.onmessage = null;
+      clearTrackMetrics(id);
       try { chain.disconnect(); } catch { /* already detached */ }
     }
     this.chains.clear();
+    for (const tap of this.analysers.values()) {
+      try { tap.disconnect(); } catch { /* already detached */ }
+    }
+    this.analysers.clear();
 
     for (const stem of this.stems) {
       this.strips.set(stem.id, createStrip(ctx, master, stem.channels));
+      const tap = ctx.createAnalyser();
+      tap.fftSize = 2048;
+      tap.smoothingTimeConstant = 0.75;
+      if (this.silentSink) tap.connect(this.silentSink);
+      this.analysers.set(stem.id, tap);
     }
 
     if (!this.liveChainsWanted || !this.wasmModule) return;
@@ -468,6 +520,19 @@ export class StemPreviewEngine {
         const node = this.spareNode ?? createChainNode(ctx, this.wasmModule, ctx.sampleRate, 2);
         this.spareNode = null;
         node.connect(strip.input);
+        const tap = this.analysers.get(stem.id);
+        if (tap) node.connect(tap);
+        // The chain's own telemetry — gain reduction, the learned noise
+        // floor, the measured tonal curve — is what the plugin panels
+        // draw. It lands in a store that notifies on a timer, never on
+        // arrival: see `track-metrics-store`.
+        const id = stem.id;
+        node.port.onmessage = (ev: MessageEvent) => {
+          const msg = ev.data as { type?: string } | null;
+          if (msg && msg.type === 'metrics') {
+            ingestTrackMetrics(id, msg as unknown as Record<string, unknown>);
+          }
+        };
         this.chains.set(stem.id, node);
         crumb('chain:connected', stem.id);
       }
@@ -510,6 +575,17 @@ export class StemPreviewEngine {
 
   liveChainsEnabled(): boolean {
     return this.liveChainsWanted;
+  }
+
+  /**
+   * This track's post-plugin spectrum tap, for the curve editors to draw on.
+   *
+   * Null when the track is not in the session, which is the state a panel
+   * opened before playback is in — the graph then draws its curve with no
+   * trace behind it rather than an invented one.
+   */
+  analyserFor(trackId: string): AnalyserNode | null {
+    return this.analysers.get(trackId) ?? null;
   }
 
   /** Push each track's plugin chain into its worklet. */

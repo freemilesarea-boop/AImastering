@@ -126,12 +126,13 @@ function stopTimer(): void {
 }
 
 /**
- * Ingest a message from the worklet.
+ * Turn a raw worklet message into a metrics snapshot.
  *
- * Deliberately does NOT notify: it only marks the store dirty.  This is the
- * line that keeps the audio thread from driving React.
+ * Pure, and exported, because the DAW runs one chain per track and needs the
+ * same parse without the single-chain store around it. One reader means the
+ * two cannot drift on what a field is called or what a missing one means.
  */
-export function ingestWorkletMetrics(msg: Record<string, unknown>): void {
+export function parseWorkletMetrics(msg: Record<string, unknown>): RealtimePreviewMetrics {
   const n = (k: string, fallback = 0): number => {
     const v = msg[k];
     return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
@@ -143,7 +144,7 @@ export function ingestWorkletMetrics(msg: Record<string, unknown>): void {
       : fallback
   );
 
-  pending = {
+  return {
     updatedAt: Date.now(),
     running: n('audioBlocks') > 0,
     bypass: b('bypass'),
@@ -173,6 +174,16 @@ export function ingestWorkletMetrics(msg: Record<string, unknown>): void {
     dryLufs: typeof msg['dryLufs'] === 'number' ? (msg['dryLufs'] as number) : Number.NEGATIVE_INFINITY,
     wetLufs: typeof msg['wetLufs'] === 'number' ? (msg['wetLufs'] as number) : Number.NEGATIVE_INFINITY,
   };
+}
+
+/**
+ * Ingest a message from the worklet.
+ *
+ * Deliberately does NOT notify: it only marks the store dirty.  This is the
+ * line that keeps the audio thread from driving React.
+ */
+export function ingestWorkletMetrics(msg: Record<string, unknown>): void {
+  pending = parseWorkletMetrics(msg);
   dirty = true;
 }
 
