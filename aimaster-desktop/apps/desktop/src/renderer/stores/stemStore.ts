@@ -16,6 +16,7 @@
 
 import { create } from 'zustand';
 import type { StemRole } from '../audio/presets/stem-defaults.js';
+import type { ModuleId } from '../audio/parameters/parameter-state.js';
 
 const STORAGE_KEY = 'loui.stem.session';
 
@@ -45,6 +46,19 @@ export interface StemTrackState {
   solo: boolean;
   status: StemStatus;
   error?: string | undefined;
+  /**
+   * Plugins on this track's channel, as module ids.
+   *
+   * Held here rather than derived from the saved rack state, because a rack
+   * state has a bypass flag for all twenty-five modules and cannot tell
+   * "the user added this and switched it off" from "the user never added
+   * it". A plugin the user bypassed has to stay in the list, or switching
+   * it off would delete it.
+   *
+   * Empty means "not set up yet" — the role's own chain is used until the
+   * user opens the rack, at which point it is seeded from that same chain.
+   */
+  inserts?: ModuleId[] | undefined;
 }
 
 /** The subset that survives a restart. */
@@ -52,6 +66,7 @@ interface PersistedTrack {
   id: string; filePath: string; name: string;
   role: StemRole; roleLocked: boolean;
   gainDb: number; pan: number; mute: boolean; solo: boolean;
+  inserts?: ModuleId[];
 }
 
 export interface StemRenderReport {
@@ -99,6 +114,8 @@ interface StemStore {
   setPan: (id: string, pan: number) => void;
   toggleMute: (id: string) => void;
   toggleSolo: (id: string) => void;
+  /** Replace a track's plugin list. */
+  setInserts: (id: string, inserts: ModuleId[]) => void;
   setMasterPreset: (id: string | null) => void;
   setMasterTargetLufs: (lufs: number | null) => void;
   /** Run the classifier over every stem that has not been analysed yet. */
@@ -139,6 +156,7 @@ function load(): StemTrackState[] {
       mute: t.mute === true,
       solo: t.solo === true,
       status: 'pending' as StemStatus,
+      ...(Array.isArray(t.inserts) ? { inserts: t.inserts } : {}),
     })).filter((t) => t.filePath.length > 0);
   } catch {
     return [];
@@ -151,6 +169,7 @@ function persist(tracks: StemTrackState[]): void {
       id: t.id, filePath: t.filePath, name: t.name,
       role: t.role, roleLocked: t.roleLocked,
       gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
+      ...(t.inserts ? { inserts: t.inserts } : {}),
     }));
     localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
   } catch {
@@ -256,6 +275,12 @@ export const useStemStore = create<StemStore>((set, get) => ({
 
   toggleSolo: (id) => {
     const tracks = get().tracks.map((t) => (t.id === id ? { ...t, solo: !t.solo } : t));
+    persist(tracks);
+    set({ tracks });
+  },
+
+  setInserts: (id, inserts) => {
+    const tracks = get().tracks.map((t) => (t.id === id ? { ...t, inserts } : t));
     persist(tracks);
     set({ tracks });
   },

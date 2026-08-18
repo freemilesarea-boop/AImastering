@@ -46,9 +46,36 @@ import TrackWaveform, { type PeakData } from '../components/daw/TrackWaveform.js
 import TrackHeader from '../components/daw/TrackHeader.js';
 import MixerStrip from '../components/daw/MixerStrip.js';
 import { trackColor, roleLabel } from '../components/daw/TrackColors.js';
+import InsertRack, {
+  startingValues, moduleLabel, type InsertState,
+} from '../components/daw/InsertRack.js';
+import { ModuleParameterPanel } from '../components/product/panels/ModuleParameterPanel.js';
+import { ALL_MODULE_PARAMETER_DEFS } from '../audio/parameters/module-parameter-definitions.js';
+import { MODULE_IDS, type ModuleId, type ParameterValue } from '../audio/parameters/parameter-state.js';
+import { saveSongSettings } from '../audio/session/song-settings.js';
+import { usePaneSizes } from '../components/daw/usePaneSizes.js';
 
 const LANE_HEIGHT = 68;
 const HEADER_WIDTH = 208;
+
+/**
+ * Absolute paths for the files in a drop.
+ *
+ * Electron exposes the real filesystem path on `File`, which a browser does
+ * not — and the whole app addresses audio by absolute path, so a drop that
+ * only produced a `File` object could not be analysed, rendered or exported.
+ * A file without one is skipped rather than added as a track that can never
+ * do anything.
+ */
+function droppedPaths(list: FileList | null): string[] {
+  if (!list) return [];
+  const out: string[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const p = (list[i] as File & { path?: string }).path;
+    if (typeof p === 'string' && p.length > 0) out.push(p);
+  }
+  return out;
+}
 
 function baseConfig(): Record<string, unknown> {
   return {
@@ -81,6 +108,53 @@ function insertsFor(role: StemRole): string[] {
   if (preset.modules['low-end-focus']) names.push('Low Focus');
   if (preset.modules.imager) names.push('Imager');
   return names;
+}
+
+
+/**
+ * The plugins a track starts with, taken from its instrument's chain.
+ *
+ * The rack is seeded rather than started empty so the chain the classifier
+ * chose is visible as plugins the moment the user looks at it — opening the
+ * inserts on a kick and finding nothing would suggest the kick chain does
+ * not exist, when it does.
+ */
+function seedInserts(role: StemRole): ModuleId[] {
+  const preset = STEM_CHAIN[role];
+  const ids = Object.keys(preset.modules) as ModuleId[];
+  if (preset.eqBands.length > 0) ids.push('parametric-eq');
+  return ids.filter((id) => MODULE_IDS.includes(id));
+}
+
+/** Read a track's rack out of its saved chain. */
+function readInserts(filePath: string, role: StemRole, ids: ModuleId[]): InsertState[] {
+  const saved = ensureStemChain(filePath, role);
+  return ids.map((id) => ({
+    id,
+    bypass: saved.state[id]?.bypass ?? true,
+    parameters: saved.state[id]?.parameters ?? {},
+  }));
+}
+
+/** Write one module's bypass and parameters back into a track's saved chain. */
+function writeInsert(
+  filePath: string,
+  role: StemRole,
+  id: ModuleId,
+  patch: { bypass?: boolean; parameters?: Record<string, ParameterValue> },
+): void {
+  const saved = ensureStemChain(filePath, role);
+  saveSongSettings({
+    ...saved,
+    state: {
+      ...saved.state,
+      [id]: {
+        ...saved.state[id],
+        ...(patch.bypass !== undefined ? { bypass: patch.bypass } : {}),
+        parameters: { ...saved.state[id].parameters, ...(patch.parameters ?? {}) },
+      },
+    },
+  });
 }
 
 // ── Ruler ────────────────────────────────────────────────────────────────────
@@ -151,8 +225,14 @@ export default function DawPage(): React.ReactElement {
     masterPresetId, masterTargetLufs,
     addFiles, clear, analyzePending, setRole, setGain, setPan,
     toggleMute, toggleSolo, remove, setRendering, setRenderResult,
-    setMasterPreset, setMasterTargetLufs,
+    setMasterPreset, setMasterTargetLufs, setInserts,
   } = useStemStore();
+
+  const { sizes, startDrag, dragging } = usePaneSizes();
+  const [dropActive, setDropActive] = useState(false);
+  const [openInsert, setOpenInsert] = useState<ModuleId | null>(null);
+  /** Bumped whenever a track's saved chain changes, to re-read the rack. */
+  const [rackTick, setRackTick] = useState(0);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -171,6 +251,49 @@ export default function DawPage(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tracks, customTick],
   );
+
+  const rackIds: ModuleId[] = useMemo(
+    () => (selected ? (selected.inserts ?? seedInserts(selected.role)) : []),
+    [selected],
+  );
+  const rack: InsertState[] = useMemo(
+    () => (selected ? readInserts(selected.filePath, selected.role, rackIds) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [selected, rackIds, rackTick],
+  );
+  const openModule = rack.find((i) => i.id === openInsert) ?? null;
+
+  const addPlugin = useCallback((id: ModuleId) => {
+    if (!selected) return;
+    const start = startingValues(id);
+    writeInsert(selected.filePath, selected.role, id, start);
+    setInserts(selected.id, [...rackIds.filter((m) => m !== id), id]);
+    setRackTick((n) => n + 1);
+  }, [selected, rackIds, setInserts]);
+
+  const removePlugin = useCallback((id: ModuleId) => {
+    if (!selected) return;
+    // Bypassed as well as delisted: the saved chain keeps a flag for every
+    // module, and leaving it engaged would keep processing a plugin the
+    // rack no longer shows.
+    writeInsert(selected.filePath, selected.role, id, { bypass: true });
+    setInserts(selected.id, rackIds.filter((m) => m !== id));
+    if (openInsert === id) setOpenInsert(null);
+    setRackTick((n) => n + 1);
+  }, [selected, rackIds, openInsert, setInserts]);
+
+  const togglePlugin = useCallback((id: ModuleId) => {
+    if (!selected) return;
+    const current = rack.find((i) => i.id === id);
+    writeInsert(selected.filePath, selected.role, id, { bypass: !(current?.bypass ?? true) });
+    setRackTick((n) => n + 1);
+  }, [selected, rack]);
+
+  const editParameter = useCallback((moduleId: ModuleId, parameterId: string, value: ParameterValue) => {
+    if (!selected) return;
+    writeInsert(selected.filePath, selected.role, moduleId, { parameters: { [parameterId]: value } });
+    setRackTick((n) => n + 1);
+  }, [selected]);
 
   // ── Analysis ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -213,7 +336,7 @@ export default function DawPage(): React.ReactElement {
   const [status, setStatus] = useState<PreviewStatus>({
     state: 'idle', position: 0, duration: 0, memoryBytes: 0, error: null,
   });
-  const [preparing, setPreparing] = useState(false);
+  const [preparing, setPreparing] = useState<{ done: number; total: number; name: string } | null>(null);
   const [baked, setBaked] = useState<Map<string, { path: string; channels: 1 | 2; samples: number }>>(new Map());
 
   useEffect(() => {
@@ -243,11 +366,12 @@ export default function DawPage(): React.ReactElement {
     const api = window.electronAPI;
     const engine = engineRef.current;
     if (!api || !engine || tracks.length === 0) return;
-    setPreparing(true);
+    setPreparing({ done: 0, total: tracks.length, name: tracks[0]?.name ?? '' });
     try {
       const next = new Map<string, { path: string; channels: 1 | 2; samples: number }>();
       const failures: string[] = [];
-      for (const t of tracks) {
+      for (const [i, t] of tracks.entries()) {
+        setPreparing({ done: i, total: tracks.length, name: t.name });
         const res = await api.invoke('stem:preview-render', {
           filePath: t.filePath,
           config: { ...baseConfig(), suiteConfig: resolveStemWire(t.filePath, t.role) },
@@ -269,8 +393,12 @@ export default function DawPage(): React.ReactElement {
         gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
       }));
       await engine.load(inputs);
+      // The user pressed play. Baking is the step in between, not the
+      // answer — finishing it silently and waiting for a second click is
+      // how a transport button feels broken.
+      if (engine.status().state === 'ready') engine.play();
     } finally {
-      setPreparing(false);
+      setPreparing(null);
     }
   }, [tracks, chainSignature, notify]);
 
@@ -327,12 +455,44 @@ export default function DawPage(): React.ReactElement {
   }, [tracks, masterPresetId, masterTargetLufs, setRendering, setRenderResult]);
 
   const playing = status.state === 'playing';
+  const bridgeMissing = typeof window !== 'undefined' && !window.electronAPI;
   const canPlay = status.state === 'ready' || playing;
   const playFrac = duration > 0 ? Math.min(1, status.position / duration) : 0;
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="h-full flex flex-col bg-zinc-950 text-zinc-300 overflow-hidden select-none">
+    <div
+      className="h-full flex flex-col bg-zinc-950 text-zinc-300 overflow-hidden select-none relative"
+      onDragOver={(e) => { e.preventDefault(); setDropActive(true); }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target) setDropActive(false); }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDropActive(false);
+        const paths = droppedPaths(e.dataTransfer?.files ?? null);
+        if (paths.length > 0) addFiles(paths);
+        else notify('이 항목에서는 파일 경로를 읽지 못했습니다 — 파인더에서 직접 끌어다 놓아 주세요.', 'warning');
+      }}
+      style={dragging ? { cursor: dragging === 'console' ? 'ns-resize' : 'ew-resize' } : undefined}
+    >
+      {dropActive && (
+        <div className="absolute inset-0 z-30 pointer-events-none border-2 border-dashed border-zinc-400/70
+                        bg-zinc-100/5 flex items-center justify-center">
+          <span className="text-[13px] text-zinc-200 bg-zinc-900/90 px-4 py-2 rounded">
+            놓으면 트랙으로 추가합니다
+          </span>
+        </div>
+      )}
+
+      {bridgeMissing && (
+        <div className="shrink-0 px-3 py-1.5 bg-red-950/70 border-b border-red-900 text-[11px] text-red-300">
+          앱 브릿지에 연결되지 않았습니다 — 분석·재생·믹스다운이 모두 동작하지 않습니다. 앱을 다시 시작해 주세요.
+        </div>
+      )}
+      {status.error && (
+        <div className="shrink-0 px-3 py-1.5 bg-amber-950/60 border-b border-amber-900/70 text-[11px] text-amber-300">
+          {status.error}
+        </div>
+      )}
 
       {/* ── Toolbar ───────────────────────────────────────────────────── */}
       <div className="drag-region shrink-0 h-11 flex items-center gap-2 px-3 border-b border-black/60 bg-zinc-900/70">
@@ -348,7 +508,7 @@ export default function DawPage(): React.ReactElement {
         <div className="no-drag flex items-center gap-1">
           <button
             onClick={() => (playing ? engineRef.current?.pause() : canPlay ? engineRef.current?.play() : void handlePrepare())}
-            disabled={preparing || status.state === 'loading' || tracks.length === 0}
+            disabled={preparing !== null || status.state === 'loading' || tracks.length === 0}
             className="w-9 h-7 rounded-sm border border-zinc-700 bg-zinc-800/80 hover:border-zinc-500
                        disabled:opacity-30 flex items-center justify-center transition-colors"
             title={canPlay ? (playing ? '일시정지' : '재생') : '미리듣기 준비'}
@@ -378,7 +538,14 @@ export default function DawPage(): React.ReactElement {
           </span>
         </div>
 
-        {preparing && <span className="no-drag text-[10px] text-amber-400">준비 중…</span>}
+        {preparing && (
+          <span className="no-drag text-[10px] text-amber-400 tabular-nums">
+            굽는 중 {preparing.done + 1}/{preparing.total} · {preparing.name}
+          </span>
+        )}
+        {!preparing && status.state === 'loading' && (
+          <span className="no-drag text-[10px] text-amber-400">불러오는 중…</span>
+        )}
         {stale && canPlay && (
           <button
             onClick={() => void handlePrepare()}
@@ -422,7 +589,10 @@ export default function DawPage(): React.ReactElement {
       <div className="flex-1 flex min-h-0">
 
         {/* Inspector */}
-        <div className="w-52 shrink-0 border-r border-black/60 bg-zinc-900/40 overflow-y-auto">
+        <div
+          className="shrink-0 border-r border-black/60 bg-zinc-900/40 overflow-y-auto"
+          style={{ width: sizes.inspector }}
+        >
           <div className="px-3 py-2 border-b border-black/40">
             <div className="text-[9px] uppercase tracking-widest text-zinc-600">Inspector</div>
           </div>
@@ -449,33 +619,39 @@ export default function DawPage(): React.ReactElement {
                 </select>
               </label>
 
-              <div>
-                <div className="text-[9px] uppercase tracking-widest text-zinc-600 mb-1">Inserts</div>
-                <div className="space-y-0.5">
-                  {insertsFor(selected.role).map((n) => (
-                    <div key={n} className="text-[10px] text-zinc-400 px-1.5 py-0.5 rounded-sm bg-zinc-950/70">{n}</div>
-                  ))}
-                  {insertsFor(selected.role).length === 0 && (
-                    <div className="text-[10px] text-zinc-700">—</div>
-                  )}
-                </div>
+              <InsertRack
+                inserts={rack}
+                openId={openInsert}
+                onOpen={setOpenInsert}
+                onAdd={addPlugin}
+                onRemove={removePlugin}
+                onToggleBypass={togglePlugin}
+              />
+
+              <button
+                onClick={() => openInStudio(selected)}
+                className="w-full text-[10px] py-1 rounded-sm border border-zinc-800 text-zinc-600
+                           hover:text-zinc-300 hover:border-zinc-600 transition-colors"
+                title="같은 체인을 큰 화면(그래프 포함)에서 편집합니다"
+              >
+                큰 화면에서 편집
+              </button>
+
+              {custom.has(selected.id) && (
                 <button
-                  onClick={() => openInStudio(selected)}
-                  className="mt-1.5 w-full text-[10px] py-1 rounded-sm border border-zinc-700
-                             hover:border-zinc-500 transition-colors"
+                  onClick={() => {
+                    resetStemChain(selected.filePath, selected.role);
+                    setInserts(selected.id, seedInserts(selected.role));
+                    setOpenInsert(null);
+                    setCustomTick((n) => n + 1);
+                    setRackTick((n) => n + 1);
+                  }}
+                  className="w-full text-[10px] py-1 rounded-sm border border-zinc-800 text-zinc-600
+                             hover:text-amber-400 transition-colors"
                 >
-                  {custom.has(selected.id) ? '스튜디오에서 이어서 편집' : '스튜디오에서 편집'}
+                  악기 기본값으로 초기화
                 </button>
-                {custom.has(selected.id) && (
-                  <button
-                    onClick={() => { resetStemChain(selected.filePath, selected.role); setCustomTick((n) => n + 1); }}
-                    className="mt-1 w-full text-[10px] py-1 rounded-sm border border-zinc-800 text-zinc-600
-                               hover:text-amber-400 transition-colors"
-                  >
-                    악기 기본값으로 초기화
-                  </button>
-                )}
-              </div>
+              )}
 
               <div>
                 <div className="text-[9px] uppercase tracking-widest text-zinc-600 mb-1">Why</div>
@@ -486,6 +662,12 @@ export default function DawPage(): React.ReactElement {
             </div>
           )}
         </div>
+
+        <div
+          onPointerDown={(e) => startDrag('inspector', e)}
+          className="w-1 shrink-0 cursor-ew-resize hover:bg-zinc-600/60 transition-colors"
+          title="드래그해서 인스펙터 너비를 조절합니다"
+        />
 
         {/* Arrange */}
         <div className="flex-1 flex flex-col min-w-0">
@@ -566,6 +748,44 @@ export default function DawPage(): React.ReactElement {
             </div>
           </div>
 
+          {/* The open plugin. A DAW opens a plugin in its own window; this
+              sits over the arrange area, which is the same idea without a
+              second window to lose behind the first. */}
+          {selected && openModule && (
+            <div className="shrink-0 max-h-[46%] overflow-y-auto border-t border-black/60 bg-zinc-900/95">
+              <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5
+                              border-b border-black/50 bg-zinc-900/95">
+                <span className="text-[11px] text-zinc-200">
+                  {moduleLabel(openModule.id)}
+                </span>
+                <span className="text-[10px] text-zinc-600 truncate">{selected.name}</span>
+                <div className="flex-1" />
+                <button
+                  onClick={() => togglePlugin(openModule.id)}
+                  className={`text-[10px] px-2 py-0.5 rounded-sm border transition-colors ${
+                    openModule.bypass
+                      ? 'border-zinc-700 text-zinc-500'
+                      : 'border-emerald-600/60 text-emerald-400'}`}
+                >
+                  {openModule.bypass ? '꺼짐' : '켜짐'}
+                </button>
+                <button
+                  onClick={() => setOpenInsert(null)}
+                  className="text-[11px] text-zinc-600 hover:text-zinc-200 px-1"
+                >✕</button>
+              </div>
+              <div className="px-3 py-2">
+                <ModuleParameterPanel
+                  moduleId={openModule.id}
+                  def={ALL_MODULE_PARAMETER_DEFS[openModule.id]}
+                  values={openModule.parameters}
+                  bypass={openModule.bypass}
+                  onChange={(pid, v) => editParameter(openModule.id, pid, v)}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Horizontal scroll — a viewport control, not an edit tool. */}
           {zoom > 1 && (
             <div className="shrink-0 h-5 flex items-center px-2 border-t border-black/60 bg-zinc-900/50">
@@ -580,8 +800,17 @@ export default function DawPage(): React.ReactElement {
           )}
         </div>
 
+        <div
+          onPointerDown={(e) => startDrag('rack', e)}
+          className="w-1 shrink-0 cursor-ew-resize hover:bg-zinc-600/60 transition-colors"
+          title="드래그해서 마스터 랙 너비를 조절합니다"
+        />
+
         {/* Rack — the master bus lives here, as a DAW's output section does. */}
-        <div className="w-56 shrink-0 border-l border-black/60 bg-zinc-900/40 overflow-y-auto">
+        <div
+          className="shrink-0 border-l border-black/60 bg-zinc-900/40 overflow-y-auto"
+          style={{ width: sizes.rack }}
+        >
           <div className="px-3 py-2 border-b border-black/40">
             <div className="text-[9px] uppercase tracking-widest text-zinc-600">Master Bus</div>
           </div>
@@ -664,7 +893,18 @@ export default function DawPage(): React.ReactElement {
       </div>
 
       {/* ── MixConsole ─────────────────────────────────────────────────── */}
-      <div className="shrink-0 h-64 border-t border-black/60 bg-zinc-950 flex flex-col">
+      <div
+        className="shrink-0 border-t border-black/60 bg-zinc-950 flex flex-col"
+        style={{ height: sizes.console }}
+      >
+        {/* Grab strip. Four pixels of target with a visible hairline — a
+            resize edge that cannot be found is the same as one that is not
+            there. */}
+        <div
+          onPointerDown={(e) => startDrag('console', e)}
+          className="shrink-0 h-1 -mt-1 cursor-ns-resize bg-transparent hover:bg-zinc-600/60 transition-colors"
+          title="드래그해서 믹스콘솔 높이를 조절합니다"
+        />
         <div className="shrink-0 h-6 flex items-center px-3 border-b border-black/50 bg-zinc-900/60">
           <span className="text-[9px] uppercase tracking-widest text-zinc-600">MixConsole</span>
           <span className="ml-3 text-[9px] text-zinc-700">

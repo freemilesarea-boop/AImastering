@@ -35,8 +35,15 @@ import TrackHeader from '../src/renderer/components/daw/TrackHeader.js';
 import MixerStrip, { faderPosition, faderDb } from '../src/renderer/components/daw/MixerStrip.js';
 import TrackWaveform from '../src/renderer/components/daw/TrackWaveform.js';
 import { trackColor, roleLabel } from '../src/renderer/components/daw/TrackColors.js';
+import InsertRack, {
+  addableModules, inEngineOrder, startingValues, TRACK_FORBIDDEN, ENGINE_ORDER,
+  type InsertState,
+} from '../src/renderer/components/daw/InsertRack.js';
+import { loadPaneSizes, PANE_LIMITS } from '../src/renderer/components/daw/usePaneSizes.js';
+import { MODULE_IDS } from '../src/renderer/audio/parameters/parameter-state.js';
 import type { StemTrackState } from '../src/renderer/stores/stemStore.js';
 import { STEM_ROLES } from '../src/renderer/audio/presets/stem-defaults.js';
+import { ALL_MODULE_PARAMETER_DEFS as ALL_PARAM_DEFS } from '../src/renderer/audio/parameters/module-parameter-definitions.js';
 
 // The store reads localStorage when it loads and the page reads `window`.
 // The store's own read is guarded, so a hoisted import is harmless; what
@@ -394,6 +401,134 @@ console.log('\n=== THE DAW SHELL ===\n');
     colors.size === 6,
     `${colors.size}가지 색 — 어레인지 창은 읽는 게 아니라 훑는 것`,
   );
+}
+
+// ── 5. The plugin rack ───────────────────────────────────────────────────────
+
+console.log('\n=== THE PLUGIN RACK ===\n');
+
+function ins(id: string, bypass = false): InsertState {
+  return { id: id as never, bypass, parameters: {} };
+}
+
+{
+  const out = html(React.createElement(InsertRack, {
+    inserts: [ins('dynamics'), ins('parametric-eq'), ins('deess', true)],
+    openId: null,
+    onOpen: () => {}, onAdd: () => {}, onRemove: () => {}, onToggleBypass: () => {},
+  }));
+  check(
+    'the rack lists what is on the channel and offers to add more',
+    out.includes('글루 컴프레서') && out.includes('치찰음 제거') && out.includes('+ 플러그인 추가'),
+    '기존 모듈이 그대로 플러그인으로 올라온다',
+  );
+  check(
+    'a bypassed plugin looks bypassed',
+    out.includes('line-through'),
+    '꺼진 것과 켜진 것을 눈으로 구별할 수 있다',
+  );
+}
+
+{
+  const out = html(React.createElement(InsertRack, {
+    inserts: [], openId: null,
+    onOpen: () => {}, onAdd: () => {}, onRemove: () => {}, onToggleBypass: () => {},
+  }));
+  check(
+    'an empty rack says it is empty rather than showing nothing',
+    out.includes('비어 있음'),
+    '빈 슬롯과 고장난 화면은 달라 보여야 한다',
+  );
+}
+
+{
+  const forbidden = addableModules([]).filter((m) => TRACK_FORBIDDEN.includes(m));
+  check(
+    'the picker never offers a master-only plugin on a track',
+    forbidden.length === 0,
+    '리미터·디더는 마스터 버스의 것 — 고를 수 있게 두면 조용히 버려지는 선택지가 된다',
+  );
+}
+
+{
+  const already = addableModules([ins('dynamics')]);
+  check(
+    'and never offers something already on the channel',
+    !already.includes('dynamics' as never) && already.length > 0,
+    `${already.length}개 추가 가능`,
+  );
+}
+
+{
+  const ordered = inEngineOrder([ins('imager'), ins('declick'), ins('dynamics'), ins('eq')]);
+  check(
+    'the rack lists plugins in the order the engine runs them',
+    JSON.stringify(ordered.map((i) => i.id)) === JSON.stringify(['declick', 'eq', 'dynamics', 'imager']),
+    `${ordered.map((i) => i.id).join(' → ')} — 복원 · 톤 · 다이나믹 · 스테레오`,
+  );
+}
+
+{
+  const missing = MODULE_IDS.filter((m) => !ENGINE_ORDER.includes(m));
+  check(
+    'every module has a place in that order',
+    missing.length === 0,
+    missing.length === 0
+      ? `${ENGINE_ORDER.length}개`
+      : `순서가 없는 모듈: ${missing.join(', ')} — 끝으로 밀려 위치를 속이게 된다`,
+  );
+}
+
+{
+  const start = startingValues('dynamics' as never);
+  const def = ALL_PARAM_DEFS.dynamics;
+  const bad = def.parameters.filter((p: { id: string }) => start.parameters[p.id] === undefined);
+  check(
+    'a newly added plugin arrives with every parameter set and switched on',
+    bad.length === 0 && start.bypass === false,
+    bad.length === 0
+      ? '추천값으로 시작하고 켜져 있다 — 이름을 지목해서 추가한 것을 꺼둔 채 주지 않는다'
+      : `값이 빠진 파라미터: ${bad.map((p: { id: string }) => p.id).join(', ')}`,
+  );
+}
+
+// ── 6. Resizable panes ───────────────────────────────────────────────────────
+
+console.log('\n=== PANES ===\n');
+
+{
+  const sizes = loadPaneSizes();
+  const inRange = (['inspector', 'rack', 'console'] as const).every((k) =>
+    sizes[k] >= PANE_LIMITS[k].min && sizes[k] <= PANE_LIMITS[k].max);
+  check(
+    'pane sizes start inside their limits',
+    inRange,
+    `인스펙터 ${sizes.inspector} · 랙 ${sizes.rack} · 콘솔 ${sizes.console}`,
+  );
+}
+
+{
+  localStorage.setItem('loui.daw.panes', JSON.stringify({ inspector: 2, rack: 9999, console: -5 }));
+  const sizes = loadPaneSizes();
+  check(
+    'a stored size outside the limits is clamped, not obeyed',
+    sizes.inspector === PANE_LIMITS.inspector.min &&
+    sizes.rack === PANE_LIMITS.rack.max &&
+    sizes.console === PANE_LIMITS.console.min,
+    `${sizes.inspector} / ${sizes.rack} / ${sizes.console} — 2픽셀짜리 패널은 사용자가 의도한 레이아웃이 아니다`,
+  );
+  localStorage.removeItem('loui.daw.panes');
+}
+
+{
+  localStorage.setItem('loui.daw.panes', 'not json at all');
+  const sizes = loadPaneSizes();
+  check(
+    'and corrupt storage falls back rather than throwing',
+    sizes.inspector === PANE_LIMITS.inspector.initial,
+    '저장된 레이아웃이 깨져도 창은 열린다',
+  );
+  localStorage.removeItem('loui.daw.panes');
 }
 
 console.log(`\n=== ${passed} passed, ${failed} failed ===`);
