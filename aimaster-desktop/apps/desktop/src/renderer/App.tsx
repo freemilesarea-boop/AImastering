@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from './stores/appStore.js';
 // License gate re-enabled (v3.6 — commercial release).
 import LicenseModal from './components/LicenseModal.js';
+import StemsPage from './pages/StemsPage.js';
 import { useLicenseStore } from './stores/licenseStore.js';
 import HomePage     from './pages/HomePage.js';
 import GuidedHome from './components/guided/GuidedHome.js';
@@ -326,7 +327,7 @@ function AppInner() {
     }
     // Mobile policy: never enter the Pro fine-tuning pages.  Bounce tweak
     // and the Studio rack to the result (if a master exists) or home.
-    if (isMobile && (page === 'tweak' || page === 'studio')) {
+    if (isMobile && (page === 'tweak' || page === 'studio' || page === 'stems')) {
       setPage(selectedFile && masteringResult?.outputPath ? 'result' : 'home');
     }
   }, [page, selectedFile, masteringResult, setPage, isMobile]);
@@ -361,12 +362,18 @@ function AppInner() {
   // is a normal way to work.  Mobile never reaches it (guard above).
   const studioSlot = isMobile ? homeEl : <StudioPage />;
 
+  // stems: the stem-session mixer.  Like the Studio it needs no file — the
+  // session brings its own — and like the Studio it is a desktop screen: a
+  // twelve-channel mixer does not fit a phone.
+  const stemsSlot = isMobile ? homeEl : <StemsPage />;
+
   const pages: Record<string, React.ReactNode> = {
     home:      homeEl,
     mastering: <MasteringPage />,
     result:    resultSlot,
     tweak:     tweakSlot,
     studio:    studioSlot,
+    stems:     stemsSlot,
     qc:        <QCPage />,
     settings:  <SettingsPage />,
   };

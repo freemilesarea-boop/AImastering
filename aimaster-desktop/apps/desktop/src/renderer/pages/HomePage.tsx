@@ -1010,7 +1010,20 @@ export default function HomePage() {
   // ── Render ────────────────────────────────────────────────────────────
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <TopBar />
+      <TopBar
+        actions={
+          // The stem session is its own workspace, not something you do to a
+          // queue item — a session brings its own files — so it is reached
+          // from the header rather than from a track's row menu.
+          <button
+            onClick={() => setPage('stems')}
+            className="text-xs text-zinc-600 hover:text-zinc-300 transition-colors"
+            title="파트별 파일을 불러와 악기마다 다른 체인으로 다듬고 하나로 합칩니다"
+          >
+            스템 세션
+          </button>
+        }
+      />
 
       {/* Official Loui preset browser — quick style selection (pre-master). */}
       <LouiPresetSlideOver

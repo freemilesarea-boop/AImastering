@@ -84,7 +84,7 @@ export async function decodeToFloatStereo(inputPath: string, sampleRate: number)
 }
 
 /** Encode interleaved f32le stereo → WAV at the target bit depth. */
-async function encodeWav(interleaved: Float32Array, sampleRate: number, bitDepth: 16 | 24, outputPath: string): Promise<void> {
+export async function encodeWav(interleaved: Float32Array, sampleRate: number, bitDepth: 16 | 24, outputPath: string): Promise<void> {
   const codec = bitDepth === 16 ? 'pcm_s16le' : 'pcm_s24le';
   const stdin = Buffer.from(interleaved.buffer, interleaved.byteOffset, interleaved.byteLength);
   await runFfmpeg([

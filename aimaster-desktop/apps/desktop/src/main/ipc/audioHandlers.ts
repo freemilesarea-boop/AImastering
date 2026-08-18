@@ -471,6 +471,106 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     }
   });
 
+  // ── Stem session ───────────────────────────────────────────────────────
+  // The stem session loads a mix as its parts and gives each part a chain
+  // built for that instrument. Two calls: work out what a stem IS, and
+  // render the whole session down to one file.
+
+  /**
+   * Measure a stem and say what instrument it is.
+   *
+   * The profile is returned alongside the verdict because the Studio needs
+   * it anyway (it drives the adaptive defaults), and profiling is the
+   * expensive part — doing it twice for the same file would double the
+   * import time of a twenty-stem session.
+   */
+  ipc.handle('stem:analyze', async (_e, filePath: unknown) => {
+    const safePath = validateAbsoluteFilePath(filePath, 'stem:analyze');
+    try {
+      const [{ profileSong }, { classifyStem }] = await Promise.all([
+        import('../offline/song-profile.js'),
+        import('../offline/stem-role.js'),
+      ]);
+      const profile = await profileSong(safePath);
+      const verdict = classifyStem(safePath, profile);
+      return { ok: true as const, ...verdict, profile };
+    } catch (err) {
+      // Returned, not thrown: one unreadable stem must not take down the
+      // import of the other nineteen. The caller files it as unclassified.
+      return { ok: false as const, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Render a stem session: every stem through its own chain, summed
+   * through the mixer, then the master bus.
+   *
+   * Every stem path is validated individually. The renderer sends a list
+   * that a user assembled, and a list is exactly the shape where one bad
+   * entry slips past a check written for a single path.
+   */
+  ipc.handle('stem:render', async (_e, req: {
+    tracks: Array<{
+      filePath: unknown; gainDb?: number; pan?: number;
+      mute?: boolean; solo?: boolean;
+      config?: import('../offline/load-mastering-chain-node.js').OfflineChainConfig | null;
+    }>;
+    master?: import('../offline/load-mastering-chain-node.js').OfflineChainConfig | null;
+    sampleRate?: number;
+    bitDepth?: 16 | 24;
+    requestId?: string;
+  }) => {
+    assertTmpWritable();
+    const t0 = Date.now();
+    try {
+      if (!Array.isArray(req?.tracks) || req.tracks.length === 0) {
+        throw new Error('스템이 없습니다.');
+      }
+      const tracks = req.tracks.map((t, i) => ({
+        filePath: validateAbsoluteFilePath(t.filePath, `stem:render[${i}]`),
+        gainDb: typeof t.gainDb === 'number' ? t.gainDb : 0,
+        pan: typeof t.pan === 'number' ? t.pan : 0,
+        mute: t.mute === true,
+        solo: t.solo === true,
+        config: t.config ?? null,
+      }));
+
+      const sampleRate = req.sampleRate === 44100 ? 44100 : 48000;
+      const bitDepth = req.bitDepth === 16 ? 16 : 24;
+
+      const [{ renderStemSession }, { encodeWav }] = await Promise.all([
+        import('../offline/stem-render.js'),
+        import('../offline/process-audio-file-rust.js'),
+      ]);
+
+      const result = await renderStemSession(tracks, {
+        sampleRate,
+        master: req.master ?? null,
+      });
+
+      // Interleave for the encoder.
+      const n = result.left.length;
+      const interleaved = new Float32Array(n * 2);
+      for (let i = 0; i < n; i++) {
+        interleaved[i * 2] = result.left[i]!;
+        interleaved[i * 2 + 1] = result.right[i]!;
+      }
+
+      const outputPath = internalTempPath('_stem_mix.wav');
+      await encodeWav(interleaved, sampleRate, bitDepth, outputPath);
+
+      return {
+        requestId: req.requestId, ok: true as const,
+        outputPath, report: result.report, renderMs: Date.now() - t0,
+      };
+    } catch (err) {
+      return {
+        requestId: req.requestId, ok: false as const,
+        error: (err as Error).message, renderMs: Date.now() - t0,
+      };
+    }
+  });
+
   ipc.handle('audio:qc', async (_e, filePath: unknown, targetLufs: number, targetTp: number) => {
     const safePath = validateAbsoluteFilePath(filePath, 'audio:qc');
     try {
