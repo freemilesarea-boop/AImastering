@@ -182,6 +182,32 @@ export function applyChainConfigForRender(
   return { usedSuiteConfig: false };
 }
 
+/**
+ * Add gain to a config's INPUT stage, wherever that config keeps it.
+ *
+ * A config has two input-gain fields and only one of them is ever read.
+ * `applyChainConfigForRender` prefers `suiteConfig`: when it is present the
+ * whole JSON goes to the engine and the flat fields are never looked at
+ * again. So adding a loudness correction to the flat `inputGainDb` of a
+ * suite-configured render is a no-op — the second pass renders at exactly
+ * the level of the first, the render reports the gain it "applied", and the
+ * file misses the target by however much was asked for.
+ *
+ * That is not hypothetical. The app's export path sends `suiteConfig`, so
+ * every loudness-normalised master went out with the correction silently
+ * discarded until this was fixed.
+ */
+export function withInputGain(config: OfflineChainConfig, addDb: number): OfflineChainConfig {
+  if (config.suiteConfig) {
+    const suite = config.suiteConfig as { inputGainDb?: number };
+    return {
+      ...config,
+      suiteConfig: { ...suite, inputGainDb: (suite.inputGainDb ?? 0) + addDb },
+    };
+  }
+  return { ...config, inputGainDb: config.inputGainDb + addDb };
+}
+
 /** Apply a flat config to a chain (spreads the 22 args in setConfig order).
  *  Also applies the optional free parametric EQ band list. */
 export function applyOfflineConfig(chain: WasmMasteringChain, c: OfflineChainConfig): void {

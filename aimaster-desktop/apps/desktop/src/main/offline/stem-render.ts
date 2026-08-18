@@ -42,7 +42,7 @@
 // how many stems there are.
 
 import {
-  createOfflineChain, applyChainConfigForRender,
+  createOfflineChain, applyChainConfigForRender, withInputGain,
   type OfflineChainConfig, type WasmMasteringChain,
 } from './load-mastering-chain-node.js';
 import { decodeToFloatStereo, deinterleaveStereo } from './process-audio-file-rust.js';
@@ -228,32 +228,6 @@ export function chainLatency(config: OfflineChainConfig | null, sampleRate: numb
   } finally {
     chain?.free?.();
   }
-}
-
-/**
- * Add gain to a config's INPUT stage, wherever that config keeps it.
- *
- * This exists because a config has two input-gain fields and only one of
- * them is ever read. `applyChainConfigForRender` prefers `suiteConfig` and,
- * when it is present, hands the whole JSON to the engine and never looks at
- * the flat fields again. So adding the loudness correction to the flat
- * `inputGainDb` of a suite-configured master is a no-op: the second pass
- * renders at exactly the level of the first, the render reports the gain it
- * "applied", and the file misses the target by however much was asked for.
- *
- * That is not hypothetical — it is what the first version of the master bus
- * did, and the loudness test caught it: 12 dB of correction, zero change in
- * the file.
- */
-function withInputGain(config: OfflineChainConfig, addDb: number): OfflineChainConfig {
-  if (config.suiteConfig) {
-    const suite = config.suiteConfig as { inputGainDb?: number };
-    return {
-      ...config,
-      suiteConfig: { ...suite, inputGainDb: (suite.inputGainDb ?? 0) + addDb },
-    } as OfflineChainConfig;
-  }
-  return { ...config, inputGainDb: config.inputGainDb + addDb };
 }
 
 /**
