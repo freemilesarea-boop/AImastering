@@ -16,6 +16,7 @@ const INVOKE_CHANNELS = [
   // Source measurement that drives the per-song recommended settings.
   'audio:song-profile',
   'stem:analyze',
+  'diag:breadcrumb',
   'stem:peaks',
   'stem:preview-render',
   'stem:preview-clear',

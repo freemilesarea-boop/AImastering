@@ -10,7 +10,7 @@ import { registerLicenseHandlers, licenseService } from './ipc/licenseHandlers.j
 import { registerEntitlementHandlers } from './ipc/entitlementHandlers.js';
 import { isLicenseSecretProductionReady, LICENSE_API_URL } from '@aimaster/license-core';
 import { initUpdater } from './updater.js';
-import { log } from './utils/logger.js';
+import { log, logFilePath } from './utils/logger.js';
 import { recordFailure } from './utils/failureLog.js';
 import { localUrlToFsPath } from './utils/localFileUrl.js';
 import { parseRangeHeader, contentTypeForPath } from './utils/localFileResponse.js';
@@ -86,7 +86,9 @@ function createWindow(): void {
         '화면이 종료되었습니다',
         `렌더러 프로세스가 예기치 않게 종료되었습니다.\n\n` +
         `원인: ${details.reason}\n종료 코드: ${details.exitCode}\n\n` +
-        `창을 닫았다가 다시 실행해 주세요. 반복되면 이 내용을 그대로 알려주시면 원인을 좁힐 수 있습니다.`,
+        `창을 닫았다가 다시 실행해 주세요.\n\n` +
+        `직전까지 무엇을 하고 있었는지는 로그에 남아 있습니다:\n${logFilePath()}\n` +
+        `그 파일 마지막의 [breadcrumb] 줄들을 알려주시면 원인을 정확히 좁힐 수 있습니다.`,
       );
     } catch { /* a dialog failure must not mask the crash */ }
   });

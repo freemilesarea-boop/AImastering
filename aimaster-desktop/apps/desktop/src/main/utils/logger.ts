@@ -14,6 +14,16 @@ function logDir(): string {
   }
 }
 
+/**
+ * Where today's log is.
+ *
+ * Exported so a crash dialog can point at it. A user told "check the log"
+ * and not told where it is has been told nothing.
+ */
+export function logFilePath(): string {
+  return logFile();
+}
+
 function logFile(): string {
   const dir = logDir();
   fs.mkdirSync(dir, { recursive: true });

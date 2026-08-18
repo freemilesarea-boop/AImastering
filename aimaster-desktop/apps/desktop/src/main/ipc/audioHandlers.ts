@@ -529,6 +529,27 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
     }
   });
 
+  /**
+   * A breadcrumb from the renderer, written to the main log immediately.
+   *
+   * The renderer's own console dies with it. A native crash — SIGSEGV in the
+   * audio thread, say — leaves no exception, no stack and an empty window,
+   * so the only way to learn WHERE it happened is to have said so from the
+   * other process before it did. `log.info` writes synchronously to the file,
+   * so the last line before the silence is the last step that completed.
+   *
+   * Deliberately not rate-limited or batched: batching would lose exactly
+   * the final entry, which is the only one that matters.
+   */
+  ipc.handle('diag:breadcrumb', (_e, step: unknown, detail: unknown) => {
+    const s = typeof step === 'string' ? step.slice(0, 120) : 'unknown';
+    const d = detail === undefined ? undefined
+      : typeof detail === 'string' ? detail.slice(0, 400)
+      : JSON.stringify(detail).slice(0, 400);
+    log.info(`[breadcrumb] ${s}`, d);
+    return { ok: true as const };
+  });
+
   /** Peaks for the arrange window's waveform. Decoded once, cached. */
   ipc.handle('stem:peaks', async (_e, filePath: unknown) => {
     const safePath = validateAbsoluteFilePath(filePath, 'stem:peaks');

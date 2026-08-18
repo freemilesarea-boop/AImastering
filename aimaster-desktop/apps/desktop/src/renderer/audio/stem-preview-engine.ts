@@ -86,6 +86,47 @@ export interface PreviewStatus {
   error: string | null;
 }
 
+/**
+ * Tell the main process what we are about to do.
+ *
+ * Fire-and-forget, and never awaited: the point is that the line is already
+ * in the log file when the step after it kills the process. Awaiting would
+ * make the breadcrumb depend on the very thread that is about to die.
+ */
+function crumb(step: string, detail?: unknown): void {
+  try {
+    void (window as { electronAPI?: { invoke: (c: string, ...a: unknown[]) => Promise<unknown> } })
+      .electronAPI?.invoke('diag:breadcrumb', step, detail);
+  } catch { /* diagnostics must never be the thing that breaks */ }
+}
+
+/**
+ * One AudioContext for the whole app, created once and never closed.
+ *
+ * Two reasons, both learned the hard way elsewhere in this codebase (see
+ * `shared-audio-graph`, which holds the same rule for the same cause).
+ *
+ * **Closing is dangerous.** `close()` on a context that still owns
+ * AudioWorkletNodes tears down the audio thread while a WASM instance is
+ * live in it, and Chromium does not always survive that. The renderer dies
+ * natively — no exception, no stack, an empty window.
+ *
+ * **Creating is limited.** A page may hold only a handful of contexts. React
+ * StrictMode mounts, unmounts and remounts every component in development,
+ * so a context owned by a component's lifetime is created twice on the first
+ * visit and once more on every return — and the ones left behind are never
+ * collected while their nodes exist.
+ *
+ * So the context outlives every engine. Tearing an engine down disconnects
+ * its nodes and leaves the context alone.
+ */
+let sharedContext: AudioContext | null = null;
+
+function sharedAudioContext(): AudioContext {
+  if (!sharedContext) sharedContext = new AudioContext();
+  return sharedContext;
+}
+
 /** Fader moves ramp over this, so a drag does not click. */
 const RAMP_MS = 25;
 
@@ -202,10 +243,14 @@ export class StemPreviewEngine {
 
       for (const stem of stems) {
         if (this.buffers.has(stem.previewPath)) continue;
+        crumb('fetch:start', stem.previewPath);
         const res = await fetch(toLocalUrl(stem.previewPath));
         if (!res.ok) throw new Error(`미리듣기 파일을 읽지 못했습니다: ${stem.previewPath}`);
         const bytes = await res.arrayBuffer();
-        this.buffers.set(stem.previewPath, await ctx.decodeAudioData(bytes));
+        crumb('decode:start', { path: stem.previewPath, bytes: bytes.byteLength });
+        const decoded = await ctx.decodeAudioData(bytes);
+        crumb('decode:done', { ch: decoded.numberOfChannels, len: decoded.length });
+        this.buffers.set(stem.previewPath, decoded);
       }
 
       this.stems = stems;
@@ -214,10 +259,15 @@ export class StemPreviewEngine {
         return b ? Math.max(max, b.duration) : max;
       }, 0);
 
+      crumb('worklet:ensure');
       await this.ensureWorklet(ctx);
+      crumb('worklet:ready', { live: this.liveChainsWanted, module: this.wasmModule !== null });
       this.rebuildStrips();
+      crumb('strips:built', { strips: this.strips.size, chains: this.chains.size });
       this.applyChains();
+      crumb('chains:configured');
       this.applyGains(0);
+      crumb('load:done');
       this.pausedAt = Math.min(this.pausedAt, this.duration);
       this.state = 'ready';
     } catch (err) {
@@ -265,6 +315,7 @@ export class StemPreviewEngine {
       this.sources.set(stem.id, src);
     }
 
+    crumb('play:started', { sources: this.sources.size, chains: this.chains.size, offset });
     this.startedAt = when - offset;
     this.state = 'playing';
     this.emit();
@@ -316,14 +367,29 @@ export class StemPreviewEngine {
     this.strips.clear();
   }
 
-  /** Release everything, including the decoded buffers. */
+  /**
+   * Release this engine's nodes and buffers.
+   *
+   * The context is deliberately left open — see `sharedAudioContext`. The
+   * master gain is disconnected so a disposed engine cannot keep feeding the
+   * speakers, which is the only part of it that outlives the engine.
+   */
   dispose(): void {
+    crumb('engine:dispose');
     this.teardownGraph();
+    if (this.spareNode) {
+      try { this.spareNode.disconnect(); } catch { /* already detached */ }
+      this.spareNode = null;
+    }
+    if (this.master) {
+      try { this.master.disconnect(); } catch { /* already detached */ }
+      this.master = null;
+    }
     this.buffers.clear();
     this.stems = [];
     this.duration = 0;
     this.state = 'idle';
-    if (this.ctx) { void this.ctx.close(); this.ctx = null; this.master = null; }
+    this.ctx = null;
     this.emit();
   }
 
@@ -331,7 +397,7 @@ export class StemPreviewEngine {
 
   private ensureContext(): AudioContext {
     if (this.ctx) return this.ctx;
-    const ctx = new AudioContext();
+    const ctx = sharedAudioContext();
     const master = ctx.createGain();
     master.gain.value = 1;
     master.connect(ctx.destination);
@@ -394,10 +460,12 @@ export class StemPreviewEngine {
       for (const stem of this.stems.slice(0, MAX_LIVE_CHAINS)) {
         const strip = this.strips.get(stem.id);
         if (!strip) continue;
+        crumb('chain:create', stem.id);
         const node = this.spareNode ?? createChainNode(ctx, this.wasmModule, ctx.sampleRate, 2);
         this.spareNode = null;
         node.connect(strip.input);
         this.chains.set(stem.id, node);
+        crumb('chain:connected', stem.id);
       }
       this.chainsDegraded = this.stems.length > MAX_LIVE_CHAINS
         ? `트랙이 ${this.stems.length}개라 앞의 ${MAX_LIVE_CHAINS}개에만 플러그인을 실시간으로 걸었습니다. ` +
