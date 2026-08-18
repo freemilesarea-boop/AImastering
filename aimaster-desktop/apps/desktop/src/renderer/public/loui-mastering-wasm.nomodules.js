@@ -1239,8 +1239,28 @@ let wasm_bindgen = (function(exports) {
 // processor's constructor calls this with the WebAssembly.Module compiled
 // on the main thread (the audio thread cannot fetch / await).
 globalThis.__loui_wasm_bindgen = wasm_bindgen;
+
+// The module is instantiated ONCE per worklet global scope; every chain
+// after the first is built from that same instance.
+//
+// `initSync` does not just wire imports — it creates a new
+// WebAssembly.Instance and rebinds the glue's module-scoped `wasm` to it.
+// Calling it a second time therefore replaces the linear memory that every
+// chain already handed out pointers into, and the next `processStereo` on an
+// older chain dereferences an address that now means something else. The
+// renderer dies with SIGSEGV (exit code 11), which is what happened the
+// moment a session ran one chain per track: the loader constructs one node
+// to prove the processor registered, and the first per-track node was
+// already the second instantiation.
+//
+// One instance, many chains, is also what the Rust side expects — a
+// `LouiMasteringChain` owns its own state and nothing is shared between
+// them except the module's code.
+var __loui_wasm_ready = false;
 globalThis.__loui_init_mastering = function (wasmModule, sr) {
-  // initSync wires the imports + instantiates synchronously.
-  wasm_bindgen.initSync({ module: wasmModule });
+  if (!__loui_wasm_ready) {
+    wasm_bindgen.initSync({ module: wasmModule });
+    __loui_wasm_ready = true;
+  }
   return new wasm_bindgen.LouiMasteringChain(sr);
 };

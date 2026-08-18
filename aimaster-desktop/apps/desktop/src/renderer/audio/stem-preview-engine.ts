@@ -115,6 +115,14 @@ export class StemPreviewEngine {
   private sources = new Map<string, AudioBufferSourceNode>();
   private chains = new Map<string, AudioWorkletNode>();
   private wasmModule: WebAssembly.Module | null = null;
+  /**
+   * The node the loader builds while proving the processor registered.
+   *
+   * Kept and used as the first track's chain rather than discarded: every
+   * node owns a chain in the worklet's memory, and throwing one away leaks
+   * it for the life of the context.
+   */
+  private spareNode: AudioWorkletNode | null = null;
   private chainsDegraded: string | null = null;
   private liveChainsWanted = true;
   private stems: PreviewStemInput[] = [];
@@ -344,9 +352,7 @@ export class StemPreviewEngine {
     try {
       const loaded = await loadMasteringWorklet(ctx, { sampleRate: ctx.sampleRate });
       this.wasmModule = loaded.wasmModule;
-      // The node the loader built is not used — this engine makes one per
-      // track — but constructing it is what proves the processor registered.
-      loaded.node.disconnect();
+      this.spareNode = loaded.node;
       this.chainsDegraded = null;
     } catch (err) {
       this.wasmModule = null;
@@ -388,7 +394,8 @@ export class StemPreviewEngine {
       for (const stem of this.stems.slice(0, MAX_LIVE_CHAINS)) {
         const strip = this.strips.get(stem.id);
         if (!strip) continue;
-        const node = createChainNode(ctx, this.wasmModule, ctx.sampleRate, 2);
+        const node = this.spareNode ?? createChainNode(ctx, this.wasmModule, ctx.sampleRate, 2);
+        this.spareNode = null;
         node.connect(strip.input);
         this.chains.set(stem.id, node);
       }
