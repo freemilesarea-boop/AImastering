@@ -126,6 +126,10 @@ function paramModuleFor(registryId: string): ModuleId | undefined {
 export default function StudioPage() {
   const setPage = useAppStore((s) => s.setPage);
   const notify = useAppStore((s) => s.notify);
+  // The Studio is reached from a queue row and from a stem in the stem
+  // session; "back" has to mean the screen the user actually came from.
+  const returnTo = useAppStore((s) => s.studioReturnTo);
+  const setStudioReturnTo = useAppStore((s) => s.setStudioReturnTo);
   const selectedFile = useAudioStore((s) => s.selectedFile);
   const refreshStudioSaved = useAudioStore((s) => s.refreshStudioSaved);
 
@@ -732,7 +736,16 @@ export default function StudioPage() {
             </>
           )}
           <HeaderButton label="Reset all" onClick={resetAll} />
-          <HeaderButton label="Back" onClick={() => setPage('home')} />
+          <HeaderButton
+            label={returnTo === 'stems' ? '스템 세션으로' : 'Back'}
+            onClick={() => {
+              const dest = returnTo ?? 'home';
+              // Cleared on the way out, or a later visit from the queue
+              // would still bounce the user into the stem mixer.
+              setStudioReturnTo(null);
+              setPage(dest);
+            }}
+          />
         </div>
       </header>
 

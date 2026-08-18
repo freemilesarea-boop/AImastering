@@ -10,7 +10,16 @@ interface Notification {
 interface AppStore {
   currentPage: Page;
   notification: Notification | null;
+  /**
+   * Where the Studio's back button should go.
+   *
+   * The Studio is reached from two places now — a queue row, and a stem in
+   * the stem session — and "back" means a different screen for each. Null is
+   * the original behaviour (home / the result page).
+   */
+  studioReturnTo: Page | null;
   setPage: (page: Page) => void;
+  setStudioReturnTo: (page: Page | null) => void;
   notify: (message: string, type?: Notification['type']) => void;
 }
 
@@ -30,6 +39,7 @@ if (typeof window !== 'undefined') {
 export const useAppStore = create<AppStore>((set) => ({
   currentPage:  'home',
   notification: null,
+  studioReturnTo: null,
 
   setPage: (page) => {
     if (page === 'result' && !_userHasInteracted) {
@@ -43,6 +53,8 @@ export const useAppStore = create<AppStore>((set) => ({
     }
     set({ currentPage: page });
   },
+
+  setStudioReturnTo: (page) => set({ studioReturnTo: page }),
 
   notify: (message, type = 'info') => {
     set({ notification: { message, type } });

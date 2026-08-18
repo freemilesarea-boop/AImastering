@@ -29,8 +29,11 @@ import {
   type StemTrackState,
 } from '../stores/stemStore.js';
 import { STEM_ROLES, type StemRole } from '../audio/presets/stem-defaults.js';
-import { stemWireFor } from '../audio/presets/stem-chain-config.js';
 import { masterBusChoices, masterWireFor } from '../audio/presets/stem-master.js';
+import {
+  ensureStemChain, resetStemChain, hasStemChain, resolveStemWire,
+} from '../audio/presets/stem-studio.js';
+import { useAudioStore } from '../stores/audioStore.js';
 
 const ROLE_LABEL: Record<StemRole, string> = {
   kick: '킥', snare: '스네어', drums: '드럼/퍼커션', bass: '베이스',
@@ -67,7 +70,15 @@ function statusDot(t: StemTrackState): { cls: string; title: string } {
 
 // ── One channel strip ────────────────────────────────────────────────────────
 
-function StemRow({ track, audible }: { track: StemTrackState; audible: boolean }): React.ReactElement {
+function StemRow({
+  track, audible, onEdit, onReset, custom,
+}: {
+  track: StemTrackState;
+  audible: boolean;
+  custom: boolean;
+  onEdit: (t: StemTrackState) => void;
+  onReset: (t: StemTrackState) => void;
+}): React.ReactElement {
   const { setRole, setGain, setPan, toggleMute, toggleSolo, remove } = useStemStore();
   const dot = statusDot(track);
 
@@ -141,6 +152,31 @@ function StemRow({ track, audible }: { track: StemTrackState; audible: boolean }
         >S</button>
 
         <button
+          onClick={() => onEdit(track)}
+          className={`text-[11px] px-2 py-1 rounded border shrink-0 transition-colors ${
+            custom
+              ? 'border-sky-500/50 text-sky-300 hover:border-sky-400'
+              : 'border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
+          }`}
+          title={custom
+            ? '이 스템은 직접 편집한 체인을 씁니다 — 스튜디오에서 이어서 수정합니다'
+            : '스튜디오에서 이 스템만 따로 다듬습니다 (악기 기본 체인에서 시작)'}
+        >
+          {custom ? '편집됨' : '편집'}
+        </button>
+
+        {custom && (
+          <button
+            onClick={() => onReset(track)}
+            className="text-[11px] px-2 py-1 rounded border border-zinc-800 text-zinc-600
+                       hover:text-amber-400 shrink-0 transition-colors"
+            title="직접 편집한 체인을 버리고 악기 기본값으로 되돌립니다"
+          >
+            초기화
+          </button>
+        )}
+
+        <button
           onClick={() => remove(track.id)}
           className="w-6 h-6 text-zinc-600 hover:text-red-400 transition-colors shrink-0"
           title="세션에서 제거"
@@ -153,6 +189,10 @@ function StemRow({ track, audible }: { track: StemTrackState; audible: boolean }
         <p className="mt-1.5 ml-5 text-[11px] text-amber-400/90 leading-snug">⚠ {track.warning}</p>
       ) : track.status === 'error' ? (
         <p className="mt-1.5 ml-5 text-[11px] text-red-400/90 leading-snug">{track.error}</p>
+      ) : custom ? (
+        <p className="mt-1.5 ml-5 text-[11px] text-sky-400/80 leading-snug">
+          직접 편집한 체인을 사용합니다 — 악기를 바꿔도 이 체인은 유지됩니다. 악기 기본값으로 돌아가려면 초기화를 누르세요.
+        </p>
       ) : (
         <p className="mt-1.5 ml-5 text-[11px] text-zinc-600 leading-snug">{track.why}</p>
       )}
@@ -231,6 +271,9 @@ function MasterBus(): React.ReactElement {
 
 export default function StemsPage(): React.ReactElement {
   const setPage = useAppStore((s) => s.setPage);
+  const notify = useAppStore((s) => s.notify);
+  const setStudioReturnTo = useAppStore((s) => s.setStudioReturnTo);
+  const setFile = useAudioStore((s) => s.setFile);
   const {
     tracks, rendering, lastReport, lastOutputPath, renderError,
     masterPresetId, masterTargetLufs,
@@ -240,6 +283,44 @@ export default function StemsPage(): React.ReactElement {
   const audible = useMemo(() => audibleFlags(tracks), [tracks]);
   const pending = pendingCount(tracks);
   const attention = needsAttention(tracks);
+
+  /**
+   * Which stems carry a chain of their own.
+   *
+   * Read from storage rather than held in the store, because the Studio
+   * writes it and the Studio knows nothing about stems. `customTick` is
+   * bumped on return so the row updates after an edit — there is no event
+   * to subscribe to across a page change.
+   */
+  const [customTick, setCustomTick] = React.useState(0);
+  const custom = useMemo(
+    () => new Set(tracks.filter((t) => hasStemChain(t.filePath)).map((t) => t.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tracks, customTick],
+  );
+
+  // The mixer is remounted when the user comes back from the Studio, but a
+  // remount is not guaranteed — recheck on focus so an edit always shows.
+  useEffect(() => {
+    const bump = (): void => setCustomTick((n) => n + 1);
+    window.addEventListener('focus', bump);
+    return () => window.removeEventListener('focus', bump);
+  }, []);
+
+  const handleEdit = useCallback((t: StemTrackState) => {
+    // Seed the instrument's chain on the first visit, so the Studio opens
+    // on the kick chain the classifier chose rather than on a blank rack.
+    ensureStemChain(t.filePath, t.role);
+    setFile(t.filePath);
+    setStudioReturnTo('stems');
+    setPage('studio');
+  }, [setFile, setStudioReturnTo, setPage]);
+
+  const handleResetChain = useCallback((t: StemTrackState) => {
+    resetStemChain(t.filePath, t.role);
+    setCustomTick((n) => n + 1);
+    notify(`${t.name} — 악기 기본 체인으로 되돌렸습니다`, 'info');
+  }, [notify]);
 
   // Analyse whatever has just been added. Runs on mount too, so a session
   // restored from a previous run is re-measured rather than shown with a
@@ -275,7 +356,9 @@ export default function StemsPage(): React.ReactElement {
           pan: t.pan,
           mute: t.mute,
           solo: t.solo,
-          config: { ...baseConfig(), suiteConfig: stemWireFor(t.role) },
+          // The stem's own chain when it has been edited, the instrument
+          // default when it has not.
+          config: { ...baseConfig(), suiteConfig: resolveStemWire(t.filePath, t.role) },
         })),
         master: master
           ? { ...baseConfig(), limCeilingDbtp: master.ceilingDbtp, suiteConfig: master.wire }
@@ -367,7 +450,16 @@ export default function StemsPage(): React.ReactElement {
             </p>
           </div>
         ) : (
-          tracks.map((t, i) => <StemRow key={t.id} track={t} audible={audible[i] ?? true} />)
+          tracks.map((t, i) => (
+            <StemRow
+              key={t.id}
+              track={t}
+              audible={audible[i] ?? true}
+              custom={custom.has(t.id)}
+              onEdit={handleEdit}
+              onReset={handleResetChain}
+            />
+          ))
         )}
       </div>
 
