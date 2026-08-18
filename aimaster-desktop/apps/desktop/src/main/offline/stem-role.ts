@@ -45,6 +45,20 @@ export type StemRole =
   | 'mid'        // a harmonic mid instrument the spectrum cannot name
   | 'other';     // nothing usable from either source
 
+/**
+ * Every role, in one list.
+ *
+ * The renderer declares the same union in `presets/stem-defaults.ts` — the
+ * two sides of the IPC boundary cannot import each other. `stem-defaults-
+ * selftest` compares these two lists so a role added on one side and not
+ * the other fails a test instead of silently having no chain.
+ */
+export const STEM_ROLES: readonly StemRole[] = [
+  'kick', 'snare', 'drums', 'bass',
+  'vocal', 'vocal-back', 'guitar', 'keys',
+  'fx', 'mid', 'other',
+] as const;
+
 /** Where the decision came from. */
 export type RoleBasis = 'name' | 'spectrum' | 'name+spectrum';
 
