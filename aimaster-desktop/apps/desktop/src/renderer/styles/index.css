@@ -97,3 +97,97 @@
   background: #a1a1aa;
   border: 1px solid #18181b;
 }
+
+/* ── Light workspace ───────────────────────────────────────────────────────
+ *
+ * The DAW is a white room. Everything else in the app is charcoal, and the
+ * plugin views inside the DAW's insert panel are the SAME components the
+ * charcoal Studio draws — they inline `surface.*` and `text.*` from
+ * `theme/loui-theme`, which are CSS variables with the charcoal values as
+ * fallbacks.
+ *
+ * So re-skinning them is a matter of setting those variables on the DAW's
+ * root element. No component needs to know a theme exists, and nothing
+ * outside this subtree changes.
+ *
+ * The ladder is inverted but not flattened: background < panel < well <
+ * overlay still steps, so panels keep reading as layered rather than as one
+ * white sheet. Text is alpha-on-white for the same reason it was
+ * alpha-on-charcoal — emphasis as hierarchy, not as pure black.
+ */
+[data-loui-theme='light'] {
+  --loui-surface-background: #ffffff;
+  --loui-surface-panel: #f8fafc;
+  --loui-surface-well: #f1f5f9;
+  --loui-surface-overlay: #e8edf3;
+  --loui-surface-border: rgba(15, 23, 42, 0.10);
+  --loui-surface-border-elevated: rgba(15, 23, 42, 0.18);
+
+  --loui-text-primary: rgba(15, 23, 42, 0.94);
+  --loui-text-secondary: rgba(15, 23, 42, 0.74);
+  --loui-text-tertiary: rgba(15, 23, 42, 0.58);
+  --loui-text-muted: rgba(15, 23, 42, 0.45);
+  --loui-text-disabled: rgba(15, 23, 42, 0.32);
+}
+
+/* The console controls, on the light workspace.
+ *
+ * A dark cap on a dark strip reads as a fader; the same cap on a white one
+ * reads as a hole. So the ladder is inverted here too — a pale brushed cap
+ * with a dark edge — and the track it slides in becomes a visible groove
+ * rather than a transparent gap. */
+[data-loui-theme='light'] .daw-fader::-webkit-slider-thumb {
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 45%, #cbd5e1 55%, #94a3b8 100%);
+  border: 1px solid #64748b;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+[data-loui-theme='light'] .daw-fader:focus-visible::-webkit-slider-thumb {
+  border-color: #2563eb;
+}
+[data-loui-theme='light'] .daw-mini {
+  background: rgba(15, 23, 42, 0.18);
+}
+[data-loui-theme='light'] .daw-mini::-webkit-slider-thumb {
+  background: #ffffff;
+  border: 1px solid #64748b;
+}
+
+/* Chart and meter accents on the light workspace.
+ *
+ * The charcoal scale is tuned to glow on #13131A: the signature violet sits
+ * at 1.9:1 on white, which is a curve you have to hunt for. Same meanings,
+ * one step darker — a warning is still amber, danger is still red. */
+[data-loui-theme='light'] {
+  --loui-meter-safe: #059669;
+  --loui-meter-safe-bg: rgba(5, 150, 105, 0.14);
+  --loui-meter-warn: #b45309;
+  --loui-meter-warn-bg: rgba(180, 83, 9, 0.14);
+  --loui-meter-hot: #c2410c;
+  --loui-meter-hot-bg: rgba(194, 65, 12, 0.14);
+  --loui-meter-danger: #dc2626;
+  --loui-meter-danger-bg: rgba(220, 38, 38, 0.14);
+  --loui-meter-cool: #2563eb;
+  --loui-meter-cool-bg: rgba(37, 99, 235, 0.14);
+  --loui-meter-accent: #6d28d9;
+  --loui-meter-accent-bg: rgba(109, 40, 217, 0.45);
+  --loui-meter-accent-fade: rgba(109, 40, 217, 0.06);
+}
+
+/* Hairlines, ticks and axis labels inside the design-system views.
+ *
+ * Those views draw their grids as `rgba(255,255,255,α)` — an alpha ladder on
+ * charcoal, and invisible on white. Rather than nineteen variables for
+ * nineteen alphas, the RGB TRIPLE is the variable and the alpha stays inline
+ * where it was: `rgba(var(--loui-onsurface-rgb), 0.30)`. One switch flips
+ * every grid line in every view, and each keeps the weight it was drawn at.
+ *
+ * `--loui-surface-rgb` is the other side of the same idea — the colour a
+ * node's outline uses to punch itself out of the page. */
+:root {
+  --loui-onsurface-rgb: 255, 255, 255;
+  --loui-surface-rgb: 10, 10, 14;
+}
+[data-loui-theme='light'] {
+  --loui-onsurface-rgb: 15, 23, 42;
+  --loui-surface-rgb: 255, 255, 255;
+}

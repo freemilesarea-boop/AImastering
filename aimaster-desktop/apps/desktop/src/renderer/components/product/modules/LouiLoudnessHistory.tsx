@@ -12,7 +12,7 @@
 //     provided), drawn so the user can see how the song sits around it.
 
 import React, { useEffect, useMemo, useRef } from 'react';
-import { surface, text, typography, meter as meterTheme } from '../../../theme/loui-theme.js';
+import { surface, text, typography, meterLiteral } from '../../../theme/loui-theme.js';
 import { useMediaElement } from '../../../audio/media-element-context.js';
 import { useNativeAnalyzer } from '../../../hooks/useNativeAnalyzer.js';
 
@@ -156,7 +156,10 @@ export function LouiLoudnessHistory({ targetLufs, height = 56, windowSec = 30 }:
         ctx.fill();
       }
       // Stroke on top.
-      ctx.strokeStyle = meterTheme.accent.foreground;
+      // `meterLiteral`, not `meter`: the themed scale is CSS variables and
+      // a canvas cannot resolve one — assigning it would leave whatever
+      // colour was set last.
+      ctx.strokeStyle = meterLiteral.accent.foreground;
       ctx.lineWidth = Math.max(1, dpr);
       ctx.beginPath();
       started = false;

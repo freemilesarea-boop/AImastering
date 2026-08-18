@@ -203,7 +203,7 @@ export function TrackPluginEditor(props: TrackPluginEditorProps): React.ReactEle
     <div className="flex flex-col gap-3" data-plugin-editor={moduleId}>
       {visual && <div data-plugin-visual={moduleId}>{visual}</div>}
       {STFT_MODULES.has(moduleId) && (
-        <p className="text-[10px] leading-relaxed text-amber-500/80">
+        <p className="text-[10px] leading-relaxed text-amber-700">
           이 모듈은 STFT 기반이라 켜면 지연이 추가됩니다 (2048 샘플 ≈ 43 ms @ 48 kHz).
           믹스다운에서는 자동 보정되지만 실시간 모니터링에서는 그만큼 늦게 들립니다.
         </p>

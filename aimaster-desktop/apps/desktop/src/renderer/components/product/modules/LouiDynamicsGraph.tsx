@@ -114,12 +114,12 @@ function CurveCell(props: {
             <g key={db}>
               <line
                 x1={toX(db)} x2={toX(db)} y1={PAD} y2={SIZE - PAD}
-                stroke={db === LABELLED_DB[1] ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.05)'}
+                stroke={db === LABELLED_DB[1] ? 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.09)' : 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.05)'}
                 strokeWidth={1}
               />
               <line
                 x1={PAD} x2={SIZE - PAD} y1={toY(db)} y2={toY(db)}
-                stroke="rgba(255,255,255,0.05)" strokeWidth={1}
+                stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.05)" strokeWidth={1}
               />
             </g>
           ))}
@@ -130,14 +130,14 @@ function CurveCell(props: {
               <text
                 x={toX(db)} y={SIZE - PAD + 9}
                 textAnchor={db === DYN_MIN_DB ? 'start' : db === DYN_MAX_DB ? 'end' : 'middle'}
-                fill="rgba(255,255,255,0.32)"
+                fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.32)"
                 style={{ fontFamily: typography.family.mono, fontSize: 7 }}
               >
                 {db}
               </text>
               <text
                 x={PAD - 3} y={toY(db) + 2} textAnchor="end"
-                fill="rgba(255,255,255,0.32)"
+                fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.32)"
                 style={{ fontFamily: typography.family.mono, fontSize: 7 }}
               >
                 {db}
@@ -148,7 +148,7 @@ function CurveCell(props: {
               gentle ratio looks like a straight line either way. */}
           <line
             x1={toX(DYN_MIN_DB)} y1={toY(DYN_MIN_DB)} x2={toX(DYN_MAX_DB)} y2={toY(DYN_MAX_DB)}
-            stroke="rgba(255,255,255,0.16)" strokeWidth={1} strokeDasharray="3 3"
+            stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.16)" strokeWidth={1} strokeDasharray="3 3"
           />
           {/* Threshold */}
           {working && (
@@ -157,18 +157,18 @@ function CurveCell(props: {
               stroke="rgba(251,191,36,0.45)" strokeWidth={1}
             />
           )}
-          <path d={path} fill="none" stroke="#A78BFA" strokeWidth={2} strokeLinejoin="round" />
+          <path d={path} fill="none" stroke="var(--loui-meter-accent, #A78BFA)" strokeWidth={2} strokeLinejoin="round" />
           {/* Live operating point */}
           {markerIn !== null && (
             <circle
               cx={toX(markerIn)}
               cy={toY(Math.max(DYN_MIN_DB, Math.min(DYN_MAX_DB, outputDbFor(curve, markerIn))))}
-              r={4} fill={meter.accent.foreground} stroke="rgba(10,10,14,0.85)" strokeWidth={1.5}
+              r={4} fill={meter.accent.foreground} stroke="rgba(var(--loui-surface-rgb, 10,10,14), 0.85)" strokeWidth={1.5}
             />
           )}
           <text
             x={SIZE - PAD} y={11} textAnchor="end"
-            fill="rgba(255,255,255,0.24)"
+            fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.24)"
             style={{ fontFamily: typography.family.mono, fontSize: 7 }}
           >
             out ↑ / in → dBFS

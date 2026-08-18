@@ -34,7 +34,7 @@ import DawPage from '../src/renderer/pages/DawPage.js';
 import TrackHeader from '../src/renderer/components/daw/TrackHeader.js';
 import MixerStrip, { faderPosition, faderDb } from '../src/renderer/components/daw/MixerStrip.js';
 import TrackWaveform from '../src/renderer/components/daw/TrackWaveform.js';
-import { trackColor, roleLabel } from '../src/renderer/components/daw/TrackColors.js';
+import { trackPalette, trackColor, roleLabel } from '../src/renderer/components/daw/TrackColors.js';
 import InsertRack, {
   addableModules, inEngineOrder, startingValues, TRACK_FORBIDDEN, ENGINE_ORDER,
   type InsertState,
@@ -400,6 +400,63 @@ console.log('\n=== THE DAW SHELL ===\n');
     'instruments are told apart by colour, not by reading',
     colors.size === 6,
     `${colors.size}가지 색 — 어레인지 창은 읽는 게 아니라 훑는 것`,
+  );
+}
+
+// ── The workspace is white, and wears the instrument ─────────────────────────
+{
+  // The theme is one attribute on the root, and it is what re-points the
+  // design-system variables the plugin views inline. If it stopped being
+  // rendered, the DAW would keep its white Tailwind classes and the plugin
+  // panel inside it would go back to charcoal — a half-dark screen that no
+  // test asserting on Tailwind alone would notice.
+  const daw = html(React.createElement(DawPage));
+  check(
+    'the DAW declares the light theme on its root',
+    daw.includes('data-loui-theme="light"'),
+    '이 속성이 플러그인 뷰의 디자인 토큰을 밝은 값으로 바꾼다',
+  );
+  check(
+    'and paints white rather than charcoal',
+    daw.includes('bg-white') && !/class="[^"]*bg-zinc-9/.test(daw),
+    'zinc-900 계열이 남아 있지 않다',
+  );
+
+  // Each role's own colours have to reach the DOM, or the classification is
+  // a table nobody sees.
+  for (const role of ['kick', 'bass', 'vocal'] as const) {
+    const p = trackPalette(role, 'light');
+    const header = html(React.createElement(TrackHeader, {
+      name: `${role} take`, role: roleLabel(role),
+      color: p.accent, tint: p.tint, ink: p.ink,
+      gainDb: 0, mute: false, solo: false, audible: true, selected: true,
+      height: 64, status: 'ready',
+      onSelect: () => {}, onGain: () => {}, onMute: () => {},
+      onSolo: () => {}, onRemove: () => {},
+    }));
+    check(
+      `a selected ${role} header wears its instrument's colour`,
+      header.includes(p.accent) && header.includes(p.tint) && header.includes(p.ink),
+      `${p.accent} / ${p.tint} / ${p.ink}`,
+    );
+  }
+
+  // A silenced track keeps its identity but stops looking live.
+  const muted = html(React.createElement(TrackHeader, {
+    name: 'muted', role: roleLabel('kick'),
+    color: trackPalette('kick', 'light').accent,
+    tint: trackPalette('kick', 'light').tint,
+    ink: trackPalette('kick', 'light').ink,
+    gainDb: 0, mute: true, solo: false, audible: false, selected: false,
+    height: 64, status: 'ready',
+    onSelect: () => {}, onGain: () => {}, onMute: () => {},
+    onSolo: () => {}, onRemove: () => {},
+  }));
+  check(
+    'a silenced track greys its spine instead of keeping the accent',
+    !muted.includes(`background:${trackPalette('kick', 'light').accent}`)
+      && !muted.includes(`background: ${trackPalette('kick', 'light').accent}`),
+    '들리지 않는 트랙은 색을 잃는다 — 악기는 그대로다',
   );
 }
 

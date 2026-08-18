@@ -434,7 +434,7 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
                 <line
                   key={`m${hz}`}
                   x1={x} x2={x} y1={PAD.top} y2={height - PAD.bottom}
-                  stroke="rgba(255,255,255,0.04)" strokeWidth={1}
+                  stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.04)" strokeWidth={1}
                 />
               );
             })}
@@ -447,11 +447,11 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
                 <g key={hz}>
                   <line
                     x1={x} x2={x} y1={PAD.top} y2={height - PAD.bottom}
-                    stroke="rgba(255,255,255,0.10)" strokeWidth={1}
+                    stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.10)" strokeWidth={1}
                   />
                   <text
                     x={x} y={height - 6} textAnchor={anchor}
-                    fill="rgba(255,255,255,0.38)"
+                    fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.38)"
                     style={{ fontFamily: typography.family.mono, fontSize: 9 }}
                   >
                     {fmtAxisHz(hz)}
@@ -465,13 +465,13 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
                 <g key={db}>
                   <line
                     x1={PAD.left} x2={width - PAD.right} y1={y} y2={y}
-                    stroke={db === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.05)'}
+                    stroke={db === 0 ? 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.18)' : 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.05)'}
                     strokeWidth={1}
                   />
                   {LABEL_DB.has(db) && (
                     <text
                       x={width - PAD.right + 4} y={y + 3}
-                      fill="rgba(255,255,255,0.34)"
+                      fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.34)"
                       style={{ fontFamily: typography.family.mono, fontSize: 9 }}
                     >
                       {db > 0 ? `+${db}` : db}
@@ -484,7 +484,7 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
                 curve is never read against an axis you have to guess. */}
             <text
               x={width - PAD.right + 4} y={PAD.top + 8}
-              fill="rgba(255,255,255,0.22)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.22)"
               style={{ fontFamily: typography.family.mono, fontSize: 8 }}
             >
               dB
@@ -498,7 +498,7 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
           )}
 
           {/* The response */}
-          <path d={curve} fill="none" stroke="#A78BFA" strokeWidth={2} strokeLinejoin="round" />
+          <path d={curve} fill="none" stroke="var(--loui-meter-accent, #A78BFA)" strokeWidth={2} strokeLinejoin="round" />
 
           {/* Nodes */}
           {bands.map((b) => {
@@ -512,7 +512,7 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
                   cx={x} cy={y} r={on ? 9 : 7}
                   fill={b.active ? b.color : 'rgba(120,120,140,0.5)'}
                   fillOpacity={on ? 0.95 : 0.75}
-                  stroke="rgba(10,10,14,0.85)" strokeWidth={2}
+                  stroke="rgba(var(--loui-surface-rgb, 10,10,14), 0.85)" strokeWidth={2}
                   tabIndex={disabled ? -1 : 0}
                   role="slider"
                   aria-label={`${b.label} — ${fmtHz(b.hz)} Hz, ${b.gainDb.toFixed(1)} dB, Q ${b.q.toFixed(2)}`}
@@ -535,7 +535,7 @@ export function LouiEqGraph(props: LouiEqGraphProps) {
                 />
                 <text
                   x={x} y={y + 3} textAnchor="middle" pointerEvents="none"
-                  fill="rgba(10,10,14,0.9)"
+                  fill="rgba(var(--loui-surface-rgb, 10,10,14), 0.9)"
                   style={{ fontFamily: typography.family.mono, fontSize: 8, fontWeight: 700 }}
                 >
                   {b.short}

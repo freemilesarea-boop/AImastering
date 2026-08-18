@@ -87,7 +87,7 @@ function FreqGrid(props: { width: number; height: number }) {
       {AXIS_MINOR_HZ.map((hz) => (
         <line key={`m${hz}`} x1={hzToX(hz, props.width)} x2={hzToX(hz, props.width)}
           y1={PAD.top} y2={props.height - PAD.bottom}
-          stroke="rgba(255,255,255,0.04)" strokeWidth={1} />
+          stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.04)" strokeWidth={1} />
       ))}
       {AXIS_MAJOR_HZ.map((hz) => {
         const x = hzToX(hz, props.width);
@@ -95,9 +95,9 @@ function FreqGrid(props: { width: number; height: number }) {
         return (
           <g key={hz}>
             <line x1={x} x2={x} y1={PAD.top} y2={props.height - PAD.bottom}
-              stroke="rgba(255,255,255,0.10)" strokeWidth={1} />
+              stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.10)" strokeWidth={1} />
             <text x={x} y={props.height - 6} textAnchor={anchor}
-              fill="rgba(255,255,255,0.38)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.38)"
               style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
               {fmtAxisHz(hz)}
             </text>
@@ -139,7 +139,7 @@ export function DeclickView(props: {
     <Shell disabled={props.disabled}>
       <Box width={props.width} height={H}>
         <line x1={PAD.left} x2={props.width - PAD.right} y1={mid} y2={mid}
-          stroke="rgba(255,255,255,0.12)" strokeWidth={1} />
+          stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.12)" strokeWidth={1} />
         {/* A plausible waveform, with one impulse in it. */}
         <path
           d={Array.from({ length: 200 }, (_, i) => {
@@ -235,7 +235,7 @@ export function ExciterView(props: {
                 {`${amt.toFixed(0)}%`}
               </text>
               <text x={(x0 + x1) / 2} y={PAD.top + 11} textAnchor="middle"
-                fill="rgba(255,255,255,0.30)"
+                fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)"
                 style={{ fontFamily: typography.family.sans, fontSize: 8 }}>
                 {BAND_LABELS[i]?.split('  ')[1] ?? ''}
               </text>
@@ -316,9 +316,9 @@ export function TapeView(props: {
         {[-6, -3, 0, 3, 6].map((db) => (
           <g key={db}>
             <line x1={PAD.left} x2={props.width - PAD.right} y1={yFor(db)} y2={yFor(db)}
-              stroke={db === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.05)'} strokeWidth={1} />
+              stroke={db === 0 ? 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.18)' : 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.05)'} strokeWidth={1} />
             <text x={props.width - PAD.right + 4} y={yFor(db) + 3}
-              fill="rgba(255,255,255,0.32)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.32)"
               style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
               {db > 0 ? `+${db}` : db}
             </text>
@@ -388,9 +388,9 @@ export function ImagerView(props: {
         {[0, 50, 100, 150, 200].map((pct) => (
           <g key={pct}>
             <line x1={PAD.left} x2={props.width - PAD.right} y1={yFor(pct)} y2={yFor(pct)}
-              stroke={pct === 100 ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.05)'} strokeWidth={1} />
+              stroke={pct === 100 ? 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.20)' : 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.05)'} strokeWidth={1} />
             <text x={props.width - PAD.right + 4} y={yFor(pct) + 3}
-              fill="rgba(255,255,255,0.32)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.32)"
               style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
               {pct}
             </text>
@@ -540,9 +540,9 @@ function TimeGrid(props: { width: number; height: number; spanMs: number }) {
       {ticks.filter((t) => t <= props.spanMs).map((ms) => (
         <g key={ms}>
           <line x1={xFor(ms)} x2={xFor(ms)} y1={PAD.top} y2={props.height - PAD.bottom}
-            stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
+            stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.06)" strokeWidth={1} />
           <text x={xFor(ms)} y={props.height - 6} textAnchor={ms === 0 ? 'start' : 'middle'}
-            fill="rgba(255,255,255,0.38)"
+            fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.38)"
             style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
             {ms === 0 ? '0' : `${ms}ms`}
           </text>
@@ -599,12 +599,12 @@ export function DelayView(props: {
       <Box width={props.width} height={H}>
         <TimeGrid width={props.width} height={H} spanMs={TIME_VIEW_MS} />
         <line x1={PAD.left} x2={props.width - PAD.right} y1={mid} y2={mid}
-          stroke="rgba(255,255,255,0.16)" strokeWidth={1} />
+          stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.16)" strokeWidth={1} />
         {/* The dry hit, at full height, so the repeats have a reference. */}
         <line x1={xFor(0)} x2={xFor(0)} y1={mid - (mid - PAD.top - 6)} y2={mid}
-          stroke="rgba(255,255,255,0.55)" strokeWidth={2} />
+          stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.55)" strokeWidth={2} />
         <text x={xFor(0) + 4} y={PAD.top + 10}
-          fill="rgba(255,255,255,0.45)"
+          fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.45)"
           style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
           원음
         </text>
@@ -697,22 +697,22 @@ export function ReverbView(props: {
       <Box width={props.width} height={H}>
         <TimeGrid width={props.width} height={H} spanMs={TIME_VIEW_MS} />
         <line x1={PAD.left} x2={props.width - PAD.right} y1={base} y2={base}
-          stroke="rgba(255,255,255,0.16)" strokeWidth={1} />
+          stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.16)" strokeWidth={1} />
         {/* The dry hit and the gap before the tail. */}
         <line x1={xFor(0)} x2={xFor(0)} y1={PAD.top + 6} y2={base}
-          stroke="rgba(255,255,255,0.55)" strokeWidth={2} />
+          stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.55)" strokeWidth={2} />
         {pre > 0.5 && (
           <>
             <rect x={xFor(0)} y={PAD.top} width={Math.max(0, xFor(pre) - xFor(0))}
-              height={base - PAD.top} fill="rgba(255,255,255,0.04)" />
+              height={base - PAD.top} fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.04)" />
             <text x={xFor(pre) + 4} y={PAD.top + 11}
-              fill="rgba(255,255,255,0.40)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.40)"
               style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
               {`시작 지연 ${pre.toFixed(0)} ms`}
             </text>
           </>
         )}
-        <path d={path} fill="rgba(167,139,250,0.22)" stroke="#A78BFA" strokeWidth={1.6} />
+        <path d={path} fill="rgba(167,139,250,0.22)" stroke="var(--loui-meter-accent, #A78BFA)" strokeWidth={1.6} />
       </Box>
       <Caption>
         {mix <= 0.001
@@ -819,7 +819,7 @@ export function TopRebuildView(props: {
 
         {amount <= 0.5 && (
           <text x={props.width / 2} y={mid + 26} textAnchor="middle"
-            fill="rgba(255,255,255,0.30)"
+            fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)"
             style={{ fontFamily: typography.family.sans, fontSize: 11 }}>
             {'\uc801\uc6a9\ub7c9\uc774 0\uc785\ub2c8\ub2e4 \u2014 \uc62c\ub9ac\uba74 \uc7ac\ub8cc\uc5d0\uc11c \ud654\uc0b4\ud45c\uac00 \ubed7\uc5b4 \ub098\uac11\ub2c8\ub2e4'}
           </text>

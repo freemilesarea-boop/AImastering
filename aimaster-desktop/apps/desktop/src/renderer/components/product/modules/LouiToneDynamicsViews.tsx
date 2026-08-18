@@ -91,7 +91,7 @@ function FreqFrame(props: {
         {AXIS_MINOR_HZ.map((hz) => (
           <line key={`m${hz}`} x1={hzToX(hz, width)} x2={hzToX(hz, width)}
             y1={PAD.top} y2={HEIGHT - PAD.bottom}
-            stroke="rgba(255,255,255,0.04)" strokeWidth={1} />
+            stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.04)" strokeWidth={1} />
         ))}
         {AXIS_MAJOR_HZ.map((hz) => {
           const x = hzToX(hz, width);
@@ -99,9 +99,9 @@ function FreqFrame(props: {
           return (
             <g key={hz}>
               <line x1={x} x2={x} y1={PAD.top} y2={HEIGHT - PAD.bottom}
-                stroke="rgba(255,255,255,0.10)" strokeWidth={1} />
+                stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.10)" strokeWidth={1} />
               <text x={x} y={HEIGHT - 6} textAnchor={anchor}
-                fill="rgba(255,255,255,0.38)"
+                fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.38)"
                 style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
                 {fmtAxisHz(hz)}
               </text>
@@ -111,9 +111,9 @@ function FreqFrame(props: {
         {props.dbTicks.map((db) => (
           <g key={db}>
             <line x1={PAD.left} x2={width - PAD.right} y1={yFor(db)} y2={yFor(db)}
-              stroke={db === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.05)'} strokeWidth={1} />
+              stroke={db === 0 ? 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.18)' : 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.05)'} strokeWidth={1} />
             <text x={width - PAD.right + 4} y={yFor(db) + 3}
-              fill="rgba(255,255,255,0.32)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.32)"
               style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
               {db > 0 ? `+${db}` : db}
             </text>
@@ -196,10 +196,10 @@ export function StabilizerView(props: {
           <>
             <path d={pathOf(target, yFor)} fill="none" stroke="#38BDF8" strokeWidth={1.6} strokeDasharray="5 3" />
             {has ? (
-              <path d={pathOf(centred, yFor)} fill="none" stroke="#A78BFA" strokeWidth={1.8} />
+              <path d={pathOf(centred, yFor)} fill="none" stroke="var(--loui-meter-accent, #A78BFA)" strokeWidth={1.8} />
             ) : (
               <text x={props.width / 2} y={HEIGHT / 2} textAnchor="middle"
-                fill="rgba(255,255,255,0.30)"
+                fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)"
                 style={{ fontFamily: typography.family.sans, fontSize: 11 }}>
                 측정 없음 — 이 모듈을 켜면 커브가 채워집니다
               </text>
@@ -283,7 +283,7 @@ export function DynamicEqView(props: {
           <>
             {active.length === 0 ? (
               <text x={props.width / 2} y={HEIGHT / 2} textAnchor="middle"
-                fill="rgba(255,255,255,0.30)"
+                fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)"
                 style={{ fontFamily: typography.family.sans, fontSize: 11 }}>
                 활성 밴드 없음 — 숫자 조정에서 밴드를 켜세요
               </text>
@@ -299,7 +299,7 @@ export function DynamicEqView(props: {
                     <path d={curveFor(b, b.liveDb, yFor)} fill="none" stroke={colour} strokeWidth={2} />
                   )}
                   <circle cx={hzToX(b.hz, props.width)} cy={yFor(live ? b.liveDb : 0)} r={4}
-                    fill={colour} stroke="rgba(10,10,14,0.85)" strokeWidth={1.5} />
+                    fill={colour} stroke="rgba(var(--loui-surface-rgb, 10,10,14), 0.85)" strokeWidth={1.5} />
                   <text x={hzToX(b.hz, props.width)} y={yFor(live ? b.liveDb : 0) - 8} textAnchor="middle"
                     fill={colour} style={{ fontFamily: typography.family.mono, fontSize: 8 }}>
                     {b.index + 1}
@@ -357,7 +357,7 @@ export function ImpactView(props: {
       }}>
         <svg width={props.width} height={H} style={{ display: 'block' }}>
           <line x1={PAD.left} x2={props.width - PAD.right} y1={mid} y2={mid}
-            stroke="rgba(255,255,255,0.18)" strokeWidth={1} />
+            stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.18)" strokeWidth={1} />
           {bands.map((b, i) => {
             const x = PAD.left + i * colW;
             const h = (Math.abs(b.pct) / 100) * (mid - 14);
@@ -370,7 +370,7 @@ export function ImpactView(props: {
                   fill={up ? 'rgba(52,211,153,0.55)' : 'rgba(248,113,113,0.55)'}
                 />
                 <text x={x + colW / 2} y={H - 6} textAnchor="middle"
-                  fill="rgba(255,255,255,0.38)"
+                  fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.38)"
                   style={{ fontFamily: typography.family.sans, fontSize: 9 }}>
                   {b.label}
                 </text>
@@ -383,7 +383,7 @@ export function ImpactView(props: {
             );
           })}
           <text x={props.width - PAD.right - 2} y={14} textAnchor="end"
-            fill="rgba(255,255,255,0.30)"
+            fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)"
             style={{ fontFamily: typography.family.mono, fontSize: 8 }}>
             {'어택 강조 ↑ / 완화 ↓'}
           </text>
@@ -460,7 +460,7 @@ export function LowEndFocusView(props: {
               />
             )}
             <text x={PAD.left + 6} y={PAD.top + 12}
-              fill="rgba(255,255,255,0.34)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.34)"
               style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
               {`${mode === 'punchy' ? 'Punchy' : 'Smooth'} · ${fmtHz(hz)} Hz 아래`}
             </text>
@@ -558,9 +558,9 @@ export function LimiterView(props: {
           {[0, 3, 6, 9, 12].map((gr) => (
             <g key={gr}>
               <line x1={PAD.left} x2={props.width - PAD.right} y1={yFor(gr)} y2={yFor(gr)}
-                stroke={gr === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.05)'} strokeWidth={1} />
+                stroke={gr === 0 ? 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.18)' : 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.05)'} strokeWidth={1} />
               <text x={props.width - PAD.right + 4} y={yFor(gr) + 3}
-                fill="rgba(255,255,255,0.32)"
+                fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.32)"
                 style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
                 {gr === 0 ? '0' : `-${gr}`}
               </text>
@@ -579,7 +579,7 @@ export function LimiterView(props: {
             />
           )}
           <text x={PAD.left + 6} y={H - 6}
-            fill="rgba(255,255,255,0.30)"
+            fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)"
             style={{ fontFamily: typography.family.mono, fontSize: 8 }}>
             {`최근 ${(HISTORY_LEN / 10).toFixed(0)}초 · GR dB`}
           </text>

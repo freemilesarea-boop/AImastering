@@ -34,6 +34,15 @@ export interface TrackWaveformProps {
   dimmed?: boolean;
   /** Playhead position as a fraction of the file, or null. */
   playhead?: number | null;
+  /**
+   * The lane's backdrop.
+   *
+   * The playhead is drawn against the lane rather than against the
+   * waveform, so it is the one colour here that cannot be derived from the
+   * track's accent: white on charcoal, near-black on white. A single
+   * hard-coded value made it invisible on one of the two.
+   */
+  surface?: 'light' | 'dark';
 }
 
 /** Slightly transparent version of a hex colour. */
@@ -45,6 +54,7 @@ function withAlpha(hex: string, alpha: number): string {
 
 export default function TrackWaveform({
   peaks, color, height, zoom, scroll, dimmed = false, playhead = null,
+  surface = 'dark',
 }: TrackWaveformProps): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
@@ -115,14 +125,14 @@ export default function TrackWaveform({
 
     if (playhead !== null && playhead >= from && playhead <= from + visible) {
       const x = ((playhead - from) / visible) * w;
-      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.strokeStyle = surface === 'light' ? 'rgba(15,23,42,0.85)' : 'rgba(255,255,255,0.85)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x + 0.5, 0);
       ctx.lineTo(x + 0.5, h);
       ctx.stroke();
     }
-  }, [peaks, color, height, zoom, scroll, dimmed, playhead]);
+  }, [peaks, color, height, zoom, scroll, dimmed, playhead, surface]);
 
   return (
     <div ref={boxRef} className="w-full" style={{ height }}>

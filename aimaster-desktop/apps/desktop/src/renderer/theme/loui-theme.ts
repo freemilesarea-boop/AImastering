@@ -14,6 +14,18 @@
 //   these tokens is incremental.
 
 // ── Colour scale ─────────────────────────────────────────────────────────
+//
+// The surface and text scales are CSS custom properties with the charcoal
+// values as fallbacks, rather than literals. That is what lets a subtree —
+// the DAW, which is a white workspace — be re-skinned by setting variables
+// on one element, without every component that inlines these tokens having
+// to learn about themes.
+//
+// Deliberately NOT the accent scales below. Those are read into `<canvas>`
+// fill and stroke styles in a couple of places, and a canvas cannot resolve
+// `var(...)`: it would silently keep the previous colour. Accents also mean
+// the same thing on either backdrop — a warning is amber whatever the page
+// is — so there is nothing to switch.
 
 /**
  * Neutral backdrop scale.  Inspired by Logic Pro / Ableton Live 12 /
@@ -24,17 +36,17 @@
  */
 export const surface = {
   /** Page background — charcoal, never pure black. */
-  background: '#13131A',
+  background: 'var(--loui-surface-background, #13131A)',
   /** Card / panel background (main panel). */
-  panel:      '#1A1A24',
+  panel:      'var(--loui-surface-panel, #1A1A24)',
   /** Panel border (hairline). */
-  border:     'rgba(255,255,255,0.08)',
+  border:     'var(--loui-surface-border, rgba(255,255,255,0.08))',
   /** Stronger border for elevated / focused surfaces. */
-  borderElevated: 'rgba(255,255,255,0.14)',
+  borderElevated: 'var(--loui-surface-border-elevated, rgba(255,255,255,0.14))',
   /** Inset wells / raised secondary surfaces. */
-  well:       '#222230',
+  well:       'var(--loui-surface-well, #222230)',
   /** Tooltip / hover overlay — the lightest surface step. */
-  overlay:    '#2A2A36',
+  overlay:    'var(--loui-surface-overlay, #2A2A36)',
 } as const;
 
 /**
@@ -42,11 +54,11 @@ export const surface = {
  * harsh pure-white — comfortable for long late-night sessions.
  */
 export const text = {
-  primary:   'rgba(255,255,255,0.92)',
-  secondary: 'rgba(255,255,255,0.70)',
-  tertiary:  'rgba(255,255,255,0.55)',
-  muted:     'rgba(255,255,255,0.42)',
-  disabled:  'rgba(255,255,255,0.30)',
+  primary:   'var(--loui-text-primary, rgba(255,255,255,0.92))',
+  secondary: 'var(--loui-text-secondary, rgba(255,255,255,0.70))',
+  tertiary:  'var(--loui-text-tertiary, rgba(255,255,255,0.55))',
+  muted:     'var(--loui-text-muted, rgba(255,255,255,0.42))',
+  disabled:  'var(--loui-text-disabled, rgba(255,255,255,0.30))',
 } as const;
 
 /**
@@ -62,35 +74,53 @@ export const text = {
 export const meter = {
   /** Safe streaming range (≤ -14 LUFS for streaming target). */
   safe: {
-    foreground: '#10b981',
-    background: 'rgba(16, 185, 129, 0.18)',
+    foreground: 'var(--loui-meter-safe, #10b981)',
+    background: 'var(--loui-meter-safe-bg, rgba(16, 185, 129, 0.18))',
   },
   /** Warning zone (peaking, hot transients). */
   warn: {
-    foreground: '#f59e0b',
-    background: 'rgba(245, 158, 11, 0.22)',
+    foreground: 'var(--loui-meter-warn, #f59e0b)',
+    background: 'var(--loui-meter-warn-bg, rgba(245, 158, 11, 0.22))',
   },
   /** Hot — over typical streaming targets. */
   hot: {
-    foreground: '#fb923c',
-    background: 'rgba(251, 146, 60, 0.20)',
+    foreground: 'var(--loui-meter-hot, #fb923c)',
+    background: 'var(--loui-meter-hot-bg, rgba(251, 146, 60, 0.20))',
   },
   /** Danger — TP at ceiling, clipping risk. */
   danger: {
-    foreground: '#ef4444',
-    background: 'rgba(239, 68, 68, 0.22)',
+    foreground: 'var(--loui-meter-danger, #ef4444)',
+    background: 'var(--loui-meter-danger-bg, rgba(239, 68, 68, 0.22))',
   },
   /** Cool — quiet content / acoustic targets. */
   cool: {
-    foreground: '#3b82f6',
-    background: 'rgba(59, 130, 246, 0.18)',
+    foreground: 'var(--loui-meter-cool, #3b82f6)',
+    background: 'var(--loui-meter-cool-bg, rgba(59, 130, 246, 0.18))',
   },
   /** Accent — Loui's signature violet for spectrum / chart fills. */
   accent: {
-    foreground: '#a78bfa',
-    background: 'rgba(167, 139, 250, 0.55)',
-    fade:       'rgba(167, 139, 250, 0.05)',
+    foreground: 'var(--loui-meter-accent, #a78bfa)',
+    background: 'var(--loui-meter-accent-bg, rgba(167, 139, 250, 0.55))',
+    fade:       'var(--loui-meter-accent-fade, rgba(167, 139, 250, 0.05))',
   },
+} as const;
+
+/**
+ * The same scale as literal colours, for `<canvas>`.
+ *
+ * A canvas cannot resolve `var(...)`: assigning one to `fillStyle` is
+ * ignored and the previous colour silently stays. Anything drawing to a
+ * canvas has to read from here instead — and gets the charcoal values,
+ * which is correct, because the canvases that use them are on charcoal
+ * screens.
+ */
+export const meterLiteral = {
+  safe:   { foreground: '#10b981' },
+  warn:   { foreground: '#f59e0b' },
+  hot:    { foreground: '#fb923c' },
+  danger: { foreground: '#ef4444' },
+  cool:   { foreground: '#3b82f6' },
+  accent: { foreground: '#a78bfa' },
 } as const;
 
 // ── Spacing scale ────────────────────────────────────────────────────────

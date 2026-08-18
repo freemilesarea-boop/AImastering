@@ -91,7 +91,7 @@ function Frame(props: {
             <line
               key={`m${hz}`} x1={hzToX(hz, width)} x2={hzToX(hz, width)}
               y1={PAD.top} y2={HEIGHT - PAD.bottom}
-              stroke="rgba(255,255,255,0.04)" strokeWidth={1}
+              stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.04)" strokeWidth={1}
             />
           ))}
           {AXIS_MAJOR_HZ.map((hz) => {
@@ -100,9 +100,9 @@ function Frame(props: {
             return (
               <g key={hz}>
                 <line x1={x} x2={x} y1={PAD.top} y2={HEIGHT - PAD.bottom}
-                  stroke="rgba(255,255,255,0.10)" strokeWidth={1} />
+                  stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.10)" strokeWidth={1} />
                 <text x={x} y={HEIGHT - 6} textAnchor={anchor}
-                  fill="rgba(255,255,255,0.38)"
+                  fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.38)"
                   style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
                   {fmtAxisHz(hz)}
                 </text>
@@ -112,9 +112,9 @@ function Frame(props: {
           {props.dbTicks.map((db) => (
             <g key={db}>
               <line x1={PAD.left} x2={width - PAD.right} y1={yFor(db)} y2={yFor(db)}
-                stroke={db === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.05)'} strokeWidth={1} />
+                stroke={db === 0 ? 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.18)' : 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.05)'} strokeWidth={1} />
               <text x={width - PAD.right + 4} y={yFor(db) + 3}
-                fill="rgba(255,255,255,0.32)"
+                fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.32)"
                 style={{ fontFamily: typography.family.mono, fontSize: 9 }}>
                 {db > 0 ? `+${db}` : db}
               </text>
@@ -152,7 +152,7 @@ function NoData(props: { width: number; label: string }) {
   return (
     <text
       x={props.width / 2} y={HEIGHT / 2} textAnchor="middle"
-      fill="rgba(255,255,255,0.30)"
+      fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)"
       style={{ fontFamily: typography.family.sans, fontSize: 11 }}
     >
       {props.label}
@@ -394,7 +394,7 @@ export function DeessView(props: {
           )}
           <text
             x={props.width - PAD.right - 4} y={PAD.top + 12} textAnchor="end"
-            fill={gr > 0.05 ? meter.accent.foreground : 'rgba(255,255,255,0.30)'}
+            fill={gr > 0.05 ? meter.accent.foreground : 'rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)'}
             style={{ fontFamily: typography.family.mono, fontSize: 10 }}
           >
             {props.metrics.running ? `−${gr.toFixed(1)} dB` : '정지'}
@@ -562,7 +562,7 @@ export function MatchView(props: {
                 fill="none" stroke="#38BDF8" strokeWidth={1.6} />
               {hasSource && (
                 <path d={bandPath(centred(source), props.width, yFor)}
-                  fill="none" stroke="#A78BFA" strokeWidth={1.8} />
+                  fill="none" stroke="var(--loui-meter-accent, #A78BFA)" strokeWidth={1.8} />
               )}
               {matchPct !== null && (
                 <text
@@ -665,7 +665,7 @@ export function HissGateView(props: {
             </text>
             <text
               x={x0 + 6} y={(yTh + yCut) / 2 + 3}
-              fill="rgba(255,255,255,0.55)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.55)"
               style={{ fontFamily: typography.family.mono, fontSize: 9 }}
             >
               {`최대 -${maxCut.toFixed(0)} dB`}
@@ -673,18 +673,18 @@ export function HissGateView(props: {
             {/* The corner: left of it the gate is inert. */}
             <line
               x1={x0} x2={x0} y1={PAD.top} y2={HEIGHT - PAD.bottom}
-              stroke="rgba(255,255,255,0.30)" strokeWidth={1} strokeDasharray="4 3"
+              stroke="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)" strokeWidth={1} strokeDasharray="4 3"
             />
             <text
               x={x0 + 4} y={PAD.top + 11}
-              fill="rgba(255,255,255,0.5)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.5)"
               style={{ fontFamily: typography.family.mono, fontSize: 9 }}
             >
               {`${fmtHz(lowHz)} 위`}
             </text>
             <text
               x={x0 - 6} y={PAD.top + 11} textAnchor="end"
-              fill="rgba(255,255,255,0.32)"
+              fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.32)"
               style={{ fontFamily: typography.family.sans, fontSize: 9 }}
             >
               건드리지 않음
@@ -748,7 +748,7 @@ export function HarshnessView(props: {
           {/* The threshold, as a height above the local neighbourhood. */}
           <line
             x1={x0} x2={x1} y1={yFor(thresholdDb)} y2={yFor(thresholdDb)}
-            stroke="#A78BFA" strokeWidth={1.6}
+            stroke="var(--loui-meter-accent, #A78BFA)" strokeWidth={1.6}
           />
           <text
             x={(x0 + x1) / 2} y={yFor(thresholdDb) - 5} textAnchor="middle"
@@ -759,7 +759,7 @@ export function HarshnessView(props: {
           </text>
           <text
             x={PAD.left + 6} y={HEIGHT - PAD.bottom - 6}
-            fill="rgba(255,255,255,0.30)"
+            fill="rgba(var(--loui-onsurface-rgb, 255,255,255), 0.30)"
             style={{ fontFamily: typography.family.mono, fontSize: 9 }}
           >
             주변 평균 = 0

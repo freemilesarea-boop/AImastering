@@ -13,7 +13,12 @@ import React from 'react';
 export interface TrackHeaderProps {
   name: string;
   role: string;
+  /** The instrument's accent — the spine, and the selected row's edge. */
   color: string;
+  /** A wash of the same colour, so a selected row reads as that instrument. */
+  tint?: string;
+  /** Label ink that stays readable on `tint`. */
+  ink?: string;
   gainDb: number;
   mute: boolean;
   solo: boolean;
@@ -33,34 +38,49 @@ export interface TrackHeaderProps {
 
 export default function TrackHeader(props: TrackHeaderProps): React.ReactElement {
   const {
-    name, role, color, gainDb, mute, solo, audible, selected, height,
+    name, role, color, tint, ink, gainDb, mute, solo, audible, selected, height,
     status, warning, onSelect, onGain, onMute, onSolo, onRemove,
   } = props;
 
   const dot =
-    status === 'error' ? 'bg-red-500'
-      : status === 'analyzing' ? 'bg-amber-400 animate-pulse'
-      : status === 'pending' ? 'bg-zinc-600'
-      : warning ? 'bg-amber-400'
-      : 'bg-emerald-500';
+    status === 'error' ? 'bg-red-600'
+      : status === 'analyzing' ? 'bg-amber-500 animate-pulse'
+      : status === 'pending' ? 'bg-slate-400'
+      : warning ? 'bg-amber-500'
+      : 'bg-emerald-600';
 
   return (
     <div
       onClick={onSelect}
-      style={{ height }}
-      className={`shrink-0 flex border-b border-black/50 cursor-pointer select-none
-                  ${selected ? 'bg-zinc-800/70' : 'bg-zinc-900/60 hover:bg-zinc-900'}`}
+      style={{
+        height,
+        // The selected row wears its instrument's colour rather than a
+        // generic grey: on a console of twenty channels, "which one am I
+        // editing" and "what is it" are the same question.
+        ...(selected && tint ? { background: tint } : {}),
+      }}
+      className={`shrink-0 flex border-b border-slate-200 cursor-pointer select-none
+                  ${selected ? '' : 'bg-white hover:bg-slate-50'}`}
     >
-      {/* Colour spine, matching the clip in the lane. */}
-      <div className="w-1 shrink-0" style={{ background: audible ? color : '#3f3f46' }} />
+      {/* Colour spine, matching the clip in the lane. A muted track keeps a
+          grey one: the instrument has not changed, but it is not being
+          heard, and the lane says so the same way. */}
+      <div
+        className="shrink-0"
+        style={{ width: selected ? 4 : 3, background: audible ? color : '#cbd5e1' }}
+      />
 
       <div className="flex-1 min-w-0 px-2 py-1.5 flex flex-col justify-between">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} title={warning ?? status} />
-          <span className="text-[11px] text-zinc-200 truncate" title={name}>{name}</span>
+          <span
+            className="text-[11px] truncate"
+            style={{ color: selected && ink ? ink : undefined }}
+            title={name}
+          >{name}</span>
           <button
             onClick={(e) => { e.stopPropagation(); onRemove(); }}
-            className="ml-auto text-zinc-700 hover:text-red-400 text-[11px] leading-none shrink-0"
+            className="ml-auto text-slate-500 hover:text-red-600 text-[11px] leading-none shrink-0"
             title="트랙 제거"
           >✕</button>
         </div>
@@ -69,14 +89,14 @@ export default function TrackHeader(props: TrackHeaderProps): React.ReactElement
           <button
             onClick={(e) => { e.stopPropagation(); onMute(); }}
             className={`w-5 text-[9px] rounded-sm border leading-4 transition-colors ${
-              mute ? 'bg-red-500/25 border-red-500/60 text-red-300'
-                   : 'border-zinc-700 text-zinc-600 hover:text-zinc-300'}`}
+              mute ? 'bg-red-100 border-red-400 text-red-700'
+                   : 'border-slate-300 text-slate-600 hover:text-slate-700'}`}
           >M</button>
           <button
             onClick={(e) => { e.stopPropagation(); onSolo(); }}
             className={`w-5 text-[9px] rounded-sm border leading-4 transition-colors ${
-              solo ? 'bg-amber-400/25 border-amber-400/60 text-amber-300'
-                   : 'border-zinc-700 text-zinc-600 hover:text-zinc-300'}`}
+              solo ? 'bg-amber-100 border-amber-500 text-amber-800'
+                   : 'border-slate-300 text-slate-600 hover:text-slate-700'}`}
           >S</button>
 
           <input
@@ -87,12 +107,15 @@ export default function TrackHeader(props: TrackHeaderProps): React.ReactElement
             className="daw-mini flex-1 min-w-0"
             aria-label={`${name} 트림`}
           />
-          <span className="text-[9px] font-mono text-zinc-600 tabular-nums w-8 text-right">
+          <span className="text-[9px] font-mono text-slate-600 tabular-nums w-8 text-right">
             {gainDb > 0 ? '+' : ''}{gainDb.toFixed(1)}
           </span>
         </div>
 
-        <div className="text-[9px] text-zinc-600 truncate">{role}</div>
+        {/* The instrument, in the instrument's own colour — the row's
+            colour and its name say the same thing, so a glance at either
+            works. */}
+        <div className="text-[9px] truncate" style={{ color: ink ?? undefined }}>{role}</div>
       </div>
     </div>
   );

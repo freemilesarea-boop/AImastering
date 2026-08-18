@@ -45,7 +45,7 @@ import { StemPreviewEngine, type PreviewStatus, type PreviewStemInput } from '..
 import TrackWaveform, { type PeakData } from '../components/daw/TrackWaveform.js';
 import TrackHeader from '../components/daw/TrackHeader.js';
 import MixerStrip from '../components/daw/MixerStrip.js';
-import { trackColor, roleLabel } from '../components/daw/TrackColors.js';
+import { trackPalette, roleLabel } from '../components/daw/TrackColors.js';
 import InsertRack, {
   startingValues, moduleLabel, type InsertState,
 } from '../components/daw/InsertRack.js';
@@ -210,14 +210,14 @@ function Ruler({ duration, zoom, scroll, playhead, onSeek }: {
         const x = (e.clientX - box.getBoundingClientRect().left) / box.clientWidth;
         onSeek((from + x * visible) * duration);
       }}
-      className="relative h-6 border-b border-black/60 bg-zinc-950/80 cursor-pointer select-none"
+      className="relative h-6 border-b border-slate-300 bg-slate-100/80 cursor-pointer select-none"
     >
       {ticks.map((t) => {
         const frac = (t / Math.max(duration, 0.001) - from) / visible;
         return (
           <div key={t} className="absolute top-0 bottom-0" style={{ left: `${frac * 100}%` }}>
-            <div className="w-px h-full bg-zinc-800" />
-            <span className="absolute left-1 top-0.5 text-[9px] font-mono text-zinc-600 whitespace-nowrap">
+            <div className="w-px h-full bg-slate-200" />
+            <span className="absolute left-1 top-0.5 text-[9px] font-mono text-slate-600 whitespace-nowrap">
               {timecode(t)}
             </span>
           </div>
@@ -225,7 +225,7 @@ function Ruler({ duration, zoom, scroll, playhead, onSeek }: {
       })}
       {duration > 0 && (
         <div
-          className="absolute top-0 bottom-0 w-px bg-white/80 pointer-events-none"
+          className="absolute top-0 bottom-0 w-px bg-slate-900/80 pointer-events-none"
           style={{ left: `${((playhead / duration - from) / visible) * 100}%` }}
         />
       )}
@@ -553,9 +553,15 @@ export default function DawPage(): React.ReactElement {
   const playFrac = duration > 0 ? Math.min(1, status.position / duration) : 0;
 
   // ── Render ───────────────────────────────────────────────────────────────
+  //
+  // `data-loui-theme="light"` on the root re-points the design-system
+  // variables the plugin views inline (see `theme/loui-theme` and
+  // `styles/index.css`), so the Studio's graphs arrive light inside this
+  // white workspace without any of them knowing a theme exists.
   return (
     <div
-      className="h-full flex flex-col bg-zinc-950 text-zinc-300 overflow-hidden select-none relative"
+      data-loui-theme="light"
+      className="h-full flex flex-col bg-white text-slate-700 overflow-hidden select-none relative"
       onDragOver={(e) => { e.preventDefault(); setDropActive(true); }}
       onDragLeave={(e) => { if (e.currentTarget === e.target) setDropActive(false); }}
       onDrop={(e) => {
@@ -568,35 +574,35 @@ export default function DawPage(): React.ReactElement {
       style={dragging ? { cursor: dragging === 'console' ? 'ns-resize' : 'ew-resize' } : undefined}
     >
       {dropActive && (
-        <div className="absolute inset-0 z-30 pointer-events-none border-2 border-dashed border-zinc-400/70
-                        bg-zinc-100/5 flex items-center justify-center">
-          <span className="text-[13px] text-zinc-200 bg-zinc-900/90 px-4 py-2 rounded">
+        <div className="absolute inset-0 z-30 pointer-events-none border-2 border-dashed border-slate-400
+                        bg-slate-900/5 flex items-center justify-center">
+          <span className="text-[13px] text-slate-800 bg-white/90 px-4 py-2 rounded">
             놓으면 트랙으로 추가합니다
           </span>
         </div>
       )}
 
       {bridgeMissing && (
-        <div className="shrink-0 px-3 py-1.5 bg-red-950/70 border-b border-red-900 text-[11px] text-red-300">
+        <div className="shrink-0 px-3 py-1.5 bg-red-50 border-b border-red-300 text-[11px] text-red-700">
           앱 브릿지에 연결되지 않았습니다 — 분석·재생·믹스다운이 모두 동작하지 않습니다. 앱을 다시 시작해 주세요.
         </div>
       )}
       {status.error && (
-        <div className="shrink-0 px-3 py-1.5 bg-amber-950/60 border-b border-amber-900/70 text-[11px] text-amber-300">
+        <div className="shrink-0 px-3 py-1.5 bg-amber-50 border-b border-amber-300 text-[11px] text-amber-800">
           {status.error}
         </div>
       )}
       {status.chainsDegraded && (
-        <div className="shrink-0 px-3 py-1.5 bg-amber-950/60 border-b border-amber-900/70 text-[11px] text-amber-300">
+        <div className="shrink-0 px-3 py-1.5 bg-amber-50 border-b border-amber-300 text-[11px] text-amber-800">
           {status.chainsDegraded}
         </div>
       )}
 
       {/* ── Toolbar ───────────────────────────────────────────────────── */}
-      <div className="drag-region shrink-0 h-11 flex items-center gap-2 px-3 border-b border-black/60 bg-zinc-900/70">
-        <span className="font-semibold text-[11px] tracking-wide text-zinc-400 no-drag">LOUVER</span>
-        <span className="text-zinc-700">/</span>
-        <span className="text-[11px] text-zinc-500 no-drag">
+      <div className="drag-region shrink-0 h-11 flex items-center gap-2 px-3 border-b border-slate-300 bg-slate-50">
+        <span className="font-semibold text-[11px] tracking-wide text-slate-600 no-drag">LOUVER</span>
+        <span className="text-slate-500">/</span>
+        <span className="text-[11px] text-slate-600 no-drag">
           {tracks.length > 0 ? `${tracks.length} TRACKS` : 'NO SESSION'}
         </span>
 
@@ -607,47 +613,47 @@ export default function DawPage(): React.ReactElement {
           <button
             onClick={() => (playing ? engineRef.current?.pause() : canPlay ? engineRef.current?.play() : void handlePrepare())}
             disabled={preparing !== null || status.state === 'loading' || tracks.length === 0}
-            className="w-9 h-7 rounded-sm border border-zinc-700 bg-zinc-800/80 hover:border-zinc-500
+            className="w-9 h-7 rounded-sm border border-slate-300 bg-white hover:border-slate-400
                        disabled:opacity-30 flex items-center justify-center transition-colors"
             title={canPlay ? (playing ? '일시정지' : '재생') : '미리듣기 준비'}
           >
             {playing
-              ? <span className="block w-2.5 h-2.5 border-x-[3px] border-zinc-200" />
+              ? <span className="block w-2.5 h-2.5 border-x-[3px] border-slate-700" />
               : <span className="block w-0 h-0 border-y-[6px] border-y-transparent border-l-[9px] border-l-zinc-200 ml-0.5" />}
           </button>
           <button
             onClick={() => engineRef.current?.stop()}
             disabled={!canPlay}
-            className="w-9 h-7 rounded-sm border border-zinc-700 bg-zinc-800/80 hover:border-zinc-500
+            className="w-9 h-7 rounded-sm border border-slate-300 bg-white hover:border-slate-400
                        disabled:opacity-30 flex items-center justify-center transition-colors"
             title="정지"
           >
-            <span className="block w-2.5 h-2.5 bg-zinc-200" />
+            <span className="block w-2.5 h-2.5 bg-slate-700" />
           </button>
         </div>
 
         {/* Timecode — a DAW's clock, in the DAW's font. */}
-        <div className="no-drag ml-1 px-3 py-1 rounded-sm bg-black/60 border border-black">
-          <span className="font-mono text-[13px] text-emerald-400 tabular-nums tracking-wider">
+        <div className="no-drag ml-1 px-3 py-1 rounded-sm bg-slate-900/[0.06] border border-slate-300">
+          <span className="font-mono text-[13px] text-emerald-700 tabular-nums tracking-wider">
             {timecode(status.position)}
           </span>
-          <span className="font-mono text-[10px] text-zinc-600 tabular-nums ml-2">
+          <span className="font-mono text-[10px] text-slate-600 tabular-nums ml-2">
             / {timecode(duration)}
           </span>
         </div>
 
         {preparing && (
-          <span className="no-drag text-[10px] text-amber-400 tabular-nums">
+          <span className="no-drag text-[10px] text-amber-700 tabular-nums">
             굽는 중 {preparing.done + 1}/{preparing.total} · {preparing.name}
           </span>
         )}
         {!preparing && status.state === 'loading' && (
-          <span className="no-drag text-[10px] text-amber-400">불러오는 중…</span>
+          <span className="no-drag text-[10px] text-amber-700">불러오는 중…</span>
         )}
         {stale && canPlay && (
           <button
             onClick={() => void handlePrepare()}
-            className="no-drag text-[10px] px-2 py-1 rounded-sm border border-amber-500/40 text-amber-300"
+            className="no-drag text-[10px] px-2 py-1 rounded-sm border border-amber-400 text-amber-800"
             title="체인이 바뀌었습니다"
           >다시 굽기</button>
         )}
@@ -664,8 +670,8 @@ export default function DawPage(): React.ReactElement {
           }}
           className={`no-drag text-[10px] px-2 py-1 rounded-sm border transition-colors ${
             liveChains
-              ? 'border-emerald-600/60 text-emerald-400'
-              : 'border-zinc-700 text-zinc-500'}`}
+              ? 'border-emerald-500 text-emerald-700'
+              : 'border-slate-300 text-slate-600'}`}
           title={liveChains
             ? '플러그인이 실시간으로 걸립니다 — 노브를 돌리면 바로 들립니다. 문제가 생기면 꺼서 원본으로 들을 수 있습니다.'
             : '플러그인이 미리듣기에 걸리지 않습니다 — 페이더·팬·솔로만 동작합니다. 믹스다운에는 정상 적용됩니다.'}
@@ -677,30 +683,30 @@ export default function DawPage(): React.ReactElement {
         <div className="no-drag ml-2 flex items-center gap-1">
           <button
             onClick={() => setZoom((z) => Math.max(1, z / 1.6))}
-            className="w-6 h-6 rounded-sm border border-zinc-700 text-zinc-500 hover:text-zinc-200 text-xs"
+            className="w-6 h-6 rounded-sm border border-slate-300 text-slate-600 hover:text-slate-800 text-xs"
           >−</button>
           <button
             onClick={() => setZoom((z) => Math.min(64, z * 1.6))}
-            className="w-6 h-6 rounded-sm border border-zinc-700 text-zinc-500 hover:text-zinc-200 text-xs"
+            className="w-6 h-6 rounded-sm border border-slate-300 text-slate-600 hover:text-slate-800 text-xs"
           >+</button>
-          <span className="text-[9px] font-mono text-zinc-600 w-8">{zoom.toFixed(1)}×</span>
+          <span className="text-[9px] font-mono text-slate-600 w-8">{zoom.toFixed(1)}×</span>
         </div>
 
         <div className="flex-1" />
 
         <div className="no-drag flex items-center gap-2">
           <button onClick={() => void handleAdd()}
-            className="text-[11px] px-2.5 py-1 rounded-sm border border-zinc-700 hover:border-zinc-500 transition-colors">
+            className="text-[11px] px-2.5 py-1 rounded-sm border border-slate-300 hover:border-slate-400 transition-colors">
             트랙 추가
           </button>
           <button onClick={() => void handleRender()}
             disabled={rendering || tracks.length === 0 || pending > 0}
-            className="text-[11px] px-3 py-1 rounded-sm bg-zinc-100 text-zinc-900 font-medium
-                       hover:bg-white disabled:opacity-30 transition-colors">
+            className="text-[11px] px-3 py-1 rounded-sm bg-slate-800 text-white font-medium
+                       hover:bg-slate-900 disabled:opacity-30 transition-colors">
             {rendering ? '합산 중…' : '믹스다운'}
           </button>
           <button onClick={() => setPage('home')}
-            className="text-[11px] text-zinc-600 hover:text-zinc-300 transition-colors">홈</button>
+            className="text-[11px] text-slate-600 hover:text-slate-700 transition-colors">홈</button>
         </div>
       </div>
 
@@ -709,30 +715,44 @@ export default function DawPage(): React.ReactElement {
 
         {/* Inspector */}
         <div
-          className="shrink-0 border-r border-black/60 bg-zinc-900/40 overflow-y-auto"
+          className="shrink-0 border-r border-slate-300 bg-slate-50/70 overflow-y-auto"
           style={{ width: sizes.inspector }}
         >
-          <div className="px-3 py-2 border-b border-black/40">
-            <div className="text-[9px] uppercase tracking-widest text-zinc-600">Inspector</div>
+          <div className="px-3 py-2 border-b border-slate-200">
+            <div className="text-[9px] uppercase tracking-widest text-slate-600">Inspector</div>
           </div>
           {!selected ? (
-            <p className="px-3 py-3 text-[10px] text-zinc-600 leading-relaxed">
+            <p className="px-3 py-3 text-[10px] text-slate-600 leading-relaxed">
               트랙을 선택하면 여기에 세부 정보가 나옵니다.
             </p>
           ) : (
             <div className="px-3 py-3 space-y-3">
-              <div>
-                <div className="text-[11px] text-zinc-200 truncate">{selected.name}</div>
-                <div className="text-[9px] text-zinc-600 truncate">{selected.filePath}</div>
+              {/* The inspector wears the selected track's colour. On a
+                  console of twenty channels the question "which one is this
+                  panel editing" is answered by the same colour that answers
+                  "what instrument is it" — one glance, not two. */}
+              <div
+                className="-mx-3 -mt-3 px-3 py-2 border-b"
+                style={{
+                  background: trackPalette(selected.role, 'light').tint,
+                  borderColor: `${trackPalette(selected.role, 'light').accent}33`,
+                  borderLeft: `3px solid ${trackPalette(selected.role, 'light').accent}`,
+                }}
+              >
+                <div
+                  className="text-[11px] truncate"
+                  style={{ color: trackPalette(selected.role, 'light').ink }}
+                >{selected.name}</div>
+                <div className="text-[9px] text-slate-600 truncate">{selected.filePath}</div>
               </div>
 
               <label className="block">
-                <span className="text-[9px] uppercase tracking-widest text-zinc-600">Instrument</span>
+                <span className="text-[9px] uppercase tracking-widest text-slate-600">Instrument</span>
                 <select
                   value={selected.role}
                   onChange={(e) => setRole(selected.id, e.target.value as StemRole)}
-                  className="mt-1 w-full text-[11px] bg-zinc-950 border border-zinc-700 rounded-sm px-1.5 py-1
-                             focus:outline-none focus:border-zinc-500"
+                  className="mt-1 w-full text-[11px] bg-slate-100 border border-slate-300 rounded-sm px-1.5 py-1
+                             focus:outline-none focus:border-slate-400"
                 >
                   {STEM_ROLES.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}
                 </select>
@@ -749,8 +769,8 @@ export default function DawPage(): React.ReactElement {
 
               <button
                 onClick={() => openInStudio(selected)}
-                className="w-full text-[10px] py-1 rounded-sm border border-zinc-800 text-zinc-600
-                           hover:text-zinc-300 hover:border-zinc-600 transition-colors"
+                className="w-full text-[10px] py-1 rounded-sm border border-slate-200 text-slate-600
+                           hover:text-slate-700 hover:border-slate-400 transition-colors"
                 title="같은 체인을 큰 화면(그래프 포함)에서 편집합니다"
               >
                 큰 화면에서 편집
@@ -765,16 +785,16 @@ export default function DawPage(): React.ReactElement {
                     setCustomTick((n) => n + 1);
                     setRackTick((n) => n + 1);
                   }}
-                  className="w-full text-[10px] py-1 rounded-sm border border-zinc-800 text-zinc-600
-                             hover:text-amber-400 transition-colors"
+                  className="w-full text-[10px] py-1 rounded-sm border border-slate-200 text-slate-600
+                             hover:text-amber-700 transition-colors"
                 >
                   악기 기본값으로 초기화
                 </button>
               )}
 
               <div>
-                <div className="text-[9px] uppercase tracking-widest text-zinc-600 mb-1">Why</div>
-                <p className={`text-[10px] leading-snug ${selected.warning ? 'text-amber-400/90' : 'text-zinc-500'}`}>
+                <div className="text-[9px] uppercase tracking-widest text-slate-600 mb-1">Why</div>
+                <p className={`text-[10px] leading-snug ${selected.warning ? 'text-amber-700' : 'text-slate-600'}`}>
                   {selected.warning ?? selected.error ?? selected.why}
                 </p>
               </div>
@@ -784,16 +804,16 @@ export default function DawPage(): React.ReactElement {
 
         <div
           onPointerDown={(e) => startDrag('inspector', e)}
-          className="w-1 shrink-0 cursor-ew-resize hover:bg-zinc-600/60 transition-colors"
+          className="w-1 shrink-0 cursor-ew-resize hover:bg-slate-400/60 transition-colors"
           title="드래그해서 인스펙터 너비를 조절합니다"
         />
 
         {/* Arrange */}
         <div className="flex-1 flex flex-col min-w-0">
           <div className="flex shrink-0">
-            <div className="shrink-0 border-r border-black/60 bg-zinc-950/80" style={{ width: HEADER_WIDTH }}>
-              <div className="h-6 flex items-center px-2 border-b border-black/60">
-                <span className="text-[9px] uppercase tracking-widest text-zinc-600">Tracks</span>
+            <div className="shrink-0 border-r border-slate-300 bg-slate-100/80" style={{ width: HEADER_WIDTH }}>
+              <div className="h-6 flex items-center px-2 border-b border-slate-300">
+                <span className="text-[9px] uppercase tracking-widest text-slate-600">Tracks</span>
               </div>
             </div>
             <div className="flex-1 min-w-0">
@@ -808,13 +828,15 @@ export default function DawPage(): React.ReactElement {
           </div>
 
           <div className="flex-1 flex min-h-0 overflow-y-auto">
-            <div className="shrink-0 border-r border-black/60" style={{ width: HEADER_WIDTH }}>
+            <div className="shrink-0 border-r border-slate-300" style={{ width: HEADER_WIDTH }}>
               {tracks.map((t, i) => (
                 <TrackHeader
                   key={t.id}
                   name={t.name}
                   role={roleLabel(t.role)}
-                  color={trackColor(t.role)}
+                  color={trackPalette(t.role, 'light').accent}
+                  tint={trackPalette(t.role, 'light').tint}
+                  ink={trackPalette(t.role, 'light').ink}
                   gainDb={t.gainDb}
                   mute={t.mute}
                   solo={t.solo}
@@ -832,11 +854,11 @@ export default function DawPage(): React.ReactElement {
               ))}
             </div>
 
-            <div className="flex-1 min-w-0 bg-zinc-950">
+            <div className="flex-1 min-w-0 bg-slate-100">
               {tracks.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center gap-2 px-8 text-center">
-                  <p className="text-[12px] text-zinc-500">트랙을 불러오세요</p>
-                  <p className="text-[10px] text-zinc-600 max-w-md leading-relaxed">
+                  <p className="text-[12px] text-slate-600">트랙을 불러오세요</p>
+                  <p className="text-[10px] text-slate-600 max-w-md leading-relaxed">
                     DAW에서 내보낸 스템(킥, 베이스, 보컬…)을 넣으면 파일 이름과 실제 측정으로 악기를 판별하고,
                     악기마다 다른 체인을 걸어 하나로 합칩니다. 스템은 이미 0에 정렬돼 있으므로 타임라인 편집은 없습니다.
                   </p>
@@ -845,16 +867,17 @@ export default function DawPage(): React.ReactElement {
                 <div
                   key={t.id}
                   onClick={() => setSelectedId(t.id)}
-                  className={`border-b border-black/50 px-px ${selected?.id === t.id ? 'bg-zinc-900/60' : ''}`}
+                  className={`border-b border-slate-200 px-px ${selected?.id === t.id ? 'bg-slate-50' : ''}`}
                   style={{ height: LANE_HEIGHT }}
                 >
                   <div className="h-full rounded-sm overflow-hidden" style={{
-                    background: `${trackColor(t.role)}12`,
-                    borderLeft: `2px solid ${trackColor(t.role)}`,
+                    background: trackPalette(t.role, 'light').tint,
+                    borderLeft: `3px solid ${trackPalette(t.role, 'light').accent}`,
                   }}>
                     <TrackWaveform
                       peaks={peaks.get(t.filePath) ?? null}
-                      color={trackColor(t.role)}
+                      color={trackPalette(t.role, 'light').accent}
+                      surface="light"
                       height={LANE_HEIGHT - 2}
                       zoom={zoom}
                       scroll={scroll}
@@ -871,26 +894,26 @@ export default function DawPage(): React.ReactElement {
               sits over the arrange area, which is the same idea without a
               second window to lose behind the first. */}
           {selected && openModule && (
-            <div className="shrink-0 max-h-[62%] overflow-y-auto border-t border-black/60 bg-zinc-900/95">
+            <div className="shrink-0 max-h-[62%] overflow-y-auto border-t border-slate-300 bg-white/95">
               <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5
-                              border-b border-black/50 bg-zinc-900/95">
-                <span className="text-[11px] text-zinc-200">
+                              border-b border-slate-200 bg-white/95">
+                <span className="text-[11px] text-slate-800">
                   {moduleLabel(openModule.id)}
                 </span>
-                <span className="text-[10px] text-zinc-600 truncate">{selected.name}</span>
+                <span className="text-[10px] text-slate-600 truncate">{selected.name}</span>
                 <div className="flex-1" />
                 <button
                   onClick={() => togglePlugin(openModule.id)}
                   className={`text-[10px] px-2 py-0.5 rounded-sm border transition-colors ${
                     openModule.bypass
-                      ? 'border-zinc-700 text-zinc-500'
-                      : 'border-emerald-600/60 text-emerald-400'}`}
+                      ? 'border-slate-300 text-slate-600'
+                      : 'border-emerald-500 text-emerald-700'}`}
                 >
                   {openModule.bypass ? '꺼짐' : '켜짐'}
                 </button>
                 <button
                   onClick={() => setOpenInsert(null)}
-                  className="text-[11px] text-zinc-600 hover:text-zinc-200 px-1"
+                  className="text-[11px] text-slate-600 hover:text-slate-800 px-1"
                 >✕</button>
               </div>
               <div className="px-3 py-2">
@@ -910,7 +933,7 @@ export default function DawPage(): React.ReactElement {
 
           {/* Horizontal scroll — a viewport control, not an edit tool. */}
           {zoom > 1 && (
-            <div className="shrink-0 h-5 flex items-center px-2 border-t border-black/60 bg-zinc-900/50">
+            <div className="shrink-0 h-5 flex items-center px-2 border-t border-slate-300 bg-slate-50">
               <input
                 type="range" min={0} max={1} step={0.001}
                 value={scroll}
@@ -924,24 +947,24 @@ export default function DawPage(): React.ReactElement {
 
         <div
           onPointerDown={(e) => startDrag('rack', e)}
-          className="w-1 shrink-0 cursor-ew-resize hover:bg-zinc-600/60 transition-colors"
+          className="w-1 shrink-0 cursor-ew-resize hover:bg-slate-400/60 transition-colors"
           title="드래그해서 마스터 랙 너비를 조절합니다"
         />
 
         {/* Rack — the master bus lives here, as a DAW's output section does. */}
         <div
-          className="shrink-0 border-l border-black/60 bg-zinc-900/40 overflow-y-auto"
+          className="shrink-0 border-l border-slate-300 bg-slate-50/70 overflow-y-auto"
           style={{ width: sizes.rack }}
         >
-          <div className="px-3 py-2 border-b border-black/40">
-            <div className="text-[9px] uppercase tracking-widest text-zinc-600">Master Bus</div>
+          <div className="px-3 py-2 border-b border-slate-200">
+            <div className="text-[9px] uppercase tracking-widest text-slate-600">Master Bus</div>
           </div>
           <div className="px-3 py-3 space-y-3">
             <select
               value={masterPresetId ?? ''}
               onChange={(e) => setMasterPreset(e.target.value === '' ? null : e.target.value)}
-              className="w-full text-[11px] bg-zinc-950 border border-zinc-700 rounded-sm px-1.5 py-1
-                         focus:outline-none focus:border-zinc-500"
+              className="w-full text-[11px] bg-slate-100 border border-slate-300 rounded-sm px-1.5 py-1
+                         focus:outline-none focus:border-slate-400"
             >
               <option value="">없음 (합산만)</option>
               {masterChoices.map((c) => <option key={c.id} value={c.id}>{c.displayName}</option>)}
@@ -951,8 +974,8 @@ export default function DawPage(): React.ReactElement {
               <>
                 <div>
                   <div className="flex items-baseline justify-between">
-                    <span className="text-[9px] uppercase tracking-widest text-zinc-600">Loudness</span>
-                    <span className="text-[10px] font-mono text-zinc-400 tabular-nums">
+                    <span className="text-[9px] uppercase tracking-widest text-slate-600">Loudness</span>
+                    <span className="text-[10px] font-mono text-slate-600 tabular-nums">
                       {(masterTargetLufs ?? activeMaster.targetLufs).toFixed(1)} LUFS
                     </span>
                   </div>
@@ -964,41 +987,41 @@ export default function DawPage(): React.ReactElement {
                     aria-label="목표 라우드니스"
                   />
                 </div>
-                <div className="text-[9px] font-mono text-zinc-600">
+                <div className="text-[9px] font-mono text-slate-600">
                   CEILING {activeMaster.ceilingDbtp.toFixed(1)} dBTP
                 </div>
-                <p className="text-[10px] text-zinc-600 leading-snug">{activeMaster.description}</p>
+                <p className="text-[10px] text-slate-600 leading-snug">{activeMaster.description}</p>
               </>
             )}
 
-            <p className="text-[9px] text-zinc-700 leading-snug border-t border-black/40 pt-2">
+            <p className="text-[9px] text-slate-500 leading-snug border-t border-slate-200 pt-2">
               미리듣기는 스템 체인과 믹서까지입니다. 마스터 버스는 믹스다운에 적용됩니다 —
               라우드니스는 완성된 파일을 재서 맞추는 방식이라 실시간으로는 같은 값이 나오지 않습니다.
             </p>
 
             {lastReport && (
-              <div className="border-t border-black/40 pt-2 space-y-1">
-                <div className="text-[9px] uppercase tracking-widest text-zinc-600">Last mixdown</div>
-                <div className="text-[10px] font-mono text-zinc-400 tabular-nums">
+              <div className="border-t border-slate-200 pt-2 space-y-1">
+                <div className="text-[9px] uppercase tracking-widest text-slate-600">Last mixdown</div>
+                <div className="text-[10px] font-mono text-slate-600 tabular-nums">
                   {lastReport.masterLufs.toFixed(1)} LUFS · {lastReport.masterTruePeakDb.toFixed(1)} dBTP
                 </div>
-                <div className={`text-[9px] font-mono tabular-nums ${lastReport.sumPeakDb > 0 ? 'text-amber-400' : 'text-zinc-600'}`}>
+                <div className={`text-[9px] font-mono tabular-nums ${lastReport.sumPeakDb > 0 ? 'text-amber-700' : 'text-slate-600'}`}>
                   SUM {lastReport.sumPeakDb.toFixed(1)} dBFS
                 </div>
                 {lastReport.loudnessNote !== 'ok' && lastReport.loudnessNote !== 'not-requested' && (
-                  <div className="text-[9px] text-amber-400">목표 미달 — {lastReport.loudnessNote}</div>
+                  <div className="text-[9px] text-amber-700">목표 미달 — {lastReport.loudnessNote}</div>
                 )}
                 {lastOutputPath && (
                   <button
                     onClick={() => void window.electronAPI?.invoke('file:save-wav', lastOutputPath)}
-                    className="w-full text-[10px] py-1 rounded-sm border border-zinc-700 hover:border-zinc-500 transition-colors"
+                    className="w-full text-[10px] py-1 rounded-sm border border-slate-300 hover:border-slate-400 transition-colors"
                   >WAV 저장</button>
                 )}
               </div>
             )}
 
             {(renderError || status.error) && (
-              <p className="text-[10px] text-amber-400 leading-snug border-t border-black/40 pt-2">
+              <p className="text-[10px] text-amber-700 leading-snug border-t border-slate-200 pt-2">
                 {renderError ?? status.error}
               </p>
             )}
@@ -1006,8 +1029,8 @@ export default function DawPage(): React.ReactElement {
             {tracks.length > 0 && (
               <button
                 onClick={clear}
-                className="w-full text-[10px] py-1 rounded-sm border border-zinc-800 text-zinc-600
-                           hover:text-red-400 transition-colors"
+                className="w-full text-[10px] py-1 rounded-sm border border-slate-200 text-slate-600
+                           hover:text-red-600 transition-colors"
               >세션 비우기</button>
             )}
           </div>
@@ -1016,7 +1039,7 @@ export default function DawPage(): React.ReactElement {
 
       {/* ── MixConsole ─────────────────────────────────────────────────── */}
       <div
-        className="shrink-0 border-t border-black/60 bg-zinc-950 flex flex-col"
+        className="shrink-0 border-t border-slate-300 bg-slate-100 flex flex-col"
         style={{ height: sizes.console }}
       >
         {/* Grab strip. Four pixels of target with a visible hairline — a
@@ -1024,16 +1047,16 @@ export default function DawPage(): React.ReactElement {
             there. */}
         <div
           onPointerDown={(e) => startDrag('console', e)}
-          className="shrink-0 h-1 -mt-1 cursor-ns-resize bg-transparent hover:bg-zinc-600/60 transition-colors"
+          className="shrink-0 h-1 -mt-1 cursor-ns-resize bg-transparent hover:bg-slate-400/60 transition-colors"
           title="드래그해서 믹스콘솔 높이를 조절합니다"
         />
-        <div className="shrink-0 h-6 flex items-center px-3 border-b border-black/50 bg-zinc-900/60">
-          <span className="text-[9px] uppercase tracking-widest text-zinc-600">MixConsole</span>
-          <span className="ml-3 text-[9px] text-zinc-700">
+        <div className="shrink-0 h-6 flex items-center px-3 border-b border-slate-200 bg-slate-50">
+          <span className="text-[9px] uppercase tracking-widest text-slate-600">MixConsole</span>
+          <span className="ml-3 text-[9px] text-slate-500">
             {audible.filter(Boolean).length} / {tracks.length} audible
           </span>
           <div className="flex-1" />
-          <span className="text-[9px] font-mono text-zinc-700 tabular-nums">
+          <span className="text-[9px] font-mono text-slate-500 tabular-nums">
             {status.liveChains > 0 ? `${status.liveChains} live chains · ` : ''}
             {status.memoryBytes > 0 ? `${(status.memoryBytes / 1e6).toFixed(0)} MB` : ''}
           </span>
@@ -1045,7 +1068,9 @@ export default function DawPage(): React.ReactElement {
               key={t.id}
               name={t.name}
               role={roleLabel(t.role)}
-              color={trackColor(t.role)}
+              color={trackPalette(t.role, 'light').accent}
+              tint={trackPalette(t.role, 'light').tint}
+              ink={trackPalette(t.role, 'light').ink}
               gainDb={t.gainDb}
               pan={t.pan}
               mute={t.mute}
@@ -1065,29 +1090,29 @@ export default function DawPage(): React.ReactElement {
 
           {tracks.length === 0 && (
             <div className="flex-1 flex items-center justify-center">
-              <span className="text-[10px] text-zinc-700">채널 없음</span>
+              <span className="text-[10px] text-slate-500">채널 없음</span>
             </div>
           )}
 
           {/* Master strip — always last, always on the right. */}
-          <div className="w-[96px] shrink-0 h-full flex flex-col bg-zinc-900/70 border-l-2 border-zinc-700">
-            <div className="h-1 shrink-0 bg-zinc-400" />
-            <div className="px-2 pt-1.5 pb-1 border-b border-black/30">
-              <div className="text-[10px] text-zinc-100">MASTER</div>
-              <div className="text-[9px] text-zinc-500 truncate">
+          <div className="w-[96px] shrink-0 h-full flex flex-col bg-slate-50 border-l-2 border-slate-300">
+            <div className="h-1 shrink-0 bg-slate-500" />
+            <div className="px-2 pt-1.5 pb-1 border-b border-slate-200">
+              <div className="text-[10px] text-slate-900">MASTER</div>
+              <div className="text-[9px] text-slate-600 truncate">
                 {activeMaster?.displayName ?? '없음'}
               </div>
             </div>
             <div className="flex-1 flex items-center justify-center px-2">
               <div className="text-center">
-                <div className="text-[10px] font-mono text-zinc-400 tabular-nums">
+                <div className="text-[10px] font-mono text-slate-600 tabular-nums">
                   {lastReport ? `${lastReport.masterLufs.toFixed(1)}` : '—'}
                 </div>
-                <div className="text-[8px] text-zinc-600 tracking-widest">LUFS</div>
+                <div className="text-[8px] text-slate-600 tracking-widest">LUFS</div>
               </div>
             </div>
             <div className="px-2 pb-2">
-              <div className="text-[8px] text-zinc-700 leading-tight text-center">
+              <div className="text-[8px] text-slate-500 leading-tight text-center">
                 믹스다운에서 적용
               </div>
             </div>

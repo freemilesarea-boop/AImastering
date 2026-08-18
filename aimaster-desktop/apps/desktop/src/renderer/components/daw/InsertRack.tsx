@@ -129,14 +129,14 @@ export default function InsertRack(props: InsertRackProps): React.ReactElement {
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <span className="text-[9px] uppercase tracking-widest text-zinc-600">Inserts</span>
-        <span className="text-[9px] text-zinc-700 tabular-nums">{inserts.length}</span>
+        <span className="text-[9px] uppercase tracking-widest text-slate-600">Inserts</span>
+        <span className="text-[9px] text-slate-500 tabular-nums">{inserts.length}</span>
       </div>
 
       {/* Slots */}
       <div className="space-y-px">
         {ordered.length === 0 && (
-          <div className="text-[10px] text-zinc-700 px-1.5 py-1.5 border border-dashed border-zinc-800 rounded-sm text-center">
+          <div className="text-[10px] text-slate-500 px-1.5 py-1.5 border border-dashed border-slate-200 rounded-sm text-center">
             비어 있음
           </div>
         )}
@@ -145,26 +145,26 @@ export default function InsertRack(props: InsertRackProps): React.ReactElement {
             key={ins.id}
             className={`group flex items-center gap-1 px-1.5 py-1 rounded-sm border transition-colors
                         ${openId === ins.id
-                          ? 'bg-zinc-800 border-zinc-600'
-                          : 'bg-zinc-950/70 border-zinc-800 hover:border-zinc-700'}`}
+                          ? 'bg-slate-200 border-slate-400'
+                          : 'bg-slate-100/70 border-slate-200 hover:border-slate-300'}`}
           >
             <button
               onClick={() => onToggleBypass(ins.id)}
               className={`w-2 h-2 rounded-full shrink-0 transition-colors
-                          ${ins.bypass ? 'bg-zinc-700' : 'bg-emerald-500'}`}
+                          ${ins.bypass ? 'bg-slate-300' : 'bg-emerald-600'}`}
               title={ins.bypass ? '꺼짐 — 눌러서 켜기' : '켜짐 — 눌러서 끄기'}
             />
             <button
               onClick={() => onOpen(openId === ins.id ? null : ins.id)}
               className={`flex-1 min-w-0 text-left text-[10px] truncate
-                          ${ins.bypass ? 'text-zinc-600 line-through' : 'text-zinc-300'}`}
+                          ${ins.bypass ? 'text-slate-600 line-through' : 'text-slate-700'}`}
               title={MODULE_GLOSSARY[ins.id]?.plain ?? ''}
             >
               {moduleLabel(ins.id)}
             </button>
             <button
               onClick={() => onRemove(ins.id)}
-              className="opacity-0 group-hover:opacity-100 text-zinc-700 hover:text-red-400 text-[10px] leading-none shrink-0"
+              className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-600 text-[10px] leading-none shrink-0"
               title="이 플러그인 제거"
             >✕</button>
           </div>
@@ -174,28 +174,28 @@ export default function InsertRack(props: InsertRackProps): React.ReactElement {
       <button
         onClick={() => setPicking((v) => !v)}
         disabled={disabled || addable.length === 0}
-        className="w-full text-[10px] py-1 rounded-sm border border-zinc-700 text-zinc-300
-                   hover:border-zinc-500 disabled:opacity-30 transition-colors"
+        className="w-full text-[10px] py-1 rounded-sm border border-slate-300 text-slate-700
+                   hover:border-slate-400 disabled:opacity-30 transition-colors"
       >
         {picking ? '닫기' : '+ 플러그인 추가'}
       </button>
 
       {picking && (
-        <div className="border border-zinc-800 rounded-sm bg-zinc-950/90 max-h-60 overflow-y-auto">
+        <div className="border border-slate-200 rounded-sm bg-slate-100/90 max-h-60 overflow-y-auto">
           {PICKER_GROUPS.map((group) => {
             const items = group.modules.filter((m) => addable.includes(m));
             if (items.length === 0) return null;
             return (
-              <div key={group.label} className="border-b border-zinc-900 last:border-0">
-                <div className="px-1.5 pt-1.5 pb-0.5 text-[9px] uppercase tracking-widest text-zinc-700">
+              <div key={group.label} className="border-b border-slate-300 last:border-0">
+                <div className="px-1.5 pt-1.5 pb-0.5 text-[9px] uppercase tracking-widest text-slate-500">
                   {group.label}
                 </div>
                 {items.map((m) => (
                   <button
                     key={m}
                     onClick={() => { onAdd(m); setPicking(false); onOpen(m); }}
-                    className="w-full text-left px-1.5 py-1 text-[10px] text-zinc-400
-                               hover:bg-zinc-800 hover:text-zinc-100 transition-colors"
+                    className="w-full text-left px-1.5 py-1 text-[10px] text-slate-600
+                               hover:bg-slate-200 hover:text-slate-900 transition-colors"
                     title={MODULE_GLOSSARY[m]?.plain ?? ''}
                   >
                     {moduleLabel(m)}
