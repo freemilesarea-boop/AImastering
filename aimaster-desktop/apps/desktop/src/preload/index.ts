@@ -16,6 +16,8 @@ const INVOKE_CHANNELS = [
   // Source measurement that drives the per-song recommended settings.
   'audio:song-profile',
   'stem:analyze',
+  'stem:preview-render',
+  'stem:preview-clear',
   'stem:render',
   // Rust offline render (RUST-OFFLINE-RENDER-1) — same Rust MasteringChain
   // as the realtime preview, used by the "새 버전 만들기" path when the

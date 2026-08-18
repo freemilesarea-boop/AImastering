@@ -502,6 +502,39 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
   });
 
   /**
+   * Bake one stem's chain so the mixer can play it in realtime.
+   *
+   * Cached on (file contents, chain, sample rate), so moving a fader costs
+   * nothing and coming back from editing one stem re-renders that stem only.
+   */
+  ipc.handle('stem:preview-render', async (_e, req: {
+    filePath: unknown;
+    config?: import('../offline/load-mastering-chain-node.js').OfflineChainConfig | null;
+    sampleRate?: number;
+  }) => {
+    assertTmpWritable();
+    const safePath = validateAbsoluteFilePath(req?.filePath, 'stem:preview-render');
+    try {
+      const { renderStemPreview } = await import('../offline/stem-preview.js');
+      const result = await renderStemPreview(
+        safePath,
+        req.config ?? null,
+        req.sampleRate === 44100 ? 44100 : 48000,
+      );
+      return { ok: true as const, ...result };
+    } catch (err) {
+      // Returned, not thrown: one stem that will not render must not stop
+      // the others from being previewed.
+      return { ok: false as const, error: (err as Error).message };
+    }
+  });
+
+  ipc.handle('stem:preview-clear', async () => {
+    const { clearPreviewCache } = await import('../offline/stem-preview.js');
+    return { ok: true as const, removed: clearPreviewCache() };
+  });
+
+  /**
    * Render a stem session: every stem through its own chain, summed
    * through the mixer, then the master bus.
    *

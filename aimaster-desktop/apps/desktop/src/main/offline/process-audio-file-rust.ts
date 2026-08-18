@@ -83,13 +83,25 @@ export async function decodeToFloatStereo(inputPath: string, sampleRate: number)
   return new Float32Array(buf.buffer, buf.byteOffset, usable / 4);
 }
 
-/** Encode interleaved f32le stereo → WAV at the target bit depth. */
-export async function encodeWav(interleaved: Float32Array, sampleRate: number, bitDepth: 16 | 24, outputPath: string): Promise<void> {
+/**
+ * Encode interleaved f32le → WAV at the target bit depth.
+ *
+ * `channels` defaults to 2. Mono is supported because a stem that measures
+ * mono costs half as much to hold in memory for playback, and a stem
+ * session holds all of them at once.
+ */
+export async function encodeWav(
+  interleaved: Float32Array,
+  sampleRate: number,
+  bitDepth: 16 | 24,
+  outputPath: string,
+  channels: 1 | 2 = 2,
+): Promise<void> {
   const codec = bitDepth === 16 ? 'pcm_s16le' : 'pcm_s24le';
   const stdin = Buffer.from(interleaved.buffer, interleaved.byteOffset, interleaved.byteLength);
   await runFfmpeg([
     '-hide_banner', '-loglevel', 'error', '-y',
-    '-f', 'f32le', '-ar', String(sampleRate), '-ac', '2', '-i', 'pipe:0',
+    '-f', 'f32le', '-ar', String(sampleRate), '-ac', String(channels), '-i', 'pipe:0',
     '-c:a', codec, outputPath,
   ], stdin);
 }

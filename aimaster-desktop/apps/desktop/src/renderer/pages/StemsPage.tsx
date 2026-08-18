@@ -34,6 +34,7 @@ import {
   ensureStemChain, resetStemChain, hasStemChain, resolveStemWire,
 } from '../audio/presets/stem-studio.js';
 import { useAudioStore } from '../stores/audioStore.js';
+import { StemPreviewEngine, type PreviewStatus, type PreviewStemInput } from '../audio/stem-preview-engine.js';
 
 const ROLE_LABEL: Record<StemRole, string> = {
   kick: '킥', snare: '스네어', drums: '드럼/퍼커션', bass: '베이스',
@@ -200,6 +201,78 @@ function StemRow({
   );
 }
 
+// ── Transport ────────────────────────────────────────────────────────────────
+
+function timecode(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return '0:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function Transport({
+  status, onPrepare, onPlay, onPause, onSeek, preparing, stale,
+}: {
+  status: PreviewStatus;
+  preparing: boolean;
+  /** True when a chain changed since the last prepare. */
+  stale: boolean;
+  onPrepare: () => void;
+  onPlay: () => void;
+  onPause: () => void;
+  onSeek: (sec: number) => void;
+}): React.ReactElement {
+  const canPlay = status.state === 'ready' || status.state === 'playing';
+
+  return (
+    <div className="shrink-0 border-t border-zinc-800/60 px-4 py-2.5 flex items-center gap-3">
+      <button
+        onClick={status.state === 'playing' ? onPause : canPlay ? onPlay : onPrepare}
+        disabled={preparing || status.state === 'loading'}
+        className="w-16 text-xs px-3 py-1.5 rounded border border-zinc-700 text-zinc-200
+                   hover:border-zinc-500 disabled:opacity-40 transition-colors"
+      >
+        {preparing || status.state === 'loading' ? '준비 중'
+          : status.state === 'playing' ? '일시정지'
+          : canPlay ? '재생' : '미리듣기'}
+      </button>
+
+      <input
+        type="range" min={0} max={Math.max(status.duration, 0.01)} step={0.01}
+        value={Math.min(status.position, status.duration)}
+        onChange={(e) => onSeek(Number(e.target.value))}
+        disabled={!canPlay}
+        className="flex-1 accent-zinc-400 disabled:opacity-30"
+        aria-label="재생 위치"
+      />
+
+      <span className="font-mono text-[11px] text-zinc-500 tabular-nums shrink-0">
+        {timecode(status.position)} / {timecode(status.duration)}
+      </span>
+
+      {status.memoryBytes > 0 && (
+        <span
+          className="font-mono text-[11px] text-zinc-600 tabular-nums shrink-0"
+          title="미리듣기를 위해 메모리에 올려둔 오디오의 크기입니다."
+        >
+          {(status.memoryBytes / 1e6).toFixed(0)} MB
+        </span>
+      )}
+
+      {stale && canPlay && (
+        <button
+          onClick={onPrepare}
+          className="text-[11px] px-2 py-1 rounded border border-amber-500/40 text-amber-300
+                     hover:border-amber-400 shrink-0 transition-colors"
+          title="스템 체인이 바뀌었습니다 — 바뀐 스템만 다시 굽습니다"
+        >
+          다시 굽기
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── Master bus ───────────────────────────────────────────────────────────────
 
 function MasterBus(): React.ReactElement {
@@ -315,6 +388,113 @@ export default function StemsPage(): React.ReactElement {
     setStudioReturnTo('stems');
     setPage('studio');
   }, [setFile, setStudioReturnTo, setPage]);
+
+  // ── Realtime preview ─────────────────────────────────────────────────────
+  // The engine outlives any render of this page, so it lives in a ref rather
+  // than in state — rebuilding it on a re-render would tear down the audio
+  // every time a fader moved.
+  const engineRef = React.useRef<StemPreviewEngine | null>(null);
+  const [status, setStatus] = React.useState<PreviewStatus>({
+    state: 'idle', position: 0, duration: 0, memoryBytes: 0, error: null,
+  });
+  const [preparing, setPreparing] = React.useState(false);
+  /** Preview paths per stem id, from the last bake. */
+  const [baked, setBaked] = React.useState<Map<string, { path: string; channels: 1 | 2; samples: number }>>(new Map());
+
+  useEffect(() => {
+    const engine = new StemPreviewEngine();
+    engineRef.current = engine;
+    const off = engine.subscribe(setStatus);
+    return () => { off(); engine.dispose(); engineRef.current = null; };
+  }, []);
+
+  // While playing, the position comes from the audio clock and nothing
+  // pushes it — poll it, at a rate a person can read rather than at the
+  // rate it changes.
+  useEffect(() => {
+    if (status.state !== 'playing') return;
+    const id = window.setInterval(() => {
+      const e = engineRef.current;
+      if (e) setStatus(e.status());
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [status.state]);
+
+  /** The stems that would be baked now, and what identifies that bake. */
+  const previewInputs = useMemo(() => tracks.map((t) => ({
+    id: t.id,
+    filePath: t.filePath,
+    role: t.role,
+    gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
+  })), [tracks]);
+
+  // A chain change invalidates the bake; a fader change does not. This is
+  // the whole reason the chains are baked and the faders are not.
+  const chainSignature = useMemo(
+    () => previewInputs.map((t) => `${t.id}:${t.filePath}:${t.role}`).join('|'),
+    [previewInputs],
+  );
+  const bakedSignature = React.useRef('');
+  const stale = baked.size > 0 && bakedSignature.current !== chainSignature;
+
+  const handlePrepare = useCallback(async () => {
+    const api = window.electronAPI;
+    const engine = engineRef.current;
+    if (!api || !engine || tracks.length === 0) return;
+    setPreparing(true);
+    try {
+      const next = new Map<string, { path: string; channels: 1 | 2; samples: number }>();
+      const failures: string[] = [];
+      for (const t of tracks) {
+        const res = await api.invoke('stem:preview-render', {
+          filePath: t.filePath,
+          config: { ...baseConfig(), suiteConfig: resolveStemWire(t.filePath, t.role) },
+          sampleRate: 48000,
+        }) as { ok: boolean; error?: string; previewPath?: string; channels?: 1 | 2; samples?: number };
+        if (res.ok && res.previewPath) {
+          next.set(t.id, {
+            path: res.previewPath,
+            channels: res.channels ?? 2,
+            samples: res.samples ?? 0,
+          });
+        } else {
+          failures.push(`${t.name}: ${res.error ?? '알 수 없는 오류'}`);
+        }
+      }
+      setBaked(next);
+      bakedSignature.current = chainSignature;
+      if (failures.length > 0) notify(`미리듣기 준비 실패 ${failures.length}개 — ${failures[0]}`, 'warning');
+
+      const inputs: PreviewStemInput[] = tracks
+        .filter((t) => next.has(t.id))
+        .map((t) => ({
+          id: t.id,
+          previewPath: next.get(t.id)!.path,
+          channels: next.get(t.id)!.channels,
+          samples: next.get(t.id)!.samples,
+          gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
+        }));
+      await engine.load(inputs);
+    } finally {
+      setPreparing(false);
+    }
+  }, [tracks, chainSignature, notify]);
+
+  // Faders, balance, mute and solo reach the running graph without
+  // interrupting it — that is what makes this a mixer rather than a player.
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || baked.size === 0) return;
+    engine.update(tracks
+      .filter((t) => baked.has(t.id))
+      .map((t) => ({
+        id: t.id,
+        previewPath: baked.get(t.id)!.path,
+        channels: baked.get(t.id)!.channels,
+        samples: baked.get(t.id)!.samples,
+        gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
+      })));
+  }, [tracks, baked]);
 
   const handleResetChain = useCallback((t: StemTrackState) => {
     resetStemChain(t.filePath, t.role);
@@ -463,10 +643,20 @@ export default function StemsPage(): React.ReactElement {
         )}
       </div>
 
+      <Transport
+        status={status}
+        preparing={preparing}
+        stale={stale}
+        onPrepare={() => void handlePrepare()}
+        onPlay={() => engineRef.current?.play()}
+        onPause={() => engineRef.current?.pause()}
+        onSeek={(sec) => engineRef.current?.seek(sec)}
+      />
+
       <MasterBus />
 
       {/* Report */}
-      {(lastReport || renderError || attention.length > 0) && (
+      {(lastReport || renderError || status.error || attention.length > 0) && (
         <div className="shrink-0 border-t border-zinc-800/60 px-4 py-2.5 space-y-1.5">
           {attention.length > 0 && (
             <p className="text-[11px] text-amber-400/80">
@@ -475,6 +665,9 @@ export default function StemsPage(): React.ReactElement {
           )}
           {renderError && (
             <p className="text-[11px] text-red-400">{renderError}</p>
+          )}
+          {status.error && (
+            <p className="text-[11px] text-amber-400">{status.error}</p>
           )}
           {lastReport && (
             <div className="flex items-center gap-4 flex-wrap">
