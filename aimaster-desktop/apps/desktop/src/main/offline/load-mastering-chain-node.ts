@@ -116,17 +116,84 @@ export interface WasmAnalyzer {
 
 const require_ = createRequire(__filename);
 
-/** Candidate locations for the node-target WASM glue (.cjs). */
-function candidatePaths(): string[] {
+/**
+ * Candidate locations for the node-target WASM glue (.cjs).
+ *
+ * # Why this walks rather than counting `..`
+ *
+ * The original list counted five levels up from `__dirname`, which is right
+ * for `apps/desktop/src/main/offline` — the layout the headless tests run
+ * in. The APP does not run from there: esbuild bundles the main process to
+ * `apps/desktop/dist-electron/main/index.js`, which is two levels shallower,
+ * so the same five `..` landed outside the workspace entirely and the module
+ * was never found.
+ *
+ * Nothing said so. `loadWasmModule` returns null when it cannot resolve, and
+ * every caller that has a Python fallback quietly took it — so the Rust
+ * engine simply never ran in the running application, while every test that
+ * exercised it passed. The parts with no fallback (the stem session) failed
+ * with "unavailable" and no explanation of why it would be unavailable in a
+ * checkout that contains the file.
+ *
+ * Walking up from wherever this module actually sits removes the assumption
+ * instead of correcting it, so a future change to the bundle layout cannot
+ * reintroduce the same silence.
+ */
+export function candidatePathsFrom(startDir: string): string[] {
   const file = 'loui_dsp_wasm.cjs';
   const c: string[] = [];
+
   // 1) explicit override
   if (process.env['LOUI_WASM_NODE_PATH']) c.push(process.env['LOUI_WASM_NODE_PATH']!);
-  // 2) workspace dev layout (apps/desktop/src/main/offline → packages/dsp-wasm/pkg-node)
-  c.push(path.resolve(__dirname, '../../../../../packages/dsp-wasm/pkg-node', file));
-  // 3) packaged resources
+
+  // 2) the workspace dependency, resolved by Node rather than by counting.
+  //    `@loui/dsp-wasm` is a dependency of this app, so when the bundle keeps
+  //    node_modules resolution this is exact and layout-independent.
+  try {
+    c.push(require_.resolve('@loui/dsp-wasm/pkg-node/loui_dsp_wasm.cjs'));
+  } catch { /* not resolvable from here — the walk below covers it */ }
+
+  // 3) walk up looking for the package. Covers the source layout
+  //    (src/main/offline), the dev bundle (dist-electron/main) and any
+  //    packaged layout that keeps the workspace shape.
+  let dir = startDir;
+  for (let i = 0; i < 8; i++) {
+    c.push(path.join(dir, 'packages/dsp-wasm/pkg-node', file));
+    c.push(path.join(dir, 'node_modules/@loui/dsp-wasm/pkg-node', file));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  // 4) packaged resources
   if (process.resourcesPath) c.push(path.join(process.resourcesPath, 'dsp-wasm-node', file));
+
   return c;
+}
+
+function candidatePaths(): string[] {
+  return candidatePathsFrom(__dirname);
+}
+
+/**
+ * Where the last resolution attempt looked, and what it found.
+ *
+ * Exposed so the app can say "the engine is missing, and here is where it
+ * was looked for" instead of "unavailable". A path bug that produces silence
+ * costs far more to find than one that prints its search.
+ */
+export interface WasmResolution {
+  resolved: string | null;
+  tried: string[];
+}
+
+let lastResolution: WasmResolution = { resolved: null, tried: [] };
+
+export function wasmResolution(): WasmResolution {
+  // Force a resolution attempt so a caller asking before first use gets a
+  // real answer rather than an empty one.
+  loadWasmModule();
+  return lastResolution;
 }
 
 let cached: WasmModule | null | undefined;
@@ -135,14 +202,20 @@ let cached: WasmModule | null | undefined;
  *  (caller falls back to the Python engine). */
 export function loadWasmModule(): WasmModule | null {
   if (cached !== undefined) return cached;
-  for (const p of candidatePaths()) {
+  const tried = candidatePaths();
+  for (const p of tried) {
     try {
       if (!fs.existsSync(p)) continue;
       const mod = require_(p) as WasmModule;
-      if (mod && typeof mod.LouiMasteringChain === 'function') { cached = mod; return mod; }
+      if (mod && typeof mod.LouiMasteringChain === 'function') {
+        cached = mod;
+        lastResolution = { resolved: p, tried };
+        return mod;
+      }
     } catch { /* try next */ }
   }
   cached = null;
+  lastResolution = { resolved: null, tried };
   return null;
 }
 

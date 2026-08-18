@@ -334,7 +334,8 @@ export default function DawPage(): React.ReactElement {
   // ── Preview ──────────────────────────────────────────────────────────────
   const engineRef = useRef<StemPreviewEngine | null>(null);
   const [status, setStatus] = useState<PreviewStatus>({
-    state: 'idle', position: 0, duration: 0, memoryBytes: 0, error: null,
+    state: 'idle', position: 0, duration: 0, memoryBytes: 0,
+    liveChains: 0, chainsDegraded: null, error: null,
   });
   const [preparing, setPreparing] = useState<{ done: number; total: number; name: string } | null>(null);
   const [baked, setBaked] = useState<Map<string, { path: string; channels: 1 | 2; samples: number }>>(new Map());
@@ -355,12 +356,15 @@ export default function DawPage(): React.ReactElement {
     return () => window.clearInterval(id);
   }, [status.state]);
 
-  const chainSignature = useMemo(
-    () => tracks.map((t) => `${t.id}:${t.filePath}:${t.role}`).join('|'),
+  // What a re-bake actually depends on: which files are in the session. The
+  // chains are applied live, so a plugin edit or a role change costs nothing
+  // and must not put a "re-bake" prompt on screen.
+  const fileSignature = useMemo(
+    () => tracks.map((t) => `${t.id}:${t.filePath}`).join('|'),
     [tracks],
   );
   const bakedSignature = useRef('');
-  const stale = baked.size > 0 && bakedSignature.current !== chainSignature;
+  const stale = baked.size > 0 && bakedSignature.current !== fileSignature;
 
   const handlePrepare = useCallback(async () => {
     const api = window.electronAPI;
@@ -374,7 +378,10 @@ export default function DawPage(): React.ReactElement {
         setPreparing({ done: i, total: tracks.length, name: t.name });
         const res = await api.invoke('stem:preview-render', {
           filePath: t.filePath,
-          config: { ...baseConfig(), suiteConfig: resolveStemWire(t.filePath, t.role) },
+          // No chain: the plugins run live in the audio thread now, so the
+          // decoded buffer must be the raw stem. This is also what makes the
+          // bake stable — adding a compressor no longer re-renders anything.
+          config: null,
           sampleRate: 48000,
         }) as { ok: boolean; error?: string; previewPath?: string; channels?: 1 | 2; samples?: number };
         if (res.ok && res.previewPath) {
@@ -382,7 +389,7 @@ export default function DawPage(): React.ReactElement {
         } else failures.push(`${t.name}: ${res.error ?? '알 수 없는 오류'}`);
       }
       setBaked(next);
-      bakedSignature.current = chainSignature;
+      bakedSignature.current = fileSignature;
       if (failures.length > 0) notify(`미리듣기 준비 실패 ${failures.length}개 — ${failures[0]}`, 'warning');
 
       const inputs: PreviewStemInput[] = tracks.filter((t) => next.has(t.id)).map((t) => ({
@@ -391,6 +398,7 @@ export default function DawPage(): React.ReactElement {
         channels: next.get(t.id)!.channels,
         samples: next.get(t.id)!.samples,
         gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
+        config: resolveStemWire(t.filePath, t.role),
       }));
       await engine.load(inputs);
       // The user pressed play. Baking is the step in between, not the
@@ -400,7 +408,7 @@ export default function DawPage(): React.ReactElement {
     } finally {
       setPreparing(null);
     }
-  }, [tracks, chainSignature, notify]);
+  }, [tracks, fileSignature, notify]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -411,8 +419,12 @@ export default function DawPage(): React.ReactElement {
       channels: baked.get(t.id)!.channels,
       samples: baked.get(t.id)!.samples,
       gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
+      config: resolveStemWire(t.filePath, t.role),
     })));
-  }, [tracks, baked]);
+    // `rackTick` is the dependency that carries a plugin edit: the saved
+    // chain changed on disk, not in `tracks`, so without it a knob move
+    // would be inaudible until something else re-rendered the page.
+  }, [tracks, baked, rackTick]);
 
   // ── Actions ──────────────────────────────────────────────────────────────
   const handleAdd = useCallback(async () => {
@@ -491,6 +503,11 @@ export default function DawPage(): React.ReactElement {
       {status.error && (
         <div className="shrink-0 px-3 py-1.5 bg-amber-950/60 border-b border-amber-900/70 text-[11px] text-amber-300">
           {status.error}
+        </div>
+      )}
+      {status.chainsDegraded && (
+        <div className="shrink-0 px-3 py-1.5 bg-amber-950/60 border-b border-amber-900/70 text-[11px] text-amber-300">
+          {status.chainsDegraded}
         </div>
       )}
 
@@ -912,6 +929,7 @@ export default function DawPage(): React.ReactElement {
           </span>
           <div className="flex-1" />
           <span className="text-[9px] font-mono text-zinc-700 tabular-nums">
+            {status.liveChains > 0 ? `${status.liveChains} live chains · ` : ''}
             {status.memoryBytes > 0 ? `${(status.memoryBytes / 1e6).toFixed(0)} MB` : ''}
           </span>
         </div>

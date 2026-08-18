@@ -19,27 +19,48 @@
 // what keeps every stem aligned after a seek. Nudging positions individually
 // is how sync is lost.
 //
+// # The chains run live, on the raw stems
+//
+// Each track's plugins run in their own worklet, inserted between its buffer
+// and its fader, so turning a knob is heard immediately — which is the only
+// way a plugin is usable at all.
+//
+// The buffers therefore hold the RAW stem rather than a rendered one. That
+// is what makes the bake stable: adding a compressor or dragging a threshold
+// changes nothing about the audio on disk, so nothing is re-decoded and
+// nothing is re-rendered. Only a new FILE costs anything.
+//
+// Parity is not lost by moving the chain into the audio thread, because it is
+// the same chain: the worklet runs the same Rust `MasteringChain` the offline
+// render runs, from the same config. It is one implementation in two hosts,
+// not two implementations.
+//
+// The cost is CPU — one chain instance per track in a 128-sample quantum —
+// so the engine reports how many are running and the caller can say so.
+//
 // # What the preview is, and what it is not
 //
-// It is the stem chains plus the mixer: exactly what the export produces up
-// to the master bus, because the stems were rendered by the export's own
-// code. It is NOT the master bus. The master's loudness is solved by
-// measuring the finished file and correcting, twice — an approximation of
-// that in realtime would be a different algorithm producing a different
-// level, and a preview that is confidently wrong about loudness is worse
-// than one that says it does not cover it.
+// It is the track chains plus the mixer. It is NOT the master bus. The
+// master's loudness is solved by measuring the finished file and correcting,
+// repeatedly — an approximation of that in realtime would be a different
+// algorithm producing a different level, and a preview confidently wrong
+// about loudness is worse than one that says it does not cover it.
 
 import {
   createStrip, stripGains, previewFitsInMemory,
   type MixerStrip, type StripSettings,
 } from './stem-mixer-graph.js';
+import { loadMasteringWorklet, createChainNode } from './mastering-worklet-loader.js';
+import type { ChainConfigWire } from './chain-config.js';
 
 export interface PreviewStemInput extends StripSettings {
   id: string;
-  /** Temp WAV written by the main process, already carrying the chain. */
+  /** Temp WAV of the RAW stem, decoded once and reused. */
   previewPath: string;
   channels: 1 | 2;
   samples: number;
+  /** This track's plugin chain, applied live. Null runs the stem dry. */
+  config: ChainConfigWire | null;
 }
 
 export type PreviewState = 'idle' | 'loading' | 'ready' | 'playing';
@@ -51,6 +72,17 @@ export interface PreviewStatus {
   duration: number;
   /** Bytes the decoded buffers occupy. */
   memoryBytes: number;
+  /** Live chains running in the audio thread — the CPU cost of the session. */
+  liveChains: number;
+  /**
+   * Set when the plugin chains could not be loaded into the audio thread.
+   *
+   * Playback still works; it is the raw stems through the mixer. Saying so
+   * matters because the difference is every plugin on every track, and a
+   * preview that quietly dropped them would send the user chasing a
+   * settings bug that is not there.
+   */
+  chainsDegraded: string | null;
   error: string | null;
 }
 
@@ -70,6 +102,9 @@ export class StemPreviewEngine {
   private buffers = new Map<string, AudioBuffer>();
   private strips = new Map<string, MixerStrip>();
   private sources = new Map<string, AudioBufferSourceNode>();
+  private chains = new Map<string, AudioWorkletNode>();
+  private wasmModule: WebAssembly.Module | null = null;
+  private chainsDegraded: string | null = null;
   private stems: PreviewStemInput[] = [];
 
   private state: PreviewState = 'idle';
@@ -100,6 +135,8 @@ export class StemPreviewEngine {
       duration: this.duration,
       memoryBytes: [...this.buffers.values()]
         .reduce((n, b) => n + b.length * b.numberOfChannels * 4, 0),
+      liveChains: this.chains.size,
+      chainsDegraded: this.chainsDegraded,
       error: this.error,
     };
   }
@@ -130,7 +167,7 @@ export class StemPreviewEngine {
       return;
     }
 
-    this.stop();
+    this.teardownGraph();
     this.state = 'loading';
     this.emit();
 
@@ -157,7 +194,9 @@ export class StemPreviewEngine {
         return b ? Math.max(max, b.duration) : max;
       }, 0);
 
+      await this.ensureWorklet(ctx);
       this.rebuildStrips();
+      this.applyChains();
       this.applyGains(0);
       this.pausedAt = Math.min(this.pausedAt, this.duration);
       this.state = 'ready';
@@ -178,6 +217,9 @@ export class StemPreviewEngine {
     if (!sameSet) return;
 
     this.stems = stems;
+    // Chains first: a plugin change and a fader change arrive through the
+    // same call, and the chain is the one that has to be heard immediately.
+    this.applyChains();
     this.applyGains(RAMP_MS);
   }
 
@@ -198,7 +240,7 @@ export class StemPreviewEngine {
       if (!buffer || !strip) continue;
       const src = ctx.createBufferSource();
       src.buffer = buffer;
-      src.connect(strip.input);
+      src.connect(this.chains.get(stem.id) ?? strip.input);
       src.start(when, offset);
       this.sources.set(stem.id, src);
     }
@@ -228,18 +270,35 @@ export class StemPreviewEngine {
     }
   }
 
+  /**
+   * Stop and return to the start.
+   *
+   * The graph stays. An earlier version tore down the strips here, which
+   * made the stop button a one-way door: `play` looks its strips up by id,
+   * found none, and did nothing until the session was loaded again. Stop is
+   * a transport control, not a teardown — that is `dispose`.
+   */
   stop(): void {
     this.stopSources();
-    for (const strip of this.strips.values()) strip.disconnect();
-    this.strips.clear();
     this.pausedAt = 0;
     if (this.state === 'playing') this.state = 'ready';
     this.emit();
   }
 
+  /** Tear the graph down, keeping the decoded buffers. */
+  private teardownGraph(): void {
+    this.stopSources();
+    for (const chain of this.chains.values()) {
+      try { chain.disconnect(); } catch { /* already detached */ }
+    }
+    this.chains.clear();
+    for (const strip of this.strips.values()) strip.disconnect();
+    this.strips.clear();
+  }
+
   /** Release everything, including the decoded buffers. */
   dispose(): void {
-    this.stop();
+    this.teardownGraph();
     this.buffers.clear();
     this.stems = [];
     this.duration = 0;
@@ -261,14 +320,76 @@ export class StemPreviewEngine {
     return ctx;
   }
 
+  /**
+   * Compile and register the chain processor once per context.
+   *
+   * Failure is not fatal. Without it every track plays dry, which is a
+   * worse preview but still a working one — and the status says so rather
+   * than leaving the user to wonder why their compressor does nothing.
+   */
+  private async ensureWorklet(ctx: AudioContext): Promise<void> {
+    if (this.wasmModule) return;
+    try {
+      const loaded = await loadMasteringWorklet(ctx, { sampleRate: ctx.sampleRate });
+      this.wasmModule = loaded.wasmModule;
+      // The node the loader built is not used — this engine makes one per
+      // track — but constructing it is what proves the processor registered.
+      loaded.node.disconnect();
+      this.chainsDegraded = null;
+    } catch (err) {
+      this.wasmModule = null;
+      this.chainsDegraded =
+        `플러그인을 실시간으로 걸지 못했습니다 (${(err as Error).message}). ` +
+        '지금 들리는 소리는 플러그인이 빠진 원본입니다 — 믹스다운에는 정상 적용됩니다.';
+    }
+  }
+
   private rebuildStrips(): void {
     const ctx = this.ctx;
     const master = this.master;
     if (!ctx || !master) return;
+
     for (const strip of this.strips.values()) strip.disconnect();
     this.strips.clear();
+    for (const chain of this.chains.values()) {
+      try { chain.disconnect(); } catch { /* already detached */ }
+    }
+    this.chains.clear();
+
     for (const stem of this.stems) {
-      this.strips.set(stem.id, createStrip(ctx, master, stem.channels));
+      const strip = createStrip(ctx, master, stem.channels);
+      this.strips.set(stem.id, strip);
+
+      // The chain sits between the buffer and the fader, so the fader is
+      // post-plugin — which is where a channel fader is on every console,
+      // and what stops a fader move from changing how hard the compressor
+      // on that channel works.
+      if (this.wasmModule) {
+        try {
+          const node = createChainNode(ctx, this.wasmModule, ctx.sampleRate, 2);
+          node.connect(strip.input);
+          this.chains.set(stem.id, node);
+        } catch {
+          // One node that will not build should not take the session down;
+          // that track simply plays dry.
+        }
+      }
+    }
+  }
+
+  /** Push each track's plugin chain into its worklet. */
+  private applyChains(): void {
+    for (const stem of this.stems) {
+      const node = this.chains.get(stem.id);
+      if (!node) continue;
+      // One message: `configJson` sets bypass from `masterBypass`, so a
+      // separate bypass message after it would be undone by the next config,
+      // and one before it would be ignored.
+      node.port.postMessage({
+        type: 'configJson',
+        json: JSON.stringify(stem.config ?? {}),
+        masterBypass: stem.config === null,
+      });
     }
   }
 

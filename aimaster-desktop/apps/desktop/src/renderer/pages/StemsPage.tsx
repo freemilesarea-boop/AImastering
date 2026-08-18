@@ -404,7 +404,8 @@ export default function StemsPage(): React.ReactElement {
   // every time a fader moved.
   const engineRef = React.useRef<StemPreviewEngine | null>(null);
   const [status, setStatus] = React.useState<PreviewStatus>({
-    state: 'idle', position: 0, duration: 0, memoryBytes: 0, error: null,
+    state: 'idle', position: 0, duration: 0, memoryBytes: 0,
+    liveChains: 0, chainsDegraded: null, error: null,
   });
   const [preparing, setPreparing] = React.useState(false);
   /** Preview paths per stem id, from the last bake. */
@@ -457,7 +458,9 @@ export default function StemsPage(): React.ReactElement {
       for (const t of tracks) {
         const res = await api.invoke('stem:preview-render', {
           filePath: t.filePath,
-          config: { ...baseConfig(), suiteConfig: resolveStemWire(t.filePath, t.role) },
+          // Raw: the chain runs live in the audio thread, so the buffer
+          // must not already carry it.
+          config: null,
           sampleRate: 48000,
         }) as { ok: boolean; error?: string; previewPath?: string; channels?: 1 | 2; samples?: number };
         if (res.ok && res.previewPath) {
@@ -482,6 +485,7 @@ export default function StemsPage(): React.ReactElement {
           channels: next.get(t.id)!.channels,
           samples: next.get(t.id)!.samples,
           gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
+          config: resolveStemWire(t.filePath, t.role),
         }));
       await engine.load(inputs);
     } finally {
@@ -502,6 +506,7 @@ export default function StemsPage(): React.ReactElement {
         channels: baked.get(t.id)!.channels,
         samples: baked.get(t.id)!.samples,
         gainDb: t.gainDb, pan: t.pan, mute: t.mute, solo: t.solo,
+        config: resolveStemWire(t.filePath, t.role),
       })));
   }, [tracks, baked]);
 

@@ -128,6 +128,36 @@ function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => void): Promi
  * compiled module.  Rejects with a `MasteringWorkletLoadError` on any
  * failure — the caller must fall back to the re-render preview.
  */
+/**
+ * Build another chain node on a context whose worklet is already loaded.
+ *
+ * The expensive parts of `loadMasteringWorklet` — fetching the glue, fetching
+ * and compiling the WASM, registering the processor — happen once per
+ * context. Constructing a second node from the SAME compiled module is
+ * cheap, and it is what lets a session run one chain per track instead of
+ * one chain in total.
+ *
+ * Pass the `wasmModule` the first load returned. Constructing a node before
+ * the processor is registered throws, so this is deliberately not able to
+ * run on its own.
+ */
+export function createChainNode(
+  ctx: AudioContext,
+  wasmModule: WebAssembly.Module,
+  sampleRate: number,
+  channels = 2,
+): AudioWorkletNode {
+  return new AudioWorkletNode(ctx, 'loui-mastering-chain', {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [channels],
+    channelCount: channels,
+    channelCountMode: 'explicit',
+    channelInterpretation: 'speakers',
+    processorOptions: { wasmModule, sampleRate },
+  });
+}
+
 export async function loadMasteringWorklet(
   ctx: AudioContext,
   opts: LoadMasteringWorkletOptions,
