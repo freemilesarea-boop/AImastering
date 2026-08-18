@@ -9,6 +9,7 @@
 //   • A new src cancels any in-flight decode for the previous src.
 
 import { useEffect, useRef, useState } from 'react';
+import { decodeAudioBytes } from '../audio/wav-buffer.js';
 
 export interface WaveformPeaks {
   /** Per-bucket max abs sample (0..1), length = bucketCount.  Null while loading or on failure. */
@@ -115,8 +116,10 @@ export function useWaveformPeaks(src: string | null | undefined, bucketCount = 1
         if (!resp.ok) throw new Error(`fetch failed (${resp.status})`);
         const buf = await resp.arrayBuffer();
         if (cancelled || reqIdRef.current !== reqId) return;
-        // decodeAudioData copies the buffer, so we can release ours.
-        const decoded = await ctx.decodeAudioData(buf);
+        // A WAV is decoded here rather than by the media stack, which in
+        // this Electron build takes the whole renderer down — see
+        // `audio/wav-buffer`.
+        const decoded = await decodeAudioBytes(ctx, buf);
         if (cancelled || reqIdRef.current !== reqId) return;
         const peaks = computePeaks(decoded, bucketCount);
         cachePut(key, peaks);

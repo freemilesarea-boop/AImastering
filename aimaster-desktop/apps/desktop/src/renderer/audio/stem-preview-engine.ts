@@ -52,6 +52,7 @@ import {
 } from './stem-mixer-graph.js';
 import { loadMasteringWorklet, createChainNode } from './mastering-worklet-loader.js';
 import type { ChainConfigWire } from './chain-config.js';
+import { decodeAudioBytes } from './wav-buffer.js';
 
 export interface PreviewStemInput extends StripSettings {
   id: string;
@@ -248,7 +249,10 @@ export class StemPreviewEngine {
         if (!res.ok) throw new Error(`미리듣기 파일을 읽지 못했습니다: ${stem.previewPath}`);
         const bytes = await res.arrayBuffer();
         crumb('decode:start', { path: stem.previewPath, bytes: bytes.byteLength });
-        const decoded = await ctx.decodeAudioData(bytes);
+        // Not `decodeAudioData` — see `wav-buffer`. That call is what was
+        // killing the renderer with exit code 11 the moment a session was
+        // prepared, and a preview is a WAV this app wrote itself.
+        const decoded = await decodeAudioBytes(ctx, bytes);
         crumb('decode:done', { ch: decoded.numberOfChannels, len: decoded.length });
         this.buffers.set(stem.previewPath, decoded);
       }

@@ -15,6 +15,7 @@ import {
   type RenderMetrics, type NormalizedRenderMetrics,
 } from './rust-offline-render-core.js';
 import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-node.js';
+import { decodeWavFile, encodeWavFile } from './wav-codec.js';
 
 export interface RustRenderOptions {
   sampleRate: number;
@@ -70,8 +71,27 @@ function runFfmpeg(args: string[], stdin?: Buffer): Promise<Buffer> {
   });
 }
 
-/** Decode any input → interleaved f32le stereo PCM at `sampleRate`. */
+/**
+ * Decode any input to interleaved f32le stereo PCM at `sampleRate`.
+ *
+ * WAV is read here rather than through ffmpeg. Two reasons, and the first
+ * one is not performance: ffmpeg is bundled into the packaged app but in a
+ * development checkout it is only whatever happens to be on PATH, which on a
+ * clean machine is nothing — and a stem session that cannot decode its stems
+ * bakes zero previews and plays silence while reporting no error. Stems are
+ * WAV. Reading them ourselves means the session works with no external
+ * binary at all.
+ *
+ * The second reason is that a twelve-stem session spawned twelve processes
+ * and piped every sample through them.
+ *
+ * Anything the built-in reader declines — mp3, flac, m4a, an exotic WAV —
+ * falls through to ffmpeg unchanged.
+ */
 export async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promise<Float32Array> {
+  const wav = decodeWavFile(inputPath, sampleRate);
+  if (wav) return wav;
+
   const buf = await runFfmpeg([
     '-hide_banner', '-loglevel', 'error',
     '-i', inputPath,
@@ -97,6 +117,14 @@ export async function encodeWav(
   outputPath: string,
   channels: 1 | 2 = 2,
 ): Promise<void> {
+  // Same reasoning as the decoder: writing a WAV is a header and a block of
+  // samples, and making it depend on an external binary is what stopped the
+  // stem session from working at all on a machine without one.
+  if (/\.wav$/i.test(outputPath)) {
+    encodeWavFile(interleaved, sampleRate, bitDepth, outputPath, channels);
+    return;
+  }
+
   const codec = bitDepth === 16 ? 'pcm_s16le' : 'pcm_s24le';
   const stdin = Buffer.from(interleaved.buffer, interleaved.byteOffset, interleaved.byteLength);
   await runFfmpeg([

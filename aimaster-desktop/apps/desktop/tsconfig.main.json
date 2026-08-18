@@ -11,5 +11,5 @@
       "@aimaster/shared-types": ["../../packages/shared-types/src/index.ts"]
     }
   },
-  "include": ["src/main", "src/preload"]
+  "include": ["src/main", "src/preload", "src/shared"]
 }
