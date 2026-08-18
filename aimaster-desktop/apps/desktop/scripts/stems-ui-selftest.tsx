@@ -531,5 +531,33 @@ console.log('\n=== PANES ===\n');
   localStorage.removeItem('loui.daw.panes');
 }
 
+// ── 7. The escape hatch ──────────────────────────────────────────────────────
+
+console.log('\n=== LIVE PLUGINS CAN BE TURNED OFF ===\n');
+
+{
+  // The audio thread is the one place in this app where a fault takes the
+  // whole window with it, so the way out has to be on the toolbar and has to
+  // survive a restart — a switch the user must find again after every
+  // relaunch is not an escape hatch.
+  const out = html(React.createElement(DawPage));
+  check(
+    'the toolbar carries the live-plugin switch',
+    out.includes('실시간 플러그인 ON'),
+    '기본은 켜짐 — 끄면 페이더·팬·솔로만 남고 믹스다운에는 그대로 적용된다',
+  );
+}
+
+{
+  localStorage.setItem('loui.daw.liveChains', 'off');
+  const out = html(React.createElement(DawPage));
+  check(
+    'and the stored choice is what the window opens with',
+    out.includes('실시간 플러그인 OFF'),
+    '재시작할 때마다 다시 꺼야 한다면 도피처가 아니다',
+  );
+  localStorage.removeItem('loui.daw.liveChains');
+}
+
 console.log(`\n=== ${passed} passed, ${failed} failed ===`);
 if (failed > 0) process.exit(1);

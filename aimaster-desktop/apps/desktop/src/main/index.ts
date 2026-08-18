@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, dialog } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
@@ -78,6 +78,17 @@ function createWindow(): void {
     recordFailure('engine', `renderer render-process-gone: reason=${details.reason} exit=${details.exitCode}`);
     // DO NOT auto-reload — first time we want the user/devtools to see the state.
     mainWindow?.show();
+    // Say it out loud. A renderer crash leaves a black window with nothing in
+    // it, which is indistinguishable from the app hanging and tells the user
+    // nothing they can act on or report. The log alone does not reach them.
+    try {
+      dialog.showErrorBox(
+        '화면이 종료되었습니다',
+        `렌더러 프로세스가 예기치 않게 종료되었습니다.\n\n` +
+        `원인: ${details.reason}\n종료 코드: ${details.exitCode}\n\n` +
+        `창을 닫았다가 다시 실행해 주세요. 반복되면 이 내용을 그대로 알려주시면 원인을 좁힐 수 있습니다.`,
+      );
+    } catch { /* a dialog failure must not mask the crash */ }
   });
   mainWindow.webContents.on('unresponsive', () => {
     log.error('[CRASH] webContents unresponsive (renderer event loop blocked)');

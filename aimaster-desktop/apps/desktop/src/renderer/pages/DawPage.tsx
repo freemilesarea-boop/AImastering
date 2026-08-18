@@ -338,10 +338,27 @@ export default function DawPage(): React.ReactElement {
     liveChains: 0, chainsDegraded: null, error: null,
   });
   const [preparing, setPreparing] = useState<{ done: number; total: number; name: string } | null>(null);
+  /**
+   * Whether the plugins run in the audio thread.
+   *
+   * Remembered across restarts, because the reason to turn it off is that
+   * it broke something — and having to find the switch again after every
+   * relaunch would make the escape hatch useless.
+   */
+  const [liveChains, setLiveChainsPref] = useState(() => {
+    try { return localStorage.getItem('loui.daw.liveChains') !== 'off'; } catch { return true; }
+  });
   const [baked, setBaked] = useState<Map<string, { path: string; channels: 1 | 2; samples: number }>>(new Map());
 
   useEffect(() => {
     const engine = new StemPreviewEngine();
+    // Read from storage rather than from `liveChains`: this effect runs once
+    // and must not be re-run when the preference changes (that would rebuild
+    // the whole engine), so closing over the state would leave a stale value
+    // with no way to tell.
+    let wanted = true;
+    try { wanted = localStorage.getItem('loui.daw.liveChains') !== 'off'; } catch { /* default on */ }
+    engine.setLiveChains(wanted);
     engineRef.current = engine;
     const off = engine.subscribe(setStatus);
     return () => { off(); engine.dispose(); engineRef.current = null; };
@@ -570,6 +587,27 @@ export default function DawPage(): React.ReactElement {
             title="체인이 바뀌었습니다"
           >다시 굽기</button>
         )}
+
+        {/* Live plugins. The audio thread is the one place a fault takes the
+            whole window with it, so the way out is on the toolbar rather
+            than buried in settings. */}
+        <button
+          onClick={() => {
+            const next = !liveChains;
+            setLiveChainsPref(next);
+            try { localStorage.setItem('loui.daw.liveChains', next ? 'on' : 'off'); } catch { /* not fatal */ }
+            engineRef.current?.setLiveChains(next);
+          }}
+          className={`no-drag text-[10px] px-2 py-1 rounded-sm border transition-colors ${
+            liveChains
+              ? 'border-emerald-600/60 text-emerald-400'
+              : 'border-zinc-700 text-zinc-500'}`}
+          title={liveChains
+            ? '플러그인이 실시간으로 걸립니다 — 노브를 돌리면 바로 들립니다. 문제가 생기면 꺼서 원본으로 들을 수 있습니다.'
+            : '플러그인이 미리듣기에 걸리지 않습니다 — 페이더·팬·솔로만 동작합니다. 믹스다운에는 정상 적용됩니다.'}
+        >
+          {liveChains ? '실시간 플러그인 ON' : '실시간 플러그인 OFF'}
+        </button>
 
         {/* Zoom */}
         <div className="no-drag ml-2 flex items-center gap-1">

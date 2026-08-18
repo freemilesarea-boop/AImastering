@@ -90,6 +90,17 @@ export interface PreviewStatus {
 const RAMP_MS = 25;
 
 /**
+ * Most chains to run in the audio thread at once.
+ *
+ * Each is a full 24-module chain inside a 128-sample quantum. Past a dozen
+ * the audio thread is the bottleneck and the failure is a dropout, which
+ * during mixing is worse than not hearing the plugins at all — so the extra
+ * tracks run dry and the caller is told, rather than the whole session
+ * glitching.
+ */
+const MAX_LIVE_CHAINS = 12;
+
+/**
  * Owns one AudioContext and the graph hanging off it.
  *
  * Deliberately a class rather than a hook: the graph outlives any component
@@ -105,6 +116,7 @@ export class StemPreviewEngine {
   private chains = new Map<string, AudioWorkletNode>();
   private wasmModule: WebAssembly.Module | null = null;
   private chainsDegraded: string | null = null;
+  private liveChainsWanted = true;
   private stems: PreviewStemInput[] = [];
 
   private state: PreviewState = 'idle';
@@ -328,7 +340,7 @@ export class StemPreviewEngine {
    * than leaving the user to wonder why their compressor does nothing.
    */
   private async ensureWorklet(ctx: AudioContext): Promise<void> {
-    if (this.wasmModule) return;
+    if (!this.liveChainsWanted || this.wasmModule) return;
     try {
       const loaded = await loadMasteringWorklet(ctx, { sampleRate: ctx.sampleRate });
       this.wasmModule = loaded.wasmModule;
@@ -357,24 +369,68 @@ export class StemPreviewEngine {
     this.chains.clear();
 
     for (const stem of this.stems) {
-      const strip = createStrip(ctx, master, stem.channels);
-      this.strips.set(stem.id, strip);
-
-      // The chain sits between the buffer and the fader, so the fader is
-      // post-plugin — which is where a channel fader is on every console,
-      // and what stops a fader move from changing how hard the compressor
-      // on that channel works.
-      if (this.wasmModule) {
-        try {
-          const node = createChainNode(ctx, this.wasmModule, ctx.sampleRate, 2);
-          node.connect(strip.input);
-          this.chains.set(stem.id, node);
-        } catch {
-          // One node that will not build should not take the session down;
-          // that track simply plays dry.
-        }
-      }
+      this.strips.set(stem.id, createStrip(ctx, master, stem.channels));
     }
+
+    if (!this.liveChainsWanted || !this.wasmModule) return;
+
+    // The chain sits between the buffer and the fader, so the fader is
+    // post-plugin — which is where a channel fader is on every console, and
+    // what stops a fader move from changing how hard the compressor on that
+    // channel works.
+    //
+    // All or nothing. A session where some tracks are processed and others
+    // are not is a mix that does not exist anywhere else, and the user has
+    // no way to see which is which — so a failure part-way through drops
+    // every chain and says so, rather than leaving a half-processed mix
+    // that sounds wrong for no visible reason.
+    try {
+      for (const stem of this.stems.slice(0, MAX_LIVE_CHAINS)) {
+        const strip = this.strips.get(stem.id);
+        if (!strip) continue;
+        const node = createChainNode(ctx, this.wasmModule, ctx.sampleRate, 2);
+        node.connect(strip.input);
+        this.chains.set(stem.id, node);
+      }
+      this.chainsDegraded = this.stems.length > MAX_LIVE_CHAINS
+        ? `트랙이 ${this.stems.length}개라 앞의 ${MAX_LIVE_CHAINS}개에만 플러그인을 실시간으로 걸었습니다. ` +
+          '나머지는 원본으로 들립니다 — 믹스다운에는 전부 정상 적용됩니다.'
+        : null;
+    } catch (err) {
+      for (const chain of this.chains.values()) {
+        try { chain.disconnect(); } catch { /* already detached */ }
+      }
+      this.chains.clear();
+      this.chainsDegraded =
+        `플러그인을 실시간으로 걸지 못했습니다 (${(err as Error).message}). ` +
+        '지금 들리는 소리는 플러그인이 빠진 원본입니다 — 믹스다운에는 정상 적용됩니다.';
+    }
+  }
+
+  /**
+   * Turn the live plugin chains on or off.
+   *
+   * Off makes the preview the raw stems through the mixer — faders, pan,
+   * mute and solo still work, the plugins are simply not heard. It exists
+   * because the audio thread is the one place in this app where a fault
+   * takes the whole window with it, and a session the user can still work
+   * in beats a correct one they cannot open.
+   */
+  setLiveChains(enabled: boolean): void {
+    if (this.liveChainsWanted === enabled) return;
+    this.liveChainsWanted = enabled;
+    const wasPlaying = this.state === 'playing';
+    const at = this.position();
+    this.stopSources();
+    this.rebuildStrips();
+    this.applyChains();
+    this.applyGains(0);
+    this.pausedAt = at;
+    if (wasPlaying) { this.state = 'ready'; this.play(); } else { this.emit(); }
+  }
+
+  liveChainsEnabled(): boolean {
+    return this.liveChainsWanted;
   }
 
   /** Push each track's plugin chain into its worklet. */
