@@ -71,7 +71,15 @@ function statusDot(t: StemTrackState): { cls: string; title: string } {
 
 // ── One channel strip ────────────────────────────────────────────────────────
 
-function StemRow({
+/**
+ * Exported for `stems-ui-selftest`.
+ *
+ * The page as a whole cannot be asserted against under
+ * `renderToStaticMarkup` — zustand's hook returns the store's state as of
+ * module load there, so seeding it proves nothing. Rendering the row with
+ * real props does, and the row is where all the per-stem content lives.
+ */
+export function StemRow({
   track, audible, onEdit, onReset, custom,
 }: {
   track: StemTrackState;
@@ -210,7 +218,8 @@ function timecode(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function Transport({
+/** Exported for `stems-ui-selftest` — see `StemRow`. */
+export function Transport({
   status, onPrepare, onPlay, onPause, onSeek, preparing, stale,
 }: {
   status: PreviewStatus;
