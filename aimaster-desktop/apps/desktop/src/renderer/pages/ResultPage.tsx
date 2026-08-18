@@ -13,7 +13,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
-import { handleLicenseRequired } from '../stores/licenseStore.js';
 import type { MasteringOptions, RealtimeDspOverrides } from '../stores/audioStore.js';
 import {
   installNativeDsp,
@@ -474,8 +473,7 @@ function SaveButtons() {
       if (res.warning) notify(res.warning, 'warning');
       else notify(`WAV 저장 완료 · ${depth}-bit`, 'success');
     } catch (err) {
-      if (handleLicenseRequired(err)) notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
-      else notify('WAV 저장 실패', 'error');
+      notify('WAV 저장 실패', 'error');
     }
   }, [masteringResult, notify, depth, dither, ditherApplies]);
 

@@ -32,7 +32,6 @@ import {
 // main-side decoder receives the original path unmangled.
 // Covered by `pnpm test:phase-e-paths`.
 import { toFileUrl } from '../utils/fileUrl.js';
-import { handleLicenseRequired } from '../stores/licenseStore.js';
 import { LouiPresetSlideOver } from '../components/product/LouiPresetSlideOver.js';
 import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
 import { louiPresetToMasteringOptions } from '../audio/presets/preset-to-options.js';
@@ -502,8 +501,7 @@ function QueueRow({
       const dest = await window.electronAPI!.invoke('file:save-wav', item.masteringResult.outputPath) as string | null;
       if (dest) notify('WAV 저장 완료', 'success');
     } catch (err) {
-      if (handleLicenseRequired(err)) notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
-      else notify('WAV 저장 실패', 'error');
+      notify('WAV 저장 실패', 'error');
     }
   }, [item, notify]);
 
@@ -881,8 +879,7 @@ export default function HomePage() {
       const res = await window.electronAPI!.invoke('file:batch-save-wav', wavPaths) as { destDir: string; saved: number } | null;
       if (res) notify(`WAV ${res.saved}곡 저장 완료`, 'success');
     } catch (err) {
-      if (handleLicenseRequired(err)) notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
-      else notify('WAV 저장 실패', 'error');
+      notify('WAV 저장 실패', 'error');
     }
   }, [queue, notify]);
 

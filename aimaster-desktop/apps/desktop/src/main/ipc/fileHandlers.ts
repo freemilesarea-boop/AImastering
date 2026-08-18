@@ -9,9 +9,6 @@ import {
   supportBundleToJson,
 } from '../utils/supportBundle.js';
 import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
-import { licenseService } from './licenseHandlers.js';
-import { getEntitlementPaid } from '../services/entitlementBridge.js';
-import { log } from '../utils/logger.js';
 import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
 
 const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
@@ -22,43 +19,18 @@ const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] 
   ogg:  { name: 'OGG Audio',  extensions: ['ogg'] },
 };
 
-// ── Commercial paywall (v3.6) ────────────────────────────────────────────────
-// Master-quality exports (lossless: wav / flac / aiff) require a paid license.
-// The MP3 preview stays free so trial users still hear the result.  Enforced
-// here in the MAIN process so it can't be bypassed from the renderer/devtools.
-// Renderer detects the `LICENSE_REQUIRED:` prefix and opens the activation modal.
-const LICENSE_REQUIRED = 'LICENSE_REQUIRED: 마스터 음원(WAV/FLAC/AIFF) 저장은 라이선스가 필요합니다. 라이선스를 활성화해 주세요.';
-const FREE_EXPORT_EXTS = new Set(['mp3', 'ogg']);
-
-function licensePaid(): boolean {
-  try { return licenseService.canProcess().isPaid; } catch { return false; }
-}
-
-type GateSource = 'license' | 'entitlement' | 'license+entitlement' | 'none';
-
-/**
- * Phase C — ADDITIVE gate: `paid = licensePaid || entitlementPaid`.
- *
- * `entitlementPaid` (entitlementBridge) defaults to false and is only true
- * when the renderer pushed an active-pro snapshot under BOTH feature flags.
- * So with the flags off (default) this is exactly the prior license-only
- * behavior, and an entitlement outage (→ false) can never block a paying
- * license user.  No license logic changed; the free policy is unchanged.
- */
-function paidStatus(): { paid: boolean; source: GateSource } {
-  const lic = licensePaid();
-  const ent = getEntitlementPaid();
-  const paid = lic || ent;
-  const source: GateSource = !paid
-    ? 'none'
-    : (lic && ent ? 'license+entitlement' : (lic ? 'license' : 'entitlement'));
-  return { paid, source };
-}
-
-/** True when the given extension/format is a paid (lossless master) export. */
-function isMasterExport(extOrFormat: string): boolean {
-  return !FREE_EXPORT_EXTS.has(extOrFormat.toLowerCase().replace('.', ''));
-}
+// ── Export gating: removed ───────────────────────────────────────────────────
+// Lossless master exports (wav / flac / aiff) used to require an activated
+// licence, with the MP3 preview left free so a trial user could still hear
+// the result.  The product is sold as a paid download, so every copy that
+// runs is already paid for — the gate could only ever fire on a customer.
+// It did: saving a WAV opened the activation dialog and refused the export.
+//
+// Enforcement lived in the MAIN process at three call sites (`file:save-wav`,
+// `file:save-audio`, `file:batch-save-wav`) so it could not be bypassed from
+// devtools.  All three are gone, along with the helpers that fed them, and so
+// are the renderer helpers that recognised the `LICENSE_REQUIRED:` prefix and
+// opened the activation dialog -- nothing can resurrect this by accident.
 
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   // ── Open file picker (single) ─────────────────────────────────────────
@@ -101,13 +73,6 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     const ext      = path.extname(safeSrc).toLowerCase().replace('.', '');
     const isWav    = ext === 'wav';
 
-    // Paywall: lossless master export requires paid (license OR entitlement).
-    if (isMasterExport(ext)) {
-      const gate = paidStatus();
-      log.info(`[export-gate] save-wav ext=${ext} paid=${gate.paid} source=${gate.source}`);
-      if (!gate.paid) throw new Error(LICENSE_REQUIRED);
-    }
-
     const filters  = isWav
       ? [{ name: 'WAV Audio', extensions: ['wav'] }]
       : [{ name: 'MP3 Audio', extensions: ['mp3'] }];
@@ -141,13 +106,6 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
     const filter = FORMAT_FILTERS[req.format];
     if (!filter) return { savedPath: null, error: `unsupported format: ${req.format}` };
-
-    // Paywall: lossless master export requires paid (license OR entitlement).
-    if (isMasterExport(req.format)) {
-      const gate = paidStatus();
-      log.info(`[export-gate] save-audio fmt=${req.format} paid=${gate.paid} source=${gate.source}`);
-      if (!gate.paid) return { savedPath: null, error: LICENSE_REQUIRED };
-    }
 
     const sourceExt = path.extname(req.sourcePath).replace('.', '');
     const spec = {
@@ -315,13 +273,6 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       }
     }
     if (!validSrcs.length) return null;
-
-    // Paywall: if the batch contains any lossless master file, require paid.
-    if (validSrcs.some((p) => isMasterExport(path.extname(p)))) {
-      const gate = paidStatus();
-      log.info(`[export-gate] batch-save-wav paid=${gate.paid} source=${gate.source}`);
-      if (!gate.paid) throw new Error(LICENSE_REQUIRED);
-    }
 
     const folderResult = await dialog.showOpenDialog(win, {
       title: '저장할 폴더 선택',
