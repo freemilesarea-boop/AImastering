@@ -37,7 +37,13 @@ export interface PluginInstance {
 export interface PluginDescriptor {
   id: string;
   name: string;
-  category: 'utility' | 'eq' | 'dynamics' | 'delay' | 'reverb';
+  category: 'utility' | 'eq' | 'dynamics' | 'delay' | 'reverb' | 'restore' | 'pitch';
+  /**
+   * Devices that cannot run in the realtime graph (they need to look at the
+   * whole file).  They stay visible in the chain — greyed, badged OFFLINE —
+   * and are applied by the render path instead of silently doing nothing.
+   */
+  offline?: boolean;
   params: PluginParamDef[];
   hasSidechain: boolean;
   /** Reported latency, in samples at the context rate — drives ADC. */
@@ -160,6 +166,54 @@ function halfWaveGainCurve(amount: number, side: 'positive' | 'negative'): Float
     const x = (i / (n - 1)) * 2 - 1;
     const active = side === 'positive' ? Math.max(0, x) : Math.max(0, -x);
     curve[i] = active * amount;
+  }
+  return curve;
+}
+
+/**
+ * Downward-expansion curve: unity above the threshold, falling away below it.
+ * This is what a broadband denoiser actually is — the noise floor sits under
+ * the threshold and gets pushed down, the performance sits above it and is
+ * untouched.
+ */
+function makeExpanderCurve(
+  thresholdDb: number, ratio: number, floorGain = 0.05,
+): Float32Array<ArrayBuffer> {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const thr = dbToGain(thresholdDb);
+  for (let i = 0; i < n; i++) {
+    const env = Math.abs((i / (n - 1)) * 2 - 1);
+    let g = 1;
+    if (env < thr && thr > 0) {
+      g = Math.pow(Math.max(env, 1e-5) / thr, Math.max(0, ratio - 1));
+      g = Math.max(floorGain, Math.min(1, g));
+    }
+    curve[i] = g;
+  }
+  return curve;
+}
+
+/**
+ * Envelope → dB REDUCTION curve, for a device that drives a filter's gain
+ * (which is expressed in dB) rather than a linear VCA.
+ */
+function makeDbReductionCurve(
+  thresholdDb: number, ratio: number, maxCutDb: number,
+): Float32Array<ArrayBuffer> {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const thr = dbToGain(thresholdDb);
+  for (let i = 0; i < n; i++) {
+    const env = Math.abs((i / (n - 1)) * 2 - 1);
+    let cut = 0;
+    if (env > thr && thr > 0) {
+      const overDb = 20 * Math.log10(env / thr);
+      cut = -overDb * (1 - 1 / Math.max(1, ratio));
+      cut = Math.max(maxCutDb, cut);
+    }
+    // Normalised so the caller can scale it back up to dB with a gain node.
+    curve[i] = cut / Math.max(1, Math.abs(maxCutDb));
   }
   return curve;
 }
@@ -644,6 +698,192 @@ export const PLUGINS: PluginDescriptor[] = [
           if (id === 'lowMonoHz') sideHigh.frequency.value = v;
         },
       };
+    }),
+  },
+
+  {
+    id: 'denoise',
+    name: 'Denoise',
+    category: 'restore',
+    hasSidechain: false,
+    params: [
+      { id: 'thresholdDb', name: 'Threshold', min: -80, max: -10, default: -48, unit: 'dB' },
+      { id: 'amount',      name: 'Amount',    min: 0,   max: 1,   default: 0,   unit: '' },
+      { id: 'releaseMs',   name: 'Release',   min: 10,  max: 500, default: 120, unit: 'ms' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Broadband downward expander: the noise floor is pushed down, the
+      // performance above the threshold passes untouched.
+      const vca = ctx.createGain();
+      vca.gain.value = 0;
+      const rect = absShaper(ctx);
+      const env = smoother(ctx, params['releaseMs'] ?? 120);
+      const ratioOf = (amount: number): number => 1 + amount * 5;
+      let curve = makeShaper(ctx, makeExpanderCurve(
+        params['thresholdDb'] ?? -48, ratioOf(params['amount'] ?? 0),
+      ));
+
+      input.connect(rect).connect(env).connect(curve);
+      curve.connect(vca.gain);
+      input.connect(vca).connect(output);
+
+      const rebuild = (): void => {
+        env.disconnect();
+        curve.disconnect();
+        curve = makeShaper(ctx, makeExpanderCurve(
+          params['thresholdDb'] ?? -48, ratioOf(params['amount'] ?? 0),
+        ));
+        env.connect(curve);
+        curve.connect(vca.gain);
+      };
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'releaseMs') { env.frequency.value = timeConstantToHz(v); return; }
+          if ((id === 'thresholdDb' || id === 'amount') && v !== params[id]) {
+            params[id] = v;
+            rebuild();
+          }
+        },
+        dispose: () => { try { curve.disconnect(); } catch { /* ignore */ } },
+      };
+    }),
+  },
+
+  {
+    id: 'deesser',
+    name: 'De-Esser',
+    category: 'dynamics',
+    hasSidechain: false,
+    params: [
+      { id: 'freqHz',      name: 'Freq',      min: 2000, max: 12000, default: 6500, unit: 'Hz' },
+      { id: 'thresholdDb', name: 'Threshold', min: -48,  max: 0,     default: -24,  unit: 'dB' },
+      { id: 'amount',      name: 'Amount',    min: 0,    max: 1,     default: 0,    unit: '' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Split the sibilant band off, compress only that, sum back.  A
+      // full-band compressor would duck the whole voice on every "s".
+      const low = ctx.createBiquadFilter();
+      low.type = 'lowpass';
+      low.frequency.value = params['freqHz'] ?? 6500;
+      const high = ctx.createBiquadFilter();
+      high.type = 'highpass';
+      high.frequency.value = params['freqHz'] ?? 6500;
+
+      const vca = ctx.createGain();
+      vca.gain.value = 0;
+      const rect = absShaper(ctx);
+      const env = smoother(ctx, 4);
+      const ratioOf = (amount: number): number => 1 + amount * 11;
+      let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, ratioOf(params['amount'] ?? 0));
+
+      input.connect(low).connect(output);
+      input.connect(high);
+      high.connect(rect).connect(env).connect(curve);
+      curve.connect(vca.gain);
+      high.connect(vca).connect(output);
+
+      const rebuild = (): void => {
+        env.disconnect();
+        curve.disconnect();
+        curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, ratioOf(params['amount'] ?? 0));
+        env.connect(curve);
+        curve.connect(vca.gain);
+      };
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'freqHz') { low.frequency.value = v; high.frequency.value = v; return; }
+          if ((id === 'thresholdDb' || id === 'amount') && v !== params[id]) {
+            params[id] = v;
+            rebuild();
+          }
+        },
+        dispose: () => { try { curve.disconnect(); } catch { /* ignore */ } },
+      };
+    }),
+  },
+
+  {
+    id: 'dyneq',
+    name: 'Dynamic EQ',
+    category: 'eq',
+    hasSidechain: false,
+    params: [
+      { id: 'freqHz',      name: 'Freq',      min: 60,  max: 12000, default: 300, unit: 'Hz' },
+      { id: 'q',           name: 'Q',         min: 0.3, max: 8,     default: 1.4, unit: '' },
+      { id: 'thresholdDb', name: 'Threshold', min: -48, max: 0,     default: -24, unit: 'dB' },
+      { id: 'rangeDb',     name: 'Range',     min: -18, max: 0,     default: 0,   unit: 'dB' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // A peaking filter whose GAIN is driven at audio rate by the level in
+      // its own band: the cut only happens when that band misbehaves.
+      const peak = ctx.createBiquadFilter();
+      peak.type = 'peaking';
+      peak.frequency.value = params['freqHz'] ?? 300;
+      peak.Q.value = params['q'] ?? 1.4;
+      peak.gain.value = 0;
+
+      const detector = ctx.createBiquadFilter();
+      detector.type = 'bandpass';
+      detector.frequency.value = params['freqHz'] ?? 300;
+      detector.Q.value = params['q'] ?? 1.4;
+
+      const rect = absShaper(ctx);
+      const env = smoother(ctx, 12);
+      const scale = ctx.createGain();
+      const range = () => Math.abs(params['rangeDb'] ?? 0);
+      scale.gain.value = range();
+      let curve = makeShaper(ctx, makeDbReductionCurve(
+        params['thresholdDb'] ?? -24, 4, -Math.max(1, range()),
+      ));
+
+      input.connect(detector).connect(rect).connect(env).connect(curve);
+      curve.connect(scale).connect(peak.gain);
+      input.connect(peak).connect(output);
+
+      const rebuild = (): void => {
+        env.disconnect();
+        curve.disconnect();
+        curve = makeShaper(ctx, makeDbReductionCurve(
+          params['thresholdDb'] ?? -24, 4, -Math.max(1, range()),
+        ));
+        env.connect(curve);
+        curve.connect(scale);
+      };
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'freqHz') { peak.frequency.value = v; detector.frequency.value = v; return; }
+          if (id === 'q') { peak.Q.value = v; detector.Q.value = v; return; }
+          if (id === 'rangeDb') { params['rangeDb'] = v; scale.gain.value = Math.abs(v); rebuild(); return; }
+          if (id === 'thresholdDb' && v !== params[id]) { params[id] = v; rebuild(); }
+        },
+        dispose: () => { try { curve.disconnect(); } catch { /* ignore */ } },
+      };
+    }),
+  },
+
+  {
+    id: 'pitchcorrect',
+    name: 'Pitch Correct',
+    category: 'pitch',
+    hasSidechain: false,
+    // Pitch correction reads the whole take before it can decide anything, so
+    // it runs in the render path (see audio/varia-actions.ts), not live.
+    offline: true,
+    params: [
+      { id: 'amount',   name: 'Amount',   min: 0, max: 1, default: 0.8, unit: '' },
+      { id: 'formant',  name: 'Formant',  min: -6, max: 6, default: 0,  unit: 'st' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx) => withBypass(ctx, (input, output) => {
+      // Realtime pass-through; the chain view badges it OFFLINE.
+      input.connect(output);
+      return { setParam: () => { /* applied at render time */ } };
     }),
   },
 ];

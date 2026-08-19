@@ -129,6 +129,10 @@ macOS 의 `Option+X` 처럼 조합 문자가 나오는 경우에도 정확히 �
 | **스마트 컨트롤** | `Mod+Alt+S` | 매크로 7개 + Advanced 실제 파라미터 |
 | 트랙 스택 만들기 | `Mod+Shift+G` | 선택 트랙을 합산 스택으로 |
 | 스택 해제 / 접기 | `Mod+Shift+U` / `Mod+Shift+F` | |
+| **Device Chain** | `Mod+Alt+H` | 신호 흐름 그래프 (병렬 · 센드 · 랙) |
+| **Session View** | `Mod+Alt+Y` | 클립 그리드 · 씬 실행 · Arrangement 변환 |
+| 모든 클립 정지 | `Mod+Alt+.` | Session 재생 중지 |
+| 뷰 순환 | `Mod+=` | EDIT → MIX → KEY → CHAIN → SESSION |
 
 DAW 화면에서는 공용 키도 세션에 작용합니다: `Space` 는 세션 재생,
 `Mod+Z` 는 편집 되돌리기, `S`/`M` 은 선택 트랙 솔로/뮤트,

@@ -13,6 +13,8 @@ import EditWindow from '../components/daw/edit/EditWindow.js';
 import MixWindow from '../components/daw/mix/MixWindow.js';
 import KeyEditor from '../components/daw/midi/KeyEditor.js';
 import SmartControlPanel from '../components/daw/smart/SmartControlPanel.js';
+import DeviceChainView from '../components/daw/chain/DeviceChainView.js';
+import SessionViewGrid from '../components/daw/session/SessionViewGrid.js';
 import { createStack } from '../daw/model/stacks.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
 import {
@@ -235,11 +237,17 @@ export default function DawPage() {
       {/* Transport / session chrome */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
         <div className="flex rounded-md overflow-hidden border border-zinc-700 mr-1">
-          {(['edit', 'mix', 'midi'] as const).map((w) => (
+          {(['edit', 'mix', 'midi', 'chain', 'session'] as const).map((w) => (
             <button key={w} onClick={() => setWindow(w)}
               className={`px-3 py-1 text-[11px] font-medium transition-colors ${
                 windowMode === w ? 'bg-indigo-600/30 text-indigo-300' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300'}`}
-            >{w === 'edit' ? 'EDIT' : w === 'mix' ? 'MIX' : 'KEY'}</button>
+            >{
+              w === 'edit' ? 'EDIT'
+              : w === 'mix' ? 'MIX'
+              : w === 'midi' ? 'KEY'
+              : w === 'chain' ? 'CHAIN'
+              : 'SESSION'
+            }</button>
           ))}
         </div>
 
@@ -307,7 +315,9 @@ export default function DawPage() {
 
       {windowMode === 'edit' ? <EditWindow />
         : windowMode === 'mix' ? <MixWindow />
-        : <KeyEditor />}
+        : windowMode === 'midi' ? <KeyEditor />
+        : windowMode === 'chain' ? <DeviceChainView />
+        : <SessionViewGrid />}
     </div>
   );
 }

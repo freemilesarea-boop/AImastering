@@ -45,6 +45,7 @@ import {
 } from '../daw/audio/varia-actions.js';
 import { clipEnd } from '../daw/model/session-ops.js';
 import { createStack, unpackStack, toggleCollapsed, stackAncestors } from '../daw/model/stacks.js';
+import { dawRuntime as runtime } from '../daw/engine/daw-runtime.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import type { CommandFn, NotifyType } from './commands.js';
 import type { CommandId } from './definitions.js';
@@ -66,7 +67,8 @@ export type DawCommandId =
   | 'daw.velocityUp' | 'daw.velocityDown'
   | 'daw.detectChords' | 'daw.reharmonize'
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
-  | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack';
+  | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
+  | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -529,6 +531,31 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       const folderId = folderForSelection(state);
       if (!folderId) { notify('스택을 선택하세요', 'warning'); return; }
       state.apply((s) => toggleCollapsed(s, folderId));
+    },
+
+    // ── Device Chain / Session View ───────────────────────────────────────
+    'daw.showChain': () => {
+      const state = daw();
+      state.setWindow('chain');
+      notify('Device Chain');
+    },
+
+    'daw.showSession': () => {
+      daw().setWindow('session');
+      notify('Session View');
+    },
+
+    'daw.launchScene': () => {
+      const state = daw();
+      const grid = state.session.sessionGrid;
+      if (grid.scenes.length === 0) { notify('씬이 없습니다', 'warning'); return; }
+      state.setWindow('session');
+      notify('Session View 에서 씬을 실행하세요');
+    },
+
+    'daw.stopAllClips': () => {
+      runtime.stopAllSlots();
+      notify('모든 클립 정지');
     },
 
     'daw.reharmonize': () => {

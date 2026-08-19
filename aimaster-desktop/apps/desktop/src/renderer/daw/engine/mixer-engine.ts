@@ -24,6 +24,7 @@ import {
 import type { BusId, DawSession, Track, TrackId } from '../model/types.js';
 import { findPlugin, type PluginInstance } from './plugins.js';
 import { materializeRack, moduleParams, type RackModuleId } from '../model/macros.js';
+import { applyChainParams, buildDeviceChain, type BuiltChain } from './device-chain.js';
 
 export interface Channel {
   trackId: TrackId;
@@ -35,6 +36,8 @@ export interface Channel {
   inserts: Map<string, PluginInstance>;
   /** Macro rack modules, ahead of the manual inserts. */
   rack: Map<RackModuleId, PluginInstance>;
+  /** Device Chain, when the track uses one instead of the slot list. */
+  chain: BuiltChain | null;
   preFaderTap: GainNode;
   fader: GainNode;
   panner: StereoPannerNode;
@@ -65,6 +68,14 @@ function structureKey(session: DawSession): string {
       // active set is part of the fingerprint.
       t.macros.enabled
         ? materializeRack(t.macros).filter((m) => m.active).map((m) => m.module.id)
+        : null,
+      // The device graph's SHAPE is structural; its parameter values are not.
+      t.deviceGraph
+        ? [
+            t.deviceGraph.nodes.map((n) => [n.id, n.kind, n.pluginId, n.rackId]),
+            t.deviceGraph.edges.map((e) => [e.id, e.from, e.to]),
+            t.racks.map((r) => [r.id, r.graph.nodes.map((n) => [n.id, n.pluginId])]),
+          ]
         : null,
     ]),
     adc: session.delayCompensation,
@@ -223,6 +234,20 @@ export class MixerEngine {
       }
     }
 
+    // Device Chain, if the track has one: the signal follows the graph,
+    // branches and all.  Otherwise the plain slot list.
+    let chain: BuiltChain | null = null;
+    if (track.deviceGraph) {
+      chain = buildDeviceChain(
+        { ctx, busFor: (id) => this.buses.get(id), racks: track.racks },
+        track.deviceGraph,
+      );
+      if (chain) {
+        cursor.connect(chain.input);
+        cursor = chain.output;
+      }
+    }
+
     // Insert chain in slot order.
     const inserts = new Map<string, PluginInstance>();
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
@@ -253,7 +278,7 @@ export class MixerEngine {
 
     void session;
     return {
-      trackId: track.id, input, adc, insertIn, insertOut, inserts, rack,
+      trackId: track.id, input, adc, insertIn, insertOut, inserts, rack, chain,
       preFaderTap, fader, panner, postFaderTap, sends, meter,
     };
   }
@@ -296,6 +321,10 @@ export class MixerEngine {
         }
       }
 
+      if (ch.chain && track.deviceGraph) {
+        applyChainParams(ch.chain, track.deviceGraph, track.racks);
+      }
+
       for (const insert of track.inserts) {
         const instance = ch.inserts.get(insert.id);
         if (!instance) continue;
@@ -336,6 +365,7 @@ export class MixerEngine {
       for (const instance of [...ch.inserts.values(), ...ch.rack.values()]) {
         try { instance.dispose(); } catch { /* ignore */ }
       }
+      try { ch.chain?.dispose(); } catch { /* ignore */ }
       for (const node of [ch.input, ch.adc, ch.insertIn, ch.insertOut,
         ch.preFaderTap, ch.fader, ch.panner, ch.postFaderTap]) {
         try { node.disconnect(); } catch { /* ignore */ }

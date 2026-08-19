@@ -12,6 +12,7 @@ import type { BusId, DawSession, Insert, Track, TrackId } from './types.js';
 import { findTrack } from './session-ops.js';
 import { findPlugin } from '../engine/plugins.js';
 import { materializeRack, moduleParams } from './macros.js';
+import { chainLatency } from '../engine/device-chain.js';
 
 // ── Graph ─────────────────────────────────────────────────────────────────────
 
@@ -141,14 +142,17 @@ export function insertLatencySamples(insert: Insert, sampleRate: number): number
  */
 export function insertLatency(track: Track, sampleRate: number): number {
   const manual = track.inserts.reduce((sum, i) => sum + insertLatencySamples(i, sampleRate), 0);
-  if (!track.macros.enabled) return manual;
+  const graph = track.deviceGraph
+    ? chainLatency(track.deviceGraph, track.racks, sampleRate)
+    : 0;
+  if (!track.macros.enabled) return manual + graph;
   const rack = materializeRack(track.macros)
     .filter((m) => m.active)
     .reduce((sum, m) => {
       const descriptor = findPlugin(m.module.pluginId);
       return sum + (descriptor ? descriptor.latencyFor(moduleParams(m), sampleRate) : 0);
     }, 0);
-  return manual + rack;
+  return manual + graph + rack;
 }
 
 /**

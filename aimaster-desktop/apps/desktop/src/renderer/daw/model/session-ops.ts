@@ -18,6 +18,7 @@ import { nextId } from './ids.js';
 import { DEFAULT_MIDI_CONFIG } from './midi.js';
 import type { ChordEvent, ChordSymbol } from './chords.js';
 import { EMPTY_RACK } from './macros.js';
+import { emptyGrid } from './session-view.js';
 
 // ── Construction ──────────────────────────────────────────────────────────────
 
@@ -66,6 +67,8 @@ export function createTrack(
     parentId: null,
     collapsed: false,
     macros: EMPTY_RACK,
+    deviceGraph: null,
+    racks: [],
     ...over,
   };
 }
@@ -96,6 +99,7 @@ export function createSession(name = 'Untitled', sampleRate = 48_000): DawSessio
     markers: [],
     chordTrack: [],
     delayCompensation: true,
+    sessionGrid: emptyGrid(),
   };
 }
 

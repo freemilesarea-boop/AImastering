@@ -8,10 +8,11 @@
 // gesture — browsers refuse to start one without a user gesture, and a
 // suspended context that nobody resumed is the classic "no sound" bug.
 
-import type { DawSession, TrackId } from '../model/types.js';
+import type { Clip, DawSession, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
-import { loadAudio } from './audio-cache.js';
+import { getCached, loadAudio } from './audio-cache.js';
+import { findInstrument } from './instruments.js';
 
 export interface LoopState {
   enabled: boolean;
@@ -29,6 +30,16 @@ class DawRuntime {
   private timer: ReturnType<typeof setInterval> | null = null;
   private session: DawSession | null = null;
   private loop: LoopState = { enabled: false, startSec: 0, endSec: 0 };
+
+  // ── Session View ────────────────────────────────────────────────────────
+  /**
+   * The Session clock runs independently of the arrangement transport, so
+   * clips can be jammed with the timeline stopped — which is the entire point
+   * of a clip launcher.
+   */
+  private sessionOrigin: number | null = null;
+  private sessionBarSec = 2;
+  private slotVoices = new Map<TrackId, Array<{ stop: (at: number) => void }>>();
 
   /** Position updates while the transport runs (seconds). */
   onPosition: ((sec: number) => void) | null = null;
@@ -140,7 +151,96 @@ class DawRuntime {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
+  // ── Session clip launching ──────────────────────────────────────────────
+
+  /** Start (or restart) the Session clock; bar length comes from the tempo. */
+  startSessionClock(barSec: number): void {
+    this.sessionBarSec = Math.max(0.05, barSec);
+    if (this.sessionOrigin === null && this.ctx) this.sessionOrigin = this.ctx.currentTime;
+  }
+
+  /** Musical position of the Session clock, in bars. */
+  sessionBar(): number {
+    if (!this.ctx || this.sessionOrigin === null) return 0;
+    return (this.ctx.currentTime - this.sessionOrigin) / this.sessionBarSec;
+  }
+
+  resetSessionClock(): void {
+    this.sessionOrigin = this.ctx ? this.ctx.currentTime : null;
+  }
+
+  /**
+   * Play a Session slot on a track, looping.  Audio clips loop natively;
+   * MIDI parts are scheduled a few passes ahead and topped up by the tick.
+   */
+  startSlot(session: DawSession, trackId: TrackId, clip: Clip, loop: boolean): void {
+    if (!this.ensure(session.sampleRate)) return;
+    const ctx = this.ctx;
+    const channel = this.engine?.channel(trackId);
+    if (!ctx || !channel) return;
+
+    this.stopSlot(trackId);
+    const voices: Array<{ stop: (at: number) => void }> = [];
+    const startAt = ctx.currentTime + 0.03;
+
+    if (clip.kind === 'audio') {
+      const cached = getCached(clip.fileId);
+      if (!cached) return;
+      const source = ctx.createBufferSource();
+      source.buffer = cached.buffer;
+      source.loop = loop;
+      source.loopStart = clip.offsetSec;
+      source.loopEnd = clip.offsetSec + clip.durationSec;
+      const gain = ctx.createGain();
+      gain.gain.value = Math.pow(10, clip.gainDb / 20);
+      source.connect(gain).connect(channel.input);
+      source.start(startAt, clip.offsetSec, loop ? undefined : clip.durationSec);
+      voices.push({
+        stop: (at: number) => {
+          try { source.stop(at); } catch { /* already stopped */ }
+          try { source.disconnect(); gain.disconnect(); } catch { /* ignore */ }
+        },
+      });
+    } else {
+      const track = session.tracks.find((t) => t.id === trackId);
+      const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
+      if (!instrument) return;
+      const passes = loop ? 4 : 1;
+      for (let pass = 0; pass < passes; pass++) {
+        for (const note of clip.notes) {
+          if (note.muted) continue;
+          const voice = instrument.playNote({
+            ctx,
+            destination: channel.input,
+            note,
+            config: clip.midiConfig,
+            when: startAt + pass * clip.durationSec + note.startSec,
+            params: { ...(track?.instrumentParams ?? {}) },
+          });
+          voices.push(voice);
+        }
+      }
+    }
+
+    this.slotVoices.set(trackId, voices);
+  }
+
+  stopSlot(trackId: TrackId): void {
+    const voices = this.slotVoices.get(trackId);
+    if (!voices) return;
+    const at = this.ctx?.currentTime ?? 0;
+    for (const voice of voices) {
+      try { voice.stop(at); } catch { /* ignore */ }
+    }
+    this.slotVoices.delete(trackId);
+  }
+
+  stopAllSlots(): void {
+    for (const trackId of [...this.slotVoices.keys()]) this.stopSlot(trackId);
+  }
+
   dispose(): void {
+    this.stopAllSlots();
     this.stop();
     this.engine?.dispose();
     void this.ctx?.close();

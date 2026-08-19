@@ -17,7 +17,7 @@ import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 
 export type EditMode = 'shuffle' | 'slip' | 'spot' | 'grid';
-export type DawWindow = 'edit' | 'mix' | 'midi';
+export type DawWindow = 'edit' | 'mix' | 'midi' | 'chain' | 'session';
 
 /** Grid values, in seconds — musical values come from the session tempo. */
 export const GRID_PRESETS = [0.01, 0.1, 0.25, 0.5, 1, 2, 4] as const;
@@ -151,7 +151,12 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   window: 'edit',
   setWindow: (w) => set({ window: w }),
-  toggleWindow: () => set((s) => ({ window: s.window === 'edit' ? 'mix' : 'edit' })),
+  // Cycles every view, so one key reaches all of them.
+  toggleWindow: () => set((s) => {
+    const order: DawWindow[] = ['edit', 'mix', 'midi', 'chain', 'session'];
+    const index = order.indexOf(s.window);
+    return { window: order[(index + 1) % order.length] ?? 'edit' };
+  }),
 
   selection: EMPTY_SELECTION,
   setSelection: (sel) => set({

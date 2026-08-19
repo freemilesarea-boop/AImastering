@@ -14,7 +14,13 @@ import type { ControllerLane, MidiNote, MidiPartConfig } from './midi.js';
 import type { ChordEvent } from './chords.js';
 import type { VariSegment } from '../audio/pitch-analysis.js';
 import type { MacroRack } from './macros.js';
-export type { ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment, MacroRack };
+import type { DeviceGraph } from './device-graph.js';
+import type { Rack } from './racks.js';
+import type { SessionGrid } from './session-view.js';
+export type {
+  ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment, MacroRack,
+  DeviceGraph, Rack, SessionGrid,
+};
 
 export type TrackId    = string;
 export type ClipId     = string;
@@ -213,6 +219,14 @@ export interface Track {
   collapsed: boolean;
   /** Macro (Smart Control) rack driving this channel's processing. */
   macros: MacroRack;
+  /**
+   * Device Chain.  When present it REPLACES the linear insert list: the
+   * signal follows this graph, branches and all.  Null keeps the simple
+   * slot chain, which is all a mastering session needs.
+   */
+  deviceGraph: DeviceGraph | null;
+  /** Racks referenced by `rack` nodes in the device graph. */
+  racks: Rack[];
 }
 
 // ── Groups / buses ────────────────────────────────────────────────────────────
@@ -267,4 +281,6 @@ export interface DawSession {
   chordTrack: ChordEvent[];
   /** Delay compensation on/off — mirrors the Pro Tools engine switch. */
   delayCompensation: boolean;
+  /** Clip grid for the Session View (empty until someone uses it). */
+  sessionGrid: SessionGrid;
 }

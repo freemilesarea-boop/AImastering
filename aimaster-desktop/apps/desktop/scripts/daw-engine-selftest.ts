@@ -23,6 +23,10 @@ import {
 } from '../src/renderer/daw/model/session-ops.js';
 import { createNote, from7bit, resetNoteIds, setExpression } from '../src/renderer/daw/model/midi.js';
 import { clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
+import {
+  linearGraph, addParallelBranch, addSend, createNode, deviceOrder, layout,
+} from '../src/renderer/daw/model/device-graph.js';
+import { buildRack, rackNode, setRackMacro } from '../src/renderer/daw/model/racks.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { setVolumeDb, toggleMute, toggleSolo } from '../src/renderer/daw/model/mixer-math.js';
 import { analyzeBuffer, clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
@@ -486,6 +490,119 @@ async function main(): Promise<void> {
       macros: { enabled: true, values: {}, overrides: {} },
     })), 1);
     close(channelRms(neutral, 0, from, to), offRms, 'an untouched rack is transparent', 0.002);
+  });
+
+  // ── Device Chain ────────────────────────────────────────────────────────
+
+  await check('a parallel branch in the device chain actually sums back in', async () => {
+    clearAudioCache();
+    makeToneFile('tone', 440, 0.4, 1);
+    resetIds();
+    let s = createSession('Chain', SR);
+    const track = createTrack('Tone', 'audio');
+    s = addTrack(s, track);
+    s = addFile(s, { id: 'tone', path: '/v/tone.wav', name: 'tone', durationSec: 1, sampleRate: SR, channels: 2 });
+    s = updateClips(s, track.id, () => [createClip('tone', 'tone', { durationSec: 1 })]);
+
+    // INPUT → TRIM → OUTPUT, then a unity-gain parallel branch alongside TRIM.
+    const straight = linearGraph([{ pluginId: 'trim', label: 'TRIM', params: { gainDb: 0 } }]);
+    const trim = deviceOrder(straight).find((n) => n.label === 'TRIM')!;
+    const input = straight.nodes.find((n) => n.kind === 'input')!;
+    const output = straight.nodes.find((n) => n.kind === 'output')!;
+    const parallel = layout(addParallelBranch(straight, input.id, output.id, createNode({
+      kind: 'device', pluginId: 'trim', label: 'PARALLEL', params: { gainDb: 0 },
+    }), 0));
+
+    const direct = await render(updateTrack(s, track.id, (t) => ({ ...t, deviceGraph: straight })), 1);
+    const summed = await render(updateTrack(s, track.id, (t) => ({ ...t, deviceGraph: parallel })), 1);
+
+    const from = Math.floor(SR * 0.2);
+    const to = Math.floor(SR * 0.8);
+    const directRms = channelRms(direct, 0, from, to);
+    const summedRms = channelRms(summed, 0, from, to);
+    close(summedRms, directRms * 2, 'two unity paths sum to double', 0.02);
+    void trim;
+
+    // Blending the branch 6 dB down lands halfway between.
+    const blended = layout(addParallelBranch(straight, input.id, output.id, createNode({
+      kind: 'device', pluginId: 'trim', label: 'PARALLEL', params: { gainDb: 0 },
+    }), -6));
+    const blendedOut = await render(updateTrack(s, track.id, (t) => ({ ...t, deviceGraph: blended })), 1);
+    close(channelRms(blendedOut, 0, from, to), directRms * 1.5012, 'branch blended at −6 dB', 0.02);
+  });
+
+  await check('a send node taps the chain without leaving it', async () => {
+    clearAudioCache();
+    makeToneFile('tone', 440, 0.4, 1);
+    resetIds();
+    let s = createSession('Send', SR);
+    const bus = createBus('FX');
+    s = { ...s, buses: [bus] };
+    const track = createTrack('Tone', 'audio');
+    s = addTrack(s, track);
+    s = addTrack(s, createTrack('FX Return', 'aux', { input: bus.id, output: { kind: 'master' } }));
+    s = addFile(s, { id: 'tone', path: '/v/tone.wav', name: 'tone', durationSec: 1, sampleRate: SR, channels: 2 });
+    s = updateClips(s, track.id, () => [createClip('tone', 'tone', { durationSec: 1 })]);
+
+    const base = linearGraph([{ pluginId: 'trim', label: 'TRIM', params: { gainDb: 0 } }]);
+    const trim = deviceOrder(base).find((n) => n.label === 'TRIM')!;
+    const withSend = layout(addSend(base, trim.id, bus.id, 'REVERB SEND', 0));
+
+    const dry = await render(updateTrack(s, track.id, (t) => ({ ...t, deviceGraph: base })), 1);
+    const sent = await render(updateTrack(s, track.id, (t) => ({ ...t, deviceGraph: withSend })), 1);
+
+    const from = Math.floor(SR * 0.2);
+    const to = Math.floor(SR * 0.8);
+    // The main path is unchanged; the send adds the return on top.
+    assert(channelRms(sent, 0, from, to) > channelRms(dry, 0, from, to) * 1.5,
+      'the return is audible');
+  });
+
+  await check('a rack renders its inner chain and its macros do something', async () => {
+    clearAudioCache();
+    makeToneFile('tone', 300, 0.4, 1);
+    resetIds();
+    let s = createSession('Rack', SR);
+    const track = createTrack('Tone', 'audio');
+    s = addTrack(s, track);
+    s = addFile(s, { id: 'tone', path: '/v/tone.wav', name: 'tone', durationSec: 1, sampleRate: SR, channels: 2 });
+    s = updateClips(s, track.id, () => [createClip('tone', 'tone', { durationSec: 1 })]);
+
+    const rack = buildRack('loui-vocal')!;
+    const graph = layout({
+      nodes: [
+        createNode({ kind: 'input', id: 'dev-input', label: 'INPUT' }),
+        rackNode(rack, 1),
+        createNode({ kind: 'output', id: 'dev-output', label: 'OUTPUT' }),
+      ],
+      edges: [],
+    });
+    const rackId = graph.nodes.find((n) => n.kind === 'rack')!.id;
+    const wired = {
+      ...graph,
+      edges: [
+        { id: 'e1', from: 'dev-input', to: rackId, gainDb: 0 },
+        { id: 'e2', from: rackId, to: 'dev-output', gainDb: 0 },
+      ],
+    };
+
+    const quiet = await render(updateTrack(s, track.id, (t) => ({
+      ...t, deviceGraph: wired, racks: [rack],
+    })), 1);
+
+    // BODY drives saturation + compression; turning it up must change the sound.
+    const body = rack.macros.find((m) => m.name === 'BODY')!;
+    const loud = await render(updateTrack(s, track.id, (t) => ({
+      ...t, deviceGraph: wired, racks: [setRackMacro(rack, body.id, 1)],
+    })), 1);
+
+    const from = Math.floor(SR * 0.2);
+    const to = Math.floor(SR * 0.8);
+    const quietRms = channelRms(quiet, 0, from, to);
+    const loudRms = channelRms(loud, 0, from, to);
+    assert(quietRms > 0.01, 'the rack passes audio');
+    assert(Math.abs(loudRms - quietRms) > quietRms * 0.05,
+      `BODY changes the sound — ${quietRms.toFixed(4)} → ${loudRms.toFixed(4)}`);
   });
 
   const passed = results.filter((r) => r.pass).length;

@@ -68,7 +68,8 @@ export type CommandId =
   | 'daw.velocityUp' | 'daw.velocityDown'
   | 'daw.detectChords' | 'daw.reharmonize'
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
-  | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack';
+  | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
+  | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -293,6 +294,16 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '멤버는 남기고 폴더와 버스를 제거', available: true },
   { id: 'daw.toggleStack', group: 'daw', label: '스택 접기/펼치기', chords: ['Mod+Shift+F'],
     note: '큰 세션에서 화면을 정리', available: true },
+
+  // ── Device Chain · Session View ────────────────────────────────────────
+  { id: 'daw.showChain', group: 'daw', label: 'Device Chain', chords: ['Mod+Alt+H'],
+    note: '신호 흐름을 그래프로 — 병렬 브랜치 · 센드 · 랙', available: true },
+  { id: 'daw.showSession', group: 'daw', label: 'Session View', chords: ['Mod+Alt+Y'],
+    note: '클립 그리드 · 씬 실행 · Arrangement 변환', available: true },
+  { id: 'daw.launchScene', group: 'daw', label: '다음 씬 실행', chords: ['Mod+Alt+Enter'],
+    note: 'Session View 의 다음 씬을 다음 마디에 실행', available: true },
+  { id: 'daw.stopAllClips', group: 'daw', label: '모든 클립 정지', chords: ['Mod+Alt+Period'],
+    note: 'Session View 재생 중지', available: true },
 ];
 
 /** Parsed bindings, in dispatch order (first match wins). */
