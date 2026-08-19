@@ -19,7 +19,7 @@
 
 import { parseChord, formatChord, type KeyChord, type Platform } from './keys.js';
 
-export type ShortcutGroupId = 'file' | 'transport' | 'tools' | 'edit' | 'window';
+export type ShortcutGroupId = 'file' | 'transport' | 'tools' | 'edit' | 'window' | 'daw';
 
 export const GROUP_TITLES: Record<ShortcutGroupId, string> = {
   file:      '1. 프로젝트 및 파일',
@@ -27,6 +27,7 @@ export const GROUP_TITLES: Record<ShortcutGroupId, string> = {
   tools:     '3. 메인 툴바',
   edit:      '4. 편집 및 트랙 조작',
   window:    '5. 창 및 패널',
+  daw:       '6. DAW 편집 (Edit / Mix)',
 };
 
 export type CommandId =
@@ -48,7 +49,18 @@ export type CommandId =
   // 5. Windows & panels
   | 'window.mixConsole' | 'window.transportPanel' | 'window.keyEditor'
   | 'window.bottomEditor' | 'window.vstEditor' | 'window.mediaBay'
-  | 'window.inspector' | 'window.rightRack' | 'window.shortcutHelp';
+  | 'window.inspector' | 'window.rightRack' | 'window.shortcutHelp'
+  // 6. DAW workspace — multitrack editing, routing and rendering
+  | 'daw.open' | 'daw.toggleWindow'
+  | 'daw.tabNext' | 'daw.tabPrev' | 'daw.toggleTabToTransient'
+  | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate' | 'daw.clearRange'
+  | 'daw.clipGainUp' | 'daw.clipGainDown'
+  | 'daw.nudgeForward' | 'daw.nudgeBack'
+  | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
+  | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
+  | 'daw.freeze' | 'daw.commit' | 'daw.bounce'
+  | 'daw.importAudio' | 'daw.importSession'
+  | 'daw.zoomIn' | 'daw.zoomOut';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -159,8 +171,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '하단 트랜스포트 바 (파형 · 루프 · 툴) 열기/닫기', available: true },
   { id: 'window.keyEditor',      group: 'window', label: 'MIDI 피아노 롤 (Key Editor)', chords: ['Enter'],
     note: 'MIDI 이벤트가 없는 오디오 마스터링 앱이라 해당 없음', available: false },
-  { id: 'window.bottomEditor',   group: 'window', label: '하단 에디터 패널', chords: ['Mod+Alt+B'],
-    note: '하단 존(트랜스포트+믹스콘솔) 한 번에 열기/닫기 — Cubase 의 Ctrl+Alt+E 는 내보내기와 충돌하여 B 로 이동', available: true },
+  { id: 'window.bottomEditor',   group: 'window', label: '하단 에디터 패널', chords: ['Mod+Alt+L'],
+    note: '하단 존(트랜스포트+믹스콘솔) 열기/닫기 — Cubase 의 Ctrl+Alt+E 는 내보내기와, B 는 바운스와 충돌하여 L(Lower zone)', available: true },
   { id: 'window.vstEditor',      group: 'window', label: 'VST 에디터 / 인스트루먼트 창', chords: ['F11'],
     note: '고급 파라미터(모듈 상세) 패널 열기/닫기', available: true },
   { id: 'window.mediaBay',       group: 'window', label: 'MediaBay (프리셋 브라우저)', chords: ['F5'],
@@ -171,6 +183,64 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '우측 세밀 조정 패널 열기/닫기', available: true },
   { id: 'window.shortcutHelp',   group: 'window', label: '단축키 도움말', chords: ['Shift+Slash', 'F1'],
     note: '이 목록 열기/닫기', available: true },
+
+  // ── 6. DAW 편집 (Edit / Mix) ────────────────────────────────────────────
+  { id: 'daw.open', group: 'daw', label: 'DAW 워크스페이스 열기', chords: ['Mod+Alt+D'],
+    note: '멀티트랙 Edit / Mix 화면으로 이동', available: true },
+  { id: 'daw.toggleWindow', group: 'daw', label: 'Edit ↔ Mix 전환', chords: ['Mod+Equal'],
+    note: '같은 세션의 편집 화면과 콘솔 화면 전환', available: true },
+  { id: 'daw.tabNext', group: 'daw', label: '다음 편집 지점으로 (Tab)', chords: ['Tab'],
+    note: '클립 경계 — Tab to Transient 가 켜져 있으면 어택까지', available: true },
+  { id: 'daw.tabPrev', group: 'daw', label: '이전 편집 지점으로', chords: ['Shift+Tab'],
+    note: '반대 방향. 구간이 선택돼 있으면 선택 범위를 확장', available: true },
+  { id: 'daw.toggleTabToTransient', group: 'daw', label: 'Tab to Transient on/off', chords: ['Mod+Alt+Tab'],
+    note: '어택 탐지 사용 여부', available: true },
+  { id: 'daw.separate', group: 'daw', label: '클립 분리 (Separate)', chords: ['Mod+E'],
+    note: '재생 위치에서 선택 트랙의 클립을 자름', available: true },
+  { id: 'daw.heal', group: 'daw', label: '분리 복구 (Heal)', chords: ['Mod+H'],
+    note: '자른 뒤 움직이지 않은 클립을 다시 합침', available: true },
+  { id: 'daw.trimToSelection', group: 'daw', label: '선택 구간으로 트림', chords: ['Mod+T'],
+    note: '선택 밖의 오디오를 잘라냄 (비파괴)', available: true },
+  { id: 'daw.clearRange', group: 'daw', label: '선택 구간 삭제', chords: ['Delete', 'Backspace'],
+    note: 'SHUFFLE 모드면 뒤 클립을 당겨 붙임', available: true },
+  { id: 'daw.consolidate', group: 'daw', label: '컨솔리데이트', chords: ['Mod+Alt+C'],
+    note: '선택 구간을 하나의 새 오디오 클립으로 렌더링', available: true },
+  { id: 'daw.clipGainUp', group: 'daw', label: '클립 게인 +0.5 dB', chords: ['Mod+Shift+ArrowUp'],
+    note: '클립 자체 게인 (페이더 이전)', available: true },
+  { id: 'daw.clipGainDown', group: 'daw', label: '클립 게인 −0.5 dB', chords: ['Mod+Shift+ArrowDown'],
+    note: '클립 자체 게인 (페이더 이전)', available: true },
+  { id: 'daw.nudgeForward', group: 'daw', label: '넛지 →', chords: ['NumpadAdd'],
+    note: '선택 클립을 넛지 값만큼 뒤로', available: true },
+  { id: 'daw.nudgeBack', group: 'daw', label: '넛지 ←', chords: ['NumpadSubtract'],
+    note: '선택 클립을 넛지 값만큼 앞으로', available: true },
+  { id: 'daw.fadeIn', group: 'daw', label: '커서까지 페이드 인', chords: ['Alt+D'],
+    note: '클립 시작 → 재생 위치', available: true },
+  { id: 'daw.fadeOut', group: 'daw', label: '커서부터 페이드 아웃', chords: ['Alt+G'],
+    note: '재생 위치 → 클립 끝', available: true },
+  { id: 'daw.crossfade', group: 'daw', label: '크로스페이드', chords: ['Mod+F'],
+    note: '맞닿은 두 클립 경계에 선택 길이만큼', available: true },
+  { id: 'daw.newTrack', group: 'daw', label: '새 오디오 트랙', chords: ['Mod+Shift+N'],
+    note: '세션에 오디오 트랙 추가', available: true },
+  { id: 'daw.playlistPrev', group: 'daw', label: '이전 테이크', chords: ['Alt+ArrowUp'],
+    note: '플레이리스트(테이크) 레인 전환', available: true },
+  { id: 'daw.playlistNext', group: 'daw', label: '다음 테이크', chords: ['Alt+ArrowDown'],
+    note: '플레이리스트(테이크) 레인 전환', available: true },
+  { id: 'daw.compSelection', group: 'daw', label: '선택 구간 컴핑', chords: ['Mod+Alt+V'],
+    note: '다른 테이크의 선택 구간을 메인 플레이리스트로', available: true },
+  { id: 'daw.freeze', group: 'daw', label: '프리즈 / 해제', chords: ['Mod+Alt+F'],
+    note: '인서트를 렌더링해 CPU 반환 (되돌릴 수 있음)', available: true },
+  { id: 'daw.commit', group: 'daw', label: '커밋', chords: ['Mod+Alt+Shift+F'],
+    note: '인서트를 오디오에 확정 렌더링 (되돌릴 수 없음)', available: true },
+  { id: 'daw.bounce', group: 'daw', label: '오프라인 바운스', chords: ['Mod+Alt+B'],
+    note: '세션(또는 선택 구간)을 WAV 로 렌더링 — 실시간보다 빠름', available: true },
+  { id: 'daw.importAudio', group: 'daw', label: '오디오 가져오기', chords: ['Mod+Shift+I'],
+    note: '파일마다 트랙 + 클립 생성', available: true },
+  { id: 'daw.importSession', group: 'daw', label: '세션 데이터 가져오기', chords: ['Mod+Shift+D'],
+    note: '다른 세션의 트랙 · 인서트 · 센드 · 오토메이션을 가져옴', available: true },
+  { id: 'daw.zoomIn', group: 'daw', label: '가로 확대', chords: ['Mod+BracketRight'],
+    note: '타임라인 확대', available: true },
+  { id: 'daw.zoomOut', group: 'daw', label: '가로 축소', chords: ['Mod+BracketLeft'],
+    note: '타임라인 축소', available: true },
 ];
 
 /** Parsed bindings, in dispatch order (first match wins). */

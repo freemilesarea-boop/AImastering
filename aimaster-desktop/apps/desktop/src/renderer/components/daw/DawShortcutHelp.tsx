@@ -11,7 +11,7 @@ import {
 import { detectPlatform } from '../../shortcuts/keys.js';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 
-const GROUP_ORDER: ShortcutGroupId[] = ['file', 'transport', 'tools', 'edit', 'window'];
+const GROUP_ORDER: ShortcutGroupId[] = ['file', 'transport', 'tools', 'edit', 'window', 'daw'];
 
 function Chip({ label }: { label: string }) {
   return (

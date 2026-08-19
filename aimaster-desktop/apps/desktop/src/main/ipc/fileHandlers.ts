@@ -60,6 +60,28 @@ function isMasterExport(extOrFormat: string): boolean {
   return !FREE_EXPORT_EXTS.has(extOrFormat.toLowerCase().replace('.', ''));
 }
 
+/**
+ * Validate a renderer-supplied audio payload.  The renderer is trusted code,
+ * but a malformed payload must not become an unbounded write, so the size is
+ * capped at a value no legitimate session bounce reaches (2 GB WAV ≈ 3 h
+ * stereo 24-bit).
+ */
+const MAX_RENDER_BYTES = 2 * 1024 * 1024 * 1024;
+
+function readAudioPayload(req: unknown): { name: string; bytes: Buffer } {
+  if (!req || typeof req !== 'object') throw new Error('invalid render payload');
+  const o = req as { name?: unknown; data?: unknown };
+  const name = typeof o.name === 'string' ? o.name : 'render';
+  const data = o.data;
+  if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer)) {
+    throw new Error('render payload must carry audio bytes');
+  }
+  const bytes = Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+  if (bytes.length === 0) throw new Error('render payload is empty');
+  if (bytes.length > MAX_RENDER_BYTES) throw new Error('render payload too large');
+  return { name, bytes };
+}
+
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   // ── Open file picker (single) ─────────────────────────────────────────
   ipc.handle('file:open-dialog', async () => {
@@ -343,6 +365,56 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       }
     }
     return { destDir, saved };
+  });
+
+  // ── DAW render output (Bounce / Freeze / Consolidate) ─────────────────
+  // The renderer renders through an OfflineAudioContext and hands us the
+  // encoded WAV bytes.  Two destinations:
+  //   • daw:write-temp-audio — a session-scratch file that Freeze and
+  //     Consolidate reference as a clip source.  Never shown to the user, so
+  //     no dialog and no license gate (nothing leaves the app).
+  //   • daw:bounce-audio     — a real export, so it goes through the same
+  //     save dialog and paid-export gate as every other master.
+
+  const dawTempDir = (): string => {
+    const dir = path.join(app.getPath('temp'), 'loui-daw');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+
+  ipc.handle('daw:write-temp-audio', (_e, req: unknown) => {
+    const { name, bytes } = readAudioPayload(req);
+    const safe = name.replace(/[^\w.\-가-힣 ]+/g, '_').slice(0, 80) || 'render';
+    const dest = path.join(dawTempDir(), `${Date.now()}-${safe}.wav`);
+    try {
+      fs.writeFileSync(dest, bytes);
+      return dest;
+    } catch (err) {
+      recordFailure('export', `daw:write-temp-audio failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:bounce-audio', async (_e, req: unknown) => {
+    if (!win) return null;
+    const { name, bytes } = readAudioPayload(req);
+    // Same paywall as every other lossless master export.
+    const gate = paidStatus();
+    log.info(`[export-gate] daw-bounce paid=${gate.paid} source=${gate.source}`);
+    if (!gate.paid) throw new Error(LICENSE_REQUIRED);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `${name || 'bounce'}.wav`,
+      filters: [FORMAT_FILTERS.wav],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, bytes);
+      log.info(`[daw] bounced ${bytes.length} bytes → ${result.filePath}`);
+      return result.filePath;
+    } catch (err) {
+      recordFailure('export', `daw:bounce-audio failed: ${(err as Error).message}`);
+      throw err;
+    }
   });
 
   // ── Recent files (v1 stub) ────────────────────────────────────────────

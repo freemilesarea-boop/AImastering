@@ -15,7 +15,9 @@ import {
 } from '../stores/workspaceStore.js';
 import { resumeSharedContext } from '../audio/shared-audio-graph.js';
 import { BINDINGS } from './definitions.js';
-import { buildCommands, type CommandDeps, type TransportApi } from './commands.js';
+import { buildCommands, type CommandDeps, type DawBridge, type TransportApi } from './commands.js';
+import { buildDawCommands, buildDawOverrides } from './daw-commands.js';
+import { useDawStore } from '../stores/dawStore.js';
 import { matchesChord, detectPlatform, type Platform } from './keys.js';
 
 /** Typing surfaces where the DAW layer must stay out of the way. */
@@ -113,7 +115,23 @@ export function useDawShortcuts(): void {
     };
   }, []);
 
-  const commands = useMemo(() => buildCommands(deps), [deps]);
+  // The DAW workspace owns a second meaning for some keys; the bridge picks
+  // whichever matches the page that is actually on screen.
+  const dawBridge = useMemo<DawBridge>(() => {
+    const dawDeps = {
+      notify: deps.notify,
+      openWorkspace: () => useAppStore.getState().setPage('daw'),
+      daw: () => useDawStore.getState(),
+      invoke: deps.invoke,
+    };
+    return {
+      isActive: () => useAppStore.getState().currentPage === 'daw',
+      commands: buildDawCommands(dawDeps),
+      overrides: buildDawOverrides(dawDeps),
+    };
+  }, [deps]);
+
+  const commands = useMemo(() => buildCommands(deps, dawBridge), [deps, dawBridge]);
 
   // ── Keydown dispatch ────────────────────────────────────────────────────
   useEffect(() => {

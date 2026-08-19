@@ -57,6 +57,20 @@ export interface CommandDeps {
 export type CommandFn = () => void | Promise<void>;
 export type CommandMap = Record<CommandId, CommandFn>;
 
+/**
+ * The DAW workspace's half of the keyboard map.
+ *
+ * `commands` are the DAW-only verbs; `overrides` are shared keys that mean
+ * something different while the DAW is on screen (Space plays the session,
+ * Mod+Z undoes an edit).  `isActive` decides which meaning applies, so one
+ * key never needs two bindings.
+ */
+export interface DawBridge {
+  isActive: () => boolean;
+  commands: Partial<Record<CommandId, CommandFn>>;
+  overrides: Partial<Record<CommandId, CommandFn>>;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const NOTE = new Map(SHORTCUTS.map((s) => [s.id, s.note] as const));
@@ -92,7 +106,7 @@ export function buildSession(snap: AudioSnapshot, createdAt: string): LouiSessio
 
 // ── Command map ───────────────────────────────────────────────────────────────
 
-export function buildCommands(deps: CommandDeps): CommandMap {
+export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
   const { notify, setPage, getAudio, audio, workspace, transport, invoke } = deps;
 
   /** Registered-but-not-applicable command: say why instead of doing nothing. */
@@ -123,7 +137,8 @@ export function buildCommands(deps: CommandDeps): CommandMap {
     }
   };
 
-  return {
+  // The DAW verbs are added right below; the literal covers everything else.
+  const base = {
     // ── 1. 프로젝트 및 파일 ─────────────────────────────────────────────
     'file.new': () => {
       audio.reset();
@@ -357,5 +372,26 @@ export function buildCommands(deps: CommandDeps): CommandMap {
     },
 
     'window.shortcutHelp': () => { workspace().togglePanel('help'); },
-  };
+  } as CommandMap;
+
+  // DAW-only verbs — registered even without the workspace so the key says
+  // what it needs instead of doing nothing.
+  for (const def of SHORTCUTS) {
+    if (def.group !== 'daw') continue;
+    const impl = daw?.commands[def.id];
+    base[def.id] = impl ?? (() => {
+      notify('DAW 워크스페이스(Mod+Alt+D)에서 사용할 수 있습니다', 'warning');
+    });
+  }
+
+  if (!daw) return base;
+
+  // Shared keys: pick the meaning that matches the visible workspace.
+  const bridge = daw;
+  for (const [id, override] of Object.entries(bridge.overrides) as Array<[CommandId, CommandFn]>) {
+    const fallback = base[id];
+    base[id] = () => (bridge.isActive() ? override() : fallback());
+  }
+  return base;
 }
+

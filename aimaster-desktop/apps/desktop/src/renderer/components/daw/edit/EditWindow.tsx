@@ -1,0 +1,345 @@
+// EditWindow — the timeline half of the workspace.
+//
+// Ruler, track headers, clip lanes, selection, play head, loop locators.
+// Every gesture here writes to dawStore, and every keystroke that does the
+// same work lives in the shortcut layer — the mouse and the keyboard drive
+// one model, never two.
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useDawStore, snapToGrid, type EditMode } from '../../../stores/dawStore.js';
+import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
+import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
+import { activePlaylist, clipAt, sessionEndSec, trackClips } from '../../../daw/model/session-ops.js';
+import { moveClip } from '../../../daw/edit/clip-edit.js';
+import { cyclePlaylist } from '../../../daw/edit/comping.js';
+import { toggleMute, toggleSolo } from '../../../daw/model/mixer-math.js';
+import type { Track } from '../../../daw/model/types.js';
+import TrackLaneCanvas from './TrackLaneCanvas.js';
+
+const HEADER_WIDTH = 168;
+const RULER_HEIGHT = 26;
+
+function fmt(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) return '0:00.000';
+  const m = Math.floor(sec / 60);
+  const s = sec - m * 60;
+  return `${m}:${s.toFixed(3).padStart(6, '0')}`;
+}
+
+const EDIT_MODES: EditMode[] = ['shuffle', 'slip', 'spot', 'grid'];
+const MODE_LABELS: Record<EditMode, string> = {
+  shuffle: 'SHUFFLE', slip: 'SLIP', spot: 'SPOT', grid: 'GRID',
+};
+
+export default function EditWindow() {
+  const session      = useDawStore((s) => s.session);
+  const selection    = useDawStore((s) => s.selection);
+  const setSelection = useDawStore((s) => s.setSelection);
+  const playheadSec  = useDawStore((s) => s.playheadSec);
+  const seek         = useDawStore((s) => s.seek);
+  const pxPerSec     = useDawStore((s) => s.pxPerSec);
+  const setPxPerSec  = useDawStore((s) => s.setPxPerSec);
+  const scrollSec    = useDawStore((s) => s.scrollSec);
+  const setScrollSec = useDawStore((s) => s.setScrollSec);
+  const editMode     = useDawStore((s) => s.editMode);
+  const setEditMode  = useDawStore((s) => s.setEditMode);
+  const gridSec      = useDawStore((s) => s.gridSec);
+  const nudgeSec     = useDawStore((s) => s.nudgeSec);
+  const tabToTransient = useDawStore((s) => s.tabToTransient);
+  const toggleTab    = useDawStore((s) => s.toggleTabToTransient);
+  const loopEnabled  = useDawStore((s) => s.loopEnabled);
+  const loopStartSec = useDawStore((s) => s.loopStartSec);
+  const loopEndSec   = useDawStore((s) => s.loopEndSec);
+  const focusedTrackId = useDawStore((s) => s.focusedTrackId);
+  const setFocusedTrack = useDawStore((s) => s.setFocusedTrack);
+  const apply        = useDawStore((s) => s.apply);
+  const tool         = useWorkspaceStore((s) => s.tool);
+
+  const laneRef = useRef<HTMLDivElement>(null);
+  const [laneWidth, setLaneWidth] = useState(900);
+  const [decodeTick, setDecodeTick] = useState(0);
+  const [drag, setDrag] = useState<null | { anchorSec: number; trackIds: string[] }>(null);
+  // Clip drag: one gesture = one undo step, so it writes through
+  // applyTransient and commits on mouse up.
+  const [clipDrag, setClipDrag] = useState<null | {
+    trackId: string; clipId: string; grabOffsetSec: number;
+  }>(null);
+  const applyTransient = useDawStore((s) => s.applyTransient);
+  const commitEdit     = useDawStore((s) => s.commitEdit);
+
+  // Decode sources for display (no user gesture needed — offline context).
+  useEffect(() => {
+    let cancelled = false;
+    void decodeForDisplay(session.files).then(() => {
+      if (!cancelled) setDecodeTick((n) => n + 1);
+    });
+    return () => { cancelled = true; };
+  }, [session.files]);
+
+  // Track the lane width so the canvases size themselves correctly.
+  useEffect(() => {
+    const el = laneRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setLaneWidth(Math.max(120, w));
+    });
+    ro.observe(el);
+    setLaneWidth(Math.max(120, el.clientWidth));
+    return () => ro.disconnect();
+  }, []);
+
+  const endSec = useMemo(() => sessionEndSec(session), [session]);
+  const toX = useCallback((sec: number) => (sec - scrollSec) * pxPerSec, [scrollSec, pxPerSec]);
+  const secAt = useCallback((clientX: number) => {
+    const el = laneRef.current;
+    if (!el) return 0;
+    const rect = el.getBoundingClientRect();
+    return Math.max(0, scrollSec + (clientX - rect.left) / pxPerSec);
+  }, [scrollSec, pxPerSec]);
+
+  const visibleTracks = session.tracks.filter((t) => t.kind !== 'master' || trackClips(t).length > 0 || true);
+
+  // ── Lane gestures ───────────────────────────────────────────────────────
+  const onLaneDown = useCallback((e: React.MouseEvent, track: Track) => {
+    const at = snapToGrid(secAt(e.clientX));
+    setFocusedTrack(track.id);
+    if (tool === 'zoom') {
+      setPxPerSec(e.altKey ? pxPerSec / 1.6 : pxPerSec * 1.6);
+      return;
+    }
+    if (tool === 'select' && !e.shiftKey) {
+      // Grabber behaviour: a click ON a clip drags it, empty lane seeks.
+      const raw = secAt(e.clientX);
+      const clip = clipAt(track, raw);
+      if (clip) {
+        setClipDrag({ trackId: track.id, clipId: clip.id, grabOffsetSec: raw - clip.startSec });
+        setSelection({ startSec: clip.startSec, endSec: clip.startSec + clip.durationSec, trackIds: [track.id] });
+        return;
+      }
+      seek(at);
+      setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
+      setDrag({ anchorSec: at, trackIds: [track.id] });
+      return;
+    }
+    // range tool or shift-drag → time selection
+    setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
+    setDrag({ anchorSec: at, trackIds: [track.id] });
+  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection]);
+
+  const onLaneMove = useCallback((e: React.MouseEvent) => {
+    if (clipDrag) {
+      const target = snapToGrid(Math.max(0, secAt(e.clientX) - clipDrag.grabOffsetSec));
+      applyTransient((s) => moveClip(s, clipDrag.trackId, clipDrag.clipId, target));
+      return;
+    }
+    if (!drag) return;
+    const at = snapToGrid(secAt(e.clientX));
+    setSelection({
+      startSec: Math.min(drag.anchorSec, at),
+      endSec: Math.max(drag.anchorSec, at),
+      trackIds: drag.trackIds,
+    });
+  }, [drag, clipDrag, secAt, setSelection, applyTransient]);
+
+  const endDrag = useCallback(() => {
+    if (clipDrag) { commitEdit(); setClipDrag(null); }
+    setDrag(null);
+  }, [clipDrag, commitEdit]);
+
+  const rulerDown = useCallback((e: React.MouseEvent) => {
+    seek(snapToGrid(secAt(e.clientX)));
+  }, [seek, secAt]);
+
+  // Ruler ticks — roughly one label every 90 px.
+  const ticks = useMemo(() => {
+    const targetSec = 90 / pxPerSec;
+    const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120];
+    const step = steps.find((s) => s >= targetSec) ?? 300;
+    const first = Math.floor(scrollSec / step) * step;
+    const out: number[] = [];
+    for (let t = first; t < scrollSec + laneWidth / pxPerSec; t += step) out.push(t);
+    return out;
+  }, [pxPerSec, scrollSec, laneWidth]);
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
+      {/* ── Toolbar ─────────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
+        <div className="flex rounded-md overflow-hidden border border-zinc-700">
+          {EDIT_MODES.map((m) => (
+            <button
+              key={m}
+              onClick={() => setEditMode(m)}
+              className={`px-2 py-1 text-[10px] font-mono tracking-wide transition-colors ${
+                editMode === m ? 'bg-emerald-600/30 text-emerald-300' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300'}`}
+            >{MODE_LABELS[m]}</button>
+          ))}
+        </div>
+
+        <span className="text-[10px] font-mono text-zinc-600">
+          Grid {gridSec}s · Nudge {nudgeSec}s
+        </span>
+
+        <button
+          onClick={toggleTab}
+          title="Tab to Transient (Cmd+Alt+Tab)"
+          className={`px-2 py-1 rounded text-[10px] border transition-colors ${
+            tabToTransient
+              ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+        >TAB→TRANSIENT</button>
+
+        <div className="flex-1" />
+
+        <button onClick={() => setPxPerSec(pxPerSec / 1.5)}
+          className="px-2 py-1 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-400">−</button>
+        <span className="text-[10px] font-mono text-zinc-600 w-16 text-center">{pxPerSec.toFixed(0)} px/s</span>
+        <button onClick={() => setPxPerSec(pxPerSec * 1.5)}
+          className="px-2 py-1 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-400">+</button>
+
+        <span className="text-[11px] font-mono text-zinc-300 ml-2">{fmt(playheadSec)}</span>
+        <span className="text-[10px] font-mono text-zinc-600">
+          {selection.endSec > selection.startSec
+            ? `SEL ${fmt(selection.startSec)} → ${fmt(selection.endSec)}`
+            : 'SEL —'}
+        </span>
+      </div>
+
+      {/* ── Ruler ───────────────────────────────────────────────────────── */}
+      <div className="flex border-b border-zinc-800 bg-[#12121a]">
+        <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800" />
+        <div
+          onMouseDown={rulerDown}
+          className="relative flex-1 cursor-pointer overflow-hidden"
+          style={{ height: RULER_HEIGHT }}
+        >
+          {ticks.map((t) => (
+            <div key={t} className="absolute top-0 bottom-0 border-l border-zinc-800"
+                 style={{ left: toX(t) }}>
+              <span className="absolute left-1 top-1 text-[9px] font-mono text-zinc-600">{fmt(t).slice(0, -2)}</span>
+            </div>
+          ))}
+          {loopEndSec > loopStartSec && (
+            <div className={`absolute top-0 h-1.5 ${loopEnabled ? 'bg-emerald-500' : 'bg-zinc-600'}`}
+                 style={{ left: toX(loopStartSec), width: Math.max(2, (loopEndSec - loopStartSec) * pxPerSec) }} />
+          )}
+          <div className="absolute top-0 bottom-0 w-px bg-red-400" style={{ left: toX(playheadSec) }} />
+        </div>
+      </div>
+
+      {/* ── Tracks ──────────────────────────────────────────────────────── */}
+      <div className="flex-1 flex overflow-y-auto" onMouseUp={endDrag} onMouseLeave={endDrag}>
+        {/* Headers */}
+        <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
+          {visibleTracks.map((track) => (
+            <TrackHeader
+              key={track.id}
+              track={track}
+              focused={focusedTrackId === track.id}
+              onFocus={() => setFocusedTrack(track.id)}
+              onSolo={() => apply((s) => toggleSolo(s, track.id))}
+              onMute={() => apply((s) => toggleMute(s, track.id))}
+              onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, track.id, dir))}
+            />
+          ))}
+        </div>
+
+        {/* Lanes */}
+        <div ref={laneRef} className="flex-1 relative overflow-hidden" onMouseMove={onLaneMove}>
+          {visibleTracks.map((track) => (
+            <div
+              key={track.id}
+              onMouseDown={(e) => onLaneDown(e, track)}
+              className="relative border-b border-zinc-900"
+              style={{ height: track.height }}
+            >
+              <TrackLaneCanvas
+                track={track}
+                viewport={{ scrollSec, pxPerSec, width: laneWidth, height: track.height }}
+                selected={selection.trackIds.includes(track.id)}
+                decodeTick={decodeTick}
+              />
+              {selection.trackIds.includes(track.id) && selection.endSec > selection.startSec && (
+                <div className="absolute top-0 bottom-0 bg-white/10 border-x border-white/40 pointer-events-none"
+                     style={{
+                       left: toX(selection.startSec),
+                       width: Math.max(1, (selection.endSec - selection.startSec) * pxPerSec),
+                     }} />
+              )}
+            </div>
+          ))}
+
+          {/* Play head across every lane */}
+          <div className="absolute top-0 bottom-0 w-px bg-red-400 pointer-events-none"
+               style={{ left: toX(playheadSec) }} />
+        </div>
+      </div>
+
+      {/* ── Horizontal scroll ───────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 px-3 py-1 border-t border-zinc-800 bg-[#12121a]">
+        <span className="text-[10px] font-mono text-zinc-600">스크롤</span>
+        <input
+          type="range"
+          min={0}
+          max={Math.max(1, endSec)}
+          step={0.05}
+          value={Math.min(scrollSec, Math.max(1, endSec))}
+          onChange={(e) => setScrollSec(parseFloat(e.target.value))}
+          className="flex-1 accent-indigo-500"
+        />
+        <span className="text-[10px] font-mono text-zinc-600">{fmt(endSec)}</span>
+      </div>
+    </div>
+  );
+}
+
+function TrackHeader({
+  track, focused, onFocus, onSolo, onMute, onCyclePlaylist,
+}: {
+  track: Track;
+  focused: boolean;
+  onFocus: () => void;
+  onSolo: () => void;
+  onMute: () => void;
+  onCyclePlaylist: (dir: 1 | -1) => void;
+}) {
+  const playlist = activePlaylist(track);
+  const takes = track.playlists.length;
+  return (
+    <div
+      onMouseDown={onFocus}
+      className={`px-2 py-1.5 border-b border-zinc-900 flex flex-col gap-1 ${focused ? 'bg-zinc-800/60' : ''}`}
+      style={{ height: track.height }}
+    >
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="w-1.5 h-4 rounded-sm shrink-0" style={{ background: track.color }} />
+        <span className="text-[11px] text-zinc-200 truncate flex-1" title={track.name}>{track.name}</span>
+        <span className="text-[9px] font-mono text-zinc-600 uppercase">{track.kind.slice(0, 3)}</span>
+      </div>
+      <div className="flex items-center gap-1">
+        <button onClick={onSolo}
+          className={`w-5 h-5 rounded text-[9px] border ${track.solo
+            ? 'bg-yellow-500/30 border-yellow-500/60 text-yellow-300'
+            : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}>S</button>
+        <button onClick={onMute}
+          className={`w-5 h-5 rounded text-[9px] border ${track.mute
+            ? 'bg-red-600/30 border-red-500/60 text-red-300'
+            : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}>M</button>
+        {track.frozen && (
+          <span className="px-1 rounded text-[8px] bg-sky-600/30 border border-sky-500/50 text-sky-300">FRZ</span>
+        )}
+        {takes > 1 && (
+          <div className="flex items-center gap-0.5 ml-auto">
+            <button onClick={() => onCyclePlaylist(-1)}
+              className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▲</button>
+            <span className="text-[8px] font-mono text-zinc-500 truncate max-w-[46px]"
+                  title={playlist?.name}>{playlist?.name.split('.').pop()}</span>
+            <button onClick={() => onCyclePlaylist(1)}
+              className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▼</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
