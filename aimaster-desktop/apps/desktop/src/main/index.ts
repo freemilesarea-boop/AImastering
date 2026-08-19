@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { checkFFmpeg } from '@aimaster/audio-engine';
 import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
+import { registerDecodeHandlers } from './ipc/decodeHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { registerLicenseHandlers, licenseService } from './ipc/licenseHandlers.js';
 import { registerEntitlementHandlers } from './ipc/entitlementHandlers.js';
@@ -300,6 +301,7 @@ app.whenReady().then(() => {
   try {
     registerAudioHandlers(ipcMain, mainWindow);
     registerFileHandlers(ipcMain, mainWindow);
+    registerDecodeHandlers(ipcMain, app.isPackaged, process.resourcesPath);
     registerSettingsHandlers(ipcMain, mainWindow);
     registerLicenseHandlers(ipcMain);
     registerEntitlementHandlers(ipcMain);

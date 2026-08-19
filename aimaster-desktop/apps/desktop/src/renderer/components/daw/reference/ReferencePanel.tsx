@@ -14,8 +14,7 @@ import { useAppStore } from '../../../stores/appStore.js';
 import { useReferenceStore, type OverlayTab } from '../../../stores/referenceStore.js';
 import { formatMetric, spectrumDelta, type ComparisonRow, type ReferenceAnalysis } from '../../../daw/analysis/reference.js';
 import { renderSession, sessionRange } from '../../../daw/engine/offline-render.js';
-import { decodeContext } from '../../../daw/engine/audio-cache.js';
-import { toFileUrl } from '../../../utils/fileUrl.js';
+import { decodeAudioFile, decodeContext } from '../../../daw/engine/audio-cache.js';
 import { premium } from '../../../theme/premium.js';
 
 const TABS: { id: OverlayTab; label: string }[] = [
@@ -46,8 +45,7 @@ export default function ReferencePanel() {
     if (!ctx) { notify('오디오 디코더를 사용할 수 없습니다', 'error'); return; }
     setBusy('레퍼런스 분석 중…');
     try {
-      const resp = await fetch(toFileUrl(first));
-      const buffer = await ctx.decodeAudioData(await resp.arrayBuffer());
+      const buffer = await decodeAudioFile(ctx, first);
       setReference(buffer, first.split(/[\\/]/).pop() ?? 'REFERENCE');
       notify('레퍼런스를 분석했습니다', 'success');
     } catch (err) {

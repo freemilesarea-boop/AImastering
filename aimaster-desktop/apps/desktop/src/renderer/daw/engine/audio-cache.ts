@@ -28,7 +28,7 @@
 // the buffer itself is re-decoded on demand when playback needs it back.
 
 import { decodeContext } from '../../audio/decode-context.js';
-import { toFileUrl } from '../../utils/fileUrl.js';
+import { fromFileUrl, toFileUrl } from '../../utils/fileUrl.js';
 import { detectTransients } from '../edit/transient.js';
 import type { FileId } from '../model/types.js';
 
@@ -187,6 +187,66 @@ export function analyzeBuffer(fileId: FileId, buffer: AudioBuffer): CachedAudio 
 }
 
 /**
+ * Turn a file into samples.
+ *
+ * FFmpeg in the main process does the decoding and hands back raw interleaved
+ * float32; here that is copied into an AudioBuffer.  `createBuffer` +
+ * `copyToChannel` is memory copying — it cannot fault, and it cannot take the
+ * renderer process with it.
+ *
+ * `decodeAudioData` can.  It is native Chromium code, and on macOS it kills
+ * the renderer outright (SIGSEGV) on real songs — no exception, no stack, just
+ * a window painted in its own background colour because the process that would
+ * have reported the error is gone.  It stays only as the fallback for
+ * environments with no main process at all: the Node self-tests, and a browser
+ * build if one is ever made.
+ */
+export async function decodeAudioFile(
+  ctx: BaseAudioContext, pathOrUrl: string,
+): Promise<AudioBuffer> {
+  const path = fromFileUrl(pathOrUrl);
+  const api = (globalThis as unknown as { electronAPI?: DecodeBridge }).electronAPI;
+  if (api) {
+    const result = await api.invoke('daw:decode-pcm', {
+      path, sampleRate: ctx.sampleRate,
+    }) as DecodedPcm;
+    return pcmToBuffer(ctx, result);
+  }
+  const resp = await fetch(toFileUrl(path));
+  if (!resp.ok) throw new Error(`오디오 로드 실패 (${resp.status}): ${path}`);
+  return ctx.decodeAudioData(await resp.arrayBuffer());
+}
+
+interface DecodeBridge {
+  invoke(channel: string, ...args: unknown[]): Promise<unknown>;
+}
+
+interface DecodedPcm {
+  sampleRate: number;
+  channels: number;
+  frames: number;
+  /** Interleaved float32 — `frames * channels` samples. */
+  pcm: Uint8Array;
+}
+
+/** De-interleave main's float32 into an AudioBuffer, one channel at a time. */
+export function pcmToBuffer(ctx: BaseAudioContext, decoded: DecodedPcm): AudioBuffer {
+  const { sampleRate, channels, frames, pcm } = decoded;
+  if (!(frames > 0) || !(channels > 0)) throw new Error('디코딩 결과가 비어 있습니다');
+
+  const bytes = pcm instanceof Uint8Array ? pcm : new Uint8Array(pcm as ArrayBufferLike);
+  const interleaved = new Float32Array(bytes.buffer, bytes.byteOffset, frames * channels);
+
+  const buffer = ctx.createBuffer(channels, frames, sampleRate);
+  const scratch = new Float32Array(frames);
+  for (let c = 0; c < channels; c++) {
+    for (let i = 0; i < frames; i++) scratch[i] = interleaved[i * channels + c] ?? 0;
+    buffer.copyToChannel(scratch, c);
+  }
+  return buffer;
+}
+
+/**
  * Decode a file (or return the cached result).  Concurrent callers for the
  * same file share one decode.
  */
@@ -199,17 +259,8 @@ export async function loadAudio(
   if (inFlight) return inFlight;
 
   const task = (async () => {
-    // Breadcrumbs.  decodeAudioData is native code: when it takes the renderer
-    // process down there is no exception and no stack, only a window painted
-    // in its own background colour.  The last line printed says which step and
-    // which file it died on.  (console.info — the main process forwards it to
-    // the terminal in dev and drops it in a packaged build.)
-    trace('fetch', path);
-    const resp = await fetch(toFileUrl(path));
-    if (!resp.ok) throw new Error(`오디오 로드 실패 (${resp.status}): ${path}`);
-    const bytes = await resp.arrayBuffer();
-    trace(`decode ${(bytes.byteLength / 1048576).toFixed(1)}MB`, path);
-    const buffer = await ctx.decodeAudioData(bytes);
+    trace('decode', path);
+    const buffer = await decodeAudioFile(ctx, path);
     trace(`analyze ${buffer.duration.toFixed(1)}s`, path);
     const entry = analyzeBuffer(fileId, buffer);
     trace('done', path);

@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { decodeContext } from '../audio/decode-context.js';
+import { decodeAudioFile } from '../daw/engine/audio-cache.js';
 
 export interface WaveformPeaks {
   /** Per-bucket max abs sample (0..1), length = bucketCount.  Null while loading or on failure. */
@@ -106,12 +107,9 @@ export function useWaveformPeaks(src: string | null | undefined, bucketCount = 1
       try {
         const ctx = getDecodeCtx();
         if (!ctx) throw new Error('AudioContext unavailable');
-        const resp = await fetch(src);
-        if (!resp.ok) throw new Error(`fetch failed (${resp.status})`);
-        const buf = await resp.arrayBuffer();
-        if (cancelled || reqIdRef.current !== reqId) return;
-        // decodeAudioData copies the buffer, so we can release ours.
-        const decoded = await ctx.decodeAudioData(buf);
+        // Decoded by FFmpeg in the main process — see audio-cache.decodeAudioFile
+        // for why the renderer no longer calls decodeAudioData itself.
+        const decoded = await decodeAudioFile(ctx, src);
         if (cancelled || reqIdRef.current !== reqId) return;
         const peaks = computePeaks(decoded, bucketCount);
         cachePut(key, peaks);
