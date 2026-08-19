@@ -1,5 +1,5 @@
 /**
- * restore-selftest — Noise Reduction + De-click.
+ * restore-selftest — Noise Reduction · De-click · De-hum · De-reverb.
  *
  * The claims that matter:
  *
@@ -13,6 +13,13 @@
  *   into a rich waveform and filled must come back close to the original —
  *   which a cubic never manages.
  *
+ *   De-hum removes the comb and not the bass.  A bass note sitting on a hum
+ *   harmonic has to survive, or the tool is a liability.
+ *
+ *   De-reverb measures the room before it acts.  T60 is estimated from
+ *   synthetic reverb with a known decay, and the tail then has to actually
+ *   drop while the direct sound stays.
+ *
  * Run: pnpm --filter @aimaster/desktop test:restore
  */
 
@@ -25,6 +32,12 @@ import {
   lpcCoefficients, lpcFromSegments, interpolateGap,
 } from '../src/renderer/daw/audio/declick.js';
 import { stft, istft } from '../src/renderer/daw/audio/stft.js';
+import {
+  detectHum, removeHum, removeHumChannels, describeHum, NOMINAL_HUM,
+} from '../src/renderer/daw/audio/dehum.js';
+import {
+  estimateReverbTime, dereverb, dereverbChannels, describeReverb,
+} from '../src/renderer/daw/audio/dereverb.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -485,6 +498,247 @@ check('stereo declick uses one detection pass', () => {
   for (const ch of result.channels) {
     eq(detectClicks(ch, SR).length, 0, 'each channel is clean');
   }
+});
+
+// ── De-hum ────────────────────────────────────────────────────────────────────
+
+/** Mains hum: a fundamental plus a decaying harmonic comb. */
+function hum(f0: number, seconds: number, amp = 0.02, harmonics = 8, sampleRate = SR): Float32Array {
+  const out = new Float32Array(Math.round(seconds * sampleRate));
+  for (let k = 1; k <= harmonics; k++) {
+    const hz = f0 * k;
+    if (hz >= sampleRate / 2) break;
+    const level = amp / k;
+    const phase = k * 0.7;
+    for (let i = 0; i < out.length; i++) {
+      out[i] = (out[i] ?? 0) + level * Math.sin((2 * Math.PI * hz * i) / sampleRate + phase);
+    }
+  }
+  return out;
+}
+
+check('hum is detected and its exact frequency measured', () => {
+  const signal = mix(hum(50, 3), tone(440, 3, 0.2));
+  const found = detectHum(signal, SR);
+  assert(found !== null, 'no hum detected');
+  eq(found!.nominal, 50, 'matched the 50 Hz standard');
+  // Mains drifts, so the detector refines the peak rather than trusting 50.
+  assert(Math.abs(found!.f0 - 50) < 1.5, `f0 measured at ${found!.f0.toFixed(2)} Hz`);
+  assert(found!.harmonics.length >= 4, `found ${found!.harmonics.length} harmonics`);
+  assert(found!.confidence > 0.35, `confidence ${found!.confidence}`);
+  assert(describeHum(found).includes('50 Hz'), 'describes itself');
+  eq(describeHum(null), '험이 검출되지 않았습니다', 'and says so when there is none');
+});
+
+check('60 Hz hum is told apart from 50 Hz hum', () => {
+  const sixty = detectHum(mix(hum(60, 3), tone(440, 3, 0.2)), SR);
+  assert(sixty !== null, 'no hum detected');
+  eq(sixty!.nominal, 60, 'matched the 60 Hz standard');
+  assert(Math.abs(sixty!.f0 - 60) < 1.5, `f0 ${sixty!.f0.toFixed(2)}`);
+  eq(NOMINAL_HUM.length, 2, 'two mains standards considered');
+});
+
+check('clean music is not accused of humming', () => {
+  eq(detectHum(tone(440, 3, 0.4), SR), null, 'a clean tone has no comb');
+  eq(detectHum(hiss(Math.round(3 * SR), 0.05, 41), SR), null, 'noise has no comb either');
+});
+
+check('a sustained bass note is not mistaken for hum', () => {
+  // A 50 Hz bass note for a third of the take: harmonics yes, stationary no.
+  const length = Math.round(3 * SR);
+  const bass = new Float32Array(length);
+  const from = Math.round(1.0 * SR);
+  const to = Math.round(1.8 * SR);
+  for (let i = from; i < to; i++) {
+    const t = (2 * Math.PI * 50 * i) / SR;
+    bass[i] = 0.25 * (Math.sin(t) + 0.5 * Math.sin(2 * t) + 0.3 * Math.sin(3 * t));
+  }
+  const found = detectHum(mix(bass, tone(440, 3, 0.15)), SR);
+  assert(found === null, `a note that stops is not hum (confidence ${found?.confidence})`);
+});
+
+check('removing hum leaves the music standing', () => {
+  const music = tone(440, 3, 0.3);
+  const dirty = mix(hum(50, 3, 0.03), music);
+  const found = detectHum(dirty, SR);
+  assert(found !== null, 'detected');
+
+  const cleaned = removeHum(dirty, SR, found!, { reductionDb: 30 });
+  const from = Math.round(1.0 * SR);
+  const to = Math.round(2.0 * SR);
+
+  const before = toneLevel(dirty.subarray(from, to), 50);
+  const after = toneLevel(cleaned.subarray(from, to), 50);
+  assert(after < before * 0.2, `fundamental ${before.toFixed(5)} → ${after.toFixed(5)}`);
+
+  const h3before = toneLevel(dirty.subarray(from, to), 150);
+  const h3after = toneLevel(cleaned.subarray(from, to), 150);
+  assert(h3after < h3before * 0.35, `third harmonic ${h3before.toFixed(5)} → ${h3after.toFixed(5)}`);
+
+  close(toneLevel(cleaned.subarray(from, to), 440), toneLevel(music.subarray(from, to), 440),
+    'the music is untouched', 0.01);
+});
+
+check('a bass note on a hum harmonic survives the notch', () => {
+  // 100 Hz hum harmonic runs the whole take; a 100 Hz note plays in the middle.
+  const length = Math.round(3 * SR);
+  const note = new Float32Array(length);
+  const from = Math.round(1.2 * SR);
+  const to = Math.round(2.0 * SR);
+  for (let i = from; i < to; i++) note[i] = 0.3 * Math.sin((2 * Math.PI * 100 * i) / SR);
+
+  const dirty = mix(hum(50, 3, 0.03), note, tone(440, 3, 0.2));
+  const found = detectHum(dirty, SR);
+  assert(found !== null, 'detected');
+  const cleaned = removeHum(dirty, SR, found!, { reductionDb: 30 });
+
+  // Quiet stretch: only hum lives at 100 Hz, so it should be gone.
+  const quietFrom = Math.round(0.3 * SR);
+  const quietTo = Math.round(0.9 * SR);
+  const humBefore = toneLevel(dirty.subarray(quietFrom, quietTo), 100);
+  const humAfter = toneLevel(cleaned.subarray(quietFrom, quietTo), 100);
+  assert(humAfter < humBefore * 0.35, `hum at 100 Hz ${humBefore.toFixed(5)} → ${humAfter.toFixed(5)}`);
+
+  // The note is far above the persistent level, so it comes through.
+  const noteBefore = toneLevel(dirty.subarray(from + 4000, to - 4000), 100);
+  const noteAfter = toneLevel(cleaned.subarray(from + 4000, to - 4000), 100);
+  assert(noteAfter > noteBefore * 0.8,
+    `the bass note must survive: ${noteBefore.toFixed(4)} → ${noteAfter.toFixed(4)}`);
+});
+
+check('hum removal is per-channel identical and can be limited', () => {
+  const dirty = mix(hum(50, 3, 0.03), tone(440, 3, 0.2));
+  const found = detectHum(dirty, SR)!;
+  const [a, b] = removeHumChannels([dirty, dirty], SR, found, { reductionDb: 24 });
+  for (let i = 0; i < (a?.length ?? 0); i += 511) close(a![i] ?? 0, b![i] ?? 0, 'channels agree', 1e-9);
+
+  // Limiting to the fundamental leaves the upper harmonics alone.
+  const onlyFirst = removeHum(dirty, SR, found, { reductionDb: 30, maxHarmonics: 1 });
+  const from = Math.round(1.0 * SR);
+  const to = Math.round(2.0 * SR);
+  assert(toneLevel(onlyFirst.subarray(from, to), 50) < toneLevel(dirty.subarray(from, to), 50) * 0.3,
+    'the fundamental still goes');
+  close(toneLevel(onlyFirst.subarray(from, to), 150), toneLevel(dirty.subarray(from, to), 150),
+    'the third harmonic is left alone', 0.002);
+});
+
+// ── De-reverb ─────────────────────────────────────────────────────────────────
+
+/**
+ * Synthetic room: a sparse tapped delay line whose taps decay exponentially
+ * with a KNOWN T60.  Cheaper than convolving a full impulse response, and the
+ * decay is exact, which is what the estimator is being measured against.
+ */
+function reverberate(dry: Float32Array, t60: number, sampleRate = SR): Float32Array {
+  const tail = Math.round(t60 * sampleRate);
+  const out = new Float32Array(dry.length + tail);
+  out.set(dry, 0);
+  const random = rng(4242);
+  const decay = (3 * Math.LN10) / t60;
+  // Taps ~1 ms apart: dense enough that the tail decays smoothly instead of
+  // fluttering, which is what a real room does and what the model assumes.
+  for (let delaySec = 0.004; delaySec < t60; delaySec += 0.0008 + 0.0006 * (random() + 0.5)) {
+    const offset = Math.round(delaySec * sampleRate);
+    const gain = 0.35 * Math.exp(-decay * delaySec) * (random() > 0 ? 1 : -1);
+    for (let i = 0; i < dry.length; i++) {
+      const index = i + offset;
+      if (index >= out.length) break;
+      out[index] = (out[index] ?? 0) + gain * (dry[i] ?? 0);
+    }
+  }
+  return out;
+}
+
+/**
+ * A struck note: fast attack, 60 ms decay.  Percussive on purpose — a
+ * sustained tone satisfies the reverb model itself, so it is the one source
+ * this method is documented NOT to suit.
+ */
+function pluck(hz: number, atSec: number, totalSec: number, sampleRate = SR): Float32Array {
+  const out = new Float32Array(Math.round(totalSec * sampleRate));
+  const start = Math.round(atSec * sampleRate);
+  for (let i = 0; start + i < out.length; i++) {
+    const env = Math.exp(-i / (0.06 * sampleRate));
+    if (env < 1e-4) break;
+    const attack = Math.min(1, i / (0.001 * sampleRate));
+    out[start + i] = 0.6 * env * attack * Math.sin((2 * Math.PI * hz * i) / sampleRate);
+  }
+  return out;
+}
+
+check('T60 is measured from a room with a known decay', () => {
+  const dry = mix(pluck(440, 0.1, 3.0), pluck(440, 1.2, 3.0));
+  const wet = reverberate(dry, 0.8);
+  const estimate = estimateReverbTime(wet, SR);
+  assert(estimate !== null, 'nothing measured');
+  assert(Math.abs(estimate!.t60 - 0.8) < 0.32,
+    `T60 measured at ${estimate!.t60.toFixed(2)} s, room was 0.80 s`);
+  assert(estimate!.segments >= 1, 'at least one decay segment');
+  assert(describeReverb(estimate).includes('T60'), 'describes itself');
+  eq(describeReverb(null), '자유 감쇠 구간이 없어 잔향 시간을 잴 수 없습니다', 'and says so when it cannot');
+});
+
+check('a longer room measures longer', () => {
+  const dry = mix(pluck(440, 0.1, 4.0), pluck(440, 1.6, 4.0));
+  const shortRoom = estimateReverbTime(reverberate(dry, 0.4), SR);
+  const longRoom = estimateReverbTime(reverberate(dry, 1.2), SR);
+  assert(shortRoom !== null && longRoom !== null, 'both measured');
+  assert(longRoom!.t60 > shortRoom!.t60 * 1.5,
+    `${shortRoom!.t60.toFixed(2)} s vs ${longRoom!.t60.toFixed(2)} s`);
+});
+
+check('de-reverb drops the tail and keeps the attack', () => {
+  const dry = pluck(440, 0.2, 2.5);
+  const wet = reverberate(dry, 0.8);
+  const cleaned = dereverb(wet, SR, 0.8, { strength: 1.5, reductionDb: 24 });
+
+  // The struck note itself: the first 60 ms.
+  const noteFrom = Math.round(0.2 * SR);
+  const noteTo = Math.round(0.26 * SR);
+  const noteDropDb = 20 * Math.log10(rms(cleaned, noteFrom, noteTo) / rms(wet, noteFrom, noteTo));
+
+  // The tail, long after the note has died.
+  const tailFrom = Math.round(0.7 * SR);
+  const tailTo = Math.round(1.1 * SR);
+  const tailDropDb = 20 * Math.log10(rms(cleaned, tailFrom, tailTo) / rms(wet, tailFrom, tailTo));
+
+  assert(tailDropDb < -9, `the tail should fall: ${tailDropDb.toFixed(1)} dB`);
+  assert(noteDropDb > -2, `the attack should stay: ${noteDropDb.toFixed(1)} dB`);
+  assert(tailDropDb < noteDropDb - 7,
+    `the tail must lose far more than the note: ${tailDropDb.toFixed(1)} vs ${noteDropDb.toFixed(1)} dB`);
+});
+
+check('more strength removes more tail', () => {
+  const wet = reverberate(pluck(440, 0.2, 2.5), 0.8);
+  const from = Math.round(0.7 * SR);
+  const to = Math.round(1.1 * SR);
+  const levels = [0, 1, 2].map((strength) =>
+    rms(dereverb(wet, SR, 0.8, { strength, reductionDb: 30 }), from, to));
+  assert((levels[0] ?? 0) > (levels[1] ?? 0), `0 should leave more than 1: ${levels[0]} vs ${levels[1]}`);
+  assert((levels[1] ?? 0) > (levels[2] ?? 0), `1 should leave more than 2: ${levels[1]} vs ${levels[2]}`);
+  // Strength 0 is a no-op, so the round trip has to be transparent.
+  close(levels[0] ?? 0, rms(wet, from, to), 'strength 0 changes nothing', 1e-4);
+});
+
+check('the de-reverb residual is the tail it took out', () => {
+  const wet = reverberate(pluck(440, 0.2, 2.5), 0.8);
+  const residual = dereverb(wet, SR, 0.8, { strength: 1.5, reductionDb: 24, output: 'residual' });
+  const clean = dereverb(wet, SR, 0.8, { strength: 1.5, reductionDb: 24 });
+  const tailFrom = Math.round(0.7 * SR);
+  const tailTo = Math.round(1.1 * SR);
+  assert(rms(residual, tailFrom, tailTo) > rms(clean, tailFrom, tailTo),
+    'the residual should hold more tail than the cleaned version');
+  const noteFrom = Math.round(0.2 * SR);
+  const noteTo = Math.round(0.26 * SR);
+  assert(rms(residual, noteFrom, noteTo) < rms(clean, noteFrom, noteTo),
+    'and less of the direct attack');
+});
+
+check('stereo de-reverb is applied per channel', () => {
+  const wet = reverberate(pluck(440, 0.2, 1.5), 0.6);
+  const [a, b] = dereverbChannels([wet, wet], SR, 0.6, { strength: 1 });
+  assert(!!a && !!b, 'two channels back');
+  for (let i = 0; i < a!.length; i += 397) close(a![i] ?? 0, b![i] ?? 0, 'identical in, identical out', 1e-9);
 });
 
 const passed = results.filter((r) => r.pass).length;

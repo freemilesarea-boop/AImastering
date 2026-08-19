@@ -12,6 +12,12 @@ import {
 import {
   declickChannels, detectClicks, type ClickEvent, type ClickOptions, type RepairOptions,
 } from '../audio/declick.js';
+import {
+  detectHum, removeHumChannels, type DehumOptions, type HumDetection, type HumOptions,
+} from '../audio/dehum.js';
+import {
+  dereverbChannels, estimateReverbTime, type DereverbOptions, type ReverbEstimate,
+} from '../audio/dereverb.js';
 import { clipAudio, writeEditedClip } from './spectral-repair.js';
 import type { ClipId, DawSession, TrackId } from '../model/types.js';
 
@@ -111,5 +117,68 @@ export async function declickClip(
     message: `클릭 ${result.detected}개 중 ${result.repaired}개를 복원했습니다`,
     detected: result.detected,
     repaired: result.repaired,
+  };
+}
+
+// ── De-hum ────────────────────────────────────────────────────────────────────
+
+/** Look for mains hum in a clip.  Null means none was convincingly there. */
+export function detectClipHum(
+  session: DawSession, trackId: TrackId, clipId: ClipId, options: HumOptions = {},
+): HumDetection | null {
+  const { clip, channels, sampleRate } = clipAudio(session, trackId, clipId);
+  const from = Math.max(0, Math.floor(clip.offsetSec * sampleRate));
+  const to = Math.min(channels[0]?.length ?? 0, Math.ceil((clip.offsetSec + clip.durationSec) * sampleRate));
+  return detectHum(monoOf(channels).subarray(from, to), sampleRate, options);
+}
+
+export async function dehumClip(
+  session: DawSession, trackId: TrackId, clipId: ClipId,
+  detection: HumDetection, options: DehumOptions = {},
+): Promise<RestoreResult> {
+  const { channels, sampleRate } = clipAudio(session, trackId, clipId);
+  if (sampleRate !== detection.profile.sampleRate) {
+    throw new Error('험 프로파일과 클립의 샘플레이트가 다릅니다');
+  }
+  const cleaned = removeHumChannels(channels, sampleRate, detection, options);
+  const residual = (options.output ?? 'clean') === 'residual';
+  const written = await writeEditedClip(
+    session, trackId, clipId, cleaned, sampleRate,
+    residual ? 'hum-residual' : 'dehum', residual ? 'hum residual' : 'de-hummed');
+  return {
+    session: written.session,
+    message: residual
+      ? '제거될 험만 남긴 잔차입니다 — 음악이 들리면 과처리입니다'
+      : `${detection.nominal} Hz 계열 험 제거 · 하모닉 ${detection.harmonics.length}개`,
+  };
+}
+
+// ── De-reverb ─────────────────────────────────────────────────────────────────
+
+/** Measure the room from the clip's own free decays. */
+export function estimateClipReverb(
+  session: DawSession, trackId: TrackId, clipId: ClipId,
+): ReverbEstimate | null {
+  const { clip, channels, sampleRate } = clipAudio(session, trackId, clipId);
+  const from = Math.max(0, Math.floor(clip.offsetSec * sampleRate));
+  const to = Math.min(channels[0]?.length ?? 0, Math.ceil((clip.offsetSec + clip.durationSec) * sampleRate));
+  return estimateReverbTime(monoOf(channels).subarray(from, to), sampleRate);
+}
+
+export async function dereverbClip(
+  session: DawSession, trackId: TrackId, clipId: ClipId,
+  t60: number, options: DereverbOptions = {},
+): Promise<RestoreResult> {
+  const { channels, sampleRate } = clipAudio(session, trackId, clipId);
+  const cleaned = dereverbChannels(channels, sampleRate, t60, options);
+  const residual = (options.output ?? 'clean') === 'residual';
+  const written = await writeEditedClip(
+    session, trackId, clipId, cleaned, sampleRate,
+    residual ? 'reverb-tail' : 'dereverb', residual ? 'reverb tail' : 'de-reverbed');
+  return {
+    session: written.session,
+    message: residual
+      ? '제거될 잔향 꼬리만 남겼습니다'
+      : `잔향 감소 · T60 ${t60.toFixed(2)} s 기준`,
   };
 }

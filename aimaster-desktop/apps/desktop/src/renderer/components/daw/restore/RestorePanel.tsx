@@ -1,9 +1,10 @@
-// RestorePanel — noise reduction and de-click.
+// RestorePanel — the four restoration tools.
 //
-// Two tools that share one idea: MEASURE first, then act.  The denoiser will
-// not run without a learned profile, and the de-clicker shows you the list of
-// what it found before it touches anything.  Restoration goes wrong when a
-// process is applied blind, so neither one can be.
+// They share one idea: MEASURE first, then act.  The denoiser will not run
+// without a learned profile, the de-clicker shows you the list of what it
+// found before it touches anything, the de-hummer refuses to notch a comb it
+// did not detect, and de-reverb reads T60 off the material.  Restoration goes
+// wrong when a process is applied blind, so none of them can be.
 //
 // The noise region is the Edit window's own time selection — the same range
 // you would trim or fade — because that is the selection the user already
@@ -16,8 +17,11 @@ import { findTrack, trackClips } from '../../../daw/model/session-ops.js';
 import { getCached } from '../../../daw/engine/audio-cache.js';
 import { profileBands, type NoiseProfile } from '../../../daw/audio/noise-reduction.js';
 import type { ClickEvent } from '../../../daw/audio/declick.js';
+import { describeHum, type HumDetection } from '../../../daw/audio/dehum.js';
+import { describeReverb, type ReverbEstimate } from '../../../daw/audio/dereverb.js';
 import {
-  declickClip, denoiseClip, learnClipNoise, scanClipClicks,
+  declickClip, dehumClip, denoiseClip, dereverbClip, detectClipHum,
+  estimateClipReverb, learnClipNoise, scanClipClicks,
 } from '../../../daw/edit/restore-actions.js';
 import { premium } from '../../../theme/premium.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
@@ -36,6 +40,18 @@ export default function RestorePanel() {
   const [sensitivity, setSensitivity] = useState(1);
   const [strength, setStrength] = useState(1.5);
   const [smoothing, setSmoothing] = useState(0.5);
+
+  const [hum, setHum] = useState<HumDetection | null>(null);
+  const [humScanned, setHumScanned] = useState(false);
+  const [humReductionDb, setHumReductionDb] = useState(24);
+  const [humHarmonics, setHumHarmonics] = useState(40);
+
+  const [reverb, setReverb] = useState<ReverbEstimate | null>(null);
+  const [reverbScanned, setReverbScanned] = useState(false);
+  const [t60, setT60] = useState(0.8);
+  const [reverbStrength, setReverbStrength] = useState(1);
+  const [reverbReductionDb, setReverbReductionDb] = useState(18);
+  const [earlyMs, setEarlyMs] = useState(40);
 
   const [clicks, setClicks] = useState<ClickEvent[] | null>(null);
   const [clickSensitivity, setClickSensitivity] = useState(8);
@@ -119,6 +135,59 @@ export default function RestorePanel() {
       notify(`디클릭 실패: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
   }, [target, clickSensitivity, maxWidthMs, apply, notify]);
+
+  const scanHum = useCallback(() => {
+    if (!target) return;
+    try {
+      const found = detectClipHum(useDawStore.getState().session, target.track.id, target.clip.id);
+      setHum(found);
+      setHumScanned(true);
+      notify(describeHum(found), found ? 'success' : 'info');
+    } catch (err) {
+      notify((err as Error).message, 'warning');
+    }
+  }, [target, notify]);
+
+  const runDehum = useCallback(async (output: 'clean' | 'residual') => {
+    if (!target || !hum) return;
+    setBusy(output === 'clean' ? '험 제거 중…' : '험 잔차 만드는 중…');
+    try {
+      const result = await dehumClip(
+        useDawStore.getState().session, target.track.id, target.clip.id, hum,
+        { reductionDb: humReductionDb, maxHarmonics: humHarmonics, output });
+      apply(() => result.session);
+      notify(result.message, 'success');
+    } catch (err) {
+      notify(`디험 실패: ${(err as Error).message}`, 'error');
+    } finally { setBusy(null); }
+  }, [target, hum, humReductionDb, humHarmonics, apply, notify]);
+
+  const measureReverb = useCallback(() => {
+    if (!target) return;
+    try {
+      const estimate = estimateClipReverb(useDawStore.getState().session, target.track.id, target.clip.id);
+      setReverb(estimate);
+      setReverbScanned(true);
+      if (estimate) setT60(Number(estimate.t60.toFixed(2)));
+      notify(describeReverb(estimate), estimate ? 'success' : 'info');
+    } catch (err) {
+      notify((err as Error).message, 'warning');
+    }
+  }, [target, notify]);
+
+  const runDereverb = useCallback(async (output: 'clean' | 'residual') => {
+    if (!target) return;
+    setBusy(output === 'clean' ? '잔향 제거 중…' : '잔향 꼬리 분리 중…');
+    try {
+      const result = await dereverbClip(
+        useDawStore.getState().session, target.track.id, target.clip.id, t60,
+        { strength: reverbStrength, reductionDb: reverbReductionDb, earlyMs, output });
+      apply(() => result.session);
+      notify(result.message, 'success');
+    } catch (err) {
+      notify(`디리버브 실패: ${(err as Error).message}`, 'error');
+    } finally { setBusy(null); }
+  }, [target, t60, reverbStrength, reverbReductionDb, earlyMs, apply, notify]);
 
   if (!target) return <Empty message="오디오 클립이 있는 트랙이 필요합니다" />;
   if (!cached) return <Empty message="오디오를 디코딩하는 중입니다 — Edit 창에서 클립을 먼저 여세요" />;
@@ -235,6 +304,81 @@ export default function RestorePanel() {
           <p style={hint}>
             복원은 구멍을 매끄럽게 잇는 게 아니라, 주변 오디오로 만든 AR 모델을 풀어 그 자리에
             <b> 같은 배음</b>을 다시 씁니다.
+          </p>
+        </Module>
+
+        {/* De-hum */}
+        <Module title="De-hum">
+          <p style={hint}>
+            전원 험은 <b>빗살 모양의 노이즈 프로파일</b>입니다. 각 하모닉에서 <b>시간축 하위
+            백분위</b>를 빼기 때문에, 100 Hz에 걸린 베이스 음은 살아남고 계속 깔려 있던 험만
+            사라집니다.
+          </p>
+
+          <div className="flex items-center gap-2 my-2">
+            <Action onClick={scanHum} disabled={!!busy}>험 검사</Action>
+            <span style={{ fontFamily: premium.type.mono, fontSize: 10, color: premium.text.muted }}>
+              {humScanned ? describeHum(hum) : '아직 검사하지 않았습니다'}
+            </span>
+          </div>
+
+          {hum && (
+            <div className="mb-2 px-2 py-1.5 rounded"
+                 style={{ background: premium.surface.well, border: `1px solid ${premium.surface.hairline}` }}>
+              <div style={{ fontFamily: premium.type.mono, fontSize: 10.5, color: premium.text.secondary }}>
+                {hum.harmonics.slice(0, 8).map((h) => `${h.hz.toFixed(1)}`).join(' · ')}
+                {hum.harmonics.length > 8 ? ` … +${hum.harmonics.length - 8}` : ''} Hz
+              </div>
+            </div>
+          )}
+
+          <Slider label="REDUCTION" value={humReductionDb} min={6} max={48} step={1} unit=" dB"
+                  onChange={setHumReductionDb} note="각 하모닉이 받는 최대 감쇠." />
+          <Slider label="HARMONICS" value={humHarmonics} min={1} max={60} step={1}
+                  onChange={setHumHarmonics}
+                  note="몇 번째 하모닉까지 지울지. 낮추면 저역만 정리합니다." />
+
+          <div className="flex items-center gap-2 mt-2">
+            <Action onClick={() => void runDehum('clean')} disabled={!hum || !!busy} primary>적용</Action>
+            <Action onClick={() => void runDehum('residual')} disabled={!hum || !!busy}>잔차 듣기</Action>
+          </div>
+          <p style={hint}>
+            검출되지 않으면 아무것도 하지 않습니다 — 험이 아닌 빗살을 지우면 베이스가 사라집니다.
+          </p>
+        </Module>
+
+        {/* De-reverb */}
+        <Module title="De-reverb">
+          <p style={hint}>
+            잔향은 <b>수십 ms 전의 소리가 감쇠한 복사본</b>입니다. 그래서 같은 빈의 과거 값에
+            방의 감쇠를 곱해 빼면 남는 건 직접음입니다. 잘못된 T60은 복원이 아니라 손상이므로
+            먼저 재고 시작합니다.
+          </p>
+
+          <div className="flex items-center gap-2 my-2">
+            <Action onClick={measureReverb} disabled={!!busy}>잔향 측정</Action>
+            <span style={{ fontFamily: premium.type.mono, fontSize: 10, color: premium.text.muted }}>
+              {reverbScanned ? describeReverb(reverb) : '아직 재지 않았습니다'}
+            </span>
+          </div>
+
+          <Slider label="T60" value={t60} min={0.1} max={3} step={0.05} unit=" s"
+                  onChange={setT60} note="방이 60 dB 감쇠하는 시간. 측정값을 귀로 보정하세요." />
+          <Slider label="STRENGTH" value={reverbStrength} min={0} max={3} step={0.1} unit="×"
+                  onChange={setReverbStrength} note="추정된 꼬리를 얼마나 빼는가. 0은 무처리." />
+          <Slider label="REDUCTION" value={reverbReductionDb} min={3} max={36} step={1} unit=" dB"
+                  onChange={setReverbReductionDb} note="한 빈이 받을 수 있는 최대 감쇠." />
+          <Slider label="EARLY" value={earlyMs} min={10} max={120} step={5} unit=" ms"
+                  onChange={setEarlyMs}
+                  note="이보다 이른 반사는 방의 성격이라 건드리지 않습니다. 줄이면 파이프 안에서 녹음한 소리가 됩니다." />
+
+          <div className="flex items-center gap-2 mt-2">
+            <Action onClick={() => void runDereverb('clean')} disabled={!!busy} primary>적용</Action>
+            <Action onClick={() => void runDereverb('residual')} disabled={!!busy}>꼬리만 듣기</Action>
+          </div>
+          <p style={hint}>
+            <b>지속음은 이 모델에서 잔향처럼 보입니다.</b> 타악·보컬·발현악기용이고, 길게 끄는
+            패드에서는 음이 얇아집니다 — STRENGTH 로 조절하세요.
           </p>
         </Module>
       </div>
