@@ -80,9 +80,13 @@ export default function DawPage() {
       if (!silent) notify('홈 화면에 불러온 곡이 없습니다', 'warning');
       return;
     }
-    setBusy('홈에서 불러온 곡을 가져오는 중…');
+    setBusy(`홈에서 불러온 곡을 가져오는 중… 0/${paths.length}`);
     try {
-      const result = await importAudioFiles(useDawStore.getState().session, paths, 0);
+      // Decoding is sequential, so the count is real progress, not a spinner.
+      const result = await importAudioFiles(
+        useDawStore.getState().session, paths, 0,
+        (done, total) => setBusy(`홈에서 불러온 곡을 가져오는 중… ${done}/${total}`),
+      );
       useDawStore.getState().apply(() => result.session);
       if (result.failed.length) {
         notify(`${result.trackIds.length}곡을 가져왔습니다 · ${result.failed.length}곡 디코딩 실패`, 'warning');
@@ -110,9 +114,12 @@ export default function DawPage() {
   const handleImportAudio = useCallback(async () => {
     const paths = await invoke('file:open-dialog-multi') as string[] | null;
     if (!paths?.length) return;
-    setBusy('오디오 불러오는 중…');
+    setBusy(`오디오 불러오는 중… 0/${paths.length}`);
     try {
-      const result = await importAudioFiles(useDawStore.getState().session, paths, 0);
+      const result = await importAudioFiles(
+        useDawStore.getState().session, paths, 0,
+        (done, total) => setBusy(`오디오 불러오는 중… ${done}/${total}`),
+      );
       loadSessionKeepingHistory(result.session);
       if (result.failed.length) notify(`${result.failed.length}개 파일을 디코딩하지 못했습니다`, 'warning');
       else notify(`${result.trackIds.length}개 트랙을 추가했습니다`, 'success');

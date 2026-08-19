@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
@@ -76,8 +76,29 @@ function createWindow(): void {
       exitCode: details.exitCode,
     }));
     recordFailure('engine', `renderer render-process-gone: reason=${details.reason} exit=${details.exitCode}`);
-    // DO NOT auto-reload — first time we want the user/devtools to see the state.
     mainWindow?.show();
+
+    // A dead renderer paints nothing, so the window falls back to its own
+    // background colour: a blank black rectangle with no menu, no error and no
+    // way to tell a crash from a hang.  Say what happened and offer the one
+    // action that helps.  (No auto-reload — a crash loop must stay visible.)
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    const outOfMemory = details.reason === 'oom';
+    void dialog.showMessageBox(win, {
+      type: 'error',
+      title: '화면 프로세스가 종료되었습니다',
+      message: outOfMemory
+        ? '메모리가 부족해 화면이 종료되었습니다.'
+        : '화면 프로세스가 예기치 않게 종료되었습니다.',
+      detail: `reason=${details.reason} · exit=${details.exitCode}\n\n`
+        + '다시 불러오면 홈 화면부터 시작합니다.',
+      buttons: ['다시 불러오기', '닫기'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then(({ response }) => {
+      if (response === 0 && !win.isDestroyed()) win.reload();
+    }).catch(() => { /* the window went away first */ });
   });
   mainWindow.webContents.on('unresponsive', () => {
     log.error('[CRASH] webContents unresponsive (renderer event loop blocked)');

@@ -14,7 +14,7 @@ import { pointValueAt } from '../model/automation.js';
 import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
 import type { Clip, DawSession, Fade, Track, TrackId } from '../model/types.js';
 import type { MidiNote } from '../model/midi.js';
-import { getCached, loadAudio } from './audio-cache.js';
+import { getCached, preloadAll } from './audio-cache.js';
 import { ensureWarpedBuffer, prepareWarps } from './warp-render.js';
 import { clipWarp } from '../model/warp.js';
 import { clipNotes } from '../model/patterns.js';
@@ -78,12 +78,9 @@ export class ClipPlayer {
 
   /** Decode every file the session references (before playback or a bounce). */
   async prepare(session: DawSession): Promise<void> {
-    await Promise.all(session.files.map((f) =>
-      loadAudio(this.engine.ctx, f.id, f.path).catch((err: unknown) => {
-        // eslint-disable-next-line no-console
-        console.warn('[ClipPlayer] decode failed:', f.path, err);
-        return null;
-      })));
+    // One file at a time — a session of full-length songs decoded in parallel
+    // is a multi-gigabyte spike that takes the renderer process with it.
+    await preloadAll(this.engine.ctx, session.files);
     // Warped clips are stretched into buffers up front — doing it inside the
     // scheduler would stall the audio thread's look-ahead.
     const clips = session.tracks.flatMap((t) => trackClips(t));

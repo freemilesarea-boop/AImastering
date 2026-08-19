@@ -11,7 +11,7 @@
 import type { Clip, DawSession, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
-import { getCached, loadAudio } from './audio-cache.js';
+import { getCached, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
 import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
 import type { RecordPlan } from '../model/recording.js';
@@ -187,7 +187,7 @@ class DawRuntime {
   async preload(session: DawSession): Promise<void> {
     if (!this.ctx) return;
     const ctx = this.ctx;
-    await Promise.all(session.files.map((f) => loadAudio(ctx, f.id, f.path).catch(() => null)));
+    await preloadAll(ctx, session.files);
   }
 
   async play(session: DawSession, fromSec: number): Promise<void> {

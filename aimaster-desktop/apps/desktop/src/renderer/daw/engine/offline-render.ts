@@ -16,7 +16,7 @@ import { applyConsolidation, type TimeSelection } from '../edit/clip-edit.js';
 import type { AudioFileRef, DawSession, FileId, Track, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
-import { analyzeBuffer, getCached, loadAudio } from './audio-cache.js';
+import { analyzeBuffer, getCached, preloadAll } from './audio-cache.js';
 import { encodeAudioBuffer, encodeWav, type WavBitDepth } from './wav.js';
 import { nextId } from '../model/ids.js';
 import { DEFAULT_MIDI_CONFIG } from '../model/midi.js';
@@ -47,7 +47,7 @@ function makeOfflineContext(channels: number, frames: number, sampleRate: number
 
 /** Decode everything the render needs before the offline pass starts. */
 async function preloadFiles(session: DawSession, ctx: BaseAudioContext): Promise<void> {
-  await Promise.all(session.files.map((f) => loadAudio(ctx, f.id, f.path).catch(() => null)));
+  await preloadAll(ctx, session.files);
 }
 
 /**

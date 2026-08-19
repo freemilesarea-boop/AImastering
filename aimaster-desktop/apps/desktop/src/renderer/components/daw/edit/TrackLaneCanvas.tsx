@@ -5,7 +5,7 @@
 // or scroll changes.
 
 import React, { useEffect, useRef } from 'react';
-import { getCached } from '../../../daw/engine/audio-cache.js';
+import { getMeta } from '../../../daw/engine/audio-cache.js';
 import { clipEnd, trackClips } from '../../../daw/model/session-ops.js';
 import { fadeCurve } from '../../../daw/engine/clip-player.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
@@ -91,10 +91,11 @@ export default function TrackLaneCanvas({
       ctx.lineWidth = 1;
       ctx.strokeRect(left + 0.5, 2.5, w - 1, height - 5);
 
-      // Waveform
-      const cached = getCached(clip.fileId);
-      if (cached) {
-        const fileDuration = cached.buffer.duration;
+      // Waveform.  The peak envelope outlives the decoded buffer, so a lane
+      // still draws its shape after the audio has been evicted for memory.
+      const meta = getMeta(clip.fileId);
+      if (meta) {
+        const fileDuration = meta.durationSec;
         const gain = Math.pow(10, clip.gainDb / 20);
         ctx.fillStyle = clip.muted ? 'rgba(150,150,170,0.5)' : hexToRgba(track.color, 0.95);
         const step = 1;
@@ -105,7 +106,7 @@ export default function TrackLaneCanvas({
           const rel1 = t1 - clip.startSec;
           if (rel1 < 0 || rel0 > clip.durationSec) continue;
           const peak = peakBetween(
-            cached.peaks, fileDuration,
+            meta.peaks, fileDuration,
             clip.offsetSec + Math.max(0, rel0),
             clip.offsetSec + Math.min(clip.durationSec, rel1),
           );
