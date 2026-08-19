@@ -18,6 +18,10 @@ import {
 import {
   dereverbChannels, estimateReverbTime, type DereverbOptions, type ReverbEstimate,
 } from '../audio/dereverb.js';
+import {
+  declipChannels, detectClipping, clippingRatio, describeClipping,
+  type DeclipOptions,
+} from '../audio/declip.js';
 import { clipAudio, writeEditedClip } from './spectral-repair.js';
 import type { ClipId, DawSession, TrackId } from '../model/types.js';
 
@@ -180,5 +184,53 @@ export async function dereverbClip(
     message: residual
       ? '제거될 잔향 꼬리만 남겼습니다'
       : `잔향 감소 · T60 ${t60.toFixed(2)} s 기준`,
+  };
+}
+
+// ── De-clip ───────────────────────────────────────────────────────────────────
+
+export interface ClippingReport {
+  runs: number;
+  /** Share of samples pinned at the ceiling. */
+  ratio: number;
+  description: string;
+}
+
+/** Look for flat tops without changing anything. */
+export function scanClipClipping(
+  session: DawSession, trackId: TrackId, clipId: ClipId, options: DeclipOptions = {},
+): ClippingReport {
+  const { clip, channels, sampleRate } = clipAudio(session, trackId, clipId);
+  const from = Math.max(0, Math.floor(clip.offsetSec * sampleRate));
+  const to = Math.min(channels[0]?.length ?? 0, Math.ceil((clip.offsetSec + clip.durationSec) * sampleRate));
+  const mono = monoOf(channels).subarray(from, to);
+  const runs = detectClipping(mono, sampleRate, options);
+  return {
+    runs: runs.length,
+    ratio: clippingRatio(mono, options.thresholdLinear),
+    description: describeClipping(runs, sampleRate),
+  };
+}
+
+export async function declipClip(
+  session: DawSession, trackId: TrackId, clipId: ClipId, options: DeclipOptions = {},
+): Promise<RestoreResult & { repaired: number; appliedGainDb: number }> {
+  const { channels, sampleRate } = clipAudio(session, trackId, clipId);
+  const result = declipChannels(channels, sampleRate, options);
+  if (result.repaired === 0) {
+    return {
+      session, message: '복원할 클리핑 구간이 없습니다', repaired: 0, appliedGainDb: 0,
+    };
+  }
+  const written = await writeEditedClip(
+    session, trackId, clipId, result.channels, sampleRate, 'declip', 'declipped');
+  return {
+    session: written.session,
+    message: `클리핑 ${result.repaired}구간 복원`
+      + (result.appliedGainDb < -0.01
+        ? ` · 복원된 피크를 담기 위해 ${result.appliedGainDb.toFixed(2)} dB 낮췄습니다`
+        : ''),
+    repaired: result.repaired,
+    appliedGainDb: result.appliedGainDb,
   };
 }

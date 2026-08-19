@@ -20,8 +20,9 @@ import type { ClickEvent } from '../../../daw/audio/declick.js';
 import { describeHum, type HumDetection } from '../../../daw/audio/dehum.js';
 import { describeReverb, type ReverbEstimate } from '../../../daw/audio/dereverb.js';
 import {
-  declickClip, dehumClip, denoiseClip, dereverbClip, detectClipHum,
-  estimateClipReverb, learnClipNoise, scanClipClicks,
+  declickClip, declipClip, dehumClip, denoiseClip, dereverbClip, detectClipHum,
+  estimateClipReverb, learnClipNoise, scanClipClicks, scanClipClipping,
+  type ClippingReport,
 } from '../../../daw/edit/restore-actions.js';
 import { premium } from '../../../theme/premium.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
@@ -52,6 +53,8 @@ export default function RestorePanel() {
   const [reverbStrength, setReverbStrength] = useState(1);
   const [reverbReductionDb, setReverbReductionDb] = useState(18);
   const [earlyMs, setEarlyMs] = useState(40);
+
+  const [clipping, setClipping] = useState<ClippingReport | null>(null);
 
   const [clicks, setClicks] = useState<ClickEvent[] | null>(null);
   const [clickSensitivity, setClickSensitivity] = useState(8);
@@ -135,6 +138,32 @@ export default function RestorePanel() {
       notify(`디클릭 실패: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
   }, [target, clickSensitivity, maxWidthMs, apply, notify]);
+
+  const scanClipping = useCallback(() => {
+    if (!target) return;
+    try {
+      const report = scanClipClipping(
+        useDawStore.getState().session, target.track.id, target.clip.id);
+      setClipping(report);
+      notify(report.description, report.runs > 0 ? 'warning' : 'info');
+    } catch (err) {
+      notify((err as Error).message, 'warning');
+    }
+  }, [target, notify]);
+
+  const runDeclip = useCallback(async () => {
+    if (!target) return;
+    setBusy('클리핑 복원 중…');
+    try {
+      const result = await declipClip(
+        useDawStore.getState().session, target.track.id, target.clip.id);
+      if (result.repaired > 0) apply(() => result.session);
+      setClipping(null);
+      notify(result.message, result.repaired > 0 ? 'success' : 'info');
+    } catch (err) {
+      notify(`디클립 실패: ${(err as Error).message}`, 'error');
+    } finally { setBusy(null); }
+  }, [target, apply, notify]);
 
   const scanHum = useCallback(() => {
     if (!target) return;
@@ -304,6 +333,36 @@ export default function RestorePanel() {
           <p style={hint}>
             복원은 구멍을 매끄럽게 잇는 게 아니라, 주변 오디오로 만든 AR 모델을 풀어 그 자리에
             <b> 같은 배음</b>을 다시 씁니다.
+          </p>
+        </Module>
+
+        {/* De-clip */}
+        <Module title="De-clip">
+          <p style={hint}>
+            클리핑된 샘플은 <b>망가진 게 아니라 없는 것</b>입니다. 파형이 변환기가 표현할 수 있는
+            범위를 넘어갔다가 윗부분이 잘려 돌아온 것이라, 정보가 오염된 게 아니라 부재합니다.
+            그래서 디클릭의 AR 보간을 그대로 씁니다 — 평평한 꼭대기를 결측 구간이라 부르면 됩니다.
+          </p>
+
+          <div className="flex items-center gap-2 my-2">
+            <Action onClick={scanClipping} disabled={!!busy}>클리핑 검사</Action>
+            <span style={{ fontFamily: premium.type.mono, fontSize: 10, color: premium.text.muted }}>
+              {clipping
+                ? `${clipping.description} · 포화 ${(clipping.ratio * 100).toFixed(2)}%`
+                : '아직 검사하지 않았습니다'}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Action onClick={() => void runDeclip()} disabled={!!busy} primary>복원</Action>
+          </div>
+          <p style={hint}>
+            복원은 <b>풀스케일을 넘어도 됩니다</b> — ±1 로 묶으면 더 부드럽게 다시 클리핑할 뿐입니다.
+            피크가 1.0 위로 돌아온 뒤 전체를 한 번에 낮춰서, 레벨이 아니라 <b>모양</b>을 되돌립니다.
+          </p>
+          <p style={hint}>
+            풀스케일에 닿은 샘플 <b>하나는 클리핑이 아닙니다.</b> 0 dBFS 를 스치는 사인은 원래
+            그 지점에 샘플이 하나 있습니다. 클리핑은 <b>연속</b>이고 평평합니다.
           </p>
         </Module>
 

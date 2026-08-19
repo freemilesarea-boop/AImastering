@@ -14,9 +14,17 @@
 import {
   yinF0, analyzePitch, segmentPitch, analyzeVocal, decimate, median, linearSlope,
   measureVibrato, targetPitchAt, shiftSemitonesAt, curveCentsAt, withEdit,
-  quantizePitch, quantizeToPitches, straighten, resetSegmentIds,
+  quantizePitch, quantizeToPitches, straighten, tuneToPitch, resetSegmentIds,
   NEUTRAL_EDIT, type VariSegment,
 } from '../src/renderer/daw/audio/pitch-analysis.js';
+import {
+  correctSegment, guideNoteFor, guideNotesFor,
+} from '../src/renderer/daw/audio/varia-actions.js';
+import { createNote } from '../src/renderer/daw/model/midi.js';
+import {
+  addTrack, createClip, createMidiPart, createSession, createTrack, updateClips,
+} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { renderVariAudioChannel, isNeutral } from '../src/renderer/daw/audio/pitch-shift.js';
 import { frequencyToPitch, pitchToFrequency, pitchName } from '../src/renderer/daw/model/midi.js';
 import { scalePitchClasses } from '../src/renderer/daw/model/scales.js';
@@ -372,6 +380,101 @@ check('the renderer leaves unedited segments alone', () => {
     maxDiff = Math.max(maxDiff, Math.abs((output[i] ?? 0) - (input[i] ?? 0)));
   }
   close(maxDiff, 0, 'the untouched note is bit-identical', 1e-12);
+});
+
+// ── MIDI-guided tuning ────────────────────────────────────────────────────────
+
+/** A segment measured at `pitch`, spanning [start, end). */
+function fakeSegment(pitch: number, startSec: number, endSec: number): VariSegment {
+  return {
+    id: `seg-${startSec}`,
+    startSec,
+    endSec,
+    measured: {
+      medianPitch: pitch,
+      curve: [],
+      confidence: 0.9,
+      vibratoRateHz: 0,
+      vibratoDepthCents: 0,
+      driftCentsPerSec: 0,
+    },
+    edit: { ...NEUTRAL_EDIT },
+  };
+}
+
+check('tuneToPitch moves a segment onto a named target', () => {
+  // Sung at 59.6 (just under B3), the guide says 60 (C4).
+  const segment = fakeSegment(59.6, 0, 0.5);
+  const tuned = tuneToPitch(segment, 60, 1);
+  close(tuned.edit.pitchOffsetCents, 40, 'forty cents up', 1e-6);
+  // Half the amount is half the move — the performance keeps some of itself.
+  close(tuneToPitch(segment, 60, 0.5).edit.pitchOffsetCents, 20, 'partial correction', 1e-6);
+});
+
+check('a guide note far from what was sung is refused, not dragged', () => {
+  // Sung a fifth below the guide: that is an alignment mistake, not a
+  // correction anybody wants.
+  const segment = fakeSegment(60, 0, 0.5);
+  eq(tuneToPitch(segment, 67, 1, 3), segment, 'left exactly as it was');
+  assert(tuneToPitch(segment, 62, 1, 3) !== segment, 'but a whole tone is fine');
+});
+
+check('the guide note is the one with the most overlap', () => {
+  const notes = [
+    createNote({ pitch: 60, startSec: 0, durationSec: 1.0 }),
+    createNote({ pitch: 64, startSec: 0.9, durationSec: 1.0 }),
+  ];
+  // A segment running 0.2–0.95 overlaps the first note far more than the
+  // second — picking the first note that starts would retune it to the wrong
+  // one at the end of a long held note.
+  eq(guideNoteFor(notes, 0.2, 0.95)?.pitch, 60, 'the note it mostly sits under');
+  eq(guideNoteFor(notes, 0.95, 1.8)?.pitch, 64, 'and the next one after that');
+  eq(guideNoteFor(notes, 5, 6), null, 'nothing sounding there');
+  eq(guideNoteFor([createNote({ pitch: 60, muted: true })], 0, 0.5), null, 'a muted guide is no guide');
+});
+
+check('a segment with no guide note over it is left alone', () => {
+  const segment = fakeSegment(58.5, 2, 2.4);
+  const notes = [createNote({ pitch: 60, startSec: 0, durationSec: 1 })];
+  const corrected = correctSegment(segment, { kind: 'toMidi', notes, amount: 1 });
+  eq(corrected, segment, 'between phrases the singer is on their own');
+});
+
+check('toMidi tunes to the guide, not to the nearest semitone', () => {
+  // Sung at 61.4 — nearest semitone is 61, but the melody says 60.
+  const segment = fakeSegment(61.4, 0, 0.5);
+  const notes = [createNote({ pitch: 60, startSec: 0, durationSec: 1 })];
+
+  const toGuide = correctSegment(segment, { kind: 'toMidi', notes, amount: 1 });
+  close(toGuide.edit.pitchOffsetCents, -140, 'down to the written note', 1e-6);
+
+  const toNearest = quantizePitch(segment, 1);
+  close(toNearest.edit.pitchOffsetCents, -40, 'the nearest semitone is somewhere else entirely', 1e-6);
+});
+
+check('guide notes are translated into the audio clip\'s own time base', () => {
+  resetIds();
+  const base = createSession('guide test');
+  const audioTrack = createTrack('Vox', 'audio');
+  const midiTrack = createTrack('Guide', 'instrument');
+  let session = addTrack(addTrack(base, audioTrack), midiTrack);
+
+  // The audio starts at 8 s; the guide part starts at 10 s with a note at
+  // its own 0.5 s.  In the audio clip's time that note is at 2.5 s.
+  const audioClip = createClip('f1', 'Vox', { startSec: 8, durationSec: 6 });
+  const guidePart = createMidiPart('Guide', {
+    startSec: 10,
+    durationSec: 4,
+    notes: [createNote({ pitch: 67, startSec: 0.5, durationSec: 1 })],
+  });
+  session = updateClips(session, audioTrack.id, () => [audioClip]);
+  session = updateClips(session, midiTrack.id, () => [guidePart]);
+
+  const notes = guideNotesFor(session, audioClip, midiTrack.id, guidePart.id);
+  eq(notes.length, 1, 'one guide note');
+  close(notes[0]?.startSec ?? 0, 2.5, 'moved into the audio clip\'s clock', 1e-9);
+  eq(guideNotesFor(session, audioClip, audioTrack.id, audioClip.id).length, 0,
+    'an audio clip is not a guide');
 });
 
 const passed = results.filter((r) => r.pass).length;

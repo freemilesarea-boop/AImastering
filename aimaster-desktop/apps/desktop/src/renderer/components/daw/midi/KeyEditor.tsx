@@ -17,6 +17,7 @@ import {
 } from '../../../stores/midiEditorStore.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { findTrack, trackClips, updateClip } from '../../../daw/model/session-ops.js';
+import { clipNotes, notesInClipTime, writeClipNotes } from '../../../daw/model/patterns.js';
 import {
   createNote, isBlackKey, pitchName, targetLabel, to7bit, from7bit, noteEnd,
   curveValueAt, findExpression, setExpression, type ExpressionTarget, type MidiNote,
@@ -81,7 +82,25 @@ export default function KeyEditor() {
 
   const track = open ? findTrack(session, open.trackId) : undefined;
   const part = track ? trackClips(track).find((c) => c.id === open?.clipId) : undefined;
-  const notes = useMemo(() => part?.notes ?? [], [part]);
+  // Pattern-backed clips store no notes of their own — resolve the link, so a
+  // placed pattern opens and edits like any other part.
+  const notes = useMemo(() => (part ? clipNotes(session, part) : []), [session, part]);
+
+  // Ghost notes: another part drawn faintly behind this one, never editable.
+  const ghost = useMidiEditorStore((s) => s.ghost);
+  const setGhost = useMidiEditorStore((s) => s.setGhost);
+  // Ghost notes are drawn in the EDITED part's time base, so a chord part that
+  // sits elsewhere on the timeline still lines up with what you write.
+  const ghostNotes = useMemo(() => (ghost && part
+    ? notesInClipTime(session, part, ghost.trackId, ghost.clipId)
+    : []), [session, ghost, part]);
+
+  /** MIDI parts other than the one open, as ghost candidates. */
+  const ghostCandidates = useMemo(() => session.tracks.flatMap((t) =>
+    trackClips(t)
+      .filter((c) => c.kind === 'midi' && c.id !== open?.clipId)
+      .map((c) => ({ trackId: t.id, clipId: c.id, label: `${t.name} · ${c.name}` }))),
+  [session, open?.clipId]);
   const tempo = session.tempoBpm;
   const gridSec = currentGridSec(tempo);
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -114,12 +133,16 @@ export default function KeyEditor() {
   // ── Note updates ────────────────────────────────────────────────────────
   const writeNotes = useCallback((next: MidiNote[], transient = false) => {
     if (!open) return;
-    const mutate = (s: typeof session) => updateClip(s, open.trackId, open.clipId, (c) => ({
-      ...c,
-      notes: next,
+    const mutate = (s: typeof session) => {
+      // Writing through the link edits the PATTERN, so every placement of it
+      // changes at once — that is what makes a pattern a pattern.
+      const written = writeClipNotes(s, open.trackId, open.clipId, next);
       // A part always covers its notes, so nothing plays outside the part.
-      durationSec: Math.max(c.durationSec, next.reduce((m, n) => Math.max(m, noteEnd(n)), 0)),
-    }));
+      return updateClip(written, open.trackId, open.clipId, (c) => ({
+        ...c,
+        durationSec: Math.max(c.durationSec, next.reduce((m, n) => Math.max(m, noteEnd(n)), 0)),
+      }));
+    };
     if (transient) applyT(mutate); else apply(mutate);
   }, [open, apply, applyT, session]);
 
@@ -172,6 +195,19 @@ export default function KeyEditor() {
         ctx.lineTo(Math.round(x) + 0.5, size.height);
         ctx.stroke();
       }
+    }
+
+    // Ghost notes — behind everything, dim, and never interactive.
+    for (const note of ghostNotes) {
+      const x = toX(note.startSec);
+      const w = Math.max(2, note.durationSec * pxPerSec);
+      const y = toY(note.pitch);
+      if (x + w < 0 || x > size.width) continue;
+      ctx.fillStyle = 'rgba(190,160,255,0.16)';
+      ctx.fillRect(x, y + 1, w, pitchHeight - 2);
+      ctx.strokeStyle = 'rgba(190,160,255,0.35)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, y + 1.5, Math.max(1, w - 1), pitchHeight - 3);
     }
 
     // Notes
@@ -497,6 +533,26 @@ export default function KeyEditor() {
           className={`h-6 px-2 rounded text-[10px] border ${snapEnabled
             ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
             : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}>SNAP</button>
+
+        <span className="w-px h-5 bg-zinc-800 mx-1" />
+
+        {/* Ghost notes — write a bass line against the chords you can see. */}
+        <select
+          value={ghost ? `${ghost.trackId}|${ghost.clipId}` : ''}
+          onChange={(e) => {
+            const value = e.target.value;
+            if (!value) { setGhost(null); return; }
+            const [trackId, clipId] = value.split('|');
+            if (trackId && clipId) setGhost({ trackId, clipId });
+          }}
+          title="다른 파트를 뒤에 흐리게 겹쳐 봅니다 — 편집은 되지 않습니다"
+          className="h-6 rounded bg-zinc-900 border border-zinc-700 text-[10px] px-1 text-zinc-300 max-w-[150px]"
+        >
+          <option value="">고스트 없음</option>
+          {ghostCandidates.map((c) => (
+            <option key={`${c.trackId}|${c.clipId}`} value={`${c.trackId}|${c.clipId}`}>{c.label}</option>
+          ))}
+        </select>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 

@@ -55,7 +55,7 @@ import { detectChordTrack, barSeconds } from '../daw/edit/chord-detect.js';
 import { setChordTrack } from '../daw/model/session-ops.js';
 import { reharmonize, formatProgression } from '../daw/model/chords.js';
 import {
-  analyzeClipPitch, applyCorrection, renderClipPitch, tuningSummary,
+  analyzeClipPitch, applyCorrection, guideNotesFor, renderClipPitch, tuningSummary,
 } from '../daw/audio/varia-actions.js';
 import { clipEnd } from '../daw/model/session-ops.js';
 import { createStack, unpackStack, toggleCollapsed, stackAncestors } from '../daw/model/stacks.js';
@@ -88,7 +88,8 @@ export type DawCommandId =
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
-  | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand';
+  | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
+  | 'daw.tuneToGuide';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -509,6 +510,47 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         const rendered = await renderClipPitch(corrected, target.trackId, target.clipId);
         state.apply(() => rendered);
         notify(`${clip.pitchSegments.length}개 구간을 스케일에 맞춰 보정했습니다`, 'success');
+      } catch (err) {
+        notify(`피치 보정 실패: ${(err as Error).message}`, 'error');
+      }
+    },
+
+    /**
+     * Tune a vocal to a GUIDE MELODY rather than to a scale.
+     *
+     * The guide is the MIDI part open in the Key Editor.  Tuning to a scale
+     * can only ask "what is the nearest legal note to what was sung"; a guide
+     * says which note was meant, so a phrase sung a whole tone flat lands
+     * where it belongs instead of on the wrong scale degree it was closest to.
+     */
+    'daw.tuneToGuide': async () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      const clip = findClip(state.session, target.trackId, target.clipId);
+      if (!clip || clip.pitchSegments.length === 0) {
+        notify('먼저 피치 분석을 실행하세요 (Mod+Alt+P)', 'warning');
+        return;
+      }
+      const guide = useMidiEditorStore.getState().open;
+      if (!guide) {
+        notify('Key Editor 에서 가이드 멜로디 파트를 여세요', 'warning');
+        return;
+      }
+      const notes = guideNotesFor(state.session, clip, guide.trackId, guide.clipId);
+      if (notes.length === 0) {
+        notify('가이드 파트에 노트가 없습니다', 'warning');
+        return;
+      }
+      notify('가이드 멜로디로 보정 중…');
+      try {
+        const corrected = applyCorrection(state.session, target.trackId, target.clipId, {
+          kind: 'toMidi', notes, amount: 1,
+        });
+        const rendered = await renderClipPitch(corrected, target.trackId, target.clipId);
+        state.apply(() => rendered);
+        notify(`가이드 노트 ${notes.length}개에 맞춰 보정했습니다`
+          + ' — 3반음 넘게 떨어진 구간은 정렬 오류로 보고 건너뜁니다', 'success');
       } catch (err) {
         notify(`피치 보정 실패: ${(err as Error).message}`, 'error');
       }

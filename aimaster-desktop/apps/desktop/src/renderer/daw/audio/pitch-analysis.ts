@@ -453,3 +453,26 @@ export function straighten(segment: VariSegment, amount = 1): VariSegment {
   const keep = 1 - Math.max(0, Math.min(1, amount));
   return withEdit(segment, { vibratoScale: keep, driftScale: keep, curveScale: keep });
 }
+
+/**
+ * Snap a segment onto a specific pitch — the target a guide melody names.
+ *
+ * Different from `quantizePitch`, which asks "what is the nearest semitone to
+ * what was sung".  Here the answer is given, so a note sung a whole tone flat
+ * lands where the writer meant it to and not on the wrong scale degree it was
+ * closest to.
+ *
+ * `maxSemitones` is the safety rail: a guide note that is a fifth away from
+ * what was sung is almost always a misalignment, not a correction anybody
+ * wants, so the segment is left alone rather than dragged.
+ */
+export function tuneToPitch(
+  segment: VariSegment, targetPitch: number, amount = 1, maxSemitones = 3,
+): VariSegment {
+  const base = segment.measured.medianPitch;
+  const distance = targetPitch - base;
+  if (!Number.isFinite(distance) || Math.abs(distance) > maxSemitones) return segment;
+  return withEdit(segment, {
+    pitchOffsetCents: distance * 100 * Math.max(0, Math.min(1, amount)),
+  });
+}

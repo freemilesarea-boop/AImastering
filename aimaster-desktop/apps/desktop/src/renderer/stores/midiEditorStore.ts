@@ -35,6 +35,18 @@ interface MidiEditorState {
   openPart: (part: OpenPart) => void;
   close: () => void;
 
+  /**
+   * Ghost notes — another part drawn faintly behind the one being edited.
+   *
+   * FL's idea, and it is purely a display concern: the notes are read from the
+   * session like any others and are never editable here, so writing a bass
+   * line against the chords you can see costs nothing but a lookup.  Null is
+   * "off", and the ghost is dropped automatically when the part it points at
+   * disappears.
+   */
+  ghost: OpenPart | null;
+  setGhost: (part: OpenPart | null) => void;
+
   selectedNoteIds: string[];
   setSelection: (ids: string[]) => void;
   toggleSelected: (id: string, additive: boolean) => void;
@@ -95,6 +107,8 @@ interface MidiEditorState {
 
 export const useMidiEditorStore = create<MidiEditorState>((set) => ({
   open: null,
+  ghost: null,
+  setGhost: (ghost) => set({ ghost }),
   openPart: (part) => set({ open: part, selectedNoteIds: [] }),
   close: () => set({ open: null, selectedNoteIds: [] }),
 

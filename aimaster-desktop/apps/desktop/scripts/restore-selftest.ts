@@ -1,5 +1,5 @@
 /**
- * restore-selftest — Noise Reduction · De-click · De-hum · De-reverb.
+ * restore-selftest — Noise Reduction · De-click · De-hum · De-reverb · De-clip.
  *
  * The claims that matter:
  *
@@ -32,6 +32,9 @@ import {
   lpcCoefficients, lpcFromSegments, interpolateGap,
 } from '../src/renderer/daw/audio/declick.js';
 import { stft, istft } from '../src/renderer/daw/audio/stft.js';
+import {
+  detectClipping, declip, declipChannels, clippingRatio, describeClipping,
+} from '../src/renderer/daw/audio/declip.js';
 import {
   detectHum, removeHum, removeHumChannels, describeHum, NOMINAL_HUM,
 } from '../src/renderer/daw/audio/dehum.js';
@@ -741,9 +744,136 @@ check('stereo de-reverb is applied per channel', () => {
   for (let i = 0; i < a!.length; i += 397) close(a![i] ?? 0, b![i] ?? 0, 'identical in, identical out', 1e-9);
 });
 
+// ── De-clip ───────────────────────────────────────────────────────────────────
+
+/** Clip a signal by squashing everything above `ceiling` flat. */
+function clipTo(x: Float32Array, ceiling: number): Float32Array {
+  return Float32Array.from(x, (v) => Math.max(-ceiling, Math.min(ceiling, v)));
+}
+
+check('a sine that touches full scale is not clipping', () => {
+  // Exactly one sample per cycle sits at the peak — that is a peak, not a
+  // flat top, and treating it as damage would invent a bigger one.
+  const peaked = tone(440, 0.2, 1.0);
+  eq(detectClipping(peaked, SR).length, 0, 'no runs found');
+  eq(describeClipping([], SR), '클리핑된 구간이 없습니다', 'and it says so');
+});
+
+check('flat tops are found, with their sign', () => {
+  const clipped = clipTo(tone(220, 0.2, 1.4), 1.0);
+  const runs = detectClipping(clipped, SR);
+  assert(runs.length >= 8, `expected a run per half cycle, found ${runs.length}`);
+  assert(runs.some((r) => r.sign > 0) && runs.some((r) => r.sign < 0), 'both polarities');
+  for (const run of runs) assert(run.to > run.from, 'runs have length');
+  assert(clippingRatio(clipped) > 0.1, `a heavily clipped signal reads high: ${clippingRatio(clipped)}`);
+  close(clippingRatio(tone(440, 0.1, 0.5)), 0, 'and a clean one reads zero', 1e-9);
+});
+
+/** Squared error against the truth — the whole buffer, so nothing hides. */
+function deviation(x: Float32Array, truth: Float32Array): number {
+  let sum = 0;
+  for (let i = 0; i < truth.length; i++) sum += ((x[i] ?? 0) - (truth[i] ?? 0)) ** 2;
+  return sum;
+}
+
+check('de-clip rebuilds the peaks the ceiling removed', () => {
+  const original = rich(220, 0.4, 0.9);          // true peak ≈ 1.18
+  const clipped = clipTo(original, 1.0);
+
+  const runs = detectClipping(clipped, SR);
+  assert(runs.length > 100, `every loud cycle has a flat top, found ${runs.length}`);
+
+  const result = declip(clipped, SR, { normalise: false });
+  eq(result.repaired, runs.length, 'every run was rebuilt');
+
+  let truePeak = 0;
+  for (let i = 0; i < original.length; i++) truePeak = Math.max(truePeak, Math.abs(original[i] ?? 0));
+  assert(Math.abs(result.restoredPeak - truePeak) < 0.04,
+    `the peak came back: ${result.restoredPeak.toFixed(3)} vs ${truePeak.toFixed(3)}`);
+
+  const remaining = deviation(result.samples, original) / deviation(clipped, original);
+  assert(remaining < 0.1,
+    `${(remaining * 100).toFixed(1)} % of the damage remains — the shape was restored`);
+});
+
+check('extra passes matter when every cycle is damaged', () => {
+  // De-clipping differs from de-clicking here: clipping is PERIODIC, so the
+  // first pass fits its model to context that is itself still clipped.
+  const original = rich(220, 0.3, 1.1);          // hammered — a third of the peak gone
+  const clipped = clipTo(original, 1.0);
+  const one = declip(clipped, SR, { normalise: false, passes: 1 });
+  const four = declip(clipped, SR, { normalise: false, passes: 4 });
+
+  const base = deviation(clipped, original);
+  const after1 = deviation(one.samples, original) / base;
+  const after4 = deviation(four.samples, original) / base;
+  assert(after4 < after1 * 0.6,
+    `passes help on heavy clipping: ${(after1 * 100).toFixed(0)} % → ${(after4 * 100).toFixed(0)} %`);
+  assert(four.restoredPeak > one.restoredPeak, 'and the peak keeps coming back');
+});
+
+check('the reconstruction is allowed past full scale, then everything is scaled', () => {
+  const clipped = clipTo(rich(220, 0.4, 1.6), 1.0);
+  const free = declip(clipped, SR, { normalise: false });
+  assert(free.restoredPeak > 1.0, `unconstrained, the peaks exceed 1: ${free.restoredPeak.toFixed(3)}`);
+
+  const fitted = declip(clipped, SR, { normalise: true, headroomDb: 0.3 });
+  let peak = 0;
+  for (let i = 0; i < fitted.samples.length; i++) {
+    peak = Math.max(peak, Math.abs(fitted.samples[i] ?? 0));
+  }
+  assert(peak <= Math.pow(10, -0.3 / 20) + 1e-6, `fitted under the ceiling: ${peak.toFixed(4)}`);
+  assert(fitted.appliedGainDb < 0, 'and it reports the gain it had to apply');
+});
+
+check('a run longer than the limit is left alone', () => {
+  const flat = new Float32Array(Math.round(0.2 * SR));
+  const from = Math.round(0.05 * SR);
+  const to = Math.round(0.15 * SR);        // 100 ms of solid ceiling
+  for (let i = 0; i < flat.length; i++) flat[i] = i >= from && i < to ? 1 : 0.2;
+  const result = declip(flat, SR, { maxRunMs: 10, normalise: false });
+  eq(result.repaired, 0, 'nothing rebuilt');
+  for (let i = from + 10; i < to - 10; i += 100) {
+    close(result.samples[i] ?? 0, 1, 'the audio is untouched', 1e-6);
+  }
+});
+
+check('stereo de-clip applies ONE gain to both channels', () => {
+  // Both channels are clipped, at different moments — which is what a real
+  // clipped stereo file looks like.
+  const left = clipTo(rich(220, 0.3, 1.5), 1.0);
+  const right = clipTo(rich(330, 0.3, 1.3), 1.0);
+
+  const raw = declipChannels([left, right], SR, { normalise: false });
+  const fitted = declipChannels([left, right], SR, { normalise: true });
+  assert(fitted.repaired > 0, 'repaired');
+  assert(fitted.appliedGainDb < 0, 'and it had to come down');
+
+  // A per-channel normalise would change the balance between them; a stereo
+  // image is a ratio and a de-clipper has no business moving it.
+  const gainOf = (index: number): number => {
+    const before = raw.channels[index]!;
+    const after = fitted.channels[index]!;
+    let ratio = 1;
+    for (let i = 1000; i < before.length - 1000; i++) {
+      if (Math.abs(before[i] ?? 0) > 0.2) { ratio = (after[i] ?? 0) / (before[i] ?? 1); break; }
+    }
+    return ratio;
+  };
+  close(gainOf(0), gainOf(1), 'both channels were scaled by the same factor', 1e-6);
+});
+
+check('clean audio passes through de-clip unchanged', () => {
+  const clean = rich(220, 0.3, 0.5);
+  const result = declip(clean, SR);
+  eq(result.repaired, 0, 'nothing to do');
+  close(result.appliedGainDb, 0, 'and no gain applied', 1e-12);
+  for (let i = 0; i < clean.length; i += 97) eq(result.samples[i], clean[i], 'samples untouched');
+});
+
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;
-console.log('\n=== Restoration: Noise Reduction · De-click ===');
+console.log('\n=== Restoration: Noise · Click · Hum · Reverb · Clip ===');
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
 console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
 if (failed > 0) process.exit(1);

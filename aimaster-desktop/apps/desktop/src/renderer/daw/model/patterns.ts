@@ -185,6 +185,28 @@ export function captureAsPattern(
   };
 }
 
+/**
+ * Another clip's notes, moved into `host`'s time base.
+ *
+ * Two features need exactly this and would otherwise each grow their own copy:
+ * MIDI-guided pitch correction (a guide melody over a vocal that sits
+ * elsewhere on the timeline) and ghost notes (chords drawn behind the part
+ * being edited).  Both ask the same question — "what is this other part
+ * playing, in MY clock" — so it is answered once.
+ *
+ * Pattern-backed sources resolve through the link, so a placed pattern works
+ * as a guide or a ghost like anything else.
+ */
+export function notesInClipTime(
+  session: DawSession, host: Clip, sourceTrackId: TrackId, sourceClipId: ClipId,
+): MidiNote[] {
+  const track = session.tracks.find((t) => t.id === sourceTrackId);
+  const source = track?.playlists.flatMap((p) => p.clips).find((c) => c.id === sourceClipId);
+  if (!source || source.kind !== 'midi') return [];
+  const shift = source.startSec - host.startSec;
+  return clipNotes(session, source).map((n) => ({ ...n, startSec: n.startSec + shift }));
+}
+
 export function describePattern(session: DawSession, pattern: Pattern): string {
   const uses = patternUsage(session, pattern.id).length;
   return `${pattern.name} · 노트 ${pattern.notes.length}개 · ${pattern.durationSec.toFixed(2)}s`

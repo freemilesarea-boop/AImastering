@@ -8,14 +8,18 @@
 // the session scratch directory and the clip is re-pointed at it, so undo
 // restores the take exactly.
 
-import { analyzeVocal, quantizeToPitches, straighten, withEdit, type VariSegment } from './pitch-analysis.js';
+import {
+  analyzeVocal, quantizeToPitches, straighten, tuneToPitch, withEdit, type VariSegment,
+} from './pitch-analysis.js';
+import { noteEnd, soundingPitch, type MidiNote } from '../model/midi.js';
+import { notesInClipTime } from '../model/patterns.js';
 import { renderVariAudio } from './pitch-shift.js';
 import { getCached, analyzeBuffer, loadAudio, decodeContext } from '../engine/audio-cache.js';
 import { writeTempChannels } from '../engine/offline-render.js';
 import { addFile, findTrack, trackClips, updateClip } from '../model/session-ops.js';
 import { scalePitchClasses, type Scale } from '../model/scales.js';
 import { nextId } from '../model/ids.js';
-import type { DawSession, TrackId, ClipId } from '../model/types.js';
+import type { Clip, DawSession, TrackId, ClipId } from '../model/types.js';
 
 /** Decoded channels for a clip's source file, decoding on demand. */
 async function clipChannels(
@@ -76,7 +80,13 @@ export type CorrectionMode =
   | { kind: 'toScale'; scale: Scale; amount: number }
   | { kind: 'toSemitone'; amount: number }
   | { kind: 'straighten'; amount: number }
-  | { kind: 'formant'; semitones: number };
+  | { kind: 'formant'; semitones: number }
+  /**
+   * Tune to a guide melody.  `notes` are in CLIP time (the same clock the
+   * segments use), so the caller has already translated the MIDI part's
+   * position — see `guideNotesFor`.
+   */
+  | { kind: 'toMidi'; notes: readonly MidiNote[]; amount: number; maxSemitones?: number };
 
 /** Apply a correction to a clip's segments without rendering yet. */
 export function applyCorrection(
@@ -88,10 +98,51 @@ export function applyCorrection(
   }));
 }
 
+/**
+ * The guide note sounding over a segment.
+ *
+ * A segment can straddle two guide notes, so the one with the most OVERLAP
+ * wins rather than the one that happens to start first — otherwise a long held
+ * note would be retuned by the short note it runs into at the end.
+ */
+export function guideNoteFor(
+  notes: readonly MidiNote[], startSec: number, endSec: number,
+): MidiNote | null {
+  let best: MidiNote | null = null;
+  let bestOverlap = 0;
+  for (const note of notes) {
+    if (note.muted) continue;
+    const overlap = Math.min(endSec, noteEnd(note)) - Math.max(startSec, note.startSec);
+    if (overlap > bestOverlap) { bestOverlap = overlap; best = note; }
+  }
+  return bestOverlap > 0 ? best : null;
+}
+
+/**
+ * A MIDI part's notes, moved into the audio clip's own time base.
+ *
+ * The two clips sit at different places on the timeline; the segments are
+ * measured from the audio clip's start.  Doing this translation in one place
+ * means the correction itself never has to know where anything is.
+ */
+export function guideNotesFor(
+  session: DawSession, audioClip: Clip, guideTrackId: TrackId, guideClipId: ClipId,
+): MidiNote[] {
+  return notesInClipTime(session, audioClip, guideTrackId, guideClipId);
+}
+
 export function correctSegment(segment: VariSegment, mode: CorrectionMode): VariSegment {
   switch (mode.kind) {
     case 'toScale':
       return quantizeToPitches(segment, scalePitchClasses(mode.scale), mode.amount);
+    case 'toMidi': {
+      const guide = guideNoteFor(mode.notes, segment.startSec, segment.endSec);
+      // No guide note over this moment means the singer is between phrases —
+      // leaving it alone is the right answer, not snapping it to something.
+      if (!guide) return segment;
+      return tuneToPitch(
+        segment, soundingPitch(guide), mode.amount, mode.maxSemitones ?? 3);
+    }
     case 'toSemitone': {
       const target = Math.round(segment.measured.medianPitch);
       const cents = (target - segment.measured.medianPitch) * 100;

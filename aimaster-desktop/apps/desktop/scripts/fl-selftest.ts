@@ -27,7 +27,7 @@ import {
 import {
   createPattern, addPattern, findPattern, updatePattern, renamePattern,
   patternUsage, removePattern, clipNotes, writeClipNotes, patternClip,
-  unlinkClip, captureAsPattern, describePattern,
+  unlinkClip, captureAsPattern, describePattern, notesInClipTime,
 } from '../src/renderer/daw/model/patterns.js';
 import {
   stampChord, arpeggiate, chordGroups, strum, applySlides, clearSlides, flam,
@@ -359,6 +359,37 @@ check('the library renames and describes', () => {
   assert(describePattern(renamed, findPattern(renamed, pattern.id)!).includes('배치 0회'),
     'reports how many times it is placed');
   eq(findPattern(base, 'nope'), undefined, 'a session with no library returns nothing');
+});
+
+check('another part can be read in this clip\'s time base', () => {
+  // What ghost notes and MIDI-guided pitch correction both need: "what is
+  // that other part playing, in MY clock".
+  resetIds();
+  const base = createSession('ghost test');
+  const track = createTrack('Keys', 'instrument');
+  let session = addTrack(base, track);
+
+  const host = createMidiPart('Bass', { startSec: 8, durationSec: 4 });
+  const chords = createMidiPart('Chords', {
+    startSec: 10,
+    durationSec: 4,
+    notes: [createNote({ pitch: 60, startSec: 0.5, durationSec: 1 })],
+  });
+  session = updateClips(session, track.id, () => [host, chords]);
+
+  const seen = notesInClipTime(session, host, track.id, chords.id);
+  eq(seen.length, 1, 'one note');
+  close(seen[0]?.startSec ?? 0, 2.5, 'shifted by the two seconds between the clips', 1e-9);
+  eq(seen[0]?.pitch, 60, 'and unchanged otherwise');
+
+  // A pattern-backed source resolves through the link, so a placed pattern
+  // works as a ghost like anything else.
+  const captured = captureAsPattern(session, track.id, chords.id, 'Chords', 120)!;
+  const throughLink = notesInClipTime(captured.session, host, track.id, chords.id);
+  eq(throughLink.length, 1, 'still one note');
+  close(throughLink[0]?.startSec ?? 0, 2.5, 'still in the host\'s clock', 1e-9);
+
+  eq(notesInClipTime(session, host, track.id, 'nope').length, 0, 'a missing source is empty');
 });
 
 // ── Note tools ────────────────────────────────────────────────────────────────
