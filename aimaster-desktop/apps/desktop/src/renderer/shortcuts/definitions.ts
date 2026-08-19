@@ -71,7 +71,8 @@ export type CommandId =
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
-  | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp';
+  | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
+  | 'daw.showRestore' | 'daw.declick';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -308,6 +309,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '트랜지언트마다 마커를 찍고 그리드에 스냅', available: true },
   { id: 'daw.toggleWarp', group: 'daw', label: 'Warp 켜기 / 끄기', chords: ['Alt+W'],
     note: '선택한 클립의 워프 on/off', available: true },
+  { id: 'daw.showRestore', group: 'daw', label: 'Restoration (노이즈 · 클릭)', chords: ['Mod+Alt+N'],
+    note: '노이즈 프로파일 학습 후 감산 · 클릭 스캔 후 AR 복원', available: true },
+  { id: 'daw.declick', group: 'daw', label: '클립 디클릭', chords: ['Mod+Shift+K'],
+    note: '커서 아래 클립의 클릭을 찾아 전부 복원', available: true },
   { id: 'daw.showSpectral', group: 'daw', label: 'Spectral Repair', chords: ['Mod+Alt+G'],
     note: '스펙트로그램에서 주파수 영역만 골라 Repair / Attenuate / Replace', available: true },
   { id: 'daw.showReference', group: 'daw', label: 'Mastering Reference', chords: ['Mod+Alt+M'],

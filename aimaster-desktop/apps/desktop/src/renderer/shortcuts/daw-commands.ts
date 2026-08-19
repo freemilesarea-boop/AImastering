@@ -37,6 +37,7 @@ import {
   autoWarpClip, setWarpEnabled, unwarpClip, warpClipToTempo,
 } from '../daw/edit/warp-actions.js';
 import { clipWarp } from '../daw/model/warp.js';
+import { declickClip } from '../daw/edit/restore-actions.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
 import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips } from '../daw/model/session-ops.js';
@@ -77,7 +78,8 @@ export type DawCommandId =
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
-  | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp';
+  | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
+  | 'daw.showRestore' | 'daw.declick';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -597,6 +599,26 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         notify(`Warp 켬 · ${result.sourceBpm.toFixed(1)} BPM${result.estimated ? ' (추정)' : ''}`, 'success');
       } catch (err) {
         notify((err as Error).message, 'warning');
+      }
+    },
+
+    // ── Restoration ───────────────────────────────────────────────────────
+    'daw.showRestore': () => {
+      daw().setWindow('restore');
+      notify('Restoration');
+    },
+
+    'daw.declick': async () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      notify('클릭 검사 중…');
+      try {
+        const result = await declickClip(state.session, target.trackId, target.clipId);
+        if (result.detected > 0) state.apply(() => result.session);
+        notify(result.message, result.detected > 0 ? 'success' : 'info');
+      } catch (err) {
+        notify(`디클릭 실패: ${(err as Error).message}`, 'error');
       }
     },
 
