@@ -136,6 +136,49 @@ function makeGainCurve(
   return shaper;
 }
 
+/** Soft-clipping transfer curve with an optional even-harmonic bias. */
+function tanhCurve(bias = 0): Float32Array<ArrayBuffer> {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    const biased = x + bias * x * x * 0.5;
+    curve[i] = Math.tanh(biased * 1.6) / Math.tanh(1.6);
+  }
+  return curve;
+}
+
+/**
+ * Map a detector signal to a GAIN DELTA, reacting to only one polarity.
+ * The transient designer uses two of these — one for attacks (positive
+ * difference) and one for sustain (negative) — summed onto the same gain.
+ */
+function halfWaveGainCurve(amount: number, side: 'positive' | 'negative'): Float32Array<ArrayBuffer> {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    const active = side === 'positive' ? Math.max(0, x) : Math.max(0, -x);
+    curve[i] = active * amount;
+  }
+  return curve;
+}
+
+/**
+ * A WaveShaper's curve may only be assigned once, so a parameter change that
+ * reshapes the transfer function has to REPLACE the node.  This helper keeps
+ * that swap in one place instead of scattering rewiring through every plugin.
+ */
+function makeShaper(
+  ctx: BaseAudioContext, curve: Float32Array<ArrayBuffer>,
+  oversample: OverSampleType = 'none',
+): WaveShaperNode {
+  const shaper = ctx.createWaveShaper();
+  shaper.curve = curve;
+  shaper.oversample = oversample;
+  return shaper;
+}
+
 /** One-pole smoother, expressed as a lowpass corner from a time constant. */
 function smoother(ctx: BaseAudioContext, timeMs: number): BiquadFilterNode {
   const f = ctx.createBiquadFilter();
@@ -373,6 +416,232 @@ export const PLUGINS: PluginDescriptor[] = [
           if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
           if (id === 'preDelayMs') pre.delayTime.value = v / 1000;
           if (id === 'decaySec') conv.buffer = makeImpulse(ctx, v);
+        },
+      };
+    }),
+  },
+
+  {
+    id: 'saturation',
+    name: 'Saturation',
+    category: 'utility',
+    hasSidechain: false,
+    params: [
+      { id: 'driveDb', name: 'Drive', min: 0,  max: 24, default: 0, unit: 'dB' },
+      { id: 'mix',     name: 'Mix',   min: 0,  max: 1,  default: 0, unit: '' },
+      { id: 'bias',    name: 'Bias',  min: -1, max: 1,  default: 0, unit: '' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const drive = ctx.createGain();
+      const compensate = ctx.createGain();
+      const wet = ctx.createGain();
+      const dry = ctx.createGain();
+      let shaper = makeShaper(ctx, tanhCurve(params['bias'] ?? 0), '4x');
+
+      const applyDrive = (db: number): void => {
+        const gain = dbToGain(db);
+        drive.gain.value = gain;
+        // Saturation adds level; compensating keeps the macro from also
+        // acting as a volume knob.
+        compensate.gain.value = 1 / Math.max(1, Math.sqrt(gain));
+      };
+      applyDrive(params['driveDb'] ?? 0);
+
+      const mix = params['mix'] ?? 0;
+      wet.gain.value = mix;
+      dry.gain.value = 1 - mix;
+
+      drive.connect(shaper).connect(compensate);
+      input.connect(drive);
+      compensate.connect(wet).connect(output);
+      input.connect(dry).connect(output);
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'driveDb') applyDrive(v);
+          if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
+          if (id === 'bias' && v !== (params['bias'] ?? 0)) {
+            params['bias'] = v;
+            drive.disconnect(shaper);
+            shaper.disconnect();
+            shaper = makeShaper(ctx, tanhCurve(v), '4x');
+            drive.connect(shaper).connect(compensate);
+          }
+        },
+        dispose: () => { try { shaper.disconnect(); } catch { /* ignore */ } },
+      };
+    }),
+  },
+
+  {
+    id: 'transient',
+    name: 'Transient Designer',
+    category: 'dynamics',
+    hasSidechain: false,
+    params: [
+      { id: 'attack',  name: 'Attack',  min: -1, max: 1, default: 0, unit: '' },
+      { id: 'sustain', name: 'Sustain', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'mix',     name: 'Mix',     min: 0,  max: 1, default: 1, unit: '' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Two envelope followers at different speeds; their DIFFERENCE is the
+      // transient.  Positive during an attack, negative while a note decays,
+      // so one signal drives both halves of the control.
+      const rect = absShaper(ctx);
+      const fast = smoother(ctx, 2);
+      const slow = smoother(ctx, 90);
+      const invert = ctx.createGain();
+      invert.gain.value = -1;
+      const difference = ctx.createGain();
+
+      input.connect(rect);
+      rect.connect(fast).connect(difference);
+      rect.connect(slow).connect(invert).connect(difference);
+
+      const vca = ctx.createGain();
+      vca.gain.value = 1;                       // audio-rate control sums onto this
+
+      // The two shapers turn the transient signal into gain deltas.  Their
+      // curves depend on the parameters, so changing one swaps the node.
+      let attackShaper = makeShaper(ctx, halfWaveGainCurve((params['attack'] ?? 0) * 6, 'positive'));
+      let sustainShaper = makeShaper(ctx, halfWaveGainCurve((params['sustain'] ?? 0) * 4, 'negative'));
+      difference.connect(attackShaper);
+      attackShaper.connect(vca.gain);
+      difference.connect(sustainShaper);
+      sustainShaper.connect(vca.gain);
+
+      const swap = (which: 'attack' | 'sustain', value: number): void => {
+        const old = which === 'attack' ? attackShaper : sustainShaper;
+        difference.disconnect(old);
+        old.disconnect();
+        const next = which === 'attack'
+          ? makeShaper(ctx, halfWaveGainCurve(value * 6, 'positive'))
+          : makeShaper(ctx, halfWaveGainCurve(value * 4, 'negative'));
+        difference.connect(next);
+        next.connect(vca.gain);
+        if (which === 'attack') attackShaper = next; else sustainShaper = next;
+      };
+
+      const wet = ctx.createGain();
+      const dry = ctx.createGain();
+      const mix = params['mix'] ?? 1;
+      wet.gain.value = mix;
+      dry.gain.value = 1 - mix;
+
+      input.connect(vca).connect(wet).connect(output);
+      input.connect(dry).connect(output);
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'attack' && v !== (params['attack'] ?? 0)) { params['attack'] = v; swap('attack', v); }
+          if (id === 'sustain' && v !== (params['sustain'] ?? 0)) { params['sustain'] = v; swap('sustain', v); }
+          if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
+        },
+        dispose: () => {
+          try { attackShaper.disconnect(); sustainShaper.disconnect(); } catch { /* ignore */ }
+        },
+      };
+    }),
+  },
+
+  {
+    id: 'exciter',
+    name: 'Exciter',
+    category: 'eq',
+    hasSidechain: false,
+    params: [
+      { id: 'amount', name: 'Amount', min: 0,   max: 1,     default: 0,    unit: '' },
+      { id: 'freqHz', name: 'Freq',   min: 1500, max: 12000, default: 4000, unit: 'Hz' },
+      { id: 'mix',    name: 'Mix',    min: 0,   max: 1,     default: 0,    unit: '' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Generate harmonics from the top band only, then blend them back —
+      // the classic exciter topology, and the reason it adds "air" instead
+      // of just turning the treble up.
+      const band = ctx.createBiquadFilter();
+      band.type = 'highpass';
+      band.frequency.value = params['freqHz'] ?? 4000;
+      band.Q.value = 0.7;
+
+      const drive = ctx.createGain();
+      const shaper = makeShaper(ctx, tanhCurve(0.15), '4x');
+      const wet = ctx.createGain();
+
+      const applyAmount = (amount: number): void => { drive.gain.value = 1 + amount * 8; };
+      applyAmount(params['amount'] ?? 0);
+      wet.gain.value = params['mix'] ?? 0;
+
+      input.connect(band).connect(drive).connect(shaper).connect(wet).connect(output);
+      input.connect(output);                      // dry stays full
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'amount') applyAmount(v);
+          if (id === 'freqHz') band.frequency.value = v;
+          if (id === 'mix') wet.gain.value = v;
+        },
+      };
+    }),
+  },
+
+  {
+    id: 'widener',
+    name: 'Stereo Width',
+    category: 'utility',
+    hasSidechain: false,
+    params: [
+      { id: 'width',     name: 'Width',    min: 0,  max: 2,   default: 1,  unit: '×' },
+      { id: 'lowMonoHz', name: 'Low Mono', min: 20, max: 400, default: 20, unit: 'Hz' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Mid/side built from plain gains: M = (L+R)/2, S = (L−R)/2, scale S,
+      // then L = M+S, R = M−S.  Everything below `lowMonoHz` is kept out of
+      // S so the bass stays centred however wide the top gets.
+      const splitter = ctx.createChannelSplitter(2);
+      const merger = ctx.createChannelMerger(2);
+
+      const mid = ctx.createGain();
+      const side = ctx.createGain();
+      const lToMid = ctx.createGain(); lToMid.gain.value = 0.5;
+      const rToMid = ctx.createGain(); rToMid.gain.value = 0.5;
+      const lToSide = ctx.createGain(); lToSide.gain.value = 0.5;
+      const rToSide = ctx.createGain(); rToSide.gain.value = -0.5;
+
+      input.connect(splitter);
+      splitter.connect(lToMid, 0);
+      splitter.connect(rToMid, 1);
+      splitter.connect(lToSide, 0);
+      splitter.connect(rToSide, 1);
+      lToMid.connect(mid);
+      rToMid.connect(mid);
+      lToSide.connect(side);
+      rToSide.connect(side);
+
+      const sideHigh = ctx.createBiquadFilter();
+      sideHigh.type = 'highpass';
+      sideHigh.frequency.value = params['lowMonoHz'] ?? 20;
+      const sideGain = ctx.createGain();
+      sideGain.gain.value = params['width'] ?? 1;
+      const sideInverted = ctx.createGain();
+      sideInverted.gain.value = -1;
+
+      side.connect(sideHigh).connect(sideGain);
+      sideGain.connect(sideInverted);
+
+      mid.connect(merger, 0, 0);
+      mid.connect(merger, 0, 1);
+      sideGain.connect(merger, 0, 0);
+      sideInverted.connect(merger, 0, 1);
+      merger.connect(output);
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'width') sideGain.gain.value = v;
+          if (id === 'lowMonoHz') sideHigh.frequency.value = v;
         },
       };
     }),

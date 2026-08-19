@@ -17,6 +17,7 @@ import {
 import { nextId } from './ids.js';
 import { DEFAULT_MIDI_CONFIG } from './midi.js';
 import type { ChordEvent, ChordSymbol } from './chords.js';
+import { EMPTY_RACK } from './macros.js';
 
 // ── Construction ──────────────────────────────────────────────────────────────
 
@@ -62,6 +63,9 @@ export function createTrack(
     frozen: null,
     instrumentId: kind === 'instrument' ? 'polysynth' : null,
     instrumentParams: {},
+    parentId: null,
+    collapsed: false,
+    macros: EMPTY_RACK,
     ...over,
   };
 }

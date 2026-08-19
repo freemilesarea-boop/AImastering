@@ -82,6 +82,10 @@ export interface DawState {
   scrollSec: number;
   setScrollSec: (v: number) => void;
 
+  /** Track whose Smart Controls are open, if any. */
+  smartTrackId: TrackId | null;
+  openSmartControls: (id: TrackId | null) => void;
+
   /** Non-fatal engine notices (feedback loops, decode failures). */
   engineWarning: string | null;
   setEngineWarning: (w: string | null) => void;
@@ -221,6 +225,9 @@ export const useDawStore = create<DawState>((set, get) => ({
   setPxPerSec: (v) => set({ pxPerSec: Math.max(4, Math.min(2000, v)) }),
   scrollSec: 0,
   setScrollSec: (v) => set({ scrollSec: Math.max(0, v) }),
+
+  smartTrackId: null,
+  openSmartControls: (id) => set({ smartTrackId: id }),
 
   engineWarning: null,
   setEngineWarning: (w) => set({ engineWarning: w }),

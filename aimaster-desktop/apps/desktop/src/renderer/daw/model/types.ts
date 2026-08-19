@@ -13,7 +13,8 @@
 import type { ControllerLane, MidiNote, MidiPartConfig } from './midi.js';
 import type { ChordEvent } from './chords.js';
 import type { VariSegment } from '../audio/pitch-analysis.js';
-export type { ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment };
+import type { MacroRack } from './macros.js';
+export type { ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment, MacroRack };
 
 export type TrackId    = string;
 export type ClipId     = string;
@@ -153,7 +154,7 @@ export interface AutomationLane {
  * and renders them through an instrument, then down the normal channel path
  * (inserts → fader → pan → output), exactly like Cubase's instrument track.
  */
-export type TrackKind = 'audio' | 'instrument' | 'aux' | 'master' | 'vca';
+export type TrackKind = 'audio' | 'instrument' | 'aux' | 'master' | 'vca' | 'folder';
 
 /** Where a channel's main output goes. */
 export type OutputTarget =
@@ -203,6 +204,15 @@ export interface Track {
   /** Sound source for an instrument track (id from the instrument registry). */
   instrumentId: string | null;
   instrumentParams: Record<string, number>;
+  /**
+   * Track Stack membership.  A track inside a stack names its folder here;
+   * the folder itself is a track of kind 'folder'.
+   */
+  parentId: TrackId | null;
+  /** Folder UI state — a collapsed stack shows one row instead of ten. */
+  collapsed: boolean;
+  /** Macro (Smart Control) rack driving this channel's processing. */
+  macros: MacroRack;
 }
 
 // ── Groups / buses ────────────────────────────────────────────────────────────

@@ -22,6 +22,7 @@ import {
   createSession, createTrack, findTrack, setInsert, setSend, updateClips, updateTrack,
 } from '../src/renderer/daw/model/session-ops.js';
 import { createNote, from7bit, resetNoteIds, setExpression } from '../src/renderer/daw/model/midi.js';
+import { clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { setVolumeDb, toggleMute, toggleSolo } from '../src/renderer/daw/model/mixer-math.js';
 import { analyzeBuffer, clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
@@ -384,6 +385,107 @@ async function main(): Promise<void> {
     const fullRms = channelRms(full, 0, 0, Math.floor(SR * 1.2));
     close(channelRms(quiet, 0, 0, Math.floor(SR * 1.2)), fullRms * 0.2512, 'fader −12 dB', 0.01);
     close(channelRms(muted, 0), 0, 'muted', 1e-6);
+  });
+
+  // ── Macro rack processors ───────────────────────────────────────────────
+
+  await check('saturation adds harmonics that were not in the source', async () => {
+    clearAudioCache();
+    // A pure sine has no harmonics; saturation must create them.
+    const ctx = new OfflineAudioContext(2, SR, SR);
+    const buffer = ctx.createBuffer(2, SR, SR);
+    for (let c = 0; c < 2; c++) {
+      const data = buffer.getChannelData(c);
+      for (let i = 0; i < data.length; i++) data[i] = 0.6 * Math.sin((2 * Math.PI * 300 * i) / SR);
+    }
+    analyzeBuffer('sine', buffer as unknown as AudioBuffer);
+
+    resetIds();
+    let s = createSession('Sat', SR);
+    const track = createTrack('Sine', 'audio');
+    s = addTrack(s, track);
+    s = addFile(s, { id: 'sine', path: '/v/sine.wav', name: 'sine', durationSec: 1, sampleRate: SR, channels: 2 });
+    s = updateClips(s, track.id, () => [createClip('sine', 'sine', { durationSec: 1 })]);
+
+    const clean = await render(s, 1);
+    const driven = await render(setInsert(s, track.id, createInsert(0, 'saturation', 'Sat', {
+      params: { driveDb: 18, mix: 1, bias: 0 },
+    })), 1);
+
+    const window = { from: Math.floor(SR * 0.2), to: Math.floor(SR * 0.8) };
+    const cleanThird = energyAt(clean.getChannelData(0), 900, window.from, window.to);
+    const drivenThird = energyAt(driven.getChannelData(0), 900, window.from, window.to);
+    assert(drivenThird > cleanThird * 8,
+      `third harmonic appears — ${cleanThird.toExponential(2)} → ${drivenThird.toExponential(2)}`);
+  });
+
+  await check('the stereo widener widens and narrows the side signal', async () => {
+    clearAudioCache();
+    // Pure side information: L = −R.
+    const ctx = new OfflineAudioContext(2, SR, SR);
+    const buffer = ctx.createBuffer(2, SR, SR);
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    for (let i = 0; i < left.length; i++) {
+      const v = 0.4 * Math.sin((2 * Math.PI * 1000 * i) / SR);
+      left[i] = v;
+      right[i] = -v;
+    }
+    analyzeBuffer('side', buffer as unknown as AudioBuffer);
+
+    resetIds();
+    let s = createSession('Width', SR);
+    const track = createTrack('Side', 'audio');
+    s = addTrack(s, track);
+    s = addFile(s, { id: 'side', path: '/v/side.wav', name: 'side', durationSec: 1, sampleRate: SR, channels: 2 });
+    s = updateClips(s, track.id, () => [createClip('side', 'side', { durationSec: 1 })]);
+
+    const unity = await render(setInsert(s, track.id, createInsert(0, 'widener', 'W', {
+      params: { width: 1, lowMonoHz: 20 },
+    })), 1);
+    const wide = await render(setInsert(s, track.id, createInsert(0, 'widener', 'W', {
+      params: { width: 1.8, lowMonoHz: 20 },
+    })), 1);
+    const narrow = await render(setInsert(s, track.id, createInsert(0, 'widener', 'W', {
+      params: { width: 0, lowMonoHz: 20 },
+    })), 1);
+
+    const from = Math.floor(SR * 0.2);
+    const to = Math.floor(SR * 0.8);
+    const unityRms = channelRms(unity, 0, from, to);
+    assert(channelRms(wide, 0, from, to) > unityRms * 1.5, 'wider is louder on a side-only signal');
+    assert(channelRms(narrow, 0, from, to) < unityRms * 0.15, 'width 0 collapses it to mono');
+  });
+
+  await check('a macro rack changes the sound and bypasses cleanly', async () => {
+    clearAudioCache();
+    makeToneFile('tone', 300, 0.4, 1);
+    resetIds();
+    let s = createSession('Macro', SR);
+    const track = createTrack('Tone', 'audio');
+    s = addTrack(s, track);
+    s = addFile(s, { id: 'tone', path: '/v/tone.wav', name: 'tone', durationSec: 1, sampleRate: SR, channels: 2 });
+    s = updateClips(s, track.id, () => [createClip('tone', 'tone', { durationSec: 1 })]);
+
+    const off = await render(s, 1);
+    const withMacros = await render(updateTrack(s, track.id, (t) => ({
+      ...t,
+      macros: { enabled: true, values: { warmth: 0.8, loudness: 0.6 }, overrides: {} },
+    })), 1);
+
+    const from = Math.floor(SR * 0.2);
+    const to = Math.floor(SR * 0.8);
+    const offRms = channelRms(off, 0, from, to);
+    const onRms = channelRms(withMacros, 0, from, to);
+    assert(Math.abs(onRms - offRms) > offRms * 0.05,
+      `the rack audibly changes the signal — ${offRms.toFixed(4)} → ${onRms.toFixed(4)}`);
+
+    // A rack with every macro at zero must be transparent.
+    const neutral = await render(updateTrack(s, track.id, (t) => ({
+      ...t,
+      macros: { enabled: true, values: {}, overrides: {} },
+    })), 1);
+    close(channelRms(neutral, 0, from, to), offRms, 'an untouched rack is transparent', 0.002);
   });
 
   const passed = results.filter((r) => r.pass).length;

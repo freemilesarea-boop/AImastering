@@ -23,6 +23,7 @@ import {
 } from '../model/mixer-math.js';
 import type { BusId, DawSession, Track, TrackId } from '../model/types.js';
 import { findPlugin, type PluginInstance } from './plugins.js';
+import { materializeRack, moduleParams, type RackModuleId } from '../model/macros.js';
 
 export interface Channel {
   trackId: TrackId;
@@ -32,12 +33,24 @@ export interface Channel {
   insertIn: GainNode;
   insertOut: GainNode;
   inserts: Map<string, PluginInstance>;
+  /** Macro rack modules, ahead of the manual inserts. */
+  rack: Map<RackModuleId, PluginInstance>;
   preFaderTap: GainNode;
   fader: GainNode;
   panner: StereoPannerNode;
   postFaderTap: GainNode;
   sends: Map<string, GainNode>;
   meter: AnalyserNode | null;
+}
+
+/**
+ * Tracks that actually pass audio.  VCAs are control-only, and a folder stack
+ * that does not sum its children has no signal path of its own.
+ */
+export function carriesAudio(track: Track): boolean {
+  if (track.kind === 'vca') return false;
+  if (track.kind === 'folder' && track.input === null) return false;
+  return true;
 }
 
 /** Structural fingerprint — changing it forces a graph rebuild. */
@@ -48,6 +61,11 @@ function structureKey(session: DawSession): string {
       t.id, t.kind, t.input, t.output,
       t.inserts.map((i) => [i.id, i.slot, i.pluginId, i.sidechainSource]),
       t.sends.map((s) => [s.id, s.slot, s.target, s.preFader]),
+      // A macro that switches a module on or off changes the graph, so the
+      // active set is part of the fingerprint.
+      t.macros.enabled
+        ? materializeRack(t.macros).filter((m) => m.active).map((m) => m.module.id)
+        : null,
     ]),
     adc: session.delayCompensation,
   });
@@ -124,7 +142,7 @@ export class MixerEngine {
     }
 
     for (const track of session.tracks) {
-      if (track.kind === 'vca') continue;      // VCAs are control-only
+      if (!carriesAudio(track)) continue;
       this.channels.set(track.id, this.buildChannel(track, session));
     }
 
@@ -188,9 +206,25 @@ export class MixerEngine {
 
     input.connect(adc).connect(insertIn);
 
+    let cursor: AudioNode = insertIn;
+
+    // Macro rack first: the Smart Controls shape the sound, then the
+    // engineer's own plugins work on the result.
+    const rack = new Map<RackModuleId, PluginInstance>();
+    if (track.macros.enabled) {
+      for (const resolved of materializeRack(track.macros)) {
+        if (!resolved.active) continue;
+        const descriptor = findPlugin(resolved.module.pluginId);
+        if (!descriptor) continue;
+        const instance = descriptor.create(ctx, moduleParams(resolved));
+        cursor.connect(instance.input);
+        cursor = instance.output;
+        rack.set(resolved.module.id, instance);
+      }
+    }
+
     // Insert chain in slot order.
     const inserts = new Map<string, PluginInstance>();
-    let cursor: AudioNode = insertIn;
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = findPlugin(insert.pluginId);
       if (!descriptor) continue;
@@ -219,7 +253,7 @@ export class MixerEngine {
 
     void session;
     return {
-      trackId: track.id, input, adc, insertIn, insertOut, inserts,
+      trackId: track.id, input, adc, insertIn, insertOut, inserts, rack,
       preFaderTap, fader, panner, postFaderTap, sends, meter,
     };
   }
@@ -247,6 +281,19 @@ export class MixerEngine {
       }
       if (!this.isAutomated(track.id, 'pan')) {
         ch.panner.pan.value = Math.max(-1, Math.min(1, track.pan));
+      }
+
+      // Macro rack — every value comes from materializeRack, which is also
+      // what the Advanced view shows, so the two can never disagree.
+      if (ch.rack.size > 0) {
+        for (const resolved of materializeRack(track.macros)) {
+          const instance = ch.rack.get(resolved.module.id);
+          if (!instance) continue;
+          instance.setBypass(!track.macros.enabled);
+          for (const [id, value] of Object.entries(moduleParams(resolved))) {
+            instance.setParam(id, value);
+          }
+        }
       }
 
       for (const insert of track.inserts) {
@@ -286,7 +333,7 @@ export class MixerEngine {
 
   teardown(): void {
     for (const ch of this.channels.values()) {
-      for (const instance of ch.inserts.values()) {
+      for (const instance of [...ch.inserts.values(), ...ch.rack.values()]) {
         try { instance.dispose(); } catch { /* ignore */ }
       }
       for (const node of [ch.input, ch.adc, ch.insertIn, ch.insertOut,

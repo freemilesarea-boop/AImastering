@@ -67,7 +67,8 @@ export type CommandId =
   | 'daw.octaveUp' | 'daw.octaveDown'
   | 'daw.velocityUp' | 'daw.velocityDown'
   | 'daw.detectChords' | 'daw.reharmonize'
-  | 'daw.analyzeVocal' | 'daw.tuneVocal';
+  | 'daw.analyzeVocal' | 'daw.tuneVocal'
+  | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -282,6 +283,16 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '재생 위치의 오디오 클립을 음정 구간으로 분석 (피치 · 비브라토 · 드리프트)', available: true },
   { id: 'daw.tuneVocal', group: 'daw', label: '스케일로 피치 보정', chords: ['Mod+Alt+U'],
     note: '분석된 구간을 에디터 스케일에 맞추고 PSOLA 로 렌더 (원본은 보존)', available: true },
+
+  // ── 스마트 컨트롤 · 트랙 스택 ──────────────────────────────────────────
+  { id: 'daw.smartControls', group: 'daw', label: '스마트 컨트롤', chords: ['Mod+Alt+S'],
+    note: '매크로 7개(WARMTH·CLARITY·PUNCH·AIR·WIDTH·DEPTH·LOUDNESS) — Advanced 로 실제 파라미터', available: true },
+  { id: 'daw.createStack', group: 'daw', label: '트랙 스택 만들기', chords: ['Mod+Shift+G'],
+    note: '선택 트랙을 합산 스택으로 묶음 (버스 생성 + 라우팅)', available: true },
+  { id: 'daw.unpackStack', group: 'daw', label: '스택 해제', chords: ['Mod+Shift+U'],
+    note: '멤버는 남기고 폴더와 버스를 제거', available: true },
+  { id: 'daw.toggleStack', group: 'daw', label: '스택 접기/펼치기', chords: ['Mod+Shift+F'],
+    note: '큰 세션에서 화면을 정리', available: true },
 ];
 
 /** Parsed bindings, in dispatch order (first match wins). */

@@ -20,6 +20,9 @@ import { describePath, computeDelayCompensation, wouldFeedback } from '../../../
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import type { AutomationMode, DawSession, Track } from '../../../daw/model/types.js';
+import { stackDepth, isSummingStack } from '../../../daw/model/stacks.js';
+import { activeMacros } from '../../../daw/model/macros.js';
+import { premium } from '../../../theme/premium.js';
 
 const VISIBLE_INSERTS = 5;      // A–E, like the top half of a Pro Tools strip
 const VISIBLE_SENDS   = 5;
@@ -68,10 +71,12 @@ export default function MixWindow() {
             key={track.id}
             session={session}
             track={track}
+            depth={stackDepth(session, track.id)}
             level={levels.get(track.id) ?? 0}
             compensationSamples={compensation.perTrack.get(track.id) ?? 0}
             onApply={apply}
             onNotify={notify}
+            onSmart={() => useDawStore.getState().openSmartControls(track.id)}
           />
         ))}
       </div>
@@ -80,26 +85,77 @@ export default function MixWindow() {
 }
 
 function ChannelStrip({
-  session, track, level, compensationSamples, onApply, onNotify,
+  session, track, depth, level, compensationSamples, onApply, onNotify, onSmart,
 }: {
   session: DawSession;
   track: Track;
+  depth: number;
   level: number;
   compensationSamples: number;
   onApply: (fn: (s: DawSession) => DawSession) => void;
   onNotify: (m: string, t?: 'info' | 'success' | 'warning' | 'error') => void;
+  onSmart: () => void;
 }) {
   const isMaster = track.kind === 'master';
   const isVca    = track.kind === 'vca';
+  const isFolder = track.kind === 'folder';
+  const macros   = activeMacros(track.macros);
   const faderDb  = effectiveFaderDb(session, track);
   const vcaDb    = vcaChainDb(session, track);
   const latency  = track.inserts.reduce(
     (sum, i) => sum + (i.bypass ? 0 : pluginLatencySamples(i.pluginId, i.params, session.sampleRate)), 0);
 
-  const stripColor = isMaster ? 'border-red-900/60' : isVca ? 'border-amber-900/60' : 'border-zinc-800';
+  const stripColor = isMaster ? 'border-red-900/60'
+    : isVca ? 'border-amber-900/60'
+    : isFolder ? 'border-[rgba(198,167,104,0.4)]'
+    : 'border-zinc-800';
 
   return (
-    <div className={`w-[124px] shrink-0 border-r ${stripColor} bg-[#12121a] flex flex-col`}>
+    <div
+      className={`w-[124px] shrink-0 border-r ${stripColor} flex flex-col`}
+      style={{
+        background: isFolder ? 'rgba(198,167,104,0.06)' : '#12121a',
+        // Nested stacks are stepped so the hierarchy reads at a glance.
+        boxShadow: depth > 0 ? `inset ${depth * 3}px 0 0 rgba(198,167,104,0.25)` : undefined,
+      }}
+    >
+      {/* Smart Controls — the macro layer, always one click away */}
+      <button
+        onClick={onSmart}
+        title="스마트 컨트롤 열기"
+        className="mx-1.5 mt-1.5 h-6 rounded flex items-center justify-center gap-1"
+        style={{
+          border: `1px solid ${macros.length > 0 ? premium.accent.deep : 'rgba(255,255,255,0.10)'}`,
+          background: macros.length > 0 ? 'rgba(198,167,104,0.12)' : 'transparent',
+          color: macros.length > 0 ? premium.accent.light : premium.text.muted,
+          fontFamily: premium.type.sans,
+          fontSize: 9,
+          letterSpacing: '0.14em',
+        }}
+      >
+        SMART
+        {macros.length > 0 && (
+          <span style={{ fontFamily: premium.type.mono, opacity: 0.8 }}>{macros.length}</span>
+        )}
+      </button>
+      {macros.length > 0 && (
+        <div className="px-1.5 pt-1 flex flex-wrap gap-0.5">
+          {macros.slice(0, 4).map(({ macro, value }) => (
+            <span
+              key={macro.id}
+              title={`${macro.name} ${Math.round(value * 100)}%`}
+              style={{
+                fontFamily: premium.type.mono,
+                fontSize: 8,
+                padding: '0 3px',
+                borderRadius: 3,
+                color: premium.accent.light,
+                background: 'rgba(198,167,104,0.14)',
+              }}
+            >{macro.name.slice(0, 3)}{Math.round(value * 100)}</span>
+          ))}
+        </div>
+      )}
       {/* Inserts */}
       <Section label="INSERTS A-E">
         {Array.from({ length: VISIBLE_INSERTS }, (_, slot) => {
@@ -299,7 +355,15 @@ function ChannelStrip({
 
       {/* Name plate */}
       <div className="px-1.5 py-1 border-t border-zinc-800" style={{ background: `${track.color}22` }}>
-        <p className="text-[10px] text-zinc-200 truncate" title={track.name}>{track.name}</p>
+        <p
+          className="text-[10px] truncate"
+          style={{
+            color: isFolder ? premium.accent.light : 'rgb(228,228,231)',
+            letterSpacing: isFolder ? '0.08em' : undefined,
+            fontWeight: isFolder ? 600 : 400,
+          }}
+          title={isSummingStack(track) ? `${track.name} (합산 스택)` : track.name}
+        >{isFolder ? track.name.toUpperCase() : track.name}</p>
         <p className="text-[9px] font-mono text-zinc-500">
           {track.volumeDb >= 0 ? '+' : ''}{track.volumeDb.toFixed(1)}
           {Math.abs(vcaDb) > 0.01 && (

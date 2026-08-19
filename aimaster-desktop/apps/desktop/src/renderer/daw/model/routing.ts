@@ -11,6 +11,7 @@
 import type { BusId, DawSession, Insert, Track, TrackId } from './types.js';
 import { findTrack } from './session-ops.js';
 import { findPlugin } from '../engine/plugins.js';
+import { materializeRack, moduleParams } from './macros.js';
 
 // ── Graph ─────────────────────────────────────────────────────────────────────
 
@@ -133,9 +134,21 @@ export function insertLatencySamples(insert: Insert, sampleRate: number): number
   return descriptor ? descriptor.latencyFor(insert.params, sampleRate) : insert.latencySamples;
 }
 
-/** Latency of a channel's own insert chain (bypassed plugins report none). */
+/**
+ * Latency of a channel's whole processing chain: the macro rack plus the
+ * manual inserts.  The rack contains a look-ahead limiter, so leaving it out
+ * would misalign every channel that has LOUDNESS turned up.
+ */
 export function insertLatency(track: Track, sampleRate: number): number {
-  return track.inserts.reduce((sum, i) => sum + insertLatencySamples(i, sampleRate), 0);
+  const manual = track.inserts.reduce((sum, i) => sum + insertLatencySamples(i, sampleRate), 0);
+  if (!track.macros.enabled) return manual;
+  const rack = materializeRack(track.macros)
+    .filter((m) => m.active)
+    .reduce((sum, m) => {
+      const descriptor = findPlugin(m.module.pluginId);
+      return sum + (descriptor ? descriptor.latencyFor(moduleParams(m), sampleRate) : 0);
+    }, 0);
+  return manual + rack;
 }
 
 /**

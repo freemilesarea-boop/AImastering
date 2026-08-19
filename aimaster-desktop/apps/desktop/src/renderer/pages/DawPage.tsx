@@ -12,6 +12,8 @@ import { useDawStore } from '../stores/dawStore.js';
 import EditWindow from '../components/daw/edit/EditWindow.js';
 import MixWindow from '../components/daw/mix/MixWindow.js';
 import KeyEditor from '../components/daw/midi/KeyEditor.js';
+import SmartControlPanel from '../components/daw/smart/SmartControlPanel.js';
+import { createStack } from '../daw/model/stacks.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
 import {
   addTrack, createTrack, createBus, createMidiPart, findTrack, sessionEndSec, updateClips,
@@ -130,6 +132,23 @@ export default function DawPage() {
       notify(`MIDI 가져오기 실패: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
   }, [invoke, apply, notify, setWindow]);
+
+  /** Wrap the selected tracks (or the focused one) in a summing stack. */
+  const handleCreateStack = useCallback(() => {
+    const state = useDawStore.getState();
+    const ids = state.selectedTrackIds.length > 0
+      ? state.selectedTrackIds
+      : (state.focusedTrackId ? [state.focusedTrackId] : []);
+    if (ids.length === 0) { notify('스택으로 묶을 트랙을 선택하세요', 'warning'); return; }
+    let folderId = '';
+    apply((s) => {
+      const result = createStack(s, `STACK ${s.tracks.filter((t) => t.kind === 'folder').length + 1}`, ids, 'summing');
+      folderId = result.folderId;
+      return result.session;
+    });
+    if (folderId) state.setFocusedTrack(folderId);
+    notify(`${ids.length}개 트랙을 스택으로 묶었습니다`, 'success');
+  }, [apply, notify]);
 
   const handleSaveSession = useCallback(async () => {
     const json = serializeDawSession(useDawStore.getState().session);
@@ -261,6 +280,15 @@ export default function DawPage() {
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
+        <ToolbarButton onClick={() => {
+          const id = focusedTrackId ?? session.tracks.find((t) => t.kind !== 'master')?.id ?? null;
+          if (!id) { notify('트랙이 없습니다', 'warning'); return; }
+          useDawStore.getState().openSmartControls(id);
+        }}>스마트 컨트롤</ToolbarButton>
+        <ToolbarButton onClick={handleCreateStack}>스택 만들기</ToolbarButton>
+
+        <span className="w-px h-5 bg-zinc-800 mx-1" />
+
         <ToolbarButton onClick={handleFreeze}>프리즈</ToolbarButton>
         <ToolbarButton onClick={handleCommit}>커밋</ToolbarButton>
         <ToolbarButton onClick={handleBounce}>바운스</ToolbarButton>
@@ -274,6 +302,8 @@ export default function DawPage() {
         <div className="flex-1" />
         {busy && <span className="text-[11px] text-amber-400">{busy}</span>}
       </div>
+
+      <SmartControlPanel />
 
       {windowMode === 'edit' ? <EditWindow />
         : windowMode === 'mix' ? <MixWindow />

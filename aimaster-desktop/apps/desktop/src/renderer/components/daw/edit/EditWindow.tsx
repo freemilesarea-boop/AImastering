@@ -9,10 +9,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDawStore, snapToGrid, type EditMode } from '../../../stores/dawStore.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
-import { activePlaylist, clipAt, sessionEndSec, trackClips } from '../../../daw/model/session-ops.js';
+import { activePlaylist, clipAt, sessionEndSec } from '../../../daw/model/session-ops.js';
 import { moveClip } from '../../../daw/edit/clip-edit.js';
 import { useMidiEditorStore } from '../../../stores/midiEditorStore.js';
 import { formatChord } from '../../../daw/model/chords.js';
+import {
+  collapsedOverviewClips, stackDepth, stackSummary, toggleCollapsed, unpackStack,
+  visibleTracks,
+} from '../../../daw/model/stacks.js';
+import { premium } from '../../../theme/premium.js';
 import { cyclePlaylist } from '../../../daw/edit/comping.js';
 import { toggleMute, toggleSolo } from '../../../daw/model/mixer-math.js';
 import type { Track } from '../../../daw/model/types.js';
@@ -100,7 +105,9 @@ export default function EditWindow() {
     return Math.max(0, scrollSec + (clientX - rect.left) / pxPerSec);
   }, [scrollSec, pxPerSec]);
 
-  const visibleTracks = session.tracks.filter((t) => t.kind !== 'master' || trackClips(t).length > 0 || true);
+  // Collapsed stacks fold their members away, so the arrange window stays
+  // readable at forty tracks.
+  const rows = visibleTracks(session);
 
   // ── Lane gestures ───────────────────────────────────────────────────────
   const onLaneDown = useCallback((e: React.MouseEvent, track: Track) => {
@@ -262,22 +269,27 @@ export default function EditWindow() {
       <div className="flex-1 flex overflow-y-auto" onMouseUp={endDrag} onMouseLeave={endDrag}>
         {/* Headers */}
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
-          {visibleTracks.map((track) => (
+          {rows.map((track) => (
             <TrackHeader
               key={track.id}
               track={track}
+              depth={stackDepth(session, track.id)}
+              summary={track.kind === 'folder' ? stackSummary(session, track.id) : null}
               focused={focusedTrackId === track.id}
               onFocus={() => setFocusedTrack(track.id)}
               onSolo={() => apply((s) => toggleSolo(s, track.id))}
               onMute={() => apply((s) => toggleMute(s, track.id))}
               onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, track.id, dir))}
+              onToggleCollapse={() => apply((s) => toggleCollapsed(s, track.id))}
+              onUnpack={() => apply((s) => unpackStack(s, track.id))}
+              onSmart={() => useDawStore.getState().openSmartControls(track.id)}
             />
           ))}
         </div>
 
         {/* Lanes */}
         <div ref={laneRef} className="flex-1 relative overflow-hidden" onMouseMove={onLaneMove}>
-          {visibleTracks.map((track) => (
+          {rows.map((track) => (
             <div
               key={track.id}
               onMouseDown={(e) => onLaneDown(e, track)}
@@ -294,12 +306,32 @@ export default function EditWindow() {
               className="relative border-b border-zinc-900"
               style={{ height: track.height }}
             >
-              <TrackLaneCanvas
-                track={track}
-                viewport={{ scrollSec, pxPerSec, width: laneWidth, height: track.height }}
-                selected={selection.trackIds.includes(track.id)}
-                decodeTick={decodeTick}
-              />
+              {track.kind === 'folder' && track.collapsed ? (
+                // A collapsed stack still shows where its material sits.
+                <div className="absolute inset-0">
+                  {collapsedOverviewClips(session, track.id).map((c, i) => (
+                    <div
+                      key={`${c.startSec}-${i}`}
+                      className="absolute rounded-sm"
+                      style={{
+                        left: toX(c.startSec),
+                        width: Math.max(2, (c.endSec - c.startSec) * pxPerSec),
+                        top: 6 + (i % 4) * 4,
+                        height: 6,
+                        background: c.trackColor,
+                        opacity: 0.75,
+                      }}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <TrackLaneCanvas
+                  track={track}
+                  viewport={{ scrollSec, pxPerSec, width: laneWidth, height: track.height }}
+                  selected={selection.trackIds.includes(track.id)}
+                  decodeTick={decodeTick}
+                />
+              )}
               {selection.trackIds.includes(track.id) && selection.endSec > selection.startSec && (
                 <div className="absolute top-0 bottom-0 bg-white/10 border-x border-white/40 pointer-events-none"
                      style={{
@@ -335,28 +367,73 @@ export default function EditWindow() {
 }
 
 function TrackHeader({
-  track, focused, onFocus, onSolo, onMute, onCyclePlaylist,
+  track, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
+  onToggleCollapse, onUnpack, onSmart,
 }: {
   track: Track;
+  depth: number;
+  summary: string | null;
   focused: boolean;
   onFocus: () => void;
   onSolo: () => void;
   onMute: () => void;
   onCyclePlaylist: (dir: 1 | -1) => void;
+  onToggleCollapse: () => void;
+  onUnpack: () => void;
+  onSmart: () => void;
 }) {
   const playlist = activePlaylist(track);
   const takes = track.playlists.length;
+  const isFolder = track.kind === 'folder';
+  const macroCount = Object.values(track.macros.values).filter((v) => (v ?? 0) !== 0).length;
   return (
     <div
       onMouseDown={onFocus}
       className={`px-2 py-1.5 border-b border-zinc-900 flex flex-col gap-1 ${focused ? 'bg-zinc-800/60' : ''}`}
-      style={{ height: track.height }}
+      style={{
+        height: track.height,
+        paddingLeft: 8 + depth * 12,
+        ...(isFolder
+          ? { background: focused ? 'rgba(198,167,104,0.10)' : 'rgba(198,167,104,0.05)' }
+          : {}),
+      }}
     >
       <div className="flex items-center gap-1.5 min-w-0">
-        <span className="w-1.5 h-4 rounded-sm shrink-0" style={{ background: track.color }} />
-        <span className="text-[11px] text-zinc-200 truncate flex-1" title={track.name}>{track.name}</span>
+        {isFolder ? (
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleCollapse(); }}
+            title={track.collapsed ? '스택 펼치기' : '스택 접기'}
+            className="w-3.5 h-3.5 shrink-0 text-[9px] leading-none"
+            style={{ color: premium.accent.base }}
+          >{track.collapsed ? '▶' : '▼'}</button>
+        ) : (
+          <span className="w-1.5 h-4 rounded-sm shrink-0" style={{ background: track.color }} />
+        )}
+        <span
+          className="text-[11px] truncate flex-1"
+          style={{
+            color: isFolder ? premium.accent.light : 'rgb(228,228,231)',
+            letterSpacing: isFolder ? '0.08em' : undefined,
+            fontWeight: isFolder ? 600 : 400,
+          }}
+          title={track.name}
+        >{isFolder ? track.name.toUpperCase() : track.name}</span>
+        {macroCount > 0 && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onSmart(); }}
+            title={`${macroCount}개 매크로 활성 — 스마트 컨트롤 열기`}
+            className="text-[8px] px-1 rounded shrink-0"
+            style={{
+              border: `1px solid ${premium.accent.deep}`,
+              color: premium.accent.base,
+            }}
+          >{macroCount}</button>
+        )}
         <span className="text-[9px] font-mono text-zinc-600 uppercase">{track.kind.slice(0, 3)}</span>
       </div>
+      {isFolder && summary && !focused && (
+        <span className="text-[8px] text-zinc-600 truncate">{summary}</span>
+      )}
       <div className="flex items-center gap-1">
         <button onClick={onSolo}
           className={`w-5 h-5 rounded text-[9px] border ${track.solo
@@ -368,6 +445,13 @@ function TrackHeader({
             : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}>M</button>
         {track.frozen && (
           <span className="px-1 rounded text-[8px] bg-sky-600/30 border border-sky-500/50 text-sky-300">FRZ</span>
+        )}
+        {isFolder && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onUnpack(); }}
+            title="스택 해제 (멤버는 유지)"
+            className="w-5 h-5 rounded text-[9px] bg-zinc-900 border border-zinc-700 text-zinc-500"
+          >⤫</button>
         )}
         {takes > 1 && (
           <div className="flex items-center gap-0.5 ml-auto">

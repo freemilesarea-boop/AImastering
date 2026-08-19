@@ -44,6 +44,7 @@ import {
   analyzeClipPitch, applyCorrection, renderClipPitch, tuningSummary,
 } from '../daw/audio/varia-actions.js';
 import { clipEnd } from '../daw/model/session-ops.js';
+import { createStack, unpackStack, toggleCollapsed, stackAncestors } from '../daw/model/stacks.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import type { CommandFn, NotifyType } from './commands.js';
 import type { CommandId } from './definitions.js';
@@ -64,7 +65,8 @@ export type DawCommandId =
   | 'daw.octaveUp' | 'daw.octaveDown'
   | 'daw.velocityUp' | 'daw.velocityDown'
   | 'daw.detectChords' | 'daw.reharmonize'
-  | 'daw.analyzeVocal' | 'daw.tuneVocal';
+  | 'daw.analyzeVocal' | 'daw.tuneVocal'
+  | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -490,6 +492,45 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       }
     },
 
+    // ── Smart Controls / Track Stacks ─────────────────────────────────────
+    'daw.smartControls': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0] ?? state.session.tracks.find((t) => t.kind !== 'master')?.id;
+      if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      state.openSmartControls(trackId);
+    },
+
+    'daw.createStack': () => {
+      const state = daw();
+      const ids = state.selectedTrackIds.length > 0 ? state.selectedTrackIds : targetTrackIds();
+      if (ids.length === 0) { notify('스택으로 묶을 트랙을 선택하세요', 'warning'); return; }
+      let folderId = '';
+      state.apply((s) => {
+        const result = createStack(
+          s, `STACK ${s.tracks.filter((t) => t.kind === 'folder').length + 1}`, ids, 'summing',
+        );
+        folderId = result.folderId;
+        return result.session;
+      });
+      if (folderId) state.setFocusedTrack(folderId);
+      notify(`${ids.length}개 트랙을 스택으로 묶었습니다`, 'success');
+    },
+
+    'daw.unpackStack': () => {
+      const state = daw();
+      const folderId = folderForSelection(state);
+      if (!folderId) { notify('스택을 선택하세요', 'warning'); return; }
+      state.apply((s) => unpackStack(s, folderId));
+      notify('스택을 해제했습니다');
+    },
+
+    'daw.toggleStack': () => {
+      const state = daw();
+      const folderId = folderForSelection(state);
+      if (!folderId) { notify('스택을 선택하세요', 'warning'); return; }
+      state.apply((s) => toggleCollapsed(s, folderId));
+    },
+
     'daw.reharmonize': () => {
       const state = daw();
       if (state.session.chordTrack.length === 0) {
@@ -501,6 +542,18 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       notify(`리하모나이즈: ${formatProgression(next)}`, 'success');
     },
   };
+}
+
+/**
+ * The stack a shortcut should act on: the selected folder, or the nearest
+ * stack above the selected track.
+ */
+function folderForSelection(state: DawState): string | null {
+  const trackId = targetTrackIds()[0];
+  if (!trackId) return null;
+  const track = findTrack(state.session, trackId);
+  if (track?.kind === 'folder') return track.id;
+  return stackAncestors(state.session, trackId)[0]?.id ?? null;
 }
 
 /** The audio clip under the play head on the focused track. */

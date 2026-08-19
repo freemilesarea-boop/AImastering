@@ -6,6 +6,7 @@
 
 import type { DawSession, GroupDef, Track, TrackId } from './types.js';
 import { findTrack, updateTrack } from './session-ops.js';
+import { stackAncestors } from './stacks.js';
 
 export const MIN_FADER_DB = -Infinity;
 
@@ -52,13 +53,24 @@ export function vcaChainDb(session: DawSession, track: Track): number {
 /** The fader value the engine should apply: channel fader folded with VCAs. */
 export function effectiveFaderDb(session: DawSession, track: Track, automationDb?: number): number {
   const base = automationDb ?? track.volumeDb;
-  return base + vcaChainDb(session, track);
+  return base + vcaChainDb(session, track) + stackGainDb(session, track);
 }
 
 // ── Solo / mute ───────────────────────────────────────────────────────────────
 
 export function anySoloActive(session: DawSession): boolean {
   return session.tracks.some((t) => t.solo && t.kind !== 'master' && t.kind !== 'vca');
+}
+
+/** Soloing a stack solos everything inside it. */
+export function isSoloedThroughStack(session: DawSession, track: Track): boolean {
+  if (track.solo) return true;
+  return stackAncestors(session, track.id).some((a) => a.solo);
+}
+
+/** Muting a stack mutes everything inside it. */
+export function isMutedByStack(session: DawSession, track: Track): boolean {
+  return stackAncestors(session, track.id).some((a) => a.mute);
 }
 
 /**
@@ -69,7 +81,17 @@ export function anySoloActive(session: DawSession): boolean {
 export function isImplicitlyMuted(session: DawSession, track: Track): boolean {
   if (track.kind === 'master' || track.kind === 'vca') return false;
   if (!anySoloActive(session)) return false;
-  return !track.solo && !track.soloSafe;
+  if (track.soloSafe) return false;
+  // A soloed stack keeps its members audible, and a stack whose member is
+  // soloed must pass audio or the solo would be inaudible.
+  if (isSoloedThroughStack(session, track)) return false;
+  if (track.kind === 'folder') {
+    const descendantSoloed = session.tracks.some(
+      (t) => t.solo && stackAncestors(session, t.id).some((a) => a.id === track.id),
+    );
+    if (descendantSoloed) return false;
+  }
+  return true;
 }
 
 /** VCA mute propagates to members, exactly like a VCA fader pulled to -∞. */
@@ -87,9 +109,20 @@ export function isMutedByVca(session: DawSession, track: Track): boolean {
 /** Everything folded: does this channel pass audio right now? */
 export function isAudible(session: DawSession, track: Track): boolean {
   if (track.mute) return false;
+  if (isMutedByStack(session, track)) return false;
   if (isMutedByVca(session, track)) return false;
   if (isImplicitlyMuted(session, track)) return false;
   return true;
+}
+
+/**
+ * A stack's fader governs its members even when it does not sum them, so a
+ * folder stack behaves like the VCA everyone expects it to be.
+ */
+export function stackGainDb(session: DawSession, track: Track): number {
+  return stackAncestors(session, track.id)
+    .filter((a) => a.kind === 'folder' && a.input === null)
+    .reduce((sum, a) => sum + a.volumeDb, 0);
 }
 
 // ── Groups ────────────────────────────────────────────────────────────────────
