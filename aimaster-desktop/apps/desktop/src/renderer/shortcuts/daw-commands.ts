@@ -89,7 +89,7 @@ export type DawCommandId =
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
-  | 'daw.tuneToGuide';
+  | 'daw.tuneToGuide' | 'daw.riff';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -668,6 +668,21 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         if (error) { notify(error, 'warning'); return; }
         notify(summariseFindings(findings), findings.length > 0 ? 'warning' : 'success');
       });
+    },
+
+    'daw.riff': () => {
+      const state = daw();
+      if (!useMidiEditorStore.getState().open) {
+        notify('Key Editor 에서 MIDI 파트를 먼저 여세요', 'warning');
+        return;
+      }
+      state.setWindow('intel');
+      const intel = useIntelStore.getState();
+      intel.setTab('riff');
+      intel.runRiff(false);
+      const { riffSuggestions, error } = useIntelStore.getState();
+      notify(error ?? (riffSuggestions[0]?.title ?? '리프를 만들지 못했습니다'),
+        error ? 'warning' : 'success');
     },
 
     'daw.aiCommand': () => {

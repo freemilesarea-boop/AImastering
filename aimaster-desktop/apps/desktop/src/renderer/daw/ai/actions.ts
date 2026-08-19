@@ -19,14 +19,16 @@
 //
 // An action that cannot be described in one sentence does not belong here.
 
-import { createInsert, findTrack, setInsert, updateTrack } from '../model/session-ops.js';
+import { createInsert, findTrack, setInsert, updateClip, updateTrack } from '../model/session-ops.js';
+import { clipNotes, writeClipNotes } from '../model/patterns.js';
+import { noteEnd, type MidiNote } from '../model/midi.js';
 import { setChordTrack } from '../model/session-ops.js';
 import { createLane } from '../model/automation.js';
 import { setMacro, MACROS, type MacroId } from '../model/macros.js';
 import { findPlugin, defaultParams } from '../engine/plugins.js';
 import { reharmonize, formatProgression, type ReharmonizeOptions } from '../model/chords.js';
 import type {
-  AutomationMode, AutomationPoint, AutomationTarget, DawSession, Insert, TrackId,
+  AutomationMode, AutomationPoint, AutomationTarget, ClipId, DawSession, Insert, TrackId,
 } from '../model/types.js';
 
 export type IntelAction =
@@ -46,7 +48,16 @@ export type IntelAction =
   | { kind: 'bypassInsert'; trackId: TrackId; slot: number; bypass: boolean }
   /** Write a whole automation lane — the output of auto-riding and ducking. */
   | { kind: 'automation'; trackId: TrackId; target: AutomationTarget; points: AutomationPoint[]; mode?: AutomationMode }
-  | { kind: 'reharmonize'; options: ReharmonizeOptions };
+  | { kind: 'reharmonize'; options: ReharmonizeOptions }
+  /**
+   * Write notes into a MIDI part — the Riff Machine's output.
+   *
+   * It goes through `writeClipNotes`, so a pattern-backed clip has its
+   * PATTERN rewritten and every placement of it changes at once.  `add` keeps
+   * what is there, which is how a generated bass line joins a part that
+   * already has something in it.
+   */
+  | { kind: 'writeNotes'; trackId: TrackId; clipId: ClipId; notes: MidiNote[]; mode?: 'replace' | 'add' };
 
 export interface Suggestion {
   id: string;
@@ -163,8 +174,28 @@ export function applyAction(session: DawSession, action: IntelAction): DawSessio
 
     case 'reharmonize':
       return setChordTrack(session, reharmonize(session.chordTrack, action.options));
+
+    case 'writeNotes': {
+      const existing = clipNotesOf(session, action.trackId, action.clipId);
+      const next = action.mode === 'add' ? [...existing, ...action.notes] : action.notes;
+      const written = writeClipNotes(session, action.trackId, action.clipId, sortNotes(next));
+      // A part always covers its notes, or the tail of the riff never plays.
+      return updateClip(written, action.trackId, action.clipId, (c) => ({
+        ...c,
+        durationSec: Math.max(c.durationSec, next.reduce((m, n) => Math.max(m, noteEnd(n)), 0)),
+      }));
+    }
   }
 }
+
+function clipNotesOf(session: DawSession, trackId: TrackId, clipId: ClipId): MidiNote[] {
+  const track = findTrack(session, trackId);
+  const clip = track?.playlists.flatMap((p) => p.clips).find((c) => c.id === clipId);
+  return clip ? clipNotes(session, clip) : [];
+}
+
+const sortNotes = (notes: MidiNote[]): MidiNote[] =>
+  [...notes].sort((a, b) => a.startSec - b.startSec || a.pitch - b.pitch);
 
 function sameTarget(a: AutomationTarget, b: AutomationTarget): boolean {
   if (a.kind !== b.kind) return false;
@@ -230,6 +261,9 @@ export function describeAction(session: DawSession, action: IntelAction): string
     }
     case 'reharmonize':
       return `코드 진행 리하모나이즈 → ${formatProgression(reharmonize(session.chordTrack, action.options))}`;
+    case 'writeNotes':
+      return `${name(action.trackId)} 에 노트 ${action.notes.length}개`
+        + `${action.mode === 'add' ? ' 추가' : ' 쓰기 (기존 노트 대체)'}`;
   }
 }
 

@@ -76,7 +76,7 @@ export type CommandId =
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
-  | 'daw.tuneToGuide';
+  | 'daw.tuneToGuide' | 'daw.riff';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -321,6 +321,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택한 구간을 펀치 인/아웃으로 설정', available: true },
   { id: 'daw.tuneToGuide', group: 'daw', label: '가이드 멜로디로 피치 보정', chords: ['Mod+Alt+T'],
     note: 'Key Editor 에 연 MIDI 파트를 타깃으로 보컬을 튜닝 — 스케일이 아니라 "의도한 음"', available: true },
+  { id: 'daw.riff', group: 'daw', label: 'Riff Machine', chords: ['Mod+Shift+R'],
+    note: '코드 트랙과 스케일에서 프레이즈를 생성 — 열려 있는 MIDI 파트에 씁니다', available: true },
   { id: 'daw.showIntel', group: 'daw', label: 'Intelligence (AI)', chords: ['Mod+Alt+I'],
     note: '분석 · AI 믹스 · AI 마스터 · 레퍼런스 매칭 · 오토메이션 · 자연어', available: true },
   { id: 'daw.analyzeMixAi', group: 'daw', label: 'AI 분석 실행', chords: ['Mod+Shift+A'],

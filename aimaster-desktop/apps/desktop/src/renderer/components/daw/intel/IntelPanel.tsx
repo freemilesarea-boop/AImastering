@@ -21,6 +21,12 @@ import { summarise, type Finding, type Severity } from '../../../daw/ai/diagnose
 import { MASTER_PROFILES } from '../../../daw/ai/master.js';
 import { roleLabel } from '../../../daw/ai/roles.js';
 import { vocabulary } from '../../../daw/ai/language.js';
+import {
+  CONTOURS, RIFF_STYLES, VARIATIONS, contourLabel, styleLabel,
+} from '../../../daw/ai/compose.js';
+import { chordsForClip, variationLabel } from '../../../daw/ai/riff.js';
+import { formatChord } from '../../../daw/model/chords.js';
+import { useMidiEditorStore } from '../../../stores/midiEditorStore.js';
 import { premium } from '../../../theme/premium.js';
 
 const TABS: { id: IntelTab; label: string; note: string }[] = [
@@ -29,6 +35,7 @@ const TABS: { id: IntelTab; label: string; note: string }[] = [
   { id: 'master', label: 'AI MASTER', note: '타깃에 맞는 마스터 체인' },
   { id: 'reference', label: 'REFERENCE', note: '레퍼런스와의 차이를 실행으로' },
   { id: 'automation', label: 'AUTOMATION', note: '라이딩 · 덕킹' },
+  { id: 'riff', label: 'RIFF', note: '코드와 스케일에서 프레이즈 생성' },
   { id: 'command', label: 'COMMAND', note: '말로 지시하기' },
 ];
 
@@ -87,6 +94,7 @@ export default function IntelPanel() {
           />
         )}
         {state.tab === 'automation' && <AutomationTab />}
+        {state.tab === 'riff' && <RiffTab />}
         {state.tab === 'command' && <CommandTab />}
       </div>
 
@@ -340,6 +348,169 @@ function AutomationTab() {
   );
 }
 
+function RiffTab() {
+  const session = useDawStore((s) => s.session);
+  const open = useMidiEditorStore((s) => s.open);
+  const scale = useMidiEditorStore((s) => s.scale);
+  const { riffOptions, riffSuggestions } = useIntelStore();
+  const setOptions = useIntelStore((s) => s.setRiffOptions);
+  const runRiff = useIntelStore((s) => s.runRiff);
+  const runVariation = useIntelStore((s) => s.runVariation);
+  const apply = useIntelStore((s) => s.apply);
+
+  const part = useMemo(() => {
+    if (!open) return null;
+    const track = session.tracks.find((t) => t.id === open.trackId);
+    const clip = track?.playlists.flatMap((p) => p.clips).find((c) => c.id === open.clipId);
+    return track && clip ? { trackName: track.name, clip } : null;
+  }, [session, open]);
+
+  const harmony = useMemo(() => {
+    if (!part) return '';
+    const chords = chordsForClip(session, part.clip);
+    return chords.length === 0
+      ? '코드 트랙이 비어 있습니다 — 스케일만 참고합니다'
+      : chords.slice(0, 6).map((c) => formatChord(c.chord)).join(' → ')
+        + (chords.length > 6 ? ' …' : '');
+  }, [session, part]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div style={{ fontFamily: premium.type.display, fontSize: 15, color: premium.accent.light }}>
+        Riff Machine
+      </div>
+      <p style={hint}>
+        스케일에서 아무 음이나 고르는 생성기는 쓸모가 없습니다 — <b>스케일에 맞는 노이즈도
+        노이즈</b>입니다. 여기서는 강박에 코드 톤, 약박에 경과음을 놓고, 프레이즈에 모양을
+        주고, 도약 뒤에는 반대 방향 순차진행으로 해소하고, 뒷마디가 앞마디를 되풀이합니다.
+      </p>
+
+      <div style={{
+        padding: '6px 10px', borderRadius: 4, background: premium.surface.well,
+        border: `1px solid ${premium.surface.hairline}`,
+        fontFamily: premium.type.mono, fontSize: 10.5, color: premium.text.secondary,
+      }}>
+        {part
+          ? <>대상: {part.trackName} · {part.clip.name} · {harmony}</>
+          : 'Key Editor 에서 MIDI 파트를 열면 그 파트에 씁니다'}
+      </div>
+
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {RIFF_STYLES.map((style) => (
+          <button key={style} onClick={() => setOptions({ style })}
+            style={{
+              height: 24, padding: '0 11px', borderRadius: 3,
+              fontFamily: premium.type.sans, fontSize: 10.5,
+              color: riffOptions.style === style ? premium.text.onAccent : premium.text.muted,
+              background: riffOptions.style === style ? premium.accent.base : premium.surface.well,
+              border: `1px solid ${premium.surface.hairline}`,
+            }}>{styleLabel(style)}</button>
+        ))}
+        <span className="w-px h-5" style={{ background: premium.surface.hairline }} />
+        {CONTOURS.map((contour) => (
+          <button key={contour} onClick={() => setOptions({ contour })}
+            title="프레이즈의 모양 — 어디로 갔다가 돌아오는가"
+            style={{
+              height: 24, padding: '0 10px', borderRadius: 3,
+              fontFamily: premium.type.sans, fontSize: 10,
+              color: riffOptions.contour === contour ? premium.text.onAccent : premium.text.muted,
+              background: riffOptions.contour === contour ? premium.accent.base : premium.surface.well,
+              border: `1px solid ${premium.surface.hairline}`,
+            }}>{contourLabel(contour)}</button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap gap-x-5 gap-y-1">
+        <Slider label="DENSITY" value={riffOptions.density ?? 0.5} min={0.1} max={1} step={0.05}
+                onChange={(v) => setOptions({ density: v })} note="그리드의 몇 칸에 노트를 놓을지" />
+        <Slider label="SYNCOPATION" value={riffOptions.syncopation ?? 0.25} min={0} max={1} step={0.05}
+                onChange={(v) => setOptions({ syncopation: v })}
+                note="박에서 얼마나 벗어날지 — 다운비트는 절대 움직이지 않습니다" />
+        <Slider label="REPETITION" value={riffOptions.repetition ?? 0.5} min={0} max={1} step={0.05}
+                onChange={(v) => setOptions({ repetition: v })}
+                note="뒷마디가 앞마디를 되풀이하는 정도 — 리프는 모티프 + 변형입니다" />
+        <Slider label="CHROMATIC" value={riffOptions.chromaticism ?? 0.08} min={0} max={0.6} step={0.02}
+                onChange={(v) => setOptions({ chromaticism: v })}
+                note="스케일 밖 경과음의 빈도" />
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <label style={miniLabel}>
+          LOW
+          <input type="number" min={21} max={108} value={riffOptions.lowPitch ?? 60}
+                 onChange={(e) => setOptions({ lowPitch: Number(e.target.value) })}
+                 style={numberBox} />
+        </label>
+        <label style={miniLabel}>
+          HIGH
+          <input type="number" min={21} max={108} value={riffOptions.highPitch ?? 79}
+                 onChange={(e) => setOptions({ highPitch: Number(e.target.value) })}
+                 style={numberBox} />
+        </label>
+        <label style={miniLabel}>
+          SEED
+          <input type="number" min={1} max={9999} value={riffOptions.seed ?? 1}
+                 onChange={(e) => setOptions({ seed: Number(e.target.value) })}
+                 style={numberBox} />
+        </label>
+        <button onClick={() => setOptions({ seed: ((riffOptions.seed ?? 1) % 999) + 1 })}
+                style={chip} title="다음 시드 — 같은 시드는 언제나 같은 리프입니다">다시 굴리기</button>
+        <span style={{ ...hint, marginLeft: 4 }}>
+          스케일: Key Editor 설정 ({scale.scaleId})
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <Action primary disabled={!part} onClick={() => runRiff(false)}>리프 생성 (대체)</Action>
+        <Action disabled={!part} onClick={() => runRiff(true)}>기존 노트에 추가</Action>
+      </div>
+
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span style={{ ...hint, marginRight: 2 }}>변형:</span>
+        {VARIATIONS.map((kind) => (
+          <button key={kind} onClick={() => runVariation(kind)} disabled={!part}
+                  title={variationLabel(kind)} style={chip}>{variationLabel(kind).split(' ')[0]}</button>
+        ))}
+      </div>
+
+      <SuggestionList
+        suggestions={riffSuggestions}
+        onApply={() => apply(riffSuggestions)}
+        applyLabel="파트에 쓰기"
+        session={session}
+      />
+      <p style={hint}>
+        생성기는 <b>출발점이지 답이 아닙니다</b> — 그래서 체크가 해제된 채로 도착합니다.
+        패턴에 링크된 파트라면 쓰기가 패턴을 고치므로 <b>모든 배치가 함께 바뀝니다</b>.
+      </p>
+    </div>
+  );
+}
+
+function Slider(
+  { label, value, min, max, step, onChange, note }: {
+    label: string; value: number; min: number; max: number; step: number;
+    onChange: (v: number) => void; note?: string;
+  },
+) {
+  return (
+    <div title={note} style={{ width: 168 }}>
+      <div className="flex items-center justify-between">
+        <span style={{
+          fontFamily: premium.type.sans, fontSize: 9, letterSpacing: '0.12em',
+          color: premium.text.faint,
+        }}>{label}</span>
+        <span style={{
+          fontFamily: premium.type.mono, fontSize: 10, color: premium.text.secondary,
+        }}>{Math.round(value * 100)}%</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+             onChange={(e) => onChange(Number(e.target.value))}
+             style={{ width: '100%', accentColor: premium.accent.base }} />
+    </div>
+  );
+}
+
 function CommandTab() {
   const session = useDawStore((s) => s.session);
   const { command, interpretation } = useIntelStore();
@@ -495,6 +666,16 @@ const selectStyle: React.CSSProperties = {
   height: 26, borderRadius: 3, fontSize: 11, minWidth: 150,
   background: premium.surface.well, color: premium.text.secondary,
   border: `1px solid ${premium.surface.hairline}`,
+};
+const miniLabel: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 3,
+  fontFamily: premium.type.sans, fontSize: 9, letterSpacing: '0.1em', color: premium.text.faint,
+};
+const numberBox: React.CSSProperties = {
+  width: 52, height: 22, borderRadius: 3, padding: '0 5px',
+  background: premium.surface.well, color: premium.text.primary,
+  border: `1px solid ${premium.surface.hairline}`,
+  fontFamily: premium.type.mono, fontSize: 10.5,
 };
 const chip: React.CSSProperties = {
   height: 24, padding: '0 10px', borderRadius: 3,

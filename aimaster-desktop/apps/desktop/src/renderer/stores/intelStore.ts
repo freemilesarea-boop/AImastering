@@ -21,6 +21,9 @@ import {
 } from '../daw/ai/auto-automation.js';
 import { applyActions, type Suggestion } from '../daw/ai/actions.js';
 import { interpret, type Interpretation } from '../daw/ai/language.js';
+import { riffSuggestion, variationSuggestion, resetRiffIds } from '../daw/ai/riff.js';
+import { DEFAULT_RIFF, type RiffOptions, type VariationKind } from '../daw/ai/compose.js';
+import { useMidiEditorStore } from './midiEditorStore.js';
 import { renderSession, renderTrack, sessionRange } from '../daw/engine/offline-render.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
 import { compareToReference } from '../daw/analysis/reference.js';
@@ -29,7 +32,7 @@ import { useDawStore } from './dawStore.js';
 import { useReferenceStore } from './referenceStore.js';
 import type { TrackId } from '../daw/model/types.js';
 
-export type IntelTab = 'analyze' | 'mix' | 'master' | 'reference' | 'automation' | 'command';
+export type IntelTab = 'analyze' | 'mix' | 'master' | 'reference' | 'automation' | 'command' | 'riff';
 
 interface IntelState {
   tab: IntelTab;
@@ -52,6 +55,12 @@ interface IntelState {
 
   command: string;
   interpretation: Interpretation | null;
+
+  riffOptions: Partial<RiffOptions>;
+  riffSuggestions: Suggestion[];
+  setRiffOptions: (patch: Partial<RiffOptions>) => void;
+  runRiff: (add?: boolean) => void;
+  runVariation: (kind: VariationKind) => void;
 
   setTab: (tab: IntelTab) => void;
   setMasterTarget: (target: MasterTarget) => void;
@@ -87,6 +96,66 @@ export const useIntelStore = create<IntelState>((set, get) => ({
   selected: new Set(),
   command: '',
   interpretation: null,
+
+  riffOptions: {
+    style: DEFAULT_RIFF.style,
+    contour: DEFAULT_RIFF.contour,
+    density: DEFAULT_RIFF.density,
+    syncopation: DEFAULT_RIFF.syncopation,
+    lowPitch: DEFAULT_RIFF.lowPitch,
+    highPitch: DEFAULT_RIFF.highPitch,
+    chromaticism: DEFAULT_RIFF.chromaticism ?? 0.08,
+    repetition: DEFAULT_RIFF.repetition ?? 0.5,
+    seed: 1,
+  },
+  riffSuggestions: [],
+  setRiffOptions: (patch) => set((s) => ({ riffOptions: { ...s.riffOptions, ...patch } })),
+
+  /**
+   * Generate into the part the Key Editor has open.  Using the open part as
+   * the target is what makes this feel like a tool rather than a dialog: you
+   * are looking at the thing it writes into.
+   */
+  runRiff: (add) => {
+    const open = useMidiEditorStore.getState().open;
+    if (!open) { set({ error: 'Key Editor 에서 MIDI 파트를 여세요' }); return; }
+    resetRiffIds();
+    const daw = useDawStore.getState();
+    const { riffOptions } = get();
+    const scale = useMidiEditorStore.getState().scale;
+    const result = riffSuggestion(daw.session, {
+      trackId: open.trackId,
+      clipId: open.clipId,
+      options: { ...riffOptions, scale },
+      ...(add ? { add: true } : {}),
+    });
+    set({
+      riffSuggestions: result.suggestion ? [result.suggestion] : [],
+      // A generator's output is never pre-selected: it is a starting point.
+      selected: new Set(),
+      error: result.suggestion ? null : result.reason,
+    });
+  },
+
+  runVariation: (kind) => {
+    const open = useMidiEditorStore.getState().open;
+    if (!open) { set({ error: 'Key Editor 에서 MIDI 파트를 여세요' }); return; }
+    resetRiffIds();
+    const daw = useDawStore.getState();
+    const scale = useMidiEditorStore.getState().scale;
+    const result = variationSuggestion(daw.session, {
+      trackId: open.trackId,
+      clipId: open.clipId,
+      kind,
+      options: { ...get().riffOptions, scale },
+      seed: get().riffOptions.seed ?? 1,
+    });
+    set({
+      riffSuggestions: result.suggestion ? [result.suggestion] : [],
+      selected: new Set(),
+      error: result.suggestion ? null : result.reason,
+    });
+  },
 
   setTab: (tab) => set({ tab }),
   setMasterTarget: (masterTarget) => set({ masterTarget }),
