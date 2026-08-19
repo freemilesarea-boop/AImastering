@@ -42,6 +42,8 @@ import { useRecordingStore } from '../stores/recordingStore.js';
 import { canRecord } from '../daw/model/recording.js';
 import { applySlides, arpeggiate, strum } from '../daw/edit/note-tools.js';
 import { captureAsPattern } from '../daw/model/patterns.js';
+import { useIntelStore } from '../stores/intelStore.js';
+import { summarise as summariseFindings } from '../daw/ai/diagnose.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
 import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips } from '../daw/model/session-ops.js';
@@ -85,7 +87,8 @@ export type DawCommandId =
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
-  | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern';
+  | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
+  | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -606,6 +609,29 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       } catch (err) {
         notify((err as Error).message, 'warning');
       }
+    },
+
+    // ── Intelligence ──────────────────────────────────────────────────────
+    'daw.showIntel': () => {
+      daw().setWindow('intel');
+      notify('Intelligence');
+    },
+
+    'daw.analyzeMixAi': () => {
+      daw().setWindow('intel');
+      useIntelStore.getState().setTab('analyze');
+      notify('믹스 분석 중…');
+      void useIntelStore.getState().analyze().then(() => {
+        const { findings, error } = useIntelStore.getState();
+        if (error) { notify(error, 'warning'); return; }
+        notify(summariseFindings(findings), findings.length > 0 ? 'warning' : 'success');
+      });
+    },
+
+    'daw.aiCommand': () => {
+      daw().setWindow('intel');
+      useIntelStore.getState().setTab('command');
+      notify('말로 지시하세요 — 예: "보컬 2dB 올려"');
     },
 
     // ── FL: step sequencer · patterns · note tools ─────────────────────────

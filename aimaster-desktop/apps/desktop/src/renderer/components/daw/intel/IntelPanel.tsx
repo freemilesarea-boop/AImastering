@@ -1,0 +1,521 @@
+// IntelPanel — the Intelligence Layer, made answerable.
+//
+// Every screen here follows one shape, because the shape is the trust model:
+//
+//   MEASURE → PROPOSE → the user reads it → APPLY
+//
+// Nothing applies itself.  Every proposal states the measurement that produced
+// it and the exact moves it would make, and each one has a tick box, because
+// "apply all" and "apply the two I agree with" have to be equally easy.
+//
+// A proposal the layer is not confident about arrives unticked.  That is the
+// difference between a tool that assists and one that has to be undone.
+
+import React, { useMemo } from 'react';
+import { useDawStore } from '../../../stores/dawStore.js';
+import { useAppStore } from '../../../stores/appStore.js';
+import { useIntelStore, type IntelTab } from '../../../stores/intelStore.js';
+import { useReferenceStore } from '../../../stores/referenceStore.js';
+import { describeAction, type Suggestion } from '../../../daw/ai/actions.js';
+import { summarise, type Finding, type Severity } from '../../../daw/ai/diagnose.js';
+import { MASTER_PROFILES } from '../../../daw/ai/master.js';
+import { roleLabel } from '../../../daw/ai/roles.js';
+import { vocabulary } from '../../../daw/ai/language.js';
+import { premium } from '../../../theme/premium.js';
+
+const TABS: { id: IntelTab; label: string; note: string }[] = [
+  { id: 'analyze', label: 'ANALYZE', note: '믹스를 재고 문제를 찾습니다' },
+  { id: 'mix', label: 'AI MIX', note: '밸런스 · 마스킹 · 스프레드' },
+  { id: 'master', label: 'AI MASTER', note: '타깃에 맞는 마스터 체인' },
+  { id: 'reference', label: 'REFERENCE', note: '레퍼런스와의 차이를 실행으로' },
+  { id: 'automation', label: 'AUTOMATION', note: '라이딩 · 덕킹' },
+  { id: 'command', label: 'COMMAND', note: '말로 지시하기' },
+];
+
+export default function IntelPanel() {
+  const session = useDawStore((s) => s.session);
+  const notify = useAppStore((s) => s.notify);
+  const state = useIntelStore();
+
+  React.useEffect(() => {
+    if (state.error) notify(state.error, 'warning');
+  }, [state.error, notify]);
+
+  return (
+    <div className="flex-1 flex flex-col overflow-auto" style={{ background: premium.surface.abyss }}>
+      <div className="flex items-center gap-2 px-4 py-2 flex-wrap"
+           style={{ borderBottom: `1px solid ${premium.surface.hairline}`, background: premium.surface.panel }}>
+        <span style={{ fontFamily: premium.type.display, fontSize: 17, color: premium.accent.light }}>
+          Intelligence
+        </span>
+        {TABS.map((tab) => (
+          <button key={tab.id} onClick={() => state.setTab(tab.id)} title={tab.note}
+            style={{
+              height: 24, padding: '0 11px', borderRadius: 3,
+              fontFamily: premium.type.sans, fontSize: 10, letterSpacing: '0.08em',
+              color: state.tab === tab.id ? premium.text.onAccent : premium.text.muted,
+              background: state.tab === tab.id ? premium.accent.base : premium.surface.well,
+              border: `1px solid ${premium.surface.hairline}`,
+            }}>{tab.label}</button>
+        ))}
+        <div className="flex-1" />
+        {state.busy && <span style={{ fontSize: 11, color: premium.accent.base }}>{state.busy}</span>}
+        {!state.busy && state.analyzedAtMs && (
+          <span style={{ fontFamily: premium.type.mono, fontSize: 10, color: premium.text.faint }}>
+            분석 {new Date(state.analyzedAtMs).toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+
+      <div className="p-4">
+        {state.tab === 'analyze' && <AnalyzeTab />}
+        {state.tab === 'mix' && (
+          <SuggestionTab
+            title="AI Mix"
+            blurb="밸런스는 LU 기준으로, 마스킹은 두 트랙이 실제로 겹치는 주파수에서, 스프레드는 역할이 겹칠 때만. 취향은 건드리지 않습니다."
+            run={state.runMix} runLabel="믹스 제안 만들기"
+            suggestions={state.mixSuggestions}
+          />
+        )}
+        {state.tab === 'master' && <MasterTab />}
+        {state.tab === 'reference' && (
+          <SuggestionTab
+            title="Reference Intelligence"
+            blurb="REFERENCE 창의 비교표를 그대로 실행으로 바꿉니다. 이미 일치하는 항목은 아무것도 제안하지 않습니다."
+            run={state.runMatch} runLabel="레퍼런스에 맞추기"
+            suggestions={state.matchSuggestions}
+          />
+        )}
+        {state.tab === 'automation' && <AutomationTab />}
+        {state.tab === 'command' && <CommandTab />}
+      </div>
+
+      {session.tracks.length <= 1 && (
+        <p className="px-4 pb-6" style={hint}>트랙을 먼저 만들거나 오디오를 불러오세요.</p>
+      )}
+    </div>
+  );
+}
+
+// ── Analyze ───────────────────────────────────────────────────────────────────
+
+const SEVERITY_COLOR: Record<Severity, string> = {
+  critical: premium.accent.danger,
+  warning: premium.accent.base,
+  info: premium.accent.cool,
+};
+
+function AnalyzeTab() {
+  const session = useDawStore((s) => s.session);
+  const { analysis, findings, busy } = useIntelStore();
+  const analyze = useIntelStore((s) => s.analyze);
+  const apply = useIntelStore((s) => s.apply);
+
+  const asSuggestions = useMemo((): Suggestion[] => findings
+    .filter((f) => f.actions.length > 0)
+    .map((f) => ({
+      id: f.id,
+      title: f.title,
+      reason: `${f.measurement} — ${f.reason}`,
+      confidence: f.severity === 'critical' ? 0.9 : f.severity === 'warning' ? 0.7 : 0.5,
+      actions: f.actions,
+    })), [findings]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <p style={hint}>
+        믹스와 모든 트랙을 렌더링해 BS.1770-4 라우드니스 · 트루 피크 · 스펙트럼 · 상관도를 잽니다.
+        여기서 나온 수치 위에서만 나머지 탭이 동작합니다.
+      </p>
+      <div className="flex items-center gap-2">
+        <Action primary disabled={!!busy} onClick={() => void analyze()}>믹스 분석</Action>
+        {analysis && (
+          <span style={{ fontFamily: premium.type.mono, fontSize: 11, color: premium.text.secondary }}>
+            {summarise(findings)} · 트랙 {analysis.tracks.length}개
+          </span>
+        )}
+      </div>
+
+      {analysis && (
+        <div className="flex flex-wrap gap-2 mt-1">
+          {analysis.tracks.map((track) => (
+            <span key={track.trackId} style={{
+              padding: '3px 8px', borderRadius: 3, fontFamily: premium.type.mono, fontSize: 10,
+              background: premium.surface.well, border: `1px solid ${premium.surface.hairline}`,
+              color: track.silent ? premium.text.faint : premium.text.secondary,
+            }} title={track.guess.matched ? `근거: ${track.guess.matched}` : '역할을 추정하지 못했습니다'}>
+              {track.name} · {track.guess.confidence > 0 ? roleLabel(track.guess.role) : '미상'}
+              {!track.silent && ` · ${track.integratedLufs.toFixed(1)} LUFS`}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {findings.map((finding) => (
+        <FindingCard key={finding.id} finding={finding} />
+      ))}
+
+      {asSuggestions.length > 0 && (
+        <SuggestionList
+          suggestions={asSuggestions}
+          onApply={() => apply(asSuggestions)}
+          applyLabel="선택한 수정 적용"
+          session={session}
+        />
+      )}
+    </div>
+  );
+}
+
+function FindingCard({ finding }: { finding: Finding }) {
+  const color = SEVERITY_COLOR[finding.severity];
+  return (
+    <div style={{
+      padding: '8px 11px', borderRadius: 5, background: premium.surface.frame,
+      border: `1px solid ${premium.surface.hairline}`, borderLeft: `3px solid ${color}`,
+    }}>
+      <div className="flex items-center gap-2">
+        <span style={{ fontFamily: premium.type.sans, fontSize: 12, color: premium.text.primary }}>
+          {finding.title}
+        </span>
+        <span style={{ fontFamily: premium.type.mono, fontSize: 10, color }}>
+          {finding.measurement}
+        </span>
+      </div>
+      <p style={{ ...hint, margin: '3px 0 0' }}>{finding.reason}</p>
+      {finding.actions.length === 0 && finding.manual && (
+        <p style={{ ...hint, margin: '3px 0 0', color: premium.accent.cool }}>
+          → {finding.manual}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Suggestion tabs ───────────────────────────────────────────────────────────
+
+function SuggestionTab(
+  { title, blurb, run, runLabel, suggestions }: {
+    title: string; blurb: string; run: () => void; runLabel: string; suggestions: Suggestion[];
+  },
+) {
+  const session = useDawStore((s) => s.session);
+  const apply = useIntelStore((s) => s.apply);
+  const analysis = useIntelStore((s) => s.analysis);
+  return (
+    <div className="flex flex-col gap-3">
+      <div style={{
+        fontFamily: premium.type.display, fontSize: 15, color: premium.accent.light,
+      }}>{title}</div>
+      <p style={hint}>{blurb}</p>
+      <div className="flex items-center gap-2">
+        <Action primary onClick={run} disabled={!analysis}>{runLabel}</Action>
+        {!analysis && <span style={hint}>ANALYZE 탭에서 먼저 분석하세요.</span>}
+      </div>
+      <SuggestionList
+        suggestions={suggestions}
+        onApply={() => apply(suggestions)}
+        applyLabel="선택 적용"
+        session={session}
+      />
+    </div>
+  );
+}
+
+function MasterTab() {
+  const { masterTarget, masterSuggestions, analysis } = useIntelStore();
+  const setTarget = useIntelStore((s) => s.setMasterTarget);
+  const run = useIntelStore((s) => s.runMaster);
+  const apply = useIntelStore((s) => s.apply);
+  const session = useDawStore((s) => s.session);
+  const reference = useReferenceStore((s) => s.reference);
+
+  const profile = MASTER_PROFILES.find((p) => p.id === masterTarget);
+  return (
+    <div className="flex flex-col gap-3">
+      <div style={{ fontFamily: premium.type.display, fontSize: 15, color: premium.accent.light }}>
+        AI Master
+      </div>
+      <p style={hint}>
+        타깃과 현재 측정치의 거리를 계산해 <b>가장 작은 체인</b>을 제안합니다. 이미 맞는 단계는
+        추가하지 않습니다 — 바이패스된 플러그인 다섯 개는 마스터가 아니라 잡동사니입니다.
+      </p>
+
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {[...MASTER_PROFILES.map((p) => ({ id: p.id, name: p.name })),
+          { id: 'reference' as const, name: reference ? `레퍼런스 (${reference.name})` : '레퍼런스 (없음)' }]
+          .map((option) => (
+            <button key={option.id} onClick={() => setTarget(option.id)}
+              style={{
+                height: 24, padding: '0 11px', borderRadius: 3,
+                fontFamily: premium.type.sans, fontSize: 10.5,
+                color: masterTarget === option.id ? premium.text.onAccent : premium.text.muted,
+                background: masterTarget === option.id ? premium.accent.base : premium.surface.well,
+                border: `1px solid ${premium.surface.hairline}`,
+              }}>{option.name}</button>
+          ))}
+      </div>
+
+      {profile && (
+        <div style={{
+          padding: '6px 10px', borderRadius: 4, background: premium.surface.well,
+          border: `1px solid ${premium.surface.hairline}`,
+          fontFamily: premium.type.mono, fontSize: 10.5, color: premium.text.secondary,
+        }}>
+          {profile.lufs} LUFS · {profile.ceilingDbtp} dBTP · PLR {profile.plr} · 폭 {profile.widthPercent}%
+          <div style={{ ...hint, marginTop: 2 }}>{profile.note}</div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <Action primary onClick={run} disabled={!analysis}>마스터 체인 제안</Action>
+        {!analysis && <span style={hint}>ANALYZE 탭에서 먼저 분석하세요.</span>}
+      </div>
+
+      <SuggestionList
+        suggestions={masterSuggestions}
+        onApply={() => apply(masterSuggestions)}
+        applyLabel="체인 적용"
+        session={session}
+      />
+    </div>
+  );
+}
+
+function AutomationTab() {
+  const session = useDawStore((s) => s.session);
+  const { automationSuggestions, busy } = useIntelStore();
+  const runRide = useIntelStore((s) => s.runRide);
+  const runDuck = useIntelStore((s) => s.runDuck);
+  const apply = useIntelStore((s) => s.apply);
+  const [source, setSource] = React.useState('');
+  const [target, setTarget] = React.useState('');
+
+  const audio = session.tracks.filter((t) => t.kind === 'audio' || t.kind === 'instrument');
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div style={{ fontFamily: premium.type.display, fontSize: 15, color: premium.accent.light }}>
+        Auto Automation
+      </div>
+      <p style={hint}>
+        컴프레서와 달리 <b>곡선이 그려져 남습니다</b>. 어디서 얼마나 움직이는지 보이고, 마음에 안 들면
+        손으로 고칠 수 있습니다.
+      </p>
+
+      <div style={{ fontFamily: premium.type.sans, fontSize: 11, color: premium.text.secondary }}>
+        볼륨 라이딩 — 트랙 자기 중앙값 기준으로 흔들림만 되돌립니다
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {audio.map((track) => (
+          <button key={track.id} disabled={!!busy}
+                  onClick={() => void runRide(track.id)} style={chip}>{track.name}</button>
+        ))}
+      </div>
+
+      <div style={{
+        fontFamily: premium.type.sans, fontSize: 11, color: premium.text.secondary, marginTop: 6,
+      }}>덕킹 — 소스의 트랜지언트마다 타깃이 비켜 줍니다</div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <select value={source} onChange={(e) => setSource(e.target.value)} style={selectStyle}>
+          <option value="">소스 (예: Kick)</option>
+          {audio.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <span style={hint}>→</span>
+        <select value={target} onChange={(e) => setTarget(e.target.value)} style={selectStyle}>
+          <option value="">타깃 (예: Bass)</option>
+          {audio.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <Action disabled={!source || !target || source === target || !!busy}
+                onClick={() => void runDuck(source, target)}>덕킹 곡선 만들기</Action>
+      </div>
+
+      <SuggestionList
+        suggestions={automationSuggestions}
+        onApply={() => apply(automationSuggestions)}
+        applyLabel="오토메이션 적용"
+        session={session}
+      />
+    </div>
+  );
+}
+
+function CommandTab() {
+  const session = useDawStore((s) => s.session);
+  const { command, interpretation } = useIntelStore();
+  const setCommand = useIntelStore((s) => s.setCommand);
+  const run = useIntelStore((s) => s.runCommand);
+  const applyIt = useIntelStore((s) => s.applyInterpretation);
+  const vocab = useMemo(() => vocabulary(), []);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div style={{ fontFamily: premium.type.display, fontSize: 15, color: premium.accent.light }}>
+        Natural Language Control
+      </div>
+      <p style={hint}>
+        규칙 기반 파서입니다 — 언어 모델이 아니고, 못 알아들으면 <b>추측하지 않고 그렇게 말합니다</b>.
+        해석한 내용을 먼저 보여주고, 동의하면 그때 적용됩니다.
+      </p>
+
+      <div className="flex items-center gap-2">
+        <input
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') run(); }}
+          placeholder='예: "보컬 2dB 올려" · "킥 펀치 더" · "마스터 넓게" · "보컬 저역 좀 줄여"'
+          style={{
+            flex: 1, height: 30, padding: '0 10px', borderRadius: 4,
+            background: premium.surface.well, color: premium.text.primary,
+            border: `1px solid ${premium.surface.hairline}`,
+            fontFamily: premium.type.sans, fontSize: 12,
+          }}
+        />
+        <Action onClick={run}>해석</Action>
+      </div>
+
+      {interpretation && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 5, background: premium.surface.frame,
+          border: `1px solid ${interpretation.error ? premium.accent.danger : premium.accent.deep}`,
+        }}>
+          {interpretation.error ? (
+            <>
+              <div style={{ fontFamily: premium.type.sans, fontSize: 12, color: premium.accent.danger }}>
+                {interpretation.error}
+              </div>
+              {interpretation.hint && <p style={{ ...hint, margin: '4px 0 0' }}>{interpretation.hint}</p>}
+            </>
+          ) : (
+            <>
+              <div style={{ fontFamily: premium.type.sans, fontSize: 12, color: premium.text.primary }}>
+                {interpretation.understood}
+              </div>
+              <ul style={{ margin: '5px 0 0' }}>
+                {interpretation.actions.map((action, i) => (
+                  <li key={i} style={{
+                    fontFamily: premium.type.mono, fontSize: 10.5, color: premium.text.muted,
+                  }}>· {describeAction(session, action)}</li>
+                ))}
+              </ul>
+              {interpretation.hint && <p style={{ ...hint, margin: '4px 0 0' }}>{interpretation.hint}</p>}
+              <div className="mt-2">
+                <Action primary onClick={applyIt}>적용</Action>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <div style={{ marginTop: 4 }}>
+        <div style={{ ...hint, marginBottom: 3 }}>아는 말</div>
+        <div className="flex flex-wrap gap-1">
+          {[...vocab.verbs, ...vocab.targets].map((word) => (
+            <span key={word} style={{
+              padding: '2px 7px', borderRadius: 3, fontFamily: premium.type.mono, fontSize: 10,
+              background: premium.surface.well, color: premium.text.faint,
+              border: `1px solid ${premium.surface.hairline}`,
+            }}>{word}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Shared ────────────────────────────────────────────────────────────────────
+
+function SuggestionList(
+  { suggestions, onApply, applyLabel, session }: {
+    suggestions: Suggestion[]; onApply: () => void; applyLabel: string;
+    session: ReturnType<typeof useDawStore.getState>['session'];
+  },
+) {
+  const selected = useIntelStore((s) => s.selected);
+  const toggle = useIntelStore((s) => s.toggleSelected);
+  const selectAll = useIntelStore((s) => s.selectAll);
+  const clear = useIntelStore((s) => s.clearSelection);
+  if (suggestions.length === 0) return null;
+  const chosen = suggestions.filter((s) => selected.has(s.id)).length;
+
+  return (
+    <div className="flex flex-col gap-1.5 mt-1">
+      <div className="flex items-center gap-2">
+        <Action primary disabled={chosen === 0} onClick={onApply}>
+          {applyLabel} ({chosen})
+        </Action>
+        <Action onClick={() => selectAll(suggestions)}>전체 선택</Action>
+        <Action onClick={clear}>선택 해제</Action>
+      </div>
+
+      {suggestions.map((suggestion) => {
+        const on = selected.has(suggestion.id);
+        return (
+          <button key={suggestion.id} onClick={() => toggle(suggestion.id)}
+            className="text-left"
+            style={{
+              padding: '8px 11px', borderRadius: 5,
+              background: on ? premium.surface.overlay : premium.surface.frame,
+              border: `1px solid ${on ? premium.accent.deep : premium.surface.hairline}`,
+            }}>
+            <div className="flex items-center gap-2">
+              <span style={{
+                width: 12, height: 12, borderRadius: 2, flexShrink: 0,
+                background: on ? premium.accent.base : 'transparent',
+                border: `1px solid ${on ? premium.accent.deep : premium.surface.hairlineStrong}`,
+              }} />
+              <span style={{ fontFamily: premium.type.sans, fontSize: 12, color: premium.text.primary }}>
+                {suggestion.title}
+              </span>
+              <span style={{
+                marginLeft: 'auto', fontFamily: premium.type.mono, fontSize: 9.5,
+                color: suggestion.confidence >= 0.7 ? premium.accent.good
+                  : suggestion.confidence >= 0.5 ? premium.accent.base : premium.text.faint,
+              }}>확신도 {Math.round(suggestion.confidence * 100)}%</span>
+            </div>
+            <p style={{ ...hint, margin: '3px 0 0 20px' }}>{suggestion.reason}</p>
+            <ul style={{ margin: '3px 0 0 20px' }}>
+              {suggestion.actions.map((action, i) => (
+                <li key={i} style={{
+                  fontFamily: premium.type.mono, fontSize: 10, color: premium.text.faint,
+                }}>· {describeAction(session, action)}</li>
+              ))}
+            </ul>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const hint: React.CSSProperties = {
+  fontFamily: premium.type.sans, fontSize: 10.5, lineHeight: 1.55, color: premium.text.muted,
+};
+const selectStyle: React.CSSProperties = {
+  height: 26, borderRadius: 3, fontSize: 11, minWidth: 150,
+  background: premium.surface.well, color: premium.text.secondary,
+  border: `1px solid ${premium.surface.hairline}`,
+};
+const chip: React.CSSProperties = {
+  height: 24, padding: '0 10px', borderRadius: 3,
+  fontFamily: premium.type.sans, fontSize: 10.5, color: premium.text.secondary,
+  background: premium.surface.well, border: `1px solid ${premium.surface.hairline}`,
+};
+
+function Action(
+  { onClick, children, disabled, primary }: {
+    onClick: () => void; children: React.ReactNode; disabled?: boolean; primary?: boolean;
+  },
+) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      height: 26, padding: '0 13px', borderRadius: 4,
+      fontFamily: premium.type.sans, fontSize: 11,
+      color: disabled ? premium.text.faint : primary ? premium.text.onAccent : premium.text.secondary,
+      background: disabled ? premium.surface.well : primary ? premium.accent.base : premium.surface.well,
+      border: `1px solid ${disabled ? premium.surface.hairline
+        : primary ? premium.accent.deep : premium.surface.hairline}`,
+      cursor: disabled ? 'default' : 'pointer',
+    }}>{children}</button>
+  );
+}

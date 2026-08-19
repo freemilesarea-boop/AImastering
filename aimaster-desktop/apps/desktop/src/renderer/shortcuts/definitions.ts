@@ -74,7 +74,8 @@ export type CommandId =
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
-  | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern';
+  | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
+  | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -317,6 +318,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '카운트인 · 프리롤 · 펀치를 계획대로 실행 (DAW 에서는 Numpad * 도 같은 동작)', available: true },
   { id: 'daw.punchFromSelection', group: 'daw', label: '선택 구간을 펀치로', chords: ['Mod+Shift+P'],
     note: '선택한 구간을 펀치 인/아웃으로 설정', available: true },
+  { id: 'daw.showIntel', group: 'daw', label: 'Intelligence (AI)', chords: ['Mod+Alt+I'],
+    note: '분석 · AI 믹스 · AI 마스터 · 레퍼런스 매칭 · 오토메이션 · 자연어', available: true },
+  { id: 'daw.analyzeMixAi', group: 'daw', label: 'AI 분석 실행', chords: ['Mod+Shift+A'],
+    note: '믹스와 모든 트랙을 재고 문제를 찾습니다', available: true },
+  { id: 'daw.aiCommand', group: 'daw', label: '말로 지시하기', chords: ['Mod+Slash'],
+    note: '자연어 커맨드 입력으로 이동', available: true },
   { id: 'daw.showSteps', group: 'daw', label: 'Channel Rack (스텝 시퀀서)', chords: ['Mod+Alt+Q'],
     note: '스텝 그리드 · 패턴 라이브러리', available: true },
   { id: 'daw.arpeggiate', group: 'daw', label: '아르페지오', chords: ['Mod+Alt+A'],
