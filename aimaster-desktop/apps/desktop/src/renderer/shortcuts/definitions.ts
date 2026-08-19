@@ -69,7 +69,8 @@ export type CommandId =
   | 'daw.detectChords' | 'daw.reharmonize'
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
-  | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips';
+  | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
+  | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -300,6 +301,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '신호 흐름을 그래프로 — 병렬 브랜치 · 센드 · 랙', available: true },
   { id: 'daw.showSession', group: 'daw', label: 'Session View', chords: ['Mod+Alt+Y'],
     note: '클립 그리드 · 씬 실행 · Arrangement 변환', available: true },
+  { id: 'daw.showSpectral', group: 'daw', label: 'Spectral Repair', chords: ['Mod+Alt+G'],
+    note: '스펙트로그램에서 주파수 영역만 골라 Repair / Attenuate / Replace', available: true },
+  { id: 'daw.showReference', group: 'daw', label: 'Mastering Reference', chords: ['Mod+Alt+M'],
+    note: 'REFERENCE vs YOUR MIX — LUFS · TP · DR · WIDTH · 대역 밸런스', available: true },
+  { id: 'daw.analyzeMix', group: 'daw', label: '현재 믹스 분석', chords: ['Mod+Alt+K'],
+    note: '세션을 렌더링해 레퍼런스와 비교', available: true },
   { id: 'daw.launchScene', group: 'daw', label: '다음 씬 실행', chords: ['Mod+Alt+Enter'],
     note: 'Session View 의 다음 씬을 다음 마디에 실행', available: true },
   { id: 'daw.stopAllClips', group: 'daw', label: '모든 클립 정지', chords: ['Mod+Alt+Period'],

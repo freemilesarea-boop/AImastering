@@ -15,6 +15,8 @@ import KeyEditor from '../components/daw/midi/KeyEditor.js';
 import SmartControlPanel from '../components/daw/smart/SmartControlPanel.js';
 import DeviceChainView from '../components/daw/chain/DeviceChainView.js';
 import SessionViewGrid from '../components/daw/session/SessionViewGrid.js';
+import SpectralEditor from '../components/daw/spectral/SpectralEditor.js';
+import ReferencePanel from '../components/daw/reference/ReferencePanel.js';
 import { createStack } from '../daw/model/stacks.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
 import {
@@ -227,7 +229,7 @@ export default function DawPage() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <TopBar
-        subtitle={`DAW · ${windowMode === 'edit' ? 'Edit' : 'Mix'}`}
+        subtitle={`DAW · ${windowMode.toUpperCase()}`}
         actions={
           <button onClick={() => setPage('home')}
             className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">← 홈</button>
@@ -237,7 +239,7 @@ export default function DawPage() {
       {/* Transport / session chrome */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
         <div className="flex rounded-md overflow-hidden border border-zinc-700 mr-1">
-          {(['edit', 'mix', 'midi', 'chain', 'session'] as const).map((w) => (
+          {(['edit', 'mix', 'midi', 'chain', 'session', 'spectral', 'reference'] as const).map((w) => (
             <button key={w} onClick={() => setWindow(w)}
               className={`px-3 py-1 text-[11px] font-medium transition-colors ${
                 windowMode === w ? 'bg-indigo-600/30 text-indigo-300' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300'}`}
@@ -246,7 +248,9 @@ export default function DawPage() {
               : w === 'mix' ? 'MIX'
               : w === 'midi' ? 'KEY'
               : w === 'chain' ? 'CHAIN'
-              : 'SESSION'
+              : w === 'session' ? 'SESSION'
+              : w === 'spectral' ? 'SPECTRAL'
+              : 'REFERENCE'
             }</button>
           ))}
         </div>
@@ -317,7 +321,9 @@ export default function DawPage() {
         : windowMode === 'mix' ? <MixWindow />
         : windowMode === 'midi' ? <KeyEditor />
         : windowMode === 'chain' ? <DeviceChainView />
-        : <SessionViewGrid />}
+        : windowMode === 'session' ? <SessionViewGrid />
+        : windowMode === 'spectral' ? <SpectralEditor />
+        : <ReferencePanel />}
     </div>
   );
 }

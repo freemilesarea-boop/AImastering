@@ -29,7 +29,10 @@ import {
   deserializeDawSession, importSessionData, serializeDawSession,
 } from '../daw/model/session-io.js';
 import { importAudioFiles } from '../daw/model/import-audio.js';
-import { bounceSession, commitTrack, consolidateSelection, freezeTrack, unfreezeTrack } from '../daw/engine/offline-render.js';
+import {
+  bounceSession, commitTrack, consolidateSelection, freezeTrack, renderSession, sessionRange, unfreezeTrack,
+} from '../daw/engine/offline-render.js';
+import { useReferenceStore } from '../stores/referenceStore.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
 import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips } from '../daw/model/session-ops.js';
@@ -68,7 +71,8 @@ export type DawCommandId =
   | 'daw.detectChords' | 'daw.reharmonize'
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
-  | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips';
+  | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
+  | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -543,6 +547,31 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     'daw.showSession': () => {
       daw().setWindow('session');
       notify('Session View');
+    },
+
+    // ── Spectral Repair / Mastering Reference ─────────────────────────────
+    'daw.showSpectral': () => {
+      daw().setWindow('spectral');
+      notify('Spectral Repair');
+    },
+
+    'daw.showReference': () => {
+      daw().setWindow('reference');
+      notify('Mastering Reference');
+    },
+
+    'daw.analyzeMix': () => {
+      const state = daw();
+      state.setWindow('reference');
+      void (async () => {
+        try {
+          const rendered = await renderSession(state.session, sessionRange(state.session));
+          useReferenceStore.getState().setMix(rendered, state.session.name || 'YOUR MIX');
+          notify('현재 믹스를 분석했습니다', 'success');
+        } catch (err) {
+          notify(`믹스 분석 실패: ${(err as Error).message}`, 'error');
+        }
+      })();
     },
 
     'daw.launchScene': () => {
