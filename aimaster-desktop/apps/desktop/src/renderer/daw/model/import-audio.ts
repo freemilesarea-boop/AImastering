@@ -15,6 +15,23 @@ export interface ImportAudioResult {
   failed: string[];
 }
 
+/**
+ * Should the DAW adopt the files the user loaded on the home screen?
+ *
+ * Only when it has nothing of its own.  The DAW used to always open on an
+ * empty session and ignore the home screen entirely, so "load five songs,
+ * open the DAW" showed a blank timeline and there was no way to start a
+ * project from the music you had just imported.
+ *
+ * Adopting is safe precisely because the session is empty — there is nothing
+ * to overwrite.  Once it has any material, the user is in charge and files
+ * only arrive when they ask for them.
+ */
+export function shouldAdoptQueue(session: DawSession, queueLength: number): boolean {
+  if (queueLength <= 0) return false;
+  return !session.tracks.some((t) => t.kind === 'audio' || t.kind === 'instrument');
+}
+
 function baseName(p: string): string {
   return p.split('/').pop()?.split('\\').pop()?.replace(/\.[^.]+$/, '') ?? p;
 }

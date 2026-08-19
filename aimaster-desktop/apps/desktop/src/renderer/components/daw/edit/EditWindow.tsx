@@ -9,6 +9,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDawStore, snapToGrid, type EditMode } from '../../../stores/dawStore.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
+import { useAudioStore } from '../../../stores/audioStore.js';
 import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import { activePlaylist, clipAt, sessionEndSec } from '../../../daw/model/session-ops.js';
 import { moveClip } from '../../../daw/edit/clip-edit.js';
@@ -110,6 +111,10 @@ export default function EditWindow() {
   // readable at forty tracks.
   const rows = visibleTracks(session);
   const recordStatus = useRecordingStore((s) => s.status);
+  // A session with only a master track is not "empty timeline", it is "you
+  // have nothing to work on yet" — and a blank grid says neither.
+  const hasMaterial = session.tracks.some((t) => t.kind === 'audio' || t.kind === 'instrument');
+  const queueCount = useAudioStore((s) => s.queue.length);
 
   // ── Lane gestures ───────────────────────────────────────────────────────
   const onLaneDown = useCallback((e: React.MouseEvent, track: Track) => {
@@ -293,6 +298,24 @@ export default function EditWindow() {
 
         {/* Lanes */}
         <div ref={laneRef} className="flex-1 relative overflow-hidden" onMouseMove={onLaneMove}>
+          {!hasMaterial && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10"
+                 style={{ pointerEvents: 'none' }}>
+              <p style={{
+                fontFamily: premium.type.display, fontSize: 20, color: premium.accent.light,
+              }}>세션이 비어 있습니다</p>
+              <p style={{
+                fontFamily: premium.type.sans, fontSize: 12, color: premium.text.muted,
+                textAlign: 'center', lineHeight: 1.7,
+              }}>
+                {queueCount > 0
+                  ? <>홈에 불러온 {queueCount}곡이 있습니다 — 위의 <b>홈 트랙 가져오기</b>를 누르세요.<br />
+                      또는 <b>오디오 추가</b>로 파일을 열거나, <b>+ 인스트루먼트</b>로 MIDI 파트를 만드세요.</>
+                  : <><b>오디오 추가</b>로 파일을 열거나, <b>+ 인스트루먼트</b>로 MIDI 파트를 만드세요.<br />
+                      드럼부터 짜려면 <b>STEPS</b> 탭에서 그리드를 찍으면 됩니다.</>}
+              </p>
+            </div>
+          )}
           {rows.map((track) => (
             <div
               key={track.id}
