@@ -83,6 +83,33 @@ OfflineAudioContext 렌더에서 타이머가 돌지 않아 **바운스 결과�
 보정도 같이 따라갑니다. `Insert.latencySamples`는 표시용 캐시이자, 이 빌드에
 없는 플러그인을 쓴 세션을 열었을 때의 폴백입니다.
 
+## 디코딩 컨텍스트 — 절대 오프라인 컨텍스트로 디코딩하지 말 것
+
+`decodeAudioData` 는 **실행 중인** 컨텍스트를 요구하지 않습니다. 크로미움이
+별도 스레드에서 디코딩해 AudioBuffer 를 넘겨주므로 suspended 상태의
+`AudioContext` 로 충분하고, 사용자 제스처도 필요 없습니다.
+
+그런데 DAW 는 한때 `new OfflineAudioContext(1, 1, 48000)` — 프레임 하나짜리
+오프라인 컨텍스트 — 로 디코딩했습니다. 앱 전체에서 여기 한 곳뿐이었습니다.
+이걸로 실제 곡을 디코딩하면 macOS 에서 렌더러 프로세스가 **SIGSEGV
+(`reason=crashed exit=11`)** 로 죽습니다. 이건 잡을 수 있는 예외가 아닙니다 —
+창에는 `backgroundColor` 만 남고, 보고할 프로세스가 이미 없으므로 에러도
+나오지 않습니다.
+
+같은 파일 · 같은 `fetch` · 같은 `decodeAudioData` 를 쓰는 마스터링 화면
+(`useWaveformPeaks`)은 **라이브 AudioContext** 로 디코딩하고 한 번도 죽은 적이
+없습니다. 차이는 컨텍스트 종류 하나뿐이었습니다.
+
+지금은 `audio/decode-context.ts` 하나가 앱 전체의 디코딩 컨텍스트를 들고 있고,
+DAW 와 마스터링 화면이 그걸 공유합니다. 라이브 컨텍스트가 있으면 **항상**
+그쪽이 이깁니다. 오프라인 폴백은 `AudioContext` 자체가 없는 Node 셀프테스트
+전용입니다.
+
+`loadAudio()` 는 단계마다 `console.info` 브레드크럼을 남깁니다
+(`fetch → decode → analyze → done`). 네이티브 코드가 프로세스를 데려가면
+스택이 남지 않으므로, 터미널의 **마지막 줄**이 어느 단계 · 어느 파일에서
+죽었는지 말해주는 유일한 기록입니다. dev 에서만 터미널로 올라옵니다.
+
 ## 디코딩 메모리 — 지켜야 하는 규칙
 
 48 kHz 스테레오 5분 곡 하나가 디코딩되면 **float32로 약 115 MB**입니다.
