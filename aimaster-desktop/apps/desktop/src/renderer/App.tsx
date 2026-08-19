@@ -20,6 +20,8 @@ import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
+import { useDawShortcuts } from './shortcuts/useDawShortcuts.js';
+import DawWorkspaceChrome from './components/daw/DawWorkspaceChrome.js';
 
 // Dev-only: analyzer streaming smoke route — only on ?dev=analyzer-stream URL.
 // Named export → wrap in a default-export shim for React.lazy.
@@ -256,6 +258,10 @@ function AppInner() {
   const loadLicense = useLicenseStore((s) => s.load);
   // Mobile width (<640px) = Guided Flow only (no Pro controls / TweakPage).
   const isMobile = useIsMobile();
+
+  // DAW keyboard layer (Cubase-style shortcuts) — one global listener.
+  // Harmless on mobile (no hardware keyboard), but its chrome is desktop-only.
+  useDawShortcuts();
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
@@ -388,6 +394,11 @@ function AppInner() {
 
       {/* Toast notifications */}
       <Toast />
+
+      {/* DAW workspace chrome — transport / mix console / inspector /
+          MediaBay / shortcut help.  Desktop only; all parts are keyboard
+          toggled (F2, F3, Alt+I, F5, ?). */}
+      {!isMobile && <DawWorkspaceChrome />}
 
       {/* v3.4.3 — auto-update bottom-right card */}
       <UpdateToast />
