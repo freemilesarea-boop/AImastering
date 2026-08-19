@@ -15,6 +15,8 @@ import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
 import type { Clip, DawSession, Fade, Track, TrackId } from '../model/types.js';
 import type { MidiNote } from '../model/midi.js';
 import { getCached, loadAudio } from './audio-cache.js';
+import { ensureWarpedBuffer, prepareWarps } from './warp-render.js';
+import { clipWarp } from '../model/warp.js';
 import { findInstrument } from './instruments.js';
 import { makeRng } from '../edit/midi-edit.js';
 import type { MixerEngine } from './mixer-engine.js';
@@ -81,6 +83,10 @@ export class ClipPlayer {
         console.warn('[ClipPlayer] decode failed:', f.path, err);
         return null;
       })));
+    // Warped clips are stretched into buffers up front — doing it inside the
+    // scheduler would stall the audio thread's look-ahead.
+    const clips = session.tracks.flatMap((t) => trackClips(t));
+    prepareWarps(this.engine.ctx, clips, session.tempoBpm);
   }
 
   /**
@@ -216,8 +222,12 @@ export class ClipPlayer {
     const remaining = clip.durationSec - skipSec;
     if (remaining <= 0.001) return;
 
+    // A warped clip plays its rendered buffer, which already starts at the
+    // clip's first sample — so the read offset is the skip alone.
+    const warped = clipWarp(clip) ? ensureWarpedBuffer(ctx, clip, session.tempoBpm) : null;
+
     const source = ctx.createBufferSource();
-    source.buffer = cached.buffer;
+    source.buffer = warped ?? cached.buffer;
     const gain = ctx.createGain();
     const base = dbToGain(clip.gainDb);
 
@@ -256,12 +266,11 @@ export class ClipPlayer {
     }
 
     source.connect(gain).connect(destination);
-    const offset = clip.offsetSec + skipSec;
+    const offset = warped ? skipSec : clip.offsetSec + skipSec;
     source.start(Math.max(0, startAt), Math.max(0, offset), remaining);
 
     this.scheduled.add(clip.id);
     this.voices.push({ source, gain, clipId: clip.id, endsAtCtxTime: stopAt });
-    void session;
   }
 
   // ── Automation playback ─────────────────────────────────────────────────

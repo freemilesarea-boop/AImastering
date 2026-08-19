@@ -17,6 +17,7 @@ import type { MacroRack } from './macros.js';
 import type { DeviceGraph } from './device-graph.js';
 import type { Rack } from './racks.js';
 import type { SessionGrid } from './session-view.js';
+import type { WarpConfig } from './warp.js';
 export type {
   ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment, MacroRack,
   DeviceGraph, Rack, SessionGrid,
@@ -87,6 +88,11 @@ export interface Clip {
   fadeIn: Fade;
   fadeOut: Fade;
   muted: boolean;
+  /**
+   * Warp settings — absent on clips saved before warp existed and on clips
+   * that were never warped.  Read it through `clipWarp()` in model/warp.ts.
+   */
+  warp?: WarpConfig;
 }
 
 /** A take lane.  One playlist is active per track; the rest are alternates. */

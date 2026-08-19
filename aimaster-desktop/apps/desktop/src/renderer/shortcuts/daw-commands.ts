@@ -33,6 +33,10 @@ import {
   bounceSession, commitTrack, consolidateSelection, freezeTrack, renderSession, sessionRange, unfreezeTrack,
 } from '../daw/engine/offline-render.js';
 import { useReferenceStore } from '../stores/referenceStore.js';
+import {
+  autoWarpClip, setWarpEnabled, unwarpClip, warpClipToTempo,
+} from '../daw/edit/warp-actions.js';
+import { clipWarp } from '../daw/model/warp.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
 import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips } from '../daw/model/session-ops.js';
@@ -72,7 +76,8 @@ export type DawCommandId =
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
-  | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix';
+  | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
+  | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -547,6 +552,52 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     'daw.showSession': () => {
       daw().setWindow('session');
       notify('Session View');
+    },
+
+    // ── Warp ──────────────────────────────────────────────────────────────
+    'daw.showWarp': () => {
+      daw().setWindow('warp');
+      notify('Warp');
+    },
+
+    'daw.autoWarp': () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      try {
+        const result = autoWarpClip(state.session, target.trackId, target.clipId);
+        state.apply(() => result.session);
+        state.setWindow('warp');
+        notify(`Auto-Warp · ${result.sourceBpm.toFixed(1)} BPM · 마커 ${result.markerCount}개`, 'success');
+      } catch (err) {
+        notify((err as Error).message, 'warning');
+      }
+    },
+
+    'daw.toggleWarp': () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      const clip = findClip(state.session, target.trackId, target.clipId);
+      if (!clip) return;
+      const on = clipWarp(clip) !== null;
+      if (on) {
+        state.apply((s) => unwarpClip(s, target.trackId, target.clipId));
+        notify('Warp 끔');
+        return;
+      }
+      if ((clip.warp?.markers.length ?? 0) >= 2) {
+        state.apply((s) => setWarpEnabled(s, target.trackId, target.clipId, true));
+        notify('Warp 켬');
+        return;
+      }
+      try {
+        const result = warpClipToTempo(state.session, target.trackId, target.clipId);
+        state.apply(() => result.session);
+        notify(`Warp 켬 · ${result.sourceBpm.toFixed(1)} BPM${result.estimated ? ' (추정)' : ''}`, 'success');
+      } catch (err) {
+        notify((err as Error).message, 'warning');
+      }
     },
 
     // ── Spectral Repair / Mastering Reference ─────────────────────────────

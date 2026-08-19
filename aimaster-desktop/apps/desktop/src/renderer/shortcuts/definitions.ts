@@ -70,7 +70,8 @@ export type CommandId =
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
-  | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix';
+  | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
+  | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -301,6 +302,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '신호 흐름을 그래프로 — 병렬 브랜치 · 센드 · 랙', available: true },
   { id: 'daw.showSession', group: 'daw', label: 'Session View', chords: ['Mod+Alt+Y'],
     note: '클립 그리드 · 씬 실행 · Arrangement 변환', available: true },
+  { id: 'daw.showWarp', group: 'daw', label: 'Warp 에디터', chords: ['Mod+Alt+W'],
+    note: '클립을 세션 템포에 맞춤 — 마커를 그리드로 끌어당기기', available: true },
+  { id: 'daw.autoWarp', group: 'daw', label: 'Auto-Warp', chords: ['Mod+Shift+W'],
+    note: '트랜지언트마다 마커를 찍고 그리드에 스냅', available: true },
+  { id: 'daw.toggleWarp', group: 'daw', label: 'Warp 켜기 / 끄기', chords: ['Alt+W'],
+    note: '선택한 클립의 워프 on/off', available: true },
   { id: 'daw.showSpectral', group: 'daw', label: 'Spectral Repair', chords: ['Mod+Alt+G'],
     note: '스펙트로그램에서 주파수 영역만 골라 Repair / Attenuate / Replace', available: true },
   { id: 'daw.showReference', group: 'daw', label: 'Mastering Reference', chords: ['Mod+Alt+M'],

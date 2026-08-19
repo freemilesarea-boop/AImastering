@@ -17,7 +17,9 @@ import DeviceChainView from '../components/daw/chain/DeviceChainView.js';
 import SessionViewGrid from '../components/daw/session/SessionViewGrid.js';
 import SpectralEditor from '../components/daw/spectral/SpectralEditor.js';
 import ReferencePanel from '../components/daw/reference/ReferencePanel.js';
+import WarpEditor from '../components/daw/warp/WarpEditor.js';
 import { createStack } from '../daw/model/stacks.js';
+import { setSessionTempo } from '../daw/model/warp.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
 import {
   addTrack, createTrack, createBus, createMidiPart, findTrack, sessionEndSec, updateClips,
@@ -239,7 +241,7 @@ export default function DawPage() {
       {/* Transport / session chrome */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
         <div className="flex rounded-md overflow-hidden border border-zinc-700 mr-1">
-          {(['edit', 'mix', 'midi', 'chain', 'session', 'spectral', 'reference'] as const).map((w) => (
+          {(['edit', 'mix', 'midi', 'chain', 'session', 'warp', 'spectral', 'reference'] as const).map((w) => (
             <button key={w} onClick={() => setWindow(w)}
               className={`px-3 py-1 text-[11px] font-medium transition-colors ${
                 windowMode === w ? 'bg-indigo-600/30 text-indigo-300' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300'}`}
@@ -249,6 +251,7 @@ export default function DawPage() {
               : w === 'midi' ? 'KEY'
               : w === 'chain' ? 'CHAIN'
               : w === 'session' ? 'SESSION'
+              : w === 'warp' ? 'WARP'
               : w === 'spectral' ? 'SPECTRAL'
               : 'REFERENCE'
             }</button>
@@ -269,6 +272,25 @@ export default function DawPage() {
             : 'bg-zinc-900 border-zinc-700 text-zinc-400'}`}>LOOP</button>
 
         <span className="ml-2 text-[12px] font-mono text-zinc-200 tabular-nums">{fmt(playheadSec)}</span>
+
+        <label className="ml-2 flex items-center gap-1 text-[10px] text-zinc-500" title="세션 템포 — 워프된 클립이 따라옵니다">
+          <input
+            type="number" min={20} max={300} step={0.5} value={session.tempoBpm}
+            onChange={(e) => {
+              const value = Number(e.target.value);
+              if (!Number.isFinite(value) || value <= 0) return;
+              const { session: next, unwarpedClipIds } = setSessionTempo(
+                useDawStore.getState().session, value);
+              apply(() => next);
+              if (unwarpedClipIds.length > 0) {
+                notify(`${next.tempoBpm} BPM — 워프가 꺼진 클립 ${unwarpedClipIds.length}개는 길이가 그대로입니다`, 'warning');
+              }
+            }}
+            className="w-16 h-7 px-1.5 rounded bg-zinc-900 border border-zinc-700
+                       text-zinc-200 text-[11px] font-mono tabular-nums"
+          />
+          BPM
+        </label>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
@@ -322,6 +344,7 @@ export default function DawPage() {
         : windowMode === 'midi' ? <KeyEditor />
         : windowMode === 'chain' ? <DeviceChainView />
         : windowMode === 'session' ? <SessionViewGrid />
+        : windowMode === 'warp' ? <WarpEditor />
         : windowMode === 'spectral' ? <SpectralEditor />
         : <ReferencePanel />}
     </div>
