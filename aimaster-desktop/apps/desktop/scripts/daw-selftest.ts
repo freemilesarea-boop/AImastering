@@ -20,6 +20,7 @@ import {
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { shouldAdoptQueue } from '../src/renderer/daw/model/import-audio.js';
 import { evictionPlan } from '../src/renderer/daw/engine/audio-cache.js';
+import { decodeContext, resetDecodeContext, DECODE_SAMPLE_RATE } from '../src/renderer/audio/decode-context.js';
 import {
   separateAt, splitClip, healSeparation, isHealable, trimToSelection, clearRange,
   duplicateSelection, nudgeSelection, slipSelection, setClipGain, nudgeClipGain,
@@ -861,6 +862,51 @@ check('one oversized file is kept rather than evicted into uselessness', () => {
   // A single file bigger than the whole budget still has to be playable.
   const plan = evictionPlan([{ id: 'huge', bytes: 900 * 1024 * 1024 }], 'huge', 12, 700 * 1024 * 1024);
   assert(plan.length === 0, 'the only file present is the one the caller needs');
+});
+
+check('decoding prefers a live AudioContext over a one-frame offline one', () => {
+  const g = globalThis as Record<string, unknown>;
+  const originalLive = g.AudioContext;
+  const originalOffline = g.OfflineAudioContext;
+
+  try {
+    // A one-frame OfflineAudioContext also has decodeAudioData, and decoding a
+    // real song through it kills the renderer outright — so when a live context
+    // exists it must win, every time.
+    const built: string[] = [];
+    resetDecodeContext();
+    g.AudioContext = class { constructor() { built.push('live'); } };
+    g.OfflineAudioContext = class { constructor() { built.push('offline'); } };
+    assert(decodeContext() !== null, 'a context is produced');
+    assert(built.length === 1 && built[0] === 'live', `live context chosen — got ${built.join()}`);
+
+    // Second call reuses it rather than opening another hardware context.
+    decodeContext();
+    assert(built.length === 1, 'the context is a singleton');
+
+    // Node self-tests have no AudioContext at all; the offline one is the
+    // fallback so the suites still decode.
+    built.length = 0;
+    resetDecodeContext();
+    delete g.AudioContext;
+    delete g.webkitAudioContext;
+    assert(decodeContext() !== null, 'the offline fallback still yields a context');
+    assert(built[0] === 'offline', 'and only when there is no live context');
+
+    // Nothing available at all is a null, never a throw.
+    resetDecodeContext();
+    delete g.OfflineAudioContext;
+    assert(decodeContext() === null, 'no audio at all reports null instead of throwing');
+  } finally {
+    resetDecodeContext();
+    if (originalLive === undefined) delete g.AudioContext; else g.AudioContext = originalLive;
+    if (originalOffline === undefined) delete g.OfflineAudioContext; else g.OfflineAudioContext = originalOffline;
+    resetDecodeContext();
+  }
+});
+
+check('the decode context runs at the session sample rate', () => {
+  assert(DECODE_SAMPLE_RATE === 48_000, 'sources are resampled to 48 kHz on the way in');
 });
 
 const passed = results.filter((r) => r.pass).length;

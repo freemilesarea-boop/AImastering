@@ -109,8 +109,12 @@ function createWindow(): void {
   });
   // Capture console errors from the renderer into the main log so they
   // survive a renderer crash that wipes DevTools.
+  // In dev, info too: the renderer's audio breadcrumbs are the only record of
+  // where a native crash landed, and a dead renderer cannot report anything
+  // itself.  Packaged builds keep the quieter warning-and-above filter.
+  const consoleFloor = isDev ? 1 : 2;   // 1=info, 2=warning, 3=error
   mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
-    if (level >= 2) { // 2=warning, 3=error
+    if (level >= consoleFloor) {
       log.warn(`[renderer-console L${level}] ${message} (${sourceId}:${line})`);
     }
   });

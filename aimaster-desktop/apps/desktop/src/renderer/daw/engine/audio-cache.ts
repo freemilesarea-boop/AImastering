@@ -27,6 +27,7 @@
 // still draw and Tab to Transient still works after the buffer is gone, and
 // the buffer itself is re-decoded on demand when playback needs it back.
 
+import { decodeContext } from '../../audio/decode-context.js';
 import { toFileUrl } from '../../utils/fileUrl.js';
 import { detectTransients } from '../edit/transient.js';
 import type { FileId } from '../model/types.js';
@@ -66,6 +67,11 @@ let residentBytes = 0;
 /** float32 per sample per channel — what the buffer actually costs. */
 export function bufferBytes(buffer: AudioBuffer): number {
   return buffer.length * buffer.numberOfChannels * 4;
+}
+
+function trace(step: string, path: string): void {
+  // eslint-disable-next-line no-console
+  console.info(`[audio-cache] ${step} — ${path.split(/[\\/]/).pop() ?? path}`);
 }
 
 export function getCached(fileId: FileId): CachedAudio | undefined {
@@ -193,11 +199,21 @@ export async function loadAudio(
   if (inFlight) return inFlight;
 
   const task = (async () => {
+    // Breadcrumbs.  decodeAudioData is native code: when it takes the renderer
+    // process down there is no exception and no stack, only a window painted
+    // in its own background colour.  The last line printed says which step and
+    // which file it died on.  (console.info — the main process forwards it to
+    // the terminal in dev and drops it in a packaged build.)
+    trace('fetch', path);
     const resp = await fetch(toFileUrl(path));
     if (!resp.ok) throw new Error(`오디오 로드 실패 (${resp.status}): ${path}`);
     const bytes = await resp.arrayBuffer();
+    trace(`decode ${(bytes.byteLength / 1048576).toFixed(1)}MB`, path);
     const buffer = await ctx.decodeAudioData(bytes);
-    return analyzeBuffer(fileId, buffer);
+    trace(`analyze ${buffer.duration.toFixed(1)}s`, path);
+    const entry = analyzeBuffer(fileId, buffer);
+    trace('done', path);
+    return entry;
   })();
 
   pending.set(fileId, task);
@@ -208,21 +224,11 @@ export async function loadAudio(
   }
 }
 
-// ── Decode-only context ───────────────────────────────────────────────────────
-// The Edit window must draw waveforms before anyone presses play, and a live
-// AudioContext cannot be created without a user gesture.  An
-// OfflineAudioContext has decodeAudioData too and needs no gesture, so the UI
-// decodes through this one and the transport keeps its own live context.
-
-let decodeCtx: OfflineAudioContext | null = null;
-
-export function decodeContext(): OfflineAudioContext | null {
-  if (decodeCtx) return decodeCtx;
-  const Ctor = (globalThis as unknown as { OfflineAudioContext?: typeof OfflineAudioContext }).OfflineAudioContext;
-  if (!Ctor) return null;
-  try { decodeCtx = new Ctor(1, 1, 48_000); } catch { decodeCtx = null; }
-  return decodeCtx;
-}
+// ── Decode context ────────────────────────────────────────────────────────────
+// Re-exported so DAW code keeps importing it from here.  It is the app-wide
+// live AudioContext — see audio/decode-context.ts for why decoding a song
+// through a one-frame OfflineAudioContext kills the renderer outright.
+export { decodeContext };
 
 export type DecodeProgress = (done: number, total: number) => void;
 
