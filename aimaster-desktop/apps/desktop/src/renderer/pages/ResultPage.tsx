@@ -45,6 +45,9 @@ import { useIsMobile } from '../hooks/useIsMobile.js';
 import { AnalyzerPanelStack } from '../components/AnalyzerPanelStack.js';
 import { reportFailure } from '../utils/reportFailure.js';
 import { toFileUrl } from '../utils/fileUrl.js';
+import { useDawTransport } from '../hooks/useDawTransport.js';
+import { useWorkspaceStore } from '../stores/workspaceStore.js';
+import { useBottomZoneHeight } from '../components/daw/DawWorkspaceChrome.js';
 
 // ── Feature flags ─────────────────────────────────────────────────────────────
 // Live WASM-based analysis (BS.1770 loudness, spectrum FFT, stereo scope)
@@ -151,6 +154,9 @@ function PreviewPlayer({
   targetLufs?: number | undefined;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
+  // Hand this element to the DAW transport layer so Space / Home / loop /
+  // scrub shortcuts drive it from anywhere in the app.
+  useDawTransport(audioRef);
   const [playing, setPlaying]   = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -1272,6 +1278,8 @@ export default function ResultPage() {
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
   const isMobile        = useIsMobile();
+  const showRightRack   = useWorkspaceStore((s) => s.panels.rightRack);
+  const bottomZoneHeight = useBottomZoneHeight();
   // Mobile Result: advanced info (LUFS/Waveform) is collapsed by default so
   // the core flow stays 확인 → 미리듣기 → 저장.
   const [mobileAdvanced, setMobileAdvanced] = useState(false);
@@ -1594,13 +1602,19 @@ export default function ResultPage() {
           )}
 
           <div className="h-4" />
+          {/* Keeps the last card clear of the fixed DAW bottom zone. */}
+          <div style={{ height: bottomZoneHeight }} />
         </div>
         </div>{/* end left scroll */}
 
-        {/* ── Right: fine-tuning panel (scrollable) ──────────────────────── */}
-        <div className="w-64 shrink-0 border-l border-zinc-800 bg-zinc-900/20 overflow-y-auto">
-          <TweakPanel onReMaster={handleReMaster} />
-        </div>
+        {/* ── Right: fine-tuning panel (scrollable) ──────────────────────────
+            Toggled by the DAW "우측 랙" shortcut (Mod+Alt+R). */}
+        {showRightRack && (
+          <div className="w-64 shrink-0 border-l border-zinc-800 bg-zinc-900/20 overflow-y-auto">
+            <TweakPanel onReMaster={handleReMaster} />
+            <div style={{ height: bottomZoneHeight }} />
+          </div>
+        )}
       </div>
     </div>
   );

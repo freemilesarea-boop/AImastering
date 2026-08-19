@@ -16,10 +16,13 @@ import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
 import QCPage       from './pages/QCPage.js';
+import DawPage      from './pages/DawPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
+import { useDawShortcuts } from './shortcuts/useDawShortcuts.js';
+import DawWorkspaceChrome from './components/daw/DawWorkspaceChrome.js';
 
 // Dev-only: analyzer streaming smoke route — only on ?dev=analyzer-stream URL.
 // Named export → wrap in a default-export shim for React.lazy.
@@ -228,6 +231,24 @@ function AccountButton() {
   );
 }
 
+/** Entry point into the multitrack workspace (also on Mod+Alt+D). */
+function DawButton() {
+  const page = useAppStore((s) => s.currentPage);
+  const setPage = useAppStore((s) => s.setPage);
+  if (page === 'daw') return null;
+  return (
+    <button
+      onClick={() => setPage('daw')}
+      title="멀티트랙 Edit / Mix 워크스페이스 (Mod+Alt+D)"
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      className="fixed top-2.5 right-24 z-40 text-[12px] px-3 py-1.5 rounded-lg
+                 bg-zinc-900/70 border border-zinc-700 text-zinc-400 hover:text-zinc-100"
+    >
+      DAW
+    </button>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -256,6 +277,10 @@ function AppInner() {
   const loadLicense = useLicenseStore((s) => s.load);
   // Mobile width (<640px) = Guided Flow only (no Pro controls / TweakPage).
   const isMobile = useIsMobile();
+
+  // DAW keyboard layer (Cubase-style shortcuts) — one global listener.
+  // Harmless on mobile (no hardware keyboard), but its chrome is desktop-only.
+  useDawShortcuts();
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
@@ -361,6 +386,8 @@ function AppInner() {
     result:    resultSlot,
     tweak:     tweakSlot,
     qc:        <QCPage />,
+    // Pro Tools-shaped multitrack workspace (Edit + Mix windows).
+    daw:       isMobile ? homeEl : <DawPage />,
     settings:  <SettingsPage />,
   };
 
@@ -388,6 +415,14 @@ function AppInner() {
 
       {/* Toast notifications */}
       <Toast />
+
+      {/* Multitrack workspace entry point (desktop only). */}
+      {!isMobile && <DawButton />}
+
+      {/* DAW workspace chrome — transport / mix console / inspector /
+          MediaBay / shortcut help.  Desktop only; all parts are keyboard
+          toggled (F2, F3, Alt+I, F5, ?). */}
+      {!isMobile && <DawWorkspaceChrome />}
 
       {/* v3.4.3 — auto-update bottom-right card */}
       <UpdateToast />

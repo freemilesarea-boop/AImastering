@@ -40,6 +40,8 @@ const INVOKE_CHANNELS = [
   'support:bundle', 'support:bundle-export', 'support:record-failure',
   // Session save / load (.louisession)
   'session:save', 'session:load',
+  // DAW offline render output (Bounce / Freeze / Consolidate)
+  'daw:write-temp-audio', 'daw:bounce-audio',
   // Updater (v3.4.3)
   'updater:check', 'updater:download', 'updater:quit-and-install',
   'updater:get-status',
