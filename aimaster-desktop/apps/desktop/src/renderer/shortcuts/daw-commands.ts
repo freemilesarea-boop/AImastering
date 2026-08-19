@@ -40,6 +40,8 @@ import { clipWarp } from '../daw/model/warp.js';
 import { declickClip } from '../daw/edit/restore-actions.js';
 import { useRecordingStore } from '../stores/recordingStore.js';
 import { canRecord } from '../daw/model/recording.js';
+import { applySlides, arpeggiate, strum } from '../daw/edit/note-tools.js';
+import { captureAsPattern } from '../daw/model/patterns.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
 import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips } from '../daw/model/session-ops.js';
@@ -82,7 +84,8 @@ export type DawCommandId =
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
   | 'daw.showRestore' | 'daw.declick'
-  | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection';
+  | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
+  | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -603,6 +606,68 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       } catch (err) {
         notify((err as Error).message, 'warning');
       }
+    },
+
+    // ── FL: step sequencer · patterns · note tools ─────────────────────────
+    'daw.showSteps': () => {
+      daw().setWindow('steps');
+      notify('Channel Rack');
+    },
+
+    'daw.arpeggiate': () => {
+      const context = midiContext();
+      if (!context) return;
+      const selected = context.notes.filter((n) => context.ids.has(n.id));
+      if (selected.length === 0) { notify('노트를 선택하세요', 'warning'); return; }
+      const rate = currentGridSec(daw().session.tempoBpm);
+      const arped = arpeggiate(selected, { rateSec: rate, direction: 'up' });
+      writeNotes(context.trackId, context.clipId, [
+        ...context.notes.filter((n) => !context.ids.has(n.id)),
+        ...arped,
+      ]);
+      notify(`아르페지오 ${arped.length}노트 · ${(rate * 1000).toFixed(0)}ms 간격`, 'success');
+    },
+
+    'daw.strum': () => {
+      const context = midiContext();
+      if (!context) return;
+      const selected = context.notes.filter((n) => context.ids.has(n.id));
+      if (selected.length === 0) { notify('노트를 선택하세요', 'warning'); return; }
+      const strummed = strum(selected, { spreadSec: 0.022, direction: 'up' });
+      writeNotes(context.trackId, context.clipId, [
+        ...context.notes.filter((n) => !context.ids.has(n.id)),
+        ...strummed,
+      ]);
+      notify('스트럼 — 끝은 함께 끝납니다', 'success');
+    },
+
+    'daw.slide': () => {
+      const context = midiContext();
+      if (!context) return;
+      const selected = context.notes.filter((n) => context.ids.has(n.id));
+      if (selected.length < 2) { notify('두 개 이상의 노트를 선택하세요', 'warning'); return; }
+      const slid = applySlides(selected, { bendRangeSemitones: 2 });
+      const changed = slid.filter((n) => n.expression.length > 0).length;
+      writeNotes(context.trackId, context.clipId, [
+        ...context.notes.filter((n) => !context.ids.has(n.id)),
+        ...slid,
+      ]);
+      notify(changed > 0
+        ? `슬라이드 ${changed}개 — 피치벤드로 기록`
+        : '붙일 만한 간격이 없습니다 (7반음 초과는 건너뜁니다)', changed > 0 ? 'success' : 'warning');
+    },
+
+    'daw.capturePattern': () => {
+      const state = daw();
+      const open = useMidiEditorStore.getState().open;
+      if (!open) { notify('Key Editor 에서 파트를 여세요', 'warning'); return; }
+      const captured = captureAsPattern(
+        state.session, open.trackId, open.clipId,
+        findClip(state.session, open.trackId, open.clipId)?.name ?? 'Pattern',
+        state.session.tempoBpm);
+      if (!captured) { notify('이미 패턴에 링크된 클립입니다', 'warning'); return; }
+      state.apply(() => captured.session);
+      notify(`${captured.pattern.name} 패턴으로 저장 — 이 클립은 이제 링크입니다`, 'success');
     },
 
     // ── Recording ─────────────────────────────────────────────────────────

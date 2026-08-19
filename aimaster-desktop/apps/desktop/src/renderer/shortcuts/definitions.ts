@@ -73,7 +73,8 @@ export type CommandId =
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
   | 'daw.showRestore' | 'daw.declick'
-  | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection';
+  | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
+  | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -316,6 +317,16 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '카운트인 · 프리롤 · 펀치를 계획대로 실행 (DAW 에서는 Numpad * 도 같은 동작)', available: true },
   { id: 'daw.punchFromSelection', group: 'daw', label: '선택 구간을 펀치로', chords: ['Mod+Shift+P'],
     note: '선택한 구간을 펀치 인/아웃으로 설정', available: true },
+  { id: 'daw.showSteps', group: 'daw', label: 'Channel Rack (스텝 시퀀서)', chords: ['Mod+Alt+Q'],
+    note: '스텝 그리드 · 패턴 라이브러리', available: true },
+  { id: 'daw.arpeggiate', group: 'daw', label: '아르페지오', chords: ['Mod+Alt+A'],
+    note: '선택한 코드를 그리드 속도로 펼칩니다', available: true },
+  { id: 'daw.strum', group: 'daw', label: '스트럼', chords: ['Mod+Alt+X'],
+    note: '블록 코드를 손으로 친 것처럼 — 끝은 함께 끝납니다', available: true },
+  { id: 'daw.slide', group: 'daw', label: '슬라이드 (포르타멘토)', chords: ['Mod+Alt+Z'],
+    note: '앞 노트에서 벤드해 들어옵니다 — 실제 피치벤드 데이터', available: true },
+  { id: 'daw.capturePattern', group: 'daw', label: '클립을 패턴으로', chords: ['Mod+Alt+O'],
+    note: '노트를 라이브러리로 옮기고 클립을 링크로 만듭니다', available: true },
   { id: 'daw.showRestore', group: 'daw', label: 'Restoration (노이즈 · 클릭)', chords: ['Mod+Alt+N'],
     note: '노이즈 프로파일 학습 후 감산 · 클릭 스캔 후 AR 복원', available: true },
   { id: 'daw.declick', group: 'daw', label: '클립 디클릭', chords: ['Mod+Shift+K'],

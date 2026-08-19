@@ -20,6 +20,7 @@ import ReferencePanel from '../components/daw/reference/ReferencePanel.js';
 import WarpEditor from '../components/daw/warp/WarpEditor.js';
 import RestorePanel from '../components/daw/restore/RestorePanel.js';
 import RecordStrip from '../components/daw/record/RecordStrip.js';
+import StepSequencer from '../components/daw/steps/StepSequencer.js';
 import { createStack } from '../daw/model/stacks.js';
 import { setSessionTempo } from '../daw/model/warp.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
@@ -243,7 +244,7 @@ export default function DawPage() {
       {/* Transport / session chrome */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
         <div className="flex rounded-md overflow-hidden border border-zinc-700 mr-1">
-          {(['edit', 'mix', 'midi', 'chain', 'session', 'warp', 'spectral', 'restore', 'reference'] as const).map((w) => (
+          {(['edit', 'mix', 'midi', 'chain', 'session', 'steps', 'warp', 'spectral', 'restore', 'reference'] as const).map((w) => (
             <button key={w} onClick={() => setWindow(w)}
               className={`px-3 py-1 text-[11px] font-medium transition-colors ${
                 windowMode === w ? 'bg-indigo-600/30 text-indigo-300' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300'}`}
@@ -253,6 +254,7 @@ export default function DawPage() {
               : w === 'midi' ? 'KEY'
               : w === 'chain' ? 'CHAIN'
               : w === 'session' ? 'SESSION'
+              : w === 'steps' ? 'STEPS'
               : w === 'warp' ? 'WARP'
               : w === 'spectral' ? 'SPECTRAL'
               : w === 'restore' ? 'RESTORE'
@@ -349,6 +351,7 @@ export default function DawPage() {
         : windowMode === 'midi' ? <KeyEditor />
         : windowMode === 'chain' ? <DeviceChainView />
         : windowMode === 'session' ? <SessionViewGrid />
+        : windowMode === 'steps' ? <StepSequencer />
         : windowMode === 'warp' ? <WarpEditor />
         : windowMode === 'spectral' ? <SpectralEditor />
         : windowMode === 'restore' ? <RestorePanel />

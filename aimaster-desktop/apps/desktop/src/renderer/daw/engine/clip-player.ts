@@ -17,6 +17,7 @@ import type { MidiNote } from '../model/midi.js';
 import { getCached, loadAudio } from './audio-cache.js';
 import { ensureWarpedBuffer, prepareWarps } from './warp-render.js';
 import { clipWarp } from '../model/warp.js';
+import { clipNotes } from '../model/patterns.js';
 import { findInstrument } from './instruments.js';
 import { makeRng } from '../edit/midi-edit.js';
 import type { MixerEngine } from './mixer-engine.js';
@@ -140,7 +141,7 @@ export class ClipPlayer {
         if (end <= fromSec || clip.startSec >= toSec) continue;
 
         if (clip.kind === 'midi') {
-          this.scheduleMidi(track, clip, channel.input, fromSec, toSec);
+          this.scheduleMidi(session, track, clip, channel.input, fromSec, toSec);
           continue;
         }
         if (this.scheduled.has(clip.id)) continue;
@@ -157,13 +158,16 @@ export class ClipPlayer {
    * which is what lets per-note expression bend a single note.
    */
   private scheduleMidi(
-    track: Track, clip: Clip, destination: AudioNode, fromSec: number, toSec: number,
+    session: DawSession, track: Track, clip: Clip, destination: AudioNode,
+    fromSec: number, toSec: number,
   ): void {
     const instrument = findInstrument(track.instrumentId ?? 'polysynth');
     if (!instrument) return;
     const params = { ...track.instrumentParams };
 
-    for (const note of clip.notes) {
+    // Pattern-backed clips carry no notes of their own — resolve the link so
+    // every placement of a pattern plays the one copy of the phrase.
+    for (const note of clipNotes(session, clip)) {
       if (note.muted) continue;
       const absoluteStart = clip.startSec + note.startSec;
       const absoluteEnd = absoluteStart + note.durationSec;

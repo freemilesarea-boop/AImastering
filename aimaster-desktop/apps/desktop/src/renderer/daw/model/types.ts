@@ -18,6 +18,8 @@ import type { DeviceGraph } from './device-graph.js';
 import type { Rack } from './racks.js';
 import type { SessionGrid } from './session-view.js';
 import type { WarpConfig } from './warp.js';
+import type { Pattern } from './patterns.js';
+import type { StepPattern } from './step-sequencer.js';
 export type {
   ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment, MacroRack,
   DeviceGraph, Rack, SessionGrid,
@@ -93,6 +95,12 @@ export interface Clip {
    * that were never warped.  Read it through `clipWarp()` in model/warp.ts.
    */
   warp?: WarpConfig;
+  /**
+   * A pattern-backed MIDI clip stores no notes of its own — they live in the
+   * session's pattern library, so every placement shares one copy.  Read
+   * through `clipNotes()` in model/patterns.ts, never `clip.notes` directly.
+   */
+  patternId?: string;
 }
 
 /** A take lane.  One playlist is active per track; the rest are alternates. */
@@ -289,4 +297,12 @@ export interface DawSession {
   delayCompensation: boolean;
   /** Clip grid for the Session View (empty until someone uses it). */
   sessionGrid: SessionGrid;
+  /**
+   * Pattern library — phrases written once and placed many times.  Optional so
+   * sessions saved before patterns existed still load; read it through the
+   * helpers in model/patterns.ts, which tolerate its absence.
+   */
+  patterns?: Pattern[];
+  /** Step-sequencer grids, the FL channel rack. */
+  stepPatterns?: StepPattern[];
 }
