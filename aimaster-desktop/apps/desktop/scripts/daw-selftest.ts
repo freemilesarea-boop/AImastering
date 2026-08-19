@@ -19,6 +19,7 @@ import {
 } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { shouldAdoptQueue } from '../src/renderer/daw/model/import-audio.js';
+import { evictionPlan } from '../src/renderer/daw/engine/audio-cache.js';
 import {
   separateAt, splitClip, healSeparation, isHealable, trimToSelection, clearRange,
   duplicateSelection, nudgeSelection, slipSelection, setClipGain, nudgeClipGain,
@@ -818,6 +819,48 @@ check('a session with work in it is never overwritten by the home screen', () =>
   // those is still empty as far as the user is concerned.
   const scaffolding = addTrack(createSession('working'), createTrack('Bus', 'aux'));
   assert(shouldAdoptQueue(scaffolding, 5), 'buses alone do not block the adoption');
+});
+
+// ── Decoded-audio budget ──────────────────────────────────────────────────────
+// Twenty five-minute songs decode to well over two gigabytes.  Holding them
+// all is what killed the renderer — a black window with no error, because the
+// process that would have reported one was gone.
+
+check('the cache is bounded by bytes, not by how many files it holds', () => {
+  const MB = 1024 * 1024;
+  // Twelve short loops fit comfortably; the count rule alone would keep them.
+  const loops = Array.from({ length: 12 }, (_, i) => ({ id: `f${i}`, bytes: 4 * MB }));
+  assert(evictionPlan(loops, 'f11', 12, 700 * MB).length === 0,
+    'twelve small files are inside both budgets');
+
+  // The same twelve entries as full-length songs are 1.4 GB and must be cut.
+  const songs = Array.from({ length: 12 }, (_, i) => ({ id: `f${i}`, bytes: 115 * MB }));
+  const dropped = evictionPlan(songs, 'f11', 12, 700 * MB);
+  assert(dropped.length > 0, 'twelve songs exceed the byte budget');
+  const kept = songs.filter((e) => !dropped.includes(e.id));
+  const keptBytes = kept.reduce((sum, e) => sum + e.bytes, 0);
+  assert(keptBytes <= 700 * MB, `what survives fits the budget — ${(keptBytes / MB) | 0} MB`);
+});
+
+check('eviction takes the oldest first and never the file just asked for', () => {
+  const MB = 1024 * 1024;
+  const entries = Array.from({ length: 5 }, (_, i) => ({ id: `f${i}`, bytes: 200 * MB }));
+  const dropped = evictionPlan(entries, 'f4', 12, 700 * MB);
+  assert(dropped[0] === 'f0', 'the least-recently-used goes first');
+  assert(!dropped.includes('f4'), 'the file the caller wants is never the one evicted');
+  assert(dropped.length === 2, `two of five 200 MB files go — got ${dropped.length}`);
+});
+
+check('a cache already inside its budget evicts nothing', () => {
+  assert(evictionPlan([], 'f0', 12, 1).length === 0, 'an empty cache has nothing to drop');
+  assert(evictionPlan([{ id: 'a', bytes: 10 }], 'a', 12, 1000).length === 0,
+    'one small file stays');
+});
+
+check('one oversized file is kept rather than evicted into uselessness', () => {
+  // A single file bigger than the whole budget still has to be playable.
+  const plan = evictionPlan([{ id: 'huge', bytes: 900 * 1024 * 1024 }], 'huge', 12, 700 * 1024 * 1024);
+  assert(plan.length === 0, 'the only file present is the one the caller needs');
 });
 
 const passed = results.filter((r) => r.pass).length;

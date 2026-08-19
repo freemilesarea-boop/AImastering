@@ -83,11 +83,32 @@ OfflineAudioContext 렌더에서 타이머가 돌지 않아 **바운스 결과�
 보정도 같이 따라갑니다. `Insert.latencySamples`는 표시용 캐시이자, 이 빌드에
 없는 플러그인을 쓴 세션을 열었을 때의 폴백입니다.
 
+## 디코딩 메모리 — 지켜야 하는 규칙
+
+48 kHz 스테레오 5분 곡 하나가 디코딩되면 **float32로 약 115 MB**입니다.
+홈 큐는 최대 20곡이므로, 전부 한꺼번에 디코딩하면 2 GB가 넘는 요청이 한 번에
+들어가고 렌더러 프로세스가 죽습니다. 렌더러가 죽으면 창은 자기
+`backgroundColor`(`#09090b`)만 남습니다 — **에러 메시지 없는 검은 화면**의
+정체가 이것입니다. 보고할 렌더러가 이미 없기 때문입니다.
+
+`audio-cache.ts`가 강제하는 두 가지:
+
+1. **디코딩은 순차적이다.** `decodeForDisplay` · `preloadAll` 은 한 번에 한
+   파일만 처리합니다. `Promise.all(files.map(loadAudio))` 은 금지 — 최대 메모리가
+   "캐시 + 한 곡"이 아니라 "세션 전체"가 됩니다.
+2. **캐시 한도는 개수가 아니라 바이트다.** 5분짜리 12곡과 8마디 루프 12개는
+   같은 개수이고 메모리는 100배 차이입니다 (`MAX_CACHE_BYTES` = 700 MB,
+   `evictionPlan()` 이 순수 함수로 규칙을 들고 있습니다).
+
+버퍼가 밀려나도 **피크 엔벨로프와 온셋 마크는 남습니다**(`getMeta`). 파형은
+계속 그려지고 Tab to Transient도 그대로 동작하며, 샘플이 다시 필요해지는
+순간에만 재디코딩합니다.
+
 ## 테스트
 
 ```
-pnpm --filter @aimaster/desktop test:daw          # 모델 · 편집 · 라우팅 · 컴핑 · IO (61)
-pnpm --filter @aimaster/desktop test:daw-engine   # 실제 오프라인 렌더 증명 (12)
+pnpm --filter @aimaster/desktop test:daw          # 모델 · 편집 · 라우팅 · 컴핑 · IO (67)
+pnpm --filter @aimaster/desktop test:daw-engine   # 실제 오프라인 렌더 증명 (25)
 pnpm --filter @aimaster/desktop test:shortcuts    # 키보드 레이어 (34)
 ```
 

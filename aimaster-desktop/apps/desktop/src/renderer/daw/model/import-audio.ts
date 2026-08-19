@@ -5,7 +5,7 @@
 // is never longer than its source.
 
 import { addFile, addTrack, createClip, createTrack, updateClips } from './session-ops.js';
-import { decodeForDisplay, getCached } from '../engine/audio-cache.js';
+import { decodeForDisplay, getMeta, type DecodeProgress } from '../engine/audio-cache.js';
 import { nextId } from './ids.js';
 import type { AudioFileRef, DawSession, TrackId } from './types.js';
 
@@ -42,6 +42,7 @@ function baseName(p: string): string {
  */
 export async function importAudioFiles(
   session: DawSession, paths: readonly string[], atSec = 0,
+  onProgress?: DecodeProgress,
 ): Promise<ImportAudioResult> {
   const refs: AudioFileRef[] = paths.map((p) => ({
     id: nextId('file'),
@@ -52,7 +53,7 @@ export async function importAudioFiles(
     channels: 2,
   }));
 
-  const { failed } = await decodeForDisplay(refs);
+  const { failed } = await decodeForDisplay(refs, onProgress);
   const failedSet = new Set(failed);
 
   let out = session;
@@ -60,13 +61,16 @@ export async function importAudioFiles(
 
   for (const ref of refs) {
     if (failedSet.has(ref.path)) continue;
-    const cached = getCached(ref.id);
-    const resolved: AudioFileRef = cached
+    // Read the duration off the metadata, not the buffer: with an album's
+    // worth of files the earliest buffers are already evicted by the time the
+    // last one lands, and a clip built from a missing buffer would be 0 s long.
+    const info = getMeta(ref.id);
+    const resolved: AudioFileRef = info
       ? {
           ...ref,
-          durationSec: cached.buffer.duration,
-          sampleRate: cached.buffer.sampleRate,
-          channels: cached.buffer.numberOfChannels,
+          durationSec: info.durationSec,
+          sampleRate: info.sampleRate,
+          channels: info.channels,
         }
       : ref;
 

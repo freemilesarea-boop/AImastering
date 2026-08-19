@@ -22,14 +22,15 @@ import {
   createSession, createTrack, findTrack, setInsert, setSend, updateClips, updateTrack,
 } from '../src/renderer/daw/model/session-ops.js';
 import { createNote, from7bit, resetNoteIds, setExpression } from '../src/renderer/daw/model/midi.js';
-import { clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
 import {
   linearGraph, addParallelBranch, addSend, createNode, deviceOrder, layout,
 } from '../src/renderer/daw/model/device-graph.js';
 import { buildRack, rackNode, setRackMacro } from '../src/renderer/daw/model/racks.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { setVolumeDb, toggleMute, toggleSolo } from '../src/renderer/daw/model/mixer-math.js';
-import { analyzeBuffer, clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
+import {
+  analyzeBuffer, cacheSize, clearAudioCache, getCached, getMeta, preloadAll, transientsFor,
+} from '../src/renderer/daw/engine/audio-cache.js';
 import { renderSession } from '../src/renderer/daw/engine/offline-render.js';
 import { defaultParams } from '../src/renderer/daw/engine/plugins.js';
 import type { DawSession } from '../src/renderer/daw/model/types.js';
@@ -603,6 +604,73 @@ async function main(): Promise<void> {
     assert(quietRms > 0.01, 'the rack passes audio');
     assert(Math.abs(loudRms - quietRms) > quietRms * 0.05,
       `BODY changes the sound — ${quietRms.toFixed(4)} → ${loudRms.toFixed(4)}`);
+  });
+
+  // ── Decode memory ─────────────────────────────────────────────────────────
+  // Twenty songs decoded in parallel is a multi-gigabyte spike; the renderer
+  // is killed and the window shows nothing but its own background colour.
+
+  await check('files are decoded one at a time, never all at once', async () => {
+    clearAudioCache();
+    const real = new OfflineAudioContext(1, 128, SR) as unknown as BaseAudioContext;
+
+    const originalFetch = globalThis.fetch;
+    (globalThis as { fetch: unknown }).fetch = async () => ({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(16),
+    });
+
+    let inFlight = 0;
+    let peak = 0;
+    const fakeCtx = {
+      decodeAudioData: async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight -= 1;
+        return real.createBuffer(1, 1024, SR);
+      },
+    } as unknown as BaseAudioContext;
+
+    try {
+      const files = Array.from({ length: 8 }, (_, i) => ({ id: `seq${i}`, path: `/tmp/s${i}.wav` }));
+      await preloadAll(fakeCtx, files);
+      assert(peak === 1, `one decode in flight at a time — peaked at ${peak}`);
+      assert(cacheSize() === 8, `all eight landed — cache holds ${cacheSize()}`);
+    } finally {
+      (globalThis as { fetch: unknown }).fetch = originalFetch;
+    }
+  });
+
+  await check('a waveform survives its buffer being evicted', async () => {
+    clearAudioCache();
+    const ctx = new OfflineAudioContext(1, 128, SR);
+
+    // A recognisable file, then enough others to push it out of the cache.
+    // Silence, then a note starting a third of the way in: one unambiguous
+    // onset to remember, and a peak envelope with something in it.
+    const first = ctx.createBuffer(1, SR, SR);
+    const data = first.getChannelData(0);
+    const onsetAt = Math.floor(SR / 3);
+    for (let i = onsetAt; i < data.length; i++) {
+      data[i] = Math.sin((2 * Math.PI * 220 * i) / SR) * 0.9;
+    }
+    analyzeBuffer('keepme', first as unknown as AudioBuffer);
+
+    const onsets = transientsFor('keepme').length;
+    assert(onsets > 0, 'the click was detected before eviction');
+
+    for (let i = 0; i < 14; i++) {
+      analyzeBuffer(`filler${i}`, ctx.createBuffer(1, 1024, SR) as unknown as AudioBuffer);
+    }
+
+    assert(getCached('keepme') === undefined, 'the buffer itself was evicted');
+    const meta = getMeta('keepme');
+    assert(meta !== undefined, 'but the metadata stayed');
+    close(meta!.durationSec, 1, 'the duration is still known', 0.001);
+    assert(meta!.peaks.some((v) => v > 0.5), 'the peak envelope is still drawable');
+    assert(transientsFor('keepme').length === onsets,
+      'and Tab to Transient still finds the same marks');
   });
 
   const passed = results.filter((r) => r.pass).length;
