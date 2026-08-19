@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDawStore, snapToGrid, type EditMode } from '../../../stores/dawStore.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
+import { useRecordingStore } from '../../../stores/recordingStore.js';
 import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import { activePlaylist, clipAt, sessionEndSec } from '../../../daw/model/session-ops.js';
 import { moveClip } from '../../../daw/edit/clip-edit.js';
@@ -108,6 +109,7 @@ export default function EditWindow() {
   // Collapsed stacks fold their members away, so the arrange window stays
   // readable at forty tracks.
   const rows = visibleTracks(session);
+  const recordStatus = useRecordingStore((s) => s.status);
 
   // ── Lane gestures ───────────────────────────────────────────────────────
   const onLaneDown = useCallback((e: React.MouseEvent, track: Track) => {
@@ -280,6 +282,8 @@ export default function EditWindow() {
               onSolo={() => apply((s) => toggleSolo(s, track.id))}
               onMute={() => apply((s) => toggleMute(s, track.id))}
               onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, track.id, dir))}
+              onArm={() => void useRecordingStore.getState().toggleArm(track.id)}
+              recording={recordStatus === 'recording' || recordStatus === 'countIn'}
               onToggleCollapse={() => apply((s) => toggleCollapsed(s, track.id))}
               onUnpack={() => apply((s) => unpackStack(s, track.id))}
               onSmart={() => useDawStore.getState().openSmartControls(track.id)}
@@ -368,7 +372,7 @@ export default function EditWindow() {
 
 function TrackHeader({
   track, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
-  onToggleCollapse, onUnpack, onSmart,
+  onToggleCollapse, onUnpack, onSmart, onArm, recording,
 }: {
   track: Track;
   depth: number;
@@ -378,6 +382,8 @@ function TrackHeader({
   onSolo: () => void;
   onMute: () => void;
   onCyclePlaylist: (dir: 1 | -1) => void;
+  onArm: () => void;
+  recording: boolean;
   onToggleCollapse: () => void;
   onUnpack: () => void;
   onSmart: () => void;
@@ -435,6 +441,17 @@ function TrackHeader({
         <span className="text-[8px] text-zinc-600 truncate">{summary}</span>
       )}
       <div className="flex items-center gap-1">
+        {(track.kind === 'audio' || track.kind === 'instrument') && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onArm(); }}
+            title={track.recordArm ? '녹음 무장 해제' : '녹음 무장 (R)'}
+            className={`w-5 h-5 rounded text-[9px] border ${track.recordArm
+              ? (recording
+                ? 'bg-red-600 border-red-400 text-white animate-pulse'
+                : 'bg-red-600/30 border-red-500/60 text-red-300')
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+          >●</button>
+        )}
         <button onClick={onSolo}
           className={`w-5 h-5 rounded text-[9px] border ${track.solo
             ? 'bg-yellow-500/30 border-yellow-500/60 text-yellow-300'

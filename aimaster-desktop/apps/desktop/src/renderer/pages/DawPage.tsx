@@ -19,6 +19,7 @@ import SpectralEditor from '../components/daw/spectral/SpectralEditor.js';
 import ReferencePanel from '../components/daw/reference/ReferencePanel.js';
 import WarpEditor from '../components/daw/warp/WarpEditor.js';
 import RestorePanel from '../components/daw/restore/RestorePanel.js';
+import RecordStrip from '../components/daw/record/RecordStrip.js';
 import { createStack } from '../daw/model/stacks.js';
 import { setSessionTempo } from '../daw/model/warp.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
@@ -338,6 +339,8 @@ export default function DawPage() {
         <div className="flex-1" />
         {busy && <span className="text-[11px] text-amber-400">{busy}</span>}
       </div>
+
+      <RecordStrip />
 
       <SmartControlPanel />
 

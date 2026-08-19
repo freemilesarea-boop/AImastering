@@ -13,6 +13,8 @@ import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
 import { getCached, loadAudio } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
+import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
+import type { RecordPlan } from '../model/recording.js';
 
 export interface LoopState {
   enabled: boolean;
@@ -45,11 +47,115 @@ class DawRuntime {
   onPosition: ((sec: number) => void) | null = null;
   /** Fired when playback stops on its own (end of session). */
   onStopped: (() => void) | null = null;
+  /** Fired when a punch-out ends a recording by itself. */
+  onPunchOut: (() => void) | null = null;
+
+  /** Live input, open only while a track is armed. */
+  private capture: InputCapture | null = null;
+  private monitorTrackId: TrackId | null = null;
+  private punchOutAtSec: number | null = null;
 
   get isReady(): boolean { return this.ctx !== null; }
   get isPlaying(): boolean { return this.player?.isPlaying ?? false; }
   get sampleRate(): number { return this.ctx?.sampleRate ?? 48_000; }
   get mixer(): MixerEngine | null { return this.engine; }
+  get context(): AudioContext | null { return this.ctx; }
+  get input(): InputCapture | null { return this.capture; }
+
+  // ── Input ───────────────────────────────────────────────────────────────
+
+  /**
+   * Open (or re-open) the audio input.  Monitoring is a separate decision from
+   * capturing: the input is routed into the armed track's channel only when
+   * asked, so the player hears themselves through their own inserts.
+   */
+  async openInput(
+    session: DawSession, trackId: TrackId | null,
+    options: { deviceId?: string | null; channels?: 1 | 2; monitor?: boolean } = {},
+  ): Promise<InputCapture | null> {
+    if (!this.ensure(session.sampleRate)) return null;
+    const ctx = this.ctx;
+    if (!ctx) return null;
+    await ctx.resume();
+    this.closeInput();
+    this.sync(session);
+
+    const capture = await openCapture(ctx, {
+      deviceId: options.deviceId ?? null,
+      channels: options.channels ?? 1,
+    });
+    this.capture = capture;
+    if (options.monitor && trackId) this.setMonitoring(trackId, true);
+    return capture;
+  }
+
+  /** Route (or unroute) the live input through a track's channel. */
+  setMonitoring(trackId: TrackId | null, on: boolean): void {
+    const capture = this.capture;
+    if (!capture) return;
+    if (this.monitorTrackId) {
+      try { capture.monitorNode.disconnect(); } catch { /* not connected */ }
+      this.monitorTrackId = null;
+    }
+    if (!on || !trackId) return;
+    const channel = this.engine?.channel(trackId);
+    if (!channel) return;
+    capture.monitorNode.connect(channel.input);
+    this.monitorTrackId = trackId;
+  }
+
+  closeInput(): void {
+    if (!this.capture) return;
+    this.setMonitoring(null, false);
+    this.capture.close();
+    this.capture = null;
+    this.punchOutAtSec = null;
+  }
+
+  /**
+   * Roll for a take.  Count-in clicks play over silence first, then the
+   * transport starts at the plan's pre-roll point and capture begins with it —
+   * the pre-roll is trimmed after the fact so it can be recovered if wanted.
+   */
+  async record(session: DawSession, plan: RecordPlan): Promise<void> {
+    if (!this.ensure(session.sampleRate)) return;
+    const ctx = this.ctx;
+    const capture = this.capture;
+    if (!ctx || !capture) throw new Error('입력이 열려 있지 않습니다');
+    await ctx.resume();
+    await this.preload(session);
+    this.sync(session);
+    if (!this.player) return;
+
+    let lead = 0.06;
+    if (plan.countInSec > 0) {
+      scheduleCountIn(ctx, ctx.destination, {
+        tempoBpm: session.tempoBpm,
+        beatsPerBar: session.timeSignature[0],
+        bars: Math.round(plan.countInSec / (session.timeSignature[0] * (60 / session.tempoBpm))),
+        when: ctx.currentTime + lead,
+      });
+      lead += plan.countInSec;
+    }
+
+    // Capture starts with the transport, not with the count-in: the clicks are
+    // monitoring, not material.
+    this.punchOutAtSec = plan.recordEndSec;
+    globalThis.setTimeout(() => capture.start(), Math.max(0, (lead - 0.02) * 1000));
+    this.player.start(session, plan.transportStartSec, lead);
+    this.startTicking();
+  }
+
+  /** Stop the transport and hand back the tape. */
+  stopRecording(): { channels: Float32Array[]; sampleRate: number } | null {
+    const capture = this.capture;
+    this.punchOutAtSec = null;
+    this.stop();
+    if (!capture) return null;
+    const buffer = capture.stop();
+    if (buffer.isEmpty) return null;
+    return { channels: buffer.toChannels(), sampleRate: buffer.sampleRate };
+  }
 
   /** Create the context on a user gesture, then keep it. */
   ensure(sampleRate = 48_000): boolean {
@@ -126,6 +232,14 @@ class DawRuntime {
       if (!session || !player) return;
 
       const pos = player.position();
+
+      // Punch-out ends the take on its own, sample-late by at most one tick —
+      // the extra audio is trimmed against the plan when the take is committed.
+      if (this.punchOutAtSec !== null && pos >= this.punchOutAtSec) {
+        this.punchOutAtSec = null;
+        this.onPunchOut?.();
+        return;
+      }
 
       // Loop: wrap at the right locator by re-arming the scheduler there.
       if (this.loop.enabled && this.loop.endSec > this.loop.startSec && pos >= this.loop.endSec) {
@@ -242,6 +356,7 @@ class DawRuntime {
   dispose(): void {
     this.stopAllSlots();
     this.stop();
+    this.closeInput();
     this.engine?.dispose();
     void this.ctx?.close();
     this.ctx = null;

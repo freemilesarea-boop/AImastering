@@ -72,7 +72,8 @@ export type CommandId =
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
-  | 'daw.showRestore' | 'daw.declick';
+  | 'daw.showRestore' | 'daw.declick'
+  | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -110,7 +111,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'transport.playPause',    group: 'transport', label: '재생 / 정지', chords: ['Space'],
     note: '프리뷰 재생 / 일시정지', available: true },
   { id: 'transport.record',       group: 'transport', label: '녹음 시작',   chords: ['NumpadMultiply'],
-    note: '마스터링 앱에는 녹음 트랙이 없습니다 — 대신 Mod+O 로 파일을 불러오세요', available: false },
+    note: '마스터링 앱에는 녹음 트랙이 없습니다 — DAW 워크스페이스에서는 이 키가 녹음을 시작합니다', available: false },
   { id: 'transport.returnToZero', group: 'transport', label: '재생 위치 0점으로', chords: ['NumpadDecimal', 'Home'],
     note: '재생 헤드를 0초로 (루프 ON 이면 루프 시작점으로)', available: true },
   { id: 'transport.metronome',    group: 'transport', label: '메트로놈 on/off', chords: ['KeyC'],
@@ -309,6 +310,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '트랜지언트마다 마커를 찍고 그리드에 스냅', available: true },
   { id: 'daw.toggleWarp', group: 'daw', label: 'Warp 켜기 / 끄기', chords: ['Alt+W'],
     note: '선택한 클립의 워프 on/off', available: true },
+  { id: 'daw.toggleArm', group: 'daw', label: '녹음 무장 / 해제', chords: ['KeyR'],
+    note: '커서가 있는 트랙을 무장하고 입력을 엽니다', available: true },
+  { id: 'daw.record', group: 'daw', label: '녹음 시작 / 정지', chords: ['Mod+KeyR'],
+    note: '카운트인 · 프리롤 · 펀치를 계획대로 실행 (DAW 에서는 Numpad * 도 같은 동작)', available: true },
+  { id: 'daw.punchFromSelection', group: 'daw', label: '선택 구간을 펀치로', chords: ['Mod+Shift+P'],
+    note: '선택한 구간을 펀치 인/아웃으로 설정', available: true },
   { id: 'daw.showRestore', group: 'daw', label: 'Restoration (노이즈 · 클릭)', chords: ['Mod+Alt+N'],
     note: '노이즈 프로파일 학습 후 감산 · 클릭 스캔 후 AR 복원', available: true },
   { id: 'daw.declick', group: 'daw', label: '클립 디클릭', chords: ['Mod+Shift+K'],

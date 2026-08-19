@@ -38,6 +38,8 @@ import {
 } from '../daw/edit/warp-actions.js';
 import { clipWarp } from '../daw/model/warp.js';
 import { declickClip } from '../daw/edit/restore-actions.js';
+import { useRecordingStore } from '../stores/recordingStore.js';
+import { canRecord } from '../daw/model/recording.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
 import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips } from '../daw/model/session-ops.js';
@@ -79,7 +81,8 @@ export type DawCommandId =
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
-  | 'daw.showRestore' | 'daw.declick';
+  | 'daw.showRestore' | 'daw.declick'
+  | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -602,6 +605,44 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       }
     },
 
+    // ── Recording ─────────────────────────────────────────────────────────
+    'daw.toggleArm': () => {
+      const state = daw();
+      const trackId = state.focusedTrackId
+        ?? state.session.tracks.find((t) => t.kind === 'audio')?.id ?? null;
+      if (!trackId) { notify('오디오 트랙이 없습니다', 'warning'); return; }
+      const track = findTrack(state.session, trackId);
+      if (!track) return;
+      void useRecordingStore.getState().toggleArm(trackId);
+      notify(track.recordArm ? `${track.name} 무장 해제` : `${track.name} 녹음 무장`);
+    },
+
+    'daw.record': () => {
+      const recorder = useRecordingStore.getState();
+      if (recorder.status === 'recording' || recorder.status === 'countIn') {
+        void recorder.stop();
+        notify('녹음 정지');
+        return;
+      }
+      const readiness = canRecord(daw().session, recorder.settings);
+      if (!readiness.ok) { notify(readiness.reason ?? '녹음할 수 없습니다', 'warning'); return; }
+      void recorder.start();
+      notify('녹음 시작');
+    },
+
+    'daw.punchFromSelection': () => {
+      const state = daw();
+      const sel = state.selection;
+      const length = Math.abs(sel.endSec - sel.startSec);
+      if (length < 0.05) { notify('구간을 먼저 선택하세요', 'warning'); return; }
+      useRecordingStore.getState().setSettings({
+        punchEnabled: true,
+        punchStartSec: Math.min(sel.startSec, sel.endSec),
+        punchEndSec: Math.max(sel.startSec, sel.endSec),
+      });
+      notify(`펀치 ${Math.min(sel.startSec, sel.endSec).toFixed(3)}–${Math.max(sel.startSec, sel.endSec).toFixed(3)}s`);
+    },
+
     // ── Restoration ───────────────────────────────────────────────────────
     'daw.showRestore': () => {
       daw().setWindow('restore');
@@ -750,6 +791,19 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
     'transport.returnToZero': () => {
       const state = daw();
       state.seek(state.loopEnabled ? state.loopStartSec : 0);
+    },
+    // Numpad * means nothing in the mastering app; in the DAW it is record.
+    'transport.record': () => {
+      const recorder = useRecordingStore.getState();
+      if (recorder.status === 'recording' || recorder.status === 'countIn') {
+        void recorder.stop();
+        notify('녹음 정지');
+        return;
+      }
+      const readiness = canRecord(daw().session, recorder.settings);
+      if (!readiness.ok) { notify(readiness.reason ?? '녹음할 수 없습니다', 'warning'); return; }
+      void recorder.start();
+      notify('녹음 시작');
     },
     'transport.toggleLoop': () => {
       daw().toggleLoop();
