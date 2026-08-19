@@ -29,7 +29,8 @@ import { buildRack, rackNode, setRackMacro } from '../src/renderer/daw/model/rac
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { setVolumeDb, toggleMute, toggleSolo } from '../src/renderer/daw/model/mixer-math.js';
 import {
-  analyzeBuffer, cacheSize, clearAudioCache, getCached, getMeta, preloadAll, transientsFor,
+  analyzeBuffer, cacheSize, clearAudioCache, getCached, getMeta, pcmToBuffer, preloadAll,
+  transientsFor,
 } from '../src/renderer/daw/engine/audio-cache.js';
 import { renderSession } from '../src/renderer/daw/engine/offline-render.js';
 import { defaultParams } from '../src/renderer/daw/engine/plugins.js';
@@ -671,6 +672,57 @@ async function main(): Promise<void> {
     assert(meta!.peaks.some((v) => v > 0.5), 'the peak envelope is still drawable');
     assert(transientsFor('keepme').length === onsets,
       'and Tab to Transient still finds the same marks');
+  });
+
+  // ── Main-process decoding ─────────────────────────────────────────────────
+  // FFmpeg hands back raw interleaved float32 and the renderer copies it into
+  // an AudioBuffer, so decodeAudioData never runs in the process that draws.
+
+  await check('main-process PCM becomes an AudioBuffer with the channels intact', () => {
+    const ctx = new OfflineAudioContext(1, 128, SR) as unknown as BaseAudioContext;
+    const frames = 5;
+    const channels = 2;
+    // Left counts up, right counts down: a swapped or mis-strided
+    // de-interleave cannot pass this.
+    const interleaved = new Float32Array(frames * channels);
+    for (let i = 0; i < frames; i++) {
+      interleaved[i * 2] = (i + 1) / 10;
+      interleaved[i * 2 + 1] = -(i + 1) / 10;
+    }
+    const buffer = pcmToBuffer(ctx, {
+      sampleRate: SR, channels, frames,
+      pcm: new Uint8Array(interleaved.buffer.slice(0)),
+    });
+
+    assert(buffer.numberOfChannels === 2, 'both channels are present');
+    assert(buffer.length === frames, `frame count survives — got ${buffer.length}`);
+    assert(buffer.sampleRate === SR, 'the sample rate is what main reported');
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    for (let i = 0; i < frames; i++) {
+      close(left[i]!, (i + 1) / 10, `left sample ${i}`, 1e-6);
+      close(right[i]!, -(i + 1) / 10, `right sample ${i}`, 1e-6);
+    }
+  });
+
+  await check('a mono decode stays mono rather than being padded to stereo', () => {
+    const ctx = new OfflineAudioContext(1, 128, SR) as unknown as BaseAudioContext;
+    const samples = new Float32Array([0.25, 0.5, -0.75]);
+    const buffer = pcmToBuffer(ctx, {
+      sampleRate: SR, channels: 1, frames: 3,
+      pcm: new Uint8Array(samples.buffer.slice(0)),
+    });
+    assert(buffer.numberOfChannels === 1, 'one channel in, one channel out');
+    close(buffer.getChannelData(0)[2]!, -0.75, 'the last sample survives', 1e-6);
+  });
+
+  await check('an empty decode is an error, never a silent zero-length clip', () => {
+    const ctx = new OfflineAudioContext(1, 128, SR) as unknown as BaseAudioContext;
+    let threw = false;
+    try {
+      pcmToBuffer(ctx, { sampleRate: SR, channels: 2, frames: 0, pcm: new Uint8Array(0) });
+    } catch { threw = true; }
+    assert(threw, 'zero frames is reported instead of producing an unusable buffer');
   });
 
   const passed = results.filter((r) => r.pass).length;

@@ -83,6 +83,40 @@ OfflineAudioContext 렌더에서 타이머가 돌지 않아 **바운스 결과�
 보정도 같이 따라갑니다. `Insert.latencySamples`는 표시용 캐시이자, 이 빌드에
 없는 플러그인을 쓴 세션을 열었을 때의 폴백입니다.
 
+## 디코딩은 렌더러가 하지 않는다
+
+렌더러는 `decodeAudioData` 를 부르지 않습니다. 크로미움 네이티브 코드이고,
+macOS 에서 실제 곡을 넣으면 렌더러 프로세스를 **SIGSEGV** 로 데려갑니다.
+
+```
+[audio-cache] decode 31.6MB — I Like You.wav
+[CRASH] render-process-gone reason=crashed exit=11
+```
+
+잡을 수 있는 예외가 아닙니다. 창에는 `backgroundColor` 만 남고, 보고할
+프로세스가 이미 없으므로 에러도 안 나옵니다 — **검은 화면**의 정체입니다.
+자기가 부른 호출 안에서 프로세스가 죽는 것을 렌더러가 방어할 방법은 없습니다.
+
+그래서 디코딩을 렌더러 밖으로 옮겼습니다.
+
+```
+메인 프로세스               렌더러
+ffprobe  → 채널 · 길이
+ffmpeg   → f32le raw   ──►  createBuffer + copyToChannel
+                            (그냥 메모리 복사 — 폴트 날 수 없다)
+```
+
+`daw:decode-pcm` IPC 하나입니다. ffmpeg 가 죽으면 IPC 하나가 reject 되고 앱이
+그걸 말해줄 뿐, 창은 그대로 살아 있습니다. 덤으로 크로미움이 못 읽는 포맷도
+전부 열립니다.
+
+`decodeAudioData` 폴백은 `window.electronAPI` 자체가 없는 환경 — Node
+셀프테스트 — 전용으로만 남아 있습니다.
+
+브레드크럼(`decode → analyze → done`)은 그대로 둡니다. 네이티브 코드가
+프로세스를 데려가면 스택이 남지 않으므로, 터미널의 마지막 줄이 어느 단계 ·
+어느 파일이었는지 말해주는 유일한 기록입니다 (dev 에서만 출력).
+
 ## 디코딩 컨텍스트 — 절대 오프라인 컨텍스트로 디코딩하지 말 것
 
 `decodeAudioData` 는 **실행 중인** 컨텍스트를 요구하지 않습니다. 크로미움이
