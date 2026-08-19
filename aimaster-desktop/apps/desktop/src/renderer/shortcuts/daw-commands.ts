@@ -31,6 +31,19 @@ import {
 import { importAudioFiles } from '../daw/model/import-audio.js';
 import { bounceSession, commitTrack, consolidateSelection, freezeTrack, unfreezeTrack } from '../daw/engine/offline-render.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
+import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js';
+import { updateClip, trackClips } from '../daw/model/session-ops.js';
+import {
+  quantizeNotes, humanizeNotes, transposeNotes, nudgeVelocity, applyLegato,
+} from '../daw/edit/midi-edit.js';
+import { noteEnd, type MidiNote } from '../daw/model/midi.js';
+import { detectChordTrack, barSeconds } from '../daw/edit/chord-detect.js';
+import { setChordTrack } from '../daw/model/session-ops.js';
+import { reharmonize, formatProgression } from '../daw/model/chords.js';
+import {
+  analyzeClipPitch, applyCorrection, renderClipPitch, tuningSummary,
+} from '../daw/audio/varia-actions.js';
+import { clipEnd } from '../daw/model/session-ops.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import type { CommandFn, NotifyType } from './commands.js';
 import type { CommandId } from './definitions.js';
@@ -45,7 +58,13 @@ export type DawCommandId =
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
   | 'daw.freeze' | 'daw.commit' | 'daw.bounce'
   | 'daw.importAudio' | 'daw.importSession'
-  | 'daw.zoomIn' | 'daw.zoomOut';
+  | 'daw.zoomIn' | 'daw.zoomOut'
+  | 'daw.quantize' | 'daw.humanize' | 'daw.selectAllNotes' | 'daw.legatoNotes'
+  | 'daw.transposeUp' | 'daw.transposeDown'
+  | 'daw.octaveUp' | 'daw.octaveDown'
+  | 'daw.velocityUp' | 'daw.velocityDown'
+  | 'daw.detectChords' | 'daw.reharmonize'
+  | 'daw.analyzeVocal' | 'daw.tuneVocal';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -75,6 +94,43 @@ function selectionOrPlayhead(daw: DawState): TimeSelection {
 export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, CommandFn> {
   const { notify, daw, invoke, openWorkspace } = deps;
   const marks = deps.transients ?? transientsFor;
+
+  // ── Key Editor helpers ──────────────────────────────────────────────────
+
+  /** The part the Key Editor has open, plus the notes it should act on. */
+  const midiContext = (): {
+    trackId: string; clipId: string; notes: MidiNote[]; ids: Set<string>;
+  } | null => {
+    const editor = useMidiEditorStore.getState();
+    const open = editor.open;
+    if (!open) { notify('Key Editor 에서 MIDI 파트를 먼저 여세요', 'warning'); return null; }
+    const track = findTrack(daw().session, open.trackId);
+    const part = track ? trackClips(track).find((c) => c.id === open.clipId) : undefined;
+    if (!part) { notify('열린 MIDI 파트를 찾을 수 없습니다', 'warning'); return null; }
+    const selected = editor.selectedNoteIds;
+    const ids = new Set(selected.length > 0 ? selected : part.notes.map((n) => n.id));
+    return { trackId: open.trackId, clipId: open.clipId, notes: part.notes, ids };
+  };
+
+  /** Write notes back, keeping the part long enough to contain them. */
+  const writeNotes = (trackId: string, clipId: string, notes: MidiNote[]): void => {
+    daw().apply((s) => updateClip(s, trackId, clipId, (c) => ({
+      ...c,
+      notes,
+      durationSec: Math.max(c.durationSec, notes.reduce((m, n) => Math.max(m, noteEnd(n)), 0)),
+    })));
+  };
+
+  const transposeBy = (semitones: number): void => {
+    const context = midiContext();
+    if (!context) return;
+    const editor = useMidiEditorStore.getState();
+    writeNotes(context.trackId, context.clipId, transposeNotes(context.notes, context.ids, {
+      semitones,
+      scale: editor.scaleCorrection ? editor.scale : null,
+    }));
+    notify(`${semitones > 0 ? '+' : ''}${semitones} 반음`);
+  };
 
   const needSelection = (): TimeSelection | null => {
     const sel = currentSelection(daw());
@@ -319,7 +375,149 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
 
     'daw.zoomIn':  () => { daw().setPxPerSec(daw().pxPerSec * 1.5); },
     'daw.zoomOut': () => { daw().setPxPerSec(daw().pxPerSec / 1.5); },
+
+    // ── Key Editor ────────────────────────────────────────────────────────
+    'daw.quantize': () => {
+      const context = midiContext();
+      if (!context) return;
+      const editor = useMidiEditorStore.getState();
+      const gridSec = currentGridSec(daw().session.tempoBpm);
+      writeNotes(context.trackId, context.clipId,
+        quantizeNotes(context.notes, context.ids, { ...editor.quantize, gridSec }));
+      notify(`퀀타이즈 (강도 ${editor.quantize.strengthPercent ?? 100}%)`);
+    },
+
+    'daw.humanize': () => {
+      const context = midiContext();
+      if (!context) return;
+      const editor = useMidiEditorStore.getState();
+      writeNotes(context.trackId, context.clipId, humanizeNotes(context.notes, context.ids, {
+        timingSec: editor.humanizeTimingMs / 1000,
+        velocity: editor.humanizeVelocity,
+        gridSec: currentGridSec(daw().session.tempoBpm),
+        seed: editor.humanizeSeed,
+      }));
+      notify('휴머나이즈 (시드 고정)');
+    },
+
+    'daw.selectAllNotes': () => {
+      const context = midiContext();
+      if (!context) return;
+      useMidiEditorStore.getState().setSelection(context.notes.map((n) => n.id));
+      notify(`${context.notes.length}개 노트 선택`);
+    },
+
+    'daw.legatoNotes': () => {
+      const context = midiContext();
+      if (!context) return;
+      const editor = useMidiEditorStore.getState();
+      writeNotes(context.trackId, context.clipId,
+        applyLegato(context.notes, context.ids, editor.overlapMs / 1000));
+      notify('레가토');
+    },
+
+    'daw.transposeUp':   () => transposeBy(1),
+    'daw.transposeDown': () => transposeBy(-1),
+    'daw.octaveUp':      () => transposeBy(12),
+    'daw.octaveDown':    () => transposeBy(-12),
+
+    'daw.velocityUp': () => {
+      const context = midiContext();
+      if (!context) return;
+      writeNotes(context.trackId, context.clipId, nudgeVelocity(context.notes, context.ids, 5 / 127));
+      notify('벨로시티 +5');
+    },
+    'daw.velocityDown': () => {
+      const context = midiContext();
+      if (!context) return;
+      writeNotes(context.trackId, context.clipId, nudgeVelocity(context.notes, context.ids, -5 / 127));
+      notify('벨로시티 −5');
+    },
+
+    // ── Chord Track ───────────────────────────────────────────────────────
+    'daw.detectChords': () => {
+      const context = midiContext();
+      if (!context) return;
+      const state = daw();
+      const track = findTrack(state.session, context.trackId);
+      const part = track ? trackClips(track).find((c) => c.id === context.clipId) : undefined;
+      const interval = barSeconds(state.session.tempoBpm, state.session.timeSignature[0]);
+      const events = detectChordTrack(context.notes, {
+        intervalSec: interval,
+        offsetSec: part?.startSec ?? 0,
+      });
+      if (events.length === 0) { notify('화성을 읽을 만한 노트가 없습니다', 'warning'); return; }
+      state.apply((s) => setChordTrack(s, events));
+      notify(`코드 트랙: ${formatProgression(events)}`, 'success');
+    },
+
+    // ── Vocal pitch editing ───────────────────────────────────────────────
+    'daw.analyzeVocal': async () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      notify('보컬 피치 분석 중…');
+      try {
+        const result = await analyzeClipPitch(state.session, target.trackId, target.clipId);
+        state.apply(() => result.session);
+        const clip = findClip(result.session, target.trackId, target.clipId);
+        notify(`피치 분석 완료 — ${tuningSummary(clip?.pitchSegments ?? [])}`, 'success');
+      } catch (err) {
+        notify(`분석 실패: ${(err as Error).message}`, 'error');
+      }
+    },
+
+    'daw.tuneVocal': async () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      const clip = findClip(state.session, target.trackId, target.clipId);
+      if (!clip || clip.pitchSegments.length === 0) {
+        notify('먼저 피치 분석을 실행하세요 (Mod+Alt+P)', 'warning');
+        return;
+      }
+      const scale = useMidiEditorStore.getState().scale;
+      notify('피치 보정 렌더링 중…');
+      try {
+        const corrected = applyCorrection(state.session, target.trackId, target.clipId, {
+          kind: 'toScale', scale, amount: 1,
+        });
+        const rendered = await renderClipPitch(corrected, target.trackId, target.clipId);
+        state.apply(() => rendered);
+        notify(`${clip.pitchSegments.length}개 구간을 스케일에 맞춰 보정했습니다`, 'success');
+      } catch (err) {
+        notify(`피치 보정 실패: ${(err as Error).message}`, 'error');
+      }
+    },
+
+    'daw.reharmonize': () => {
+      const state = daw();
+      if (state.session.chordTrack.length === 0) {
+        notify('먼저 코드를 감지하세요 (Mod+Shift+C)', 'warning');
+        return;
+      }
+      const next = reharmonize(state.session.chordTrack, { extend: true, insertTwoFive: true });
+      state.apply((s) => setChordTrack(s, next));
+      notify(`리하모나이즈: ${formatProgression(next)}`, 'success');
+    },
   };
+}
+
+/** The audio clip under the play head on the focused track. */
+function audioClipAtPlayhead(state: DawState): { trackId: string; clipId: string } | null {
+  for (const trackId of targetTrackIds()) {
+    const track = findTrack(state.session, trackId);
+    if (!track) continue;
+    const clip = trackClips(track).find((c) =>
+      c.kind === 'audio' && state.playheadSec >= c.startSec && state.playheadSec < clipEnd(c));
+    if (clip) return { trackId, clipId: clip.id };
+  }
+  return null;
+}
+
+function findClip(session: DawState['session'], trackId: string, clipId: string) {
+  const track = findTrack(session, trackId);
+  return track ? trackClips(track).find((c) => c.id === clipId) : undefined;
 }
 
 function cyclePlaylistOn(state: DawState, direction: 1 | -1, notify: DawCommandDeps['notify']): void {
@@ -437,6 +635,21 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
     'track.clearSoloMute': () => {
       daw().apply((s) => clearAllMute(clearAllSolo(s)));
       notify('모든 Solo / Mute 해제');
+    },
+
+    'window.keyEditor': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      const track = trackId ? findTrack(state.session, trackId) : undefined;
+      const part = track
+        ? trackClips(track).find((c) => c.kind === 'midi'
+            && state.playheadSec >= c.startSec && state.playheadSec < c.startSec + c.durationSec)
+          ?? trackClips(track).find((c) => c.kind === 'midi')
+        : undefined;
+      if (!part || !trackId) { notify('MIDI 파트를 가진 트랙을 선택하세요', 'warning'); return; }
+      useMidiEditorStore.getState().openPart({ trackId, clipId: part.id });
+      state.setWindow('midi');
+      notify(`Key Editor: ${part.name}`);
     },
 
     'loop.toSelection': () => {

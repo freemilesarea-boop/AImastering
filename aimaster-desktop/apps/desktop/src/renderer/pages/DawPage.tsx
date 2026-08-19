@@ -11,11 +11,17 @@ import { useAppStore } from '../stores/appStore.js';
 import { useDawStore } from '../stores/dawStore.js';
 import EditWindow from '../components/daw/edit/EditWindow.js';
 import MixWindow from '../components/daw/mix/MixWindow.js';
-import { addTrack, createTrack, createBus, findTrack, sessionEndSec } from '../daw/model/session-ops.js';
+import KeyEditor from '../components/daw/midi/KeyEditor.js';
+import { useMidiEditorStore } from '../stores/midiEditorStore.js';
+import {
+  addTrack, createTrack, createBus, createMidiPart, findTrack, sessionEndSec, updateClips,
+} from '../daw/model/session-ops.js';
+import { importMidiFile } from '../daw/io/midi-file.js';
 import { importAudioFiles } from '../daw/model/import-audio.js';
 import { importSessionData, deserializeDawSession, serializeDawSession } from '../daw/model/session-io.js';
 import { bounceSession, commitTrack, freezeTrack, unfreezeTrack } from '../daw/engine/offline-render.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
+import { toFileUrl } from '../utils/fileUrl.js';
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00.000';
@@ -64,6 +70,66 @@ export default function DawPage() {
   const loadSessionKeepingHistory = useCallback((next: typeof session) => {
     useDawStore.getState().apply(() => next);
   }, []);
+
+  /** New instrument track with an empty four-bar part, opened for editing. */
+  const handleAddInstrument = useCallback(() => {
+    const current = useDawStore.getState().session;
+    const barSec = (60 / current.tempoBpm) * current.timeSignature[0];
+    const track = createTrack(`Synth ${current.tracks.filter((t) => t.kind === 'instrument').length + 1}`, 'instrument');
+    const part = createMidiPart(`${track.name} 1`, { startSec: 0, durationSec: barSec * 4 });
+    apply((s) => updateClips(addTrack(s, track), track.id, () => [part]));
+    useDawStore.getState().setFocusedTrack(track.id);
+    useMidiEditorStore.getState().openPart({ trackId: track.id, clipId: part.id });
+    setWindow('midi');
+    notify('인스트루먼트 트랙을 만들고 Key Editor 를 열었습니다', 'success');
+  }, [apply, notify, setWindow]);
+
+  /** Import a .mid — one instrument track per source track, MPE preserved. */
+  const handleImportMidi = useCallback(async () => {
+    const paths = await invoke('file:open-dialog-multi') as string[] | null;
+    const first = paths?.[0];
+    if (!first) return;
+    setBusy('MIDI 읽는 중…');
+    try {
+      const response = await fetch(toFileUrl(first));
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const imported = importMidiFile(bytes);
+      if (imported.parts.length === 0) { notify('노트가 있는 트랙이 없습니다', 'warning'); return; }
+
+      let firstOpen: { trackId: string; clipId: string } | null = null;
+      apply((s) => {
+        let next = { ...s, tempoBpm: imported.tempoBpm, timeSignature: imported.timeSignature };
+        for (const importedPart of imported.parts) {
+          const track = createTrack(importedPart.name || 'MIDI', 'instrument');
+          const part = createMidiPart(importedPart.name || 'MIDI', {
+            startSec: 0,
+            durationSec: Math.max(1, importedPart.durationSec),
+            notes: importedPart.notes,
+            controllers: importedPart.controllers,
+            midiConfig: {
+              bendRangeSemitones: importedPart.bendRangeSemitones,
+              mpe: importedPart.mpe,
+            },
+          });
+          next = updateClips(addTrack(next, track), track.id, () => [part]);
+          if (!firstOpen) firstOpen = { trackId: track.id, clipId: part.id };
+        }
+        return next;
+      });
+      if (firstOpen) {
+        useMidiEditorStore.getState().openPart(firstOpen);
+        setWindow('midi');
+      }
+      const mpeCount = imported.parts.filter((p) => p.mpe).length;
+      notify(
+        `${imported.parts.length}개 MIDI 트랙 · ${imported.tempoBpm.toFixed(0)} BPM`
+        + (mpeCount > 0 ? ` · MPE ${mpeCount}개 (노트별 표현 유지)` : ''),
+        'success',
+      );
+    } catch (err) {
+      notify(`MIDI 가져오기 실패: ${(err as Error).message}`, 'error');
+    } finally { setBusy(null); }
+  }, [invoke, apply, notify, setWindow]);
 
   const handleSaveSession = useCallback(async () => {
     const json = serializeDawSession(useDawStore.getState().session);
@@ -150,11 +216,11 @@ export default function DawPage() {
       {/* Transport / session chrome */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
         <div className="flex rounded-md overflow-hidden border border-zinc-700 mr-1">
-          {(['edit', 'mix'] as const).map((w) => (
+          {(['edit', 'mix', 'midi'] as const).map((w) => (
             <button key={w} onClick={() => setWindow(w)}
               className={`px-3 py-1 text-[11px] font-medium transition-colors ${
                 windowMode === w ? 'bg-indigo-600/30 text-indigo-300' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300'}`}
-            >{w === 'edit' ? 'EDIT' : 'MIX'}</button>
+            >{w === 'edit' ? 'EDIT' : w === 'mix' ? 'MIX' : 'KEY'}</button>
           ))}
         </div>
 
@@ -179,6 +245,8 @@ export default function DawPage() {
         <ToolbarButton onClick={() => apply((s) => addTrack(s, createTrack(`Audio ${s.tracks.length}`, 'audio')))}>
           + 트랙
         </ToolbarButton>
+        <ToolbarButton onClick={handleAddInstrument}>+ 인스트루먼트</ToolbarButton>
+        <ToolbarButton onClick={handleImportMidi}>MIDI 가져오기</ToolbarButton>
         <ToolbarButton onClick={() => apply((s) => {
           const bus = createBus(`Bus ${s.buses.length + 1}`);
           const aux = createTrack(`Aux ${s.tracks.filter((t) => t.kind === 'aux').length + 1}`, 'aux', {
@@ -207,7 +275,9 @@ export default function DawPage() {
         {busy && <span className="text-[11px] text-amber-400">{busy}</span>}
       </div>
 
-      {windowMode === 'edit' ? <EditWindow /> : <MixWindow />}
+      {windowMode === 'edit' ? <EditWindow />
+        : windowMode === 'mix' ? <MixWindow />
+        : <KeyEditor />}
     </div>
   );
 }

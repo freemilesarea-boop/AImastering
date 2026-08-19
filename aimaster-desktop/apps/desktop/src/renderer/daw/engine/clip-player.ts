@@ -13,7 +13,10 @@ import { clipEnd, findTrack, trackClips } from '../model/session-ops.js';
 import { pointValueAt } from '../model/automation.js';
 import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
 import type { Clip, DawSession, Fade, Track, TrackId } from '../model/types.js';
+import type { MidiNote } from '../model/midi.js';
 import { getCached, loadAudio } from './audio-cache.js';
+import { findInstrument } from './instruments.js';
+import { makeRng } from '../edit/midi-edit.js';
 import type { MixerEngine } from './mixer-engine.js';
 
 const FADE_STEPS = 64;
@@ -37,6 +40,12 @@ interface Voice {
   endsAtCtxTime: number;
 }
 
+/** A sounding MIDI note — owned by the instrument that created it. */
+interface NoteVoice {
+  stop: (at: number) => void;
+  endsAtCtxTime: number;
+}
+
 export interface PlayerState {
   playing: boolean;
   /** Timeline position in seconds. */
@@ -46,6 +55,7 @@ export interface PlayerState {
 export class ClipPlayer {
   private engine: MixerEngine;
   private voices: Voice[] = [];
+  private noteVoices: NoteVoice[] = [];
   private scheduled = new Set<string>();
   private origin = 0;
   private playing = false;
@@ -101,26 +111,89 @@ export class ClipPlayer {
       try { v.source.stop(at); } catch { /* already stopped */ }
       try { v.source.disconnect(); v.gain.disconnect(); } catch { /* ignore */ }
     }
+    for (const v of this.noteVoices) {
+      try { v.stop(at); } catch { /* already stopped */ }
+    }
     if (this.playing) this.startedAtSec = this.position();
     this.voices = [];
+    this.noteVoices = [];
     this.scheduled.clear();
     this.playing = false;
   }
 
-  /** Schedule every clip that begins inside [fromSec, toSec). */
+  /** Schedule every clip (audio) and note (MIDI) inside [fromSec, toSec). */
   scheduleWindow(session: DawSession, fromSec: number, toSec: number): void {
     for (const track of session.tracks) {
-      if (track.kind !== 'audio') continue;
+      if (track.kind !== 'audio' && track.kind !== 'instrument') continue;
       const channel = this.engine.channel(track.id);
       if (!channel) continue;
+
       for (const clip of trackClips(track)) {
         if (clip.muted) continue;
         const end = clipEnd(clip);
         if (end <= fromSec || clip.startSec >= toSec) continue;
+
+        if (clip.kind === 'midi') {
+          this.scheduleMidi(track, clip, channel.input, fromSec, toSec);
+          continue;
+        }
         if (this.scheduled.has(clip.id)) continue;
         this.scheduleClip(session, clip, channel.input, Math.max(fromSec, clip.startSec));
       }
     }
+  }
+
+  /**
+   * Schedule the notes of a MIDI part.
+   *
+   * Notes are placed individually (not as a block) so the look-ahead window
+   * works the same as it does for audio, and each one becomes its own voice —
+   * which is what lets per-note expression bend a single note.
+   */
+  private scheduleMidi(
+    track: Track, clip: Clip, destination: AudioNode, fromSec: number, toSec: number,
+  ): void {
+    const instrument = findInstrument(track.instrumentId ?? 'polysynth');
+    if (!instrument) return;
+    const params = { ...track.instrumentParams };
+
+    for (const note of clip.notes) {
+      if (note.muted) continue;
+      const absoluteStart = clip.startSec + note.startSec;
+      const absoluteEnd = absoluteStart + note.durationSec;
+      // Skip notes that finished before the window and ones not reached yet.
+      if (absoluteEnd <= fromSec || absoluteStart >= toSec) continue;
+      // A note that is already sounding cannot be started mid-way by a
+      // one-shot voice, so it is skipped rather than retriggered late.
+      if (absoluteStart < fromSec - 1e-6) continue;
+
+      const key = `${clip.id}:${note.id}`;
+      if (this.scheduled.has(key)) continue;
+      if (!this.passesProbability(note)) { this.scheduled.add(key); continue; }
+
+      const voice = instrument.playNote({
+        ctx: this.engine.ctx,
+        destination,
+        note,
+        config: clip.midiConfig,
+        when: this.origin + absoluteStart,
+        params,
+      });
+      this.scheduled.add(key);
+      this.noteVoices.push({ stop: voice.stop, endsAtCtxTime: this.origin + absoluteEnd + 4 });
+    }
+  }
+
+  /**
+   * Play probability, decided deterministically from the note id so a bounce
+   * reproduces exactly the pass you approved.
+   */
+  private passesProbability(note: MidiNote): boolean {
+    if (note.playProbability >= 1) return true;
+    if (note.playProbability <= 0) return false;
+    let hash = 0;
+    for (let i = 0; i < note.id.length; i++) hash = (hash * 31 + note.id.charCodeAt(i)) | 0;
+    return makeRng(hash)() < note.playProbability;
   }
 
   /** Schedule the WHOLE session — used by offline bounce. */
@@ -255,6 +328,13 @@ export class ClipPlayer {
       }
     }
     this.voices = alive;
+
+    const aliveNotes: NoteVoice[] = [];
+    for (const v of this.noteVoices) {
+      if (v.endsAtCtxTime < now) continue;                 // its nodes already stopped
+      aliveNotes.push(v);
+    }
+    this.noteVoices = aliveNotes;
   }
 }
 

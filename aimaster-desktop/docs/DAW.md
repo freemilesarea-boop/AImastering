@@ -62,6 +62,9 @@ OfflineAudioContext로 렌더해서 검증합니다 (`test:daw-engine`, 12 check
 | Freeze / Commit | ✅ | Freeze는 되돌릴 수 있고, Commit은 인서트를 오디오에 확정 |
 | Session Import | ✅ | 다른 세션의 트랙 + 인서트/센드/오토메이션/파일, id 리맵 · 동명 버스 병합 |
 | Tab to Transient | ✅ | 에너지 플럭스 온셋 탐지 + 클립 경계 병합. `Tab` / `Shift+Tab` |
+| MIDI / Key Editor | ✅ | 별도 문서 — [MIDI.md](./MIDI.md) |
+| Chord Track | ✅ | 구조화된 코드 심볼 + 감지 + 리하모나이즈 |
+| 보컬 피치 편집 | ◑ | 분석 · 보정 · PSOLA 렌더 완료, 전용 UI 미구현 |
 
 ◑ = 로직은 있고 테스트도 되지만 UI 연결이 남음.
 

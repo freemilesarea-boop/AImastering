@@ -124,9 +124,13 @@ check('all five Cubase groups are covered', () => {
   eq(SHORTCUTS.filter((s) => s.group === 'tools').length, 9, '9 toolbar tools');
 });
 
-check('unavailable commands are the documented five', () => {
+check('unavailable commands are the documented four', () => {
+  // The Key Editor left this list when the MIDI layer shipped: Enter now
+  // opens a real piano roll.
   const off = SHORTCUTS.filter((s) => !s.available).map((s) => s.id).sort();
-  eq(off.join(','), 'tool.draw,tool.glue,transport.metronome,transport.record,window.keyEditor', 'unavailable set');
+  eq(off.join(','), 'tool.draw,tool.glue,transport.metronome,transport.record', 'unavailable set');
+  assert(SHORTCUTS.find((s) => s.id === 'window.keyEditor')?.available === true,
+    'the Key Editor is implemented');
 });
 
 // ── options history ──────────────────────────────────────────────────────────

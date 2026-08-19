@@ -10,6 +10,11 @@
 //   • Time is seconds (double).  Sample conversion happens only at the
 //     engine boundary — mixing units is how DAW code rots.
 
+import type { ControllerLane, MidiNote, MidiPartConfig } from './midi.js';
+import type { ChordEvent } from './chords.js';
+import type { VariSegment } from '../audio/pitch-analysis.js';
+export type { ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment };
+
 export type TrackId    = string;
 export type ClipId     = string;
 export type PlaylistId = string;
@@ -19,6 +24,8 @@ export type InsertId   = string;
 export type GroupId    = string;
 export type BusId      = string;
 export type FileId     = string;
+
+export type ClipKind = 'audio' | 'midi';
 
 // ── Audio sources ─────────────────────────────────────────────────────────────
 
@@ -45,7 +52,23 @@ export const NO_FADE: Fade = { durationSec: 0, shape: 'equalPower' };
 
 export interface Clip {
   id: ClipId;
+  /**
+   * Audio clips reference a decoded file; MIDI parts carry `notes` instead
+   * and leave this empty.
+   */
+  kind: ClipKind;
   fileId: FileId;
+  /** MIDI notes — always empty on an audio clip. */
+  notes: MidiNote[];
+  /** Part-level controller lanes (CC / bend / pressure automation). */
+  controllers: ControllerLane[];
+  /**
+   * Vocal pitch analysis for an AUDIO clip — the segments a VariAudio-style
+   * editor edits.  Empty until the clip has been analysed.
+   */
+  pitchSegments: VariSegment[];
+  /** Bend range + MPE flag for this part. */
+  midiConfig: MidiPartConfig;
   name: string;
   /** Position on the timeline. */
   startSec: number;
@@ -125,7 +148,12 @@ export interface AutomationLane {
 
 // ── Tracks ────────────────────────────────────────────────────────────────────
 
-export type TrackKind = 'audio' | 'aux' | 'master' | 'vca';
+/**
+ * `instrument` is a MIDI track with its own sound source: it holds MIDI parts
+ * and renders them through an instrument, then down the normal channel path
+ * (inserts → fader → pan → output), exactly like Cubase's instrument track.
+ */
+export type TrackKind = 'audio' | 'instrument' | 'aux' | 'master' | 'vca';
 
 /** Where a channel's main output goes. */
 export type OutputTarget =
@@ -172,6 +200,9 @@ export interface Track {
   /** UI lane height in px. */
   height: number;
   frozen: FrozenState | null;
+  /** Sound source for an instrument track (id from the instrument registry). */
+  instrumentId: string | null;
+  instrumentParams: Record<string, number>;
 }
 
 // ── Groups / buses ────────────────────────────────────────────────────────────
@@ -218,6 +249,12 @@ export interface DawSession {
   buses: BusDef[];
   groups: GroupDef[];
   markers: Marker[];
+  /**
+   * The project's harmony.  Storing chords as structured symbols (root,
+   * quality, bass) rather than text is what lets features reason about them —
+   * reharmonising, suggesting scales, or generating a part that fits.
+   */
+  chordTrack: ChordEvent[];
   /** Delay compensation on/off — mirrors the Pro Tools engine switch. */
   delayCompensation: boolean;
 }

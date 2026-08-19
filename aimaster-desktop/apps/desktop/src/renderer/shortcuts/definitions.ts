@@ -60,7 +60,14 @@ export type CommandId =
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
   | 'daw.freeze' | 'daw.commit' | 'daw.bounce'
   | 'daw.importAudio' | 'daw.importSession'
-  | 'daw.zoomIn' | 'daw.zoomOut';
+  | 'daw.zoomIn' | 'daw.zoomOut'
+  // Key Editor
+  | 'daw.quantize' | 'daw.humanize' | 'daw.selectAllNotes' | 'daw.legatoNotes'
+  | 'daw.transposeUp' | 'daw.transposeDown'
+  | 'daw.octaveUp' | 'daw.octaveDown'
+  | 'daw.velocityUp' | 'daw.velocityDown'
+  | 'daw.detectChords' | 'daw.reharmonize'
+  | 'daw.analyzeVocal' | 'daw.tuneVocal';
 
 export interface ShortcutDef {
   id: CommandId;
@@ -170,7 +177,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'window.transportPanel', group: 'window', label: '트랜스포트 Panel', chords: ['F2'],
     note: '하단 트랜스포트 바 (파형 · 루프 · 툴) 열기/닫기', available: true },
   { id: 'window.keyEditor',      group: 'window', label: 'MIDI 피아노 롤 (Key Editor)', chords: ['Enter'],
-    note: 'MIDI 이벤트가 없는 오디오 마스터링 앱이라 해당 없음', available: false },
+    note: '선택한 MIDI 파트를 Key Editor 로 열기 (DAW 워크스페이스)', available: true },
   { id: 'window.bottomEditor',   group: 'window', label: '하단 에디터 패널', chords: ['Mod+Alt+L'],
     note: '하단 존(트랜스포트+믹스콘솔) 열기/닫기 — Cubase 의 Ctrl+Alt+E 는 내보내기와, B 는 바운스와 충돌하여 L(Lower zone)', available: true },
   { id: 'window.vstEditor',      group: 'window', label: 'VST 에디터 / 인스트루먼트 창', chords: ['F11'],
@@ -241,6 +248,40 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '타임라인 확대', available: true },
   { id: 'daw.zoomOut', group: 'daw', label: '가로 축소', chords: ['Mod+BracketLeft'],
     note: '타임라인 축소', available: true },
+
+  // ── Key Editor ─────────────────────────────────────────────────────────
+  { id: 'daw.quantize', group: 'daw', label: '퀀타이즈', chords: ['Mod+Q'],
+    note: '인스펙터의 강도 · 스윙 · 캐치 설정으로 선택 노트를 퀀타이즈', available: true },
+  { id: 'daw.humanize', group: 'daw', label: '휴머나이즈', chords: ['Mod+Shift+Q'],
+    note: '시드 고정 랜덤 — 바운스에서 같은 결과가 재현됨', available: true },
+  { id: 'daw.selectAllNotes', group: 'daw', label: '노트 전체 선택', chords: ['Mod+A'],
+    note: '열린 파트의 모든 노트 선택', available: true },
+  { id: 'daw.legatoNotes', group: 'daw', label: '레가토', chords: ['Alt+L'],
+    note: '각 노트를 다음 노트까지 늘림', available: true },
+  { id: 'daw.transposeUp', group: 'daw', label: '반음 위로', chords: ['Shift+ArrowUp'],
+    note: '선택 노트 +1 반음 (스케일 보정 옵션 반영)', available: true },
+  { id: 'daw.transposeDown', group: 'daw', label: '반음 아래로', chords: ['Shift+ArrowDown'],
+    note: '선택 노트 −1 반음', available: true },
+  { id: 'daw.octaveUp', group: 'daw', label: '옥타브 위로', chords: ['Shift+Alt+ArrowUp'],
+    note: '선택 노트 +12 반음', available: true },
+  { id: 'daw.octaveDown', group: 'daw', label: '옥타브 아래로', chords: ['Shift+Alt+ArrowDown'],
+    note: '선택 노트 −12 반음', available: true },
+  { id: 'daw.velocityUp', group: 'daw', label: '벨로시티 +', chords: ['Mod+ArrowUp'],
+    note: '선택 노트 벨로시티 +5', available: true },
+  { id: 'daw.velocityDown', group: 'daw', label: '벨로시티 −', chords: ['Mod+ArrowDown'],
+    note: '선택 노트 벨로시티 −5', available: true },
+
+  // ── Chord Track ────────────────────────────────────────────────────────
+  { id: 'daw.detectChords', group: 'daw', label: '코드 감지 → 코드 트랙', chords: ['Mod+Shift+C'],
+    note: '열린 MIDI 파트의 화성을 읽어 코드 트랙을 채움', available: true },
+  { id: 'daw.reharmonize', group: 'daw', label: '리하모나이즈 (재즈)', chords: ['Mod+Alt+J'],
+    note: '3화음 → 7화음, 도미넌트 앞에 ii 삽입', available: true },
+
+  // ── 보컬 피치 편집 (VariAudio 계열) ────────────────────────────────────
+  { id: 'daw.analyzeVocal', group: 'daw', label: '보컬 피치 분석', chords: ['Mod+Alt+P'],
+    note: '재생 위치의 오디오 클립을 음정 구간으로 분석 (피치 · 비브라토 · 드리프트)', available: true },
+  { id: 'daw.tuneVocal', group: 'daw', label: '스케일로 피치 보정', chords: ['Mod+Alt+U'],
+    note: '분석된 구간을 에디터 스케일에 맞추고 PSOLA 로 렌더 (원본은 보존)', available: true },
 ];
 
 /** Parsed bindings, in dispatch order (first match wins). */

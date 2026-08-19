@@ -18,9 +18,10 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import {
-  addFile, addTrack, createBus, createClip, createInsert, createSend, createSession,
-  createTrack, findTrack, setInsert, setSend, updateClips, updateTrack,
+  addFile, addTrack, createBus, createClip, createInsert, createMidiPart, createSend,
+  createSession, createTrack, findTrack, setInsert, setSend, updateClips, updateTrack,
 } from '../src/renderer/daw/model/session-ops.js';
+import { createNote, from7bit, resetNoteIds, setExpression } from '../src/renderer/daw/model/midi.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { setVolumeDb, toggleMute, toggleSolo } from '../src/renderer/daw/model/mixer-math.js';
 import { analyzeBuffer, clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
@@ -288,6 +289,101 @@ async function main(): Promise<void> {
     const expected = Math.round(0.005 * SR);
     assert(lOff - rOff > expected * 0.5,
       `without ADC the plugin path is late by ~${expected} samples — got ${lOff - rOff}`);
+  });
+
+  // ── MIDI ────────────────────────────────────────────────────────────────
+
+  /** Session with one instrument track holding a MIDI part. */
+  function midiSession(notes: Parameters<typeof createNote>[0][]): DawSession {
+    resetIds();
+    resetNoteIds();
+    let s = createSession('MIDI', SR);
+    const track = createTrack('Synth', 'instrument');
+    s = addTrack(s, track);
+    s = updateClips(s, track.id, () => [createMidiPart('Part', {
+      startSec: 0,
+      durationSec: 2,
+      notes: notes.map((n) => createNote(n)),
+    })]);
+    return s;
+  }
+
+  /** Energy at a frequency, via the Goertzel algorithm. */
+  function energyAt(data: Float32Array, freq: number, from: number, to: number): number {
+    const n = to - from;
+    if (n <= 0) return 0;
+    const k = (2 * Math.PI * freq) / SR;
+    const c = 2 * Math.cos(k);
+    let s0 = 0; let s1 = 0; let s2 = 0;
+    for (let i = from; i < to; i++) { s0 = (data[i] ?? 0) + c * s1 - s2; s2 = s1; s1 = s0; }
+    return Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - c * s1 * s2)) / n;
+  }
+
+  await check('a MIDI part renders audio through its instrument', async () => {
+    const s = midiSession([{ pitch: 69, startSec: 0.1, durationSec: 0.8, velocity: from7bit(110) }]);
+    const out = await render(s, 2);
+    const silence = channelRms(out, 0, 0, Math.floor(SR * 0.05));
+    const sounding = channelRms(out, 0, Math.floor(SR * 0.3), Math.floor(SR * 0.8));
+    assert(silence < 0.001, `silent before the note — ${silence.toFixed(5)}`);
+    assert(sounding > 0.01, `the note is audible — ${sounding.toFixed(5)}`);
+  });
+
+  await check('note velocity scales the rendered level', async () => {
+    const loud = await render(midiSession([
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: from7bit(127) }]), 1.5);
+    const soft = await render(midiSession([
+      { pitch: 60, startSec: 0, durationSec: 1, velocity: from7bit(30) }]), 1.5);
+    const loudRms = channelRms(loud, 0, Math.floor(SR * 0.2), Math.floor(SR * 0.8));
+    const softRms = channelRms(soft, 0, Math.floor(SR * 0.2), Math.floor(SR * 0.8));
+    assert(loudRms > softRms * 1.8, `velocity matters — ${loudRms.toFixed(4)} vs ${softRms.toFixed(4)}`);
+  });
+
+  await check('a muted note renders nothing', async () => {
+    const s = midiSession([{ pitch: 60, startSec: 0, durationSec: 1, muted: true }]);
+    const out = await render(s, 1.5);
+    close(channelRms(out, 0), 0, 'silent', 1e-5);
+  });
+
+  await check('per-note pitch bend actually bends that note', async () => {
+    // A3 (440 Hz) with a full upward bend over the note, ±2 semitones →
+    // it should end near 493.9 Hz (B3).
+    resetIds();
+    resetNoteIds();
+    let s = createSession('MPE', SR);
+    const track = createTrack('Synth', 'instrument');
+    s = addTrack(s, track);
+    const bent = setExpression(
+      createNote({ pitch: 69, startSec: 0, durationSec: 1.5, velocity: from7bit(110) }),
+      { target: { kind: 'pitchBend' }, points: [{ timeSec: 0, value: 0 }, { timeSec: 1.5, value: 1 }] },
+    );
+    s = updateClips(s, track.id, () => [createMidiPart('Part', {
+      startSec: 0, durationSec: 2, notes: [bent],
+      midiConfig: { bendRangeSemitones: 2, mpe: true },
+    })]);
+
+    const out = await render(s, 2);
+    const data = out.getChannelData(0);
+    const head = { from: Math.floor(SR * 0.05), to: Math.floor(SR * 0.25) };
+    const tail = { from: Math.floor(SR * 1.2), to: Math.floor(SR * 1.45) };
+
+    const startAt440 = energyAt(data, 440, head.from, head.to);
+    const startAt494 = energyAt(data, 493.88, head.from, head.to);
+    const endAt440 = energyAt(data, 440, tail.from, tail.to);
+    const endAt494 = energyAt(data, 493.88, tail.from, tail.to);
+
+    assert(startAt440 > startAt494, `starts at A3 — ${startAt440.toFixed(5)} vs ${startAt494.toFixed(5)}`);
+    assert(endAt494 > endAt440, `ends bent up to B3 — ${endAt494.toFixed(5)} vs ${endAt440.toFixed(5)}`);
+  });
+
+  await check('a MIDI track obeys the fader and mute like any other channel', async () => {
+    const base = midiSession([{ pitch: 60, startSec: 0, durationSec: 1, velocity: from7bit(110) }]);
+    const trackId = base.tracks.find((t) => t.kind === 'instrument')!.id;
+    const full = await render(base, 1.5);
+    const quiet = await render(setVolumeDb(base, trackId, -12), 1.5);
+    const muted = await render(toggleMute(base, trackId), 1.5);
+    const fullRms = channelRms(full, 0, 0, Math.floor(SR * 1.2));
+    close(channelRms(quiet, 0, 0, Math.floor(SR * 1.2)), fullRms * 0.2512, 'fader −12 dB', 0.01);
+    close(channelRms(muted, 0), 0, 'muted', 1e-6);
   });
 
   const passed = results.filter((r) => r.pass).length;

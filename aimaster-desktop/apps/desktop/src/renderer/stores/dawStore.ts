@@ -17,7 +17,7 @@ import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 
 export type EditMode = 'shuffle' | 'slip' | 'spot' | 'grid';
-export type DawWindow = 'edit' | 'mix';
+export type DawWindow = 'edit' | 'mix' | 'midi';
 
 /** Grid values, in seconds — musical values come from the session tempo. */
 export const GRID_PRESETS = [0.01, 0.1, 0.25, 0.5, 1, 2, 4] as const;

@@ -17,8 +17,9 @@ import type { AudioFileRef, DawSession, FileId, Track, TrackId } from '../model/
 import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
 import { analyzeBuffer, getCached, loadAudio } from './audio-cache.js';
-import { encodeAudioBuffer, type WavBitDepth } from './wav.js';
+import { encodeAudioBuffer, encodeWav, type WavBitDepth } from './wav.js';
 import { nextId } from '../model/ids.js';
+import { DEFAULT_MIDI_CONFIG } from '../model/midi.js';
 
 export interface RenderRange {
   startSec: number;
@@ -110,6 +111,15 @@ function invoker(): Invoke {
   const api = window.electronAPI;
   if (!api) throw new Error('electronAPI를 사용할 수 없습니다');
   return (channel, ...args) => api.invoke(channel as Parameters<typeof api.invoke>[0], ...args);
+}
+
+/** Write raw channel data to the scratch dir (used by the vocal editor). */
+export async function writeTempChannels(
+  channels: readonly Float32Array[], sampleRate: number, name: string,
+  bitDepth: WavBitDepth = 32,
+): Promise<string> {
+  const bytes = encodeWav(channels, sampleRate, bitDepth);
+  return await invoker()('daw:write-temp-audio', { name, data: bytes }) as string;
 }
 
 /** Write a rendered buffer to the session scratch dir; returns its path. */
@@ -209,7 +219,12 @@ export async function commitTrack(session: DawSession, trackId: TrackId): Promis
     if (!playlist) return t;
     const clip = {
       id: nextId('clip'),
+      kind: 'audio' as const,
       fileId: ref.id,
+      notes: [],
+      controllers: [],
+      pitchSegments: [],
+      midiConfig: DEFAULT_MIDI_CONFIG,
       name: ref.name,
       startSec: 0,
       offsetSec: 0,

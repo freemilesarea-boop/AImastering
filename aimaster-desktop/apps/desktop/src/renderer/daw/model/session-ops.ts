@@ -15,6 +15,8 @@ import {
   type TrackId, type TrackKind, type ClipId, type BusId, type OutputTarget,
 } from './types.js';
 import { nextId } from './ids.js';
+import { DEFAULT_MIDI_CONFIG } from './midi.js';
+import type { ChordEvent, ChordSymbol } from './chords.js';
 
 // ── Construction ──────────────────────────────────────────────────────────────
 
@@ -58,6 +60,8 @@ export function createTrack(
     automation: [],
     height: DEFAULT_TRACK_HEIGHT,
     frozen: null,
+    instrumentId: kind === 'instrument' ? 'polysynth' : null,
+    instrumentParams: {},
     ...over,
   };
 }
@@ -86,6 +90,7 @@ export function createSession(name = 'Untitled', sampleRate = 48_000): DawSessio
     buses: [],
     groups: [],
     markers: [],
+    chordTrack: [],
     delayCompensation: true,
   };
 }
@@ -93,11 +98,38 @@ export function createSession(name = 'Untitled', sampleRate = 48_000): DawSessio
 export function createClip(fileId: FileId, name: string, over: Partial<Clip> = {}): Clip {
   return {
     id: nextId('clip'),
+    kind: 'audio',
     fileId,
+    notes: [],
+    controllers: [],
+    pitchSegments: [],
+    midiConfig: DEFAULT_MIDI_CONFIG,
     name,
     startSec: 0,
     offsetSec: 0,
     durationSec: 0,
+    gainDb: 0,
+    fadeIn: NO_FADE,
+    fadeOut: NO_FADE,
+    muted: false,
+    ...over,
+  };
+}
+
+/** An empty MIDI part — the container the Key Editor opens. */
+export function createMidiPart(name: string, over: Partial<Clip> = {}): Clip {
+  return {
+    id: nextId('clip'),
+    kind: 'midi',
+    fileId: '',
+    notes: [],
+    controllers: [],
+    pitchSegments: [],
+    midiConfig: DEFAULT_MIDI_CONFIG,
+    name,
+    startSec: 0,
+    offsetSec: 0,
+    durationSec: 4,
     gainDb: 0,
     fadeIn: NO_FADE,
     fadeOut: NO_FADE,
@@ -306,6 +338,21 @@ export function removeGroup(session: DawSession, groupId: string): DawSession {
     tracks: session.tracks.map((t) =>
       t.groupIds.includes(groupId) ? { ...t, groupIds: t.groupIds.filter((g) => g !== groupId) } : t),
   };
+}
+
+// ── Chord track ───────────────────────────────────────────────────────────────
+
+export function setChordTrack(session: DawSession, events: ChordEvent[]): DawSession {
+  return { ...session, chordTrack: [...events].sort((a, b) => a.timeSec - b.timeSec) };
+}
+
+export function addChordEvent(session: DawSession, timeSec: number, chord: ChordSymbol): DawSession {
+  const events = session.chordTrack.filter((e) => Math.abs(e.timeSec - timeSec) > 1e-6);
+  return setChordTrack(session, [...events, { id: nextId('chord'), timeSec, chord }]);
+}
+
+export function removeChordEvent(session: DawSession, id: string): DawSession {
+  return { ...session, chordTrack: session.chordTrack.filter((e) => e.id !== id) };
 }
 
 // ── Automation lanes ──────────────────────────────────────────────────────────

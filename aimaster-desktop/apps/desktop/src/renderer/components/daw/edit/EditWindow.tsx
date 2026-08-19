@@ -11,6 +11,8 @@ import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import { activePlaylist, clipAt, sessionEndSec, trackClips } from '../../../daw/model/session-ops.js';
 import { moveClip } from '../../../daw/edit/clip-edit.js';
+import { useMidiEditorStore } from '../../../stores/midiEditorStore.js';
+import { formatChord } from '../../../daw/model/chords.js';
 import { cyclePlaylist } from '../../../daw/edit/comping.js';
 import { toggleMute, toggleSolo } from '../../../daw/model/mixer-math.js';
 import type { Track } from '../../../daw/model/types.js';
@@ -228,6 +230,34 @@ export default function EditWindow() {
         </div>
       </div>
 
+      {/* ── Chord track ─────────────────────────────────────────────────
+          The project's harmony, shown above the tracks so an arrangement
+          decision is visible while editing. */}
+      <div className="flex border-b border-zinc-800 bg-[#14141c]" style={{ height: 22 }}>
+        <div style={{ width: HEADER_WIDTH }}
+             className="shrink-0 border-r border-zinc-800 flex items-center px-2">
+          <span className="text-[9px] uppercase tracking-[0.14em] text-zinc-600">Chords</span>
+        </div>
+        <div className="relative flex-1 overflow-hidden">
+          {session.chordTrack.map((event) => (
+            <span
+              key={event.id}
+              className="absolute top-0.5 px-1 rounded text-[10px] font-medium
+                         bg-indigo-600/25 border border-indigo-500/40 text-indigo-200 whitespace-nowrap"
+              style={{ left: toX(event.timeSec) }}
+              title={`${formatChord(event.chord)} @ ${event.timeSec.toFixed(2)}s`}
+            >
+              {formatChord(event.chord)}
+            </span>
+          ))}
+          {session.chordTrack.length === 0 && (
+            <span className="absolute left-2 top-1 text-[9px] text-zinc-700">
+              MIDI 파트에서 Mod+Shift+C 로 코드를 감지할 수 있습니다
+            </span>
+          )}
+        </div>
+      </div>
+
       {/* ── Tracks ──────────────────────────────────────────────────────── */}
       <div className="flex-1 flex overflow-y-auto" onMouseUp={endDrag} onMouseLeave={endDrag}>
         {/* Headers */}
@@ -251,6 +281,16 @@ export default function EditWindow() {
             <div
               key={track.id}
               onMouseDown={(e) => onLaneDown(e, track)}
+              onDoubleClick={(e) => {
+                // Double-clicking a MIDI part opens it in the Key Editor,
+                // exactly like the reference DAW.
+                const at = secAt(e.clientX);
+                const clip = clipAt(track, at);
+                if (clip?.kind === 'midi') {
+                  useMidiEditorStore.getState().openPart({ trackId: track.id, clipId: clip.id });
+                  useDawStore.getState().setWindow('midi');
+                }
+              }}
               className="relative border-b border-zinc-900"
               style={{ height: track.height }}
             >
