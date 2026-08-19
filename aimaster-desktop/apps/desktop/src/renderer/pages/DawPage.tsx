@@ -5,9 +5,10 @@
 // owns the chrome (transport, track creation, bounce/freeze); the windows own
 // their own interaction.
 
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
+import { useAudioStore } from '../stores/audioStore.js';
 import { useDawStore } from '../stores/dawStore.js';
 import EditWindow from '../components/daw/edit/EditWindow.js';
 import MixWindow from '../components/daw/mix/MixWindow.js';
@@ -29,7 +30,7 @@ import {
   addTrack, createTrack, createBus, createMidiPart, findTrack, sessionEndSec, updateClips,
 } from '../daw/model/session-ops.js';
 import { importMidiFile } from '../daw/io/midi-file.js';
-import { importAudioFiles } from '../daw/model/import-audio.js';
+import { importAudioFiles, shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { importSessionData, deserializeDawSession, serializeDawSession } from '../daw/model/session-io.js';
 import { bounceSession, commitTrack, freezeTrack, unfreezeTrack } from '../daw/engine/offline-render.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
@@ -60,11 +61,51 @@ export default function DawPage() {
   const selection    = useDawStore((s) => s.selection);
   const [busy, setBusy] = useState<string | null>(null);
 
+  // Files the user loaded on the home screen.  The DAW used to ignore them
+  // entirely, which meant opening it always showed an empty session — you
+  // could not start a project with the music you had just imported.
+  const queue = useAudioStore((s) => s.queue);
+  const importedOnce = useRef(false);
+
   const invoke = useCallback(async (channel: string, ...args: unknown[]): Promise<unknown> => {
     const api = window.electronAPI;
     if (!api) throw new Error('electronAPI를 사용할 수 없습니다');
     return api.invoke(channel as Parameters<typeof api.invoke>[0], ...args);
   }, []);
+
+  /** Pull the home screen's files in as audio tracks. */
+  const importQueue = useCallback(async (silent = false) => {
+    const paths = useAudioStore.getState().queue.map((q) => q.filePath).filter(Boolean);
+    if (paths.length === 0) {
+      if (!silent) notify('홈 화면에 불러온 곡이 없습니다', 'warning');
+      return;
+    }
+    setBusy('홈에서 불러온 곡을 가져오는 중…');
+    try {
+      const result = await importAudioFiles(useDawStore.getState().session, paths, 0);
+      useDawStore.getState().apply(() => result.session);
+      if (result.failed.length) {
+        notify(`${result.trackIds.length}곡을 가져왔습니다 · ${result.failed.length}곡 디코딩 실패`, 'warning');
+      } else {
+        notify(`홈에서 ${result.trackIds.length}곡을 세션으로 가져왔습니다`, 'success');
+      }
+    } catch (err) {
+      notify(`가져오기 실패: ${(err as Error).message}`, 'error');
+    } finally { setBusy(null); }
+  }, [notify]);
+
+  /**
+   * On the first visit, an empty session adopts whatever is on the home
+   * screen.  Nothing can be lost — the session has no audio yet — and it is
+   * the only behaviour that makes "load songs, open the DAW" work the way
+   * anyone would expect.
+   */
+  useEffect(() => {
+    if (importedOnce.current) return;
+    if (!shouldAdoptQueue(session, queue.length)) return;
+    importedOnce.current = true;
+    void importQueue(true);
+  }, [queue.length, session.tracks, importQueue]);
 
   const handleImportAudio = useCallback(async () => {
     const paths = await invoke('file:open-dialog-multi') as string[] | null;
@@ -302,6 +343,11 @@ export default function DawPage() {
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
         <ToolbarButton onClick={handleImportAudio}>오디오 추가</ToolbarButton>
+        {queue.length > 0 && (
+          <ToolbarButton onClick={() => void importQueue()}>
+            홈 트랙 가져오기 ({queue.length})
+          </ToolbarButton>
+        )}
         <ToolbarButton onClick={() => apply((s) => addTrack(s, createTrack(`Audio ${s.tracks.length}`, 'audio')))}>
           + 트랙
         </ToolbarButton>

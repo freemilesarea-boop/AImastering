@@ -3,6 +3,7 @@ import React from 'react';
 // See main/index.ts header for the rationale.  TopBar layout remains the
 // same — SupportBundleButton stays as the only right-aligned chip.
 import SupportBundleButton from './SupportBundleButton.js';
+import { detectPlatform } from '../shortcuts/keys.js';
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
 
@@ -13,9 +14,14 @@ interface TopBarProps {
 }
 
 export default function TopBar({ subtitle, actions }: TopBarProps) {
+  // macOS runs `titleBarStyle: 'hiddenInset'`, which puts the traffic lights
+  // INSIDE the window at the top-left.  Without room reserved for them they
+  // sit on top of the wordmark — which is exactly what it looks like: broken.
+  const isMac = detectPlatform() === 'mac';
   return (
-    <div className="drag-region h-10 shrink-0 flex items-center px-4 gap-3
-                    border-b border-zinc-800/60">
+    <div className="drag-region h-10 shrink-0 flex items-center pr-4 gap-3
+                    border-b border-zinc-800/60"
+         style={{ paddingLeft: isMac ? 82 : 16 }}>
       {/* App wordmark — left side of drag region */}
       <span className="font-semibold text-[12px] tracking-wide text-zinc-300 select-none">
         Louver Mastering AI

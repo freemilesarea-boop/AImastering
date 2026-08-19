@@ -18,6 +18,7 @@ import {
   sessionEndSec, createInsert, setInsert, createSend, setSend, findTrack, addFile,
 } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
+import { shouldAdoptQueue } from '../src/renderer/daw/model/import-audio.js';
 import {
   separateAt, splitClip, healSeparation, isHealable, trimToSelection, clearRange,
   duplicateSelection, nudgeSelection, slipSelection, setClipGain, nudgeClipGain,
@@ -793,6 +794,30 @@ check('detector time constants map to sane corner frequencies', () => {
   assert(timeConstantToHz(10) > timeConstantToHz(100), 'faster attack → higher corner');
   close(timeConstantToHz(1000 / (2 * Math.PI)), 1, '1 s/2π → 1 Hz', 1e-3);
   assert(findPlugin('comp')?.hasSidechain === true, 'compressor takes a key input');
+});
+
+// ── Home screen → DAW ─────────────────────────────────────────────────────────
+
+check('an empty DAW adopts the files loaded on the home screen', () => {
+  resetIds();
+  const empty = createSession('fresh');
+  // A brand-new session has only a master track — nothing to overwrite.
+  assert(shouldAdoptQueue(empty, 5), 'five loaded songs are adopted');
+  assert(!shouldAdoptQueue(empty, 0), 'and nothing is adopted from an empty home screen');
+});
+
+check('a session with work in it is never overwritten by the home screen', () => {
+  resetIds();
+  const withAudio = addTrack(createSession('working'), createTrack('Vox', 'audio'));
+  assert(!shouldAdoptQueue(withAudio, 5), 'audio already there — the user is in charge');
+
+  const withMidi = addTrack(createSession('working'), createTrack('Keys', 'instrument'));
+  assert(!shouldAdoptQueue(withMidi, 5), 'an instrument track counts as work too');
+
+  // A bus or an aux is scaffolding, not material — a session that only has
+  // those is still empty as far as the user is concerned.
+  const scaffolding = addTrack(createSession('working'), createTrack('Bus', 'aux'));
+  assert(shouldAdoptQueue(scaffolding, 5), 'buses alone do not block the adoption');
 });
 
 const passed = results.filter((r) => r.pass).length;
