@@ -200,6 +200,12 @@ export class MixerEngine {
     return instance?.reduction?.() ?? null;
   }
 
+  /** What a metering insert is reading, for devices whose job is to measure. */
+  analyse(trackId: TrackId, insertId: string): { lufs: number; peakDb: number } | null {
+    const instance = this.channels.get(trackId)?.inserts.get(insertId);
+    return instance?.analyse?.() ?? null;
+  }
+
   /** Called by the player when a lane takes over a parameter. */
   markAutomated(trackId: TrackId, param: string): void {
     const set = this.automated.get(trackId) ?? new Set<string>();
