@@ -28,7 +28,8 @@ import { createSession } from '../daw/model/session-ops.js';
 import {
   deserializeDawSession, importSessionData, serializeDawSession,
 } from '../daw/model/session-io.js';
-import { importAudioFiles } from '../daw/model/import-audio.js';
+import { isEmptyPlan, planDrop } from '../daw/model/drop-target.js';
+import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import {
   bounceSession, commitTrack, consolidateSelection, freezeTrack, renderSession, sessionRange, unfreezeTrack,
 } from '../daw/engine/offline-render.js';
@@ -377,14 +378,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       }
     },
 
-    'daw.importAudio': async () => {
-      const paths = await invoke('file:open-dialog-multi') as string[] | null;
-      if (!paths?.length) return;
-      const result = await importAudioFiles(daw().session, paths, daw().playheadSec);
-      daw().apply(() => result.session);
-      if (result.failed.length) notify(`${result.failed.length}개 파일 디코딩 실패`, 'warning');
-      else notify(`${result.trackIds.length}개 트랙 추가`, 'success');
-    },
+    'daw.importAudio': () => importAtPlayhead(deps),
 
     'daw.importSession': async () => {
       const loaded = await invoke('session:load') as { path: string; data: string } | null;
@@ -916,6 +910,31 @@ function clipRangeAtPlayhead(state: DawState): TimeSelection | null {
   return null;
 }
 
+/**
+ * Open a file dialog and put whatever comes back into the open session, at the
+ * play head.  Audio becomes tracks, MIDI becomes parts, and the Key Editor
+ * opens on the first part so the notes are in front of you.
+ */
+async function importAtPlayhead(deps: DawCommandDeps): Promise<void> {
+  const { notify, daw, invoke } = deps;
+  const paths = await invoke('file:open-dialog-multi') as string[] | null;
+  if (!paths?.length) return;
+
+  const plan = planDrop(paths, 'daw', 0);
+  if (isEmptyPlan(plan)) { notify('오디오나 MIDI 파일이 아닙니다', 'warning'); return; }
+
+  try {
+    const report = await importIntoSession(plan.audio, plan.midi, daw().playheadSec);
+    notify(describeImport(report), report.failed.length ? 'warning' : 'success');
+    if (report.firstMidiPart) {
+      useMidiEditorStore.getState().openPart(report.firstMidiPart);
+      daw().setWindow('midi');
+    }
+  } catch (err) {
+    notify(`가져오기 실패: ${(err as Error).message}`, 'error');
+  }
+}
+
 // ── Context-aware overrides ───────────────────────────────────────────────────
 
 /**
@@ -1049,13 +1068,10 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
       daw().loadSession(createSession('Untitled Session'));
       notify('새 세션', 'success');
     },
-    'file.open': async () => {
-      const paths = await invoke('file:open-dialog-multi') as string[] | null;
-      if (!paths?.length) return;
-      const result = await importAudioFiles(daw().session, paths, daw().playheadSec);
-      daw().apply(() => result.session);
-      notify(`${result.trackIds.length}개 트랙 추가`, 'success');
-    },
+    // Mod+O in the mastering app fills the queue and jumps to the home screen.
+    // In the DAW that would eject you from the session you are editing, so here
+    // it adds tracks at the play head and you stay where you are.
+    'file.open': () => importAtPlayhead(deps),
     'file.openSession': async () => {
       const loaded = await invoke('session:load') as { path: string; data: string } | null;
       if (!loaded) return;

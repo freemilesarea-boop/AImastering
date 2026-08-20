@@ -23,6 +23,10 @@ import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
 import { useDawShortcuts } from './shortcuts/useDawShortcuts.js';
 import DawWorkspaceChrome from './components/daw/DawWorkspaceChrome.js';
+import { isEmptyPlan, planDrop } from './daw/model/drop-target.js';
+import { describeImport, importIntoSession } from './daw/edit/session-import.js';
+import { useDawStore } from './stores/dawStore.js';
+import { useMidiEditorStore } from './stores/midiEditorStore.js';
 
 // Dev-only: analyzer streaming smoke route — only on ?dev=analyzer-stream URL.
 // Named export → wrap in a default-export shim for React.lazy.
@@ -135,8 +139,6 @@ function NoApiUI() {
 // Solution: listen at the document level and show a full-screen overlay
 // (z-index > TopBar, -webkit-app-region: no-drag) that captures the drop.
 
-const AUDIO_EXTENSIONS = new Set(['.wav', '.flac', '.aiff', '.aif', '.mp3', '.m4a']);
-
 function isAudioDrag(dt: DataTransfer | null): boolean {
   if (!dt) return false;
   return Array.from(dt.types).includes('Files');
@@ -147,6 +149,11 @@ function GlobalDropOverlay() {
   const counter = useRef(0);
   const addFilesToQueue = useAudioStore((s) => s.addFilesToQueue);
   const setPage         = useAppStore((s) => s.setPage);
+  const notify          = useAppStore((s) => s.notify);
+  // The overlay tells you where the files are about to land, so a drop is
+  // never a surprise trip back to the home screen.
+  const page            = useAppStore((s) => s.currentPage);
+  const inDaw           = page === 'daw';
 
   useEffect(() => {
     const onEnter = (e: DragEvent) => {
@@ -165,19 +172,48 @@ function GlobalDropOverlay() {
       counter.current = 0;
       setActive(false);
 
-      const files = Array.from(e.dataTransfer?.files ?? []);
-      const paths = files
+      const paths = Array.from(e.dataTransfer?.files ?? [])
         .map((f) => (f as File & { path?: string }).path ?? '')
-        .filter((p) => {
-          if (!p) return false;
-          const ext = p.slice(p.lastIndexOf('.')).toLowerCase();
-          return AUDIO_EXTENSIONS.has(ext);
-        })
-        .slice(0, MAX_QUEUE_SIZE);
+        .filter(Boolean);
 
-      if (paths.length) {
-        addFilesToQueue(paths);
-        setPage('home');
+      const state = useAppStore.getState();
+      const slots = MAX_QUEUE_SIZE - useAudioStore.getState().queue.length;
+      const plan = planDrop(paths, state.currentPage, slots);
+
+      if (isEmptyPlan(plan)) {
+        if (paths.length > 0) {
+          state.notify(
+            plan.destination === 'daw'
+              ? '오디오나 MIDI 파일이 아닙니다'
+              : '오디오 파일이 아니거나 대기열이 가득 찼습니다',
+            'warning',
+          );
+        }
+        return;
+      }
+
+      // In the DAW the files become tracks in the session you are already in.
+      // Sending you back to the home screen to re-enter the DAW was the single
+      // most disruptive thing the app did.
+      if (plan.destination === 'daw') {
+        void importIntoSession(plan.audio, plan.midi, useDawStore.getState().playheadSec)
+          .then((report) => {
+            state.notify(describeImport(report), report.failed.length ? 'warning' : 'success');
+            if (report.firstMidiPart) {
+              useMidiEditorStore.getState().openPart(report.firstMidiPart);
+              useDawStore.getState().setWindow('midi');
+            }
+          })
+          .catch((err: unknown) => {
+            state.notify(`가져오기 실패: ${(err as Error).message}`, 'error');
+          });
+        return;
+      }
+
+      addFilesToQueue(plan.audio);
+      setPage('home');
+      if (plan.ignored.length > 0) {
+        state.notify(`${plan.ignored.length}개 파일은 건너뛰었습니다`, 'warning');
       }
     };
 
@@ -191,7 +227,7 @@ function GlobalDropOverlay() {
       document.removeEventListener('dragover',  onDragOver);
       document.removeEventListener('drop',      onDrop);
     };
-  }, [addFilesToQueue, setPage]);
+  }, [addFilesToQueue, setPage, notify]);
 
   if (!active) return null;
 
@@ -205,8 +241,12 @@ function GlobalDropOverlay() {
            stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
         <path d="M2 12h2M20 12h2M6 8v8M18 8v8M10 5v14M14 5v14" />
       </svg>
-      <p className="text-base font-medium text-zinc-200">파일을 놓으세요</p>
-      <p className="text-xs text-zinc-500">WAV · FLAC · AIFF · MP3 · M4A</p>
+      <p className="text-base font-medium text-zinc-200">
+        {inDaw ? '세션에 트랙으로 추가합니다' : '파일을 놓으세요'}
+      </p>
+      <p className="text-xs text-zinc-500">
+        {inDaw ? 'WAV · FLAC · AIFF · MP3 · M4A · MID' : 'WAV · FLAC · AIFF · MP3 · M4A'}
+      </p>
     </div>
   );
 }

@@ -29,12 +29,11 @@ import { useMidiEditorStore } from '../stores/midiEditorStore.js';
 import {
   addTrack, createTrack, createBus, createMidiPart, findTrack, sessionEndSec, updateClips,
 } from '../daw/model/session-ops.js';
-import { importMidiFile } from '../daw/io/midi-file.js';
-import { importAudioFiles, shouldAdoptQueue } from '../daw/model/import-audio.js';
+import { shouldAdoptQueue } from '../daw/model/import-audio.js';
+import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import { importSessionData, deserializeDawSession, serializeDawSession } from '../daw/model/session-io.js';
 import { bounceSession, commitTrack, freezeTrack, unfreezeTrack } from '../daw/engine/offline-render.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
-import { toFileUrl } from '../utils/fileUrl.js';
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00.000';
@@ -83,16 +82,9 @@ export default function DawPage() {
     setBusy(`홈에서 불러온 곡을 가져오는 중… 0/${paths.length}`);
     try {
       // Decoding is sequential, so the count is real progress, not a spinner.
-      const result = await importAudioFiles(
-        useDawStore.getState().session, paths, 0,
-        (done, total) => setBusy(`홈에서 불러온 곡을 가져오는 중… ${done}/${total}`),
-      );
-      useDawStore.getState().apply(() => result.session);
-      if (result.failed.length) {
-        notify(`${result.trackIds.length}곡을 가져왔습니다 · ${result.failed.length}곡 디코딩 실패`, 'warning');
-      } else {
-        notify(`홈에서 ${result.trackIds.length}곡을 세션으로 가져왔습니다`, 'success');
-      }
+      const report = await importIntoSession(paths, [], 0,
+        (done, total) => setBusy(`홈에서 불러온 곡을 가져오는 중… ${done}/${total}`));
+      notify(describeImport(report), report.failed.length ? 'warning' : 'success');
     } catch (err) {
       notify(`가져오기 실패: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
@@ -116,20 +108,13 @@ export default function DawPage() {
     if (!paths?.length) return;
     setBusy(`오디오 불러오는 중… 0/${paths.length}`);
     try {
-      const result = await importAudioFiles(
-        useDawStore.getState().session, paths, 0,
-        (done, total) => setBusy(`오디오 불러오는 중… ${done}/${total}`),
-      );
-      loadSessionKeepingHistory(result.session);
-      if (result.failed.length) notify(`${result.failed.length}개 파일을 디코딩하지 못했습니다`, 'warning');
-      else notify(`${result.trackIds.length}개 트랙을 추가했습니다`, 'success');
+      const report = await importIntoSession(paths, [], playheadSec,
+        (done, total) => setBusy(`오디오 불러오는 중… ${done}/${total}`));
+      notify(describeImport(report), report.failed.length ? 'warning' : 'success');
+    } catch (err) {
+      notify(`가져오기 실패: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
-  }, [invoke, notify]);
-
-  // Import keeps the undo stack: it is an edit, not a new session.
-  const loadSessionKeepingHistory = useCallback((next: typeof session) => {
-    useDawStore.getState().apply(() => next);
-  }, []);
+  }, [invoke, notify, playheadSec]);
 
   /** New instrument track with an empty four-bar part, opened for editing. */
   const handleAddInstrument = useCallback(() => {
@@ -151,45 +136,17 @@ export default function DawPage() {
     if (!first) return;
     setBusy('MIDI 읽는 중…');
     try {
-      const response = await fetch(toFileUrl(first));
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      const imported = importMidiFile(bytes);
-      if (imported.parts.length === 0) { notify('노트가 있는 트랙이 없습니다', 'warning'); return; }
-
-      let firstOpen: { trackId: string; clipId: string } | null = null;
-      apply((s) => {
-        let next = { ...s, tempoBpm: imported.tempoBpm, timeSignature: imported.timeSignature };
-        for (const importedPart of imported.parts) {
-          const track = createTrack(importedPart.name || 'MIDI', 'instrument');
-          const part = createMidiPart(importedPart.name || 'MIDI', {
-            startSec: 0,
-            durationSec: Math.max(1, importedPart.durationSec),
-            notes: importedPart.notes,
-            controllers: importedPart.controllers,
-            midiConfig: {
-              bendRangeSemitones: importedPart.bendRangeSemitones,
-              mpe: importedPart.mpe,
-            },
-          });
-          next = updateClips(addTrack(next, track), track.id, () => [part]);
-          if (!firstOpen) firstOpen = { trackId: track.id, clipId: part.id };
-        }
-        return next;
-      });
-      if (firstOpen) {
-        useMidiEditorStore.getState().openPart(firstOpen);
+      const report = await importIntoSession([], [first], 0);
+      if (report.midiParts === 0) { notify('노트가 있는 트랙이 없습니다', 'warning'); return; }
+      if (report.firstMidiPart) {
+        useMidiEditorStore.getState().openPart(report.firstMidiPart);
         setWindow('midi');
       }
-      const mpeCount = imported.parts.filter((p) => p.mpe).length;
-      notify(
-        `${imported.parts.length}개 MIDI 트랙 · ${imported.tempoBpm.toFixed(0)} BPM`
-        + (mpeCount > 0 ? ` · MPE ${mpeCount}개 (노트별 표현 유지)` : ''),
-        'success',
-      );
+      notify(describeImport(report), 'success');
     } catch (err) {
       notify(`MIDI 가져오기 실패: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
-  }, [invoke, apply, notify, setWindow]);
+  }, [invoke, notify, setWindow]);
 
   /** Wrap the selected tracks (or the focused one) in a summing stack. */
   const handleCreateStack = useCallback(() => {
