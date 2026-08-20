@@ -51,13 +51,15 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   // ── Live level, so the picture shows this performance ────────────────────
   const [level, setLevel] = useState(0);
   const [reduction, setReduction] = useState<number | null>(null);
+  const [analysis, setAnalysis] = useState<{ lufs: number; peakDb: number } | null>(null);
   const isPlaying = useDawStore((s) => s.isPlaying);
   const insertId = insertIdOf(session, win.trackId, win.slot);
   useEffect(() => {
-    if (!isPlaying) { setLevel(0); setReduction(null); return; }
+    if (!isPlaying) { setLevel(0); setReduction(null); setAnalysis(null); return; }
     const timer = setInterval(() => {
       setLevel(dawRuntime.meterLevels().get(win.trackId) ?? 0);
       setReduction(insertId ? dawRuntime.insertReduction(win.trackId, insertId) : null);
+      setAnalysis(insertId ? dawRuntime.insertAnalysis(win.trackId, insertId) : null);
     }, 60);
     return () => clearInterval(timer);
   }, [isPlaying, win.trackId, insertId]);
@@ -188,6 +190,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
           bypassed={insert.bypass}
           level={level}
           reduction={reduction}
+          analysis={analysis}
           width={VISUAL_WIDTH}
           height={VISUAL_HEIGHT}
         />
@@ -209,6 +212,12 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
           ))}
         </div>
 
+        {descriptor.freeRunning && (
+          <p className="text-[10px] text-center" style={{ color: premium.text.faint }}>
+            LFO 위상은 재생 위치가 아니라 오디오 컨텍스트를 따릅니다 — 바운스가
+            모니터링과 같은 위상에서 시작하지 않습니다
+          </p>
+        )}
         {descriptor.offline && (
           <p className="text-[10px] text-center" style={{ color: 'rgb(251,191,36)' }}>
             OFFLINE — 이 장치는 바운스/렌더에서 적용됩니다

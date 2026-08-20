@@ -24,6 +24,8 @@ export interface PluginVisualProps {
   level: number;
   /** Gain reduction the device reports, in dB (negative), or null. */
   reduction?: number | null;
+  /** What a metering device is reading, or null. */
+  analysis?: { lufs: number; peakDb: number } | null;
   width: number;
   height: number;
 }
@@ -251,6 +253,62 @@ function drawReverb(
   ctx.fillText(`RT60 ${decay.toFixed(2)} s`, 4, 11);
 }
 
+/**
+ * Loudness against the delivery target.
+ *
+ * The number a master is finished against, next to the number it is aimed at,
+ * because "how loud is it" is only ever asked relative to a target.
+ */
+function drawLoudness(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  analysis: { lufs: number; peakDb: number } | null, params: Record<string, number>,
+): void {
+  const target = param(params, 'targetLufs', -14);
+  const FLOOR = -40;
+  const xFor = (lufs: number): number =>
+    ((Math.max(FLOOR, Math.min(0, lufs)) - FLOOR) / -FLOOR) * w;
+
+  ctx.strokeStyle = GRID;
+  for (const mark of [-30, -20, -10]) {
+    const x = Math.round(xFor(mark)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, 20); ctx.lineTo(x, h - 20); ctx.stroke();
+  }
+
+  // The target, and the bar that has to reach it.
+  const tx = Math.round(xFor(target)) + 0.5;
+  ctx.strokeStyle = 'rgba(198,167,104,0.8)';
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(tx, 12); ctx.lineTo(tx, h - 12); ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = LABEL;
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.fillText(`TARGET ${target.toFixed(1)}`, 4, 11);
+
+  if (!analysis || analysis.lufs <= -60) {
+    ctx.fillText('재생하면 측정됩니다', 4, h / 2 + 4);
+    return;
+  }
+
+  const level = xFor(analysis.lufs);
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(0, h / 2 - 10, w, 20);
+  const over = analysis.lufs > target;
+  ctx.fillStyle = over ? 'rgba(248,113,113,0.85)' : 'rgba(110,231,183,0.85)';
+  ctx.fillRect(0, h / 2 - 10, level, 20);
+
+  ctx.fillStyle = 'rgba(240,240,245,0.95)';
+  ctx.font = '11px ui-monospace, monospace';
+  ctx.fillText(`${analysis.lufs.toFixed(1)} LUFS`, 4, h / 2 + 4);
+
+  // True peak matters as much as loudness: a limiter that hits the target and
+  // clips the converter has not finished the job.
+  const peakOver = analysis.peakDb > -1;
+  ctx.fillStyle = peakOver ? 'rgba(248,113,113,0.95)' : LABEL;
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.fillText(`PEAK ${analysis.peakDb.toFixed(1)} dBFS`, 4, h - 6);
+}
+
 /** A level bar, for plugins whose behaviour is not a curve. */
 function drawLevel(ctx: CanvasRenderingContext2D, w: number, h: number, level: number): void {
   const db = level > 0.0005 ? 20 * Math.log10(level) : -60;
@@ -265,7 +323,7 @@ function drawLevel(ctx: CanvasRenderingContext2D, w: number, h: number, level: n
 }
 
 export default function PluginVisual({
-  pluginId, params, bypassed, level, reduction = null, width, height,
+  pluginId, params, bypassed, level, reduction = null, analysis = null, width, height,
 }: PluginVisualProps) {
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -291,8 +349,9 @@ export default function PluginVisual({
       if (reduction !== null && reduction < -0.05) drawReduction(ctx, width, height, reduction);
     } else if (pluginId === 'delay') drawDelay(ctx, width, height, params, bypassed);
     else if (pluginId === 'reverb') drawReverb(ctx, width, height, params, bypassed);
+    else if (pluginId === 'loudness') drawLoudness(ctx, width, height, analysis, params);
     else drawLevel(ctx, width, height, level);
-  }, [pluginId, params, bypassed, level, reduction, width, height]);
+  }, [pluginId, params, bypassed, level, reduction, analysis, width, height]);
 
   return <canvas ref={ref} className="block rounded-md" style={{ background: 'rgba(0,0,0,0.28)' }} />;
 }

@@ -255,6 +255,11 @@ class DawRuntime {
     return this.engine?.reduction(trackId, insertId) ?? null;
   }
 
+  /** A metering insert's current reading, or null when it is not one. */
+  insertAnalysis(trackId: TrackId, insertId: string): { lufs: number; peakDb: number } | null {
+    return this.engine?.analyse(trackId, insertId) ?? null;
+  }
+
   meterLevels(): Map<TrackId, number> {
     return this.engine?.meterLevels() ?? new Map();
   }
