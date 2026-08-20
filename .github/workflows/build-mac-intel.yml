@@ -178,29 +178,56 @@ jobs:
             || { echo "✗ engine is not x86_64"; exit 1; }
 
       # ── ffmpeg / ffprobe for darwin-x64 ─────────────────────────────────────
-      # Staged in a throwaway package so the main pnpm install (which must stay
+      # Staged outside the workspace so the main pnpm install (which must stay
       # host-native — it also builds the renderer) is untouched.
-      #   ffmpeg-static  reads npm_config_arch before falling back to os.arch()
-      #   @ffprobe-installer/darwin-x64  is the per-arch package @ffprobe-
-      #     installer/ffprobe would pick on a real Intel machine; --cpu/--os
-      #     override npm's EBADPLATFORM check on this arm64 host.
-      - name: Stage darwin-x64 ffmpeg + ffprobe
+      #
+      # The two packages need different treatment:
+      #
+      #   ffmpeg-static  ships no binary; a postinstall script downloads one,
+      #                  reading `npm_config_arch || os.arch()`.  So a normal
+      #                  install with that env var sets the arch.  The package
+      #                  itself declares no cpu/os, so npm is happy to install
+      #                  it here.
+      #
+      #   @ffprobe-installer/darwin-x64  ships the binary in the tarball and
+      #                  declares {os: darwin, cpu: x64}.  npm rejects it on an
+      #                  arm64 host with EBADPLATFORM, and --cpu/--os do NOT
+      #                  override that check for a directly-requested package.
+      #                  `npm pack` only fetches the tarball — no platform gate,
+      #                  no install scripts — and the binary is right inside it,
+      #                  so we unpack it by hand instead of forcing the install.
+      - name: Stage darwin-x64 ffmpeg
         run: |
           set -e
           mkdir -p /tmp/x64bins
           cd /tmp/x64bins
           npm init -y >/dev/null
           npm_config_arch=x64 npm_config_platform=darwin \
-            npm install --no-save --cpu=x64 --os=darwin \
-              "ffmpeg-static@${FFMPEG_STATIC_VERSION}" \
-              "@ffprobe-installer/darwin-x64@${FFPROBE_DARWIN_X64_VERSION}"
+            npm install --no-save "ffmpeg-static@${FFMPEG_STATIC_VERSION}"
+          echo "FFMPEG_BIN=$(node -p "require('/tmp/x64bins/node_modules/ffmpeg-static')")" >> "$GITHUB_ENV"
 
-          FFMPEG_BIN=$(node -p "require('/tmp/x64bins/node_modules/ffmpeg-static')")
-          FFPROBE_BIN=$(find /tmp/x64bins/node_modules/@ffprobe-installer/darwin-x64 -type f -name ffprobe | head -1)
+      - name: Stage darwin-x64 ffprobe (npm pack — bypasses EBADPLATFORM)
+        run: |
+          set -e
+          mkdir -p /tmp/x64bins/ffprobe
+          cd /tmp/x64bins/ffprobe
+          npm pack "@ffprobe-installer/darwin-x64@${FFPROBE_DARWIN_X64_VERSION}"
+          ls -la ./*.tgz
+          tar -xzf ./*.tgz
+          FFPROBE_BIN=$(find /tmp/x64bins/ffprobe/package -type f -name ffprobe | head -1)
+          test -n "$FFPROBE_BIN" || {
+            echo "✗ ffprobe binary not found in the tarball; contents were:"
+            find /tmp/x64bins/ffprobe/package -maxdepth 2 -type f | head -20
+            exit 1
+          }
+          chmod +x "$FFPROBE_BIN"
+          echo "FFPROBE_BIN=$FFPROBE_BIN" >> "$GITHUB_ENV"
 
+      - name: Verify staged binaries are x86_64
+        run: |
+          set -e
           echo "ffmpeg : $FFMPEG_BIN"
           echo "ffprobe: $FFPROBE_BIN"
-          test -n "$FFPROBE_BIN" || { echo "✗ ffprobe binary not found in the staged package"; exit 1; }
 
           echo "=== staged arch ==="
           lipo -archs "$FFMPEG_BIN"
@@ -208,6 +235,8 @@ jobs:
           lipo -archs "$FFMPEG_BIN"  | grep -q x86_64 || { echo "✗ ffmpeg is not x86_64";  exit 1; }
           lipo -archs "$FFPROBE_BIN" | grep -q x86_64 || { echo "✗ ffprobe is not x86_64"; exit 1; }
 
+          # prebuild.cjs consumes these and re-asserts the arch on the copies
+          # it makes into public/bin.
           echo "FFMPEG_BINARY=$FFMPEG_BIN"   >> "$GITHUB_ENV"
           echo "FFPROBE_BINARY=$FFPROBE_BIN" >> "$GITHUB_ENV"
 
