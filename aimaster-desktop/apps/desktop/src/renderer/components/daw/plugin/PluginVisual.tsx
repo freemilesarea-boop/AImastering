@@ -14,6 +14,7 @@ import {
   biquadMagnitudeDb, compressorOutputDb, delayTaps, freqToX, limiterOutputDb,
   logFrequencies, reverbEnvelope, type BiquadSpec,
 } from '../../../daw/model/plugin-curves.js';
+import { irDisplay, spaceAt } from '../../../daw/engine/reverb-spaces.js';
 import { premium } from '../../../theme/premium.js';
 
 export interface PluginVisualProps {
@@ -229,28 +230,105 @@ function drawDelay(
   ctx.fillText(`${taps.length} repeats · ${(delaySec * 1000).toFixed(0)} ms`, 4, 11);
 }
 
+/**
+ * The room, drawn from the numbers that build it.
+ *
+ * For the convolution devices this is not an illustration: the early
+ * reflections are the taps the image-source model actually produced, at the
+ * times it produced them, and the curve behind them is the envelope the tail
+ * actually decays with.  A gated room's picture stops because the room stops.
+ *
+ * For the plate and the spring there is no impulse response to draw — they are
+ * delay networks — so the curve is their decay law and the front is marked as
+ * dense from the first millisecond, which is what they are.
+ */
 function drawReverb(
   ctx: CanvasRenderingContext2D, w: number, h: number,
-  params: Record<string, number>, dim: boolean,
+  pluginId: string, params: Record<string, number>, dim: boolean,
 ): void {
-  const decay = param(params, 'decaySec', 1.8);
-  const env = reverbEnvelope(decay, w);
+  const floor = h - 8;
+  const top = 12;
+  const stroke = dim ? 'rgba(140,140,160,0.5)' : premium.accent.base;
 
+  const convolved = pluginId === 'spacereverb' || pluginId === 'shimmer';
+  const preDelaySec = param(params, 'preDelayMs', 0) / 1000;
+
+  let envelope: number[];
+  let lengthSec: number;
+  let taps: Array<{ timeSec: number; gain: number }> = [];
+  let caption: string;
+
+  if (convolved) {
+    const space = spaceAt(param(params, 'space', 0));
+    const display = irDisplay(space, {
+      sampleRate: 48_000,
+      sizeScale: param(params, 'sizePct', 100) / 100,
+      decayScale: param(params, 'decayPct', 100) / 100,
+      holdMs: param(params, 'holdMs', 260),
+    }, w);
+    envelope = display.envelope;
+    lengthSec = display.lengthSec + preDelaySec;
+    caption = `${space.name} · RT60 ${display.rt60Sec.toFixed(2)} s`;
+    // Early reflections are only drawn where they are audible as reflections;
+    // a plate's are 18 dB down and would just be noise on the picture.
+    if (param(params, 'erDb', 0) > -18) {
+      taps = display.taps.map((tap) => ({ timeSec: tap.timeSec, gain: tap.gain }));
+    }
+  } else {
+    const decay = param(params, 'decaySec', 1.8);
+    lengthSec = decay * 1.05 + preDelaySec;
+    envelope = reverbEnvelope(decay, w);
+    caption = `RT60 ${decay.toFixed(2)} s`;
+  }
+
+  const xOf = (seconds: number): number => (seconds / Math.max(1e-6, lengthSec)) * w;
+  const preX = xOf(preDelaySec);
+  const span = Math.max(1, w - preX);
+
+  // The tail.
   ctx.beginPath();
-  env.forEach((g, i) => {
-    const y = h - 8 - g * (h - 20);
-    if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i, y);
+  ctx.moveTo(preX, floor);
+  envelope.forEach((g, i) => {
+    const x = preX + (i / Math.max(1, envelope.length - 1)) * span;
+    ctx.lineTo(x, floor - g * (floor - top));
   });
-  ctx.strokeStyle = dim ? 'rgba(140,140,160,0.5)' : premium.accent.base;
+  ctx.strokeStyle = stroke;
   ctx.lineWidth = 2;
   ctx.stroke();
-  ctx.lineTo(w, h - 8); ctx.lineTo(0, h - 8); ctx.closePath();
+  ctx.lineTo(w, floor);
+  ctx.lineTo(preX, floor);
+  ctx.closePath();
   ctx.fillStyle = 'rgba(230,210,160,0.08)';
   ctx.fill();
 
+  // The reflections, where there are any to show.
+  const loudest = taps.reduce((max, tap) => Math.max(max, tap.gain), 0);
+  for (const tap of taps) {
+    const x = xOf(preDelaySec + tap.timeSec);
+    if (x > w) continue;
+    const height = (tap.gain / Math.max(1e-9, loudest)) * (floor - top) * 0.8;
+    ctx.beginPath();
+    ctx.moveTo(x, floor);
+    ctx.lineTo(x, floor - height);
+    ctx.strokeStyle = dim ? 'rgba(140,140,160,0.35)' : 'rgba(126,200,255,0.55)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Where the direct sound is, and how far behind it the room starts.
+  if (preX > 1) {
+    ctx.beginPath();
+    ctx.moveTo(preX, top - 4);
+    ctx.lineTo(preX, floor);
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
   ctx.fillStyle = LABEL;
   ctx.font = '9px ui-monospace, monospace';
-  ctx.fillText(`RT60 ${decay.toFixed(2)} s`, 4, 11);
+  ctx.fillText(caption, 4, 11);
+  ctx.fillText(`${lengthSec.toFixed(2)} s`, w - 34, floor - 2);
 }
 
 /**
@@ -348,7 +426,10 @@ export default function PluginVisual({
       drawDynamics(ctx, width, height, pluginId, params, level, bypassed);
       if (reduction !== null && reduction < -0.05) drawReduction(ctx, width, height, reduction);
     } else if (pluginId === 'delay') drawDelay(ctx, width, height, params, bypassed);
-    else if (pluginId === 'reverb') drawReverb(ctx, width, height, params, bypassed);
+    else if (pluginId === 'reverb' || pluginId === 'spacereverb' || pluginId === 'plate'
+             || pluginId === 'spring' || pluginId === 'shimmer') {
+      drawReverb(ctx, width, height, pluginId, params, bypassed);
+    }
     else if (pluginId === 'loudness') drawLoudness(ctx, width, height, analysis, params);
     else drawLevel(ctx, width, height, level);
   }, [pluginId, params, bypassed, level, reduction, analysis, width, height]);
