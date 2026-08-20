@@ -22,7 +22,7 @@ import { getSource } from './pcm-store.js';
 import {
   createStreamVoice, ensureStreamRuntime, streamRuntimeReady, type StreamVoice,
 } from './stream-voice.js';
-import { ensureWarpedBuffer, prepareWarps } from './warp-render.js';
+import { ensureWarpedBufferForSession, prepareWarpsForSession } from './warp-render.js';
 import { clipWarp } from '../model/warp.js';
 import { clipNotes } from '../model/patterns.js';
 import { findInstrument } from './instruments.js';
@@ -116,7 +116,7 @@ export class ClipPlayer {
     // Warped clips are stretched into buffers up front — doing it inside the
     // scheduler would stall the audio thread's look-ahead.
     const clips = session.tracks.flatMap((t) => trackClips(t));
-    prepareWarps(this.engine.ctx, clips, session.tempoBpm);
+    prepareWarpsForSession(this.engine.ctx, clips, session);
   }
 
   /** Turn streaming off for this player — an offline render cannot wait. */
@@ -291,7 +291,7 @@ export class ClipPlayer {
     // A warped clip plays its rendered buffer, which already starts at the
     // clip's first sample — so the read offset is the skip alone.  Warping
     // produces the buffer up front, so those clips are never streamed.
-    const warped = clipWarp(clip) ? ensureWarpedBuffer(ctx, clip, session.tempoBpm) : null;
+    const warped = clipWarp(clip) ? ensureWarpedBufferForSession(ctx, clip, session) : null;
 
     // Prefer streaming: a track that plays off disk costs a two-second ring
     // instead of its whole length in memory, which is the difference between

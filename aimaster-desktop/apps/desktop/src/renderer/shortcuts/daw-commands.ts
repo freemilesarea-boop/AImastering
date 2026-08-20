@@ -50,6 +50,10 @@ import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js
 import { updateClip, trackClips, updateTrack } from '../daw/model/session-ops.js';
 import { findLane } from '../daw/model/automation.js';
 import {
+  addTempoEvent, barBeatAt, secToBeat, tempoAtBeat, tempoMapOf, updateTempoEvent,
+  withTempoMap,
+} from '../daw/model/tempo-map.js';
+import {
   availableTargets, ensureLane, setLaneVisible, visibleLanes,
 } from '../daw/edit/automation-lanes.js';
 import type { AutomationMode } from '../daw/model/types.js';
@@ -89,6 +93,7 @@ export type DawCommandId =
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.toggleAutomation' | 'daw.automationMode'
+  | 'daw.tempoChange' | 'daw.tempoRamp'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
@@ -557,6 +562,32 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     // ── Smart Controls / Track Stacks ─────────────────────────────────────
+    'daw.tempoChange': () => {
+      const state = daw();
+      const map = tempoMapOf(state.session);
+      const beat = secToBeat(map, state.playheadSec);
+      // At the tempo already in force, so dropping one does not move the
+      // music — it gives you a handle to move it with.
+      const bpm = tempoAtBeat(map, beat);
+      state.apply((s) => withTempoMap(s, addTempoEvent(tempoMapOf(s), beat, bpm)));
+      const where = barBeatAt(map, beat);
+      notify(`${where.bar}마디 — 템포 이벤트 ${bpm.toFixed(1)} BPM`, 'info');
+    },
+
+    'daw.tempoRamp': () => {
+      const state = daw();
+      const map = tempoMapOf(state.session);
+      const beat = secToBeat(map, state.playheadSec);
+      // The event at or before the playhead: the one whose curve reaches here.
+      const event = [...map.tempos].reverse().find((e) => e.beat <= beat + 1e-6);
+      if (!event) { notify('템포 이벤트가 없습니다', 'warning'); return; }
+      const next = event.curve === 'ramp' ? 'jump' : 'ramp';
+      state.apply((s) => withTempoMap(s, updateTempoEvent(tempoMapOf(s), event.id, { curve: next })));
+      notify(next === 'ramp'
+        ? `${barBeatAt(map, event.beat).bar}마디부터 다음 이벤트까지 템포가 이어집니다`
+        : `${barBeatAt(map, event.beat).bar}마디 템포 고정`, 'info');
+    },
+
     'daw.toggleAutomation': () => {
       const state = daw();
       const trackId = targetTrackIds()[0];

@@ -15,6 +15,7 @@ import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
 import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
+import { snapSecToBeats, tempoMapOf } from '../daw/model/tempo-map.js';
 
 export type EditMode = 'shuffle' | 'slip' | 'spot' | 'grid';
 export type DawWindow = 'edit' | 'mix' | 'midi' | 'chain' | 'session' | 'spectral' | 'reference' | 'warp' | 'restore' | 'steps' | 'intel';
@@ -69,8 +70,14 @@ export interface DawState {
 
   editMode: EditMode;
   setEditMode: (m: EditMode) => void;
-  gridSec: number;
-  setGridSec: (s: number) => void;
+  /**
+   * The snap grid, in quarter notes — 4 is a bar of 4/4, 1 a beat, 0.25 a
+   * sixteenth.  Musical rather than in seconds because with a tempo map the
+   * two are not the same thing: a grid fixed at 0.5 s stops being the beat the
+   * moment the tempo moves.
+   */
+  gridDivision: number;
+  setGridDivision: (beats: number) => void;
   nudgeSec: number;
   setNudgeSec: (s: number) => void;
   tabToTransient: boolean;
@@ -219,8 +226,8 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   editMode: 'slip',
   setEditMode: (m) => set({ editMode: m }),
-  gridSec: 0.5,
-  setGridSec: (s) => set({ gridSec: Math.max(0.001, s) }),
+  gridDivision: 1,
+  setGridDivision: (beats) => set({ gridDivision: Math.max(1 / 32, beats) }),
   nudgeSec: 0.1,
   setNudgeSec: (s) => set({ nudgeSec: Math.max(0.001, s) }),
   tabToTransient: true,
@@ -246,11 +253,17 @@ dawRuntime.onStopped = () => {
   useDawStore.setState({ isPlaying: false });
 };
 
-/** Snap a time to the grid when the session is in Grid mode. */
+/**
+ * Snap a time to the grid when the session is in Grid mode.
+ *
+ * Rounds on the BEAT axis and converts back, so the grid follows the tempo
+ * map: a bar line stays a bar line through a ritardando, which is the whole
+ * reason the map exists.
+ */
 export function snapToGrid(sec: number): number {
-  const { editMode, gridSec } = useDawStore.getState();
-  if (editMode !== 'grid' || gridSec <= 0) return Math.max(0, sec);
-  return Math.max(0, Math.round(sec / gridSec) * gridSec);
+  const { editMode, gridDivision, session } = useDawStore.getState();
+  if (editMode !== 'grid' || gridDivision <= 0) return Math.max(0, sec);
+  return snapSecToBeats(tempoMapOf(session), sec, gridDivision);
 }
 
 /** The tracks an edit command applies to: the selection, else the focus. */

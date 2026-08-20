@@ -282,6 +282,40 @@ export interface BusDef {
   channels: 1 | 2;
 }
 
+// ── Tempo ─────────────────────────────────────────────────────────────────────
+//
+// Positioned in QUARTER-NOTE BEATS, never in seconds: an event written in
+// seconds has to be rewritten every time an earlier tempo changes, and two
+// representations of the same truth is how a tempo map rots.  The arithmetic
+// lives in `tempo-map.ts`.
+
+export type TempoCurve = 'jump' | 'ramp';
+
+export interface TempoEvent {
+  id: string;
+  /** Quarter-note beats from the session start. */
+  beat: number;
+  bpm: number;
+  /** How the tempo travels from here to the next event. */
+  curve: TempoCurve;
+}
+
+export interface MeterEvent {
+  id: string;
+  /** 1-based bar this signature starts at. */
+  bar: number;
+  numerator: number;
+  /** 1, 2, 4, 8, 16 — the note that gets the beat. */
+  denominator: number;
+}
+
+export interface TempoMap {
+  /** Sorted by beat.  Always has one at beat 0. */
+  tempos: TempoEvent[];
+  /** Sorted by bar.  Always has one at bar 1. */
+  meters: MeterEvent[];
+}
+
 // ── Markers / session ─────────────────────────────────────────────────────────
 
 export interface Marker {
@@ -297,8 +331,21 @@ export interface DawSession {
   id: string;
   name: string;
   sampleRate: number;
+  /**
+   * The tempo at the start of the song, and its opening signature.
+   *
+   * Kept in step with `tempoMap` rather than replaced by it: features that
+   * have not been taught the map read these, and a session written by an
+   * older build has only these.  `tempoMapOf` reconciles the two.
+   */
   tempoBpm: number;
   timeSignature: [number, number];
+  /**
+   * Tempo and signature changes over the song.  Absent in sessions saved
+   * before the tempo track existed, which is why every reader goes through
+   * `tempoMapOf(session)` instead of touching this.
+   */
+  tempoMap?: TempoMap;
   files: AudioFileRef[];
   tracks: Track[];
   buses: BusDef[];

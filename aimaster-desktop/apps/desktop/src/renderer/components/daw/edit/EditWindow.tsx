@@ -32,6 +32,10 @@ import {
   availableTargets, setLaneVisible, visibleLanes,
 } from '../../../daw/edit/automation-lanes.js';
 import type { AutomationLane } from '../../../daw/model/types.js';
+import {
+  describeTempoMap, formatBarBeat, gridLines, isConstantTempo, tempoMapOf,
+} from '../../../daw/model/tempo-map.js';
+import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 
 const HEADER_WIDTH = 168;
 const RULER_HEIGHT = 26;
@@ -42,6 +46,19 @@ function fmt(sec: number): string {
   const s = sec - m * 60;
   return `${m}:${s.toFixed(3).padStart(6, '0')}`;
 }
+
+/** Snap units, in quarter notes.  A bar is only 4 beats in 4/4 — the label
+ *  says "1 Bar" and the map decides how long that actually is. */
+const GRID_DIVISIONS: ReadonlyArray<{ beats: number; label: string }> = [
+  { beats: 4,     label: '1 Bar' },
+  { beats: 2,     label: '1/2' },
+  { beats: 1,     label: '1/4' },
+  { beats: 0.5,   label: '1/8' },
+  { beats: 1 / 3, label: '1/8T' },
+  { beats: 0.25,  label: '1/16' },
+  { beats: 1 / 6, label: '1/16T' },
+  { beats: 0.125, label: '1/32' },
+];
 
 const EDIT_MODES: EditMode[] = ['shuffle', 'slip', 'spot', 'grid'];
 const MODE_LABELS: Record<EditMode, string> = {
@@ -60,7 +77,8 @@ export default function EditWindow() {
   const setScrollSec = useDawStore((s) => s.setScrollSec);
   const editMode     = useDawStore((s) => s.editMode);
   const setEditMode  = useDawStore((s) => s.setEditMode);
-  const gridSec      = useDawStore((s) => s.gridSec);
+  const gridDivision = useDawStore((s) => s.gridDivision);
+  const setGridDivision = useDawStore((s) => s.setGridDivision);
   const nudgeSec     = useDawStore((s) => s.nudgeSec);
   const tabToTransient = useDawStore((s) => s.tabToTransient);
   const toggleTab    = useDawStore((s) => s.toggleTabToTransient);
@@ -150,6 +168,8 @@ export default function EditWindow() {
   // A session with only a master track is not "empty timeline", it is "you
   // have nothing to work on yet" — and a blank grid says neither.
   const hasMaterial = session.tracks.some((t) => t.kind === 'audio' || t.kind === 'instrument');
+  const hasMidiParts = session.tracks.some((t) => t.playlists.some(
+    (p) => p.clips.some((c) => c.kind === 'midi')));
   const queueCount = useAudioStore((s) => s.queue.length);
 
   /**
@@ -225,16 +245,21 @@ export default function EditWindow() {
     seek(snapToGrid(secAt(e.clientX)));
   }, [seek, secAt]);
 
-  // Ruler ticks — roughly one label every 90 px.
-  const ticks = useMemo(() => {
-    const targetSec = 90 / pxPerSec;
-    const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120];
-    const step = steps.find((s) => s >= targetSec) ?? 300;
-    const first = Math.floor(scrollSec / step) * step;
-    const out: number[] = [];
-    for (let t = first; t < scrollSec + laneWidth / pxPerSec; t += step) out.push(t);
-    return out;
-  }, [pxPerSec, scrollSec, laneWidth]);
+  // The ruler is bars, not seconds.
+  //
+  // With a tempo map those are different rulers: a ritardando makes the last
+  // bar in view twice as wide as the first, and a scale drawn at a fixed
+  // second interval would sit next to the music instead of on it.  Beat lines
+  // appear once a bar is wide enough to hold them.
+  const tempoMap = useMemo(() => tempoMapOf(session), [session]);
+  const viewEndSec = scrollSec + laneWidth / Math.max(1, pxPerSec);
+  const barLines = useMemo(() => {
+    const barWidthPx = 4 * (60 / Math.max(1, session.tempoBpm)) * pxPerSec;
+    return gridLines(tempoMap, scrollSec, viewEndSec, {
+      beats: barWidthPx > 90,
+      maxLines: 400,
+    });
+  }, [tempoMap, scrollSec, viewEndSec, pxPerSec, session.tempoBpm]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
@@ -251,9 +276,34 @@ export default function EditWindow() {
           ))}
         </div>
 
-        <span className="text-[10px] font-mono text-zinc-600">
-          Grid {gridSec}s · Nudge {nudgeSec}s
+        <label className="flex items-center gap-1 text-[10px] font-mono text-zinc-600">
+          Grid
+          <select
+            value={gridDivision}
+            onChange={(e) => setGridDivision(parseFloat(e.target.value))}
+            className="h-5 rounded px-1 bg-zinc-900 border border-zinc-700 text-zinc-400"
+            title="스냅 단위 — 초가 아니라 음가입니다"
+          >
+            {GRID_DIVISIONS.map((g) => (
+              <option key={g.beats} value={g.beats}>{g.label}</option>
+            ))}
+          </select>
+        </label>
+        <span className="text-[10px] font-mono text-zinc-600">Nudge {nudgeSec}s</span>
+        <span className="text-[10px] font-mono" style={{ color: premium.accent.base }}
+              title="템포 트랙에서 변화를 추가할 수 있습니다">
+          {describeTempoMap(tempoMap)}
         </span>
+        {/* Said where it matters, not only in a document: audio follows the
+            map, MIDI does not yet, and finding that out by ear is the worst
+            way to find it out. */}
+        {!isConstantTempo(tempoMap) && hasMidiParts && (
+          <span
+            className="text-[10px] font-mono"
+            style={{ color: 'rgb(251,191,36)' }}
+            title="워프된 오디오는 템포 맵을 따라갑니다. MIDI 노트는 아직 초 단위로 저장되어 있어 템포 변화를 따라가지 않습니다 — 노트는 있던 시각에 그대로 남습니다."
+          >⚠ MIDI 미추종</span>
+        )}
 
         <button
           onClick={toggleTab}
@@ -272,7 +322,10 @@ export default function EditWindow() {
         <button onClick={() => setPxPerSec(pxPerSec * 1.5)}
           className="px-2 py-1 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-400">+</button>
 
-        <span className="text-[11px] font-mono text-zinc-300 ml-2">{fmt(playheadSec)}</span>
+        <span className="text-[11px] font-mono tabular-nums ml-2"
+              style={{ color: premium.accent.light }}
+              title="마디|박|틱">{formatBarBeat(tempoMap, playheadSec)}</span>
+        <span className="text-[11px] font-mono text-zinc-500">{fmt(playheadSec)}</span>
         <span className="text-[10px] font-mono text-zinc-600">
           {selection.endSec > selection.startSec
             ? `SEL ${fmt(selection.startSec)} → ${fmt(selection.endSec)}`
@@ -288,10 +341,19 @@ export default function EditWindow() {
           className="relative flex-1 cursor-pointer overflow-hidden"
           style={{ height: RULER_HEIGHT }}
         >
-          {ticks.map((t) => (
-            <div key={t} className="absolute top-0 bottom-0 border-l border-zinc-800"
-                 style={{ left: toX(t) }}>
-              <span className="absolute left-1 top-1 text-[9px] font-mono text-zinc-600">{fmt(t).slice(0, -2)}</span>
+          {barLines.map((line) => (
+            <div
+              key={`${line.bar}-${line.beat}`}
+              className="absolute top-0 bottom-0"
+              style={{
+                left: toX(line.sec),
+                borderLeft: `1px solid ${line.isBar ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.06)'}`,
+              }}
+            >
+              {line.isBar && (
+                <span className="absolute left-1 top-1 text-[9px] font-mono"
+                      style={{ color: premium.text.muted }}>{line.bar}</span>
+              )}
             </div>
           ))}
           {loopEndSec > loopStartSec && (
@@ -334,6 +396,7 @@ export default function EditWindow() {
       <div className="flex-1 flex overflow-y-auto" onMouseUp={endDrag} onMouseLeave={endDrag}>
         {/* Headers */}
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
+          <TempoTrackHeader session={session} />
           {displayRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneHeader key={row.key} track={row.track} lane={row.lane} />
           ) : (
@@ -379,6 +442,10 @@ export default function EditWindow() {
               </p>
             </div>
           )}
+          <TempoTrack
+            session={session}
+            viewport={{ scrollSec, pxPerSec, width: laneWidth }}
+          />
           {displayRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneCanvas
               key={row.key}

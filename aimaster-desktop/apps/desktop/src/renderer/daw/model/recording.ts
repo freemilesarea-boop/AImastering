@@ -21,6 +21,7 @@
 //   do with playlists.
 
 import { activePlaylist } from './session-ops.js';
+import { meterAtBeat, secToBeat, tempoAtSec, tempoMapOf } from './tempo-map.js';
 import type { DawSession, Track, TrackId } from './types.js';
 
 export type MonitorMode = 'off' | 'on';
@@ -93,8 +94,17 @@ export function planRecording(
   session: DawSession, settings: RecordSettings, playheadSec: number,
   loop: LoopRange | null = null,
 ): RecordPlan {
-  const beatsPerBar = session.timeSignature[0];
-  const countInSec = countInSeconds(settings.countInBars, session.tempoBpm, beatsPerBar);
+  // The count-in is the bars BEFORE the take, at the tempo that is actually in
+  // force there — a count-in at the session's opening tempo would be the wrong
+  // speed for a take that starts after a tempo change, and the player would
+  // come in on the wrong beat.
+  const map = tempoMapOf(session);
+  const punchAt = settings.punchEnabled
+    ? Math.min(settings.punchStartSec, settings.punchEndSec) : playheadSec;
+  const meterHere = meterAtBeat(map, secToBeat(map, Math.max(0, punchAt)));
+  const beatsPerBar = meterHere.numerator;
+  const countInSec = countInSeconds(
+    settings.countInBars, tempoAtSec(map, Math.max(0, punchAt)), beatsPerBar);
 
   const punchStart = Math.min(settings.punchStartSec, settings.punchEndSec);
   const punchEnd = Math.max(settings.punchStartSec, settings.punchEndSec);
