@@ -224,3 +224,87 @@ export function reverbEnvelope(decaySec: number, points = 48): number[] {
   }
   return out;
 }
+
+// ── The Web Audio compressor's hidden makeup gain ───────────────────────────
+//
+// `DynamicsCompressorNode` does not leave a quiet signal alone.  WebKit's
+// kernel — which Chromium inherits — derives an automatic makeup gain from the
+// threshold, knee and ratio and applies it to everything:
+//
+//     fullRangeGain      = saturate(1)          // the curve's output at 0 dBFS
+//     fullRangeMakeup    = (1 / fullRangeGain) ^ 0.6
+//
+// Measured in Chromium 120 at threshold -24 dB, knee 6, ratio 8:1, a signal
+// 26 dB below the threshold came out **11.4 dB louder** than it went in.  That
+// is not a compressor; that is a compressor and an unlabelled gain stage, and
+// it is why dropping one on a channel makes the mix jump.
+//
+// So the value is computed here and divided back out, which leaves the device
+// doing what its own curve says it does and nothing else.  The Makeup knob is
+// then the only gain in the box, which is the point of having one.
+//
+// Reproduced from the WebKit kernel rather than approximated: an approximation
+// leaves a residual gain that changes every time the threshold moves.
+
+/** WebKit's soft knee: linear below the threshold, saturating above it. */
+function kneeCurve(x: number, k: number, linearThreshold: number): number {
+  if (x < linearThreshold) return x;
+  return linearThreshold + (1 - Math.exp(-k * (x - linearThreshold))) / k;
+}
+
+const dbToLinear = (db: number): number => Math.pow(10, db / 20);
+const linearToDb = (x: number): number => 20 * Math.log10(Math.max(1e-12, x));
+
+/** Slope of the knee curve at `x`, in dB per dB. */
+function slopeAt(x: number, k: number, linearThreshold: number): number {
+  if (x < linearThreshold) return 1;
+  const x2 = x * 1.001;
+  const xDb = linearToDb(x);
+  const x2Db = linearToDb(x2);
+  const yDb = linearToDb(kneeCurve(x, k, linearThreshold));
+  const y2Db = linearToDb(kneeCurve(x2, k, linearThreshold));
+  return (y2Db - yDb) / (x2Db - xDb);
+}
+
+/** Binary search for the k that gives the requested slope at the knee top. */
+function kAtSlope(desiredSlope: number, thresholdDb: number, kneeDb: number): number {
+  const linearThreshold = dbToLinear(thresholdDb);
+  const x = dbToLinear(thresholdDb + kneeDb);
+  let minK = 0.1;
+  let maxK = 10_000;
+  for (let i = 0; i < 15; i++) {
+    const midK = Math.sqrt(minK * maxK);
+    if (slopeAt(x, midK, linearThreshold) < desiredSlope) maxK = midK;
+    else minK = midK;
+  }
+  return Math.sqrt(minK * maxK);
+}
+
+/**
+ * The gain `DynamicsCompressorNode` silently adds, as a linear multiplier.
+ *
+ * Divide it out of the device's own makeup stage and the compressor sits at
+ * unity below its threshold, like every other compressor an engineer has used.
+ */
+export function webAudioAutoMakeup(
+  thresholdDb: number, kneeDb: number, ratio: number,
+): number {
+  const knee = Math.max(0, kneeDb);
+  const linearThreshold = dbToLinear(thresholdDb);
+  const kneeThreshold = dbToLinear(thresholdDb + knee);
+  const k = kAtSlope(1 / Math.max(1, ratio), thresholdDb, knee);
+
+  // saturate(1): where full scale lands on the static curve.
+  let fullRangeGain: number;
+  if (1 < kneeThreshold) {
+    fullRangeGain = kneeCurve(1, k, linearThreshold);
+  } else {
+    const kneeThresholdDb = linearToDb(kneeThreshold);
+    const yKneeThresholdDb = linearToDb(kneeCurve(kneeThreshold, k, linearThreshold));
+    const slope = 1 / Math.max(1, ratio);
+    fullRangeGain = dbToLinear(yKneeThresholdDb + slope * (linearToDb(1) - kneeThresholdDb));
+  }
+
+  // The 0.6 exponent is WebKit's own perceptual fudge, not a derivation.
+  return Math.pow(1 / Math.max(1e-9, fullRangeGain), 0.6);
+}

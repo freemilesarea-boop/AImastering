@@ -12,6 +12,8 @@
 // through an audio connection, which is how you get a working detector with
 // no script node in the path.
 
+import { webAudioAutoMakeup } from '../model/plugin-curves.js';
+
 export interface PluginParamDef {
   id: string;
   name: string;
@@ -31,6 +33,12 @@ export interface PluginInstance {
   setBypass: (bypassed: boolean) => void;
   /** Tell the plugin an external key is (or is not) feeding its sidechain. */
   setSidechainActive: (active: boolean) => void;
+  /**
+   * Gain reduction right now, in dB (0 = none, negative = pulling down).
+   * Present only on devices that actually know — a meter that guesses is
+   * worse than no meter.
+   */
+  reduction?: () => number;
   dispose: () => void;
 }
 
@@ -234,12 +242,47 @@ function makeShaper(
 }
 
 /** One-pole smoother, expressed as a lowpass corner from a time constant. */
-function smoother(ctx: BaseAudioContext, timeMs: number): BiquadFilterNode {
-  const f = ctx.createBiquadFilter();
-  f.type = 'lowpass';
-  f.frequency.value = timeConstantToHz(timeMs);
-  f.Q.value = 0.7071;
-  return f;
+/**
+ * The envelope follower behind a level detector.
+ *
+ * Two poles, not one, and never above `DETECTOR_MAX_HZ`.
+ *
+ * A single pole at the requested time constant is what a detector "should" be,
+ * and it is why the compressor screamed: ask for a 0.1 ms attack and the
+ * filter sits at 1591 Hz, so the ripple of the rectified waveform itself walks
+ * straight into the gain stage.  That is not compression, it is ring
+ * modulation, and on a vocal it is unlistenable.
+ *
+ * A rectified 440 Hz tone ripples at 880 Hz.  Two poles at 60 Hz put that
+ * 46 dB down, which is inaudible, while still settling in about 3 ms — fast
+ * enough for a limiter with 2 ms of look-ahead.
+ */
+const DETECTOR_MAX_HZ = 60;
+
+export interface Smoother {
+  input: BiquadFilterNode;
+  output: BiquadFilterNode;
+  setTimeMs: (timeMs: number) => void;
+}
+
+function smoother(ctx: BaseAudioContext, timeMs: number): Smoother {
+  const make = (): BiquadFilterNode => {
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.Q.value = 0.7071;
+    return f;
+  };
+  const first = make();
+  const second = make();
+  first.connect(second);
+
+  const setTimeMs = (ms: number): void => {
+    const hz = Math.min(DETECTOR_MAX_HZ, timeConstantToHz(ms));
+    first.frequency.value = hz;
+    second.frequency.value = hz;
+  };
+  setTimeMs(timeMs);
+  return { input: first, output: second, setTimeMs };
 }
 
 export function timeConstantToHz(timeMs: number): number {
@@ -307,34 +350,112 @@ export const PLUGINS: PluginDescriptor[] = [
     id: 'comp',
     name: 'Compressor',
     category: 'dynamics',
-    hasSidechain: true,
+    // Sidechain ducking lives in its own device — see 'ducker' below for why.
+    hasSidechain: false,
     params: [
       { id: 'thresholdDb', name: 'Threshold', min: -60, max: 0,   default: -18, unit: 'dB' },
       { id: 'ratio',       name: 'Ratio',     min: 1,   max: 20,  default: 4,   unit: ':1' },
+      { id: 'kneeDb',      name: 'Knee',      min: 0,   max: 40,  default: 6,   unit: 'dB' },
       { id: 'attackMs',    name: 'Attack',    min: 0.1, max: 100, default: 10,  unit: 'ms' },
       { id: 'releaseMs',   name: 'Release',   min: 10,  max: 1000, default: 120, unit: 'ms' },
       { id: 'makeupDb',    name: 'Makeup',    min: 0,   max: 24,  default: 0,   unit: 'dB' },
     ],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
-      // Signal path: input → vca → makeup → output
+      // A real compressor needs SEPARATE attack and release times, and a
+      // detector that follows the envelope without following the waveform.
+      // Neither is expressible as a graph of filters and shapers: one
+      // BiquadFilter is linear and time-invariant, so it cannot rise at one
+      // rate and fall at another.  The hand-built detector this replaced
+      // shared a single lowpass between attack and release — whichever knob
+      // you touched last won — and at a 0.1 ms attack that filter sat at
+      // 1591 Hz and passed the rectified waveform straight into the gain
+      // stage.  That is the screaming.
+      //
+      // DynamicsCompressorNode is a native node with a proper asymmetric
+      // detector and a soft knee, and it reports its own gain reduction, so
+      // the meter in the plugin window is measured rather than modelled.
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.value = params['thresholdDb'] ?? -18;
+      comp.ratio.value = Math.max(1, params['ratio'] ?? 4);
+      comp.knee.value = Math.max(0, params['kneeDb'] ?? 6);
+      comp.attack.value = Math.max(0, (params['attackMs'] ?? 10) / 1000);
+      comp.release.value = Math.max(0, (params['releaseMs'] ?? 120) / 1000);
+
+      // Cancel the node's hidden automatic makeup so the device sits at unity
+      // below its threshold.  Without this, inserting a compressor made the
+      // channel 11 dB louder before it did any compressing.
+      const makeup = ctx.createGain();
+      const applyMakeup = (): void => {
+        makeup.gain.value = dbToGain(params['makeupDb'] ?? 0)
+          / webAudioAutoMakeup(
+            params['thresholdDb'] ?? -18,
+            params['kneeDb'] ?? 6,
+            params['ratio'] ?? 4,
+          );
+      };
+      applyMakeup();
+
+      input.connect(comp).connect(makeup).connect(output);
+
+      return {
+        setParam: (id, v) => {
+          params[id] = v;
+          if (id === 'thresholdDb') comp.threshold.value = v;
+          if (id === 'ratio')       comp.ratio.value = Math.max(1, v);
+          if (id === 'kneeDb')      comp.knee.value = Math.max(0, v);
+          if (id === 'attackMs')    comp.attack.value = Math.max(0, v / 1000);
+          if (id === 'releaseMs')   comp.release.value = Math.max(0, v / 1000);
+          // Threshold, knee and ratio all move the hidden gain, so the
+          // compensation is recomputed for any of them.
+          if (id !== 'attackMs' && id !== 'releaseMs') applyMakeup();
+        },
+        reduction: () => comp.reduction,
+      };
+    }),
+  },
+
+  {
+    id: 'ducker',
+    name: 'Sidechain Ducker',
+    category: 'dynamics',
+    hasSidechain: true,
+    params: [
+      { id: 'thresholdDb', name: 'Threshold', min: -60, max: 0,   default: -24, unit: 'dB' },
+      { id: 'ratio',       name: 'Amount',    min: 1,   max: 20,  default: 6,   unit: ':1' },
+      // Never fast enough to chase the waveform: a ducker rides a part out of
+      // the way of a vocal, and the shortest musical version of that is a few
+      // milliseconds, not a tenth of one.
+      { id: 'attackMs',    name: 'Attack',    min: 5,   max: 200,  default: 20,  unit: 'ms' },
+      { id: 'releaseMs',   name: 'Release',   min: 20,  max: 1000, default: 200, unit: 'ms' },
+      { id: 'makeupDb',    name: 'Makeup',    min: 0,   max: 24,   default: 0,   unit: 'dB' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Web Audio's compressor cannot take an external key, so ducking is the
+      // one case that still needs a hand-built detector.  It is honest about
+      // what that costs: one shared time constant, and a floor under it so it
+      // can never modulate at audio rate.  Those limits are also why this is a
+      // separate device rather than a mode of the compressor — a plugin that
+      // silently changes its DSP depending on how it is wired is a plugin you
+      // cannot trust.
       const vca = ctx.createGain();
-      vca.gain.value = 0;               // driven entirely by the detector signal
+      vca.gain.value = 0;               // driven entirely by the detector
       const makeup = ctx.createGain();
       makeup.gain.value = dbToGain(params['makeupDb'] ?? 0);
 
-      // Detector: key → |x| → smoother → transfer curve → vca.gain
-      const internalKey = ctx.createGain();      // key tapped from the input
-      const externalKey = ctx.createGain();      // key from another bus
+      const internalKey = ctx.createGain();
+      const externalKey = ctx.createGain();
       externalKey.gain.value = 0;
       const rect = absShaper(ctx);
-      const env = smoother(ctx, params['attackMs'] ?? 10);
-      let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -18, params['ratio'] ?? 4);
+      const env = smoother(ctx, params['attackMs'] ?? 20);
+      let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, params['ratio'] ?? 6);
 
       input.connect(internalKey);
       internalKey.connect(rect);
       externalKey.connect(rect);
-      rect.connect(env).connect(curve);
+      rect.connect(env.input);
+      env.output.connect(curve);
       curve.connect(vca.gain);
 
       input.connect(vca).connect(makeup).connect(output);
@@ -347,18 +468,16 @@ export const PLUGINS: PluginDescriptor[] = [
         },
         setParam: (id, v) => {
           if (id === 'makeupDb') makeup.gain.value = dbToGain(v);
-          if (id === 'attackMs' || id === 'releaseMs') env.frequency.value = timeConstantToHz(v);
+          if (id === 'attackMs' || id === 'releaseMs') env.setTimeMs(v);
           if (id === 'thresholdDb' || id === 'ratio') {
-            const next = makeGainCurve(
-              ctx,
-              id === 'thresholdDb' ? v : (params['thresholdDb'] ?? -18),
-              id === 'ratio' ? v : (params['ratio'] ?? 4),
-            );
             if (id === 'thresholdDb') params['thresholdDb'] = v; else params['ratio'] = v;
-            env.disconnect();
+            const next = makeGainCurve(
+              ctx, params['thresholdDb'] ?? -24, params['ratio'] ?? 6,
+            );
+            env.output.disconnect();
             curve.disconnect();
             curve = next;
-            env.connect(curve);
+            env.output.connect(curve);
             curve.connect(vca.gain);
           }
         },
@@ -392,7 +511,8 @@ export const PLUGINS: PluginDescriptor[] = [
       const curve = makeGainCurve(ctx, params['ceilingDb'] ?? -1, 20, true);
 
       // Detector runs on the UNDELAYED signal — that is what look-ahead means.
-      input.connect(rect).connect(env).connect(curve);
+      input.connect(rect).connect(env.input);
+      env.output.connect(curve);
       curve.connect(vca.gain);
       input.connect(delay).connect(vca).connect(output);
 
@@ -404,7 +524,7 @@ export const PLUGINS: PluginDescriptor[] = [
         bypassDelay,
         latencySamples: Math.round(lookaheadSec * ctx.sampleRate),
         setParam: (id, v) => {
-          if (id === 'releaseMs') env.frequency.value = timeConstantToHz(v);
+          if (id === 'releaseMs') env.setTimeMs(v);
           if (id === 'lookaheadMs') {
             delay.delayTime.value = v / 1000;
             bypassDelay.delayTime.value = v / 1000;
@@ -551,8 +671,10 @@ export const PLUGINS: PluginDescriptor[] = [
       const difference = ctx.createGain();
 
       input.connect(rect);
-      rect.connect(fast).connect(difference);
-      rect.connect(slow).connect(invert).connect(difference);
+      rect.connect(fast.input);
+      fast.output.connect(difference);
+      rect.connect(slow.input);
+      slow.output.connect(invert).connect(difference);
 
       const vca = ctx.createGain();
       vca.gain.value = 1;                       // audio-rate control sums onto this
@@ -724,23 +846,24 @@ export const PLUGINS: PluginDescriptor[] = [
         params['thresholdDb'] ?? -48, ratioOf(params['amount'] ?? 0),
       ));
 
-      input.connect(rect).connect(env).connect(curve);
+      input.connect(rect).connect(env.input);
+      env.output.connect(curve);
       curve.connect(vca.gain);
       input.connect(vca).connect(output);
 
       const rebuild = (): void => {
-        env.disconnect();
+        env.output.disconnect();
         curve.disconnect();
         curve = makeShaper(ctx, makeExpanderCurve(
           params['thresholdDb'] ?? -48, ratioOf(params['amount'] ?? 0),
         ));
-        env.connect(curve);
+        env.output.connect(curve);
         curve.connect(vca.gain);
       };
 
       return {
         setParam: (id, v) => {
-          if (id === 'releaseMs') { env.frequency.value = timeConstantToHz(v); return; }
+          if (id === 'releaseMs') { env.setTimeMs(v); return; }
           if ((id === 'thresholdDb' || id === 'amount') && v !== params[id]) {
             params[id] = v;
             rebuild();
@@ -781,15 +904,16 @@ export const PLUGINS: PluginDescriptor[] = [
 
       input.connect(low).connect(output);
       input.connect(high);
-      high.connect(rect).connect(env).connect(curve);
+      high.connect(rect).connect(env.input);
+      env.output.connect(curve);
       curve.connect(vca.gain);
       high.connect(vca).connect(output);
 
       const rebuild = (): void => {
-        env.disconnect();
+        env.output.disconnect();
         curve.disconnect();
         curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, ratioOf(params['amount'] ?? 0));
-        env.connect(curve);
+        env.output.connect(curve);
         curve.connect(vca.gain);
       };
 
@@ -841,17 +965,18 @@ export const PLUGINS: PluginDescriptor[] = [
         params['thresholdDb'] ?? -24, 4, -Math.max(1, range()),
       ));
 
-      input.connect(detector).connect(rect).connect(env).connect(curve);
+      input.connect(detector).connect(rect).connect(env.input);
+      env.output.connect(curve);
       curve.connect(scale).connect(peak.gain);
       input.connect(peak).connect(output);
 
       const rebuild = (): void => {
-        env.disconnect();
+        env.output.disconnect();
         curve.disconnect();
         curve = makeShaper(ctx, makeDbReductionCurve(
           params['thresholdDb'] ?? -24, 4, -Math.max(1, range()),
         ));
-        env.connect(curve);
+        env.output.connect(curve);
         curve.connect(scale);
       };
 

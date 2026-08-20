@@ -33,6 +33,13 @@ export interface Channel {
   adc: DelayNode;
   insertIn: GainNode;
   insertOut: GainNode;
+  /**
+   * The node the insert chain hangs off — `insertIn`, or the output of the
+   * macro rack / device chain that runs ahead of it.  Kept so the inserts can
+   * be rebuilt on their own without disturbing anything a clip is connected
+   * to.
+   */
+  insertChainIn: AudioNode;
   inserts: Map<string, PluginInstance>;
   /** Macro rack modules, ahead of the manual inserts. */
   rack: Map<RackModuleId, PluginInstance>;
@@ -56,13 +63,25 @@ export function carriesAudio(track: Track): boolean {
   return true;
 }
 
+/**
+ * What an insert chain is made of.
+ *
+ * Split out of the graph fingerprint on purpose.  Adding a plugin used to
+ * change the whole-session key, which tore down and rebuilt every channel —
+ * and every clip that was playing was connected to a node that no longer
+ * existed, so the music stopped.  Reaching for a compressor in the middle of
+ * a take is the most ordinary thing an engineer does; it cannot cost the take.
+ */
+function insertsKey(track: Track): string {
+  return JSON.stringify(track.inserts.map((i) => [i.id, i.slot, i.pluginId, i.sidechainSource]));
+}
+
 /** Structural fingerprint — changing it forces a graph rebuild. */
 function structureKey(session: DawSession): string {
   return JSON.stringify({
     buses: session.buses.map((b) => [b.id, b.channels]),
     tracks: session.tracks.map((t) => [
       t.id, t.kind, t.input, t.output,
-      t.inserts.map((i) => [i.id, i.slot, i.pluginId, i.sidechainSource]),
       t.sends.map((s) => [s.id, s.slot, s.target, s.preFader]),
       // A macro that switches a module on or off changes the graph, so the
       // active set is part of the fingerprint.
@@ -104,6 +123,8 @@ export class MixerEngine {
    * fader would freeze mid-move.
    */
   private automated = new Map<TrackId, Set<string>>();
+  /** Per-track device fingerprint, so a plugin change rebuilds only that chain. */
+  private insertKeys = new Map<TrackId, string>();
 
   constructor(ctx: BaseAudioContext, destination: AudioNode, options: MixerEngineOptions = {}) {
     this.ctx = ctx;
@@ -117,9 +138,66 @@ export class MixerEngine {
     if (key !== this.key) {
       this.rebuild(session);
       this.key = key;
+      for (const track of session.tracks) this.insertKeys.set(track.id, insertsKey(track));
+    } else {
+      // Only the devices changed: re-thread the insert chain in place and
+      // leave every node a playing clip is attached to exactly where it is.
+      for (const track of session.tracks) {
+        const next = insertsKey(track);
+        if (this.insertKeys.get(track.id) === next) continue;
+        this.insertKeys.set(track.id, next);
+        this.rebuildInserts(track, session);
+      }
     }
     this.applyParams(session);
     this.lastSession = session;
+  }
+
+  /**
+   * Rebuild one channel's insert chain without touching the rest of it.
+   *
+   * `input`, `insertIn`, `insertOut`, the fader and the sends all survive, so
+   * the AudioBufferSourceNodes and streaming worklets feeding this channel go
+   * on playing through the change.
+   */
+  private rebuildInserts(track: Track, session: DawSession): void {
+    const ch = this.channels.get(track.id);
+    if (!ch) return;
+
+    ch.insertChainIn.disconnect();
+    for (const instance of ch.inserts.values()) {
+      try { instance.output.disconnect(); } catch { /* already gone */ }
+      instance.dispose();
+    }
+    ch.inserts.clear();
+
+    let cursor: AudioNode = ch.insertChainIn;
+    for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
+      const descriptor = findPlugin(insert.pluginId);
+      if (!descriptor) continue;
+      const instance = descriptor.create(this.ctx, { ...insert.params });
+      cursor.connect(instance.input);
+      cursor = instance.output;
+      ch.inserts.set(insert.id, instance);
+    }
+    cursor.connect(ch.insertOut);
+
+    // Re-attach any key inputs the new devices asked for.
+    for (const insert of track.inserts) {
+      if (!insert.sidechainSource) continue;
+      const instance = ch.inserts.get(insert.id);
+      const bus = this.buses.get(insert.sidechainSource);
+      if (!instance?.sidechain || !bus) continue;
+      bus.connect(instance.sidechain);
+      instance.setSidechainActive(true);
+    }
+    void session;
+  }
+
+  /** Gain reduction an insert is applying right now, in dB, when it knows. */
+  reduction(trackId: TrackId, insertId: string): number | null {
+    const instance = this.channels.get(trackId)?.inserts.get(insertId);
+    return instance?.reduction?.() ?? null;
   }
 
   /** Called by the player when a lane takes over a parameter. */
@@ -248,7 +326,9 @@ export class MixerEngine {
       }
     }
 
-    // Insert chain in slot order.
+    // Insert chain in slot order.  Where it starts is remembered so the
+    // devices can be swapped later without rebuilding the channel.
+    const insertChainIn = cursor;
     const inserts = new Map<string, PluginInstance>();
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = findPlugin(insert.pluginId);
@@ -278,7 +358,7 @@ export class MixerEngine {
 
     void session;
     return {
-      trackId: track.id, input, adc, insertIn, insertOut, inserts, rack, chain,
+      trackId: track.id, input, adc, insertIn, insertOut, insertChainIn, inserts, rack, chain,
       preFaderTap, fader, panner, postFaderTap, sends, meter,
     };
   }

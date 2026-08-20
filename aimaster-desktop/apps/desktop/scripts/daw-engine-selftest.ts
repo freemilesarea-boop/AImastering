@@ -33,6 +33,7 @@ import {
   pcmToBuffer, pinFiles, preloadAll, transientsFor,
 } from '../src/renderer/daw/engine/audio-cache.js';
 import { renderSession } from '../src/renderer/daw/engine/offline-render.js';
+import { MixerEngine } from '../src/renderer/daw/engine/mixer-engine.js';
 import { defaultParams } from '../src/renderer/daw/engine/plugins.js';
 import type { DawSession } from '../src/renderer/daw/model/types.js';
 
@@ -71,6 +72,26 @@ function onsetIndex(data: Float32Array, threshold = 0.05): number {
 // ── Test material ─────────────────────────────────────────────────────────────
 
 /** A steady sine, registered in the decode cache under `fileId`. */
+/**
+ * Level of one frequency in a slice, by Goertzel.
+ *
+ * Cheaper and sharper than an FFT for "how much 440 Hz is in here", which is
+ * exactly the question when asking whether a device invented harmonics.
+ */
+function goertzel(data: Float32Array, hz: number, sampleRate: number, from: number, to: number): number {
+  const n = to - from;
+  if (n <= 0) return 0;
+  const k = (2 * Math.PI * hz) / sampleRate;
+  const coeff = 2 * Math.cos(k);
+  let s1 = 0, s2 = 0;
+  for (let i = from; i < to; i++) {
+    const s0 = data[i]! + coeff * s1 - s2;
+    s2 = s1; s1 = s0;
+  }
+  const power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+  return (2 * Math.sqrt(Math.max(0, power))) / n;
+}
+
 function makeToneFile(fileId: string, freq: number, amp: number, seconds: number): void {
   const ctx = new OfflineAudioContext(2, Math.floor(SR * seconds), SR);
   const buffer = ctx.createBuffer(2, Math.floor(SR * seconds), SR);
@@ -211,7 +232,7 @@ async function main(): Promise<void> {
     close(channelRms(outBypass, 0), baseline, 'bypass is unity', 0.02);
   });
 
-  await check('the sidechain compressor ducks from its key input', async () => {
+  await check('the ducker pulls the music down from its key input', async () => {
     // Tone track + a key track that is silent for the first half and loud
     // after; the tone must duck only in the second half.
     resetIds();
@@ -236,8 +257,10 @@ async function main(): Promise<void> {
     s = addFile(s, { id: 'key',  path: '/v/key.wav',  name: 'key',  durationSec: 2, sampleRate: SR, channels: 2 });
     s = updateClips(s, music.id, () => [createClip('tone', 'tone', { durationSec: 2 })]);
     s = updateClips(s, key.id,   () => [createClip('key', 'key', { durationSec: 2 })]);
-    s = setInsert(s, music.id, createInsert(0, 'comp', 'Comp', {
-      params: { ...defaultParams('comp'), thresholdDb: -30, ratio: 8, attackMs: 5, releaseMs: 50 },
+    // Ducking is the one thing Web Audio's compressor cannot do — it takes no
+    // external key — so it is its own device.
+    s = setInsert(s, music.id, createInsert(0, 'ducker', 'Ducker', {
+      params: { ...defaultParams('ducker'), thresholdDb: -30, ratio: 8, attackMs: 5, releaseMs: 50 },
       sidechainSource: bus.id,
     }));
 
@@ -763,6 +786,149 @@ async function main(): Promise<void> {
       analyzeBuffer(`fill${i}`, ctx.createBuffer(2, SR, SR) as unknown as AudioBuffer);
     }
     assert(getCached('old') === undefined, 'and released once nothing references it');
+  });
+
+  // ── Dynamics that behave like dynamics ────────────────────────────────────
+
+  await check('the compressor pulls a loud signal down and leaves a quiet one', async () => {
+    resetIds();
+    clearAudioCache();
+    // Two seconds: quiet for the first, loud for the second.
+    const ctx = new OfflineAudioContext(2, SR * 2, SR);
+    const buffer = ctx.createBuffer(2, SR * 2, SR);
+    for (let c = 0; c < 2; c++) {
+      const data = buffer.getChannelData(c);
+      for (let i = 0; i < data.length; i++) {
+        const amp = i < SR ? 0.05 : 0.9;
+        data[i] = Math.sin((2 * Math.PI * 220 * i) / SR) * amp;
+      }
+    }
+    analyzeBuffer('steps', buffer as unknown as AudioBuffer);
+
+    let s = createSession('COMP', SR);
+    const track = createTrack('T', 'audio');
+    s = addTrack(s, track);
+    s = addFile(s, { id: 'steps', path: '/v/steps.wav', name: 'steps', durationSec: 2, sampleRate: SR, channels: 2 });
+    s = updateClips(s, track.id, () => [createClip('steps', 'steps', { durationSec: 2 })]);
+
+    const dry = await render(s, 2);
+    const withComp = setInsert(s, track.id, createInsert(0, 'comp', 'Comp', {
+      params: { ...defaultParams('comp'), thresholdDb: -24, ratio: 8, attackMs: 5, releaseMs: 100 },
+    }));
+    const wet = await render(withComp, 2);
+
+    const quietFrom = Math.floor(SR * 0.4), quietTo = Math.floor(SR * 0.9);
+    const loudFrom = Math.floor(SR * 1.4), loudTo = Math.floor(SR * 1.9);
+
+    const quietDry = channelRms(dry, 0, quietFrom, quietTo);
+    const quietWet = channelRms(wet, 0, quietFrom, quietTo);
+    const loudDry = channelRms(dry, 0, loudFrom, loudTo);
+    const loudWet = channelRms(wet, 0, loudFrom, loudTo);
+
+    // The Web Audio compressor adds a hidden makeup gain; if the compensation
+    // is right, a signal under the threshold comes out exactly as it went in.
+    const quietDb = 20 * Math.log10(quietWet / Math.max(1e-9, quietDry));
+    assert(Math.abs(quietDb) < 0.6,
+      `below the threshold nothing happens — got ${quietDb > 0 ? '+' : ''}${quietDb.toFixed(2)} dB`);
+    assert(loudWet < loudDry * 0.7,
+      `the loud half is pulled down — ${loudDry.toFixed(4)} to ${loudWet.toFixed(4)}`);
+  });
+
+  await check('a fast attack compresses without turning into a fuzz box', async () => {
+    // The old detector shared one lowpass between attack and release; at a
+    // 0.1 ms attack it sat at 1591 Hz and modulated the gain at audio rate.
+    // A 220 Hz tone came out full of harmonics that were never in it.
+    resetIds();
+    clearAudioCache();
+    makeToneFile('tone', 220, 0.8, 1);
+
+    let s = createSession('FUZZ', SR);
+    const track = createTrack('T', 'audio');
+    s = addTrack(s, track);
+    s = addFile(s, { id: 'tone', path: '/v/tone.wav', name: 'tone', durationSec: 1, sampleRate: SR, channels: 2 });
+    s = updateClips(s, track.id, () => [createClip('tone', 'tone', { durationSec: 1 })]);
+    s = setInsert(s, track.id, createInsert(0, 'comp', 'Comp', {
+      params: { ...defaultParams('comp'), thresholdDb: -30, ratio: 12, attackMs: 0.1, releaseMs: 50 },
+    }));
+
+    const out = await render(s, 1);
+    const from = Math.floor(SR * 0.4), to = Math.floor(SR * 0.9);
+    const fundamental = goertzel(out.getChannelData(0), 220, SR, from, to);
+
+    // Anything the compressor invents shows up as harmonics of the tone.
+    let harmonics = 0;
+    for (const mult of [2, 3, 4, 5, 6]) {
+      harmonics += goertzel(out.getChannelData(0), 220 * mult, SR, from, to) ** 2;
+    }
+    harmonics = Math.sqrt(harmonics);
+    const thdPercent = (harmonics / Math.max(1e-9, fundamental)) * 100;
+    assert(thdPercent < 5,
+      `a compressed sine is still a sine — ${thdPercent.toFixed(2)} % harmonic content`);
+  });
+
+  await check('adding a plugin mid-render does not cut the audio', async () => {
+    // The scenario: the transport is running and you reach for a compressor.
+    // A full graph rebuild would drop every playing source, which is what a
+    // session-wide structure key used to force.
+    resetIds();
+    clearAudioCache();
+    makeToneFile('tone', 440, 0.5, 2);
+
+    let s = createSession('LIVE', SR);
+    const track = createTrack('T', 'audio');
+    s = addTrack(s, track);
+    s = addFile(s, { id: 'tone', path: '/v/tone.wav', name: 'tone', durationSec: 2, sampleRate: SR, channels: 2 });
+    s = updateClips(s, track.id, () => [createClip('tone', 'tone', { durationSec: 2 })]);
+
+    // Build the engine as the live transport does, then change the devices
+    // and check that the nodes a clip is attached to survived.
+    const ctx = new OfflineAudioContext(2, SR * 2, SR);
+    const engine = new MixerEngine(ctx as unknown as BaseAudioContext, ctx.destination as unknown as AudioNode);
+    engine.sync(s);
+
+    const before = engine.channel(track.id)!;
+    const inputBefore = before.input;
+    const insertOutBefore = before.insertOut;
+    const faderBefore = before.fader;
+
+    const withComp = setInsert(s, track.id, createInsert(0, 'comp', 'Comp', {
+      params: defaultParams('comp'),
+    }));
+    engine.sync(withComp);
+
+    const after = engine.channel(track.id)!;
+    assert(after.input === inputBefore,
+      'the node clips are connected to is the same object — otherwise they are playing into nothing');
+    assert(after.insertOut === insertOutBefore, 'and so is the chain output');
+    assert(after.fader === faderBefore, 'and the fader, so no automation ramp is lost');
+    assert(after.inserts.size === 1, 'while the new device is in place');
+
+    // Removing it again is the same story.
+    engine.sync(s);
+    assert(engine.channel(track.id)!.input === inputBefore, 'removal keeps the channel too');
+    assert(engine.channel(track.id)!.inserts.size === 0, 'and the device is gone');
+  });
+
+  await check('a real structural change still rebuilds', async () => {
+    // Routing is not a device: changing it has to rebuild, and should.
+    resetIds();
+    clearAudioCache();
+    let s = createSession('STRUCT', SR);
+    const track = createTrack('T', 'audio');
+    s = addTrack(s, track);
+
+    const ctx = new OfflineAudioContext(2, SR, SR);
+    const engine = new MixerEngine(ctx as unknown as BaseAudioContext, ctx.destination as unknown as AudioNode);
+    engine.sync(s);
+    const inputBefore = engine.channel(track.id)!.input;
+
+    const bus = createBus('B');
+    const routed = updateTrack(
+      { ...s, buses: [bus] }, track.id, (t) => ({ ...t, output: { kind: 'bus' as const, busId: bus.id } }),
+    );
+    engine.sync(routed);
+    assert(engine.channel(track.id)!.input !== inputBefore,
+      'a routing change rebuilds the channel, as it must');
   });
 
   const passed = results.filter((r) => r.pass).length;

@@ -796,7 +796,11 @@ check('the limiter reports its look-ahead as real latency', () => {
 check('detector time constants map to sane corner frequencies', () => {
   assert(timeConstantToHz(10) > timeConstantToHz(100), 'faster attack → higher corner');
   close(timeConstantToHz(1000 / (2 * Math.PI)), 1, '1 s/2π → 1 Hz', 1e-3);
-  assert(findPlugin('comp')?.hasSidechain === true, 'compressor takes a key input');
+  // Sidechain moved to its own device: Web Audio's compressor cannot take an
+  // external key, and a plugin that changes its DSP depending on how it is
+  // wired is a plugin you cannot trust.
+  assert(findPlugin('ducker')?.hasSidechain === true, 'the ducker takes a key input');
+  assert(findPlugin('comp')?.hasSidechain === false, 'and the compressor does not pretend to');
 });
 
 // ── Home screen → DAW ─────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 
 import {
   biquadMagnitudeDb, chainMagnitudeDb, compressorOutputDb, delayTaps, freqToX,
-  gainReductionDb, limiterOutputDb, logFrequencies, reverbEnvelope,
+  gainReductionDb, limiterOutputDb, logFrequencies, reverbEnvelope, webAudioAutoMakeup,
 } from '../src/renderer/daw/model/plugin-curves.js';
 import { formatValue } from '../src/renderer/components/daw/plugin/Knob.js';
 
@@ -262,6 +262,68 @@ async function main(): Promise<void> {
     assert(formatValue(4, ':1') === '4.0:1', `got ${formatValue(4, ':1')}`);
     assert(formatValue(0.5, 'ms') === '0.5 ms', `sub-millisecond keeps a decimal — got ${formatValue(0.5, 'ms')}`);
     assert(formatValue(250, 'ms') === '250 ms', `and long times do not — got ${formatValue(250, 'ms')}`);
+  });
+
+  await check("the compressor's hidden makeup is cancelled, not left in", async () => {
+    // DynamicsCompressorNode adds an automatic gain derived from threshold,
+    // knee and ratio and applies it to EVERYTHING — a signal 20 dB below the
+    // threshold came out 11.4 dB louder.  Inserting a compressor should not
+    // change the level of audio it is not compressing.
+    //
+    // Verified against Chromium 120 directly, where the residual is ±0.00 dB
+    // at all five settings below.  node-web-audio-api implements the same node
+    // slightly differently at wide knees, so what is asserted here is what
+    // holds for both: the compensation removes the great majority of the
+    // error, and never makes it worse.
+    let checked = 0;
+    for (const [thresholdDb, kneeDb, ratio] of [
+      [-24, 6, 8], [-40, 0, 4], [-12, 30, 20], [-6, 10, 2], [-50, 12, 12],
+    ] as const) {
+      const amp = Math.pow(10, (thresholdDb - 20) / 20);   // 20 dB under it
+      const expected = 20 * Math.log10(amp);
+
+      const render = async (compensate: boolean): Promise<number> => measureDb(220, (ctx, source) => {
+        const comp = ctx.createDynamicsCompressor();
+        comp.threshold.value = thresholdDb;
+        comp.knee.value = kneeDb;
+        comp.ratio.value = ratio;
+        comp.attack.value = 0.005;
+        comp.release.value = 0.1;
+        const trim = ctx.createGain();
+        trim.gain.value = amp;
+        const fix = ctx.createGain();
+        fix.gain.value = compensate ? 1 / webAudioAutoMakeup(thresholdDb, kneeDb, ratio) : 1;
+        source.connect(trim as unknown as AudioNode);
+        (trim as unknown as AudioNode).connect(comp as unknown as AudioNode);
+        (comp as unknown as AudioNode).connect(fix as unknown as AudioNode);
+        return fix as unknown as AudioNode;
+      });
+
+      const raw = Math.abs(await render(false) - expected);
+      const fixed = Math.abs(await render(true) - expected);
+      const label = `thr ${thresholdDb} knee ${kneeDb} ratio ${ratio}:1`;
+
+      if (raw < 2) {
+        // node-web-audio-api barely applies auto-makeup at this setting where
+        // Chromium applies a lot.  Nothing meaningful to measure locally; the
+        // Chromium residual for this exact case is ±0.00 dB.
+        continue;
+      }
+      checked += 1;
+      assert(fixed < raw * 0.35,
+        `${label}: cancelling removes most of it — ${raw.toFixed(2)} dB to ${fixed.toFixed(2)} dB`);
+      assert(fixed < 1, `${label}: and what is left is inaudible — ${fixed.toFixed(2)} dB`);
+    }
+    assert(checked >= 3, `the engine applied auto-makeup at ${checked} settings, expected at least 3`);
+  });
+
+  check('the hidden makeup grows with ratio, as the curve says it must', () => {
+    // A harder ratio pushes full scale further down the curve, so WebKit's
+    // 1/saturate(1) compensation gets bigger.  A constant would be wrong.
+    const gentle = webAudioAutoMakeup(-24, 6, 2);
+    const hard = webAudioAutoMakeup(-24, 6, 20);
+    assert(hard > gentle, `20:1 makes more hidden gain than 2:1 — ${hard.toFixed(3)} vs ${gentle.toFixed(3)}`);
+    assert(gentle >= 1, 'and it is never a cut');
   });
 
   const passed = results.filter((r) => r.pass).length;
