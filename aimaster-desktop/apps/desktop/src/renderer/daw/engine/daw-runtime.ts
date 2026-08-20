@@ -15,6 +15,9 @@ import { ClipPlayer } from './clip-player.js';
 import { getCached, pinFiles, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
 import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
+import { MidiInputHandle, anchorTimebase, openMidiInputs } from './midi-input.js';
+import type { CaptureEvent } from '../model/midi-capture.js';
+import type { MidiNote } from '../model/midi.js';
 import type { RecordPlan } from '../model/recording.js';
 
 export interface LoopState {
@@ -25,6 +28,16 @@ export interface LoopState {
 
 const TICK_MS = 50;
 const LOOKAHEAD_SEC = 1.0;
+/** How long a live voice is scheduled for before the key comes up. */
+const LIVE_HOLD_SEC = 30;
+/** Fallback release when the instrument has no release parameter. */
+const LIVE_RELEASE_SEC = 0.12;
+
+interface LiveVoice {
+  gate: GainNode;
+  voice: { stop: (at: number) => void };
+  releaseSec: number;
+}
 
 class DawRuntime {
   private ctx: AudioContext | null = null;
@@ -56,12 +69,27 @@ class DawRuntime {
   private monitorTrackId: TrackId | null = null;
   private punchOutAtSec: number | null = null;
 
+  // ── MIDI input ──────────────────────────────────────────────────────────
+  private midi: MidiInputHandle | null = null;
+  private midiTrackId: TrackId | null = null;
+  private midiMonitor = false;
+  private midiEvents: CaptureEvent[] = [];
+  private midiRecording = false;
+  private midiTapeZeroSec = 0;
+  /** One live voice per sounding key, so a note-off finds exactly its own. */
+  private liveVoices = new Map<string, LiveVoice>();
+
+  /** Every MIDI message that arrives, for the activity light and the pitch. */
+  onMidiActivity: ((event: CaptureEvent) => void) | null = null;
+
   get isReady(): boolean { return this.ctx !== null; }
   get isPlaying(): boolean { return this.player?.isPlaying ?? false; }
   get sampleRate(): number { return this.ctx?.sampleRate ?? 48_000; }
   get mixer(): MixerEngine | null { return this.engine; }
   get context(): AudioContext | null { return this.ctx; }
   get input(): InputCapture | null { return this.capture; }
+  get midiInput(): MidiInputHandle | null { return this.midi; }
+  get isMidiOpen(): boolean { return this.midi !== null; }
 
   // ── Input ───────────────────────────────────────────────────────────────
 
@@ -103,6 +131,198 @@ class DawRuntime {
     if (!channel) return;
     capture.monitorNode.connect(channel.input);
     this.monitorTrackId = trackId;
+  }
+
+  // ── MIDI ────────────────────────────────────────────────────────────────
+
+  /**
+   * Open a keyboard for an instrument track.
+   *
+   * Monitoring is the default and not really optional in practice: a keyboard
+   * you cannot hear is a keyboard you cannot play.  It is still a flag, because
+   * a player using their hardware synth's own sound wants the DAW silent.
+   */
+  async openMidiInput(
+    session: DawSession, trackId: TrackId | null,
+    options: { deviceId?: string | null; monitor?: boolean } = {},
+  ): Promise<MidiInputHandle> {
+    this.ensure(session.sampleRate);
+    this.closeMidiInput();
+    this.sync(session);
+
+    const handle = await openMidiInputs(options.deviceId ?? null);
+    this.midi = handle;
+    this.midiTrackId = trackId;
+    this.midiMonitor = options.monitor ?? true;
+    // Not recording yet, so a message stamped now belongs at the playhead.
+    handle.fallbackSec = () => this.midiTapeZeroSec;
+    handle.onMessage((event) => this.receiveMidi(event));
+    return handle;
+  }
+
+  closeMidiInput(): void {
+    this.allNotesOff();
+    this.midi?.close();
+    this.midi = null;
+    this.midiTrackId = null;
+    this.midiRecording = false;
+    this.midiEvents = [];
+  }
+
+  setMidiMonitoring(on: boolean): void {
+    this.midiMonitor = on;
+    if (!on) this.allNotesOff();
+  }
+
+  /** Which track the keyboard plays into.  Changing it silences what is held. */
+  setMidiTrack(trackId: TrackId | null): void {
+    if (this.midiTrackId === trackId) return;
+    this.allNotesOff();
+    this.midiTrackId = trackId;
+  }
+
+  private receiveMidi(event: CaptureEvent): void {
+    if (this.midiRecording) this.midiEvents.push(event);
+    if (this.midiMonitor) this.playLive(event);
+    this.onMidiActivity?.(event);
+  }
+
+  /**
+   * Sound one incoming message.
+   *
+   * The instrument descriptors schedule a whole note — attack, decay, release —
+   * from a duration known up front, and a live note has no duration until the
+   * key comes up.  So the voice is started with a long hold and routed through
+   * a gate of our own; the note-off rides the gate down and then tears the
+   * voice out.  Native nodes only, same as everywhere else.
+   */
+  private playLive(event: CaptureEvent): void {
+    const ctx = this.ctx;
+    const channel = this.midiTrackId ? this.engine?.channel(this.midiTrackId) : null;
+    if (!ctx || !channel) return;
+
+    if (event.kind === 'noteOn') {
+      const track = this.session?.tracks.find((t) => t.id === this.midiTrackId);
+      const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
+      if (!instrument) return;
+      const key = `${event.channel}:${event.pitch}`;
+      this.releaseLive(key, 0);
+
+      const gate = ctx.createGain();
+      gate.gain.value = 1;
+      gate.connect(channel.input);
+      const params = { ...(track?.instrumentParams ?? {}) };
+      const voice = instrument.playNote({
+        ctx,
+        destination: gate,
+        note: createLiveNote(event.pitch, event.velocity),
+        config: { bendRangeSemitones: 2, mpe: false },
+        when: ctx.currentTime,
+        params,
+      });
+      this.liveVoices.set(key, {
+        gate, voice, releaseSec: Math.max(0.03, params['release'] ?? LIVE_RELEASE_SEC),
+      });
+      return;
+    }
+
+    if (event.kind === 'noteOff') {
+      this.releaseLive(`${event.channel}:${event.pitch}`, undefined);
+      return;
+    }
+
+    // 120 = all sound off, 123 = all notes off.  Both are what a controller
+    // sends when it is unplugged mid-chord, and ignoring them is how a note
+    // gets stuck on forever.
+    if (event.kind === 'cc' && (event.controller === 120 || event.controller === 123)) {
+      this.allNotesOff();
+    }
+  }
+
+  private releaseLive(key: string, overrideRelease?: number): void {
+    const live = this.liveVoices.get(key);
+    if (!live) return;
+    this.liveVoices.delete(key);
+    const ctx = this.ctx;
+    const now = ctx?.currentTime ?? 0;
+    const release = overrideRelease ?? live.releaseSec;
+    try {
+      live.gate.gain.cancelScheduledValues(now);
+      live.gate.gain.setValueAtTime(live.gate.gain.value, now);
+      live.gate.gain.linearRampToValueAtTime(0, now + release);
+    } catch { /* context gone */ }
+    try { live.voice.stop(now + release + 0.01); } catch { /* already stopped */ }
+    globalThis.setTimeout(() => {
+      try { live.gate.disconnect(); } catch { /* already gone */ }
+    }, (release + 0.1) * 1000);
+  }
+
+  /** Silence everything the keyboard is holding — panic, and every teardown. */
+  allNotesOff(): void {
+    for (const key of [...this.liveVoices.keys()]) this.releaseLive(key, 0.01);
+  }
+
+  /**
+   * Roll for a MIDI take.
+   *
+   * Same plan, same count-in, same transport as an audio take — the only
+   * difference is that the tape is a list of events, and its zero is anchored
+   * to the context clock here so every message can be placed without reading
+   * the clock again.
+   */
+  async recordMidi(session: DawSession, plan: RecordPlan): Promise<void> {
+    if (!this.ensure(session.sampleRate)) return;
+    const ctx = this.ctx;
+    const handle = this.midi;
+    if (!ctx || !handle) throw new Error('MIDI 입력이 열려 있지 않습니다');
+    await ctx.resume();
+    await this.preload(session);
+    this.sync(session);
+    if (!this.player) return;
+
+    let lead = 0.06;
+    if (plan.countInSec > 0) {
+      scheduleCountIn(ctx, ctx.destination, {
+        tempoBpm: session.tempoBpm,
+        beatsPerBar: session.timeSignature[0],
+        bars: Math.round(plan.countInSec / (session.timeSignature[0] * (60 / session.tempoBpm))),
+        when: ctx.currentTime + lead,
+      });
+      lead += plan.countInSec;
+    }
+
+    // Tape zero is the instant the transport starts, which is what the player
+    // is about to be told.  Reading the clock once here and once inside
+    // `start` differs by well under a millisecond; re-reading it per message
+    // would cost far more.
+    const tapeZeroCtx = ctx.currentTime + lead;
+    this.midiEvents = [];
+    this.midiRecording = true;
+    this.midiTapeZeroSec = 0;
+    handle.timebase = anchorTimebase(ctx, tapeZeroCtx, 0);
+    handle.fallbackSec = () => Math.max(0, ctx.currentTime - tapeZeroCtx);
+
+    this.punchOutAtSec = plan.recordEndSec;
+    this.player.start(session, plan.transportStartSec, lead);
+    this.startTicking();
+  }
+
+  /** Stop the transport and hand back the events, in tape seconds. */
+  stopMidiRecording(): { events: CaptureEvent[]; tapeSec: number } | null {
+    const handle = this.midi;
+    const wasRecording = this.midiRecording;
+    const tapeSec = Math.max(0, (this.player?.position() ?? 0));
+    this.punchOutAtSec = null;
+    this.midiRecording = false;
+    this.stop();
+    if (handle) {
+      handle.timebase = null;
+      handle.fallbackSec = () => this.midiTapeZeroSec;
+    }
+    if (!wasRecording) return null;
+    const events = this.midiEvents;
+    this.midiEvents = [];
+    return { events, tapeSec };
   }
 
   closeInput(): void {
@@ -397,6 +617,7 @@ class DawRuntime {
     this.stopAllSlots();
     this.stop();
     this.closeInput();
+    this.closeMidiInput();
     this.engine?.dispose();
     void this.ctx?.close();
     this.ctx = null;
@@ -424,6 +645,24 @@ function playableFiles(session: DawSession): Array<{ id: string; path: string }>
     }
   }
   return session.files.filter((f) => needed.has(f.id));
+}
+
+/** A note for a key that is down and has not come up yet. */
+function createLiveNote(pitch: number, velocity: number): MidiNote {
+  return {
+    id: 'live',
+    pitch,
+    pitchOffsetSemitones: 0,
+    startSec: 0,
+    durationSec: LIVE_HOLD_SEC,
+    velocity,
+    releaseVelocity: 0.5,
+    channel: 0,
+    muted: false,
+    expression: [],
+    articulation: null,
+    playProbability: 1,
+  };
 }
 
 export const dawRuntime = new DawRuntime();

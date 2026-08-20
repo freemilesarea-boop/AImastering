@@ -40,7 +40,7 @@ import {
 import { clipWarp } from '../daw/model/warp.js';
 import { declickClip } from '../daw/edit/restore-actions.js';
 import { useRecordingStore } from '../stores/recordingStore.js';
-import { canRecord } from '../daw/model/recording.js';
+import { canRecord, recordKind } from '../daw/model/recording.js';
 import { applySlides, arpeggiate, strum } from '../daw/edit/note-tools.js';
 import { captureAsPattern } from '../daw/model/patterns.js';
 import { useIntelStore } from '../stores/intelStore.js';
@@ -845,7 +845,11 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         notify('녹음 정지');
         return;
       }
-      const readiness = canRecord(daw().session, recorder.settings);
+      // The armed track decides which input has to be open, so the shortcut
+      // refuses for the same reason the button does instead of saying
+      // "녹음 시작" and having the store quietly bail.
+      const readiness = canRecord(daw().session, recorder.settings,
+        recordKind(daw().session) === 'midi' ? { midiOpen: recorder.midiOpen } : {});
       if (!readiness.ok) { notify(readiness.reason ?? '녹음할 수 없습니다', 'warning'); return; }
       void recorder.start();
       notify('녹음 시작');
@@ -1046,7 +1050,11 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
         notify('녹음 정지');
         return;
       }
-      const readiness = canRecord(daw().session, recorder.settings);
+      // The armed track decides which input has to be open, so the shortcut
+      // refuses for the same reason the button does instead of saying
+      // "녹음 시작" and having the store quietly bail.
+      const readiness = canRecord(daw().session, recorder.settings,
+        recordKind(daw().session) === 'midi' ? { midiOpen: recorder.midiOpen } : {});
       if (!readiness.ok) { notify(readiness.reason ?? '녹음할 수 없습니다', 'warning'); return; }
       void recorder.start();
       notify('녹음 시작');

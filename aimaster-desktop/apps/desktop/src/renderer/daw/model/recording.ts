@@ -43,6 +43,10 @@ export interface RecordSettings {
   countInBars: number;
   /** Loop recording: each pass through the loop becomes its own take. */
   loopTakes: boolean;
+  /** Web MIDI input id, or null for every connected input. */
+  midiInputId: string | null;
+  /** Read CC64 as note length.  Off for gear that sends it as a plain lane. */
+  midiSustainPedal: boolean;
 }
 
 export const DEFAULT_RECORD_SETTINGS: RecordSettings = {
@@ -55,6 +59,8 @@ export const DEFAULT_RECORD_SETTINGS: RecordSettings = {
   preRollSec: 2,
   countInBars: 0,
   loopTakes: true,
+  midiInputId: null,
+  midiSustainPedal: true,
 };
 
 export interface RecordPlan {
@@ -225,14 +231,48 @@ export interface RecordReadiness {
   reason?: string;
 }
 
+/**
+ * What kind of take the armed track wants.
+ *
+ * An instrument track records MIDI and an audio track records sound; the two
+ * paths share the plan but not the capture, so the difference is named once
+ * here rather than re-derived at every call site.
+ */
+export type RecordKind = 'audio' | 'midi';
+
+export function recordKind(session: DawSession): RecordKind | null {
+  const first = armedTracks(session)[0];
+  if (!first) return null;
+  return first.kind === 'instrument' ? 'midi' : 'audio';
+}
+
+/** What the capture side has actually managed to open. */
+export interface RecordInputs {
+  /** A microphone is open. */
+  audioOpen?: boolean;
+  /** At least one MIDI input is open. */
+  midiOpen?: boolean;
+}
+
 /** Everything that has to be true before the button does anything. */
-export function canRecord(session: DawSession, settings: RecordSettings): RecordReadiness {
+export function canRecord(
+  session: DawSession, settings: RecordSettings, inputs: RecordInputs = {},
+): RecordReadiness {
   const armed = armedTracks(session);
   if (armed.length === 0) return { ok: false, reason: '녹음할 트랙을 먼저 무장(R)하세요' };
-  if (armed.some((t) => t.kind === 'instrument')) {
-    return { ok: false, reason: '인스트루먼트 트랙 MIDI 녹음은 아직 지원하지 않습니다' };
-  }
   if (armed.some((t) => t.frozen)) return { ok: false, reason: '프리즈된 트랙에는 녹음할 수 없습니다' };
+  // Mixing the two would need two captures and two commits; one at a time is
+  // already the rule below, so this only makes the reason readable.
+  const kinds = new Set(armed.map((t) => (t.kind === 'instrument' ? 'midi' : 'audio')));
+  if (kinds.size > 1) {
+    return { ok: false, reason: '오디오 트랙과 인스트루먼트 트랙을 함께 녹음할 수 없습니다' };
+  }
+  if (kinds.has('midi') && inputs.midiOpen === false) {
+    return { ok: false, reason: 'MIDI 입력 장치를 연결하고 트랙을 무장하세요' };
+  }
+  if (kinds.has('audio') && inputs.audioOpen === false) {
+    return { ok: false, reason: '오디오 입력이 열려 있지 않습니다' };
+  }
   if (settings.punchEnabled && settings.punchEndSec - settings.punchStartSec <= 1e-6) {
     return { ok: false, reason: '펀치 구간을 먼저 선택하세요' };
   }
