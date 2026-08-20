@@ -219,6 +219,31 @@ export class MixerEngine {
     if (trackId) this.automated.delete(trackId); else this.automated.clear();
   }
 
+  /**
+   * Hand ONE parameter back, and cancel what was already scheduled on it.
+   *
+   * Dropping the flag is not enough.  A ramp scheduled in an earlier window is
+   * still queued on the AudioParam, and it overrides `.value` — so a fader
+   * being recorded would follow your hand for a moment and then get pulled
+   * back onto last take's automation.  The queue has to go too.
+   */
+  clearAutomatedParam(trackId: TrackId, param: string): void {
+    const set = this.automated.get(trackId);
+    if (set?.delete(param) !== true) return;
+
+    const ch = this.channels.get(trackId);
+    if (!ch) return;
+    const now = this.ctx.currentTime;
+    const target: AudioParam | undefined = param === 'volume' ? ch.fader.gain
+      : param === 'pan' ? ch.panner.pan
+        : param.startsWith('send:') ? ch.sends.get(param.slice(5))?.gain
+          : undefined;
+    if (!target) return;
+    const held = target.value;
+    target.cancelScheduledValues(now);
+    target.setValueAtTime(held, now);
+  }
+
   private isAutomated(trackId: TrackId, param: string): boolean {
     return this.automated.get(trackId)?.has(param) ?? false;
   }

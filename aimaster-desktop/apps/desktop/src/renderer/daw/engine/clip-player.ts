@@ -10,9 +10,12 @@
 // pre-fader, pre-insert position clip gain occupies in Pro Tools.
 
 import { clipEnd, findTrack, trackClips } from '../model/session-ops.js';
-import { pointValueAt } from '../model/automation.js';
+import { laneKey, pointValueAt } from '../model/automation.js';
+import { isLiveAutomation } from './automation-live.js';
 import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
-import type { Clip, DawSession, Fade, Track, TrackId } from '../model/types.js';
+import type {
+  AutomationTarget, Clip, DawSession, Fade, Track, TrackId,
+} from '../model/types.js';
 import type { MidiNote } from '../model/midi.js';
 import { getCached, loadAudio, preloadAll } from './audio-cache.js';
 import { getSource } from './pcm-store.js';
@@ -373,6 +376,17 @@ export class ClipPlayer {
   // ── Automation playback ─────────────────────────────────────────────────
 
   /**
+   * What the engine calls the AudioParam behind a target.
+   *
+   * The same three strings `markAutomated` uses; kept in one function so the
+   * flag that is set and the flag that is cleared cannot drift apart.
+   */
+  private paramNameOf(target: AutomationTarget): string {
+    if (target.kind === 'sendLevel') return `send:${target.sendId}`;
+    return target.kind;
+  }
+
+  /**
    * Ramp fader / pan / send params through their breakpoints over the
    * window.  Tracks with a live lane are flagged on the engine so
    * `applyParams` stops fighting the ramps.
@@ -385,6 +399,13 @@ export class ClipPlayer {
 
       for (const lane of track.automation) {
         if (lane.mode === 'off' || lane.points.length === 0) continue;
+        // A lane being recorded is not played: the hand on the control is the
+        // authority for this pass, and scheduling the old move underneath it
+        // would drag the fader back on every window.
+        if (isLiveAutomation(laneKey(track.id, lane.target))) {
+          this.engine.clearAutomatedParam(track.id, this.paramNameOf(lane.target));
+          continue;
+        }
 
         if (lane.target.kind === 'volume') {
           this.engine.markAutomated(track.id, 'volume');

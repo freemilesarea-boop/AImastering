@@ -25,6 +25,13 @@ import { cyclePlaylist } from '../../../daw/edit/comping.js';
 import { toggleMute, toggleSolo } from '../../../daw/model/mixer-math.js';
 import type { Track } from '../../../daw/model/types.js';
 import TrackLaneCanvas from './TrackLaneCanvas.js';
+import AutomationLaneCanvas, {
+  AUTOMATION_LANE_HEIGHT, AutomationLaneHeader,
+} from './AutomationLane.js';
+import {
+  availableTargets, setLaneVisible, visibleLanes,
+} from '../../../daw/edit/automation-lanes.js';
+import type { AutomationLane } from '../../../daw/model/types.js';
 
 const HEADER_WIDTH = 168;
 const RULER_HEIGHT = 26;
@@ -111,11 +118,61 @@ export default function EditWindow() {
   // Collapsed stacks fold their members away, so the arrange window stays
   // readable at forty tracks.
   const rows = visibleTracks(session);
+
+  // Headers and lanes are two columns of the same list, so they are built ONCE
+  // and both sides map over it.  Building them separately is how the two
+  // columns end up one row out of step the first time somebody opens an
+  // automation lane.
+  const displayRows = useMemo<Array<
+    | { kind: 'track'; key: string; track: Track; height: number }
+    | { kind: 'lane'; key: string; track: Track; lane: AutomationLane; height: number }
+  >>(() => {
+    const out: Array<
+      | { kind: 'track'; key: string; track: Track; height: number }
+      | { kind: 'lane'; key: string; track: Track; lane: AutomationLane; height: number }
+    > = [];
+    for (const track of rows) {
+      out.push({ kind: 'track', key: track.id, track, height: track.height });
+      if (track.kind === 'folder' && track.collapsed) continue;
+      for (const lane of visibleLanes(track)) {
+        out.push({
+          kind: 'lane',
+          key: `${track.id}:${lane.id}`,
+          track,
+          lane,
+          height: AUTOMATION_LANE_HEIGHT,
+        });
+      }
+    }
+    return out;
+  }, [rows]);
   const recordStatus = useRecordingStore((s) => s.status);
   // A session with only a master track is not "empty timeline", it is "you
   // have nothing to work on yet" — and a blank grid says neither.
   const hasMaterial = session.tracks.some((t) => t.kind === 'audio' || t.kind === 'instrument');
   const queueCount = useAudioStore((s) => s.queue.length);
+
+  /**
+   * Open or close a track's automation.
+   *
+   * Opening shows the volume lane — the one anybody opening automation wants
+   * first — and closing folds every lane away without deleting anything: the
+   * breakpoints stay, and the engine goes on playing them.
+   */
+  const toggleAutomation = useCallback((track: Track) => {
+    const open = visibleLanes(track).length > 0;
+    apply((s) => {
+      if (open) {
+        let next = s;
+        for (const lane of track.automation) {
+          next = setLaneVisible(next, track.id, lane.target, false);
+        }
+        return next;
+      }
+      const first = availableTargets(track)[0];
+      return first ? setLaneVisible(s, track.id, first, true) : s;
+    });
+  }, [apply]);
 
   // ── Lane gestures ───────────────────────────────────────────────────────
   const onLaneDown = useCallback((e: React.MouseEvent, track: Track) => {
@@ -277,25 +334,29 @@ export default function EditWindow() {
       <div className="flex-1 flex overflow-y-auto" onMouseUp={endDrag} onMouseLeave={endDrag}>
         {/* Headers */}
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
-          {rows.map((track) => (
+          {displayRows.map((row) => (row.kind === 'lane' ? (
+            <AutomationLaneHeader key={row.key} track={row.track} lane={row.lane} />
+          ) : (
             <TrackHeader
-              key={track.id}
-              track={track}
-              depth={stackDepth(session, track.id)}
-              summary={track.kind === 'folder' ? stackSummary(session, track.id) : null}
-              focused={focusedTrackId === track.id}
-              onFocus={() => setFocusedTrack(track.id)}
-              onSolo={() => apply((s) => toggleSolo(s, track.id))}
-              onMute={() => apply((s) => toggleMute(s, track.id))}
-              onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, track.id, dir))}
-              onArm={() => void useRecordingStore.getState().toggleArm(track.id)}
+              key={row.key}
+              track={row.track}
+              depth={stackDepth(session, row.track.id)}
+              summary={row.track.kind === 'folder' ? stackSummary(session, row.track.id) : null}
+              focused={focusedTrackId === row.track.id}
+              onFocus={() => setFocusedTrack(row.track.id)}
+              onSolo={() => apply((s) => toggleSolo(s, row.track.id))}
+              onMute={() => apply((s) => toggleMute(s, row.track.id))}
+              onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, row.track.id, dir))}
+              onArm={() => void useRecordingStore.getState().toggleArm(row.track.id)}
               recording={recordStatus === 'recording' || recordStatus === 'countIn'}
-              onToggleCollapse={() => apply((s) => toggleCollapsed(s, track.id))}
-              onUnpack={() => apply((s) => unpackStack(s, track.id))}
-              onSmart={() => useDawStore.getState().openSmartControls(track.id)}
-              onInserts={() => usePluginWindowStore.getState().toggleRack(track.id)}
+              onToggleCollapse={() => apply((s) => toggleCollapsed(s, row.track.id))}
+              onUnpack={() => apply((s) => unpackStack(s, row.track.id))}
+              onSmart={() => useDawStore.getState().openSmartControls(row.track.id)}
+              onInserts={() => usePluginWindowStore.getState().toggleRack(row.track.id)}
+              onToggleAutomation={() => toggleAutomation(row.track)}
+              automationOpen={visibleLanes(row.track).length > 0}
             />
-          ))}
+          )))}
         </div>
 
         {/* Lanes */}
@@ -318,27 +379,34 @@ export default function EditWindow() {
               </p>
             </div>
           )}
-          {rows.map((track) => (
+          {displayRows.map((row) => (row.kind === 'lane' ? (
+            <AutomationLaneCanvas
+              key={row.key}
+              track={row.track}
+              lane={row.lane}
+              viewport={{ scrollSec, pxPerSec, width: laneWidth, height: row.height }}
+            />
+          ) : (
             <div
-              key={track.id}
-              onMouseDown={(e) => onLaneDown(e, track)}
+              key={row.key}
+              onMouseDown={(e) => onLaneDown(e, row.track)}
               onDoubleClick={(e) => {
                 // Double-clicking a MIDI part opens it in the Key Editor,
                 // exactly like the reference DAW.
                 const at = secAt(e.clientX);
-                const clip = clipAt(track, at);
+                const clip = clipAt(row.track, at);
                 if (clip?.kind === 'midi') {
-                  useMidiEditorStore.getState().openPart({ trackId: track.id, clipId: clip.id });
+                  useMidiEditorStore.getState().openPart({ trackId: row.track.id, clipId: clip.id });
                   useDawStore.getState().setWindow('midi');
                 }
               }}
               className="relative border-b border-zinc-900"
-              style={{ height: track.height }}
+              style={{ height: row.height }}
             >
-              {track.kind === 'folder' && track.collapsed ? (
+              {row.track.kind === 'folder' && row.track.collapsed ? (
                 // A collapsed stack still shows where its material sits.
                 <div className="absolute inset-0">
-                  {collapsedOverviewClips(session, track.id).map((c, i) => (
+                  {collapsedOverviewClips(session, row.track.id).map((c, i) => (
                     <div
                       key={`${c.startSec}-${i}`}
                       className="absolute rounded-sm"
@@ -355,13 +423,13 @@ export default function EditWindow() {
                 </div>
               ) : (
                 <TrackLaneCanvas
-                  track={track}
-                  viewport={{ scrollSec, pxPerSec, width: laneWidth, height: track.height }}
-                  selected={selection.trackIds.includes(track.id)}
+                  track={row.track}
+                  viewport={{ scrollSec, pxPerSec, width: laneWidth, height: row.height }}
+                  selected={selection.trackIds.includes(row.track.id)}
                   decodeTick={decodeTick}
                 />
               )}
-              {selection.trackIds.includes(track.id) && selection.endSec > selection.startSec && (
+              {selection.trackIds.includes(row.track.id) && selection.endSec > selection.startSec && (
                 <div className="absolute top-0 bottom-0 bg-white/10 border-x border-white/40 pointer-events-none"
                      style={{
                        left: toX(selection.startSec),
@@ -369,7 +437,7 @@ export default function EditWindow() {
                      }} />
               )}
             </div>
-          ))}
+          )))}
 
           {/* Play head across every lane */}
           <div className="absolute top-0 bottom-0 w-px bg-red-400 pointer-events-none"
@@ -398,6 +466,7 @@ export default function EditWindow() {
 function TrackHeader({
   track, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
   onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
+  onToggleAutomation, automationOpen,
 }: {
   track: Track;
   depth: number;
@@ -413,6 +482,8 @@ function TrackHeader({
   onUnpack: () => void;
   onSmart: () => void;
   onInserts: () => void;
+  onToggleAutomation: () => void;
+  automationOpen: boolean;
 }) {
   const playlist = activePlaylist(track);
   const takes = track.playlists.length;
@@ -463,6 +534,18 @@ function TrackHeader({
               color: premium.accent.base,
             }}
           >{macroCount}</button>
+        )}
+        {carriesInserts && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleAutomation(); }}
+            title={automationOpen ? '오토메이션 레인 접기' : '오토메이션 레인 열기'}
+            className="text-[9px] leading-none w-4 h-4 rounded shrink-0 flex items-center
+                       justify-center transition-colors"
+            style={{
+              border: `1px solid ${automationOpen ? premium.accent.deep : 'rgba(255,255,255,0.14)'}`,
+              color: automationOpen ? premium.accent.base : premium.text.muted,
+            }}
+          >A</button>
         )}
         {carriesInserts && (
           <button
