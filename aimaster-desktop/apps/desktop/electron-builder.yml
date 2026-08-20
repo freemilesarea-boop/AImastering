@@ -95,8 +95,9 @@ extraResources:
 # on an Apple Silicon runner yields an Intel .app with an x64 Electron shell
 # (Finder shows "응용 프로그램(Intel)") but arm64 sidecars, which cannot execute
 # on a real Intel Mac — the app dies in checkFFmpeg() before showing a window.
-# The Intel artefact is built by .github/workflows/build-mac-intel.yml on the
-# macos-13 (Intel) runner, and scripts/verify-mac-arch.cjs gates the result.
+# The Intel artefact is cross-built by .github/workflows/build-mac-intel.yml,
+# which sources every x64 binary explicitly (the free Intel runner macos-13 is
+# retired), and scripts/verify-mac-arch.cjs gates the result.
 mac:
   category: public.app-category.music
   icon: public/icon.png

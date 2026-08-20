@@ -150,8 +150,8 @@ if (bad.length) {
   console.error('  This is the Intel-Mac failure mode: the Electron shell is the');
   console.error('  right arch (so Finder shows the right "종류"), but a bundled');
   console.error('  binary is not, and the app dies on launch.');
-  console.error('  → Build each arch on a runner of that arch. macos-13 is Intel;');
-  console.error('    macos-14+ is Apple Silicon.');
+  console.error('  → Each arch-sensitive binary must be sourced for the target');
+  console.error('    arch, not for the build host. See build-mac-intel.yml.');
 }
 
 process.exit(1);

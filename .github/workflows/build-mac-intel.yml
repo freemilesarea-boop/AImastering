@@ -5,29 +5,47 @@ name: Build Louver Mastering AI — macOS Intel (x64)
 # "종류: 응용 프로그램(Intel)" but that would not run on an actual Intel Mac.
 #
 # The cause was NOT the Electron shell — that really was x64.  build.yml's
-# `build-mac` job runs on `macos-14` (Apple Silicon) and packaged both
+# `build-mac` job runs on an Apple Silicon runner and packaged both
 # architectures in a single `electron-builder --mac dmg zip --x64 --arm64`
 # invocation.  electron-builder swaps the Electron shell per arch, but
 # `extraResources` is arch-blind: whatever sits in apps/desktop/public/bin at
 # package time is copied verbatim into EVERY arch's bundle.  Those sidecars are
-# produced on the runner:
+# produced on the runner, so they were all arm64:
 #
-#   • public/bin/engine          ← PyInstaller, built on the runner  → arm64
-#   • public/bin/ffmpeg          ← require('ffmpeg-static')          → arm64
-#   • public/bin/ffprobe         ← @ffprobe-installer/ffprobe        → arm64
+#   • public/bin/engine    ← PyInstaller, built on the runner
+#   • public/bin/ffmpeg    ← require('ffmpeg-static')
+#   • public/bin/ffprobe   ← @ffprobe-installer/ffprobe
 #
-# So the Intel .app carried arm64 sidecars.  Rosetta 2 translates x64 → arm64,
-# never the reverse, so on an Intel Mac none of them can execute.  The main
-# process resolves them at startup (main/utils/ffmpegEnv.ts →
-# Resources/bin/ffmpeg) and `checkFFmpeg()` fails before a window is shown.
+# Rosetta 2 translates x64 → arm64, never the reverse, so on an Intel Mac none
+# of them can execute.  The main process resolves them at startup
+# (main/utils/ffmpegEnv.ts → Resources/bin/ffmpeg) and `checkFFmpeg()` fails
+# before a window is shown.
 #
-# The fix is structural: build the Intel artefact on an INTEL runner, so every
-# binary npm/PyInstaller produces is natively x86_64.  `macos-13` is the last
-# GitHub-hosted Intel image; `macos-14`+ are all Apple Silicon.
+# ── Why this cross-builds instead of using an Intel runner ────────────────────
+# The obvious fix — build on an Intel runner — is no longer available for free.
+# `macos-13` was the last free GitHub-hosted Intel image and has been retired
+# (a job requesting it now queues forever rather than failing).  Every
+# remaining x86_64 macOS label (`macos-15-intel`, `macos-26-intel`,
+# `macos-*-large`) is a paid larger runner.
 #
-# scripts/verify-mac-arch.cjs then walks every Mach-O inside the packaged .app
-# and fails the build if anything lacks an x86_64 slice — so this cannot
-# regress silently again.
+# So we cross-build on the free arm64 runner and source each arch-sensitive
+# piece explicitly for x86_64:
+#
+#   • Electron shell → electron-builder downloads the darwin-x64 dist itself,
+#                      driven purely by the --x64 flag.  Never host-dependent.
+#   • ffmpeg         → `npm_config_arch=x64` makes ffmpeg-static's install
+#                      script fetch ffmpeg-darwin-x64 (it reads that env var
+#                      before falling back to os.arch()).
+#   • ffprobe        → @ffprobe-installer/darwin-x64 installed directly, at the
+#                      exact version pnpm-lock.yaml already pins.
+#   • engine         → PyInstaller cannot cross-compile, so we install a real
+#                      x86_64 CPython via uv and freeze under Rosetta 2.
+#
+# Cross-building is only safe because it is verified, not assumed:
+# scripts/verify-mac-arch.cjs walks every Mach-O inside the packaged .app and
+# fails the build if anything lacks an x86_64 slice or if a sidecar is missing.
+# If any step above silently produced arm64, this job goes red instead of
+# publishing another Intel build that dies on launch.
 
 on:
   push:
@@ -53,37 +71,43 @@ on:
         type: string
         default: 'v3.6.0-intel'
 
+# A new push supersedes whatever is still queued or running for the same ref.
+concurrency:
+  group: mac-intel-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned to the versions pnpm-lock.yaml already resolves, so the x64 binaries
+  # we stage are the same builds the arm64 pipeline ships — only the arch
+  # differs.
+  FFMPEG_STATIC_VERSION: '5.3.0'
+  FFPROBE_DARWIN_X64_VERSION: '5.1.0'
+  PYINSTALLER_VERSION: '6.11.1'
+
 jobs:
   build-mac-intel:
-    name: Build (macos-13 · Intel x86_64)
-    runs-on: macos-13          # ← Intel runner.  macos-14+ is Apple Silicon.
+    name: Build (cross-compile → Intel x86_64)
+    runs-on: macos-15          # arm64 host; every x64 artefact is sourced explicitly below
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
-      # Prove the runner really is Intel before spending 20 minutes on it.
-      # If GitHub ever retires the macos-13 image and silently remaps the
-      # label to Apple Silicon, this fails loudly instead of producing another
-      # broken "Intel" build.
-      - name: Assert runner is Intel (x86_64)
+      # PyInstaller has to *execute* the target interpreter to freeze it, so an
+      # x86_64 CPython must be runnable here.  Rosetta 2 is preinstalled on the
+      # GitHub arm64 macOS images; prove it before spending 20 minutes.
+      - name: Assert Rosetta 2 can execute x86_64
         run: |
           set -e
-          echo "uname -m      : $(uname -m)"
-          echo "arch          : $(arch)"
-          echo "sw_vers       : $(sw_vers -productVersion)"
-          if [ "$(uname -m)" != "x86_64" ]; then
+          echo "host arch : $(uname -m)"
+          echo "macOS     : $(sw_vers -productVersion)"
+          softwareupdate --install-rosetta --agree-to-license 2>/dev/null || true
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
             echo ""
-            echo "✗ Runner is $(uname -m), not x86_64."
-            echo "  Building the Intel artefact here would bundle arm64 sidecars"
-            echo "  again — exactly the v3.6.0 bug.  Aborting."
+            echo "✗ Cannot execute x86_64 binaries on this runner."
+            echo "  Rosetta 2 is required to freeze the Python engine for Intel."
             exit 1
           fi
-          echo "✓ Intel runner confirmed"
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          architecture: 'x64'
+          echo "✓ Rosetta 2 available"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -93,26 +117,46 @@ jobs:
       - name: Install pnpm
         run: npm install -g pnpm@9
 
-      - name: Install Python dependencies + PyInstaller
+      # ── Python engine, frozen as x86_64 ──────────────────────────────────────
+      # actions/setup-python only serves arm64 interpreters on arm64 runners, so
+      # we pull a genuine x86_64 CPython from python-build-standalone via uv and
+      # run the whole pip + PyInstaller chain against it.  Because that
+      # interpreter is thin x86_64, every wheel pip resolves is x86_64 too, and
+      # PyInstaller emits an x86_64 binary.
+      - name: Install uv
+        run: |
+          set -e
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Create x86_64 Python 3.11 environment
         working-directory: aimaster-desktop/services/python-audio
         run: |
           set -e
-          python3 -V
-          python3 -c "import platform; print('python arch:', platform.machine())"
-          python3 -m venv .venv
-          .venv/bin/pip install --upgrade pip
+          uv python install cpython-3.11-macos-x86_64-none
+          uv venv --python cpython-3.11-macos-x86_64-none .venv-x64
+          echo "=== interpreter arch (must be x86_64) ==="
+          lipo -archs .venv-x64/bin/python3 || file .venv-x64/bin/python3
+          .venv-x64/bin/python3 -c "import platform; print('python reports:', platform.machine())"
+          .venv-x64/bin/python3 -c "import platform,sys; sys.exit(0 if platform.machine()=='x86_64' else 1)" \
+            || { echo "✗ uv gave us a non-x86_64 interpreter"; exit 1; }
+
+      - name: Install Python dependencies + PyInstaller (x86_64)
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          set -e
+          uv pip install --python .venv-x64/bin/python3 -r requirements.txt
           # Pin PyInstaller to 6.11.x — last release tested against the
           # numpy<2 / soundfile 0.13 combination this engine ships with.
-          .venv/bin/pip install -r requirements.txt
-          .venv/bin/pip install "pyinstaller==6.11.1"
-          .venv/bin/pip list
+          uv pip install --python .venv-x64/bin/python3 "pyinstaller==${PYINSTALLER_VERSION}"
+          uv pip list --python .venv-x64/bin/python3
 
       - name: Build Python engine (PyInstaller · x86_64)
         working-directory: aimaster-desktop/services/python-audio
         run: |
           set -e
           mkdir -p ../../apps/desktop/public/bin
-          .venv/bin/pyinstaller \
+          arch -x86_64 .venv-x64/bin/python3 -m PyInstaller \
             --clean --noconfirm --onefile --name engine \
             --log-level INFO \
             --target-arch x86_64 \
@@ -133,6 +177,40 @@ jobs:
           lipo -archs ../../apps/desktop/public/bin/engine | grep -q x86_64 \
             || { echo "✗ engine is not x86_64"; exit 1; }
 
+      # ── ffmpeg / ffprobe for darwin-x64 ─────────────────────────────────────
+      # Staged in a throwaway package so the main pnpm install (which must stay
+      # host-native — it also builds the renderer) is untouched.
+      #   ffmpeg-static  reads npm_config_arch before falling back to os.arch()
+      #   @ffprobe-installer/darwin-x64  is the per-arch package @ffprobe-
+      #     installer/ffprobe would pick on a real Intel machine; --cpu/--os
+      #     override npm's EBADPLATFORM check on this arm64 host.
+      - name: Stage darwin-x64 ffmpeg + ffprobe
+        run: |
+          set -e
+          mkdir -p /tmp/x64bins
+          cd /tmp/x64bins
+          npm init -y >/dev/null
+          npm_config_arch=x64 npm_config_platform=darwin \
+            npm install --no-save --cpu=x64 --os=darwin \
+              "ffmpeg-static@${FFMPEG_STATIC_VERSION}" \
+              "@ffprobe-installer/darwin-x64@${FFPROBE_DARWIN_X64_VERSION}"
+
+          FFMPEG_BIN=$(node -p "require('/tmp/x64bins/node_modules/ffmpeg-static')")
+          FFPROBE_BIN=$(find /tmp/x64bins/node_modules/@ffprobe-installer/darwin-x64 -type f -name ffprobe | head -1)
+
+          echo "ffmpeg : $FFMPEG_BIN"
+          echo "ffprobe: $FFPROBE_BIN"
+          test -n "$FFPROBE_BIN" || { echo "✗ ffprobe binary not found in the staged package"; exit 1; }
+
+          echo "=== staged arch ==="
+          lipo -archs "$FFMPEG_BIN"
+          lipo -archs "$FFPROBE_BIN"
+          lipo -archs "$FFMPEG_BIN"  | grep -q x86_64 || { echo "✗ ffmpeg is not x86_64";  exit 1; }
+          lipo -archs "$FFPROBE_BIN" | grep -q x86_64 || { echo "✗ ffprobe is not x86_64"; exit 1; }
+
+          echo "FFMPEG_BINARY=$FFMPEG_BIN"   >> "$GITHUB_ENV"
+          echo "FFPROBE_BINARY=$FFPROBE_BIN" >> "$GITHUB_ENV"
+
       - name: Install Node dependencies (clean)
         working-directory: aimaster-desktop
         run: |
@@ -140,9 +218,9 @@ jobs:
           pnpm store prune || true
           pnpm install --no-frozen-lockfile
 
-      # Copies ffmpeg + ffprobe into public/bin.  AIMASTER_TARGET_ARCH makes
-      # prebuild.cjs assert each copied binary carries an x86_64 slice, so a
-      # wrong-arch sidecar fails here rather than at the user's machine.
+      # Copies the staged x64 binaries into public/bin.  AIMASTER_TARGET_ARCH
+      # makes prebuild.cjs re-assert each copy carries an x86_64 slice, and it
+      # checks the already-staged engine too.
       - name: Copy FFmpeg binaries (arch-checked)
         working-directory: aimaster-desktop/apps/desktop
         env:
@@ -164,13 +242,13 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         run: |
           set -e
-          test -f dist/renderer/index.html      || { echo "FAIL: dist/renderer/index.html missing"; exit 1; }
-          test -f dist-electron/main/index.js   || { echo "FAIL: dist-electron/main/index.js missing"; exit 1; }
+          test -f dist/renderer/index.html       || { echo "FAIL: dist/renderer/index.html missing"; exit 1; }
+          test -f dist-electron/main/index.js    || { echo "FAIL: dist-electron/main/index.js missing"; exit 1; }
           test -f dist-electron/preload/index.js || { echo "FAIL: dist-electron/preload/index.js missing"; exit 1; }
           echo "✓ renderer + main + preload present"
 
-      # x64 ONLY.  Never add --arm64 here: a single invocation would reuse the
-      # same public/bin sidecars for both bundles, which is the original bug.
+      # x64 ONLY.  Never add --arm64 here: a single invocation reuses the same
+      # public/bin sidecars for both bundles, which is the original bug.
       - name: Package macOS .dmg + .zip (x64 only)
         working-directory: aimaster-desktop
         env:
@@ -178,9 +256,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm --filter @aimaster/desktop exec electron-builder --mac dmg zip --x64 --publish never
 
-      # The gate.  Walks every Mach-O inside the packaged .app — Electron
-      # shell, helpers, frameworks AND the Resources/bin sidecars — and fails
-      # if any of them lacks an x86_64 slice or if a sidecar is missing.
+      # The gate that makes cross-building trustworthy.  Walks every Mach-O in
+      # the packaged .app — Electron shell, helpers, frameworks AND the
+      # Resources/bin sidecars — and fails on anything without an x86_64 slice.
       - name: Verify EVERY binary in the bundle is x86_64
         working-directory: aimaster-desktop/apps/desktop
         run: |
@@ -216,9 +294,9 @@ jobs:
   release-intel:
     name: Publish Intel download
     needs: [build-mac-intel]
-    # Only publish from the branches/tags that are meant to be downloadable —
-    # a push to some other claude/** branch still builds and uploads a run
-    # artifact, but must not move the public release.
+    # Only publish from the refs that are meant to be downloadable — a push to
+    # some other claude/** branch still builds and uploads a run artifact, but
+    # must not move the public release.
     if: |
       github.event_name == 'workflow_dispatch' ||
       startsWith(github.ref, 'refs/tags/v') ||

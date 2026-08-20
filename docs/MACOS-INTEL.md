@@ -75,22 +75,39 @@ Finder 는 메인 실행 파일만 보기 때문에 `응용 프로그램(Intel)`
 
 ## 어떻게 고쳤나
 
-1. **아키텍처별로 러너를 분리했습니다.**
-   `.github/workflows/build-mac-intel.yml` 이 인텔 러너(`macos-13`)에서
-   `--x64` 만 빌드합니다. PyInstaller·ffmpeg·ffprobe 가 전부 네이티브
-   x86_64 로 나옵니다. 기존 `build.yml` 의 mac 잡은 `--arm64` 전용이 되어
-   더 이상 깨진 Intel 산출물을 만들지 않습니다.
+가장 단순한 해법은 인텔 러너에서 빌드하는 것이지만, **무료 인텔 러너가
+없어졌습니다.** 마지막 무료 GitHub 호스티드 인텔 이미지였던 `macos-13` 은
+은퇴했고(요청하면 실패도 안 하고 큐에 영원히 남습니다), 남은 x86_64 macOS
+라벨(`macos-15-intel`, `macos-26-intel`, `macos-*-large`)은 전부 유료
+larger runner 입니다.
 
-2. **러너가 정말 인텔인지 먼저 확인합니다.**
-   `uname -m` 이 `x86_64` 가 아니면 빌드를 즉시 중단합니다. GitHub 이
-   나중에 `macos-13` 이미지를 Apple Silicon 으로 바꿔도 조용히 깨진 빌드가
-   나가지 않습니다.
+그래서 **무료 arm64 러너에서 크로스 빌드하되, 아키텍처가 걸린 조각을 전부
+명시적으로 x86_64 로 조달**하도록 했습니다.
+
+1. **아키텍처별 조각을 하나씩 x86_64 로 지정했습니다.**
+
+   | 조각 | 어떻게 x86_64 를 얻나 |
+   |---|---|
+   | Electron 셸 | `--x64` 플래그만으로 electron-builder 가 darwin-x64 배포판을 직접 내려받음 (호스트와 무관) |
+   | `ffmpeg` | `npm_config_arch=x64` — ffmpeg-static 의 install 스크립트가 `os.arch()` 보다 이 값을 먼저 읽음 |
+   | `ffprobe` | `@ffprobe-installer/darwin-x64` 를 pnpm-lock 이 고정한 버전 그대로 직접 설치 |
+   | `engine` | PyInstaller 는 크로스 컴파일이 안 되므로, uv 로 진짜 x86_64 CPython 3.11 을 받아 Rosetta 2 위에서 freeze |
+
+   기존 `build.yml` 의 mac 잡은 `--arm64` 전용이 되어 더 이상 깨진 Intel
+   산출물을 만들지 않습니다.
+
+2. **전제를 먼저 확인합니다.**
+   Rosetta 2 로 x86_64 실행이 되는지, uv 가 준 인터프리터가 정말 x86_64
+   인지(`platform.machine()`), 받아온 ffmpeg/ffprobe 가 x86_64 인지를
+   각각 확인하고 아니면 즉시 중단합니다.
 
 3. **번들 전체를 검사하는 게이트를 넣었습니다.**
    `scripts/verify-mac-arch.cjs` 가 패키징된 `.app` 안의 **모든** Mach-O
    파일(Electron 셸, 헬퍼, 프레임워크, 그리고 `Resources/bin` 의 보조
    바이너리)을 `lipo` 로 확인해서, x86_64 슬라이스가 없는 파일이 하나라도
-   있거나 보조 바이너리가 빠져 있으면 빌드를 실패시킵니다.
+   있거나 보조 바이너리가 빠져 있으면 빌드를 실패시킵니다. 크로스 빌드가
+   안전한 이유가 바로 이겁니다 — 위 조달 과정 중 하나라도 조용히 arm64 를
+   내놓으면, 앱이 나가는 게 아니라 빌드가 빨갛게 실패합니다.
 
 4. **ad-hoc 코드 서명을 추가했습니다.**
    `scripts/mac-adhoc-sign.cjs` (electron-builder `afterPack` 훅) 이 번들에
@@ -128,6 +145,6 @@ node scripts/verify-mac-arch.cjs "out/mac/Louver Mastering AI.app" x64
 `.github/workflows/build-mac-intel.yml` 의 *Build Python engine* 스텝과
 동일합니다.
 
-Apple Silicon 맥에서 `--x64` 로 빌드하면 `prebuild.cjs` 가 아키텍처 불일치를
-잡아내고 빌드를 세웁니다. 이건 의도된 동작입니다 — 크로스 빌드로는 정상적인
-Intel 앱을 만들 수 없습니다.
+Apple Silicon 맥에서 빌드한다면 `FFMPEG_BINARY` / `FFPROBE_BINARY` 로 x86_64
+바이너리를 직접 지정해야 합니다. 그냥 `--x64` 만 주면 `prebuild.cjs` 가
+아키텍처 불일치를 잡아내고 빌드를 세웁니다 — 의도된 동작입니다.

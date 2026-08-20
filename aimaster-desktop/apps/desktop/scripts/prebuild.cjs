@@ -25,11 +25,17 @@
  * Finder ("종류: 응용 프로그램(Intel)") because the Electron shell really was
  * x64 — only the sidecars were wrong.
  *
- * The fix is to build the Intel artefact on an Intel runner (macos-13).  This
- * guard makes that non-negotiable: if the binaries we just copied do not match
- * the arch we are packaging for, the build FAILS here instead of shipping a
- * silently broken app.  Set AIMASTER_TARGET_ARCH to the arch being packaged
- * (the Intel workflow sets it to `x64`); it defaults to the host arch.
+ * Building each arch on a runner of that arch would fix it, but `macos-13` —
+ * the last free GitHub-hosted Intel image — has been retired, so the Intel
+ * artefact is cross-built on an arm64 runner with every x64 binary sourced
+ * explicitly (FFMPEG_BINARY / FFPROBE_BINARY, and an x86_64 CPython for
+ * PyInstaller).  See .github/workflows/build-mac-intel.yml.
+ *
+ * Cross-building is only safe when it is checked, so this guard makes the
+ * check non-negotiable: if the binaries we just copied do not match the arch
+ * we are packaging for, the build FAILS here instead of shipping a silently
+ * broken app.  Set AIMASTER_TARGET_ARCH to the arch being packaged (the Intel
+ * workflow sets it to `x64`); it defaults to the host arch.
  *
  * Run:  node apps/desktop/scripts/prebuild.cjs
  */
@@ -86,15 +92,16 @@ function assertArch(file, name) {
   console.error(`  contains: ${archs.join(', ')}`);
   console.error(`  required: ${want}  (AIMASTER_TARGET_ARCH=${TARGET_ARCH})`);
   console.error('');
-  console.error('  This binary comes from the npm package installed for the');
-  console.error('  BUILD MACHINE, so it can only be correct when the runner');
-  console.error('  arch matches the arch being packaged.');
+  console.error('  Unless overridden, this binary comes from the npm package');
+  console.error('  installed for the BUILD MACHINE, so on a cross-build it is');
+  console.error('  only correct when staged for the target arch explicitly.');
   console.error('');
-  console.error('  → Build the Intel (x64) artefact on an Intel runner');
-  console.error('    (macos-13), and the Apple Silicon artefact on macos-14+.');
-  console.error('    Do NOT pass --x64 --arm64 in a single invocation: the');
-  console.error('    extraResources sidecars are copied arch-blind and the');
-  console.error('    non-host arch ends up with unusable binaries.');
+  console.error('  → Set FFMPEG_BINARY / FFPROBE_BINARY to binaries staged for');
+  console.error('    the target arch (npm_config_arch=x64 npm install ...), as');
+  console.error('    .github/workflows/build-mac-intel.yml does.');
+  console.error('  → Do NOT pass --x64 --arm64 in a single electron-builder');
+  console.error('    invocation: the extraResources sidecars are copied');
+  console.error('    arch-blind, so one of the two bundles gets unusable ones.');
   console.error('');
   process.exitCode = 1;
 }

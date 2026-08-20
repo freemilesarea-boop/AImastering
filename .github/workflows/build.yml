@@ -149,8 +149,8 @@ jobs:
   # Apple Silicon (arm64) and Intel (x64). If `hdiutil` DMG packaging flakes on
   # the runner, the next step falls back to zip-only. App is NOT code-signed /
   # notarized yet (see electron-builder.yml mac.identity TODO + docs/MACOS-RELEASE.md).
-  # Apple Silicon (arm64) only — the Intel/x64 build lives in
-  # .github/workflows/build-mac-intel.yml on the macos-13 runner.
+  # Apple Silicon (arm64) only — the Intel/x64 build is cross-compiled by
+  # .github/workflows/build-mac-intel.yml.
   build-mac:
     runs-on: macos-14   # Apple Silicon runner
     steps:
@@ -318,9 +318,9 @@ jobs:
       # Intel binary in Finder and then died on launch on real Intel Macs
       # (checkFFmpeg() cannot spawn an arm64 ffmpeg under Rosetta).
       #
-      # The Intel artefact is built on the macos-13 (Intel) runner by
-      # .github/workflows/build-mac-intel.yml, which verifies every Mach-O in
-      # the bundle before uploading.
+      # The Intel artefact is cross-built by
+      # .github/workflows/build-mac-intel.yml, which sources each x64 binary
+      # explicitly and verifies every Mach-O in the bundle before uploading.
       - name: Package macOS .dmg + .zip (arm64)
         id: pack_mac
         working-directory: aimaster-desktop
