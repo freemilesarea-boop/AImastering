@@ -14,7 +14,7 @@ import { pointValueAt } from '../model/automation.js';
 import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
 import type { Clip, DawSession, Fade, Track, TrackId } from '../model/types.js';
 import type { MidiNote } from '../model/midi.js';
-import { getCached, preloadAll } from './audio-cache.js';
+import { getCached, loadAudio, preloadAll } from './audio-cache.js';
 import { ensureWarpedBuffer, prepareWarps } from './warp-render.js';
 import { clipWarp } from '../model/warp.js';
 import { clipNotes } from '../model/patterns.js';
@@ -60,6 +60,8 @@ export class ClipPlayer {
   private voices: Voice[] = [];
   private noteVoices: NoteVoice[] = [];
   private scheduled = new Set<string>();
+  /** Files this pass has already asked the cache for, so it asks once. */
+  private requested = new Set<string>();
   private origin = 0;
   private playing = false;
   private startedAtSec = 0;
@@ -122,6 +124,7 @@ export class ClipPlayer {
     this.voices = [];
     this.noteVoices = [];
     this.scheduled.clear();
+    this.requested.clear();
     this.playing = false;
   }
 
@@ -203,6 +206,22 @@ export class ClipPlayer {
     return makeRng(hash)() < note.playProbability;
   }
 
+  /**
+   * Fetch a buffer the scheduler wanted and did not have, without blocking the
+   * look-ahead.  One request per file per playback pass — a file that will not
+   * decode must not be re-attempted fifty times a second.
+   */
+  private requestDecode(session: DawSession, fileId: string): void {
+    if (this.requested.has(fileId)) return;
+    const file = session.files.find((f) => f.id === fileId);
+    if (!file) return;
+    this.requested.add(fileId);
+    void loadAudio(this.engine.ctx, file.id, file.path).catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.warn('[ClipPlayer] 재생 중 디코딩 실패:', file.path, err);
+    });
+  }
+
   /** Schedule the WHOLE session — used by offline bounce. */
   scheduleAll(session: DawSession, fromSec: number, toSec: number): void {
     this.origin = -fromSec;
@@ -214,7 +233,15 @@ export class ClipPlayer {
     session: DawSession, clip: Clip, destination: AudioNode, notBeforeSec: number,
   ): void {
     const cached = getCached(clip.fileId);
-    if (!cached) return;                       // not decoded yet — next tick
+    if (!cached) {
+      // Returning here silently is how a whole stem goes missing from a take:
+      // nothing decodes during playback, so a clip skipped once stays skipped
+      // for good, and the mix plays back without its vocal saying nothing.
+      // Ask for the file instead — the next look-ahead tick enters the clip
+      // mid-way at the right offset, exactly as seeking into it would.
+      this.requestDecode(session, clip.fileId);
+      return;
+    }
     const ctx = this.engine.ctx;
 
     // A clip already under way when playback starts is entered mid-way.

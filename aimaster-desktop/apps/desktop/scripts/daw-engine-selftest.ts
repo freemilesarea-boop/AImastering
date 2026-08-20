@@ -29,8 +29,8 @@ import { buildRack, rackNode, setRackMacro } from '../src/renderer/daw/model/rac
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { setVolumeDb, toggleMute, toggleSolo } from '../src/renderer/daw/model/mixer-math.js';
 import {
-  analyzeBuffer, cacheSize, clearAudioCache, getCached, getMeta, pcmToBuffer, preloadAll,
-  transientsFor,
+  analyzeBuffer, cacheSize, clearAudioCache, DECODE_CONCURRENCY, getCached, getMeta,
+  pcmToBuffer, pinFiles, preloadAll, transientsFor,
 } from '../src/renderer/daw/engine/audio-cache.js';
 import { renderSession } from '../src/renderer/daw/engine/offline-render.js';
 import { defaultParams } from '../src/renderer/daw/engine/plugins.js';
@@ -611,7 +611,7 @@ async function main(): Promise<void> {
   // Twenty songs decoded in parallel is a multi-gigabyte spike; the renderer
   // is killed and the window shows nothing but its own background colour.
 
-  await check('files are decoded one at a time, never all at once', async () => {
+  await check('decoding is bounded, never the whole session at once', async () => {
     clearAudioCache();
     const real = new OfflineAudioContext(1, 128, SR) as unknown as BaseAudioContext;
 
@@ -636,7 +636,9 @@ async function main(): Promise<void> {
     try {
       const files = Array.from({ length: 8 }, (_, i) => ({ id: `seq${i}`, path: `/tmp/s${i}.wav` }));
       await preloadAll(fakeCtx, files);
-      assert(peak === 1, `one decode in flight at a time — peaked at ${peak}`);
+      assert(peak <= DECODE_CONCURRENCY,
+        `never more than ${DECODE_CONCURRENCY} in flight — peaked at ${peak}`);
+      assert(peak > 1, `and more than one, or opening a session is needlessly serial — ${peak}`);
       assert(cacheSize() === 8, `all eight landed — cache holds ${cacheSize()}`);
     } finally {
       (globalThis as { fetch: unknown }).fetch = originalFetch;
@@ -671,7 +673,7 @@ async function main(): Promise<void> {
     close(meta!.durationSec, 1, 'the duration is still known', 0.001);
     assert(meta!.peaks.some((v) => v > 0.5), 'the peak envelope is still drawable');
     assert(transientsFor('keepme').length === onsets,
-      'and Tab to Transient still finds the same marks');
+      'and the marks found earlier are remembered, not recomputed from a gone buffer');
   });
 
   // ── Main-process decoding ─────────────────────────────────────────────────
@@ -723,6 +725,44 @@ async function main(): Promise<void> {
       pcmToBuffer(ctx, { sampleRate: SR, channels: 2, frames: 0, pcm: new Uint8Array(0) });
     } catch { threw = true; }
     assert(threw, 'zero frames is reported instead of producing an unusable buffer');
+  });
+
+  await check('the open session keeps its stems however small the budget is', async () => {
+    clearAudioCache();
+    const ctx = new OfflineAudioContext(1, 128, SR);
+    const stems = ['vox', 'drums', 'bass', 'gtr'];
+
+    // Every stem belongs to the open session.
+    pinFiles(stems);
+    for (const id of stems) {
+      analyzeBuffer(id, ctx.createBuffer(2, SR, SR) as unknown as AudioBuffer);
+    }
+    // Then a pile of files nothing references any more — old takes, undone
+    // imports — enough to blow past the entry cap several times over.
+    for (let i = 0; i < 20; i++) {
+      analyzeBuffer(`stale${i}`, ctx.createBuffer(2, SR, SR) as unknown as AudioBuffer);
+    }
+
+    for (const id of stems) {
+      assert(getCached(id) !== undefined,
+        `${id} is still playable — an evicted stem is a silent track in the mix`);
+    }
+    assert(getCached('stale0') === undefined, 'unreferenced files still make way');
+  });
+
+  await check('unpinning lets a closed session go', async () => {
+    clearAudioCache();
+    const ctx = new OfflineAudioContext(1, 128, SR);
+    pinFiles(['old']);
+    analyzeBuffer('old', ctx.createBuffer(2, SR, SR) as unknown as AudioBuffer);
+    assert(getCached('old') !== undefined, 'held while the session is open');
+
+    // Loading another session re-pins; the previous material is now cache.
+    pinFiles(['fresh']);
+    for (let i = 0; i < 20; i++) {
+      analyzeBuffer(`fill${i}`, ctx.createBuffer(2, SR, SR) as unknown as AudioBuffer);
+    }
+    assert(getCached('old') === undefined, 'and released once nothing references it');
   });
 
   const passed = results.filter((r) => r.pass).length;

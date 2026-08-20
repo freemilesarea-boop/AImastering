@@ -963,6 +963,32 @@ check('a dotfile without an extension is not mistaken for audio', () => {
   assert(isEmptyPlan(plan), 'nothing to import');
 });
 
+check('a pinned entry is never the one evicted', () => {
+  const MB = 1024 * 1024;
+  // Four stems of an open session plus one stale file, well over the budget.
+  const entries = [
+    { id: 'stale', bytes: 200 * MB },
+    { id: 'vox',   bytes: 200 * MB, pinned: true },
+    { id: 'drums', bytes: 200 * MB, pinned: true },
+    { id: 'bass',  bytes: 200 * MB, pinned: true },
+    { id: 'gtr',   bytes: 200 * MB, pinned: true },
+  ];
+  const dropped = evictionPlan(entries, 'gtr', 12, 700 * MB);
+  assert(dropped.length === 1 && dropped[0] === 'stale',
+    `only the unreferenced file goes — dropped ${dropped.join() || 'nothing'}`);
+});
+
+check('a session bigger than the budget keeps playing rather than going silent', () => {
+  const MB = 1024 * 1024;
+  // Eight four-minute stereo stems are ~740 MB — past any sane cache budget.
+  // Evicting them would mute those tracks, so the budget yields instead.
+  const stems = Array.from({ length: 8 }, (_, i) => ({
+    id: `stem${i}`, bytes: 92 * MB, pinned: true,
+  }));
+  assert(evictionPlan(stems, 'stem7', 12, 700 * MB).length === 0,
+    'every stem survives — an evicted stem is a track missing from the mix');
+});
+
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;
 console.log('\n=== DAW core (model · edit · mix · routing · render) ===');
