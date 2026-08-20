@@ -47,7 +47,12 @@ import { useIntelStore } from '../stores/intelStore.js';
 import { summarise as summariseFindings } from '../daw/ai/diagnose.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
 import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js';
-import { updateClip, trackClips } from '../daw/model/session-ops.js';
+import { updateClip, trackClips, updateTrack } from '../daw/model/session-ops.js';
+import { findLane } from '../daw/model/automation.js';
+import {
+  availableTargets, ensureLane, setLaneVisible, visibleLanes,
+} from '../daw/edit/automation-lanes.js';
+import type { AutomationMode } from '../daw/model/types.js';
 import {
   quantizeNotes, humanizeNotes, transposeNotes, nudgeVelocity, applyLegato,
 } from '../daw/edit/midi-edit.js';
@@ -83,6 +88,7 @@ export type DawCommandId =
   | 'daw.detectChords' | 'daw.reharmonize'
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
+  | 'daw.toggleAutomation' | 'daw.automationMode'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
@@ -551,6 +557,48 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     // ── Smart Controls / Track Stacks ─────────────────────────────────────
+    'daw.toggleAutomation': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      const track = trackId ? state.session.tracks.find((t) => t.id === trackId) : undefined;
+      if (!track) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      const open = visibleLanes(track).length > 0;
+      state.apply((s) => {
+        if (open) {
+          let next = s;
+          for (const lane of track.automation) {
+            next = setLaneVisible(next, track.id, lane.target, false);
+          }
+          return next;
+        }
+        const first = availableTargets(track)[0];
+        return first ? setLaneVisible(s, track.id, first, true) : s;
+      });
+      notify(open ? '오토메이션 레인을 접었습니다' : `${track.name} — 오토메이션 레인`, 'info');
+    },
+
+    'daw.automationMode': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      const track = trackId ? state.session.tracks.find((t) => t.id === trackId) : undefined;
+      if (!track) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      const current = findLane(track.automation, { kind: 'volume' })?.mode
+        ?? track.automation[0]?.mode ?? 'read';
+      const order: AutomationMode[] = ['read', 'touch', 'latch', 'write', 'trim'];
+      const next = order[(order.indexOf(current) + 1) % order.length] ?? 'read';
+      state.apply((s) => {
+        // Setting a mode on a track with no lanes has to make one, or the
+        // selector would say "touch" with nothing able to record.
+        const withLane = ensureLane(s, track.id, { kind: 'volume' }, next).session;
+        return updateTrack(withLane, track.id, (t) => ({
+          ...t,
+          automation: t.automation.map((lane) => ({ ...lane, mode: next })),
+        }));
+      });
+      notify(`${track.name} — 오토메이션 ${next}`,
+        next === 'write' ? 'warning' : 'info');
+    },
+
     'daw.smartControls': () => {
       const state = daw();
       const trackId = targetTrackIds()[0] ?? state.session.tracks.find((t) => t.kind !== 'master')?.id;

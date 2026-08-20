@@ -14,12 +14,17 @@ import {
   updateTrack, findTrack,
 } from '../../../daw/model/session-ops.js';
 import {
-  effectiveFaderDb, setPan, setVolumeDb, toggleMute, toggleSolo, vcaChainDb,
+  effectiveFaderDb, toggleMute, toggleSolo, vcaChainDb,
 } from '../../../daw/model/mixer-math.js';
 import { describePath, computeDelayCompensation, wouldFeedback } from '../../../daw/model/routing.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
-import type { AutomationMode, DawSession, Track } from '../../../daw/model/types.js';
+import type {
+  AutomationMode, AutomationTarget, DawSession, Track,
+} from '../../../daw/model/types.js';
+import { useAutomationStore } from '../../../stores/automationStore.js';
+import { findLane, isWritingMode, pointValueAt } from '../../../daw/model/automation.js';
+import { ensureLane } from '../../../daw/edit/automation-lanes.js';
 import { stackDepth, isSummingStack } from '../../../daw/model/stacks.js';
 import { activeMacros } from '../../../daw/model/macros.js';
 import { premium } from '../../../theme/premium.js';
@@ -104,6 +109,47 @@ function ChannelStrip({
   const vcaDb    = vcaChainDb(session, track);
   const latency  = track.inserts.reduce(
     (sum, i) => sum + (i.bypass ? 0 : pluginLatencySamples(i.pluginId, i.params, session.sampleRate)), 0);
+
+  // ── Automation gestures ───────────────────────────────────────────────
+  //
+  // Every control that has a lane goes through the same three calls.  `grab`
+  // decides whether this is a pass or an ordinary edit — it needs the
+  // transport rolling and the lane in a writing mode — and `move` writes the
+  // control either way, so a fader in read mode behaves exactly as it did.
+  const gestureCount = useAutomationStore((s) => s.recordingCount());
+  const grab = (target: AutomationTarget): void => {
+    useAutomationStore.getState().grab(track.id, target);
+  };
+  const move = (target: AutomationTarget, value: number): void => {
+    useAutomationStore.getState().move(track.id, target, value);
+  };
+  const release = (target: AutomationTarget): void => {
+    useAutomationStore.getState().release(track.id, target);
+  };
+  const volumeLane = findLane(track.automation, { kind: 'volume' });
+  const panLane = findLane(track.automation, { kind: 'pan' });
+  const writingVolume = gestureCount > 0
+    && useAutomationStore.getState().isRecording(track.id, { kind: 'volume' });
+
+  /**
+   * Where the fader sits on screen.
+   *
+   * While a lane is playing, that is the LANE's value, not the static one —
+   * automation you cannot see moving is automation you do not believe is
+   * running.  The playhead is read without subscribing to it: the meter poll
+   * above already re-renders every strip twenty times a second, which is
+   * exactly the rate a moving fader needs and a rate the transport's own
+   * position updates would beat pointlessly.
+   */
+  const playing = useDawStore((s) => s.isPlaying);
+  const nowSec = useDawStore.getState().playheadSec;
+  const following = (lane: typeof volumeLane, target: AutomationTarget): boolean =>
+    playing && lane !== undefined && lane.mode !== 'off' && lane.points.length > 0
+    && !useAutomationStore.getState().isRecording(track.id, target);
+  const shownVolumeDb = following(volumeLane, { kind: 'volume' })
+    ? pointValueAt(volumeLane!.points, nowSec, track.volumeDb) : track.volumeDb;
+  const shownPan = following(panLane, { kind: 'pan' })
+    ? pointValueAt(panLane!.points, nowSec, track.pan) : track.pan;
 
   const stripColor = isMaster ? 'border-red-900/60'
     : isVca ? 'border-amber-900/60'
@@ -231,8 +277,13 @@ function ChannelStrip({
               {send && (
                 <input
                   type="range" min={-60} max={12} step={0.5} value={send.levelDb}
-                  onChange={(e) => onApply((s) =>
-                    setSend(s, track.id, { ...send, levelDb: parseFloat(e.target.value) }))}
+                  onPointerDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
+                  onPointerUp={() => release({ kind: 'sendLevel', sendId: send.id })}
+                  onLostPointerCapture={() => release({ kind: 'sendLevel', sendId: send.id })}
+                  onKeyDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
+                  onKeyUp={() => release({ kind: 'sendLevel', sendId: send.id })}
+                  onChange={(e) => move(
+                    { kind: 'sendLevel', sendId: send.id }, parseFloat(e.target.value))}
                   className="w-full h-1 accent-emerald-500"
                 />
               )}
@@ -284,12 +335,26 @@ function ChannelStrip({
       {/* Automation + group/VCA */}
       <div className="px-1.5 py-1 border-b border-zinc-900 space-y-1">
         <select
-          value={track.automation[0]?.mode ?? 'read'}
-          onChange={(e) => onApply((s) => updateTrack(s, track.id, (t) => ({
-            ...t,
-            automation: t.automation.map((l) => ({ ...l, mode: e.target.value as AutomationMode })),
-          })))}
-          className="w-full h-5 rounded text-[9px] px-1 bg-zinc-900 border border-zinc-700 text-zinc-400"
+          value={volumeLane?.mode ?? track.automation[0]?.mode ?? 'read'}
+          onChange={(e) => {
+            const mode = e.target.value as AutomationMode;
+            onApply((s) => {
+              // Setting the mode on a track with no lanes yet has to create
+              // one, or the selector says "touch" and nothing can be written.
+              const withLane = ensureLane(s, track.id, { kind: 'volume' }, mode).session;
+              return updateTrack(withLane, track.id, (t) => ({
+                ...t,
+                automation: t.automation.map((l) => ({ ...l, mode })),
+              }));
+            });
+          }}
+          className={`w-full h-5 rounded text-[9px] px-1 bg-zinc-900 border ${
+            writingVolume ? 'border-red-500/60 text-red-300'
+              : (volumeLane?.mode === 'write' ? 'border-red-800 text-red-400'
+                : 'border-zinc-700 text-zinc-400')}`}
+          title={isWritingMode(volumeLane?.mode ?? 'read')
+            ? '재생 중에 페이더를 잡으면 그 움직임이 레인에 기록됩니다'
+            : '기록하려면 touch · latch · write · trim 중 하나로'}
         >
           {AUTOMATION_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
         </select>
@@ -318,12 +383,17 @@ function ChannelStrip({
       {!isVca && (
         <div className="px-1.5 py-1 border-b border-zinc-900">
           <input
-            type="range" min={-1} max={1} step={0.01} value={track.pan}
-            onChange={(e) => onApply((s) => setPan(s, track.id, parseFloat(e.target.value)))}
+            type="range" min={-1} max={1} step={0.01} value={shownPan}
+            onPointerDown={() => grab({ kind: 'pan' })}
+            onPointerUp={() => release({ kind: 'pan' })}
+            onLostPointerCapture={() => release({ kind: 'pan' })}
+            onKeyDown={() => grab({ kind: 'pan' })}
+            onKeyUp={() => release({ kind: 'pan' })}
+            onChange={(e) => move({ kind: 'pan' }, parseFloat(e.target.value))}
             className="w-full h-1 accent-zinc-400"
           />
           <p className="text-[8px] font-mono text-zinc-600 text-center">
-            {track.pan === 0 ? 'C' : track.pan < 0 ? `L${Math.round(-track.pan * 100)}` : `R${Math.round(track.pan * 100)}`}
+            {shownPan === 0 ? 'C' : shownPan < 0 ? `L${Math.round(-shownPan * 100)}` : `R${Math.round(shownPan * 100)}`}
           </p>
         </div>
       )}
@@ -331,10 +401,19 @@ function ChannelStrip({
       {/* Fader + meter */}
       <div className="flex-1 flex gap-1 px-1.5 py-2 min-h-[150px]">
         <input
-          type="range" min={-60} max={12} step={0.1} value={track.volumeDb}
-          onChange={(e) => onApply((s) => setVolumeDb(s, track.id, parseFloat(e.target.value)))}
+          type="range" min={-60} max={12} step={0.1} value={shownVolumeDb}
+          onPointerDown={() => grab({ kind: 'volume' })}
+          onPointerUp={() => release({ kind: 'volume' })}
+          onLostPointerCapture={() => release({ kind: 'volume' })}
+          onKeyDown={() => grab({ kind: 'volume' })}
+          onKeyUp={() => release({ kind: 'volume' })}
+          onChange={(e) => move({ kind: 'volume' }, parseFloat(e.target.value))}
           className="daw-fader accent-zinc-300"
-          style={{ writingMode: 'vertical-lr', direction: 'rtl', width: 20, height: '100%' }}
+          style={{
+            writingMode: 'vertical-lr', direction: 'rtl', width: 20, height: '100%',
+            accentColor: writingVolume ? 'rgb(248,113,113)' : undefined,
+          }}
+          title={writingVolume ? '오토메이션 기록 중' : undefined}
         />
         <Meter level={level} />
         <div className="flex flex-col justify-end gap-1">
@@ -365,7 +444,7 @@ function ChannelStrip({
           title={isSummingStack(track) ? `${track.name} (합산 스택)` : track.name}
         >{isFolder ? track.name.toUpperCase() : track.name}</p>
         <p className="text-[9px] font-mono text-zinc-500">
-          {track.volumeDb >= 0 ? '+' : ''}{track.volumeDb.toFixed(1)}
+          {shownVolumeDb >= 0 ? '+' : ''}{shownVolumeDb.toFixed(1)}
           {Math.abs(vcaDb) > 0.01 && (
             <span className="text-amber-400"> ({faderDb >= 0 ? '+' : ''}{faderDb.toFixed(1)})</span>
           )}

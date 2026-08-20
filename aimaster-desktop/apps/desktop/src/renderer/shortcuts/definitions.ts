@@ -69,6 +69,7 @@ export type CommandId =
   | 'daw.detectChords' | 'daw.reharmonize'
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
+  | 'daw.toggleAutomation' | 'daw.automationMode'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
@@ -293,6 +294,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '분석된 구간을 에디터 스케일에 맞추고 PSOLA 로 렌더 (원본은 보존)', available: true },
 
   // ── 스마트 컨트롤 · 트랙 스택 ──────────────────────────────────────────
+  { id: 'daw.toggleAutomation', group: 'daw', label: '오토메이션 레인 열기 / 접기', chords: ['Alt+A'],
+    note: '볼륨 레인부터 — 접어도 브레이크포인트는 그대로 남고 계속 재생됩니다', available: true },
+  { id: 'daw.automationMode', group: 'daw', label: '오토메이션 모드 순환', chords: ['Mod+Alt+Shift+A'],
+    note: 'read → touch → latch → write → trim. 재생 중에 페이더를 잡으면 기록됩니다', available: true },
   { id: 'daw.smartControls', group: 'daw', label: '스마트 컨트롤', chords: ['Mod+Alt+S'],
     note: '매크로 7개(WARMTH·CLARITY·PUNCH·AIR·WIDTH·DEPTH·LOUDNESS) — Advanced 로 실제 파라미터', available: true },
   { id: 'daw.createStack', group: 'daw', label: '트랙 스택 만들기', chords: ['Mod+Shift+G'],

@@ -14,7 +14,9 @@
 // All functions are pure; the engine calls `valueAt` per block and the UI
 // calls the writers on gesture end.
 
-import type { AutomationLane, AutomationPoint, AutomationMode } from './types.js';
+import type {
+  AutomationLane, AutomationMode, AutomationPoint, AutomationTarget,
+} from './types.js';
 import { nextId } from './ids.js';
 
 const EPS = 1e-9;
@@ -35,6 +37,97 @@ export function createLane(
 
 export function sortPoints(points: AutomationPoint[]): AutomationPoint[] {
   return [...points].sort((a, b) => a.timeSec - b.timeSec);
+}
+
+/**
+ * A stable string for a target.
+ *
+ * Lanes are addressed by what they automate, not by their id: a gesture on the
+ * fader has to find the volume lane whether or not one exists yet, and two
+ * parts of the app must agree on what "the volume lane of this track" means.
+ * One definition, here, so they cannot drift.
+ */
+export function targetKey(target: AutomationTarget): string {
+  switch (target.kind) {
+    case 'sendLevel':
+    case 'sendPan':
+    case 'sendMute':
+      return `${target.kind}:${target.sendId}`;
+    case 'plugin':
+      return `plugin:${target.insertId}:${target.paramId}`;
+    default:
+      return target.kind;
+  }
+}
+
+/** Address of one lane in the whole session. */
+export function laneKey(trackId: string, target: AutomationTarget): string {
+  return `${trackId}|${targetKey(target)}`;
+}
+
+export function sameTarget(a: AutomationTarget, b: AutomationTarget): boolean {
+  return targetKey(a) === targetKey(b);
+}
+
+/** The lane on this track for a target, if it has one yet. */
+export function findLane(
+  lanes: readonly AutomationLane[], target: AutomationTarget,
+): AutomationLane | undefined {
+  const key = targetKey(target);
+  return lanes.find((lane) => targetKey(lane.target) === key);
+}
+
+/**
+ * The breakpoint nearest a point in lane space, or −1.
+ *
+ * Tolerances are given separately for the two axes because they are measured
+ * in different units and the caller is the only thing that knows the scale:
+ * a pixel is some number of seconds across and some number of decibels tall.
+ */
+export function nearestPoint(
+  points: readonly AutomationPoint[],
+  timeSec: number, value: number,
+  timeTol: number, valueTol: number,
+): number {
+  let best = -1;
+  let bestScore = Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]!;
+    const dt = Math.abs(p.timeSec - timeSec) / Math.max(1e-9, timeTol);
+    const dv = Math.abs(p.value - value) / Math.max(1e-9, valueTol);
+    if (dt > 1 || dv > 1) continue;
+    const score = dt * dt + dv * dv;
+    if (score < bestScore) { bestScore = score; best = i; }
+  }
+  return best;
+}
+
+/**
+ * Move one breakpoint.
+ *
+ * The moved point cannot pass its neighbours: dragging point 3 to the left of
+ * point 2 would either reorder the lane silently or produce a fold that reads
+ * back as a jump.  It stops just short instead, which is what every DAW does.
+ */
+export function movePoint(
+  lane: AutomationLane, index: number, timeSec: number, value: number,
+  minGapSec = 1e-3,
+): AutomationLane {
+  if (index < 0 || index >= lane.points.length) return lane;
+  const before = lane.points[index - 1];
+  const after = lane.points[index + 1];
+  const lo = before ? before.timeSec + minGapSec : 0;
+  const hi = after ? after.timeSec - minGapSec : Infinity;
+  const t = Math.max(lo, Math.min(hi, Math.max(0, timeSec)));
+  const points = lane.points.map((p, i) => (i === index ? { timeSec: t, value } : p));
+  return { ...lane, points };
+}
+
+export function removePointAt(lane: AutomationLane, index: number): AutomationLane {
+  if (index < 0 || index >= lane.points.length) return lane;
+  // A lane with no points reads as its static value, which is a legitimate
+  // state — "no automation here" — so this does not refuse to empty a lane.
+  return { ...lane, points: lane.points.filter((_, i) => i !== index) };
 }
 
 /**
