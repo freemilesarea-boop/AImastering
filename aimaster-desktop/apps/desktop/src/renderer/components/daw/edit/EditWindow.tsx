@@ -10,6 +10,7 @@ import { useDawStore, snapToGrid, type EditMode } from '../../../stores/dawStore
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
 import { useAudioStore } from '../../../stores/audioStore.js';
+import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
 import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import { activePlaylist, clipAt, sessionEndSec } from '../../../daw/model/session-ops.js';
 import { moveClip } from '../../../daw/edit/clip-edit.js';
@@ -292,6 +293,7 @@ export default function EditWindow() {
               onToggleCollapse={() => apply((s) => toggleCollapsed(s, track.id))}
               onUnpack={() => apply((s) => unpackStack(s, track.id))}
               onSmart={() => useDawStore.getState().openSmartControls(track.id)}
+              onInserts={() => usePluginWindowStore.getState().toggleRack(track.id)}
             />
           ))}
         </div>
@@ -395,7 +397,7 @@ export default function EditWindow() {
 
 function TrackHeader({
   track, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
-  onToggleCollapse, onUnpack, onSmart, onArm, recording,
+  onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
 }: {
   track: Track;
   depth: number;
@@ -410,11 +412,15 @@ function TrackHeader({
   onToggleCollapse: () => void;
   onUnpack: () => void;
   onSmart: () => void;
+  onInserts: () => void;
 }) {
   const playlist = activePlaylist(track);
   const takes = track.playlists.length;
   const isFolder = track.kind === 'folder';
   const macroCount = Object.values(track.macros.values).filter((v) => (v ?? 0) !== 0).length;
+  // Folders and VCAs carry no signal, so there is nothing to insert into them.
+  const carriesInserts = track.kind !== 'folder' && track.kind !== 'vca';
+  const insertCount = track.inserts.length;
   return (
     <div
       onMouseDown={onFocus}
@@ -457,6 +463,20 @@ function TrackHeader({
               color: premium.accent.base,
             }}
           >{macroCount}</button>
+        )}
+        {carriesInserts && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onInserts(); }}
+            title={insertCount > 0
+              ? `인서트 ${insertCount}개 — 열기`
+              : '플러그인 추가 · 편집'}
+            className="text-[10px] leading-none w-4 h-4 rounded shrink-0 flex items-center
+                       justify-center transition-colors"
+            style={{
+              border: `1px solid ${insertCount > 0 ? premium.accent.deep : 'rgba(255,255,255,0.14)'}`,
+              color: insertCount > 0 ? premium.accent.base : premium.text.muted,
+            }}
+          >✎</button>
         )}
         <span className="text-[9px] font-mono text-zinc-600 uppercase">{track.kind.slice(0, 3)}</span>
       </div>
