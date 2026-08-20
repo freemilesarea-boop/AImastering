@@ -246,6 +246,15 @@ class DawRuntime {
 
   position(): number { return this.player?.position() ?? 0; }
 
+  /**
+   * Gain reduction an insert is applying right now, in dB, or null when the
+   * device cannot say.  Measured by the device itself — a modelled meter would
+   * drift from what is actually happening to the audio.
+   */
+  insertReduction(trackId: TrackId, insertId: string): number | null {
+    return this.engine?.reduction(trackId, insertId) ?? null;
+  }
+
   meterLevels(): Map<TrackId, number> {
     return this.engine?.meterLevels() ?? new Map();
   }

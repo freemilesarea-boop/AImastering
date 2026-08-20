@@ -21,6 +21,15 @@ import PluginVisual from './PluginVisual.js';
 const VISUAL_WIDTH = 300;
 const VISUAL_HEIGHT = 132;
 
+/** The insert in this slot, for asking the engine what it is doing. */
+function insertIdOf(
+  session: ReturnType<typeof useDawStore.getState>['session'],
+  trackId: string, slot: number,
+): string | null {
+  const track = findTrack(session, trackId);
+  return track?.inserts.find((i) => i.slot === slot)?.id ?? null;
+}
+
 /** Frequency and time knobs feel wrong linear — an octave is a ratio. */
 function curveFor(unit: string, min: number): 'linear' | 'log' {
   return (unit === 'Hz' || unit === 'ms') && min > 0 ? 'log' : 'linear';
@@ -41,14 +50,17 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
 
   // ── Live level, so the picture shows this performance ────────────────────
   const [level, setLevel] = useState(0);
+  const [reduction, setReduction] = useState<number | null>(null);
   const isPlaying = useDawStore((s) => s.isPlaying);
+  const insertId = insertIdOf(session, win.trackId, win.slot);
   useEffect(() => {
-    if (!isPlaying) { setLevel(0); return; }
+    if (!isPlaying) { setLevel(0); setReduction(null); return; }
     const timer = setInterval(() => {
       setLevel(dawRuntime.meterLevels().get(win.trackId) ?? 0);
+      setReduction(insertId ? dawRuntime.insertReduction(win.trackId, insertId) : null);
     }, 60);
     return () => clearInterval(timer);
-  }, [isPlaying, win.trackId]);
+  }, [isPlaying, win.trackId, insertId]);
 
   // ── Dragging the window ──────────────────────────────────────────────────
   const drag = useRef<{ dx: number; dy: number } | null>(null);
@@ -175,6 +187,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
           params={params}
           bypassed={insert.bypass}
           level={level}
+          reduction={reduction}
           width={VISUAL_WIDTH}
           height={VISUAL_HEIGHT}
         />

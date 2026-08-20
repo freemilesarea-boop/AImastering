@@ -22,6 +22,8 @@ export interface PluginVisualProps {
   bypassed: boolean;
   /** Track peak, 0..1, sampled while the transport runs.  0 when silent. */
   level: number;
+  /** Gain reduction the device reports, in dB (negative), or null. */
+  reduction?: number | null;
   width: number;
   height: number;
 }
@@ -173,6 +175,31 @@ function drawDynamics(
   ctx.fillText('OUT', 4, 11);
 }
 
+/**
+ * Gain reduction, as reported by the device itself.
+ *
+ * Down from the top, like every hardware GR meter: more light means more
+ * squeeze.  The number is measured, not derived from the knobs, so it tells
+ * you what this take is actually doing rather than what the settings imply.
+ */
+function drawReduction(
+  ctx: CanvasRenderingContext2D, w: number, h: number, reductionDb: number,
+): void {
+  const SPAN = 24;                                 // 24 dB of meter
+  const amount = Math.min(1, Math.abs(reductionDb) / SPAN);
+  const x = w - 12;
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(x, 4, 6, h - 8);
+  ctx.fillStyle = amount > 0.75 ? 'rgba(248,113,113,0.9)' : 'rgba(198,167,104,0.9)';
+  ctx.fillRect(x, 4, 6, Math.max(1, amount * (h - 8)));
+
+  ctx.fillStyle = 'rgba(230,210,160,0.95)';
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(`GR ${reductionDb.toFixed(1)}`, x - 4, 11);
+  ctx.textAlign = 'left';
+}
+
 function drawDelay(
   ctx: CanvasRenderingContext2D, w: number, h: number,
   params: Record<string, number>, dim: boolean,
@@ -238,7 +265,7 @@ function drawLevel(ctx: CanvasRenderingContext2D, w: number, h: number, level: n
 }
 
 export default function PluginVisual({
-  pluginId, params, bypassed, level, width, height,
+  pluginId, params, bypassed, level, reduction = null, width, height,
 }: PluginVisualProps) {
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -258,12 +285,14 @@ export default function PluginVisual({
 
     const specs = eqSpecs(pluginId, params);
     if (specs.length > 0) drawEq(ctx, width, height, specs, bypassed);
-    else if (pluginId === 'comp' || pluginId === 'limiter' || pluginId === 'transient') {
+    else if (pluginId === 'comp' || pluginId === 'limiter' || pluginId === 'transient'
+             || pluginId === 'ducker') {
       drawDynamics(ctx, width, height, pluginId, params, level, bypassed);
+      if (reduction !== null && reduction < -0.05) drawReduction(ctx, width, height, reduction);
     } else if (pluginId === 'delay') drawDelay(ctx, width, height, params, bypassed);
     else if (pluginId === 'reverb') drawReverb(ctx, width, height, params, bypassed);
     else drawLevel(ctx, width, height, level);
-  }, [pluginId, params, bypassed, level, width, height]);
+  }, [pluginId, params, bypassed, level, reduction, width, height]);
 
   return <canvas ref={ref} className="block rounded-md" style={{ background: 'rgba(0,0,0,0.28)' }} />;
 }
