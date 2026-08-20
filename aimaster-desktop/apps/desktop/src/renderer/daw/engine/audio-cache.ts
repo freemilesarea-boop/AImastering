@@ -27,7 +27,8 @@
 // still draw and Tab to Transient still works after the buffer is gone, and
 // the buffer itself is re-decoded on demand when playback needs it back.
 
-import { decodeContext } from '../../audio/decode-context.js';
+import { decodeContext, DECODE_SAMPLE_RATE } from '../../audio/decode-context.js';
+import { canUseStore, ensureSource, ensureSources, getSource } from './pcm-store.js';
 import { fromFileUrl, toFileUrl } from '../../utils/fileUrl.js';
 import { detectTransients } from '../edit/transient.js';
 import type { FileId } from '../model/types.js';
@@ -102,9 +103,25 @@ export function getCached(fileId: FileId): CachedAudio | undefined {
   return hit;
 }
 
-/** Duration, peaks and onsets for a file — present even after eviction. */
+/**
+ * Duration, peaks and channel count for a file.
+ *
+ * Answered from the PCM store when the samples are not resident, which is the
+ * normal case now: a streamed track never loads into memory at all, and its
+ * waveform still has to draw.
+ */
 export function getMeta(fileId: FileId): FileMeta | undefined {
-  return meta.get(fileId);
+  const known = meta.get(fileId);
+  if (known) return known;
+  const source = getSource(fileId);
+  if (!source) return undefined;
+  return {
+    fileId,
+    durationSec: source.durationSec,
+    sampleRate: source.sampleRate,
+    channels: source.channels,
+    peaks: source.peaks,
+  };
 }
 
 export function cacheSize(): number { return cache.size; }
@@ -249,41 +266,27 @@ export function analyzeBuffer(fileId: FileId, buffer: AudioBuffer): CachedAudio 
  * build if one is ever made.
  */
 export async function decodeAudioFile(
-  ctx: BaseAudioContext, pathOrUrl: string,
+  ctx: BaseAudioContext, pathOrUrl: string, fileId?: FileId,
 ): Promise<AudioBuffer> {
   const path = fromFileUrl(pathOrUrl);
-  const api = (globalThis as unknown as { electronAPI?: DecodeBridge }).electronAPI;
-  if (api) {
-    const decoded = await api.invoke('daw:decode-pcm', {
-      path, sampleRate: ctx.sampleRate,
-    }) as DecodedPcmFile;
-    try {
-      // The samples come back through the file protocol, which streams them.
-      // Returning 92 MB from the IPC reply instead cost three times as long as
-      // decoding the song did.
-      const resp = await fetch(toFileUrl(decoded.pcmPath));
-      if (!resp.ok) throw new Error(`디코딩 결과를 읽지 못했습니다 (${resp.status})`);
-      const pcm = new Uint8Array(await resp.arrayBuffer());
-      return pcmToBuffer(ctx, { ...decoded, pcm });
-    } finally {
-      void api.invoke('daw:release-pcm', decoded.pcmPath).catch(() => { /* swept later */ });
-    }
+  if (canUseStore()) {
+    // The store already holds this file as float32; reading it whole is a
+    // file read, not a decode.  Only the callers that genuinely need every
+    // sample at once — offline render, spectral repair, warping — come here.
+    const source = await ensureSource(fileId ?? path, path, ctx.sampleRate);
+    const resp = await fetch(source.url);
+    if (!resp.ok) throw new Error(`디코딩 결과를 읽지 못했습니다 (${resp.status})`);
+    const pcm = new Uint8Array(await resp.arrayBuffer());
+    return pcmToBuffer(ctx, {
+      sampleRate: source.sampleRate,
+      channels: source.channels,
+      frames: source.frames,
+      pcm,
+    });
   }
   const resp = await fetch(toFileUrl(path));
   if (!resp.ok) throw new Error(`오디오 로드 실패 (${resp.status}): ${path}`);
   return ctx.decodeAudioData(await resp.arrayBuffer());
-}
-
-interface DecodeBridge {
-  invoke(channel: string, ...args: unknown[]): Promise<unknown>;
-}
-
-interface DecodedPcmFile {
-  sampleRate: number;
-  channels: number;
-  frames: number;
-  /** Scratch file holding interleaved float32. */
-  pcmPath: string;
 }
 
 interface DecodedPcm {
@@ -350,7 +353,7 @@ export async function loadAudio(
 
   const task = (async () => {
     trace('decode', path);
-    const buffer = await decodeAudioFile(ctx, path);
+    const buffer = await decodeAudioFile(ctx, path, fileId);
     trace(`analyze ${buffer.duration.toFixed(1)}s`, path);
     const entry = analyzeBuffer(fileId, buffer);
     trace('done', path);
@@ -413,6 +416,15 @@ export async function decodeForDisplay(
   files: ReadonlyArray<{ id: FileId; path: string }>,
   onProgress?: DecodeProgress,
 ): Promise<{ decoded: number; failed: string[] }> {
+  // Drawing a timeline needs a peak envelope and a duration, not samples.
+  // Main computes both while decoding into the store, so preparing a track
+  // for display costs a 32 KB sidecar instead of 92 MB of resident PCM —
+  // which is the whole reason a sixteen-track session can be opened at all.
+  if (canUseStore()) {
+    const { ready, failed } = await ensureSources(files, DECODE_SAMPLE_RATE, onProgress);
+    return { decoded: ready, failed };
+  }
+
   const ctx = decodeContext();
   if (!ctx) return { decoded: 0, failed: files.map((f) => f.path) };
   const failed: string[] = [];
