@@ -8,7 +8,9 @@ VariAudio 에 해당하는 세 축을 **처음부터 MIDI 2.0 · MPE 를 담을 
 - 편집: `src/renderer/daw/edit/` (`midi-edit.ts` · `chord-detect.ts`)
 - 파일: `src/renderer/daw/io/midi-file.ts`
 - 보컬: `src/renderer/daw/audio/` (`pitch-analysis.ts` · `pitch-shift.ts` · `varia-actions.ts`)
-- 엔진: `src/renderer/daw/engine/instruments.ts`
+- 엔진: `src/renderer/daw/engine/instruments.ts` · `midi-input.ts`
+- 입력: `src/renderer/daw/model/midi-capture.ts` · `edit/midi-record-actions.ts`
+  — 건반 녹음은 [DAW.md 의 MIDI 입력 캡처](./DAW.md#midi-입력-캡처--건반을-꽂으면-연주가-파트가-됩니다)
 - UI: `src/renderer/components/daw/midi/`
 
 ## 1. 왜 이런 데이터 모델인가
@@ -159,7 +161,7 @@ pnpm --filter @aimaster/desktop test:daw-engine  # MIDI 렌더 증명 포함 (17
 
 1. 보컬 편집 **UI** — 분석 결과를 파형 위에 세그먼트로 그리고 드래그로 피치·타이밍
    조정 (현재는 분석 · 보정 · 렌더가 명령/단축키로만 노출)
-2. 노트 익스프레션 **기록** — 컨트롤러를 실시간으로 받아 커브로 저장
-3. MIDI 내보내기의 MPE 모드 (현재 내보내기는 MIDI 1.0 채널 메시지)
-4. 코드 트랙 편집 UI (현재는 감지 · 변환 · 표시)
-5. 보컬 → MIDI 전사 (분석 결과가 이미 노트 후보라 연결만 남음)
+2. MIDI 내보내기의 MPE 모드 (현재 내보내기는 MIDI 1.0 채널 메시지)
+3. 코드 트랙 편집 UI (현재는 감지 · 변환 · 표시)
+4. 보컬 → MIDI 전사 (분석 결과가 이미 노트 후보라 연결만 남음)
+5. 노트를 비트로 — 지금 노트는 초 단위라 템포 맵을 따라가지 않습니다

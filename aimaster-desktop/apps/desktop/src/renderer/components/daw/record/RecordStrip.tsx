@@ -10,7 +10,10 @@ import React, { useEffect, useMemo } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
-import { armedTracks, canRecord, describePlan, planRecording } from '../../../daw/model/recording.js';
+import {
+  armedTracks, canRecord, describePlan, planRecording, recordKind,
+} from '../../../daw/model/recording.js';
+import { pitchName } from '../../../daw/model/midi.js';
 import { premium } from '../../../theme/premium.js';
 
 export default function RecordStrip() {
@@ -22,19 +25,31 @@ export default function RecordStrip() {
   const loopEndSec = useDawStore((s) => s.loopEndSec);
   const notify = useAppStore((s) => s.notify);
 
-  const { status, settings, devices, level, elapsedSec, error } = useRecordingStore();
+  const {
+    status, settings, devices, midiDevices, midiOpen, midiNote, kind,
+    level, elapsedSec, lastTakeNote, error,
+  } = useRecordingStore();
   const setSettings = useRecordingStore((s) => s.setSettings);
   const refreshDevices = useRecordingStore((s) => s.refreshDevices);
+  const refreshMidiDevices = useRecordingStore((s) => s.refreshMidiDevices);
   const start = useRecordingStore((s) => s.start);
   const stop = useRecordingStore((s) => s.stop);
 
   const armed = armedTracks(session);
   const rolling = status === 'recording' || status === 'countIn';
-  const readiness = canRecord(session, settings);
+  // What the ARMED track wants, falling back to what the store last opened —
+  // so the strip does not flip its controls between disarm and re-arm.
+  const armedKind = recordKind(session) ?? kind;
+  const isMidi = armedKind === 'midi';
+  const readiness = canRecord(session, settings, isMidi ? { midiOpen } : {});
 
   useEffect(() => {
     if (error) notify(error, 'warning');
   }, [error, notify]);
+
+  useEffect(() => {
+    if (lastTakeNote) notify(`MIDI 테이크: ${lastTakeNote}`, 'info');
+  }, [lastTakeNote, notify]);
 
   const plan = useMemo(() => planRecording(
     session, settings, playheadSec,
@@ -74,39 +89,80 @@ export default function RecordStrip() {
         <span style={{ fontSize: 11, color: premium.accent.base }}>테이크 기록 중…</span>
       )}
 
-      {/* Input meter — always live once armed, because that is when it matters. */}
-      <div className="h-4 w-24 rounded-sm overflow-hidden shrink-0"
-           style={{ background: premium.surface.well, border: `1px solid ${premium.surface.hairline}` }}
-           title={`입력 피크 ${level > 0 ? `${(20 * Math.log10(level)).toFixed(1)} dBFS` : '—'}`}>
-        <div style={{
-          width: `${Math.min(100, level * 100)}%`, height: '100%',
-          background: level > 0.98 ? premium.accent.danger
-            : level > 0.7 ? premium.accent.base : premium.accent.good,
-          transition: 'width 60ms linear',
-        }} />
-      </div>
+      {isMidi ? (
+        <>
+          {/* The keyboard's own meter: the last key played.  "Is the keyboard
+              reaching the app" is the question being asked while arming. */}
+          <div className="h-4 w-24 rounded-sm shrink-0 flex items-center justify-center"
+               style={{
+                 background: midiNote ? premium.accent.good : premium.surface.well,
+                 border: `1px solid ${midiNote ? premium.accent.good : premium.surface.hairline}`,
+                 fontFamily: premium.type.mono, fontSize: 9.5,
+                 color: midiNote ? premium.text.onAccent : premium.text.faint,
+                 transition: 'background 90ms linear',
+               }}
+               title={midiOpen ? '마지막으로 들어온 노트' : 'MIDI 입력이 열려 있지 않습니다'}>
+            {midiNote
+              ? `${pitchName(midiNote.pitch)} ${Math.round(midiNote.velocity * 127)}`
+              : midiOpen ? 'MIDI' : '—'}
+          </div>
 
-      <select
-        value={settings.inputDeviceId ?? ''}
-        onFocus={() => { if (devices.length === 0) void refreshDevices(); }}
-        onChange={(e) => setSettings({ inputDeviceId: e.target.value || null })}
-        title="입력 장치"
-        style={selectStyle}
-      >
-        <option value="">기본 입력</option>
-        {devices.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
-      </select>
+          <select
+            value={settings.midiInputId ?? ''}
+            onFocus={() => { if (midiDevices.length === 0) void refreshMidiDevices(); }}
+            onChange={(e) => setSettings({ midiInputId: e.target.value || null })}
+            title="MIDI 입력 장치 — 비워 두면 연결된 모든 입력을 받습니다"
+            style={selectStyle}
+          >
+            <option value="">모든 MIDI 입력</option>
+            {midiDevices.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}{d.connected ? '' : ' (분리됨)'}</option>
+            ))}
+          </select>
 
-      <select value={settings.channels}
-              onChange={(e) => setSettings({ channels: Number(e.target.value) === 2 ? 2 : 1 })}
-              title="캡처 채널" style={selectStyle}>
-        <option value={1}>MONO</option>
-        <option value={2}>STEREO</option>
-      </select>
+          <Toggle on={settings.midiSustainPedal}
+                  onClick={() => setSettings({ midiSustainPedal: !settings.midiSustainPedal })}
+                  title="서스테인 페달(CC64)을 노트 길이로 기록합니다">PED</Toggle>
+        </>
+      ) : (
+        <>
+          {/* Input meter — always live once armed, because that is when it matters. */}
+          <div className="h-4 w-24 rounded-sm overflow-hidden shrink-0"
+               style={{ background: premium.surface.well, border: `1px solid ${premium.surface.hairline}` }}
+               title={`입력 피크 ${level > 0 ? `${(20 * Math.log10(level)).toFixed(1)} dBFS` : '—'}`}>
+            <div style={{
+              width: `${Math.min(100, level * 100)}%`, height: '100%',
+              background: level > 0.98 ? premium.accent.danger
+                : level > 0.7 ? premium.accent.base : premium.accent.good,
+              transition: 'width 60ms linear',
+            }} />
+          </div>
+
+          <select
+            value={settings.inputDeviceId ?? ''}
+            onFocus={() => { if (devices.length === 0) void refreshDevices(); }}
+            onChange={(e) => setSettings({ inputDeviceId: e.target.value || null })}
+            title="입력 장치"
+            style={selectStyle}
+          >
+            <option value="">기본 입력</option>
+            {devices.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+          </select>
+
+          <select value={settings.channels}
+                  onChange={(e) => setSettings({ channels: Number(e.target.value) === 2 ? 2 : 1 })}
+                  title="캡처 채널" style={selectStyle}>
+            <option value={1}>MONO</option>
+            <option value={2}>STEREO</option>
+          </select>
+        </>
+      )}
 
       <Toggle on={settings.monitoring === 'on'}
               onClick={() => setSettings({ monitoring: settings.monitoring === 'on' ? 'off' : 'on' })}
-              title="입력 모니터링 — 트랙의 인서트를 통과해서 들립니다">MON</Toggle>
+              title={isMidi
+                ? '건반을 트랙의 인스트루먼트로 바로 소리냅니다'
+                : '입력 모니터링 — 트랙의 인서트를 통과해서 들립니다'}>MON</Toggle>
 
       <label style={labelStyle} title="녹음 전에 굴러가는 트랜스포트 시간. 이 구간은 버려집니다.">
         PRE

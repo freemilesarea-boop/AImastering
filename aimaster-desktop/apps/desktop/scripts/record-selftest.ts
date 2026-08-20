@@ -231,9 +231,15 @@ check('recording refuses when it cannot do the right thing', () => {
   eq(punchless.ok, false, 'punch with no range');
   assert(punchless.reason?.includes('펀치'), 'and says why');
 
+  // An instrument track records MIDI, and says so when no keyboard is open —
+  // the readiness check is the same gate for both kinds of take.
   const instrument = addTrack(createSession('s'), createTrack('Synth', 'instrument'));
   const armedInstrument = setRecordArm(instrument, instrument.tracks[0]?.id ?? '', true);
-  eq(canRecord(armedInstrument, settings()).ok, false, 'MIDI recording is not claimed');
+  eq(canRecord(armedInstrument, settings(), { midiOpen: true }).ok, true,
+    'an instrument track with a keyboard open can record');
+  const noKeyboard = canRecord(armedInstrument, settings(), { midiOpen: false });
+  eq(noKeyboard.ok, false, 'without one it is refused');
+  assert(noKeyboard.reason?.includes('MIDI'), 'and says which input is missing');
 });
 
 check('takes are named like a tape op would', () => {
