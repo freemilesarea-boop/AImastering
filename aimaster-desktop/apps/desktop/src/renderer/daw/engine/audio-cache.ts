@@ -15,9 +15,9 @@
 //
 // Two rules prevent that:
 //
-//   1. Decoding is SEQUENTIAL.  One file is in flight at a time, so peak
-//      memory is one buffer above whatever the cache already holds — not the
-//      sum of every file the session references.
+//   1. Decoding is BOUNDED.  A few files are in flight at a time, never the
+//      whole session at once, so peak memory is a handful of buffers above
+//      what the cache already holds — not the sum of every file it references.
 //   2. The cache is bounded in BYTES, not in entries.  Twelve five-minute
 //      songs and twelve eight-bar loops are the same count and a hundredfold
 //      difference in memory; only bytes describe the real limit.
@@ -37,8 +37,6 @@ export interface CachedAudio {
   buffer: AudioBuffer;
   /** Mono peak envelope for waveform drawing (normalised 0..1). */
   peaks: Float32Array;
-  /** Onset times in seconds, relative to the file start. */
-  transients: number[];
 }
 
 /**
@@ -51,7 +49,6 @@ export interface FileMeta {
   sampleRate: number;
   channels: number;
   peaks: Float32Array;
-  transients: number[];
 }
 
 const PEAK_BUCKETS = 4096;
@@ -61,8 +58,33 @@ export const MAX_CACHE_BYTES = 700 * 1024 * 1024;
 
 const cache = new Map<FileId, CachedAudio>();
 const meta = new Map<FileId, FileMeta>();
+/** Onset marks, found the first time something asks — see `transientsFor`. */
+const onsets = new Map<FileId, number[]>();
 const pending = new Map<FileId, Promise<CachedAudio>>();
 let residentBytes = 0;
+let pinnedIds: ReadonlySet<FileId> = new Set();
+
+/**
+ * The files the open session references.  They are never evicted.
+ *
+ * An eight-stem session is ~740 MB of float32 — more than any sensible cache
+ * budget — so a budget alone evicts the stems it just decoded.  The scheduler
+ * then finds no buffer for those clips and skips them, and the take plays back
+ * missing its vocal with nothing reported: the cache did exactly what it was
+ * told, and the session lost half its audio.
+ *
+ * Material that is open is not cache.  It is the work.  Only files nothing
+ * references any more compete for the budget.
+ */
+export function pinFiles(ids: Iterable<FileId>): void {
+  pinnedIds = new Set(ids);
+}
+
+export function pinnedBytes(): number {
+  let total = 0;
+  for (const [id, entry] of cache) if (pinnedIds.has(id)) total += bufferBytes(entry.buffer);
+  return total;
+}
 
 /** float32 per sample per channel — what the buffer actually costs. */
 export function bufferBytes(buffer: AudioBuffer): number {
@@ -89,7 +111,8 @@ export function cacheSize(): number { return cache.size; }
 export function cacheBytes(): number { return residentBytes; }
 
 export function clearAudioCache(): void {
-  cache.clear(); meta.clear(); pending.clear(); residentBytes = 0;
+  cache.clear(); meta.clear(); onsets.clear(); pending.clear(); residentBytes = 0;
+  pinnedIds = new Set();
 }
 
 /** Mono-summed peak envelope, normalised so the loudest bucket reads 1. */
@@ -115,16 +138,31 @@ export function computePeaks(buffer: AudioBuffer, buckets = PEAK_BUCKETS): Float
   return out;
 }
 
-/** Mono sum of a buffer — the input transient detection wants. */
+/**
+ * Mono sum of a buffer — the input transient detection wants.
+ *
+ * Written as a straight typed-array walk on purpose.  This runs over every
+ * sample of every stem on the way in — eleven million per four-minute song —
+ * and it runs on the thread that draws, so the `?? 0` bounds guards this file
+ * uses everywhere else cost real frames here.  A local alias and a plain index
+ * are safe because the loop bound IS the array length.
+ */
 export function monoSum(buffer: AudioBuffer): Float32Array {
   const length = buffer.length;
-  const out = new Float32Array(length);
   const channels = buffer.numberOfChannels;
-  for (let c = 0; c < channels; c++) {
+  const first = buffer.getChannelData(0);
+
+  // Mono: the channel data is already the answer, so copy it once and stop.
+  if (channels === 1) return first.slice();
+
+  const out = new Float32Array(length);
+  out.set(first);
+  for (let c = 1; c < channels; c++) {
     const data = buffer.getChannelData(c);
-    for (let i = 0; i < length; i++) out[i] = (out[i] ?? 0) + (data[i] ?? 0);
+    for (let i = 0; i < length; i++) out[i] = out[i]! + data[i]!;
   }
-  if (channels > 1) for (let i = 0; i < length; i++) out[i] = (out[i] ?? 0) / channels;
+  const scale = 1 / channels;
+  for (let i = 0; i < length; i++) out[i] = out[i]! * scale;
   return out;
 }
 
@@ -136,7 +174,7 @@ export function monoSum(buffer: AudioBuffer): Float32Array {
  * the caller just asked for — evicting that one would make the call pointless.
  */
 export function evictionPlan(
-  entries: ReadonlyArray<{ id: FileId; bytes: number }>,
+  entries: ReadonlyArray<{ id: FileId; bytes: number; pinned?: boolean }>,
   keep: FileId, maxEntries: number, maxBytes: number,
 ): FileId[] {
   let count = entries.length;
@@ -145,6 +183,9 @@ export function evictionPlan(
   for (const entry of entries) {
     if (count <= maxEntries && bytes <= maxBytes) break;
     if (entry.id === keep) continue;
+    // The open session's audio is not a cache entry to be reclaimed — dropping
+    // it makes a clip fall silent with nothing to say why.
+    if (entry.pinned) continue;
     drop.push(entry.id);
     count -= 1;
     bytes -= entry.bytes;
@@ -154,7 +195,9 @@ export function evictionPlan(
 
 /** Drop least-recently-used buffers until both budgets are satisfied. */
 function evictDownTo(keep: FileId): void {
-  const order = [...cache].map(([id, entry]) => ({ id, bytes: bufferBytes(entry.buffer) }));
+  const order = [...cache].map(([id, entry]) => ({
+    id, bytes: bufferBytes(entry.buffer), pinned: pinnedIds.has(id),
+  }));
   for (const id of evictionPlan(order, keep, CACHE_CAP, MAX_CACHE_BYTES)) {
     const entry = cache.get(id);
     if (!entry) continue;
@@ -164,9 +207,14 @@ function evictDownTo(keep: FileId): void {
 }
 
 export function analyzeBuffer(fileId: FileId, buffer: AudioBuffer): CachedAudio {
+  // Peaks only.  Onset detection has to mono-sum the whole file first, which
+  // is ~0.7 s per four-minute stem ON THE THREAD THAT DRAWS — eight stems is
+  // six seconds of frozen UI to compute marks that nothing has asked for.
+  // `transientsFor` finds them the first time Tab to Transient or the warp
+  // editor actually wants them.
   const peaks = computePeaks(buffer);
-  const transients = detectTransients(monoSum(buffer), buffer.sampleRate);
-  const entry: CachedAudio = { fileId, buffer, peaks, transients };
+  const entry: CachedAudio = { fileId, buffer, peaks };
+  onsets.delete(fileId);
 
   meta.set(fileId, {
     fileId,
@@ -174,7 +222,6 @@ export function analyzeBuffer(fileId: FileId, buffer: AudioBuffer): CachedAudio 
     sampleRate: buffer.sampleRate,
     channels: buffer.numberOfChannels,
     peaks,
-    transients,
   });
 
   const previous = cache.get(fileId);
@@ -207,10 +254,20 @@ export async function decodeAudioFile(
   const path = fromFileUrl(pathOrUrl);
   const api = (globalThis as unknown as { electronAPI?: DecodeBridge }).electronAPI;
   if (api) {
-    const result = await api.invoke('daw:decode-pcm', {
+    const decoded = await api.invoke('daw:decode-pcm', {
       path, sampleRate: ctx.sampleRate,
-    }) as DecodedPcm;
-    return pcmToBuffer(ctx, result);
+    }) as DecodedPcmFile;
+    try {
+      // The samples come back through the file protocol, which streams them.
+      // Returning 92 MB from the IPC reply instead cost three times as long as
+      // decoding the song did.
+      const resp = await fetch(toFileUrl(decoded.pcmPath));
+      if (!resp.ok) throw new Error(`디코딩 결과를 읽지 못했습니다 (${resp.status})`);
+      const pcm = new Uint8Array(await resp.arrayBuffer());
+      return pcmToBuffer(ctx, { ...decoded, pcm });
+    } finally {
+      void api.invoke('daw:release-pcm', decoded.pcmPath).catch(() => { /* swept later */ });
+    }
   }
   const resp = await fetch(toFileUrl(path));
   if (!resp.ok) throw new Error(`오디오 로드 실패 (${resp.status}): ${path}`);
@@ -221,6 +278,14 @@ interface DecodeBridge {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>;
 }
 
+interface DecodedPcmFile {
+  sampleRate: number;
+  channels: number;
+  frames: number;
+  /** Scratch file holding interleaved float32. */
+  pcmPath: string;
+}
+
 interface DecodedPcm {
   sampleRate: number;
   channels: number;
@@ -229,18 +294,43 @@ interface DecodedPcm {
   pcm: Uint8Array;
 }
 
-/** De-interleave main's float32 into an AudioBuffer, one channel at a time. */
+/**
+ * De-interleave main's float32 into an AudioBuffer, one channel at a time.
+ *
+ * Mono skips the de-interleave entirely, and the stereo loop reads both
+ * channels in one pass so the 92 MB of samples is walked once rather than
+ * twice.  Same reasoning as `monoSum`: this is per-sample work on the thread
+ * that draws the timeline.
+ */
 export function pcmToBuffer(ctx: BaseAudioContext, decoded: DecodedPcm): AudioBuffer {
   const { sampleRate, channels, frames, pcm } = decoded;
   if (!(frames > 0) || !(channels > 0)) throw new Error('디코딩 결과가 비어 있습니다');
 
   const bytes = pcm instanceof Uint8Array ? pcm : new Uint8Array(pcm as ArrayBufferLike);
-  const interleaved = new Float32Array(bytes.buffer, bytes.byteOffset, frames * channels);
-
+  const store = bytes.buffer as ArrayBuffer;
+  const interleaved = new Float32Array(store, bytes.byteOffset, frames * channels);
   const buffer = ctx.createBuffer(channels, frames, sampleRate);
+
+  if (channels === 1) {
+    buffer.copyToChannel(interleaved.subarray(0, frames), 0);
+    return buffer;
+  }
+
+  if (channels === 2) {
+    const left = new Float32Array(frames);
+    const right = new Float32Array(frames);
+    for (let i = 0, j = 0; i < frames; i++, j += 2) {
+      left[i] = interleaved[j]!;
+      right[i] = interleaved[j + 1]!;
+    }
+    buffer.copyToChannel(left, 0);
+    buffer.copyToChannel(right, 1);
+    return buffer;
+  }
+
   const scratch = new Float32Array(frames);
   for (let c = 0; c < channels; c++) {
-    for (let i = 0; i < frames; i++) scratch[i] = interleaved[i * channels + c] ?? 0;
+    for (let i = 0; i < frames; i++) scratch[i] = interleaved[i * channels + c]!;
     buffer.copyToChannel(scratch, c);
   }
   return buffer;
@@ -284,11 +374,40 @@ export { decodeContext };
 export type DecodeProgress = (done: number, total: number) => void;
 
 /**
+ * How many files decode at once.
+ *
+ * Decoding happens in the main process now — one FFmpeg child per file — so
+ * the renderer is not the thing under load and strictly sequential decoding
+ * just leaves the machine idle between files.  An eight-stem session took as
+ * long to open as the sum of its stems.
+ *
+ * Three, not eight: each in-flight decode holds a full song's PCM in main and
+ * again in the renderer while it is copied, so the ceiling is about peak
+ * memory, not about how many cores are free.
+ */
+export const DECODE_CONCURRENCY = 3;
+
+/** Run `task` over `items`, at most `limit` at a time, in order of completion. */
+async function mapLimit<T>(
+  items: readonly T[], limit: number, task: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const index = next++;
+      const item = items[index];
+      if (item === undefined) return;
+      await task(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+/**
  * Decode a set of files for display.  Failures are reported, never thrown.
  *
- * One at a time: twenty songs decoded in parallel is a two-gigabyte spike that
- * kills the renderer.  A file whose peaks are already known is skipped even if
- * its buffer has been evicted — display does not need the samples back.
+ * A file whose peaks are already known is skipped even if its buffer has been
+ * evicted — display does not need the samples back.
  */
 export async function decodeForDisplay(
   files: ReadonlyArray<{ id: FileId; path: string }>,
@@ -299,16 +418,18 @@ export async function decodeForDisplay(
   const failed: string[] = [];
   let decoded = 0;
   let seen = 0;
-  for (const f of files) {
-    seen += 1;
+
+  await mapLimit(files, DECODE_CONCURRENCY, async (f) => {
     if (getCached(f.id) || meta.has(f.id)) {
       decoded += 1;
     } else {
       try { await loadAudio(ctx, f.id, f.path); decoded += 1; }
       catch { failed.push(f.path); }
     }
+    seen += 1;
     onProgress?.(seen, files.length);
-  }
+  });
+
   return { decoded, failed };
 }
 
@@ -319,13 +440,24 @@ export async function decodeForDisplay(
 export async function preloadAll(
   ctx: BaseAudioContext, files: ReadonlyArray<{ id: FileId; path: string }>,
 ): Promise<void> {
-  for (const f of files) {
-    if (getCached(f.id)) continue;
+  await mapLimit(files, DECODE_CONCURRENCY, async (f) => {
+    if (getCached(f.id)) return;
     try { await loadAudio(ctx, f.id, f.path); } catch { /* missing file → silence */ }
-  }
+  });
 }
 
-/** Transient marks for a file, or an empty list when it is not decoded yet. */
+/**
+ * Transient marks for a file, or an empty list when it is not decoded yet.
+ *
+ * Found on first use and remembered from then on, including after the buffer
+ * itself is evicted — the marks are a few hundred numbers.
+ */
 export function transientsFor(fileId: FileId): number[] {
-  return getCached(fileId)?.transients ?? meta.get(fileId)?.transients ?? [];
+  const known = onsets.get(fileId);
+  if (known) return known;
+  const cached = getCached(fileId);
+  if (!cached) return [];
+  const found = detectTransients(monoSum(cached.buffer), cached.buffer.sampleRate);
+  onsets.set(fileId, found);
+  return found;
 }

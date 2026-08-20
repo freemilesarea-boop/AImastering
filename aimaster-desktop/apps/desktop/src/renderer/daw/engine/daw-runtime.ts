@@ -10,8 +10,9 @@
 
 import type { Clip, DawSession, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
+import { trackClips } from '../model/session-ops.js';
 import { ClipPlayer } from './clip-player.js';
-import { getCached, preloadAll } from './audio-cache.js';
+import { getCached, pinFiles, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
 import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
 import type { RecordPlan } from '../model/recording.js';
@@ -177,28 +178,53 @@ class DawRuntime {
   /** Push the current session into the graph (structure + parameters). */
   sync(session: DawSession): void {
     this.session = session;
+    // Every session change passes through here, so this is the one place that
+    // always knows what audio is open.  Pinning it means the cache can never
+    // evict a stem out from under the scheduler.
+    pinFiles(session.files.map((f) => f.id));
     if (!this.engine) return;
     this.engine.sync(session);
   }
 
   setLoop(loop: LoopState): void { this.loop = loop; }
 
-  /** Decode every referenced file so the first bar is not silent. */
+  /**
+   * Decode what the transport needs.
+   *
+   * Only files an unmuted clip actually plays — a session that has imported
+   * ten takes and kept two should not decode the other eight to press play.
+   * Anything already decoded is skipped, so on a warm session this returns
+   * without doing any work at all.
+   */
   async preload(session: DawSession): Promise<void> {
     if (!this.ctx) return;
-    const ctx = this.ctx;
-    await preloadAll(ctx, session.files);
+    await preloadAll(this.ctx, playableFiles(session));
   }
 
+  /**
+   * Start playback.
+   *
+   * The transport does NOT wait for every stem to decode.  It starts with
+   * whatever is ready and the look-ahead picks up each remaining stem as it
+   * lands — a clip that arrives late is entered mid-way at the right offset,
+   * which is what the scheduler already does for a clip you seek into.
+   * Waiting instead meant pressing space on an eight-stem session and staring
+   * at a still play head for seconds.
+   *
+   * On a warm session — which is every session that has been open long enough
+   * to draw its waveforms — nothing is left to decode and this is immediate.
+   */
   async play(session: DawSession, fromSec: number): Promise<void> {
     if (!this.ensure(session.sampleRate)) return;
-    await this.ctx?.resume();
-    await this.preload(session);
     this.sync(session);
+    await this.ctx?.resume();
     if (!this.player) return;
 
     this.player.start(session, fromSec);
     this.startTicking();
+
+    // Fill in anything still missing behind the play head.
+    void this.preload(session).catch(() => { /* reported per file already */ });
   }
 
   stop(): void {
@@ -373,6 +399,17 @@ function sessionEnd(session: DawSession): number {
     for (const c of pl?.clips ?? []) end = Math.max(end, c.startSec + c.durationSec);
   }
   return end;
+}
+
+/** Files an unmuted clip references — what playback actually needs decoded. */
+function playableFiles(session: DawSession): Array<{ id: string; path: string }> {
+  const needed = new Set<string>();
+  for (const track of session.tracks) {
+    for (const clip of trackClips(track)) {
+      if (clip.kind === 'audio' && !clip.muted) needed.add(clip.fileId);
+    }
+  }
+  return session.files.filter((f) => needed.has(f.id));
 }
 
 export const dawRuntime = new DawRuntime();
