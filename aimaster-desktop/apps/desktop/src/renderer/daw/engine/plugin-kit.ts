@@ -16,6 +16,16 @@ export interface PluginParamDef {
   max: number;
   default: number;
   unit: string;
+  /**
+   * A list to pick from rather than a range to sweep.
+   *
+   * The value is still a number — the index — because a session stores
+   * parameters as numbers and always has.  What changes is the control: a
+   * thirty-one-position knob is unusable, and a list is not.
+   */
+  choices?: readonly string[];
+  /** One line per choice, shown under the picker.  Same length as `choices`. */
+  choiceNotes?: readonly string[];
 }
 
 export interface PluginInstance {

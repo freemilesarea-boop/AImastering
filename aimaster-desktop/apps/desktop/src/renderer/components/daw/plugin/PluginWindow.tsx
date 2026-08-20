@@ -13,6 +13,8 @@ import { useDawStore } from '../../../stores/dawStore.js';
 import { usePluginWindowStore, type PluginWindowState } from '../../../stores/pluginWindowStore.js';
 import { findTrack, setInsert } from '../../../daw/model/session-ops.js';
 import { descriptorFor } from '../../../daw/engine/external-device.js';
+import { defaultParams } from '../../../daw/engine/plugins.js';
+import { presetGroups, resolvePreset } from '../../../daw/engine/plugin-presets.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import { premium } from '../../../theme/premium.js';
 import Knob from './Knob.js';
@@ -28,6 +30,16 @@ function insertIdOf(
 ): string | null {
   const track = findTrack(session, trackId);
   return track?.inserts.find((i) => i.slot === slot)?.id ?? null;
+}
+
+/**
+ * A parameter that is a list of things is not a knob.
+ *
+ * Thirty-one rooms on a knob means dragging blind through thirty of them to
+ * reach the one you want.  Anything with `choices` gets a picker instead.
+ */
+function isChoice(def: { choices?: readonly string[] }): boolean {
+  return def.choices !== undefined && def.choices.length > 0;
 }
 
 /** Frequency and time knobs feel wrong linear — an octave is a ratio. */
@@ -63,6 +75,13 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
     }, 60);
     return () => clearInterval(timer);
   }, [isPlaying, win.trackId, insertId]);
+
+  // ── Presets ──────────────────────────────────────────────────────────────
+  //
+  // Which preset is loaded is deliberately NOT stored in the session: the
+  // moment you move a knob it is no longer that preset, and a session that
+  // still claimed it was would be lying the next time it opened.
+  const [loadedPreset, setLoadedPreset] = useState<string>('');
 
   // ── Dragging the window ──────────────────────────────────────────────────
   const drag = useRef<{ dx: number; dy: number } | null>(null);
@@ -106,6 +125,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   }
 
   const setParam = (id: string, value: number): void => {
+    setLoadedPreset('');
     applyTransient((s) => setInsert(s, win.trackId, {
       ...insert,
       params: { ...insert.params, [id]: value },
@@ -115,11 +135,36 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
     }));
   };
 
+  // A picker's change is a whole edit, not a drag: commit it directly.
+  const commitParam = (id: string, value: number): void => {
+    setLoadedPreset('');
+    apply((s) => setInsert(s, win.trackId, {
+      ...insert,
+      params: { ...insert.params, [id]: value },
+      latencySamples: descriptor.latencyFor({ ...params, [id]: value }, session.sampleRate),
+    }));
+  };
+
+  const groups = presetGroups(insert.pluginId);
+  const loadPreset = (presetId: string): void => {
+    const preset = groups.flatMap((g) => g.presets).find((entry) => entry.id === presetId);
+    if (!preset) return;
+    const next = resolvePreset(preset, defaultParams(insert.pluginId));
+    setLoadedPreset(preset.id);
+    apply((s) => setInsert(s, win.trackId, {
+      ...insert,
+      params: next,
+      latencySamples: descriptor.latencyFor(next, session.sampleRate),
+    }));
+  };
+  const activePreset = groups.flatMap((g) => g.presets).find((entry) => entry.id === loadedPreset);
+
   const toggleBypass = (): void => {
     apply((s) => setInsert(s, win.trackId, { ...insert, bypass: !insert.bypass }));
   };
 
   const resetAll = (): void => {
+    setLoadedPreset('');
     apply((s) => setInsert(s, win.trackId, { ...insert, params: {} }));
   };
 
@@ -183,6 +228,40 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         >×</button>
       </div>
 
+      {/* Somewhere to start.  Only shown where there is somewhere to start. */}
+      {groups.length > 0 && (
+        <div
+          className="px-3.5 py-2 flex flex-col gap-1"
+          style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] tracking-wide shrink-0" style={{ color: premium.text.faint }}>
+              프리셋
+            </span>
+            <select
+              value={loadedPreset}
+              onChange={(e) => loadPreset(e.target.value)}
+              className="flex-1 h-6 px-1 text-[10px] rounded bg-transparent outline-none"
+              style={{ color: premium.text.primary, border: '1px solid rgba(255,255,255,0.12)' }}
+            >
+              <option value="">— 직접 설정 —</option>
+              {groups.map((group) => (
+                <optgroup key={group.group} label={group.group}>
+                  {group.presets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>{preset.name}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          {activePreset && (
+            <span className="text-[9px] leading-relaxed" style={{ color: premium.text.faint }}>
+              {activePreset.note}
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="p-3.5 flex flex-col gap-3">
         <PluginVisual
           pluginId={insert.pluginId}
@@ -195,8 +274,36 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
           height={VISUAL_HEIGHT}
         />
 
+        {descriptor.params.filter(isChoice).map((def) => {
+          const index = Math.round(params[def.id] ?? def.default);
+          return (
+            <div key={def.id} className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] tracking-wide shrink-0 w-10" style={{ color: premium.text.faint }}>
+                  {def.name}
+                </span>
+                <select
+                  value={index}
+                  onChange={(e) => commitParam(def.id, Number(e.target.value))}
+                  className="flex-1 h-6 px-1 text-[10px] rounded bg-transparent outline-none"
+                  style={{ color: premium.text.primary, border: '1px solid rgba(255,255,255,0.12)' }}
+                >
+                  {def.choices!.map((label, i) => (
+                    <option key={label} value={def.min + i}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              {def.choiceNotes?.[index - def.min] && (
+                <span className="text-[9px] leading-relaxed" style={{ color: premium.text.faint }}>
+                  {def.choiceNotes[index - def.min]}
+                </span>
+              )}
+            </div>
+          );
+        })}
+
         <div className="flex flex-wrap gap-x-1 gap-y-2 justify-center">
-          {descriptor.params.map((def) => (
+          {descriptor.params.filter((def) => !isChoice(def)).map((def) => (
             <Knob
               key={def.id}
               label={def.name}

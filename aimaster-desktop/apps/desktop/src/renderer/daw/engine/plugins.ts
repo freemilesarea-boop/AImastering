@@ -16,10 +16,12 @@ import { webAudioAutoMakeup } from '../model/plugin-curves.js';
 
 import {
   absShaper, dbToGain, halfWaveGainCurve, makeDbReductionCurve, makeExpanderCurve,
-  makeGainCurve, makeImpulse, makeShaper, smoother, tanhCurve, withBypass,
+  makeGainCurve, makeShaper, smoother, tanhCurve, withBypass,
   type PluginDescriptor, type PluginInstance, type PluginParamDef,
 } from './plugin-kit.js';
 import { EXTENDED_PLUGINS } from './plugins-extended.js';
+import { REVERB_PLUGINS } from './plugins-reverb.js';
+import { SPACES, irBuffer, spaceIndex } from './reverb-spaces.js';
 
 export type { PluginDescriptor, PluginInstance, PluginParamDef };
 export { timeConstantToHz, makeImpulse } from './plugin-kit.js';
@@ -303,6 +305,12 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     name: 'Reverb',
     category: 'reverb',
     hasSidechain: false,
+    // The DAW's original reverb, and the id every session written before the
+    // reverb family existed still refers to.  Its parameters are unchanged, so
+    // those sessions load exactly as they were saved — but what it convolves
+    // with is now a synthesised room rather than a decaying noise burst, which
+    // costs nothing and is a different instrument entirely.  Reach for Space
+    // Reverb when you want to choose the room.
     params: [
       { id: 'decaySec', name: 'Decay',   min: 0.2, max: 8, default: 1.8, unit: 's' },
       { id: 'mix',      name: 'Mix',     min: 0,   max: 1, default: 1,   unit: '' },
@@ -310,8 +318,14 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     ],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const room = SPACES[spaceIndex('hall-recital')]!;
       const conv = ctx.createConvolver();
-      conv.buffer = makeImpulse(ctx, params['decaySec'] ?? 1.8);
+      conv.normalize = false;
+      const build = (decaySec: number): AudioBuffer => irBuffer(ctx, room, {
+        sampleRate: ctx.sampleRate,
+        decayScale: Math.round((decaySec / room.rt60Sec) / 0.05) * 0.05,
+      });
+      conv.buffer = build(params['decaySec'] ?? 1.8);
       const pre = ctx.createDelay(0.2);
       pre.delayTime.value = (params['preDelayMs'] ?? 12) / 1000;
       const wet = ctx.createGain(); wet.gain.value = params['mix'] ?? 1;
@@ -322,7 +336,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
         setParam: (id, v) => {
           if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
           if (id === 'preDelayMs') pre.delayTime.value = v / 1000;
-          if (id === 'decaySec') conv.buffer = makeImpulse(ctx, v);
+          if (id === 'decaySec') conv.buffer = build(v);
         },
       };
     }),
@@ -746,15 +760,13 @@ const CORE_PLUGINS: PluginDescriptor[] = [
   },
 ];
 
-/** Exponentially decaying noise burst — a serviceable algorithmic tail. */
-
 /**
  * Every device, core first.
  *
  * Order is the order the picker shows them in within a category, so the ones
  * an engineer reaches for most sit at the top of their group.
  */
-export const PLUGINS: PluginDescriptor[] = [...CORE_PLUGINS, ...EXTENDED_PLUGINS];
+export const PLUGINS: PluginDescriptor[] = [...CORE_PLUGINS, ...REVERB_PLUGINS, ...EXTENDED_PLUGINS];
 
 export function findPlugin(id: string): PluginDescriptor | undefined {
   return PLUGINS.find((p) => p.id === id);
