@@ -12,6 +12,10 @@ import { useDawStore } from '../../../stores/dawStore.js';
 import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
 import { createInsert, findTrack, removeInsert, setInsert } from '../../../daw/model/session-ops.js';
 import { PLUGINS, findPlugin } from '../../../daw/engine/plugins.js';
+import {
+  descriptorFor, externalParams, REFERENCE_PLUGIN, REFERENCE_PLUGIN_ID,
+} from '../../../daw/engine/external-device.js';
+import type { ExternalPluginRef } from '../../../daw/model/types.js';
 import type { PluginCategory } from '../../../daw/engine/plugin-kit.js';
 import { defaultParams } from '../../../daw/engine/plugins.js';
 import { premium } from '../../../theme/premium.js';
@@ -71,6 +75,19 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
 
   const bySlot = new Map(track.inserts.map((i) => [i.slot, i]));
 
+  /** Put an installed (or reference) device in a slot as an offline insert. */
+  const addExternal = (slot: number, pluginId: string, ref: ExternalPluginRef): void => {
+    apply((s) => setInsert(s, trackId, createInsert(slot, pluginId, ref.name, {
+      external: ref,
+      params: Object.fromEntries(
+        externalParams(ref).map((param) => [param.id, param.default]),
+      ),
+    })));
+    setPicking(null);
+    setFilter('');
+    openWindow(trackId, slot);
+  };
+
   const addPlugin = (slot: number, pluginId: string): void => {
     const descriptor = findPlugin(pluginId);
     if (!descriptor) return;
@@ -115,7 +132,7 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
       <div className="overflow-y-auto p-1.5 flex flex-col gap-0.5">
         {Array.from({ length: SLOT_COUNT }, (_, slot) => {
           const insert = bySlot.get(slot);
-          const descriptor = insert ? findPlugin(insert.pluginId) : undefined;
+          const descriptor = insert ? descriptorFor(insert) : undefined;
 
           return (
             <div key={slot} className="flex items-center gap-1.5">
@@ -183,7 +200,7 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
           />
 
           <button
-            onClick={() => usePluginWindowStore.getState().setManagerOpen(true)}
+            onClick={() => usePluginWindowStore.getState().openManagerForSlot(trackId, picking)}
             className="w-full h-7 px-2 flex items-center gap-1.5 text-left"
             style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
           >
@@ -191,8 +208,22 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
             <span className="text-[10px] flex-1" style={{ color: premium.text.secondary }}>
               서드파티 (VST3 · AU · CLAP)
             </span>
-            <span className="text-[9px]" style={{ color: premium.text.faint }}>목록 보기</span>
+            <span className="text-[9px]" style={{ color: premium.text.faint }}>설치된 것 보기</span>
           </button>
+
+          {/* The device that proves the host path works, without needing a
+              third-party plugin installed to try it. */}
+          {matches(REFERENCE_PLUGIN.name, filter) && (
+            <button
+              onClick={() => addExternal(picking, REFERENCE_PLUGIN_ID, REFERENCE_PLUGIN)}
+              className="w-full h-7 pl-6 pr-2 rounded text-left text-[11px] flex items-center gap-2
+                         hover:bg-white/5 transition-colors"
+              style={{ color: premium.text.secondary }}
+            >
+              <span className="flex-1 truncate">{REFERENCE_PLUGIN.name}</span>
+              <span className="text-[8px]" style={{ color: 'rgb(251,191,36)' }}>OFFLINE</span>
+            </button>
+          )}
 
           {CATEGORY_ORDER.map((category) => {
             const devices = PLUGINS.filter(

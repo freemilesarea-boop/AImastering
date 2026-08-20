@@ -17,6 +17,7 @@ import type { AudioFileRef, DawSession, FileId, Track, TrackId } from '../model/
 import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
 import { analyzeBuffer, getCached, preloadAll } from './audio-cache.js';
+import { applyExternalInserts, type ExternalRenderResult } from './external-render.js';
 import { encodeAudioBuffer, encodeWav, type WavBitDepth } from './wav.js';
 import { nextId } from '../model/ids.js';
 import { DEFAULT_MIDI_CONFIG } from '../model/midi.js';
@@ -157,6 +158,8 @@ export interface FreezeResult {
   session: DawSession;
   fileId: FileId;
   path: string;
+  /** What the external-plugin pass did, when the track had any. */
+  external?: ExternalRenderResult;
 }
 
 /**
@@ -169,7 +172,14 @@ export async function freezeTrack(session: DawSession, trackId: TrackId): Promis
   if (!track) throw new Error('트랙을 찾을 수 없습니다');
   if (track.frozen) return { session, fileId: track.frozen.fileId, path: '' };
 
-  const rendered = await renderTrack(session, trackId);
+  // External plugins cannot run in the realtime graph, so freezing is the
+  // moment they are applied — which is exactly what freezing a heavy device is
+  // for.  A host failure leaves the audio untouched and is reported; it never
+  // costs the freeze.
+  const raw = await renderTrack(session, trackId);
+  const pass = await applyExternalInserts(raw, track);
+  const rendered = pass.buffer;
+
   const path = await writeTempRender(rendered, `${track.name}-freeze`);
   const ref = fileRefFor(path, `${track.name} (frozen)`, rendered);
   analyzeBuffer(ref.id, rendered);
@@ -184,7 +194,7 @@ export async function freezeTrack(session: DawSession, trackId: TrackId): Promis
       frozenAt: Date.now(),
     },
   }));
-  return { session: out, fileId: ref.id, path };
+  return { session: out, fileId: ref.id, path, external: pass };
 }
 
 export function unfreezeTrack(session: DawSession, trackId: TrackId): DawSession {
@@ -208,7 +218,8 @@ export async function commitTrack(session: DawSession, trackId: TrackId): Promis
   const track = findTrack(session, trackId);
   if (!track) throw new Error('트랙을 찾을 수 없습니다');
 
-  const rendered = await renderTrack(session, trackId);
+  const raw = await renderTrack(session, trackId);
+  const rendered = (await applyExternalInserts(raw, track)).buffer;
   const path = await writeTempRender(rendered, `${track.name}-commit`);
   const ref = fileRefFor(path, `${track.name} (committed)`, rendered);
   analyzeBuffer(ref.id, rendered);

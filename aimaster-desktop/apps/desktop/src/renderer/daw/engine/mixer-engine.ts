@@ -23,6 +23,7 @@ import {
 } from '../model/mixer-math.js';
 import type { BusId, DawSession, Track, TrackId } from '../model/types.js';
 import { findPlugin, type PluginInstance } from './plugins.js';
+import { descriptorFor } from './external-device.js';
 import { materializeRack, moduleParams, type RackModuleId } from '../model/macros.js';
 import { applyChainParams, buildDeviceChain, type BuiltChain } from './device-chain.js';
 
@@ -173,7 +174,7 @@ export class MixerEngine {
 
     let cursor: AudioNode = ch.insertChainIn;
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
-      const descriptor = findPlugin(insert.pluginId);
+      const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
       const instance = descriptor.create(this.ctx, { ...insert.params });
       cursor.connect(instance.input);
@@ -337,7 +338,7 @@ export class MixerEngine {
     const insertChainIn = cursor;
     const inserts = new Map<string, PluginInstance>();
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
-      const descriptor = findPlugin(insert.pluginId);
+      const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
       const instance = descriptor.create(ctx, { ...insert.params });
       cursor.connect(instance.input);

@@ -45,7 +45,7 @@ const INVOKE_CHANNELS = [
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer
   'daw:pcm-source',
   // Installed third-party plugins (scan only — nothing is loaded)
-  'plugins:scan',
+  'plugins:scan', 'daw:host-apply',
   // Updater (v3.4.3)
   'updater:check', 'updater:download', 'updater:quit-and-install',
   'updater:get-status',

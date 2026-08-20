@@ -12,7 +12,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { usePluginWindowStore, type PluginWindowState } from '../../../stores/pluginWindowStore.js';
 import { findTrack, setInsert } from '../../../daw/model/session-ops.js';
-import { findPlugin } from '../../../daw/engine/plugins.js';
+import { descriptorFor } from '../../../daw/engine/external-device.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import { premium } from '../../../theme/premium.js';
 import Knob from './Knob.js';
@@ -46,7 +46,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
 
   const track = findTrack(session, win.trackId);
   const insert = track?.inserts.find((i) => i.slot === win.slot);
-  const descriptor = insert ? findPlugin(insert.pluginId) : undefined;
+  const descriptor = insert ? descriptorFor(insert) : undefined;
 
   // ── Live level, so the picture shows this performance ────────────────────
   const [level, setLevel] = useState(0);

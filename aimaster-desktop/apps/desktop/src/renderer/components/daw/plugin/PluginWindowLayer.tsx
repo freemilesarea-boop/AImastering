@@ -8,7 +8,7 @@
 import React, { useEffect } from 'react';
 import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
 import { useDawStore } from '../../../stores/dawStore.js';
-import { findTrack } from '../../../daw/model/session-ops.js';
+import { createInsert, findTrack, setInsert } from '../../../daw/model/session-ops.js';
 import PluginWindow from './PluginWindow.js';
 import InsertRack from './InsertRack.js';
 import ExternalPluginManager from './ExternalPluginManager.js';
@@ -17,6 +17,9 @@ export default function PluginWindowLayer() {
   const windows = usePluginWindowStore((s) => s.windows);
   const rackTrackId = usePluginWindowStore((s) => s.rackTrackId);
   const managerOpen = usePluginWindowStore((s) => s.managerOpen);
+  const managerSlot = usePluginWindowStore((s) => s.managerSlot);
+  const openWindow = usePluginWindowStore((s) => s.open);
+  const apply = useDawStore((s) => s.apply);
   const setManagerOpen = usePluginWindowStore((s) => s.setManagerOpen);
   const closeTrack = usePluginWindowStore((s) => s.closeTrack);
   const toggleRack = usePluginWindowStore((s) => s.toggleRack);
@@ -46,7 +49,27 @@ export default function PluginWindowLayer() {
 
   return (
     <>
-      {managerOpen && <ExternalPluginManager onClose={() => setManagerOpen(false)} />}
+      {managerOpen && (
+        <ExternalPluginManager
+          onClose={() => setManagerOpen(false)}
+          {...(managerSlot ? {
+            onInsert: (plugin) => {
+              const { trackId, slot } = managerSlot;
+              apply((s) => setInsert(s, trackId, createInsert(slot, plugin.id, plugin.name, {
+                external: {
+                  format: plugin.format,
+                  path: plugin.path,
+                  uid: plugin.uid,
+                  name: plugin.name,
+                  vendor: plugin.vendor,
+                },
+              })));
+              setManagerOpen(false);
+              openWindow(trackId, slot);
+            },
+          } : {})}
+        />
+      )}
       {rackTrackId && <InsertRack trackId={rackTrackId} anchorY={120} />}
       {windows.map((win) => <PluginWindow key={win.id} window={win} />)}
     </>

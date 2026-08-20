@@ -64,6 +64,17 @@ Promise.all([
     alias:       workspaceAlias,
   }),
 
+  // ── Plugin host ───────────────────────────────────────────────────────────
+  // Forked as its own process so a third-party plugin that crashes takes down
+  // one bounce instead of the session.  Built separately because a fork needs
+  // a real file on disk, not a module inside the main bundle.
+  esbuild.build({
+    ...shared,
+    entryPoints: ['src/main/plugins/host-worker.ts'],
+    outfile:     'dist-electron/main/plugin-host.js',
+    alias:       workspaceAlias,
+  }),
+
   // ── Preload ───────────────────────────────────────────────────────────────
   // Preload runs in a sandboxed renderer context; it only uses the
   // built-in `electron` module (contextBridge + ipcRenderer).

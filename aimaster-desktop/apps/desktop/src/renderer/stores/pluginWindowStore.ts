@@ -30,6 +30,8 @@ interface PluginWindowStore {
   rackTrackId: TrackId | null;
   /** The installed-plugin browser. */
   managerOpen: boolean;
+  /** Set when it was opened to fill a slot, rather than just to look. */
+  managerSlot: { trackId: TrackId; slot: number } | null;
 
   open: (trackId: TrackId, slot: number) => void;
   close: (id: string) => void;
@@ -39,6 +41,7 @@ interface PluginWindowStore {
   move: (id: string, x: number, y: number) => void;
   toggleRack: (trackId: TrackId | null) => void;
   setManagerOpen: (open: boolean) => void;
+  openManagerForSlot: (trackId: TrackId, slot: number) => void;
 }
 
 const windowId = (trackId: TrackId, slot: number): string => `${trackId}:${slot}`;
@@ -61,6 +64,7 @@ export const usePluginWindowStore = create<PluginWindowStore>((set, get) => ({
   windows: [],
   rackTrackId: null,
   managerOpen: false,
+  managerSlot: null,
 
   open: (trackId, slot) => {
     const id = windowId(trackId, slot);
@@ -96,5 +100,7 @@ export const usePluginWindowStore = create<PluginWindowStore>((set, get) => ({
     rackTrackId: s.rackTrackId === trackId ? null : trackId,
   })),
 
-  setManagerOpen: (open) => set({ managerOpen: open }),
+  setManagerOpen: (open) => set({ managerOpen: open, managerSlot: open ? get().managerSlot : null }),
+
+  openManagerForSlot: (trackId, slot) => set({ managerOpen: true, managerSlot: { trackId, slot } }),
 }));
