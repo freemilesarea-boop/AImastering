@@ -127,6 +127,23 @@ export interface Insert {
   params: Record<string, number>;
   /** Bus tapped as the sidechain key input, if the plugin has one. */
   sidechainSource: BusId | null;
+  /**
+   * Set when this insert is a plugin installed on the machine rather than one
+   * of ours.  Kept in the session so opening it somewhere the plugin is not
+   * installed can say WHICH plugin is missing instead of dropping the slot.
+   */
+  external?: ExternalPluginRef;
+}
+
+/** Enough to find an installed plugin again, and to name it if we cannot. */
+export interface ExternalPluginRef {
+  /** `reference` is the device this app defines to exercise the host path. */
+  format: 'vst3' | 'au' | 'vst2' | 'clap' | 'reference';
+  /** Where it was when it was added; a moved plugin is re-found by `uid`. */
+  path: string;
+  uid: string;
+  name: string;
+  vendor: string;
 }
 
 export interface Send {

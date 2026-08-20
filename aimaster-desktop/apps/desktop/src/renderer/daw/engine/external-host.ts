@@ -37,10 +37,13 @@
 // ── What is actually missing ───────────────────────────────────────────────
 //
 // One thing: a native module that can open a VST3 or AU bundle and process a
-// block.  Everything above it — the scan, the model, the offline apply, the
-// file transport — is ordinary code.  `HOST_REQUIREMENTS` below is the list a
-// build of that module has to satisfy, kept here rather than in a document so
-// it stays next to the code that will use it.
+// block.  Everything above it is built and proved — the scan, the model, the
+// offline apply, the isolated host process, the file transport — against a
+// reference device this app defines, so the only piece left is the adapter
+// that turns a bundle into something that can process a buffer.
+//
+// `HOST_REQUIREMENTS` below is that list, kept here rather than in a document
+// so it stays next to the code that will use it.
 
 import type { PluginFormat } from '../../stores/externalPluginStore.js';
 
@@ -64,7 +67,9 @@ export const HOST_REQUIREMENTS: readonly HostRequirement[] = [
     id: 'process-isolation',
     what: '플러그인을 앱과 분리된 자식 프로세스에서 실행',
     why: '서드파티 코드가 죽으면 앱이 같이 죽습니다. 세션 하나가 크래시하는 플러그인 하나 때문에 날아가면 안 됩니다',
-    met: false,
+    // Built: the host is forked per job with a deadline, and both a crash and
+    // a hang come back as an error on one bounce.
+    met: true,
   },
   {
     id: 'macos-entitlement',

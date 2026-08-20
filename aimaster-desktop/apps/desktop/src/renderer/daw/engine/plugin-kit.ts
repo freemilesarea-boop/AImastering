@@ -51,7 +51,9 @@ export interface PluginInstance {
  */
 export type PluginCategory =
   | 'eq' | 'dynamics' | 'saturation' | 'modulation' | 'delay' | 'reverb'
-  | 'imaging' | 'restore' | 'pitch' | 'utility' | 'master';
+  | 'imaging' | 'restore' | 'pitch' | 'utility' | 'master'
+  // Installed on the machine rather than defined here.
+  | 'external';
 
 export interface PluginDescriptor {
   id: string;

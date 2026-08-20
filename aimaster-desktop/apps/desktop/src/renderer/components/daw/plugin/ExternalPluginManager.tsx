@@ -8,7 +8,8 @@
 
 import React, { useEffect, useState } from 'react';
 import {
-  byVendor, formatCounts, useExternalPluginStore, type PluginFormat,
+  byVendor, formatCounts, useExternalPluginStore,
+  type PluginFormat, type ScannedPlugin,
 } from '../../../stores/externalPluginStore.js';
 import { HOST_REQUIREMENTS, hostability } from '../../../daw/engine/external-host.js';
 import { premium } from '../../../theme/premium.js';
@@ -17,7 +18,11 @@ const FORMAT_LABEL: Record<PluginFormat, string> = {
   vst3: 'VST3', au: 'Audio Unit', vst2: 'VST2', clap: 'CLAP',
 };
 
-export default function ExternalPluginManager({ onClose }: { onClose: () => void }) {
+export default function ExternalPluginManager({ onClose, onInsert }: {
+  onClose: () => void;
+  /** Present when the manager was opened from a specific empty slot. */
+  onInsert?: (plugin: ScannedPlugin) => void;
+}) {
   const plugins = useExternalPluginStore((s) => s.plugins);
   const searched = useExternalPluginStore((s) => s.searched);
   const skipped = useExternalPluginStore((s) => s.skipped);
@@ -37,6 +42,7 @@ export default function ExternalPluginManager({ onClose }: { onClose: () => void
   const counts = formatCounts(plugins);
   const groups = byVendor(visible);
   const unmet = HOST_REQUIREMENTS.filter((r) => !r.met);
+  const built = HOST_REQUIREMENTS.filter((r) => r.met);
 
   return (
     <div
@@ -76,9 +82,21 @@ export default function ExternalPluginManager({ onClose }: { onClose: () => void
           className="px-4 py-3 shrink-0"
           style={{ background: 'rgba(251,191,36,0.06)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}
         >
-          <p className="text-[11px] mb-1.5" style={{ color: 'rgb(251,191,36)' }}>
-            지금은 목록만 읽습니다 — 아직 채널에 걸 수 없습니다
+          <p className="text-[11px] mb-1" style={{ color: 'rgb(251,191,36)' }}>
+            슬롯에 걸고 세션에 저장까지 됩니다 — 아직 소리에는 반영되지 않습니다
           </p>
+          <p className="text-[10px] mb-2 leading-relaxed" style={{ color: premium.text.secondary }}>
+            서드파티 플러그인은 오프라인 장치입니다. 모니터링 중에는 바이패스되고
+            바운스 · 프리즈 때 적용됩니다. 그 경로는 이미 다 만들어져 있고
+            앱이 직접 만든 레퍼런스 장치로 검증까지 끝났습니다. 남은 건 번들을
+            여는 어댑터 하나뿐이라, 그때까지 실제 플러그인은 조용히 통과시키지
+            않고 “적용 못 함”으로 분명히 보고합니다.
+          </p>
+          {built.length > 0 && (
+            <p className="text-[10px] mb-2" style={{ color: premium.accent.good }}>
+              ✓ {built.map((r) => r.what).join(' · ')}
+            </p>
+          )}
           <ul className="flex flex-col gap-1">
             {unmet.map((requirement) => (
               <li key={requirement.id} className="text-[10px] leading-relaxed">
@@ -148,11 +166,15 @@ export default function ExternalPluginManager({ onClose }: { onClose: () => void
             </div>
             {group.plugins.map((plugin) => {
               const host = hostability(plugin.format);
+              const canInsert = onInsert !== undefined;
               return (
                 <div
                   key={plugin.id}
-                  className="px-4 h-8 flex items-center gap-2"
-                  title={plugin.path}
+                  onClick={() => canInsert && onInsert(plugin)}
+                  className={`px-4 h-8 flex items-center gap-2${canInsert ? ' hover:bg-white/5 cursor-pointer' : ''}`}
+                  title={canInsert
+                    ? `${plugin.path}\n슬롯에 추가 — ${host.reason}`
+                    : plugin.path}
                 >
                   <span className="text-[11px] flex-1 truncate" style={{ color: premium.text.primary }}>
                     {plugin.name}
@@ -170,7 +192,7 @@ export default function ExternalPluginManager({ onClose }: { onClose: () => void
                     className="text-[9px] w-24 text-right truncate"
                     style={{ color: host.hostable ? premium.accent.good : premium.text.faint }}
                     title={host.reason}
-                  >{host.hostable ? host.reason : '호스팅 불가'}</span>
+                  >{host.hostable ? host.reason : '어댑터 없음'}</span>
                 </div>
               );
             })}
