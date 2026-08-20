@@ -28,6 +28,8 @@ interface PluginWindowStore {
   windows: PluginWindowState[];
   /** Track whose insert rack is open, or null. */
   rackTrackId: TrackId | null;
+  /** The installed-plugin browser. */
+  managerOpen: boolean;
 
   open: (trackId: TrackId, slot: number) => void;
   close: (id: string) => void;
@@ -36,6 +38,7 @@ interface PluginWindowStore {
   focus: (id: string) => void;
   move: (id: string, x: number, y: number) => void;
   toggleRack: (trackId: TrackId | null) => void;
+  setManagerOpen: (open: boolean) => void;
 }
 
 const windowId = (trackId: TrackId, slot: number): string => `${trackId}:${slot}`;
@@ -57,6 +60,7 @@ function nextPosition(existing: readonly PluginWindowState[]): { x: number; y: n
 export const usePluginWindowStore = create<PluginWindowStore>((set, get) => ({
   windows: [],
   rackTrackId: null,
+  managerOpen: false,
 
   open: (trackId, slot) => {
     const id = windowId(trackId, slot);
@@ -91,4 +95,6 @@ export const usePluginWindowStore = create<PluginWindowStore>((set, get) => ({
   toggleRack: (trackId) => set((s) => ({
     rackTrackId: s.rackTrackId === trackId ? null : trackId,
   })),
+
+  setManagerOpen: (open) => set({ managerOpen: open }),
 }));

@@ -11,10 +11,13 @@ import { useDawStore } from '../../../stores/dawStore.js';
 import { findTrack } from '../../../daw/model/session-ops.js';
 import PluginWindow from './PluginWindow.js';
 import InsertRack from './InsertRack.js';
+import ExternalPluginManager from './ExternalPluginManager.js';
 
 export default function PluginWindowLayer() {
   const windows = usePluginWindowStore((s) => s.windows);
   const rackTrackId = usePluginWindowStore((s) => s.rackTrackId);
+  const managerOpen = usePluginWindowStore((s) => s.managerOpen);
+  const setManagerOpen = usePluginWindowStore((s) => s.setManagerOpen);
   const closeTrack = usePluginWindowStore((s) => s.closeTrack);
   const toggleRack = usePluginWindowStore((s) => s.toggleRack);
   const session = useDawStore((s) => s.session);
@@ -32,6 +35,7 @@ export default function PluginWindowLayer() {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape') return;
       const state = usePluginWindowStore.getState();
+      if (state.managerOpen) { state.setManagerOpen(false); return; }
       if (state.rackTrackId) { state.toggleRack(null); return; }
       const top = [...state.windows].sort((a, b) => b.z - a.z)[0];
       if (top) { state.close(top.id); e.stopPropagation(); }
@@ -42,6 +46,7 @@ export default function PluginWindowLayer() {
 
   return (
     <>
+      {managerOpen && <ExternalPluginManager onClose={() => setManagerOpen(false)} />}
       {rackTrackId && <InsertRack trackId={rackTrackId} anchorY={120} />}
       {windows.map((win) => <PluginWindow key={win.id} window={win} />)}
     </>

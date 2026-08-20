@@ -6,6 +6,7 @@ import { checkFFmpeg } from '@aimaster/audio-engine';
 import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
 import { registerDecodeHandlers } from './ipc/decodeHandlers.js';
+import { registerPluginHandlers } from './ipc/pluginHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
 import { registerLicenseHandlers, licenseService } from './ipc/licenseHandlers.js';
 import { registerEntitlementHandlers } from './ipc/entitlementHandlers.js';
@@ -310,6 +311,7 @@ app.whenReady().then(() => {
     registerAudioHandlers(ipcMain, mainWindow);
     registerFileHandlers(ipcMain, mainWindow);
     registerDecodeHandlers(ipcMain, app.isPackaged, process.resourcesPath);
+    registerPluginHandlers(ipcMain);
     registerSettingsHandlers(ipcMain, mainWindow);
     registerLicenseHandlers(ipcMain);
     registerEntitlementHandlers(ipcMain);

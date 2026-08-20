@@ -182,6 +182,18 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
             style={{ color: premium.text.primary, borderBottom: '1px solid rgba(255,255,255,0.06)' }}
           />
 
+          <button
+            onClick={() => usePluginWindowStore.getState().setManagerOpen(true)}
+            className="w-full h-7 px-2 flex items-center gap-1.5 text-left"
+            style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+          >
+            <span className="text-[9px] w-2 shrink-0" style={{ color: premium.text.faint }}>▸</span>
+            <span className="text-[10px] flex-1" style={{ color: premium.text.secondary }}>
+              서드파티 (VST3 · AU · CLAP)
+            </span>
+            <span className="text-[9px]" style={{ color: premium.text.faint }}>목록 보기</span>
+          </button>
+
           {CATEGORY_ORDER.map((category) => {
             const devices = PLUGINS.filter(
               (plugin) => plugin.category === category.id && matches(plugin.name, filter),
