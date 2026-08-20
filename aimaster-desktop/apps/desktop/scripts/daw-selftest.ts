@@ -19,6 +19,7 @@ import {
 } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { shouldAdoptQueue } from '../src/renderer/daw/model/import-audio.js';
+import { planDrop, isEmptyPlan } from '../src/renderer/daw/model/drop-target.js';
 import { evictionPlan } from '../src/renderer/daw/engine/audio-cache.js';
 import { decodeContext, resetDecodeContext, DECODE_SAMPLE_RATE } from '../src/renderer/audio/decode-context.js';
 import {
@@ -907,6 +908,59 @@ check('decoding prefers a live AudioContext over a one-frame offline one', () =>
 
 check('the decode context runs at the session sample rate', () => {
   assert(DECODE_SAMPLE_RATE === 48_000, 'sources are resampled to 48 kHz on the way in');
+});
+
+// ── Where a dropped file goes ─────────────────────────────────────────────────
+// Dropping a stem while you are inside the DAW used to throw you back to the
+// home screen — the single most disruptive thing the app did.
+
+check('a drop inside the DAW stays inside the DAW', () => {
+  const plan = planDrop(['/a/kick.wav', '/a/riff.mid'], 'daw', 20);
+  assert(plan.destination === 'daw', 'the session takes it, not the mastering queue');
+  assert(plan.audio.length === 1 && plan.audio[0] === '/a/kick.wav', 'audio is sorted out');
+  assert(plan.midi.length === 1 && plan.midi[0] === '/a/riff.mid', 'MIDI is sorted out');
+});
+
+check('the same drop anywhere else feeds the mastering queue', () => {
+  const plan = planDrop(['/a/song.wav', '/a/riff.mid'], 'home', 20);
+  assert(plan.destination === 'queue', 'home means the mastering list');
+  assert(plan.audio.length === 1, 'the song is queued');
+  assert(plan.midi.length === 0, 'mastering has no use for MIDI');
+  assert(plan.ignored.includes('/a/riff.mid'), 'and says the MIDI was skipped');
+});
+
+check('the DAW takes more files than the mastering queue has room for', () => {
+  const many = Array.from({ length: 30 }, (_, i) => `/a/${i}.wav`);
+  // The queue has a hard limit and reports what did not fit.
+  const queued = planDrop(many, 'home', 20);
+  assert(queued.audio.length === 20, `queue caps at its remaining slots — got ${queued.audio.length}`);
+  assert(queued.ignored.length === 10, 'the overflow is reported, not silently dropped');
+
+  // A session is a workspace: thirty tracks is a decision, not an accident.
+  const session = planDrop(many, 'daw', 20);
+  assert(session.audio.length === 30, `the DAW takes them all — got ${session.audio.length}`);
+  assert(session.ignored.length === 0, 'nothing skipped');
+});
+
+check('a full queue still reports what it could not take', () => {
+  const plan = planDrop(['/a/song.wav'], 'home', 0);
+  assert(plan.audio.length === 0, 'no slots left');
+  assert(isEmptyPlan(plan), 'the drop has nothing to do');
+  assert(plan.ignored.length === 1, 'and the file is accounted for');
+});
+
+check('unknown file types are skipped, not guessed at', () => {
+  const plan = planDrop(['/a/notes.txt', '/a/cover.png', '/a/mix.WAV'], 'daw', 20);
+  assert(plan.audio.length === 1, 'only the audio file is taken');
+  assert(plan.audio[0] === '/a/mix.WAV', 'extension matching ignores case');
+  assert(plan.ignored.length === 2, 'the other two are reported');
+  assert(!isEmptyPlan(plan), 'one usable file is still a usable drop');
+});
+
+check('a dotfile without an extension is not mistaken for audio', () => {
+  const plan = planDrop(['/a/.wav', '/a/noext'], 'daw', 20);
+  assert(plan.audio.length === 0, 'a leading dot is a name, not an extension');
+  assert(isEmptyPlan(plan), 'nothing to import');
 });
 
 const passed = results.filter((r) => r.pass).length;
