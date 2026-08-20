@@ -104,6 +104,69 @@ export async function renderTrack(
   return renderSession(isolated, { startSec: 0, endSec: end }, options);
 }
 
+export interface TrackWindowOptions extends RenderOptions {
+  /**
+   * Drop this insert and everything after it.
+   *
+   * What a device should be advised from is what ARRIVES at it, not what
+   * leaves the channel: a compressor sitting third has already been EQ'd, and
+   * measuring the finished channel would set it from audio it never sees.
+   */
+  beforeSlot?: number;
+  startSec?: number;
+  endSec?: number;
+}
+
+/**
+ * A window of one track, isolated, optionally truncated at an insert.
+ *
+ * Bounded on purpose.  Measuring a four-minute track to set a knob costs
+ * seconds of rendering for numbers that a well-chosen thirty seconds gives
+ * just as well, and a button that takes ten seconds is a button nobody
+ * presses twice.
+ */
+export async function renderTrackWindow(
+  session: DawSession,
+  trackId: TrackId,
+  options: TrackWindowOptions = {},
+): Promise<AudioBuffer> {
+  const track = findTrack(session, trackId);
+  if (!track) throw new Error('트랙을 찾을 수 없습니다');
+
+  const isolated: DawSession = {
+    ...session,
+    tracks: session.tracks.map((t): Track => {
+      if (t.id === trackId) {
+        return {
+          ...t,
+          mute: false,
+          solo: false,
+          output: { kind: 'master' },
+          // The fader is not part of what a device hears — it is after the
+          // inserts — so the channel is measured at unity either way.
+          volumeDb: 0,
+          pan: 0,
+          inserts: options.beforeSlot === undefined
+            ? t.inserts
+            : t.inserts.filter((i) => i.slot < options.beforeSlot!),
+        };
+      }
+      if (t.kind === 'master') return { ...t, inserts: [], volumeDb: 0, pan: 0, mute: false, solo: false };
+      return { ...t, mute: true, solo: false };
+    }),
+  };
+
+  const clips = trackClips(track);
+  const first = clips.reduce((min, c) => Math.min(min, c.startSec), Infinity);
+  const last = clips.reduce((max, c) => Math.max(max, clipEnd(c)), 0);
+  const startSec = options.startSec ?? (Number.isFinite(first) ? first : 0);
+  const endSec = options.endSec ?? last;
+  if (!(endSec > startSec)) throw new Error('이 트랙에는 분석할 오디오가 없습니다');
+
+  const { beforeSlot: _slot, startSec: _from, endSec: _to, ...render } = options;
+  return renderSession(isolated, { startSec, endSec }, { ...render, tailSec: 0 });
+}
+
 // ── Destinations ──────────────────────────────────────────────────────────────
 
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;

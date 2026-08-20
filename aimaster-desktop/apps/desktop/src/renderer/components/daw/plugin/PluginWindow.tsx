@@ -15,6 +15,8 @@ import { findTrack, setInsert } from '../../../daw/model/session-ops.js';
 import { descriptorFor } from '../../../daw/engine/external-device.js';
 import { defaultParams } from '../../../daw/engine/plugins.js';
 import { presetGroups, resolvePreset } from '../../../daw/engine/plugin-presets.js';
+import { adviseFor, canAdvise, LOW_CONFIDENCE } from '../../../daw/ai/plugin-advice.js';
+import { describeWindow, profileForInsert } from '../../../daw/ai/advice-runner.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import { premium } from '../../../theme/premium.js';
 import Knob from './Knob.js';
@@ -75,6 +77,18 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
     }, 60);
     return () => clearInterval(timer);
   }, [isPlaying, win.trackId, insertId]);
+
+  // ── AI 추천 ──────────────────────────────────────────────────────────────
+  //
+  // Renders the audio that ARRIVES at this insert, measures it, and asks the
+  // device's advisor what it should be.  One press, one undo step — and a
+  // line saying what it read, because a setting you cannot argue with is a
+  // setting you cannot trust.
+  const [advising, setAdvising] = useState(false);
+  const [advice, setAdvice] = useState<null | {
+    headline: string; evidence: string[]; confidence: number; window: string;
+  }>(null);
+  const [adviceError, setAdviceError] = useState<string | null>(null);
 
   // ── Presets ──────────────────────────────────────────────────────────────
   //
@@ -159,6 +173,44 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   };
   const activePreset = groups.flatMap((g) => g.presets).find((entry) => entry.id === loadedPreset);
 
+  const runAdvice = async (): Promise<void> => {
+    if (!insert) return;
+    setAdvising(true);
+    setAdviceError(null);
+    try {
+      const { profile, window } = await profileForInsert({
+        session: useDawStore.getState().session,
+        trackId: win.trackId,
+        slot: insert.slot,
+        selection: useDawStore.getState().selection,
+      });
+      const result = adviseFor(insert.pluginId, profile);
+      if (!result.ok) {
+        setAdvice(null);
+        setAdviceError(result.reason);
+        return;
+      }
+      const next = result.advice.params;
+      apply((s) => setInsert(s, win.trackId, {
+        ...insert,
+        params: next,
+        latencySamples: descriptor.latencyFor(next, session.sampleRate),
+      }));
+      setLoadedPreset('');
+      setAdvice({
+        headline: result.advice.headline,
+        evidence: result.advice.evidence,
+        confidence: result.advice.confidence,
+        window: describeWindow(window),
+      });
+    } catch (err) {
+      setAdvice(null);
+      setAdviceError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAdvising(false);
+    }
+  };
+
   const toggleBypass = (): void => {
     apply((s) => setInsert(s, win.trackId, { ...insert, bypass: !insert.bypass }));
   };
@@ -205,6 +257,19 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
           style={{ fontFamily: premium.type.display, color: premium.accent.light }}
         >{descriptor.name}</span>
 
+        {canAdvise(insert.pluginId) && (
+          <button
+            onClick={() => void runAdvice()}
+            disabled={advising}
+            title="이 인서트에 도착하는 오디오를 분석해서 값을 추천합니다"
+            className="h-5 px-1.5 rounded text-[9px] tracking-wide border"
+            style={{
+              borderColor: premium.accent.deep,
+              color: advising ? premium.text.muted : premium.accent.base,
+              background: advising ? 'transparent' : 'rgba(198,167,104,0.10)',
+            }}
+          >{advising ? '분석 중…' : 'AI'}</button>
+        )}
         <button
           onClick={toggleBypass}
           title="바이패스 — 원본과 비교"
@@ -258,6 +323,48 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             <span className="text-[9px] leading-relaxed" style={{ color: premium.text.faint }}>
               {activePreset.note}
             </span>
+          )}
+        </div>
+      )}
+
+      {(advice || adviceError) && (
+        <div
+          className="px-3.5 py-2 flex flex-col gap-1"
+          style={{
+            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            background: adviceError ? 'rgba(212,106,106,0.06)' : 'rgba(198,167,104,0.06)',
+          }}
+        >
+          {adviceError ? (
+            <span className="text-[10px] leading-relaxed" style={{ color: premium.accent.danger }}>
+              {adviceError}
+            </span>
+          ) : advice && (
+            <>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[10px] font-mono shrink-0" style={{ color: premium.accent.base }}>AI</span>
+                <span className="text-[10px] leading-relaxed flex-1"
+                      style={{ color: premium.text.secondary }}>{advice.headline}</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {advice.evidence.map((item) => (
+                  <span
+                    key={item}
+                    className="text-[9px] font-mono px-1 rounded"
+                    style={{
+                      border: '1px solid rgba(255,255,255,0.10)',
+                      color: premium.text.muted,
+                    }}
+                  >{item}</span>
+                ))}
+              </div>
+              <span className="text-[9px]" style={{ color: premium.text.faint }}>
+                {advice.window} 구간 측정
+                {advice.confidence < LOW_CONFIDENCE
+                  ? ' · 출발점입니다, 정답이 아닙니다'
+                  : ''}
+              </span>
+            </>
           )}
         </div>
       )}
