@@ -44,6 +44,8 @@ const INVOKE_CHANNELS = [
   'daw:write-temp-audio', 'daw:bounce-audio',
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer
   'daw:pcm-source',
+  // Installed third-party plugins (scan only — nothing is loaded)
+  'plugins:scan',
   // Updater (v3.4.3)
   'updater:check', 'updater:download', 'updater:quit-and-install',
   'updater:get-status',
