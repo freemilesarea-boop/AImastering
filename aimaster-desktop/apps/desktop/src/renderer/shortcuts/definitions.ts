@@ -70,6 +70,7 @@ export type CommandId =
   | 'daw.analyzeVocal' | 'daw.tuneVocal'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.toggleAutomation' | 'daw.automationMode'
+  | 'daw.tempoChange' | 'daw.tempoRamp'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
@@ -294,6 +295,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '분석된 구간을 에디터 스케일에 맞추고 PSOLA 로 렌더 (원본은 보존)', available: true },
 
   // ── 스마트 컨트롤 · 트랙 스택 ──────────────────────────────────────────
+  { id: 'daw.tempoChange', group: 'daw', label: '재생 위치에 템포 변화', chords: ['Alt+T'],
+    note: '지금 걸려 있는 템포 그대로 이벤트를 놓습니다 — 음악은 안 움직이고 손잡이만 생깁니다', available: true },
+  { id: 'daw.tempoRamp', group: 'daw', label: '템포 이벤트 Jump ↔ Ramp', chords: ['Shift+Alt+T'],
+    note: '재생 위치 직전 이벤트를 리타르단도 / 아첼레란도로', available: true },
   { id: 'daw.toggleAutomation', group: 'daw', label: '오토메이션 레인 열기 / 접기', chords: ['Alt+A'],
     note: '볼륨 레인부터 — 접어도 브레이크포인트는 그대로 남고 계속 재생됩니다', available: true },
   { id: 'daw.automationMode', group: 'daw', label: '오토메이션 모드 순환', chords: ['Mod+Alt+Shift+A'],

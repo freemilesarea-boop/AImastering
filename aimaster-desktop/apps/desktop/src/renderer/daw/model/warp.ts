@@ -17,6 +17,9 @@
 
 import { nextId } from './ids.js';
 import type { Clip, DawSession } from './types.js';
+import {
+  beatToSec, isConstantTempo, secToBeat, tempoMapKey, tempoMapOf,
+} from './tempo-map.js';
 
 export type WarpMode = 'beats' | 'tones' | 'texture' | 'complex';
 
@@ -58,6 +61,72 @@ export function resolveBpm(warp: WarpConfig, sessionBpm: number): number {
   return warp.followTempo ? sessionBpm : warp.baseBpm;
 }
 
+// ── Where a beat lands ────────────────────────────────────────────────────────
+//
+// A warp marker is a beat, and turning a beat into seconds used to be one
+// division: 60/bpm.  With a tempo map it is a lookup, because the beats inside
+// one clip can span a tempo change — a clip that straddles a ritardando has
+// wider beats at its end than at its start, and the markers have to move with
+// them or the warp fights the map.
+//
+// So the tempo is passed as a small object instead of a number.  Every
+// existing call site passes a plain number and keeps the old behaviour
+// exactly; the runtime passes one of these, built from the session's map.
+
+export interface WarpTempo {
+  /** The tempo to report, and what the constant-tempo path divides by. */
+  bpm: number;
+  /** Clip-local seconds for a beat measured from the clip's start. */
+  beatToClipSec: (beat: number) => number;
+  /** Identifies this mapping, so a cached render is invalidated when it moves. */
+  key: string;
+}
+
+export function constantTempo(bpm: number): WarpTempo {
+  const beat = beatSeconds(bpm);
+  return { bpm, beatToClipSec: (b) => b * beat, key: bpm.toFixed(4) };
+}
+
+/** Accepts either form, so no call site has to change to keep working. */
+export function asWarpTempo(tempo: number | WarpTempo): WarpTempo {
+  return typeof tempo === 'number' ? constantTempo(tempo) : tempo;
+}
+
+/**
+ * The tempo a clip's beats resolve through.
+ *
+ * A clip that does NOT follow the session keeps its own constant tempo — that
+ * is what `followTempo: false` means, and a fixed loop must not breathe with a
+ * ritardando it was never part of.
+ */
+export function warpTempoFor(warp: WarpConfig, sessionTempo: number | WarpTempo): WarpTempo {
+  return warp.followTempo ? asWarpTempo(sessionTempo) : constantTempo(warp.baseBpm);
+}
+
+/**
+ * The session's tempo, as this clip sees it.
+ *
+ * A clip's markers are beats FROM THE CLIP'S START, so the map has to be read
+ * relative to where the clip sits: the same marker at beat 4 is a different
+ * number of seconds in a clip that begins during a ritardando than in one that
+ * begins after it.
+ *
+ * Sessions with no tempo changes take the old path exactly — one division —
+ * so nothing about a constant-tempo project changes, including its cache keys.
+ */
+export function sessionWarpTempo(session: DawSession, clip: Clip): WarpTempo {
+  const map = tempoMapOf(session);
+  if (isConstantTempo(map)) return constantTempo(session.tempoBpm);
+
+  const startBeat = secToBeat(map, Math.max(0, clip.startSec));
+  const startSec = beatToSec(map, startBeat);
+  return {
+    bpm: session.tempoBpm,
+    beatToClipSec: (beat) => beatToSec(map, startBeat + beat) - startSec,
+    key: `${startBeat.toFixed(6)}|${tempoMapKey(map)}`,
+  };
+}
+
 export const beatSeconds = (bpm: number): number => 60 / Math.max(1e-6, bpm);
 
 // ── The map ───────────────────────────────────────────────────────────────────
@@ -77,13 +146,13 @@ export interface WarpMap {
  * direction the renderer reads: for every output sample it needs to know how
  * far to advance in the source.
  */
-export function buildWarpMap(warp: WarpConfig, sessionBpm: number): WarpMap {
-  const bpm = resolveBpm(warp, sessionBpm);
-  const beat = beatSeconds(bpm);
+export function buildWarpMap(warp: WarpConfig, sessionTempo: number | WarpTempo): WarpMap {
+  const tempo = warpTempoFor(warp, sessionTempo);
+  const bpm = tempo.bpm;
   const markers = [...warp.markers].sort((a, b) => a.sourceSec - b.sourceSec);
 
   const source = markers.map((m) => m.sourceSec);
-  const dest = markers.map((m) => m.beat * beat);
+  const dest = markers.map((m) => tempo.beatToClipSec(m.beat));
   const rates: number[] = [];
   for (let i = 0; i + 1 < markers.length; i++) {
     const ds = (source[i + 1] ?? 0) - (source[i] ?? 0);
@@ -315,7 +384,7 @@ export function estimateBpm(
 // ── Clip-level helpers ────────────────────────────────────────────────────────
 
 /** Source span a clip covers, in file seconds, once warp is taken into account. */
-export function clipSourceSpan(clip: Clip, sessionBpm: number): { fromSec: number; toSec: number } {
+export function clipSourceSpan(clip: Clip, sessionBpm: number | WarpTempo): { fromSec: number; toSec: number } {
   const warp = clipWarp(clip);
   if (!warp) return { fromSec: clip.offsetSec, toSec: clip.offsetSec + clip.durationSec };
   const map = buildWarpMap(warp, sessionBpm);
@@ -327,7 +396,7 @@ export function clipSourceSpan(clip: Clip, sessionBpm: number): { fromSec: numbe
 }
 
 /** How long the clip plays for when its whole warped span is used. */
-export function warpedDuration(warp: WarpConfig, sessionBpm: number, sourceDurationSec: number): number {
+export function warpedDuration(warp: WarpConfig, sessionBpm: number | WarpTempo, sourceDurationSec: number): number {
   const map = buildWarpMap(warp, sessionBpm);
   const from = map.source[0] ?? 0;
   return sourceToDest(map, from + sourceDurationSec) - sourceToDest(map, from);
@@ -362,7 +431,7 @@ export interface WarpProblem {
 export const MAX_RATE = 8;
 export const MIN_RATE = 1 / 8;
 
-export function validateWarp(warp: WarpConfig, sessionBpm: number): WarpProblem[] {
+export function validateWarp(warp: WarpConfig, sessionBpm: number | WarpTempo): WarpProblem[] {
   const problems: WarpProblem[] = [];
   const sorted = [...warp.markers].sort((a, b) => a.sourceSec - b.sourceSec);
 

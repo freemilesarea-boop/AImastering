@@ -12,11 +12,12 @@
 // and nothing does.
 
 import {
-  buildWarpMap, clipWarp, destToSource, sourceToDest, type WarpConfig,
+  asWarpTempo, buildWarpMap, clipWarp, destToSource, sessionWarpTempo, sourceToDest,
+  warpTempoFor, type WarpConfig, type WarpTempo,
 } from '../model/warp.js';
 import { modeOptions, stretchChannels } from '../audio/time-stretch.js';
 import { getCached } from './audio-cache.js';
-import type { Clip } from '../model/types.js';
+import type { Clip, DawSession } from '../model/types.js';
 
 export interface WarpedClipAudio {
   channels: Float32Array[];
@@ -38,12 +39,12 @@ function isIdentity(rates: readonly number[]): boolean {
  */
 export function renderWarpedClip(
   channels: readonly Float32Array[], sampleRate: number,
-  clip: Clip, sessionBpm: number,
+  clip: Clip, sessionTempo: number | WarpTempo,
 ): WarpedClipAudio | null {
   const warp = clipWarp(clip);
   if (!warp) return null;
 
-  const map = buildWarpMap(warp, sessionBpm);
+  const map = buildWarpMap(warp, sessionTempo);
   const outLength = Math.max(0, Math.round(clip.durationSec * sampleRate));
   if (outLength === 0) return { channels: channels.map(() => new Float32Array(0)), sampleRate, durationSec: 0 };
 
@@ -84,15 +85,19 @@ export function renderWarpedClip(
  * and nothing that does not (clip position on the timeline, gain, fades) is —
  * moving a warped clip must not cost a re-render.
  */
-export function warpKey(clip: Clip, sessionBpm: number): string | null {
+export function warpKey(clip: Clip, sessionTempo: number | WarpTempo): string | null {
   const warp = clipWarp(clip);
   if (!warp) return null;
   const markers = warp.markers
     .map((m) => `${m.sourceSec.toFixed(6)}:${m.beat.toFixed(6)}`)
     .join(',');
-  const bpm = warp.followTempo ? sessionBpm : warp.baseBpm;
+  // The tempo's own key, not just its BPM: under a tempo map two clips at the
+  // same nominal tempo can stretch differently because they sit on different
+  // parts of the map, and a cache keyed on BPM alone would hand the second one
+  // the first one's audio.
+  const tempo = warpTempoFor(warp, sessionTempo);
   return [
-    clip.fileId, warp.mode, bpm.toFixed(4),
+    clip.fileId, warp.mode, tempo.key,
     clip.offsetSec.toFixed(6), clip.durationSec.toFixed(6), markers,
   ].join('|');
 }
@@ -125,9 +130,9 @@ function store(key: string, buffer: AudioBuffer): AudioBuffer {
  * playing the source directly, which is the right behaviour in both cases.
  */
 export function ensureWarpedBuffer(
-  ctx: BaseAudioContext, clip: Clip, sessionBpm: number,
+  ctx: BaseAudioContext, clip: Clip, sessionTempo: number | WarpTempo,
 ): AudioBuffer | null {
-  const key = warpKey(clip, sessionBpm);
+  const key = warpKey(clip, sessionTempo);
   if (!key) return null;
   const hit = getWarped(key);
   if (hit) return hit;
@@ -139,7 +144,7 @@ export function ensureWarpedBuffer(
   const channels: Float32Array[] = [];
   for (let c = 0; c < source.numberOfChannels; c++) channels.push(source.getChannelData(c));
 
-  const rendered = renderWarpedClip(channels, source.sampleRate, clip, sessionBpm);
+  const rendered = renderWarpedClip(channels, source.sampleRate, clip, sessionTempo);
   if (!rendered) return null;
 
   const length = rendered.channels[0]?.length ?? 0;
@@ -153,22 +158,49 @@ export function ensureWarpedBuffer(
 
 /** Pre-render every warped clip in a session — called before playback. */
 export function prepareWarps(
-  ctx: BaseAudioContext, clips: readonly Clip[], sessionBpm: number,
+  ctx: BaseAudioContext, clips: readonly Clip[], sessionTempo: number | WarpTempo,
 ): number {
   let rendered = 0;
   for (const clip of clips) {
     if (clip.kind !== 'audio') continue;
-    const key = warpKey(clip, sessionBpm);
+    const key = warpKey(clip, sessionTempo);
     if (!key || getWarped(key)) continue;
-    if (ensureWarpedBuffer(ctx, clip, sessionBpm)) rendered++;
+    if (ensureWarpedBuffer(ctx, clip, sessionTempo)) rendered++;
   }
   return rendered;
 }
 
 /** True when a warped clip still needs rendering before it can play. */
-export function warpPending(clip: Clip, sessionBpm: number): boolean {
-  const key = warpKey(clip, sessionBpm);
+export function warpPending(clip: Clip, sessionTempo: number | WarpTempo): boolean {
+  const key = warpKey(clip, sessionTempo);
   return key !== null && getWarped(key) === undefined;
 }
 
-export type { WarpConfig };
+/**
+ * The same two entry points, for callers that have a session.
+ *
+ * Each clip resolves its own tempo, because under a map two clips at the same
+ * nominal tempo genuinely stretch differently depending on where they sit.
+ */
+export function prepareWarpsForSession(
+  ctx: BaseAudioContext, clips: readonly Clip[], session: DawSession,
+): number {
+  let rendered = 0;
+  for (const clip of clips) {
+    if (clip.kind !== 'audio' || !clipWarp(clip)) continue;
+    const tempo = sessionWarpTempo(session, clip);
+    const key = warpKey(clip, tempo);
+    if (!key || getWarped(key)) continue;
+    if (ensureWarpedBuffer(ctx, clip, tempo)) rendered++;
+  }
+  return rendered;
+}
+
+export function ensureWarpedBufferForSession(
+  ctx: BaseAudioContext, clip: Clip, session: DawSession,
+): AudioBuffer | null {
+  return ensureWarpedBuffer(ctx, clip, sessionWarpTempo(session, clip));
+}
+
+export type { WarpConfig, WarpTempo };
+export { asWarpTempo };

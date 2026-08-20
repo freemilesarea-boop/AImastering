@@ -19,6 +19,9 @@
 // All pure: the launcher state is a value, not a class with hidden timers.
 
 import { nextId } from './ids.js';
+import {
+  barBeatAt, barStartBeat, beatToSec, secToBeat, tempoAtSec, tempoMapOf,
+} from './tempo-map.js';
 import type { Clip, DawSession, TrackId } from './types.js';
 import { findTrack, updateTrack } from './session-ops.js';
 
@@ -267,8 +270,16 @@ export interface ArrangeOptions {
   replace?: boolean;
 }
 
+/**
+ * One bar at the session's opening tempo.
+ *
+ * Used for SIZING a plan — "how many bars is this loop" — where an average bar
+ * is the right answer.  Placing clips walks the real bar lines instead; see
+ * `convertToArrangement`.
+ */
 export function barSeconds(session: DawSession): number {
-  return (60 / Math.max(1, session.tempoBpm)) * Math.max(1, session.timeSignature[0]);
+  const map = tempoMapOf(session);
+  return (60 / Math.max(1, tempoAtSec(map, 0))) * Math.max(1, session.timeSignature[0]);
 }
 
 /**
@@ -283,7 +294,11 @@ export function convertToArrangement(
   options: ArrangeOptions = {},
 ): DawSession {
   const { startSec = 0, fill = true, replace = false } = options;
-  const barSec = barSeconds(session);
+  // Bars are counted on the beat axis, not multiplied out from one bar length:
+  // under a tempo map an eight-bar section that begins during a ritardando is
+  // longer than one that does not, and a fixed multiple would drift off the
+  // bar lines it is meant to land on.
+  const map = tempoMapOf(session);
   let next = session;
 
   if (replace) {
@@ -297,8 +312,11 @@ export function convertToArrangement(
   }
 
   let cursorSec = startSec;
+  let cursorBar = barBeatAt(map, secToBeat(map, startSec)).bar;
   for (const step of plan) {
-    const stepSec = Math.max(0, step.bars) * barSec;
+    const bars = Math.max(0, step.bars);
+    const stepEndSec = beatToSec(map, barStartBeat(map, cursorBar + bars));
+    const stepSec = Math.max(0, stepEndSec - cursorSec);
     for (const slot of sceneSlots(grid, step.sceneIndex)) {
       const source = slot.clip;
       if (!source) continue;
@@ -329,6 +347,7 @@ export function convertToArrangement(
       }));
     }
     cursorSec += stepSec;
+    cursorBar += bars;
   }
 
   return next;
