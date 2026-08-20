@@ -43,7 +43,7 @@ const INVOKE_CHANNELS = [
   // DAW offline render output (Bounce / Freeze / Consolidate)
   'daw:write-temp-audio', 'daw:bounce-audio',
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer
-  'daw:decode-pcm', 'daw:release-pcm',
+  'daw:pcm-source',
   // Updater (v3.4.3)
   'updater:check', 'updater:download', 'updater:quit-and-install',
   'updater:get-status',

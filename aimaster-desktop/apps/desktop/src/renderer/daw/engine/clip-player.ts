@@ -15,6 +15,10 @@ import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
 import type { Clip, DawSession, Fade, Track, TrackId } from '../model/types.js';
 import type { MidiNote } from '../model/midi.js';
 import { getCached, loadAudio, preloadAll } from './audio-cache.js';
+import { getSource } from './pcm-store.js';
+import {
+  createStreamVoice, ensureStreamRuntime, streamRuntimeReady, type StreamVoice,
+} from './stream-voice.js';
 import { ensureWarpedBuffer, prepareWarps } from './warp-render.js';
 import { clipWarp } from '../model/warp.js';
 import { clipNotes } from '../model/patterns.js';
@@ -37,10 +41,25 @@ export function fadeCurve(shape: Fade['shape'], steps = FADE_STEPS): Float32Arra
 }
 
 interface Voice {
-  source: AudioBufferSourceNode;
+  /** Where the samples come from: a resident buffer or a stream off disk. */
+  source: AudioBufferSourceNode | StreamVoice;
   gain: GainNode;
   clipId: string;
   endsAtCtxTime: number;
+}
+
+function isBufferSource(source: Voice['source']): source is AudioBufferSourceNode {
+  return 'buffer' in source;
+}
+
+/** Stop a voice's source, whichever kind it is. */
+function stopSource(source: Voice['source'], at: number): void {
+  if (isBufferSource(source)) {
+    try { source.stop(at); } catch { /* already stopped */ }
+    try { source.disconnect(); } catch { /* already disconnected */ }
+  } else {
+    source.stop();
+  }
 }
 
 /** A sounding MIDI note — owned by the instrument that created it. */
@@ -64,6 +83,12 @@ export class ClipPlayer {
   private requested = new Set<string>();
   private origin = 0;
   private playing = false;
+  /**
+   * Streaming is for the live transport only.  An offline render runs faster
+   * than real time and cannot wait on a reader thread, so a bounce plays from
+   * resident buffers — the same samples, delivered without a clock.
+   */
+  private streaming = false;
   private startedAtSec = 0;
 
   constructor(engine: MixerEngine) {
@@ -80,13 +105,27 @@ export class ClipPlayer {
 
   /** Decode every file the session references (before playback or a bounce). */
   async prepare(session: DawSession): Promise<void> {
-    // One file at a time — a session of full-length songs decoded in parallel
-    // is a multi-gigabyte spike that takes the renderer process with it.
-    await preloadAll(this.engine.ctx, session.files);
+    // Bring up streaming if this context can have it.  When it can, no source
+    // audio needs to be resident at all; when it cannot, fall back to loading
+    // the files, which is what every context did before.
+    this.streaming = await ensureStreamRuntime(this.engine.ctx);
+    if (!this.streaming) await preloadAll(this.engine.ctx, session.files);
     // Warped clips are stretched into buffers up front — doing it inside the
     // scheduler would stall the audio thread's look-ahead.
     const clips = session.tracks.flatMap((t) => trackClips(t));
     prepareWarps(this.engine.ctx, clips, session.tempoBpm);
+  }
+
+  /** Turn streaming off for this player — an offline render cannot wait. */
+  useResidentBuffers(): void { this.streaming = false; }
+
+  /** Frames the audio thread asked for and did not have this pass. */
+  underruns(): number {
+    let total = 0;
+    for (const v of this.voices) {
+      if (!isBufferSource(v.source)) total += v.source.underruns();
+    }
+    return total;
   }
 
   /**
@@ -114,8 +153,8 @@ export class ClipPlayer {
   stop(): void {
     const at = this.engine.ctx.currentTime;
     for (const v of this.voices) {
-      try { v.source.stop(at); } catch { /* already stopped */ }
-      try { v.source.disconnect(); v.gain.disconnect(); } catch { /* ignore */ }
+      stopSource(v.source, at);
+      try { v.gain.disconnect(); } catch { /* ignore */ }
     }
     for (const v of this.noteVoices) {
       try { v.stop(at); } catch { /* already stopped */ }
@@ -224,6 +263,9 @@ export class ClipPlayer {
 
   /** Schedule the WHOLE session — used by offline bounce. */
   scheduleAll(session: DawSession, fromSec: number, toSec: number): void {
+    // A bounce renders faster than real time, so nothing may depend on a
+    // reader thread keeping up: an offline pass always plays resident buffers.
+    this.streaming = false;
     this.origin = -fromSec;
     this.scheduleWindow(session, fromSec, toSec);
     this.scheduleAutomation(session, fromSec, toSec);
@@ -232,16 +274,6 @@ export class ClipPlayer {
   private scheduleClip(
     session: DawSession, clip: Clip, destination: AudioNode, notBeforeSec: number,
   ): void {
-    const cached = getCached(clip.fileId);
-    if (!cached) {
-      // Returning here silently is how a whole stem goes missing from a take:
-      // nothing decodes during playback, so a clip skipped once stays skipped
-      // for good, and the mix plays back without its vocal saying nothing.
-      // Ask for the file instead — the next look-ahead tick enters the clip
-      // mid-way at the right offset, exactly as seeking into it would.
-      this.requestDecode(session, clip.fileId);
-      return;
-    }
     const ctx = this.engine.ctx;
 
     // A clip already under way when playback starts is entered mid-way.
@@ -250,17 +282,48 @@ export class ClipPlayer {
     const remaining = clip.durationSec - skipSec;
     if (remaining <= 0.001) return;
 
-    // A warped clip plays its rendered buffer, which already starts at the
-    // clip's first sample — so the read offset is the skip alone.
-    const warped = clipWarp(clip) ? ensureWarpedBuffer(ctx, clip, session.tempoBpm) : null;
-
-    const source = ctx.createBufferSource();
-    source.buffer = warped ?? cached.buffer;
-    const gain = ctx.createGain();
-    const base = dbToGain(clip.gainDb);
-
     const startAt = this.origin + enterSec;
     const stopAt  = this.origin + clip.startSec + clip.durationSec;
+
+    // A warped clip plays its rendered buffer, which already starts at the
+    // clip's first sample — so the read offset is the skip alone.  Warping
+    // produces the buffer up front, so those clips are never streamed.
+    const warped = clipWarp(clip) ? ensureWarpedBuffer(ctx, clip, session.tempoBpm) : null;
+
+    // Prefer streaming: a track that plays off disk costs a two-second ring
+    // instead of its whole length in memory, which is the difference between
+    // eight tracks and forty.  Everything below this point is identical for
+    // either kind of source.
+    const store = warped ? undefined : getSource(clip.fileId);
+    const streamed = store && this.streaming && streamRuntimeReady()
+      ? createStreamVoice(ctx, store, {
+          startAtSec: Math.max(0, startAt),
+          offsetFrames: Math.round((clip.offsetSec + skipSec) * store.sampleRate),
+          durationFrames: Math.round(remaining * store.sampleRate),
+        })
+      : null;
+
+    let source: Voice['source'];
+    if (streamed) {
+      source = streamed;
+    } else {
+      const cached = getCached(clip.fileId);
+      if (!cached) {
+        // Returning here silently is how a whole stem goes missing from a
+        // take: a clip skipped once stays skipped for good, and the mix plays
+        // back without its vocal saying nothing.  Ask for the file instead —
+        // the next look-ahead tick enters the clip mid-way at the right
+        // offset, exactly as seeking into it would.
+        this.requestDecode(session, clip.fileId);
+        return;
+      }
+      const buffered = ctx.createBufferSource();
+      buffered.buffer = warped ?? cached.buffer;
+      source = buffered;
+    }
+
+    const gain = ctx.createGain();
+    const base = dbToGain(clip.gainDb);
 
     gain.gain.cancelScheduledValues(0);
     gain.gain.setValueAtTime(base, Math.max(0, startAt));
@@ -293,9 +356,15 @@ export class ClipPlayer {
       gain.gain.setValueCurveAtTime(reversed, fadeStart, Math.min(fadeOut, stopAt - fadeStart));
     }
 
-    source.connect(gain).connect(destination);
-    const offset = warped ? skipSec : clip.offsetSec + skipSec;
-    source.start(Math.max(0, startAt), Math.max(0, offset), remaining);
+    if (isBufferSource(source)) {
+      source.connect(gain).connect(destination);
+      const offset = warped ? skipSec : clip.offsetSec + skipSec;
+      source.start(Math.max(0, startAt), Math.max(0, offset), remaining);
+    } else {
+      // The worklet holds its own start frame and length; it emits silence
+      // until then, so there is nothing to schedule here.
+      source.node.connect(gain).connect(destination);
+    }
 
     this.scheduled.add(clip.id);
     this.voices.push({ source, gain, clipId: clip.id, endsAtCtxTime: stopAt });
@@ -358,7 +427,8 @@ export class ClipPlayer {
     const alive: Voice[] = [];
     for (const v of this.voices) {
       if (v.endsAtCtxTime < now - 0.2) {
-        try { v.source.disconnect(); v.gain.disconnect(); } catch { /* ignore */ }
+        stopSource(v.source, now);
+        try { v.gain.disconnect(); } catch { /* ignore */ }
         this.scheduled.delete(v.clipId);
       } else {
         alive.push(v);

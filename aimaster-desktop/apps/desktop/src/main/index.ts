@@ -26,6 +26,14 @@ import { applyBundledFfmpegEnv } from './utils/ffmpegEnv.js';
 
 const isDev = !app.isPackaged;
 
+// SharedArrayBuffer is how the disk-streaming reader thread hands samples to
+// the audio thread without a lock — the audio thread cannot wait for one.
+// Chromium gates it behind cross-origin isolation, which a custom protocol and
+// a dev server cannot satisfy; this switch is Electron's way to allow it for
+// an app that is not serving third-party content in the first place.
+// Without it, playback falls back to loading whole files into memory.
+app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+
 let mainWindow: BrowserWindow | null = null;
 
 // ── Local-file protocol (for audio preview in renderer) ───────────────────────
