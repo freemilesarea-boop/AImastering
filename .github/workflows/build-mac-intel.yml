@@ -1,0 +1,265 @@
+name: Build Louver Mastering AI — macOS Intel (x64)
+
+# ── Why this workflow exists ──────────────────────────────────────────────────
+# v3.6.0 shipped a macOS x64 build that Finder correctly identified as
+# "종류: 응용 프로그램(Intel)" but that would not run on an actual Intel Mac.
+#
+# The cause was NOT the Electron shell — that really was x64.  build.yml's
+# `build-mac` job runs on `macos-14` (Apple Silicon) and packaged both
+# architectures in a single `electron-builder --mac dmg zip --x64 --arm64`
+# invocation.  electron-builder swaps the Electron shell per arch, but
+# `extraResources` is arch-blind: whatever sits in apps/desktop/public/bin at
+# package time is copied verbatim into EVERY arch's bundle.  Those sidecars are
+# produced on the runner:
+#
+#   • public/bin/engine          ← PyInstaller, built on the runner  → arm64
+#   • public/bin/ffmpeg          ← require('ffmpeg-static')          → arm64
+#   • public/bin/ffprobe         ← @ffprobe-installer/ffprobe        → arm64
+#
+# So the Intel .app carried arm64 sidecars.  Rosetta 2 translates x64 → arm64,
+# never the reverse, so on an Intel Mac none of them can execute.  The main
+# process resolves them at startup (main/utils/ffmpegEnv.ts →
+# Resources/bin/ffmpeg) and `checkFFmpeg()` fails before a window is shown.
+#
+# The fix is structural: build the Intel artefact on an INTEL runner, so every
+# binary npm/PyInstaller produces is natively x86_64.  `macos-13` is the last
+# GitHub-hosted Intel image; `macos-14`+ are all Apple Silicon.
+#
+# scripts/verify-mac-arch.cjs then walks every Mach-O inside the packaged .app
+# and fails the build if anything lacks an x86_64 slice — so this cannot
+# regress silently again.
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+    tags:
+      - 'v*'
+    paths-ignore:
+      - 'aimaster-desktop/apps/mobile/**'
+      - 'aimaster-desktop/apps/mac-shell/**'
+      - 'aimaster-desktop/services/mastering-api/**'
+      - 'docs/**'
+      - 'render.yaml'
+      - '**/*.md'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: |
+          이 빌드를 붙일 GitHub Release tag (기본 v3.6.0-intel).
+          같은 tag 로 다시 실행하면 첨부 파일이 갱신됩니다.
+        required: false
+        type: string
+        default: 'v3.6.0-intel'
+
+jobs:
+  build-mac-intel:
+    name: Build (macos-13 · Intel x86_64)
+    runs-on: macos-13          # ← Intel runner.  macos-14+ is Apple Silicon.
+    steps:
+      - uses: actions/checkout@v4
+
+      # Prove the runner really is Intel before spending 20 minutes on it.
+      # If GitHub ever retires the macos-13 image and silently remaps the
+      # label to Apple Silicon, this fails loudly instead of producing another
+      # broken "Intel" build.
+      - name: Assert runner is Intel (x86_64)
+        run: |
+          set -e
+          echo "uname -m      : $(uname -m)"
+          echo "arch          : $(arch)"
+          echo "sw_vers       : $(sw_vers -productVersion)"
+          if [ "$(uname -m)" != "x86_64" ]; then
+            echo ""
+            echo "✗ Runner is $(uname -m), not x86_64."
+            echo "  Building the Intel artefact here would bundle arm64 sidecars"
+            echo "  again — exactly the v3.6.0 bug.  Aborting."
+            exit 1
+          fi
+          echo "✓ Intel runner confirmed"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install Python dependencies + PyInstaller
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          set -e
+          python3 -V
+          python3 -c "import platform; print('python arch:', platform.machine())"
+          python3 -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          # Pin PyInstaller to 6.11.x — last release tested against the
+          # numpy<2 / soundfile 0.13 combination this engine ships with.
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install "pyinstaller==6.11.1"
+          .venv/bin/pip list
+
+      - name: Build Python engine (PyInstaller · x86_64)
+        working-directory: aimaster-desktop/services/python-audio
+        run: |
+          set -e
+          mkdir -p ../../apps/desktop/public/bin
+          .venv/bin/pyinstaller \
+            --clean --noconfirm --onefile --name engine \
+            --log-level INFO \
+            --target-arch x86_64 \
+            --distpath ../../apps/desktop/public/bin \
+            --workpath /tmp/pyinstaller-build \
+            --specpath /tmp/pyinstaller-spec \
+            --hidden-import soundfile \
+            --hidden-import numpy \
+            --collect-all soundfile \
+            --collect-all numpy \
+            --exclude-module tkinter \
+            --exclude-module pytest \
+            --exclude-module matplotlib \
+            app/main.py
+          chmod +x ../../apps/desktop/public/bin/engine
+          echo "=== engine arch ==="
+          lipo -archs ../../apps/desktop/public/bin/engine
+          lipo -archs ../../apps/desktop/public/bin/engine | grep -q x86_64 \
+            || { echo "✗ engine is not x86_64"; exit 1; }
+
+      - name: Install Node dependencies (clean)
+        working-directory: aimaster-desktop
+        run: |
+          rm -rf node_modules apps/desktop/node_modules packages/*/node_modules
+          pnpm store prune || true
+          pnpm install --no-frozen-lockfile
+
+      # Copies ffmpeg + ffprobe into public/bin.  AIMASTER_TARGET_ARCH makes
+      # prebuild.cjs assert each copied binary carries an x86_64 slice, so a
+      # wrong-arch sidecar fails here rather than at the user's machine.
+      - name: Copy FFmpeg binaries (arch-checked)
+        working-directory: aimaster-desktop/apps/desktop
+        env:
+          AIMASTER_TARGET_ARCH: x64
+        run: node scripts/prebuild.cjs
+
+      - name: Clean previous out/ + dist*/ before build
+        working-directory: aimaster-desktop/apps/desktop
+        run: rm -rf out dist dist-electron
+
+      - name: Build Electron app
+        working-directory: aimaster-desktop/apps/desktop
+        env:
+          AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+        run: pnpm build
+
+      - name: Verify build outputs (renderer + main + preload)
+        working-directory: aimaster-desktop/apps/desktop
+        run: |
+          set -e
+          test -f dist/renderer/index.html      || { echo "FAIL: dist/renderer/index.html missing"; exit 1; }
+          test -f dist-electron/main/index.js   || { echo "FAIL: dist-electron/main/index.js missing"; exit 1; }
+          test -f dist-electron/preload/index.js || { echo "FAIL: dist-electron/preload/index.js missing"; exit 1; }
+          echo "✓ renderer + main + preload present"
+
+      # x64 ONLY.  Never add --arm64 here: a single invocation would reuse the
+      # same public/bin sidecars for both bundles, which is the original bug.
+      - name: Package macOS .dmg + .zip (x64 only)
+        working-directory: aimaster-desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm --filter @aimaster/desktop exec electron-builder --mac dmg zip --x64 --publish never
+
+      # The gate.  Walks every Mach-O inside the packaged .app — Electron
+      # shell, helpers, frameworks AND the Resources/bin sidecars — and fails
+      # if any of them lacks an x86_64 slice or if a sidecar is missing.
+      - name: Verify EVERY binary in the bundle is x86_64
+        working-directory: aimaster-desktop/apps/desktop
+        run: |
+          set -e
+          APP=$(find out -maxdepth 2 -name "*.app" -type d | head -1)
+          if [ -z "$APP" ]; then
+            echo "✗ no .app found under out/"; ls -R out | head -50; exit 1
+          fi
+          echo "app bundle: $APP"
+          echo "=== main executable ==="
+          lipo -archs "$APP/Contents/MacOS/"* || true
+          echo ""
+          node scripts/verify-mac-arch.cjs "$APP" x64
+
+      - name: List build outputs
+        working-directory: aimaster-desktop/apps/desktop
+        run: ls -lah out/ || true
+
+      - name: Upload Intel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Louver-Mastering-AI-mac-intel
+          path: |
+            aimaster-desktop/apps/desktop/out/*.dmg
+            aimaster-desktop/apps/desktop/out/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  # ── Downloadable release ────────────────────────────────────────────────────
+  # Publishes (or refreshes) a pre-release carrying just the Intel artefacts, so
+  # there is a stable public download URL that does not require opening the
+  # Actions tab.  Re-running the workflow updates the same release's assets.
+  release-intel:
+    name: Publish Intel download
+    needs: [build-mac-intel]
+    # Only publish from the branches/tags that are meant to be downloadable —
+    # a push to some other claude/** branch still builds and uploads a run
+    # artifact, but must not move the public release.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/claude/studio-mix-version-search-gnko8i'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Intel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: Louver-Mastering-AI-mac-intel
+          path: artifacts/mac-intel
+
+      - name: Inspect downloaded artifacts
+        run: ls -lah artifacts/mac-intel/
+
+      - name: Resolve release tag
+        id: resolve_tag
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "tag=${{ github.ref_name }}-intel" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v3.6.0-intel" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish / update Intel pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:                ${{ steps.resolve_tag.outputs.tag }}
+          name:                    Louver Mastering AI v3.6.0 — macOS Intel
+          body_path:               docs/MACOS-INTEL.md
+          draft:                   false
+          prerelease:              true
+          fail_on_unmatched_files: true
+          target_commitish:        ${{ github.sha }}
+          files: |
+            artifacts/mac-intel/*.dmg
+            artifacts/mac-intel/*.zip

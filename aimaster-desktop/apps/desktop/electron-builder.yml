@@ -61,6 +61,15 @@ asarUnpack:
 extraMetadata:
   main: dist-electron/main/index.js
 
+# ── Build hooks ───────────────────────────────────────────────────────────────
+# afterPack runs once per (platform, arch) after the .app tree is assembled and
+# before the .dmg / .zip are built.  We use it to ad-hoc code-sign macOS
+# bundles, because CI has no Developer ID yet and an entirely unsigned bundle
+# is what makes Gatekeeper report "손상되었기 때문에 열 수 없습니다" instead of
+# the recoverable "확인되지 않은 개발자" prompt.  The hook is a no-op on
+# Windows/Linux and never fails the build.
+afterPack: scripts/mac-adhoc-sign.cjs
+
 # ── Bundled native binaries ───────────────────────────────────────────────────
 extraResources:
   - from: "public/bin"
@@ -81,6 +90,13 @@ extraResources:
 # TODO (v3.5): wire CSC_LINK / CSC_KEY_PASSWORD + Apple notarization
 # (notarytool) to enable macOS auto-update.  Until that lands, mac auto-
 # update will fail gracefully with an error event the renderer surfaces.
+# !! ARCH: build ONE arch per runner.  `extraResources` (Resources/bin/ffmpeg,
+# ffprobe, engine) is copied arch-blind, so invoking `--x64 --arm64` together
+# on an Apple Silicon runner yields an Intel .app with an x64 Electron shell
+# (Finder shows "응용 프로그램(Intel)") but arm64 sidecars, which cannot execute
+# on a real Intel Mac — the app dies in checkFFmpeg() before showing a window.
+# The Intel artefact is built by .github/workflows/build-mac-intel.yml on the
+# macos-13 (Intel) runner, and scripts/verify-mac-arch.cjs gates the result.
 mac:
   category: public.app-category.music
   icon: public/icon.png
