@@ -33,6 +33,22 @@ const LIVE_HOLD_SEC = 30;
 /** Fallback release when the instrument has no release parameter. */
 const LIVE_RELEASE_SEC = 0.12;
 
+/**
+ * One pass of the transport, as captured.
+ *
+ * Both halves come back together because they were recorded together: the
+ * microphones and the keyboard rode the same transport from the same tape
+ * zero, and committing them as one edit is the only way the takes line up in
+ * the undo history as well as on the timeline.
+ */
+export interface CapturedPass {
+  audio: Map<TrackId, { channels: Float32Array[]; sampleRate: number }>;
+  /** Null when no instrument track was armed. */
+  midi: { events: CaptureEvent[]; trackIds: TrackId[] } | null;
+  /** Seconds of transport that actually rolled. */
+  tapeSec: number;
+}
+
 interface LiveVoice {
   gate: GainNode;
   voice: { stop: (at: number) => void };
@@ -64,14 +80,31 @@ class DawRuntime {
   /** Fired when a punch-out ends a recording by itself. */
   onPunchOut: (() => void) | null = null;
 
-  /** Live input, open only while a track is armed. */
-  private capture: InputCapture | null = null;
-  private monitorTrackId: TrackId | null = null;
+  /**
+   * Live inputs, one per armed audio track.
+   *
+   * A band take is several microphones at once, so this is a map rather than a
+   * single capture: each armed track opens its OWN `getUserMedia` stream with
+   * its own device and channel count, monitors through its own channel strip,
+   * and hands back its own tape.  Nothing is shared between them but the
+   * transport.
+   */
+  private captures = new Map<TrackId, InputCapture>();
+  /** Tracks whose input is currently routed to their channel input. */
+  private monitored = new Set<TrackId>();
   private punchOutAtSec: number | null = null;
 
   // ── MIDI input ──────────────────────────────────────────────────────────
   private midi: MidiInputHandle | null = null;
-  private midiTrackId: TrackId | null = null;
+  /**
+   * Every armed instrument track.
+   *
+   * One keyboard, several tracks: the same performance sounds through each
+   * armed instrument and is committed to each of them.  That is what layering
+   * a pad under a piano means, and it is what every DAW does with more than
+   * one MIDI track armed.
+   */
+  private midiTrackIds: TrackId[] = [];
   private midiMonitor = false;
   private midiEvents: CaptureEvent[] = [];
   private midiRecording = false;
@@ -87,7 +120,12 @@ class DawRuntime {
   get sampleRate(): number { return this.ctx?.sampleRate ?? 48_000; }
   get mixer(): MixerEngine | null { return this.engine; }
   get context(): AudioContext | null { return this.ctx; }
-  get input(): InputCapture | null { return this.capture; }
+  /** The capture open for one track, if any. */
+  inputFor(trackId: TrackId): InputCapture | null {
+    return this.captures.get(trackId) ?? null;
+  }
+  /** Every track with an audio input open — what `canRecord` checks against. */
+  get openInputTracks(): TrackId[] { return [...this.captures.keys()]; }
   get midiInput(): MidiInputHandle | null { return this.midi; }
   get isMidiOpen(): boolean { return this.midi !== null; }
 
@@ -99,38 +137,45 @@ class DawRuntime {
    * asked, so the player hears themselves through their own inserts.
    */
   async openInput(
-    session: DawSession, trackId: TrackId | null,
+    session: DawSession, trackId: TrackId,
     options: { deviceId?: string | null; channels?: 1 | 2; monitor?: boolean } = {},
   ): Promise<InputCapture | null> {
     if (!this.ensure(session.sampleRate)) return null;
     const ctx = this.ctx;
     if (!ctx) return null;
     await ctx.resume();
-    this.closeInput();
+    // Only THIS track's input is replaced.  Re-opening one track's device in
+    // the middle of arming five would otherwise silence the other four.
+    this.closeInput(trackId);
     this.sync(session);
 
     const capture = await openCapture(ctx, {
       deviceId: options.deviceId ?? null,
       channels: options.channels ?? 1,
     });
-    this.capture = capture;
-    if (options.monitor && trackId) this.setMonitoring(trackId, true);
+    this.captures.set(trackId, capture);
+    if (options.monitor) this.setMonitoring(trackId, true);
     return capture;
   }
 
-  /** Route (or unroute) the live input through a track's channel. */
-  setMonitoring(trackId: TrackId | null, on: boolean): void {
-    const capture = this.capture;
+  /** Route (or unroute) one track's live input through its own channel. */
+  setMonitoring(trackId: TrackId, on: boolean): void {
+    const capture = this.captures.get(trackId);
     if (!capture) return;
-    if (this.monitorTrackId) {
+    if (this.monitored.has(trackId)) {
       try { capture.monitorNode.disconnect(); } catch { /* not connected */ }
-      this.monitorTrackId = null;
+      this.monitored.delete(trackId);
     }
-    if (!on || !trackId) return;
+    if (!on) return;
     const channel = this.engine?.channel(trackId);
     if (!channel) return;
     capture.monitorNode.connect(channel.input);
-    this.monitorTrackId = trackId;
+    this.monitored.add(trackId);
+  }
+
+  /** Turn monitoring on or off for everything that is open. */
+  setAllMonitoring(on: boolean): void {
+    for (const trackId of this.captures.keys()) this.setMonitoring(trackId, on);
   }
 
   // ── MIDI ────────────────────────────────────────────────────────────────
@@ -143,7 +188,7 @@ class DawRuntime {
    * a player using their hardware synth's own sound wants the DAW silent.
    */
   async openMidiInput(
-    session: DawSession, trackId: TrackId | null,
+    session: DawSession, trackIds: readonly TrackId[],
     options: { deviceId?: string | null; monitor?: boolean } = {},
   ): Promise<MidiInputHandle> {
     this.ensure(session.sampleRate);
@@ -152,7 +197,7 @@ class DawRuntime {
 
     const handle = await openMidiInputs(options.deviceId ?? null);
     this.midi = handle;
-    this.midiTrackId = trackId;
+    this.midiTrackIds = [...trackIds];
     this.midiMonitor = options.monitor ?? true;
     // Not recording yet, so a message stamped now belongs at the playhead.
     handle.fallbackSec = () => this.midiTapeZeroSec;
@@ -164,7 +209,7 @@ class DawRuntime {
     this.allNotesOff();
     this.midi?.close();
     this.midi = null;
-    this.midiTrackId = null;
+    this.midiTrackIds = [];
     this.midiRecording = false;
     this.midiEvents = [];
   }
@@ -174,11 +219,13 @@ class DawRuntime {
     if (!on) this.allNotesOff();
   }
 
-  /** Which track the keyboard plays into.  Changing it silences what is held. */
-  setMidiTrack(trackId: TrackId | null): void {
-    if (this.midiTrackId === trackId) return;
+  /** Which tracks the keyboard plays into.  Changing them silences what is held. */
+  setMidiTracks(trackIds: readonly TrackId[]): void {
+    const same = trackIds.length === this.midiTrackIds.length
+      && trackIds.every((id, i) => this.midiTrackIds[i] === id);
+    if (same) return;
     this.allNotesOff();
-    this.midiTrackId = trackId;
+    this.midiTrackIds = [...trackIds];
   }
 
   private receiveMidi(event: CaptureEvent): void {
@@ -198,36 +245,43 @@ class DawRuntime {
    */
   private playLive(event: CaptureEvent): void {
     const ctx = this.ctx;
-    const channel = this.midiTrackId ? this.engine?.channel(this.midiTrackId) : null;
-    if (!ctx || !channel) return;
+    if (!ctx) return;
 
     if (event.kind === 'noteOn') {
-      const track = this.session?.tracks.find((t) => t.id === this.midiTrackId);
-      const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
-      if (!instrument) return;
-      const key = `${event.channel}:${event.pitch}`;
-      this.releaseLive(key, 0);
+      // Every armed instrument track sounds it — the voice key carries the
+      // track id so each one is released by its own note-off.
+      for (const trackId of this.midiTrackIds) {
+        const channel = this.engine?.channel(trackId);
+        if (!channel) continue;
+        const track = this.session?.tracks.find((t) => t.id === trackId);
+        const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
+        if (!instrument) continue;
+        const key = `${trackId}:${event.channel}:${event.pitch}`;
+        this.releaseLive(key, 0);
 
-      const gate = ctx.createGain();
-      gate.gain.value = 1;
-      gate.connect(channel.input);
-      const params = { ...(track?.instrumentParams ?? {}) };
-      const voice = instrument.playNote({
-        ctx,
-        destination: gate,
-        note: createLiveNote(event.pitch, event.velocity),
-        config: { bendRangeSemitones: 2, mpe: false },
-        when: ctx.currentTime,
-        params,
-      });
-      this.liveVoices.set(key, {
-        gate, voice, releaseSec: Math.max(0.03, params['release'] ?? LIVE_RELEASE_SEC),
-      });
+        const gate = ctx.createGain();
+        gate.gain.value = 1;
+        gate.connect(channel.input);
+        const params = { ...(track?.instrumentParams ?? {}) };
+        const voice = instrument.playNote({
+          ctx,
+          destination: gate,
+          note: createLiveNote(event.pitch, event.velocity),
+          config: { bendRangeSemitones: 2, mpe: false },
+          when: ctx.currentTime,
+          params,
+        });
+        this.liveVoices.set(key, {
+          gate, voice, releaseSec: Math.max(0.03, params['release'] ?? LIVE_RELEASE_SEC),
+        });
+      }
       return;
     }
 
     if (event.kind === 'noteOff') {
-      this.releaseLive(`${event.channel}:${event.pitch}`, undefined);
+      for (const trackId of this.midiTrackIds) {
+        this.releaseLive(`${trackId}:${event.channel}:${event.pitch}`, undefined);
+      }
       return;
     }
 
@@ -262,75 +316,17 @@ class DawRuntime {
     for (const key of [...this.liveVoices.keys()]) this.releaseLive(key, 0.01);
   }
 
-  /**
-   * Roll for a MIDI take.
-   *
-   * Same plan, same count-in, same transport as an audio take — the only
-   * difference is that the tape is a list of events, and its zero is anchored
-   * to the context clock here so every message can be placed without reading
-   * the clock again.
-   */
-  async recordMidi(session: DawSession, plan: RecordPlan): Promise<void> {
-    if (!this.ensure(session.sampleRate)) return;
-    const ctx = this.ctx;
-    const handle = this.midi;
-    if (!ctx || !handle) throw new Error('MIDI 입력이 열려 있지 않습니다');
-    await ctx.resume();
-    await this.preload(session);
-    this.sync(session);
-    if (!this.player) return;
-
-    let lead = 0.06;
-    if (plan.countInSec > 0) {
-      scheduleCountIn(ctx, ctx.destination, {
-        tempoBpm: session.tempoBpm,
-        beatsPerBar: session.timeSignature[0],
-        bars: Math.round(plan.countInSec / (session.timeSignature[0] * (60 / session.tempoBpm))),
-        when: ctx.currentTime + lead,
-      });
-      lead += plan.countInSec;
+  /** Close one track's input, or every one of them. */
+  closeInput(trackId?: TrackId): void {
+    const ids = trackId === undefined ? [...this.captures.keys()] : [trackId];
+    for (const id of ids) {
+      const capture = this.captures.get(id);
+      if (!capture) continue;
+      this.setMonitoring(id, false);
+      capture.close();
+      this.captures.delete(id);
     }
-
-    // Tape zero is the instant the transport starts, which is what the player
-    // is about to be told.  Reading the clock once here and once inside
-    // `start` differs by well under a millisecond; re-reading it per message
-    // would cost far more.
-    const tapeZeroCtx = ctx.currentTime + lead;
-    this.midiEvents = [];
-    this.midiRecording = true;
-    this.midiTapeZeroSec = 0;
-    handle.timebase = anchorTimebase(ctx, tapeZeroCtx, 0);
-    handle.fallbackSec = () => Math.max(0, ctx.currentTime - tapeZeroCtx);
-
-    this.punchOutAtSec = plan.recordEndSec;
-    this.player.start(session, plan.transportStartSec, lead);
-    this.startTicking();
-  }
-
-  /** Stop the transport and hand back the events, in tape seconds. */
-  stopMidiRecording(): { events: CaptureEvent[]; tapeSec: number } | null {
-    const handle = this.midi;
-    const wasRecording = this.midiRecording;
-    const tapeSec = Math.max(0, (this.player?.position() ?? 0));
-    this.punchOutAtSec = null;
-    this.midiRecording = false;
-    this.stop();
-    if (handle) {
-      handle.timebase = null;
-      handle.fallbackSec = () => this.midiTapeZeroSec;
-    }
-    if (!wasRecording) return null;
-    const events = this.midiEvents;
-    this.midiEvents = [];
-    return { events, tapeSec };
-  }
-
-  closeInput(): void {
-    if (!this.capture) return;
-    this.setMonitoring(null, false);
-    this.capture.close();
-    this.capture = null;
-    this.punchOutAtSec = null;
+    if (this.captures.size === 0) this.punchOutAtSec = null;
   }
 
   /**
@@ -341,8 +337,10 @@ class DawRuntime {
   async record(session: DawSession, plan: RecordPlan): Promise<void> {
     if (!this.ensure(session.sampleRate)) return;
     const ctx = this.ctx;
-    const capture = this.capture;
-    if (!ctx || !capture) throw new Error('입력이 열려 있지 않습니다');
+    if (!ctx) return;
+    const captures = [...this.captures.values()];
+    const midi = this.midi;
+    if (captures.length === 0 && !midi) throw new Error('입력이 열려 있지 않습니다');
     await ctx.resume();
     await this.preload(session);
     this.sync(session);
@@ -359,23 +357,65 @@ class DawRuntime {
       lead += plan.countInSec;
     }
 
-    // Capture starts with the transport, not with the count-in: the clicks are
-    // monitoring, not material.
+    // Every tape starts on the SAME timer callback, so the takes line up with
+    // each other as well as with the transport.  Starting them in a loop of
+    // separate timers would spread them over several milliseconds.
     this.punchOutAtSec = plan.recordEndSec;
-    globalThis.setTimeout(() => capture.start(), Math.max(0, (lead - 0.02) * 1000));
+    const tapeZeroCtx = ctx.currentTime + lead;
+    globalThis.setTimeout(() => {
+      for (const capture of captures) capture.start();
+    }, Math.max(0, (lead - 0.02) * 1000));
+
+    // A MIDI track can be armed alongside the microphones; the keyboard rides
+    // the same transport and the same tape zero.
+    if (midi) {
+      this.midiEvents = [];
+      this.midiRecording = true;
+      this.midiTapeZeroSec = 0;
+      midi.timebase = anchorTimebase(ctx, tapeZeroCtx, 0);
+      midi.fallbackSec = () => Math.max(0, ctx.currentTime - tapeZeroCtx);
+    }
+
     this.player.start(session, plan.transportStartSec, lead);
     this.startTicking();
   }
 
-  /** Stop the transport and hand back the tape. */
-  stopRecording(): { channels: Float32Array[]; sampleRate: number } | null {
-    const capture = this.capture;
+  /**
+   * Stop the transport and hand back every tape.
+   *
+   * Tracks whose tape came back empty are simply absent from the map — the
+   * caller decides whether that is an error, because "one of six microphones
+   * was unplugged" and "nothing recorded at all" are different situations.
+   */
+  stopRecording(): CapturedPass {
     this.punchOutAtSec = null;
+    // Read the tape length BEFORE stopping the transport — afterwards the
+    // player reports where it was parked, not how far it ran.
+    const tapeSec = Math.max(0, this.player?.position() ?? 0);
+    const wasMidiRecording = this.midiRecording;
+    this.midiRecording = false;
     this.stop();
-    if (!capture) return null;
-    const buffer = capture.stop();
-    if (buffer.isEmpty) return null;
-    return { channels: buffer.toChannels(), sampleRate: buffer.sampleRate };
+
+    const audio = new Map<TrackId, { channels: Float32Array[]; sampleRate: number }>();
+    for (const [trackId, capture] of this.captures) {
+      const buffer = capture.stop();
+      if (buffer.isEmpty) continue;
+      audio.set(trackId, { channels: buffer.toChannels(), sampleRate: buffer.sampleRate });
+    }
+
+    const handle = this.midi;
+    if (handle) {
+      handle.timebase = null;
+      handle.fallbackSec = () => this.midiTapeZeroSec;
+    }
+    const events = wasMidiRecording ? this.midiEvents : null;
+    this.midiEvents = [];
+
+    return {
+      audio,
+      midi: events === null ? null : { events, trackIds: [...this.midiTrackIds] },
+      tapeSec,
+    };
   }
 
   /** Create the context on a user gesture, then keep it. */

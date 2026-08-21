@@ -201,7 +201,7 @@ check('a recording that starts after the loop ends is not looped', () => {
 
 // ── Arming ────────────────────────────────────────────────────────────────────
 
-check('arming is exclusive through the store helpers', () => {
+check('arming is per track, and several at once is the point', () => {
   const { session, track } = sessionWithTrack();
   const second = createTrack('Gtr', 'audio');
   const two = addTrack(session, second);
@@ -211,8 +211,11 @@ check('arming is exclusive through the store helpers', () => {
   eq(armedTracks(armed)[0]?.id, track.id, 'the right one');
 
   const both = setRecordArm(armed, second.id, true);
-  eq(armedTracks(both).length, 2, 'the model allows two');
-  eq(canRecord(both, settings()).ok, false, 'but recording refuses to guess which');
+  eq(armedTracks(both).length, 2, 'two armed');
+  // Multi-track detail lives in multitrack-selftest; here it just has to be
+  // true that two armed tracks are a take rather than a refusal.
+  eq(canRecord(both, settings(), { audioOpen: [track.id, second.id] }).ok, true,
+    'and both roll together');
 
   const cleared = clearRecordArm(both);
   eq(armedTracks(cleared).length, 0, 'cleared');
@@ -225,9 +228,15 @@ check('recording refuses when it cannot do the right thing', () => {
   assert(canRecord(session, settings()).reason?.includes('무장'), 'and says to arm a track');
 
   const armed = setRecordArm(session, track.id, true);
-  eq(canRecord(armed, settings()).ok, true, 'one armed audio track is enough');
+  eq(canRecord(armed, settings(), { audioOpen: [track.id] }).ok, true,
+    'one armed audio track with its input open is enough');
+  const noInput = canRecord(armed, settings(), { audioOpen: [] });
+  eq(noInput.ok, false, 'without an input it is refused');
+  assert(noInput.reason?.includes('Vox'), `naming the track — ${noInput.reason}`);
 
-  const punchless = canRecord(armed, settings({ punchEnabled: true, punchStartSec: 4, punchEndSec: 4 }));
+  const punchless = canRecord(
+    armed, settings({ punchEnabled: true, punchStartSec: 4, punchEndSec: 4 }),
+    { audioOpen: [track.id] });
   eq(punchless.ok, false, 'punch with no range');
   assert(punchless.reason?.includes('펀치'), 'and says why');
 

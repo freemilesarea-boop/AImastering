@@ -27,8 +27,8 @@ import {
   commitMidiRecording, hasPerformance, trimNotes,
 } from '../src/renderer/daw/edit/midi-record-actions.js';
 import {
-  DEFAULT_RECORD_SETTINGS, canRecord, planRecording, recordKind, setRecordArm,
-  type RecordSettings,
+  DEFAULT_RECORD_SETTINGS, armedSplit, canRecord, planRecording, setRecordArm,
+  trackRecordKind, type RecordSettings,
 } from '../src/renderer/daw/model/recording.js';
 import {
   addTrack, createSession, createTrack, findTrack,
@@ -419,7 +419,8 @@ check('the timebase is linear in both directions', () => {
 check('an instrument track can now be armed for MIDI', () => {
   const { session, track } = sessionWithInstrument();
   const armed = setRecordArm(session, track.id, true);
-  eq(recordKind(armed), 'midi', 'an instrument track records MIDI');
+  eq(trackRecordKind(track), 'midi', 'an instrument track records MIDI');
+  eq(armedSplit(armed).midi.length, 1, 'and lands on the MIDI side of the split');
   const ready = canRecord(armed, settings(), { midiOpen: true });
   assert(ready.ok, `it is allowed — ${ready.reason ?? ''}`);
 });
@@ -432,16 +433,18 @@ check('with no MIDI input open the button says why', () => {
   assert((ready.reason ?? '').includes('MIDI'), `and names the reason — ${ready.reason}`);
 });
 
-check('audio and instrument tracks cannot be armed together', () => {
+check('audio and instrument tracks roll together in one pass', () => {
   resetIds();
   let session = createSession('mixed');
   const audio = createTrack('Vox', 'audio');
   const keys = createTrack('Keys', 'instrument');
   session = addTrack(addTrack(session, audio), keys);
   session = setRecordArm(setRecordArm(session, audio.id, true), keys.id, true);
-  const ready = canRecord(session, settings(), { midiOpen: true, audioOpen: true });
-  assert(!ready.ok, 'refused');
-  assert((ready.reason ?? '').includes('함께'), `for the right reason — ${ready.reason}`);
+  const split = armedSplit(session);
+  eq(split.audio.length, 1, 'the microphone');
+  eq(split.midi.length, 1, 'and the keyboard');
+  const ready = canRecord(session, settings(), { midiOpen: true, audioOpen: [audio.id] });
+  assert(ready.ok, `a band take is allowed — ${ready.reason ?? ''}`);
 });
 
 check('an audio track still records audio', () => {
@@ -449,8 +452,8 @@ check('an audio track still records audio', () => {
   const session = createSession('audio');
   const track = createTrack('Vox', 'audio');
   const armed = setRecordArm(addTrack(session, track), track.id, true);
-  eq(recordKind(armed), 'audio', 'unchanged');
-  assert(canRecord(armed, settings(), { audioOpen: true }).ok, 'and still allowed');
+  eq(trackRecordKind(track), 'audio', 'unchanged');
+  assert(canRecord(armed, settings(), { audioOpen: [track.id] }).ok, 'and still allowed');
 });
 
 // ── 7. Commit ─────────────────────────────────────────────────────────────────
