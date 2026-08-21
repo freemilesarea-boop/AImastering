@@ -55,6 +55,8 @@ const INVOKE_CHANNELS = [
   // Natural-language assistant.  The key lives in main and never crosses
   // this bridge — the renderer can set one and ask questions, not read one.
   'assistant:status', 'assistant:ask', 'assistant:set-key', 'assistant:clear-key',
+  // Picture: ffprobe tells us the frame rate, which a <video> element will not.
+  'video:probe',
   // Updater (v3.4.3)
   'updater:check', 'updater:download', 'updater:quit-and-install',
   'updater:get-status',

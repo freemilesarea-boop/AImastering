@@ -71,6 +71,8 @@ import { setChordTrack } from '../daw/model/session-ops.js';
 import { reharmonize, formatProgression, makeChord } from '../daw/model/chords.js';
 import { addChord, sortedChords, withChords } from '../daw/edit/chord-edit.js';
 import { useVocalEditorStore } from '../stores/vocalEditorStore.js';
+import { useVideoStore } from '../stores/videoStore.js';
+import { frameSec, videoOf } from '../daw/model/video.js';
 import {
   analyzeClipPitch, applyCorrection, guideNotesFor, renderClipPitch, tuningSummary,
 } from '../daw/audio/varia-actions.js';
@@ -110,7 +112,8 @@ export type DawCommandId =
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
   | 'daw.tuneToGuide' | 'daw.riff'
-  | 'daw.addChord' | 'daw.openVocalEditor';
+  | 'daw.addChord' | 'daw.openVocalEditor'
+  | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -601,6 +604,22 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       }
     },
 
+    // ── Picture ───────────────────────────────────────────────────────────
+    'daw.togglePicture': () => {
+      useVideoStore.getState().toggle();
+    },
+
+    /**
+     * Move by a FRAME, not by the nudge amount.
+     *
+     * Against picture the only meaningful step is one frame, and at 23.976
+     * that is 41.7 ms — a number nobody would ever set the nudge to.  With no
+     * picture loaded there is no frame rate to step by, so it says so rather
+     * than inventing 25.
+     */
+    'daw.nudgeFrameBack': () => stepFramesWith(daw(), -1, notify),
+    'daw.nudgeFrameForward': () => stepFramesWith(daw(), 1, notify),
+
     // ── Smart Controls / Track Stacks ─────────────────────────────────────
     'daw.tempoChange': () => {
       const state = daw();
@@ -1028,6 +1047,15 @@ function folderForSelection(state: DawState): string | null {
 }
 
 /** The audio clip under the play head on the focused track. */
+/** One frame at the picture's own rate, or a complaint when there is none. */
+function stepFramesWith(
+  state: DawState, frames: number, notify: DawCommandDeps['notify'],
+): void {
+  const video = videoOf(state.session);
+  if (!video) { notify('픽처가 없습니다 — 영상을 먼저 불러오세요', 'warning'); return; }
+  state.seek(Math.max(0, state.playheadSec + frames * frameSec(video.fps)));
+}
+
 function audioClipAtPlayhead(state: DawState): { trackId: string; clipId: string } | null {
   for (const trackId of targetTrackIds()) {
     const track = findTrack(state.session, trackId);
