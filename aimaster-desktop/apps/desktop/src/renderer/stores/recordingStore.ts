@@ -13,14 +13,11 @@
 
 import { create } from 'zustand';
 import {
-  DEFAULT_RECORD_SETTINGS, armedTracks, canRecord, clearRecordArm, planRecording,
-  recordKind, setRecordArm, type RecordKind, type RecordPlan, type RecordSettings,
+  DEFAULT_RECORD_SETTINGS, DEFAULT_TRACK_INPUT, armedSplit, armedTracks, canRecord,
+  clearRecordArm, planRecording, setRecordArm, trackRecordKind,
+  type RecordPlan, type RecordSettings, type TrackInput,
 } from '../daw/model/recording.js';
-import { commitRecording } from '../daw/edit/record-actions.js';
-import { commitMidiRecording } from '../daw/edit/midi-record-actions.js';
-import {
-  bendRangeFor, captureNotes, describeCapture, looksLikeMpeStream,
-} from '../daw/model/midi-capture.js';
+import { commitPass, describePass, passIsEmpty } from '../daw/edit/record-pass.js';
 import { listInputDevices, requestInputPermission, type InputDevice } from '../daw/engine/recorder.js';
 import { isMidiSupported, listMidiInputs, type MidiInputDevice } from '../daw/engine/midi-input.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
@@ -34,34 +31,48 @@ interface RecordingState {
   settings: RecordSettings;
   devices: InputDevice[];
   midiDevices: MidiInputDevice[];
-  /** What the armed track wants — audio tape or a keyboard. */
-  kind: RecordKind | null;
+  /**
+   * What each armed track listens to.  Per track, because six microphones on
+   * one interface is six different inputs, and a DAW that can only say
+   * "the input device" cannot record a band.
+   */
+  inputs: Record<TrackId, TrackInput>;
   /** True once a MIDI input is actually open. */
   midiOpen: boolean;
   /** Last key played, for the activity light.  Cleared when it comes up. */
   midiNote: { pitch: number; velocity: number } | null;
-  /** Peak of the live input, 0…1. */
-  level: number;
+  /** Peak of each track's live input, 0…1. */
+  levels: Record<TrackId, number>;
   /** Seconds of tape rolled on the current take. */
   elapsedSec: number;
   plan: RecordPlan | null;
-  /** What the last committed take contained — notes, drops, ignored CCs. */
+  /** What the last committed pass laid down. */
   lastTakeNote: string | null;
   error: string | null;
 
   setSettings: (patch: Partial<RecordSettings>) => void;
+  setTrackInput: (trackId: TrackId, patch: Partial<TrackInput>) => void;
   refreshDevices: () => Promise<void>;
   refreshMidiDevices: () => Promise<void>;
   toggleArm: (trackId: TrackId) => Promise<void>;
+  /** Match the one MIDI handle to whichever instrument tracks are armed. */
+  syncMidiArm: () => Promise<void>;
+  disarmTrack: (trackId: TrackId) => void;
   disarmAll: () => void;
   start: () => Promise<void>;
   stop: () => Promise<void>;
   cancel: () => void;
 }
 
-let levelUnsubscribe: (() => void) | null = null;
+/** One unsubscribe per open input, so closing one track leaves the rest alone. */
+const levelUnsubscribers = new Map<TrackId, () => void>();
 let elapsedTimer: ReturnType<typeof setInterval> | null = null;
 let midiNoteClear: ReturnType<typeof setTimeout> | null = null;
+
+function dropLevelListener(trackId: TrackId): void {
+  levelUnsubscribers.get(trackId)?.();
+  levelUnsubscribers.delete(trackId);
+}
 
 function stopElapsed(): void {
   if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
@@ -72,10 +83,10 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
   settings: DEFAULT_RECORD_SETTINGS,
   devices: [],
   midiDevices: [],
-  kind: null,
+  inputs: {},
   midiOpen: false,
   midiNote: null,
-  level: 0,
+  levels: {},
   elapsedSec: 0,
   plan: null,
   lastTakeNote: null,
@@ -89,15 +100,18 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
   setSettings: (patch) => {
     const before = get().settings;
     set({ settings: { ...before, ...patch } });
-    if (!get().midiOpen) return;
+
     if (patch.monitoring !== undefined && patch.monitoring !== before.monitoring) {
-      dawRuntime.setMidiMonitoring(patch.monitoring === 'on');
+      const on = patch.monitoring === 'on';
+      dawRuntime.setAllMonitoring(on);
+      if (get().midiOpen) dawRuntime.setMidiMonitoring(on);
     }
-    if (patch.midiInputId !== undefined && patch.midiInputId !== before.midiInputId) {
+    if (get().midiOpen
+      && patch.midiInputId !== undefined && patch.midiInputId !== before.midiInputId) {
       const daw = useDawStore.getState();
-      const armed = armedTracks(daw.session)[0];
-      if (!armed) return;
-      void dawRuntime.openMidiInput(daw.session, armed.id, {
+      const midiTracks = armedSplit(daw.session).midi.map((t) => t.id);
+      if (midiTracks.length === 0) return;
+      void dawRuntime.openMidiInput(daw.session, midiTracks, {
         deviceId: patch.midiInputId,
         monitor: get().settings.monitoring === 'on',
       }).then(
@@ -105,6 +119,36 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
         (err: Error) => set({ midiOpen: false, error: err.message }),
       );
     }
+  },
+
+  /**
+   * Change what ONE armed track listens to, and re-open just that input.
+   *
+   * Re-opening is the only way a device change reaches a stream that is
+   * already running, and doing it per track is what keeps changing microphone
+   * four from interrupting the other five.
+   */
+  setTrackInput: (trackId, patch) => {
+    const current = get().inputs[trackId] ?? DEFAULT_TRACK_INPUT;
+    const next: TrackInput = { ...current, ...patch };
+    set({ inputs: { ...get().inputs, [trackId]: next } });
+
+    if (!dawRuntime.inputFor(trackId)) return;
+    const daw = useDawStore.getState();
+    void dawRuntime.openInput(daw.session, trackId, {
+      deviceId: next.deviceId,
+      channels: next.channels,
+      monitor: get().settings.monitoring === 'on',
+    }).then(
+      (capture) => {
+        if (!capture) { set({ error: '입력을 다시 열 수 없습니다' }); return; }
+        dropLevelListener(trackId);
+        levelUnsubscribers.set(trackId,
+          capture.onLevel((peak) => set({ levels: { ...get().levels, [trackId]: peak } })));
+        set({ error: null });
+      },
+      (err: Error) => set({ error: err.message }),
+    );
   },
 
   refreshDevices: async () => {
@@ -128,56 +172,97 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     if (!track) return;
     const arming = !track.recordArm;
 
-    daw.apply((s) => (arming ? setRecordArm(clearRecordArm(s), trackId, true) : setRecordArm(s, trackId, false)));
+    // Arming NO LONGER disarms everything else: several tracks rolling at once
+    // is the point.  Each one opens its own input and closes its own input.
+    daw.apply((s) => setRecordArm(s, trackId, arming));
 
     if (!arming) {
-      get().disarmAll();
+      get().disarmTrack(trackId);
       return;
     }
 
     const { settings } = get();
-    const kind: RecordKind = track.kind === 'instrument' ? 'midi' : 'audio';
     try {
-      if (kind === 'midi') {
-        // A keyboard track opens a keyboard, not a microphone.  Same rule
-        // either way: arming opens the input and disarming closes it, so
-        // nothing is left listening after a session.
-        const handle = await dawRuntime.openMidiInput(useDawStore.getState().session, trackId, {
-          deviceId: settings.midiInputId,
-          monitor: settings.monitoring === 'on',
-        });
-        dawRuntime.onMidiActivity = (event) => {
-          if (event.kind === 'noteOn') {
-            if (midiNoteClear) clearTimeout(midiNoteClear);
-            set({ midiNote: { pitch: event.pitch, velocity: event.velocity } });
-            // The light stays lit briefly after the key comes up, otherwise a
-            // staccato note is a flicker nobody sees.
-            midiNoteClear = globalThis.setTimeout(() => set({ midiNote: null }), 320);
-          }
-        };
-        set({ status: 'armed', kind, midiOpen: handle.deviceCount > 0, error: null, level: 0 });
+      if (trackRecordKind(track) === 'midi') {
+        await get().syncMidiArm();
+        set({ status: 'armed', error: null });
         void get().refreshMidiDevices();
         return;
       }
 
+      const input = get().inputs[trackId] ?? {
+        deviceId: settings.inputDeviceId, channels: settings.channels,
+      };
+      set({ inputs: { ...get().inputs, [trackId]: input } });
       const capture = await dawRuntime.openInput(useDawStore.getState().session, trackId, {
-        deviceId: settings.inputDeviceId,
-        channels: settings.channels,
+        deviceId: input.deviceId,
+        channels: input.channels,
         monitor: settings.monitoring === 'on',
       });
       if (!capture) throw new Error('입력을 열 수 없습니다');
-      levelUnsubscribe?.();
-      levelUnsubscribe = capture.onLevel((peak) => set({ level: peak }));
-      set({ status: 'armed', kind, midiOpen: false, error: null });
+      dropLevelListener(trackId);
+      levelUnsubscribers.set(trackId,
+        capture.onLevel((peak) => set({ levels: { ...get().levels, [trackId]: peak } })));
+      set({ status: 'armed', error: null });
     } catch (err) {
       useDawStore.getState().apply((s) => setRecordArm(s, trackId, false));
-      set({ status: 'idle', kind: null, midiOpen: false, error: (err as Error).message });
+      set({
+        status: armedTracks(useDawStore.getState().session).length > 0 ? 'armed' : 'idle',
+        error: `${track.name}: ${(err as Error).message}`,
+      });
+    }
+  },
+
+  /**
+   * Open, re-open or close the ONE keyboard, matched to the armed instrument
+   * tracks.  There is a single MIDI handle no matter how many tracks are
+   * armed — the keyboard is one device; what changes is who hears it.
+   */
+  syncMidiArm: async () => {
+    const daw = useDawStore.getState();
+    const midiTracks = armedSplit(daw.session).midi.map((t) => t.id);
+    if (midiTracks.length === 0) {
+      dawRuntime.onMidiActivity = null;
+      dawRuntime.closeMidiInput();
+      set({ midiOpen: false, midiNote: null });
+      return;
+    }
+    if (dawRuntime.isMidiOpen) {
+      // Already listening — just widen or narrow who it plays through.
+      dawRuntime.setMidiTracks(midiTracks);
+      return;
+    }
+    const handle = await dawRuntime.openMidiInput(daw.session, midiTracks, {
+      deviceId: get().settings.midiInputId,
+      monitor: get().settings.monitoring === 'on',
+    });
+    dawRuntime.onMidiActivity = (event) => {
+      if (event.kind !== 'noteOn') return;
+      if (midiNoteClear) clearTimeout(midiNoteClear);
+      set({ midiNote: { pitch: event.pitch, velocity: event.velocity } });
+      // The light stays lit briefly after the key comes up, otherwise a
+      // staccato note is a flicker nobody sees.
+      midiNoteClear = globalThis.setTimeout(() => set({ midiNote: null }), 320);
+    };
+    set({ midiOpen: handle.deviceCount > 0 });
+  },
+
+  /** Disarm one track and close only what belonged to it. */
+  disarmTrack: (trackId) => {
+    dropLevelListener(trackId);
+    dawRuntime.closeInput(trackId);
+    const levels = { ...get().levels };
+    delete levels[trackId];
+    set({ levels });
+    void get().syncMidiArm();
+    if (armedTracks(useDawStore.getState().session).length === 0) {
+      stopElapsed();
+      set({ status: 'idle', elapsedSec: 0, plan: null });
     }
   },
 
   disarmAll: () => {
-    levelUnsubscribe?.();
-    levelUnsubscribe = null;
+    for (const trackId of [...levelUnsubscribers.keys()]) dropLevelListener(trackId);
     if (midiNoteClear) { clearTimeout(midiNoteClear); midiNoteClear = null; }
     stopElapsed();
     dawRuntime.onMidiActivity = null;
@@ -185,30 +270,31 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     dawRuntime.closeMidiInput();
     useDawStore.getState().apply((s) => clearRecordArm(s));
     set({
-      status: 'idle', kind: null, midiOpen: false, midiNote: null,
-      level: 0, elapsedSec: 0, plan: null,
+      status: 'idle', midiOpen: false, midiNote: null,
+      levels: {}, elapsedSec: 0, plan: null,
     });
   },
 
   start: async () => {
     const daw = useDawStore.getState();
     const { settings } = get();
-    const kind = recordKind(daw.session);
-    const readiness = canRecord(daw.session, settings, kind === 'midi'
-      ? { midiOpen: dawRuntime.isMidiOpen }
-      : { audioOpen: dawRuntime.input !== null });
+    const readiness = canRecord(daw.session, settings, {
+      audioOpen: dawRuntime.openInputTracks,
+      midiOpen: dawRuntime.isMidiOpen,
+    });
     if (!readiness.ok) { set({ error: readiness.reason ?? '녹음할 수 없습니다' }); return; }
 
     const loop = daw.loopEnabled ? { startSec: daw.loopStartSec, endSec: daw.loopEndSec } : null;
     const plan = planRecording(daw.session, settings, daw.playheadSec, loop);
     set({
-      plan, kind, error: null, elapsedSec: 0, lastTakeNote: null,
+      plan, error: null, elapsedSec: 0, lastTakeNote: null,
       status: plan.countInSec > 0 ? 'countIn' : 'recording',
     });
 
     try {
-      if (kind === 'midi') await dawRuntime.recordMidi(daw.session, plan);
-      else await dawRuntime.record(daw.session, plan);
+      // One call for the whole pass — microphones and keyboard alike ride the
+      // same transport from the same tape zero.
+      await dawRuntime.record(daw.session, plan);
     } catch (err) {
       set({ status: 'armed', error: (err as Error).message, plan: null });
       return;
@@ -229,55 +315,33 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
   },
 
   stop: async () => {
-    const { status, plan, settings, kind } = get();
+    const { status, plan, settings } = get();
     if (status !== 'recording' && status !== 'countIn') return;
     stopElapsed();
     const daw = useDawStore.getState();
-    const track = armedTracks(daw.session)[0];
-
-    if (kind === 'midi') {
-      const performance = dawRuntime.stopMidiRecording();
-      if (!performance || !plan || !track) {
-        set({
-          status: 'armed', elapsedSec: 0, plan: null,
-          error: performance ? null : '연주된 노트가 없습니다',
-        });
-        return;
-      }
-      set({ status: 'committing' });
-      try {
-        const mpe = looksLikeMpeStream(performance.events);
-        const captured = captureNotes(performance.events, {
-          endSec: performance.tapeSec,
-          sustainPedal: settings.midiSustainPedal,
-        });
-        const result = commitMidiRecording(daw.session, track.id, {
-          notes: captured.notes,
-          tapeSec: performance.tapeSec,
-          config: { bendRangeSemitones: bendRangeFor(mpe), mpe },
-        }, plan, settings);
-        useDawStore.getState().apply(() => result.session);
-        set({
-          status: 'armed', elapsedSec: 0, plan: null, error: null,
-          lastTakeNote: describeCapture(captured),
-        });
-      } catch (err) {
-        set({ status: 'armed', elapsedSec: 0, plan: null, error: (err as Error).message });
-      }
-      return;
-    }
-
     const captured = dawRuntime.stopRecording();
-    if (!captured || !plan || !track) {
-      set({ status: 'armed', elapsedSec: 0, plan: null, error: captured ? null : '녹음된 오디오가 없습니다' });
+
+    if (!plan || passIsEmpty(captured)) {
+      set({ status: 'armed', elapsedSec: 0, plan: null, error: '녹음된 것이 없습니다' });
       return;
     }
 
     set({ status: 'committing' });
     try {
-      const result = await commitRecording(daw.session, track.id, captured, plan, settings);
+      // Every track lands in ONE edit, so one Cmd+Z takes the whole pass back.
+      const result = await commitPass(daw.session, {
+        audio: captured.audio,
+        midi: captured.midi,
+        tapeSec: captured.tapeSec,
+      }, plan, settings);
       useDawStore.getState().apply(() => result.session);
-      set({ status: 'armed', elapsedSec: 0, plan: null, error: null });
+      set({
+        status: 'armed', elapsedSec: 0, plan: null,
+        lastTakeNote: describePass(result),
+        // A track that recorded nothing is reported, not swallowed — with six
+        // microphones open, a silent one has to be findable.
+        error: result.problems.length > 0 ? result.problems.join(' / ') : null,
+      });
     } catch (err) {
       set({ status: 'armed', elapsedSec: 0, plan: null, error: (err as Error).message });
     }
@@ -286,8 +350,7 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
   /** Throw the take away — the transport stops and nothing is written. */
   cancel: () => {
     stopElapsed();
-    if (get().kind === 'midi') dawRuntime.stopMidiRecording();
-    else dawRuntime.stopRecording();
+    dawRuntime.stopRecording();
     set({ status: 'armed', elapsedSec: 0, plan: null });
   },
 }));

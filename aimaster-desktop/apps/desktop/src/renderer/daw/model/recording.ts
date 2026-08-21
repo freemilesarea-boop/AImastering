@@ -27,9 +27,9 @@ import type { DawSession, Track, TrackId } from './types.js';
 export type MonitorMode = 'off' | 'on';
 
 export interface RecordSettings {
-  /** MediaDevices id, or null for the system default. */
+  /** Default MediaDevices id for a newly armed track, null for the system one. */
   inputDeviceId: string | null;
-  /** Channels to capture. */
+  /** Default channel count for a newly armed track. */
   channels: 1 | 2;
   monitoring: MonitorMode;
   /** Punch gives the recording an end as well as a start. */
@@ -240,17 +240,55 @@ export interface RecordReadiness {
  */
 export type RecordKind = 'audio' | 'midi';
 
-export function recordKind(session: DawSession): RecordKind | null {
-  const first = armedTracks(session)[0];
-  if (!first) return null;
-  return first.kind === 'instrument' ? 'midi' : 'audio';
+export function trackRecordKind(track: Track): RecordKind {
+  return track.kind === 'instrument' ? 'midi' : 'audio';
 }
+
+/**
+ * The armed tracks split by what they capture.
+ *
+ * A band take is several microphones AND a keyboard at once, so both lists can
+ * be non-empty in the same pass.  They are separated here because the two
+ * capture paths are genuinely different — one is a tape, the other is a list
+ * of events — while everything around them (the plan, the count-in, the loop
+ * passes) is shared.
+ */
+export interface ArmedSplit {
+  audio: Track[];
+  midi: Track[];
+}
+
+export function armedSplit(session: DawSession): ArmedSplit {
+  const armed = armedTracks(session);
+  return {
+    audio: armed.filter((t) => trackRecordKind(t) === 'audio'),
+    midi: armed.filter((t) => trackRecordKind(t) === 'midi'),
+  };
+}
+
+/** What ONE armed track listens to. */
+export interface TrackInput {
+  /** MediaDevices id, or null for the system default. */
+  deviceId: string | null;
+  channels: 1 | 2;
+}
+
+export const DEFAULT_TRACK_INPUT: TrackInput = { deviceId: null, channels: 1 };
+
+/**
+ * How many tracks can roll at once.
+ *
+ * Every armed audio track is a separate `getUserMedia` stream with its own
+ * worklet, and browsers get unhappy well before this.  A stated limit that
+ * refuses cleanly beats an unstated one that drops samples on take nine.
+ */
+export const MAX_RECORD_TRACKS = 16;
 
 /** What the capture side has actually managed to open. */
 export interface RecordInputs {
-  /** A microphone is open. */
-  audioOpen?: boolean;
-  /** At least one MIDI input is open. */
+  /** Track ids with an audio capture open.  Undefined means "do not check". */
+  audioOpen?: readonly TrackId[];
+  /** At least one MIDI input is open.  Undefined means "do not check". */
   midiOpen?: boolean;
 }
 
@@ -260,26 +298,46 @@ export function canRecord(
 ): RecordReadiness {
   const armed = armedTracks(session);
   if (armed.length === 0) return { ok: false, reason: '녹음할 트랙을 먼저 무장(R)하세요' };
-  if (armed.some((t) => t.frozen)) return { ok: false, reason: '프리즈된 트랙에는 녹음할 수 없습니다' };
-  // Mixing the two would need two captures and two commits; one at a time is
-  // already the rule below, so this only makes the reason readable.
-  const kinds = new Set(armed.map((t) => (t.kind === 'instrument' ? 'midi' : 'audio')));
-  if (kinds.size > 1) {
-    return { ok: false, reason: '오디오 트랙과 인스트루먼트 트랙을 함께 녹음할 수 없습니다' };
+  const frozen = armed.filter((t) => t.frozen);
+  if (frozen.length > 0) {
+    return { ok: false, reason: `프리즈된 트랙에는 녹음할 수 없습니다 — ${frozen[0]?.name}` };
   }
-  if (kinds.has('midi') && inputs.midiOpen === false) {
+  if (armed.length > MAX_RECORD_TRACKS) {
+    return { ok: false, reason: `한 번에 ${MAX_RECORD_TRACKS}트랙까지 녹음할 수 있습니다` };
+  }
+
+  const split = armedSplit(session);
+  if (split.midi.length > 0 && inputs.midiOpen === false) {
     return { ok: false, reason: 'MIDI 입력 장치를 연결하고 트랙을 무장하세요' };
   }
-  if (kinds.has('audio') && inputs.audioOpen === false) {
-    return { ok: false, reason: '오디오 입력이 열려 있지 않습니다' };
+  if (split.audio.length > 0 && inputs.audioOpen !== undefined) {
+    // Naming the track is the whole value of this check: with six armed, "an
+    // input is not open" tells you nothing about which one to look at.
+    const open = new Set(inputs.audioOpen);
+    const missing = split.audio.filter((t) => !open.has(t.id));
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason: missing.length === 1
+          ? `"${missing[0]?.name}" 의 입력이 열려 있지 않습니다`
+          : `${missing.length}개 트랙의 입력이 열려 있지 않습니다 — ${missing[0]?.name} 외`,
+      };
+    }
   }
+
   if (settings.punchEnabled && settings.punchEndSec - settings.punchStartSec <= 1e-6) {
     return { ok: false, reason: '펀치 구간을 먼저 선택하세요' };
   }
-  if (armed.length > 1) {
-    return { ok: false, reason: '지금은 한 번에 한 트랙만 녹음할 수 있습니다' };
-  }
   return { ok: true };
+}
+
+/** `마이크 3 · 건반 1` — what the next take will actually capture. */
+export function describeArmed(session: DawSession): string {
+  const split = armedSplit(session);
+  const parts: string[] = [];
+  if (split.audio.length > 0) parts.push(`오디오 ${split.audio.length}`);
+  if (split.midi.length > 0) parts.push(`MIDI ${split.midi.length}`);
+  return parts.join(' · ');
 }
 
 /** Next take name for a track, in the Pro Tools "Vox.03" style. */
