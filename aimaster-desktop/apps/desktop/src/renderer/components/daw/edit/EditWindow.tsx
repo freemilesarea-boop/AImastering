@@ -37,6 +37,7 @@ import {
 } from '../../../daw/model/tempo-map.js';
 import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 import SectionLane, { SectionLaneHeader } from './SectionLane.js';
+import ChordLane, { ChordLaneHeader } from './ChordLane.js';
 
 const HEADER_WIDTH = 168;
 const RULER_HEIGHT = 26;
@@ -398,6 +399,7 @@ export default function EditWindow() {
         {/* Headers */}
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
           <SectionLaneHeader />
+          <ChordLaneHeader />
           <TempoTrackHeader session={session} />
           {displayRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneHeader key={row.key} track={row.track} lane={row.lane} />
@@ -445,6 +447,7 @@ export default function EditWindow() {
             </div>
           )}
           <SectionLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
+          <ChordLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
           <TempoTrack
             session={session}
             viewport={{ scrollSec, pxPerSec, width: laneWidth }}

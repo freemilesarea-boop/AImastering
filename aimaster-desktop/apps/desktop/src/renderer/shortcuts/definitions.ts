@@ -67,8 +67,8 @@ export type CommandId =
   | 'daw.transposeUp' | 'daw.transposeDown'
   | 'daw.octaveUp' | 'daw.octaveDown'
   | 'daw.velocityUp' | 'daw.velocityDown'
-  | 'daw.detectChords' | 'daw.reharmonize'
-  | 'daw.analyzeVocal' | 'daw.tuneVocal'
+  | 'daw.detectChords' | 'daw.reharmonize' | 'daw.addChord'
+  | 'daw.analyzeVocal' | 'daw.tuneVocal' | 'daw.openVocalEditor'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.toggleAutomation' | 'daw.automationMode'
   | 'daw.tempoChange' | 'daw.tempoRamp'
@@ -299,12 +299,16 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '열린 MIDI 파트의 화성을 읽어 코드 트랙을 채움', available: true },
   { id: 'daw.reharmonize', group: 'daw', label: '리하모나이즈 (재즈)', chords: ['Mod+Alt+J'],
     note: '3화음 → 7화음, 도미넌트 앞에 ii 삽입', available: true },
+  { id: 'daw.addChord', group: 'daw', label: '재생 위치에 코드', chords: ['Alt+H'],
+    note: '코드 레인에 C 를 놓습니다 — 블록을 더블클릭해 Cmaj7 처럼 고쳐 씁니다', available: true },
 
   // ── 보컬 피치 편집 (VariAudio 계열) ────────────────────────────────────
   { id: 'daw.analyzeVocal', group: 'daw', label: '보컬 피치 분석', chords: ['Mod+Alt+P'],
     note: '재생 위치의 오디오 클립을 음정 구간으로 분석 (피치 · 비브라토 · 드리프트)', available: true },
   { id: 'daw.tuneVocal', group: 'daw', label: '스케일로 피치 보정', chords: ['Mod+Alt+U'],
     note: '분석된 구간을 에디터 스케일에 맞추고 PSOLA 로 렌더 (원본은 보존)', available: true },
+  { id: 'daw.openVocalEditor', group: 'daw', label: 'VOCAL 에디터에서 열기', chords: ['Shift+Alt+V'],
+    note: '재생 위치의 오디오 클립을 블롭 에디터로 — 노트 하나씩 끌어 고칩니다', available: true },
 
   // ── 스마트 컨트롤 · 트랙 스택 ──────────────────────────────────────────
   { id: 'daw.tempoChange', group: 'daw', label: '재생 위치에 템포 변화', chords: ['Alt+T'],

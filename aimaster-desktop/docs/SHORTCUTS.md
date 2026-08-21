@@ -124,8 +124,10 @@ macOS 의 `Option+X` 처럼 조합 문자가 나오는 경우에도 정확히 �
 | 벨로시티 ± | `Mod+↑` / `Mod+↓` | ±5 |
 | 코드 감지 | `Mod+Shift+C` | MIDI 파트 → 코드 트랙 |
 | 리하모나이즈 | `Mod+Alt+J` | 7화음화 + ii 삽입 |
+| 재생 위치에 코드 | `Alt+H` | 코드 레인에 C — 더블클릭해서 `Cmaj7` 처럼 고쳐 씀 |
 | 보컬 피치 분석 | `Mod+Alt+P` | 오디오 클립 → 음정 구간 |
 | 스케일로 피치 보정 | `Mod+Alt+U` | PSOLA 렌더 (원본 보존) |
+| **VOCAL 에디터** | `Shift+Alt+V` | 블롭 뷰 — 노트 하나씩 끌어 고침 |
 | **스마트 컨트롤** | `Mod+Alt+S` | 매크로 7개 + Advanced 실제 파라미터 |
 | 트랙 스택 만들기 | `Mod+Shift+G` | 선택 트랙을 합산 스택으로 |
 | 스택 해제 / 접기 | `Mod+Shift+U` / `Mod+Shift+F` | |
