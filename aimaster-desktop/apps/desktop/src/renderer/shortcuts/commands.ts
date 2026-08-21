@@ -372,6 +372,7 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
     },
 
     'window.shortcutHelp': () => { workspace().togglePanel('help'); },
+    'window.controlSurface': () => { workspace().togglePanel('surface'); },
   } as CommandMap;
 
   // DAW-only verbs — registered even without the workspace so the key says

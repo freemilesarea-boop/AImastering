@@ -15,7 +15,9 @@ import { ClipPlayer } from './clip-player.js';
 import { getCached, pinFiles, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
 import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
-import { MidiInputHandle, anchorTimebase, openMidiInputs } from './midi-input.js';
+import {
+  MidiInputHandle, anchorTimebase, midiFailureReason, openMidiInputs,
+} from './midi-input.js';
 import type { CaptureEvent } from '../model/midi-capture.js';
 import type { MidiNote } from '../model/midi.js';
 import type { RecordPlan } from '../model/recording.js';
@@ -114,6 +116,16 @@ class DawRuntime {
 
   /** Every MIDI message that arrives, for the activity light and the pitch. */
   onMidiActivity: ((event: CaptureEvent) => void) | null = null;
+  /**
+   * Anything else that wants the raw stream — the control surface, MIDI learn.
+   *
+   * A registry rather than one more callback slot, because these listeners
+   * outlive each other: a surface stays mapped while tracks are armed and
+   * disarmed underneath it, and learn is a listener that removes itself.
+   */
+  private midiListeners = new Set<(event: CaptureEvent) => void>();
+  /** True while something other than a track wants the port kept open. */
+  private midiHeldOpen = false;
 
   get isReady(): boolean { return this.ctx !== null; }
   get isPlaying(): boolean { return this.player?.isPlaying ?? false; }
@@ -192,7 +204,11 @@ class DawRuntime {
     options: { deviceId?: string | null; monitor?: boolean } = {},
   ): Promise<MidiInputHandle> {
     this.ensure(session.sampleRate);
+    // A re-open really does replace the port, hold or no hold.
+    const held = this.midiHeldOpen;
+    this.midiHeldOpen = false;
     this.closeMidiInput();
+    this.midiHeldOpen = held;
     this.sync(session);
 
     const handle = await openMidiInputs(options.deviceId ?? null);
@@ -205,13 +221,18 @@ class DawRuntime {
     return handle;
   }
 
+  /**
+   * Close the port — unless something else is holding it open, in which case
+   * only the tracks are detached and the surface keeps hearing the desk.
+   */
   closeMidiInput(): void {
     this.allNotesOff();
-    this.midi?.close();
-    this.midi = null;
     this.midiTrackIds = [];
     this.midiRecording = false;
     this.midiEvents = [];
+    if (this.midiHeldOpen) return;
+    this.midi?.close();
+    this.midi = null;
   }
 
   setMidiMonitoring(on: boolean): void {
@@ -228,10 +249,48 @@ class DawRuntime {
     this.midiTrackIds = [...trackIds];
   }
 
+  /**
+   * Listen to every incoming MIDI message.
+   *
+   * Returns the unsubscribe.  Independent of arming: a control surface has to
+   * work with nothing armed at all, which is most of the time.
+   */
+  addMidiListener(listener: (event: CaptureEvent) => void): () => void {
+    this.midiListeners.add(listener);
+    return () => this.midiListeners.delete(listener);
+  }
+
+  /**
+   * Open the MIDI port for something that is not a track, and keep it open.
+   *
+   * Arming opens the port too, and disarming closes it — which would take the
+   * control surface down with it.  `midiHeldOpen` is what stops that: once
+   * something is holding the port, `closeMidiInput` only detaches the tracks.
+   */
+  async holdMidiOpen(session: DawSession, deviceId: string | null): Promise<boolean> {
+    this.midiHeldOpen = true;
+    if (this.midi) return this.midi.deviceCount > 0;
+    try {
+      const handle = await this.openMidiInput(session, [], { deviceId, monitor: false });
+      this.midiHeldOpen = true;
+      return handle.deviceCount > 0;
+    } catch {
+      this.midiHeldOpen = false;
+      throw new Error(midiFailureReason() ?? 'MIDI 입력을 열 수 없습니다');
+    }
+  }
+
+  /** Let go of the port.  It closes unless a track still wants it. */
+  releaseMidiHold(): void {
+    this.midiHeldOpen = false;
+    if (this.midiTrackIds.length === 0) this.closeMidiInput();
+  }
+
   private receiveMidi(event: CaptureEvent): void {
     if (this.midiRecording) this.midiEvents.push(event);
     if (this.midiMonitor) this.playLive(event);
     this.onMidiActivity?.(event);
+    for (const listener of this.midiListeners) listener(event);
   }
 
   /**
@@ -657,6 +716,8 @@ class DawRuntime {
     this.stopAllSlots();
     this.stop();
     this.closeInput();
+    this.midiListeners.clear();
+    this.midiHeldOpen = false;
     this.closeMidiInput();
     this.engine?.dispose();
     void this.ctx?.close();
