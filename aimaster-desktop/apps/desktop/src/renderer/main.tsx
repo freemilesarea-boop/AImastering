@@ -5,6 +5,12 @@ import './styles/index.css';
 // SAFE_BOOT: load flag helpers first so window.__SAFE_BOOT__ is available
 // before any feature code reads them.
 import './audio/safe-boot-flags.js';
+// The natural-language assistant's route to the main process.  Installed
+// here rather than lazily so `ask()` never has to decide whether it is
+// running in Electron; outside Electron this returns null and the rule
+// parser stays the whole feature.
+import { ipcBridge, setAssistantBridge } from './daw/ai/nl-assistant.js';
+setAssistantBridge(ipcBridge());
 
 // ── 시작 진단 로그 ─────────────────────────────────────────────────────────────
 // DevTools(Ctrl+Shift+I) 콘솔에서 이 로그로 preload 상태를 확인하세요.
