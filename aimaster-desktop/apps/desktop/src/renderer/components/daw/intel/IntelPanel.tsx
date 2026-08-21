@@ -21,6 +21,8 @@ import { summarise, type Finding, type Severity } from '../../../daw/ai/diagnose
 import { MASTER_PROFILES } from '../../../daw/ai/master.js';
 import { roleLabel } from '../../../daw/ai/roles.js';
 import { vocabulary } from '../../../daw/ai/language.js';
+import { trackMatchSummary } from '../../../daw/ai/track-reference.js';
+import { decodeAudioFile, decodeContext } from '../../../daw/engine/audio-cache.js';
 import {
   assistantStatus, clearAssistantKey, setAssistantKey, type AssistantStatus,
 } from '../../../daw/ai/assistant-setup.js';
@@ -37,6 +39,7 @@ const TABS: { id: IntelTab; label: string; note: string }[] = [
   { id: 'mix', label: 'AI MIX', note: '밸런스 · 마스킹 · 스프레드' },
   { id: 'master', label: 'AI MASTER', note: '타깃에 맞는 마스터 체인' },
   { id: 'reference', label: 'REFERENCE', note: '레퍼런스와의 차이를 실행으로' },
+  { id: 'trackref', label: 'TRACK REF', note: '트랙 하나를 같은 종류의 스템과 비교' },
   { id: 'automation', label: 'AUTOMATION', note: '라이딩 · 덕킹' },
   { id: 'riff', label: 'RIFF', note: '코드와 스케일에서 프레이즈 생성' },
   { id: 'command', label: 'COMMAND', note: '말로 지시하기' },
@@ -96,6 +99,7 @@ export default function IntelPanel() {
             suggestions={state.matchSuggestions}
           />
         )}
+        {state.tab === 'trackref' && <TrackReferenceTab />}
         {state.tab === 'automation' && <AutomationTab />}
         {state.tab === 'riff' && <RiffTab />}
         {state.tab === 'command' && <CommandTab />}
@@ -676,6 +680,154 @@ function CommandTab() {
       </div>
     </div>
   );
+}
+
+
+// ── Per-track reference ───────────────────────────────────────────────────────
+
+function TrackReferenceTab() {
+  const session = useDawStore((s) => s.session);
+  const notify = useAppStore((s) => s.notify);
+  const {
+    analysis, trackRefs, trackComparison, trackMatchSuggestions,
+  } = useIntelStore();
+  const setTrackReference = useIntelStore((s) => s.setTrackReference);
+  const setTrackReferenceMix = useIntelStore((s) => s.setTrackReferenceMix);
+  const clearTrackReference = useIntelStore((s) => s.clearTrackReference);
+  const runTrackMatch = useIntelStore((s) => s.runTrackMatch);
+  const applySuggestions = useIntelStore((s) => s.apply);
+
+  const [trackId, setTrackId] = useState<string>('');
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // Only tracks the analysis actually measured can be compared; offering the
+  // rest would be a picker whose entries fail on click.
+  const candidates = useMemo(
+    () => (analysis?.tracks ?? []).filter((t) => !t.silent),
+    [analysis],
+  );
+  const current = trackId || candidates[0]?.trackId || '';
+  const reference = current ? trackRefs[current] : undefined;
+
+  const load = useCallback(async (what: 'stem' | 'mix') => {
+    const api = window.electronAPI;
+    if (!api) { notify('electronAPI를 사용할 수 없습니다', 'error'); return; }
+    if (!current) { notify('먼저 트랙을 고르세요', 'warning'); return; }
+    const paths = await api.invoke('file:open-dialog-multi') as string[] | null;
+    const first = paths?.[0];
+    if (!first) return;
+    const ctx = decodeContext();
+    if (!ctx) { notify('오디오 디코더를 사용할 수 없습니다', 'error'); return; }
+    setBusy(what === 'stem' ? '스템 분석 중…' : '레퍼런스 믹스 분석 중…');
+    try {
+      const buffer = await decodeAudioFile(ctx, first);
+      const name = first.split(/[\\/]/).pop() ?? 'REFERENCE';
+      if (what === 'stem') setTrackReference(current as never, buffer, name, 'stem');
+      else setTrackReferenceMix(current as never, buffer, name);
+      notify(`${name} 을 분석했습니다`, 'success');
+    } catch (err) {
+      notify(`분석 실패: ${(err as Error).message}`, 'error');
+    } finally { setBusy(null); }
+  }, [current, notify, setTrackReference, setTrackReferenceMix]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div style={{ fontFamily: premium.type.display, fontSize: 15, color: premium.accent.light }}>
+        Per-Track Reference
+      </div>
+      <p style={hint}>
+        트랙 하나를 <b>같은 종류의 소스</b>와 비교합니다. 완성된 믹스는 받지 않습니다 —
+        보컬을 풀 믹스와 비교하면 킥과 심벌의 에너지가 보컬의 EQ 로 둔갑합니다.
+        스템과 <b>그 스템이 나온 믹스</b>를 함께 넣으면 절대 레벨이 아니라
+        <b> 믹스와의 관계</b>로 페이더를 맞춥니다.
+      </p>
+
+      {!analysis && (
+        <div style={{ ...hint, color: premium.accent.danger }}>
+          먼저 ANALYZE 탭에서 믹스를 분석하세요 — 비교하려면 내 트랙도 측정되어 있어야 합니다.
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <select
+          value={current}
+          onChange={(e) => setTrackId(e.target.value)}
+          style={{
+            height: 26, minWidth: 150, padding: '0 6px', borderRadius: 3,
+            background: premium.surface.well, color: premium.text.primary,
+            border: `1px solid ${premium.surface.hairline}`,
+            fontFamily: premium.type.sans, fontSize: 11,
+          }}
+        >
+          {candidates.length === 0 && <option value="">분석된 트랙 없음</option>}
+          {candidates.map((t) => (
+            <option key={t.trackId} value={t.trackId}>{t.name}</option>
+          ))}
+        </select>
+        <Action onClick={() => { void load('stem'); }}>스템 불러오기</Action>
+        {reference && <Action onClick={() => { void load('mix'); }}>그 스템의 믹스</Action>}
+        {reference && (
+          <Action onClick={() => clearTrackReference(current as never)}>비우기</Action>
+        )}
+        <Action primary onClick={() => runTrackMatch(current as never)}>비교</Action>
+        {busy && <span style={{ fontSize: 11, color: premium.accent.base }}>{busy}</span>}
+      </div>
+
+      {reference && (
+        <div style={{ ...hint }}>
+          레퍼런스: <b>{reference.name}</b>
+          {reference.mix ? ` · 믹스: ${reference.mix.name}` : ' · 믹스 없음 (레벨은 비교하지 않습니다)'}
+        </div>
+      )}
+
+      {trackComparison?.blocked && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 5, background: premium.surface.frame,
+          border: `1px solid ${premium.accent.danger}`,
+          fontFamily: premium.type.sans, fontSize: 12, color: premium.accent.danger,
+        }}>{trackComparison.blocked}</div>
+      )}
+
+      {trackComparison && !trackComparison.blocked && (
+        <>
+          <div style={{ fontFamily: premium.type.sans, fontSize: 12, color: premium.text.primary }}>
+            {trackMatchSummary(trackComparison, trackMatchSuggestions)}
+          </div>
+
+          <table style={{ borderCollapse: 'collapse', fontFamily: premium.type.mono, fontSize: 10.5 }}>
+            <tbody>
+              {trackComparison.rows.map((row) => (
+                <tr key={row.id} style={{ opacity: row.skipped ? 0.45 : 1 }}>
+                  <td style={cell(premium.text.secondary)}>{row.label}</td>
+                  <td style={cell(premium.text.muted)}>{row.reference.toFixed(1)}</td>
+                  <td style={cell(premium.text.muted)}>{row.mine.toFixed(1)}</td>
+                  <td style={cell(row.skipped ? premium.text.faint
+                    : row.verdict === 'match' ? premium.accent.base : premium.accent.danger)}>
+                    {row.skipped ?? `${row.delta >= 0 ? '+' : ''}${row.delta.toFixed(1)} ${row.unit}`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {trackComparison.notes.map((note, i) => (
+            <div key={i} style={{ ...hint, color: premium.text.muted }}>· {note}</div>
+          ))}
+
+          <SuggestionList
+            suggestions={trackMatchSuggestions}
+            onApply={() => applySuggestions(trackMatchSuggestions)}
+            applyLabel="이 트랙에 적용"
+            session={session}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+function cell(color: string): React.CSSProperties {
+  return { padding: '2px 10px 2px 0', color, whiteSpace: 'nowrap' };
 }
 
 // ── Shared ────────────────────────────────────────────────────────────────────

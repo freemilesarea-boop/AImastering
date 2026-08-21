@@ -21,6 +21,12 @@ import {
 } from '../daw/ai/auto-automation.js';
 import { applyActions, type Suggestion } from '../daw/ai/actions.js';
 import { ask, type Answer } from '../daw/ai/nl-assistant.js';
+import {
+  compareTrackToReference, matchTrackActions, resetTrackMatchIds,
+  type ReferenceKind, type TrackComparison, type TrackReference,
+} from '../daw/ai/track-reference.js';
+import { analyzeForReference } from '../daw/analysis/reference.js';
+import type { AudioBufferLike } from '../audio/loudnessCore.js';
 import { riffSuggestion, variationSuggestion, resetRiffIds } from '../daw/ai/riff.js';
 import { DEFAULT_RIFF, type RiffOptions, type VariationKind } from '../daw/ai/compose.js';
 import { useMidiEditorStore } from './midiEditorStore.js';
@@ -32,7 +38,7 @@ import { useDawStore } from './dawStore.js';
 import { useReferenceStore } from './referenceStore.js';
 import type { TrackId } from '../daw/model/types.js';
 
-export type IntelTab = 'analyze' | 'mix' | 'master' | 'reference' | 'automation' | 'command' | 'riff';
+export type IntelTab = 'analyze' | 'mix' | 'master' | 'reference' | 'trackref' | 'automation' | 'command' | 'riff';
 
 interface IntelState {
   tab: IntelTab;
@@ -43,6 +49,15 @@ interface IntelState {
   /** When the analysis was taken, so a stale one is visible as stale. */
   analyzedAtMs: number | null;
   findings: Finding[];
+
+  /**
+   * One reference per track.  Kept as ANALYSES, not buffers — a two-minute
+   * stem is 40 MB of samples and 4 KB of measurements, and nothing downstream
+   * of the comparison ever needs the audio again.
+   */
+  trackRefs: Record<string, TrackReference>;
+  trackComparison: TrackComparison | null;
+  trackMatchSuggestions: Suggestion[];
 
   mixSuggestions: Suggestion[];
   masterSuggestions: Suggestion[];
@@ -80,6 +95,10 @@ interface IntelState {
   runMix: () => void;
   runMaster: () => void;
   runMatch: () => void;
+  setTrackReference: (trackId: TrackId, buffer: AudioBufferLike, name: string, kind: ReferenceKind) => void;
+  setTrackReferenceMix: (trackId: TrackId, buffer: AudioBufferLike, name: string) => void;
+  clearTrackReference: (trackId: TrackId) => void;
+  runTrackMatch: (trackId: TrackId) => void;
   runRide: (trackId: TrackId) => Promise<void>;
   runDuck: (sourceId: TrackId, targetId: TrackId) => Promise<void>;
 
@@ -98,6 +117,9 @@ export const useIntelStore = create<IntelState>((set, get) => ({
   analysis: null,
   analyzedAtMs: null,
   findings: [],
+  trackRefs: {},
+  trackComparison: null,
+  trackMatchSuggestions: [],
   mixSuggestions: [],
   masterSuggestions: [],
   matchSuggestions: [],
@@ -261,6 +283,62 @@ export const useIntelStore = create<IntelState>((set, get) => ({
       matchSuggestions: suggestions,
       selected: new Set(suggestions.map((s) => s.id)),
       error: suggestions.length === 0 ? `이미 ${comparison.score}% 일치합니다` : null,
+    });
+  },
+
+  /**
+   * Attach a reference source to one track.
+   *
+   * The KIND is the user's answer, not a guess: nothing measurable separates
+   * "an acapella" from "a very sparse mix", and getting it wrong in the app's
+   * favour is how a tool ends up EQ'ing a vocal against a drum bus.  What the
+   * measurement does get to do is say so afterwards, in a note.
+   */
+  setTrackReference: (trackId, buffer, name, kind) => {
+    const source = analyzeForReference(buffer, name);
+    const previous = get().trackRefs[trackId];
+    const reference: TrackReference = {
+      name, kind, source,
+      // A mix already loaded for the previous stem still belongs to this
+      // track only if the new source still claims to have come from one.
+      ...(kind === 'stemWithMix' && previous?.mix ? { mix: previous.mix } : {}),
+    };
+    set({ trackRefs: { ...get().trackRefs, [trackId]: reference }, trackComparison: null, trackMatchSuggestions: [] });
+  },
+
+  setTrackReferenceMix: (trackId, buffer, name) => {
+    const existing = get().trackRefs[trackId];
+    if (!existing) { set({ error: '먼저 레퍼런스 스템을 불러오세요' }); return; }
+    const mix = analyzeForReference(buffer, name);
+    set({
+      trackRefs: { ...get().trackRefs, [trackId]: { ...existing, kind: 'stemWithMix', mix } },
+      trackComparison: null,
+      trackMatchSuggestions: [],
+    });
+  },
+
+  clearTrackReference: (trackId) => {
+    const next = { ...get().trackRefs };
+    delete next[trackId];
+    set({ trackRefs: next, trackComparison: null, trackMatchSuggestions: [] });
+  },
+
+  runTrackMatch: (trackId) => {
+    const { analysis, trackRefs } = get();
+    if (!analysis) { set({ error: '먼저 분석하세요' }); return; }
+    const reference = trackRefs[trackId];
+    if (!reference) { set({ error: '이 트랙에 레퍼런스가 없습니다' }); return; }
+    const mine = analysis.tracks.find((t) => t.trackId === trackId);
+    if (!mine) { set({ error: '이 트랙은 분석에 포함되지 않았습니다 (뮤트 상태이거나 오디오가 없습니다)' }); return; }
+
+    resetTrackMatchIds();
+    const comparison = compareTrackToReference(mine, reference, analysis.master);
+    const suggestions = matchTrackActions(useDawStore.getState().session, comparison);
+    set({
+      trackComparison: comparison,
+      trackMatchSuggestions: suggestions,
+      error: comparison.blocked ?? null,
+      selected: new Set(suggestions.filter((s) => s.confidence >= 0.6).map((s) => s.id)),
     });
   },
 
