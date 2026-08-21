@@ -2,8 +2,16 @@
 # the legacy `numpy.core` module path — numpy 2.0 renamed it to `numpy._core`,
 # which makes `--collect-all numpy` fail silently on CI runners and aborts
 # the macOS/Windows packaging job before reaching electron-builder.
-soundfile>=0.12.1,<0.14
-numpy>=1.24.0,<2.0
+# Pinned exactly, not to a range. Canonical feature values depend on numpy's
+# FFT and percentile implementations, so a commercial reference target is only
+# comparable to a runtime measurement taken under the same version. A range let
+# every build resolve its own, which is undetectable drift.
+#
+# These are the versions the successful production build resolved (GitHub
+# Actions run 31312761102, commit b0d1bf2) — identical on linux, macOS and
+# Windows — so pinning them changes nothing about what production installs.
+soundfile==0.13.1
+numpy==1.26.4
 
 # Dev / test
 pytest>=7.4.0

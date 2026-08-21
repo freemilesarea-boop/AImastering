@@ -243,7 +243,7 @@ export default function MasteringPage() {
           '',
           {
             style:              options.style,
-            targetLufs:         options.targetLufs,
+            ...(options.targetLufsExplicit ? { targetLufs: options.targetLufs } : {}),
             targetTp:           options.targetTp,
             sampleRate:         options.sampleRate,
             bitDepth:           options.bitDepth,
@@ -253,6 +253,7 @@ export default function MasteringPage() {
             stereoWidth:        options.stereoWidth,
             outputGainDb:       options.outputGainDb,
             dynamicEqIntensity: options.dynamicEqIntensity,
+            engineMode:         options.engineMode,
             aiDetections:       analysisToUse?.aiDetection ?? {},
           },
           { preLoudness: analysisToUse?.loudness },

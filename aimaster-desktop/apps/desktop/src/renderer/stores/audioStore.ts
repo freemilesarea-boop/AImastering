@@ -144,6 +144,17 @@ export interface MasteringOptions {
   outputGainDb?: number | undefined;         // undefined = 0
   /** Dynamic EQ intensity (0=off, 1=full).  undefined = 1.0 (full). */
   dynamicEqIntensity?: number | undefined;
+  /**
+   * AUTO loudness — false(기본)면 target_lufs 를 Python 에 보내지 않아
+   * Commercial Loudness Policy 가 입력 라우드니스로부터 목표를 정한다.
+   * 사용자가 슬라이더/프리셋으로 값을 정하면 true 가 되어 그 값이 존중된다.
+   */
+  targetLufsExplicit?: boolean | undefined;
+  /**
+   * RC — 'rc' 선택 시 Decision Engine 자문 pre-correction 을 거친 뒤
+   * 기존 파이프라인이 그대로 실행된다.  기본은 'stable' (기존 동작).
+   */
+  engineMode?: 'stable' | 'rc' | undefined;
   /** UI 상태: 어떤 빠른 프리셋이 선택되어 있는지 */
   quickPreset?: string | undefined;
   /** Live DSP overrides — applied to the WebAudio preview chain. */
@@ -178,6 +189,8 @@ const defaultOptions: MasteringOptions = {
   bitDepth:           24,
   applyAiCorrections: true,
   limiterStrength:    'medium',
+  targetLufsExplicit: false,
+  engineMode:         'stable',
   rt:                 defaultRtOverrides,
 };
 
