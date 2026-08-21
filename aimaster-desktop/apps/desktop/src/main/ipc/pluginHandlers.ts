@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { scanPlugins, type ScanResult } from '../plugins/scan.js';
+import { hasAuHost } from '../plugins/au-native.js';
 import { newScratchFile, runHostJob, sweepHostScratch } from '../plugins/host.js';
 import type { HostStage } from '../plugins/host-protocol.js';
 import { log } from '../utils/logger.js';
@@ -82,6 +83,21 @@ export function registerPluginHandlers(ipc: IpcMain): void {
       await fs.promises.rm(inputPath, { force: true }).catch(() => { /* gone */ });
     }
   });
+  /**
+   * What this BUILD can actually host, measured rather than declared.
+   *
+   * The requirement list used to carry hand-edited booleans, and one of them
+   * was already wrong: `disable-library-validation` has shipped in the
+   * entitlements plist for some time while the list still said it was missing.
+   * A capability flag that has to be remembered in two places is a capability
+   * flag that will disagree with itself, so the renderer asks instead.
+   */
+  ipc.handle('plugins:capabilities', () => ({
+    platform: process.platform,
+    /** The native AU addon really loaded — not "we wrote an adapter". */
+    auHost: hasAuHost(),
+  }));
+
   ipc.handle('plugins:scan', (_e, force: unknown): ScanResult => {
     if (cached && force !== true) return cached;
     const started = Date.now();

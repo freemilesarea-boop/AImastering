@@ -1,0 +1,14 @@
+{
+  "name": "@loui/au-host",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Audio Unit host addon. macOS only. UNBUILT — see README.md.",
+  "main": "index.js",
+  "scripts": {
+    "build": "node-gyp rebuild"
+  },
+  "dependencies": {
+    "node-addon-api": "^7.1.0"
+  },
+  "os": ["darwin"]
+}

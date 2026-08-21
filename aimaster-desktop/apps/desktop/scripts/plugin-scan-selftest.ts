@@ -21,7 +21,7 @@ import {
   displayNameFromPath, formatOf, parseAudioComponents, parseModuleInfo, pluginId,
   pluginSearchPaths, scanPlugins,
 } from '../src/main/plugins/scan.js';
-import { HOST_REQUIREMENTS, hostability } from '../src/renderer/daw/engine/external-host.js';
+import { requirements, hostability } from '../src/renderer/daw/engine/external-host.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -243,11 +243,11 @@ check('the app says what it can and cannot do with a scanned plugin', () => {
 });
 
 check('the requirement list names the real blockers, not a vague one', () => {
-  const ids = HOST_REQUIREMENTS.map((r) => r.id);
+  const ids = requirements().map((r) => r.id);
   for (const id of ['native-module', 'process-isolation', 'macos-entitlement', 'vst3-licence']) {
     assert(ids.includes(id), `${id} is listed`);
   }
-  for (const requirement of HOST_REQUIREMENTS) {
+  for (const requirement of requirements()) {
     assert(requirement.why.length > 20, `${requirement.id} explains itself`);
   }
 });
@@ -256,10 +256,10 @@ check('the Steinberg licence is required for VST3 and not for Audio Units', () =
   // AU hosting uses Apple's own AudioToolbox; VST3 needs an agreement with
   // Steinberg before a commercial closed-source app can ship it.  Which means
   // AU is the format that unblocks first, and the code should know that.
-  const auBlockers = HOST_REQUIREMENTS.filter((r) => !r.met && r.id === 'vst3-licence');
+  const auBlockers = requirements().filter((r) => !r.met && r.id === 'vst3-licence');
   assert(auBlockers.length === 1, 'the licence is currently unmet');
   assert(hostability('au').reason !== hostability('vst3').reason
-    || HOST_REQUIREMENTS.filter((r) => !r.met).length > 1,
+    || requirements().filter((r) => !r.met).length > 1,
     'the two formats are evaluated separately');
 });
 

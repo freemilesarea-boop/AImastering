@@ -211,7 +211,10 @@ async function main(): Promise<void> {
     const input = writePcm(source);
     const output = scratchFile('.out.f32');
 
-    for (const format of ['vst3', 'au', 'vst2', 'clap'] as const) {
+    // `au` is deliberately NOT in this list any more: it has an adapter now.
+    // Its own refusal — "the native module is not in this build" — is a
+    // different claim with a different reason, and it is covered by test:au.
+    for (const format of ['vst3', 'vst2', 'clap'] as const) {
       assert(!isImplemented(format), `${format} has no adapter yet`);
       const result = runJob(job(input, output, frames,
         [stage({ format, path: `/Library/Audio/Plug-Ins/VST3/X.${format}`, params: { gainDb: -12 } })]));
@@ -222,6 +225,26 @@ async function main(): Promise<void> {
       const processed = readPcm(output, frames * 2);
       assert(processed[100] === source[100], 'and the audio is untouched');
     }
+  });
+
+  await check('AU is refused for the module, not for the adapter', () => {
+    // The reason has to be the real one.  "AU 어댑터가 아직 없습니다" would
+    // now be a lie: the adapter is written and tested, and what is missing on
+    // this machine is the native module it calls.
+    const frames = 256;
+    const source = makePcm(frames);
+    const input = writePcm(source);
+    const output = scratchFile('.out.f32');
+    assert(isImplemented('au'), 'au has an adapter');
+
+    const result = runJob(job(input, output, frames,
+      [stage({ format: 'au', uid: 'aufx-dcmp-appl', path: '/x.component', params: {} })]));
+    assert(result.ok, 'the job completes');
+    assert(result.stages[0]?.applied === false, 'and the stage did not apply');
+    assert((result.stages[0]?.reason ?? '').includes('모듈'),
+      `for the module, got: ${result.stages[0]?.reason}`);
+    const processed = readPcm(output, frames * 2);
+    assert(processed[100] === source[100], 'and the audio is untouched');
   });
 
   await check('one refused stage does not stop the rest of the chain', () => {

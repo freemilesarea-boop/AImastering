@@ -42,7 +42,7 @@
 // reference device this app defines, so the only piece left is the adapter
 // that turns a bundle into something that can process a buffer.
 //
-// `HOST_REQUIREMENTS` below is that list, kept here rather than in a document
+// `requirements()` below is that list, kept here rather than in a document
 // so it stays next to the code that will use it.
 
 import type { PluginFormat } from '../../stores/externalPluginStore.js';
@@ -56,12 +56,40 @@ export interface HostRequirement {
   met: boolean;
 }
 
-export const HOST_REQUIREMENTS: readonly HostRequirement[] = [
+/**
+ * What this build can really do, as measured by the main process.
+ *
+ * Set once at startup from `plugins:capabilities`.  It exists because the
+ * requirement list used to carry hand-edited booleans and one of them was
+ * already wrong: `disable-library-validation` had been shipping in the
+ * entitlements plist while the list still said it was missing.  A capability
+ * that has to be remembered in two places will disagree with itself.
+ */
+export interface HostCapabilities {
+  platform: string;
+  /** The native AU addon actually loaded — not "an adapter exists". */
+  auHost: boolean;
+}
+
+let capabilities: HostCapabilities = { platform: 'unknown', auHost: false };
+
+export function setHostCapabilities(next: HostCapabilities): void {
+  capabilities = next;
+}
+
+export function hostCapabilities(): HostCapabilities {
+  return capabilities;
+}
+
+export function requirements(): readonly HostRequirement[] {
+  return [
   {
     id: 'native-module',
-    what: 'VST3/AU 번들을 열고 블록을 처리하는 네이티브 모듈',
+    what: 'AU 번들을 열고 블록을 처리하는 네이티브 모듈',
     why: '플러그인은 네이티브 바이너리라 JS 로는 열 수 없습니다. N-API 애드온이 메인 프로세스에 있어야 합니다',
-    met: false,
+    // Measured.  The adapter is written and tested; whether the addon it calls
+    // was built for THIS machine is a question only the main process can answer.
+    met: capabilities.auHost,
   },
   {
     id: 'process-isolation',
@@ -75,7 +103,10 @@ export const HOST_REQUIREMENTS: readonly HostRequirement[] = [
     id: 'macos-entitlement',
     what: 'com.apple.security.cs.disable-library-validation 엔타이틀먼트',
     why: 'notarize 된 앱은 기본적으로 서명이 다른 dylib 을 못 올립니다. 이게 없으면 macOS 에서 어떤 플러그인도 로드되지 않습니다',
-    met: false,
+    // Shipping: it is in public/entitlements.mac.plist and electron-builder.yml
+    // points both `entitlements` and `entitlementsInherit` at that file.  This
+    // said `false` for a long time after it stopped being true.
+    met: true,
   },
   {
     id: 'vst3-licence',
@@ -83,7 +114,8 @@ export const HOST_REQUIREMENTS: readonly HostRequirement[] = [
     why: 'VST3 SDK 는 GPLv3 이거나 Steinberg 독점 라이선스입니다. 상용 클로즈드 소스 앱은 후자를 등록해야 합니다. AU 는 Apple AudioToolbox 라 해당 없습니다',
     met: false,
   },
-];
+  ];
+}
 
 export interface Hostability {
   hostable: boolean;
@@ -102,7 +134,7 @@ export interface Hostability {
  * leaving a second place that also has to be remembered.
  */
 export function hostability(format: PluginFormat): Hostability {
-  const missing = HOST_REQUIREMENTS.filter((requirement) => {
+  const missing = requirements().filter((requirement) => {
     if (!requirement.met) {
       // The VST3 licence does not apply to Audio Units.
       if (requirement.id === 'vst3-licence') return format !== 'au';
