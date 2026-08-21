@@ -79,6 +79,7 @@ export type CommandId =
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
+  | 'daw.sectionNext' | 'daw.sectionPrev' | 'daw.sectionSelect' | 'daw.sectionAdd'
   | 'daw.tuneToGuide' | 'daw.riff';
 
 export interface ShortcutDef {
@@ -210,6 +211,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '멀티트랙 Edit / Mix 화면으로 이동', available: true },
   { id: 'daw.toggleWindow', group: 'daw', label: 'Edit ↔ Mix 전환', chords: ['Mod+Equal'],
     note: '같은 세션의 편집 화면과 콘솔 화면 전환', available: true },
+  { id: 'daw.sectionAdd',    group: 'daw', label: '구간 경계 추가', chords: ['Alt+Shift+G'],
+    note: '재생헤드에 어레인지 구간 경계를 만듭니다', available: true },
+  { id: 'daw.sectionNext',   group: 'daw', label: '다음 구간으로', chords: ['Alt+Period'],
+    note: '다음 구간 시작으로 이동', available: true },
+  { id: 'daw.sectionPrev',   group: 'daw', label: '이전 구간으로', chords: ['Alt+Comma'],
+    note: '이전 구간 시작으로 이동', available: true },
+  { id: 'daw.sectionSelect', group: 'daw', label: '현재 구간 선택', chords: ['Alt+BracketRight'],
+    note: '재생헤드가 있는 구간을 모든 트랙에서 선택합니다', available: true },
   { id: 'daw.tabNext', group: 'daw', label: '다음 편집 지점으로 (Tab)', chords: ['Tab'],
     note: '클립 경계 — Tab to Transient 가 켜져 있으면 어택까지', available: true },
   { id: 'daw.tabPrev', group: 'daw', label: '이전 편집 지점으로', chords: ['Shift+Tab'],

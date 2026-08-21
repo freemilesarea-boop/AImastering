@@ -41,6 +41,11 @@ import { clipWarp } from '../daw/model/warp.js';
 import { declickClip } from '../daw/edit/restore-actions.js';
 import { useRecordingStore } from '../stores/recordingStore.js';
 import { canRecord } from '../daw/model/recording.js';
+import {
+  addSection, createSection, nextSectionStart, previousSectionStart, sectionAt,
+  sectionLabel, sectionsOf, withSections,
+} from '../daw/model/arrangement.js';
+import { selectionForSection } from '../daw/edit/arrange-ops.js';
 import { applySlides, arpeggiate, strum } from '../daw/edit/note-tools.js';
 import { captureAsPattern } from '../daw/model/patterns.js';
 import { useIntelStore } from '../stores/intelStore.js';
@@ -94,6 +99,7 @@ export type DawCommandId =
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.toggleAutomation' | 'daw.automationMode'
   | 'daw.tempoChange' | 'daw.tempoRamp'
+  | 'daw.sectionNext' | 'daw.sectionPrev' | 'daw.sectionSelect' | 'daw.sectionAdd'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
@@ -762,6 +768,40 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       daw().setWindow('intel');
       useIntelStore.getState().setTab('command');
       notify('말로 지시하세요 — 예: "보컬 2dB 올려"');
+    },
+
+    // ── Arrangement sections ──────────────────────────────────────────────
+    'daw.sectionAdd': () => {
+      const state = daw();
+      const at = snapToGrid(state.playheadSec);
+      const result = addSection(sectionsOf(state.session), createSection('verse', at));
+      if (!result.ok) { notify(result.reason, 'warning'); return; }
+      state.apply((s) => withSections(s, result.sections));
+      notify('구간 경계 추가');
+    },
+
+    'daw.sectionNext': () => {
+      const state = daw();
+      const at = nextSectionStart(sectionsOf(state.session), state.playheadSec);
+      if (at === null) { notify('다음 구간이 없습니다', 'warning'); return; }
+      state.seek(at);
+    },
+
+    'daw.sectionPrev': () => {
+      const state = daw();
+      const at = previousSectionStart(sectionsOf(state.session), state.playheadSec);
+      if (at === null) { notify('이전 구간이 없습니다', 'warning'); return; }
+      state.seek(at);
+    },
+
+    'daw.sectionSelect': () => {
+      const state = daw();
+      const here = sectionAt(sectionsOf(state.session), state.playheadSec);
+      if (!here) { notify('재생헤드에 구간이 없습니다', 'warning'); return; }
+      const selection = selectionForSection(state.session, here.id);
+      if (!selection) return;
+      state.setSelection(selection);
+      notify(`${sectionLabel(here)} 선택`);
     },
 
     // ── FL: step sequencer · patterns · note tools ─────────────────────────

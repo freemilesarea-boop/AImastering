@@ -11,6 +11,7 @@
 //     engine boundary — mixing units is how DAW code rots.
 
 import type { ControllerLane, MidiNote, MidiPartConfig } from './midi.js';
+import type { Section } from './arrangement.js';
 import type { ChordEvent } from './chords.js';
 import type { VariSegment } from '../audio/pitch-analysis.js';
 import type { MacroRack } from './macros.js';
@@ -22,6 +23,7 @@ import type { Pattern } from './patterns.js';
 import type { StepPattern } from './step-sequencer.js';
 export type {
   ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment, MacroRack,
+  Section,
   DeviceGraph, Rack, SessionGrid,
 };
 
@@ -351,6 +353,15 @@ export interface DawSession {
   buses: BusDef[];
   groups: GroupDef[];
   markers: Marker[];
+  /**
+   * The song's shape — intro, verse, chorus.
+   *
+   * Optional because sessions written before sections existed do not have it;
+   * every reader goes through `sectionsOf(session)` rather than touching this.
+   * A section stores only where it STARTS: its end is the next one's start, so
+   * a gap or an overlap is not representable.
+   */
+  sections?: Section[];
   /**
    * The project's harmony.  Storing chords as structured symbols (root,
    * quality, bass) rather than text is what lets features reason about them —
