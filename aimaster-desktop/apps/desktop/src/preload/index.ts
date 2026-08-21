@@ -44,6 +44,8 @@ const INVOKE_CHANNELS = [
   'daw:presets-export', 'daw:presets-import',
   // Control surface mappings (.louisurface)
   'daw:surface-export', 'daw:surface-import',
+  // Whole insert chains (.louirack)
+  'daw:racks-export', 'daw:racks-import',
   // DAW offline render output (Bounce / Freeze / Consolidate)
   'daw:write-temp-audio', 'daw:bounce-audio',
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer
