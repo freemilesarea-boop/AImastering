@@ -11,7 +11,7 @@
 // A proposal the layer is not confident about arrives unticked.  That is the
 // difference between a tool that assists and one that has to be undone.
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { useIntelStore, type IntelTab } from '../../../stores/intelStore.js';
@@ -21,6 +21,9 @@ import { summarise, type Finding, type Severity } from '../../../daw/ai/diagnose
 import { MASTER_PROFILES } from '../../../daw/ai/master.js';
 import { roleLabel } from '../../../daw/ai/roles.js';
 import { vocabulary } from '../../../daw/ai/language.js';
+import {
+  assistantStatus, clearAssistantKey, setAssistantKey, type AssistantStatus,
+} from '../../../daw/ai/assistant-setup.js';
 import {
   CONTOURS, RIFF_STYLES, VARIATIONS, contourLabel, styleLabel,
 } from '../../../daw/ai/compose.js';
@@ -513,11 +516,28 @@ function Slider(
 
 function CommandTab() {
   const session = useDawStore((s) => s.session);
-  const { command, interpretation } = useIntelStore();
+  const { command, answer, busy, preferModel, chat } = useIntelStore();
   const setCommand = useIntelStore((s) => s.setCommand);
+  const setPreferModel = useIntelStore((s) => s.setPreferModel);
   const run = useIntelStore((s) => s.runCommand);
   const applyIt = useIntelStore((s) => s.applyInterpretation);
+  const clearChat = useIntelStore((s) => s.clearChat);
   const vocab = useMemo(() => vocabulary(), []);
+  const [model, setModel] = useState<AssistantStatus>({ ok: false });
+  const [keyDraft, setKeyDraft] = useState('');
+
+  const refreshStatus = useCallback(() => {
+    void assistantStatus().then(setModel);
+  }, []);
+  useEffect(refreshStatus, [refreshStatus]);
+
+  const saveKey = async (): Promise<void> => {
+    const result = await setAssistantKey(keyDraft);
+    setKeyDraft('');
+    if (!result.ok && result.reason) window.alert(result.reason);
+    else if (result.reason) window.alert(result.reason);
+    refreshStatus();
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -525,16 +545,62 @@ function CommandTab() {
         Natural Language Control
       </div>
       <p style={hint}>
-        규칙 기반 파서입니다 — 언어 모델이 아니고, 못 알아들으면 <b>추측하지 않고 그렇게 말합니다</b>.
-        해석한 내용을 먼저 보여주고, 동의하면 그때 적용됩니다.
+        먼저 <b>규칙 파서</b>가 봅니다 — 아는 문장이면 아무것도 밖으로 나가지 않고 즉시 해석합니다.
+        모르는 문장일 때만 <b>언어 모델</b>에게 넘어가고, 모델이 만든 동작도 세션에 있는 트랙과
+        장치만 통과합니다. 어느 쪽이든 <b>읽고 동의해야</b> 적용됩니다.
       </p>
+
+      {/* Where the answer will come from, and how to change it.  A user who
+          cannot tell whether their words left the machine cannot consent to
+          it, so this row is never hidden. */}
+      <div className="flex items-center gap-2 flex-wrap" style={{
+        padding: '6px 8px', borderRadius: 4, background: premium.surface.well,
+        border: `1px solid ${premium.surface.hairline}`,
+      }}>
+        <span style={{ ...hint, margin: 0 }}>
+          {model.ok ? `모델 준비됨 · ${model.model ?? ''}` : `모델 없음 — ${model.reason ?? '규칙 파서만 씁니다'}`}
+        </span>
+        {model.ok ? (
+          <>
+            <label className="flex items-center gap-1" style={{ ...hint, margin: 0, cursor: 'pointer' }}>
+              <input type="checkbox" checked={preferModel}
+                     onChange={(e) => setPreferModel(e.target.checked)} />
+              규칙이 알아들어도 모델에게 묻기
+            </label>
+            {model.persisted === false && (
+              <span style={{ ...hint, margin: 0, color: premium.accent.danger }}>
+                키를 안전하게 저장할 수 없어 이번 실행에만 유지됩니다
+              </span>
+            )}
+            <button onClick={() => { void clearAssistantKey().then(refreshStatus); }}
+                    style={chip}>키 지우기</button>
+            {chat.length > 0 && <button onClick={clearChat} style={chip}>대화 비우기</button>}
+          </>
+        ) : (
+          <>
+            <input
+              type="password"
+              value={keyDraft}
+              onChange={(e) => setKeyDraft(e.target.value)}
+              placeholder="sk-ant-…"
+              style={{
+                flex: 1, minWidth: 160, height: 22, padding: '0 6px', borderRadius: 3,
+                background: premium.surface.frame, color: premium.text.primary,
+                border: `1px solid ${premium.surface.hairline}`,
+                fontFamily: premium.type.mono, fontSize: 10.5,
+              }}
+            />
+            <button onClick={() => { void saveKey(); }} style={chip}>저장</button>
+          </>
+        )}
+      </div>
 
       <div className="flex items-center gap-2">
         <input
           value={command}
           onChange={(e) => setCommand(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') run(); }}
-          placeholder='예: "보컬 2dB 올려" · "킥 펀치 더" · "마스터 넓게" · "보컬 저역 좀 줄여"'
+          onKeyDown={(e) => { if (e.key === 'Enter') void run(); }}
+          placeholder='예: "보컬 2dB 올려" · "킥 펀치 더" · "보컬이 좀 답답한데 뚫어줘"'
           style={{
             flex: 1, height: 30, padding: '0 10px', borderRadius: 4,
             background: premium.surface.well, color: premium.text.primary,
@@ -542,44 +608,62 @@ function CommandTab() {
             fontFamily: premium.type.sans, fontSize: 12,
           }}
         />
-        <Action onClick={run}>해석</Action>
+        <Action onClick={() => { void run(); }}>{busy ? '…' : '해석'}</Action>
       </div>
 
-      {interpretation && (
+      {answer && (
         <div style={{
           padding: '10px 12px', borderRadius: 5, background: premium.surface.frame,
-          border: `1px solid ${interpretation.error ? premium.accent.danger : premium.accent.deep}`,
+          border: `1px solid ${answer.actions.length === 0 ? premium.accent.danger : premium.accent.deep}`,
         }}>
-          {interpretation.error ? (
-            <>
-              <div style={{ fontFamily: premium.type.sans, fontSize: 12, color: premium.accent.danger }}>
-                {interpretation.error}
-              </div>
-              {interpretation.hint && <p style={{ ...hint, margin: '4px 0 0' }}>{interpretation.hint}</p>}
-            </>
+          <div className="flex items-center gap-2 mb-1">
+            <span style={{
+              padding: '1px 6px', borderRadius: 3, fontFamily: premium.type.mono, fontSize: 9,
+              color: premium.text.faint, border: `1px solid ${premium.surface.hairline}`,
+            }}>{answer.source === 'model' ? '모델' : '규칙'}</span>
+            {answer.degraded && (
+              <span style={{ ...hint, margin: 0 }}>{answer.degraded}</span>
+            )}
+          </div>
+
+          {answer.actions.length === 0 ? (
+            <div style={{ fontFamily: premium.type.sans, fontSize: 12, color: premium.accent.danger }}>
+              {answer.refusal ?? '적용할 동작이 없습니다'}
+            </div>
           ) : (
             <>
               <div style={{ fontFamily: premium.type.sans, fontSize: 12, color: premium.text.primary }}>
-                {interpretation.understood}
+                {answer.understood}
               </div>
               <ul style={{ margin: '5px 0 0' }}>
-                {interpretation.actions.map((action, i) => (
+                {answer.actions.map((action, i) => (
                   <li key={i} style={{
                     fontFamily: premium.type.mono, fontSize: 10.5, color: premium.text.muted,
                   }}>· {describeAction(session, action)}</li>
                 ))}
               </ul>
-              {interpretation.hint && <p style={{ ...hint, margin: '4px 0 0' }}>{interpretation.hint}</p>}
               <div className="mt-2">
                 <Action primary onClick={applyIt}>적용</Action>
               </div>
             </>
           )}
+
+          {/* Anything thrown away is shown.  A plan that lost half its actions
+              to validation must never read as "understood". */}
+          {answer.rejected.length > 0 && (
+            <ul style={{ margin: '6px 0 0' }}>
+              {answer.rejected.map((why, i) => (
+                <li key={i} style={{
+                  fontFamily: premium.type.mono, fontSize: 10, color: premium.accent.danger,
+                }}>✕ {why}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
       <div style={{ marginTop: 4 }}>
-        <div style={{ ...hint, marginBottom: 3 }}>아는 말</div>
+        <div style={{ ...hint, marginBottom: 3 }}>규칙 파서가 아는 말</div>
         <div className="flex flex-wrap gap-1">
           {[...vocab.verbs, ...vocab.targets].map((word) => (
             <span key={word} style={{

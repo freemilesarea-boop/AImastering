@@ -20,7 +20,7 @@ import {
   duckCurve, duckSuggestion, levelEnvelope, rideCurve, rideSuggestion,
 } from '../daw/ai/auto-automation.js';
 import { applyActions, type Suggestion } from '../daw/ai/actions.js';
-import { interpret, type Interpretation } from '../daw/ai/language.js';
+import { ask, type Answer } from '../daw/ai/nl-assistant.js';
 import { riffSuggestion, variationSuggestion, resetRiffIds } from '../daw/ai/riff.js';
 import { DEFAULT_RIFF, type RiffOptions, type VariationKind } from '../daw/ai/compose.js';
 import { useMidiEditorStore } from './midiEditorStore.js';
@@ -54,7 +54,15 @@ interface IntelState {
   selected: Set<string>;
 
   command: string;
-  interpretation: Interpretation | null;
+  /**
+   * The last answer, from either engine.  Held rather than applied: a plan is
+   * shown as sentences and only moves anything on a second press.
+   */
+  answer: Answer | null;
+  /** Turns kept so "그럼 반만" has something to refer to. */
+  chat: { role: 'user' | 'assistant'; content: string }[];
+  /** Ask the model even when the rule parser understood the phrase. */
+  preferModel: boolean;
 
   riffOptions: Partial<RiffOptions>;
   riffSuggestions: Suggestion[];
@@ -76,8 +84,10 @@ interface IntelState {
   runDuck: (sourceId: TrackId, targetId: TrackId) => Promise<void>;
 
   setCommand: (text: string) => void;
-  runCommand: () => void;
+  setPreferModel: (on: boolean) => void;
+  runCommand: () => Promise<void>;
   applyInterpretation: () => void;
+  clearChat: () => void;
   apply: (suggestions: readonly Suggestion[]) => void;
 }
 
@@ -95,7 +105,9 @@ export const useIntelStore = create<IntelState>((set, get) => ({
   masterTarget: 'streaming',
   selected: new Set(),
   command: '',
-  interpretation: null,
+  answer: null,
+  chat: [],
+  preferModel: false,
 
   riffOptions: {
     style: DEFAULT_RIFF.style,
@@ -306,18 +318,45 @@ export const useIntelStore = create<IntelState>((set, get) => ({
 
   setCommand: (command) => set({ command }),
 
-  /** Parse only.  The interpretation is shown, and applied on a second press. */
-  runCommand: () => {
+  setPreferModel: (preferModel) => set({ preferModel }),
+
+  clearChat: () => set({ chat: [], answer: null }),
+
+  /**
+   * Interpret only.  Nothing is applied until the user presses 적용.
+   *
+   * `busy` is set because the model path crosses a network and a box that
+   * looks idle for four seconds reads as broken.  The rule-parser path
+   * resolves in the same tick and the spinner never paints.
+   */
+  runCommand: async () => {
     const daw = useDawStore.getState();
-    const interpretation = interpret(daw.session, get().command, daw.focusedTrackId);
-    set({ interpretation, error: interpretation.error ?? null });
+    const text = get().command;
+    set({ busy: '해석 중…', error: null });
+    try {
+      const answer = await ask(daw.session, text, {
+        focusedTrackId: daw.focusedTrackId,
+        history: get().chat,
+        forceModel: get().preferModel,
+      });
+      set({
+        answer,
+        error: answer.refusal ?? null,
+        chat: answer.understood
+          ? [...get().chat, { role: 'user' as const, content: text },
+             { role: 'assistant' as const, content: answer.understood }].slice(-8)
+          : get().chat,
+      });
+    } finally {
+      set({ busy: null });
+    }
   },
 
   applyInterpretation: () => {
-    const { interpretation } = get();
-    if (!interpretation || interpretation.actions.length === 0) return;
-    useDawStore.getState().apply((s) => applyActions(s, interpretation.actions));
-    set({ interpretation: null, command: '' });
+    const { answer } = get();
+    if (!answer || answer.actions.length === 0) return;
+    useDawStore.getState().apply((s) => applyActions(s, answer.actions));
+    set({ answer: null, command: '' });
   },
 
   apply: (suggestions) => {
