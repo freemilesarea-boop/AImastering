@@ -28,6 +28,37 @@ export interface PluginParamDef {
   choiceNotes?: readonly string[];
 }
 
+/**
+ * A parameter that is ONE AudioParam, so it can be automated.
+ *
+ * This is the whole basis of plugin automation here.  `setParam` sets a value
+ * now; an AudioParam can be given a ramp that the audio thread walks sample by
+ * sample — which means a filter sweep is smooth instead of stepped, and, far
+ * more importantly, that the SAME schedule renders in an OfflineAudioContext.
+ * Anything driven by timers would be live-only, and a bounce that does not
+ * reproduce what you monitored is not a bounce.
+ *
+ * `map` converts the lane's units into the AudioParam's: a volume lane is in
+ * decibels and a GainNode is linear, so the ramp has to be built from mapped
+ * values rather than from the raw ones.
+ */
+export interface AutomatableParam {
+  param: AudioParam;
+  /** Lane value → AudioParam value.  Identity when absent. */
+  map?: (value: number) => number;
+}
+
+/** Build an `automatable` lookup from a plain table of the device's params. */
+export function automatableFrom(
+  table: Record<string, AudioParam | AutomatableParam>,
+): (id: string) => AutomatableParam | null {
+  return (id: string): AutomatableParam | null => {
+    const entry = table[id];
+    if (!entry) return null;
+    return 'param' in entry ? entry : { param: entry };
+  };
+}
+
 export interface PluginInstance {
   input: AudioNode;
   output: AudioNode;
@@ -35,6 +66,15 @@ export interface PluginInstance {
   sidechain: AudioNode | null;
   latencySamples: number;
   setParam: (id: string, value: number) => void;
+  /**
+   * The AudioParam behind one parameter, when there is exactly one.
+   *
+   * Absent, or returning null, means the parameter cannot be automated — the
+   * device rebuilds a curve, splits the value across two nodes, or picks an
+   * impulse response.  The UI reads `PluginDescriptor.automatableParams` and
+   * only offers lanes for the ones that answer.
+   */
+  automatable?: (id: string) => AutomatableParam | null;
   setBypass: (bypassed: boolean) => void;
   /** Tell the plugin an external key is (or is not) feeding its sidechain. */
   setSidechainActive: (active: boolean) => void;
@@ -83,6 +123,15 @@ export interface PluginDescriptor {
    */
   freeRunning?: boolean;
   params: PluginParamDef[];
+  /**
+   * Which of `params` can carry an automation lane.
+   *
+   * Declared on the descriptor because the UI has to build the lane menu
+   * without an AudioContext.  The selftest creates every device and checks
+   * this list against what the instance actually hands back, so the two
+   * cannot drift into offering a lane that does nothing.
+   */
+  automatableParams?: readonly string[];
   hasSidechain: boolean;
   /** Reported latency, in samples at the context rate — drives ADC. */
   latencyFor: (params: Record<string, number>, sampleRate: number) => number;
@@ -96,6 +145,7 @@ export function withBypass(
   ctx: BaseAudioContext,
   build: (input: GainNode, output: GainNode) => {
     setParam: (id: string, v: number) => void;
+    automatable?: (id: string) => AutomatableParam | null;
     dispose?: () => void;
     sidechain?: AudioNode | null;
     setSidechainActive?: (a: boolean) => void;
@@ -132,6 +182,7 @@ export function withBypass(
     sidechain: built.sidechain ?? null,
     latencySamples: built.latencySamples ?? 0,
     setParam: built.setParam,
+    ...(built.automatable ? { automatable: built.automatable } : {}),
     setBypass: (bypassed) => {
       wet.gain.value = bypassed ? 0 : 1;
       dry.gain.value = bypassed ? 1 : 0;

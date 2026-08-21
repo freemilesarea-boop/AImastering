@@ -17,6 +17,7 @@ import { webAudioAutoMakeup } from '../model/plugin-curves.js';
 import {
   absShaper, dbToGain, halfWaveGainCurve, makeDbReductionCurve, makeExpanderCurve,
   makeGainCurve, makeShaper, smoother, tanhCurve, withBypass,
+  automatableFrom,
   type PluginDescriptor, type PluginInstance, type PluginParamDef,
 } from './plugin-kit.js';
 import { EXTENDED_PLUGINS } from './plugins-extended.js';
@@ -34,6 +35,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     category: 'utility',
     hasSidechain: false,
     params: [{ id: 'gainDb', name: 'Gain', min: -24, max: 24, default: 0, unit: 'dB' }],
+    automatableParams: ['gainDb'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const gain = ctx.createGain();
@@ -41,6 +43,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       input.connect(gain).connect(output);
       return {
         setParam: (id, v) => { if (id === 'gainDb') gain.gain.value = dbToGain(v); },
+        automatable: automatableFrom({ gainDb: { param: gain.gain, map: dbToGain } }),
       };
     }),
   },
@@ -57,6 +60,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'highDb',  name: 'High',     min: -18, max: 18,    default: 0,    unit: 'dB' },
       { id: 'hpfHz',   name: 'HPF',      min: 20,  max: 400,   default: 20,   unit: 'Hz' },
     ],
+    automatableParams: ['lowDb', 'midDb', 'midHz', 'highDb', 'hpfHz'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const hpf = ctx.createBiquadFilter();  hpf.type = 'highpass';
@@ -77,6 +81,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           if (id === 'highDb') high.gain.value = v;
           if (id === 'hpfHz')  hpf.frequency.value = v;
         },
+        automatable: automatableFrom({
+          lowDb: low.gain, midDb: mid.gain, midHz: mid.frequency,
+          highDb: high.gain, hpfHz: hpf.frequency,
+        }),
       };
     }),
   },
@@ -95,6 +103,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'releaseMs',   name: 'Release',   min: 10,  max: 1000, default: 120, unit: 'ms' },
       { id: 'makeupDb',    name: 'Makeup',    min: 0,   max: 24,  default: 0,   unit: 'dB' },
     ],
+    automatableParams: ['attackMs', 'releaseMs'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // A real compressor needs SEPARATE attack and release times, and a
@@ -145,6 +154,15 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           // compensation is recomputed for any of them.
           if (id !== 'attackMs' && id !== 'releaseMs') applyMakeup();
         },
+        // Threshold, knee and ratio also move the node's hidden auto-makeup,
+        // which is a plain gain recomputed in `setParam` — a ramp on the
+        // AudioParam would leave that compensation behind and the device would
+        // get louder as the lane moved.  Only the two time constants, which
+        // nothing else depends on, are offered.
+        automatable: automatableFrom({
+          attackMs: { param: comp.attack, map: (v) => Math.max(0, v / 1000) },
+          releaseMs: { param: comp.release, map: (v) => Math.max(0, v / 1000) },
+        }),
         reduction: () => comp.reduction,
       };
     }),
@@ -231,6 +249,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'lookaheadMs', name: 'Look-ahead', min: 0,  max: 10,  default: 2,   unit: 'ms' },
       { id: 'releaseMs',   name: 'Release',   min: 10,  max: 500, default: 80,  unit: 'ms' },
     ],
+    // Ceiling rebuilds the transfer curve and look-ahead changes the reported
+    // latency, which delay compensation has already lined the channel up
+    // against.  Neither can move mid-render, so neither is offered.
+    automatableParams: [],
     // Real reported latency — this is what delay compensation lines up.
     latencyFor: (params, sampleRate) =>
       Math.round(((params['lookaheadMs'] ?? 2) / 1000) * sampleRate),
@@ -279,6 +301,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'feedback', name: 'Feedback', min: 0, max: 0.95, default: 0.35, unit: '' },
       { id: 'mix',      name: 'Mix',      min: 0, max: 1,    default: 0.3,  unit: '' },
     ],
+    // `mix` is two gains moving in opposite directions, so it is not one
+    // AudioParam and is left off the list rather than half-automated.
+    automatableParams: ['timeMs', 'feedback'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const delay = ctx.createDelay(2.1);
@@ -296,6 +321,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           if (id === 'feedback') fb.gain.value = v;
           if (id === 'mix')      { wet.gain.value = v; dry.gain.value = 1 - v; }
         },
+        automatable: automatableFrom({
+          timeMs: { param: delay.delayTime, map: (v) => v / 1000 },
+          feedback: fb.gain,
+        }),
       };
     }),
   },
@@ -316,6 +345,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'mix',      name: 'Mix',     min: 0,   max: 1, default: 1,   unit: '' },
       { id: 'preDelayMs', name: 'Pre-delay', min: 0, max: 120, default: 12, unit: 'ms' },
     ],
+    // `decaySec` rebuilds the impulse response and `mix` is two gains, so
+    // pre-delay is the only one that is a single AudioParam.
+    automatableParams: ['preDelayMs'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const room = SPACES[spaceIndex('hall-recital')]!;
@@ -338,6 +370,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           if (id === 'preDelayMs') pre.delayTime.value = v / 1000;
           if (id === 'decaySec') conv.buffer = build(v);
         },
+        automatable: automatableFrom({
+          preDelayMs: { param: pre.delayTime, map: (v) => v / 1000 },
+        }),
       };
     }),
   },

@@ -60,6 +60,30 @@ export function targetKey(target: AutomationTarget): string {
   }
 }
 
+/**
+ * The engine's name for one automated plugin parameter.
+ *
+ * Deliberately the SAME string `targetKey` produces for a plugin target, so
+ * the set of "parameters automation is currently driving" can be keyed by
+ * either without a translation table between them.
+ */
+export function pluginParamKey(insertId: string, paramId: string): string {
+  return `plugin:${insertId}:${paramId}`;
+}
+
+/** The inverse, for the engine reading a key back. */
+export function parsePluginParamKey(
+  key: string,
+): { insertId: string; paramId: string } | null {
+  if (!key.startsWith('plugin:')) return null;
+  const rest = key.slice('plugin:'.length);
+  // A parameter id never contains a colon; an insert id never does either, so
+  // the FIRST colon is the boundary and the rest is the parameter.
+  const colon = rest.indexOf(':');
+  if (colon <= 0 || colon === rest.length - 1) return null;
+  return { insertId: rest.slice(0, colon), paramId: rest.slice(colon + 1) };
+}
+
 /** Address of one lane in the whole session. */
 export function laneKey(trackId: string, target: AutomationTarget): string {
   return `${trackId}|${targetKey(target)}`;

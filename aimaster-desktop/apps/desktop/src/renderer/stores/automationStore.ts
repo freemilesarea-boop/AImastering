@@ -78,16 +78,18 @@ export const useAutomationStore = create<AutomationState>((set, get) => ({
   grab: (trackId, target) => {
     const daw = useDawStore.getState();
     if (!daw.isPlaying) return false;
-    if (!isPlayable(target)) return false;
+
+    const track = daw.session.tracks.find((t) => t.id === trackId);
+    if (!track) return false;
+    // Whether a plugin lane plays depends on which device is in the slot, so
+    // the track has to be in hand before the question can be answered.
+    if (!isPlayable(target, track)) return false;
 
     const mode = modeOf(daw.session, trackId, target);
     if (!isWritingMode(mode)) return false;
 
     const key = laneKey(trackId, target);
     if (get().gestures[key]) return true;
-
-    const track = daw.session.tracks.find((t) => t.id === trackId);
-    if (!track) return false;
     const value = staticValue(track, target);
 
     // The lane is created BEFORE the hand moves anything, so its first point
@@ -192,7 +194,7 @@ export function armWriteLanes(atSec: number): void {
 
   for (const track of daw.session.tracks) {
     for (const lane of track.automation) {
-      if (lane.mode !== 'write' || !isPlayable(lane.target)) continue;
+      if (lane.mode !== 'write' || !isPlayable(lane.target, track)) continue;
       const key = laneKey(track.id, lane.target);
       if (gestures[key]) continue;
       const value = staticValue(track, lane.target);

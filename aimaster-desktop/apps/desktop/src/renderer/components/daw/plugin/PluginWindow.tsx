@@ -20,6 +20,8 @@ import {
   importUserPresets, isUserPresetId, overwriteUserPreset, saveUserPreset, describeImport,
 } from '../../../daw/engine/user-presets.js';
 import { useAppStore } from '../../../stores/appStore.js';
+import { useAutomationStore } from '../../../stores/automationStore.js';
+import { automatableParamsOf } from '../../../daw/edit/automation-lanes.js';
 import { adviseFor, canAdvise, LOW_CONFIDENCE } from '../../../daw/ai/plugin-advice.js';
 import { describeWindow, profileForInsert } from '../../../daw/ai/advice-runner.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
@@ -147,8 +149,26 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
     params[def.id] = insert.params[def.id] ?? def.default;
   }
 
+  /** The automation target for a knob, when the device can ramp that knob. */
+  const targetFor = (id: string): { kind: 'plugin'; insertId: string; paramId: string } | null =>
+    automatableParamsOf(insert).some((p) => p.id === id)
+      ? { kind: 'plugin', insertId: insert.id, paramId: id }
+      : null;
+
   const setParam = (id: string, value: number): void => {
     setLoadedPreset('');
+    const target = targetFor(id);
+    if (target) {
+      // An automatable knob is ridden, not just set: `grab` is a no-op unless
+      // the transport is rolling in a writing mode, and `move` applies the
+      // value either way.  No automatable parameter changes the device's
+      // reported latency (the selftest holds every device to that), so this
+      // path does not need to recompute it.
+      const automation = useAutomationStore.getState();
+      automation.grab(win.trackId, target);
+      automation.move(win.trackId, target, value);
+      return;
+    }
     applyTransient((s) => setInsert(s, win.trackId, {
       ...insert,
       params: { ...insert.params, [id]: value },
@@ -156,6 +176,13 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         { ...params, [id]: value }, session.sampleRate,
       ),
     }));
+  };
+
+  /** Pointer up: a ridden knob ends its pass, an ordinary one ends its edit. */
+  const commitParamEdit = (id: string): void => {
+    const target = targetFor(id);
+    if (target) { useAutomationStore.getState().release(win.trackId, target); return; }
+    commitEdit();
   };
 
   // A picker's change is a whole edit, not a drag: commit it directly.
@@ -549,7 +576,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
               unit={def.unit}
               curve={curveFor(def.unit, def.min)}
               onChange={(v) => setParam(def.id, v)}
-              onCommit={commitEdit}
+              onCommit={() => commitParamEdit(def.id)}
             />
           ))}
         </div>
