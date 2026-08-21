@@ -17,6 +17,7 @@ import SmartControlPanel from '../components/daw/smart/SmartControlPanel.js';
 import DeviceChainView from '../components/daw/chain/DeviceChainView.js';
 import SessionViewGrid from '../components/daw/session/SessionViewGrid.js';
 import SpectralEditor from '../components/daw/spectral/SpectralEditor.js';
+import VocalEditor from '../components/daw/vocal/VocalEditor.js';
 import ReferencePanel from '../components/daw/reference/ReferencePanel.js';
 import WarpEditor from '../components/daw/warp/WarpEditor.js';
 import RestorePanel from '../components/daw/restore/RestorePanel.js';
@@ -251,7 +252,7 @@ export default function DawPage() {
       {/* Transport / session chrome */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
         <div className="flex rounded-md overflow-hidden border border-zinc-700 mr-1">
-          {(['edit', 'mix', 'midi', 'chain', 'session', 'steps', 'warp', 'spectral', 'restore', 'reference', 'intel'] as const).map((w) => (
+          {(['edit', 'mix', 'midi', 'chain', 'session', 'steps', 'warp', 'spectral', 'vocal', 'restore', 'reference', 'intel'] as const).map((w) => (
             <button key={w} onClick={() => setWindow(w)}
               className={`px-3 py-1 text-[11px] font-medium transition-colors ${
                 windowMode === w ? 'bg-indigo-600/30 text-indigo-300' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300'}`}
@@ -264,6 +265,7 @@ export default function DawPage() {
               : w === 'steps' ? 'STEPS'
               : w === 'warp' ? 'WARP'
               : w === 'spectral' ? 'SPECTRAL'
+              : w === 'vocal' ? 'VOCAL'
               : w === 'restore' ? 'RESTORE'
               : w === 'reference' ? 'REFERENCE'
               : 'AI'
@@ -371,6 +373,7 @@ export default function DawPage() {
         : windowMode === 'steps' ? <StepSequencer />
         : windowMode === 'warp' ? <WarpEditor />
         : windowMode === 'spectral' ? <SpectralEditor />
+        : windowMode === 'vocal' ? <VocalEditor />
         : windowMode === 'restore' ? <RestorePanel />
         : windowMode === 'intel' ? <IntelPanel />
         : <ReferencePanel />}

@@ -68,7 +68,9 @@ import {
 import { noteEnd, type MidiNote } from '../daw/model/midi.js';
 import { detectChordTrack, barSeconds } from '../daw/edit/chord-detect.js';
 import { setChordTrack } from '../daw/model/session-ops.js';
-import { reharmonize, formatProgression } from '../daw/model/chords.js';
+import { reharmonize, formatProgression, makeChord } from '../daw/model/chords.js';
+import { addChord, sortedChords, withChords } from '../daw/edit/chord-edit.js';
+import { useVocalEditorStore } from '../stores/vocalEditorStore.js';
 import {
   analyzeClipPitch, applyCorrection, guideNotesFor, renderClipPitch, tuningSummary,
 } from '../daw/audio/varia-actions.js';
@@ -107,7 +109,8 @@ export type DawCommandId =
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
-  | 'daw.tuneToGuide' | 'daw.riff';
+  | 'daw.tuneToGuide' | 'daw.riff'
+  | 'daw.addChord' | 'daw.openVocalEditor';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -487,6 +490,22 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       notify(`코드 트랙: ${formatProgression(events)}`, 'success');
     },
 
+    /**
+     * Drop a chord at the playhead.
+     *
+     * Always a C, and that is on purpose: the block is a placeholder you
+     * double-click and type over, so asking which chord BEFORE there is
+     * anywhere to put it would be a dialog in the way of a keystroke.
+     */
+    'daw.addChord': () => {
+      const state = daw();
+      const at = state.playheadSec;
+      const result = addChord(sortedChords(state.session), at, makeChord(0));
+      if (!result.ok) { notify(result.reason, 'warning'); return; }
+      state.apply((s) => withChords(s, result.events));
+      notify('코드를 놓았습니다 — 블록을 더블클릭해서 고쳐 쓰세요');
+    },
+
     // ── Vocal pitch editing ───────────────────────────────────────────────
     'daw.analyzeVocal': async () => {
       const state = daw();
@@ -564,6 +583,21 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
           + ' — 3반음 넘게 떨어진 구간은 정렬 오류로 보고 건너뜁니다', 'success');
       } catch (err) {
         notify(`피치 보정 실패: ${(err as Error).message}`, 'error');
+      }
+    },
+
+    /** Open the clip under the playhead in the blob editor. */
+    'daw.openVocalEditor': () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      useVocalEditorStore.getState().openTake({
+        trackId: target.trackId, clipId: target.clipId,
+      });
+      state.setWindow('vocal');
+      const clip = findClip(state.session, target.trackId, target.clipId);
+      if (!clip || clip.pitchSegments.length === 0) {
+        notify('아직 분석되지 않은 테이크입니다 — 에디터에서 피치 분석을 누르세요');
       }
     },
 

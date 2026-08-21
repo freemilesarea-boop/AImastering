@@ -18,6 +18,7 @@ import { getCached, analyzeBuffer, loadAudio, decodeContext } from '../engine/au
 import { writeTempChannels } from '../engine/offline-render.js';
 import { addFile, findTrack, trackClips, updateClip } from '../model/session-ops.js';
 import { scalePitchClasses, type Scale } from '../model/scales.js';
+import { bakeSegments } from '../edit/vocal-edit.js';
 import { nextId } from '../model/ids.js';
 import type { Clip, DawSession, TrackId, ClipId } from '../model/types.js';
 
@@ -159,8 +160,13 @@ export function correctSegment(segment: VariSegment, mode: CorrectionMode): Vari
 
 /**
  * Render the clip's pitch edits into a new file and re-point the clip at it.
- * The analysis is carried over (re-pointed at the new source) so the editor
- * keeps showing the same segments.
+ *
+ * The analysis is carried over so the editor keeps showing the same segments —
+ * but the edits are BAKED as it goes.  Without that, rendering twice applies
+ * every correction a second time on top of audio that already has it, and a
+ * note pulled up 40 cents ends up 80 cents sharp.  It never showed up while
+ * this was shortcut-only; a UI makes "fix one more note, press render" the
+ * normal way to work.  See edit/vocal-edit.ts.
  */
 export async function renderClipPitch(
   session: DawSession, trackId: TrackId, clipId: ClipId,
@@ -208,7 +214,9 @@ export async function renderClipPitch(
   }
 
   const withRef = addFile(session, ref);
-  return updateClip(withRef, trackId, clipId, (c) => ({ ...c, fileId: ref.id }));
+  return updateClip(withRef, trackId, clipId, (c) => ({
+    ...c, fileId: ref.id, pitchSegments: bakeSegments(c.pitchSegments),
+  }));
 }
 
 /** Summary line for the UI: how far off the take is. */
