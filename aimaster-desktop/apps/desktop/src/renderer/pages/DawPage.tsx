@@ -18,6 +18,8 @@ import DeviceChainView from '../components/daw/chain/DeviceChainView.js';
 import SessionViewGrid from '../components/daw/session/SessionViewGrid.js';
 import SpectralEditor from '../components/daw/spectral/SpectralEditor.js';
 import VocalEditor from '../components/daw/vocal/VocalEditor.js';
+import VideoViewer from '../components/daw/video/VideoViewer.js';
+import { useVideoStore } from '../stores/videoStore.js';
 import ReferencePanel from '../components/daw/reference/ReferencePanel.js';
 import WarpEditor from '../components/daw/warp/WarpEditor.js';
 import RestorePanel from '../components/daw/restore/RestorePanel.js';
@@ -281,6 +283,8 @@ export default function DawPage() {
           className={`h-7 px-3 rounded border text-[11px] ${isPlaying
             ? 'bg-emerald-600/25 border-emerald-500/50 text-emerald-300'
             : 'bg-zinc-900 border-zinc-700 text-zinc-300'}`}>{isPlaying ? '❚❚' : '▶'}</button>
+        <button onClick={() => useVideoStore.getState().toggle()} title="픽처 창 (Shift+Alt+P)"
+          className="h-7 px-2 rounded bg-zinc-900 border border-zinc-700 text-zinc-400 text-[11px]">PIC</button>
         <button onClick={toggleLoop} title="루프 (Numpad /)"
           className={`h-7 px-2 rounded border text-[11px] ${loopEnabled
             ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
@@ -377,6 +381,10 @@ export default function DawPage() {
         : windowMode === 'restore' ? <RestorePanel />
         : windowMode === 'intel' ? <IntelPanel />
         : <ReferencePanel />}
+
+      {/* Floats over every window — scoring means watching the picture WHILE
+          arranging, not instead of it. */}
+      <VideoViewer />
     </div>
   );
 }

@@ -69,6 +69,7 @@ export type CommandId =
   | 'daw.velocityUp' | 'daw.velocityDown'
   | 'daw.detectChords' | 'daw.reharmonize' | 'daw.addChord'
   | 'daw.analyzeVocal' | 'daw.tuneVocal' | 'daw.openVocalEditor'
+  | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.toggleAutomation' | 'daw.automationMode'
   | 'daw.tempoChange' | 'daw.tempoRamp'
@@ -309,6 +310,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '분석된 구간을 에디터 스케일에 맞추고 PSOLA 로 렌더 (원본은 보존)', available: true },
   { id: 'daw.openVocalEditor', group: 'daw', label: 'VOCAL 에디터에서 열기', chords: ['Shift+Alt+V'],
     note: '재생 위치의 오디오 클립을 블롭 에디터로 — 노트 하나씩 끌어 고칩니다', available: true },
+
+  // ── 픽처 (비디오) ──────────────────────────────────────────────────────
+  { id: 'daw.togglePicture', group: 'daw', label: '픽처 창 켜기 / 끄기', chords: ['Shift+Alt+P'],
+    note: '어느 창에 있든 영상이 위에 떠 있습니다 — 스코어링은 보면서 하는 일입니다', available: true },
+  { id: 'daw.nudgeFrameBack', group: 'daw', label: '한 프레임 뒤로', chords: ['Shift+Alt+Comma'],
+    note: '초가 아니라 프레임 단위 — 23.976 에서는 41.7 ms 입니다', available: true },
+  { id: 'daw.nudgeFrameForward', group: 'daw', label: '한 프레임 앞으로', chords: ['Shift+Alt+Period'],
+    note: '히트 포인트는 프레임 위에 있습니다', available: true },
 
   // ── 스마트 컨트롤 · 트랙 스택 ──────────────────────────────────────────
   { id: 'daw.tempoChange', group: 'daw', label: '재생 위치에 템포 변화', chords: ['Alt+T'],

@@ -15,6 +15,7 @@ import type { Section } from './arrangement.js';
 import type { ChordEvent } from './chords.js';
 import type { VariSegment } from '../audio/pitch-analysis.js';
 import type { MacroRack } from './macros.js';
+import type { VideoRef } from './video.js';
 import type { DeviceGraph } from './device-graph.js';
 import type { Rack } from './racks.js';
 import type { SessionGrid } from './session-view.js';
@@ -353,6 +354,13 @@ export interface DawSession {
   buses: BusDef[];
   groups: GroupDef[];
   markers: Marker[];
+  /**
+   * The picture, when scoring to one.  At most one — see model/video.ts.
+   *
+   * Optional because sessions written before video existed do not have it;
+   * every reader goes through `videoOf(session)` rather than touching this.
+   */
+  video?: VideoRef | null;
   /**
    * The song's shape — intro, verse, chorus.
    *
