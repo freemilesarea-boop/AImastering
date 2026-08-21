@@ -40,6 +40,8 @@ const INVOKE_CHANNELS = [
   'support:bundle', 'support:bundle-export', 'support:record-failure',
   // Session save / load (.louisession)
   'session:save', 'session:load',
+  // User plugin presets (.louipreset)
+  'daw:presets-export', 'daw:presets-import',
   // DAW offline render output (Bounce / Freeze / Consolidate)
   'daw:write-temp-audio', 'daw:bounce-audio',
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer

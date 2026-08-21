@@ -442,6 +442,52 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
   });
 
+  // User plugin presets — a small JSON file, so a sound someone spent an
+  // afternoon on can leave the machine.  localStorage does not survive a
+  // reinstall; a file does.
+  ipc.handle('daw:presets-export', async (_e, payload: unknown) => {
+    if (!win) return null;
+    if (typeof payload !== 'string' || payload.length > 8 * 1024 * 1024) {
+      throw new Error('daw:presets-export: payload rejected');
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `loui-presets-${stamp}.louipreset`,
+      filters: [
+        { name: 'Loui Preset', extensions: ['louipreset'] },
+        { name: 'JSON',        extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, payload, 'utf8');
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `daw:presets-export failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:presets-import', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [{ name: 'Loui Preset', extensions: ['louipreset', 'json'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const chosen = result.filePaths[0];
+    try {
+      const stat = fs.statSync(chosen);
+      // A preset file is kilobytes.  Anything enormous is not one, and
+      // reading it would be the renderer's problem rather than the dialog's.
+      if (stat.size > 8 * 1024 * 1024) throw new Error('프리셋 파일이 너무 큽니다');
+      return fs.readFileSync(chosen, 'utf8');
+    } catch (err) {
+      recordFailure('session', `daw:presets-import failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
   ipc.handle('session:load', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {

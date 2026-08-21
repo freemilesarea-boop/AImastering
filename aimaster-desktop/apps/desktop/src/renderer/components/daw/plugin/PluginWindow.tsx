@@ -14,7 +14,12 @@ import { usePluginWindowStore, type PluginWindowState } from '../../../stores/pl
 import { findTrack, setInsert } from '../../../daw/model/session-ops.js';
 import { descriptorFor } from '../../../daw/engine/external-device.js';
 import { defaultParams } from '../../../daw/engine/plugins.js';
-import { presetGroups, resolvePreset } from '../../../daw/engine/plugin-presets.js';
+import { resolvePreset } from '../../../daw/engine/plugin-presets.js';
+import {
+  allPresetGroups, canSaveUserPreset, deleteUserPreset, exportUserPresets,
+  importUserPresets, isUserPresetId, overwriteUserPreset, saveUserPreset, describeImport,
+} from '../../../daw/engine/user-presets.js';
+import { useAppStore } from '../../../stores/appStore.js';
 import { adviseFor, canAdvise, LOW_CONFIDENCE } from '../../../daw/ai/plugin-advice.js';
 import { describeWindow, profileForInsert } from '../../../daw/ai/advice-runner.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
@@ -96,6 +101,10 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   // moment you move a knob it is no longer that preset, and a session that
   // still claimed it was would be lying the next time it opened.
   const [loadedPreset, setLoadedPreset] = useState<string>('');
+  // The preset store lives outside React, so a save or a delete has to say so.
+  const [presetTick, setPresetTick] = useState(0);
+  const [savingName, setSavingName] = useState<string | null>(null);
+  const notify = useAppStore((s) => s.notify);
 
   // ── Dragging the window ──────────────────────────────────────────────────
   const drag = useRef<{ dx: number; dy: number } | null>(null);
@@ -159,7 +168,10 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
     }));
   };
 
-  const groups = presetGroups(insert.pluginId);
+  // `presetTick` is read so the list rebuilds after a save, an overwrite, a
+  // delete or an import — none of which go through React state.
+  void presetTick;
+  const groups = allPresetGroups(insert.pluginId);
   const loadPreset = (presetId: string): void => {
     const preset = groups.flatMap((g) => g.presets).find((entry) => entry.id === presetId);
     if (!preset) return;
@@ -172,6 +184,70 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
     }));
   };
   const activePreset = groups.flatMap((g) => g.presets).find((entry) => entry.id === loadedPreset);
+  const userPresetActive = activePreset !== undefined && isUserPresetId(activePreset.id);
+  // A third-party device reached through the external host declares no
+  // parameters here, so there is nothing to validate a preset against.
+  const canSave = !insert.external && canSaveUserPreset(insert.pluginId);
+
+  // Saving stores the FULL current parameter map — `params`, which already has
+  // the device's default filled in for anything the insert never set.  A user
+  // preset means "this exact sound", not "the bits I happened to move".
+  const commitSave = (): void => {
+    const name = savingName ?? '';
+    const result = saveUserPreset({ pluginId: insert.pluginId, name, params });
+    if (!result.ok) { notify(result.reason, 'warning'); return; }
+    setSavingName(null);
+    setLoadedPreset(result.preset.id);
+    setPresetTick((n) => n + 1);
+    notify(`프리셋 "${result.preset.name}" 저장`);
+  };
+
+  const overwriteActive = (): void => {
+    if (!activePreset) return;
+    const result = overwriteUserPreset(activePreset.id, params);
+    if (!result.ok) { notify(result.reason, 'warning'); return; }
+    setPresetTick((n) => n + 1);
+    notify(`"${result.preset.name}" 덮어썼습니다`);
+  };
+
+  const deleteActive = (): void => {
+    if (!activePreset) return;
+    const name = activePreset.name;
+    if (!deleteUserPreset(activePreset.id)) { notify('프리셋을 지울 수 없습니다', 'warning'); return; }
+    setLoadedPreset('');
+    setPresetTick((n) => n + 1);
+    notify(`"${name}" 삭제`);
+  };
+
+  // Export and import go through a real file dialog: localStorage does not
+  // survive a reinstall, and a sound worth naming is worth keeping.
+  const exportPresets = async (): Promise<void> => {
+    const api = globalThis.window?.electronAPI;
+    if (!api) { notify('파일 저장을 사용할 수 없습니다', 'warning'); return; }
+    const json = exportUserPresets();
+    if (JSON.parse(json).items.length === 0) { notify('내보낼 프리셋이 없습니다', 'warning'); return; }
+    try {
+      const dest = await api.invoke('daw:presets-export', json) as string | null;
+      if (dest) notify(`프리셋을 내보냈습니다 — ${dest}`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'error');
+    }
+  };
+
+  const importPresets = async (): Promise<void> => {
+    const api = globalThis.window?.electronAPI;
+    if (!api) { notify('파일 열기를 사용할 수 없습니다', 'warning'); return; }
+    try {
+      const json = await api.invoke('daw:presets-import') as string | null;
+      if (!json) return;
+      const report = importUserPresets(json);
+      setPresetTick((n) => n + 1);
+      notify(describeImport(report), report.added === 0 ? 'warning' : 'info');
+      for (const reason of report.reasons.slice(0, 3)) notify(reason, 'warning');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'error');
+    }
+  };
 
   const runAdvice = async (): Promise<void> => {
     if (!insert) return;
@@ -293,12 +369,14 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         >×</button>
       </div>
 
-      {/* Somewhere to start.  Only shown where there is somewhere to start. */}
-      {groups.length > 0 && (
-        <div
-          className="px-3.5 py-2 flex flex-col gap-1"
-          style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
-        >
+      {/* Somewhere to start — and somewhere to keep what you arrived at.
+          Always shown, including for a device with no factory presets: that
+          is exactly the device you would want to save your own settings for. */}
+      <div
+        className="px-3.5 py-2 flex flex-col gap-1"
+        style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+      >
+        {(groups.length > 0 || canSave) && (
           <div className="flex items-center gap-2">
             <span className="text-[9px] tracking-wide shrink-0" style={{ color: premium.text.faint }}>
               프리셋
@@ -306,10 +384,13 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             <select
               value={loadedPreset}
               onChange={(e) => loadPreset(e.target.value)}
+              disabled={groups.length === 0}
               className="flex-1 h-6 px-1 text-[10px] rounded bg-transparent outline-none"
               style={{ color: premium.text.primary, border: '1px solid rgba(255,255,255,0.12)' }}
             >
-              <option value="">— 직접 설정 —</option>
+              <option value="">
+                {groups.length === 0 ? '— 저장된 프리셋 없음 —' : '— 직접 설정 —'}
+              </option>
               {groups.map((group) => (
                 <optgroup key={group.group} label={group.group}>
                   {group.presets.map((preset) => (
@@ -318,14 +399,61 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
                 </optgroup>
               ))}
             </select>
+            {canSave && (
+              <button
+                onClick={() => setSavingName(savingName === null ? '' : null)}
+                title="지금 설정을 내 프리셋으로 저장"
+                className="h-6 w-6 rounded text-[13px] leading-none shrink-0"
+                style={{
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  color: savingName === null ? premium.text.muted : premium.accent.base,
+                }}
+              >+</button>
+            )}
           </div>
-          {activePreset && (
-            <span className="text-[9px] leading-relaxed" style={{ color: premium.text.faint }}>
-              {activePreset.note}
-            </span>
+        )}
+
+        {savingName !== null && (
+          <div className="flex items-center gap-1.5">
+            <input
+              autoFocus
+              value={savingName}
+              maxLength={60}
+              placeholder="프리셋 이름"
+              onChange={(e) => setSavingName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitSave();
+                if (e.key === 'Escape') setSavingName(null);
+              }}
+              className="flex-1 h-6 px-1.5 text-[10px] rounded bg-transparent outline-none"
+              style={{ color: premium.text.primary, border: `1px solid ${premium.accent.deep}` }}
+            />
+            <button onClick={commitSave} style={miniButton(premium.accent.base)}>저장</button>
+            <button onClick={() => setSavingName(null)} style={miniButton(premium.text.muted)}>취소</button>
+          </div>
+        )}
+
+        {activePreset?.note && (
+          <span className="text-[9px] leading-relaxed" style={{ color: premium.text.faint }}>
+            {activePreset.note}
+          </span>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {userPresetActive && (
+            <>
+              <button onClick={overwriteActive} title="지금 설정으로 이 프리셋을 갱신합니다"
+                      style={linkButton(premium.text.muted)}>덮어쓰기</button>
+              <button onClick={deleteActive} title="이 프리셋을 지웁니다"
+                      style={linkButton(premium.accent.danger)}>삭제</button>
+            </>
           )}
+          <button onClick={() => void exportPresets()} title="내 프리셋 전체를 파일로 저장합니다"
+                  style={linkButton(premium.text.faint)}>내보내기</button>
+          <button onClick={() => void importPresets()} title="프리셋 파일을 읽어 옵니다"
+                  style={linkButton(premium.text.faint)}>가져오기</button>
         </div>
-      )}
+      </div>
 
       {(advice || adviceError) && (
         <div
@@ -440,4 +568,21 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       </div>
     </div>
   );
+}
+
+/** A small filled button for the save row. */
+function miniButton(color: string): React.CSSProperties {
+  return {
+    height: 24, padding: '0 8px', borderRadius: 3, fontSize: 9.5,
+    border: '1px solid rgba(255,255,255,0.14)', color, background: 'transparent',
+  };
+}
+
+/** A text-weight action, so the row does not read as four more controls. */
+function linkButton(color: string): React.CSSProperties {
+  return {
+    fontSize: 9, letterSpacing: '0.04em', color,
+    background: 'transparent', border: 'none', padding: 0,
+    textDecoration: 'underline', textUnderlineOffset: 2,
+  };
 }
