@@ -1,16 +1,32 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAppStore } from './stores/appStore.js';
-// License gate disabled for the internal RC (v3.6.0-rc.1+1) — license
-// store / modal imports removed.  See main/index.ts header.
+// License gate re-enabled (v3.6 — commercial release).
+import LicenseModal from './components/LicenseModal.js';
+import { useLicenseStore } from './stores/licenseStore.js';
 import HomePage     from './pages/HomePage.js';
+import GuidedHome from './components/guided/GuidedHome.js';
+import { isGuidedFlowEnabled } from './audio/guided-flow-flag.js';
+import { useIsMobile } from './hooks/useIsMobile.js';
+import AccountAuthModal from './components/auth/AccountAuthModal.js';
+import { useAuthStore } from './stores/authStore.js';
+import { useEntitlementStore } from './stores/entitlementStore.js';
+import { useDeviceStore } from './stores/deviceStore.js';
+import { isAccountAuthEnabled, isEntitlementGateEnabled } from './audio/account-auth-flag.js';
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
 import QCPage       from './pages/QCPage.js';
+import DawPage      from './pages/DawPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
+import { useDawShortcuts } from './shortcuts/useDawShortcuts.js';
+import DawWorkspaceChrome from './components/daw/DawWorkspaceChrome.js';
+import { isEmptyPlan, planDrop } from './daw/model/drop-target.js';
+import { describeImport, importIntoSession } from './daw/edit/session-import.js';
+import { useDawStore } from './stores/dawStore.js';
+import { useMidiEditorStore } from './stores/midiEditorStore.js';
 
 // Dev-only: analyzer streaming smoke route — only on ?dev=analyzer-stream URL.
 // Named export → wrap in a default-export shim for React.lazy.
@@ -32,9 +48,11 @@ function Toast() {
   };
 
   return (
-    <div className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-50
-                     px-4 py-2.5 rounded-xl border shadow-xl
-                     text-sm animate-in-fast whitespace-nowrap
+    <div className={`fixed z-50 animate-in-fast border
+                     bottom-4 left-4 right-4 px-4 py-3 rounded-xl shadow-lg
+                     text-[15px] text-center whitespace-nowrap overflow-hidden text-ellipsis
+                     sm:bottom-5 sm:left-1/2 sm:right-auto sm:-translate-x-1/2
+                     sm:px-4 sm:py-2.5 sm:shadow-xl sm:text-sm sm:text-left sm:overflow-visible
                      ${colors[notif.type] ?? colors.info}`}>
       {notif.message}
     </div>
@@ -121,8 +139,6 @@ function NoApiUI() {
 // Solution: listen at the document level and show a full-screen overlay
 // (z-index > TopBar, -webkit-app-region: no-drag) that captures the drop.
 
-const AUDIO_EXTENSIONS = new Set(['.wav', '.flac', '.aiff', '.aif', '.mp3', '.m4a']);
-
 function isAudioDrag(dt: DataTransfer | null): boolean {
   if (!dt) return false;
   return Array.from(dt.types).includes('Files');
@@ -133,6 +149,11 @@ function GlobalDropOverlay() {
   const counter = useRef(0);
   const addFilesToQueue = useAudioStore((s) => s.addFilesToQueue);
   const setPage         = useAppStore((s) => s.setPage);
+  const notify          = useAppStore((s) => s.notify);
+  // The overlay tells you where the files are about to land, so a drop is
+  // never a surprise trip back to the home screen.
+  const page            = useAppStore((s) => s.currentPage);
+  const inDaw           = page === 'daw';
 
   useEffect(() => {
     const onEnter = (e: DragEvent) => {
@@ -151,19 +172,48 @@ function GlobalDropOverlay() {
       counter.current = 0;
       setActive(false);
 
-      const files = Array.from(e.dataTransfer?.files ?? []);
-      const paths = files
+      const paths = Array.from(e.dataTransfer?.files ?? [])
         .map((f) => (f as File & { path?: string }).path ?? '')
-        .filter((p) => {
-          if (!p) return false;
-          const ext = p.slice(p.lastIndexOf('.')).toLowerCase();
-          return AUDIO_EXTENSIONS.has(ext);
-        })
-        .slice(0, MAX_QUEUE_SIZE);
+        .filter(Boolean);
 
-      if (paths.length) {
-        addFilesToQueue(paths);
-        setPage('home');
+      const state = useAppStore.getState();
+      const slots = MAX_QUEUE_SIZE - useAudioStore.getState().queue.length;
+      const plan = planDrop(paths, state.currentPage, slots);
+
+      if (isEmptyPlan(plan)) {
+        if (paths.length > 0) {
+          state.notify(
+            plan.destination === 'daw'
+              ? '오디오나 MIDI 파일이 아닙니다'
+              : '오디오 파일이 아니거나 대기열이 가득 찼습니다',
+            'warning',
+          );
+        }
+        return;
+      }
+
+      // In the DAW the files become tracks in the session you are already in.
+      // Sending you back to the home screen to re-enter the DAW was the single
+      // most disruptive thing the app did.
+      if (plan.destination === 'daw') {
+        void importIntoSession(plan.audio, plan.midi, useDawStore.getState().playheadSec)
+          .then((report) => {
+            state.notify(describeImport(report), report.failed.length ? 'warning' : 'success');
+            if (report.firstMidiPart) {
+              useMidiEditorStore.getState().openPart(report.firstMidiPart);
+              useDawStore.getState().setWindow('midi');
+            }
+          })
+          .catch((err: unknown) => {
+            state.notify(`가져오기 실패: ${(err as Error).message}`, 'error');
+          });
+        return;
+      }
+
+      addFilesToQueue(plan.audio);
+      setPage('home');
+      if (plan.ignored.length > 0) {
+        state.notify(`${plan.ignored.length}개 파일은 건너뛰었습니다`, 'warning');
       }
     };
 
@@ -177,7 +227,7 @@ function GlobalDropOverlay() {
       document.removeEventListener('dragover',  onDragOver);
       document.removeEventListener('drop',      onDrop);
     };
-  }, [addFilesToQueue, setPage]);
+  }, [addFilesToQueue, setPage, notify]);
 
   if (!active) return null;
 
@@ -191,9 +241,51 @@ function GlobalDropOverlay() {
            stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
         <path d="M2 12h2M20 12h2M6 8v8M18 8v8M10 5v14M14 5v14" />
       </svg>
-      <p className="text-base font-medium text-zinc-200">파일을 놓으세요</p>
-      <p className="text-xs text-zinc-500">WAV · FLAC · AIFF · MP3 · M4A</p>
+      <p className="text-base font-medium text-zinc-200">
+        {inDaw ? '세션에 트랙으로 추가합니다' : '파일을 놓으세요'}
+      </p>
+      <p className="text-xs text-zinc-500">
+        {inDaw ? 'WAV · FLAC · AIFF · MP3 · M4A · MID' : 'WAV · FLAC · AIFF · MP3 · M4A'}
+      </p>
     </div>
+  );
+}
+
+// ── Account auth trigger (Phase A, flag-gated) ────────────────────────────────
+// Small fixed entry point to open the account modal.  Rendered only when the
+// account-auth flag is ON, so it never appears in the shipping (flag-OFF) app.
+function AccountButton() {
+  const status = useAuthStore((s) => s.status);
+  const user = useAuthStore((s) => s.user);
+  const setModalOpen = useAuthStore((s) => s.setModalOpen);
+  const name = user?.email ? user.email.split('@')[0] : '계정';
+  return (
+    <button
+      onClick={() => setModalOpen(true)}
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      className="fixed top-2.5 right-4 z-40 text-[12px] px-3 py-1.5 rounded-lg
+                 bg-zinc-900/70 border border-zinc-700 text-zinc-300 hover:text-zinc-100"
+    >
+      {status === 'signed-in' ? `● ${name}` : '로그인'}
+    </button>
+  );
+}
+
+/** Entry point into the multitrack workspace (also on Mod+Alt+D). */
+function DawButton() {
+  const page = useAppStore((s) => s.currentPage);
+  const setPage = useAppStore((s) => s.setPage);
+  if (page === 'daw') return null;
+  return (
+    <button
+      onClick={() => setPage('daw')}
+      title="멀티트랙 Edit / Mix 워크스페이스 (Mod+Alt+D)"
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      className="fixed top-2.5 right-24 z-40 text-[12px] px-3 py-1.5 rounded-lg
+                 bg-zinc-900/70 border border-zinc-700 text-zinc-400 hover:text-zinc-100"
+    >
+      DAW
+    </button>
   );
 }
 
@@ -222,10 +314,65 @@ function AppInner() {
   const setPage = useAppStore((s) => s.setPage);
   const selectedFile = useAudioStore((s) => s.selectedFile);
   const masteringResult = useAudioStore((s) => s.masteringResult);
+  const loadLicense = useLicenseStore((s) => s.load);
+  // Mobile width (<640px) = Guided Flow only (no Pro controls / TweakPage).
+  const isMobile = useIsMobile();
+
+  // DAW keyboard layer (Cubase-style shortcuts) — one global listener.
+  // Harmless on mobile (no hardware keyboard), but its chrome is desktop-only.
+  useDawShortcuts();
   useEffect(() => {
     // eslint-disable-next-line no-console
     console.log('[AppInner] mounted — page:', useAppStore.getState().currentPage);
-  }, []);
+    // Load license state on startup (main process also re-validates online).
+    void loadLicense();
+  }, [loadLicense]);
+
+  // Phase A — account auth (flag-gated).  Restores any persisted session;
+  // does NOT affect license/export/payment decisions.
+  const accountAuth = isAccountAuthEnabled();
+  useEffect(() => {
+    if (accountAuth) void useAuthStore.getState().init();
+  }, [accountAuth]);
+
+  // Phase B — fetch the account entitlement on sign-in (query/cache only).
+  // Clears on sign-out.
+  const authStatus = useAuthStore((s) => s.status);
+  useEffect(() => {
+    if (!accountAuth) return;
+    if (authStatus === 'signed-in') {
+      useEntitlementStore.getState().loadCache();
+      void useEntitlementStore.getState().refresh();
+      void useDeviceStore.getState().registerCurrent();   // Phase D2
+    } else if (authStatus === 'signed-out') {
+      useEntitlementStore.getState().clear();
+      useDeviceStore.getState().clear();
+    }
+  }, [accountAuth, authStatus]);
+
+  // Phase C — push the (additive) entitlement gate decision to the main
+  // process.  Only true when BOTH flags are ON AND the plan is active pro;
+  // fetch failure / no session / non-pro → false → license-only fallback.
+  // When account auth is OFF we never touch the bridge → main stays default
+  // false → export gate is exactly license-only.
+  const entitlement = useEntitlementStore((s) => s.entitlement);
+  const entStatus = useEntitlementStore((s) => s.status);
+  const deviceAllowed = useDeviceStore((s) => s.deviceAllowed);   // Phase D2
+  useEffect(() => {
+    if (!accountAuth) return;
+    const gateOn = isEntitlementGateEnabled();
+    let paid = false;
+    let plan = 'free';
+    let status = 'free';
+    if (gateOn && authStatus === 'signed-in' && entStatus === 'loaded' && entitlement) {
+      plan = entitlement.plan;
+      status = entitlement.status;
+      const notExpired = !entitlement.expiresAt || new Date(entitlement.expiresAt).getTime() > Date.now();
+      paid = status === 'active' && (plan === 'pro_monthly' || plan === 'pro_lifetime') && notExpired;
+    }
+    // Gate value = paid (entitlementPaid) && deviceAllowed (folded in main).
+    void window.electronAPI?.invoke('entitlement:set', { paid, deviceAllowed, plan, status });
+  }, [accountAuth, authStatus, entStatus, entitlement, deviceAllowed]);
 
   // Defensive redirects — bounce to home when a page is reached without
   // the data it requires.  Runs synchronously after every render so the
@@ -241,7 +388,12 @@ function AppInner() {
       console.warn('[AppInner] page=tweak with no selectedFile — redirecting to home');
       setPage('home');
     }
-  }, [page, selectedFile, masteringResult, setPage]);
+    // Mobile policy: never enter the Pro fine-tuning page.  Bounce tweak to
+    // the result (if a master exists) or home.
+    if (isMobile && page === 'tweak') {
+      setPage(selectedFile && masteringResult?.outputPath ? 'result' : 'home');
+    }
+  }, [page, selectedFile, masteringResult, setPage, isMobile]);
 
   // Dev-only: route via URL query so the analyzer-stream smoke page can
   // be reached without touching the appStore page enum.  Production
@@ -254,20 +406,28 @@ function AppInner() {
   // ProductPage / ProductPageErrorBoundary / isProductLayoutEnabled used to
   // gate this slot but were retired when ResultPage became the canonical
   // result screen — see the WASM panic recovery in the redesign branch.
+  // Guided "three picks" flow (T6) — gated by a flag (default OFF).  When OFF
+  // the legacy HomePage stays the route exactly as before (one-switch rollback).
+  // Mobile width forces the Guided flow regardless of the desktop flag.
+  const homeEl = (isMobile || isGuidedFlowEnabled()) ? <GuidedHome /> : <HomePage />;
+
   const hasResultData = Boolean(selectedFile && masteringResult?.outputPath);
-  const resultSlot = hasResultData ? <ResultPage /> : <HomePage />;
+  const resultSlot = hasResultData ? <ResultPage /> : homeEl;
 
   // tweak: source-only preview — selectedFile required, masteringResult NOT required.
   // TweakPage is a dedicated lightweight component; it never loads the heavy
   // ProductPage audio graph so it can't crash on null masteringResult.
-  const tweakSlot = Boolean(selectedFile) ? <TweakPage /> : <HomePage />;
+  // On mobile the Pro fine-tuning page is never shown (guard above redirects).
+  const tweakSlot = isMobile ? homeEl : (Boolean(selectedFile) ? <TweakPage /> : homeEl);
 
   const pages: Record<string, React.ReactNode> = {
-    home:      <HomePage />,
+    home:      homeEl,
     mastering: <MasteringPage />,
     result:    resultSlot,
     tweak:     tweakSlot,
     qc:        <QCPage />,
+    // Pro Tools-shaped multitrack workspace (Edit + Mix windows).
+    daw:       isMobile ? homeEl : <DawPage />,
     settings:  <SettingsPage />,
   };
 
@@ -285,10 +445,24 @@ function AppInner() {
         </span>
       </div>
 
-      {/* License modal removed — license gate disabled for internal RC. */}
+      {/* License activation modal (v3.6 — commercial release). */}
+      <LicenseModal />
+
+      {/* Phase A — account auth UI (flag-gated, default OFF).  Additive only:
+          no effect on the license/export/payment flow. */}
+      {accountAuth && <AccountButton />}
+      {accountAuth && <AccountAuthModal />}
 
       {/* Toast notifications */}
       <Toast />
+
+      {/* Multitrack workspace entry point (desktop only). */}
+      {!isMobile && <DawButton />}
+
+      {/* DAW workspace chrome — transport / mix console / inspector /
+          MediaBay / shortcut help.  Desktop only; all parts are keyboard
+          toggled (F2, F3, Alt+I, F5, ?). */}
+      {!isMobile && <DawWorkspaceChrome />}
 
       {/* v3.4.3 — auto-update bottom-right card */}
       <UpdateToast />

@@ -9,6 +9,8 @@
 //   • A new src cancels any in-flight decode for the previous src.
 
 import { useEffect, useRef, useState } from 'react';
+import { decodeContext } from '../audio/decode-context.js';
+import { decodeAudioFile } from '../daw/engine/audio-cache.js';
 
 export interface WaveformPeaks {
   /** Per-bucket max abs sample (0..1), length = bucketCount.  Null while loading or on failure. */
@@ -45,15 +47,9 @@ function cachePut(key: string, value: Float32Array): void {
   }
 }
 
-// Single lazy AudioContext for decode (closed = creation cost on first use,
-// reused across all decodes for the session).
-let decodeCtx: AudioContext | null = null;
-function getDecodeCtx(): AudioContext | null {
-  if (decodeCtx) return decodeCtx;
-  if (typeof AudioContext === 'undefined') return null;
-  try { decodeCtx = new AudioContext({ sampleRate: 48000 }); } catch { decodeCtx = null; }
-  return decodeCtx;
-}
+// One decode context for the whole app — shared with the DAW so the page never
+// holds two hardware contexts just to turn files into samples.
+const getDecodeCtx = decodeContext;
 
 /** Reduce a mono / stereo AudioBuffer into per-bucket peak abs values. */
 function computePeaks(buffer: AudioBuffer, bucketCount: number): Float32Array {
@@ -111,12 +107,9 @@ export function useWaveformPeaks(src: string | null | undefined, bucketCount = 1
       try {
         const ctx = getDecodeCtx();
         if (!ctx) throw new Error('AudioContext unavailable');
-        const resp = await fetch(src);
-        if (!resp.ok) throw new Error(`fetch failed (${resp.status})`);
-        const buf = await resp.arrayBuffer();
-        if (cancelled || reqIdRef.current !== reqId) return;
-        // decodeAudioData copies the buffer, so we can release ours.
-        const decoded = await ctx.decodeAudioData(buf);
+        // Decoded by FFmpeg in the main process — see audio-cache.decodeAudioFile
+        // for why the renderer no longer calls decodeAudioData itself.
+        const decoded = await decodeAudioFile(ctx, src);
         if (cancelled || reqIdRef.current !== reqId) return;
         const peaks = computePeaks(decoded, bucketCount);
         cachePut(key, peaks);

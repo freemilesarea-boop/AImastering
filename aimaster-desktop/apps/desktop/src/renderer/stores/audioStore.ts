@@ -110,6 +110,26 @@ export const MAX_QUEUE_SIZE = 20;
 
 // ── Mastering options ─────────────────────────────────────────────────────────
 
+/**
+ * Real-time DSP overrides — applied LIVE to the preview audio element via
+ * the WebAudio native DSP chain on ResultPage.  Values mirror
+ * RealtimeChainConfig.  Each field is optional; undefined means the
+ * field is omitted from the chain config (chain falls back to its own
+ * default).  ALL fields default to a neutral pass-through value so the
+ * sliders read "0 dB / 100 %" before the user touches anything.
+ */
+export interface RealtimeDspOverrides {
+  eqLowCutHz?:    number; eqLowShelfDb?: number;
+  eqPresenceDb?:  number; eqAirDb?:      number;
+  dynThresholdDb?: number; dynRatio?:     number;
+  dynAttackMs?:    number; dynReleaseMs?: number;
+  dynMixPct?:      number;
+  imgWidthPct?:  number; imgLowMonoHz?: number;
+  limCeilingDbtp?: number;
+  eqBypass?: boolean; dynBypass?: boolean; imgBypass?: boolean; limBypass?: boolean;
+  masterBypass?: boolean;
+}
+
 export interface MasteringOptions {
   style: MasteringStyle;
   targetLufs: number;
@@ -122,9 +142,44 @@ export interface MasteringOptions {
   saturationAmount?: number | undefined;     // undefined = 모드 기본값
   stereoWidth?: number | undefined;          // undefined = 모드 기본값
   outputGainDb?: number | undefined;         // undefined = 0
+  /** Dynamic EQ intensity (0=off, 1=full).  undefined = 1.0 (full). */
+  dynamicEqIntensity?: number | undefined;
+  /**
+   * AUTO loudness — false(기본)면 target_lufs 를 Python 에 보내지 않아
+   * Commercial Loudness Policy 가 입력 라우드니스로부터 목표를 정한다.
+   * 사용자가 슬라이더/프리셋으로 값을 정하면 true 가 되어 그 값이 존중된다.
+   */
+  targetLufsExplicit?: boolean | undefined;
+  /**
+   * RC — 'rc' 선택 시 Decision Engine 자문 pre-correction 을 거친 뒤
+   * 기존 파이프라인이 그대로 실행된다.  기본은 'stable' (기존 동작).
+   */
+  engineMode?: 'stable' | 'rc' | undefined;
   /** UI 상태: 어떤 빠른 프리셋이 선택되어 있는지 */
   quickPreset?: string | undefined;
+  /** Live DSP overrides — applied to the WebAudio preview chain. */
+  rt?: RealtimeDspOverrides;
 }
+
+const defaultRtOverrides: RealtimeDspOverrides = {
+  eqLowCutHz:     20,
+  eqLowShelfDb:   0,
+  eqPresenceDb:   0,
+  eqAirDb:        0,
+  dynThresholdDb: -18,
+  dynRatio:       2,
+  dynAttackMs:    10,
+  dynReleaseMs:   120,
+  dynMixPct:      100,
+  imgWidthPct:    100,
+  imgLowMonoHz:   120,
+  limCeilingDbtp: -1,
+  eqBypass:       false,
+  dynBypass:      false,
+  imgBypass:      false,
+  limBypass:      false,
+  masterBypass:   false,
+};
 
 const defaultOptions: MasteringOptions = {
   style:              'balanced',
@@ -134,6 +189,9 @@ const defaultOptions: MasteringOptions = {
   bitDepth:           24,
   applyAiCorrections: true,
   limiterStrength:    'medium',
+  targetLufsExplicit: false,
+  engineMode:         'stable',
+  rt:                 defaultRtOverrides,
 };
 
 // ── Store ─────────────────────────────────────────────────────────────────────

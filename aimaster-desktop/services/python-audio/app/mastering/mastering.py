@@ -10,10 +10,18 @@ Error handling:
 """
 from __future__ import annotations
 
+import os
+import shutil
 import traceback
 from typing import Any, Callable
 
+from app.mastering.loudness_policy import AUTO_TARGET_FLOOR_LUFS
 from app.mastering.pipeline import run_pipeline
+from app.mastering.rc_engine import (
+    apply_precorrection,
+    is_rc_enabled,
+    log_engine_banner,
+)
 from app.mastering.iterative import run_iterative_mastering
 from app.mastering.safe_modes import (
     apply_overrides_to_pipeline_args,
@@ -46,7 +54,12 @@ def master_file(
     input_path  = params["input_path"]
     output_path = params["output_path"]
     style       = str(params.get("style", "balanced"))
-    target_lufs = float(params.get("target_lufs", -14.0))
+    # An absent target_lufs means AUTO — the commercial loudness policy resolves
+    # it from the measured input. A supplied value is explicit caller intent and
+    # is passed through untouched.
+    _target_raw = params.get("target_lufs")
+    explicit_target_lufs = _target_raw is not None
+    target_lufs = float(_target_raw) if explicit_target_lufs else AUTO_TARGET_FLOOR_LUFS
     target_tp   = float(params.get("target_tp", -1.0))
     lra         = float(params.get("lra", 11.0))
     sample_rate = int(params.get("sample_rate", 44100))
@@ -74,6 +87,7 @@ def master_file(
     pipeline_kwargs: dict[str, Any] = {
         "style": style,
         "target_lufs": target_lufs,
+        "explicit_target_lufs": explicit_target_lufs,
         "target_tp": target_tp,
         "lra": lra,
         "sample_rate": sample_rate,
@@ -88,6 +102,11 @@ def master_file(
         "generate_waveforms": gen_waveforms,
         "pre_loudness": (dict(pre_loudness) if isinstance(pre_loudness, dict) else None),
         "debug_logging": (None if debug_logging is None else bool(debug_logging)),
+        # Fast-mode skips (mobile API). Default False → desktop path unchanged.
+        "skip_preview": bool(params.get("skip_preview", False)),
+        "skip_correction": bool(params.get("skip_correction", False)),
+        "skip_post_analysis": bool(params.get("skip_post_analysis", False)),
+        "skip_isp_safety": bool(params.get("skip_isp_safety", False)),
     }
 
     overrides = build_safe_mode_overrides(list(safe_modes_raw))
@@ -98,9 +117,29 @@ def master_file(
                 f"sr={sample_rate}, bits={bit_depth}, ai={apply_ai}, "
                 f"safe_modes={safe_modes_raw}")
 
+    # ── RC engine (opt-in) ───────────────────────────────────────────────────
+    # Adds one advisory pre-correction pass on a COPY of the input; the stable
+    # pipeline below then runs unchanged, so every output safety stage still
+    # applies. Falls back to the original input on any failure.
+    rc_enabled = is_rc_enabled(params)
+    rc_outcome: dict[str, Any] | None = None
+    pipeline_input = input_path
+
+    if rc_enabled:
+        rc_outcome = apply_precorrection(
+            input_path,
+            sample_rate=sample_rate,
+            bit_depth=bit_depth,
+            file_name=os.path.basename(input_path),
+        )
+        pipeline_input = rc_outcome["path"]
+        log_engine_banner(True, rc_outcome.get("plan"))
+    else:
+        log_engine_banner(False)
+
     try:
         result = run_pipeline(
-            input_path,
+            pipeline_input,
             output_path,
             job_id=job_id,
             progress=send_progress,
@@ -110,6 +149,11 @@ def master_file(
         # display the resulting chip / banner.
         if safe_modes_raw:
             result["appliedSafeModes"] = list(safe_modes_raw)
+        if rc_enabled:
+            plan = (rc_outcome or {}).get("plan") or {}
+            result["engineMode"] = "rc"
+            result["rcPreCorrectionApplied"] = bool((rc_outcome or {}).get("applied"))
+            result["rcRecommendations"] = plan.get("recommendations", [])
         return result
 
     except FFmpegError as exc:
@@ -124,6 +168,13 @@ def master_file(
         raise RuntimeError(
             f"마스터링 중 예상치 못한 오류가 발생했습니다: {type(exc).__name__}"
         ) from exc
+
+    finally:
+        # RC writes its pre-corrected copy to a temp dir; the original input is
+        # never touched, so this only ever removes RC's own scratch space.
+        temp_dir = (rc_outcome or {}).get("temp_dir")
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def master_with_reference(

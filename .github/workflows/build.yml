@@ -7,6 +7,20 @@ on:
       - 'claude/**'
     tags:
       - 'v*'           # v3.5.0, v3.5.1 등 — release 빌드 트리거
+    # This is the DESKTOP Electron build. Don't run it for app-only work
+    # (Capacitor mobile app / macOS mobile-style wrapper / server API / docs /
+    # their own workflows) — those have their own workflows. Desktop-relevant
+    # changes (apps/desktop, packages/*, python-audio, lockfile) still trigger.
+    # Tag pushes / workflow_dispatch remain the reliable release triggers.
+    paths-ignore:
+      - 'aimaster-desktop/apps/mobile/**'
+      - 'aimaster-desktop/apps/mac-shell/**'
+      - 'aimaster-desktop/services/mastering-api/**'
+      - '.github/workflows/build-mobile-android.yml'
+      - '.github/workflows/build-mac-mobile.yml'
+      - 'docs/**'
+      - 'render.yaml'
+      - '**/*.md'
   workflow_dispatch:
     inputs:
       release_tag:
@@ -89,6 +103,9 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         env:
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # Guided "three picks" flow — ON only for production release (tag)
+          # builds; branch / workflow_dispatch artefacts stay OFF (legacy Home).
+          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
         run: pnpm build
 
       # v3.4.3 — auto-update.  On tag push (refs/tags/v*) electron-builder
@@ -104,23 +121,25 @@ jobs:
             echo "flag=never" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Package AppImage
+      - name: Package AppImage + deb
         working-directory: aimaster-desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage --x64 --publish ${{ steps.pub.outputs.flag }}
+        run: pnpm --filter @aimaster/desktop exec electron-builder --linux AppImage deb --x64 --publish ${{ steps.pub.outputs.flag }}
 
       - name: List build outputs
         working-directory: aimaster-desktop/apps/desktop
         run: ls -lah out/
 
-      - name: Upload Linux AppImage
+      - name: Upload Linux artifacts (AppImage + deb)
         uses: actions/upload-artifact@v4
         with:
           name: Louver-Mastering-AI-linux
           path: |
             aimaster-desktop/apps/desktop/out/*.AppImage
+            aimaster-desktop/apps/desktop/out/*.deb
+            aimaster-desktop/apps/desktop/out/latest-linux.yml
           if-no-files-found: error
           retention-days: 30
 
@@ -273,6 +292,8 @@ jobs:
         working-directory: aimaster-desktop/apps/desktop
         env:
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # Guided flow — ON only for production release (tag) builds.
+          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
         run: pnpm build
 
       # ── Sanity: verify the artefacts electron-builder will package exist ──
@@ -520,6 +541,16 @@ jobs:
       - name: Build Electron app
         env:
           AUTO_UPDATE_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # Guided flow — ON only for production release (tag) builds.
+          VITE_LOUI_GUIDED_FLOW: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
+          # License/billing config baked into the bundle (esbuild + vite).
+          # Empty when the secret is unset → app falls back to dev mode
+          # (LocalValidator) so CI stays green; set the secrets to ship a
+          # protected production installer.
+          LICENSE_API_URL:      ${{ secrets.LICENSE_API_URL }}
+          LICENSE_API_KEY:      ${{ secrets.LICENSE_API_KEY }}
+          LICENSE_HMAC_SECRET:  ${{ secrets.LICENSE_HMAC_SECRET }}
+          PADDLE_CHECKOUT_URL:  ${{ secrets.PADDLE_CHECKOUT_URL }}
         run: |
           cd D:\w\aimaster-desktop\apps\desktop
           pnpm build
@@ -676,6 +707,7 @@ jobs:
           target_commitish:       ${{ github.sha }}
           files: |
             artifacts/linux/*.AppImage
+            artifacts/linux/*.deb
             artifacts/mac/*.dmg
             artifacts/mac/*.zip
             artifacts/win/*.exe

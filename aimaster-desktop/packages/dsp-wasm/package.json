@@ -18,7 +18,7 @@
   },
   "files": ["pkg/", "pkg-node/"],
   "scripts": {
-    "build": "bash ../../dsp-core/scripts/build-wasm-bindings.sh",
+    "build": "if [ \"$CI\" = 'true' ] && [ -f pkg/loui_dsp_wasm_bg.wasm ]; then echo '[dsp-wasm] pre-built artifacts present — skipping rebuild in CI'; else bash ../../dsp-core/scripts/build-wasm-bindings.sh; fi",
     "build:web": "bash ../../dsp-core/scripts/build-wasm-bindings.sh",
     "build:worklet": "bash ../../dsp-core/scripts/build-wasm-worklet.sh",
     "build:node": "bash ../../dsp-core/scripts/build-wasm-node.sh",

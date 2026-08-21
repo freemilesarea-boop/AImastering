@@ -1,0 +1,7 @@
+node_modules/
+dist/
+# Native projects are regeneratable via `npx cap add android` — not committed.
+android/
+ios/
+.env
+.env.local

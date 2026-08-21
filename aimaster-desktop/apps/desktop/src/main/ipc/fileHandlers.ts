@@ -9,6 +9,9 @@ import {
   supportBundleToJson,
 } from '../utils/supportBundle.js';
 import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
+import { licenseService } from './licenseHandlers.js';
+import { getEntitlementPaid } from '../services/entitlementBridge.js';
+import { log } from '../utils/logger.js';
 import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
 
 const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
@@ -18,6 +21,66 @@ const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] 
   aiff: { name: 'AIFF Audio', extensions: ['aiff', 'aif'] },
   ogg:  { name: 'OGG Audio',  extensions: ['ogg'] },
 };
+
+// ── Commercial paywall (v3.6) ────────────────────────────────────────────────
+// Master-quality exports (lossless: wav / flac / aiff) require a paid license.
+// The MP3 preview stays free so trial users still hear the result.  Enforced
+// here in the MAIN process so it can't be bypassed from the renderer/devtools.
+// Renderer detects the `LICENSE_REQUIRED:` prefix and opens the activation modal.
+const LICENSE_REQUIRED = 'LICENSE_REQUIRED: 마스터 음원(WAV/FLAC/AIFF) 저장은 라이선스가 필요합니다. 라이선스를 활성화해 주세요.';
+const FREE_EXPORT_EXTS = new Set(['mp3', 'ogg']);
+
+function licensePaid(): boolean {
+  try { return licenseService.canProcess().isPaid; } catch { return false; }
+}
+
+type GateSource = 'license' | 'entitlement' | 'license+entitlement' | 'none';
+
+/**
+ * Phase C — ADDITIVE gate: `paid = licensePaid || entitlementPaid`.
+ *
+ * `entitlementPaid` (entitlementBridge) defaults to false and is only true
+ * when the renderer pushed an active-pro snapshot under BOTH feature flags.
+ * So with the flags off (default) this is exactly the prior license-only
+ * behavior, and an entitlement outage (→ false) can never block a paying
+ * license user.  No license logic changed; the free policy is unchanged.
+ */
+function paidStatus(): { paid: boolean; source: GateSource } {
+  const lic = licensePaid();
+  const ent = getEntitlementPaid();
+  const paid = lic || ent;
+  const source: GateSource = !paid
+    ? 'none'
+    : (lic && ent ? 'license+entitlement' : (lic ? 'license' : 'entitlement'));
+  return { paid, source };
+}
+
+/** True when the given extension/format is a paid (lossless master) export. */
+function isMasterExport(extOrFormat: string): boolean {
+  return !FREE_EXPORT_EXTS.has(extOrFormat.toLowerCase().replace('.', ''));
+}
+
+/**
+ * Validate a renderer-supplied audio payload.  The renderer is trusted code,
+ * but a malformed payload must not become an unbounded write, so the size is
+ * capped at a value no legitimate session bounce reaches (2 GB WAV ≈ 3 h
+ * stereo 24-bit).
+ */
+const MAX_RENDER_BYTES = 2 * 1024 * 1024 * 1024;
+
+function readAudioPayload(req: unknown): { name: string; bytes: Buffer } {
+  if (!req || typeof req !== 'object') throw new Error('invalid render payload');
+  const o = req as { name?: unknown; data?: unknown };
+  const name = typeof o.name === 'string' ? o.name : 'render';
+  const data = o.data;
+  if (!(data instanceof Uint8Array) && !(data instanceof ArrayBuffer)) {
+    throw new Error('render payload must carry audio bytes');
+  }
+  const bytes = Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+  if (bytes.length === 0) throw new Error('render payload is empty');
+  if (bytes.length > MAX_RENDER_BYTES) throw new Error('render payload too large');
+  return { name, bytes };
+}
 
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   // ── Open file picker (single) ─────────────────────────────────────────
@@ -59,6 +122,14 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
     const ext      = path.extname(safeSrc).toLowerCase().replace('.', '');
     const isWav    = ext === 'wav';
+
+    // Paywall: lossless master export requires paid (license OR entitlement).
+    if (isMasterExport(ext)) {
+      const gate = paidStatus();
+      log.info(`[export-gate] save-wav ext=${ext} paid=${gate.paid} source=${gate.source}`);
+      if (!gate.paid) throw new Error(LICENSE_REQUIRED);
+    }
+
     const filters  = isWav
       ? [{ name: 'WAV Audio', extensions: ['wav'] }]
       : [{ name: 'MP3 Audio', extensions: ['mp3'] }];
@@ -92,6 +163,13 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
     const filter = FORMAT_FILTERS[req.format];
     if (!filter) return { savedPath: null, error: `unsupported format: ${req.format}` };
+
+    // Paywall: lossless master export requires paid (license OR entitlement).
+    if (isMasterExport(req.format)) {
+      const gate = paidStatus();
+      log.info(`[export-gate] save-audio fmt=${req.format} paid=${gate.paid} source=${gate.source}`);
+      if (!gate.paid) return { savedPath: null, error: LICENSE_REQUIRED };
+    }
 
     const sourceExt = path.extname(req.sourcePath).replace('.', '');
     const spec = {
@@ -259,6 +337,13 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
     if (!validSrcs.length) return null;
 
+    // Paywall: if the batch contains any lossless master file, require paid.
+    if (validSrcs.some((p) => isMasterExport(path.extname(p)))) {
+      const gate = paidStatus();
+      log.info(`[export-gate] batch-save-wav paid=${gate.paid} source=${gate.source}`);
+      if (!gate.paid) throw new Error(LICENSE_REQUIRED);
+    }
+
     const folderResult = await dialog.showOpenDialog(win, {
       title: '저장할 폴더 선택',
       buttonLabel: '이 폴더에 저장',
@@ -282,6 +367,56 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     return { destDir, saved };
   });
 
+  // ── DAW render output (Bounce / Freeze / Consolidate) ─────────────────
+  // The renderer renders through an OfflineAudioContext and hands us the
+  // encoded WAV bytes.  Two destinations:
+  //   • daw:write-temp-audio — a session-scratch file that Freeze and
+  //     Consolidate reference as a clip source.  Never shown to the user, so
+  //     no dialog and no license gate (nothing leaves the app).
+  //   • daw:bounce-audio     — a real export, so it goes through the same
+  //     save dialog and paid-export gate as every other master.
+
+  const dawTempDir = (): string => {
+    const dir = path.join(app.getPath('temp'), 'loui-daw');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  };
+
+  ipc.handle('daw:write-temp-audio', (_e, req: unknown) => {
+    const { name, bytes } = readAudioPayload(req);
+    const safe = name.replace(/[^\w.\-가-힣 ]+/g, '_').slice(0, 80) || 'render';
+    const dest = path.join(dawTempDir(), `${Date.now()}-${safe}.wav`);
+    try {
+      fs.writeFileSync(dest, bytes);
+      return dest;
+    } catch (err) {
+      recordFailure('export', `daw:write-temp-audio failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:bounce-audio', async (_e, req: unknown) => {
+    if (!win) return null;
+    const { name, bytes } = readAudioPayload(req);
+    // Same paywall as every other lossless master export.
+    const gate = paidStatus();
+    log.info(`[export-gate] daw-bounce paid=${gate.paid} source=${gate.source}`);
+    if (!gate.paid) throw new Error(LICENSE_REQUIRED);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `${name || 'bounce'}.wav`,
+      filters: [FORMAT_FILTERS.wav],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, bytes);
+      log.info(`[daw] bounced ${bytes.length} bytes → ${result.filePath}`);
+      return result.filePath;
+    } catch (err) {
+      recordFailure('export', `daw:bounce-audio failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
   // ── Recent files (v1 stub) ────────────────────────────────────────────
   ipc.handle('file:get-recent', () => []);
 
@@ -303,6 +438,140 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       return result.filePath;
     } catch (err) {
       recordFailure('session', `session:save failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  // User plugin presets — a small JSON file, so a sound someone spent an
+  // afternoon on can leave the machine.  localStorage does not survive a
+  // reinstall; a file does.
+  ipc.handle('daw:presets-export', async (_e, payload: unknown) => {
+    if (!win) return null;
+    if (typeof payload !== 'string' || payload.length > 8 * 1024 * 1024) {
+      throw new Error('daw:presets-export: payload rejected');
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `loui-presets-${stamp}.louipreset`,
+      filters: [
+        { name: 'Loui Preset', extensions: ['louipreset'] },
+        { name: 'JSON',        extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, payload, 'utf8');
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `daw:presets-export failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:presets-import', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [{ name: 'Loui Preset', extensions: ['louipreset', 'json'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const chosen = result.filePaths[0];
+    try {
+      const stat = fs.statSync(chosen);
+      // A preset file is kilobytes.  Anything enormous is not one, and
+      // reading it would be the renderer's problem rather than the dialog's.
+      if (stat.size > 8 * 1024 * 1024) throw new Error('프리셋 파일이 너무 큽니다');
+      return fs.readFileSync(chosen, 'utf8');
+    } catch (err) {
+      recordFailure('session', `daw:presets-import failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  // Control surface mappings — the same shape as the preset file, and for the
+  // same reason: a desk that took an afternoon to map should not die with a
+  // reinstall, and a studio with two machines wants the same mapping on both.
+  ipc.handle('daw:surface-export', async (_e, payload: unknown) => {
+    if (!win) return null;
+    if (typeof payload !== 'string' || payload.length > 4 * 1024 * 1024) {
+      throw new Error('daw:surface-export: payload rejected');
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `loui-surface-${stamp}.louisurface`,
+      filters: [
+        { name: 'Loui Control Surface', extensions: ['louisurface'] },
+        { name: 'JSON',                 extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, payload, 'utf8');
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `daw:surface-export failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:surface-import', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [{ name: 'Loui Control Surface', extensions: ['louisurface', 'json'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const chosen = result.filePaths[0];
+    try {
+      if (fs.statSync(chosen).size > 4 * 1024 * 1024) {
+        throw new Error('매핑 파일이 너무 큽니다');
+      }
+      return fs.readFileSync(chosen, 'utf8');
+    } catch (err) {
+      recordFailure('session', `daw:surface-import failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  // Whole insert chains.  Same shape as the preset and surface files.
+  ipc.handle('daw:racks-export', async (_e, payload: unknown) => {
+    if (!win) return null;
+    if (typeof payload !== 'string' || payload.length > 8 * 1024 * 1024) {
+      throw new Error('daw:racks-export: payload rejected');
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `loui-racks-${stamp}.louirack`,
+      filters: [
+        { name: 'Loui Rack', extensions: ['louirack'] },
+        { name: 'JSON',      extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, payload, 'utf8');
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `daw:racks-export failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:racks-import', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [{ name: 'Loui Rack', extensions: ['louirack', 'json'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const chosen = result.filePaths[0];
+    try {
+      if (fs.statSync(chosen).size > 8 * 1024 * 1024) {
+        throw new Error('랙 파일이 너무 큽니다');
+      }
+      return fs.readFileSync(chosen, 'utf8');
+    } catch (err) {
+      recordFailure('session', `daw:racks-import failed: ${(err as Error).message}`);
       throw err;
     }
   });

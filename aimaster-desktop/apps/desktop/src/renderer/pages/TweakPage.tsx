@@ -9,6 +9,7 @@ import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { toFileUrl } from '../utils/fileUrl.js';
+import { useDawTransport } from '../hooks/useDawTransport.js';
 
 export default function TweakPage() {
   const setPage      = useAppStore((s) => s.setPage);
@@ -31,6 +32,8 @@ export default function TweakPage() {
   }, [selectedFile, setPage]);
 
   const audioRef               = useRef<HTMLAudioElement | null>(null);
+  // Source preview also drives the DAW transport (Space / loop / scrub).
+  useDawTransport(audioRef);
   const [playing, setPlaying]  = useState(false);
   const [time, setTime]        = useState(0);
   const [duration, setDuration] = useState(0);

@@ -13,6 +13,14 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
+import { handleLicenseRequired } from '../stores/licenseStore.js';
+import type { MasteringOptions, RealtimeDspOverrides } from '../stores/audioStore.js';
+import {
+  installNativeDsp,
+  applyNativeDspConfig,
+  uninstallNativeDsp,
+} from '../audio/shared-audio-graph.js';
+import type { RealtimeChainConfig } from '../audio/realtime-mastering-chain.js';
 import type {
   AnalysisReport as AnalysisReportType,
   MasteringMeta,
@@ -22,13 +30,24 @@ import type {
   DynamicEqReport,
 } from '@aimaster/shared-types';
 import { LIMITER_STRENGTH_LABELS } from '@aimaster/shared-types';
+import type { MasteringStyle, LimiterStrength } from '@aimaster/shared-types';
 import SectionAnalysisPanel from '../components/SectionAnalysisPanel.js';
 import AIArtifactWarningPanel from '../components/AIArtifactWarningPanel.js';
 import SmartRecommendationPanel from '../components/SmartRecommendationPanel.js';
 import ExportReportPanel from '../components/ExportReportPanel.js';
+import AchievementHeader from '../components/result/AchievementHeader.js';
+import LoudnessDeltaBars from '../components/result/LoudnessDeltaBars.js';
+import BeforeAfterWaveform from '../components/result/BeforeAfterWaveform.js';
+import MobilePreview from '../components/result/MobilePreview.js';
+import { isGuidedFlowEnabled } from '../audio/guided-flow-flag.js';
+import { resumeSharedContext } from '../audio/shared-audio-graph.js';
+import { useIsMobile } from '../hooks/useIsMobile.js';
 import { AnalyzerPanelStack } from '../components/AnalyzerPanelStack.js';
 import { reportFailure } from '../utils/reportFailure.js';
 import { toFileUrl } from '../utils/fileUrl.js';
+import { useDawTransport } from '../hooks/useDawTransport.js';
+import { useWorkspaceStore } from '../stores/workspaceStore.js';
+import { useBottomZoneHeight } from '../components/daw/DawWorkspaceChrome.js';
 
 // ── Feature flags ─────────────────────────────────────────────────────────────
 // Live WASM-based analysis (BS.1770 loudness, spectrum FFT, stereo scope)
@@ -127,8 +146,17 @@ function BeforeAfterCard() {
 
 // ── Audio preview player ──────────────────────────────────────────────────────
 
-function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number | undefined }) {
+function PreviewPlayer({
+  src,
+  targetLufs,
+}: {
+  src: string;
+  targetLufs?: number | undefined;
+}) {
   const audioRef = useRef<HTMLAudioElement>(null);
+  // Hand this element to the DAW transport layer so Space / Home / loop /
+  // scrub shortcuts drive it from anywhere in the app.
+  useDawTransport(audioRef);
   const [playing, setPlaying]   = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -138,10 +166,55 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
   // the user is actually listening.
   const [meterReady, setMeterReady] = useState(false);
 
+  // ── Live DSP — install native WebAudio chain on the element ──────────
+  // Slider changes in TweakPanel feed `audioStore.options`.  We subscribe
+  // here and push the derived chain config into the native DSP chain on
+  // every change so EQ / Dynamics / Imager / Limiter edits are AUDIBLE
+  // immediately while the file plays.  No re-render, no IPC, no Python.
+  const options = useAudioStore((s) => s.options);
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try {
+      installNativeDsp(a);
+      applyNativeDspConfig(a, optionsToChainConfig(options));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[PreviewPlayer] native DSP install failed:', err);
+    }
+    return () => {
+      try { uninstallNativeDsp(a); } catch { /* ignore */ }
+    };
+  // installNativeDsp is idempotent; we only need to install once per element
+  // mount.  Config-only updates happen in the effect below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meterReady]);
+
+  // Push new config on every options change (rAF-batched for free via React).
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a || !meterReady) return;
+    try {
+      applyNativeDspConfig(a, optionsToChainConfig(options));
+    } catch { /* invalid config — skip */ }
+  }, [options, meterReady]);
+
   const toggle = useCallback(() => {
     const a = audioRef.current;
     if (!a) return;
-    if (a.paused) { void a.play(); } else { a.pause(); }
+    if (a.paused) {
+      // Resume the shared WebAudio context INSIDE this user gesture.  Once the
+      // element is captured by createMediaElementSource, its audio only flows
+      // through the shared AudioContext — which starts 'suspended'.  Relying on
+      // the provider's effect-based resume can miss the gesture window, leaving
+      // the context suspended → no sound and the analyzer tap never receives
+      // samples ("awaiting frames").  Resuming here, in the click handler,
+      // guarantees a gesture-initiated resume.
+      void resumeSharedContext();
+      void a.play();
+    } else {
+      a.pause();
+    }
   }, []);
 
   const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -161,9 +234,19 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
 
   return (
     <div className="rounded-xl bg-zinc-900/50 border border-zinc-800 p-4">
-      <p className="text-xs text-zinc-600 uppercase tracking-wider mb-3">프리뷰 (MP3)</p>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-zinc-600 uppercase tracking-wider">프리뷰 (MP3)</p>
+        <span className="flex items-center gap-1.5 text-[10px] text-zinc-600">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+          실시간 DSP
+        </span>
+      </div>
 
-      {/* Hidden audio element */}
+      {/* Hidden audio element.
+          NOTE: do NOT set crossOrigin here.  The aimaster-local scheme is
+          registered `secure` but NOT `corsEnabled`, so a crossOrigin (CORS-mode)
+          request is blocked by Chromium and the element never loads.  The
+          scheme is trusted, so createMediaElementSource does not taint it. */}
       <audio
         ref={audioRef}
         src={src}
@@ -177,6 +260,13 @@ function PreviewPlayer({ src, targetLufs }: { src: string; targetLufs?: number |
         onLoadedMetadata={() => {
           const a = audioRef.current;
           if (a) setDuration(a.duration);
+          setMeterReady(true);
+        }}
+        onCanPlay={() => {
+          // Safety net: if `loadedmetadata` is flaky on a platform, `canplay`
+          // still arms the realtime DSP + meters (setMeterReady is idempotent).
+          const a = audioRef.current;
+          if (a && Number.isFinite(a.duration)) setDuration(a.duration);
           setMeterReady(true);
         }}
         onError={() => {
@@ -301,11 +391,16 @@ function SaveButtons() {
 
   const handleSaveWav = useCallback(async () => {
     if (!masteringResult?.outputPath) return;
-    const dest = await window.electronAPI.invoke(
-      'file:save-wav',
-      masteringResult.outputPath,
-    ) as string | null;
-    if (dest) notify('WAV 저장 완료', 'success');
+    try {
+      const dest = await window.electronAPI.invoke(
+        'file:save-wav',
+        masteringResult.outputPath,
+      ) as string | null;
+      if (dest) notify('WAV 저장 완료', 'success');
+    } catch (err) {
+      if (handleLicenseRequired(err)) notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
+      else notify('WAV 저장 실패', 'error');
+    }
   }, [masteringResult, notify]);
 
   return (
@@ -825,6 +920,354 @@ function AnalysisReportCard({ report }: { report: AnalysisReportType }) {
   );
 }
 
+// ── Realtime DSP wiring ──────────────────────────────────────────────────────
+
+/**
+ * Build a RealtimeChainConfig from a MasteringOptions object.  This is the
+ * single source of truth for how store options map to the live WebAudio
+ * DSP chain — used by the audio-element effect to push parameter changes
+ * to the chain in real time.  Falls back to sensible defaults so the chain
+ * never receives NaN even before the user touches a slider.
+ */
+function optionsToChainConfig(opts: MasteringOptions): RealtimeChainConfig {
+  const rt: RealtimeDspOverrides = opts.rt ?? {};
+  return {
+    inputGainDb:    0,
+    eqLowCutHz:     rt.eqLowCutHz     ?? 20,
+    eqLowShelfDb:   rt.eqLowShelfDb   ?? 0,
+    eqPresenceDb:   rt.eqPresenceDb   ?? 0,
+    eqAirDb:        rt.eqAirDb        ?? 0,
+    eqAdaptive:     opts.applyAiCorrections,
+    eqBypass:       rt.eqBypass       ?? false,
+    dynThresholdDb: rt.dynThresholdDb ?? -18,
+    dynRatio:       rt.dynRatio       ?? 2,
+    dynAttackMs:    rt.dynAttackMs    ?? 10,
+    dynReleaseMs:   rt.dynReleaseMs   ?? 120,
+    dynMixPct:      rt.dynMixPct      ?? 100,
+    dynBypass:      rt.dynBypass      ?? false,
+    imgWidthPct:    rt.imgWidthPct    ?? (opts.stereoWidth != null ? opts.stereoWidth * 100 : 100),
+    imgLowMonoHz:   rt.imgLowMonoHz   ?? 120,
+    imgBypass:      rt.imgBypass      ?? false,
+    limCeilingDbtp: rt.limCeilingDbtp ?? opts.targetTp ?? -1,
+    limLookaheadMs: 2.5,
+    limIsp:         true,
+    limBypass:      rt.limBypass      ?? false,
+    outputGainDb:   opts.outputGainDb ?? 0,
+    masterBypass:   rt.masterBypass   ?? false,
+  };
+}
+
+// ── Slider row (right panel helper) ──────────────────────────────────────────
+
+function SliderRow({
+  label, value, min, max, step, unit, onChange,
+}: {
+  label: string; value: number; min: number; max: number; step: number; unit: string;
+  onChange: (v: number) => void;
+}) {
+  const display = unit === '%'
+    ? `${Math.round(value)}${unit}`
+    : unit === ''
+      ? value.toFixed(2)
+      : `${value >= 0 && unit === 'dB' ? '+' : ''}${value.toFixed(1)} ${unit}`;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-between items-baseline">
+        <p className="text-[10px] text-zinc-600 uppercase tracking-wider">{label}</p>
+        <span className="text-[11px] font-mono text-zinc-400">{display}</span>
+      </div>
+      <input
+        type="range"
+        min={min} max={max} step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full cursor-pointer accent-indigo-500"
+        style={{ height: '4px' }}
+      />
+    </div>
+  );
+}
+
+// ── Right panel: fine-tuning controls ────────────────────────────────────────
+
+const STYLES: Array<{ id: MasteringStyle; label: string; hint: string }> = [
+  { id: 'balanced', label: 'Balanced', hint: '범용'   },
+  { id: 'warm',     label: 'Warm',     hint: '따뜻한' },
+  { id: 'bright',   label: 'Bright',   hint: '선명한' },
+  { id: 'punch',    label: 'Punch',    hint: '강한'   },
+];
+
+const LIMITERS: Array<{ id: LimiterStrength; label: string }> = [
+  { id: 'low',    label: '약하게' },
+  { id: 'medium', label: '보통'   },
+  { id: 'high',   label: '강하게' },
+];
+
+// Collapsible section wrapper.
+function Section({
+  title, defaultOpen = true, children,
+}: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border border-zinc-800 rounded-lg bg-zinc-900/30 overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="no-drag w-full flex items-center justify-between px-3 py-2 hover:bg-zinc-800/30 transition-colors"
+      >
+        <span className="text-[10px] uppercase tracking-[0.14em] text-zinc-400 font-semibold">{title}</span>
+        <span className="text-[9px] text-zinc-600">{open ? '▼' : '▶'}</span>
+      </button>
+      {open && <div className="px-3 pb-3 pt-1 space-y-3 border-t border-zinc-800/60">{children}</div>}
+    </div>
+  );
+}
+
+function TweakPanel({ onReMaster }: { onReMaster: () => void }) {
+  const options       = useAudioStore((s) => s.options);
+  const setStyle      = useAudioStore((s) => s.setStyle);
+  const updateOptions = useAudioStore((s) => s.updateOptions);
+
+  const rt = options.rt ?? {};
+  const updateRt = useCallback((patch: Partial<NonNullable<MasteringOptions['rt']>>) => {
+    updateOptions({ rt: { ...rt, ...patch } });
+  }, [rt, updateOptions]);
+
+  // Resolved display values.
+  const widthDisplay = rt.imgWidthPct ?? (options.stereoWidth != null ? options.stereoWidth * 100 : 100);
+  const gainDisplay  = options.outputGainDb ?? 0;
+
+  return (
+    <div className="p-3 space-y-3">
+      {/* Header */}
+      <div>
+        <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-300 font-semibold">세밀 조정</p>
+        <p className="text-[10px] text-zinc-600 mt-0.5">슬라이더 조정 → 즉시 들립니다 (실시간 DSP)</p>
+      </div>
+
+      {/* ── Style preset ───────────────────────────────────────────────────── */}
+      <Section title="Style">
+        <div className="grid grid-cols-2 gap-1">
+          {STYLES.map(({ id, label, hint }) => (
+            <button
+              key={id}
+              onClick={() => setStyle(id)}
+              className={`no-drag px-2 py-1.5 rounded-md text-left transition-colors ${
+                options.style === id
+                  ? 'bg-indigo-600/25 border border-indigo-500/50 text-indigo-300'
+                  : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-400 hover:border-zinc-600'
+              }`}
+            >
+              <span className="block text-[11px] font-medium">{label}</span>
+              <span className="block text-[9px] opacity-60 mt-0.5">{hint}</span>
+            </button>
+          ))}
+        </div>
+        <p className="text-[9px] text-zinc-700 leading-snug pt-1">
+          저장 시 엔진은 스타일 프리셋 + 아래 슬라이더를 적용합니다.
+        </p>
+      </Section>
+
+      {/* ── EQ section (live) ──────────────────────────────────────────────── */}
+      <Section title="EQ">
+        <SliderRow
+          label="Low Cut"
+          value={rt.eqLowCutHz ?? 20}
+          min={20} max={200} step={1}
+          unit="Hz"
+          onChange={(v) => updateRt({ eqLowCutHz: v })}
+        />
+        <SliderRow
+          label="Low Shelf (120Hz)"
+          value={rt.eqLowShelfDb ?? 0}
+          min={-12} max={12} step={0.1}
+          unit="dB"
+          onChange={(v) => updateRt({ eqLowShelfDb: v })}
+        />
+        <SliderRow
+          label="Presence (3kHz)"
+          value={rt.eqPresenceDb ?? 0}
+          min={-12} max={12} step={0.1}
+          unit="dB"
+          onChange={(v) => updateRt({ eqPresenceDb: v })}
+        />
+        <SliderRow
+          label="Air (12kHz)"
+          value={rt.eqAirDb ?? 0}
+          min={-12} max={12} step={0.1}
+          unit="dB"
+          onChange={(v) => updateRt({ eqAirDb: v })}
+        />
+      </Section>
+
+      {/* ── Dynamics section (live) ────────────────────────────────────────── */}
+      <Section title="Dynamics">
+        <SliderRow
+          label="Threshold"
+          value={rt.dynThresholdDb ?? -18}
+          min={-60} max={0} step={0.5}
+          unit="dB"
+          onChange={(v) => updateRt({ dynThresholdDb: v })}
+        />
+        <SliderRow
+          label="Ratio"
+          value={rt.dynRatio ?? 2}
+          min={1} max={20} step={0.1}
+          unit=""
+          onChange={(v) => updateRt({ dynRatio: v })}
+        />
+        <SliderRow
+          label="Attack"
+          value={rt.dynAttackMs ?? 10}
+          min={0.1} max={200} step={0.1}
+          unit="ms"
+          onChange={(v) => updateRt({ dynAttackMs: v })}
+        />
+        <SliderRow
+          label="Release"
+          value={rt.dynReleaseMs ?? 120}
+          min={5} max={2000} step={1}
+          unit="ms"
+          onChange={(v) => updateRt({ dynReleaseMs: v })}
+        />
+        <div className="space-y-1.5 pt-1">
+          <p className="text-[10px] text-zinc-600 uppercase tracking-wider">리미터 강도 (저장용)</p>
+          <div className="flex gap-1">
+            {LIMITERS.map(({ id, label }) => (
+              <button
+                key={id}
+                onClick={() => updateOptions({ limiterStrength: id })}
+                className={`no-drag flex-1 py-1.5 rounded-md text-[11px] transition-colors ${
+                  options.limiterStrength === id
+                    ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                    : 'bg-zinc-800/60 border border-zinc-700/60 text-zinc-500 hover:border-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Section>
+
+      {/* ── Imager (live stereo width) ─────────────────────────────────────── */}
+      <Section title="Stereo Imager">
+        <SliderRow
+          label="스테레오 폭"
+          value={widthDisplay}
+          min={0} max={200} step={1}
+          unit="%"
+          onChange={(v) => {
+            updateRt({ imgWidthPct: v });
+            updateOptions({ stereoWidth: v / 100 });
+          }}
+        />
+        <SliderRow
+          label="Low-Mono Freq"
+          value={rt.imgLowMonoHz ?? 120}
+          min={20} max={500} step={1}
+          unit="Hz"
+          onChange={(v) => updateRt({ imgLowMonoHz: v })}
+        />
+      </Section>
+
+      {/* ── Loudness ───────────────────────────────────────────────────────── */}
+      <Section title="Loudness">
+        <SliderRow
+          label="목표 라우드니스"
+          value={options.targetLufs}
+          min={-20} max={-8} step={0.5}
+          unit="LUFS"
+          onChange={(v) => updateOptions({ targetLufs: v })}
+        />
+        <SliderRow
+          label="True Peak 한계"
+          value={options.targetTp}
+          min={-3} max={-0.1} step={0.1}
+          unit="dBTP"
+          onChange={(v) => updateOptions({ targetTp: v })}
+        />
+        <SliderRow
+          label="출력 게인"
+          value={gainDisplay}
+          min={-6} max={6} step={0.1}
+          unit="dB"
+          onChange={(v) => updateOptions({ outputGainDb: v })}
+        />
+        <div className="flex items-center justify-between pt-1">
+          <span className="text-[11px] text-zinc-400">AI 보정 적용</span>
+          <button
+            onClick={() => updateOptions({ applyAiCorrections: !options.applyAiCorrections })}
+            className={`no-drag relative w-9 h-5 rounded-full transition-colors ${
+              options.applyAiCorrections ? 'bg-indigo-600' : 'bg-zinc-700'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                options.applyAiCorrections ? 'translate-x-4 left-0.5' : 'translate-x-0 left-0.5'
+              }`}
+            />
+          </button>
+        </div>
+      </Section>
+
+      {/* ── Format ─────────────────────────────────────────────────────────── */}
+      <Section title="Format" defaultOpen={false}>
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] text-zinc-500">샘플레이트</span>
+          <div className="flex gap-1">
+            {([44100, 48000, 96000] as const).map((sr) => (
+              <button
+                key={sr}
+                onClick={() => updateOptions({ sampleRate: sr })}
+                className={`no-drag px-2 py-1 rounded text-[10px] transition-colors ${
+                  options.sampleRate === sr
+                    ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                    : 'bg-zinc-800 border border-zinc-700 text-zinc-600 hover:border-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {sr === 44100 ? '44.1k' : sr === 48000 ? '48k' : '96k'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] text-zinc-500">비트 심도</span>
+          <div className="flex gap-1">
+            {([16, 24] as const).map((bd) => (
+              <button
+                key={bd}
+                onClick={() => updateOptions({ bitDepth: bd })}
+                className={`no-drag px-2.5 py-1 rounded text-[10px] transition-colors ${
+                  options.bitDepth === bd
+                    ? 'bg-zinc-600 text-zinc-100 border border-zinc-500'
+                    : 'bg-zinc-800 border border-zinc-700 text-zinc-600 hover:border-zinc-600 hover:text-zinc-400'
+                }`}
+              >
+                {bd}-bit
+              </button>
+            ))}
+          </div>
+        </div>
+      </Section>
+
+      {/* ── Re-master CTA ──────────────────────────────────────────────────── */}
+      <button
+        onClick={onReMaster}
+        className="no-drag w-full py-2.5 rounded-xl text-sm font-semibold transition-all hover:opacity-90 active:scale-[0.98]"
+        style={{
+          background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+          color: '#fff',
+          border: '1px solid rgba(99,102,241,0.4)',
+        }}
+      >
+        다시 마스터링
+      </button>
+
+      <div className="h-2" />
+    </div>
+  );
+}
+
 // ── ResultPage ────────────────────────────────────────────────────────────────
 
 export default function ResultPage() {
@@ -834,6 +1277,15 @@ export default function ResultPage() {
   const selectedFile    = useAudioStore((s) => s.selectedFile);
   const reset           = useAudioStore((s) => s.reset);
   const options         = useAudioStore((s) => s.options);
+  const isMobile        = useIsMobile();
+  const showRightRack   = useWorkspaceStore((s) => s.panels.rightRack);
+  const bottomZoneHeight = useBottomZoneHeight();
+  // Mobile Result: advanced info (LUFS/Waveform) is collapsed by default so
+  // the core flow stays 확인 → 미리듣기 → 저장.
+  const [mobileAdvanced, setMobileAdvanced] = useState(false);
+
+  // previewSrc is derived from masteringResult; live DSP edits are applied
+  // to the <audio> element via the WebAudio native chain (see PreviewPlayer).
 
   // eslint-disable-next-line no-console
   console.log('[ResultPage] render entered');
@@ -913,6 +1365,79 @@ export default function ResultPage() {
     ? (masteringResult.outputPath.split('/').pop()?.split('\\').pop() ?? masteringResult.outputPath)
     : null;
 
+  // ── Guided flow result viz (T8) — real loudness metrics, flag-gated ──────
+  const guided = isGuidedFlowEnabled();
+  const guidedStyleKey = (options?.style ?? 'balanced') as string;
+  const guidedIsKpop = guidedStyleKey === 'kpop_loud';
+  const guidedGainLu = masteringResult
+    ? (masteringResult.loudnessAfter.integratedLufs - masteringResult.loudnessBefore.integratedLufs)
+    : 0;
+
+  // ── Mobile (<640px) result — summary + save only (M3) ────────────────────
+  // Pro controls (TweakPanel, advanced analysis cards, live analyzer) are
+  // hidden; the user sees only the achievement summary, LUFS/Waveform cards,
+  // save, and re-master.  Desktop width keeps the full layout below.
+  if (isMobile && masteringResult) {
+    return (
+      <div className="h-screen overflow-y-auto bg-[#13131A] text-zinc-100 px-5 py-7 space-y-4">
+        <AchievementHeader
+          gainLu={guidedGainLu}
+          styleKey={guidedStyleKey}
+          title={guidedIsKpop ? 'KPOP LOUD 완성' : '더 커졌어요'}
+          sub={guidedIsKpop ? '스트리밍에서 밀리지 않는 음압 완성' : '마스터링 완료'}
+        />
+        {(masteringResult.previewPath || masteringResult.outputPath) && selectedFile && (
+          <MobilePreview
+            originalSrc={toFileUrl(selectedFile)}
+            masterSrc={toFileUrl(masteringResult.previewPath || masteringResult.outputPath)}
+            styleKey={guidedStyleKey}
+          />
+        )}
+        <SaveButtons />
+
+        {/* Advanced info collapsed by default — action first. */}
+        <button
+          type="button"
+          onClick={() => setMobileAdvanced((v) => !v)}
+          aria-expanded={mobileAdvanced}
+          className="w-full min-h-[48px] py-3 rounded-xl text-[15px] font-medium text-zinc-400
+                     border border-zinc-800 bg-transparent flex items-center justify-center gap-1.5"
+        >
+          <span>{mobileAdvanced ? '고급 정보 숨기기' : '고급 정보 보기'}</span>
+          <span className={`transition-transform ${mobileAdvanced ? 'rotate-180' : ''}`}>▾</span>
+        </button>
+
+        {mobileAdvanced && (
+          <>
+            <LoudnessDeltaBars
+              origLufs={masteringResult.loudnessBefore.integratedLufs}
+              mastLufs={masteringResult.loudnessAfter.integratedLufs}
+              targetLufs={options.targetLufs}
+              styleKey={guidedStyleKey}
+            />
+            <BeforeAfterWaveform styleKey={guidedStyleKey} />
+          </>
+        )}
+
+        <button
+          onClick={handleReMaster}
+          className="w-full min-h-[48px] py-3 rounded-xl text-[16px] font-semibold text-zinc-300
+                     border border-zinc-700 bg-transparent"
+        >
+          다시 마스터링
+        </button>
+        <button
+          onClick={handleNewFile}
+          className="w-full min-h-[48px] py-3 rounded-xl text-[15px] font-medium text-zinc-500
+                     border border-zinc-800 bg-transparent"
+        >
+          새 파일
+        </button>
+        <div className="h-4" />
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <TopBar
@@ -927,10 +1452,32 @@ export default function ResultPage() {
         }
       />
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-lg mx-auto px-6 py-5 space-y-4 animate-in">
+      <div className="flex-1 flex overflow-hidden">
+        {/* ── Left: result content (scrollable) ─────────────────────────── */}
+        <div className="flex-1 min-w-0 overflow-y-auto">
+        <div className="px-6 py-5 space-y-4 animate-in">
+
+          {/* ── Guided flow: achievement + evidence (T8, flag-gated) ───────── */}
+          {guided && masteringResult && (
+            <div className="space-y-4">
+              <AchievementHeader
+                gainLu={guidedGainLu}
+                styleKey={guidedStyleKey}
+                title={guidedIsKpop ? 'KPOP LOUD 완성' : '더 커졌어요'}
+                sub={guidedIsKpop ? '스트리밍에서 밀리지 않는 음압 완성' : '마스터링이 끝났어요'}
+              />
+              <LoudnessDeltaBars
+                origLufs={masteringResult.loudnessBefore.integratedLufs}
+                mastLufs={masteringResult.loudnessAfter.integratedLufs}
+                targetLufs={options.targetLufs}
+                styleKey={guidedStyleKey}
+              />
+              <BeforeAfterWaveform styleKey={guidedStyleKey} />
+            </div>
+          )}
 
           {/* ── 완료 메시지 ──────────────────────────────── */}
+          {!guided && (
           <div className="rounded-xl bg-emerald-950/20 border border-emerald-900/40 px-4 py-3 flex items-center gap-3">
             <svg className="w-5 h-5 text-emerald-400 shrink-0" viewBox="0 0 20 20" fill="none"
                  stroke="currentColor" strokeWidth={1.75} strokeLinecap="round">
@@ -946,6 +1493,7 @@ export default function ResultPage() {
               )}
             </div>
           </div>
+          )}
 
           {/* ── 출력 파일 정보 + 열기 버튼 ──────────────── */}
           {masteringResult?.outputPath && (
@@ -1054,7 +1602,19 @@ export default function ResultPage() {
           )}
 
           <div className="h-4" />
+          {/* Keeps the last card clear of the fixed DAW bottom zone. */}
+          <div style={{ height: bottomZoneHeight }} />
         </div>
+        </div>{/* end left scroll */}
+
+        {/* ── Right: fine-tuning panel (scrollable) ──────────────────────────
+            Toggled by the DAW "우측 랙" shortcut (Mod+Alt+R). */}
+        {showRightRack && (
+          <div className="w-64 shrink-0 border-l border-zinc-800 bg-zinc-900/20 overflow-y-auto">
+            <TweakPanel onReMaster={handleReMaster} />
+            <div style={{ height: bottomZoneHeight }} />
+          </div>
+        )}
       </div>
     </div>
   );

@@ -44,7 +44,10 @@ export function isRustOfflineAvailable(): boolean {
 function runFfmpeg(args: string[], stdin?: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const bin = resolveFFmpegPath();
-    const child = spawn(bin, args, { windowsHide: true });
+    // shell:false (the spawn default, set explicitly to match audioTranscode):
+    // the binary path + args go straight to CreateProcess/execvp, so paths
+    // with spaces or non-ASCII (Korean) chars are never re-parsed by a shell.
+    const child = spawn(bin, args, { shell: false, windowsHide: true });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     child.stdout.on('data', (c: Buffer) => out.push(c));

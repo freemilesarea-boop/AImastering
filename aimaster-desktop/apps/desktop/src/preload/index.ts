@@ -16,9 +16,14 @@ const INVOKE_CHANNELS = [
   // rust-offline flag is ON (default).  Free parametric EQ bands flow
   // through here (Phase 3b).
   'audio:master-rust-experimental',
-  // License IPC channels REMOVED (v3.6.0-rc.1+1) — license gate disabled
-  // for the internal RC test cycle; the renderer no longer invokes these
-  // and the main process no longer registers them.
+  // License IPC channels (v3.6 — re-enabled for commercial release).
+  'license:status', 'license:can-process', 'license:get-remaining',
+  'license:activate', 'license:deactivate', 'license:decrement-trial',
+  'license:revalidate',
+  // Entitlement bridge (Phase C) — renderer pushes a non-sensitive gate snapshot.
+  'entitlement:set',
+  // Device id for account device registration (Phase D2).
+  'device:get-id',
   // Files
   'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
   'file:batch-save-wav',
@@ -35,6 +40,23 @@ const INVOKE_CHANNELS = [
   'support:bundle', 'support:bundle-export', 'support:record-failure',
   // Session save / load (.louisession)
   'session:save', 'session:load',
+  // User plugin presets (.louipreset)
+  'daw:presets-export', 'daw:presets-import',
+  // Control surface mappings (.louisurface)
+  'daw:surface-export', 'daw:surface-import',
+  // Whole insert chains (.louirack)
+  'daw:racks-export', 'daw:racks-import',
+  // DAW offline render output (Bounce / Freeze / Consolidate)
+  'daw:write-temp-audio', 'daw:bounce-audio',
+  // DAW source decoding — FFmpeg in main, never Chromium in the renderer
+  'daw:pcm-source',
+  // Installed third-party plugins (scan only — nothing is loaded)
+  'plugins:scan', 'plugins:capabilities', 'daw:host-apply',
+  // Natural-language assistant.  The key lives in main and never crosses
+  // this bridge — the renderer can set one and ask questions, not read one.
+  'assistant:status', 'assistant:ask', 'assistant:set-key', 'assistant:clear-key',
+  // Picture: ffprobe tells us the frame rate, which a <video> element will not.
+  'video:probe',
   // Updater (v3.4.3)
   'updater:check', 'updater:download', 'updater:quit-and-install',
   'updater:get-status',

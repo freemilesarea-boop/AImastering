@@ -11,6 +11,8 @@ import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore, toStructuredError } from '../stores/audioStore.js';
 import type { StructuredError } from '../stores/audioStore.js';
 import type { MasteringResult, AudioAnalysisResult } from '@aimaster/shared-types';
+import { isGuidedFlowEnabled } from '../audio/guided-flow-flag.js';
+import { styleAccent } from '../theme/loui-tokens.js';
 
 // ── Stage definitions ─────────────────────────────────────────────────────────
 
@@ -161,6 +163,12 @@ export default function MasteringPage() {
   // The main process tears down the Python bridge; the next attempt
   // respawns it.
   const inFlightRef = useRef(false);
+  // Deferred-cancel timer for the navigation-away cleanup.  Used to tell a
+  // StrictMode (dev) fake-unmount apart from a real navigation: a real
+  // unmount lets the macrotask fire (→ cancel); a StrictMode remount clears
+  // it in the effect setup before it runs (→ no spurious cancel that would
+  // kill the just-started first analyze).
+  const navCancelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sendCancel = useCallback((reason: string) => {
     if (!inFlightRef.current) return;
     inFlightRef.current = false;
@@ -235,7 +243,7 @@ export default function MasteringPage() {
           '',
           {
             style:              options.style,
-            targetLufs:         options.targetLufs,
+            ...(options.targetLufsExplicit ? { targetLufs: options.targetLufs } : {}),
             targetTp:           options.targetTp,
             sampleRate:         options.sampleRate,
             bitDepth:           options.bitDepth,
@@ -244,6 +252,8 @@ export default function MasteringPage() {
             saturationAmount:   options.saturationAmount,
             stereoWidth:        options.stereoWidth,
             outputGainDb:       options.outputGainDb,
+            dynamicEqIntensity: options.dynamicEqIntensity,
+            engineMode:         options.engineMode,
             aiDetections:       analysisToUse?.aiDetection ?? {},
           },
           { preLoudness: analysisToUse?.loudness },
@@ -275,8 +285,21 @@ export default function MasteringPage() {
   // mid-mastering) tell the main process to kill the Python engine so it
   // doesn't keep working on a result nobody will use.
   useEffect(() => {
+    // (Re)mounted — if a pending "unmount cancel" was scheduled by a
+    // StrictMode fake-unmount that immediately remounted, abort it so the
+    // first analyze isn't killed.
+    if (navCancelTimer.current) {
+      clearTimeout(navCancelTimer.current);
+      navCancelTimer.current = null;
+    }
     return () => {
-      sendCancel('unmount');
+      // Defer the cancel by one macrotask.  A REAL navigation-away unmount
+      // lets it fire (kills the abandoned engine job); a StrictMode
+      // unmount→remount clears it in the setup above before it runs.
+      navCancelTimer.current = setTimeout(() => {
+        navCancelTimer.current = null;
+        sendCancel('unmount');
+      }, 0);
     };
   }, [sendCancel]);
 
@@ -311,6 +334,15 @@ export default function MasteringPage() {
     void runMastering();
   }, [runMastering]);
 
+  // ── Guided restyle (T9) — visual only; logic above is untouched ──────────
+  const guided = isGuidedFlowEnabled();
+  const guidedAccent = styleAccent(options?.style);
+  const guidedStage =
+    progress < 25 ? { short: '분석',          title: '트랙을 분석하고 있어요', sub: '주파수와 음량을 살펴보는 중' }
+    : progress < 50 ? { short: '톤 보정',      title: '톤을 다듬는 중',         sub: '주파수 균형을 맞추고 있어요' }
+    : progress < 80 ? { short: '음압 강화',    title: '음압을 끌어올리는 중',   sub: '체감 볼륨을 키우고 있어요' }
+    :                 { short: '트루피크 보호', title: '거의 다 됐어요',         sub: '깨지지 않게 안전 처리 중' };
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <TopBar subtitle="처리 중" />
@@ -318,25 +350,63 @@ export default function MasteringPage() {
       <div className="flex-1 flex items-center justify-center px-8">
         <div className="w-full max-w-sm space-y-6 animate-in">
 
-          {/* File name */}
-          <div>
-            <p className="text-xs text-zinc-600 mb-1">처리 중인 파일</p>
-            <p className="text-sm text-zinc-300 truncate">{fileName}</p>
-          </div>
+          {/* File name (legacy layout only) */}
+          {!guided && (
+            <div>
+              <p className="text-xs text-zinc-600 mb-1">처리 중인 파일</p>
+              <p className="text-sm text-zinc-300 truncate">{fileName}</p>
+            </div>
+          )}
 
-          {/* Stage list */}
-          <div className="space-y-3">
-            {STAGES.map((stage) => (
-              <StageRow
-                key={stage.label}
-                label={stage.label}
-                status={error ? 'pending' : getStageStatus(stage, progress)}
-              />
-            ))}
-          </div>
+          {/* ── Guided progress: ring + stage label + LUFS gauge (T9) ─────── */}
+          {guided && !error && (
+            <div className="flex flex-col items-center text-center gap-6">
+              <span
+                className="px-[14px] py-2 rounded-full text-[13px] font-extrabold tracking-wide"
+                style={guidedAccent.isKpop
+                  ? { background: guidedAccent.grad, color: '#1A0A10' }
+                  : { background: '#20202A', color: '#9A9AA8' }}
+              >
+                {guidedAccent.isKpop ? 'KPOP LOUD' : '처리 중'}
+              </span>
 
-          {/* Overall progress bar */}
-          {!error && (
+              <div className="relative w-[200px] h-[200px] rounded-full flex items-center justify-center"
+                   style={{ background: `conic-gradient(${guidedAccent.a} 0% ${progress}%, #1d1d27 ${progress}% 100%)` }}>
+                <div className="w-[156px] h-[156px] rounded-full bg-[#0d0d12] flex flex-col items-center justify-center">
+                  <div className="font-mono text-[38px] font-extrabold">{progress}%</div>
+                  <div className="text-[12px] text-zinc-500">{guidedStage.short}</div>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[19px] font-bold">{guidedStage.title}</div>
+                <div className="text-[15px] text-zinc-400 mt-[6px]">{guidedStage.sub}</div>
+              </div>
+
+              {/* LUFS target gauge */}
+              <div className="w-[260px] max-w-[80%] h-[10px] rounded-md bg-[#16161E] border border-zinc-700 relative overflow-hidden">
+                <div className="absolute left-0 top-0 bottom-0 transition-[width] duration-200"
+                     style={{ width: `${progress}%`, background: guidedAccent.grad }} />
+                <div className="absolute top-[-4px] bottom-[-4px] w-[2px]" style={{ left: '88%', background: '#7C8AFF' }} />
+              </div>
+            </div>
+          )}
+
+          {/* Stage list (legacy layout only) */}
+          {!guided && (
+            <div className="space-y-3">
+              {STAGES.map((stage) => (
+                <StageRow
+                  key={stage.label}
+                  label={stage.label}
+                  status={error ? 'pending' : getStageStatus(stage, progress)}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Overall progress bar (legacy layout only) */}
+          {!guided && !error && (
             <div>
               <div className="h-1 rounded-full bg-zinc-800 overflow-hidden">
                 <div
@@ -350,7 +420,7 @@ export default function MasteringPage() {
             </div>
           )}
 
-          {/* Error state */}
+          {/* Error state (shared) */}
           {error && <ErrorCard error={error} onRetry={handleRetry} />}
 
         </div>

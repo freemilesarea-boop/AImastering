@@ -5,6 +5,19 @@ import './styles/index.css';
 // SAFE_BOOT: load flag helpers first so window.__SAFE_BOOT__ is available
 // before any feature code reads them.
 import './audio/safe-boot-flags.js';
+// The natural-language assistant's route to the main process.  Installed
+// here rather than lazily so `ask()` never has to decide whether it is
+// running in Electron; outside Electron this returns null and the rule
+// parser stays the whole feature.
+import { ipcBridge, setAssistantBridge } from './daw/ai/nl-assistant.js';
+setAssistantBridge(ipcBridge());
+// What this build can actually host, asked once rather than declared in two
+// places that then disagree — see daw/engine/external-host.ts.
+import { setHostCapabilities } from './daw/engine/external-host.js';
+void (window as Window & { electronAPI?: { invoke(c: string): Promise<unknown> } })
+  .electronAPI?.invoke('plugins:capabilities')
+  .then((caps) => { if (caps && typeof caps === 'object') setHostCapabilities(caps as never); })
+  .catch(() => { /* older main, or not Electron: the defaults are already "no" */ });
 
 // ── 시작 진단 로그 ─────────────────────────────────────────────────────────────
 // DevTools(Ctrl+Shift+I) 콘솔에서 이 로그로 preload 상태를 확인하세요.

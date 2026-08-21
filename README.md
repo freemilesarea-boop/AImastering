@@ -11,6 +11,18 @@
 
 신기능 / 버그 수정은 모두 `aimaster-desktop/services/python-audio/` 에서.
 
+## 🚀 Phase 1 출시 (데스크톱)
+
+- **Phase 1 출시 대상 = `aimaster-desktop/apps/desktop`** (Windows / macOS Electron 앱).
+- **마스터링은 사용자 컴퓨터의 로컬 엔진에서 실행된다** — 번들된 Python/FFmpeg 엔진(Electron IPC
+  `audio:master`) + Rust DSP WASM 프리뷰. **Render 등 외부 마스터링 서버가 필요 없다.**
+- **Render 마스터링 서버는 데스크톱 출시의 blocker가 아니다.** Render가 다운/과금 초과여도
+  데스크톱 빌드·출시·마스터링은 정상 동작한다. (근거: `docs/LOCAL_MASTERING_MIGRATION.md`)
+- 데스크톱이 쓰는 서버는 **라이선스/계정/결제 검증(LICENSE_API_URL)** 과 **자동 업데이트(GitHub
+  Releases)** 뿐 — Render 마스터링과 무관.
+- **모바일 앱(`apps/mobile`)과 `apps/mac-shell`은 Render 마스터링 API에 의존하므로 Phase 1
+  출시 범위에서 제외**한다(로컬 엔진 전환 = Phase 3 이전까지 배포 대상 아님).
+
 ## 주요 기능
 
 | 기능 | 설명 |

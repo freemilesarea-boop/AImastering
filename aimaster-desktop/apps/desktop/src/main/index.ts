@@ -1,13 +1,24 @@
-import { app, BrowserWindow, ipcMain, protocol, net } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import fs from 'node:fs';
+import { Readable } from 'node:stream';
 import { checkFFmpeg } from '@aimaster/audio-engine';
 import { registerAudioHandlers, killBridge } from './ipc/audioHandlers.js';
 import { registerFileHandlers } from './ipc/fileHandlers.js';
+import { registerDecodeHandlers } from './ipc/decodeHandlers.js';
+import { registerPluginHandlers } from './ipc/pluginHandlers.js';
 import { registerSettingsHandlers } from './ipc/settingsHandlers.js';
+import { registerLicenseHandlers, licenseService } from './ipc/licenseHandlers.js';
+import { registerEntitlementHandlers } from './ipc/entitlementHandlers.js';
+import { registerAssistantHandlers } from './ipc/assistantHandlers.js';
+import { registerVideoHandlers } from './ipc/videoHandlers.js';
+import { isLicenseSecretProductionReady, LICENSE_API_URL } from '@aimaster/license-core';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
 import { recordFailure } from './utils/failureLog.js';
+import { localUrlToFsPath } from './utils/localFileUrl.js';
+import { parseRangeHeader, contentTypeForPath } from './utils/localFileResponse.js';
+import { applyBundledFfmpegEnv } from './utils/ffmpegEnv.js';
 
 // ── License gate REMOVED (v3.6.0-rc.1+1) ─────────────────────────────────────
 // The previous LICENSE_HMAC_SECRET startup gate has been removed for the
@@ -17,6 +28,14 @@ import { recordFailure } from './utils/failureLog.js';
 // see preload/index.ts and renderer/App.tsx.
 
 const isDev = !app.isPackaged;
+
+// SharedArrayBuffer is how the disk-streaming reader thread hands samples to
+// the audio thread without a lock — the audio thread cannot wait for one.
+// Chromium gates it behind cross-origin isolation, which a custom protocol and
+// a dev server cannot satisfy; this switch is Electron's way to allow it for
+// an app that is not serving third-party content in the first place.
+// Without it, playback falls back to loading whole files into memory.
+app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -69,8 +88,29 @@ function createWindow(): void {
       exitCode: details.exitCode,
     }));
     recordFailure('engine', `renderer render-process-gone: reason=${details.reason} exit=${details.exitCode}`);
-    // DO NOT auto-reload — first time we want the user/devtools to see the state.
     mainWindow?.show();
+
+    // A dead renderer paints nothing, so the window falls back to its own
+    // background colour: a blank black rectangle with no menu, no error and no
+    // way to tell a crash from a hang.  Say what happened and offer the one
+    // action that helps.  (No auto-reload — a crash loop must stay visible.)
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    const outOfMemory = details.reason === 'oom';
+    void dialog.showMessageBox(win, {
+      type: 'error',
+      title: '화면 프로세스가 종료되었습니다',
+      message: outOfMemory
+        ? '메모리가 부족해 화면이 종료되었습니다.'
+        : '화면 프로세스가 예기치 않게 종료되었습니다.',
+      detail: `reason=${details.reason} · exit=${details.exitCode}\n\n`
+        + '다시 불러오면 홈 화면부터 시작합니다.',
+      buttons: ['다시 불러오기', '닫기'],
+      defaultId: 0,
+      cancelId: 1,
+    }).then(({ response }) => {
+      if (response === 0 && !win.isDestroyed()) win.reload();
+    }).catch(() => { /* the window went away first */ });
   });
   mainWindow.webContents.on('unresponsive', () => {
     log.error('[CRASH] webContents unresponsive (renderer event loop blocked)');
@@ -81,8 +121,12 @@ function createWindow(): void {
   });
   // Capture console errors from the renderer into the main log so they
   // survive a renderer crash that wipes DevTools.
+  // In dev, info too: the renderer's audio breadcrumbs are the only record of
+  // where a native crash landed, and a dead renderer cannot report anything
+  // itself.  Packaged builds keep the quieter warning-and-above filter.
+  const consoleFloor = isDev ? 1 : 2;   // 1=info, 2=warning, 3=error
   mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
-    if (level >= 2) { // 2=warning, 3=error
+    if (level >= consoleFloor) {
       log.warn(`[renderer-console L${level}] ${message} (${sourceId}:${line})`);
     }
   });
@@ -103,7 +147,13 @@ function createWindow(): void {
   });
 
   if (isDev) {
-    void mainWindow.loadURL('http://localhost:5173');
+    // LOUI_DEV_PAGE=daw opens straight into the DAW instead of the home
+    // screen — see stores/appStore.ts.  Dev only; the packaged branch below
+    // never reads it.
+    const page = process.env['LOUI_DEV_PAGE'];
+    void mainWindow.loadURL(page
+      ? `http://localhost:5173/?page=${encodeURIComponent(page)}`
+      : 'http://localhost:5173');
   } else {
     // Main process is at dist-electron/main/index.js; renderer is at
     // dist/renderer/index.html.  Both live inside app.asar at runtime, so
@@ -124,20 +174,74 @@ app.whenReady().then(() => {
   //   2. Range requests — forward the media element's `Range` header so
   //      net.fetch returns 206 Partial Content; without it Chromium's media
   //      pipeline often fails to load metadata (duration stays 0:00).
-  protocol.handle('aimaster-local', (request) => {
-    let absPath: string;
+  protocol.handle('aimaster-local', async (request) => {
+    // localUrlToFsPath handles spaces / Korean / `#` / `?` and — critically
+    // for Windows — strips the leading slash before a drive letter so
+    // `/C:/Users/…` decodes to a valid `C:/Users/…` path.
+    //
+    // We serve the file ourselves with fs streaming (NOT net.fetch('file://'))
+    // so the HTTP `206 Partial Content` reply to the media element's Range
+    // probe is byte-identical on every platform.  Electron's net.fetch does
+    // not honour Range for file:// consistently on Windows, so the <audio>
+    // never got a 206, `loadedmetadata` never fired, and the preview player +
+    // realtime DSP (both gated on metadata) silently did nothing — the
+    // "preview/detailed controls don't respond on Windows" bug.
+    const corsHeaders: Record<string, string> = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Range',
+      'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
+    };
+    let fsPath = '';
     try {
-      const u = new URL(request.url);
-      // `standard` scheme → host is usually empty and the path is in pathname.
-      // On Windows a drive path may surface as the host (C:) — recombine.
-      const raw = u.host ? `/${u.host}${u.pathname}` : u.pathname;
-      absPath = decodeURIComponent(raw);
-    } catch {
-      absPath = decodeURIComponent(request.url.slice('aimaster-local://'.length));
+      fsPath = localUrlToFsPath(request.url);
+      const stat = await fs.promises.stat(fsPath);
+      if (!stat.isFile()) throw new Error('not a regular file');
+      const total = stat.size;
+      const type = contentTypeForPath(fsPath);
+      const rangeHeader = request.headers.get('Range') ?? request.headers.get('range');
+      const parsed = parseRangeHeader(rangeHeader, total);
+
+      if (parsed.kind === 'unsatisfiable') {
+        return new Response(null, {
+          status: 416,
+          headers: { ...corsHeaders, 'Content-Range': `bytes */${total}`, 'Accept-Ranges': 'bytes' },
+        });
+      }
+
+      if (parsed.kind === 'range') {
+        const { start, end } = parsed;
+        const stream = fs.createReadStream(fsPath, { start, end });
+        const body = Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>;
+        return new Response(body, {
+          status: 206,
+          headers: {
+            ...corsHeaders,
+            'Content-Type': type,
+            'Content-Length': String(end - start + 1),
+            'Content-Range': `bytes ${start}-${end}/${total}`,
+            'Accept-Ranges': 'bytes',
+          },
+        });
+      }
+
+      // Whole file.
+      const stream = fs.createReadStream(fsPath);
+      const body = Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>;
+      return new Response(body, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': type,
+          'Content-Length': String(total),
+          'Accept-Ranges': 'bytes',
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error('[aimaster-local] serve failed', { url: request.url, fsPath, msg });
+      recordFailure('preview', `aimaster-local serve failed: ${msg}`, { fsPath });
+      return new Response(null, { status: 404, headers: corsHeaders });
     }
-    const fileUrl = pathToFileURL(absPath).toString();
-    const range = request.headers.get('Range') ?? request.headers.get('range');
-    return net.fetch(fileUrl, range ? { headers: { Range: range } } : undefined);
   });
 
   // ── 1. 창을 먼저 생성 ─────────────────────────────────────────────────────
@@ -147,9 +251,14 @@ app.whenReady().then(() => {
   createWindow();
 
   // ── 2. FFmpeg 상태 확인 (실패해도 창은 유지) ──────────────────────────────
+  // Point AIMASTER_FFMPEG/FFPROBE at the bundled binaries BEFORE the first
+  // resolution so checkFFmpeg() — and every later consumer that resolves with
+  // no opts (export transcode, Rust offline render, the Python engine) —
+  // finds the bundled binary on a clean machine regardless of call order.
+  applyBundledFfmpegEnv(app.isPackaged, process.resourcesPath);
   let ffmpeg;
   try {
-    ffmpeg = checkFFmpeg();
+    ffmpeg = checkFFmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath });
     log.info('FFmpeg status', ffmpeg);
     if (!ffmpeg?.available) {
       recordFailure('ffmpeg', 'checkFFmpeg() returned available=false', { ffmpeg });
@@ -197,17 +306,36 @@ app.whenReady().then(() => {
   }
 
   // ── 3. IPC 핸들러 등록 (mainWindow가 이미 생성된 뒤) ─────────────────────
-  // License IPC handlers intentionally NOT registered — license gate
-  // disabled for the internal RC test cycle.  See main/index.ts header
-  // comment.  licenseHandlers.ts is left in the tree as dead code so a
-  // future re-enable doesn't require fishing it out of git history.
+  // v3.6 — License gate RE-ENABLED for commercial release (Paddle + Supabase
+  // RemoteValidator).  When LICENSE_API_URL is injected the app validates
+  // keys server-side; otherwise it runs in dev mode (LocalValidator).
+  if (app.isPackaged && LICENSE_API_URL && !isLicenseSecretProductionReady()) {
+    // Production license mode is on but no strong HMAC secret was injected.
+    // Not fatal (server is the source of truth + startup revalidation), but
+    // local tamper-resistance is weakened — make it loud so CI gets fixed.
+    log.error('[license] PRODUCTION build with LICENSE_API_URL but weak/missing LICENSE_HMAC_SECRET. Inject a strong secret in CI.');
+  }
   try {
     registerAudioHandlers(ipcMain, mainWindow);
     registerFileHandlers(ipcMain, mainWindow);
+    registerDecodeHandlers(ipcMain, app.isPackaged, process.resourcesPath);
+    registerPluginHandlers(ipcMain);
     registerSettingsHandlers(ipcMain, mainWindow);
+    registerLicenseHandlers(ipcMain);
+    registerEntitlementHandlers(ipcMain);
+    registerAssistantHandlers(ipcMain);
+    registerVideoHandlers(ipcMain, app.isPackaged, process.resourcesPath);
   } catch (err) {
     log.error('IPC handler registration failed:', err);
   }
+
+  // ── 3b. Startup license re-validation (online refresh) ───────────────────
+  // Picks up subscription renewals and enforces refunds / revocations /
+  // device removals.  Fire-and-forget: offline failures keep the cached
+  // license (monthly still self-expires at expiresAt).
+  licenseService.revalidate().catch((err) => {
+    log.warn('[license] startup revalidate failed (continuing):', err?.message ?? err);
+  });
 
   // ── 4. Auto-updater (프로덕션 빌드에서만 실제로 체크) ─────────────────────
   // dev 빌드에선 IPC 핸들러는 등록되지만 checkForUpdates() 호출이 no-op.

@@ -66,6 +66,206 @@ log("INFO", f"ffmpeg  binary: {_FFMPEG_BIN}")
 log("INFO", f"ffprobe binary: {_FFPROBE_BIN}")
 
 
+# ── Canonical analysis binary provenance ─────────────────────────────────────
+#
+# Mastering keeps the resolution above: an unset env var falls back to the bare
+# name and PATH, which is what lets the engine run in dev.
+#
+# Canonical feature analysis may not. Commercial reference targets and runtime
+# measurements have to come out of the same binary, and a bare name silently
+# resolves to whatever the machine happens to have — here, ffmpeg 6.0 when
+# packaged versus 8.1.1 from Homebrew, two major versions apart. Measuring the
+# reference with one and the runtime with the other reintroduces exactly the
+# incomparability this contract exists to remove, so canonical analysis requires
+# an explicit path and fails closed without one. Nothing else changes: existing
+# mastering calls keep using _FFMPEG_BIN untouched.
+
+CANONICAL_FFMPEG_ENV = "AIMASTER_FFMPEG"
+
+# Resampler parameters for canonical analysis, in the order they are emitted.
+# Every value is stated rather than left to a default, because a default is an
+# unrecorded parameter. cutoff stays 0 ("auto") deliberately: the actual figure
+# auto resolves to is not readable from the binary, so inventing a number would
+# mean silently applying a different filter than auto would. Pinning the binary
+# by version and sha256 fixes what auto means instead.
+CANONICAL_ARESAMPLE_PARAMS: tuple[tuple[str, str], ...] = (
+    ("resampler",      "swr"),
+    ("filter_size",    "32"),
+    ("phase_shift",    "10"),
+    ("linear_interp",  "1"),
+    ("exact_rational", "1"),
+    ("filter_type",    "kaiser"),
+    ("kaiser_beta",    "9"),
+    ("cutoff",         "0"),
+    ("dither_method",  "0"),
+    ("async",          "0"),
+)
+
+# Analysis output is float32, whose 24-bit mantissa holds a 24-bit source
+# exactly, so no word length is reduced and there is nothing for dither to
+# decorrelate. Injecting noise into a measurement signal would perturb the HF
+# features and risk non-determinism, hence dither_method=0 above.
+CANONICAL_DITHER_POLICY = "none"
+
+
+class CanonicalProvenanceError(RuntimeError):
+    """Canonical analysis cannot prove which ffmpeg binary it would run.
+
+    Deliberately not an FFmpegError: this is not a processing failure with a
+    user-facing message, it is a refusal to measure without provenance.
+    """
+
+
+def canonical_aresample_filter(target_sr: int) -> str:
+    """The one resampler invocation canonical analysis is allowed to use."""
+    parts = [f"osr={int(target_sr)}"]
+    parts += [f"{k}={v}" for k, v in CANONICAL_ARESAMPLE_PARAMS]
+    return "aresample=" + ":".join(parts)
+
+
+def resolve_canonical_ffmpeg() -> str:
+    """Return an explicit ffmpeg path for canonical analysis, or raise.
+
+    A bare name is rejected even though it would work, because "it worked" is
+    not the property we need — we need to know afterwards which binary ran.
+    """
+    value = os.environ.get(CANONICAL_FFMPEG_ENV, "").strip()
+    if not value:
+        raise CanonicalProvenanceError(
+            f"{CANONICAL_FFMPEG_ENV} is not set. Canonical analysis requires an "
+            "explicit ffmpeg binary path so the reference and the runtime can be "
+            "shown to have used the same one; PATH resolution is not accepted."
+        )
+    if os.path.basename(value) == value:
+        raise CanonicalProvenanceError(
+            f"{CANONICAL_FFMPEG_ENV}={value!r} is a bare name resolved through "
+            "PATH. Canonical analysis requires an explicit path."
+        )
+    resolved = os.path.abspath(value)
+    if not os.path.isfile(resolved):
+        raise CanonicalProvenanceError(
+            f"{CANONICAL_FFMPEG_ENV}={value!r} is not a file: {resolved}"
+        )
+    if not os.access(resolved, os.X_OK):
+        raise CanonicalProvenanceError(
+            f"{CANONICAL_FFMPEG_ENV}={value!r} is not executable: {resolved}"
+        )
+    return resolved
+
+
+def ffmpeg_version(binary: str | None = None) -> str:
+    """Version string of an ffmpeg binary, e.g. "6.0"."""
+    bin_path = binary or _FFMPEG_BIN
+    stdout, _ = _run([bin_path, "-hide_banner", "-version"], timeout=30, kind="ffmpeg_version")
+    first = (stdout or "").splitlines()[0] if stdout else ""
+    match = re.match(r"ffmpeg version (\S+)", first)
+    if not match:
+        raise CanonicalProvenanceError(
+            f"could not parse ffmpeg version from: {first!r}"
+        )
+    return match.group(1)
+
+
+def ffmpeg_binary_sha256(binary: str | None = None) -> str:
+    """sha256 of the ffmpeg binary itself, streamed.
+
+    Version alone does not identify a build: the same version compiled with
+    different flags is a different resampler.
+    """
+    import hashlib
+
+    bin_path = binary or _FFMPEG_BIN
+    if os.path.basename(bin_path) == bin_path:
+        raise CanonicalProvenanceError(
+            f"cannot hash a PATH-resolved binary name: {bin_path!r}"
+        )
+    digest = hashlib.sha256()
+    with open(bin_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_canonical_decode_cmd(
+    input_path: str,
+    *,
+    binary: str,
+    target_sr: int | None = None,
+) -> list[str]:
+    """Command for one canonical decode. Pure: builds argv, runs nothing.
+
+    ``target_sr`` of None means decode only — no resampler is attached at all,
+    rather than an aresample that happens to be a no-op. A filter that is not in
+    the graph cannot contribute anything to the measurement.
+
+    ``-map 0:a:0 -vn`` is not cosmetic: every track in the commercial reference
+    corpus carries an attached PNG cover, so the audio stream is selected
+    explicitly instead of relying on ffmpeg's default choice.
+    """
+    cmd = [
+        binary, "-hide_banner", "-nostdin", "-v", "error",
+        "-i", input_path,
+        "-map", "0:a:0", "-vn",
+    ]
+    if target_sr is not None:
+        cmd += ["-af", canonical_aresample_filter(target_sr)]
+    cmd += ["-c:a", "pcm_f32le", "-f", "f32le", "pipe:1"]
+    return cmd
+
+
+def decode_canonical_pcm_f32le(
+    input_path: str,
+    *,
+    channels: int,
+    binary: str,
+    target_sr: int | None = None,
+    timeout: int = 600,
+) -> bytes:
+    """Decode to raw interleaved float32 on stdout and return the bytes.
+
+    A pipe rather than a temporary WAV: analysis never needs the intermediate to
+    persist, and a temp file is one more thing that can be left behind on a
+    user's disk after a crash.
+    """
+    if channels <= 0:
+        raise CanonicalProvenanceError(f"invalid channel count: {channels}")
+
+    cmd = build_canonical_decode_cmd(input_path, binary=binary, target_sr=target_sr)
+    log("DEBUG", f"exec[canonical_decode]: {' '.join(cmd[:10])} ...")
+    t0 = time.time()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _record_invocation("canonical_decode", cmd, "<timeout>", False, time.time() - t0)
+        raise CanonicalProvenanceError(
+            f"canonical decode timed out after {timeout}s: {input_path}"
+        )
+    except FileNotFoundError:
+        _record_invocation("canonical_decode", cmd, "<not found>", False, time.time() - t0)
+        raise CanonicalProvenanceError(f"ffmpeg binary not found: {binary}")
+
+    elapsed = time.time() - t0
+    stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        _record_invocation("canonical_decode", cmd, stderr, False, elapsed)
+        raise CanonicalProvenanceError(
+            f"canonical decode failed (exit {proc.returncode}): {stderr[-500:]}"
+        )
+
+    raw = proc.stdout or b""
+    _record_invocation("canonical_decode", cmd, stderr, True, elapsed)
+
+    frame_bytes = 4 * channels
+    if len(raw) == 0:
+        raise CanonicalProvenanceError(f"canonical decode produced no audio: {input_path}")
+    if len(raw) % frame_bytes != 0:
+        raise CanonicalProvenanceError(
+            f"malformed f32le stream: {len(raw)} bytes is not a multiple of "
+            f"{frame_bytes} ({channels}ch x 4 bytes)"
+        )
+    return raw
+
+
 # ── Custom exception ──────────────────────────────────────────────────────────
 
 class FFmpegError(RuntimeError):

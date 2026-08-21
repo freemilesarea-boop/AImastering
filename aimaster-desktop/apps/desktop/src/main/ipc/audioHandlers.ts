@@ -25,6 +25,7 @@ import { log } from '../utils/logger.js';
 import { recordFailure } from '../utils/failureLog.js';
 import { recordPipelineWarning } from '../utils/supportBundle.js';
 import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
+import { applyBundledFfmpegEnv } from '../utils/ffmpegEnv.js';
 
 let bridge: PythonBridge | null = null;
 
@@ -63,9 +64,10 @@ function resolvePaths(): { pythonPath: string; scriptPath: string } {
   if (app.isPackaged) {
     const binDir = path.join(process.resourcesPath, 'bin');
 
-    // Point the Python engine to the bundled FFmpeg
-    process.env['AIMASTER_FFMPEG']  = path.join(binDir, `ffmpeg${ext}`);
-    process.env['AIMASTER_FFPROBE'] = path.join(binDir, `ffprobe${ext}`);
+    // Point the Python engine (and every other ffmpeg consumer) to the
+    // bundled FFmpeg.  Centralised + idempotent so resolution never depends
+    // on which handler ran first — also called at app startup in index.ts.
+    applyBundledFfmpegEnv(app.isPackaged, process.resourcesPath);
 
     return {
       pythonPath: path.join(binDir, `engine${ext}`),
@@ -117,13 +119,24 @@ function getBridge(): PythonBridge {
   return bridge;
 }
 
+// Windows reserved device names — illegal as a base filename even WITH an
+// extension (e.g. `CON.wav` cannot be created on Windows).  Matched
+// case-insensitively against the stem.
+const WIN_RESERVED = new Set([
+  'con', 'prn', 'aux', 'nul',
+  'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+  'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
+]);
+
 /**
  * Remove characters that are illegal in filenames on Windows or Unix.
- * Spaces are replaced with underscores; the result is trimmed.
- * Falls back to 'untitled' if the result is empty.
+ * Spaces are replaced with underscores; the result is trimmed.  A stem that
+ * collides with a Windows reserved device name (CON, NUL, COM1…) is prefixed
+ * with `_` so the file can be created on every platform.  Falls back to
+ * 'untitled' if the result is empty.
  */
 function sanitizeFilename(name: string): string {
-  return (
+  const cleaned = (
     name
       // eslint-disable-next-line no-control-regex
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')  // illegal on Windows/Unix
@@ -131,6 +144,7 @@ function sanitizeFilename(name: string): string {
       .replace(/\.+$/, '')                      // trailing dots (Windows disallows)
       .trim()
   ) || 'untitled';
+  return WIN_RESERVED.has(cleaned.toLowerCase()) ? `_${cleaned}` : cleaned;
 }
 
 /**

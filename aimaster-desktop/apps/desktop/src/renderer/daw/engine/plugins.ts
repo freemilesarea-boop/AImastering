@@ -1,0 +1,823 @@
+// Insert plugins.
+//
+// Every plugin is built from native WebAudio nodes only — no ScriptProcessor,
+// no control-rate JS.  That is a deliberate constraint: nodes render inside
+// an OfflineAudioContext, so what you hear live is bit-identical to what
+// Bounce / Freeze writes to disk.  A JS envelope follower would silently
+// drop out during an offline render and the bounce would not match.
+//
+// The sidechain compressor and the look-ahead limiter are the interesting
+// ones: their detectors are audio-rate signal chains
+// (|x| → one-pole → transfer curve) driving a GainNode's `gain` AudioParam
+// through an audio connection, which is how you get a working detector with
+// no script node in the path.
+
+import { webAudioAutoMakeup } from '../model/plugin-curves.js';
+
+import {
+  absShaper, dbToGain, halfWaveGainCurve, makeDbReductionCurve, makeExpanderCurve,
+  makeGainCurve, makeShaper, smoother, tanhCurve, withBypass,
+  automatableFrom,
+  type PluginDescriptor, type PluginInstance, type PluginParamDef,
+} from './plugin-kit.js';
+import { EXTENDED_PLUGINS } from './plugins-extended.js';
+import { REVERB_PLUGINS } from './plugins-reverb.js';
+import { SPACES, irBuffer, spaceIndex } from './reverb-spaces.js';
+
+export type { PluginDescriptor, PluginInstance, PluginParamDef };
+export { timeConstantToHz, makeImpulse } from './plugin-kit.js';
+
+/** The devices this file defines.  Extended devices are appended below. */
+const CORE_PLUGINS: PluginDescriptor[] = [
+  {
+    id: 'trim',
+    name: 'Trim',
+    category: 'utility',
+    hasSidechain: false,
+    params: [{ id: 'gainDb', name: 'Gain', min: -24, max: 24, default: 0, unit: 'dB' }],
+    automatableParams: ['gainDb'],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const gain = ctx.createGain();
+      gain.gain.value = dbToGain(params['gainDb'] ?? 0);
+      input.connect(gain).connect(output);
+      return {
+        setParam: (id, v) => { if (id === 'gainDb') gain.gain.value = dbToGain(v); },
+        automatable: automatableFrom({ gainDb: { param: gain.gain, map: dbToGain } }),
+      };
+    }),
+  },
+
+  {
+    id: 'eq3',
+    name: 'EQ 3-Band',
+    category: 'eq',
+    hasSidechain: false,
+    params: [
+      { id: 'lowDb',   name: 'Low',      min: -18, max: 18,    default: 0,    unit: 'dB' },
+      { id: 'midDb',   name: 'Mid',      min: -18, max: 18,    default: 0,    unit: 'dB' },
+      { id: 'midHz',   name: 'Mid Freq', min: 200, max: 8000,  default: 1000, unit: 'Hz' },
+      { id: 'highDb',  name: 'High',     min: -18, max: 18,    default: 0,    unit: 'dB' },
+      { id: 'hpfHz',   name: 'HPF',      min: 20,  max: 400,   default: 20,   unit: 'Hz' },
+    ],
+    automatableParams: ['lowDb', 'midDb', 'midHz', 'highDb', 'hpfHz'],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const hpf = ctx.createBiquadFilter();  hpf.type = 'highpass';
+      hpf.frequency.value = params['hpfHz'] ?? 20;
+      const low = ctx.createBiquadFilter();  low.type = 'lowshelf';
+      low.frequency.value = 120; low.gain.value = params['lowDb'] ?? 0;
+      const mid = ctx.createBiquadFilter();  mid.type = 'peaking';
+      mid.frequency.value = params['midHz'] ?? 1000; mid.Q.value = 1;
+      mid.gain.value = params['midDb'] ?? 0;
+      const high = ctx.createBiquadFilter(); high.type = 'highshelf';
+      high.frequency.value = 8000; high.gain.value = params['highDb'] ?? 0;
+      input.connect(hpf).connect(low).connect(mid).connect(high).connect(output);
+      return {
+        setParam: (id, v) => {
+          if (id === 'lowDb')  low.gain.value = v;
+          if (id === 'midDb')  mid.gain.value = v;
+          if (id === 'midHz')  mid.frequency.value = v;
+          if (id === 'highDb') high.gain.value = v;
+          if (id === 'hpfHz')  hpf.frequency.value = v;
+        },
+        automatable: automatableFrom({
+          lowDb: low.gain, midDb: mid.gain, midHz: mid.frequency,
+          highDb: high.gain, hpfHz: hpf.frequency,
+        }),
+      };
+    }),
+  },
+
+  {
+    id: 'comp',
+    name: 'Compressor',
+    category: 'dynamics',
+    // Sidechain ducking lives in its own device — see 'ducker' below for why.
+    hasSidechain: false,
+    params: [
+      { id: 'thresholdDb', name: 'Threshold', min: -60, max: 0,   default: -18, unit: 'dB' },
+      { id: 'ratio',       name: 'Ratio',     min: 1,   max: 20,  default: 4,   unit: ':1' },
+      { id: 'kneeDb',      name: 'Knee',      min: 0,   max: 40,  default: 6,   unit: 'dB' },
+      { id: 'attackMs',    name: 'Attack',    min: 0.1, max: 100, default: 10,  unit: 'ms' },
+      { id: 'releaseMs',   name: 'Release',   min: 10,  max: 1000, default: 120, unit: 'ms' },
+      { id: 'makeupDb',    name: 'Makeup',    min: 0,   max: 24,  default: 0,   unit: 'dB' },
+    ],
+    automatableParams: ['attackMs', 'releaseMs'],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // A real compressor needs SEPARATE attack and release times, and a
+      // detector that follows the envelope without following the waveform.
+      // Neither is expressible as a graph of filters and shapers: one
+      // BiquadFilter is linear and time-invariant, so it cannot rise at one
+      // rate and fall at another.  The hand-built detector this replaced
+      // shared a single lowpass between attack and release — whichever knob
+      // you touched last won — and at a 0.1 ms attack that filter sat at
+      // 1591 Hz and passed the rectified waveform straight into the gain
+      // stage.  That is the screaming.
+      //
+      // DynamicsCompressorNode is a native node with a proper asymmetric
+      // detector and a soft knee, and it reports its own gain reduction, so
+      // the meter in the plugin window is measured rather than modelled.
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.value = params['thresholdDb'] ?? -18;
+      comp.ratio.value = Math.max(1, params['ratio'] ?? 4);
+      comp.knee.value = Math.max(0, params['kneeDb'] ?? 6);
+      comp.attack.value = Math.max(0, (params['attackMs'] ?? 10) / 1000);
+      comp.release.value = Math.max(0, (params['releaseMs'] ?? 120) / 1000);
+
+      // Cancel the node's hidden automatic makeup so the device sits at unity
+      // below its threshold.  Without this, inserting a compressor made the
+      // channel 11 dB louder before it did any compressing.
+      const makeup = ctx.createGain();
+      const applyMakeup = (): void => {
+        makeup.gain.value = dbToGain(params['makeupDb'] ?? 0)
+          / webAudioAutoMakeup(
+            params['thresholdDb'] ?? -18,
+            params['kneeDb'] ?? 6,
+            params['ratio'] ?? 4,
+          );
+      };
+      applyMakeup();
+
+      input.connect(comp).connect(makeup).connect(output);
+
+      return {
+        setParam: (id, v) => {
+          params[id] = v;
+          if (id === 'thresholdDb') comp.threshold.value = v;
+          if (id === 'ratio')       comp.ratio.value = Math.max(1, v);
+          if (id === 'kneeDb')      comp.knee.value = Math.max(0, v);
+          if (id === 'attackMs')    comp.attack.value = Math.max(0, v / 1000);
+          if (id === 'releaseMs')   comp.release.value = Math.max(0, v / 1000);
+          // Threshold, knee and ratio all move the hidden gain, so the
+          // compensation is recomputed for any of them.
+          if (id !== 'attackMs' && id !== 'releaseMs') applyMakeup();
+        },
+        // Threshold, knee and ratio also move the node's hidden auto-makeup,
+        // which is a plain gain recomputed in `setParam` — a ramp on the
+        // AudioParam would leave that compensation behind and the device would
+        // get louder as the lane moved.  Only the two time constants, which
+        // nothing else depends on, are offered.
+        automatable: automatableFrom({
+          attackMs: { param: comp.attack, map: (v) => Math.max(0, v / 1000) },
+          releaseMs: { param: comp.release, map: (v) => Math.max(0, v / 1000) },
+        }),
+        reduction: () => comp.reduction,
+      };
+    }),
+  },
+
+  {
+    id: 'ducker',
+    name: 'Sidechain Ducker',
+    category: 'dynamics',
+    hasSidechain: true,
+    params: [
+      { id: 'thresholdDb', name: 'Threshold', min: -60, max: 0,   default: -24, unit: 'dB' },
+      { id: 'ratio',       name: 'Amount',    min: 1,   max: 20,  default: 6,   unit: ':1' },
+      // Never fast enough to chase the waveform: a ducker rides a part out of
+      // the way of a vocal, and the shortest musical version of that is a few
+      // milliseconds, not a tenth of one.
+      { id: 'attackMs',    name: 'Attack',    min: 5,   max: 200,  default: 20,  unit: 'ms' },
+      { id: 'releaseMs',   name: 'Release',   min: 20,  max: 1000, default: 200, unit: 'ms' },
+      { id: 'makeupDb',    name: 'Makeup',    min: 0,   max: 24,   default: 0,   unit: 'dB' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Web Audio's compressor cannot take an external key, so ducking is the
+      // one case that still needs a hand-built detector.  It is honest about
+      // what that costs: one shared time constant, and a floor under it so it
+      // can never modulate at audio rate.  Those limits are also why this is a
+      // separate device rather than a mode of the compressor — a plugin that
+      // silently changes its DSP depending on how it is wired is a plugin you
+      // cannot trust.
+      const vca = ctx.createGain();
+      vca.gain.value = 0;               // driven entirely by the detector
+      const makeup = ctx.createGain();
+      makeup.gain.value = dbToGain(params['makeupDb'] ?? 0);
+
+      const internalKey = ctx.createGain();
+      const externalKey = ctx.createGain();
+      externalKey.gain.value = 0;
+      const rect = absShaper(ctx);
+      const env = smoother(ctx, params['attackMs'] ?? 20);
+      let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, params['ratio'] ?? 6);
+
+      input.connect(internalKey);
+      internalKey.connect(rect);
+      externalKey.connect(rect);
+      rect.connect(env.input);
+      env.output.connect(curve);
+      curve.connect(vca.gain);
+
+      input.connect(vca).connect(makeup).connect(output);
+
+      return {
+        sidechain: externalKey,
+        setSidechainActive: (active) => {
+          externalKey.gain.value = active ? 1 : 0;
+          internalKey.gain.value = active ? 0 : 1;
+        },
+        setParam: (id, v) => {
+          if (id === 'makeupDb') makeup.gain.value = dbToGain(v);
+          if (id === 'attackMs' || id === 'releaseMs') env.setTimeMs(v);
+          if (id === 'thresholdDb' || id === 'ratio') {
+            if (id === 'thresholdDb') params['thresholdDb'] = v; else params['ratio'] = v;
+            const next = makeGainCurve(
+              ctx, params['thresholdDb'] ?? -24, params['ratio'] ?? 6,
+            );
+            env.output.disconnect();
+            curve.disconnect();
+            curve = next;
+            env.output.connect(curve);
+            curve.connect(vca.gain);
+          }
+        },
+        dispose: () => { curve.disconnect(); },
+      };
+    }),
+  },
+
+  {
+    id: 'limiter',
+    name: 'Look-ahead Limiter',
+    category: 'dynamics',
+    hasSidechain: false,
+    params: [
+      { id: 'ceilingDb',   name: 'Ceiling',   min: -12, max: 0,   default: -1,  unit: 'dB' },
+      { id: 'lookaheadMs', name: 'Look-ahead', min: 0,  max: 10,  default: 2,   unit: 'ms' },
+      { id: 'releaseMs',   name: 'Release',   min: 10,  max: 500, default: 80,  unit: 'ms' },
+    ],
+    // Ceiling rebuilds the transfer curve and look-ahead changes the reported
+    // latency, which delay compensation has already lined the channel up
+    // against.  Neither can move mid-render, so neither is offered.
+    automatableParams: [],
+    // Real reported latency — this is what delay compensation lines up.
+    latencyFor: (params, sampleRate) =>
+      Math.round(((params['lookaheadMs'] ?? 2) / 1000) * sampleRate),
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const lookaheadSec = (params['lookaheadMs'] ?? 2) / 1000;
+      const delay = ctx.createDelay(0.05);
+      delay.delayTime.value = lookaheadSec;
+
+      const vca = ctx.createGain();
+      vca.gain.value = 0;
+      const rect = absShaper(ctx);
+      const env = smoother(ctx, params['releaseMs'] ?? 80);
+      const curve = makeGainCurve(ctx, params['ceilingDb'] ?? -1, 20, true);
+
+      // Detector runs on the UNDELAYED signal — that is what look-ahead means.
+      input.connect(rect).connect(env.input);
+      env.output.connect(curve);
+      curve.connect(vca.gain);
+      input.connect(delay).connect(vca).connect(output);
+
+      // Bypass path is delayed by the same look-ahead so A/B stays aligned.
+      const bypassDelay = ctx.createDelay(0.05);
+      bypassDelay.delayTime.value = lookaheadSec;
+
+      return {
+        bypassDelay,
+        latencySamples: Math.round(lookaheadSec * ctx.sampleRate),
+        setParam: (id, v) => {
+          if (id === 'releaseMs') env.setTimeMs(v);
+          if (id === 'lookaheadMs') {
+            delay.delayTime.value = v / 1000;
+            bypassDelay.delayTime.value = v / 1000;
+          }
+        },
+      };
+    }),
+  },
+
+  {
+    id: 'delay',
+    name: 'Delay',
+    category: 'delay',
+    hasSidechain: false,
+    params: [
+      { id: 'timeMs',   name: 'Time',     min: 1, max: 2000, default: 320, unit: 'ms' },
+      { id: 'feedback', name: 'Feedback', min: 0, max: 0.95, default: 0.35, unit: '' },
+      { id: 'mix',      name: 'Mix',      min: 0, max: 1,    default: 0.3,  unit: '' },
+    ],
+    // `mix` is two gains moving in opposite directions, so it is not one
+    // AudioParam and is left off the list rather than half-automated.
+    automatableParams: ['timeMs', 'feedback'],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const delay = ctx.createDelay(2.1);
+      delay.delayTime.value = (params['timeMs'] ?? 320) / 1000;
+      const fb = ctx.createGain();  fb.gain.value = params['feedback'] ?? 0.35;
+      const wet = ctx.createGain(); wet.gain.value = params['mix'] ?? 0.3;
+      const dry = ctx.createGain(); dry.gain.value = 1 - (params['mix'] ?? 0.3);
+      input.connect(delay);
+      delay.connect(fb).connect(delay);
+      delay.connect(wet).connect(output);
+      input.connect(dry).connect(output);
+      return {
+        setParam: (id, v) => {
+          if (id === 'timeMs')   delay.delayTime.value = v / 1000;
+          if (id === 'feedback') fb.gain.value = v;
+          if (id === 'mix')      { wet.gain.value = v; dry.gain.value = 1 - v; }
+        },
+        automatable: automatableFrom({
+          timeMs: { param: delay.delayTime, map: (v) => v / 1000 },
+          feedback: fb.gain,
+        }),
+      };
+    }),
+  },
+
+  {
+    id: 'reverb',
+    name: 'Reverb',
+    category: 'reverb',
+    hasSidechain: false,
+    // The DAW's original reverb, and the id every session written before the
+    // reverb family existed still refers to.  Its parameters are unchanged, so
+    // those sessions load exactly as they were saved — but what it convolves
+    // with is now a synthesised room rather than a decaying noise burst, which
+    // costs nothing and is a different instrument entirely.  Reach for Space
+    // Reverb when you want to choose the room.
+    params: [
+      { id: 'decaySec', name: 'Decay',   min: 0.2, max: 8, default: 1.8, unit: 's' },
+      { id: 'mix',      name: 'Mix',     min: 0,   max: 1, default: 1,   unit: '' },
+      { id: 'preDelayMs', name: 'Pre-delay', min: 0, max: 120, default: 12, unit: 'ms' },
+    ],
+    // `decaySec` rebuilds the impulse response and `mix` is two gains, so
+    // pre-delay is the only one that is a single AudioParam.
+    automatableParams: ['preDelayMs'],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const room = SPACES[spaceIndex('hall-recital')]!;
+      const conv = ctx.createConvolver();
+      conv.normalize = false;
+      const build = (decaySec: number): AudioBuffer => irBuffer(ctx, room, {
+        sampleRate: ctx.sampleRate,
+        decayScale: Math.round((decaySec / room.rt60Sec) / 0.05) * 0.05,
+      });
+      conv.buffer = build(params['decaySec'] ?? 1.8);
+      const pre = ctx.createDelay(0.2);
+      pre.delayTime.value = (params['preDelayMs'] ?? 12) / 1000;
+      const wet = ctx.createGain(); wet.gain.value = params['mix'] ?? 1;
+      const dry = ctx.createGain(); dry.gain.value = 1 - (params['mix'] ?? 1);
+      input.connect(pre).connect(conv).connect(wet).connect(output);
+      input.connect(dry).connect(output);
+      return {
+        setParam: (id, v) => {
+          if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
+          if (id === 'preDelayMs') pre.delayTime.value = v / 1000;
+          if (id === 'decaySec') conv.buffer = build(v);
+        },
+        automatable: automatableFrom({
+          preDelayMs: { param: pre.delayTime, map: (v) => v / 1000 },
+        }),
+      };
+    }),
+  },
+
+  {
+    id: 'saturation',
+    name: 'Saturation',
+    category: 'saturation',
+    hasSidechain: false,
+    params: [
+      { id: 'driveDb', name: 'Drive', min: 0,  max: 24, default: 0, unit: 'dB' },
+      { id: 'mix',     name: 'Mix',   min: 0,  max: 1,  default: 0, unit: '' },
+      { id: 'bias',    name: 'Bias',  min: -1, max: 1,  default: 0, unit: '' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const drive = ctx.createGain();
+      const compensate = ctx.createGain();
+      const wet = ctx.createGain();
+      const dry = ctx.createGain();
+      let shaper = makeShaper(ctx, tanhCurve(params['bias'] ?? 0), '4x');
+
+      const applyDrive = (db: number): void => {
+        const gain = dbToGain(db);
+        drive.gain.value = gain;
+        // Saturation adds level; compensating keeps the macro from also
+        // acting as a volume knob.
+        compensate.gain.value = 1 / Math.max(1, Math.sqrt(gain));
+      };
+      applyDrive(params['driveDb'] ?? 0);
+
+      const mix = params['mix'] ?? 0;
+      wet.gain.value = mix;
+      dry.gain.value = 1 - mix;
+
+      drive.connect(shaper).connect(compensate);
+      input.connect(drive);
+      compensate.connect(wet).connect(output);
+      input.connect(dry).connect(output);
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'driveDb') applyDrive(v);
+          if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
+          if (id === 'bias' && v !== (params['bias'] ?? 0)) {
+            params['bias'] = v;
+            drive.disconnect(shaper);
+            shaper.disconnect();
+            shaper = makeShaper(ctx, tanhCurve(v), '4x');
+            drive.connect(shaper).connect(compensate);
+          }
+        },
+        dispose: () => { try { shaper.disconnect(); } catch { /* ignore */ } },
+      };
+    }),
+  },
+
+  {
+    id: 'transient',
+    name: 'Transient Designer',
+    category: 'dynamics',
+    hasSidechain: false,
+    params: [
+      { id: 'attack',  name: 'Attack',  min: -1, max: 1, default: 0, unit: '' },
+      { id: 'sustain', name: 'Sustain', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'mix',     name: 'Mix',     min: 0,  max: 1, default: 1, unit: '' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Two envelope followers at different speeds; their DIFFERENCE is the
+      // transient.  Positive during an attack, negative while a note decays,
+      // so one signal drives both halves of the control.
+      const rect = absShaper(ctx);
+      const fast = smoother(ctx, 2);
+      const slow = smoother(ctx, 90);
+      const invert = ctx.createGain();
+      invert.gain.value = -1;
+      const difference = ctx.createGain();
+
+      input.connect(rect);
+      rect.connect(fast.input);
+      fast.output.connect(difference);
+      rect.connect(slow.input);
+      slow.output.connect(invert).connect(difference);
+
+      const vca = ctx.createGain();
+      vca.gain.value = 1;                       // audio-rate control sums onto this
+
+      // The two shapers turn the transient signal into gain deltas.  Their
+      // curves depend on the parameters, so changing one swaps the node.
+      let attackShaper = makeShaper(ctx, halfWaveGainCurve((params['attack'] ?? 0) * 6, 'positive'));
+      let sustainShaper = makeShaper(ctx, halfWaveGainCurve((params['sustain'] ?? 0) * 4, 'negative'));
+      difference.connect(attackShaper);
+      attackShaper.connect(vca.gain);
+      difference.connect(sustainShaper);
+      sustainShaper.connect(vca.gain);
+
+      const swap = (which: 'attack' | 'sustain', value: number): void => {
+        const old = which === 'attack' ? attackShaper : sustainShaper;
+        difference.disconnect(old);
+        old.disconnect();
+        const next = which === 'attack'
+          ? makeShaper(ctx, halfWaveGainCurve(value * 6, 'positive'))
+          : makeShaper(ctx, halfWaveGainCurve(value * 4, 'negative'));
+        difference.connect(next);
+        next.connect(vca.gain);
+        if (which === 'attack') attackShaper = next; else sustainShaper = next;
+      };
+
+      const wet = ctx.createGain();
+      const dry = ctx.createGain();
+      const mix = params['mix'] ?? 1;
+      wet.gain.value = mix;
+      dry.gain.value = 1 - mix;
+
+      input.connect(vca).connect(wet).connect(output);
+      input.connect(dry).connect(output);
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'attack' && v !== (params['attack'] ?? 0)) { params['attack'] = v; swap('attack', v); }
+          if (id === 'sustain' && v !== (params['sustain'] ?? 0)) { params['sustain'] = v; swap('sustain', v); }
+          if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
+        },
+        dispose: () => {
+          try { attackShaper.disconnect(); sustainShaper.disconnect(); } catch { /* ignore */ }
+        },
+      };
+    }),
+  },
+
+  {
+    id: 'exciter',
+    name: 'Exciter',
+    category: 'eq',
+    hasSidechain: false,
+    params: [
+      { id: 'amount', name: 'Amount', min: 0,   max: 1,     default: 0,    unit: '' },
+      { id: 'freqHz', name: 'Freq',   min: 1500, max: 12000, default: 4000, unit: 'Hz' },
+      { id: 'mix',    name: 'Mix',    min: 0,   max: 1,     default: 0,    unit: '' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Generate harmonics from the top band only, then blend them back —
+      // the classic exciter topology, and the reason it adds "air" instead
+      // of just turning the treble up.
+      const band = ctx.createBiquadFilter();
+      band.type = 'highpass';
+      band.frequency.value = params['freqHz'] ?? 4000;
+      band.Q.value = 0.7;
+
+      const drive = ctx.createGain();
+      const shaper = makeShaper(ctx, tanhCurve(0.15), '4x');
+      const wet = ctx.createGain();
+
+      const applyAmount = (amount: number): void => { drive.gain.value = 1 + amount * 8; };
+      applyAmount(params['amount'] ?? 0);
+      wet.gain.value = params['mix'] ?? 0;
+
+      input.connect(band).connect(drive).connect(shaper).connect(wet).connect(output);
+      input.connect(output);                      // dry stays full
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'amount') applyAmount(v);
+          if (id === 'freqHz') band.frequency.value = v;
+          if (id === 'mix') wet.gain.value = v;
+        },
+      };
+    }),
+  },
+
+  {
+    id: 'widener',
+    name: 'Stereo Width',
+    category: 'imaging',
+    hasSidechain: false,
+    params: [
+      { id: 'width',     name: 'Width',    min: 0,  max: 2,   default: 1,  unit: '×' },
+      { id: 'lowMonoHz', name: 'Low Mono', min: 20, max: 400, default: 20, unit: 'Hz' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Mid/side built from plain gains: M = (L+R)/2, S = (L−R)/2, scale S,
+      // then L = M+S, R = M−S.  Everything below `lowMonoHz` is kept out of
+      // S so the bass stays centred however wide the top gets.
+      const splitter = ctx.createChannelSplitter(2);
+      const merger = ctx.createChannelMerger(2);
+
+      const mid = ctx.createGain();
+      const side = ctx.createGain();
+      const lToMid = ctx.createGain(); lToMid.gain.value = 0.5;
+      const rToMid = ctx.createGain(); rToMid.gain.value = 0.5;
+      const lToSide = ctx.createGain(); lToSide.gain.value = 0.5;
+      const rToSide = ctx.createGain(); rToSide.gain.value = -0.5;
+
+      input.connect(splitter);
+      splitter.connect(lToMid, 0);
+      splitter.connect(rToMid, 1);
+      splitter.connect(lToSide, 0);
+      splitter.connect(rToSide, 1);
+      lToMid.connect(mid);
+      rToMid.connect(mid);
+      lToSide.connect(side);
+      rToSide.connect(side);
+
+      const sideHigh = ctx.createBiquadFilter();
+      sideHigh.type = 'highpass';
+      sideHigh.frequency.value = params['lowMonoHz'] ?? 20;
+      const sideGain = ctx.createGain();
+      sideGain.gain.value = params['width'] ?? 1;
+      const sideInverted = ctx.createGain();
+      sideInverted.gain.value = -1;
+
+      side.connect(sideHigh).connect(sideGain);
+      sideGain.connect(sideInverted);
+
+      mid.connect(merger, 0, 0);
+      mid.connect(merger, 0, 1);
+      sideGain.connect(merger, 0, 0);
+      sideInverted.connect(merger, 0, 1);
+      merger.connect(output);
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'width') sideGain.gain.value = v;
+          if (id === 'lowMonoHz') sideHigh.frequency.value = v;
+        },
+      };
+    }),
+  },
+
+  {
+    id: 'denoise',
+    name: 'Denoise',
+    category: 'restore',
+    hasSidechain: false,
+    params: [
+      { id: 'thresholdDb', name: 'Threshold', min: -80, max: -10, default: -48, unit: 'dB' },
+      { id: 'amount',      name: 'Amount',    min: 0,   max: 1,   default: 0,   unit: '' },
+      { id: 'releaseMs',   name: 'Release',   min: 10,  max: 500, default: 120, unit: 'ms' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Broadband downward expander: the noise floor is pushed down, the
+      // performance above the threshold passes untouched.
+      const vca = ctx.createGain();
+      vca.gain.value = 0;
+      const rect = absShaper(ctx);
+      const env = smoother(ctx, params['releaseMs'] ?? 120);
+      const ratioOf = (amount: number): number => 1 + amount * 5;
+      let curve = makeShaper(ctx, makeExpanderCurve(
+        params['thresholdDb'] ?? -48, ratioOf(params['amount'] ?? 0),
+      ));
+
+      input.connect(rect).connect(env.input);
+      env.output.connect(curve);
+      curve.connect(vca.gain);
+      input.connect(vca).connect(output);
+
+      const rebuild = (): void => {
+        env.output.disconnect();
+        curve.disconnect();
+        curve = makeShaper(ctx, makeExpanderCurve(
+          params['thresholdDb'] ?? -48, ratioOf(params['amount'] ?? 0),
+        ));
+        env.output.connect(curve);
+        curve.connect(vca.gain);
+      };
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'releaseMs') { env.setTimeMs(v); return; }
+          if ((id === 'thresholdDb' || id === 'amount') && v !== params[id]) {
+            params[id] = v;
+            rebuild();
+          }
+        },
+        dispose: () => { try { curve.disconnect(); } catch { /* ignore */ } },
+      };
+    }),
+  },
+
+  {
+    id: 'deesser',
+    name: 'De-Esser',
+    category: 'dynamics',
+    hasSidechain: false,
+    params: [
+      { id: 'freqHz',      name: 'Freq',      min: 2000, max: 12000, default: 6500, unit: 'Hz' },
+      { id: 'thresholdDb', name: 'Threshold', min: -48,  max: 0,     default: -24,  unit: 'dB' },
+      { id: 'amount',      name: 'Amount',    min: 0,    max: 1,     default: 0,    unit: '' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Split the sibilant band off, compress only that, sum back.  A
+      // full-band compressor would duck the whole voice on every "s".
+      const low = ctx.createBiquadFilter();
+      low.type = 'lowpass';
+      low.frequency.value = params['freqHz'] ?? 6500;
+      const high = ctx.createBiquadFilter();
+      high.type = 'highpass';
+      high.frequency.value = params['freqHz'] ?? 6500;
+
+      const vca = ctx.createGain();
+      vca.gain.value = 0;
+      const rect = absShaper(ctx);
+      const env = smoother(ctx, 4);
+      const ratioOf = (amount: number): number => 1 + amount * 11;
+      let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, ratioOf(params['amount'] ?? 0));
+
+      input.connect(low).connect(output);
+      input.connect(high);
+      high.connect(rect).connect(env.input);
+      env.output.connect(curve);
+      curve.connect(vca.gain);
+      high.connect(vca).connect(output);
+
+      const rebuild = (): void => {
+        env.output.disconnect();
+        curve.disconnect();
+        curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, ratioOf(params['amount'] ?? 0));
+        env.output.connect(curve);
+        curve.connect(vca.gain);
+      };
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'freqHz') { low.frequency.value = v; high.frequency.value = v; return; }
+          if ((id === 'thresholdDb' || id === 'amount') && v !== params[id]) {
+            params[id] = v;
+            rebuild();
+          }
+        },
+        dispose: () => { try { curve.disconnect(); } catch { /* ignore */ } },
+      };
+    }),
+  },
+
+  {
+    id: 'dyneq',
+    name: 'Dynamic EQ',
+    category: 'eq',
+    hasSidechain: false,
+    params: [
+      { id: 'freqHz',      name: 'Freq',      min: 60,  max: 12000, default: 300, unit: 'Hz' },
+      { id: 'q',           name: 'Q',         min: 0.3, max: 8,     default: 1.4, unit: '' },
+      { id: 'thresholdDb', name: 'Threshold', min: -48, max: 0,     default: -24, unit: 'dB' },
+      { id: 'rangeDb',     name: 'Range',     min: -18, max: 0,     default: 0,   unit: 'dB' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // A peaking filter whose GAIN is driven at audio rate by the level in
+      // its own band: the cut only happens when that band misbehaves.
+      const peak = ctx.createBiquadFilter();
+      peak.type = 'peaking';
+      peak.frequency.value = params['freqHz'] ?? 300;
+      peak.Q.value = params['q'] ?? 1.4;
+      peak.gain.value = 0;
+
+      const detector = ctx.createBiquadFilter();
+      detector.type = 'bandpass';
+      detector.frequency.value = params['freqHz'] ?? 300;
+      detector.Q.value = params['q'] ?? 1.4;
+
+      const rect = absShaper(ctx);
+      const env = smoother(ctx, 12);
+      const scale = ctx.createGain();
+      const range = () => Math.abs(params['rangeDb'] ?? 0);
+      scale.gain.value = range();
+      let curve = makeShaper(ctx, makeDbReductionCurve(
+        params['thresholdDb'] ?? -24, 4, -Math.max(1, range()),
+      ));
+
+      input.connect(detector).connect(rect).connect(env.input);
+      env.output.connect(curve);
+      curve.connect(scale).connect(peak.gain);
+      input.connect(peak).connect(output);
+
+      const rebuild = (): void => {
+        env.output.disconnect();
+        curve.disconnect();
+        curve = makeShaper(ctx, makeDbReductionCurve(
+          params['thresholdDb'] ?? -24, 4, -Math.max(1, range()),
+        ));
+        env.output.connect(curve);
+        curve.connect(scale);
+      };
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'freqHz') { peak.frequency.value = v; detector.frequency.value = v; return; }
+          if (id === 'q') { peak.Q.value = v; detector.Q.value = v; return; }
+          if (id === 'rangeDb') { params['rangeDb'] = v; scale.gain.value = Math.abs(v); rebuild(); return; }
+          if (id === 'thresholdDb' && v !== params[id]) { params[id] = v; rebuild(); }
+        },
+        dispose: () => { try { curve.disconnect(); } catch { /* ignore */ } },
+      };
+    }),
+  },
+
+  {
+    id: 'pitchcorrect',
+    name: 'Pitch Correct',
+    category: 'pitch',
+    hasSidechain: false,
+    // Pitch correction reads the whole take before it can decide anything, so
+    // it runs in the render path (see audio/varia-actions.ts), not live.
+    offline: true,
+    params: [
+      { id: 'amount',   name: 'Amount',   min: 0, max: 1, default: 0.8, unit: '' },
+      { id: 'formant',  name: 'Formant',  min: -6, max: 6, default: 0,  unit: 'st' },
+    ],
+    latencyFor: () => 0,
+    create: (ctx) => withBypass(ctx, (input, output) => {
+      // Realtime pass-through; the chain view badges it OFFLINE.
+      input.connect(output);
+      return { setParam: () => { /* applied at render time */ } };
+    }),
+  },
+];
+
+/**
+ * Every device, core first.
+ *
+ * Order is the order the picker shows them in within a category, so the ones
+ * an engineer reaches for most sit at the top of their group.
+ */
+export const PLUGINS: PluginDescriptor[] = [...CORE_PLUGINS, ...REVERB_PLUGINS, ...EXTENDED_PLUGINS];
+
+export function findPlugin(id: string): PluginDescriptor | undefined {
+  return PLUGINS.find((p) => p.id === id);
+}
+
+export function defaultParams(id: string): Record<string, number> {
+  const def = findPlugin(id);
+  if (!def) return {};
+  const out: Record<string, number> = {};
+  for (const p of def.params) out[p.id] = p.default;
+  return out;
+}
+
+/** Latency a configured insert reports, used by both ADC and the UI. */
+export function pluginLatencySamples(
+  pluginId: string, params: Record<string, number>, sampleRate: number,
+): number {
+  return findPlugin(pluginId)?.latencyFor(params, sampleRate) ?? 0;
+}

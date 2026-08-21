@@ -1,0 +1,13 @@
+# Rendered audio is large and reconstructible: a record carries render_sha256
+# and render_bytes, so a re-render can be verified bit-for-bit without the
+# original being stored here.
+runs/*/renders/
+*.wav
+*.flac
+*.aiff
+*.aif
+*.mp3
+
+# Everything else in a run — manifest, candidate records, failure records,
+# hashes, feature data, summary — IS committed. Losing it is the failure this
+# directory exists to prevent, so do not add a blanket ignore here.
