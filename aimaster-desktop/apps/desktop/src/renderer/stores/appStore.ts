@@ -27,8 +27,29 @@ if (typeof window !== 'undefined') {
   window.addEventListener('keydown',     _markInteracted, { once: true, capture: true });
 }
 
+/**
+ * Which page to open on, in DEV only.
+ *
+ * `pnpm dev` lands on the home screen, which is right for the product and
+ * wrong for working on the DAW: every reload costs two clicks to get back to
+ * where you were.  `?page=daw` on the dev-server URL skips them.
+ *
+ * Gated on `import.meta.env.DEV` rather than trusted from the URL, because in
+ * the packaged app the renderer is loaded from a file:// path a user could in
+ * principle influence, and a deep link is not worth a route somebody else can
+ * choose.  Unknown values fall back to home rather than rendering nothing.
+ */
+function initialPage(): Page {
+  if (!import.meta.env.DEV || typeof window === 'undefined') return 'home';
+  const wanted = new URLSearchParams(window.location.search).get('page');
+  const pages: Page[] = ['home', 'mastering', 'result', 'tweak', 'qc', 'settings', 'daw'];
+  // 'result' needs data that a fresh boot does not have — it would white-screen.
+  return wanted && wanted !== 'result' && (pages as string[]).includes(wanted)
+    ? wanted as Page : 'home';
+}
+
 export const useAppStore = create<AppStore>((set) => ({
-  currentPage:  'home',
+  currentPage:  initialPage(),
   notification: null,
 
   setPage: (page) => {
