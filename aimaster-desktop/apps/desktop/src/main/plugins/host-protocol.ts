@@ -61,8 +61,16 @@ export const HOST_TIMEOUT_MS = 120_000;
  * plausible-looking transform.  A plugin that silently does nothing is the one
  * outcome worse than a plugin that does not load.
  */
-export const IMPLEMENTED_FORMATS: readonly ExternalFormat[] = ['reference'];
+export const IMPLEMENTED_FORMATS: readonly ExternalFormat[] = ['reference', 'au'];
 
+/**
+ * Whether a format has an adapter AT ALL — not whether it will work here.
+ *
+ * `au` is on the list because the adapter is written; whether the native
+ * module it needs exists in this build is a different question, answered at
+ * the adapter itself so the refusal carries the real reason ("AU 호스트 모듈이
+ * 이 빌드에 없습니다") rather than a generic "no adapter".
+ */
 export function isImplemented(format: ExternalFormat): boolean {
   return IMPLEMENTED_FORMATS.includes(format);
 }

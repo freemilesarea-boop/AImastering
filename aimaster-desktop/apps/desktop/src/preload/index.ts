@@ -51,7 +51,7 @@ const INVOKE_CHANNELS = [
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer
   'daw:pcm-source',
   // Installed third-party plugins (scan only — nothing is loaded)
-  'plugins:scan', 'daw:host-apply',
+  'plugins:scan', 'plugins:capabilities', 'daw:host-apply',
   // Natural-language assistant.  The key lives in main and never crosses
   // this bridge — the renderer can set one and ask questions, not read one.
   'assistant:status', 'assistant:ask', 'assistant:set-key', 'assistant:clear-key',

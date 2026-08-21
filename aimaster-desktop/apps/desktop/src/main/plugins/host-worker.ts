@@ -23,8 +23,15 @@ import fs from 'node:fs';
 import {
   isImplemented, type HostJob, type HostResult, type HostStage, type HostStageReport,
 } from './host-protocol.js';
+import { loadAuHost, runAuStage } from './au-native.js';
 
-/** Processes audio in place.  Interleaved, `frames * channels` samples. */
+/**
+ * Processes audio in place.  Interleaved, `frames * channels` samples.
+ *
+ * Returns nothing on success and THROWS to refuse — the caller already turns a
+ * throw into a per-stage failure with the reason attached, so an adapter never
+ * needs a second way to say no.
+ */
 type Adapter = (
   samples: Float32Array, frames: number, channels: number, sampleRate: number,
   stage: HostStage,
@@ -48,10 +55,27 @@ const referenceAdapter: Adapter = (samples, frames, channels, _sampleRate, stage
   for (let i = 0; i < total; i++) samples[i] = samples[i]! * gain;
 };
 
+/**
+ * Audio Units, through Apple's own framework.
+ *
+ * The stage is only counted as applied when the native module is present AND
+ * what it returned survives `checkBlock` — a plugin that hands back NaN or a
+ * short buffer fails its own stage and leaves the audio untouched.  See
+ * au-native.ts for why success is not taken at face value.
+ */
+const audioUnitAdapter: Adapter = (samples, frames, channels, sampleRate, stage) => {
+  const host = loadAuHost();
+  // Not built, or not macOS.  Refusing is the point: a format that cannot be
+  // applied must not be passed through looking like it was.
+  if (!host) throw new Error('AU 호스트 모듈이 이 빌드에 없습니다');
+  const outcome = runAuStage(host, samples, frames, channels, sampleRate, stage);
+  if (!outcome.applied) throw new Error(outcome.reason ?? 'AU 를 적용하지 못했습니다');
+};
+
 const ADAPTERS: Partial<Record<HostStage['format'], Adapter>> = {
   reference: referenceAdapter,
-  // vst3: nativeVst3Adapter,   ← one entry, once the native module exists
-  // au:   nativeAudioUnitAdapter,
+  au: audioUnitAdapter,
+  // vst3: nativeVst3Adapter,   ← one entry, once the licence is in place
 };
 
 export function runJob(job: HostJob): HostResult {

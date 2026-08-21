@@ -11,7 +11,7 @@ import {
   byVendor, formatCounts, useExternalPluginStore,
   type PluginFormat, type ScannedPlugin,
 } from '../../../stores/externalPluginStore.js';
-import { HOST_REQUIREMENTS, hostability } from '../../../daw/engine/external-host.js';
+import { hostability, requirements } from '../../../daw/engine/external-host.js';
 import { premium } from '../../../theme/premium.js';
 
 const FORMAT_LABEL: Record<PluginFormat, string> = {
@@ -41,8 +41,10 @@ export default function ExternalPluginManager({ onClose, onInsert }: {
     (p.name + p.vendor).toLowerCase().includes(filter.trim().toLowerCase()));
   const counts = formatCounts(plugins);
   const groups = byVendor(visible);
-  const unmet = HOST_REQUIREMENTS.filter((r) => !r.met);
-  const built = HOST_REQUIREMENTS.filter((r) => r.met);
+  // Asked for, not captured at import: the answer changes once main
+  // reports what this build can really load.
+  const unmet = requirements().filter((r) => !r.met);
+  const built = requirements().filter((r) => r.met);
 
   return (
     <div
