@@ -76,7 +76,7 @@ function readText(rel: string, root: string = REPO_ROOT): string {
 
 // ── Constants pulled from the bump in this RC ──────────────────────────────
 
-const EXPECTED_VERSION = '3.6.0';
+const EXPECTED_VERSION = '3.6.1';
 const EXPECTED_SHARED_TYPES_VERSION = '0.2.0';
 
 // ── 1–3. Build artefacts ───────────────────────────────────────────────────
