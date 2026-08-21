@@ -16,6 +16,7 @@ import DawMixConsole from './DawMixConsole.js';
 import DawInspector from './DawInspector.js';
 import DawMediaBay from './DawMediaBay.js';
 import DawShortcutHelp from './DawShortcutHelp.js';
+import ControlSurfacePanel from './surface/ControlSurfacePanel.js';
 
 /** Approximate height (px) the fixed bottom zone occupies right now. */
 export function useBottomZoneHeight(): number {
@@ -52,6 +53,7 @@ export default function DawWorkspaceChrome() {
 
       {panels.mediaBay && <DawMediaBay />}
       {panels.help     && <DawShortcutHelp />}
+      {panels.surface  && <ControlSurfacePanel />}
     </>
   );
 }

@@ -488,6 +488,51 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
   });
 
+  // Control surface mappings — the same shape as the preset file, and for the
+  // same reason: a desk that took an afternoon to map should not die with a
+  // reinstall, and a studio with two machines wants the same mapping on both.
+  ipc.handle('daw:surface-export', async (_e, payload: unknown) => {
+    if (!win) return null;
+    if (typeof payload !== 'string' || payload.length > 4 * 1024 * 1024) {
+      throw new Error('daw:surface-export: payload rejected');
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `loui-surface-${stamp}.louisurface`,
+      filters: [
+        { name: 'Loui Control Surface', extensions: ['louisurface'] },
+        { name: 'JSON',                 extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, payload, 'utf8');
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `daw:surface-export failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:surface-import', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [{ name: 'Loui Control Surface', extensions: ['louisurface', 'json'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const chosen = result.filePaths[0];
+    try {
+      if (fs.statSync(chosen).size > 4 * 1024 * 1024) {
+        throw new Error('매핑 파일이 너무 큽니다');
+      }
+      return fs.readFileSync(chosen, 'utf8');
+    } catch (err) {
+      recordFailure('session', `daw:surface-import failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
   ipc.handle('session:load', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
