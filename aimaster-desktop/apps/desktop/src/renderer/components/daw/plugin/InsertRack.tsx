@@ -18,6 +18,14 @@ import {
 import type { ExternalPluginRef } from '../../../daw/model/types.js';
 import type { PluginCategory } from '../../../daw/engine/plugin-kit.js';
 import { defaultParams } from '../../../daw/engine/plugins.js';
+import {
+  captureRack, createRackPreset, describeRack, loadRack, missingDevices,
+} from '../../../daw/model/rack-preset.js';
+import {
+  deleteRack, describeImport, exportRacks, importRacks, listRacks, overwriteRack,
+  saveRack,
+} from '../../../daw/engine/rack-store.js';
+import { useAppStore } from '../../../stores/appStore.js';
 import { premium } from '../../../theme/premium.js';
 import type { TrackId } from '../../../daw/model/types.js';
 
@@ -58,8 +66,15 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
   const apply = useDawStore((s) => s.apply);
   const openWindow = usePluginWindowStore((s) => s.open);
   const toggleRack = usePluginWindowStore((s) => s.toggleRack);
+  const notify = useAppStore((s) => s.notify);
   const [picking, setPicking] = useState<number | null>(null);
   const [filter, setFilter] = useState('');
+  // The rack store lives outside React, so saving or deleting has to say so.
+  const [rackTick, setRackTick] = useState(0);
+  const [savingRack, setSavingRack] = useState<string | null>(null);
+  // The rack that was last loaded onto this track — what 덮어쓰기 and 삭제
+  // act on.  Cleared when it is deleted, or when the picker goes back to none.
+  const [activeRack, setActiveRack] = useState<string | null>(null);
   // Dynamics and EQ open by default: on a real channel that is where four out
   // of five devices come from.
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['eq', 'dynamics']));
@@ -102,6 +117,98 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
     openWindow(trackId, slot);
   };
 
+  // `rackTick` is read so the list rebuilds after a save, a delete or an
+  // import — none of which go through React state.
+  void rackTick;
+  const racks = listRacks();
+
+  const commitRackSave = (): void => {
+    const captured = captureRack(track);
+    if (captured.devices.length === 0) {
+      notify('저장할 인서트가 없습니다', 'warning');
+      return;
+    }
+    const preset = createRackPreset('', savingRack ?? '', captured.devices);
+    const result = saveRack(savingRack ?? '', preset);
+    if (!result.ok) { notify(result.reason, 'warning'); return; }
+    setSavingRack(null);
+    setActiveRack(result.rack.id);
+    setRackTick((n) => n + 1);
+    notify(`랙 "${result.rack.name}" 저장 — ${describeRack(result.rack)}`);
+    // Third-party plugins cannot travel in a rack, and losing one silently is
+    // exactly the kind of thing that is discovered a week later.
+    if (captured.skipped.length > 0) {
+      notify(`서드파티 플러그인은 랙에 담기지 않습니다 — ${captured.skipped.join(', ')}`, 'warning');
+    }
+  };
+
+  const loadNamedRack = (rackId: string): void => {
+    const rack = racks.find((r) => r.id === rackId);
+    if (!rack) { setActiveRack(null); return; }
+    setActiveRack(rack.id);
+    const missing = missingDevices(rack);
+    apply((s) => {
+      const result = loadRack(s, trackId, rack, 'replace');
+      if (result.problems.length > 0) {
+        for (const problem of result.problems.slice(0, 3)) notify(problem, 'warning');
+      }
+      return result.session;
+    });
+    notify(missing.length > 0
+      ? `"${rack.name}" 로드 — ${missing.length}개 장치는 이 빌드에 없습니다`
+      : `"${rack.name}" 로드 — ${describeRack(rack)}`);
+  };
+
+  /** Update the loaded rack to whatever the chain is now. */
+  const overwriteActiveRack = (): void => {
+    const rack = racks.find((r) => r.id === activeRack);
+    if (!rack) return;
+    const captured = captureRack(track);
+    const result = overwriteRack(rack.id, captured.devices);
+    if (!result.ok) { notify(result.reason, 'warning'); return; }
+    setRackTick((n) => n + 1);
+    notify(`"${result.rack.name}" 덮어썼습니다 — ${describeRack(result.rack)}`);
+    if (captured.skipped.length > 0) {
+      notify(`서드파티 플러그인은 랙에 담기지 않습니다 — ${captured.skipped.join(', ')}`, 'warning');
+    }
+  };
+
+  const deleteActiveRack = (): void => {
+    const rack = racks.find((r) => r.id === activeRack);
+    if (!rack) return;
+    if (!deleteRack(rack.id)) { notify('랙을 지울 수 없습니다', 'warning'); return; }
+    setActiveRack(null);
+    setRackTick((n) => n + 1);
+    notify(`"${rack.name}" 삭제`);
+  };
+
+  const exportRackFile = async (): Promise<void> => {
+    const api = globalThis.window?.electronAPI;
+    if (!api) { notify('파일 저장을 사용할 수 없습니다', 'warning'); return; }
+    if (racks.length === 0) { notify('내보낼 랙이 없습니다', 'warning'); return; }
+    try {
+      const dest = await api.invoke('daw:racks-export', exportRacks()) as string | null;
+      if (dest) notify(`랙을 내보냈습니다 — ${dest}`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'error');
+    }
+  };
+
+  const importRackFile = async (): Promise<void> => {
+    const api = globalThis.window?.electronAPI;
+    if (!api) { notify('파일 열기를 사용할 수 없습니다', 'warning'); return; }
+    try {
+      const json = await api.invoke('daw:racks-import') as string | null;
+      if (!json) return;
+      const report = importRacks(json);
+      setRackTick((n) => n + 1);
+      notify(describeImport(report), report.added === 0 ? 'warning' : 'info');
+      for (const reason of report.reasons.slice(0, 3)) notify(reason, 'warning');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'error');
+    }
+  };
+
   return (
     <div
       className="fixed rounded-xl overflow-hidden flex flex-col"
@@ -127,6 +234,72 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
           className="h-5 w-5 text-[12px] leading-none"
           style={{ color: premium.text.muted }}
         >×</button>
+      </div>
+
+      {/* The whole chain, under one name.  A device preset is one box; this is
+          "my vocal chain" — the thing people actually rebuild on every song. */}
+      <div className="px-3 py-1.5 flex flex-col gap-1 shrink-0"
+           style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] tracking-wide shrink-0" style={{ color: premium.text.faint }}>랙</span>
+          <select
+            value={activeRack ?? ''}
+            onChange={(e) => loadNamedRack(e.target.value)}
+            disabled={racks.length === 0}
+            title={racks.length === 0 ? '저장된 랙이 없습니다' : '이 트랙의 인서트를 저장된 랙으로 교체합니다'}
+            className="flex-1 h-5 px-1 text-[9.5px] rounded bg-transparent outline-none"
+            style={{ color: premium.text.primary, border: '1px solid rgba(255,255,255,0.12)' }}
+          >
+            <option value="">{racks.length === 0 ? '— 저장된 랙 없음 —' : '— 랙 불러오기 —'}</option>
+            {racks.map((rack) => (
+              <option key={rack.id} value={rack.id}>{rack.name}</option>
+            ))}
+          </select>
+          <button
+            onClick={() => setSavingRack(savingRack === null ? '' : null)}
+            title="지금 인서트 체인 전체를 랙으로 저장"
+            className="h-5 w-5 rounded text-[12px] leading-none shrink-0"
+            style={{
+              border: '1px solid rgba(255,255,255,0.12)',
+              color: savingRack === null ? premium.text.muted : premium.accent.base,
+            }}
+          >+</button>
+        </div>
+
+        {savingRack !== null && (
+          <div className="flex items-center gap-1">
+            <input
+              autoFocus
+              value={savingRack}
+              maxLength={60}
+              placeholder="랙 이름"
+              onChange={(e) => setSavingRack(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitRackSave();
+                if (e.key === 'Escape') setSavingRack(null);
+              }}
+              className="flex-1 h-5 px-1.5 text-[9.5px] rounded bg-transparent outline-none"
+              style={{ color: premium.text.primary, border: `1px solid ${premium.accent.deep}` }}
+            />
+            <button onClick={commitRackSave} style={rackButton(premium.accent.base)}>저장</button>
+            <button onClick={() => setSavingRack(null)} style={rackButton(premium.text.muted)}>취소</button>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {activeRack !== null && racks.some((r) => r.id === activeRack) && (
+            <>
+              <button onClick={overwriteActiveRack} title="지금 체인으로 이 랙을 갱신합니다"
+                      style={rackLink(premium.text.muted)}>덮어쓰기</button>
+              <button onClick={deleteActiveRack} title="이 랙을 지웁니다"
+                      style={rackLink(premium.accent.danger)}>삭제</button>
+            </>
+          )}
+          <button onClick={() => void exportRackFile()} title="저장한 랙 전체를 파일로 저장합니다"
+                  style={rackLink(premium.text.faint)}>내보내기</button>
+          <button onClick={() => void importRackFile()} title="랙 파일을 읽어 옵니다"
+                  style={rackLink(premium.text.faint)}>가져오기</button>
+        </div>
       </div>
 
       <div className="overflow-y-auto p-1.5 flex flex-col gap-0.5">
@@ -285,4 +458,21 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
       )}
     </div>
   );
+}
+
+/** A small filled button for the rack save row. */
+function rackButton(color: string): React.CSSProperties {
+  return {
+    height: 20, padding: '0 6px', borderRadius: 3, fontSize: 9,
+    border: '1px solid rgba(255,255,255,0.14)', color, background: 'transparent',
+  };
+}
+
+/** A text-weight action, so the row does not read as more controls. */
+function rackLink(color: string): React.CSSProperties {
+  return {
+    fontSize: 8.5, letterSpacing: '0.04em', color,
+    background: 'transparent', border: 'none', padding: 0,
+    textDecoration: 'underline', textUnderlineOffset: 2,
+  };
 }

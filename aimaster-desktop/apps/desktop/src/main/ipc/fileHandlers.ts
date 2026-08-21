@@ -533,6 +533,49 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
   });
 
+  // Whole insert chains.  Same shape as the preset and surface files.
+  ipc.handle('daw:racks-export', async (_e, payload: unknown) => {
+    if (!win) return null;
+    if (typeof payload !== 'string' || payload.length > 8 * 1024 * 1024) {
+      throw new Error('daw:racks-export: payload rejected');
+    }
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `loui-racks-${stamp}.louirack`,
+      filters: [
+        { name: 'Loui Rack', extensions: ['louirack'] },
+        { name: 'JSON',      extensions: ['json'] },
+      ],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, payload, 'utf8');
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `daw:racks-export failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:racks-import', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [{ name: 'Loui Rack', extensions: ['louirack', 'json'] }],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const chosen = result.filePaths[0];
+    try {
+      if (fs.statSync(chosen).size > 8 * 1024 * 1024) {
+        throw new Error('랙 파일이 너무 큽니다');
+      }
+      return fs.readFileSync(chosen, 'utf8');
+    } catch (err) {
+      recordFailure('session', `daw:racks-import failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
   ipc.handle('session:load', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
