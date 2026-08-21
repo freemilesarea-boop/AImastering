@@ -12,7 +12,8 @@
 // with a free-running LFO — the device says so rather than pretending.
 
 import {
-  absShaper, dbToGain, makeShaper, smoother, withBypass, type PluginDescriptor,
+  absShaper, automatableFrom, dbToGain, makeShaper, smoother, withBypass,
+  type PluginDescriptor,
 } from './plugin-kit.js';
 
 const p = (params: Record<string, number>, id: string, fallback: number): number => {
@@ -196,6 +197,12 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'highHz', name: 'High Freq', min: 2000, max: 16000, default: 8000, unit: 'Hz' },
       { id: 'lpfHz',  name: 'LPF',      min: 2000, max: 20000, default: 20000, unit: 'Hz' },
     ],
+    // Every one of these is exactly one BiquadFilter AudioParam, so the whole
+    // EQ automates — filter sweeps included.
+    automatableParams: [
+      'hpfHz', 'lowDb', 'lowHz', 'b1Db', 'b1Hz', 'b1Q', 'b2Db', 'b2Hz', 'b2Q',
+      'b3Db', 'b3Hz', 'b3Q', 'highDb', 'highHz', 'lpfHz',
+    ],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const hpf = ctx.createBiquadFilter(); hpf.type = 'highpass';
@@ -241,6 +248,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             if (bell[2] === 'Q')  node.Q.value = Math.max(0.05, v);
           }
         },
+        automatable: automatableFrom({
+          hpfHz: hpf.frequency, lpfHz: lpf.frequency,
+          lowDb: low.gain, lowHz: low.frequency,
+          highDb: high.gain, highHz: high.frequency,
+          b1Db: bells[0]!.gain, b1Hz: bells[0]!.frequency, b1Q: bells[0]!.Q,
+          b2Db: bells[1]!.gain, b2Hz: bells[1]!.frequency, b2Q: bells[1]!.Q,
+          b3Db: bells[2]!.gain, b3Hz: bells[2]!.frequency, b3Q: bells[2]!.Q,
+        }),
       };
     }),
   },

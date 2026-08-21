@@ -23,6 +23,8 @@ import {
 } from '../model/mixer-math.js';
 import type { BusId, DawSession, Track, TrackId } from '../model/types.js';
 import { findPlugin, type PluginInstance } from './plugins.js';
+import { parsePluginParamKey, pluginParamKey } from '../model/automation.js';
+import type { AutomatableParam } from './plugin-kit.js';
 import { descriptorFor } from './external-device.js';
 import { materializeRack, moduleParams, type RackModuleId } from '../model/macros.js';
 import { applyChainParams, buildDeviceChain, type BuiltChain } from './device-chain.js';
@@ -195,6 +197,21 @@ export class MixerEngine {
     void session;
   }
 
+  /**
+   * The AudioParam behind one insert parameter, when the device offers one.
+   *
+   * This is what the player ramps.  Returning null is the honest answer for a
+   * parameter that rebuilds a curve or splits across two nodes — the lane menu
+   * never offers those, so a null here means the session was hand-edited or
+   * the device changed between builds.
+   */
+  automatableParam(
+    trackId: TrackId, insertId: string, paramId: string,
+  ): AutomatableParam | null {
+    const instance = this.channels.get(trackId)?.inserts.get(insertId);
+    return instance?.automatable?.(paramId) ?? null;
+  }
+
   /** Gain reduction an insert is applying right now, in dB, when it knows. */
   reduction(trackId: TrackId, insertId: string): number | null {
     const instance = this.channels.get(trackId)?.inserts.get(insertId);
@@ -234,17 +251,20 @@ export class MixerEngine {
     const ch = this.channels.get(trackId);
     if (!ch) return;
     const now = this.ctx.currentTime;
+    const plugin = parsePluginParamKey(param);
     const target: AudioParam | undefined = param === 'volume' ? ch.fader.gain
       : param === 'pan' ? ch.panner.pan
         : param.startsWith('send:') ? ch.sends.get(param.slice(5))?.gain
-          : undefined;
+          : plugin
+            ? ch.inserts.get(plugin.insertId)?.automatable?.(plugin.paramId)?.param ?? undefined
+            : undefined;
     if (!target) return;
     const held = target.value;
     target.cancelScheduledValues(now);
     target.setValueAtTime(held, now);
   }
 
-  private isAutomated(trackId: TrackId, param: string): boolean {
+  isAutomated(trackId: TrackId, param: string): boolean {
     return this.automated.get(trackId)?.has(param) ?? false;
   }
 
@@ -441,7 +461,14 @@ export class MixerEngine {
         const instance = ch.inserts.get(insert.id);
         if (!instance) continue;
         instance.setBypass(insert.bypass);
-        for (const [id, value] of Object.entries(insert.params)) instance.setParam(id, value);
+        for (const [id, value] of Object.entries(insert.params)) {
+          // A parameter an automation lane is driving must not be written back
+          // from the session on every sync — the store changes constantly
+          // while the transport runs, and each write would cancel the ramp and
+          // snap the knob back to where the session thinks it is.
+          if (this.isAutomated(track.id, pluginParamKey(insert.id, id))) continue;
+          instance.setParam(id, value);
+        }
       }
 
       for (const send of track.sends) {

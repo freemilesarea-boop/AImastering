@@ -23,9 +23,10 @@ import {
 } from '../../../daw/model/automation.js';
 import { updateLane } from '../../../daw/model/session-ops.js';
 import {
-  clampToRange, describeTarget, laneRange, setLaneVisible, type LaneRange,
+  availableTargets, clampToRange, describeTarget, ensureLane, laneRange,
+  setLaneVisible, type LaneRange,
 } from '../../../daw/edit/automation-lanes.js';
-import { laneKey } from '../../../daw/model/automation.js';
+import { laneKey, targetKey } from '../../../daw/model/automation.js';
 import { premium } from '../../../theme/premium.js';
 import type {
   AutomationLane as Lane, AutomationMode, Track,
@@ -81,11 +82,35 @@ export function AutomationLaneHeader({ track, lane }: { track: Track; lane: Lane
             boxShadow: recording ? `0 0 6px ${premium.accent.danger}` : 'none',
           }}
         />
-        <span
-          className="text-[10px] truncate flex-1"
-          style={{ color: premium.text.secondary }}
+        {/* The lane's title is also its target picker.  With a channel's
+            plugin parameters now on the menu there are far too many for a
+            "show all lanes" toggle, and switching a lane to another target is
+            what a lane header does in every DAW — the lane being left keeps
+            its breakpoints, it is only hidden. */}
+        <select
+          value={targetKey(lane.target)}
+          onChange={(e) => {
+            const next = availableTargets(track).find((t) => targetKey(t) === e.target.value);
+            if (!next) return;
+            apply((s) => {
+              const hidden = setLaneVisible(s, track.id, lane.target, false);
+              const { session } = ensureLane(hidden, track.id, next);
+              return setLaneVisible(session, track.id, next, true);
+            });
+          }}
+          className="text-[10px] truncate flex-1 h-4 bg-transparent border-none outline-none"
+          style={{ color: premium.text.secondary, maxWidth: 118 }}
           title={describeTarget(track, lane.target)}
-        >{describeTarget(track, lane.target)}</span>
+        >
+          {availableTargets(track).map((t) => (
+            <option key={targetKey(t)} value={targetKey(t)}>{describeTarget(track, t)}</option>
+          ))}
+          {/* A lane whose device has gone keeps its own entry, so the header
+              still says what it is instead of showing someone else's name. */}
+          {!availableTargets(track).some((t) => targetKey(t) === targetKey(lane.target)) && (
+            <option value={targetKey(lane.target)}>{describeTarget(track, lane.target)}</option>
+          )}
+        </select>
         <span
           className="text-[9px] font-mono tabular-nums"
           style={{ color: recording ? premium.accent.danger : premium.text.muted }}

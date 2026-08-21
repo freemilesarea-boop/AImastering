@@ -10,7 +10,7 @@
 // pre-fader, pre-insert position clip gain occupies in Pro Tools.
 
 import { clipEnd, findTrack, trackClips } from '../model/session-ops.js';
-import { laneKey, pointValueAt } from '../model/automation.js';
+import { laneKey, pluginParamKey, pointValueAt } from '../model/automation.js';
 import { isLiveAutomation } from './automation-live.js';
 import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
 import type {
@@ -30,6 +30,18 @@ import { makeRng } from '../edit/midi-edit.js';
 import type { MixerEngine } from './mixer-engine.js';
 
 const FADE_STEPS = 64;
+
+/**
+ * How finely a plugin lane is sampled onto its AudioParam.
+ *
+ * A host hands a plugin one parameter value per processing block; 20 ms is
+ * coarser than most, but each step here is itself a linear RAMP rather than a
+ * jump, so what the audio thread walks is a piecewise-linear approximation of
+ * the drawn curve — smooth, and with no zipper.  Fine enough that a two-second
+ * sweep is a hundred events, cheap enough that a one-second look-ahead window
+ * with a dozen lanes is still nothing.
+ */
+export const AUTOMATION_BLOCK_SEC = 0.02;
 
 /** Fade curve samples for a shape, from 0 → 1. */
 export function fadeCurve(shape: Fade['shape'], steps = FADE_STEPS): Float32Array {
@@ -383,12 +395,13 @@ export class ClipPlayer {
    */
   private paramNameOf(target: AutomationTarget): string {
     if (target.kind === 'sendLevel') return `send:${target.sendId}`;
+    if (target.kind === 'plugin') return pluginParamKey(target.insertId, target.paramId);
     return target.kind;
   }
 
   /**
-   * Ramp fader / pan / send params through their breakpoints over the
-   * window.  Tracks with a live lane are flagged on the engine so
+   * Ramp fader, pan, send and plugin parameters through their breakpoints
+   * over the window.  Tracks with a live lane are flagged on the engine so
    * `applyParams` stops fighting the ramps.
    */
   scheduleAutomation(session: DawSession, fromSec: number, toSec: number): void {
@@ -420,6 +433,23 @@ export class ClipPlayer {
           if (!node) continue;
           this.engine.markAutomated(track.id, `send:${lane.target.sendId}`);
           this.rampParam(node.gain, lane.points, fromSec, toSec, (db) => dbToGain(db));
+        } else if (lane.target.kind === 'plugin') {
+          // A plugin parameter is not a fader, but the ones offered as lanes
+          // ARE single AudioParams — so they take the same ramp, on the same
+          // clock, through the same code.  That is what makes a bounce
+          // reproduce the sweep you monitored: an OfflineAudioContext walks a
+          // scheduled ramp exactly as the live one does, while anything driven
+          // by a timer would be live-only.
+          const insert = lane.target.insertId;
+          const automatable = this.engine.automatableParam(
+            track.id, insert, lane.target.paramId);
+          if (!automatable) continue;
+          this.engine.markAutomated(
+            track.id, pluginParamKey(insert, lane.target.paramId));
+          const map = automatable.map;
+          this.rampParam(
+            automatable.param, lane.points, fromSec, toSec,
+            map ? (v) => map(v) : (v) => v, AUTOMATION_BLOCK_SEC);
         }
       }
     }
@@ -431,12 +461,43 @@ export class ClipPlayer {
     fromSec: number,
     toSec: number,
     map: (value: number) => number,
+    subdivideSec = 0,
   ): void {
     const startCtx = this.origin + fromSec;
     // Anchor at the window start so the first ramp has a defined origin.
     const startValue = map(pointValueAt(points, fromSec, points[0]?.value ?? 0));
     param.cancelScheduledValues(Math.max(0, startCtx));
     param.setValueAtTime(startValue, Math.max(0, startCtx));
+
+    if (subdivideSec > 0) {
+      // Walk the lane in blocks, reading it in ITS OWN units and mapping each
+      // step.  Between two breakpoints on a straight line, `linearRamp` alone
+      // is linear in the AudioParam's units — which for a decibel lane means
+      // gain, and for a frequency lane means hertz.  A line drawn from 20 kHz
+      // to 400 Hz would then spend most of its length up in the treble and
+      // fall off a cliff at the end, which is not the shape that was drawn.
+      // Sampling the lane instead makes the AudioParam follow the drawing.
+      const fallback = points[0]?.value ?? 0;
+      let last = startValue;
+      // Where the value was last seen to be unchanged.  A flat stretch emits
+      // nothing until something moves; then the value is PINNED at the end of
+      // the flat stretch first, because `linearRamp` interpolates from the
+      // previous event — without the pin, a lane that sits still for a minute
+      // and then rises would ramp across the whole minute.
+      let flatAt = -1;
+      for (let t = fromSec + subdivideSec; t <= toSec + 1e-9; t += subdivideSec) {
+        const value = map(pointValueAt(points, t, fallback));
+        if (value === last) { flatAt = t; continue; }
+        if (flatAt >= 0) {
+          param.setValueAtTime(last, Math.max(0, this.origin + flatAt));
+          flatAt = -1;
+        }
+        param.linearRampToValueAtTime(value, Math.max(0, this.origin + t));
+        last = value;
+      }
+      return;
+    }
+
     for (const p of points) {
       if (p.timeSec <= fromSec || p.timeSec > toSec) continue;
       param.linearRampToValueAtTime(map(p.value), Math.max(0, this.origin + p.timeSec));

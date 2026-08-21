@@ -17,6 +17,7 @@ import {
   findLane, sortPoints, targetKey,
 } from '../model/automation.js';
 import { descriptorFor } from '../engine/external-device.js';
+import type { PluginParamDef } from '../engine/plugin-kit.js';
 import { nextId } from '../model/ids.js';
 import type {
   AutomationLane, AutomationMode, AutomationTarget, DawSession, Track, TrackId,
@@ -109,31 +110,64 @@ export function describeTarget(track: Track, target: AutomationTarget): string {
 }
 
 /**
+ * Every parameter of one insert that can carry a lane.
+ *
+ * A device declares this, because the answer is "is there exactly one
+ * AudioParam behind it".  A parameter that rebuilds an impulse response or
+ * splits across two gains cannot be ramped, and offering it would draw a
+ * beautiful lane that does nothing.
+ */
+export function automatableParamsOf(insert: Track['inserts'][number]): PluginParamDef[] {
+  const descriptor = descriptorFor(insert);
+  const allowed = descriptor?.automatableParams;
+  if (!descriptor || !allowed || allowed.length === 0) return [];
+  const set = new Set(allowed);
+  return descriptor.params.filter((p) => set.has(p.id));
+}
+
+/**
  * What this track can automate today, in the order a channel is read.
  *
  * Deliberately only the targets the ENGINE PLAYS BACK.  `AutomationTarget`
- * has more members — mute, send pan, plugin parameters — and a lane for one of
- * those would draw beautifully and do nothing, which is the worst outcome
- * available: you would spend an afternoon wondering why the filter sweep you
- * drew has no effect.  Volume, pan and send level are ramped by the player
- * live and by the offline bounce, so what the lane shows is what you hear.
+ * has more members — mute, send pan — and a lane for one of those would draw
+ * beautifully and do nothing, which is the worst outcome available: you would
+ * spend an afternoon wondering why the move you drew has no effect.
  *
- * Extending this list means extending `ClipPlayer.scheduleAutomation` first.
- * Plugin parameters in particular are not AudioParams — they need a scheduler
- * that runs at block boundaries in both the live and the offline path — so
- * they are their own piece of work, not a line added here.
+ * Plugin parameters are now here too, but only the ones the device says are a
+ * single AudioParam: those take the same ramp as the fader, on the same clock,
+ * through the same code — which is why a bounce reproduces them.  The rest of
+ * a device's knobs are simply absent from the menu.
  */
 export function availableTargets(track: Track): AutomationTarget[] {
   const out: AutomationTarget[] = [{ kind: 'volume' }, { kind: 'pan' }];
   for (const send of [...track.sends].sort((a, b) => a.slot - b.slot)) {
     out.push({ kind: 'sendLevel', sendId: send.id });
   }
+  // In chain order, so the menu reads down the channel the way the signal does.
+  for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
+    for (const param of automatableParamsOf(insert)) {
+      out.push({ kind: 'plugin', insertId: insert.id, paramId: param.id });
+    }
+  }
   return out;
 }
 
-/** True when the engine will actually reproduce a lane for this target. */
-export function isPlayable(target: AutomationTarget): boolean {
-  return target.kind === 'volume' || target.kind === 'pan' || target.kind === 'sendLevel';
+/**
+ * True when the engine will actually reproduce a lane for this target.
+ *
+ * For a plugin lane this needs the TRACK, because the answer depends on which
+ * device is in that slot: the same lane is playable before someone swaps the
+ * insert and dead afterwards, and saying so is better than pretending.
+ */
+export function isPlayable(target: AutomationTarget, track?: Track): boolean {
+  if (target.kind === 'volume' || target.kind === 'pan' || target.kind === 'sendLevel') {
+    return true;
+  }
+  if (target.kind !== 'plugin') return false;
+  if (!track) return false;
+  const insert = track.inserts.find((i) => i.id === target.insertId);
+  if (!insert) return false;
+  return automatableParamsOf(insert).some((p) => p.id === target.paramId);
 }
 
 /**
