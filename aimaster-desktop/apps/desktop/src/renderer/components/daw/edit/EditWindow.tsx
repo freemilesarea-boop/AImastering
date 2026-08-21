@@ -15,7 +15,6 @@ import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import { activePlaylist, clipAt, sessionEndSec } from '../../../daw/model/session-ops.js';
 import { moveClip } from '../../../daw/edit/clip-edit.js';
 import { useMidiEditorStore } from '../../../stores/midiEditorStore.js';
-import { formatChord } from '../../../daw/model/chords.js';
 import {
   collapsedOverviewClips, stackDepth, stackSummary, toggleCollapsed, unpackStack,
   visibleTracks,
@@ -363,34 +362,6 @@ export default function EditWindow() {
                  style={{ left: toX(loopStartSec), width: Math.max(2, (loopEndSec - loopStartSec) * pxPerSec) }} />
           )}
           <div className="absolute top-0 bottom-0 w-px bg-red-400" style={{ left: toX(playheadSec) }} />
-        </div>
-      </div>
-
-      {/* ── Chord track ─────────────────────────────────────────────────
-          The project's harmony, shown above the tracks so an arrangement
-          decision is visible while editing. */}
-      <div className="flex border-b border-zinc-800 bg-[#14141c]" style={{ height: 22 }}>
-        <div style={{ width: HEADER_WIDTH }}
-             className="shrink-0 border-r border-zinc-800 flex items-center px-2">
-          <span className="text-[9px] uppercase tracking-[0.14em] text-zinc-600">Chords</span>
-        </div>
-        <div className="relative flex-1 overflow-hidden">
-          {session.chordTrack.map((event) => (
-            <span
-              key={event.id}
-              className="absolute top-0.5 px-1 rounded text-[10px] font-medium
-                         bg-indigo-600/25 border border-indigo-500/40 text-indigo-200 whitespace-nowrap"
-              style={{ left: toX(event.timeSec) }}
-              title={`${formatChord(event.chord)} @ ${event.timeSec.toFixed(2)}s`}
-            >
-              {formatChord(event.chord)}
-            </span>
-          ))}
-          {session.chordTrack.length === 0 && (
-            <span className="absolute left-2 top-1 text-[9px] text-zinc-700">
-              MIDI 파트에서 Mod+Shift+C 로 코드를 감지할 수 있습니다
-            </span>
-          )}
         </div>
       </div>
 

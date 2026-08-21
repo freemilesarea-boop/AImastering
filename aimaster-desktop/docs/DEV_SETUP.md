@@ -21,8 +21,33 @@ pnpm install
 ./scripts/setup-python.sh
 
 # 3. Start dev mode
-pnpm desktop         # Electron + Vite HMR
+pnpm desktop         # Electron + Vite HMR — 홈 화면에서 시작
+pnpm --filter @aimaster/desktop dev:daw   # DAW 창으로 바로 (개발용)
 ```
+
+`pnpm desktop` 은 Vite 개발 서버와 Electron 을 함께 띄웁니다. 첫 창은 홈
+화면이고, DAW 는 상단의 **DAW** 버튼으로 들어갑니다.
+
+DAW 작업 중이라면 `dev:daw` 쪽이 낫습니다 — 리로드할 때마다 홈에서 두 번씩
+클릭해 들어가지 않아도 됩니다. `LOUI_DEV_PAGE` 환경변수로 동작하고
+**개발 모드에서만** 읽힙니다(`src/renderer/stores/appStore.ts`).
+
+### 2번(Python)은 언제 필요한가
+
+Electron 앱 자체는 Python 없이 **뜹니다.** DAW · 믹서 · 플러그인 · 에디터는
+전부 Web Audio 라서 브라우저 안에서 끝납니다. Python 이 필요한 건 마스터링
+엔진 쪽(AI Analyze / Master) 호출이고, 그때까지는 없어도 됩니다.
+
+### 리눅스에서 root 로 실행할 때
+
+컨테이너 등에서 root 로 돌리면 Chromium 이 샌드박스를 거부하며 즉시 죽습니다
+(`Running as root without --no-sandbox is not supported`). 그럴 때만:
+
+```bash
+ELECTRON_DISABLE_SANDBOX=1 pnpm desktop
+```
+
+일반 사용자 계정(맥 · 윈도우 · 데스크톱 리눅스)에서는 필요 없습니다.
 
 ## Individual Commands
 

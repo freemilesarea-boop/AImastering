@@ -146,7 +146,13 @@ function createWindow(): void {
   });
 
   if (isDev) {
-    void mainWindow.loadURL('http://localhost:5173');
+    // LOUI_DEV_PAGE=daw opens straight into the DAW instead of the home
+    // screen — see stores/appStore.ts.  Dev only; the packaged branch below
+    // never reads it.
+    const page = process.env['LOUI_DEV_PAGE'];
+    void mainWindow.loadURL(page
+      ? `http://localhost:5173/?page=${encodeURIComponent(page)}`
+      : 'http://localhost:5173');
   } else {
     // Main process is at dist-electron/main/index.js; renderer is at
     // dist/renderer/index.html.  Both live inside app.asar at runtime, so
