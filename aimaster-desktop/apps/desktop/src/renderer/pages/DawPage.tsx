@@ -41,6 +41,7 @@ import { importSessionData, deserializeDawSession, serializeDawSession } from '.
 import { bounceSession, commitTrack, freezeTrack, unfreezeTrack } from '../daw/engine/offline-render.js';
 import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
+import TemplatePanel from '../components/daw/template/TemplatePanel.js';
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00.000';
@@ -217,6 +218,8 @@ export default function DawPage() {
     } finally { setBusy(null); }
   }, [notify, selection]);
 
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+
   const handleStems = useCallback(async () => {
     const current = useDawStore.getState().session;
     const plan = planStems(current);
@@ -388,6 +391,10 @@ export default function DawPage() {
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
+        <ToolbarButton onClick={() => setTemplatesOpen(true)}>템플릿</ToolbarButton>
+
+        <span className="w-px h-5 bg-zinc-800 mx-1" />
+
         <ToolbarButton onClick={handleSaveSession}>세션 저장</ToolbarButton>
         <ToolbarButton onClick={handleOpenSession}>세션 열기</ToolbarButton>
         <ToolbarButton onClick={handleImportSession}>세션 가져오기</ToolbarButton>
@@ -416,6 +423,8 @@ export default function DawPage() {
         : windowMode === 'restore' ? <RestorePanel />
         : windowMode === 'intel' ? <IntelPanel />
         : <ReferencePanel />}
+
+      {templatesOpen && <TemplatePanel onClose={() => setTemplatesOpen(false)} />}
 
       {/* Floats over every window — scoring means watching the picture WHILE
           arranging, not instead of it. */}
