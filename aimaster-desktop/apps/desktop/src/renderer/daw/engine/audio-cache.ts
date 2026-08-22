@@ -30,7 +30,7 @@
 import { decodeContext, DECODE_SAMPLE_RATE } from '../../audio/decode-context.js';
 import { canUseStore, ensureSource, ensureSources, getSource } from './pcm-store.js';
 import { fromFileUrl, toFileUrl } from '../../utils/fileUrl.js';
-import { detectTransients } from '../edit/transient.js';
+import { detectTransientMarks, type TransientMark } from '../edit/transient.js';
 import type { FileId } from '../model/types.js';
 
 export interface CachedAudio {
@@ -60,7 +60,7 @@ export const MAX_CACHE_BYTES = 700 * 1024 * 1024;
 const cache = new Map<FileId, CachedAudio>();
 const meta = new Map<FileId, FileMeta>();
 /** Onset marks, found the first time something asks — see `transientsFor`. */
-const onsets = new Map<FileId, number[]>();
+const onsets = new Map<FileId, TransientMark[]>();
 const pending = new Map<FileId, Promise<CachedAudio>>();
 let residentBytes = 0;
 let pinnedIds: ReadonlySet<FileId> = new Set();
@@ -465,11 +465,16 @@ export async function preloadAll(
  * itself is evicted — the marks are a few hundred numbers.
  */
 export function transientsFor(fileId: FileId): number[] {
+  return transientMarksFor(fileId).map((m) => m.timeSec);
+}
+
+/** The same marks, keeping how hard each attack was. */
+export function transientMarksFor(fileId: FileId): TransientMark[] {
   const known = onsets.get(fileId);
   if (known) return known;
   const cached = getCached(fileId);
   if (!cached) return [];
-  const found = detectTransients(monoSum(cached.buffer), cached.buffer.sampleRate);
+  const found = detectTransientMarks(monoSum(cached.buffer), cached.buffer.sampleRate);
   onsets.set(fileId, found);
   return found;
 }

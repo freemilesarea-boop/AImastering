@@ -53,6 +53,10 @@ import { captureAsPattern } from '../daw/model/patterns.js';
 import { useIntelStore } from '../stores/intelStore.js';
 import { summarise as summariseFindings } from '../daw/ai/diagnose.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
+import {
+  applyGrooveToPart, extractClipGroove, matchSessionTempo,
+} from '../daw/edit/tempo-groove-actions.js';
+import { describeGroove } from '../daw/model/groove.js';
 import { useMidiEditorStore, currentGridBeat } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips, updateTrack } from '../daw/model/session-ops.js';
 import { findLane } from '../daw/model/automation.js';
@@ -128,6 +132,7 @@ export type DawCommandId =
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
+  | 'daw.detectTempo' | 'daw.extractGroove' | 'daw.applyGroove'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
@@ -1046,6 +1051,45 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       } catch (err) {
         notify((err as Error).message, 'warning');
       }
+    },
+
+    // ── 템포 검출 · 그루브 ────────────────────────────────────────────────
+    'daw.detectTempo': () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      const result = matchSessionTempo(state.session, target.trackId, target.clipId);
+      if (!result.applied) { notify(result.message, 'warning'); return; }
+      state.apply(() => result.session);
+      notify(result.message, 'success');
+    },
+
+    'daw.extractGroove': () => {
+      const state = daw();
+      // The open MIDI part wins: if the Key Editor has one up, that is what
+      // the user is looking at.  Otherwise the clip under the play head.
+      const open = useMidiEditorStore.getState().open;
+      const target = open
+        ? { trackId: open.trackId, clipId: open.clipId }
+        : audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두거나 MIDI 파트를 여세요', 'warning'); return; }
+      const result = extractClipGroove(state.session, target.trackId, target.clipId);
+      if (!result.groove) { notify(result.reason ?? '그루브를 추출할 수 없습니다', 'warning'); return; }
+      state.setGroove(result.groove);
+      notify(`그루브 추출 — ${describeGroove(result.groove)}`, 'success');
+    },
+
+    'daw.applyGroove': () => {
+      const state = daw();
+      const groove = state.groove;
+      if (!groove) { notify('먼저 그루브를 추출하세요', 'warning'); return; }
+      const context = midiContext();
+      if (!context) return;
+      const result = applyGrooveToPart(
+        state.session, context.trackId, context.clipId, groove, context.ids,
+        { strength: 1 });
+      state.apply(() => result.session);
+      notify(result.message, result.movedCount > 0 ? 'success' : 'warning');
     },
 
     'daw.toggleWarp': () => {

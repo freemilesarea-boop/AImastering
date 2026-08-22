@@ -54,6 +54,21 @@ export function peakEnvelope(samples: ArrayLike<number>, hopSamples: number): Fl
   return env;
 }
 
+/** An attack, and how hard it was. */
+export interface TransientMark {
+  /** Seconds from the start of `samples`. */
+  timeSec: number;
+  /**
+   * 0…1 — the peak of this attack against the loudest in the material.
+   *
+   * How hard a hit was is not decoration.  A kick and the hat between it are
+   * the same event to a detector that only records times, and telling them
+   * apart is the whole of knowing whether a pulse is the beat or half of it
+   * (see `model/tempo-detect.ts`).
+   */
+  strength: number;
+}
+
 /**
  * Detect transient times (seconds from the start of `samples`).
  * `sampleRate` is the rate of the incoming samples, not of the session.
@@ -63,6 +78,15 @@ export function detectTransients(
   sampleRate: number,
   options: Partial<TransientOptions> = {},
 ): number[] {
+  return detectTransientMarks(samples, sampleRate, options).map((m) => m.timeSec);
+}
+
+/** The same detection, keeping how strong each attack was. */
+export function detectTransientMarks(
+  samples: ArrayLike<number>,
+  sampleRate: number,
+  options: Partial<TransientOptions> = {},
+): TransientMark[] {
   const opt = { ...DEFAULT_TRANSIENT_OPTIONS, ...options };
   if (sampleRate <= 0 || samples.length === 0) return [];
 
@@ -85,8 +109,9 @@ export function detectTransients(
     if (count > baselineHops) { acc -= env[i - baselineHops] ?? 0; count = baselineHops; }
   }
 
-  const onsets: number[] = [];
+  const found: { hop: number; level: number }[] = [];
   let lastHop = -Infinity;
+  let loudest = 0;
   for (let i = 0; i < env.length; i++) {
     const v = env[i] ?? 0;
     if (v < opt.floor) continue;
@@ -96,9 +121,15 @@ export function detectTransients(
     if (v < (env[i - 1] ?? 0) || v < (env[i + 1] ?? 0)) continue;
     if (i - lastHop < minSpacingHops) continue;
     lastHop = i;
-    onsets.push(i * hopSec);
+    if (v > loudest) loudest = v;
+    found.push({ hop: i, level: v });
   }
-  return onsets;
+  // Relative to the loudest attack in this material, not to full scale: a
+  // quietly recorded take must not come out as a list of weak hits.
+  return found.map(({ hop, level }) => ({
+    timeSec: hop * hopSec,
+    strength: loudest > 0 ? level / loudest : 0,
+  }));
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────

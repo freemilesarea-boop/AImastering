@@ -15,6 +15,11 @@ import { useAppStore } from '../../../stores/appStore.js';
 import { findTrack, trackClips } from '../../../daw/model/session-ops.js';
 import { getCached, transientsFor } from '../../../daw/engine/audio-cache.js';
 import {
+  detectClipTempo, extractClipGroove, matchSessionTempo,
+} from '../../../daw/edit/tempo-groove-actions.js';
+import { describeDetection } from '../../../daw/model/tempo-detect.js';
+import { describeGroove } from '../../../daw/model/groove.js';
+import {
   DEFAULT_WARP, beatSeconds, buildWarpMap, clipWarp, destToSource, describeWarp,
   moveMarker, removeMarker, addMarker, resolveBpm, sourceToDest, validateWarp,
   setSessionTempo, type WarpMode,
@@ -45,6 +50,8 @@ export default function WarpEditor() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [bpmDraft, setBpmDraft] = useState<string>('');
+  const [detected, setDetected] = useState<string>('');
+  const setGroove = useDawStore((st) => st.setGroove);
 
   const target = useMemo((): { track: Track; clip: Clip } | null => {
     const tracks = focusedTrackId
@@ -200,6 +207,33 @@ export default function WarpEditor() {
     }
   };
 
+  /**
+   * Read the tempo off the recording and take the session to it.
+   *
+   * The refusal is the point: a reading the detector does not trust is shown
+   * and nothing moves, because setting the tempo drags every clip in the
+   * project along with it.  The number is still on screen — the user can type
+   * it into the SESSION field if they know better than the measurement.
+   */
+  const detect = (): void => {
+    if (!target) return;
+    const current = useDawStore.getState().session;
+    const result = matchSessionTempo(current, target.track.id, target.clip.id);
+    setDetected(describeDetection(result.detection));
+    if (!result.applied) { notify(result.message, 'warning'); return; }
+    apply(() => result.session);
+    notify(result.message, 'success');
+  };
+
+  const lift = (): void => {
+    if (!target) return;
+    const current = useDawStore.getState().session;
+    const result = extractClipGroove(current, target.track.id, target.clip.id);
+    if (!result.groove) { notify(result.reason ?? '그루브를 추출할 수 없습니다', 'warning'); return; }
+    setGroove(result.groove);
+    notify(`그루브 추출 — ${describeGroove(result.groove)} · Key Editor 에서 적용하세요`, 'success');
+  };
+
   const changeTempo = (value: number): void => {
     if (!Number.isFinite(value) || value <= 0) return;
     const { session: next, unwarpedClipIds } = setSessionTempo(useDawStore.getState().session, value);
@@ -262,6 +296,16 @@ export default function WarpEditor() {
         <Action onClick={() => runSetup('tempo')}>Warp to Tempo</Action>
         <Action onClick={() => runSetup('auto')}>Auto-Warp</Action>
         <Action onClick={() => apply((s) => unwarpClip(s, target.track.id, clip.id))}>Unwarp</Action>
+
+        <span className="w-px h-5" style={{ background: premium.surface.hairline }} />
+
+        <Action onClick={detect}>템포 검출</Action>
+        <Action onClick={lift}>그루브 추출</Action>
+        {detected && (
+          <span style={{ fontFamily: premium.type.mono, fontSize: 10, color: premium.text.secondary }}>
+            {detected}
+          </span>
+        )}
       </div>
 
       {/* Canvas */}

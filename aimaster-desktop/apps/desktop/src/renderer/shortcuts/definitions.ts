@@ -80,6 +80,7 @@ export type CommandId =
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
+  | 'daw.detectTempo' | 'daw.extractGroove' | 'daw.applyGroove'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
@@ -393,6 +394,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '트랜지언트마다 마커를 찍고 그리드에 스냅', available: true },
   { id: 'daw.toggleWarp', group: 'daw', label: 'Warp 켜기 / 끄기', chords: ['Alt+W'],
     note: '선택한 클립의 워프 on/off', available: true },
+
+  // ── 템포 검출 · 그루브 ──────────────────────────────────────────────────
+  { id: 'daw.detectTempo', group: 'daw', label: '클립에서 템포 검출', chords: ['Mod+Alt+Shift+T'],
+    note: '박의 위치까지 함께 찾아 세션 템포를 맞추고 클립을 그리드에 붙입니다', available: true },
+  { id: 'daw.extractGroove', group: 'daw', label: '그루브 추출', chords: ['Mod+Alt+Shift+G'],
+    note: '연주의 밀고 당김을 템플릿으로 떠냅니다 — 오디오 클립 또는 열린 MIDI 파트', available: true },
+  { id: 'daw.applyGroove', group: 'daw', label: '그루브 적용', chords: ['Mod+Alt+Shift+H'],
+    note: '떠낸 그루브를 선택한 노트에 입힙니다 — 모르는 자리는 건드리지 않습니다', available: true },
   { id: 'daw.toggleArm', group: 'daw', label: '녹음 무장 / 해제', chords: ['KeyR'],
     note: '커서가 있는 트랙을 무장하고 입력을 엽니다', available: true },
   { id: 'daw.record', group: 'daw', label: '녹음 시작 / 정지', chords: ['Mod+KeyR'],
