@@ -2,7 +2,7 @@
   "name": "@loui/au-host",
   "version": "0.1.0",
   "private": true,
-  "description": "Audio Unit host addon. macOS only. UNBUILT — see README.md.",
+  "description": "Audio Unit host addon. macOS only. Built and run against a fake CoreAudio in test/; against Apple’s real framework by the macOS CI job. See README.md.",
   "main": "index.js",
   "scripts": {
     "build": "node-gyp rebuild"

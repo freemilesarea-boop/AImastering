@@ -22,8 +22,11 @@
 //
 // Everything in THIS file is tested, against a fake native host that returns
 // the wrong length, NaNs, infinities, silence, and throws.  The native module
-// it loads is macOS-only and is not built or exercised here; see
-// `native/au-host/README.md` for how to build and check it on a Mac.
+// it loads is macOS-only, but it is no longer unexercised: `pnpm test:au-native`
+// compiles the real `au_host.mm` against a fake CoreAudio and runs this file's
+// `runAuStage` straight through it.  Only Apple's own framework is left
+// untested here, and the macOS CI job covers that.  See
+// `native/au-host/README.md`.
 
 import type { HostStage } from './host-protocol.js';
 
@@ -45,42 +48,115 @@ export interface AuNativeHost {
   close(handle: number): void;
 }
 
-/** Where the built addon lands.  One name, so a missing build is obvious. */
+/** The package name, for anyone who links the module into `node_modules`. */
 export const AU_MODULE = '@loui/au-host';
 
+/**
+ * Every place the built addon can legitimately be.
+ *
+ * This list exists because the bare specifier alone was a dead end: nothing
+ * links `@loui/au-host` into `node_modules`, `native/au-host` is outside the
+ * pnpm workspace globs, and it is not a dependency of anything.  So
+ * `require('@loui/au-host')` could never resolve — on a Mac, after a
+ * successful `node-gyp rebuild`, `hasAuHost()` was still false and the plugin
+ * manager still showed the `native-module` blocker.  A build whose output
+ * nothing can load is not a build.
+ *
+ * `.node` files must live OUTSIDE `app.asar`: `dlopen` needs a real path on
+ * disk, so the packaged copy goes in `extraResources` (see
+ * electron-builder.yml) rather than in `files`.
+ */
+export function auCandidates(
+  resourcesPath: string | undefined
+    = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath,
+  baseDir: string = __dirname,
+): string[] {
+  const out = [AU_MODULE];
+  if (typeof resourcesPath === 'string' && resourcesPath.length > 0) {
+    out.push(`${resourcesPath}/au-host/au_host.node`);
+  }
+  // A Mac dev checkout where `pnpm build:au` has been run and nothing else —
+  // which is exactly what native/au-host/README.md tells people to do.  Two
+  // depths, because `__dirname` is `src/main/plugins` when this file is run
+  // from source and `dist-electron/main` once esbuild has bundled it, and a
+  // path that is only right in one of them is right for nobody.
+  const built = 'native/au-host/build/Release/au_host.node';
+  out.push(`${baseDir}/../../../${built}`);   // src/main/plugins → apps/desktop
+  out.push(`${baseDir}/../../${built}`);      // dist-electron/main → apps/desktop
+  return out;
+}
+
+export interface AuLoadReport {
+  host: AuNativeHost | null;
+  /** Where it was loaded from, when it was. */
+  loadedFrom: string | null;
+  /** Every place that was tried and what went wrong there. */
+  tried: Array<{ where: string; error: string }>;
+}
+
 let cached: AuNativeHost | null | undefined;
+let report: AuLoadReport = { host: null, loadedFrom: null, tried: [] };
+
+/** Enough of the module to be worth calling.  A partial export is not. */
+function usable(mod: unknown): mod is AuNativeHost {
+  const m = mod as Partial<AuNativeHost> | undefined | null;
+  return !!m && typeof m.open === 'function' && typeof m.parameters === 'function'
+    && typeof m.setParameter === 'function' && typeof m.process === 'function'
+    && typeof m.close === 'function';
+}
 
 /**
- * Load the native module, or report that there isn't one.
+ * Load the native module, or report that there isn't one — and from where.
  *
  * Never throws and never retries: a missing addon is the NORMAL state on every
  * platform but macOS, and on macOS until someone builds it.  Retrying on every
- * bounce would turn a known absence into a per-job cost.
+ * bounce would turn a known absence into a per-job cost.  The list of places
+ * that were tried is kept, because "no AU hosting" with no further detail is
+ * the failure that took a working build a long time to notice.
  */
 export function loadAuHost(
   require_: ((id: string) => unknown) | null = null,
+  candidates: readonly string[] | null = null,
 ): AuNativeHost | null {
   if (cached !== undefined) return cached;
   cached = null;
-  if (process.platform !== 'darwin' && require_ === null) return cached;
-  try {
-    const req = require_ ?? eval('require') as (id: string) => unknown;
-    const mod = req(AU_MODULE) as Partial<AuNativeHost> | undefined;
-    if (mod && typeof mod.open === 'function' && typeof mod.process === 'function'
-      && typeof mod.close === 'function') {
-      cached = mod as AuNativeHost;
+  report = { host: null, loadedFrom: null, tried: [] };
+  if (process.platform !== 'darwin' && require_ === null) {
+    report.tried.push({ where: '(플랫폼)', error: `${process.platform} 에서는 AU 가 없습니다` });
+    return cached;
+  }
+  const req = require_ ?? eval('require') as (id: string) => unknown;
+  for (const where of candidates ?? auCandidates()) {
+    try {
+      const mod = req(where);
+      if (usable(mod)) {
+        cached = mod;
+        report = { host: mod, loadedFrom: where, tried: report.tried };
+        return cached;
+      }
+      report.tried.push({ where, error: '모듈이 필요한 함수를 내보내지 않습니다' });
+    } catch (err) {
+      // Not built, wrong architecture, blocked by library validation.  All of
+      // them mean the same thing to the caller — but not to whoever has to fix
+      // it, so the message is kept.
+      report.tried.push({ where, error: String(err).slice(0, 200) });
     }
-  } catch {
-    // Not built, wrong architecture, blocked by library validation.  All of
-    // them mean the same thing here: no Audio Unit hosting in this build.
-    cached = null;
   }
   return cached;
+}
+
+/** Where it looked, and what it found.  Loads on first ask. */
+export function auLoadReport(): AuLoadReport {
+  loadAuHost();
+  return report;
 }
 
 /** Tests inject a fake; this puts it back. */
 export function setAuHost(host: AuNativeHost | null | undefined): void {
   cached = host;
+  report = host
+    ? { host, loadedFrom: '(주입됨)', tried: [] }
+    : { host: null, loadedFrom: null, tried: [] };
 }
 
 export function hasAuHost(): boolean {

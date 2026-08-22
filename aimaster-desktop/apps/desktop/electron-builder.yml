@@ -62,11 +62,24 @@ extraMetadata:
   main: dist-electron/main/index.js
 
 # ── Bundled native binaries ───────────────────────────────────────────────────
+#
+# `.node` addons must stay OUTSIDE app.asar: `dlopen` needs a real path on
+# disk, and an addon inside the archive cannot be loaded at all.  So the AU
+# host goes in extraResources, not in `files`, and `auCandidates()` in
+# src/main/plugins/au-native.ts looks for it at exactly this path.
+#
+# The `from:` directory only exists after `pnpm build:au` has been run on a
+# Mac.  electron-builder skips a missing extraResources entry, so a build on
+# Linux or Windows — where there is no AU hosting anyway — is unaffected.
 extraResources:
   - from: "public/bin"
     to:   "bin"
     filter:
       - "**/*"
+  - from: "native/au-host/build/Release"
+    to:   "au-host"
+    filter:
+      - "*.node"
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
 # v3.4.3 — DMG + ZIP both built.  electron-updater on macOS reads the .zip
