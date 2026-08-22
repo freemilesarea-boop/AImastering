@@ -287,6 +287,11 @@ class DawRuntime {
     }
   }
 
+  /** Names of the inputs currently open — how feedback finds the matching output. */
+  midiDeviceNames(): string[] {
+    return this.midi?.deviceNames ?? [];
+  }
+
   /** Let go of the port.  It closes unless a track still wants it. */
   releaseMidiHold(): void {
     this.midiHeldOpen = false;

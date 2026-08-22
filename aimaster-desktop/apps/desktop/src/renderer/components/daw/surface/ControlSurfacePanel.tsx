@@ -11,7 +11,7 @@
 //   LEARN IS A MODE, NOT A DIALOG.  Pick what you want to control, press
 //   learn, wiggle the knob.  The list is the editor.
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { useControlSurfaceStore, surfaceConflicts } from '../../../stores/controlSurfaceStore.js';
@@ -22,6 +22,7 @@ import {
   type ControlAction, type ControlBinding, type ControlMode,
 } from '../../../daw/model/control-surface.js';
 import { availableTargets, describeTarget } from '../../../daw/edit/automation-lanes.js';
+import { listMidiOutputs } from '../../../daw/engine/midi-input.js';
 import { premium } from '../../../theme/premium.js';
 
 const MODES: ControlMode[] = ['absolute', 'relative', 'toggle', 'trigger'];
@@ -44,12 +45,16 @@ export default function ControlSurfacePanel() {
   const refreshMidiDevices = useRecordingStore((s) => s.refreshMidiDevices);
 
   const {
-    enabled, deviceId, bindings, learning, lastSeen, error,
+    enabled, deviceId, feedback, outputId, outputName, bindings, learning, lastSeen, error,
   } = useControlSurfaceStore();
+  const [midiOutputs, setMidiOutputs] = useState<Array<{ id: string; name: string; connected: boolean }>>([]);
   const store = useControlSurfaceStore;
 
   useEffect(() => { store.getState().refresh(); }, [store]);
   useEffect(() => { void refreshMidiDevices(); }, [refreshMidiDevices]);
+  useEffect(() => {
+    void listMidiOutputs().then(setMidiOutputs).catch(() => setMidiOutputs([]));
+  }, [enabled]);
 
   const conflicts = surfaceConflicts();
 
@@ -121,6 +126,44 @@ export default function ControlSurfacePanel() {
             ))}
           </select>
         </div>
+
+        {/* Feedback — its own switch, because it fails in the opposite
+            direction: a desk that reads but does not light is merely plain,
+            while writing to something that is actually a synth plays notes. */}
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] tracking-wide shrink-0" style={{ color: premium.text.faint }}>피드백</span>
+          <button onClick={() => void store.getState().setFeedback(!feedback)}
+                  title="세션 상태를 데스크로 보냅니다 — 모터 페이더와 버튼 LED"
+                  style={{
+                    height: 22, padding: '0 10px', borderRadius: 3, fontSize: 9.5, letterSpacing: '0.1em',
+                    color: feedback ? premium.text.onAccent : premium.text.muted,
+                    background: feedback ? premium.accent.base : premium.surface.well,
+                    border: `1px solid ${feedback ? premium.accent.deep : premium.surface.hairline}`,
+                  }}>
+            {feedback ? 'ON' : 'OFF'}
+          </button>
+          <select value={outputId ?? ''}
+                  onChange={(e) => void store.getState().setOutputId(e.target.value || null)}
+                  disabled={!feedback}
+                  className="flex-1 h-6 px-1 text-[10px] rounded bg-transparent outline-none"
+                  style={{
+                    color: feedback ? premium.text.primary : premium.text.faint,
+                    border: '1px solid rgba(255,255,255,0.12)',
+                  }}>
+            <option value="">입력과 같은 이름의 출력</option>
+            {midiOutputs.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}{d.connected ? '' : ' (분리됨)'}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Which desk is actually being written to — the setting says what was
+            asked for, this says what happened. */}
+        {feedback && (
+          <div className="text-[9px] px-1" style={{ color: outputName ? premium.text.faint : premium.accent.danger }}>
+            {outputName ? `출력: ${outputName}` : '출력을 찾지 못했습니다 — 입력은 그대로 동작합니다'}
+          </div>
+        )}
 
         {/* The activity line.  "The desk is talking, nothing is listening" is
             invisible without it, and it is the state people get stuck in. */}

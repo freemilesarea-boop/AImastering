@@ -25,9 +25,13 @@ import {
 } from '../daw/edit/control-surface-actions.js';
 import {
   clearBindings, describeImport, exportSurface, importSurface, listBindings,
-  putBinding, removeBinding, setSurfaceDeviceId, setSurfaceEnabled, storedConflicts,
-  surfaceDeviceId, surfaceEnabled, updateBinding,
+  putBinding, removeBinding, setSurfaceDeviceId, setSurfaceEnabled,
+  setSurfaceFeedback, setSurfaceOutputId, storedConflicts,
+  surfaceDeviceId, surfaceEnabled, surfaceFeedback, surfaceOutputId, updateBinding,
 } from '../daw/engine/control-surface-store.js';
+import { SurfaceFeedback, portOf } from '../daw/engine/surface-feedback.js';
+import { openMidiOutput } from '../daw/engine/midi-input.js';
+import type { TransportLights } from '../daw/model/surface-feedback.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import { nextId } from '../daw/model/ids.js';
 import { useDawStore } from './dawStore.js';
@@ -40,6 +44,11 @@ const SETTLE_MS = 240;
 interface SurfaceState {
   enabled: boolean;
   deviceId: string | null;
+  /** Sending the session back out — separate switch, separate failure mode. */
+  feedback: boolean;
+  outputId: string | null;
+  /** Name of the output actually in use, so the panel can say which desk. */
+  outputName: string | null;
   bindings: ControlBinding[];
   /** Set while MIDI learn is waiting for a control to be moved. */
   learning: ControlAction | null;
@@ -50,6 +59,8 @@ interface SurfaceState {
   refresh: () => void;
   setEnabled: (enabled: boolean) => Promise<void>;
   setDeviceId: (deviceId: string | null) => Promise<void>;
+  setFeedback: (feedback: boolean) => Promise<void>;
+  setOutputId: (outputId: string | null) => Promise<void>;
   startLearn: (action: ControlAction) => void;
   cancelLearn: () => void;
   edit: (id: string, patch: Partial<ControlBinding>) => void;
@@ -91,6 +102,9 @@ function runTransport(command: TransportCommand): void {
 export const useControlSurfaceStore = create<SurfaceState>((set, get) => ({
   enabled: false,
   deviceId: null,
+  feedback: false,
+  outputId: null,
+  outputName: null,
   bindings: [],
   learning: null,
   lastSeen: null,
@@ -99,20 +113,46 @@ export const useControlSurfaceStore = create<SurfaceState>((set, get) => ({
   refresh: () => set({
     enabled: surfaceEnabled(),
     deviceId: surfaceDeviceId(),
+    feedback: surfaceFeedback(),
+    outputId: surfaceOutputId(),
     bindings: listBindings(),
   }),
 
   setEnabled: async (enabled) => {
     setSurfaceEnabled(enabled);
     set({ enabled });
-    if (!enabled) { stopListening(); set({ learning: null }); return; }
+    if (!enabled) {
+      stopListening();
+      // The desk is no longer reading the session, so it must not keep
+      // showing it — a lit surface for a mix nobody is driving looks live.
+      stopFeedback(get().bindings);
+      set({ learning: null, outputName: null });
+      return;
+    }
     await startListening(set);
+    if (get().feedback) await startFeedback(set);
   },
 
   setDeviceId: async (deviceId) => {
     setSurfaceDeviceId(deviceId);
     set({ deviceId });
     if (get().enabled) { stopListening(); await startListening(set); }
+    // The output is chosen by matching the input's name when none is pinned,
+    // so a new input means a new guess.
+    if (get().enabled && get().feedback) await startFeedback(set);
+  },
+
+  setFeedback: async (feedback) => {
+    setSurfaceFeedback(feedback);
+    set({ feedback });
+    if (!feedback) { stopFeedback(get().bindings); set({ outputName: null }); return; }
+    if (get().enabled) await startFeedback(set);
+  },
+
+  setOutputId: async (outputId) => {
+    setSurfaceOutputId(outputId);
+    set({ outputId });
+    if (get().enabled && get().feedback) await startFeedback(set);
   },
 
   /**
@@ -182,6 +222,77 @@ export const useControlSurfaceStore = create<SurfaceState>((set, get) => ({
 // ── Listening ─────────────────────────────────────────────────────────────────
 
 type SetState = (patch: Partial<SurfaceState>) => void;
+
+// ── Feedback ──────────────────────────────────────────────────────────────────
+
+const feedbackDriver = new SurfaceFeedback();
+let feedbackUnsubscribe: (() => void) | null = null;
+
+/** The lamps the transport buttons should be showing. */
+function transportLights(): TransportLights {
+  const daw = useDawStore.getState();
+  const recorder = useRecordingStore.getState();
+  return {
+    playing: daw.isPlaying,
+    recording: recorder.status === 'recording' || recorder.status === 'countIn',
+    loop: daw.loopEnabled,
+  };
+}
+
+function pushFeedback(force = false): void {
+  if (!feedbackDriver.attached) return;
+  const bindings = useControlSurfaceStore.getState().bindings;
+  if (bindings.length === 0) return;
+  feedbackDriver.push(
+    useDawStore.getState().session, bindings, transportLights(), Date.now(), force);
+}
+
+async function startFeedback(set: SetState): Promise<void> {
+  const state = useControlSurfaceStore.getState();
+  // Default to the output whose NAME matches the input — a control surface is
+  // one box with a port each way, and picking any output would light up a
+  // synth's panel with fader positions.
+  const inputName = dawRuntime.midiDeviceNames()[0] ?? null;
+  let port = null;
+  try {
+    port = await openMidiOutput(state.outputId, inputName);
+  } catch {
+    port = null;
+  }
+  if (!port) {
+    // Not an error that stops anything: input still works, and saying which
+    // half is missing is more use than switching the whole surface off.
+    set({ outputName: null, error: '데스크로 보낼 MIDI 출력을 찾지 못했습니다 (입력은 그대로 동작합니다)' });
+    feedbackDriver.attach(null);
+    return;
+  }
+  feedbackDriver.attach(portOf(port));
+  set({ outputName: port.name || port.id, error: null });
+
+  // Push on every session change, and on transport changes — the store
+  // fires for both, and the driver's own pacing keeps a ridden fader from
+  // flooding the wire.
+  feedbackUnsubscribe?.();
+  const unsubSession = useDawStore.subscribe(() => pushFeedback());
+  const unsubRecord = useRecordingStore.subscribe(() => pushFeedback());
+  feedbackUnsubscribe = () => { unsubSession(); unsubRecord(); };
+
+  // And once immediately, forced: the desk powered up showing nothing.
+  pushFeedback(true);
+}
+
+function stopFeedback(bindings: readonly ControlBinding[]): void {
+  feedbackUnsubscribe?.();
+  feedbackUnsubscribe = null;
+  if (feedbackDriver.attached) feedbackDriver.clear(bindings);
+  feedbackDriver.attach(null);
+}
+
+/** Re-send everything — for a bank switch, where meanings changed but values did not. */
+export function refreshSurfaceFeedback(): void {
+  feedbackDriver.invalidate();
+  pushFeedback(true);
+}
 
 function stopListening(): void {
   unsubscribe?.();
