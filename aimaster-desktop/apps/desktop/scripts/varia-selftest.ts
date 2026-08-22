@@ -28,6 +28,8 @@ import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { renderVariAudioChannel, isNeutral } from '../src/renderer/daw/audio/pitch-shift.js';
 import { frequencyToPitch, pitchToFrequency, pitchName } from '../src/renderer/daw/model/midi.js';
 import { scalePitchClasses } from '../src/renderer/daw/model/scales.js';
+import { partClock } from '../src/renderer/daw/model/note-time.js';
+import { defaultTempoMap } from '../src/renderer/daw/model/tempo-map.js';
 
 const SR = 44_100;
 
@@ -419,33 +421,42 @@ check('a guide note far from what was sung is refused, not dragged', () => {
   assert(tuneToPitch(segment, 62, 1, 3) !== segment, 'but a whole tone is fine');
 });
 
+/**
+ * A guide part's frame at 60 BPM, where a beat is a second.
+ *
+ * The comparison these tests are about is audio seconds against written
+ * beats; at this tempo the two read alike, so the numbers stay legible
+ * while the real conversion still runs.
+ */
+const GUIDE_CLOCK = partClock(defaultTempoMap(60), 0);
+
 check('the guide note is the one with the most overlap', () => {
   const notes = [
-    createNote({ pitch: 60, startSec: 0, durationSec: 1.0 }),
-    createNote({ pitch: 64, startSec: 0.9, durationSec: 1.0 }),
+    createNote({ pitch: 60, startBeat: 0, durationBeat: 1.0 }),
+    createNote({ pitch: 64, startBeat: 0.9, durationBeat: 1.0 }),
   ];
   // A segment running 0.2–0.95 overlaps the first note far more than the
   // second — picking the first note that starts would retune it to the wrong
   // one at the end of a long held note.
-  eq(guideNoteFor(notes, 0.2, 0.95)?.pitch, 60, 'the note it mostly sits under');
-  eq(guideNoteFor(notes, 0.95, 1.8)?.pitch, 64, 'and the next one after that');
-  eq(guideNoteFor(notes, 5, 6), null, 'nothing sounding there');
-  eq(guideNoteFor([createNote({ pitch: 60, muted: true })], 0, 0.5), null, 'a muted guide is no guide');
+  eq(guideNoteFor(notes, GUIDE_CLOCK, 0.2, 0.95)?.pitch, 60, 'the note it mostly sits under');
+  eq(guideNoteFor(notes, GUIDE_CLOCK, 0.95, 1.8)?.pitch, 64, 'and the next one after that');
+  eq(guideNoteFor(notes, GUIDE_CLOCK, 5, 6), null, 'nothing sounding there');
+  eq(guideNoteFor([createNote({ pitch: 60, muted: true })], GUIDE_CLOCK, 0, 0.5), null, 'a muted guide is no guide');
 });
 
 check('a segment with no guide note over it is left alone', () => {
   const segment = fakeSegment(58.5, 2, 2.4);
-  const notes = [createNote({ pitch: 60, startSec: 0, durationSec: 1 })];
-  const corrected = correctSegment(segment, { kind: 'toMidi', notes, amount: 1 });
+  const notes = [createNote({ pitch: 60, startBeat: 0, durationBeat: 1 })];
+  const corrected = correctSegment(segment, { kind: 'toMidi', notes, amount: 1, clock: GUIDE_CLOCK });
   eq(corrected, segment, 'between phrases the singer is on their own');
 });
 
 check('toMidi tunes to the guide, not to the nearest semitone', () => {
   // Sung at 61.4 — nearest semitone is 61, but the melody says 60.
   const segment = fakeSegment(61.4, 0, 0.5);
-  const notes = [createNote({ pitch: 60, startSec: 0, durationSec: 1 })];
+  const notes = [createNote({ pitch: 60, startBeat: 0, durationBeat: 1 })];
 
-  const toGuide = correctSegment(segment, { kind: 'toMidi', notes, amount: 1 });
+  const toGuide = correctSegment(segment, { kind: 'toMidi', notes, amount: 1, clock: GUIDE_CLOCK });
   close(toGuide.edit.pitchOffsetCents, -140, 'down to the written note', 1e-6);
 
   const toNearest = quantizePitch(segment, 1);
@@ -454,7 +465,9 @@ check('toMidi tunes to the guide, not to the nearest semitone', () => {
 
 check('guide notes are translated into the audio clip\'s own time base', () => {
   resetIds();
-  const base = createSession('guide test');
+  // 60 BPM, so a beat is a second and the timings below can be read as
+  // the seconds of audio they line up with.
+  const base = { ...createSession('guide test'), tempoBpm: 60 };
   const audioTrack = createTrack('Vox', 'audio');
   const midiTrack = createTrack('Guide', 'instrument');
   let session = addTrack(addTrack(base, audioTrack), midiTrack);
@@ -465,14 +478,16 @@ check('guide notes are translated into the audio clip\'s own time base', () => {
   const guidePart = createMidiPart('Guide', {
     startSec: 10,
     durationSec: 4,
-    notes: [createNote({ pitch: 67, startSec: 0.5, durationSec: 1 })],
+    notes: [createNote({ pitch: 67, startBeat: 0.5, durationBeat: 1 })],
   });
   session = updateClips(session, audioTrack.id, () => [audioClip]);
   session = updateClips(session, midiTrack.id, () => [guidePart]);
 
   const notes = guideNotesFor(session, audioClip, midiTrack.id, guidePart.id);
   eq(notes.length, 1, 'one guide note');
-  close(notes[0]?.startSec ?? 0, 2.5, 'moved into the audio clip\'s clock', 1e-9);
+  // Two seconds between the clips, which at 60 BPM is two beats, plus
+  // the note's own half-beat inside its part.
+  close(notes[0]?.startBeat ?? -1, 2.5, 'moved into the audio clip\'s clock', 1e-9);
   eq(guideNotesFor(session, audioClip, audioTrack.id, audioClip.id).length, 0,
     'an audio clip is not a guide');
 });

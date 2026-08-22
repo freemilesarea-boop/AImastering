@@ -29,6 +29,14 @@ export interface VoiceContext {
   config: MidiPartConfig;
   /** Context time the note starts. */
   when: number;
+  /**
+   * How long the note sounds, in seconds.
+   *
+   * Passed in rather than read off the note: the note's length is in beats,
+   * and across a tempo ramp its length in seconds is a measurement only the
+   * caller's tempo map can make.
+   */
+  durationSec: number;
   params: Record<string, number>;
 }
 
@@ -56,6 +64,7 @@ function scheduleCurve(
   note: MidiNote,
   target: Parameters<typeof findExpression>[1],
   when: number,
+  durationSec: number,
   map: (normalized: number) => number,
   fallback: number,
 ): void {
@@ -64,11 +73,14 @@ function scheduleCurve(
   param.setValueAtTime(base, Math.max(0, when));
   if (!curve || curve.points.length === 0) return;
 
-  const duration = note.durationSec;
+  // Two axes: the curve is read in the note's BEATS, and written at the
+  // seconds those beats fall on.  Walking both by the same fraction keeps
+  // them lined up without a tempo map in here — the note is one span, and
+  // a fraction of it is the same fraction on either axis.
   for (let i = 1; i <= CURVE_STEPS; i++) {
-    const t = (duration * i) / CURVE_STEPS;
-    const value = map(curveValueAt(curve.points, t, fallback));
-    param.linearRampToValueAtTime(value, Math.max(0, when + t));
+    const fraction = i / CURVE_STEPS;
+    const value = map(curveValueAt(curve.points, note.durationBeat * fraction, fallback));
+    param.linearRampToValueAtTime(value, Math.max(0, when + durationSec * fraction));
   }
 }
 
@@ -103,7 +115,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'detune',   name: 'Detune',  min: 0,     max: 40,   default: 8,     unit: 'ct' },
       { id: 'level',    name: 'Level',   min: 0,     max: 1,    default: 0.22,  unit: '' },
     ],
-    playNote: ({ ctx, destination, note, config, when, params }) => {
+    playNote: ({ ctx, destination, note, config, when, durationSec, params }) => {
       const freq = pitchToFrequency(soundingPitch(note));
       const detune = params['detune'] ?? 8;
 
@@ -123,19 +135,19 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
 
       // Per-note pitch bend → this voice's detune, in cents.
       const bendCents = (normalized: number): number => normalized * config.bendRangeSemitones * 100;
-      scheduleCurve(oscA.detune, note, { kind: 'pitchBend' }, when, (v) => bendCents(v) - detune, 0);
-      scheduleCurve(oscB.detune, note, { kind: 'pitchBend' }, when, (v) => bendCents(v) + detune, 0);
+      scheduleCurve(oscA.detune, note, { kind: 'pitchBend' }, when, durationSec, (v) => bendCents(v) - detune, 0);
+      scheduleCurve(oscB.detune, note, { kind: 'pitchBend' }, when, durationSec, (v) => bendCents(v) + detune, 0);
 
       // Pressure and timbre open the filter — the two expressive dimensions
       // an MPE controller sends continuously.
       const baseCutoff = params['cutoffHz'] ?? 2800;
       const velocityCutoff = baseCutoff * (0.45 + 0.85 * note.velocity);
       scheduleCurve(
-        filter.frequency, note, { kind: 'timbre' }, when,
+        filter.frequency, note, { kind: 'timbre' }, when, durationSec,
         (v) => Math.min(18_000, velocityCutoff * (0.6 + 1.6 * v)), 0.5,
       );
       scheduleCurve(
-        amp.gain, note, { kind: 'pressure' }, when,
+        amp.gain, note, { kind: 'pressure' }, when, durationSec,
         () => 1, 1,
       );
 
@@ -145,7 +157,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
 
       const peak = (params['level'] ?? 0.22) * (0.25 + 0.75 * note.velocity);
       const releaseEnd = adsr(
-        amp.gain, when, note.durationSec,
+        amp.gain, when, durationSec,
         params['attack'] ?? 0.008, params['decay'] ?? 0.18,
         params['sustain'] ?? 0.65, params['release'] ?? 0.22, peak,
       );
@@ -175,7 +187,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'release', name: 'Release', min: 0.02, max: 3, default: 0.35, unit: 's' },
       { id: 'level',   name: 'Level',   min: 0,   max: 1,  default: 0.25, unit: '' },
     ],
-    playNote: ({ ctx, destination, note, config, when, params }) => {
+    playNote: ({ ctx, destination, note, config, when, durationSec, params }) => {
       const freq = pitchToFrequency(soundingPitch(note));
       const carrier = ctx.createOscillator();
       const modulator = ctx.createOscillator();
@@ -195,7 +207,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       );
 
       scheduleCurve(
-        carrier.detune, note, { kind: 'pitchBend' }, when,
+        carrier.detune, note, { kind: 'pitchBend' }, when, durationSec,
         (v) => v * config.bendRangeSemitones * 100, 0,
       );
 
@@ -205,7 +217,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
 
       const peak = (params['level'] ?? 0.25) * (0.2 + 0.8 * note.velocity);
       const releaseEnd = adsr(
-        amp.gain, when, note.durationSec,
+        amp.gain, when, durationSec,
         0.004, params['decay'] ?? 1.6, 0.35, params['release'] ?? 0.35, peak,
       );
 

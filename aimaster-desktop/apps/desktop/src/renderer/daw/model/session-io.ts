@@ -7,6 +7,7 @@
 
 import { DAW_SESSION_VERSION, type BusDef, type DawSession, type GroupDef, type Track } from './types.js';
 import { nextId } from './ids.js';
+import { migrateSession, needsMigration } from './session-migrate.js';
 
 export function serializeDawSession(session: DawSession): string {
   return JSON.stringify(session, null, 2);
@@ -24,13 +25,18 @@ export function deserializeDawSession(raw: string): ParseResult {
     return { ok: false, error: '세션 파일 형식이 올바르지 않습니다.' };
   }
   const o = parsed as Record<string, unknown>;
-  if (o['version'] !== DAW_SESSION_VERSION) {
-    return { ok: false, error: `지원하지 않는 세션 버전 (${String(o['version'])}).` };
+  const version = o['version'];
+  if (typeof version !== 'number' || version > DAW_SESSION_VERSION || version < 1) {
+    return { ok: false, error: `지원하지 않는 세션 버전 (${String(version)}).` };
   }
   if (!Array.isArray(o['tracks'])) return { ok: false, error: '트랙 정보가 없습니다.' };
 
   const warnings: string[] = [];
-  const session = parsed as DawSession;
+  // An older file is converted rather than refused — it is a session
+  // somebody made, and the only thing wrong with it is its age.
+  const migrated = needsMigration(o) ? migrateSession(o) : { session: o, notes: [] };
+  warnings.push(...migrated.notes);
+  const session = migrated.session as unknown as DawSession;
   if (!session.tracks.some((t) => t.kind === 'master')) {
     warnings.push('마스터 트랙이 없어 새로 만들었습니다.');
   }

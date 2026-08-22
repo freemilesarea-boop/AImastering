@@ -63,7 +63,7 @@ const PAN: AutomationTarget = { kind: 'pan' };
 /** A session with one audio track, at a known fader position. */
 function fixture(volumeDb = 0): { session: DawSession; trackId: TrackId } {
   let session = createSession('automation');
-  const track = createTrack('audio', 'Vox');
+  const track = createTrack('Vox', 'audio');
   session = { ...session, tracks: [...session.tracks, { ...track, volumeDb }] };
   return { session, trackId: track.id };
 }
@@ -438,8 +438,8 @@ check('two passes on one lane compose instead of erasing', () => {
 
 check('a pass on one track leaves the others alone', () => {
   let session = createSession('two');
-  const a = createTrack('audio', 'A');
-  const b = createTrack('audio', 'B');
+  const a = createTrack('A', 'audio');
+  const b = createTrack('B', 'audio');
   session = { ...session, tracks: [...session.tracks, a, b] };
 
   const after = ride(session, a.id, VOLUME, 'touch', [[1, 0], [2, -10], [3, -10]]);

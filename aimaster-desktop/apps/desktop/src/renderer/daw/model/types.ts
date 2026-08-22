@@ -327,7 +327,7 @@ export interface Marker {
   timeSec: number;
 }
 
-export const DAW_SESSION_VERSION = 1 as const;
+export const DAW_SESSION_VERSION = 2 as const;
 
 export interface DawSession {
   version: typeof DAW_SESSION_VERSION;

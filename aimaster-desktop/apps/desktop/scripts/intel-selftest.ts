@@ -49,9 +49,11 @@ import {
   chordsForClip, riffSuggestion, variationSuggestion, resetRiffIds, variationLabel,
 } from '../src/renderer/daw/ai/riff.js';
 import { createMidiPart, updateClips, trackClips, setChordTrack as setChords } from '../src/renderer/daw/model/session-ops.js';
-import { createNote, noteEnd } from '../src/renderer/daw/model/midi.js';
+import { createNote, noteEndBeat } from '../src/renderer/daw/model/midi.js';
 import { isInScale, scalePitchClasses, type Scale } from '../src/renderer/daw/model/scales.js';
-import { chordAt, chordPitchClasses } from '../src/renderer/daw/model/chords.js';
+import { chordAt, chordPitchClasses, type ChordSymbol } from '../src/renderer/daw/model/chords.js';
+import { partClock, secToBeatsAt } from '../src/renderer/daw/model/note-time.js';
+import { tempoMapOf } from '../src/renderer/daw/model/tempo-map.js';
 import { captureAsPattern, clipNotes } from '../src/renderer/daw/model/patterns.js';
 import { compareToReference, type ReferenceAnalysis, type SpectrumCurve } from '../src/renderer/daw/analysis/reference.js';
 import {
@@ -82,7 +84,7 @@ const BANDS = 48;
 
 /** Rhythm-only fixture: the pitch settings do not matter to generateRhythm. */
 const DEFAULT_RIFF_FIXTURE: RiffOptions = {
-  bars: 2, tempoBpm: 120, beatsPerBar: 4, style: 'melody', contour: 'arch',
+  bars: 2, beatsPerBar: 4, style: 'melody', contour: 'arch',
   density: 0.5, syncopation: 0, lowPitch: 60, highPitch: 79,
   scale: { root: 0, scaleId: 'major' }, chords: [], seed: 1, stepsPerBeat: 4,
 };
@@ -879,15 +881,15 @@ const C_MAJOR: Scale = { root: 0, scaleId: 'major' };
 
 function riff(over: Partial<RiffOptions> = {}): ReturnType<typeof generateRiff> {
   return generateRiff({
-    bars: 4, tempoBpm: 120, beatsPerBar: 4, scale: C_MAJOR,
+    bars: 4, beatsPerBar: 4, scale: C_MAJOR,
     lowPitch: 60, highPitch: 79, seed: 5, chromaticism: 0, ...over,
   });
 }
 
 /** Mean pitch of a slice of the phrase, for measuring shape. */
 function meanPitch(notes: ReturnType<typeof generateRiff>, fromFraction: number, toFraction: number): number {
-  const end = Math.max(...notes.map(noteEnd));
-  const slice = notes.filter((n) => n.startSec >= end * fromFraction && n.startSec < end * toFraction);
+  const end = Math.max(...notes.map(noteEndBeat));
+  const slice = notes.filter((n) => n.startBeat >= end * fromFraction && n.startBeat < end * toFraction);
   if (slice.length === 0) return 0;
   return slice.reduce((sum, n) => sum + n.pitch, 0) / slice.length;
 }
@@ -948,22 +950,31 @@ check('every note lands in the requested range and scale', () => {
   }
 });
 
+/** The riff generator's own chord lookup: last chord at or before the beat. */
+function chordUnder(
+  chords: readonly { beat: number; chord: ChordSymbol }[], beat: number,
+): { beat: number; chord: ChordSymbol } | null {
+  let found: { beat: number; chord: ChordSymbol } | null = null;
+  for (const c of chords) { if (c.beat <= beat + 1e-9) found = c; else break; }
+  return found;
+}
+
 check('strong beats take chord tones, which is what "on the chord" means', () => {
   const chords = [
-    { id: 'c1', timeSec: 0, chord: makeChord(0, 'maj') },       // C
-    { id: 'c2', timeSec: 2, chord: makeChord(5, 'maj') },       // F
-    { id: 'c3', timeSec: 4, chord: makeChord(7, 'dom7') },      // G7
+    { beat: 0, chord: makeChord(0, 'maj') },       // C
+    { beat: 2, chord: makeChord(5, 'maj') },       // F
+    { beat: 4, chord: makeChord(7, 'dom7') },      // G7
   ];
   const notes = riff({ bars: 3, chords, density: 0.7 });
-  const beatSec = 0.5;
 
   let strong = 0;
   let onChord = 0;
   for (const note of notes) {
-    const beats = note.startSec / beatSec;
-    if (Math.abs(beats - Math.round(beats)) > 1e-6) continue;    // off the beat
+    // A strong beat is a whole beat — which the note's own units now say
+    // directly, without a tempo to divide by.
+    if (Math.abs(note.startBeat - Math.round(note.startBeat)) > 1e-6) continue;
     strong++;
-    const chord = chordAt(chords, note.startSec);
+    const chord = chordUnder(chords, note.startBeat);
     if (chord && chordPitchClasses(chord.chord).has(((note.pitch % 12) + 12) % 12)) onChord++;
   }
   assert(strong > 4, `there are strong beats to check, found ${strong}`);
@@ -1014,7 +1025,7 @@ check('a leap is answered by a step in the other direction', () => {
 
 check('a riff is reproducible, and a different seed is a different riff', () => {
   const signature = (n: ReturnType<typeof generateRiff>): string =>
-    n.map((x) => `${x.startSec.toFixed(4)}:${x.pitch}`).join(',');
+    n.map((x) => `${x.startBeat.toFixed(4)}:${x.pitch}`).join(',');
   eq(signature(riff({ seed: 3 })), signature(riff({ seed: 3 })), 'the same seed is the same riff');
   assert(signature(riff({ seed: 3 })) !== signature(riff({ seed: 4 })), 'a different seed is not');
 });
@@ -1026,7 +1037,7 @@ check('density controls how many notes there are', () => {
 });
 
 check('a bass line stays low and on the chord', () => {
-  const chords = [{ id: 'c1', timeSec: 0, chord: makeChord(0, 'maj') }];
+  const chords = [{ beat: 0, chord: makeChord(0, 'maj') }];
   const notes = riff({ style: 'bass', lowPitch: 33, highPitch: 52, chords, bars: 2 });
   assert(notes.length > 0, 'notes produced');
   const tones = chordPitchClasses(chords[0]!.chord);
@@ -1037,10 +1048,10 @@ check('a bass line stays low and on the chord', () => {
 });
 
 check('the chord style stacks a voicing at each hit', () => {
-  const chords = [{ id: 'c1', timeSec: 0, chord: makeChord(0, 'maj7') }];
+  const chords = [{ beat: 0, chord: makeChord(0, 'maj7') }];
   const notes = riff({ style: 'chords', chords, bars: 1, density: 0.25, lowPitch: 48, highPitch: 84 });
   const byTime = new Map<number, number>();
-  for (const note of notes) byTime.set(note.startSec, (byTime.get(note.startSec) ?? 0) + 1);
+  for (const note of notes) byTime.set(note.startBeat, (byTime.get(note.startBeat) ?? 0) + 1);
   assert([...byTime.values()].every((count) => count >= 3), 'every hit is a chord, not a note');
   for (const style of RIFF_STYLES) assert(styleLabel(style).length > 0, `${style} has a label`);
 });
@@ -1077,7 +1088,7 @@ check('inversion turns every rise into a fall', () => {
 check('retrograde reverses the pitches and keeps the rhythm', () => {
   const source = riff({ bars: 2, density: 0.5 });
   const reversed = varyRiff(source, { kind: 'retrograde', scale: C_MAJOR });
-  eq(reversed.map((n) => n.startSec).join(','), source.map((n) => n.startSec).join(','),
+  eq(reversed.map((n) => n.startBeat).join(','), source.map((n) => n.startBeat).join(','),
     'the rhythm is the riff’s identity — reversing it would make a different riff');
   eq(reversed.map((n) => n.pitch).join(','),
     source.map((n) => n.pitch).reverse().join(','), 'the pitches run backwards');
@@ -1096,8 +1107,8 @@ check('transposition moves by scale degrees, not semitones', () => {
 
 check('displacement, thinning and densifying do what they say', () => {
   const source = riff({ bars: 2, density: 0.6 });
-  const moved = varyRiff(source, { kind: 'displace', scale: C_MAJOR, shiftSec: 0.125 });
-  close((moved[0]?.startSec ?? 0) - (source[0]?.startSec ?? 0), 0.125, 'shifted', 1e-9);
+  const moved = varyRiff(source, { kind: 'displace', scale: C_MAJOR, shiftBeat: 0.125 });
+  close((moved[0]?.startBeat ?? 0) - (source[0]?.startBeat ?? 0), 0.125, 'shifted', 1e-9);
 
   const thin = varyRiff(source, { kind: 'thin', scale: C_MAJOR, seed: 3 });
   assert(thin.length <= source.length, 'thinning removes notes');
@@ -1158,23 +1169,27 @@ check('a riff arrives as a suggestion, unticked, and fills the part', () => {
   const clip = trackClips(findTrack(applied, trackId)!)[0]!;
   const notes = clipNotes(applied, clip);
   assert(notes.length > 0, 'notes landed');
-  // The riff fills the part, and the part still covers the riff.
-  const last = Math.max(...notes.map(noteEnd));
-  assert(last <= clip.durationSec + 1e-6, `nothing hangs off the end: ${last} vs ${clip.durationSec}`);
+  // The riff fills the part, and the part still covers the riff — measured
+  // in the part's own beats, since that is what the notes are in.
+  const clock = partClock(tempoMapOf(applied), clip.startSec);
+  const last = Math.max(...notes.map(noteEndBeat));
+  const partBeats = secToBeatsAt(clock, clip.durationSec);
+  assert(last <= partBeats + 1e-6, `nothing hangs off the end: ${last} vs ${partBeats} beats`);
+  assert(last > partBeats * 0.5, `and it actually fills it: ${last} of ${partBeats} beats`);
 });
 
 check('generating into a part that has notes can add instead of replace', () => {
   resetRiffIds();
   const { session, trackId, clipId } = riffSession();
   const seeded = applyActions(session, [{
-    kind: 'writeNotes', trackId, clipId, notes: [createNote({ pitch: 48, startSec: 0 })],
+    kind: 'writeNotes', trackId, clipId, notes: [createNote({ pitch: 48, startBeat: 0 })],
   }]);
   eq(clipNotes(seeded, trackClips(findTrack(seeded, trackId)!)[0]!).length, 1, 'one note to start');
 
   const replaced = riffSuggestion(seeded, { trackId, clipId, options: { seed: 2 } });
   const afterReplace = applySuggestions(seeded, [replaced.suggestion!]);
   assert(!clipNotes(afterReplace, trackClips(findTrack(afterReplace, trackId)!)[0]!)
-    .some((n) => n.pitch === 48 && n.startSec === 0), 'replace wipes what was there');
+    .some((n) => n.pitch === 48 && n.startBeat === 0), 'replace wipes what was there');
 
   const added = riffSuggestion(seeded, { trackId, clipId, options: { seed: 2 }, add: true });
   const afterAdd = applySuggestions(seeded, [added.suggestion!]);

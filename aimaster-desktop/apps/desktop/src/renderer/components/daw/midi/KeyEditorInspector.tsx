@@ -6,7 +6,7 @@
 
 import React, { useMemo } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
-import { useMidiEditorStore, currentGridSec } from '../../../stores/midiEditorStore.js';
+import { useMidiEditorStore, currentGridBeat } from '../../../stores/midiEditorStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { findTrack, trackClips, updateClip } from '../../../daw/model/session-ops.js';
 import {
@@ -16,7 +16,9 @@ import {
 } from '../../../daw/edit/midi-edit.js';
 import { SCALES, PITCH_CLASS_NAMES, suggestScales, scaleName } from '../../../daw/model/scales.js';
 import { detectChord, formatChord, voiceChord, QUALITIES, makeChord } from '../../../daw/model/chords.js';
-import { createNote, from7bit, noteEnd, type MidiNote } from '../../../daw/model/midi.js';
+import { createNote, from7bit, noteEndBeat, type MidiNote } from '../../../daw/model/midi.js';
+import { beatsToSecAt, partClock, secToBeatsAt } from '../../../daw/model/note-time.js';
+import { tempoMapOf } from '../../../daw/model/tempo-map.js';
 
 const COMMON_QUALITIES = ['maj', 'min', 'sus4', 'sus2', 'dim', 'aug',
   'maj7', 'dom7', 'min7', 'min6', 'min7b5', 'minMaj7', 'sus4_7', 'dim7'] as const;
@@ -57,19 +59,30 @@ export default function KeyEditorInspector() {
     () => new Set(selectedIds.length > 0 ? selectedIds : notes.map((n) => n.id)),
     [selectedIds, notes],
   );
-  const gridSec = currentGridSec(session.tempoBpm);
+  const gridBeat = currentGridBeat();
+  // The one place this panel needs the timeline: turning a millisecond feel
+  // (humanize, legato overlap) into the beats the notes live in, and the
+  // part's beat length back into the seconds its box is drawn with.
+  const clock = useMemo(
+    () => partClock(tempoMapOf(session), part?.startSec ?? 0),
+    [session, part?.startSec],
+  );
+  const msToBeats = (ms: number): number => secToBeatsAt(clock, ms / 1000);
 
   const write = (next: MidiNote[]): void => {
     if (!open) return;
     apply((s) => updateClip(s, open.trackId, open.clipId, (c) => ({
       ...c,
       notes: next,
-      durationSec: Math.max(c.durationSec, next.reduce((m, n) => Math.max(m, noteEnd(n)), 0)),
+      durationSec: Math.max(
+        c.durationSec,
+        beatsToSecAt(clock, next.reduce((m, n) => Math.max(m, noteEndBeat(n)), 0)),
+      ),
     })));
   };
 
   const suggestions = useMemo(
-    () => suggestScales(notes.map((n) => ({ pitch: n.pitch, weight: n.durationSec })), 6),
+    () => suggestScales(notes.map((n) => ({ pitch: n.pitch, weight: n.durationBeat })), 6),
     [notes],
   );
 
@@ -152,8 +165,8 @@ export default function KeyEditorInspector() {
                   const others = notes.filter((n) => !selectedIds.includes(n.id));
                   const built = voiced.map((pitch) => createNote({
                     pitch,
-                    startSec: rootNote.startSec,
-                    durationSec: rootNote.durationSec,
+                    startBeat: rootNote.startBeat,
+                    durationBeat: rootNote.durationBeat,
                     velocity: rootNote.velocity,
                   }));
                   write([...others, ...built]);
@@ -174,20 +187,22 @@ export default function KeyEditorInspector() {
           suffix="%" onChange={(v) => setQuantize({ strengthPercent: v })} />
         <Slider label="Swing" value={quantize.swingPercent ?? 0} min={0} max={100} step={1}
           suffix="%" onChange={(v) => setQuantize({ swingPercent: v })} />
-        <Slider label="Randomize" value={(quantize.randomizeSec ?? 0) * 1000} min={0} max={60} step={1}
-          suffix="ms" onChange={(v) => setQuantize({ randomizeSec: v / 1000 })} />
-        <Slider label="Catch" value={(quantize.catchRangeSec ?? 0) * 1000} min={0} max={200} step={5}
-          suffix="ms" onChange={(v) => setQuantize({ catchRangeSec: v / 1000 })} />
+        <Slider label="Randomize" value={Math.round((quantize.randomizeBeat ?? 0) * 1000) / 10}
+          min={0} max={25} step={0.5}
+          suffix="%박" onChange={(v) => setQuantize({ randomizeBeat: v / 100 })} />
+        <Slider label="Catch" value={Math.round((quantize.catchRangeBeat ?? 0) * 100)}
+          min={0} max={100} step={5}
+          suffix="%박" onChange={(v) => setQuantize({ catchRangeBeat: v / 100 })} />
         <Action onClick={() => {
-          write(quantizeNotes(notes, targetIds, { ...quantize, gridSec }));
+          write(quantizeNotes(notes, targetIds, { ...quantize, gridBeat }));
           notify('퀀타이즈 적용');
         }}>Apply Quantize</Action>
         <Action onClick={() => {
-          write(quantizeNotes(notes, targetIds, { ...quantize, gridSec, quantizeLengths: true }));
+          write(quantizeNotes(notes, targetIds, { ...quantize, gridBeat, quantizeLengths: true }));
           notify('길이 퀀타이즈');
         }}>Quantize Lengths</Action>
         <Action onClick={() => {
-          write(quantizeNotes(notes, targetIds, { ...quantize, gridSec, quantizeEnds: true }));
+          write(quantizeNotes(notes, targetIds, { ...quantize, gridBeat, quantizeEnds: true }));
           notify('엔드 퀀타이즈');
         }}>Quantize Ends</Action>
       </Section>
@@ -202,9 +217,9 @@ export default function KeyEditorInspector() {
           onChange={(v) => setHumanize({ seed: v })} />
         <Action onClick={() => {
           write(humanizeNotes(notes, targetIds, {
-            timingSec: humanizeTimingMs / 1000,
+            timingBeat: msToBeats(humanizeTimingMs),
             velocity: humanizeVelocity,
-            gridSec,
+            gridBeat,
             seed: humanizeSeed,
           }));
           notify('휴머나이즈 적용 (시드 고정 — 바운스에서 그대로 재현)');
@@ -233,11 +248,11 @@ export default function KeyEditorInspector() {
           onChange={setOverlapMs} />
         <Action onClick={() => {
           write(legatoPercent > 0
-            ? scaleLegato(notes, targetIds, legatoPercent, overlapMs / 1000)
-            : applyLegato(notes, targetIds, overlapMs / 1000));
+            ? scaleLegato(notes, targetIds, legatoPercent, msToBeats(overlapMs))
+            : applyLegato(notes, targetIds, msToBeats(overlapMs)));
           notify('레가토 적용');
         }}>Apply Legato</Action>
-        <Action onClick={() => { write(fixedLengths(notes, targetIds, gridSec)); notify('고정 길이'); }}>
+        <Action onClick={() => { write(fixedLengths(notes, targetIds, gridBeat)); notify('고정 길이'); }}>
           Fixed Lengths
         </Action>
         <Action onClick={() => { write(extendToNextSelected(notes, targetIds)); notify('다음 선택 노트까지 연장'); }}>

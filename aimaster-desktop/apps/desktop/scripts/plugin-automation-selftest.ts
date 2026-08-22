@@ -474,7 +474,7 @@ async function run(): Promise<void> {
     const engine = new MixerEngine(ctx as unknown as BaseAudioContext, ctx.destination as unknown as AudioNode, { meters: false });
     engine.sync(session);
     const automatable = engine.automatableParam(track.id, insert.id, 'gainDb')!;
-    close(automatable.param.value, 1, 'unity to start');
+    close(automatable.param.value, 1, 'unity to start', 1e-6);
 
     engine.sync(setInsert(session, track.id, { ...insert, params: { gainDb: -6 } }));
     close(automatable.param.value, Math.pow(10, -6 / 20), 'the knob follows the session', 1e-4);

@@ -21,7 +21,9 @@
 
 import { createInsert, findTrack, setInsert, updateClip, updateTrack } from '../model/session-ops.js';
 import { clipNotes, writeClipNotes } from '../model/patterns.js';
-import { noteEnd, type MidiNote } from '../model/midi.js';
+import { noteEndBeat, type MidiNote } from '../model/midi.js';
+import { beatsToSecAt, partClock } from '../model/note-time.js';
+import { tempoMapOf } from '../model/tempo-map.js';
 import { setChordTrack } from '../model/session-ops.js';
 import { createLane } from '../model/automation.js';
 import { setMacro, MACROS, type MacroId } from '../model/macros.js';
@@ -180,10 +182,14 @@ export function applyAction(session: DawSession, action: IntelAction): DawSessio
       const next = action.mode === 'add' ? [...existing, ...action.notes] : action.notes;
       const written = writeClipNotes(session, action.trackId, action.clipId, sortNotes(next));
       // A part always covers its notes, or the tail of the riff never plays.
-      return updateClip(written, action.trackId, action.clipId, (c) => ({
-        ...c,
-        durationSec: Math.max(c.durationSec, next.reduce((m, n) => Math.max(m, noteEnd(n)), 0)),
-      }));
+      return updateClip(written, action.trackId, action.clipId, (c) => {
+        const clock = partClock(tempoMapOf(written), c.startSec);
+        const lastBeat = next.reduce((m, n) => Math.max(m, noteEndBeat(n)), 0);
+        return {
+          ...c,
+          durationSec: Math.max(c.durationSec, beatsToSecAt(clock, lastBeat)),
+        };
+      });
     }
   }
 }
@@ -195,7 +201,7 @@ function clipNotesOf(session: DawSession, trackId: TrackId, clipId: ClipId): Mid
 }
 
 const sortNotes = (notes: MidiNote[]): MidiNote[] =>
-  [...notes].sort((a, b) => a.startSec - b.startSec || a.pitch - b.pitch);
+  [...notes].sort((a, b) => a.startBeat - b.startBeat || a.pitch - b.pitch);
 
 function sameTarget(a: AutomationTarget, b: AutomationTarget): boolean {
   if (a.kind !== b.kind) return false;

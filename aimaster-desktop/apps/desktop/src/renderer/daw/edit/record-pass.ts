@@ -19,6 +19,8 @@
 
 import { commitRecording, type AudioWriter, type CapturedTake } from './record-actions.js';
 import { commitMidiRecording } from './midi-record-actions.js';
+import { partClock } from '../model/note-time.js';
+import { tempoMapOf } from '../model/tempo-map.js';
 import {
   bendRangeFor, captureNotes, describeCapture, looksLikeMpeStream,
   type CaptureEvent, type CaptureResult,
@@ -99,9 +101,13 @@ export async function commitPass(
   let midiCapture: CaptureResult | null = null;
   if (capture.midi && capture.midi.trackIds.length > 0) {
     const mpe = looksLikeMpeStream(capture.midi.events);
+    // Tape zero is where the transport started rolling, so that is the frame
+    // the performance is read in — and the one the commit trims against.
+    const tapeClock = partClock(tempoMapOf(session), plan.transportStartSec);
     midiCapture = captureNotes(capture.midi.events, {
       endSec: capture.tapeSec,
       sustainPedal: settings.midiSustainPedal,
+      clock: tapeClock,
     });
     const config = { bendRangeSemitones: bendRangeFor(mpe), mpe };
     for (const trackId of capture.midi.trackIds) {
@@ -109,6 +115,7 @@ export async function commitPass(
         const result = commitMidiRecording(next, trackId, {
           notes: midiCapture.notes,
           tapeSec: capture.tapeSec,
+          clock: tapeClock,
           config,
         }, plan, settings);
         next = result.session;

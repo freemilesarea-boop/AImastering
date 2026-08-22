@@ -20,7 +20,7 @@
 import {
   DEFAULT_STEP, GM_DRUM_MAP, createPattern as createStepPattern, createChannel,
   toggleStep, setStep, clearChannel, addChannel, removeChannel, resizePattern,
-  rotateChannel, euclidFill, stepSeconds, patternSeconds, stepTime,
+  rotateChannel, euclidFill, stepBeats, patternBeats, stepTime,
   stepsToNotes, notesToSteps, activeStepCount, describePattern as describeSteps,
   type StepPattern,
 } from '../src/renderer/daw/model/step-sequencer.js';
@@ -33,7 +33,7 @@ import {
   stampChord, arpeggiate, chordGroups, strum, applySlides, clearSlides, flam,
   snapToScale,
 } from '../src/renderer/daw/edit/note-tools.js';
-import { createNote, from7bit, noteEnd, type MidiNote } from '../src/renderer/daw/model/midi.js';
+import { createNote, from7bit, noteEndBeat, type MidiNote } from '../src/renderer/daw/model/midi.js';
 import { makeChord } from '../src/renderer/daw/model/chords.js';
 import {
   addTrack, createMidiPart, createSession, createTrack, findTrack, trackClips, updateClips,
@@ -78,8 +78,8 @@ check('a new pattern is a four-channel sixteenth grid', () => {
   eq(p.channels[0]?.name, 'Kick', 'in drum-map order');
   eq(p.channels[0]?.pitch, GM_DRUM_MAP[0]?.pitch, 'on the GM pitch');
   eq(activeStepCount(p), 0, 'and empty');
-  close(stepSeconds(p, BPM), 0.125, 'a sixteenth at 120 BPM', 1e-12);
-  close(patternSeconds(p, BPM), 2, 'one bar', 1e-12);
+  close(stepBeats(p), 0.25, 'a sixteenth is a quarter of a beat, at any tempo', 1e-12);
+  close(patternBeats(p), 4, 'one bar of 4/4', 1e-12);
 });
 
 check('steps toggle and carry their own values', () => {
@@ -154,10 +154,10 @@ check('euclidean fill spreads hits evenly', () => {
 
 check('a straight grid becomes notes on the grid', () => {
   const p = fill(pattern4(), 0, [0, 4, 8, 12]);
-  const notes = stepsToNotes(p, BPM);
+  const notes = stepsToNotes(p);
   eq(notes.length, 4, 'four hits');
   notes.forEach((n, i) => {
-    close(n.startSec, i * 0.5, `hit ${i} on the beat`, 1e-9);
+    close(n.startBeat, i, `hit ${i} on the beat`, 1e-9);
     eq(n.pitch, 36, 'on the kick');
   });
 });
@@ -165,35 +165,35 @@ check('a straight grid becomes notes on the grid', () => {
 check('swing pushes the off-beats late and leaves the down-beats alone', () => {
   const straight = fill(pattern4(), 3, [0, 1, 2, 3]);
   const swung: StepPattern = { ...straight, swing: 0.5 };
-  const notes = stepsToNotes(swung, BPM);
-  const step = stepSeconds(swung, BPM);
-  close(notes[0]?.startSec ?? -1, 0, 'step 0 does not move', 1e-9);
-  close(notes[1]?.startSec ?? -1, step + 0.25 * step, 'step 1 is late by a quarter step', 1e-9);
-  close(notes[2]?.startSec ?? -1, 2 * step, 'step 2 does not move', 1e-9);
+  const notes = stepsToNotes(swung);
+  const step = stepBeats(swung);
+  close(notes[0]?.startBeat ?? -1, 0, 'step 0 does not move', 1e-9);
+  close(notes[1]?.startBeat ?? -1, step + 0.25 * step, 'step 1 is late by a quarter step', 1e-9);
+  close(notes[2]?.startBeat ?? -1, 2 * step, 'step 2 does not move', 1e-9);
   // Straight is straight.
-  const plain = stepsToNotes(straight, BPM);
-  close(plain[1]?.startSec ?? -1, step, 'with no swing the off-beat is on the grid', 1e-9);
+  const plain = stepsToNotes(straight);
+  close(plain[1]?.startBeat ?? -1, step, 'with no swing the off-beat is on the grid', 1e-9);
 });
 
 check('nudge moves one hit without moving the grid', () => {
   let p = fill(pattern4(), 1, [4]);
   const snare = p.channels[1]!.id;
   p = setStep(p, snare, 4, { nudge: 0.2 });
-  const notes = stepsToNotes(p, BPM);
-  const step = stepSeconds(p, BPM);
-  close(notes[0]?.startSec ?? -1, 4 * step + 0.2 * step, 'behind the beat', 1e-9);
-  close(stepTime(p, 4, BPM, 0), 4 * step, 'and the grid itself did not move', 1e-9);
+  const notes = stepsToNotes(p);
+  const step = stepBeats(p);
+  close(notes[0]?.startBeat ?? -1, 4 * step + 0.2 * step, 'behind the beat', 1e-9);
+  close(stepTime(p, 4, 0), 4 * step, 'and the grid itself did not move', 1e-9);
 });
 
 check('a ratchet stays inside its own step', () => {
   let p = fill(pattern4(), 3, [0]);
   const hat = p.channels[3]!.id;
   p = setStep(p, hat, 0, { ratchet: 4 });
-  const notes = stepsToNotes(p, BPM);
+  const notes = stepsToNotes(p);
   eq(notes.length, 4, 'four retriggers');
-  const step = stepSeconds(p, BPM);
-  notes.forEach((n, i) => close(n.startSec, (i * step) / 4, `retrigger ${i}`, 1e-9));
-  assert(noteEnd(notes[3]!) <= step + 1e-6, 'the roll does not run over the next step');
+  const step = stepBeats(p);
+  notes.forEach((n, i) => close(n.startBeat, (i * step) / 4, `retrigger ${i}`, 1e-9));
+  assert(noteEndBeat(notes[3]!) <= step + 1e-6, 'the roll does not run over the next step');
   // A roll that does not taper sounds like a machine.
   assert((notes[3]?.velocity ?? 1) < (notes[0]?.velocity ?? 0), 'the roll tapers');
 });
@@ -202,41 +202,42 @@ check('probability is deterministic, so a bounce reproduces the take', () => {
   let p = fill(pattern4(), 0, [0, 4, 8, 12]);
   const kick = p.channels[0]!.id;
   for (const i of [0, 4, 8, 12]) p = setStep(p, kick, i, { probability: 0.5 });
-  const a = stepsToNotes(p, BPM).map((n) => n.startSec).join(',');
-  const b = stepsToNotes(p, BPM).map((n) => n.startSec).join(',');
+  const a = stepsToNotes(p).map((n) => n.startBeat).join(',');
+  const b = stepsToNotes(p).map((n) => n.startBeat).join(',');
   eq(a, b, 'the same pattern plays the same way twice');
-  assert(stepsToNotes(p, BPM).length < 4, 'and some hits actually drop');
-  eq(stepsToNotes(p, BPM, { ignoreProbability: true }).length, 4,
+  assert(stepsToNotes(p).length < 4, 'and some hits actually drop');
+  eq(stepsToNotes(p, { ignoreProbability: true }).length, 4,
     'the editor can see the grid as drawn');
   // A different seed is a different roll of the dice.
-  const other = stepsToNotes({ ...p, seed: 99 }, BPM).map((n) => n.startSec).join(',');
+  const other = stepsToNotes({ ...p, seed: 99 }).map((n) => n.startBeat).join(',');
   assert(other !== a, 'the seed matters');
 });
 
 check('repeats lay the grid end to end', () => {
   const p = fill(pattern4(), 0, [0]);
-  const notes = stepsToNotes(p, BPM, { repeats: 3 });
+  const notes = stepsToNotes(p, { repeats: 3 });
   eq(notes.length, 3, 'three hits');
-  notes.forEach((n, i) => close(n.startSec, i * 2, `bar ${i}`, 1e-9));
+  // Sixteen sixteenths is four beats — one bar of 4/4, per repeat.
+  notes.forEach((n, i) => close(n.startBeat, i * 4, `bar ${i}`, 1e-9));
 });
 
 check('a muted channel is silent but still drawn', () => {
   let p = fill(pattern4(), 0, [0, 4]);
-  eq(stepsToNotes(p, BPM).length, 2, 'audible');
+  eq(stepsToNotes(p).length, 2, 'audible');
   p = { ...p, channels: p.channels.map((c, i) => (i === 0 ? { ...c, muted: true } : c)) };
-  eq(stepsToNotes(p, BPM).length, 0, 'muted');
+  eq(stepsToNotes(p).length, 0, 'muted');
   eq(activeStepCount(p), 2, 'but the steps are still there');
 });
 
 check('notes fold back onto the grid, and what does not fit becomes nudge', () => {
   const p = pattern4();
-  const step = stepSeconds(p, BPM);
+  const step = stepBeats(p);
   const notes = [
-    createNote({ pitch: 36, startSec: 0, durationSec: 0.1 }),
-    createNote({ pitch: 38, startSec: 4 * step + step * 0.2, durationSec: 0.1 }),
-    createNote({ pitch: 99, startSec: 0, durationSec: 0.1 }),            // no channel
+    createNote({ pitch: 36, startBeat: 0, durationBeat: 0.1 }),
+    createNote({ pitch: 38, startBeat: 4 * step + step * 0.2, durationBeat: 0.1 }),
+    createNote({ pitch: 99, startBeat: 0, durationBeat: 0.1 }),            // no channel
   ];
-  const folded = notesToSteps(p, notes, BPM);
+  const folded = notesToSteps(p, notes);
   assert(folded.channels[0]?.steps[0]?.on, 'the kick landed');
   assert(folded.channels[1]?.steps[4]?.on, 'the snare landed on the nearest step');
   close(folded.channels[1]?.steps[4]?.nudge ?? 0, 0.2, 'and its timing survived as nudge', 1e-6);
@@ -245,11 +246,11 @@ check('notes fold back onto the grid, and what does not fit becomes nudge', () =
 
 check('the pattern describes itself', () => {
   const p = { ...fill(pattern4(), 0, [0, 4]), swing: 0.3 };
-  const text = describeSteps(p, BPM);
+  const text = describeSteps(p);
   assert(text.includes('16스텝'), 'step count');
   assert(text.includes('2히트'), 'hit count');
   assert(text.includes('스윙'), 'swing when it is on');
-  assert(!describeSteps(pattern4(), BPM).includes('스윙'), 'and not when it is off');
+  assert(!describeSteps(pattern4()).includes('스윙'), 'and not when it is off');
 });
 
 // ── Patterns ──────────────────────────────────────────────────────────────────
@@ -261,7 +262,7 @@ function sessionWithPart(): { session: DawSession; trackId: string; clipId: stri
   const part = createMidiPart('Verse', {
     startSec: 0,
     durationSec: 2,
-    notes: [createNote({ pitch: 60, startSec: 0 }), createNote({ pitch: 64, startSec: 1 })],
+    notes: [createNote({ pitch: 60, startBeat: 0 }), createNote({ pitch: 64, startBeat: 1 })],
   });
   const session = updateClips(addTrack(base, track), track.id, () => [part]);
   return { session, trackId: track.id, clipId: part.id };
@@ -296,7 +297,7 @@ check('editing one placement changes every placement', () => {
 
   // Edit through ONE of them.
   const edited = writeClipNotes(placed, trackId, 'clip-2', [
-    createNote({ pitch: 72, startSec: 0 }),
+    createNote({ pitch: 72, startBeat: 0 }),
   ]);
 
   const clips = trackClips(findTrack(edited, trackId)!);
@@ -337,7 +338,7 @@ check('deleting a pattern never deletes the music', () => {
 });
 
 check('a placement is re-timed for the session tempo', () => {
-  const notes = [createNote({ pitch: 60, startSec: 0 })];
+  const notes = [createNote({ pitch: 60, startBeat: 0 })];
   const pattern = createPattern('Loop', notes, 2, 120, 0);
   const atSame = patternClip(pattern, 0, 120);
   close(atSame.durationSec ?? 0, 2, 'same tempo, same length', 1e-9);
@@ -373,13 +374,14 @@ check('another part can be read in this clip\'s time base', () => {
   const chords = createMidiPart('Chords', {
     startSec: 10,
     durationSec: 4,
-    notes: [createNote({ pitch: 60, startSec: 0.5, durationSec: 1 })],
+    notes: [createNote({ pitch: 60, startBeat: 0.5, durationBeat: 1 })],
   });
   session = updateClips(session, track.id, () => [host, chords]);
 
   const seen = notesInClipTime(session, host, track.id, chords.id);
   eq(seen.length, 1, 'one note');
-  close(seen[0]?.startSec ?? 0, 2.5, 'shifted by the two seconds between the clips', 1e-9);
+  // The clips are two seconds apart, which at 120 BPM is four beats.
+  close(seen[0]?.startBeat ?? 0, 4.5, 'shifted by the four beats between the clips', 1e-9);
   eq(seen[0]?.pitch, 60, 'and unchanged otherwise');
 
   // A pattern-backed source resolves through the link, so a placed pattern
@@ -387,7 +389,7 @@ check('another part can be read in this clip\'s time base', () => {
   const captured = captureAsPattern(session, track.id, chords.id, 'Chords', 120)!;
   const throughLink = notesInClipTime(captured.session, host, track.id, chords.id);
   eq(throughLink.length, 1, 'still one note');
-  close(throughLink[0]?.startSec ?? 0, 2.5, 'still in the host\'s clock', 1e-9);
+  close(throughLink[0]?.startBeat ?? 0, 4.5, 'still in the host\'s clock', 1e-9);
 
   eq(notesInClipTime(session, host, track.id, 'nope').length, 0, 'a missing source is empty');
 });
@@ -395,71 +397,71 @@ check('another part can be read in this clip\'s time base', () => {
 // ── Note tools ────────────────────────────────────────────────────────────────
 
 check('a chord stamp writes a voicing, low to high', () => {
-  const notes = stampChord(makeChord(0, 'maj7'), { startSec: 1, durationSec: 2, bottomPitch: 48 });
+  const notes = stampChord(makeChord(0, 'maj7'), { startBeat: 1, durationBeat: 2, bottomPitch: 48 });
   eq(notes.length, 4, 'four voices');
   for (const n of notes) {
-    close(n.startSec, 1, 'all at the same time', 1e-9);
-    close(n.durationSec, 2, 'all the same length', 1e-9);
+    close(n.startBeat, 1, 'all at the same time', 1e-9);
+    close(n.durationBeat, 2, 'all the same length', 1e-9);
   }
   const pitches = notes.map((n) => n.pitch);
   eq(pitches.join(','), [...pitches].sort((a, b) => a - b).join(','), 'sorted low to high');
-  const open = stampChord(makeChord(0, 'maj7'), { startSec: 0, durationSec: 1, open: true });
+  const open = stampChord(makeChord(0, 'maj7'), { startBeat: 0, durationBeat: 1, open: true });
   assert(Math.max(...open.map((n) => n.pitch)) - Math.min(...open.map((n) => n.pitch))
     > Math.max(...pitches) - Math.min(...pitches), 'an open voicing spans wider');
 });
 
 check('chord grouping tells a chord from a melody', () => {
   const chord = [
-    createNote({ pitch: 60, startSec: 0, durationSec: 1 }),
-    createNote({ pitch: 64, startSec: 0, durationSec: 1 }),
-    createNote({ pitch: 67, startSec: 0, durationSec: 1 }),
+    createNote({ pitch: 60, startBeat: 0, durationBeat: 1 }),
+    createNote({ pitch: 64, startBeat: 0, durationBeat: 1 }),
+    createNote({ pitch: 67, startBeat: 0, durationBeat: 1 }),
   ];
   eq(chordGroups(chord).length, 1, 'three notes at once are one chord');
   const melody = [
-    createNote({ pitch: 60, startSec: 0, durationSec: 0.4 }),
-    createNote({ pitch: 62, startSec: 0.5, durationSec: 0.4 }),
-    createNote({ pitch: 64, startSec: 1.0, durationSec: 0.4 }),
+    createNote({ pitch: 60, startBeat: 0, durationBeat: 0.4 }),
+    createNote({ pitch: 62, startBeat: 0.5, durationBeat: 0.4 }),
+    createNote({ pitch: 64, startBeat: 1.0, durationBeat: 0.4 }),
   ];
   eq(chordGroups(melody).length, 3, 'a melody is three groups');
 });
 
 check('arpeggiate turns a held chord into a run', () => {
   const chord = [60, 64, 67].map((pitch) =>
-    createNote({ pitch, startSec: 0, durationSec: 1 }));
-  const up = arpeggiate(chord, { rateSec: 0.25, direction: 'up' });
+    createNote({ pitch, startBeat: 0, durationBeat: 1 }));
+  const up = arpeggiate(chord, { rateBeat: 0.25, direction: 'up' });
   eq(up.length, 4, 'four steps in one second');
   eq(up.map((n) => n.pitch).join(','), '60,64,67,60', 'up, then round again');
-  up.forEach((n, i) => close(n.startSec, i * 0.25, `step ${i}`, 1e-9));
+  up.forEach((n, i) => close(n.startBeat, i * 0.25, `step ${i}`, 1e-9));
 
-  const down = arpeggiate(chord, { rateSec: 0.25, direction: 'down' });
+  const down = arpeggiate(chord, { rateBeat: 0.25, direction: 'down' });
   eq(down.map((n) => n.pitch).join(','), '67,64,60,67', 'down');
 
-  const octaves = arpeggiate(chord, { rateSec: 0.25, direction: 'up', octaves: 2 });
+  const octaves = arpeggiate(chord, { rateBeat: 0.25, direction: 'up', octaves: 2 });
   eq(octaves.map((n) => n.pitch).join(','), '60,64,67,72', 'a second octave stacks on top');
 });
 
 check('updown does not stutter at the turn', () => {
   const chord = [60, 64, 67].map((pitch) =>
-    createNote({ pitch, startSec: 0, durationSec: 1 }));
-  const notes = arpeggiate(chord, { rateSec: 0.2, direction: 'updown' });
+    createNote({ pitch, startBeat: 0, durationBeat: 1 }));
+  const notes = arpeggiate(chord, { rateBeat: 0.2, direction: 'updown' });
   // 60 64 67 64 then round to 60 — the top and bottom are not played twice.
   eq(notes.slice(0, 5).map((n) => n.pitch).join(','), '60,64,67,64,60', 'a clean turn');
 });
 
 check('a melody through the arpeggiator stays a melody', () => {
   const melody = [
-    createNote({ pitch: 60, startSec: 0, durationSec: 0.25 }),
-    createNote({ pitch: 62, startSec: 0.5, durationSec: 0.25 }),
+    createNote({ pitch: 60, startBeat: 0, durationBeat: 0.25 }),
+    createNote({ pitch: 62, startBeat: 0.5, durationBeat: 0.25 }),
   ];
-  const notes = arpeggiate(melody, { rateSec: 0.25, direction: 'up' });
+  const notes = arpeggiate(melody, { rateBeat: 0.25, direction: 'up' });
   eq(notes.length, 2, 'two notes in, two notes out');
   eq(notes.map((n) => n.pitch).join(','), '60,62', 'unchanged');
 });
 
 check('a random arpeggio is the same every time it renders', () => {
   const chord = [60, 64, 67, 71].map((pitch) =>
-    createNote({ pitch, startSec: 0, durationSec: 2 }));
-  const options = { rateSec: 0.25, direction: 'random' as const, seed: 7 };
+    createNote({ pitch, startBeat: 0, durationBeat: 2 }));
+  const options = { rateBeat: 0.25, direction: 'random' as const, seed: 7 };
   eq(arpeggiate(chord, options).map((n) => n.pitch).join(','),
     arpeggiate(chord, options).map((n) => n.pitch).join(','), 'deterministic');
   assert(arpeggiate(chord, { ...options, seed: 8 }).map((n) => n.pitch).join(',')
@@ -468,25 +470,25 @@ check('a random arpeggio is the same every time it renders', () => {
 
 check('a strum lands one note at a time and ends together', () => {
   const chord = [60, 64, 67, 72].map((pitch) =>
-    createNote({ pitch, startSec: 1, durationSec: 2 }));
-  const played = strum(chord, { spreadSec: 0.02, direction: 'up' });
+    createNote({ pitch, startBeat: 1, durationBeat: 2 }));
+  const played = strum(chord, { spreadBeat: 0.02, direction: 'up' });
   eq(played.length, 4, 'four voices');
-  played.forEach((n, i) => close(n.startSec, 1 + i * 0.02, `voice ${i} comes in late`, 1e-9));
+  played.forEach((n, i) => close(n.startBeat, 1 + i * 0.02, `voice ${i} comes in late`, 1e-9));
   // The ends stay together — shortening every note by its own offset is what
   // makes a strummed chord sound clipped.
-  for (const n of played) close(noteEnd(n), 3, 'all ring out together', 1e-9);
+  for (const n of played) close(noteEndBeat(n), 3, 'all ring out together', 1e-9);
   // Later voices are quieter.
   assert((played[3]?.velocity ?? 1) < (played[0]?.velocity ?? 0), 'velocity falls off');
 
-  const down = strum(chord, { spreadSec: 0.02, direction: 'down' });
+  const down = strum(chord, { spreadBeat: 0.02, direction: 'down' });
   eq(down[0]?.pitch, 72, 'a downstroke starts at the top');
 });
 
 check('a slide is real pitch-bend data, and wide jumps are left alone', () => {
   const line = [
-    createNote({ pitch: 60, startSec: 0, durationSec: 0.5 }),
-    createNote({ pitch: 62, startSec: 0.5, durationSec: 0.5 }),      // +2, slid
-    createNote({ pitch: 74, startSec: 1.0, durationSec: 0.5 }),      // +12, not slid
+    createNote({ pitch: 60, startBeat: 0, durationBeat: 0.5 }),
+    createNote({ pitch: 62, startBeat: 0.5, durationBeat: 0.5 }),      // +2, slid
+    createNote({ pitch: 74, startBeat: 1.0, durationBeat: 0.5 }),      // +12, not slid
   ];
   const slid = applySlides(line, { bendRangeSemitones: 2, timeFraction: 0.25 });
   eq(slid[0]?.expression.length, 0, 'the first note has nothing to slide from');
@@ -495,22 +497,22 @@ check('a slide is real pitch-bend data, and wide jumps are left alone', () => {
   assert(!!bend, 'the second note bends');
   close(bend!.points[0]?.value ?? 0, -1, 'starting a whole tone below, at the range limit', 1e-9);
   close(bend!.points[1]?.value ?? 1, 0, 'and arriving in tune', 1e-9);
-  close(bend!.points[1]?.timeSec ?? 0, 0.125, 'a quarter of the way in', 1e-9);
+  close(bend!.points[1]?.timeBeat ?? 0, 0.125, 'a quarter of the way in', 1e-9);
 
   eq(slid[2]?.expression.length, 0, 'an octave jump is a portamento effect, not a legato');
   eq(clearSlides(slid).every((n) => n.expression.length === 0), true, 'and slides can be removed');
 });
 
 check('a flam is a grace note before the hit', () => {
-  const hit = [createNote({ pitch: 38, startSec: 1, durationSec: 0.2, velocity: 1 })];
-  const flammed = flam(hit, { spacingSec: 0.03, graceVelocity: 0.5 });
+  const hit = [createNote({ pitch: 38, startBeat: 1, durationBeat: 0.2, velocity: 1 })];
+  const flammed = flam(hit, { spacingBeat: 0.03, graceVelocity: 0.5 });
   eq(flammed.length, 2, 'grace plus hit');
-  close(flammed[0]?.startSec ?? -1, 0.97, 'the grace comes first', 1e-9);
-  close(flammed[1]?.startSec ?? -1, 1, 'the hit stays put', 1e-9);
+  close(flammed[0]?.startBeat ?? -1, 0.97, 'the grace comes first', 1e-9);
+  close(flammed[1]?.startBeat ?? -1, 1, 'the hit stays put', 1e-9);
   close(flammed[0]?.velocity ?? 0, 0.5, 'and is softer', 1e-9);
 
   // A hit too close to zero cannot have a grace note before it.
-  eq(flam([createNote({ pitch: 38, startSec: 0.01 })], { spacingSec: 0.05 }).length, 1,
+  eq(flam([createNote({ pitch: 38, startBeat: 0.01 })], { spacingBeat: 0.05 }).length, 1,
     'no negative start times');
   eq(flam(hit, { count: 4 }).length, 4, 'a longer roll');
 });

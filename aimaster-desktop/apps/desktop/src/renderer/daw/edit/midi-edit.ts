@@ -1,19 +1,31 @@
 // MIDI note editing — every verb the Key Editor's inspector exposes.
 //
-// All pure `(notes, options) → notes`, so they are unit-testable to the
-// millisecond and reusable from the keyboard, the mouse and (later) an AI
-// action without a second implementation.
+// All pure `(notes, options) → notes`, so they are unit-testable exactly and
+// reusable from the keyboard, the mouse and (later) an AI action without a
+// second implementation.
+//
+// Everything here is in BEATS, note-relative — the domain notes are stored
+// in.  A quantize grid of 0.25 is a sixteenth at every tempo, and none of
+// these verbs needs a tempo map to do its job.
 //
 // Randomised operations (Humanize, quantize randomise) take a SEED and use a
 // deterministic generator: an offline bounce has to reproduce exactly what
 // you heard, and `Math.random()` would make every render different.
 
 import {
-  createNote, noteEnd, sortNotes, clamp01, type MidiNote,
+  createNote, noteEndBeat, sortNotes, clamp01, type MidiNote,
 } from '../model/midi.js';
 import { snapPitchToScale, type Scale } from '../model/scales.js';
 
 const EPS = 1e-9;
+
+/**
+ * Shortest a note may be shrunk to: a 128th note.
+ *
+ * A musical floor, not a millisecond one — the old 10 ms floor meant a
+ * note's minimum length changed meaning with the tempo.
+ */
+export const MIN_NOTE_BEATS = 1 / 32;
 
 // ── Deterministic randomness ──────────────────────────────────────────────────
 
@@ -57,10 +69,10 @@ export function mapSelected(
 }
 
 export interface MoveOptions {
-  deltaSec?: number;
+  deltaBeat?: number;
   deltaPitch?: number;
-  /** Grid to snap the resulting start to (0 = free). */
-  gridSec?: number;
+  /** Grid in beats to snap the resulting start to (0 = free). */
+  gridBeat?: number;
   /** Constrain the result into a scale (Snap Pitch Editing). */
   scale?: Scale | null;
 }
@@ -68,22 +80,22 @@ export interface MoveOptions {
 export function moveNotes(
   notes: readonly MidiNote[], ids: ReadonlySet<string>, options: MoveOptions,
 ): MidiNote[] {
-  const { deltaSec = 0, deltaPitch = 0, gridSec = 0, scale = null } = options;
+  const { deltaBeat = 0, deltaPitch = 0, gridBeat = 0, scale = null } = options;
   return sortNotes(mapSelected(notes, ids, (n) => {
-    let start = Math.max(0, n.startSec + deltaSec);
-    if (gridSec > 0) start = Math.max(0, Math.round(start / gridSec) * gridSec);
+    let start = Math.max(0, n.startBeat + deltaBeat);
+    if (gridBeat > 0) start = Math.max(0, Math.round(start / gridBeat) * gridBeat);
     let pitch = Math.min(127, Math.max(0, n.pitch + deltaPitch));
     if (scale) pitch = snapPitchToScale(pitch, scale);
-    return { ...n, startSec: start, pitch };
+    return { ...n, startBeat: start, pitch };
   }));
 }
 
-/** Drag the right edge.  `minSec` keeps a note from collapsing to nothing. */
+/** Drag the right edge.  `minBeat` keeps a note from collapsing to nothing. */
 export function resizeNotes(
-  notes: readonly MidiNote[], ids: ReadonlySet<string>, deltaSec: number, minSec = 0.01,
+  notes: readonly MidiNote[], ids: ReadonlySet<string>, deltaBeat: number, minBeat = MIN_NOTE_BEATS,
 ): MidiNote[] {
   return mapSelected(notes, ids, (n) => ({
-    ...n, durationSec: Math.max(minSec, n.durationSec + deltaSec),
+    ...n, durationBeat: Math.max(minBeat, n.durationBeat + deltaBeat),
   }));
 }
 
@@ -166,8 +178,8 @@ export function quantizePitches(
 // ── Quantize ──────────────────────────────────────────────────────────────────
 
 export interface QuantizeOptions {
-  /** Base grid in seconds (a 1/16 at 120 BPM = 0.125 s). */
-  gridSec: number;
+  /** Base grid in BEATS (a 1/16 note = 0.25). */
+  gridBeat: number;
   /** 3 = triplets, 5 = quintuplets… 0/1 = straight. */
   tuplet?: number;
   /** 0…100 — pushes every second grid line later. */
@@ -178,11 +190,11 @@ export interface QuantizeOptions {
    * Notes further than this from a grid line are left alone (Catch Range).
    * 0 = catch everything.
    */
-  catchRangeSec?: number;
-  /** Notes already this close to the grid are left alone (Safe Range). */
-  safeRangeSec?: number;
+  catchRangeBeat?: number;
+  /** Notes already this close (beats) to the grid are left alone (Safe Range). */
+  safeRangeBeat?: number;
   /** Deterministic humanising spread applied after quantising. */
-  randomizeSec?: number;
+  randomizeBeat?: number;
   seed?: number;
   /** Also snap the note ENDS (Quantize Ends). */
   quantizeEnds?: boolean;
@@ -193,7 +205,7 @@ export interface QuantizeOptions {
 /** The grid line nearest `time`, honouring tuplets and swing. */
 export function nearestGridTime(time: number, options: QuantizeOptions): number {
   const tuplet = options.tuplet && options.tuplet > 1 ? options.tuplet : 1;
-  const step = options.gridSec / (tuplet === 1 ? 1 : tuplet / 2);
+  const step = options.gridBeat / (tuplet === 1 ? 1 : tuplet / 2);
   if (step <= 0) return time;
 
   const swing = (options.swingPercent ?? 0) / 100;
@@ -212,44 +224,44 @@ export function quantizeNotes(
   notes: readonly MidiNote[], ids: ReadonlySet<string>, options: QuantizeOptions,
 ): MidiNote[] {
   const strength = (options.strengthPercent ?? 100) / 100;
-  const catchRange = options.catchRangeSec ?? 0;
-  const safeRange = options.safeRangeSec ?? 0;
+  const catchRange = options.catchRangeBeat ?? 0;
+  const safeRange = options.safeRangeBeat ?? 0;
   const rng = makeRng(options.seed ?? 1);
-  const randomize = options.randomizeSec ?? 0;
+  const randomize = options.randomizeBeat ?? 0;
 
   return sortNotes(mapSelected(notes, ids, (n) => {
-    const target = nearestGridTime(n.startSec, options);
-    const distance = Math.abs(target - n.startSec);
+    const target = nearestGridTime(n.startBeat, options);
+    const distance = Math.abs(target - n.startBeat);
 
-    let start = n.startSec;
+    let start = n.startBeat;
     const outsideCatch = catchRange > 0 && distance > catchRange;
     const insideSafe = safeRange > 0 && distance <= safeRange;
     if (!outsideCatch && !insideSafe) {
-      start = n.startSec + (target - n.startSec) * strength;
+      start = n.startBeat + (target - n.startBeat) * strength;
     }
     if (randomize > 0) start += bipolarRandom(rng) * randomize;
     start = Math.max(0, start);
 
-    let duration = n.durationSec;
+    let duration = n.durationBeat;
     if (options.quantizeLengths) {
-      const step = options.gridSec;
+      const step = options.gridBeat;
       duration = Math.max(step, Math.round(duration / step) * step);
     } else if (options.quantizeEnds) {
       const end = nearestGridTime(start + duration, options);
-      duration = Math.max(0.01, end - start);
+      duration = Math.max(MIN_NOTE_BEATS, end - start);
     }
 
-    return start === n.startSec && duration === n.durationSec
+    return start === n.startBeat && duration === n.durationBeat
       ? n
-      : { ...n, startSec: start, durationSec: duration };
+      : { ...n, startBeat: start, durationBeat: duration };
   }));
 }
 
 // ── Humanize ──────────────────────────────────────────────────────────────────
 
 export interface HumanizeOptions {
-  /** Maximum timing displacement, seconds. */
-  timingSec?: number;
+  /** Maximum timing displacement, in beats. */
+  timingBeat?: number;
   /** Maximum velocity displacement, normalised (0.08 ≈ 10 of 127). */
   velocity?: number;
   /** Maximum length displacement, as a fraction of each note's length. */
@@ -258,9 +270,9 @@ export interface HumanizeOptions {
    * Push notes that land on strong beats slightly earlier and weak ones
    * later — the "playing ahead of the beat" feel, not just noise.
    */
-  grooveSec?: number;
-  /** Grid used to decide what a strong beat is. */
-  gridSec?: number;
+  grooveBeat?: number;
+  /** Grid in beats used to decide what a strong beat is. */
+  gridBeat?: number;
   seed?: number;
 }
 
@@ -275,23 +287,23 @@ export function humanizeNotes(
   notes: readonly MidiNote[], ids: ReadonlySet<string>, options: HumanizeOptions = {},
 ): MidiNote[] {
   const {
-    timingSec = 0.012, velocity = 0.06, lengthPercent = 0,
-    grooveSec = 0, gridSec = 0, seed = 1,
+    timingBeat = 0.012, velocity = 0.06, lengthPercent = 0,
+    grooveBeat = 0, gridBeat = 0, seed = 1,
   } = options;
   const rng = makeRng(seed);
 
   return sortNotes(mapSelected(notes, ids, (n) => {
-    let start = n.startSec + bipolarRandom(rng) * timingSec;
-    if (grooveSec !== 0 && gridSec > 0) {
-      const beatIndex = Math.round(n.startSec / gridSec);
+    let start = n.startBeat + bipolarRandom(rng) * timingBeat;
+    if (grooveBeat !== 0 && gridBeat > 0) {
+      const beatIndex = Math.round(n.startBeat / gridBeat);
       const onStrongBeat = beatIndex % 2 === 0;
-      start += onStrongBeat ? -grooveSec : grooveSec;
+      start += onStrongBeat ? -grooveBeat : grooveBeat;
     }
     const nextVelocity = clamp01(n.velocity + bipolarRandom(rng) * velocity);
     const duration = lengthPercent > 0
-      ? Math.max(0.01, n.durationSec * (1 + bipolarRandom(rng) * lengthPercent))
-      : n.durationSec;
-    return { ...n, startSec: Math.max(0, start), velocity: nextVelocity, durationSec: duration };
+      ? Math.max(MIN_NOTE_BEATS, n.durationBeat * (1 + bipolarRandom(rng) * lengthPercent))
+      : n.durationBeat;
+    return { ...n, startBeat: Math.max(0, start), velocity: nextVelocity, durationBeat: duration };
   }));
 }
 
@@ -299,18 +311,18 @@ export function humanizeNotes(
 
 /**
  * Legato: stretch each note until the next one on the same "voice".
- * `overlapSec` can be negative to leave a gap (Cubase's Overlap in ticks).
+ * `overlapBeat` can be negative to leave a gap (Cubase's Overlap in ticks).
  */
 export function applyLegato(
-  notes: readonly MidiNote[], ids: ReadonlySet<string>, overlapSec = 0,
+  notes: readonly MidiNote[], ids: ReadonlySet<string>, overlapBeat = 0,
 ): MidiNote[] {
   const ordered = sortNotes(notes);
   const result = ordered.map((n) => {
     if (!ids.has(n.id)) return n;
-    const next = ordered.find((m) => m.id !== n.id && m.startSec > n.startSec + EPS);
+    const next = ordered.find((m) => m.id !== n.id && m.startBeat > n.startBeat + EPS);
     if (!next) return n;
-    const duration = Math.max(0.01, next.startSec - n.startSec + overlapSec);
-    return duration === n.durationSec ? n : { ...n, durationSec: duration };
+    const duration = Math.max(MIN_NOTE_BEATS, next.startBeat - n.startBeat + overlapBeat);
+    return duration === n.durationBeat ? n : { ...n, durationBeat: duration };
   });
   return result;
 }
@@ -320,24 +332,24 @@ export function applyLegato(
  * own phrasing: 0 % leaves lengths alone, 100 % is full legato.
  */
 export function scaleLegato(
-  notes: readonly MidiNote[], ids: ReadonlySet<string>, percent: number, overlapSec = 0,
+  notes: readonly MidiNote[], ids: ReadonlySet<string>, percent: number, overlapBeat = 0,
 ): MidiNote[] {
   const amount = Math.max(0, Math.min(1, percent / 100));
   if (amount === 0) return notes as MidiNote[];
-  const legato = applyLegato(notes, ids, overlapSec);
+  const legato = applyLegato(notes, ids, overlapBeat);
   const byId = new Map(legato.map((n) => [n.id, n] as const));
   return mapSelected(notes, ids, (n) => {
     const target = byId.get(n.id);
     if (!target) return n;
-    const duration = n.durationSec + (target.durationSec - n.durationSec) * amount;
-    return { ...n, durationSec: Math.max(0.01, duration) };
+    const duration = n.durationBeat + (target.durationBeat - n.durationBeat) * amount;
+    return { ...n, durationBeat: Math.max(MIN_NOTE_BEATS, duration) };
   });
 }
 
 export function fixedLengths(
-  notes: readonly MidiNote[], ids: ReadonlySet<string>, lengthSec: number,
+  notes: readonly MidiNote[], ids: ReadonlySet<string>, lengthBeat: number,
 ): MidiNote[] {
-  return mapSelected(notes, ids, (n) => ({ ...n, durationSec: Math.max(0.01, lengthSec) }));
+  return mapSelected(notes, ids, (n) => ({ ...n, durationBeat: Math.max(MIN_NOTE_BEATS, lengthBeat) }));
 }
 
 /**
@@ -351,12 +363,12 @@ export function extendToNextSelected(
   const nextStart = new Map<string, number>();
   selected.forEach((n, i) => {
     const next = selected[i + 1];
-    if (next) nextStart.set(n.id, next.startSec);
+    if (next) nextStart.set(n.id, next.startBeat);
   });
   return mapSelected(notes, ids, (n) => {
     const end = nextStart.get(n.id);
     if (end === undefined) return n;
-    return { ...n, durationSec: Math.max(0.01, end - n.startSec) };
+    return { ...n, durationBeat: Math.max(MIN_NOTE_BEATS, end - n.startBeat) };
   });
 }
 
@@ -369,8 +381,8 @@ export function deleteOverlapsMono(notes: readonly MidiNote[]): MidiNote[] {
   return ordered.map((n, i) => {
     const next = ordered[i + 1];
     if (!next) return n;
-    if (noteEnd(n) <= next.startSec + EPS) return n;
-    return { ...n, durationSec: Math.max(0.01, next.startSec - n.startSec) };
+    if (noteEndBeat(n) <= next.startBeat + EPS) return n;
+    return { ...n, durationBeat: Math.max(MIN_NOTE_BEATS, next.startBeat - n.startBeat) };
   });
 }
 
@@ -383,37 +395,37 @@ export function deleteOverlapsPoly(notes: readonly MidiNote[]): MidiNote[] {
   return ordered.map((n, i) => {
     const next = ordered.slice(i + 1).find((m) => m.pitch === n.pitch);
     if (!next) return n;
-    if (noteEnd(n) <= next.startSec + EPS) return n;
-    return { ...n, durationSec: Math.max(0.01, next.startSec - n.startSec) };
+    if (noteEndBeat(n) <= next.startBeat + EPS) return n;
+    return { ...n, durationBeat: Math.max(MIN_NOTE_BEATS, next.startBeat - n.startBeat) };
   });
 }
 
 /** Sustain-pedal (CC64) spans stretched into note lengths. */
 export function pedalsToNoteLength(
-  notes: readonly MidiNote[], pedalSpans: ReadonlyArray<{ startSec: number; endSec: number }>,
+  notes: readonly MidiNote[], pedalSpans: ReadonlyArray<{ startBeat: number; endBeat: number }>,
 ): MidiNote[] {
   if (pedalSpans.length === 0) return notes as MidiNote[];
   return notes.map((n) => {
-    const span = pedalSpans.find((p) => n.startSec >= p.startSec - EPS && n.startSec < p.endSec);
+    const span = pedalSpans.find((p) => n.startBeat >= p.startBeat - EPS && n.startBeat < p.endBeat);
     if (!span) return n;
-    const duration = Math.max(n.durationSec, span.endSec - n.startSec);
-    return duration === n.durationSec ? n : { ...n, durationSec: duration };
+    const duration = Math.max(n.durationBeat, span.endBeat - n.startBeat);
+    return duration === n.durationBeat ? n : { ...n, durationBeat: duration };
   });
 }
 
 // ── Split / glue ──────────────────────────────────────────────────────────────
 
-export function splitNotesAt(notes: readonly MidiNote[], timeSec: number): MidiNote[] {
+export function splitNotesAt(notes: readonly MidiNote[], atBeat: number): MidiNote[] {
   const out: MidiNote[] = [];
   for (const n of notes) {
-    if (timeSec > n.startSec + EPS && timeSec < noteEnd(n) - EPS) {
-      const headLength = timeSec - n.startSec;
-      out.push({ ...n, id: createNote().id, durationSec: headLength });
+    if (atBeat > n.startBeat + EPS && atBeat < noteEndBeat(n) - EPS) {
+      const headLength = atBeat - n.startBeat;
+      out.push({ ...n, id: createNote().id, durationBeat: headLength });
       out.push({
         ...n,
         id: createNote().id,
-        startSec: timeSec,
-        durationSec: n.durationSec - headLength,
+        startBeat: atBeat,
+        durationBeat: n.durationBeat - headLength,
         // The tail continues the phrase, so it starts from the head's release.
         velocity: n.velocity,
       });
@@ -444,7 +456,7 @@ export function glueNotes(notes: readonly MidiNote[], ids: ReadonlySet<string>):
     const last = list[list.length - 1];
     if (!first || !last) continue;
     for (const n of list) removed.add(n.id);
-    merged.push({ ...first, durationSec: Math.max(0.01, noteEnd(last) - first.startSec) });
+    merged.push({ ...first, durationBeat: Math.max(MIN_NOTE_BEATS, noteEndBeat(last) - first.startBeat) });
   }
   if (merged.length === 0) return notes as MidiNote[];
   return sortNotes([...notes.filter((n) => !removed.has(n.id)), ...merged]);
@@ -453,24 +465,24 @@ export function glueNotes(notes: readonly MidiNote[], ids: ReadonlySet<string>):
 // ── Queries ───────────────────────────────────────────────────────────────────
 
 /** Notes sounding at a moment — feeds the Current Chord Display. */
-export function notesAt(notes: readonly MidiNote[], timeSec: number): MidiNote[] {
-  return notes.filter((n) => !n.muted && timeSec >= n.startSec - EPS && timeSec < noteEnd(n));
+export function notesAt(notes: readonly MidiNote[], atBeat: number): MidiNote[] {
+  return notes.filter((n) => !n.muted && atBeat >= n.startBeat - EPS && atBeat < noteEndBeat(n));
 }
 
 /** Pitch and time bounds of a set of notes, for zoom-to-fit. */
 export function noteBounds(notes: readonly MidiNote[]): {
-  startSec: number; endSec: number; lowPitch: number; highPitch: number;
+  startBeat: number; endBeat: number; lowPitch: number; highPitch: number;
 } | null {
   if (notes.length === 0) return null;
-  let startSec = Infinity;
-  let endSec = -Infinity;
+  let startBeat = Infinity;
+  let endBeat = -Infinity;
   let lowPitch = 127;
   let highPitch = 0;
   for (const n of notes) {
-    startSec = Math.min(startSec, n.startSec);
-    endSec = Math.max(endSec, noteEnd(n));
+    startBeat = Math.min(startBeat, n.startBeat);
+    endBeat = Math.max(endBeat, noteEndBeat(n));
     lowPitch = Math.min(lowPitch, n.pitch);
     highPitch = Math.max(highPitch, n.pitch);
   }
-  return { startSec, endSec, lowPitch, highPitch };
+  return { startBeat, endBeat, lowPitch, highPitch };
 }

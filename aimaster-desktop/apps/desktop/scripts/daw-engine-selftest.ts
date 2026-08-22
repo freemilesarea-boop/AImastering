@@ -324,10 +324,18 @@ async function main(): Promise<void> {
   // ── MIDI ────────────────────────────────────────────────────────────────
 
   /** Session with one instrument track holding a MIDI part. */
+  /**
+   * A one-part MIDI session at 60 BPM.
+   *
+   * Sixty, not the default 120, so one beat is exactly one second: notes are
+   * written in beats and the render is measured in seconds, and at this tempo
+   * the two read the same.  The conversion still runs — it just does not
+   * force every timing below to be restated.
+   */
   function midiSession(notes: Parameters<typeof createNote>[0][]): DawSession {
     resetIds();
     resetNoteIds();
-    let s = createSession('MIDI', SR);
+    let s = { ...createSession('MIDI', SR), tempoBpm: 60 };
     const track = createTrack('Synth', 'instrument');
     s = addTrack(s, track);
     s = updateClips(s, track.id, () => [createMidiPart('Part', {
@@ -350,7 +358,7 @@ async function main(): Promise<void> {
   }
 
   await check('a MIDI part renders audio through its instrument', async () => {
-    const s = midiSession([{ pitch: 69, startSec: 0.1, durationSec: 0.8, velocity: from7bit(110) }]);
+    const s = midiSession([{ pitch: 69, startBeat: 0.1, durationBeat: 0.8, velocity: from7bit(110) }]);
     const out = await render(s, 2);
     const silence = channelRms(out, 0, 0, Math.floor(SR * 0.05));
     const sounding = channelRms(out, 0, Math.floor(SR * 0.3), Math.floor(SR * 0.8));
@@ -360,16 +368,16 @@ async function main(): Promise<void> {
 
   await check('note velocity scales the rendered level', async () => {
     const loud = await render(midiSession([
-      { pitch: 60, startSec: 0, durationSec: 1, velocity: from7bit(127) }]), 1.5);
+      { pitch: 60, startBeat: 0, durationBeat: 1, velocity: from7bit(127) }]), 1.5);
     const soft = await render(midiSession([
-      { pitch: 60, startSec: 0, durationSec: 1, velocity: from7bit(30) }]), 1.5);
+      { pitch: 60, startBeat: 0, durationBeat: 1, velocity: from7bit(30) }]), 1.5);
     const loudRms = channelRms(loud, 0, Math.floor(SR * 0.2), Math.floor(SR * 0.8));
     const softRms = channelRms(soft, 0, Math.floor(SR * 0.2), Math.floor(SR * 0.8));
     assert(loudRms > softRms * 1.8, `velocity matters — ${loudRms.toFixed(4)} vs ${softRms.toFixed(4)}`);
   });
 
   await check('a muted note renders nothing', async () => {
-    const s = midiSession([{ pitch: 60, startSec: 0, durationSec: 1, muted: true }]);
+    const s = midiSession([{ pitch: 60, startBeat: 0, durationBeat: 1, muted: true }]);
     const out = await render(s, 1.5);
     close(channelRms(out, 0), 0, 'silent', 1e-5);
   });
@@ -379,12 +387,14 @@ async function main(): Promise<void> {
     // it should end near 493.9 Hz (B3).
     resetIds();
     resetNoteIds();
-    let s = createSession('MPE', SR);
+    // 60 BPM for the same reason `midiSession` uses it: the note is written
+    // in beats and measured in seconds, and here they read the same.
+    let s = { ...createSession('MPE', SR), tempoBpm: 60 };
     const track = createTrack('Synth', 'instrument');
     s = addTrack(s, track);
     const bent = setExpression(
-      createNote({ pitch: 69, startSec: 0, durationSec: 1.5, velocity: from7bit(110) }),
-      { target: { kind: 'pitchBend' }, points: [{ timeSec: 0, value: 0 }, { timeSec: 1.5, value: 1 }] },
+      createNote({ pitch: 69, startBeat: 0, durationBeat: 1.5, velocity: from7bit(110) }),
+      { target: { kind: 'pitchBend' }, points: [{ timeBeat: 0, value: 0 }, { timeBeat: 1.5, value: 1 }] },
     );
     s = updateClips(s, track.id, () => [createMidiPart('Part', {
       startSec: 0, durationSec: 2, notes: [bent],
@@ -406,7 +416,7 @@ async function main(): Promise<void> {
   });
 
   await check('a MIDI track obeys the fader and mute like any other channel', async () => {
-    const base = midiSession([{ pitch: 60, startSec: 0, durationSec: 1, velocity: from7bit(110) }]);
+    const base = midiSession([{ pitch: 60, startBeat: 0, durationBeat: 1, velocity: from7bit(110) }]);
     const trackId = base.tracks.find((t) => t.kind === 'instrument')!.id;
     const full = await render(base, 1.5);
     const quiet = await render(setVolumeDb(base, trackId, -12), 1.5);

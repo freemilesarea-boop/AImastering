@@ -18,7 +18,7 @@ import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import {
   GM_DRUM_MAP, addChannel, clearChannel, createPattern as createStepPattern, euclidFill,
-  describePattern as describeSteps, patternSeconds, removeChannel, resizePattern,
+  describePattern as describeSteps, patternBeats, removeChannel, resizePattern,
   rotateChannel, setStep, stepsToNotes, toggleStep, type StepPattern,
 } from '../../../daw/model/step-sequencer.js';
 import {
@@ -30,6 +30,8 @@ import {
 } from '../../../daw/model/session-ops.js';
 import { premium } from '../../../theme/premium.js';
 import type { DawSession } from '../../../daw/model/types.js';
+import { beatsToSecAt, partClock } from '../../../daw/model/note-time.js';
+import { tempoMapOf } from '../../../daw/model/tempo-map.js';
 
 const CELL = 26;
 
@@ -63,10 +65,13 @@ export default function StepSequencer() {
   /** The grid becomes a pattern in the library — one copy, many placements. */
   const commitToLibrary = (): void => {
     if (!grid) return;
-    const notes = stepsToNotes(grid, session.tempoBpm, { ignoreProbability: false });
+    const notes = stepsToNotes(grid, { ignoreProbability: false });
     if (notes.length === 0) { notify('스텝을 먼저 찍으세요', 'warning'); return; }
+    // The grid is in beats; the pattern's box is in seconds, measured at the
+    // playhead where it will actually be placed.
+    const clock = partClock(tempoMapOf(session), 0);
     const pattern = createPattern(
-      grid.name, notes, patternSeconds(grid, session.tempoBpm),
+      grid.name, notes, beatsToSecAt(clock, patternBeats(grid)),
       session.tempoBpm, (session.patterns ?? []).length);
     apply((s) => addPattern(s, pattern));
     notify(`${pattern.name} 패턴으로 저장 — 배치하면 링크됩니다`, 'success');
@@ -241,7 +246,7 @@ export default function StepSequencer() {
             writeGrid((g) => addChannel(g, entry?.name ?? `Note ${addPitch}`, addPitch));
           }} style={button}>+ 채널</button>
           <span style={{ fontFamily: premium.type.mono, fontSize: 10, color: premium.text.faint }}>
-            {describeSteps(grid, session.tempoBpm)}
+            {describeSteps(grid)}
           </span>
         </div>
 

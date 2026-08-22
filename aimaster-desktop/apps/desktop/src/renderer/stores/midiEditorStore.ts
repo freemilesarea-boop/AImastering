@@ -77,13 +77,19 @@ interface MidiEditorState {
   controllerTarget: ExpressionTarget;
   setControllerTarget: (t: ExpressionTarget) => void;
 
-  /** View. */
-  pxPerSec: number;
-  setPxPerSec: (v: number) => void;
+  /**
+   * View.
+   *
+   * The piano roll's axis is BEATS, not seconds — that is the axis its
+   * ruler shows and its notes are stored on, so a tempo change never
+   * redraws the roll.
+   */
+  pxPerBeat: number;
+  setPxPerBeat: (v: number) => void;
   pitchHeight: number;
   setPitchHeight: (v: number) => void;
-  scrollSec: number;
-  setScrollSec: (v: number) => void;
+  scrollBeat: number;
+  setScrollBeat: (v: number) => void;
   /** Lowest visible pitch (the grid draws upward from here). */
   bottomPitch: number;
   setBottomPitch: (v: number) => void;
@@ -143,23 +149,23 @@ export const useMidiEditorStore = create<MidiEditorState>((set) => ({
   controllerTarget: { kind: 'pitchBend' },
   setControllerTarget: (t) => set({ controllerTarget: t, laneMode: 'controller' }),
 
-  pxPerSec: 220,
-  setPxPerSec: (v) => set({ pxPerSec: Math.max(20, Math.min(3000, v)) }),
+  pxPerBeat: 110,
+  setPxPerBeat: (v) => set({ pxPerBeat: Math.max(10, Math.min(1500, v)) }),
   pitchHeight: 12,
   setPitchHeight: (v) => set({ pitchHeight: Math.max(5, Math.min(40, v)) }),
-  scrollSec: 0,
-  setScrollSec: (v) => set({ scrollSec: Math.max(0, v) }),
+  scrollBeat: 0,
+  setScrollBeat: (v) => set({ scrollBeat: Math.max(0, v) }),
   bottomPitch: 48,
   setBottomPitch: (v) => set({ bottomPitch: Math.max(0, Math.min(120, v)) }),
 
   quantize: {
-    gridSec: 0.125,
+    gridBeat: 0.25,          // a sixteenth, at every tempo
     strengthPercent: 100,
     swingPercent: 0,
     tuplet: 1,
-    catchRangeSec: 0,
-    safeRangeSec: 0,
-    randomizeSec: 0,
+    catchRangeBeat: 0,
+    safeRangeBeat: 0,
+    randomizeBeat: 0,
     seed: 1,
   },
   setQuantize: (patch) => set((s) => ({ quantize: { ...s.quantize, ...patch } })),
@@ -183,23 +189,28 @@ export const useMidiEditorStore = create<MidiEditorState>((set) => ({
   toggleScaleCorrection: () => set((s) => ({ scaleCorrection: !s.scaleCorrection })),
 }));
 
-/** Grid step in seconds for the current division at a tempo. */
-export function gridSecondsFor(tempoBpm: number, division: GridDivision, triplet: boolean): number {
-  const quarter = 60 / Math.max(1, tempoBpm);
-  const straight = quarter * (4 / division);
+/**
+ * Grid step in BEATS for a division.
+ *
+ * No tempo argument: a sixteenth is a quarter of a beat at 60 BPM and at
+ * 174 BPM alike.  The tempo only ever mattered because the grid used to be
+ * measured in seconds.
+ */
+export function gridBeatsFor(division: GridDivision, triplet: boolean): number {
+  const straight = 4 / division;
   return triplet ? (straight * 2) / 3 : straight;
 }
 
-/** The editor's current grid, derived from the session tempo. */
-export function currentGridSec(tempoBpm: number): number {
+/** The editor's current grid, in beats. */
+export function currentGridBeat(): number {
   const { division, triplet } = useMidiEditorStore.getState();
-  return gridSecondsFor(tempoBpm, division, triplet);
+  return gridBeatsFor(division, triplet);
 }
 
-/** Snap a part-relative time to the grid when snapping is on. */
-export function snapTimeToGrid(sec: number, tempoBpm: number): number {
+/** Snap a part-relative beat to the grid when snapping is on. */
+export function snapBeatToGrid(beat: number): number {
   const { snapEnabled } = useMidiEditorStore.getState();
-  if (!snapEnabled) return Math.max(0, sec);
-  const grid = currentGridSec(tempoBpm);
-  return grid > 0 ? Math.max(0, Math.round(sec / grid) * grid) : Math.max(0, sec);
+  if (!snapEnabled) return Math.max(0, beat);
+  const grid = currentGridBeat();
+  return grid > 0 ? Math.max(0, Math.round(beat / grid) * grid) : Math.max(0, beat);
 }

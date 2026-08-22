@@ -55,8 +55,8 @@ function db(x: number): number { return 20 * Math.log10(Math.max(1e-12, x)); }
 async function render(cfg: RealtimeChainConfig, left: Float32Array, right: Float32Array): Promise<{ l: Float32Array; r: Float32Array }> {
   const ctx = new OfflineAudioContext(2, N, SR);
   const buf = new AudioBuffer({ length: N, numberOfChannels: 2, sampleRate: SR });
-  buf.copyToChannel(left, 0);
-  buf.copyToChannel(right, 1);
+  buf.copyToChannel(left as Float32Array<ArrayBuffer>, 0);
+  buf.copyToChannel(right as Float32Array<ArrayBuffer>, 1);
   const src = ctx.createBufferSource();
   src.buffer = buf;
   const chain = createNativeDspChain(ctx);

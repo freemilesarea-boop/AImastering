@@ -16,21 +16,25 @@
 
 import { createMidiPart, findTrack, createPlaylist, updateTrack } from '../model/session-ops.js';
 import { loopPasses, passClipName, type LoopPass, type RecordPlan, type RecordSettings } from '../model/recording.js';
-import { noteEnd, sortNotes, type MidiNote, type MidiPartConfig } from '../model/midi.js';
+import { noteEndBeat, sortNotes, type ExpressionPoint, type MidiNote, type MidiPartConfig } from '../model/midi.js';
 import { DEFAULT_MIDI_CONFIG } from '../model/midi.js';
 import type { Clip, DawSession, Playlist, TrackId } from '../model/types.js';
+import { secToBeatsAt, type PartClock } from '../model/note-time.js';
 
 /**
  * What the capture produced.
  *
- * `notes` are in TAPE time — seconds since the transport started rolling, which
- * is the plan's `transportStartSec`.  That is the same frame the audio tape
- * uses, so the pre-roll trimming and the loop cutting are shared arithmetic.
+ * `notes` are in TAPE time — beats since the transport started rolling, which
+ * is the plan's `transportStartSec`.  `clock` is that same frame, so the
+ * pre-roll trimming and the loop cutting can be done in the seconds the tape
+ * uses and converted once, here.
  */
 export interface CapturedPerformance {
   notes: readonly MidiNote[];
   /** Seconds of tape rolled, including the pre-roll. */
   tapeSec: number;
+  /** The tape's own frame — a clock at `plan.transportStartSec`. */
+  clock: PartClock;
   config?: MidiPartConfig;
 }
 
@@ -64,7 +68,11 @@ export function commitMidiRecording(
   const keptSec = Math.max(0, keepTo - keepFrom);
   if (keptSec <= 1e-4) throw new Error('녹음 구간이 비어 있습니다');
 
-  const kept = trimNotes(captured.notes, keepFrom, keepTo);
+  // The window is decided in tape seconds and applied in beats: one
+  // conversion, at the point the two frames meet.
+  const toTapeBeat = (tapeSec: number): number =>
+    secToBeatsAt(captured.clock, tapeSec);
+  const kept = trimNotes(captured.notes, toTapeBeat(keepFrom), toTapeBeat(keepTo));
   if (kept.length === 0) throw new Error('녹음 구간에 노트가 없습니다');
 
   const passes = loopPasses(
@@ -75,7 +83,7 @@ export function commitMidiRecording(
   const lanes: Playlist[] = [];
   let written = 0;
   passes.forEach((pass) => {
-    const part = partForPass(kept, track.name, pass, passes.length, config);
+    const part = partForPass(kept, track.name, pass, passes.length, config, captured.clock);
     written += part.notes.length;
     lanes.push(createPlaylist(
       laneName(track.name, track.playlists.length + lanes.length + 1), [part]));
@@ -106,14 +114,14 @@ export function commitMidiRecording(
  * into the section.
  */
 export function trimNotes(
-  notes: readonly MidiNote[], fromSec: number, toSec: number,
+  notes: readonly MidiNote[], fromBeat: number, toBeat: number,
 ): MidiNote[] {
   const out: MidiNote[] = [];
   for (const note of notes) {
-    const start = Math.max(note.startSec, fromSec);
-    const end = Math.min(noteEnd(note), toSec);
-    if (end - start <= 1e-4) continue;
-    out.push(shiftNote(note, start, end, fromSec));
+    const start = Math.max(note.startBeat, fromBeat);
+    const end = Math.min(noteEndBeat(note), toBeat);
+    if (end - start <= 1e-6) continue;
+    out.push(shiftNote(note, start, end, fromBeat));
   }
   return sortNotes(out);
 }
@@ -125,12 +133,12 @@ export function trimNotes(
  * note has to slide them too, or a bend recorded half a second in would play
  * half a second early.
  */
-function shiftNote(note: MidiNote, startSec: number, endSec: number, originSec: number): MidiNote {
-  const lost = startSec - note.startSec;
+function shiftNote(note: MidiNote, startBeat: number, endBeat: number, originBeat: number): MidiNote {
+  const lost = startBeat - note.startBeat;
   return {
     ...note,
-    startSec: startSec - originSec,
-    durationSec: endSec - startSec,
+    startBeat: startBeat - originBeat,
+    durationBeat: endBeat - startBeat,
     expression: lost <= 1e-9 ? note.expression : note.expression.map((curve) => ({
       target: curve.target,
       points: cutCurveFront(curve.points, lost),
@@ -139,7 +147,7 @@ function shiftNote(note: MidiNote, startSec: number, endSec: number, originSec: 
 }
 
 /**
- * Slide a curve back by `lost` seconds, keeping the value it was already at.
+ * Slide a curve back by `lost` beats, keeping the value it was already at.
  *
  * Points before the cut are discarded, but the LAST of them is pinned to zero
  * first: a wheel that was pushed up before the punch and held there has no
@@ -147,15 +155,15 @@ function shiftNote(note: MidiNote, startSec: number, endSec: number, originSec: 
  * centred and then jump.
  */
 function cutCurveFront(
-  points: readonly { timeSec: number; value: number }[], lost: number,
-): { timeSec: number; value: number }[] {
-  const out: { timeSec: number; value: number }[] = [];
-  let carried: { timeSec: number; value: number } | null = null;
+  points: readonly ExpressionPoint[], lost: number,
+): ExpressionPoint[] {
+  const out: ExpressionPoint[] = [];
+  let carried: ExpressionPoint | null = null;
   for (const point of points) {
-    const shifted = point.timeSec - lost;
-    if (shifted < 0) { carried = { timeSec: 0, value: point.value }; continue; }
+    const shifted = point.timeBeat - lost;
+    if (shifted < 0) { carried = { timeBeat: 0, value: point.value }; continue; }
     if (carried) { out.push(carried); carried = null; }
-    out.push({ timeSec: shifted, value: point.value });
+    out.push({ timeBeat: shifted, value: point.value });
   }
   if (carried) out.push(carried);
   return out;
@@ -163,10 +171,15 @@ function cutCurveFront(
 
 function partForPass(
   notes: readonly MidiNote[], trackName: string, pass: LoopPass, total: number,
-  config: MidiPartConfig,
+  config: MidiPartConfig, clock: PartClock,
 ): Clip {
   const length = pass.captureToSec - pass.captureFromSec;
-  const inPass = trimNotes(notes, pass.captureFromSec, pass.captureToSec);
+  // The pass window is cut in the TAPE's frame, which is where the player
+  // actually played it; the part it lands in re-reads those beats from its
+  // own start.  The two agree except across a tempo ramp inside the loop,
+  // where the performance keeps the beats it was played on.
+  const inPass = trimNotes(
+    notes, secToBeatsAt(clock, pass.captureFromSec), secToBeatsAt(clock, pass.captureToSec));
   return createMidiPart(passClipName(trackName, pass, total), {
     startSec: pass.timelineStartSec,
     offsetSec: 0,

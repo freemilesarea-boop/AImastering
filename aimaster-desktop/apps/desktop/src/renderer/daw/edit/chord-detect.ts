@@ -9,12 +9,13 @@ import { notesAt } from './midi-edit.js';
 import { detectChord, formatChord, type ChordEvent } from '../model/chords.js';
 import type { MidiNote } from '../model/midi.js';
 import { nextId } from '../model/ids.js';
+import { beatToTimelineSec, type PartClock } from '../model/note-time.js';
 
 export interface ChordDetectOptions {
-  /** How often to look, in seconds (default: one bar at the session tempo). */
-  intervalSec: number;
-  /** Offset added to every event (a part's timeline position). */
-  offsetSec?: number;
+  /** How often to look, in BEATS (default: one bar of the session meter). */
+  intervalBeat: number;
+  /** The part's frame — turns a beat inside it into a timeline second. */
+  clock: PartClock;
   /** Ignore weak matches — below this the detector is guessing. */
   minScore?: number;
 }
@@ -26,24 +27,24 @@ export interface ChordDetectOptions {
 export function detectChordTrack(
   notes: readonly MidiNote[], options: ChordDetectOptions,
 ): ChordEvent[] {
-  const { intervalSec, offsetSec = 0, minScore = 0.35 } = options;
-  if (intervalSec <= 0 || notes.length === 0) return [];
+  const { intervalBeat, clock, minScore = 0.35 } = options;
+  if (intervalBeat <= 0 || notes.length === 0) return [];
 
-  const end = notes.reduce((max, n) => Math.max(max, n.startSec + n.durationSec), 0);
+  const end = notes.reduce((max, n) => Math.max(max, n.startBeat + n.durationBeat), 0);
   const events: ChordEvent[] = [];
   let previous = '';
 
-  for (let t = 0; t < end - 1e-6; t += intervalSec) {
+  for (let t = 0; t < end - 1e-6; t += intervalBeat) {
     // Look slightly after the boundary so a chord that starts exactly on the
     // beat is fully sounding.
-    const sounding = notesAt(notes, t + Math.min(0.02, intervalSec / 8));
+    const sounding = notesAt(notes, t + Math.min(0.05, intervalBeat / 8));
     if (sounding.length < 2) continue;
     const match = detectChord(sounding.map((n) => n.pitch));
     if (!match || match.score < minScore) continue;
     const label = formatChord(match.chord);
     if (label === previous) continue;
     previous = label;
-    events.push({ id: nextId('chord'), timeSec: offsetSec + t, chord: match.chord });
+    events.push({ id: nextId('chord'), timeSec: beatToTimelineSec(clock, t), chord: match.chord });
   }
   return events;
 }

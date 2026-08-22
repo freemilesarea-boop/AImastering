@@ -33,8 +33,20 @@ import {
 import {
   addTrack, createSession, createTrack, findTrack,
 } from '../src/renderer/daw/model/session-ops.js';
-import { findExpression, noteEnd, resetNoteIds, to7bit } from '../src/renderer/daw/model/midi.js';
+import { findExpression, noteEndBeat, resetNoteIds, to7bit } from '../src/renderer/daw/model/midi.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
+import { partClock } from '../src/renderer/daw/model/note-time.js';
+import { defaultTempoMap } from '../src/renderer/daw/model/tempo-map.js';
+
+/**
+ * The tape's frame, at 60 BPM.
+ *
+ * Notes come out of the capture in beats.  Sixty BPM makes one beat exactly
+ * one second, so every timing below can be read as the seconds the player's
+ * hands actually moved in — which is what these tests are about — while
+ * still exercising the real seconds→beats conversion.
+ */
+const TAPE = partClock(defaultTempoMap(60), 0);
 import type { DawSession, Track } from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
@@ -140,13 +152,13 @@ check('isNoteMessage picks out the two that make sound', () => {
 // ── 2. Pairing ────────────────────────────────────────────────────────────────
 
 check('an on/off pair becomes one note of the right length', () => {
-  const result = captureNotes([on(1, 60, 100), off(2.5, 60)], { endSec: 4 });
+  const result = captureNotes([on(1, 60, 100), off(2.5, 60)], { endSec: 4, clock: TAPE });
   eq(result.notes.length, 1, 'one note');
   const note = result.notes[0];
   if (!note) throw new Error('note');
   eq(note.pitch, 60, 'pitch');
-  close(note.startSec, 1, 'start');
-  close(note.durationSec, 1.5, 'length');
+  close(note.startBeat, 1, 'start');
+  close(note.durationBeat, 1.5, 'length');
   close(note.velocity, 100 / 127, 'velocity survives');
   eq(result.heldAtEnd, 0, 'nothing was cut off');
 });
@@ -155,45 +167,45 @@ check('the same key struck twice before either release is two notes', () => {
   // A trill on a sticky key, or two controllers on one channel.  Pairing by
   // pitch alone would merge these into one long note.
   const result = captureNotes(
-    [on(0, 60), on(0.5, 60), off(1, 60), off(1.5, 60)], { endSec: 3 });
+    [on(0, 60), on(0.5, 60), off(1, 60), off(1.5, 60)], { endSec: 3, clock: TAPE });
   eq(result.notes.length, 2, 'two presses, two notes');
   const [first, second] = result.notes;
   if (!first || !second) throw new Error('notes');
-  close(first.startSec, 0, 'first starts first');
-  close(first.durationSec, 1, 'FIFO: the older press takes the earlier release');
-  close(second.startSec, 0.5, 'second starts second');
-  close(second.durationSec, 1, 'and takes the later one');
+  close(first.startBeat, 0, 'first starts first');
+  close(first.durationBeat, 1, 'FIFO: the older press takes the earlier release');
+  close(second.startBeat, 0.5, 'second starts second');
+  close(second.durationBeat, 1, 'and takes the later one');
 });
 
 check('a note-off with nothing down is dropped, not turned into a note', () => {
-  const result = captureNotes([off(1, 60), on(2, 60), off(3, 60)], { endSec: 4 });
+  const result = captureNotes([off(1, 60), on(2, 60), off(3, 60)], { endSec: 4, clock: TAPE });
   eq(result.notes.length, 1, 'only the real note');
-  close(result.notes[0]?.startSec ?? -1, 2, 'and it is the second one');
+  close(result.notes[0]?.startBeat ?? -1, 2, 'and it is the second one');
 });
 
 check('a key still down when the tape stops is closed, not lost', () => {
-  const result = captureNotes([on(1, 60), on(1.1, 64)], { endSec: 3 });
+  const result = captureNotes([on(1, 60), on(1.1, 64)], { endSec: 3, clock: TAPE });
   eq(result.notes.length, 2, 'the last chord of a take is not thrown away');
   eq(result.heldAtEnd, 2, 'and it is reported as cut');
-  close(result.notes[0]?.durationSec ?? 0, 2, 'closed at the end of the take');
+  close(result.notes[0]?.durationBeat ?? 0, 2, 'closed at the end of the take');
 });
 
 check('events past the end of the take are ignored', () => {
-  const result = captureNotes([on(1, 60), off(1.5, 60), on(9, 72), off(9.5, 72)], { endSec: 3 });
+  const result = captureNotes([on(1, 60), off(1.5, 60), on(9, 72), off(9.5, 72)], { endSec: 3, clock: TAPE });
   eq(result.notes.length, 1, 'only what was inside the window');
   eq(result.notes[0]?.pitch, 60, 'the one inside');
 });
 
 check('a flicker shorter than the floor is dropped and counted', () => {
-  const result = captureNotes([on(1, 60), off(1 + MIN_NOTE_SEC / 2, 60)], { endSec: 3 });
+  const result = captureNotes([on(1, 60), off(1 + MIN_NOTE_SEC / 2, 60)], { endSec: 3, clock: TAPE });
   eq(result.notes.length, 0, 'not a note');
   eq(result.tooShort, 1, 'but it is reported rather than vanishing');
 });
 
 check('events arriving out of order are sorted before pairing', () => {
-  const result = captureNotes([off(2, 60), on(1, 60)], { endSec: 3 });
+  const result = captureNotes([off(2, 60), on(1, 60)], { endSec: 3, clock: TAPE });
   eq(result.notes.length, 1, 'a late-delivered note-on still pairs');
-  close(result.notes[0]?.durationSec ?? 0, 1, 'with the right length');
+  close(result.notes[0]?.durationBeat ?? 0, 1, 'with the right length');
 });
 
 // ── 3. The pedal ──────────────────────────────────────────────────────────────
@@ -203,9 +215,9 @@ check('a note released under the pedal ends when the pedal lifts', () => {
     cc(0.5, SUSTAIN_CC, 127),
     on(1, 60), off(1.2, 60),
     cc(3, SUSTAIN_CC, 0),
-  ], { endSec: 5 });
+  ], { endSec: 5, clock: TAPE });
   eq(result.notes.length, 1, 'one note');
-  close(result.notes[0]?.durationSec ?? 0, 2, 'held from 1s to the pedal-up at 3s');
+  close(result.notes[0]?.durationBeat ?? 0, 2, 'held from 1s to the pedal-up at 3s');
   eq(result.heldAtEnd, 0, 'the pedal ended it, not the tape');
 });
 
@@ -213,16 +225,16 @@ check('the pedal threshold is half — a half-pedal counts as down', () => {
   const down = Math.ceil(PEDAL_DOWN_THRESHOLD * 127);
   const result = captureNotes([
     cc(0, SUSTAIN_CC, down), on(1, 60), off(1.2, 60), cc(2, SUSTAIN_CC, 0),
-  ], { endSec: 4 });
-  close(result.notes[0]?.durationSec ?? 0, 1, 'held to the pedal-up');
+  ], { endSec: 4, clock: TAPE });
+  close(result.notes[0]?.durationBeat ?? 0, 1, 'held to the pedal-up');
 });
 
 check('the pedal still down at the end closes its notes at the end', () => {
   const result = captureNotes([
     cc(0, SUSTAIN_CC, 127), on(1, 60), off(1.2, 60),
-  ], { endSec: 4 });
+  ], { endSec: 4, clock: TAPE });
   eq(result.notes.length, 1, 'the note survives');
-  close(result.notes[0]?.durationSec ?? 0, 3, 'closed by the end of the take');
+  close(result.notes[0]?.durationBeat ?? 0, 3, 'closed by the end of the take');
   eq(result.heldAtEnd, 1, 'and reported as cut');
 });
 
@@ -232,19 +244,19 @@ check('re-pressing a key the pedal is holding starts a NEW note', () => {
     on(1, 60), off(1.2, 60),
     on(2, 60), off(2.2, 60),
     cc(3, SUSTAIN_CC, 0),
-  ], { endSec: 5 });
+  ], { endSec: 5, clock: TAPE });
   eq(result.notes.length, 2, 'two strikes are two notes, both sustained');
-  close(result.notes[0]?.startSec ?? -1, 1, 'first strike');
-  close(result.notes[1]?.startSec ?? -1, 2, 'second strike');
-  for (const note of result.notes) close(noteEnd(note), 3, 'both end at the pedal-up');
+  close(result.notes[0]?.startBeat ?? -1, 1, 'first strike');
+  close(result.notes[1]?.startBeat ?? -1, 2, 'second strike');
+  for (const note of result.notes) close(noteEndBeat(note), 3, 'both end at the pedal-up');
 });
 
 check('with the pedal setting off, CC64 is reported as unrecorded instead', () => {
   const events = [cc(0, SUSTAIN_CC, 127), on(1, 60), off(1.2, 60)];
-  const held = captureNotes(events, { endSec: 4, sustainPedal: true });
-  const plain = captureNotes(events, { endSec: 4, sustainPedal: false });
-  close(held.notes[0]?.durationSec ?? 0, 3, 'honoured: the note is held');
-  close(plain.notes[0]?.durationSec ?? 0, 0.2, 'ignored: the note is as played');
+  const held = captureNotes(events, { endSec: 4, sustainPedal: true, clock: TAPE });
+  const plain = captureNotes(events, { endSec: 4, sustainPedal: false, clock: TAPE });
+  close(held.notes[0]?.durationBeat ?? 0, 3, 'honoured: the note is held');
+  close(plain.notes[0]?.durationBeat ?? 0, 0.2, 'ignored: the note is as played');
   assert(!held.ignoredCc.includes(SUSTAIN_CC), 'an honoured pedal is not "ignored"');
   assert(plain.ignoredCc.includes(SUSTAIN_CC), 'an unhonoured one is reported');
 });
@@ -256,37 +268,37 @@ check('the wheel bends every note sounding on that channel', () => {
     on(1, 60), on(1, 64), on(1, 67),
     bend(1.5, 0.5),
     off(2, 60), off(2, 64), off(2, 67),
-  ], { endSec: 3 });
+  ], { endSec: 3, clock: TAPE });
   eq(result.notes.length, 3, 'a triad');
   for (const note of result.notes) {
     const curve = findExpression(note, { kind: 'pitchBend' });
     assert(curve !== undefined, `${note.pitch} got the bend`);
     const last = curve?.points[curve.points.length - 1];
     close(last?.value ?? 0, 0.5, 'to the value that was sent');
-    close(last?.timeSec ?? -1, 0.5, 'in the note’s own time frame');
+    close(last?.timeBeat ?? -1, 0.5, 'in the note’s own time frame');
   }
 });
 
 check('a bend on another channel does not reach the note', () => {
   const result = captureNotes(
-    [on(1, 60, 100, 0), bend(1.5, 0.9, 5), off(2, 60, 0)], { endSec: 3 });
+    [on(1, 60, 100, 0), bend(1.5, 0.9, 5), off(2, 60, 0)], { endSec: 3, clock: TAPE });
   const note = result.notes[0];
   if (!note) throw new Error('note');
   eq(findExpression(note, { kind: 'pitchBend' }), undefined, 'channels are separate');
 });
 
 check('a curve that starts mid-note is anchored at its neutral first', () => {
-  const result = captureNotes([on(1, 60), bend(1.5, 0.5), off(2, 60)], { endSec: 3 });
+  const result = captureNotes([on(1, 60), bend(1.5, 0.5), off(2, 60)], { endSec: 3, clock: TAPE });
   const curve = findExpression(result.notes[0]!, { kind: 'pitchBend' });
   const first = curve?.points[0];
-  close(first?.timeSec ?? -1, 0, 'the curve starts at the note start');
+  close(first?.timeBeat ?? -1, 0, 'the curve starts at the note start');
   close(first?.value ?? -1, 0, 'centred, so the bend ramps up instead of jumping');
 });
 
 check('CC74 is timbre; the mod wheel is reported unrecorded', () => {
   const result = captureNotes([
     on(1, 60), cc(1.2, TIMBRE_CC, 127), cc(1.3, 1, 64), off(2, 60),
-  ], { endSec: 3 });
+  ], { endSec: 3, clock: TAPE });
   const note = result.notes[0];
   if (!note) throw new Error('note');
   assert(findExpression(note, { kind: 'timbre' }) !== undefined, 'CC74 plays back, so it is kept');
@@ -296,7 +308,7 @@ check('CC74 is timbre; the mod wheel is reported unrecorded', () => {
 check('aftertouch lands on the sounding note', () => {
   const result = captureNotes([
     on(1, 60), { kind: 'channelPressure', timeSec: 1.4, channel: 0, value: 0.8 }, off(2, 60),
-  ], { endSec: 3 });
+  ], { endSec: 3, clock: TAPE });
   const curve = findExpression(result.notes[0]!, { kind: 'pressure' });
   assert(curve !== undefined, 'pressure is captured');
   close(curve?.points[curve.points.length - 1]?.value ?? 0, 0.8, 'at the value sent');
@@ -305,7 +317,7 @@ check('aftertouch lands on the sounding note', () => {
 check('a note the pedal is holding still receives the wheel', () => {
   const result = captureNotes([
     cc(0, SUSTAIN_CC, 127), on(1, 60), off(1.2, 60), bend(2, -0.4), cc(3, SUSTAIN_CC, 0),
-  ], { endSec: 4 });
+  ], { endSec: 4, clock: TAPE });
   const curve = findExpression(result.notes[0]!, { kind: 'pitchBend' });
   assert(curve !== undefined, 'it is still sounding, so it still bends');
   close(curve?.points[curve.points.length - 1]?.value ?? 0, -0.4, 'value');
@@ -313,7 +325,7 @@ check('a note the pedal is holding still receives the wheel', () => {
 
 check('expression can be turned off entirely', () => {
   const result = captureNotes(
-    [on(1, 60), bend(1.5, 0.5), off(2, 60)], { endSec: 3, expression: false });
+    [on(1, 60), bend(1.5, 0.5), off(2, 60)], { endSec: 3, expression: false, clock: TAPE });
   eq(result.notes[0]?.expression.length, 0, 'no curves recorded');
 });
 
@@ -332,7 +344,7 @@ check('describeCapture says what landed and what did not', () => {
   const result = captureNotes([
     on(1, 60), cc(1.1, 1, 90), on(1.2, 64),
     off(1.2 + MIN_NOTE_SEC / 3, 64),
-  ], { endSec: 3 });
+  ], { endSec: 3, clock: TAPE });
   const text = describeCapture(result);
   assert(text.includes('1음'), `note count is stated — ${text}`);
   assert(text.includes('CC 1'), `the dropped controller is named — ${text}`);
@@ -463,16 +475,16 @@ check('the pre-roll is discarded and the take is rebased', () => {
   const plan = planRecording(session, settings({ preRollSec: 2 }), 10);
   eq(plan.preRollSec, 2, 'two seconds of run-up');
   // Played at tape 1 s (during the pre-roll) and tape 3 s (one second in).
-  const captured = captureNotes([on(1, 60), off(1.5, 60), on(3, 64), off(4, 64)], { endSec: 6 });
+  const captured = captureNotes([on(1, 60), off(1.5, 60), on(3, 64), off(4, 64)], { endSec: 6, clock: TAPE });
   const result = commitMidiRecording(
-    session, track.id, { notes: captured.notes, tapeSec: 6 }, plan, settings());
+    session, track.id, { notes: captured.notes, tapeSec: 6, clock: TAPE }, plan, settings());
 
   eq(result.takes, 1, 'one take');
   const laid = findTrack(result.session, track.id);
   const part = laid?.playlists[laid.playlists.length - 1]?.clips[0];
   assert(part?.kind === 'midi', 'a MIDI part, not an audio clip');
   eq(part?.notes.length, 1, 'the pre-roll noodle is gone');
-  close(part?.notes[0]?.startSec ?? -1, 1, 'and the kept note is one second into the part');
+  close(part?.notes[0]?.startBeat ?? -1, 1, 'and the kept note is one second into the part');
   close(part?.startSec ?? -1, 10, 'the part sits at the punch point');
 });
 
@@ -480,17 +492,17 @@ check('a note held across the punch is trimmed, not dropped', () => {
   const { session, track } = sessionWithInstrument();
   const plan = planRecording(session, settings({ preRollSec: 2 }), 10);
   // A pad struck in the pre-roll and still down two seconds into the take.
-  const captured = captureNotes([on(0.5, 48), bend(1, 0.25), off(4, 48)], { endSec: 6 });
+  const captured = captureNotes([on(0.5, 48), bend(1, 0.25), off(4, 48)], { endSec: 6, clock: TAPE });
   const result = commitMidiRecording(
-    session, track.id, { notes: captured.notes, tapeSec: 6 }, plan, settings());
+    session, track.id, { notes: captured.notes, tapeSec: 6, clock: TAPE }, plan, settings());
   const laid = findTrack(result.session, track.id);
   const note = laid?.playlists[laid.playlists.length - 1]?.clips[0]?.notes[0];
   assert(note !== undefined, 'the pad is kept');
-  close(note?.startSec ?? -1, 0, 'from the punch');
-  close(note?.durationSec ?? -1, 2, 'for what is left of it');
+  close(note?.startBeat ?? -1, 0, 'from the punch');
+  close(note?.durationBeat ?? -1, 2, 'for what is left of it');
   const curve = findExpression(note!, { kind: 'pitchBend' });
   const pinned = curve?.points[0];
-  close(pinned?.timeSec ?? -1, 0, 'the bend made before the punch is pinned to the start');
+  close(pinned?.timeBeat ?? -1, 0, 'the bend made before the punch is pinned to the start');
   close(pinned?.value ?? -1, 0.25, 'at the value it was already at, so nothing jumps');
 });
 
@@ -499,13 +511,13 @@ check('a punch-out truncates the take', () => {
   const plan = planRecording(session, settings({
     preRollSec: 0, punchEnabled: true, punchStartSec: 4, punchEndSec: 8,
   }), 0);
-  const captured = captureNotes([on(1, 60), off(2, 60), on(5, 64), off(6, 64)], { endSec: 10 });
+  const captured = captureNotes([on(1, 60), off(2, 60), on(5, 64), off(6, 64)], { endSec: 10, clock: TAPE });
   const result = commitMidiRecording(
-    session, track.id, { notes: captured.notes, tapeSec: 10 }, plan, settings());
+    session, track.id, { notes: captured.notes, tapeSec: 10, clock: TAPE }, plan, settings());
   const laid = findTrack(result.session, track.id);
   const part = laid?.playlists[laid.playlists.length - 1]?.clips[0];
   eq(part?.notes.length, 1, 'only what was inside the punch');
-  close(part?.notes[0]?.startSec ?? -1, 1, 'rebased onto the punch-in');
+  close(part?.notes[0]?.startBeat ?? -1, 1, 'rebased onto the punch-in');
   eq(result.notes, 1, 'and the count agrees');
 });
 
@@ -516,9 +528,9 @@ check('each loop pass becomes its own take lane', () => {
   // Three passes through a two-second loop, one note each.
   const captured = captureNotes([
     on(0.5, 60), off(1, 60), on(2.5, 62), off(3, 62), on(4.5, 64), off(5, 64),
-  ], { endSec: 6 });
+  ], { endSec: 6, clock: TAPE });
   const result = commitMidiRecording(
-    session, track.id, { notes: captured.notes, tapeSec: 6 }, plan, settings());
+    session, track.id, { notes: captured.notes, tapeSec: 6, clock: TAPE }, plan, settings());
 
   eq(result.takes, 3, 'three passes, three takes');
   const laid = findTrack(result.session, track.id);
@@ -526,7 +538,7 @@ check('each loop pass becomes its own take lane', () => {
   const pitches = lanes.map((l) => l.clips[0]?.notes[0]?.pitch);
   eq(pitches.join(','), '60,62,64', 'one note per pass, in order');
   for (const lane of lanes) {
-    close(lane.clips[0]?.notes[0]?.startSec ?? -1, 0.5, 'each note sits at the same place in its pass');
+    close(lane.clips[0]?.notes[0]?.startBeat ?? -1, 0.5, 'each note sits at the same place in its pass');
     close(lane.clips[0]?.startSec ?? -1, 0, 'and every pass starts at the loop start');
   }
   eq(result.activePlaylistId, lanes[lanes.length - 1]?.id, 'the last pass is left active');
@@ -536,9 +548,9 @@ check('loop takes off keeps the performance as one continuous part', () => {
   const { session, track } = sessionWithInstrument();
   const plan = planRecording(
     session, settings({ preRollSec: 0 }), 0, { startSec: 0, endSec: 2 });
-  const captured = captureNotes([on(0.5, 60), off(1, 60), on(2.5, 62), off(3, 62)], { endSec: 4 });
+  const captured = captureNotes([on(0.5, 60), off(1, 60), on(2.5, 62), off(3, 62)], { endSec: 4, clock: TAPE });
   const result = commitMidiRecording(
-    session, track.id, { notes: captured.notes, tapeSec: 4 }, plan, settings({ loopTakes: false }));
+    session, track.id, { notes: captured.notes, tapeSec: 4, clock: TAPE }, plan, settings({ loopTakes: false }));
   eq(result.takes, 1, 'one take');
   eq(result.notes, 2, 'holding both notes');
 });
@@ -548,20 +560,20 @@ check('a take with no notes is an error, not an empty part', () => {
   const plan = planRecording(session, settings({ preRollSec: 0 }), 0);
   let threw = false;
   try {
-    commitMidiRecording(session, track.id, { notes: [], tapeSec: 4 }, plan, settings());
+    commitMidiRecording(session, track.id, { notes: [], tapeSec: 4, clock: TAPE }, plan, settings());
   } catch { threw = true; }
   assert(threw, 'a player who did not play does not get a part');
-  assert(!hasPerformance({ notes: [], tapeSec: 4 }), 'and the caller can tell in advance');
+  assert(!hasPerformance({ notes: [], tapeSec: 4, clock: TAPE }), 'and the caller can tell in advance');
 });
 
 check('a take that is all pre-roll is refused', () => {
   const { session, track } = sessionWithInstrument();
   const plan = planRecording(session, settings({ preRollSec: 2 }), 10);
-  const captured = captureNotes([on(0.5, 60), off(1, 60)], { endSec: 1.5 });
+  const captured = captureNotes([on(0.5, 60), off(1, 60)], { endSec: 1.5, clock: TAPE });
   let threw = false;
   try {
     commitMidiRecording(
-      session, track.id, { notes: captured.notes, tapeSec: 1.5 }, plan, settings());
+      session, track.id, { notes: captured.notes, tapeSec: 1.5, clock: TAPE }, plan, settings());
   } catch { threw = true; }
   assert(threw, 'stopping during the run-up leaves nothing to keep');
 });
@@ -570,9 +582,9 @@ check('committing never disturbs what is already on the track', () => {
   const { session, track } = sessionWithInstrument();
   const before = findTrack(session, track.id)?.playlists.length ?? 0;
   const plan = planRecording(session, settings({ preRollSec: 0 }), 0);
-  const captured = captureNotes([on(0.5, 60), off(1, 60)], { endSec: 2 });
+  const captured = captureNotes([on(0.5, 60), off(1, 60)], { endSec: 2, clock: TAPE });
   const result = commitMidiRecording(
-    session, track.id, { notes: captured.notes, tapeSec: 2 }, plan, settings());
+    session, track.id, { notes: captured.notes, tapeSec: 2, clock: TAPE }, plan, settings());
   const after = findTrack(result.session, track.id)?.playlists.length ?? 0;
   eq(after, before + 1, 'takes stack, they never overwrite');
   eq(findTrack(session, track.id)?.playlists.length, before, 'and the input session is untouched');
@@ -584,20 +596,20 @@ check('trimNotes keeps only what overlaps the window', () => {
     on(1, 62), off(3, 62),        // straddles the front
     on(4, 64), off(4.5, 64),      // inside
     on(9, 67), off(9.5, 67),      // entirely after
-  ], { endSec: 12 });
+  ], { endSec: 12, clock: TAPE });
   const kept = trimNotes(captured.notes, 2, 6);
   eq(kept.length, 2, 'two survive');
   eq(kept.map((n) => n.pitch).join(','), '62,64', 'the straddler and the inside one');
-  close(kept[0]?.startSec ?? -1, 0, 'the straddler starts at the window');
-  close(kept[0]?.durationSec ?? -1, 1, 'and keeps only its remainder');
+  close(kept[0]?.startBeat ?? -1, 0, 'the straddler starts at the window');
+  close(kept[0]?.durationBeat ?? -1, 1, 'and keeps only its remainder');
 });
 
 check('a MIDI part carries the bend range the stream implied', () => {
   const { session, track } = sessionWithInstrument();
   const plan = planRecording(session, settings({ preRollSec: 0 }), 0);
-  const captured = captureNotes([on(0.5, 60), off(1, 60)], { endSec: 2 });
+  const captured = captureNotes([on(0.5, 60), off(1, 60)], { endSec: 2, clock: TAPE });
   const result = commitMidiRecording(session, track.id, {
-    notes: captured.notes, tapeSec: 2,
+    notes: captured.notes, tapeSec: 2, clock: TAPE,
     config: { bendRangeSemitones: bendRangeFor(true), mpe: true },
   }, plan, settings());
   const laid = findTrack(result.session, track.id);
@@ -627,9 +639,9 @@ check('a played phrase survives bytes → events → notes → part intact', () 
   port.send([0x80, 67, 64], 1800);
   port.send([0xb0, SUSTAIN_CC, 0], 2000);
 
-  const captured = captureNotes(events, { endSec: 2.5 });
+  const captured = captureNotes(events, { endSec: 2.5, clock: TAPE });
   eq(captured.notes.length, 3, 'three notes');
-  for (const note of captured.notes) close(noteEnd(note), 2, 'all three ride the pedal to 2 s');
+  for (const note of captured.notes) close(noteEndBeat(note), 2, 'all three ride the pedal to 2 s');
   close(captured.notes[0]?.velocity ?? 0, to7bit(0.8) / 127, 'velocity survived the 7-bit round trip');
   const curve = findExpression(captured.notes[2]!, { kind: 'pitchBend' });
   assert(curve !== undefined, 'the bend reached the top note');
@@ -638,12 +650,12 @@ check('a played phrase survives bytes → events → notes → part intact', () 
 
   const plan = planRecording(session, settings({ preRollSec: 0 }), 8);
   const result = commitMidiRecording(
-    session, track.id, { notes: captured.notes, tapeSec: 2.5 }, plan, settings());
+    session, track.id, { notes: captured.notes, tapeSec: 2.5, clock: TAPE }, plan, settings());
   eq(result.notes, 3, 'all three landed in the part');
   const laid = findTrack(result.session, track.id);
   const part = laid?.playlists[laid.playlists.length - 1]?.clips[0];
   close(part?.startSec ?? -1, 8, 'at the playhead');
-  close(part?.notes[0]?.startSec ?? -1, 0.5, 'with the phrase’s own timing intact');
+  close(part?.notes[0]?.startBeat ?? -1, 0.5, 'with the phrase’s own timing intact');
   handle.close();
 });
 
