@@ -23,7 +23,8 @@ import {
   type SectionKind,
 } from '../../../daw/model/arrangement.js';
 import {
-  deleteSectionTime, duplicateSection, selectionForSection, songEnd,
+  deleteSectionTime, describeOrder, duplicateSection, nudgeSection,
+  selectionForSection, songEnd,
 } from '../../../daw/edit/arrange-ops.js';
 import { premium } from '../../../theme/premium.js';
 
@@ -127,6 +128,25 @@ export default function SectionLane({ viewport }: { viewport: Viewport }) {
     else notify(what);
   };
 
+  /**
+   * Move a section one place along the running order.
+   *
+   * The new order is read back in the toast: a reorder is invisible until the
+   * playhead gets there, and "코러스 를 옮겼습니다" alone does not say where to.
+   */
+  const nudge = (sectionId: string, direction: -1 | 1): void => {
+    let problems: string[] = [];
+    let order = '';
+    apply((s) => {
+      const result = nudgeSection(s, sectionId, direction);
+      problems = result.problems;
+      order = describeOrder(result.session);
+      return result.session;
+    });
+    if (problems.length > 0) { notify(problems[0]!, 'warning'); return; }
+    notify(order, 'success');
+  };
+
   return (
     <div
       ref={boxRef}
@@ -195,6 +215,21 @@ export default function SectionLane({ viewport }: { viewport: Viewport }) {
                     <option key={k.kind} value={k.kind}>{k.label}</option>
                   ))}
                 </select>
+                {/* Reorder.  Buttons rather than dragging the block: the
+                    block's own left edge is already the boundary handle, and
+                    a section can be two pixels wide. */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); nudge(range.section.id, -1); }}
+                  disabled={range.index === 0}
+                  title="이 구간을 앞 구간과 맞바꿉니다 (내용째로 이동)"
+                  style={laneChip(undefined, range.index === 0)}
+                >◀</button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); nudge(range.section.id, 1); }}
+                  disabled={range.index === ranges.length - 1}
+                  title="이 구간을 뒤 구간과 맞바꿉니다 (내용째로 이동)"
+                  style={laneChip(undefined, range.index === ranges.length - 1)}
+                >▶</button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -250,9 +285,16 @@ export default function SectionLane({ viewport }: { viewport: Viewport }) {
   );
 }
 
-function laneChip(color: string = premium.text.muted): React.CSSProperties {
+function laneChip(
+  color: string = premium.text.muted, disabled = false,
+): React.CSSProperties {
   return {
     height: 15, padding: '0 4px', borderRadius: 2, fontSize: 8,
-    color, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
+    color: disabled ? premium.text.faint : color,
+    background: 'transparent',
+    border: `1px solid rgba(255,255,255,${disabled ? '0.06' : '0.14'})`,
+    // A first section that cannot move left says so by looking unavailable,
+    // rather than by doing nothing when pressed.
+    cursor: disabled ? 'default' : 'pointer',
   };
 }

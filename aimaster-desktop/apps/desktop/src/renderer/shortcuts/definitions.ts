@@ -85,6 +85,7 @@ export type CommandId =
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
   | 'daw.sectionNext' | 'daw.sectionPrev' | 'daw.sectionSelect' | 'daw.sectionAdd'
+  | 'daw.sectionMoveBack' | 'daw.sectionMoveForward'
   | 'daw.tuneToGuide' | 'daw.riff';
 
 export interface ShortcutDef {
@@ -226,6 +227,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '이전 구간 시작으로 이동', available: true },
   { id: 'daw.sectionSelect', group: 'daw', label: '현재 구간 선택', chords: ['Alt+BracketRight'],
     note: '재생헤드가 있는 구간을 모든 트랙에서 선택합니다', available: true },
+  { id: 'daw.sectionMoveBack', group: 'daw', label: '구간을 앞으로 옮기기',
+    chords: ['Alt+Shift+BracketLeft'],
+    note: '재생헤드의 구간을 앞 구간과 맞바꿉니다 — 클립·오토메이션·템포째로', available: true },
+  { id: 'daw.sectionMoveForward', group: 'daw', label: '구간을 뒤로 옮기기',
+    chords: ['Alt+Shift+BracketRight'],
+    note: '재생헤드의 구간을 뒤 구간과 맞바꿉니다 — 클립·오토메이션·템포째로', available: true },
   { id: 'daw.tabNext', group: 'daw', label: '다음 편집 지점으로 (Tab)', chords: ['Tab'],
     note: '클립 경계 — Tab to Transient 가 켜져 있으면 어택까지', available: true },
   { id: 'daw.tabPrev', group: 'daw', label: '이전 편집 지점으로', chords: ['Shift+Tab'],
