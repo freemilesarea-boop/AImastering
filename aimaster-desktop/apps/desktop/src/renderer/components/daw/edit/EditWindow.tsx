@@ -37,6 +37,8 @@ import {
 import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 import SectionLane, { SectionLaneHeader } from './SectionLane.js';
 import ChordLane, { ChordLaneHeader } from './ChordLane.js';
+import { trackDelayMs } from '../../../daw/model/track-delay.js';
+import { describeDelay } from '../../../daw/edit/track-delay-ops.js';
 import {
   TRACK_COLORS, clampTrackHeight, renameTrack, setTrackColor,
   setTrackHeight,
@@ -668,6 +670,21 @@ function TrackHeader({
             : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}>M</button>
         {track.frozen && (
           <span className="px-1 rounded text-[8px] bg-sky-600/30 border border-sky-500/50 text-sky-300">FRZ</span>
+        )}
+        {/* A delayed track has to say so where the clips are.  A 12 ms nudge
+            set once in the mixer is invisible for the rest of the session
+            otherwise, and it is the first thing to suspect when something
+            stops lining up. */}
+        {trackDelayMs(track) !== 0 && (
+          <span
+            title={`트랙 딜레이 ${describeDelay(trackDelayMs(track))} — 믹서에서 조정`}
+            className="px-1 rounded text-[8px]"
+            style={{
+              border: `1px solid ${premium.accent.deep}`,
+              color: premium.accent.base,
+              fontFamily: premium.type.mono,
+            }}
+          >{trackDelayMs(track) > 0 ? '+' : '−'}{Math.abs(trackDelayMs(track))}</span>
         )}
         {isFolder && (
           <button

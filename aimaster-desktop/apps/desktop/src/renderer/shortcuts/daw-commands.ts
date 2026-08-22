@@ -57,6 +57,10 @@ import {
   applyGrooveToPart, extractClipGroove, matchSessionTempo,
 } from '../daw/edit/tempo-groove-actions.js';
 import { describeGroove } from '../daw/model/groove.js';
+import { trackDelayMs } from '../daw/model/track-delay.js';
+import {
+  clearTrackDelay, describeDelay, nudgeTrackDelay,
+} from '../daw/edit/track-delay-ops.js';
 import { useMidiEditorStore, currentGridBeat } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips, updateTrack } from '../daw/model/session-ops.js';
 import { findLane } from '../daw/model/automation.js';
@@ -133,6 +137,7 @@ export type DawCommandId =
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
   | 'daw.detectTempo' | 'daw.extractGroove' | 'daw.applyGroove'
+  | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
@@ -237,6 +242,26 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     if (problems.length > 0) { notify(problems[0]!, 'warning'); return; }
     if (landedAt !== null) state.seek(landedAt + offset);
     notify(order, 'success');
+  };
+
+  /**
+   * Nudge the focused track's delay by a millisecond.
+   *
+   * The refusal comes back from the model with its reason — a bus cannot be
+   * pulled early and says so, rather than the key doing nothing.
+   */
+  const shiftTrackDelay = (deltaMs: number): void => {
+    const state = daw();
+    const trackId = targetTrackIds()[0];
+    if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+    const result = nudgeTrackDelay(state.session, trackId, deltaMs);
+    if (!result.applied) {
+      notify(result.reason ?? '더 이상 옮길 수 없습니다', 'warning');
+      return;
+    }
+    state.apply(() => result.session);
+    const track = findTrack(result.session, trackId);
+    notify(`${track?.name ?? '트랙'} · ${describeDelay(trackDelayMs(track!))}`);
   };
 
   const transposeBy = (semitones: number): void => {
@@ -1051,6 +1076,21 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       } catch (err) {
         notify((err as Error).message, 'warning');
       }
+    },
+
+    // ── 트랙 딜레이 ──────────────────────────────────────────────────────
+    'daw.trackDelayEarlier': () => shiftTrackDelay(-1),
+    'daw.trackDelayLater':   () => shiftTrackDelay(1),
+    'daw.trackDelayClear': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      const track = findTrack(state.session, trackId);
+      if (track && trackDelayMs(track) === 0) { notify('트랙 딜레이가 이미 0 입니다'); return; }
+      const result = clearTrackDelay(state.session, trackId);
+      if (!result.applied) { notify(result.reason ?? '바꿀 수 없습니다', 'warning'); return; }
+      state.apply(() => result.session);
+      notify(`${track?.name ?? '트랙'} 딜레이 0`, 'success');
     },
 
     // ── 템포 검출 · 그루브 ────────────────────────────────────────────────

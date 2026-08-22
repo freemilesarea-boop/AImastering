@@ -18,6 +18,16 @@
 import {
   computeDelayCompensation, detectFeedback, insertLatency,
 } from '../model/routing.js';
+import { signalDelaySec } from '../model/track-delay.js';
+
+/**
+ * How much delay one channel's compensation line can hold.
+ *
+ * Two seconds covers automatic compensation for anything short of an
+ * absurd look-ahead chain, plus the half second a user can ask for on a bus,
+ * with room left over.
+ */
+const MAX_DELAY_LINE_SEC = 2;
 import {
   dbToGain, effectiveFaderDb, isAudible,
 } from '../model/mixer-math.js';
@@ -395,7 +405,7 @@ export class MixerEngine {
   private buildChannel(track: Track, session: DawSession): Channel {
     const ctx = this.ctx;
     const input        = ctx.createGain();
-    const adc          = ctx.createDelay(2);
+    const adc          = ctx.createDelay(MAX_DELAY_LINE_SEC);
     const insertIn     = ctx.createGain();
     const insertOut    = ctx.createGain();
     const preFaderTap  = ctx.createGain();
@@ -483,8 +493,14 @@ export class MixerEngine {
       const ch = this.channels.get(track.id);
       if (!ch) continue;
 
+      // The compensation line carries two delays that point the same way:
+      // what the engine owes this channel to line the mix up, and what the
+      // user asked for on a bus.  A bus has no events to re-schedule, so a
+      // positive Track Delay is the only kind it can have and this is where
+      // it happens (see `model/track-delay.ts`).
       const delaySamples = compensation.perTrack.get(track.id) ?? 0;
-      ch.adc.delayTime.value = Math.min(2, delaySamples / this.ctx.sampleRate);
+      ch.adc.delayTime.value = Math.min(
+        MAX_DELAY_LINE_SEC, delaySamples / this.ctx.sampleRate + signalDelaySec(track));
 
       const audible = isAudible(session, track);
       if (!this.isAutomated(track.id, 'volume')) {
