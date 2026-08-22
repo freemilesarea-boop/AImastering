@@ -506,6 +506,65 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   // User plugin presets — a small JSON file, so a sound someone spent an
   // afternoon on can leave the machine.  localStorage does not survive a
   // reinstall; a file does.
+  // ── AAF interchange ─────────────────────────────────────────────────
+  //
+  // Binary, not text: an AAF is a compound file and passing it through a
+  // string would corrupt it.  It crosses the bridge as a plain array of
+  // bytes, which structured clone carries intact.
+  ipc.handle('daw:aaf-open', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [
+        { name: 'AAF', extensions: ['aaf'] },
+        { name: 'OMF', extensions: ['omf', 'omfi'] },
+      ],
+      properties: ['openFile'],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const chosen = result.filePaths[0];
+    try {
+      const stat = fs.statSync(chosen);
+      // An AAF that references its media is kilobytes to a few megabytes.
+      // Anything past this is one with the audio embedded, which this build
+      // does not read — and reading 2 GB into the renderer to discover that
+      // would take the window down with it.
+      if (stat.size > 256 * 1024 * 1024) {
+        throw new Error('AAF 파일이 너무 큽니다 (256 MB 초과) — 오디오가 안에 들어 있는 파일로 보입니다');
+      }
+      const bytes = fs.readFileSync(chosen);
+      return { path: chosen, bytes: Array.from(bytes) as number[] };
+    } catch (err) {
+      recordFailure('session', `daw:aaf-open failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:aaf-save', async (_e, req: unknown) => {
+    if (!win) return null;
+    const payload = req as { name?: unknown; bytes?: unknown } | null;
+    if (!payload || !Array.isArray(payload.bytes)) {
+      throw new Error('daw:aaf-save: payload rejected');
+    }
+    if (payload.bytes.length > 64 * 1024 * 1024) {
+      throw new Error('daw:aaf-save: payload too large');
+    }
+    const base = typeof payload.name === 'string' && payload.name.trim()
+      ? payload.name.trim().replace(/[^\w가-힣 .-]/g, '_').slice(0, 60)
+      : 'session';
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `${base}.aaf`,
+      filters: [{ name: 'AAF', extensions: ['aaf'] }],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, Buffer.from(payload.bytes as number[]));
+      return result.filePath;
+    } catch (err) {
+      recordFailure('session', `daw:aaf-save failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
   ipc.handle('daw:presets-export', async (_e, payload: unknown) => {
     if (!win) return null;
     if (typeof payload !== 'string' || payload.length > 8 * 1024 * 1024) {

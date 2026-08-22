@@ -42,6 +42,7 @@ import { bounceSession, commitTrack, freezeTrack, unfreezeTrack } from '../daw/e
 import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import TemplatePanel from '../components/daw/template/TemplatePanel.js';
+import { describeFailure, exportAaf, importAaf } from '../daw/io/aaf-actions.js';
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00.000';
@@ -201,6 +202,48 @@ export default function DawPage() {
     notify(`${result.importedTrackIds.length}개 트랙을 가져왔습니다`, 'success');
     for (const w of result.warnings) notify(w, 'warning');
   }, [invoke, notify, apply]);
+
+  /**
+   * Bring in a picture editor's AAF.
+   *
+   * The media it names lives on the machine that wrote it, so the import
+   * reports what came across and leaves the audio to be relinked — a session
+   * of clips at the right times with the wrong paths is still the day's work
+   * saved, and pretending the files are here would not be.
+   */
+  const handleImportAaf = useCallback(async () => {
+    const loaded = await invoke('daw:aaf-open') as { path: string; bytes: number[] } | null;
+    if (!loaded) return;
+    try {
+      const result = importAaf(Uint8Array.from(loaded.bytes));
+      loadSession(result.session);
+      for (const p of result.problems.slice(0, 5)) notify(p, 'warning');
+      if (result.problems.length > 5) {
+        notify(`… 그리고 ${result.problems.length - 5}가지 더`, 'warning');
+      }
+      notify(`${result.summary} · 미디어는 다시 연결해야 합니다`, 'success');
+    } catch (err) {
+      notify(describeFailure(err), 'error');
+    }
+  }, [invoke, notify, loadSession]);
+
+  const handleExportAaf = useCallback(async () => {
+    const current = useDawStore.getState().session;
+    try {
+      const result = exportAaf(current);
+      for (const p of result.problems.slice(0, 5)) notify(p, 'warning');
+      if (result.problems.length > 5) {
+        notify(`… 그리고 ${result.problems.length - 5}가지 더`, 'warning');
+      }
+      const dest = await invoke('daw:aaf-save', {
+        name: current.name, bytes: Array.from(result.bytes),
+      }) as string | null;
+      if (!dest) { notify('AAF 내보내기를 취소했습니다', 'info'); return; }
+      notify(`AAF 저장 — ${result.summary}`, 'success');
+    } catch (err) {
+      notify(describeFailure(err), 'error');
+    }
+  }, [invoke, notify]);
 
   const handleBounce = useCallback(async () => {
     const current = useDawStore.getState().session;
@@ -398,6 +441,11 @@ export default function DawPage() {
         <ToolbarButton onClick={handleSaveSession}>세션 저장</ToolbarButton>
         <ToolbarButton onClick={handleOpenSession}>세션 열기</ToolbarButton>
         <ToolbarButton onClick={handleImportSession}>세션 가져오기</ToolbarButton>
+
+        <span className="w-px h-5 bg-zinc-800 mx-1" />
+
+        <ToolbarButton onClick={handleImportAaf}>AAF 가져오기</ToolbarButton>
+        <ToolbarButton onClick={handleExportAaf}>AAF 내보내기</ToolbarButton>
 
         <div className="flex-1" />
         {busy && <span className="text-[11px] text-amber-400">{busy}</span>}

@@ -46,6 +46,8 @@ const INVOKE_CHANNELS = [
   'daw:surface-export', 'daw:surface-import',
   // Whole insert chains (.louirack)
   'daw:racks-export', 'daw:racks-import',
+  // AAF interchange — binary, so these carry byte arrays rather than text
+  'daw:aaf-open', 'daw:aaf-save',
   // DAW offline render output (Bounce / Freeze / Consolidate)
   'daw:write-temp-audio', 'daw:bounce-audio',
   'daw:choose-stem-folder', 'daw:write-stem',
