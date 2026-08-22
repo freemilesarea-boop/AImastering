@@ -248,6 +248,18 @@ export interface Track {
   /** UI lane height in px. */
   height: number;
   /**
+   * What this track records FROM, saved with the project.
+   *
+   * Optional so sessions from before it existed still load; read it through
+   * the helpers in `model/track-input.ts`, which also resolve the saved
+   * device against what is plugged into THIS machine.
+   */
+  recordInput?: {
+    deviceLabel: string | null;
+    deviceId: string | null;
+    channels: 1 | 2;
+  };
+  /**
    * Track Delay in milliseconds — negative plays EARLIER.
    *
    * Optional so sessions saved before it existed still load; read it through

@@ -23,6 +23,10 @@ import { isMidiSupported, listMidiInputs, type MidiInputDevice } from '../daw/en
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import { useDawStore } from './dawStore.js';
 import type { TrackId } from '../daw/model/types.js';
+import { resolveTrackInput, trackInputRef } from '../daw/model/track-input.js';
+import {
+  assignInputDevice, rememberResolved, setTrackInputChannels,
+} from '../daw/edit/track-input-ops.js';
 
 export type RecordStatus = 'idle' | 'armed' | 'countIn' | 'recording' | 'committing';
 
@@ -133,6 +137,20 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     const next: TrackInput = { ...current, ...patch };
     set({ inputs: { ...get().inputs, [trackId]: next } });
 
+    // The choice goes into the SESSION, by device NAME, so it is still there
+    // tomorrow — and on the other machine, where the id means nothing.  This
+    // is an edit to the project like any other, which is what makes it save
+    // with the project and undo with everything else.
+    useDawStore.getState().apply((session) => {
+      let out = session;
+      if (patch.deviceId !== undefined) {
+        const device = get().devices.find((d) => d.id === next.deviceId) ?? null;
+        out = assignInputDevice(out, trackId, device, next.channels);
+      }
+      if (patch.channels !== undefined) out = setTrackInputChannels(out, trackId, next.channels);
+      return out;
+    });
+
     if (!dawRuntime.inputFor(trackId)) return;
     const daw = useDawStore.getState();
     void dawRuntime.openInput(daw.session, trackId, {
@@ -190,10 +208,24 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
         return;
       }
 
-      const input = get().inputs[trackId] ?? {
-        deviceId: settings.inputDeviceId, channels: settings.channels,
-      };
+      // What this track records from is a property of the track, resolved
+      // against what is plugged in right now.  A saved device that is not
+      // here falls back to the system default and SAYS SO — recording a
+      // vocal off the laptop microphone because the interface is unplugged
+      // is the failure nobody hears until playback.
+      const saved = trackInputRef(track);
+      const resolution = resolveTrackInput(saved, get().devices);
+      const input: TrackInput = saved.deviceLabel || saved.deviceId
+        ? { deviceId: resolution.deviceId, channels: resolution.channels }
+        : (get().inputs[trackId] ?? {
+          deviceId: settings.inputDeviceId, channels: settings.channels,
+        });
       set({ inputs: { ...get().inputs, [trackId]: input } });
+      if (resolution.reason) set({ error: `${track.name}: ${resolution.reason}` });
+      // The id the lookup found is worth keeping: next time it is the fast path.
+      if (resolution.kind === 'label') {
+        useDawStore.getState().apply((s2) => rememberResolved(s2, trackId, resolution));
+      }
       const capture = await dawRuntime.openInput(useDawStore.getState().session, trackId, {
         deviceId: input.deviceId,
         channels: input.channels,
