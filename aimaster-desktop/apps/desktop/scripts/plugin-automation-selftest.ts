@@ -79,6 +79,31 @@ function makeToneFile(fileId: string, freq: number, amp: number, seconds: number
   analyzeBuffer(fileId, buffer as unknown as AudioBuffer);
 }
 
+/**
+ * A wideband, genuinely stereo test signal.
+ *
+ * Several partials so a filter anywhere in the band has something to move,
+ * and the right channel carries a different set so mid and side both have
+ * content — the difference between measuring a width control and measuring
+ * nothing.
+ */
+function makeSweepFile(fileId: string, seconds: number): void {
+  const length = Math.floor(SR * seconds);
+  const ctx = new OfflineAudioContext(2, length, SR);
+  const buffer = ctx.createBuffer(2, length, SR);
+  const partials = [[70, 240, 900, 3200, 9000], [110, 380, 1400, 5000, 12000]];
+  for (let c = 0; c < 2; c++) {
+    const data = buffer.getChannelData(c);
+    const set = partials[c]!;
+    for (let i = 0; i < data.length; i++) {
+      let v = 0;
+      for (const hz of set) v += Math.sin((2 * Math.PI * hz * i) / SR);
+      data[i] = (v / set.length) * 0.4;
+    }
+  }
+  analyzeBuffer(fileId, buffer as unknown as AudioBuffer);
+}
+
 /** One track playing a tone, with one insert, and one automation lane on it. */
 function toneWithLane(
   fileId: string, seconds: number,
@@ -163,6 +188,96 @@ async function run(): Promise<void> {
     instance.dispose();
   });
 
+  await check('every declared lane actually reaches the audio', async () => {
+    // Declaring a parameter automatable and wiring it to an AudioParam that
+    // nothing is connected to would pass every check above and still do
+    // nothing.  So each one is swept across its own range and the render is
+    // compared against the same session held at the bottom of that range: if
+    // the two are identical, the lane is decorative.
+    //
+    // A few knobs are steady-state-inaudible by nature and are excused BY
+    // NAME, with the reason — never by a silent tolerance.
+    const excused = new Map<string, string>([
+      // Pre-delay moves the reverb's onset, not its steady state; a sustained
+      // tone through a sustained tail measures the same either way.
+      ['reverb.preDelayMs', 'shifts onset, not steady state'],
+      ['spacereverb.preDelayMs', 'shifts onset, not steady state'],
+      ['plate.preDelayMs', 'shifts onset, not steady state'],
+      ['shimmer.preDelayMs', 'shifts onset, not steady state'],
+      // The delay's own time only re-times repeats, which a steady tone hides.
+      ['delay.timeMs', 'retimes repeats of a steady tone'],
+      ['tapedelay.timeMs', 'retimes repeats of a steady tone'],
+      ['tapedelay.wowMs', 'sub-millisecond detune of a repeat'],
+      ['flanger.delayMs', 'moves a notch a steady tone may sit between'],
+    ]);
+
+    // A stereo signal with real content in BOTH mid and side, and energy
+    // spread across the spectrum: a mono tone leaves every width, mid/side
+    // and Haas device with nothing to act on, and a single frequency leaves
+    // every EQ band that is not sitting exactly on it looking inert.
+    makeSweepFile('tone-sweep', 1.2);
+    const problems: string[] = [];
+    let swept = 0;
+
+    for (const device of PLUGINS) {
+      for (const id of device.automatableParams ?? []) {
+        const def = device.params.find((param) => param.id === id);
+        if (!def) continue;
+        const key = `${device.id}.${id}`;
+        if (excused.has(key)) continue;
+
+        // Presets that give the parameter something to do: a device left at
+        // "no effect" would measure the same however its knobs move.
+        const base: Record<string, number> = { ...defaultParams(device.id) };
+        if ('mix' in base) base['mix'] = def.unit === '%' ? 60 : 0.6;
+        if ('mixPct' in base) base['mixPct'] = 60;
+        if ('driveDb' in base && id !== 'driveDb') base['driveDb'] = 12;
+        // A band at 0 dB does not care where it sits or how wide it is, so a
+        // frequency or Q lane on a flat EQ is inert for reasons that have
+        // nothing to do with whether it is wired.
+        for (const param of device.params) {
+          if (/Db$/.test(param.id) && param.id !== id && base[param.id] === 0
+              && param.min < 0 && param.max > 0) {
+            base[param.id] = Math.min(6, param.max);
+          }
+        }
+        // Likewise a transient designer set to "do nothing": its wet path is
+        // its dry path, and blending between them is not observable.
+        if (device.id === 'transient' && id === 'mix') base['attack'] = 1;
+
+        // BOTH channels: the Haas and width devices deliberately leave one
+        // side alone, so a left-channel-only comparison calls them inert.
+        const render = async (points: AutomationPoint[]): Promise<Float32Array[]> => {
+          const { session } = toneWithLane(
+            'tone-sweep', 1.2, device.id, { ...base, [id]: def.min }, id, points);
+          const buffer = await renderSession(
+            session, { startSec: 0, endSec: 1.0 }, { tailSec: 0 });
+          return [buffer.getChannelData(0), buffer.getChannelData(1)];
+        };
+
+        const flat = await render([{ timeSec: 0, value: def.min }]);
+        const sweep = await render([
+          { timeSec: 0, value: def.min }, { timeSec: 0.9, value: def.max },
+        ]);
+
+        let biggest = 0;
+        for (let c = 0; c < flat.length; c++) {
+          const a = flat[c]!;
+          const b = sweep[c]!;
+          for (let i = 0; i < a.length; i++) {
+            const d = Math.abs((b[i] ?? 0) - (a[i] ?? 0));
+            if (d > biggest) biggest = d;
+          }
+        }
+        swept += 1;
+        if (biggest < 1e-4) problems.push(`${key}: swept ${def.min}→${def.max}, output identical`);
+      }
+    }
+
+    assert(swept > 60, `most of the roster was actually swept — ${swept}`);
+    eq(problems.length, 0, `every lane moves the audio — ${problems.join(' | ')}`);
+  });
+
   await check('no automatable parameter changes the device’s reported latency', () => {
     // The plugin window rides an automatable knob through the automation
     // store, which writes the value without recomputing `latencySamples` —
@@ -224,10 +339,17 @@ async function run(): Promise<void> {
     const insert = laid.inserts[0]!;
 
     const offered = automatableParamsOf(insert).map((p) => p.id).sort();
-    eq(offered.join(','), 'feedback,timeMs', 'time and feedback, but not mix');
-    // `mix` is two gains moving in opposite directions — half-automating it
-    // would leave the dry side behind.
-    assert(!offered.includes('mix'), 'mix is deliberately absent');
+    eq(offered.join(','), 'feedback,mix,timeMs', 'all three of the delay\'s knobs');
+
+    // And a device that genuinely cannot ramp anything offers nothing: the
+    // saturation's drive moves two gains at once, its bias rebuilds a shaper
+    // curve, and its mix is a crossfade the wet/dry helper was not applied to
+    // because the drive compensation sits inside the wet path.
+    session = setInsert(session, track.id,
+      { ...createInsert(1, 'gate', 'gate'), params: defaultParams('gate') });
+    const gate = findTrack(session, track.id)!.inserts[1]!;
+    eq(automatableParamsOf(gate).length, 0,
+      'the gate rebuilds a transfer curve for every knob, so it offers none');
   });
 
   await check('a lane is playable only while its device is in the slot', () => {
@@ -385,19 +507,42 @@ async function run(): Promise<void> {
   });
 
   await check('a lane on a parameter the device cannot ramp changes nothing', async () => {
-    // `mix` is never offered by the menu, so this is the hand-edited session
-    // case: it must be inert, not a crash and not a half-applied sweep.
-    makeToneFile('tone-mix', 440, 0.5, 3);
-    const { session } = toneWithLane('tone-mix', 3, 'delay', { mix: 0 }, 'mix', [
-      { timeSec: 0, value: 0 },
-      { timeSec: 2, value: 1 },
-    ]);
+    // The gate's threshold is never offered by the menu — it rebuilds a
+    // transfer curve — so this is the hand-edited session case: it must be
+    // inert, not a crash and not a half-applied sweep.  The gate is left
+    // wide open so the tone passes and any drift would show.
+    makeToneFile('tone-inert', 440, 0.5, 3);
+    const { session } = toneWithLane(
+      'tone-inert', 3, 'gate', { thresholdDb: -60, rangeDb: 0 }, 'thresholdDb', [
+        { timeSec: 0, value: -60 },
+        { timeSec: 2, value: 0 },
+      ]);
     const buffer = await renderSession(session, { startSec: 0, endSec: 2.5 }, { tailSec: 0 });
     const data = buffer.getChannelData(0);
     const head = db(rms(data, Math.round(0.05 * SR), Math.round(0.25 * SR)));
     const tail = db(rms(data, Math.round(2.05 * SR), Math.round(2.4 * SR)));
     close(head, tail, 'the level does not drift', 0.5);
-    close(head, db(0.5 / Math.SQRT2), 'the delay stays fully dry, as configured', 1.0);
+  });
+
+  await check('the delay mix lane reaches the audio, dry end to wet end', async () => {
+    // The counterpart to the test above, and the reason the wet/dry helper
+    // exists: one AudioParam now moves BOTH sides of the blend.  A delay fed
+    // a tone that stops early is silent at the dry end and audible at the wet
+    // end, because by then only the repeats are left.
+    makeToneFile('tone-mix', 440, 0.5, 1.0);
+    const { session } = toneWithLane(
+      'tone-mix', 1.0, 'delay', { mix: 0, timeMs: 500, feedback: 0.6 }, 'mix', [
+        { timeSec: 0, value: 0 },
+        { timeSec: 1.2, value: 1 },
+      ]);
+    const buffer = await renderSession(session, { startSec: 0, endSec: 2.4 }, { tailSec: 0 });
+    const data = buffer.getChannelData(0);
+    const dryEnd = rms(data, Math.round(0.05 * SR), Math.round(0.3 * SR));
+    const wetEnd = rms(data, Math.round(1.6 * SR), Math.round(2.2 * SR));
+    // At the start the lane is at 0, so the repeats are muted and only the
+    // source is heard; after the source stops, a fully wet blend is repeats.
+    assert(dryEnd > 0.2, `the dry end passes the source — ${dryEnd.toFixed(4)}`);
+    assert(wetEnd > 0.01, `and the wet end is audible repeats — ${wetEnd.toFixed(4)}`);
   });
 
   await check('a lane surviving an insert swap does not reach the wrong device', async () => {

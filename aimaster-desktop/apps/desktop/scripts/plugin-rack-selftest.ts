@@ -380,7 +380,44 @@ async function main(): Promise<void> {
     }
   });
 
-  const passed = results.filter((r) => r.pass).length;
+  await check('a feedback loop with no delay in it renders silence, and none of ours has one', async () => {
+  // Web Audio mutes any cycle that does not contain a DelayNode.  The phaser
+  // had one — four allpass stages feeding back directly — and the whole wet
+  // path rendered silence: the device was audible only as the dry signal
+  // being turned down, which reads as "subtle" rather than as broken.
+  //
+  // The property to hold is therefore not "the phaser sounds right" but "a
+  // fully wet device is not silent", which catches this class everywhere.
+  const problems: string[] = [];
+  for (const device of PLUGINS) {
+    const wetKnob = device.params.find((p) => p.id === 'mix' || p.id === 'mixPct');
+    if (!wetKnob) continue;
+    const ctx = new OfflineAudioContext(1, SR / 2, SR);
+    const instance = device.create(ctx as unknown as BaseAudioContext, {
+      ...defaultParams(device.id), [wetKnob.id]: wetKnob.max,
+    });
+    const buffer = ctx.createBuffer(1, SR / 2, SR);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = 0.4 * Math.sin((2 * Math.PI * 300 * i) / SR);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(instance.input);
+    source.start(0);
+    instance.output.connect(ctx.destination);
+    const out = await ctx.startRendering();
+    const rendered = out.getChannelData(0);
+    let sum = 0;
+    for (let i = 0; i < rendered.length; i++) sum += rendered[i]! * rendered[i]!;
+    const level = Math.sqrt(sum / rendered.length);
+    // A tenth of the input is a generous floor: a device may filter, notch or
+    // duck heavily, but a wet path that has been muted reads as exactly zero.
+    if (level < 0.028) problems.push(`${device.id}: fully wet renders ${level.toFixed(5)}`);
+    instance.dispose();
+  }
+  assert(problems.length === 0, `no muted wet paths — ${problems.join(' | ')}`);
+});
+
+const passed = results.filter((r) => r.pass).length;
   const failed = results.length - passed;
   console.log(`\n=== Plugin rack — ${PLUGINS.length} devices, rendered ===`);
   for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);

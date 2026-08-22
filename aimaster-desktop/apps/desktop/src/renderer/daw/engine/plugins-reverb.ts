@@ -25,7 +25,8 @@
 // device would not be the device that was designed.
 
 import {
-  dbToGain, withBypass, type PluginDescriptor,
+  automatableFrom, dbToGain, wetDry, withBypass,
+  type AutomatableParam, type PluginDescriptor,
 } from './plugin-kit.js';
 import {
   SPACES, irBuffer, spaceAt, spaceChoices, spaceIndex, spaceNotes, type Space,
@@ -276,7 +277,10 @@ interface SpaceEngine {
 function buildSpaceReverb(
   ctx: BaseAudioContext, params: Record<string, number>,
   input: GainNode, output: GainNode,
-): SpaceEngine & { setParam: (id: string, v: number) => void } {
+): SpaceEngine & {
+  setParam: (id: string, v: number) => void;
+  automatable: (id: string) => AutomatableParam | null;
+} {
   const pre = ctx.createDelay(0.5);
   const early = ctx.createConvolver();
   const tail = ctx.createConvolver();
@@ -290,8 +294,9 @@ function buildSpaceReverb(
   const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
   const highCut = ctx.createBiquadFilter(); highCut.type = 'lowpass';
   const width = widthStage(ctx);
-  const wet = ctx.createGain();
-  const dry = ctx.createGain();
+  const blend = wetDry(ctx, 0);
+  const wet = blend.wet;
+  const dry = blend.dry;
 
   input.connect(pre);
   pre.connect(early).connect(erGain).connect(lowCut);
@@ -314,9 +319,7 @@ function buildSpaceReverb(
   };
 
   const applyMix = (): void => {
-    const mix = clamp(p(params, 'mixPct', 30) / 100, 0, 1);
-    wet.gain.value = mix;
-    dry.gain.value = 1 - mix;
+    blend.setMix(clamp(p(params, 'mixPct', 30) / 100, 0, 1));
   };
 
   const applyLevels = (): void => {
@@ -334,7 +337,17 @@ function buildSpaceReverb(
 
   return {
     setSpace: rebuild,
-    dispose: () => { /* convolvers hold only buffers */ },
+    dispose: () => { blend.dispose(); },
+    // Space, size, decay, damping and hold all rebuild an impulse response;
+    // width writes a mid/side matrix.  What is left is one AudioParam each.
+    automatable: automatableFrom({
+      preDelayMs: { param: pre.delayTime, map: (v) => v / 1000 },
+      erDb: { param: erGain.gain, map: dbToGain },
+      tailDb: { param: tailGain.gain, map: dbToGain },
+      lowCutHz: lowCut.frequency,
+      highCutHz: highCut.frequency,
+      mixPct: { param: blend.mix, map: (v) => clamp(v / 100, 0, 1) },
+    }),
     setParam: (id, v) => {
       params[id] = v;
       if (id === 'space' || id === 'sizePct' || id === 'decayPct'
@@ -377,12 +390,17 @@ const PLATE_DIFFUSE_MS = [2.9, 3.7, 4.3, 5.1];
 function buildPlate(
   ctx: BaseAudioContext, params: Record<string, number>,
   input: GainNode, output: GainNode,
-): { setParam: (id: string, v: number) => void; dispose: () => void } {
+): {
+  setParam: (id: string, v: number) => void;
+  dispose: () => void;
+  automatable: (id: string) => AutomatableParam | null;
+} {
   const drive = ctx.createGain(); drive.gain.value = 0.4;
   const pre = ctx.createDelay(0.5);
   const width = widthStage(ctx);
-  const wet = ctx.createGain();
-  const dry = ctx.createGain();
+  const blend = wetDry(ctx, 0);
+  const wet = blend.wet;
+  const dry = blend.dry;
   const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
   const highCut = ctx.createBiquadFilter(); highCut.type = 'lowpass';
 
@@ -448,9 +466,7 @@ function buildPlate(
     for (const line of lines) line.damp.frequency.value = hz;
   };
   const applyMix = (): void => {
-    const mix = clamp(p(params, 'mixPct', 30) / 100, 0, 1);
-    wet.gain.value = mix;
-    dry.gain.value = 1 - mix;
+    blend.setMix(clamp(p(params, 'mixPct', 30) / 100, 0, 1));
   };
 
   applyDecay(); applyDamp(); applyMix();
@@ -461,7 +477,15 @@ function buildPlate(
   for (const ap of diffusers) ap.setG(clamp(p(params, 'diffusion', 0.7), 0, 0.92));
 
   return {
-    dispose: () => { /* nothing started */ },
+    dispose: () => { blend.dispose(); },
+    // Decay retunes four feedback gains, damping four filters, diffusion four
+    // allpasses, width a mid/side matrix — one knob, four parameters each.
+    automatable: automatableFrom({
+      preDelayMs: { param: pre.delayTime, map: (v) => v / 1000 },
+      lowCutHz: lowCut.frequency,
+      highCutHz: highCut.frequency,
+      mixPct: { param: blend.mix, map: (v) => clamp(v / 100, 0, 1) },
+    }),
     setParam: (id, v) => {
       params[id] = v;
       if (id === 'decaySec') applyDecay();
@@ -495,11 +519,16 @@ const SPRING_ALLPASS_MS = [3.1, 4.7, 5.3, 6.9, 8.1, 9.7, 11.3, 12.9];
 function buildSpring(
   ctx: BaseAudioContext, params: Record<string, number>,
   input: GainNode, output: GainNode,
-): { setParam: (id: string, v: number) => void; dispose: () => void } {
+): {
+  setParam: (id: string, v: number) => void;
+  dispose: () => void;
+  automatable: (id: string) => AutomatableParam | null;
+} {
   const band = ctx.createBiquadFilter(); band.type = 'bandpass';
   band.frequency.value = 1400; band.Q.value = 0.55;
-  const wet = ctx.createGain();
-  const dry = ctx.createGain();
+  const blend = wetDry(ctx, 0);
+  const wet = blend.wet;
+  const dry = blend.dry;
   const merger = ctx.createChannelMerger(2);
 
   input.connect(band);
@@ -546,9 +575,7 @@ function buildSpring(
     }
   };
   const applyMix = (): void => {
-    const mix = clamp(p(params, 'mixPct', 30) / 100, 0, 1);
-    wet.gain.value = mix;
-    dry.gain.value = 1 - mix;
+    blend.setMix(clamp(p(params, 'mixPct', 30) / 100, 0, 1));
   };
 
   applyDecay(); applyMix();
@@ -563,7 +590,12 @@ function buildSpring(
   applyBoing(p(params, 'boing', 0.62));
 
   return {
-    dispose: () => { /* nothing started */ },
+    dispose: () => { blend.dispose(); },
+    // Decay, damping and boing each write every tank in the chain.
+    automatable: automatableFrom({
+      toneHz: band.frequency,
+      mixPct: { param: blend.mix, map: (v) => clamp(v / 100, 0, 1) },
+    }),
     setParam: (id, v) => {
       params[id] = v;
       if (id === 'decaySec') applyDecay();
@@ -592,12 +624,17 @@ function buildSpring(
 function buildShimmer(
   ctx: BaseAudioContext, params: Record<string, number>,
   input: GainNode, output: GainNode,
-): { setParam: (id: string, v: number) => void; dispose: () => void } {
+): {
+  setParam: (id: string, v: number) => void;
+  dispose: () => void;
+  automatable: (id: string) => AutomatableParam | null;
+} {
   const pre = ctx.createDelay(0.5);
   const conv = ctx.createConvolver();
   conv.normalize = false;
-  const wet = ctx.createGain();
-  const dry = ctx.createGain();
+  const blend = wetDry(ctx, 0);
+  const wet = blend.wet;
+  const dry = blend.dry;
   const width = widthStage(ctx);
   const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
   const highCut = ctx.createBiquadFilter(); highCut.type = 'lowpass';
@@ -637,9 +674,7 @@ function buildShimmer(
     });
   };
   const applyMix = (): void => {
-    const mix = clamp(p(params, 'mixPct', 35) / 100, 0, 1);
-    wet.gain.value = mix;
-    dry.gain.value = 1 - mix;
+    blend.setMix(clamp(p(params, 'mixPct', 35) / 100, 0, 1));
   };
 
   rebuild();
@@ -652,7 +687,16 @@ function buildShimmer(
   width.set(p(params, 'widthPct', 120) / 100);
 
   return {
-    dispose: () => shifter.dispose(),
+    dispose: () => { blend.dispose(); shifter.dispose(); },
+    // Space and decay rebuild the room; width writes a mid/side matrix.
+    automatable: automatableFrom({
+      preDelayMs: { param: pre.delayTime, map: (v) => v / 1000 },
+      loopMs: { param: loopDelay.delayTime, map: (v) => clamp(v, 20, 800) / 1000 },
+      shimmer: { param: shiftGain.gain, map: (v) => clamp(v, 0, 0.85) },
+      lowCutHz: lowCut.frequency,
+      highCutHz: highCut.frequency,
+      mixPct: { param: blend.mix, map: (v) => clamp(v / 100, 0, 1) },
+    }),
     setParam: (id, v) => {
       params[id] = v;
       if (id === 'space' || id === 'decayPct') rebuild();
@@ -689,10 +733,15 @@ export const REVERB_PLUGINS: PluginDescriptor[] = [
       { id: 'holdMs',     name: 'Hold',      min: 40,   max: 1200,  default: 260, unit: 'ms' },
       { id: 'mixPct',     name: 'Mix',       min: 0,    max: 100,   default: 30,  unit: '%' },
     ],
+    automatableParams: ['preDelayMs', 'erDb', 'tailDb', 'lowCutHz', 'highCutHz', 'mixPct'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const engine = buildSpaceReverb(ctx, params, input, output);
-      return { setParam: engine.setParam, dispose: engine.dispose };
+      return {
+        setParam: engine.setParam,
+        automatable: engine.automatable,
+        dispose: engine.dispose,
+      };
     }),
   },
 
@@ -711,6 +760,7 @@ export const REVERB_PLUGINS: PluginDescriptor[] = [
       { id: 'widthPct',   name: 'Width',     min: 0,    max: 150,   default: 110,  unit: '%' },
       { id: 'mixPct',     name: 'Mix',       min: 0,    max: 100,   default: 30,   unit: '%' },
     ],
+    automatableParams: ['preDelayMs', 'lowCutHz', 'highCutHz', 'mixPct'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => buildPlate(ctx, params, input, output)),
   },
@@ -727,6 +777,7 @@ export const REVERB_PLUGINS: PluginDescriptor[] = [
       { id: 'boing',    name: 'Boing',  min: 0,    max: 0.9,   default: 0.62, unit: '' },
       { id: 'mixPct',   name: 'Mix',    min: 0,    max: 100,   default: 30,   unit: '%' },
     ],
+    automatableParams: ['toneHz', 'mixPct'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => buildSpring(ctx, params, input, output)),
   },
@@ -748,6 +799,7 @@ export const REVERB_PLUGINS: PluginDescriptor[] = [
       { id: 'widthPct',   name: 'Width',     min: 0,    max: 150,   default: 120, unit: '%' },
       { id: 'mixPct',     name: 'Mix',       min: 0,    max: 100,   default: 35,  unit: '%' },
     ],
+    automatableParams: ['preDelayMs', 'shimmer', 'loopMs', 'lowCutHz', 'highCutHz', 'mixPct'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => buildShimmer(ctx, params, input, output)),
   },
