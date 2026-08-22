@@ -97,6 +97,9 @@ export class ClipPlayer {
   /** Files this pass has already asked the cache for, so it asks once. */
   private requested = new Set<string>();
   private origin = 0;
+
+  /** Context time that timeline zero maps to — what the metronome anchors on. */
+  get originSec(): number { return this.origin; }
   private playing = false;
   /**
    * Streaming is for the live transport only.  An offline render runs faster

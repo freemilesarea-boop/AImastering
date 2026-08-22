@@ -84,6 +84,9 @@ import {
   renameClip, renameSelection, selectedAudioClips,
 } from '../daw/edit/clip-dsp.js';
 import { reverseClip } from '../daw/edit/clip-dsp-actions.js';
+import {
+  cleanTrackName, describeHeight, renameTrack, setHeights, stepTrackHeight,
+} from '../daw/model/track-header.js';
 import { frameSec, videoOf } from '../daw/model/video.js';
 import {
   analyzeClipPitch, applyCorrection, guideNotesFor, renderClipPitch, tuningSummary,
@@ -128,7 +131,8 @@ export type DawCommandId =
   | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
   | 'daw.copy' | 'daw.cut' | 'daw.cutRipple' | 'daw.paste' | 'daw.pasteInsert'
   | 'daw.insertSilence' | 'daw.stripSilence' | 'daw.snapZeroCross'
-  | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip';
+  | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip'
+  | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -598,6 +602,30 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       });
       notify(summary, 'success');
     },
+
+    // ── Track header ──────────────────────────────────────────────────────
+
+    'daw.renameTrack': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      const track = findTrack(state.session, trackId);
+      const typed = globalThis.prompt?.('트랙 이름', track?.name ?? '');
+      if (typed === null || typed === undefined) return;
+      if (cleanTrackName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
+      state.apply((s: DawSession) => renameTrack(s, trackId, typed));
+      notify(`${cleanTrackName(typed)}`);
+    },
+
+    /**
+     * Step every selected track's height.
+     *
+     * Stepping rather than adding pixels: "make this big enough to edit in" is
+     * a repeated action, and hunting for the same pixel height by hand every
+     * time is not editing.
+     */
+    'daw.trackHeightUp': () => stepHeights(daw(), 1, notify),
+    'daw.trackHeightDown': () => stepHeights(daw(), -1, notify),
 
     // ── Clip processing ───────────────────────────────────────────────────
 
@@ -1240,6 +1268,16 @@ function folderForSelection(state: DawState): string | null {
 }
 
 /** The audio clip under the play head on the focused track. */
+/** Grow or shrink the height of whatever the keyboard is pointing at. */
+function stepHeights(state: DawState, direction: 1 | -1, notify: DawCommandDeps['notify']): void {
+  const ids = targetTrackIds();
+  if (ids.length === 0) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+  const first = findTrack(state.session, ids[0]!);
+  const next = stepTrackHeight(first?.height ?? 72, direction);
+  state.apply((s: DawSession) => setHeights(s, ids, next));
+  notify(describeHeight(next));
+}
+
 /** The first audio clip the selection touches, for a sample-level question. */
 function firstAudioUnder(
   state: DawState, sel: TimeSelection,
@@ -1414,6 +1452,10 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
       if (!readiness.ok) { notify(readiness.reason ?? '녹음할 수 없습니다', 'warning'); return; }
       void recorder.start();
       notify('녹음 시작');
+    },
+    'transport.metronome': () => {
+      daw().toggleMetronome();
+      notify(daw().metronomeOn ? '메트로놈 ON' : '메트로놈 OFF');
     },
     'transport.toggleLoop': () => {
       daw().toggleLoop();

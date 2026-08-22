@@ -15,6 +15,8 @@ import { ClipPlayer } from './clip-player.js';
 import { getCached, pinFiles, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
 import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
+import { Metronome } from './metronome.js';
+import { tempoMapOf } from '../model/tempo-map.js';
 import {
   MidiInputHandle, anchorTimebase, midiFailureReason, openMidiInputs,
 } from './midi-input.js';
@@ -62,6 +64,8 @@ class DawRuntime {
   private engine: MixerEngine | null = null;
   private player: ClipPlayer | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** The click.  Not in the mix — see engine/metronome.ts. */
+  readonly metronome = new Metronome();
   private session: DawSession | null = null;
   private loop: LoopState = { enabled: false, startSec: 0, endSec: 0 };
 
@@ -547,14 +551,26 @@ class DawRuntime {
   }
 
   stop(): void {
+    // Whatever was scheduled ahead is no longer true.
+    this.metronome.reset();
     this.player?.stop();
     this.stopTicking();
   }
 
   /** Move the play head; keeps playing if it was playing. */
+  /** Turn the click on or off.  Persisted by the store, not here. */
+  setMetronome(on: boolean): void {
+    if (this.ctx) this.metronome.attach(this.ctx);
+    this.metronome.setEnabled(on);
+  }
+
+  get metronomeOn(): boolean { return this.metronome.enabled; }
+
   seek(session: DawSession, toSec: number): void {
     const wasPlaying = this.isPlaying;
     this.player?.stop();
+    // A locate invalidates every click already scheduled into the future.
+    this.metronome.reset();
     if (wasPlaying) {
       this.player?.start(session, Math.max(0, toSec));
       this.startTicking();
@@ -609,6 +625,9 @@ class DawRuntime {
       }
 
       player.tick(session, LOOKAHEAD_SEC);
+      // The click rides the same tick and the same origin as the clips, so a
+      // beat and a kick on that beat are scheduled to the same context time.
+      this.metronome.tick(tempoMapOf(session), pos, LOOKAHEAD_SEC, player.originSec);
       this.onPosition?.(pos);
 
       // Stop at the end of the last clip (plus a tail for effects).
