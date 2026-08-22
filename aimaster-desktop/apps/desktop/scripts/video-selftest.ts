@@ -36,14 +36,37 @@ import {
   resetVideoPosition, spotVideoTimecode, spotVideoToPlayhead, trimVideoHead,
   videoOffsetFrames,
 } from '../src/renderer/daw/edit/video-move.js';
-import { createSession } from '../src/renderer/daw/model/session-ops.js';
+import {
+  addFile, addTrack, createClip, createSession, createTrack, findTrack, trackClips, updateClips,
+} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds } from '../src/renderer/daw/model/ids.js';
+import {
+  alignVideoAudio, describeVideoAudio, hasVideoAudio, importVideoAudio,
+  videoAudioOffsetSec, videoAudioTracks,
+} from '../src/renderer/daw/edit/video-audio.js';
 import type { DawSession } from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
-function check(name: string, fn: () => void): void {
-  try { fn(); results.push({ name, pass: true, detail: '' }); }
-  catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+/**
+ * Every check, sync or async, and the summary waits for all of them.
+ *
+ * The synchronous-only version of this silently PASSED every async test: an
+ * `async` function returns a promise, the try block sees no throw, and the
+ * rejection surfaced after the summary had already printed a clean score.
+ * Anything that can pass without running is worse than no test at all.
+ */
+const pending: Promise<void>[] = [];
+function check(name: string, fn: () => void | Promise<void>): void {
+  const done = (e?: unknown): void => {
+    if (e === undefined) results.push({ name, pass: true, detail: '' });
+    else results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) });
+  };
+  try {
+    const result = fn();
+    if (result instanceof Promise) pending.push(result.then(() => done(), (e: unknown) => done(e)));
+    else done();
+  } catch (e) { done(e); }
 }
 function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
 function eq<T>(a: T, b: T, m: string): void {
@@ -497,11 +520,175 @@ check('the read-out is where the picture is, and what came off the front', () =>
   assert(line.includes('96프레임 잘림'), `and the trim in frames: ${line}`);
 });
 
-const passed = results.filter((r) => r.pass).length;
-const failed = results.length - passed;
-console.log('\n=== Video: timecode · placement · sync ladder ===');
-for (const r of results) {
-  console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
+// ── The film's own sound ──────────────────────────────────────────────────────
+//
+// No demuxed WAV: the audio track's file reference points AT THE FILM, and
+// the existing decode path pulls its first audio stream.  So "is this the
+// picture's audio" is answered by a shared path rather than by a flag — and
+// that link is what makes a re-align possible after the picture is moved.
+
+/** A decode that succeeds, standing in for the codec. */
+const fakeDecode = (durationSec = 120) => ({
+  decode: async () => ({ failed: [] as string[] }),
+  meta: () => ({ durationSec, sampleRate: 48_000, channels: 2 }),
+});
+
+async function importedSession(over: Partial<VideoRef> = {}, durationSec = 120) {
+  resetIds();
+  const session = withVideo(createSession('score', 48_000), reel(over));
+  const result = await importVideoAudio(session, fakeDecode(durationSec));
+  return result;
 }
-console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
-if (failed > 0) process.exit(1);
+
+check('the imported track plays the FILM, not a copy of it', async () => {
+  const result = await importedSession();
+  assert(result.trackId, `imported: ${result.reason}`);
+  const track = findTrack(result.session, result.trackId!)!;
+  const clip = trackClips(track)[0]!;
+  const file = result.session.files.find((f) => f.id === clip.fileId)!;
+  eq(file.path, '/v/reel.mov', 'the file reference IS the video file');
+  eq(result.session.files.length, 1, 'and there is only one of it');
+  assert(hasVideoAudio(result.session), 'which is how it is recognised later');
+  eq(videoAudioTracks(result.session).length, 1, 'one such track');
+});
+
+check('the audio lands where the picture is, trimmed the same way', async () => {
+  const result = await importedSession({ startSec: 12, offsetSec: 3 });
+  const clip = trackClips(findTrack(result.session, result.trackId!)!)[0]!;
+  close(clip.startSec, 12, 'starts with the picture', 1e-9);
+  close(clip.offsetSec, 3, 'and as far into the file as the picture is', 1e-9);
+  close(clip.durationSec, 117, 'running to the end of the audio', 1e-9);
+  close(videoAudioOffsetSec(result.session) ?? -1, 0, 'so there is no drift', 1e-9);
+});
+
+check('a film with no readable audio says so instead of making an empty track', async () => {
+  resetIds();
+  const session = withVideo(createSession('score', 48_000), reel());
+  const result = await importVideoAudio(session, {
+    decode: async () => ({ failed: ['/v/reel.mov'] }),
+    meta: () => undefined,
+  });
+  eq(result.trackId, null, 'nothing imported');
+  assert(result.reason?.includes('꺼내지 못했습니다'), `and says why: ${result.reason}`);
+  eq(result.session.tracks.length, 1, 'no track was left behind');
+});
+
+check('audio of zero length is refused too', async () => {
+  resetIds();
+  const session = withVideo(createSession('score', 48_000), reel());
+  const result = await importVideoAudio(session, {
+    decode: async () => ({ failed: [] }),
+    meta: () => ({ durationSec: 0, sampleRate: 48_000, channels: 2 }),
+  });
+  eq(result.trackId, null, 'nothing imported');
+  assert(result.reason?.includes('길이가 0'), `named: ${result.reason}`);
+});
+
+check('importing twice does not give you the dialogue twice', async () => {
+  const first = await importedSession();
+  const again = await importVideoAudio(first.session, fakeDecode());
+  eq(again.trackId, null, 'refused');
+  assert(again.reason?.includes('이미'), `and says why: ${again.reason}`);
+  eq(videoAudioTracks(again.session).length, 1, 'still one');
+  // Unless it is asked for deliberately.
+  const forced = await importVideoAudio(first.session, { ...fakeDecode(), force: true });
+  assert(forced.trackId, 'forced through');
+  eq(videoAudioTracks(forced.session).length, 2, 'two tracks now');
+});
+
+check('with no picture there is nothing to import', async () => {
+  const result = await importVideoAudio(createSession('empty', 48_000), fakeDecode());
+  eq(result.trackId, null, 'nothing');
+  assert(result.reason?.includes('픽처가 없습니다'), `and says so: ${result.reason}`);
+});
+
+// ── Drift, and putting it back ────────────────────────────────────────────────
+
+check('moving the picture leaves the audio behind — visibly', async () => {
+  const imported = await importedSession();
+  const moved = moveVideoTo(imported.session, 8);
+  assert(moved.applied, 'the picture moved');
+  const drift = videoAudioOffsetSec(moved.session)!;
+  // The audio is now EARLY relative to the picture by however far it moved.
+  close(drift, -videoOf(moved.session)!.startSec, 'and the drift is exactly that far', 1e-9);
+  assert(describeVideoAudio(moved.session).includes('빠름'), describeVideoAudio(moved.session));
+});
+
+check('one button puts it back under the picture', async () => {
+  const imported = await importedSession();
+  const moved = moveVideoTo(imported.session, 8).session;
+  const aligned = alignVideoAudio(moved);
+  eq(aligned.moved, 1, 'one clip moved');
+  eq(aligned.reason, null, 'no complaint');
+  close(videoAudioOffsetSec(aligned.session) ?? -1, 0, 'and the drift is gone', 1e-9);
+  const clip = trackClips(videoAudioTracks(aligned.session)[0]!)[0]!;
+  close(clip.startSec, videoOf(aligned.session)!.startSec, 'sitting with the picture', 1e-9);
+  // Already aligned: nothing to do, and it says nothing.
+  eq(alignVideoAudio(aligned.session).moved, 0, 'a second press does nothing');
+});
+
+check('a trimmed picture takes its audio trim with it', async () => {
+  const imported = await importedSession();
+  const trimmed = trimVideoHead(imported.session, 4).session;
+  const aligned = alignVideoAudio(trimmed);
+  const clip = trackClips(videoAudioTracks(aligned.session)[0]!)[0]!;
+  const video = videoOf(aligned.session)!;
+  close(clip.offsetSec, video.offsetSec, 'the same frames came off both', 1e-9);
+  close(clip.startSec, video.startSec, 'and it did not move', 1e-9);
+});
+
+check('audio that has been EDITED is not silently reassembled', async () => {
+  // Split into two clips means somebody made a decision.  A re-align button
+  // that put them both back at the picture would delete that decision, so it
+  // refuses and names the track instead.
+  const imported = await importedSession();
+  const trackId = imported.trackId!;
+  const split = updateClips(imported.session, trackId, (clips) => {
+    const c = clips[0]!;
+    return [
+      { ...c, durationSec: 30 },
+      createClip(c.fileId, 'tail', { startSec: 40, offsetSec: 30, durationSec: 30 }),
+    ];
+  });
+  const result = alignVideoAudio(split);
+  eq(result.moved, 0, 'nothing was moved');
+  assert(result.reason?.includes('여러 클립'), `and it says why: ${result.reason}`);
+  eq(result.session, split, 'the session is untouched');
+});
+
+check('a session with no picture audio has nothing to align or describe', () => {
+  resetIds();
+  const bare = withVideo(createSession('score', 48_000), reel());
+  eq(hasVideoAudio(bare), false, 'nothing imported');
+  eq(videoAudioOffsetSec(bare), null, 'no drift to report');
+  eq(describeVideoAudio(bare), '영상 오디오 없음', 'and the read-out says so');
+  eq(alignVideoAudio(bare).reason, '영상 오디오 트랙이 없습니다', 'aligning refuses');
+});
+
+check('an ordinary audio track is not mistaken for the film’s', async () => {
+  const imported = await importedSession();
+  let s = addFile(imported.session, {
+    id: 'other', path: '/music/gtr.wav', name: 'gtr',
+    durationSec: 10, sampleRate: 48_000, channels: 2,
+  });
+  const gtr = createTrack('Gtr', 'audio');
+  s = addTrack(s, gtr);
+  s = updateClips(s, gtr.id, () => [createClip('other', 'gtr', { startSec: 0, durationSec: 10 })]);
+  eq(videoAudioTracks(s).length, 1, 'still just the one');
+  eq(videoAudioTracks(s)[0]!.id, imported.trackId, 'and it is the right one');
+});
+
+async function report(): Promise<void> {
+  await Promise.all(pending);
+
+  const passed = results.filter((r) => r.pass).length;
+  const failed = results.length - passed;
+  console.log('\n=== Video: timecode · placement · sync ladder · 영상 오디오 ===');
+  for (const r of results) {
+    console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
+  }
+  console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
+  if (failed > 0) process.exit(1);
+}
+
+void report();
