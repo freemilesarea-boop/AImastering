@@ -27,6 +27,10 @@ import { toFileUrl } from '../../../utils/fileUrl.js';
 import { nextId } from '../../../daw/model/ids.js';
 import { premium } from '../../../theme/premium.js';
 import {
+  alignVideoAudio, describeVideoAudio, hasVideoAudio, importVideoAudio,
+  videoAudioOffsetSec,
+} from '../../../daw/edit/video-audio.js';
+import {
   describeVideoPosition, nudgeVideoFrames, spotVideoTimecode,
 } from '../../../daw/edit/video-move.js';
 
@@ -103,15 +107,39 @@ export default function VideoViewer() {
       setOpen(true);
       if (probe.fps <= 0) {
         notify('프레임 레이트를 읽지 못했습니다 — 25 로 두었습니다. 헤더에서 고치세요', 'warning');
-      } else if (probe.hasAudio) {
-        notify(`${probe.name} — 영상의 소리는 나지 않습니다. 필요하면 오디오로 따로 가져오세요`);
       } else {
         notify(`${probe.name} 을 불러왔습니다`, 'success');
       }
+      // The film's own sound, on a track, lined up with the picture.  Done
+      // here rather than offered, because a scoring session that starts
+      // without the dialogue is a scoring session that starts with a
+      // detour — and the track can be deleted in one keystroke if it is not
+      // wanted, which is cheaper than finding the menu item that adds it.
+      if (probe.hasAudio) await pullVideoAudio();
     } catch (err) {
       notify(`영상을 읽지 못했습니다: ${(err as Error).message}`, 'error');
     } finally { setProbing(null); }
   }, [apply, notify, setOpen, setProbing]);
+
+  /**
+   * Import the film's audio, reporting what happened either way.
+   *
+   * The picture is already loaded by the time this runs, so a failure here
+   * costs the sound and not the session — which is why it is a separate step
+   * with its own message rather than part of the video import.
+   */
+  const pullVideoAudio = useCallback(async (force = false): Promise<void> => {
+    setProbing('영상에서 오디오를 꺼내는 중…');
+    try {
+      const result = await importVideoAudio(useDawStore.getState().session,
+        force ? { force: true } : {});
+      if (!result.trackId) { notify(result.reason ?? '영상 오디오를 가져오지 못했습니다', 'warning'); return; }
+      apply(() => result.session);
+      notify('영상 오디오를 트랙으로 가져왔습니다 — 픽처와 같은 자리입니다', 'success');
+    } catch (err) {
+      notify(`영상 오디오를 가져오지 못했습니다: ${(err as Error).message}`, 'warning');
+    } finally { setProbing(null); }
+  }, [apply, notify, setProbing]);
 
   if (!open) return null;
 
@@ -263,6 +291,31 @@ export default function VideoViewer() {
 
         <button onClick={() => nudgeFrames(-1)} title="한 프레임 뒤로" style={chip}>◀</button>
         <button onClick={() => nudgeFrames(1)} title="한 프레임 앞으로" style={chip}>▶</button>
+
+        {/* The film's own sound.  Only offered when there is something to
+            do: no track yet, or a track that has drifted from the picture. */}
+        {video && !hasVideoAudio(session) && (
+          <button onClick={() => { void pullVideoAudio(); }}
+                  title="영상의 오디오를 트랙으로 가져옵니다 — 파일을 따로 만들지 않고 영상 파일을 그대로 읽습니다"
+                  style={chip}>오디오 가져오기</button>
+        )}
+        {video && hasVideoAudio(session) && Math.abs(videoAudioOffsetSec(session) ?? 0) > 1e-6 && (
+          <button
+            onClick={() => {
+              let reason: string | null = null;
+              let moved = 0;
+              apply((st) => {
+                const r = alignVideoAudio(st);
+                reason = r.reason; moved = r.moved;
+                return r.moved > 0 ? r.session : st;
+              });
+              if (reason) { notify(reason, 'warning'); return; }
+              notify(`영상 오디오 ${moved}개를 픽처에 맞췄습니다`, 'success');
+            }}
+            title={describeVideoAudio(session)}
+            style={{ ...chip, borderColor: premium.accent.base, color: premium.accent.base }}
+          >오디오 맞추기</button>
+        )}
 
         {/* Moving the PICTURE, not the play head.  Deliberately a separate
             pair of buttons from the two above: one moves you through the
