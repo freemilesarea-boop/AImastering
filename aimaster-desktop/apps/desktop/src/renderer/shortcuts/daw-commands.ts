@@ -59,6 +59,9 @@ import {
 import { describeGroove } from '../daw/model/groove.js';
 import { trackDelayMs } from '../daw/model/track-delay.js';
 import {
+  describeVideoPosition, moveVideoTo, nudgeVideoFrames,
+} from '../daw/edit/video-move.js';
+import {
   clearTrackDelay, describeDelay, nudgeTrackDelay,
 } from '../daw/edit/track-delay-ops.js';
 import { useMidiEditorStore, currentGridBeat } from '../stores/midiEditorStore.js';
@@ -138,6 +141,7 @@ export type DawCommandId =
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
   | 'daw.detectTempo' | 'daw.extractGroove' | 'daw.applyGroove'
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
+  | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
@@ -262,6 +266,28 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     state.apply(() => result.session);
     const track = findTrack(result.session, trackId);
     notify(`${track?.name ?? '트랙'} · ${describeDelay(trackDelayMs(track!))}`);
+  };
+
+  /**
+   * Move the picture, and say where it landed.
+   *
+   * The read-out is not decoration: nudging the film by a frame produces no
+   * visible change on the timeline at most zoom levels, and a key that
+   * silently does nothing is indistinguishable from a key that is broken.
+   */
+  const movePicture = (fn: (s: DawSession) => { session: DawSession; applied: boolean; reason: string | null }): void => {
+    const state = daw();
+    let reason: string | null = null;
+    let applied = false;
+    state.apply((s) => {
+      const r = fn(s);
+      reason = r.reason;
+      applied = r.applied;
+      return r.applied ? r.session : s;
+    });
+    if (reason) { notify(reason, 'warning'); return; }
+    if (!applied) return;
+    notify(describeVideoPosition(daw().session));
   };
 
   const transposeBy = (semitones: number): void => {
@@ -1077,6 +1103,11 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         notify((err as Error).message, 'warning');
       }
     },
+
+    // ── 픽처 ─────────────────────────────────────────────────────────────
+    'daw.pictureBack':    () => movePicture((s) => nudgeVideoFrames(s, -1)),
+    'daw.pictureForward': () => movePicture((s) => nudgeVideoFrames(s, 1)),
+    'daw.pictureToPlayhead': () => movePicture((s) => moveVideoTo(s, daw().playheadSec)),
 
     // ── 트랙 딜레이 ──────────────────────────────────────────────────────
     'daw.trackDelayEarlier': () => shiftTrackDelay(-1),

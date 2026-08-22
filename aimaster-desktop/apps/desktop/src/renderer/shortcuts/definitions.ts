@@ -82,6 +82,7 @@ export type CommandId =
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
   | 'daw.detectTempo' | 'daw.extractGroove' | 'daw.applyGroove'
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
+  | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
@@ -395,6 +396,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '트랜지언트마다 마커를 찍고 그리드에 스냅', available: true },
   { id: 'daw.toggleWarp', group: 'daw', label: 'Warp 켜기 / 끄기', chords: ['Alt+W'],
     note: '선택한 클립의 워프 on/off', available: true },
+
+  // ── 픽처 ───────────────────────────────────────────────────────────────
+  { id: 'daw.pictureBack', group: 'daw', label: '픽처 한 프레임 앞으로', chords: ['Mod+Shift+BracketLeft'],
+    note: '픽처만 옮깁니다 — 재생헤드는 그대로', available: true },
+  { id: 'daw.pictureForward', group: 'daw', label: '픽처 한 프레임 뒤로', chords: ['Mod+Shift+BracketRight'],
+    note: '픽처만 옮깁니다 — 재생헤드는 그대로', available: true },
+  { id: 'daw.pictureToPlayhead', group: 'daw', label: '픽처를 재생헤드로', chords: ['Mod+Alt+Shift+KeyP'],
+    note: '픽처의 첫 프레임이 재생헤드에 오도록 옮깁니다', available: true },
 
   // ── 트랙 딜레이 ────────────────────────────────────────────────────────
   { id: 'daw.trackDelayEarlier', group: 'daw', label: '트랙 딜레이 −1 ms', chords: ['Mod+Alt+Shift+Comma'],

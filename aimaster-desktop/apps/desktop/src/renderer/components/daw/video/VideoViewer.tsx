@@ -26,6 +26,9 @@ import { describeSync } from '../../../daw/engine/video-sync.js';
 import { toFileUrl } from '../../../utils/fileUrl.js';
 import { nextId } from '../../../daw/model/ids.js';
 import { premium } from '../../../theme/premium.js';
+import {
+  describeVideoPosition, nudgeVideoFrames, spotVideoTimecode,
+} from '../../../daw/edit/video-move.js';
 
 interface ProbeResult {
   path: string; name: string; durationSec: number; fps: number;
@@ -55,6 +58,7 @@ export default function VideoViewer() {
     y: 150,
   }));
   const [tcDraft, setTcDraft] = useState<string | null>(null);
+  const [spotDraft, setSpotDraft] = useState<string | null>(null);
 
   const video = videoOf(session);
 
@@ -149,6 +153,39 @@ export default function VideoViewer() {
     seek(Math.max(0, playheadSec + frames * frameSec(video.fps)));
   };
 
+  /**
+   * Spot the reel: move the PICTURE so this timecode lands on the play head.
+   *
+   * The inverse of locating.  Both operations start from the same number a
+   * spotting note carries — "the door slams at 01:02:14:07" — and which one
+   * you want depends on whether the picture is already placed.  Locating
+   * moves you; spotting moves the film.
+   */
+  const spotHere = (text: string): void => {
+    if (!video) return;
+    const parsed = parseTimecode(text, video.fps);
+    setSpotDraft(null);
+    if (parsed === null) { notify('타임코드를 읽지 못했습니다 (01:02:14:07)', 'warning'); return; }
+    let reason: string | null = null;
+    apply((s) => {
+      const r = spotVideoTimecode(s, parsed, playheadSec);
+      reason = r.reason;
+      return r.applied ? r.session : s;
+    });
+    if (reason) { notify(reason, 'warning'); return; }
+    notify(`픽처를 옮겼습니다 — ${describeVideoPosition(useDawStore.getState().session)}`, 'success');
+  };
+
+  const shiftPicture = (frames: number): void => {
+    let reason: string | null = null;
+    apply((s) => {
+      const r = nudgeVideoFrames(s, frames);
+      reason = r.reason;
+      return r.applied ? r.session : s;
+    });
+    if (reason) notify(reason, 'warning');
+  };
+
   return (
     <div
       className="fixed z-40 rounded shadow-2xl overflow-hidden"
@@ -226,6 +263,41 @@ export default function VideoViewer() {
 
         <button onClick={() => nudgeFrames(-1)} title="한 프레임 뒤로" style={chip}>◀</button>
         <button onClick={() => nudgeFrames(1)} title="한 프레임 앞으로" style={chip}>▶</button>
+
+        {/* Moving the PICTURE, not the play head.  Deliberately a separate
+            pair of buttons from the two above: one moves you through the
+            film, the other moves the film, and a spotting session needs both
+            within reach without them looking like the same control. */}
+        {video && (
+          <>
+            <span style={{ fontSize: 9, color: premium.text.faint, marginLeft: 4 }}>픽처</span>
+            <button onClick={() => shiftPicture(-1)} title="픽처를 한 프레임 앞으로" style={chip}>−1</button>
+            <button onClick={() => shiftPicture(1)} title="픽처를 한 프레임 뒤로" style={chip}>+1</button>
+            {spotDraft === null ? (
+              <button
+                onClick={() => setSpotDraft(timecode === '--:--:--:--' ? '01:00:00:00' : timecode)}
+                title="타임코드를 입력하면 그 프레임이 재생헤드에 오도록 픽처를 옮깁니다"
+                style={chip}
+              >스팟</button>
+            ) : (
+              <input
+                autoFocus
+                defaultValue={spotDraft}
+                onBlur={(e) => spotHere(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                  if (e.key === 'Escape') setSpotDraft(null);
+                }}
+                title="이 타임코드가 재생헤드에 오도록"
+                style={{
+                  fontFamily: premium.type.mono, fontSize: 11, width: 104,
+                  background: 'transparent', color: premium.accent.light,
+                  border: `1px solid ${premium.accent.base}`, borderRadius: 3, padding: '0 4px',
+                }}
+              />
+            )}
+          </>
+        )}
 
         <div className="flex-1" />
 

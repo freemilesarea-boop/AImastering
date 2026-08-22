@@ -37,6 +37,7 @@ import {
 import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 import SectionLane, { SectionLaneHeader } from './SectionLane.js';
 import ChordLane, { ChordLaneHeader } from './ChordLane.js';
+import PictureLane, { PictureLaneHeader } from './PictureLane.js';
 import { trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay } from '../../../daw/edit/track-delay-ops.js';
 import {
@@ -377,6 +378,7 @@ export default function EditWindow() {
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
           <SectionLaneHeader />
           <ChordLaneHeader />
+          <PictureLaneHeader />
           <TempoTrackHeader session={session} />
           {displayRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneHeader key={row.key} track={row.track} lane={row.lane} />
@@ -428,6 +430,7 @@ export default function EditWindow() {
           )}
           <SectionLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
           <ChordLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
+          <PictureLane viewport={{ scrollSec, pxPerSec, width: laneWidth }} />
           <TempoTrack
             session={session}
             viewport={{ scrollSec, pxPerSec, width: laneWidth }}
