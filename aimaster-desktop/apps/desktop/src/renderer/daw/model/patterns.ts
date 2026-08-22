@@ -18,6 +18,7 @@
 
 import { nextId } from './ids.js';
 import { updateClip } from './session-ops.js';
+import { secToBeat, tempoMapOf } from './tempo-map.js';
 import type { MidiNote } from './midi.js';
 import type { Clip, ClipId, DawSession, TrackId } from './types.js';
 
@@ -203,8 +204,12 @@ export function notesInClipTime(
   const track = session.tracks.find((t) => t.id === sourceTrackId);
   const source = track?.playlists.flatMap((p) => p.clips).find((c) => c.id === sourceClipId);
   if (!source || source.kind !== 'midi') return [];
-  const shift = source.startSec - host.startSec;
-  return clipNotes(session, source).map((n) => ({ ...n, startSec: n.startSec + shift }));
+  // Both parts are anchored in seconds but the notes are in beats, so the
+  // shift between the two frames is measured in beats — a guide part two
+  // bars later stays two bars later even across a tempo change between them.
+  const map = tempoMapOf(session);
+  const shift = secToBeat(map, source.startSec) - secToBeat(map, host.startSec);
+  return clipNotes(session, source).map((n) => ({ ...n, startBeat: n.startBeat + shift }));
 }
 
 export function describePattern(session: DawSession, pattern: Pattern): string {

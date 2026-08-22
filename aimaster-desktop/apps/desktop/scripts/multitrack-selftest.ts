@@ -35,6 +35,8 @@ import {
 } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { resetNoteIds } from '../src/renderer/daw/model/midi.js';
+import { partClock } from '../src/renderer/daw/model/note-time.js';
+import { tempoMapOf } from '../src/renderer/daw/model/tempo-map.js';
 import type { DawSession, Track, TrackId } from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
@@ -141,7 +143,7 @@ async function run(): Promise<void> {
 
   await check('a frozen track among many is named', () => {
     const { session, tracks } = band(3);
-    const frozen = updateTrack(session, tracks[1]!.id, (t) => ({ ...t, frozen: true }));
+    const frozen = updateTrack(session, tracks[1]!.id, (t) => ({ ...t, frozen: { fileId: 'frozen-f1', renderedInsertIds: [], frozenAt: 0 } }));
     const ready = canRecord(frozen, settings(), { audioOpen: tracks.map((t) => t.id) });
     assert(!ready.ok, 'refused');
     assert((ready.reason ?? '').includes('Mic 2'), `and named — got "${ready.reason}"`);
@@ -326,7 +328,7 @@ async function run(): Promise<void> {
     // The note played at tape 1.2 s is 0.2 s into the take, since the first
     // second was pre-roll.  Same origin as the audio, therefore aligned.
     const second = part?.notes.find((n) => n.pitch === 64);
-    close(second?.startSec ?? -1, 0.2, 'and its notes sit where they were played');
+    close(second?.startBeat ?? -1, 0.4, 'and its notes sit where they were played');
   });
 
   await check('the pre-roll is dropped identically on every track', async () => {
@@ -416,11 +418,11 @@ async function run(): Promise<void> {
     eq(a.length, b.length, 'same count');
     for (let i = 0; i < a.length; i++) {
       eq(a[i]?.pitch, b[i]?.pitch, `note ${i} pitch`);
-      close(a[i]?.startSec ?? -1, b[i]?.startSec ?? -2, `note ${i} start`);
-      close(a[i]?.durationSec ?? -1, b[i]?.durationSec ?? -2, `note ${i} length`);
+      close(a[i]?.startBeat ?? -1, b[i]?.startBeat ?? -2, `note ${i} start`);
+      close(a[i]?.durationBeat ?? -1, b[i]?.durationBeat ?? -2, `note ${i} length`);
     }
     // And it matches what the shared parse produced.
-    const direct = captureNotes(events, { endSec: 3 });
+    const direct = captureNotes(events, { endSec: 3, clock: partClock(tempoMapOf(result.session), 0) });
     eq(a.length, direct.notes.length, 'and it is the same parse the caller can reproduce');
   });
 

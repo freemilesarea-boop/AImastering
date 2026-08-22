@@ -14,11 +14,13 @@ import { chordAt, formatChord, type ChordEvent } from '../model/chords.js';
 import { findTrack, trackClips } from '../model/session-ops.js';
 import { clipNotes } from '../model/patterns.js';
 import {
-  DEFAULT_RIFF, describeRiff, generateRiff, varyRiff,
+  DEFAULT_RIFF, describeRiff, generateRiff, varyRiff, type RiffChord,
   type RiffOptions, type VariationKind,
 } from './compose.js';
 import type { Suggestion } from './actions.js';
 import type { Clip, ClipId, DawSession, TrackId } from '../model/types.js';
+import { partClock, secToBeatsAt } from '../model/note-time.js';
+import { tempoMapOf } from '../model/tempo-map.js';
 
 let counter = 0;
 const nextId = (prefix: string): string => `${prefix}-${(counter += 1)}`;
@@ -70,14 +72,20 @@ export function riffSuggestion(session: DawSession, request: RiffRequest): RiffR
     return { suggestion: null, reason: 'MIDI 파트를 먼저 여세요' };
   }
 
-  const chords = chordsForClip(session, clip);
+  const clock = partClock(tempoMapOf(session), clip.startSec);
+  // The chord track is on the timeline in seconds; the riff is written in
+  // the part's beats, so the harmony crosses over once, here.
+  const chords: RiffChord[] = chordsForClip(session, clip).map((e) => ({
+    beat: secToBeatsAt(clock, e.timeSec),
+    chord: e.chord,
+  }));
   const beatsPerBar = session.timeSignature[0];
-  const barSec = (60 / session.tempoBpm) * beatsPerBar;
-  // The riff fills the part, not an arbitrary length.
-  const bars = Math.max(1, Math.round(clip.durationSec / barSec));
+  // The riff fills the part, not an arbitrary length — measured in beats,
+  // so a part over a tempo change still comes out the right number of bars.
+  const bars = Math.max(1, Math.round(
+    secToBeatsAt(clock, clip.durationSec) / Math.max(1, beatsPerBar)));
 
   const options: Partial<RiffOptions> = {
-    tempoBpm: session.tempoBpm,
     beatsPerBar,
     bars,
     chords,
@@ -147,12 +155,12 @@ export function variationSuggestion(
   }
 
   const merged = { ...DEFAULT_RIFF, ...request.options };
-  const stepSec = (60 / session.tempoBpm) / Math.max(1, merged.stepsPerBeat ?? 4);
+  const stepBeat = 1 / Math.max(1, merged.stepsPerBeat ?? 4);
   const varied = varyRiff(source, {
     kind: request.kind,
     scale: merged.scale,
     degrees: 2,
-    shiftSec: stepSec,
+    shiftBeat: stepBeat,
     lowPitch: merged.lowPitch,
     highPitch: merged.highPitch,
     ...(request.seed === undefined ? {} : { seed: request.seed }),

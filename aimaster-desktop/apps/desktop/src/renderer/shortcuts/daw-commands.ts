@@ -51,11 +51,12 @@ import { captureAsPattern } from '../daw/model/patterns.js';
 import { useIntelStore } from '../stores/intelStore.js';
 import { summarise as summariseFindings } from '../daw/ai/diagnose.js';
 import { transientsFor } from '../daw/engine/audio-cache.js';
-import { useMidiEditorStore, currentGridSec } from '../stores/midiEditorStore.js';
+import { useMidiEditorStore, currentGridBeat } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips, updateTrack } from '../daw/model/session-ops.js';
 import { findLane } from '../daw/model/automation.js';
 import {
-  addTempoEvent, barBeatAt, secToBeat, tempoAtBeat, tempoMapOf, updateTempoEvent,
+  addTempoEvent, barBeatAt, beatsPerBar, meterAtBeat, secToBeat, tempoAtBeat,
+  tempoMapOf, updateTempoEvent,
   withTempoMap,
 } from '../daw/model/tempo-map.js';
 import {
@@ -65,8 +66,9 @@ import type { AutomationMode, Clip, DawSession } from '../daw/model/types.js';
 import {
   quantizeNotes, humanizeNotes, transposeNotes, nudgeVelocity, applyLegato,
 } from '../daw/edit/midi-edit.js';
-import { noteEnd, type MidiNote } from '../daw/model/midi.js';
-import { detectChordTrack, barSeconds } from '../daw/edit/chord-detect.js';
+import { noteEndBeat, type MidiNote } from '../daw/model/midi.js';
+import { detectChordTrack } from '../daw/edit/chord-detect.js';
+import { beatsToSecAt, partClock, secToBeatsAt, type PartClock } from '../daw/model/note-time.js';
 import { setChordTrack } from '../daw/model/session-ops.js';
 import { reharmonize, formatProgression, makeChord } from '../daw/model/chords.js';
 import { addChord, sortedChords, withChords } from '../daw/edit/chord-edit.js';
@@ -168,6 +170,8 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
   /** The part the Key Editor has open, plus the notes it should act on. */
   const midiContext = (): {
     trackId: string; clipId: string; notes: MidiNote[]; ids: Set<string>;
+    /** The open part's time frame — every beat↔second conversion goes here. */
+    clock: PartClock;
   } | null => {
     const editor = useMidiEditorStore.getState();
     const open = editor.open;
@@ -177,16 +181,23 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     if (!part) { notify('열린 MIDI 파트를 찾을 수 없습니다', 'warning'); return null; }
     const selected = editor.selectedNoteIds;
     const ids = new Set(selected.length > 0 ? selected : part.notes.map((n) => n.id));
-    return { trackId: open.trackId, clipId: open.clipId, notes: part.notes, ids };
+    const clock = partClock(tempoMapOf(daw().session), part.startSec);
+    return { trackId: open.trackId, clipId: open.clipId, notes: part.notes, ids, clock };
   };
 
   /** Write notes back, keeping the part long enough to contain them. */
   const writeNotes = (trackId: string, clipId: string, notes: MidiNote[]): void => {
-    daw().apply((s) => updateClip(s, trackId, clipId, (c) => ({
-      ...c,
-      notes,
-      durationSec: Math.max(c.durationSec, notes.reduce((m, n) => Math.max(m, noteEnd(n)), 0)),
-    })));
+    daw().apply((s) => updateClip(s, trackId, clipId, (c) => {
+      // The part's box is in seconds and its notes are in beats, so "long
+      // enough" is a measurement against the tempo map, not an addition.
+      const clock = partClock(tempoMapOf(s), c.startSec);
+      const lastBeat = notes.reduce((m, n) => Math.max(m, noteEndBeat(n)), 0);
+      return {
+        ...c,
+        notes,
+        durationSec: Math.max(c.durationSec, beatsToSecAt(clock, lastBeat)),
+      };
+    }));
   };
 
   const transposeBy = (semitones: number): void => {
@@ -442,9 +453,9 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       const context = midiContext();
       if (!context) return;
       const editor = useMidiEditorStore.getState();
-      const gridSec = currentGridSec(daw().session.tempoBpm);
+      const gridBeat = currentGridBeat();
       writeNotes(context.trackId, context.clipId,
-        quantizeNotes(context.notes, context.ids, { ...editor.quantize, gridSec }));
+        quantizeNotes(context.notes, context.ids, { ...editor.quantize, gridBeat }));
       notify(`퀀타이즈 (강도 ${editor.quantize.strengthPercent ?? 100}%)`);
     },
 
@@ -453,9 +464,10 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!context) return;
       const editor = useMidiEditorStore.getState();
       writeNotes(context.trackId, context.clipId, humanizeNotes(context.notes, context.ids, {
-        timingSec: editor.humanizeTimingMs / 1000,
+        // Humanize is a millisecond feel, so it crosses into beats here.
+        timingBeat: secToBeatsAt(context.clock, editor.humanizeTimingMs / 1000),
         velocity: editor.humanizeVelocity,
-        gridSec: currentGridSec(daw().session.tempoBpm),
+        gridBeat: currentGridBeat(),
         seed: editor.humanizeSeed,
       }));
       notify('휴머나이즈 (시드 고정)');
@@ -704,10 +716,10 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       const state = daw();
       const track = findTrack(state.session, context.trackId);
       const part = track ? trackClips(track).find((c) => c.id === context.clipId) : undefined;
-      const interval = barSeconds(state.session.tempoBpm, state.session.timeSignature[0]);
+      const map = tempoMapOf(state.session);
       const events = detectChordTrack(context.notes, {
-        intervalSec: interval,
-        offsetSec: part?.startSec ?? 0,
+        intervalBeat: beatsPerBar(meterAtBeat(map, 0)),
+        clock: partClock(map, part?.startSec ?? 0),
       });
       if (events.length === 0) { notify('화성을 읽을 만한 노트가 없습니다', 'warning'); return; }
       state.apply((s) => setChordTrack(s, events));
@@ -800,6 +812,7 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       try {
         const corrected = applyCorrection(state.session, target.trackId, target.clipId, {
           kind: 'toMidi', notes, amount: 1,
+          clock: partClock(tempoMapOf(state.session), clip.startSec),
         });
         const rendered = await renderClipPitch(corrected, target.trackId, target.clipId);
         state.apply(() => rendered);
@@ -1089,13 +1102,13 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!context) return;
       const selected = context.notes.filter((n) => context.ids.has(n.id));
       if (selected.length === 0) { notify('노트를 선택하세요', 'warning'); return; }
-      const rate = currentGridSec(daw().session.tempoBpm);
-      const arped = arpeggiate(selected, { rateSec: rate, direction: 'up' });
+      const rate = currentGridBeat();
+      const arped = arpeggiate(selected, { rateBeat: rate, direction: 'up' });
       writeNotes(context.trackId, context.clipId, [
         ...context.notes.filter((n) => !context.ids.has(n.id)),
         ...arped,
       ]);
-      notify(`아르페지오 ${arped.length}노트 · ${(rate * 1000).toFixed(0)}ms 간격`, 'success');
+      notify(`아르페지오 ${arped.length}노트 · ${rate.toFixed(3)}박 간격`, 'success');
     },
 
     'daw.strum': () => {
@@ -1103,7 +1116,10 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!context) return;
       const selected = context.notes.filter((n) => context.ids.has(n.id));
       if (selected.length === 0) { notify('노트를 선택하세요', 'warning'); return; }
-      const strummed = strum(selected, { spreadSec: 0.022, direction: 'up' });
+      // 22 ms of hand travel, expressed in the beats the notes live in.
+      const strummed = strum(selected, {
+        spreadBeat: secToBeatsAt(context.clock, 0.022), direction: 'up',
+      });
       writeNotes(context.trackId, context.clipId, [
         ...context.notes.filter((n) => !context.ids.has(n.id)),
         ...strummed,

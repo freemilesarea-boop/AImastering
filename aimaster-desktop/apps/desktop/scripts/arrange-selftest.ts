@@ -90,7 +90,7 @@ function song(): { session: DawSession; trackId: string; sections: Section[] } {
       id: `ch${i}`, timeSec: at,
       chord: { root: i, quality: 'maj' as const, bass: null, extensions: [] },
     })),
-  } as DawSession;
+  } as unknown as DawSession;
 
   const sections = [
     createSection('intro', 0),

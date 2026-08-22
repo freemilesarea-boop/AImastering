@@ -25,6 +25,8 @@ import {
 import { ensureWarpedBufferForSession, prepareWarpsForSession } from './warp-render.js';
 import { clipWarp } from '../model/warp.js';
 import { clipNotes } from '../model/patterns.js';
+import { noteSpan, partClock } from '../model/note-time.js';
+import { tempoMapOf } from '../model/tempo-map.js';
 import { findInstrument } from './instruments.js';
 import { makeRng } from '../edit/midi-edit.js';
 import type { MixerEngine } from './mixer-engine.js';
@@ -221,13 +223,17 @@ export class ClipPlayer {
     const instrument = findInstrument(track.instrumentId ?? 'polysynth');
     if (!instrument) return;
     const params = { ...track.instrumentParams };
+    // Notes live in beats; the clock turns them into the seconds the graph
+    // schedules on.  Built once per part, not once per note.
+    const clock = partClock(tempoMapOf(session), clip.startSec);
 
     // Pattern-backed clips carry no notes of their own — resolve the link so
     // every placement of a pattern plays the one copy of the phrase.
     for (const note of clipNotes(session, clip)) {
       if (note.muted) continue;
-      const absoluteStart = clip.startSec + note.startSec;
-      const absoluteEnd = absoluteStart + note.durationSec;
+      const span = noteSpan(clock, note);
+      const absoluteStart = span.startSec;
+      const absoluteEnd = span.endSec;
       // Skip notes that finished before the window and ones not reached yet.
       if (absoluteEnd <= fromSec || absoluteStart >= toSec) continue;
       // A note that is already sounding cannot be started mid-way by a
@@ -244,6 +250,7 @@ export class ClipPlayer {
         note,
         config: clip.midiConfig,
         when: this.origin + absoluteStart,
+        durationSec: span.durationSec,
         params,
       });
       this.scheduled.add(key);

@@ -28,6 +28,8 @@ import {
   validateWarp, describeWarp, setSessionTempo, clipSourceSpan,
   type WarpConfig,
 } from '../src/renderer/daw/model/warp.js';
+import { noteSpan, partClock } from '../src/renderer/daw/model/note-time.js';
+import { tempoMapOf } from '../src/renderer/daw/model/tempo-map.js';
 import {
   modeOptions, planStretch, renderStretch, stretchChannel, stretchChannels,
 } from '../src/renderer/daw/audio/time-stretch.js';
@@ -490,11 +492,15 @@ check('a clip pinned to its own tempo does not stretch', () => {
   close(resolveBpm(warp, 60), 120, 'and it still resolves at its own tempo', 1e-9);
 });
 
-check('MIDI parts follow the tempo, notes and all', () => {
+check('MIDI parts follow the tempo, and their notes never have to move', () => {
+  // The note is on beat 2 for a beat.  Halving the tempo moves the PART —
+  // its position and its box are in seconds — but the note is already
+  // written in beats, so there is nothing to rescale: it is on beat 2 before
+  // and after, which is what "bar 9 stays bar 9" actually means.
   const part = createMidiPart('part', {
     startSec: 2, durationSec: 4,
     notes: [{
-      id: 'n1', pitch: 60, pitchOffsetSemitones: 0, startSec: 1, durationSec: 0.5,
+      id: 'n1', pitch: 60, pitchOffsetSemitones: 0, startBeat: 2, durationBeat: 1,
       velocity: 0.8, releaseVelocity: 0.5, channel: 0, muted: false,
       expression: [], articulation: null, playProbability: 1,
     }],
@@ -504,8 +510,15 @@ check('MIDI parts follow the tempo, notes and all', () => {
   const moved = trackClips(findTrack(slower, trackId)!)[0]!;
   close(moved.startSec, 4, 'part moved', 1e-9);
   close(moved.durationSec, 8, 'part stretched', 1e-9);
-  close(moved.notes[0]?.startSec ?? 0, 2, 'note moved', 1e-9);
-  close(moved.notes[0]?.durationSec ?? 0, 1, 'note stretched', 1e-9);
+  close(moved.notes[0]?.startBeat ?? -1, 2, 'the note is still on beat 2', 1e-9);
+  close(moved.notes[0]?.durationBeat ?? -1, 1, 'and still a beat long', 1e-9);
+
+  // Which is the same thing said in seconds: at half the tempo the note
+  // sounds twice as late and lasts twice as long, without being rewritten.
+  const clock = partClock(tempoMapOf(slower), moved.startSec);
+  const span = noteSpan(clock, moved.notes[0]!);
+  close(span.startSec - moved.startSec, 2, 'two beats at 60 BPM is two seconds', 1e-9);
+  close(span.durationSec, 1, 'and one beat is one — both twice what they were at 120', 1e-9);
 });
 
 check('setting the same tempo changes nothing but is still safe', () => {

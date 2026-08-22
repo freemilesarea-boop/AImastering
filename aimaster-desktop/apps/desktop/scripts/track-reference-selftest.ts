@@ -383,7 +383,11 @@ check('the fader move lands on the track, never on the master', () => {
   const comparison = compareTrackToReference(mine, reference, myMix);
   const suggestions = matchTrackActions(s, comparison);
   for (const action of suggestions.flatMap((sg) => sg.actions)) {
-    eq(action.trackId, vox, `every action targets ${vox}, not ${action.trackId}`);
+    // Not every IntelAction has a track (a reharmonisation is session-wide),
+    // so "targets this track" means it has one AND it is this one.
+    assert('trackId' in action, `${action.kind} is not a per-track action`);
+    const targeted = action as { trackId: string };
+    eq(targeted.trackId, vox, `every action targets ${vox}, not ${targeted.trackId}`);
   }
   const after = applyActions(s, suggestions.flatMap((sg) => sg.actions));
   assert(findTrack(after, vox), 'and it applies cleanly');

@@ -20,17 +20,36 @@
 
 import { createNote, from7bit, type MidiNote } from '../model/midi.js';
 import {
-  chordAt, chordPitchClasses, voiceChord, type ChordEvent,
+  chordPitchClasses, voiceChord, type ChordEvent,
 } from '../model/chords.js';
 import { pitchClass, scalePitchClasses, snapPitchToScale, type Scale } from '../model/scales.js';
 import { makeRng } from '../edit/midi-edit.js';
+
+/**
+ * A chord the riff writes over, positioned in part-relative beats.
+ *
+ * Not a `ChordEvent`: those sit on the timeline in seconds.  Converting on
+ * the way in keeps the generator in one time domain.
+ */
+export interface RiffChord {
+  beat: number;
+  chord: ChordEvent['chord'];
+}
+
+/** The chord sounding at a beat — `chordAt`, in the riff's own domain. */
+function chordAtBeat(chords: readonly RiffChord[], beat: number): RiffChord | null {
+  let found: RiffChord | null = null;
+  for (const c of chords) {
+    if (c.beat <= beat + 1e-9) found = c; else break;
+  }
+  return found;
+}
 
 export type RiffStyle = 'melody' | 'bass' | 'chords' | 'arp';
 export type Contour = 'rise' | 'fall' | 'arch' | 'valley' | 'wave' | 'flat';
 
 export interface RiffOptions {
   bars: number;
-  tempoBpm: number;
   beatsPerBar: number;
   style: RiffStyle;
   contour: Contour;
@@ -42,7 +61,8 @@ export interface RiffOptions {
   highPitch: number;
   scale: Scale;
   /** The harmony, in the riff's own time base.  Empty means scale only. */
-  chords: readonly ChordEvent[];
+  /** Harmony to write over, in part-relative BEATS. */
+  chords: readonly RiffChord[];
   seed: number;
   /** 0…1 — how often a passing note may step outside the scale. */
   chromaticism?: number;
@@ -58,7 +78,6 @@ export interface RiffOptions {
 
 export const DEFAULT_RIFF: RiffOptions = {
   bars: 2,
-  tempoBpm: 120,
   beatsPerBar: 4,
   style: 'melody',
   contour: 'arch',
@@ -155,7 +174,7 @@ export function generateRhythm(options: RiffOptions): Onset[] {
 
 /** Pitches available at a moment, given the harmony and the register. */
 function candidatePitches(
-  chord: ChordEvent | null, scale: Scale, low: number, high: number, chordOnly: boolean,
+  chord: RiffChord | null, scale: Scale, low: number, high: number, chordOnly: boolean,
 ): number[] {
   const allowed = chord && chordOnly
     ? chordPitchClasses(chord.chord)
@@ -185,8 +204,9 @@ function candidatePitches(
 export function generateRiff(options: Partial<RiffOptions> = {}): MidiNote[] {
   const config = { ...DEFAULT_RIFF, ...options };
   const stepsPerBeat = Math.max(1, Math.round(config.stepsPerBeat ?? 4));
-  const beatSec = 60 / Math.max(1, config.tempoBpm);
-  const stepSec = beatSec / stepsPerBeat;
+  // One step, in beats.  No tempo: the riff is written on a grid of
+  // subdivisions, and a sixteenth is a sixteenth at any speed.
+  const stepBeat = 1 / stepsPerBeat;
   const stepsPerBar = stepsPerBeat * config.beatsPerBar;
   const totalSteps = stepsPerBar * config.bars;
   const random = makeRng(config.seed * 7919 + 13);
@@ -207,10 +227,10 @@ export function generateRiff(options: Partial<RiffOptions> = {}): MidiNote[] {
   const played = new Map<number, number>();
 
   onsets.forEach((onset, index) => {
-    const startSec = onset.step * stepSec;
+    const startBeat = onset.step * stepBeat;
     const nextStep = onsets[index + 1]?.step ?? totalSteps;
-    const durationSec = Math.max(stepSec * 0.25, (nextStep - onset.step) * stepSec * gate);
-    const chord = config.chords.length > 0 ? chordAt(config.chords, startSec) : null;
+    const durationBeat = Math.max(stepBeat * 0.25, (nextStep - onset.step) * stepBeat * gate);
+    const chord = config.chords.length > 0 ? chordAtBeat(config.chords, startBeat) : null;
 
     if (config.style === 'chords') {
       // A chord stab uses the harmony's own voicing; nothing to choose.
@@ -218,7 +238,7 @@ export function generateRiff(options: Partial<RiffOptions> = {}): MidiNote[] {
       for (const pitch of voicing) {
         if (pitch > high) continue;
         notes.push(createNote({
-          pitch, startSec, durationSec,
+          pitch, startBeat, durationBeat,
           velocity: from7bit(Math.round(70 + onset.weight * 40)),
         }));
       }
@@ -298,8 +318,8 @@ export function generateRiff(options: Partial<RiffOptions> = {}): MidiNote[] {
 
     notes.push(createNote({
       pitch: best,
-      startSec,
-      durationSec,
+      startBeat,
+      durationBeat,
       velocity: from7bit(Math.round(64 + onset.weight * 45)),
     }));
   });
@@ -323,8 +343,8 @@ export interface VaryOptions {
   scale: Scale;
   /** Scale degrees for `transpose`. */
   degrees?: number;
-  /** Seconds for `displace`. */
-  shiftSec?: number;
+  /** Beats for `displace`. */
+  shiftBeat?: number;
   seed?: number;
   lowPitch?: number;
   highPitch?: number;
@@ -371,10 +391,10 @@ export function varyRiff(notes: readonly MidiNote[], options: VaryOptions): Midi
       return notes.map((n, i) => ({ ...n, pitch: pitches[i] as number }));
     }
     case 'displace': {
-      const shift = options.shiftSec ?? 0;
+      const shift = options.shiftBeat ?? 0;
       return notes
-        .map((n) => ({ ...n, startSec: Math.max(0, n.startSec + shift) }))
-        .sort((a, b) => a.startSec - b.startSec);
+        .map((n) => ({ ...n, startBeat: Math.max(0, n.startBeat + shift) }))
+        .sort((a, b) => a.startBeat - b.startBeat);
     }
     case 'thin':
       // Drop weak notes, keep the frame.
@@ -382,14 +402,15 @@ export function varyRiff(notes: readonly MidiNote[], options: VaryOptions): Midi
     case 'densify':
       // Split long notes in two, the second an octave-safe neighbour.
       return notes.flatMap((n) => {
-        if (n.durationSec < 0.12) return [n];
-        const half = n.durationSec / 2;
+        // Shorter than a 32nd has nothing left to split.
+        if (n.durationBeat < 0.125) return [n];
+        const half = n.durationBeat / 2;
         return [
-          { ...n, durationSec: half },
+          { ...n, durationBeat: half },
           createNote({
             pitch: snap(nextScalePitch(n.pitch, options.scale, random() > 0.5 ? 1 : -1)),
-            startSec: n.startSec + half,
-            durationSec: half,
+            startBeat: n.startBeat + half,
+            durationBeat: half,
             velocity: n.velocity * 0.85,
           }),
         ];

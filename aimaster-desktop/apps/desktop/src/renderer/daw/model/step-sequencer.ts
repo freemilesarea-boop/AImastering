@@ -23,6 +23,7 @@
 
 import { createNote, from7bit, type MidiNote, type Unipolar } from './midi.js';
 import { nextId } from './ids.js';
+import { MIN_NOTE_BEATS } from '../edit/midi-edit.js';
 
 export interface Step {
   on: boolean;
@@ -192,12 +193,19 @@ export function euclidFill(
 
 // ── Timing ────────────────────────────────────────────────────────────────────
 
-export function stepSeconds(pattern: StepPattern, tempoBpm: number): number {
-  return 60 / Math.max(1, tempoBpm) / Math.max(1, pattern.stepsPerBeat);
+/**
+ * One step, in beats.
+ *
+ * `stepsPerBeat` says it: no tempo needed, and a pattern therefore means the
+ * same thing at every tempo and follows a tempo change without being redrawn.
+ */
+export function stepBeats(pattern: StepPattern): number {
+  return 1 / Math.max(1, pattern.stepsPerBeat);
 }
 
-export function patternSeconds(pattern: StepPattern, tempoBpm: number): number {
-  return pattern.stepCount * stepSeconds(pattern, tempoBpm);
+/** The whole grid, in beats. */
+export function patternBeats(pattern: StepPattern): number {
+  return pattern.stepCount * stepBeats(pattern);
 }
 
 /**
@@ -205,9 +213,9 @@ export function patternSeconds(pattern: StepPattern, tempoBpm: number): number {
  * the step; nudge moves one step without moving the grid under it.
  */
 export function stepTime(
-  pattern: StepPattern, index: number, tempoBpm: number, nudge = 0,
+  pattern: StepPattern, index: number, nudge = 0,
 ): number {
-  const step = stepSeconds(pattern, tempoBpm);
+  const step = stepBeats(pattern);
   const swing = index % 2 === 1 ? pattern.swing * 0.5 * step : 0;
   return index * step + swing + nudge * step;
 }
@@ -235,11 +243,11 @@ export interface StepRenderOptions {
  * and the offline renderer all already work on it.
  */
 export function stepsToNotes(
-  pattern: StepPattern, tempoBpm: number, options: StepRenderOptions = {},
+  pattern: StepPattern, options: StepRenderOptions = {},
 ): MidiNote[] {
   const repeats = Math.max(1, Math.round(options.repeats ?? 1));
-  const step = stepSeconds(pattern, tempoBpm);
-  const cycle = patternSeconds(pattern, tempoBpm);
+  const step = stepBeats(pattern);
+  const cycle = patternBeats(pattern);
   const notes: MidiNote[] = [];
 
   pattern.channels.forEach((channel, channelIndex) => {
@@ -250,18 +258,18 @@ export function stepsToNotes(
         if (stepChance(pattern.seed, channelIndex, stepIndex) >= slot.probability) return;
       }
       const ratchet = Math.max(1, Math.round(slot.ratchet));
-      const base = stepTime(pattern, stepIndex, tempoBpm, slot.nudge);
+      const base = stepTime(pattern, stepIndex, slot.nudge);
       // A ratchet divides the step, so a roll stays inside its own slot
       // instead of running over the next hit.
       const subStep = step / ratchet;
-      const duration = Math.max(0.01, subStep * channel.gate);
+      const duration = Math.max(MIN_NOTE_BEATS, subStep * channel.gate);
 
       for (let r = 0; r < repeats; r++) {
         for (let k = 0; k < ratchet; k++) {
           notes.push(createNote({
             pitch: channel.pitch,
-            startSec: r * cycle + base + k * subStep,
-            durationSec: duration,
+            startBeat: r * cycle + base + k * subStep,
+            durationBeat: duration,
             velocity: slot.velocity,
             // A roll that does not taper sounds like a machine, so the
             // retriggers after the first come in slightly softer.
@@ -272,26 +280,26 @@ export function stepsToNotes(
     });
   });
 
-  return notes.sort((a, b) => a.startSec - b.startSec || a.pitch - b.pitch);
+  return notes.sort((a, b) => a.startBeat - b.startBeat || a.pitch - b.pitch);
 }
 
 /** Round-trip the other way: fold notes onto the nearest grid slot. */
 export function notesToSteps(
-  pattern: StepPattern, notes: readonly MidiNote[], tempoBpm: number,
+  pattern: StepPattern, notes: readonly MidiNote[],
 ): StepPattern {
-  const step = stepSeconds(pattern, tempoBpm);
+  const step = stepBeats(pattern);
   const channels = pattern.channels.map((c) => ({ ...c, steps: createSteps(c.steps.length) }));
   for (const note of notes) {
     const channel = channels.find((c) => c.pitch === note.pitch);
     if (!channel) continue;
-    const index = Math.round(note.startSec / step);
+    const index = Math.round(note.startBeat / step);
     if (index < 0 || index >= channel.steps.length) continue;
     const slot = channel.steps[index];
     if (!slot) continue;
     slot.on = true;
     slot.velocity = note.velocity;
     // Whatever the grid could not represent becomes nudge, not silence.
-    slot.nudge = Math.max(-0.5, Math.min(0.5, (note.startSec - index * step) / step));
+    slot.nudge = Math.max(-0.5, Math.min(0.5, (note.startBeat - index * step) / step));
   }
   return { ...pattern, channels };
 }
@@ -300,8 +308,8 @@ export function activeStepCount(pattern: StepPattern): number {
   return pattern.channels.reduce((sum, c) => sum + c.steps.filter((s) => s.on).length, 0);
 }
 
-export function describePattern(pattern: StepPattern, tempoBpm: number): string {
+export function describePattern(pattern: StepPattern): string {
   return `${pattern.name} · ${pattern.stepCount}스텝 · ${pattern.channels.length}채널`
-    + ` · ${activeStepCount(pattern)}히트 · ${patternSeconds(pattern, tempoBpm).toFixed(2)}s`
+    + ` · ${activeStepCount(pattern)}히트 · ${patternBeats(pattern).toFixed(2)}박`
     + (pattern.swing > 0 ? ` · 스윙 ${(pattern.swing * 100).toFixed(0)}%` : '');
 }

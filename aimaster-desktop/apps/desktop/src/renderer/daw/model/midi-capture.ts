@@ -34,6 +34,7 @@ import {
   bendFrom14bit, createNote, from7bit, sortNotes,
   type Bipolar, type ExpressionPoint, type ExpressionTarget, type MidiNote, type Unipolar,
 } from './midi.js';
+import { secToBeatsAt, type PartClock } from './note-time.js';
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
@@ -104,6 +105,13 @@ export function isNoteMessage(event: CaptureEvent): boolean {
 export interface CaptureOptions {
   /** Transport time the take ends.  Notes still held are closed here. */
   endSec: number;
+  /**
+   * The transport's own frame (a clock built at 0 s).
+   *
+   * The player's hands are in seconds and the notes they produce are in
+   * beats, so the take crosses over exactly here — once, at the edge.
+   */
+  clock: PartClock;
   /** Honour CC64.  Off for controllers that send it as an ordinary lane. */
   sustainPedal?: boolean;
   /** Keep continuous controllers as per-note curves. */
@@ -137,11 +145,11 @@ interface Held {
 export const MIN_NOTE_SEC = 0.012;
 
 /**
- * Turn a take's events into notes, in the same time frame the events carry.
+ * Turn a take's events into notes.
  *
- * The caller stamps events on the transport clock, so the notes come back in
- * transport seconds; making them clip-local is the commit's job, because only
- * the commit knows where the part starts.
+ * The caller stamps events on the transport clock in seconds; the notes come
+ * back in transport BEATS through `options.clock`.  Making them part-local is
+ * the commit's job, because only the commit knows where the part starts.
  */
 export function captureNotes(
   events: readonly CaptureEvent[], options: CaptureOptions,
@@ -150,6 +158,12 @@ export function captureNotes(
   const sustainPedal = options.sustainPedal ?? true;
   const expression = options.expression ?? true;
   const minDuration = options.minDurationSec ?? MIN_NOTE_SEC;
+
+  // Events are stamped in TAPE seconds — from where the transport started
+  // rolling, not from the top of the session — so they are measured from the
+  // clock's own origin.  Reading them as timeline seconds would put every
+  // note of a take that began at 0:08 eight seconds early.
+  const toBeat = (tapeSec: number): number => secToBeatsAt(options.clock, tapeSec);
 
   const ordered = [...events].sort((a, b) => a.timeSec - b.timeSec);
 
@@ -169,11 +183,12 @@ export function captureNotes(
     const duration = Math.max(0, Math.min(atSec, endSec) - note.startSec);
     if (duration < minDuration) { tooShort += 1; return; }
     if (closedByEnd) heldAtEnd += 1;
+    const startBeat = toBeat(note.startSec);
     notes.push(createNote({
       pitch: note.pitch,
       channel: note.channel,
-      startSec: note.startSec,
-      durationSec: duration,
+      startBeat,
+      durationBeat: Math.max(0, toBeat(note.startSec + duration) - startBeat),
       velocity: note.velocity,
       releaseVelocity: note.releaseVelocity,
       expression: [...note.curves.values()]
@@ -188,14 +203,14 @@ export function captureNotes(
     const id = target.kind === 'cc' ? `cc:${target.controller}` : target.kind;
     const touch = (note: Held): void => {
       const curve = note.curves.get(id) ?? { target, points: [] as ExpressionPoint[] };
-      const relative = Math.max(0, timeSec - note.startSec);
+      const relative = Math.max(0, toBeat(timeSec) - toBeat(note.startSec));
       // The instruments read curves in the note's own time frame, and a curve
       // that starts after the note has begun would jump from the default; the
       // first point is therefore anchored at the note start.
       if (curve.points.length === 0 && relative > 1e-6) {
-        curve.points.push({ timeSec: 0, value: neutralFor(target) });
+        curve.points.push({ timeBeat: 0, value: neutralFor(target) });
       }
-      curve.points.push({ timeSec: relative, value });
+      curve.points.push({ timeBeat: relative, value });
       note.curves.set(id, curve);
     };
     for (const list of held.values()) {

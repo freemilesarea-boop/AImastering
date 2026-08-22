@@ -107,7 +107,7 @@ check('a third-party plugin is not captured, and is named', () => {
   const { session, track } = emptyChannel();
   const withExternal = setInsert(session, track.id, {
     ...createInsert(1, 'some-vst3-uid', 'Fancy Reverb'),
-    external: { format: 'vst3', name: 'Fancy Reverb', path: '/x', uid: 'u' },
+    external: { format: 'vst3', name: 'Fancy Reverb', path: '/x', uid: 'u', vendor: 'Test' },
   });
   const captured = captureRack(findTrack(withExternal, track.id)!);
   eq(captured.devices.length, 0, 'nothing to save');

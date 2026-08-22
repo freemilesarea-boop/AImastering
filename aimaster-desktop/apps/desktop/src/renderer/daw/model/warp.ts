@@ -494,7 +494,9 @@ const scalePoints = <T extends { timeSec: number }>(points: T[], ratio: number):
  * The timeline is stored in seconds, but the ARRANGEMENT is musical: bar 9 has
  * to stay bar 9 when the tempo changes.  So every position scales by the tempo
  * ratio, and lengths scale for anything that can stretch — MIDI parts always,
- * audio clips only when they are warped and following.
+ * audio clips only when they are warped and following.  MIDI NOTES are the
+ * exception that needs no work: they are stored in beats and were never in
+ * the seconds domain this function rescales.
  *
  * An unwarped audio clip is the one thing that cannot follow.  It is moved
  * (its start is musical) but keeps its length, and its id is returned so the
@@ -512,18 +514,15 @@ export function setSessionTempo(session: DawSession, bpm: number): TempoChangeRe
   const retimeClipAt = (clip: Clip): Clip => {
     const moved: Clip = { ...clip, startSec: clip.startSec * ratio };
     if (clip.kind === 'midi') {
+      // Notes and their curves are in BEATS, so they need no rescaling: the
+      // tempo map moved under them and they are still on the beats they were
+      // written on.  Only the part's own seconds — where it sits and how long
+      // its box is — follow the ratio.
       return {
         ...moved,
         durationSec: clip.durationSec * ratio,
         fadeIn: { ...clip.fadeIn, durationSec: clip.fadeIn.durationSec * ratio },
         fadeOut: { ...clip.fadeOut, durationSec: clip.fadeOut.durationSec * ratio },
-        notes: clip.notes.map((n) => ({
-          ...n,
-          startSec: n.startSec * ratio,
-          durationSec: n.durationSec * ratio,
-          expression: n.expression.map((e) => ({ ...e, points: scalePoints(e.points, ratio) })),
-        })),
-        controllers: clip.controllers.map((lane) => ({ ...lane, points: scalePoints(lane.points, ratio) })),
       };
     }
     const warp = clipWarp(clip);

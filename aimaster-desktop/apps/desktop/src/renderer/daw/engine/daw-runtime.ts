@@ -17,6 +17,7 @@ import { findInstrument } from './instruments.js';
 import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
 import { Metronome } from './metronome.js';
 import { tempoMapOf } from '../model/tempo-map.js';
+import { noteSpan, partClock } from '../model/note-time.js';
 import {
   MidiInputHandle, anchorTimebase, midiFailureReason, openMidiInputs,
 } from './midi-input.js';
@@ -34,6 +35,8 @@ const TICK_MS = 50;
 const LOOKAHEAD_SEC = 1.0;
 /** How long a live voice is scheduled for before the key comes up. */
 const LIVE_HOLD_SEC = 30;
+/** The same ceiling in beats — long enough that no curve ever reaches it. */
+const LIVE_HOLD_BEATS = 64;
 /** Fallback release when the instrument has no release parameter. */
 const LIVE_RELEASE_SEC = 0.12;
 
@@ -332,6 +335,7 @@ class DawRuntime {
           note: createLiveNote(event.pitch, event.velocity),
           config: { bendRangeSemitones: 2, mpe: false },
           when: ctx.currentTime,
+          durationSec: LIVE_HOLD_SEC,
           params,
         });
         this.liveVoices.set(key, {
@@ -698,15 +702,20 @@ class DawRuntime {
       const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
       if (!instrument) return;
       const passes = loop ? 4 : 1;
+      // A Session slot is fired by hand, not placed on the timeline, so its
+      // notes are read against the tempo map from the clip's own start.
+      const clock = partClock(tempoMapOf(session), clip.startSec);
       for (let pass = 0; pass < passes; pass++) {
         for (const note of clip.notes) {
           if (note.muted) continue;
+          const span = noteSpan(clock, note);
           const voice = instrument.playNote({
             ctx,
             destination: channel.input,
             note,
             config: clip.midiConfig,
-            when: startAt + pass * clip.durationSec + note.startSec,
+            when: startAt + pass * clip.durationSec + (span.startSec - clip.startSec),
+            durationSec: span.durationSec,
             params: { ...(track?.instrumentParams ?? {}) },
           });
           voices.push(voice);
@@ -767,14 +776,20 @@ function playableFiles(session: DawSession): Array<{ id: string; path: string }>
   return session.files.filter((f) => needed.has(f.id));
 }
 
-/** A note for a key that is down and has not come up yet. */
+/**
+ * A note for a key that is down and has not come up yet.
+ *
+ * A held key has no musical length — it lasts until the finger lifts — so
+ * the hold is expressed in seconds at the voice (`durationSec`) and the beat
+ * length is only the ceiling that keeps a stuck note from ringing forever.
+ */
 function createLiveNote(pitch: number, velocity: number): MidiNote {
   return {
     id: 'live',
     pitch,
     pitchOffsetSemitones: 0,
-    startSec: 0,
-    durationSec: LIVE_HOLD_SEC,
+    startBeat: 0,
+    durationBeat: LIVE_HOLD_BEATS,
     velocity,
     releaseVelocity: 0.5,
     channel: 0,

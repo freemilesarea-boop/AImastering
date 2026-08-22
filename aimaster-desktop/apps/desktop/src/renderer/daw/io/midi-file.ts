@@ -11,10 +11,17 @@
 // this app's model wants.
 
 import {
-  bendFrom14bit, createNote, from7bit, noteEnd, sortNotes,
+  bendFrom14bit, createNote, from7bit, noteEndBeat, sortNotes,
   type ControllerLane, type ExpressionPoint, type ExpressionTarget, type MidiNote,
 } from '../model/midi.js';
 import { nextId } from '../model/ids.js';
+import { MIN_NOTE_BEATS } from '../edit/midi-edit.js';
+
+/**
+ * Length given to a note whose note-off never arrived — a sixteenth, long
+ * enough to be audible and short enough not to smear the part.
+ */
+const UNCLOSED_NOTE_BEATS = 0.25;
 
 // ── Low-level reading ─────────────────────────────────────────────────────────
 
@@ -237,6 +244,19 @@ export function makeTickToSeconds(file: MidiFile): (tick: number) => number {
   };
 }
 
+/**
+ * Tick → BEATS.
+ *
+ * A tick is a fraction of a quarter note and a beat IS a quarter note, so
+ * this is a division and nothing else — no tempo integration, and therefore
+ * no drift after bar 8 whatever the file's tempo map does.  The file's
+ * tempo events become the session tempo map instead of being baked into
+ * the note positions.
+ */
+export function tickToBeat(file: MidiFile, tick: number): number {
+  return tick / Math.max(1, file.ticksPerQuarter);
+}
+
 export function fileTempoBpm(file: MidiFile): number {
   const first = [...file.tempoMap].sort((a, b) => a.tick - b.tick)[0];
   return first ? 60_000_000 / first.microsecondsPerQuarter : 120;
@@ -251,7 +271,8 @@ export interface ImportedPart {
   /** True when the source used one channel per note (MPE). */
   mpe: boolean;
   bendRangeSemitones: number;
-  durationSec: number;
+  /** Length of the part in beats — the end of its last note. */
+  durationBeat: number;
 }
 
 export interface MidiImportOptions {
@@ -284,7 +305,7 @@ export function looksLikeMpe(events: readonly RawEvent[]): boolean {
 export function trackToPart(
   track: RawTrack, file: MidiFile, options: MidiImportOptions = {},
 ): ImportedPart {
-  const toSeconds = makeTickToSeconds(file);
+  const toBeat = (tick: number): number => tickToBeat(file, tick);
   const mpe = options.mpe ?? looksLikeMpe(track.events);
   const bendRange = options.bendRangeSemitones ?? (mpe ? 48 : 2);
 
@@ -294,15 +315,15 @@ export function trackToPart(
   interface Pending { note: MidiNote; startTick: number }
   const open = new Map<string, Pending>();
   const notes: MidiNote[] = [];
-  const noteSpans: Array<{ note: MidiNote; channel: number; startSec: number; endSec: number }> = [];
+  const noteSpans: Array<{ note: MidiNote; channel: number; startBeat: number; endBeat: number }> = [];
 
   for (const e of events) {
     const key = `${e.channel}:${e.a}`;
     if (e.kind === 'noteOn') {
       const note = createNote({
         pitch: e.a,
-        startSec: toSeconds(e.tick),
-        durationSec: 0.1,
+        startBeat: toBeat(e.tick),
+        durationBeat: UNCLOSED_NOTE_BEATS,
         velocity: from7bit(e.b),
         channel: e.channel,
       });
@@ -311,22 +332,25 @@ export function trackToPart(
       const pending = open.get(key);
       if (!pending) continue;
       open.delete(key);
-      const startSec = toSeconds(pending.startTick);
-      const endSec = toSeconds(e.tick);
+      const startBeat = toBeat(pending.startTick);
+      const endBeat = toBeat(e.tick);
       const note: MidiNote = {
         ...pending.note,
-        durationSec: Math.max(0.01, endSec - startSec),
+        durationBeat: Math.max(MIN_NOTE_BEATS, endBeat - startBeat),
         releaseVelocity: from7bit(e.b || 64),
       };
       notes.push(note);
-      noteSpans.push({ note, channel: e.channel, startSec, endSec });
+      noteSpans.push({ note, channel: e.channel, startBeat, endBeat });
     }
   }
   // Anything still held at the end of the track gets a nominal length.
   for (const [, pending] of open) {
     notes.push(pending.note);
-    const startSec = toSeconds(pending.startTick);
-    noteSpans.push({ note: pending.note, channel: pending.note.channel, startSec, endSec: startSec + 0.1 });
+    const startBeat = toBeat(pending.startTick);
+    noteSpans.push({
+      note: pending.note, channel: pending.note.channel,
+      startBeat, endBeat: startBeat + UNCLOSED_NOTE_BEATS,
+    });
   }
 
   // 2. Controller curves.
@@ -350,14 +374,14 @@ export function trackToPart(
   for (const e of events) {
     const target = targetOf(e);
     if (!target) continue;
-    const point: ExpressionPoint = { timeSec: toSeconds(e.tick), value: valueOf(e) };
+    const point: ExpressionPoint = { timeBeat: toBeat(e.tick), value: valueOf(e) };
 
     if (mpe) {
       // Assign the controller to the note sounding on that channel.
       const span = noteSpans.find((s) =>
-        s.channel === e.channel && point.timeSec >= s.startSec - 1e-6 && point.timeSec <= s.endSec + 1e-6);
+        s.channel === e.channel && point.timeBeat >= s.startBeat - 1e-6 && point.timeBeat <= s.endBeat + 1e-6);
       if (span) {
-        const relative: ExpressionPoint = { timeSec: point.timeSec - span.startSec, value: point.value };
+        const relative: ExpressionPoint = { timeBeat: point.timeBeat - span.startBeat, value: point.value };
         const key = `${span.note.id}|${target.kind}:${target.kind === 'cc' ? target.controller : ''}`;
         const list = laneMap.get(key) ?? [];
         list.push(relative);
@@ -383,7 +407,7 @@ export function trackToPart(
       : kind === 'pitchBend' ? { kind: 'pitchBend' }
       : kind === 'pressure' ? { kind: 'pressure' }
       : { kind: 'timbre' };
-    const sorted = points.sort((a, b) => a.timeSec - b.timeSec);
+    const sorted = points.sort((a, b) => a.timeBeat - b.timeBeat);
 
     if (owner === 'part') {
       controllers.push({ id: nextId('lane'), target, points: sorted, visible: false });
@@ -394,14 +418,14 @@ export function trackToPart(
   }
 
   const sorted = sortNotes(notes);
-  const duration = sorted.reduce((max, n) => Math.max(max, noteEnd(n)), 0);
+  const duration = sorted.reduce((max, n) => Math.max(max, noteEndBeat(n)), 0);
   return {
     name: track.name,
     notes: sorted,
     controllers,
     mpe,
     bendRangeSemitones: bendRange,
-    durationSec: duration,
+    durationBeat: duration,
   };
 }
 
@@ -437,8 +461,10 @@ function ascii(text: string): number[] {
 export function exportMidiFile(
   notes: readonly MidiNote[], tempoBpm = 120, ticksPerQuarter = 480,
 ): Uint8Array {
-  const secondsPerTick = 60 / tempoBpm / ticksPerQuarter;
-  const toTicks = (sec: number): number => Math.max(0, Math.round(sec / secondsPerTick));
+  // Beats out to ticks is a multiplication: a beat is a quarter note, and
+  // `ticksPerQuarter` is how many ticks that is.  The tempo only reaches the
+  // file through the tempo meta event below.
+  const toTicks = (beat: number): number => Math.max(0, Math.round(beat * ticksPerQuarter));
 
   interface Raw { tick: number; bytes: number[] }
   const raw: Raw[] = [];
@@ -446,9 +472,9 @@ export function exportMidiFile(
     if (n.muted) continue;
     const channel = n.channel & 0x0f;
     const velocity = Math.max(1, Math.round(n.velocity * 127));
-    raw.push({ tick: toTicks(n.startSec), bytes: [0x90 | channel, n.pitch & 0x7f, velocity] });
+    raw.push({ tick: toTicks(n.startBeat), bytes: [0x90 | channel, n.pitch & 0x7f, velocity] });
     raw.push({
-      tick: toTicks(noteEnd(n)),
+      tick: toTicks(noteEndBeat(n)),
       bytes: [0x80 | channel, n.pitch & 0x7f, Math.round(n.releaseVelocity * 127) & 0x7f],
     });
   }

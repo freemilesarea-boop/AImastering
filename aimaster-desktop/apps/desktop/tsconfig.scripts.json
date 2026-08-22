@@ -1,0 +1,25 @@
+{
+  // The self-tests, typechecked against the model.
+  //
+  // They were not, and a rename that moved MIDI notes from seconds to beats
+  // left two suites asserting on fields the model no longer had — still
+  // green, because an unknown key in `createNote({ startSec: 0.1 })` is
+  // silently dropped at runtime.  A suite that cannot fail is worse than no
+  // suite, so `pnpm test` runs this first.
+  //
+  // Deliberately weaker than the app's own config: `noUncheckedIndexedAccess`
+  // and `exactOptionalPropertyTypes` are off here.  Test scaffolding indexes
+  // fixture arrays constantly, and this check exists to catch a test that has
+  // drifted from the MODEL, not to make the fixtures themselves strict.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "types": ["node"],
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["scripts", "src"]
+}

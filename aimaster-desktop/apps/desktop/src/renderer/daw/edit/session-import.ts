@@ -8,6 +8,8 @@
 import { useDawStore } from '../../stores/dawStore.js';
 import { importAudioFiles } from '../model/import-audio.js';
 import { importMidiFile } from '../io/midi-file.js';
+import { beatsToSecAt, partClock } from '../model/note-time.js';
+import { tempoMapOf } from '../model/tempo-map.js';
 import { addTrack, createMidiPart, createTrack, updateClips } from '../model/session-ops.js';
 import { toFileUrl } from '../../utils/fileUrl.js';
 import type { DecodeProgress } from '../engine/audio-cache.js';
@@ -63,11 +65,16 @@ export async function importIntoSession(
     let firstOpen: { trackId: TrackId; clipId: ClipId } | null = null;
     useDawStore.getState().apply((s) => {
       let next = { ...s, tempoBpm: imported.tempoBpm, timeSignature: imported.timeSignature };
+      // The part's length is in beats; the clip that holds it is in seconds,
+      // so it is measured against the tempo map the import just installed —
+      // not the one that was there a line ago.
+      const startSec = Math.max(0, atSec);
+      const clock = partClock(tempoMapOf(next), startSec);
       for (const part of imported.parts) {
         const track = createTrack(part.name || 'MIDI', 'instrument');
         const clip = createMidiPart(part.name || 'MIDI', {
-          startSec: Math.max(0, atSec),
-          durationSec: Math.max(1, part.durationSec),
+          startSec,
+          durationSec: Math.max(1, beatsToSecAt(clock, part.durationBeat)),
           notes: part.notes,
           controllers: part.controllers,
           midiConfig: { bendRangeSemitones: part.bendRangeSemitones, mpe: part.mpe },

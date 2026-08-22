@@ -133,8 +133,10 @@ function drumHit(at: number, seconds: number, sampleRate = SR): Float32Array {
 }
 
 /** A click: one sample of discontinuity. */
-function withClick(base: Float32Array, atSec: number, amplitude = 0.6, sampleRate = SR): Float32Array {
-  const out = Float32Array.from(base);
+function withClick(
+  base: Float32Array, atSec: number, amplitude = 0.6, sampleRate = SR,
+): Float32Array<ArrayBuffer> {
+  const out: Float32Array<ArrayBuffer> = Float32Array.from(base);
   const index = Math.round(atSec * sampleRate);
   if (index < out.length) out[index] = (out[index] ?? 0) + amplitude;
   return out;
@@ -461,7 +463,7 @@ check('interpolation near a buffer edge falls back instead of failing', () => {
 
 check('declick removes the clicks and leaves the music', () => {
   const music = rich(220, 1.0);
-  let dirty = Float32Array.from(music);
+  let dirty: Float32Array<ArrayBuffer> = Float32Array.from(music);
   for (const t of [0.25, 0.5, 0.75]) dirty = withClick(dirty, t, 0.7);
 
   const before = detectClicks(dirty, SR);

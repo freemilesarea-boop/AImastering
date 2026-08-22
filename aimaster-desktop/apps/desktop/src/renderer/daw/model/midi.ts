@@ -104,8 +104,13 @@ export const CC_NAMES: Record<number, string> = {
 // ── Curves ────────────────────────────────────────────────────────────────────
 
 export interface ExpressionPoint {
-  /** Seconds, relative to the NOTE start (per-note) or PART start (lane). */
-  timeSec: number;
+  /**
+   * BEATS, relative to the NOTE start (per-note) or PART start (lane).
+   *
+   * Beats, not seconds, for the same reason notes are: a curve authored
+   * over a note has to stay over that note when the tempo changes.
+   */
+  timeBeat: number;
   /** Normalised: 0…1 unipolar, −1…1 for pitch bend. */
   value: number;
 }
@@ -136,9 +141,16 @@ export interface MidiNote {
    * Continuous bend over time lives in `expression`.
    */
   pitchOffsetSemitones: number;
-  /** Seconds from the PART start. */
-  startSec: number;
-  durationSec: number;
+  /**
+   * BEATS from the PART start — not seconds.
+   *
+   * Musical time is the source of truth for MIDI: a note written on beat 3
+   * is on beat 3 at any tempo, and stays there when the tempo map changes
+   * under it.  Seconds are DERIVED at render/draw time through the session
+   * tempo map (see `model/note-time.ts`); nothing stores them.
+   */
+  startBeat: number;
+  durationBeat: number;
   velocity: Unipolar;
   releaseVelocity: Unipolar;
   /** 0-based.  Under MPE this is the per-note channel the renderer assigns. */
@@ -171,8 +183,8 @@ export function createNote(over: Partial<MidiNote> = {}): MidiNote {
     id: nextNoteId(),
     pitch: MIDDLE_C_PITCH,
     pitchOffsetSemitones: 0,
-    startSec: 0,
-    durationSec: 0.5,
+    startBeat: 0,
+    durationBeat: 1,
     velocity: from7bit(100),
     releaseVelocity: from7bit(64),
     channel: 0,
@@ -184,41 +196,42 @@ export function createNote(over: Partial<MidiNote> = {}): MidiNote {
   };
 }
 
-export const noteEnd = (n: MidiNote): number => n.startSec + n.durationSec;
+/** End of the note in PART beats. */
+export const noteEndBeat = (n: MidiNote): number => n.startBeat + n.durationBeat;
 
 /** Sounding pitch including the static offset — what the synth plays. */
 export const soundingPitch = (n: MidiNote): number => n.pitch + n.pitchOffsetSemitones;
 
 export function sortNotes(notes: readonly MidiNote[]): MidiNote[] {
-  return [...notes].sort((a, b) => (a.startSec - b.startSec) || (a.pitch - b.pitch));
+  return [...notes].sort((a, b) => (a.startBeat - b.startBeat) || (a.pitch - b.pitch));
 }
 
 // ── Curve evaluation ──────────────────────────────────────────────────────────
 
 /** Linear interpolation with flat ends — the same rule as automation lanes. */
 export function curveValueAt(
-  points: readonly ExpressionPoint[], timeSec: number, fallback: number,
+  points: readonly ExpressionPoint[], beat: number, fallback: number,
 ): number {
   if (points.length === 0) return fallback;
   const first = points[0];
   const last = points[points.length - 1];
   if (!first || !last) return fallback;
-  if (timeSec <= first.timeSec) return first.value;
-  if (timeSec >= last.timeSec) return last.value;
+  if (beat <= first.timeBeat) return first.value;
+  if (beat >= last.timeBeat) return last.value;
   let lo = 0;
   let hi = points.length - 1;
   while (hi - lo > 1) {
     const mid = (lo + hi) >> 1;
     const p = points[mid];
     if (!p) break;
-    if (p.timeSec <= timeSec) lo = mid; else hi = mid;
+    if (p.timeBeat <= beat) lo = mid; else hi = mid;
   }
   const a = points[lo];
   const b = points[hi];
   if (!a || !b) return fallback;
-  const span = b.timeSec - a.timeSec;
+  const span = b.timeBeat - a.timeBeat;
   if (span <= 1e-12) return b.value;
-  return a.value + (b.value - a.value) * ((timeSec - a.timeSec) / span);
+  return a.value + (b.value - a.value) * ((beat - a.timeBeat) / span);
 }
 
 export function findExpression(
@@ -228,19 +241,19 @@ export function findExpression(
   return note.expression.find((e) => targetKey(e.target) === key);
 }
 
-/** Note expression value at a note-relative time (fallback when no curve). */
+/** Note expression value at a note-relative BEAT (fallback when no curve). */
 export function noteExpressionAt(
-  note: MidiNote, target: ExpressionTarget, timeSec: number, fallback: number,
+  note: MidiNote, target: ExpressionTarget, beatIntoNote: number, fallback: number,
 ): number {
   const curve = findExpression(note, target);
-  return curve ? curveValueAt(curve.points, timeSec, fallback) : fallback;
+  return curve ? curveValueAt(curve.points, beatIntoNote, fallback) : fallback;
 }
 
 /** Replace (or add) one per-note curve, keeping the others. */
 export function setExpression(note: MidiNote, expression: NoteExpression): MidiNote {
   const key = targetKey(expression.target);
   const rest = note.expression.filter((e) => targetKey(e.target) !== key);
-  const points = [...expression.points].sort((a, b) => a.timeSec - b.timeSec);
+  const points = [...expression.points].sort((a, b) => a.timeBeat - b.timeBeat);
   return { ...note, expression: [...rest, { ...expression, points }] };
 }
 
@@ -255,9 +268,9 @@ export function removeExpression(note: MidiNote, target: ExpressionTarget): Midi
  * offset plus the per-note bend curve scaled by the part's bend range.
  */
 export function pitchOffsetAt(
-  note: MidiNote, timeSec: number, config: MidiPartConfig,
+  note: MidiNote, beatIntoNote: number, config: MidiPartConfig,
 ): number {
-  const bend = noteExpressionAt(note, { kind: 'pitchBend' }, timeSec, 0);
+  const bend = noteExpressionAt(note, { kind: 'pitchBend' }, beatIntoNote, 0);
   return note.pitchOffsetSemitones + bend * config.bendRangeSemitones;
 }
 

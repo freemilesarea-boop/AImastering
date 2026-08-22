@@ -11,8 +11,9 @@
 import {
   analyzeVocal, quantizeToPitches, straighten, tuneToPitch, withEdit, type VariSegment,
 } from './pitch-analysis.js';
-import { noteEnd, soundingPitch, type MidiNote } from '../model/midi.js';
+import { noteEndBeat, soundingPitch, type MidiNote } from '../model/midi.js';
 import { notesInClipTime } from '../model/patterns.js';
+import { timelineSecToBeat, type PartClock } from '../model/note-time.js';
 import { renderVariAudio } from './pitch-shift.js';
 import { getCached, analyzeBuffer, loadAudio, decodeContext } from '../engine/audio-cache.js';
 import { writeTempChannels } from '../engine/offline-render.js';
@@ -87,7 +88,8 @@ export type CorrectionMode =
    * segments use), so the caller has already translated the MIDI part's
    * position — see `guideNotesFor`.
    */
-  | { kind: 'toMidi'; notes: readonly MidiNote[]; amount: number; maxSemitones?: number };
+  | { kind: 'toMidi'; notes: readonly MidiNote[]; clock: PartClock; amount: number;
+      maxSemitones?: number };
 
 /** Apply a correction to a clip's segments without rendering yet. */
 export function applyCorrection(
@@ -107,13 +109,17 @@ export function applyCorrection(
  * note would be retuned by the short note it runs into at the end.
  */
 export function guideNoteFor(
-  notes: readonly MidiNote[], startSec: number, endSec: number,
+  notes: readonly MidiNote[], clock: PartClock, startSec: number, endSec: number,
 ): MidiNote | null {
   let best: MidiNote | null = null;
   let bestOverlap = 0;
+  // The segment is a measured span of audio (seconds from the clip start);
+  // the guide note is written music (beats).  They meet here, once.
+  const startBeat = timelineSecToBeat(clock, clock.startSec + startSec);
+  const endBeat = timelineSecToBeat(clock, clock.startSec + endSec);
   for (const note of notes) {
     if (note.muted) continue;
-    const overlap = Math.min(endSec, noteEnd(note)) - Math.max(startSec, note.startSec);
+    const overlap = Math.min(endBeat, noteEndBeat(note)) - Math.max(startBeat, note.startBeat);
     if (overlap > bestOverlap) { bestOverlap = overlap; best = note; }
   }
   return bestOverlap > 0 ? best : null;
@@ -137,7 +143,7 @@ export function correctSegment(segment: VariSegment, mode: CorrectionMode): Vari
     case 'toScale':
       return quantizeToPitches(segment, scalePitchClasses(mode.scale), mode.amount);
     case 'toMidi': {
-      const guide = guideNoteFor(mode.notes, segment.startSec, segment.endSec);
+      const guide = guideNoteFor(mode.notes, mode.clock, segment.startSec, segment.endSec);
       // No guide note over this moment means the singer is between phrases —
       // leaving it alone is the right answer, not snapping it to something.
       if (!guide) return segment;

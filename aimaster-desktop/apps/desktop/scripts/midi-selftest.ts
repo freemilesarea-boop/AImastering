@@ -11,7 +11,7 @@
 
 import {
   from7bit, to7bit, from14bit, to14bit, from32bit, to32bit,
-  bendFrom14bit, bendTo14bit, createNote, resetNoteIds, noteEnd, sortNotes,
+  bendFrom14bit, bendTo14bit, createNote, resetNoteIds, noteEndBeat, sortNotes,
   pitchName, isBlackKey, pitchToFrequency, frequencyToPitch, curveValueAt,
   setExpression, removeExpression, findExpression, pitchOffsetAt, noteExpressionAt,
   targetKey, targetLabel, soundingPitch, DEFAULT_MIDI_CONFIG,
@@ -86,17 +86,17 @@ check('pitch ↔ frequency round-trips at concert pitch', () => {
 
 check('per-note expression is stored, replaced and removed by target', () => {
   resetNoteIds();
-  let note = createNote({ durationSec: 1 });
+  let note = createNote({ durationBeat: 1 });
   note = setExpression(note, {
     target: { kind: 'pitchBend' },
-    points: [{ timeSec: 1, value: 1 }, { timeSec: 0, value: 0 }],
+    points: [{ timeBeat: 1, value: 1 }, { timeBeat: 0, value: 0 }],
   });
   eq(note.expression.length, 1, 'one curve');
-  eq(findExpression(note, { kind: 'pitchBend' })?.points[0]?.timeSec, 0, 'points sorted on insert');
+  eq(findExpression(note, { kind: 'pitchBend' })?.points[0]?.timeBeat, 0, 'points sorted on insert');
 
-  note = setExpression(note, { target: { kind: 'timbre' }, points: [{ timeSec: 0, value: 0.5 }] });
+  note = setExpression(note, { target: { kind: 'timbre' }, points: [{ timeBeat: 0, value: 0.5 }] });
   eq(note.expression.length, 2, 'second target coexists');
-  note = setExpression(note, { target: { kind: 'pitchBend' }, points: [{ timeSec: 0, value: -1 }] });
+  note = setExpression(note, { target: { kind: 'pitchBend' }, points: [{ timeBeat: 0, value: -1 }] });
   eq(note.expression.length, 2, 'same target replaces');
   eq(findExpression(note, { kind: 'pitchBend' })?.points.length, 1, 'replaced curve');
 
@@ -114,7 +114,7 @@ check('expression targets have stable keys and readable labels', () => {
 });
 
 check('curves interpolate linearly with flat ends', () => {
-  const points = [{ timeSec: 0, value: 0 }, { timeSec: 2, value: 1 }];
+  const points = [{ timeBeat: 0, value: 0 }, { timeBeat: 2, value: 1 }];
   close(curveValueAt(points, -1, 0.5), 0, 'before start');
   close(curveValueAt(points, 1, 0.5), 0.5, 'midpoint');
   close(curveValueAt(points, 9, 0.5), 1, 'after end');
@@ -123,10 +123,10 @@ check('curves interpolate linearly with flat ends', () => {
 
 check('pitch offset folds the static offset with the bend curve and range', () => {
   resetNoteIds();
-  let note = createNote({ durationSec: 1, pitchOffsetSemitones: 0.25 });
+  let note = createNote({ durationBeat: 1, pitchOffsetSemitones: 0.25 });
   note = setExpression(note, {
     target: { kind: 'pitchBend' },
-    points: [{ timeSec: 0, value: 0 }, { timeSec: 1, value: 1 }],
+    points: [{ timeBeat: 0, value: 0 }, { timeBeat: 1, value: 1 }],
   });
   close(pitchOffsetAt(note, 0, DEFAULT_MIDI_CONFIG), 0.25, 'start = static only');
   close(pitchOffsetAt(note, 1, { ...DEFAULT_MIDI_CONFIG, bendRangeSemitones: 2 }), 2.25, '±2 range');
@@ -278,16 +278,16 @@ function scale16(count: number, step = 0.25): MidiNote[] {
   resetNoteIds();
   return Array.from({ length: count }, (_, i) => createNote({
     pitch: 60 + i,
-    startSec: i * step,
-    durationSec: step * 0.5,
+    startBeat: i * step,
+    durationBeat: step * 0.5,
     velocity: from7bit(100),
   }));
 }
 
 check('notes are added, deleted and kept in time order', () => {
   resetNoteIds();
-  let notes = addNote([], { pitch: 64, startSec: 1 });
-  notes = addNote(notes, { pitch: 60, startSec: 0 });
+  let notes = addNote([], { pitch: 64, startBeat: 1 });
+  notes = addNote(notes, { pitch: 60, startBeat: 0 });
   eq(notes.map((n) => n.pitch).join(','), '60,64', 'sorted by time');
   notes = deleteNotes(notes, new Set([notes[0]!.id]));
   eq(notes.length, 1, 'deleted');
@@ -295,8 +295,8 @@ check('notes are added, deleted and kept in time order', () => {
 
 check('moving notes snaps to grid and, optionally, to a scale', () => {
   const notes = scale16(2, 1);
-  const moved = moveNotes(notes, allIds(notes), { deltaSec: 0.13, gridSec: 0.25 });
-  close(moved[0]!.startSec, 0.25, 'snapped to the grid');
+  const moved = moveNotes(notes, allIds(notes), { deltaBeat: 0.13, gridBeat: 0.25 });
+  close(moved[0]!.startBeat, 0.25, 'snapped to the grid');
   const snapped = moveNotes(notes, allIds(notes), {
     deltaPitch: 1, scale: { root: 0, scaleId: 'major' },
   });
@@ -341,12 +341,12 @@ check('transpose can correct into a scale and stay inside a register', () => {
 // ── Quantize ──────────────────────────────────────────────────────────────────
 
 check('the grid line search handles straight, tuplet and swung grids', () => {
-  const straight = { gridSec: 0.25 };
+  const straight = { gridBeat: 0.25 };
   close(nearestGridTime(0.26, straight), 0.25, 'nearest line');
   close(nearestGridTime(0.13, straight), 0.25, 'rounds up past halfway');
-  const triplet = { gridSec: 0.25, tuplet: 3 };
+  const triplet = { gridBeat: 0.25, tuplet: 3 };
   close(nearestGridTime(0.17, triplet), 1 / 6, 'triplet line', 1e-6);
-  const swung = { gridSec: 0.25, swingPercent: 100 };
+  const swung = { gridBeat: 0.25, swingPercent: 100 };
   close(nearestGridTime(0.3, swung), 0.375, 'off-beat pushed late');
   close(nearestGridTime(0.02, swung), 0, 'down-beat unmoved');
 });
@@ -354,29 +354,29 @@ check('the grid line search handles straight, tuplet and swung grids', () => {
 check('quantize honours strength, catch range and safe range', () => {
   resetNoteIds();
   const notes = [
-    createNote({ startSec: 0.03, durationSec: 0.1 }),     // slightly late
-    createNote({ startSec: 0.6,  durationSec: 0.1 }),     // far from any line
+    createNote({ startBeat: 0.03, durationBeat: 0.1 }),     // slightly late
+    createNote({ startBeat: 0.6,  durationBeat: 0.1 }),     // far from any line
   ];
-  const full = quantizeNotes(notes, allIds(notes), { gridSec: 0.25 });
-  close(full[0]!.startSec, 0, 'snapped hard');
+  const full = quantizeNotes(notes, allIds(notes), { gridBeat: 0.25 });
+  close(full[0]!.startBeat, 0, 'snapped hard');
 
-  const soft = quantizeNotes(notes, allIds(notes), { gridSec: 0.25, strengthPercent: 50 });
-  close(soft[0]!.startSec, 0.015, 'moved half way');
+  const soft = quantizeNotes(notes, allIds(notes), { gridBeat: 0.25, strengthPercent: 50 });
+  close(soft[0]!.startBeat, 0.015, 'moved half way');
 
-  const caught = quantizeNotes(notes, allIds(notes), { gridSec: 0.25, catchRangeSec: 0.02 });
-  close(caught[0]!.startSec, 0.03, 'outside the catch range → untouched');
+  const caught = quantizeNotes(notes, allIds(notes), { gridBeat: 0.25, catchRangeBeat: 0.02 });
+  close(caught[0]!.startBeat, 0.03, 'outside the catch range → untouched');
 
-  const safe = quantizeNotes(notes, allIds(notes), { gridSec: 0.25, safeRangeSec: 0.05 });
-  close(safe[0]!.startSec, 0.03, 'inside the safe range → untouched');
+  const safe = quantizeNotes(notes, allIds(notes), { gridBeat: 0.25, safeRangeBeat: 0.05 });
+  close(safe[0]!.startBeat, 0.03, 'inside the safe range → untouched');
 });
 
 check('quantize can snap lengths and ends', () => {
   resetNoteIds();
-  const notes = [createNote({ startSec: 0, durationSec: 0.31 })];
-  const lengths = quantizeNotes(notes, allIds(notes), { gridSec: 0.25, quantizeLengths: true });
-  close(lengths[0]!.durationSec, 0.25, 'length snapped');
-  const ends = quantizeNotes(notes, allIds(notes), { gridSec: 0.25, quantizeEnds: true });
-  close(ends[0]!.startSec + ends[0]!.durationSec, 0.25, 'end snapped');
+  const notes = [createNote({ startBeat: 0, durationBeat: 0.31 })];
+  const lengths = quantizeNotes(notes, allIds(notes), { gridBeat: 0.25, quantizeLengths: true });
+  close(lengths[0]!.durationBeat, 0.25, 'length snapped');
+  const ends = quantizeNotes(notes, allIds(notes), { gridBeat: 0.25, quantizeEnds: true });
+  close(ends[0]!.startBeat + ends[0]!.durationBeat, 0.25, 'end snapped');
 });
 
 // ── Humanize ──────────────────────────────────────────────────────────────────
@@ -393,27 +393,27 @@ check('humanize is deterministic for a seed and different across seeds', () => {
 check('humanize stays inside its stated amounts', () => {
   const notes = scale16(16);
   const humanized = humanizeNotes(notes, allIds(notes), {
-    timingSec: 0.01, velocity: 0.05, seed: 3,
+    timingBeat: 0.01, velocity: 0.05, seed: 3,
   });
   humanized.forEach((n, i) => {
     const original = notes.find((o) => o.id === n.id)!;
-    assert(Math.abs(n.startSec - original.startSec) <= 0.0101, `timing bound at ${i}`);
+    assert(Math.abs(n.startBeat - original.startBeat) <= 0.0101, `timing bound at ${i}`);
     assert(Math.abs(n.velocity - original.velocity) <= 0.0501, `velocity bound at ${i}`);
-    assert(n.startSec >= 0, 'never negative');
+    assert(n.startBeat >= 0, 'never negative');
   });
 });
 
 check('groove biases strong beats early and weak beats late', () => {
   resetNoteIds();
   const notes = [
-    createNote({ startSec: 0,    durationSec: 0.2 }),   // strong
-    createNote({ startSec: 0.25, durationSec: 0.2 }),   // weak
+    createNote({ startBeat: 0,    durationBeat: 0.2 }),   // strong
+    createNote({ startBeat: 0.25, durationBeat: 0.2 }),   // weak
   ];
   const grooved = humanizeNotes(notes, allIds(notes), {
-    timingSec: 0, velocity: 0, grooveSec: 0.01, gridSec: 0.25, seed: 1,
+    timingBeat: 0, velocity: 0, grooveBeat: 0.01, gridBeat: 0.25, seed: 1,
   });
-  close(grooved[0]!.startSec, 0, 'strong beat pulled early (clamped at 0)');
-  close(grooved[1]!.startSec, 0.26, 'weak beat pushed late');
+  close(grooved[0]!.startBeat, 0, 'strong beat pulled early (clamped at 0)');
+  close(grooved[1]!.startBeat, 0.26, 'weak beat pushed late');
 });
 
 check('the RNG is stable across runs', () => {
@@ -427,77 +427,77 @@ check('the RNG is stable across runs', () => {
 check('legato stretches each note to the next', () => {
   const notes = scale16(3, 1);            // starts 0, 1, 2 — lengths 0.5
   const legato = applyLegato(notes, allIds(notes));
-  close(legato[0]!.durationSec, 1, 'first reaches the second');
-  close(legato[1]!.durationSec, 1, 'second reaches the third');
-  close(legato[2]!.durationSec, 0.5, 'last one is left alone');
+  close(legato[0]!.durationBeat, 1, 'first reaches the second');
+  close(legato[1]!.durationBeat, 1, 'second reaches the third');
+  close(legato[2]!.durationBeat, 0.5, 'last one is left alone');
 
   const gapped = applyLegato(notes, allIds(notes), -0.1);
-  close(gapped[0]!.durationSec, 0.9, 'negative overlap leaves a gap');
+  close(gapped[0]!.durationBeat, 0.9, 'negative overlap leaves a gap');
 });
 
 check('scale legato blends between the original and full legato', () => {
   const notes = scale16(2, 1);
   const half = scaleLegato(notes, allIds(notes), 50);
-  close(half[0]!.durationSec, 0.75, 'half way to legato');
+  close(half[0]!.durationBeat, 0.75, 'half way to legato');
   eq(scaleLegato(notes, allIds(notes), 0), notes, '0 % is identity');
 });
 
 check('fixed lengths, extend-to-next-selected and overlap cleanup', () => {
   const notes = scale16(4, 1);
-  close(fixedLengths(notes, allIds(notes), 0.3)[0]!.durationSec, 0.3, 'fixed');
+  close(fixedLengths(notes, allIds(notes), 0.3)[0]!.durationBeat, 0.3, 'fixed');
 
   const selected = ids(notes[0]!, notes[2]!);
   const extended = extendToNextSelected(notes, selected);
-  close(extended[0]!.durationSec, 2, 'stretched past the unselected note');
-  close(extended[1]!.durationSec, 0.5, 'unselected untouched');
+  close(extended[0]!.durationBeat, 2, 'stretched past the unselected note');
+  close(extended[1]!.durationBeat, 0.5, 'unselected untouched');
 
   resetNoteIds();
   const overlapping = [
-    createNote({ pitch: 60, startSec: 0, durationSec: 2 }),
-    createNote({ pitch: 64, startSec: 1, durationSec: 2 }),
-    createNote({ pitch: 60, startSec: 1.5, durationSec: 2 }),
+    createNote({ pitch: 60, startBeat: 0, durationBeat: 2 }),
+    createNote({ pitch: 64, startBeat: 1, durationBeat: 2 }),
+    createNote({ pitch: 60, startBeat: 1.5, durationBeat: 2 }),
   ];
   const mono = deleteOverlapsMono(overlapping);
-  close(mono[0]!.durationSec, 1, 'mono cuts at the next note of any pitch');
+  close(mono[0]!.durationBeat, 1, 'mono cuts at the next note of any pitch');
   const poly = deleteOverlapsPoly(overlapping);
-  close(poly[0]!.durationSec, 1.5, 'poly cuts only at the same pitch');
-  close(poly[1]!.durationSec, 2, 'the chord tone survives');
+  close(poly[0]!.durationBeat, 1.5, 'poly cuts only at the same pitch');
+  close(poly[1]!.durationBeat, 2, 'the chord tone survives');
 });
 
 check('sustain pedal spans become note lengths', () => {
   resetNoteIds();
-  const notes = [createNote({ startSec: 0.1, durationSec: 0.1 })];
-  const held = pedalsToNoteLength(notes, [{ startSec: 0, endSec: 2 }]);
-  close(held[0]!.durationSec, 1.9, 'held to the pedal release');
+  const notes = [createNote({ startBeat: 0.1, durationBeat: 0.1 })];
+  const held = pedalsToNoteLength(notes, [{ startBeat: 0, endBeat: 2 }]);
+  close(held[0]!.durationBeat, 1.9, 'held to the pedal release');
   eq(pedalsToNoteLength(notes, []), notes, 'no pedal data → identity');
 });
 
 check('split and glue', () => {
   resetNoteIds();
-  const notes = [createNote({ pitch: 60, startSec: 0, durationSec: 2 })];
+  const notes = [createNote({ pitch: 60, startBeat: 0, durationBeat: 2 })];
   const split = splitNotesAt(notes, 0.5);
   eq(split.length, 2, 'two notes');
-  close(split[0]!.durationSec, 0.5, 'head');
-  close(split[1]!.startSec, 0.5, 'tail start');
-  close(split[1]!.durationSec, 1.5, 'tail length');
+  close(split[0]!.durationBeat, 0.5, 'head');
+  close(split[1]!.startBeat, 0.5, 'tail start');
+  close(split[1]!.durationBeat, 1.5, 'tail length');
   eq(splitNotesAt(notes, 5).length, 1, 'outside the note → no split');
 
   const glued = glueNotes(split, allIds(split));
   eq(glued.length, 1, 'glued back');
-  close(glued[0]!.durationSec, 2, 'full length restored');
+  close(glued[0]!.durationBeat, 2, 'full length restored');
 });
 
 check('queries: sounding notes and bounds', () => {
   resetNoteIds();
   const notes = [
-    createNote({ pitch: 60, startSec: 0, durationSec: 1 }),
-    createNote({ pitch: 67, startSec: 0.5, durationSec: 1 }),
+    createNote({ pitch: 60, startBeat: 0, durationBeat: 1 }),
+    createNote({ pitch: 67, startBeat: 0.5, durationBeat: 1 }),
   ];
   eq(notesAt(notes, 0.75).length, 2, 'both sounding');
   eq(notesAt(notes, 1.2).length, 1, 'one sounding');
   eq(notesAt(notes, 5).length, 0, 'silence');
   const bounds = noteBounds(notes)!;
-  close(bounds.startSec, 0, 'start'); close(bounds.endSec, 1.5, 'end');
+  close(bounds.startBeat, 0, 'start'); close(bounds.endBeat, 1.5, 'end');
   eq(bounds.lowPitch, 60, 'low'); eq(bounds.highPitch, 67, 'high');
   eq(noteBounds([]), null, 'no notes');
 });
@@ -507,9 +507,9 @@ check('queries: sounding notes and bounds', () => {
 check('a written file reads back with the same notes', () => {
   resetNoteIds();
   const notes = [
-    createNote({ pitch: 60, startSec: 0,   durationSec: 0.5, velocity: from7bit(100) }),
-    createNote({ pitch: 64, startSec: 0.5, durationSec: 0.5, velocity: from7bit(80) }),
-    createNote({ pitch: 67, startSec: 1,   durationSec: 1,   velocity: from7bit(120) }),
+    createNote({ pitch: 60, startBeat: 0,   durationBeat: 0.5, velocity: from7bit(100) }),
+    createNote({ pitch: 64, startBeat: 0.5, durationBeat: 0.5, velocity: from7bit(80) }),
+    createNote({ pitch: 67, startBeat: 1,   durationBeat: 1,   velocity: from7bit(120) }),
   ];
   const bytes = exportMidiFile(notes, 120);
   const imported = importMidiFile(bytes);
@@ -518,14 +518,14 @@ check('a written file reads back with the same notes', () => {
   assert(part !== undefined, 'one part');
   eq(part!.notes.length, 3, 'all notes');
   eq(part!.notes.map((n) => n.pitch).join(','), '60,64,67', 'pitches');
-  close(part!.notes[1]!.startSec, 0.5, 'timing');
-  close(part!.notes[2]!.durationSec, 1, 'length');
+  close(part!.notes[1]!.startBeat, 0.5, 'timing');
+  close(part!.notes[2]!.durationBeat, 1, 'length');
   eq(to7bit(part!.notes[0]!.velocity), 100, 'velocity');
 });
 
 check('tempo changes are integrated, not applied globally', () => {
   // 120 BPM for one quarter, then 60 BPM.
-  const file = parseMidiFile(exportMidiFile([createNote({ startSec: 0, durationSec: 0.1 })], 120));
+  const file = parseMidiFile(exportMidiFile([createNote({ startBeat: 0, durationBeat: 0.1 })], 120));
   const toSeconds = makeTickToSeconds({
     ...file,
     tempoMap: [
@@ -596,14 +596,14 @@ check('MPE files are detected and their bends become per-note expression', () =>
     const bend = findExpression(note, { kind: 'pitchBend' });
     assert(bend !== undefined, `note ${note.pitch} carries its own bend`);
     assert(bend!.points.length > 0, 'has points');
-    assert(bend!.points[0]!.timeSec >= 0, 'curve time is note-relative');
+    assert(bend!.points[0]!.timeBeat >= 0, 'curve time is note-relative');
     assert(bend!.points[0]!.value > 0, 'bends upward');
   }
 });
 
 check('a single-channel file keeps controllers at part level', () => {
   resetNoteIds();
-  const notes = [createNote({ pitch: 60, startSec: 0, durationSec: 1 })];
+  const notes = [createNote({ pitch: 60, startBeat: 0, durationBeat: 1 })];
   const file = parseMidiFile(exportMidiFile(notes, 120));
   assert(!looksLikeMpe(file.tracks[0]!.events), 'not MPE');
   const part = trackToPart(file.tracks[0]!, file);

@@ -16,16 +16,18 @@
 // A slide is a pitch-bend curve on the target note, which means it survives
 // export, works per-note in a chord, and needs no special case in the player.
 
-import { createNote, noteEnd, soundingPitch, type MidiNote, type NoteExpression } from '../model/midi.js';
+import { createNote, noteEndBeat, soundingPitch, type MidiNote, type NoteExpression } from '../model/midi.js';
 import { voiceChord, type ChordSymbol } from '../model/chords.js';
 import { isInScale, snapPitchToScale, type Scale } from '../model/scales.js';
-import { makeRng } from './midi-edit.js';
+import { makeRng, MIN_NOTE_BEATS } from './midi-edit.js';
 
 // ── Chord stamp ───────────────────────────────────────────────────────────────
 
 export interface StampOptions {
-  startSec: number;
-  durationSec: number;
+  /** Part-relative beat the chord lands on. */
+  startBeat: number;
+  /** Length of every voice, in beats. */
+  durationBeat: number;
   /** Lowest pitch of the voicing. */
   bottomPitch?: number;
   velocity?: number;
@@ -45,8 +47,8 @@ export function stampChord(chord: ChordSymbol, options: StampOptions): MidiNote[
     .sort((a, b) => a - b)
     .map((pitch) => createNote({
       pitch,
-      startSec: options.startSec,
-      durationSec: options.durationSec,
+      startBeat: options.startBeat,
+      durationBeat: options.durationBeat,
       ...(options.velocity === undefined ? {} : { velocity: options.velocity }),
     }));
 }
@@ -57,8 +59,8 @@ export type ArpDirection = 'up' | 'down' | 'updown' | 'random' | 'chord';
 
 export interface ArpOptions {
   direction?: ArpDirection;
-  /** Length of one arp step, seconds. */
-  rateSec: number;
+  /** Length of one arp step, in beats (0.25 = a sixteenth). */
+  rateBeat: number;
   /** Fraction of the step each note sounds for. */
   gate?: number;
   /** Extra octaves stacked above the chord. */
@@ -75,15 +77,15 @@ export interface ArpOptions {
  */
 export function arpeggiate(notes: readonly MidiNote[], options: ArpOptions): MidiNote[] {
   const direction = options.direction ?? 'up';
-  const rate = Math.max(0.01, options.rateSec);
+  const rate = Math.max(MIN_NOTE_BEATS, options.rateBeat);
   const gate = Math.max(0.05, Math.min(1, options.gate ?? 0.9));
   const octaves = Math.max(1, Math.round(options.octaves ?? 1));
   const random = makeRng(options.seed ?? 1);
 
   const out: MidiNote[] = [];
   for (const group of chordGroups(notes)) {
-    const start = Math.min(...group.map((n) => n.startSec));
-    const end = Math.max(...group.map(noteEnd));
+    const start = Math.min(...group.map((n) => n.startBeat));
+    const end = Math.max(...group.map(noteEndBeat));
     const base = [...group].sort((a, b) => soundingPitch(a) - soundingPitch(b));
 
     const ladder: MidiNote[] = [];
@@ -101,8 +103,8 @@ export function arpeggiate(notes: readonly MidiNote[], options: ArpOptions): Mid
         pitch: source.pitch,
         pitchOffsetSemitones: source.pitchOffsetSemitones,
         // The last step is trimmed to the chord's end rather than overhanging.
-        startSec: time,
-        durationSec: Math.min(rate * gate, end - time),
+        startBeat: time,
+        durationBeat: Math.min(rate * gate, end - time),
         velocity: source.velocity,
         channel: source.channel,
       }));
@@ -110,7 +112,7 @@ export function arpeggiate(notes: readonly MidiNote[], options: ArpOptions): Mid
       index++;
     }
   }
-  return out.sort((a, b) => a.startSec - b.startSec || a.pitch - b.pitch);
+  return out.sort((a, b) => a.startBeat - b.startBeat || a.pitch - b.pitch);
 }
 
 function orderFor(
@@ -142,12 +144,12 @@ function orderFor(
 
 /** Notes that sound together, as groups.  A melody yields groups of one. */
 export function chordGroups(notes: readonly MidiNote[]): MidiNote[][] {
-  const sorted = [...notes].sort((a, b) => a.startSec - b.startSec);
+  const sorted = [...notes].sort((a, b) => a.startBeat - b.startBeat);
   const groups: MidiNote[][] = [];
   for (const note of sorted) {
     const group = groups[groups.length - 1];
     // Same onset within a hair, or genuinely overlapping in time.
-    if (group && note.startSec < Math.max(...group.map(noteEnd)) - 1e-6) group.push(note);
+    if (group && note.startBeat < Math.max(...group.map(noteEndBeat)) - 1e-6) group.push(note);
     else groups.push([note]);
   }
   return groups;
@@ -156,8 +158,14 @@ export function chordGroups(notes: readonly MidiNote[]): MidiNote[][] {
 // ── Strum ─────────────────────────────────────────────────────────────────────
 
 export interface StrumOptions {
-  /** Delay between adjacent voices, seconds. */
-  spreadSec: number;
+  /**
+   * Delay between adjacent voices, in BEATS.
+   *
+   * A strum is a physical gesture — roughly 20 ms of hand travel, not a
+   * musical subdivision — so the caller converts it through the part clock
+   * (`secToBeatsAt`) rather than this module guessing a tempo.
+   */
+  spreadBeat: number;
   direction?: 'up' | 'down';
   /** Later voices come in this much quieter, 0…1. */
   velocityFalloff?: number;
@@ -172,7 +180,7 @@ export interface StrumOptions {
  * strummed chord sound clipped instead of played.
  */
 export function strum(notes: readonly MidiNote[], options: StrumOptions): MidiNote[] {
-  const spread = Math.max(0, options.spreadSec);
+  const spread = Math.max(0, options.spreadBeat);
   const direction = options.direction ?? 'up';
   const falloff = Math.max(0, Math.min(1, options.velocityFalloff ?? 0.15));
   const alignEnds = options.alignEnds ?? true;
@@ -182,20 +190,20 @@ export function strum(notes: readonly MidiNote[], options: StrumOptions): MidiNo
     if (group.length < 2) { out.push(...group); continue; }
     const ordered = [...group].sort((a, b) =>
       (direction === 'up' ? 1 : -1) * (soundingPitch(a) - soundingPitch(b)));
-    const end = Math.max(...group.map(noteEnd));
+    const end = Math.max(...group.map(noteEndBeat));
 
     ordered.forEach((note, i) => {
       const offset = i * spread;
-      const startSec = note.startSec + offset;
+      const startBeat = note.startBeat + offset;
       out.push({
         ...note,
-        startSec,
-        durationSec: alignEnds ? Math.max(0.01, end - startSec) : note.durationSec,
+        startBeat,
+        durationBeat: alignEnds ? Math.max(MIN_NOTE_BEATS, end - startBeat) : note.durationBeat,
         velocity: Math.max(0.01, note.velocity * (1 - falloff * (i / Math.max(1, ordered.length - 1)))),
       });
     });
   }
-  return out.sort((a, b) => a.startSec - b.startSec || a.pitch - b.pitch);
+  return out.sort((a, b) => a.startBeat - b.startBeat || a.pitch - b.pitch);
 }
 
 // ── Slide ─────────────────────────────────────────────────────────────────────
@@ -224,7 +232,7 @@ export function applySlides(
   const range = Math.max(1, options.bendRangeSemitones ?? 2);
   const maxInterval = options.maxIntervalSemitones ?? 7;
 
-  const sorted = [...notes].sort((a, b) => a.startSec - b.startSec);
+  const sorted = [...notes].sort((a, b) => a.startBeat - b.startBeat);
   return sorted.map((note, i) => {
     const previous = sorted[i - 1];
     if (!previous) return note;
@@ -235,8 +243,8 @@ export function applySlides(
     const expression: NoteExpression = {
       target: { kind: 'pitchBend' },
       points: [
-        { timeSec: 0, value: from },
-        { timeSec: note.durationSec * fraction, value: 0 },
+        { timeBeat: 0, value: from },
+        { timeBeat: note.durationBeat * fraction, value: 0 },
       ],
     };
     return {
@@ -259,8 +267,8 @@ export function clearSlides(notes: readonly MidiNote[]): MidiNote[] {
 // ── Flam ──────────────────────────────────────────────────────────────────────
 
 export interface FlamOptions {
-  /** Gap between the grace note and the hit. */
-  spacingSec?: number;
+  /** Gap between the grace note and the hit, in beats (a physical ~30 ms). */
+  spacingBeat?: number;
   /** Grace-note level relative to the hit. */
   graceVelocity?: number;
   /** Hits per flam, including the main one. */
@@ -269,26 +277,26 @@ export interface FlamOptions {
 
 /** One hit becomes a grace note plus the hit — a roll, without drawing it. */
 export function flam(notes: readonly MidiNote[], options: FlamOptions = {}): MidiNote[] {
-  const spacing = Math.max(0.005, options.spacingSec ?? 0.03);
+  const spacing = Math.max(MIN_NOTE_BEATS / 4, options.spacingBeat ?? MIN_NOTE_BEATS * 2);
   const grace = Math.max(0.05, Math.min(1, options.graceVelocity ?? 0.55));
   const count = Math.max(2, Math.round(options.count ?? 2));
 
   const out: MidiNote[] = [];
   for (const note of notes) {
     for (let i = count - 1; i >= 1; i--) {
-      const startSec = note.startSec - i * spacing;
-      if (startSec < 0) continue;
+      const startBeat = note.startBeat - i * spacing;
+      if (startBeat < 0) continue;
       out.push(createNote({
         pitch: note.pitch,
-        startSec,
-        durationSec: Math.min(spacing * 0.9, note.durationSec),
+        startBeat,
+        durationBeat: Math.min(spacing * 0.9, note.durationBeat),
         velocity: note.velocity * grace,
         channel: note.channel,
       }));
     }
     out.push(note);
   }
-  return out.sort((a, b) => a.startSec - b.startSec || a.pitch - b.pitch);
+  return out.sort((a, b) => a.startBeat - b.startBeat || a.pitch - b.pitch);
 }
 
 // ── Scale snap ────────────────────────────────────────────────────────────────

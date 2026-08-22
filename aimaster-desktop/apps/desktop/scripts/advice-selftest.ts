@@ -476,7 +476,7 @@ check('a low-confidence suggestion is marked as one', () => {
 
 check('the analysis window starts where the material starts', () => {
   let session = createSession('advice');
-  const track = createTrack('audio', 'Vox');
+  const track = createTrack('Vox', 'audio');
   const clip = {
     id: 'c1', kind: 'audio' as const, fileId: 'f1', name: 'take',
     startSec: 12, durationSec: 90, offsetSec: 0, gainDb: 0,

@@ -12,19 +12,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import {
-  useMidiEditorStore, currentGridSec, snapTimeToGrid, CONTROLLER_TARGETS,
+  useMidiEditorStore, currentGridBeat, snapBeatToGrid, CONTROLLER_TARGETS,
   GRID_DIVISIONS, type GridDivision,
 } from '../../../stores/midiEditorStore.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { findTrack, trackClips, updateClip } from '../../../daw/model/session-ops.js';
 import { clipNotes, notesInClipTime, writeClipNotes } from '../../../daw/model/patterns.js';
 import {
-  createNote, isBlackKey, pitchName, targetLabel, to7bit, from7bit, noteEnd,
+  createNote, isBlackKey, pitchName, targetLabel, to7bit, from7bit, noteEndBeat,
   curveValueAt, findExpression, setExpression, type ExpressionTarget, type MidiNote,
 } from '../../../daw/model/midi.js';
 import { isInScale, scalePitchClasses } from '../../../daw/model/scales.js';
 import { detectChord, formatChord } from '../../../daw/model/chords.js';
-import { notesAt } from '../../../daw/edit/midi-edit.js';
+import { notesAt, MIN_NOTE_BEATS } from '../../../daw/edit/midi-edit.js';
+import { beatsToSecAt, partClock, timelineSecToBeat } from '../../../daw/model/note-time.js';
+import { barBeatAt, tempoMapOf } from '../../../daw/model/tempo-map.js';
 import KeyEditorInspector from './KeyEditorInspector.js';
 
 const KEYBOARD_WIDTH = 62;
@@ -64,12 +66,12 @@ export default function KeyEditor() {
   const setLaneMode     = useMidiEditorStore((s) => s.setLaneMode);
   const controllerTarget = useMidiEditorStore((s) => s.controllerTarget);
   const setControllerTarget = useMidiEditorStore((s) => s.setControllerTarget);
-  const pxPerSec        = useMidiEditorStore((s) => s.pxPerSec);
-  const setPxPerSec     = useMidiEditorStore((s) => s.setPxPerSec);
+  const pxPerBeat        = useMidiEditorStore((s) => s.pxPerBeat);
+  const setPxPerBeat     = useMidiEditorStore((s) => s.setPxPerBeat);
   const pitchHeight     = useMidiEditorStore((s) => s.pitchHeight);
   const setPitchHeight  = useMidiEditorStore((s) => s.setPitchHeight);
-  const scrollSec       = useMidiEditorStore((s) => s.scrollSec);
-  const setScrollSec    = useMidiEditorStore((s) => s.setScrollSec);
+  const scrollBeat       = useMidiEditorStore((s) => s.scrollBeat);
+  const setScrollBeat    = useMidiEditorStore((s) => s.setScrollBeat);
   const bottomPitch     = useMidiEditorStore((s) => s.bottomPitch);
   const setBottomPitch  = useMidiEditorStore((s) => s.setBottomPitch);
 
@@ -78,7 +80,7 @@ export default function KeyEditor() {
   const areaRef   = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 900, height: 460 });
   const [drag, setDrag] = useState<Drag | null>(null);
-  const [hoverInfo, setHoverInfo] = useState<{ timeSec: number; pitch: number } | null>(null);
+  const [hoverInfo, setHoverInfo] = useState<{ beat: number; pitch: number } | null>(null);
 
   const track = open ? findTrack(session, open.trackId) : undefined;
   const part = track ? trackClips(track).find((c) => c.id === open?.clipId) : undefined;
@@ -102,12 +104,19 @@ export default function KeyEditor() {
       .map((c) => ({ trackId: t.id, clipId: c.id, label: `${t.name} · ${c.name}` }))),
   [session, open?.clipId]);
   const tempo = session.tempoBpm;
-  const gridSec = currentGridSec(tempo);
+  const gridBeat = currentGridBeat();
+  // Notes are in beats and the roll draws in beats; the clock is needed only
+  // where the timeline intrudes — the play head, and the part's own box.
+  const tempoMap = useMemo(() => tempoMapOf(session), [session]);
+  const clock = useMemo(
+    () => partClock(tempoMap, part?.startSec ?? 0),
+    [tempoMap, part?.startSec],
+  );
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   // ── Geometry ────────────────────────────────────────────────────────────
-  const toX = useCallback((sec: number) => (sec - scrollSec) * pxPerSec, [scrollSec, pxPerSec]);
-  const toSec = useCallback((x: number) => scrollSec + x / pxPerSec, [scrollSec, pxPerSec]);
+  const toX = useCallback((beat: number) => (beat - scrollBeat) * pxPerBeat, [scrollBeat, pxPerBeat]);
+  const toBeat = useCallback((x: number) => scrollBeat + x / pxPerBeat, [scrollBeat, pxPerBeat]);
   const gridHeight = size.height;
   const toY = useCallback(
     (pitch: number) => gridHeight - (pitch - bottomPitch + 1) * pitchHeight,
@@ -140,7 +149,10 @@ export default function KeyEditor() {
       // A part always covers its notes, so nothing plays outside the part.
       return updateClip(written, open.trackId, open.clipId, (c) => ({
         ...c,
-        durationSec: Math.max(c.durationSec, next.reduce((m, n) => Math.max(m, noteEnd(n)), 0)),
+        durationSec: Math.max(
+          c.durationSec,
+          beatsToSecAt(clock, next.reduce((m, n) => Math.max(m, noteEndBeat(n)), 0)),
+        ),
       }));
     };
     if (transient) applyT(mutate); else apply(mutate);
@@ -183,12 +195,11 @@ export default function KeyEditor() {
     }
 
     // Grid lines
-    if (gridSec > 0) {
-      const beat = 60 / tempo;
-      const first = Math.floor(scrollSec / gridSec) * gridSec;
-      for (let t = first; t < scrollSec + size.width / pxPerSec; t += gridSec) {
+    if (gridBeat > 0) {
+      const first = Math.floor(scrollBeat / gridBeat) * gridBeat;
+      for (let t = first; t < scrollBeat + size.width / pxPerBeat; t += gridBeat) {
         const x = toX(t);
-        const onBeat = Math.abs(t / beat - Math.round(t / beat)) < 1e-6;
+        const onBeat = Math.abs(t - Math.round(t)) < 1e-6;
         ctx.strokeStyle = onBeat ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.07)';
         ctx.beginPath();
         ctx.moveTo(Math.round(x) + 0.5, 0);
@@ -199,8 +210,8 @@ export default function KeyEditor() {
 
     // Ghost notes — behind everything, dim, and never interactive.
     for (const note of ghostNotes) {
-      const x = toX(note.startSec);
-      const w = Math.max(2, note.durationSec * pxPerSec);
+      const x = toX(note.startBeat);
+      const w = Math.max(2, note.durationBeat * pxPerBeat);
       const y = toY(note.pitch);
       if (x + w < 0 || x > size.width) continue;
       ctx.fillStyle = 'rgba(190,160,255,0.16)';
@@ -212,8 +223,8 @@ export default function KeyEditor() {
 
     // Notes
     for (const note of notes) {
-      const x = toX(note.startSec);
-      const w = Math.max(2, note.durationSec * pxPerSec);
+      const x = toX(note.startBeat);
+      const w = Math.max(2, note.durationBeat * pxPerBeat);
       const y = toY(note.pitch);
       if (x + w < 0 || x > size.width) continue;
       const isSelected = selected.has(note.id);
@@ -233,9 +244,9 @@ export default function KeyEditor() {
         ctx.strokeStyle = 'rgba(255,235,140,0.9)';
         ctx.beginPath();
         for (let i = 0; i <= 16; i++) {
-          const t = (note.durationSec * i) / 16;
+          const t = (note.durationBeat * i) / 16;
           const v = curveValueAt(bend.points, t, 0);
-          const px = x + t * pxPerSec;
+          const px = x + t * pxPerBeat;
           const py = y + pitchHeight / 2 - v * (pitchHeight / 2 - 1);
           if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
         }
@@ -262,8 +273,7 @@ export default function KeyEditor() {
 
     // Play head (part-relative)
     if (part) {
-      const local = playhead - part.startSec;
-      const x = toX(local);
+      const x = toX(timelineSecToBeat(clock, playhead));
       if (x >= 0 && x <= size.width) {
         ctx.strokeStyle = 'rgba(255,90,90,0.95)';
         ctx.beginPath();
@@ -272,8 +282,8 @@ export default function KeyEditor() {
         ctx.stroke();
       }
     }
-  }, [notes, size, scale, showGuides, bottomPitch, pitchHeight, pxPerSec, scrollSec,
-      selected, drag, gridSec, tempo, toX, toY, part, playhead]);
+  }, [notes, size, scale, showGuides, bottomPitch, pitchHeight, pxPerBeat, scrollBeat,
+      selected, drag, gridBeat, tempo, toX, toY, part, playhead]);
 
   // ── Controller / velocity lane ──────────────────────────────────────────
   useEffect(() => {
@@ -293,7 +303,7 @@ export default function KeyEditor() {
 
     if (laneMode === 'velocity') {
       for (const note of notes) {
-        const x = toX(note.startSec);
+        const x = toX(note.startBeat);
         if (x < -20 || x > size.width) continue;
         const h = note.velocity * (LANE_HEIGHT - 8);
         ctx.fillStyle = selected.has(note.id) ? 'rgba(235,80,80,0.95)' : 'rgba(90,150,240,0.9)';
@@ -315,9 +325,9 @@ export default function KeyEditor() {
         ctx.strokeStyle = selected.has(note.id) ? 'rgba(255,120,120,0.95)' : 'rgba(255,215,120,0.9)';
         ctx.beginPath();
         for (let i = 0; i <= 32; i++) {
-          const t = (note.durationSec * i) / 32;
+          const t = (note.durationBeat * i) / 32;
           const v = curveValueAt(curve.points, t, 0);
-          const px = toX(note.startSec + t);
+          const px = toX(note.startBeat + t);
           const py = bipolar
             ? zeroY - v * (LANE_HEIGHT / 2 - 4)
             : LANE_HEIGHT - 2 - v * (LANE_HEIGHT - 8);
@@ -336,15 +346,15 @@ export default function KeyEditor() {
 
   const noteAtPoint = useCallback((x: number, y: number): MidiNote | null => {
     const pitch = toPitch(y);
-    const sec = toSec(x);
+    const sec = toBeat(x);
     for (let i = notes.length - 1; i >= 0; i--) {
       const n = notes[i];
       if (!n) continue;
       if (n.pitch !== pitch) continue;
-      if (sec >= n.startSec && sec <= noteEnd(n)) return n;
+      if (sec >= n.startBeat && sec <= noteEndBeat(n)) return n;
     }
     return null;
-  }, [notes, toPitch, toSec]);
+  }, [notes, toPitch, toBeat]);
 
   // ── Grid gestures ───────────────────────────────────────────────────────
   const onGridDown = useCallback((e: React.MouseEvent) => {
@@ -359,11 +369,11 @@ export default function KeyEditor() {
 
     if (!hit) {
       if (tool === 'draw' || e.metaKey || e.ctrlKey) {
-        const startSec = snapTimeToGrid(toSec(x), tempo);
+        const startBeat = snapBeatToGrid(toBeat(x));
         const note = createNote({
           pitch: Math.max(0, Math.min(127, toPitch(y))),
-          startSec,
-          durationSec: gridSec > 0 ? gridSec : 0.25,
+          startBeat,
+          durationBeat: gridBeat > 0 ? gridBeat : 0.25,
           velocity: from7bit(100),
         });
         writeNotes([...notes, note]);
@@ -381,19 +391,19 @@ export default function KeyEditor() {
       : (selected.has(hit.id) ? selectedIds : [hit.id]);
     setSelection(ids);
 
-    const noteRight = toX(noteEnd(hit));
+    const noteRight = toX(noteEndBeat(hit));
     const originals = notes.filter((n) => ids.includes(n.id));
     if (Math.abs(x - noteRight) <= RESIZE_HANDLE_PX) {
       setDrag({ kind: 'resize', noteIds: ids, startX: x, originals });
     } else {
       setDrag({ kind: 'move', noteIds: ids, startX: x, startY: y, originals });
     }
-  }, [part, noteAtPoint, tool, notes, writeNotes, setSelection, toSec, toPitch, tempo,
-      gridSec, selected, selectedIds, toX]);
+  }, [part, noteAtPoint, tool, notes, writeNotes, setSelection, toBeat, toPitch, tempo,
+      gridBeat, selected, selectedIds, toX]);
 
   const onGridMove = useCallback((e: React.MouseEvent) => {
     const { x, y } = localPoint(e);
-    setHoverInfo({ timeSec: toSec(x), pitch: toPitch(y) });
+    setHoverInfo({ beat: toBeat(x), pitch: toPitch(y) });
     if (!drag) return;
 
     if (drag.kind === 'marquee') {
@@ -401,8 +411,8 @@ export default function KeyEditor() {
       const x0 = Math.min(drag.x0, x); const x1 = Math.max(drag.x0, x);
       const y0 = Math.min(drag.y0, y); const y1 = Math.max(drag.y0, y);
       const inside = notes.filter((n) => {
-        const nx = toX(n.startSec);
-        const nw = n.durationSec * pxPerSec;
+        const nx = toX(n.startBeat);
+        const nw = n.durationBeat * pxPerBeat;
         const ny = toY(n.pitch);
         return nx + nw >= x0 && nx <= x1 && ny + pitchHeight >= y0 && ny <= y1;
       });
@@ -411,35 +421,35 @@ export default function KeyEditor() {
     }
 
     if (drag.kind === 'move') {
-      const deltaSec = (x - drag.startX) / pxPerSec;
+      const deltaBeat = (x - drag.startX) / pxPerBeat;
       const deltaPitch = Math.round((drag.startY - y) / pitchHeight);
       const byId = new Map(drag.originals.map((n) => [n.id, n] as const));
       const next = notes.map((n) => {
         const original = byId.get(n.id);
         if (!original) return n;
-        const startSec = snapTimeToGrid(original.startSec + deltaSec, tempo);
+        const startBeat = snapBeatToGrid(original.startBeat + deltaBeat);
         let pitch = Math.max(0, Math.min(127, original.pitch + deltaPitch));
         if (snapPitch && !isInScale(pitch, scale)) {
           pitch = Math.max(0, Math.min(127, pitch));
         }
-        return { ...n, startSec, pitch };
+        return { ...n, startBeat, pitch };
       });
       writeNotes(next, true);
       return;
     }
 
     if (drag.kind === 'resize') {
-      const deltaSec = (x - drag.startX) / pxPerSec;
+      const deltaBeat = (x - drag.startX) / pxPerBeat;
       const byId = new Map(drag.originals.map((n) => [n.id, n] as const));
       const next = notes.map((n) => {
         const original = byId.get(n.id);
         if (!original) return n;
-        const end = snapTimeToGrid(noteEnd(original) + deltaSec, tempo);
-        return { ...n, durationSec: Math.max(0.02, end - n.startSec) };
+        const end = snapBeatToGrid(noteEndBeat(original) + deltaBeat);
+        return { ...n, durationBeat: Math.max(MIN_NOTE_BEATS, end - n.startBeat) };
       });
       writeNotes(next, true);
     }
-  }, [drag, notes, pxPerSec, pitchHeight, toX, toY, toSec, toPitch, setSelection,
+  }, [drag, notes, pxPerBeat, pitchHeight, toX, toY, toBeat, toPitch, setSelection,
       writeNotes, tempo, snapPitch, scale]);
 
   const endDrag = useCallback(() => {
@@ -458,11 +468,11 @@ export default function KeyEditor() {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    const sec = toSec(x);
+    const beat = toBeat(x);
 
     if (laneMode === 'velocity') {
       const value = Math.max(0, Math.min(1, 1 - y / LANE_HEIGHT));
-      const target = notes.filter((n) => Math.abs(toX(n.startSec) - x) < 5);
+      const target = notes.filter((n) => Math.abs(toX(n.startBeat) - x) < 5);
       if (target.length === 0) return;
       const targetIds = new Set(target.map((n) => n.id));
       writeNotes(notes.map((n) => (targetIds.has(n.id) ? { ...n, velocity: value } : n)), true);
@@ -474,20 +484,20 @@ export default function KeyEditor() {
     const value = bipolar
       ? Math.max(-1, Math.min(1, (LANE_HEIGHT / 2 - y) / (LANE_HEIGHT / 2 - 4)))
       : Math.max(0, Math.min(1, 1 - y / LANE_HEIGHT));
-    const sounding = notesAt(notes, sec);
+    const sounding = notesAt(notes, beat);
     if (sounding.length === 0) return;
     const soundingIds = new Set(sounding.map((n) => n.id));
     writeNotes(notes.map((n) => {
       if (!soundingIds.has(n.id)) return n;
-      const relative = sec - n.startSec;
+      const relative = beat - n.startBeat;
       const existing = findExpression(n, controllerTarget);
       const points = [...(existing?.points ?? [])]
-        .filter((p) => Math.abs(p.timeSec - relative) > 0.01)
-        .concat({ timeSec: Math.max(0, relative), value })
-        .sort((a, b) => a.timeSec - b.timeSec);
+        .filter((p) => Math.abs(p.timeBeat - relative) > 0.01)
+        .concat({ timeBeat: Math.max(0, relative), value })
+        .sort((a, b) => a.timeBeat - b.timeBeat);
       return setExpression(n, { target: controllerTarget, points });
     }), true);
-  }, [part, notes, laneMode, controllerTarget, toSec, toX, writeNotes]);
+  }, [part, notes, laneMode, controllerTarget, toBeat, toX, writeNotes]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
     if (drag?.kind !== 'lane') return;
@@ -497,7 +507,7 @@ export default function KeyEditor() {
   // ── Readouts ────────────────────────────────────────────────────────────
   const firstSelected = notes.find((n) => selected.has(n.id)) ?? null;
   const chord = useMemo(() => {
-    const sounding = part ? notesAt(notes, playhead - part.startSec) : [];
+    const sounding = part ? notesAt(notes, timelineSecToBeat(clock, playhead)) : [];
     if (sounding.length < 2) return null;
     return detectChord(sounding.map((n) => n.pitch));
   }, [notes, part, playhead]);
@@ -571,9 +581,9 @@ export default function KeyEditor() {
         </select>
 
         <div className="flex-1" />
-        <button onClick={() => setPxPerSec(pxPerSec / 1.4)}
+        <button onClick={() => setPxPerBeat(pxPerBeat / 1.4)}
           className="h-6 px-2 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-400">−</button>
-        <button onClick={() => setPxPerSec(pxPerSec * 1.4)}
+        <button onClick={() => setPxPerBeat(pxPerBeat * 1.4)}
           className="h-6 px-2 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-400">+</button>
         <button onClick={() => setPitchHeight(pitchHeight - 2)}
           className="h-6 px-2 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-400">⇕−</button>
@@ -585,13 +595,13 @@ export default function KeyEditor() {
 
       {/* Info line — the selected note's data, like the reference editor */}
       <div className="flex items-center gap-4 px-3 py-1 border-b border-zinc-800 bg-[#12121a] text-[10px] font-mono">
-        <Readout label="Start"    value={firstSelected ? firstSelected.startSec.toFixed(3) : '—'} />
-        <Readout label="Length"   value={firstSelected ? firstSelected.durationSec.toFixed(3) : '—'} />
+        <Readout label="Start"    value={firstSelected ? `${firstSelected.startBeat.toFixed(3)}박` : '—'} />
+        <Readout label="Length"   value={firstSelected ? `${firstSelected.durationBeat.toFixed(3)}박` : '—'} />
         <Readout label="Pitch"    value={firstSelected ? pitchName(firstSelected.pitch) : '—'} />
         <Readout label="Velocity" value={firstSelected ? String(to7bit(firstSelected.velocity)) : '—'} />
         <Readout label="Channel"  value={firstSelected ? String(firstSelected.channel + 1) : '—'} />
         <Readout label="Chord"    value={chord ? formatChord(chord.chord) : '—'} />
-        <Readout label="Mouse"    value={hoverInfo ? `${hoverInfo.timeSec.toFixed(2)}s ${pitchName(hoverInfo.pitch)}` : '—'} />
+        <Readout label="Mouse"    value={hoverInfo ? `${hoverInfo.beat.toFixed(2)}박 ${pitchName(hoverInfo.pitch)}` : '—'} />
         <div className="flex-1" />
         <span className="text-zinc-600">{selectedIds.length} selected · {notes.length} notes</span>
       </div>
@@ -604,14 +614,17 @@ export default function KeyEditor() {
           <div className="flex border-b border-zinc-800 bg-[#12121a]" style={{ height: RULER_HEIGHT }}>
             <div style={{ width: KEYBOARD_WIDTH }} className="shrink-0 border-r border-zinc-800" />
             <div className="relative flex-1 overflow-hidden">
-              {gridSec > 0 && Array.from({ length: Math.ceil(size.width / (gridSec * pxPerSec)) + 1 }, (_, i) => {
-                const t = Math.floor(scrollSec / gridSec) * gridSec + i * gridSec;
-                const beat = 60 / tempo;
-                if (Math.abs(t / beat - Math.round(t / beat)) > 1e-6) return null;
+              {/* One label per whole beat, reading bar|beat off the tempo map —
+                  which the roll can now do directly, because its axis IS beats. */}
+              {Array.from({ length: Math.ceil(size.width / pxPerBeat) + 1 }, (_, i) => {
+                const t = Math.floor(scrollBeat) + i;
+                const { bar, beat } = barBeatAt(tempoMap, clock.startBeat + t);
+                const barStart = beat === 1;
                 return (
-                  <span key={t} className="absolute top-1 text-[9px] font-mono text-zinc-600"
+                  <span key={t}
+                        className={`absolute top-1 text-[9px] font-mono ${barStart ? 'text-zinc-400' : 'text-zinc-600'}`}
                         style={{ left: toX(t) + 2 }}>
-                    {(t / beat + 1).toFixed(0)}
+                    {barStart ? bar : `${bar}.${beat}`}
                   </span>
                 );
               })}
@@ -658,7 +671,7 @@ export default function KeyEditor() {
               onMouseLeave={endDrag}
               onDoubleClick={(e) => {
                 const { x } = localPoint(e);
-                if (part) seek(part.startSec + toSec(x));
+                if (part) seek(part.startSec + toBeat(x));
               }}
             >
               <canvas ref={canvasRef} className="block" />
@@ -688,8 +701,8 @@ export default function KeyEditor() {
           <div className="flex items-center gap-2 px-3 py-1 border-t border-zinc-800 bg-[#12121a]">
             <span className="text-[10px] font-mono text-zinc-600">시간</span>
             <input type="range" min={0} max={Math.max(1, part.durationSec)} step={0.01}
-              value={Math.min(scrollSec, part.durationSec)}
-              onChange={(e) => setScrollSec(parseFloat(e.target.value))}
+              value={Math.min(scrollBeat, part.durationSec)}
+              onChange={(e) => setScrollBeat(parseFloat(e.target.value))}
               className="flex-1 accent-indigo-500" />
             <span className="text-[10px] font-mono text-zinc-600">음역</span>
             <input type="range" min={0} max={108} step={1} value={bottomPitch}
