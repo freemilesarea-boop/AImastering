@@ -16,6 +16,8 @@
 import {
   findLane, sortPoints, targetKey,
 } from '../model/automation.js';
+import { MACROS, setMacro, type MacroId } from '../model/macros.js';
+import { automatableMacros, describeCoverage, findCoverage } from '../model/macro-automation.js';
 import { descriptorFor } from '../engine/external-device.js';
 import type { PluginParamDef } from '../engine/plugin-kit.js';
 import { nextId } from '../model/ids.js';
@@ -75,6 +77,20 @@ export function laneRange(track: Track, target: AutomationTarget): LaneRange {
         stepped: def.choices !== undefined,
       };
     }
+    case 'macro': {
+      // A macro's own units, not the units of anything it moves: the lane is
+      // drawn on the knob, and WIDTH goes narrower as well as wider.
+      const macro = MACROS.find((m) => m.id === target.macroId);
+      const bipolar = macro?.bipolar === true;
+      return {
+        min: bipolar ? -1 : 0,
+        max: 1,
+        neutral: 0,
+        unit: '',
+        thinTolerance: 0.004,
+        stepped: false,
+      };
+    }
   }
 }
 
@@ -105,6 +121,11 @@ export function describeTarget(track: Track, target: AutomationTarget): string {
       const param = descriptor?.params.find((p) => p.id === target.paramId);
       const slot = String.fromCharCode(65 + insert.slot);
       return `${slot} ${descriptor?.name ?? insert.label} · ${param?.name ?? target.paramId}`;
+    }
+    case 'macro': {
+      const coverage = findCoverage(track.macros, target.macroId as MacroId);
+      if (!coverage) return '매크로 (없음)';
+      return `매크로 · ${describeCoverage(coverage)}`;
     }
   }
 }
@@ -143,6 +164,15 @@ export function availableTargets(track: Track): AutomationTarget[] {
   for (const send of [...track.sends].sort((a, b) => a.slot - b.slot)) {
     out.push({ kind: 'sendLevel', sendId: send.id });
   }
+  // Macro knobs, before the plugins — the rack sits first in the chain, so
+  // the menu reads down the channel the way the signal does.  Only the ones
+  // that move something: LOUDNESS is all curve rebuilds, so it is absent
+  // rather than present and inert.
+  if (track.macros.enabled) {
+    for (const coverage of automatableMacros(track.macros)) {
+      out.push({ kind: 'macro', macroId: coverage.macro.id });
+    }
+  }
   // In chain order, so the menu reads down the channel the way the signal does.
   for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
     for (const param of automatableParamsOf(insert)) {
@@ -162,6 +192,14 @@ export function availableTargets(track: Track): AutomationTarget[] {
 export function isPlayable(target: AutomationTarget, track?: Track): boolean {
   if (target.kind === 'volume' || target.kind === 'pan' || target.kind === 'sendLevel') {
     return true;
+  }
+  if (target.kind === 'macro') {
+    if (!track || !track.macros.enabled) return false;
+    // Playable when SOMETHING follows.  A macro whose every target is a
+    // curve rebuild is not offered at all; one that is partly followed is
+    // offered and says which part is not — see `describeCoverage`.
+    const coverage = findCoverage(track.macros, target.macroId as MacroId);
+    return (coverage?.moving.length ?? 0) > 0;
   }
   if (target.kind !== 'plugin') return false;
   if (!track) return false;
@@ -193,6 +231,7 @@ export function staticValue(track: Track, target: AutomationTarget): number {
       const def = descriptorFor(insert)?.params.find((p) => p.id === target.paramId);
       return def?.default ?? 0;
     }
+    case 'macro': return track.macros.values[target.macroId as MacroId] ?? 0;
   }
 }
 
@@ -241,6 +280,11 @@ export function setStaticValue(
             ? { ...insert, params: { ...insert.params, [target.paramId]: v } }
             : insert)),
         };
+      case 'macro':
+        // Writing the macro VALUE, not the parameters it resolves to: the
+        // rack is materialised from these, so setting the knob is the whole
+        // edit and the Advanced view follows on its own.
+        return { ...track, macros: setMacro(track.macros, target.macroId as MacroId, v) };
     }
   });
 }

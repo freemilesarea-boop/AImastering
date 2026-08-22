@@ -59,6 +59,21 @@ export function automatableFrom(
   };
 }
 
+/**
+ * The AudioParams a knob moves, whether the device couples any or not.
+ *
+ * One place, so a caller never has to know which devices bothered to
+ * declare a coupling.
+ */
+export function paramsDrivenBy(
+  instance: Pick<PluginInstance, 'automatable' | 'drives'>, paramId: string,
+): AutomatableParam[] {
+  const coupled = instance.drives?.(paramId);
+  if (coupled && coupled.length > 0) return coupled;
+  const single = instance.automatable?.(paramId);
+  return single ? [single] : [];
+}
+
 export interface PluginInstance {
   input: AudioNode;
   output: AudioNode;
@@ -75,6 +90,24 @@ export interface PluginInstance {
    * only offers lanes for the ones that answer.
    */
   automatable?: (id: string) => AutomatableParam | null;
+  /**
+   * EVERY AudioParam one knob moves, for callers driving the device from a
+   * single scalar.
+   *
+   * `automatable` answers "is this knob one parameter a lane can ride", and
+   * some knobs are not: the compressor's threshold also moves its makeup
+   * compensation, and the saturation's drive also moves its level trim.  A
+   * lane on one of those alone would leave the other behind, which is why
+   * they are not offered as insert lanes.
+   *
+   * A MACRO is different.  It computes every parameter of the rack from one
+   * value, so it can move a coupled pair in step and stay consistent — the
+   * coupling is not a problem when one number decides both.  This is how it
+   * asks what to move.
+   *
+   * Absent means "the same as `automatable`" — see `paramsDrivenBy`.
+   */
+  drives?: (id: string) => AutomatableParam[] | null;
   setBypass: (bypassed: boolean) => void;
   /** Tell the plugin an external key is (or is not) feeding its sidechain. */
   setSidechainActive: (active: boolean) => void;
@@ -132,6 +165,17 @@ export interface PluginDescriptor {
    * cannot drift into offering a lane that does nothing.
    */
   automatableParams?: readonly string[];
+  /**
+   * Params that move only when ONE SCALAR decides them all — the descriptor
+   * side of `PluginInstance.drives`.
+   *
+   * Declared here for the same reason as `automatableParams`: the UI works
+   * out what a macro can do without an AudioContext.  These are deliberately
+   * NOT lane targets; they are coupled, and a lane on one alone would leave
+   * its partner behind.  The selftest checks this list against what an
+   * instance actually hands back.
+   */
+  drivenParams?: readonly string[];
   hasSidechain: boolean;
   /** Reported latency, in samples at the context rate — drives ADC. */
   latencyFor: (params: Record<string, number>, sampleRate: number) => number;
@@ -146,6 +190,7 @@ export function withBypass(
   build: (input: GainNode, output: GainNode) => {
     setParam: (id: string, v: number) => void;
     automatable?: (id: string) => AutomatableParam | null;
+    drives?: (id: string) => AutomatableParam[] | null;
     dispose?: () => void;
     sidechain?: AudioNode | null;
     setSidechainActive?: (a: boolean) => void;
@@ -183,6 +228,7 @@ export function withBypass(
     latencySamples: built.latencySamples ?? 0,
     setParam: built.setParam,
     ...(built.automatable ? { automatable: built.automatable } : {}),
+    ...(built.drives ? { drives: built.drives } : {}),
     setBypass: (bypassed) => {
       wet.gain.value = bypassed ? 0 : 1;
       dry.gain.value = bypassed ? 1 : 0;

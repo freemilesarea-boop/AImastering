@@ -25,6 +25,8 @@ import {
 import { ensureWarpedBufferForSession, prepareWarpsForSession } from './warp-render.js';
 import { clipWarp } from '../model/warp.js';
 import { clipNotes } from '../model/patterns.js';
+import { findCoverage } from '../model/macro-automation.js';
+import type { MacroId } from '../model/macros.js';
 import { noteSpan, partClock } from '../model/note-time.js';
 import { tempoMapOf } from '../model/tempo-map.js';
 import { findInstrument } from './instruments.js';
@@ -406,6 +408,7 @@ export class ClipPlayer {
   private paramNameOf(target: AutomationTarget): string {
     if (target.kind === 'sendLevel') return `send:${target.sendId}`;
     if (target.kind === 'plugin') return pluginParamKey(target.insertId, target.paramId);
+    if (target.kind === 'macro') return `macro:${target.macroId}`;
     return target.kind;
   }
 
@@ -460,6 +463,28 @@ export class ClipPlayer {
           this.rampParam(
             automatable.param, lane.points, fromSec, toSec,
             map ? (v) => map(v) : (v) => v, AUTOMATION_BLOCK_SEC);
+        } else if (lane.target.kind === 'macro') {
+          // One lane, MANY ramps.  A macro is a pure function from its own
+          // value to every parameter of the rack, so each parameter it can
+          // reach gets its own ramp — sampled from the same lane, mapped
+          // through the macro's curve, on the same clock as the fader.  That
+          // is what puts the move in the bounce as well as the monitor.
+          if (!track.macros.enabled) continue;
+          const coverage = findCoverage(track.macros, lane.target.macroId as MacroId);
+          if (!coverage || coverage.moving.length === 0) continue;
+          this.engine.markAutomated(track.id, `macro:${lane.target.macroId}`);
+          for (const moving of coverage.moving) {
+            // A knob may move a coupled pair — the compressor's threshold
+            // carries its makeup compensation with it — which is legitimate
+            // here precisely because one number decides both.
+            for (const driven of this.engine.rackParams(track.id, moving.module, moving.param)) {
+              const inner = driven.map;
+              this.rampParam(
+                driven.param, lane.points, fromSec, toSec,
+                inner ? (v) => inner(moving.at(v)) : (v) => moving.at(v),
+                AUTOMATION_BLOCK_SEC);
+            }
+          }
         }
       }
     }
