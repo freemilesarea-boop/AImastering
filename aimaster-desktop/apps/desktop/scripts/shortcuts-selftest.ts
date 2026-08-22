@@ -124,11 +124,13 @@ check('all five Cubase groups are covered', () => {
   eq(SHORTCUTS.filter((s) => s.group === 'tools').length, 9, '9 toolbar tools');
 });
 
-check('unavailable commands are the documented four', () => {
-  // The Key Editor left this list when the MIDI layer shipped: Enter now
-  // opens a real piano roll.
+check('unavailable commands are the documented three', () => {
+  // Two have left this list as the app grew: the Key Editor when the MIDI
+  // layer shipped, and the metronome when the tempo map got a click that
+  // follows it.  The list is asserted exactly so leaving a shipped feature
+  // marked "not applicable" fails here instead of in a user's hands.
   const off = SHORTCUTS.filter((s) => !s.available).map((s) => s.id).sort();
-  eq(off.join(','), 'tool.draw,tool.glue,transport.metronome,transport.record', 'unavailable set');
+  eq(off.join(','), 'tool.draw,tool.glue,transport.record', 'unavailable set');
   assert(SHORTCUTS.find((s) => s.id === 'window.keyEditor')?.available === true,
     'the Key Editor is implemented');
 });

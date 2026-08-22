@@ -20,6 +20,8 @@ import SpectralEditor from '../components/daw/spectral/SpectralEditor.js';
 import VocalEditor from '../components/daw/vocal/VocalEditor.js';
 import VideoViewer from '../components/daw/video/VideoViewer.js';
 import { useVideoStore } from '../stores/videoStore.js';
+import { findRecoveries, loadRecovery, type RecoveryOffer } from '../daw/engine/autosave-driver.js';
+import { premium } from '../theme/premium.js';
 import ReferencePanel from '../components/daw/reference/ReferencePanel.js';
 import WarpEditor from '../components/daw/warp/WarpEditor.js';
 import RestorePanel from '../components/daw/restore/RestorePanel.js';
@@ -58,6 +60,7 @@ export default function DawPage() {
   const togglePlay   = useDawStore((s) => s.togglePlay);
   const seek         = useDawStore((s) => s.seek);
   const playheadSec  = useDawStore((s) => s.playheadSec);
+  const metronomeOn  = useDawStore((s) => s.metronomeOn);
   const loopEnabled  = useDawStore((s) => s.loopEnabled);
   const toggleLoop   = useDawStore((s) => s.toggleLoop);
   const focusedTrackId = useDawStore((s) => s.focusedTrackId);
@@ -285,6 +288,11 @@ export default function DawPage() {
             : 'bg-zinc-900 border-zinc-700 text-zinc-300'}`}>{isPlaying ? '❚❚' : '▶'}</button>
         <button onClick={() => useVideoStore.getState().toggle()} title="픽처 창 (Shift+Alt+P)"
           className="h-7 px-2 rounded bg-zinc-900 border border-zinc-700 text-zinc-400 text-[11px]">PIC</button>
+        <button onClick={() => useDawStore.getState().toggleMetronome()}
+          title="메트로놈 (C) — 템포 맵을 따라갑니다"
+          className={`h-7 px-2 rounded border text-[11px] ${metronomeOn
+            ? 'bg-amber-600/25 border-amber-500/50 text-amber-300'
+            : 'bg-zinc-900 border-zinc-700 text-zinc-400'}`}>♩</button>
         <button onClick={toggleLoop} title="루프 (Numpad /)"
           className={`h-7 px-2 rounded border text-[11px] ${loopEnabled
             ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
@@ -385,6 +393,7 @@ export default function DawPage() {
       {/* Floats over every window — scoring means watching the picture WHILE
           arranging, not instead of it. */}
       <VideoViewer />
+      <RecoveryPrompt />
     </div>
   );
 }
@@ -396,5 +405,70 @@ function ToolbarButton({ onClick, children }: { onClick: () => void; children: R
       className="h-7 px-2 rounded bg-zinc-900 border border-zinc-700 text-zinc-400
                  text-[11px] hover:text-zinc-200 hover:border-zinc-600 transition-colors"
     >{children}</button>
+  );
+}
+
+/**
+ * The crash-recovery offer.
+ *
+ * Shown ONCE, at startup, and only when there is something worth offering —
+ * a full-width banner every time the app opens would train people to dismiss
+ * it, which is the one thing it must not do.
+ *
+ * It never opens anything by itself.  Restoring replaces the open session, so
+ * it is a decision, not a convenience.
+ */
+function RecoveryPrompt() {
+  const [offers, setOffers] = useState<RecoveryOffer[]>([]);
+  const [dismissed, setDismissed] = useState(false);
+  const notify = useAppStore((s) => s.notify);
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api) return;
+    void findRecoveries((c, ...a) => api.invoke(c as never, ...a)).then(setOffers);
+  }, []);
+
+  if (dismissed || offers.length === 0) return null;
+  const offer = offers[0]!;
+
+  const restore = async (): Promise<void> => {
+    const api = window.electronAPI;
+    if (!api) return;
+    const result = await loadRecovery((c, ...a) => api.invoke(c as never, ...a), offer.info);
+    setDismissed(true);
+    if ('error' in result) { notify(`복구하지 못했습니다: ${result.error}`, 'error'); return; }
+    useDawStore.getState().loadSession(result.session);
+    notify(`${offer.info.sessionName} 을 복구했습니다`, 'success');
+  };
+
+  return (
+    <div className="fixed z-50 rounded shadow-2xl"
+         style={{
+           right: 20, bottom: 20, width: 320, padding: '14px 16px',
+           background: premium.surface.frame,
+           border: `1px solid ${premium.accent.deep}`,
+         }}>
+      <div style={{ fontSize: 11, letterSpacing: '0.12em', color: premium.accent.base }}>
+        복구할 세션이 있습니다
+      </div>
+      <div style={{ fontSize: 12.5, color: premium.text.primary, margin: '6px 0 2px' }}>
+        {offer.label}
+      </div>
+      <p style={{ fontSize: 11, color: premium.text.muted, margin: '0 0 10px' }}>
+        앱이 예기치 않게 종료됐을 때 저장된 것입니다. 복구하면 지금 열려 있는
+        세션을 대체합니다.
+      </p>
+      <div className="flex gap-1.5">
+        <button onClick={() => { void restore(); }}
+          className="h-6 px-2.5 rounded text-[11px]"
+          style={{ background: 'rgba(198,167,104,0.16)', color: premium.accent.light,
+                   border: `1px solid ${premium.accent.deep}` }}>복구</button>
+        <button onClick={() => setDismissed(true)}
+          className="h-6 px-2.5 rounded text-[11px]"
+          style={{ background: 'transparent', color: premium.text.muted,
+                   border: `1px solid ${premium.surface.hairline}` }}>무시</button>
+      </div>
+    </div>
   );
 }

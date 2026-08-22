@@ -12,6 +12,7 @@ import { registerLicenseHandlers, licenseService } from './ipc/licenseHandlers.j
 import { registerEntitlementHandlers } from './ipc/entitlementHandlers.js';
 import { registerAssistantHandlers } from './ipc/assistantHandlers.js';
 import { registerVideoHandlers } from './ipc/videoHandlers.js';
+import { registerAutosaveHandlers } from './ipc/autosaveHandlers.js';
 import { isLicenseSecretProductionReady, LICENSE_API_URL } from '@aimaster/license-core';
 import { initUpdater } from './updater.js';
 import { log } from './utils/logger.js';
@@ -325,6 +326,7 @@ app.whenReady().then(() => {
     registerEntitlementHandlers(ipcMain);
     registerAssistantHandlers(ipcMain);
     registerVideoHandlers(ipcMain, app.isPackaged, process.resourcesPath);
+    registerAutosaveHandlers(ipcMain);
   } catch (err) {
     log.error('IPC handler registration failed:', err);
   }

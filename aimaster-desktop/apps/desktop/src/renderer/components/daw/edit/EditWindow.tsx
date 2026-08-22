@@ -37,6 +37,10 @@ import {
 import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 import SectionLane, { SectionLaneHeader } from './SectionLane.js';
 import ChordLane, { ChordLaneHeader } from './ChordLane.js';
+import {
+  TRACK_COLORS, clampTrackHeight, renameTrack, setTrackColor,
+  setTrackHeight,
+} from '../../../daw/model/track-header.js';
 
 const HEADER_WIDTH = 168;
 const RULER_HEIGHT = 26;
@@ -379,6 +383,9 @@ export default function EditWindow() {
               key={row.key}
               track={row.track}
               depth={stackDepth(session, row.track.id)}
+              onRename={(name) => apply((st) => renameTrack(st, row.track.id, name))}
+              onColor={(hex) => apply((st) => setTrackColor(st, row.track.id, hex))}
+              onResize={(px) => apply((st) => setTrackHeight(st, row.track.id, px))}
               summary={row.track.kind === 'folder' ? stackSummary(session, row.track.id) : null}
               focused={focusedTrackId === row.track.id}
               onFocus={() => setFocusedTrack(row.track.id)}
@@ -510,7 +517,7 @@ export default function EditWindow() {
 function TrackHeader({
   track, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
   onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
-  onToggleAutomation, automationOpen,
+  onToggleAutomation, automationOpen, onRename, onColor, onResize,
 }: {
   track: Track;
   depth: number;
@@ -528,7 +535,12 @@ function TrackHeader({
   onInserts: () => void;
   onToggleAutomation: () => void;
   automationOpen: boolean;
+  onRename: (name: string) => void;
+  onColor: (hex: string) => void;
+  onResize: (px: number) => void;
 }) {
+  const [renaming, setRenaming] = useState(false);
+  const [picking, setPicking] = useState(false);
   const playlist = activePlaylist(track);
   const takes = track.playlists.length;
   const isFolder = track.kind === 'folder';
@@ -539,7 +551,7 @@ function TrackHeader({
   return (
     <div
       onMouseDown={onFocus}
-      className={`px-2 py-1.5 border-b border-zinc-900 flex flex-col gap-1 ${focused ? 'bg-zinc-800/60' : ''}`}
+      className={`relative px-2 py-1.5 border-b border-zinc-900 flex flex-col gap-1 ${focused ? 'bg-zinc-800/60' : ''}`}
       style={{
         height: track.height,
         paddingLeft: 8 + depth * 12,
@@ -557,17 +569,41 @@ function TrackHeader({
             style={{ color: premium.accent.base }}
           >{track.collapsed ? '▶' : '▼'}</button>
         ) : (
-          <span className="w-1.5 h-4 rounded-sm shrink-0" style={{ background: track.color }} />
+          /* The colour swatch IS the picker — a track's colour is one click
+             away from where it is already shown, not in a submenu. */
+          <button
+            onClick={(e) => { e.stopPropagation(); setPicking(!picking); }}
+            title="트랙 색"
+            className="w-1.5 h-4 rounded-sm shrink-0"
+            style={{ background: track.color, border: 'none', padding: 0, cursor: 'pointer' }}
+          />
         )}
-        <span
-          className="text-[11px] truncate flex-1"
-          style={{
-            color: isFolder ? premium.accent.light : 'rgb(228,228,231)',
-            letterSpacing: isFolder ? '0.08em' : undefined,
-            fontWeight: isFolder ? 600 : 400,
-          }}
-          title={track.name}
-        >{isFolder ? track.name.toUpperCase() : track.name}</span>
+        {renaming ? (
+          <input
+            autoFocus
+            defaultValue={track.name}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={(e) => { onRename(e.target.value); setRenaming(false); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.currentTarget.blur();
+              if (e.key === 'Escape') setRenaming(false);
+            }}
+            className="text-[11px] flex-1 min-w-0 px-1 rounded bg-transparent outline-none"
+            style={{ color: 'rgb(228,228,231)', border: `1px solid ${premium.accent.deep}` }}
+          />
+        ) : (
+          <span
+            className="text-[11px] truncate flex-1"
+            style={{
+              color: isFolder ? premium.accent.light : 'rgb(228,228,231)',
+              letterSpacing: isFolder ? '0.08em' : undefined,
+              fontWeight: isFolder ? 600 : 400,
+              cursor: 'text',
+            }}
+            title={`${track.name} — 더블클릭해서 이름 바꾸기`}
+            onDoubleClick={(e) => { e.stopPropagation(); setRenaming(true); }}
+          >{isFolder ? track.name.toUpperCase() : track.name}</span>
+        )}
         {macroCount > 0 && (
           <button
             onClick={(e) => { e.stopPropagation(); onSmart(); }}
@@ -651,6 +687,57 @@ function TrackHeader({
           </div>
         )}
       </div>
+
+      {/* The palette, right under the swatch that opened it. */}
+      {picking && (
+        <div
+          className="absolute z-20 flex flex-wrap gap-1 p-1.5 rounded"
+          style={{
+            left: 6, top: 22, width: 132,
+            background: premium.surface.frame,
+            border: `1px solid ${premium.surface.hairlineStrong}`,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {TRACK_COLORS.map((entry) => (
+            <button
+              key={entry.id}
+              title={entry.label}
+              onClick={(e) => { e.stopPropagation(); onColor(entry.hex); setPicking(false); }}
+              className="w-5 h-5 rounded-sm"
+              style={{
+                background: entry.hex,
+                border: track.color === entry.hex
+                  ? `1.5px solid ${premium.accent.light}` : '1px solid rgba(0,0,0,0.4)',
+              }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Drag the bottom edge to resize.  Sits on the boundary rather than
+          inside the header, because that is where the hand goes. */}
+      <div
+        onPointerDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const startY = e.clientY;
+          const startHeight = track.height;
+          const move = (ev: PointerEvent): void =>
+            onResize(clampTrackHeight(startHeight + (ev.clientY - startY)));
+          const up = (): void => {
+            globalThis.removeEventListener('pointermove', move);
+            globalThis.removeEventListener('pointerup', up);
+          };
+          globalThis.addEventListener('pointermove', move);
+          globalThis.addEventListener('pointerup', up);
+        }}
+        onDoubleClick={(e) => { e.stopPropagation(); onResize(72); }}
+        title="끌어서 높이 조절 · 더블클릭하면 기본 높이"
+        className="absolute left-0 right-0 bottom-0"
+        style={{ height: 5, cursor: 'ns-resize' }}
+      />
     </div>
   );
 }

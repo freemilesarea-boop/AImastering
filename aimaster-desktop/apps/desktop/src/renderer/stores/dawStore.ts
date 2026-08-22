@@ -16,6 +16,7 @@ import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
+import { autosaveDriver } from '../daw/engine/autosave-driver.js';
 import { snapSecToBeats, tempoMapOf } from '../daw/model/tempo-map.js';
 
 export type EditMode = 'shuffle' | 'slip' | 'spot' | 'grid';
@@ -61,6 +62,10 @@ export interface DawState {
    */
   clipboard: EditClipboard | null;
   setClipboard: (board: EditClipboard | null) => void;
+
+  /** The click.  Off by default — a metronome nobody asked for is noise. */
+  metronomeOn: boolean;
+  toggleMetronome: () => void;
   selectedTrackIds: TrackId[];
   setSelectedTracks: (ids: TrackId[]) => void;
   /** Track the keyboard acts on when the selection spans none. */
@@ -123,6 +128,10 @@ export const useDawStore = create<DawState>((set, get) => ({
     if (next === current) return;
     set({ session: next, history: recordHistory(get().history, next) });
     dawRuntime.sync(next);
+    // The ONE place a real edit goes through.  Watching store emissions
+    // instead would count playback and scrolling as changes — see
+    // engine/autosave-driver.ts.
+    autosaveDriver.noteEdit(next);
   },
 
   applyTransient: (fn) => {
@@ -193,6 +202,14 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   clipboard: null,
   setClipboard: (clipboard) => set({ clipboard }),
+
+  metronomeOn: false,
+  toggleMetronome: () => {
+    const on = !get().metronomeOn;
+    dawRuntime.ensure(get().session.sampleRate);
+    dawRuntime.setMetronome(on);
+    set({ metronomeOn: on });
+  },
 
   playheadSec: 0,
   setPlayhead: (sec) => set({ playheadSec: Math.max(0, sec) }),

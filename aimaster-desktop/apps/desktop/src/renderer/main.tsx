@@ -11,6 +11,20 @@ import './audio/safe-boot-flags.js';
 // parser stays the whole feature.
 import { ipcBridge, setAssistantBridge } from './daw/ai/nl-assistant.js';
 setAssistantBridge(ipcBridge());
+// Autosave: writes when editing pauses, so a crash costs the last few seconds
+// rather than the last hour.  See daw/model/autosave.ts for when, and
+// main/ipc/autosaveHandlers.ts for the atomic write.
+import { autosaveDriver } from './daw/engine/autosave-driver.js';
+import { useDawStore as _dawStoreForAutosave } from './stores/dawStore.js';
+{
+  const api = (window as Window & { electronAPI?: { invoke(c: string, ...a: unknown[]): Promise<unknown> } }).electronAPI;
+  if (api) {
+    autosaveDriver.start({
+      session: () => _dawStoreForAutosave.getState().session,
+      invoke: (channel, ...args) => api.invoke(channel, ...args),
+    });
+  }
+}
 // What this build can actually host, asked once rather than declared in two
 // places that then disagree — see daw/engine/external-host.ts.
 import { setHostCapabilities } from './daw/engine/external-host.js';

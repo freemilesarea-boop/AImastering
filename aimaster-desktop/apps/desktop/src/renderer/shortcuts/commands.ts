@@ -204,7 +204,11 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
     },
 
     'transport.record':    unavailable('transport.record'),
-    'transport.metronome': unavailable('transport.metronome'),
+    // The click belongs to the session's tempo map, so the DAW override owns
+    // it.  Outside the DAW there is no tempo to click to.
+    'transport.metronome': () => {
+      notify('메트로놈은 DAW 워크스페이스에서 씁니다', 'warning');
+    },
 
     'transport.returnToZero': () => {
       const ws = workspace();

@@ -73,6 +73,7 @@ export type CommandId =
   | 'daw.cutRipple' | 'daw.pasteInsert' | 'daw.insertSilence'
   | 'daw.stripSilence' | 'daw.snapZeroCross'
   | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip'
+  | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.toggleAutomation' | 'daw.automationMode'
   | 'daw.tempoChange' | 'daw.tempoRamp'
@@ -126,7 +127,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'transport.returnToZero', group: 'transport', label: '재생 위치 0점으로', chords: ['NumpadDecimal', 'Home'],
     note: '재생 헤드를 0초로 (루프 ON 이면 루프 시작점으로)', available: true },
   { id: 'transport.metronome',    group: 'transport', label: '메트로놈 on/off', chords: ['KeyC'],
-    note: '템포/클릭 트랙이 없는 마스터링 전용 앱이라 해당 없음', available: false },
+    note: '템포 맵을 따라갑니다 — 리타르단도에서도 음악과 같이 느려집니다', available: true },
   { id: 'transport.toggleLoop',   group: 'transport', label: '루프 구간 on/off', chords: ['NumpadDivide'],
     note: '루프 재생 on/off — 구간은 파형에서 드래그(2번 툴)', available: true },
   { id: 'transport.gotoLoopStart', group: 'transport', label: '좌측 루프 포인터로', chords: ['Numpad1'],
@@ -329,6 +330,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '재생 위치 클립에서 소리 나는 부분만 남깁니다 — 타이밍은 그대로', available: true },
   { id: 'daw.snapZeroCross', group: 'daw', label: '영교차로 스냅', chords: ['Shift+Alt+Z'],
     note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
+
+  // ── 트랙 헤더 ──────────────────────────────────────────────────────────
+  { id: 'daw.renameTrack', group: 'daw', label: '트랙 이름 바꾸기', chords: ['Shift+Alt+K'],
+    note: '헤더의 이름을 더블클릭해도 됩니다 · 색은 왼쪽 색 조각을 클릭', available: true },
+  { id: 'daw.trackHeightUp', group: 'daw', label: '트랙 높이 키우기', chords: ['Shift+Alt+Equal'],
+    note: '아주 작게 → 작게 → 보통 → 크게 → 아주 크게', available: true },
+  { id: 'daw.trackHeightDown', group: 'daw', label: '트랙 높이 줄이기', chords: ['Shift+Alt+Minus'],
+    note: '헤더 아래 모서리를 끌어도 됩니다', available: true },
 
   // ── 클립 처리 ──────────────────────────────────────────────────────────
   { id: 'daw.normalizeClip', group: 'daw', label: '클립 노멀라이즈', chords: ['Shift+Alt+N'],
