@@ -16,7 +16,7 @@ import { webAudioAutoMakeup } from '../model/plugin-curves.js';
 
 import {
   absShaper, dbToGain, halfWaveGainCurve, makeDbReductionCurve, makeExpanderCurve,
-  makeGainCurve, makeShaper, smoother, tanhCurve, withBypass,
+  makeGainCurve, makeShaper, smoother, tanhCurve, wetDry, withBypass,
   automatableFrom,
   type PluginDescriptor, type PluginInstance, type PluginParamDef,
 } from './plugin-kit.js';
@@ -183,6 +183,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'releaseMs',   name: 'Release',   min: 20,  max: 1000, default: 200, unit: 'ms' },
       { id: 'makeupDb',    name: 'Makeup',    min: 0,   max: 24,   default: 0,   unit: 'dB' },
     ],
+    automatableParams: ['makeupDb'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Web Audio's compressor cannot take an external key, so ducking is the
@@ -234,6 +235,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
             curve.connect(vca.gain);
           }
         },
+        // Only the makeup gain: threshold and ratio rebuild the transfer
+        // curve, and the detector's time constants are two biquads, not one
+        // parameter.
+        automatable: automatableFrom({ makeupDb: { param: makeup.gain, map: dbToGain } }),
         dispose: () => { curve.disconnect(); },
       };
     }),
@@ -301,30 +306,29 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'feedback', name: 'Feedback', min: 0, max: 0.95, default: 0.35, unit: '' },
       { id: 'mix',      name: 'Mix',      min: 0, max: 1,    default: 0.3,  unit: '' },
     ],
-    // `mix` is two gains moving in opposite directions, so it is not one
-    // AudioParam and is left off the list rather than half-automated.
-    automatableParams: ['timeMs', 'feedback'],
+    automatableParams: ['timeMs', 'feedback', 'mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const delay = ctx.createDelay(2.1);
       delay.delayTime.value = (params['timeMs'] ?? 320) / 1000;
       const fb = ctx.createGain();  fb.gain.value = params['feedback'] ?? 0.35;
-      const wet = ctx.createGain(); wet.gain.value = params['mix'] ?? 0.3;
-      const dry = ctx.createGain(); dry.gain.value = 1 - (params['mix'] ?? 0.3);
+      const blend = wetDry(ctx, params['mix'] ?? 0.3);
       input.connect(delay);
       delay.connect(fb).connect(delay);
-      delay.connect(wet).connect(output);
-      input.connect(dry).connect(output);
+      delay.connect(blend.wet).connect(output);
+      input.connect(blend.dry).connect(output);
       return {
         setParam: (id, v) => {
           if (id === 'timeMs')   delay.delayTime.value = v / 1000;
           if (id === 'feedback') fb.gain.value = v;
-          if (id === 'mix')      { wet.gain.value = v; dry.gain.value = 1 - v; }
+          if (id === 'mix')      blend.setMix(v);
         },
         automatable: automatableFrom({
           timeMs: { param: delay.delayTime, map: (v) => v / 1000 },
           feedback: fb.gain,
+          mix: blend.mix,
         }),
+        dispose: () => blend.dispose(),
       };
     }),
   },
@@ -345,9 +349,8 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'mix',      name: 'Mix',     min: 0,   max: 1, default: 1,   unit: '' },
       { id: 'preDelayMs', name: 'Pre-delay', min: 0, max: 120, default: 12, unit: 'ms' },
     ],
-    // `decaySec` rebuilds the impulse response and `mix` is two gains, so
-    // pre-delay is the only one that is a single AudioParam.
-    automatableParams: ['preDelayMs'],
+    // `decaySec` rebuilds the impulse response, so it stays off the list.
+    automatableParams: ['preDelayMs', 'mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const room = SPACES[spaceIndex('hall-recital')]!;
@@ -360,19 +363,20 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       conv.buffer = build(params['decaySec'] ?? 1.8);
       const pre = ctx.createDelay(0.2);
       pre.delayTime.value = (params['preDelayMs'] ?? 12) / 1000;
-      const wet = ctx.createGain(); wet.gain.value = params['mix'] ?? 1;
-      const dry = ctx.createGain(); dry.gain.value = 1 - (params['mix'] ?? 1);
-      input.connect(pre).connect(conv).connect(wet).connect(output);
-      input.connect(dry).connect(output);
+      const blend = wetDry(ctx, params['mix'] ?? 1);
+      input.connect(pre).connect(conv).connect(blend.wet).connect(output);
+      input.connect(blend.dry).connect(output);
       return {
         setParam: (id, v) => {
-          if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
+          if (id === 'mix') blend.setMix(v);
           if (id === 'preDelayMs') pre.delayTime.value = v / 1000;
           if (id === 'decaySec') conv.buffer = build(v);
         },
         automatable: automatableFrom({
           preDelayMs: { param: pre.delayTime, map: (v) => v / 1000 },
+          mix: blend.mix,
         }),
+        dispose: () => blend.dispose(),
       };
     }),
   },
@@ -387,12 +391,13 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'mix',     name: 'Mix',   min: 0,  max: 1,  default: 0, unit: '' },
       { id: 'bias',    name: 'Bias',  min: -1, max: 1,  default: 0, unit: '' },
     ],
+    // `driveDb` moves the drive AND its level compensation, and `bias`
+    // rebuilds the transfer curve; only the blend is one parameter.
+    automatableParams: ['mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const drive = ctx.createGain();
       const compensate = ctx.createGain();
-      const wet = ctx.createGain();
-      const dry = ctx.createGain();
       let shaper = makeShaper(ctx, tanhCurve(params['bias'] ?? 0), '4x');
 
       const applyDrive = (db: number): void => {
@@ -404,19 +409,17 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       };
       applyDrive(params['driveDb'] ?? 0);
 
-      const mix = params['mix'] ?? 0;
-      wet.gain.value = mix;
-      dry.gain.value = 1 - mix;
+      const blend = wetDry(ctx, params['mix'] ?? 0);
 
       drive.connect(shaper).connect(compensate);
       input.connect(drive);
-      compensate.connect(wet).connect(output);
-      input.connect(dry).connect(output);
+      compensate.connect(blend.wet).connect(output);
+      input.connect(blend.dry).connect(output);
 
       return {
         setParam: (id, v) => {
           if (id === 'driveDb') applyDrive(v);
-          if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
+          if (id === 'mix') blend.setMix(v);
           if (id === 'bias' && v !== (params['bias'] ?? 0)) {
             params['bias'] = v;
             drive.disconnect(shaper);
@@ -425,7 +428,11 @@ const CORE_PLUGINS: PluginDescriptor[] = [
             drive.connect(shaper).connect(compensate);
           }
         },
-        dispose: () => { try { shaper.disconnect(); } catch { /* ignore */ } },
+        automatable: automatableFrom({ mix: blend.mix }),
+        dispose: () => {
+          blend.dispose();
+          try { shaper.disconnect(); } catch { /* ignore */ }
+        },
       };
     }),
   },
@@ -440,6 +447,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'sustain', name: 'Sustain', min: -1, max: 1, default: 0, unit: '' },
       { id: 'mix',     name: 'Mix',     min: 0,  max: 1, default: 1, unit: '' },
     ],
+    // `attack` and `sustain` each swap a shaper's curve, so only the blend
+    // between the shaped signal and the original is one parameter.
+    automatableParams: ['mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Two envelope followers at different speeds; their DIFFERENCE is the
@@ -482,22 +492,20 @@ const CORE_PLUGINS: PluginDescriptor[] = [
         if (which === 'attack') attackShaper = next; else sustainShaper = next;
       };
 
-      const wet = ctx.createGain();
-      const dry = ctx.createGain();
-      const mix = params['mix'] ?? 1;
-      wet.gain.value = mix;
-      dry.gain.value = 1 - mix;
+      const blend = wetDry(ctx, params['mix'] ?? 1);
 
-      input.connect(vca).connect(wet).connect(output);
-      input.connect(dry).connect(output);
+      input.connect(vca).connect(blend.wet).connect(output);
+      input.connect(blend.dry).connect(output);
 
       return {
         setParam: (id, v) => {
           if (id === 'attack' && v !== (params['attack'] ?? 0)) { params['attack'] = v; swap('attack', v); }
           if (id === 'sustain' && v !== (params['sustain'] ?? 0)) { params['sustain'] = v; swap('sustain', v); }
-          if (id === 'mix') { wet.gain.value = v; dry.gain.value = 1 - v; }
+          if (id === 'mix') blend.setMix(v);
         },
+        automatable: automatableFrom({ mix: blend.mix }),
         dispose: () => {
+          blend.dispose();
           try { attackShaper.disconnect(); sustainShaper.disconnect(); } catch { /* ignore */ }
         },
       };
@@ -514,6 +522,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'freqHz', name: 'Freq',   min: 1500, max: 12000, default: 4000, unit: 'Hz' },
       { id: 'mix',    name: 'Mix',    min: 0,   max: 1,     default: 0,    unit: '' },
     ],
+    automatableParams: ['freqHz', 'mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Generate harmonics from the top band only, then blend them back —
@@ -541,6 +550,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           if (id === 'freqHz') band.frequency.value = v;
           if (id === 'mix') wet.gain.value = v;
         },
+        // `amount` is not offered: it scales the drive going INTO the shaper,
+        // and the harmonics it generates are a function of that level, so a
+        // lane on it would be ramping a curve's input, not a gain.
+        automatable: automatableFrom({ freqHz: band.frequency, mix: wet.gain }),
       };
     }),
   },
@@ -554,6 +567,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'width',     name: 'Width',    min: 0,  max: 2,   default: 1,  unit: '×' },
       { id: 'lowMonoHz', name: 'Low Mono', min: 20, max: 400, default: 20, unit: 'Hz' },
     ],
+    automatableParams: ['width', 'lowMonoHz'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Mid/side built from plain gains: M = (L+R)/2, S = (L−R)/2, scale S,
@@ -601,6 +615,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           if (id === 'width') sideGain.gain.value = v;
           if (id === 'lowMonoHz') sideHigh.frequency.value = v;
         },
+        automatable: automatableFrom({
+          width: sideGain.gain,
+          lowMonoHz: sideHigh.frequency,
+        }),
       };
     }),
   },
@@ -615,6 +633,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'amount',      name: 'Amount',    min: 0,   max: 1,   default: 0,   unit: '' },
       { id: 'releaseMs',   name: 'Release',   min: 10,  max: 500, default: 120, unit: 'ms' },
     ],
+    // Threshold and amount rebuild the expander's transfer curve, and the
+    // detector's release is two biquads inside the smoother.
+    automatableParams: [],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Broadband downward expander: the noise floor is pushed down, the
@@ -666,6 +687,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'thresholdDb', name: 'Threshold', min: -48,  max: 0,     default: -24,  unit: 'dB' },
       { id: 'amount',      name: 'Amount',    min: 0,    max: 1,     default: 0,    unit: '' },
     ],
+    // The band is a matched pair of filters (one to split, one to detect), and
+    // threshold and amount rebuild the transfer curve.
+    automatableParams: [],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Split the sibilant band off, compress only that, sum back.  A
@@ -723,6 +747,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'thresholdDb', name: 'Threshold', min: -48, max: 0,     default: -24, unit: 'dB' },
       { id: 'rangeDb',     name: 'Range',     min: -18, max: 0,     default: 0,   unit: 'dB' },
     ],
+    // Frequency and Q each retune BOTH the peaking filter and its detector;
+    // range and threshold rebuild the curve that drives the band.
+    automatableParams: [],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // A peaking filter whose GAIN is driven at audio rate by the level in
@@ -786,6 +813,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'amount',   name: 'Amount',   min: 0, max: 1, default: 0.8, unit: '' },
       { id: 'formant',  name: 'Formant',  min: -6, max: 6, default: 0,  unit: 'st' },
     ],
+    // Offline-only: the correction is applied at render time, not by a node in
+    // the live graph, so there is no AudioParam to ramp.
+    automatableParams: [],
     latencyFor: () => 0,
     create: (ctx) => withBypass(ctx, (input, output) => {
       // Realtime pass-through; the chain view badges it OFFLINE.

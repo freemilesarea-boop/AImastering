@@ -346,6 +346,93 @@ export function makeShaper(
  */
 const DETECTOR_MAX_HZ = 60;
 
+// ── Wet / dry ─────────────────────────────────────────────────────────────────
+
+/**
+ * A wet/dry blend whose control is ONE AudioParam, so a lane can ride it.
+ *
+ * The obvious way — `wet.gain.value = m; dry.gain.value = 1 - m` — writes two
+ * parameters from one knob, and there is no way to hand an automation lane
+ * "both of those".  So the knob becomes a signal instead: a DC source scaled
+ * by `mix`, fed into `wet.gain`, and subtracted from a second DC of 1 into
+ * `dry.gain`.  One AudioParam (`mix`) now moves both sides at audio rate, in
+ * the offline render exactly as live.
+ *
+ * The DC is a looping buffer of ones rather than a `ConstantSourceNode`, for
+ * the same reason the reverbs use one: the buffer source exists in every
+ * implementation this engine renders in, including the self-tests'.
+ *
+ * The blend is LINEAR, matching what these devices did before — this exists
+ * to make the existing control automatable, not to change how it sounds.
+ */
+export interface WetDry {
+  /** Wet path in.  Its gain is driven by the control; do not write it. */
+  wet: GainNode;
+  /** Dry path in.  Its gain is `1 - mix`; do not write it. */
+  dry: GainNode;
+  /** The single automatable control, 0 = dry, 1 = wet. */
+  mix: AudioParam;
+  setMix: (value01: number) => void;
+  dispose: () => void;
+}
+
+export interface WetDryOptions {
+  /**
+   * How far the dry side falls as the wet side rises: `dry = 1 - mix × slope`.
+   *
+   * 1 is a true crossfade.  The chorus uses 0.5, so a fully wet setting still
+   * carries half the original — without it the body drops out of the sound
+   * at the top of the knob.
+   */
+  drySlope?: number;
+}
+
+export function wetDry(
+  ctx: BaseAudioContext, mix01: number, options: WetDryOptions = {},
+): WetDry {
+  const dc = (value: number): GainNode => {
+    const buffer = ctx.createBuffer(1, 128, ctx.sampleRate);
+    buffer.getChannelData(0).fill(1);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    const gain = ctx.createGain();
+    gain.gain.value = value;
+    source.connect(gain);
+    source.start(0);
+    sources.push(source);
+    return gain;
+  };
+  const sources: AudioBufferSourceNode[] = [];
+
+  const clamped = Math.max(0, Math.min(1, mix01));
+  const control = dc(clamped);            // carries `mix`
+  const unity = dc(1);                    // carries 1
+  const invert = ctx.createGain();
+  invert.gain.value = -(options.drySlope ?? 1);
+
+  const wet = ctx.createGain();
+  const dry = ctx.createGain();
+  // Both start at zero: the value arrives entirely through the control
+  // signals, so there is never a moment where the knob and the graph disagree.
+  wet.gain.value = 0;
+  dry.gain.value = 0;
+
+  control.connect(wet.gain);
+  unity.connect(dry.gain);
+  control.connect(invert).connect(dry.gain);
+
+  return {
+    wet,
+    dry,
+    mix: control.gain,
+    setMix: (value) => { control.gain.value = Math.max(0, Math.min(1, value)); },
+    dispose: () => {
+      for (const source of sources) { try { source.stop(); } catch { /* already stopped */ } }
+    },
+  };
+}
+
 export interface Smoother {
   input: BiquadFilterNode;
   output: BiquadFilterNode;

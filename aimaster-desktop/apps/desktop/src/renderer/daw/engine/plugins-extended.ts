@@ -12,7 +12,7 @@
 // with a free-running LFO — the device says so rather than pretending.
 
 import {
-  absShaper, automatableFrom, dbToGain, makeShaper, smoother, withBypass,
+  absShaper, automatableFrom, dbToGain, makeShaper, smoother, wetDry, withBypass,
   type PluginDescriptor,
 } from './plugin-kit.js';
 
@@ -269,6 +269,9 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'tiltDb',  name: 'Tilt',  min: -12, max: 12,    default: 0,    unit: 'dB' },
       { id: 'pivotHz', name: 'Pivot', min: 200, max: 5000,  default: 1000, unit: 'Hz' },
     ],
+    // One knob, two shelves: the tilt writes equal and opposite gains, and the
+    // pivot retunes both. Half a tilt is a shelf, not a tilt.
+    automatableParams: [],
     latencyFor: () => 0,
     // One knob that darkens or brightens a whole mix without asking which
     // band — the fastest useful move there is on a master.
@@ -304,6 +307,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'sideLowDb', name: 'S Low',  min: -12, max: 12, default: 0, unit: 'dB' },
       { id: 'sideHighDb', name: 'S High', min: -12, max: 12, default: 0, unit: 'dB' },
     ],
+    automatableParams: ['midLowDb', 'midHighDb', 'sideLowDb', 'sideHighDb'],
     latencyFor: () => 0,
     // Brighten the sides without brightening the vocal; tighten the centre
     // without narrowing the record.  The one EQ a master often needs.
@@ -334,6 +338,12 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           if (id === 'sideLowDb')  sideLow.gain.value = v;
           if (id === 'sideHighDb') sideHigh.gain.value = v;
         },
+        automatable: automatableFrom({
+          midLowDb: midLow.gain,
+          midHighDb: midHigh.gain,
+          sideLowDb: sideLow.gain,
+          sideHighDb: sideHigh.gain,
+        }),
       };
     }),
   },
@@ -350,6 +360,9 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'attackMs',    name: 'Attack',    min: 1,   max: 100,  default: 5,   unit: 'ms' },
       { id: 'releaseMs',   name: 'Release',   min: 20,  max: 2000, default: 200, unit: 'ms' },
     ],
+    // Threshold and range rebuild the gate's transfer curve; attack and release
+    // are the detector's two biquads.
+    automatableParams: [],
     latencyFor: () => 0,
     // Between the toms, under the amp, behind the room mic.  A gate is the
     // most-used dynamics device in a real multitrack and the DAW had none.
@@ -419,6 +432,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'hiRatio',  name: 'High R',  min: 1,   max: 12,   default: 3,   unit: ':1' },
       { id: 'makeupDb', name: 'Makeup',  min: -12, max: 12,   default: 0,   unit: 'dB' },
     ],
+    automatableParams: ['lowThrDb', 'lowRatio', 'midThrDb', 'midRatio', 'hiThrDb', 'hiRatio', 'makeupDb'],
     latencyFor: () => 0,
     // Control the bass without dulling the cymbals.  A single band across a
     // whole mix cannot do that, which is why every master chain has one.
@@ -487,6 +501,18 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           if (id === 'hiRatio')  high.comp.ratio.value = Math.max(1, v);
           if (id === 'makeupDb') makeup.gain.value = dbToGain(v);
         },
+        // The crossover frequencies are not offered: each one retunes a
+        // matched pair of filters, and moving half of a Linkwitz-Riley pair
+        // is a hole in the response, not a sweep.
+        automatable: automatableFrom({
+          lowThrDb: low.comp.threshold,
+          lowRatio: { param: low.comp.ratio, map: (v) => Math.max(1, v) },
+          midThrDb: mid.comp.threshold,
+          midRatio: { param: mid.comp.ratio, map: (v) => Math.max(1, v) },
+          hiThrDb: high.comp.threshold,
+          hiRatio: { param: high.comp.ratio, map: (v) => Math.max(1, v) },
+          makeupDb: { param: makeup.gain, map: dbToGain },
+        }),
         reduction: () => Math.min(low.comp.reduction, mid.comp.reduction, high.comp.reduction),
       };
     }),
@@ -502,6 +528,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'ceilingDb', name: 'Ceiling',  min: -12, max: 0,  default: -1, unit: 'dB' },
       { id: 'hardness',  name: 'Hardness', min: 0,   max: 1,  default: 0.5, unit: '' },
     ],
+    automatableParams: ['driveDb'],
     latencyFor: () => 0,
     // Shaves the two dB of drum transient that would otherwise cost the whole
     // master three dB of limiting.  Instant, no detector, no pumping.
@@ -530,6 +557,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
         setParam: (id, v) => {
           params[id] = v;
           if (id === 'driveDb') { drive.gain.value = dbToGain(v); return; }
+          // ceilingDb and hardness fall through to the curve rebuild below.
           const ceiling = dbToGain(p(params, 'ceilingDb', -1));
           const next = makeShaper(ctx, clipCurve(ceiling, p(params, 'hardness', 0.5)));
           next.oversample = '4x';
@@ -543,6 +571,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           shaper.connect(guard);
           guard.connect(output);
         },
+        automatable: automatableFrom({ driveDb: { param: drive.gain, map: dbToGain } }),
         dispose: () => { shaper.disconnect(); guard.disconnect(); },
       };
     }),
@@ -561,6 +590,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'mix',     name: 'Mix',    min: 0,   max: 100, default: 100, unit: '%' },
       { id: 'outDb',   name: 'Output', min: -24, max: 12, default: 0,  unit: 'dB' },
     ],
+    automatableParams: ['toneHz', 'mix', 'outDb'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Asymmetric on purpose: a symmetric curve makes only odd harmonics and
@@ -569,15 +599,13 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       shaper.oversample = '4x';
       const tone = ctx.createBiquadFilter(); tone.type = 'lowpass';
       tone.frequency.value = p(params, 'toneHz', 8000);
-      const wet = ctx.createGain();
-      const dry = ctx.createGain();
+      const blend = wetDry(ctx, 0);
+      const wet = blend.wet;
+      const dry = blend.dry;
       const out = ctx.createGain();
       out.gain.value = dbToGain(p(params, 'outDb', 0));
 
-      const setMix = (percent: number): void => {
-        wet.gain.value = Math.max(0, Math.min(1, percent / 100));
-        dry.gain.value = 1 - wet.gain.value;
-      };
+      const setMix = (percent: number): void => blend.setMix(percent / 100);
       setMix(p(params, 'mix', 100));
 
       input.connect(shaper);
@@ -601,7 +629,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             shaper.connect(tone);
           }
         },
-        dispose: () => { shaper.disconnect(); },
+        // `drive` and `bias` rebuild the tube curve together, so neither is
+        // a parameter a lane can ride.
+        automatable: automatableFrom({
+          toneHz: tone.frequency,
+          mix: { param: blend.mix, map: (v) => Math.max(0, Math.min(1, v / 100)) },
+          outDb: { param: out.gain, map: dbToGain },
+        }),
+        dispose: () => { blend.dispose(); shaper.disconnect(); },
       };
     }),
   },
@@ -615,15 +650,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'bits', name: 'Bits', min: 2,  max: 16,  default: 8,  unit: '' },
       { id: 'mix',  name: 'Mix',  min: 0,  max: 100, default: 100, unit: '%' },
     ],
+    automatableParams: ['mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       let shaper = makeShaper(ctx, bitCurve(p(params, 'bits', 8)));
-      const wet = ctx.createGain();
-      const dry = ctx.createGain();
-      const setMix = (percent: number): void => {
-        wet.gain.value = Math.max(0, Math.min(1, percent / 100));
-        dry.gain.value = 1 - wet.gain.value;
-      };
+      const blend = wetDry(ctx, 0);
+      const wet = blend.wet;
+      const dry = blend.dry;
+      const setMix = (percent: number): void => blend.setMix(percent / 100);
       setMix(p(params, 'mix', 100));
       input.connect(shaper).connect(wet).connect(output);
       input.connect(dry).connect(output);
@@ -637,7 +671,11 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           shaper = next;
           input.connect(shaper).connect(wet);
         },
-        dispose: () => { shaper.disconnect(); },
+        // `bits` rebuilds the quantising curve — there is no parameter to ramp.
+        automatable: automatableFrom({
+          mix: { param: blend.mix, map: (v) => Math.max(0, Math.min(1, v / 100)) },
+        }),
+        dispose: () => { blend.dispose(); shaper.disconnect(); },
       };
     }),
   },
@@ -660,12 +698,16 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'delayMs', name: 'Delay', min: 5,    max: 40,  default: 18,  unit: 'ms' },
       { id: 'mix',     name: 'Mix',   min: 0,    max: 100, default: 40,  unit: '%' },
     ],
+    automatableParams: ['mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Two voices in opposite phase: one alone is a vibrato, two are a
       // chorus, and putting them on opposite sides is what makes it wide.
-      const wet = ctx.createGain();
-      const dry = ctx.createGain();
+      // `drySlope: 0.5` keeps this device's own blend law: a fully wet
+      // chorus still carries half the original, or the body drops out.
+      const blend = wetDry(ctx, 0, { drySlope: 0.5 });
+      const wet = blend.wet;
+      const dry = blend.dry;
       const voices = [0, 1].map((i) => {
         const delay = ctx.createDelay(0.2);
         delay.delayTime.value = p(params, 'delayMs', 18) / 1000;
@@ -678,10 +720,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
         return { delay, mod };
       });
 
-      const setMix = (percent: number): void => {
-        wet.gain.value = Math.max(0, Math.min(1, percent / 100));
-        dry.gain.value = 1 - wet.gain.value * 0.5;   // stays full-bodied at 100 %
-      };
+      const setMix = (percent: number): void => blend.setMix(percent / 100);
       setMix(p(params, 'mix', 40));
       wet.connect(output);
       input.connect(dry).connect(output);
@@ -695,7 +734,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             if (id === 'delayMs') voice.delay.delayTime.value = v / 1000;
           }
         },
-        dispose: () => { for (const v of voices) v.mod.osc.stop(); },
+        // Rate, depth and delay each move BOTH voices — and the second voice
+        // runs at 1.17× the rate, so there is no single parameter behind any
+        // of them.  That detune is what makes it a chorus rather than two
+        // flangers, so it is not worth collapsing to win a lane.
+        automatable: automatableFrom({
+          mix: { param: blend.mix, map: (v) => Math.max(0, Math.min(1, v / 100)) },
+        }),
+        dispose: () => { blend.dispose(); for (const v of voices) v.mod.osc.stop(); },
       };
     }),
   },
@@ -713,6 +759,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'feedback', name: 'Feedback', min: 0,    max: 0.95, default: 0.5, unit: '' },
       { id: 'mix',      name: 'Mix',      min: 0,    max: 100, default: 50,  unit: '%' },
     ],
+    automatableParams: ['rateHz', 'depthMs', 'delayMs', 'feedback', 'mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const delay = ctx.createDelay(0.05);
@@ -724,12 +771,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       // unity because at 1.0 it is not an effect, it is an oscillator.
       const feedback = ctx.createGain();
       feedback.gain.value = Math.min(0.95, p(params, 'feedback', 0.5));
-      const wet = ctx.createGain();
-      const dry = ctx.createGain();
-      const setMix = (percent: number): void => {
-        wet.gain.value = Math.max(0, Math.min(1, percent / 100));
-        dry.gain.value = 1 - wet.gain.value;
-      };
+      const blend = wetDry(ctx, 0);
+      const wet = blend.wet;
+      const dry = blend.dry;
+      const setMix = (percent: number): void => blend.setMix(percent / 100);
       setMix(p(params, 'mix', 50));
 
       input.connect(delay);
@@ -745,7 +790,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           if (id === 'feedback') feedback.gain.value = Math.min(0.95, v);
           if (id === 'mix')      setMix(v);
         },
-        dispose: () => { mod.osc.stop(); },
+        automatable: automatableFrom({
+          rateHz: mod.osc.frequency,
+          depthMs: { param: mod.depth.gain, map: (v) => v / 1000 },
+          delayMs: { param: delay.delayTime, map: (v) => v / 1000 },
+          feedback: { param: feedback.gain, map: (v) => Math.min(0.95, v) },
+          mix: { param: blend.mix, map: (v) => Math.max(0, Math.min(1, v / 100)) },
+        }),
+        dispose: () => { blend.dispose(); mod.osc.stop(); },
       };
     }),
   },
@@ -763,6 +815,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'feedback', name: 'Feedback', min: 0,    max: 0.9,  default: 0.4, unit: '' },
       { id: 'mix',      name: 'Mix',      min: 0,    max: 100,  default: 50,  unit: '%' },
     ],
+    automatableParams: ['rateHz', 'feedback', 'mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Four allpass stages: they leave the magnitude alone and rotate phase,
@@ -780,17 +833,26 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
 
       const feedback = ctx.createGain();
       feedback.gain.value = Math.min(0.9, p(params, 'feedback', 0.4));
-      const wet = ctx.createGain();
-      const dry = ctx.createGain();
-      const setMix = (percent: number): void => {
-        wet.gain.value = Math.max(0, Math.min(1, percent / 100));
-        dry.gain.value = 1 - wet.gain.value;
-      };
+      const blend = wetDry(ctx, 0);
+      const wet = blend.wet;
+      const dry = blend.dry;
+      const setMix = (percent: number): void => blend.setMix(percent / 100);
       setMix(p(params, 'mix', 50));
 
       let cursor: AudioNode = input;
       for (const stage of stages) { cursor.connect(stage); cursor = stage; }
-      cursor.connect(feedback).connect(stages[0]!);
+
+      // One sample of delay inside the feedback loop.
+      //
+      // Web Audio mutes any cycle that does not contain a DelayNode, and
+      // without this the ENTIRE allpass chain renders silence — the device
+      // was audible only as the dry path being turned down.  A single sample
+      // is the shortest legal loop and is inaudible as a delay; what it does
+      // is make the resonance exist at all.
+      const loopDelay = ctx.createDelay(0.05);
+      loopDelay.delayTime.value = 1 / ctx.sampleRate;
+      cursor.connect(loopDelay).connect(feedback).connect(stages[0]!);
+
       cursor.connect(wet).connect(output);
       input.connect(dry).connect(output);
 
@@ -806,7 +868,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             mod.setDepth(centre * p(params, 'depth', 0.7));
           }
         },
-        dispose: () => { mod.osc.stop(); },
+        // `centreHz` retunes every all-pass stage and `depth` is scaled BY it,
+        // so the two are one control in two knobs — neither is offered.
+        automatable: automatableFrom({
+          rateHz: mod.osc.frequency,
+          feedback: { param: feedback.gain, map: (v) => Math.min(0.9, v) },
+          mix: { param: blend.mix, map: (v) => Math.max(0, Math.min(1, v / 100)) },
+        }),
+        dispose: () => { blend.dispose(); mod.osc.stop(); },
       };
     }),
   },
@@ -822,6 +891,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'depth',  name: 'Depth', min: 0,   max: 1,   default: 0.5, unit: '' },
       { id: 'shape',  name: 'Shape', min: 0,   max: 1,   default: 0,  unit: '' },
     ],
+    automatableParams: ['rateHz'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const vca = ctx.createGain();
@@ -838,6 +908,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           if (id === 'depth')  { vca.gain.value = 1 - v / 2; mod.setDepth(v / 2); }
           if (id === 'shape')  mod.osc.type = v >= 0.5 ? 'square' : 'sine';
         },
+        // `depth` sets the LFO's swing AND re-centres the VCA around it, so
+        // the two have to move together; `shape` swaps a waveform, which is
+        // not a ramp at all.
+        automatable: automatableFrom({ rateHz: mod.osc.frequency }),
         dispose: () => { mod.osc.stop(); },
       };
     }),
@@ -853,6 +927,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'rateHz', name: 'Rate',  min: 0.05, max: 10, default: 0.5, unit: 'Hz' },
       { id: 'depth',  name: 'Depth', min: 0,    max: 1,  default: 0.7, unit: '' },
     ],
+    automatableParams: ['rateHz', 'depth'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const panner = ctx.createStereoPanner();
@@ -865,6 +940,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           if (id === 'rateHz') mod.setRate(v);
           if (id === 'depth')  mod.setDepth(v);
         },
+        automatable: automatableFrom({
+          rateHz: mod.osc.frequency,
+          depth: mod.depth.gain,
+        }),
         dispose: () => { mod.osc.stop(); },
       };
     }),
@@ -882,6 +961,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'toneHz',   name: 'Tone',     min: 800, max: 16000, default: 6000, unit: 'Hz' },
       { id: 'mix',      name: 'Mix',      min: 0,   max: 100,  default: 28,  unit: '%' },
     ],
+    automatableParams: ['mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Two delays that feed each OTHER, each panned hard: that cross-feed is
@@ -930,6 +1010,13 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           if (id === 'toneHz')   { toneL.frequency.value = v; toneR.frequency.value = v; }
           if (id === 'mix')      setMix(v);
         },
+        // Time, feedback and tone each set a matched left/right pair — one
+        // knob, two AudioParams, and ramping half a ping-pong is a stereo
+        // image tearing itself apart.  The mix is a send-style wet gain, so
+        // it is a single parameter as it stands.
+        automatable: automatableFrom({
+          mix: { param: wet.gain, map: (v) => Math.max(0, Math.min(1, v / 100)) },
+        }),
       };
     }),
   },
@@ -948,6 +1035,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'drive',    name: 'Drive',    min: 0,   max: 1,    default: 0.25, unit: '' },
       { id: 'mix',      name: 'Mix',      min: 0,   max: 100,  default: 25,  unit: '%' },
     ],
+    automatableParams: ['timeMs', 'feedback', 'toneHz', 'wowMs', 'mix'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // What makes a tape delay a tape delay is what happens INSIDE the
@@ -996,6 +1084,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             sat.connect(wet);
           }
         },
+        // `drive` rebuilds the saturation curve inside the feedback loop.
+        automatable: automatableFrom({
+          timeMs: { param: delay.delayTime, map: (v) => v / 1000 },
+          feedback: { param: fb.gain, map: (v) => Math.min(0.95, v) },
+          toneHz: tone.frequency,
+          wowMs: { param: wow.depth.gain, map: (v) => v / 1000 },
+          mix: { param: wet.gain, map: (v) => Math.max(0, Math.min(1, v / 100)) },
+        }),
         dispose: () => { wow.osc.stop(); sat.disconnect(); },
       };
     }),
@@ -1011,6 +1107,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'freqHz', name: 'Below',  min: 20, max: 400, default: 120, unit: 'Hz' },
       { id: 'widthPct', name: 'Width', min: 0, max: 200, default: 100, unit: '%' },
     ],
+    automatableParams: ['widthPct'],
     latencyFor: () => 0,
     // Bass that is out of phase between the channels disappears the moment
     // anything sums to mono — a club system, a phone, a laptop.  Collapsing
@@ -1044,6 +1141,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           if (id === 'freqHz')   for (const f of sideHp) f.frequency.value = v;
           if (id === 'widthPct') width.gain.value = Math.max(0, v / 100);
         },
+        // `freqHz` retunes a cascade of high-passes, not one filter.
+        automatable: automatableFrom({
+          widthPct: { param: width.gain, map: (v) => Math.max(0, v / 100) },
+        }),
       };
     }),
   },
@@ -1057,6 +1158,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'delayMs', name: 'Delay',  min: 0, max: 40,  default: 12, unit: 'ms' },
       { id: 'amount',  name: 'Amount', min: 0, max: 1,   default: 0.5, unit: '' },
     ],
+    automatableParams: ['delayMs', 'amount'],
     latencyFor: () => 0,
     // A few milliseconds on one side reads as width, not as an echo.  Mono
     // compatibility is the price, which is why Amount exists and why this is
@@ -1066,13 +1168,12 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const merger = ctx.createChannelMerger(2);
       const delay = ctx.createDelay(0.1);
       delay.delayTime.value = p(params, 'delayMs', 12) / 1000;
-      const wet = ctx.createGain();
-      const dryR = ctx.createGain();
-      const setAmount = (a: number): void => {
-        wet.gain.value = Math.max(0, Math.min(1, a));
-        dryR.gain.value = 1 - wet.gain.value;
-      };
-      setAmount(p(params, 'amount', 0.5));
+      // `amount` is a wet/dry blend on the right channel under another name,
+      // so it gets the same single-parameter treatment.
+      const blend = wetDry(ctx, p(params, 'amount', 0.5));
+      const wet = blend.wet;
+      const dryR = blend.dry;
+      const setAmount = (a: number): void => blend.setMix(a);
 
       input.connect(splitter);
       splitter.connect(merger, 0, 0);                 // left straight through
@@ -1087,6 +1188,11 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           if (id === 'delayMs') delay.delayTime.value = v / 1000;
           if (id === 'amount')  setAmount(v);
         },
+        automatable: automatableFrom({
+          delayMs: { param: delay.delayTime, map: (v) => v / 1000 },
+          amount: blend.mix,
+        }),
+        dispose: () => blend.dispose(),
       };
     }),
   },
@@ -1103,6 +1209,9 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'swap',    name: 'Swap L/R', min: 0, max: 1, default: 0, unit: '' },
       { id: 'mono',    name: 'Mono',     min: 0, max: 1, default: 0, unit: '' },
     ],
+    // Four switches, not knobs: each one re-wires a matrix of six gains, and
+    // ramping through 'half swapped' is not a state this device has.
+    automatableParams: [],
     latencyFor: () => 0,
     // The first thing to reach for when a snare has two mics and the pair
     // sounds thin, and the check every mix needs before it leaves.
@@ -1155,6 +1264,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     category: 'utility',
     hasSidechain: false,
     params: [],
+    // One job, no parameters.
+    automatableParams: [],
     latencyFor: () => 0,
     // A DC offset costs headroom without making a sound: the waveform sits
     // off-centre and the limiter sees peaks that are not music.
@@ -1178,6 +1289,9 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'bits',     name: 'Bits',  min: 8,  max: 24, default: 16, unit: '' },
       { id: 'amount',   name: 'Amount', min: 0, max: 2,  default: 1,  unit: '' },
     ],
+    // The noise level is a function of BOTH knobs (an LSB from the bit depth,
+    // scaled by the amount), so neither is a parameter on its own.
+    automatableParams: [],
     latencyFor: () => 0,
     // The last device in the chain and nowhere else.  Truncating 24-bit to
     // 16 without dither turns quiet tails into gritty steps; a bit of noise
@@ -1216,6 +1330,9 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'harmonics', name: 'Harmonics', min: 1, max: 8, default: 4,  unit: '' },
       { id: 'q',        name: 'Q',        min: 5,  max: 60, default: 30, unit: '' },
     ],
+    // Every knob retunes the whole notch cascade — up to eight filters — and
+    // the harmonic count switches notches in and out entirely.
+    automatableParams: [],
     latencyFor: () => 0,
     // Mains hum is not one tone, it is a comb: 50 or 60 Hz and everything
     // above it.  Notching only the fundamental leaves the buzz behind.
@@ -1257,6 +1374,9 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     params: [
       { id: 'targetLufs', name: 'Target', min: -24, max: -6, default: -14, unit: 'LUFS' },
     ],
+    // A meter. Its one knob is the target it reports against; it changes
+    // nothing in the signal path, so there is nothing for a lane to move.
+    automatableParams: [],
     latencyFor: () => 0,
     // A master is finished against a number, not a feeling.  This is the only
     // device here that changes nothing: the audio passes through untouched and
