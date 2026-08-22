@@ -167,6 +167,16 @@ export function mapSegments(
   }));
 }
 
+/** Replace a clip's whole segment list — what a timing move produces. */
+export function withSegments(
+  session: DawSession, trackId: TrackId, clipId: ClipId,
+  fn: (segments: readonly VariSegment[]) => VariSegment[],
+): DawSession {
+  return updateClip(session, trackId, clipId, (clip) => ({
+    ...clip, pitchSegments: fn(clip.pitchSegments),
+  }));
+}
+
 /** Segments touching a time span — what a rubber-band selection picks up. */
 export function segmentsInSpan(
   segments: readonly VariSegment[], startSec: number, endSec: number,
@@ -181,6 +191,139 @@ export function segmentAt(
   segments: readonly VariSegment[], timeSec: number,
 ): VariSegment | null {
   return segments.find((s) => timeSec >= s.startSec && timeSec <= s.endSec) ?? null;
+}
+
+// ── Timing ────────────────────────────────────────────────────────────────────
+//
+// The one axis the model always had and nothing could reach.  `timeOffsetSec`
+// has been in `SegmentEdit` since the analysis was written, the renderer has
+// always shifted the samples by it, and the editor has always drawn the blob
+// at the offset position — but there was no gesture that could set it, so it
+// was permanently zero.  A vocal editor that can retune a late word but not
+// move it is half a tool.
+//
+// The rule that shapes all of it: A NOTE CANNOT PASS ITS NEIGHBOURS.  The
+// renderer lays each segment's grains into the segment's own span, so two
+// spans that overlap are two passes writing the same samples — which does not
+// sound like a timing edit, it sounds like a fault.  So a move is CLAMPED at
+// the neighbours rather than refused, because "drag until it stops" is how a
+// timing nudge is actually performed; you feel the limit, you do not read
+// about it.
+
+/** A segment's span after its own timing edit — where it will really land. */
+export function editedSpan(segment: VariSegment): { startSec: number; endSec: number } {
+  return {
+    startSec: segment.startSec + segment.edit.timeOffsetSec,
+    endSec: segment.endSec + segment.edit.timeOffsetSec,
+  };
+}
+
+export interface TimingRange {
+  /** Most negative delta the selection can take — zero when it cannot move. */
+  minDelta: number;
+  maxDelta: number;
+}
+
+/**
+ * How far a selection can be moved before something collides.
+ *
+ * Measured against the segments NOT in the selection, at their own edited
+ * positions, plus the ends of the clip.  Moving three notes of a phrase
+ * together must be limited by what is outside the phrase, not by the notes
+ * moving with it.
+ */
+export function timingRange(
+  segments: readonly VariSegment[], ids: ReadonlySet<string>, clipDurationSec: number,
+): TimingRange {
+  const moving = segments.filter((s) => ids.has(s.id));
+  if (moving.length === 0) return { minDelta: 0, maxDelta: 0 };
+  const fixed = segments.filter((s) => !ids.has(s.id)).map(editedSpan);
+
+  let minDelta = -Infinity;
+  let maxDelta = Infinity;
+  for (const segment of moving) {
+    const span = editedSpan(segment);
+    // The clip's own ends are as hard a limit as any neighbour.
+    let back = span.startSec;
+    let forward = Math.max(0, clipDurationSec - span.endSec);
+    for (const other of fixed) {
+      if (other.endSec <= span.startSec) back = Math.min(back, span.startSec - other.endSec);
+      else if (other.startSec >= span.endSec) forward = Math.min(forward, other.startSec - span.endSec);
+      else {
+        // Already overlapping — a session edited before this rule existed, or
+        // an analysis that produced touching segments.  Freeze rather than
+        // pretend there is room.
+        back = 0;
+        forward = 0;
+      }
+    }
+    minDelta = Math.max(minDelta, -Math.max(0, back));
+    maxDelta = Math.min(maxDelta, Math.max(0, forward));
+  }
+  return {
+    minDelta: Number.isFinite(minDelta) ? minDelta : 0,
+    maxDelta: Number.isFinite(maxDelta) ? maxDelta : 0,
+  };
+}
+
+export interface TimingMove {
+  segments: VariSegment[];
+  /** What was actually applied, after clamping. */
+  deltaSec: number;
+  /** True when the neighbours or the clip stopped it short. */
+  clamped: boolean;
+}
+
+/**
+ * Move a selection in time by `deltaSec`, relative to `baseOffsets`.
+ *
+ * The base offsets are where each segment was when the gesture STARTED.  A
+ * drag handler that adds a delta to the current value each time accumulates
+ * rounding and drifts away from the pointer; taking an absolute offset from a
+ * frozen start is the only shape that survives a slow drag — the same reason
+ * the pitch drag works that way.
+ */
+export function moveSegmentTime(
+  segments: readonly VariSegment[], ids: ReadonlySet<string>,
+  deltaSec: number, clipDurationSec: number,
+  baseOffsets?: ReadonlyMap<string, number>,
+): TimingMove {
+  if (ids.size === 0 || !Number.isFinite(deltaSec)) {
+    return { segments: [...segments], deltaSec: 0, clamped: false };
+  }
+  // The range is measured from the BASE positions, so a drag that goes out
+  // and comes back lands where it started rather than ratcheting.
+  const based = baseOffsets
+    ? segments.map((s) => (ids.has(s.id) && baseOffsets.has(s.id)
+      ? patchSegment(s, { timeOffsetSec: baseOffsets.get(s.id)! })
+      : s))
+    : [...segments];
+
+  const range = timingRange(based, ids, clipDurationSec);
+  const applied = Math.max(range.minDelta, Math.min(range.maxDelta, deltaSec));
+  const clamped = Math.abs(applied - deltaSec) > 1e-9;
+
+  return {
+    segments: based.map((s) => (ids.has(s.id)
+      ? patchSegment(s, { timeOffsetSec: s.edit.timeOffsetSec + applied })
+      : s)),
+    deltaSec: applied,
+    clamped,
+  };
+}
+
+/** Put a selection's timing back where it was measured. */
+export function resetSegmentTime(
+  segments: readonly VariSegment[], ids: ReadonlySet<string>,
+): VariSegment[] {
+  return segments.map((s) => (ids.has(s.id) ? patchSegment(s, { timeOffsetSec: 0 }) : s));
+}
+
+/** Milliseconds, signed — the unit a timing nudge is talked about in. */
+export function describeTiming(segment: VariSegment): string {
+  const ms = segment.edit.timeOffsetSec * 1000;
+  if (Math.abs(ms) < 0.05) return '0 ms';
+  return `${ms > 0 ? '+' : '−'}${Math.abs(ms).toFixed(0)} ms`;
 }
 
 // ── Baking, after a render ────────────────────────────────────────────────────

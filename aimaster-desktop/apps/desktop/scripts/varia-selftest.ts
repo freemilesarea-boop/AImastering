@@ -20,6 +20,9 @@ import {
 import {
   correctSegment, guideNoteFor, guideNotesFor,
 } from '../src/renderer/daw/audio/varia-actions.js';
+import {
+  describeTiming, editedSpan, isEdited, moveSegmentTime, resetSegmentTime, timingRange,
+} from '../src/renderer/daw/edit/vocal-edit.js';
 import { createNote } from '../src/renderer/daw/model/midi.js';
 import {
   addTrack, createClip, createMidiPart, createSession, createTrack, updateClips,
@@ -490,6 +493,123 @@ check('guide notes are translated into the audio clip\'s own time base', () => {
   close(notes[0]?.startBeat ?? -1, 2.5, 'moved into the audio clip\'s clock', 1e-9);
   eq(guideNotesFor(session, audioClip, audioTrack.id, audioClip.id).length, 0,
     'an audio clip is not a guide');
+});
+
+// ── Moving a note in time ─────────────────────────────────────────────────────
+//
+// The axis that was in the model, honoured by the renderer, drawn by the
+// editor — and unreachable, because nothing could set it.  What these tests
+// hold is the rule that makes it safe: a note cannot pass its neighbours,
+// because the renderer lays each segment's grains into that segment's own
+// span and two overlapping spans are two passes writing the same samples.
+
+/** Three one-second notes with a quarter-second gap between them. */
+function phrase(): VariSegment[] {
+  return [0, 1.25, 2.5].map((startSec, i) => ({
+    ...syntheticSegment(),
+    id: `seg-${i}`,
+    startSec,
+    endSec: startSec + 1,
+  }));
+}
+const only = (...ids: string[]): Set<string> => new Set(ids);
+
+check('a note moves in time, and the span moves with it', () => {
+  const list = phrase();
+  const moved = moveSegmentTime(list, only('seg-1'), 0.1, 4);
+  close(moved.deltaSec, 0.1, 'the whole move landed', 1e-9);
+  eq(moved.clamped, false, 'nothing stopped it');
+  const span = editedSpan(moved.segments[1]!);
+  close(span.startSec, 1.35, 'the start moved', 1e-9);
+  close(span.endSec, 2.35, 'and so did the end', 1e-9);
+  close(editedSpan(moved.segments[0]!).startSec, 0, 'the others did not', 1e-9);
+});
+
+check('a note cannot pass its neighbour — it stops against it', () => {
+  const list = phrase();
+  // seg-1 ends at 2.25 and seg-2 starts at 2.5: a quarter second of room.
+  const far = moveSegmentTime(list, only('seg-1'), 2, 4);
+  eq(far.clamped, true, 'it was stopped');
+  close(far.deltaSec, 0.25, 'exactly at the neighbour', 1e-9);
+  close(editedSpan(far.segments[1]!).endSec, 2.5, 'touching, not overlapping', 1e-9);
+  // And backwards against the one before.
+  const back = moveSegmentTime(list, only('seg-1'), -2, 4);
+  close(back.deltaSec, -0.25, 'the same room on the other side', 1e-9);
+  close(editedSpan(back.segments[1]!).startSec, 1, 'up against the first note', 1e-9);
+});
+
+check('the clip’s own ends are as hard a limit as a neighbour', () => {
+  const list = phrase();
+  const off = moveSegmentTime(list, only('seg-2'), 5, 4);      // clip is 4 s
+  eq(off.clamped, true, 'stopped');
+  close(editedSpan(off.segments[2]!).endSec, 4, 'at the end of the clip', 1e-9);
+  const before = moveSegmentTime(list, only('seg-0'), -5, 4);
+  close(editedSpan(before.segments[0]!).startSec, 0, 'and not before the start', 1e-9);
+});
+
+check('a phrase moves as one, limited by what is OUTSIDE it', () => {
+  // Moving two notes together must not be stopped by each other.
+  const list = phrase();
+  const moved = moveSegmentTime(list, only('seg-0', 'seg-1'), 0.2, 4);
+  eq(moved.clamped, false, `the pair had room: ${moved.deltaSec}`);
+  close(editedSpan(moved.segments[0]!).startSec, 0.2, 'the first moved', 1e-9);
+  close(editedSpan(moved.segments[1]!).startSec, 1.45, 'the second moved the same', 1e-9);
+  // And the limit is seg-2, which is not moving.
+  const far = moveSegmentTime(list, only('seg-0', 'seg-1'), 2, 4);
+  close(far.deltaSec, 0.25, 'stopped by the note that stayed behind', 1e-9);
+});
+
+check('the room available is reported before anything moves', () => {
+  const list = phrase();
+  const range = timingRange(list, only('seg-1'), 4);
+  close(range.minDelta, -0.25, 'a quarter second back', 1e-9);
+  close(range.maxDelta, 0.25, 'and a quarter second forward', 1e-9);
+  const stuck = timingRange(
+    [{ ...syntheticSegment(), id: 'a', startSec: 0, endSec: 1 },
+     { ...syntheticSegment(), id: 'b', startSec: 1, endSec: 2 }],
+    only('a'), 2);
+  close(stuck.maxDelta, 0, 'a note already touching the next has nowhere to go', 1e-9);
+});
+
+check('a drag that goes out and comes back lands where it started', () => {
+  // The base offsets are the gesture's frozen start.  Without them the range
+  // is measured from the CURRENT position each time and the note ratchets
+  // forward against its neighbour instead of returning.
+  const list = phrase();
+  const base = new Map([['seg-1', 0]]);
+  const out = moveSegmentTime(list, only('seg-1'), 2, 4, base);      // clamped to +0.25
+  const backAgain = moveSegmentTime(out.segments, only('seg-1'), 0, 4, base);
+  close(backAgain.segments[1]!.edit.timeOffsetSec, 0, 'exactly back to zero', 1e-9);
+  const half = moveSegmentTime(out.segments, only('seg-1'), 0.1, 4, base);
+  close(half.segments[1]!.edit.timeOffsetSec, 0.1, 'and a smaller move is absolute, not additive', 1e-9);
+});
+
+check('a timing move counts as an edit, and can be undone on its own', () => {
+  const list = phrase();
+  const moved = moveSegmentTime(list, only('seg-1'), 0.05, 4).segments;
+  assert(isEdited(moved[1]!), 'the note is edited');
+  const cleared = resetSegmentTime(moved, only('seg-1'));
+  close(cleared[1]!.edit.timeOffsetSec, 0, 'the timing is back', 1e-9);
+  eq(isEdited(cleared[1]!), false, 'and nothing else was touched');
+});
+
+check('the read-out is milliseconds, signed', () => {
+  const list = phrase();
+  eq(describeTiming(list[0]!), '0 ms', 'unmoved');
+  const late = moveSegmentTime(list, only('seg-1'), 0.012, 4).segments;
+  eq(describeTiming(late[1]!), '+12 ms', 'late');
+  const early = moveSegmentTime(list, only('seg-1'), -0.012, 4).segments;
+  eq(describeTiming(early[1]!), '−12 ms', 'early');
+});
+
+check('an empty selection and a nonsense delta do nothing at all', () => {
+  const list = phrase();
+  const none = moveSegmentTime(list, new Set(), 0.1, 4);
+  eq(none.deltaSec, 0, 'no move');
+  eq(none.segments.length, 3, 'and the list is intact');
+  const nan = moveSegmentTime(list, only('seg-1'), Number.NaN, 4);
+  eq(nan.deltaSec, 0, 'NaN moves nothing');
+  close(nan.segments[1]!.edit.timeOffsetSec, 0, 'and writes nothing', 1e-9);
 });
 
 const passed = results.filter((r) => r.pass).length;

@@ -25,10 +25,12 @@ import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { useVocalEditorStore } from '../../../stores/vocalEditorStore.js';
 import {
-  correctedLine, describeSegment, editedPitch, hasPendingEdits, isEdited,
-  mapSegments, moveToPitch, nudgeCents, patchSegment, performanceLine,
-  pitchName, pitchRange, resetSegment, segmentsInSpan,
+  correctedLine, describeSegment, describeTiming, editedPitch, findClipSegments,
+  hasPendingEdits, isEdited, mapSegments, moveSegmentTime, moveToPitch, nudgeCents,
+  patchSegment, performanceLine, pitchName, pitchRange, resetSegment,
+  resetSegmentTime, segmentsInSpan, timingRange, withSegments,
 } from '../../../daw/edit/vocal-edit.js';
+import { snapSecToBeats, tempoMapOf } from '../../../daw/model/tempo-map.js';
 import { analyzeClipPitch, renderClipPitch, tuningSummary } from '../../../daw/audio/varia-actions.js';
 import { findTrack, trackClips } from '../../../daw/model/session-ops.js';
 import { premium } from '../../../theme/premium.js';
@@ -129,6 +131,41 @@ export default function VocalEditor() {
     apply((s) => mapSegments(s, open.trackId, open.clipId, selected, fn));
   };
 
+  /**
+   * Move the selection in time by a fixed step.
+   *
+   * Refuses out loud when the neighbours leave no room: a button that does
+   * nothing looks broken, and "it stopped" is information — the note is
+   * already against the next word.
+   */
+  const nudgeTiming = (deltaSec: number): void => {
+    if (!open) return;
+    if (selected.size === 0) { notify('먼저 노트를 고르세요', 'warning'); return; }
+    const length = clip?.durationSec ?? 0;
+    const range = timingRange(segments, selected, length);
+    if (deltaSec < 0 ? range.minDelta >= -1e-9 : range.maxDelta <= 1e-9) {
+      notify('옆 노트에 막혀 더 옮길 수 없습니다', 'warning');
+      return;
+    }
+    apply((st) => withSegments(st, open.trackId, open.clipId,
+      (list) => moveSegmentTime(list, selected, deltaSec, length).segments));
+  };
+
+  /**
+   * Snap a timing move so the note's START lands on the grid.
+   *
+   * The grid is musical and the note is not: the snap is computed on the
+   * TIMELINE, through the clip's position and the tempo map, so "put this
+   * word on beat three" means beat three of the song rather than of the clip.
+   */
+  const snapTimingDelta = (segment: VariSegment, wanted: number): number => {
+    const division = useDawStore.getState().gridDivision;
+    if (!clip || !(division > 0)) return wanted;
+    const base = clip.startSec + segment.startSec + segment.edit.timeOffsetSec;
+    const snapped = snapSecToBeats(tempoMapOf(session), base + wanted, division);
+    return snapped - base;
+  };
+
   // ── Dragging a blob ────────────────────────────────────────────────────────
 
   const onBlobDown = (e: React.PointerEvent, segment: VariSegment): void => {
@@ -146,23 +183,48 @@ export default function VocalEditor() {
     select(ids);
 
     const startPitch = editedPitch(segment);
-    const startY = localPoint(e).y;
+    const start = localPoint(e);
     // Where every dragged note started, captured once.  `applyTransient` keeps
     // handing back the LAST transient state, so a move handler that adds a
     // delta each time accumulates; setting an absolute offset from the frozen
     // start is the only shape that survives a slow drag.
     const startOffsets = new Map(
       segments.filter((s) => ids.has(s.id)).map((s) => [s.id, s.edit.pitchOffsetCents]));
+    const startTiming = new Map(
+      segments.filter((s) => ids.has(s.id)).map((s) => [s.id, s.edit.timeOffsetSec]));
+    const clipLength = clip?.durationSec ?? 0;
     let moved = false;
+    // ONE gesture, ONE axis.  A blob drag that changed pitch and timing at
+    // once would move a note twelve milliseconds late every time somebody
+    // tuned it, and nobody would notice until the render.  The axis is
+    // decided by the first few pixels and then held for the rest of the drag.
+    let axis: 'pitch' | 'time' | null = null;
 
     const move = (ev: PointerEvent): void => {
-      const dy = localPoint(ev).y - startY;
+      const here = localPoint(ev);
+      const dx = here.x - start.x;
+      const dy = here.y - start.y;
+      if (!moved) {
+        if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
+        axis = Math.abs(dx) > Math.abs(dy) ? 'time' : 'pitch';
+        moved = true;
+      }
+
+      if (axis === 'time') {
+        // Alt suspends the grid here too, and here it matters more: vocal
+        // timing lives in milliseconds, and the grid is in beats.
+        const wanted = dx / pxPerSec;
+        const delta = snap && !ev.altKey ? snapTimingDelta(segment, wanted) : wanted;
+        useDawStore.getState().applyTransient((state) =>
+          withSegments(state, open.trackId, open.clipId, (list) =>
+            moveSegmentTime(list, ids, delta, clipLength, startTiming).segments));
+        return;
+      }
+
       const raw = startPitch - dy / SEMITONE_PX;
       // Alt suspends the grid: a four-cent move is not expressible on it.
       const target = snap && !ev.altKey ? Math.round(raw) : raw;
       const deltaCents = (target - startPitch) * 100;
-      if (!moved && Math.abs(dy) < 2) return;
-      moved = true;
       // Every selected note moves by the SAME interval rather than all landing
       // on one pitch — dragging a phrase up a tone is the common gesture, and
       // collapsing a phrase onto one note is not an edit anybody wants.
@@ -172,7 +234,14 @@ export default function VocalEditor() {
         })));
     };
     const up = (): void => {
-      if (moved) useDawStore.getState().commitEdit();
+      if (moved) {
+        useDawStore.getState().commitEdit();
+        if (axis === 'time') {
+          const after = findClipSegments(useDawStore.getState().session, open.trackId, open.clipId)
+            .find((s) => s.id === segment.id);
+          if (after) notify(`타이밍 ${describeTiming(after)}`);
+        }
+      }
       globalThis.removeEventListener('pointermove', move);
       globalThis.removeEventListener('pointerup', up);
     };
@@ -301,22 +370,48 @@ export default function VocalEditor() {
               const w = Math.max(3, xOf(segment.endSec - segment.startSec));
               return (
                 <g key={segment.id}>
-                  {/* What was sung — never hidden, even after an edit. */}
-                  <path d={path(sung)} fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth={1} />
-                  {/* The blob: the note, and the handle. */}
+                  {/* What was sung — never hidden, even after an edit.
+                      Both curves are DECORATION: they are drawn over the
+                      blob, and a stroked path takes pointer events, so
+                      without this the note cannot be grabbed anywhere near
+                      its middle — which is exactly where a hand goes. */}
+                  <path d={path(sung)} fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth={1}
+                        style={{ pointerEvents: 'none' }} />
+                  {/* Where the note was SUNG, when it has been moved.  A
+                      timing edit is otherwise invisible — the blob just sits
+                      somewhere, and nothing says how far from the take it is. */}
+                  {segment.edit.timeOffsetSec !== 0 && (
+                    <>
+                      <rect
+                        x={xOf(segment.startSec)} y={blobY - SEMITONE_PX / 2 + 1}
+                        width={w} height={SEMITONE_PX - 2} rx={3}
+                        fill="none" stroke="rgba(255,255,255,0.20)" strokeDasharray="2 2"
+                      />
+                      <line
+                        x1={xOf(segment.startSec)} x2={x} y1={blobY} y2={blobY}
+                        stroke={premium.accent.base} strokeWidth={1} strokeDasharray="1 2"
+                      />
+                    </>
+                  )}
+                  {/* The blob: the note, and the handle.  It moves on both
+                      axes, so the cursor says so — `ns-resize` would promise
+                      pitch only. */}
                   <rect
                     x={x} y={blobY - SEMITONE_PX / 2 + 1}
                     width={w} height={SEMITONE_PX - 2} rx={3}
                     fill={isEdited(segment) ? 'rgba(198,167,104,0.30)' : 'rgba(120,140,200,0.26)'}
                     stroke={isSelected ? premium.accent.light : 'rgba(255,255,255,0.18)'}
                     strokeWidth={isSelected ? 1.5 : 1}
-                    style={{ cursor: 'ns-resize' }}
+                    style={{ cursor: 'move' }}
                     onPointerDown={(e) => onBlobDown(e, segment)}
-                  />
+                  >
+                    <title>{`${pitchName(Math.round(editedPitch(segment)))} · ${describeTiming(segment)}`
+                      + ' — 위아래로 끌면 음정, 좌우로 끌면 타이밍'}</title>
+                  </rect>
                   {/* What the render will produce. */}
                   <path d={path(fixed)} fill="none"
                         stroke={isEdited(segment) ? premium.accent.base : 'rgba(255,255,255,0.45)'}
-                        strokeWidth={1.4} />
+                        strokeWidth={1.4} style={{ pointerEvents: 'none' }} />
                 </g>
               );
             })}
@@ -358,6 +453,16 @@ export default function VocalEditor() {
           <Slider label="포먼트" value={chosen[0]?.edit.formantSemitones ?? 0}
                   min={-6} max={6} step={0.5} unit=" st"
                   onChange={(v) => editSelection((s) => patchSegment(s, { formantSemitones: v }))} />
+
+          {/* Timing.  Milliseconds, because that is the unit a late word is
+              talked about in, and clamped by the neighbours like the drag. */}
+          <Btn onClick={() => nudgeTiming(-0.01)}>−10ms</Btn>
+          <Btn onClick={() => nudgeTiming(0.01)}>+10ms</Btn>
+          <Btn onClick={() => {
+            if (!open || selected.size === 0) { notify('먼저 노트를 고르세요', 'warning'); return; }
+            apply((st) => withSegments(st, open.trackId, open.clipId,
+              (list) => resetSegmentTime(list, selected)));
+          }}>타이밍 0</Btn>
 
           <Btn onClick={() => editSelection(resetSegment)}>원래대로</Btn>
         </div>
