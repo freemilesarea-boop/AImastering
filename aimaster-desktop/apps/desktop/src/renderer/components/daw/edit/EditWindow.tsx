@@ -38,6 +38,7 @@ import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 import SectionLane, { SectionLaneHeader } from './SectionLane.js';
 import ChordLane, { ChordLaneHeader } from './ChordLane.js';
 import PictureLane, { PictureLaneHeader } from './PictureLane.js';
+import SpotDialog, { type SpotTarget } from './SpotDialog.js';
 import { trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay } from '../../../daw/edit/track-delay-ops.js';
 import {
@@ -84,6 +85,8 @@ export default function EditWindow() {
   const scrollSec    = useDawStore((s) => s.scrollSec);
   const setScrollSec = useDawStore((s) => s.setScrollSec);
   const editMode     = useDawStore((s) => s.editMode);
+  const spotTarget = useDawStore((s) => s.spotTarget);
+  const setSpotTarget = useDawStore((s) => s.setSpotTarget);
   const setEditMode  = useDawStore((s) => s.setEditMode);
   const gridDivision = useDawStore((s) => s.gridDivision);
   const setGridDivision = useDawStore((s) => s.setGridDivision);
@@ -215,8 +218,11 @@ export default function EditWindow() {
       const raw = secAt(e.clientX);
       const clip = clipAt(track, raw);
       if (clip) {
-        setClipDrag({ trackId: track.id, clipId: clip.id, grabOffsetSec: raw - clip.startSec });
         setSelection({ startSec: clip.startSec, endSec: clip.startSec + clip.durationSec, trackIds: [track.id] });
+        // Spot mode: the position is known to the frame and the mouse cannot
+        // express it, so clicking asks for the number instead of dragging.
+        if (editMode === 'spot') { setSpotTarget({ trackId: track.id, clipId: clip.id }); return; }
+        setClipDrag({ trackId: track.id, clipId: clip.id, grabOffsetSec: raw - clip.startSec });
         return;
       }
       seek(at);
@@ -227,7 +233,7 @@ export default function EditWindow() {
     // range tool or shift-drag → time selection
     setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
     setDrag({ anchorSec: at, trackIds: [track.id] });
-  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection]);
+  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
     if (clipDrag) {
@@ -270,7 +276,7 @@ export default function EditWindow() {
   }, [tempoMap, scrollSec, viewEndSec, pxPerSec, session.tempoBpm]);
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
+    <div className="relative flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
         <div className="flex rounded-md overflow-hidden border border-zinc-700">
@@ -515,6 +521,10 @@ export default function EditWindow() {
         />
         <span className="text-[10px] font-mono text-zinc-600">{fmt(endSec)}</span>
       </div>
+
+      {spotTarget && (
+        <SpotDialog target={spotTarget} onClose={() => setSpotTarget(null)} />
+      )}
     </div>
   );
 }

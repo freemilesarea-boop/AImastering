@@ -123,6 +123,16 @@ export interface DawState {
   groove: Groove | null;
   setGroove: (g: Groove | null) => void;
 
+  /**
+   * The clip the Spot dialog is open on, if any.
+   *
+   * In the store rather than in the Edit window because two things open it:
+   * a click in Spot mode, and the keyboard.  A local `useState` would give
+   * the shortcut nothing to talk to.
+   */
+  spotTarget: { trackId: TrackId; clipId: string } | null;
+  setSpotTarget: (target: { trackId: TrackId; clipId: string } | null) => void;
+
   /** Non-fatal engine notices (feedback loops, decode failures). */
   engineWarning: string | null;
   setEngineWarning: (w: string | null) => void;
@@ -217,6 +227,9 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   groove: null,
   setGroove: (groove) => set({ groove }),
+
+  spotTarget: null,
+  setSpotTarget: (spotTarget) => set({ spotTarget }),
 
   metronomeOn: false,
   toggleMetronome: () => {

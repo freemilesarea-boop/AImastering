@@ -142,6 +142,7 @@ export type DawCommandId =
   | 'daw.detectTempo' | 'daw.extractGroove' | 'daw.applyGroove'
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
+  | 'daw.spotClip'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
@@ -1104,6 +1105,21 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       }
     },
 
+    /**
+     * Spot the clip under the play head.
+     *
+     * The dialog is opened by putting the target in the store rather than by
+     * moving anything: the keyboard's job here is to ask the question, and
+     * the answer is typed.
+     */
+    'daw.spotClip': () => {
+      const state = daw();
+      const target = clipAtPlayhead(state);
+      if (!target) { notify('재생헤드 아래에 클립이 없습니다', 'warning'); return; }
+      state.setWindow('edit');
+      state.setSpotTarget({ trackId: target.trackId, clipId: target.clipId });
+    },
+
     // ── 픽처 ─────────────────────────────────────────────────────────────
     'daw.pictureBack':    () => movePicture((s) => nudgeVideoFrames(s, -1)),
     'daw.pictureForward': () => movePicture((s) => nudgeVideoFrames(s, 1)),
@@ -1538,6 +1554,26 @@ function stepFramesWith(
   const video = videoOf(state.session);
   if (!video) { notify('픽처가 없습니다 — 영상을 먼저 불러오세요', 'warning'); return; }
   state.seek(Math.max(0, state.playheadSec + frames * frameSec(video.fps)));
+}
+
+/**
+ * The clip under the play head, of any kind.
+ *
+ * `audioClipAtPlayhead` exists because most clip commands are DSP and only
+ * mean something on audio.  Spot is not one of those: putting a cue at an
+ * exact timecode is as ordinary for a MIDI part as for a sound effect, and
+ * a Spot that silently ignored parts would be a Spot that does nothing on
+ * half a scoring session.
+ */
+function clipAtPlayhead(state: DawState): { trackId: string; clipId: string } | null {
+  for (const trackId of targetTrackIds()) {
+    const track = findTrack(state.session, trackId);
+    if (!track) continue;
+    const clip = trackClips(track).find((c) =>
+      state.playheadSec >= c.startSec && state.playheadSec < clipEnd(c));
+    if (clip) return { trackId, clipId: clip.id };
+  }
+  return null;
 }
 
 function audioClipAtPlayhead(state: DawState): { trackId: string; clipId: string } | null {
