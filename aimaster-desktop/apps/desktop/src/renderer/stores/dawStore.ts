@@ -14,6 +14,7 @@ import {
 import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
 import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
+import type { EditClipboard } from '../daw/edit/clipboard.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import { snapSecToBeats, tempoMapOf } from '../daw/model/tempo-map.js';
 
@@ -48,6 +49,18 @@ export interface DawState {
 
   selection: TimeSelection;
   setSelection: (sel: TimeSelection) => void;
+
+  /**
+   * The timeline clipboard.
+   *
+   * Lives here rather than in the OS clipboard because what is copied is a
+   * structure — cropped clips, their file references, one lane per source
+   * track — and flattening it to text to hand to the system would lose all
+   * three.  It survives switching windows and loading another session, which
+   * is what makes copy-here-paste-there work.
+   */
+  clipboard: EditClipboard | null;
+  setClipboard: (board: EditClipboard | null) => void;
   selectedTrackIds: TrackId[];
   setSelectedTracks: (ids: TrackId[]) => void;
   /** Track the keyboard acts on when the selection spans none. */
@@ -177,6 +190,9 @@ export const useDawStore = create<DawState>((set, get) => ({
   setSelectedTracks: (ids) => set({ selectedTrackIds: ids }),
   focusedTrackId: null,
   setFocusedTrack: (id) => set({ focusedTrackId: id }),
+
+  clipboard: null,
+  setClipboard: (clipboard) => set({ clipboard }),
 
   playheadSec: 0,
   setPlayhead: (sec) => set({ playheadSec: Math.max(0, sec) }),

@@ -15,7 +15,7 @@ import type { DawState } from '../stores/dawStore.js';
 import { snapToGrid, targetTrackIds } from '../stores/dawStore.js';
 import {
   clearRange, crossfadeAt, duplicateSelection, fadeToCursor, healSeparation,
-  nudgeClipGain, nudgeSelection, separateAt, trimToSelection, hasRange,
+  nudgeClipGain, nudgeSelection, selectionLength, separateAt, trimToSelection, hasRange,
   type TimeSelection,
 } from '../daw/edit/clip-edit.js';
 import { compRange, cyclePlaylist } from '../daw/edit/comping.js';
@@ -61,7 +61,7 @@ import {
 import {
   availableTargets, ensureLane, setLaneVisible, visibleLanes,
 } from '../daw/edit/automation-lanes.js';
-import type { AutomationMode } from '../daw/model/types.js';
+import type { AutomationMode, Clip, DawSession } from '../daw/model/types.js';
 import {
   quantizeNotes, humanizeNotes, transposeNotes, nudgeVelocity, applyLegato,
 } from '../daw/edit/midi-edit.js';
@@ -72,6 +72,13 @@ import { reharmonize, formatProgression, makeChord } from '../daw/model/chords.j
 import { addChord, sortedChords, withChords } from '../daw/edit/chord-edit.js';
 import { useVocalEditorStore } from '../stores/vocalEditorStore.js';
 import { useVideoStore } from '../stores/videoStore.js';
+import {
+  copyRange, cutRange, describeClipboard, insertSilence, isEmptyClipboard, pasteAt,
+  type PasteMode,
+} from '../daw/edit/clipboard.js';
+import { snapDistanceMs, snapSecToZero } from '../daw/edit/zero-cross.js';
+import { describeStrip, findSoundRegions, stripClipSilence } from '../daw/edit/strip-silence.js';
+import { getCached, monoSum } from '../daw/engine/audio-cache.js';
 import { frameSec, videoOf } from '../daw/model/video.js';
 import {
   analyzeClipPitch, applyCorrection, guideNotesFor, renderClipPitch, tuningSummary,
@@ -113,7 +120,9 @@ export type DawCommandId =
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
   | 'daw.tuneToGuide' | 'daw.riff'
   | 'daw.addChord' | 'daw.openVocalEditor'
-  | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward';
+  | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
+  | 'daw.copy' | 'daw.cut' | 'daw.cutRipple' | 'daw.paste' | 'daw.pasteInsert'
+  | 'daw.insertSilence' | 'daw.stripSilence' | 'daw.snapZeroCross';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -474,6 +483,114 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!context) return;
       writeNotes(context.trackId, context.clipId, nudgeVelocity(context.notes, context.ids, -5 / 127));
       notify('벨로시티 −5');
+    },
+
+    // ── Clipboard ─────────────────────────────────────────────────────────
+    // Copy and cut read the time selection; paste lands at the PLAYHEAD, on
+    // the tracks the selection names (or the focused one).  That split is what
+    // makes "copy this bar, move there, paste" work without a second gesture
+    // to say where.
+
+    'daw.copy': () => {
+      const state = daw();
+      const board = copyRange(state.session, state.selection);
+      if (!board) { notify('구간을 먼저 선택하세요 (2번 툴)', 'warning'); return; }
+      state.setClipboard(board);
+      notify(`복사했습니다 — ${describeClipboard(board)}`);
+    },
+
+    'daw.cut': () => cutInto(daw(), false, notify),
+    'daw.cutRipple': () => cutInto(daw(), true, notify),
+
+    'daw.paste': () => pasteInto(daw(), 'overwrite', notify),
+    'daw.pasteInsert': () => pasteInto(daw(), 'insert', notify),
+
+    /**
+     * Open a gap as long as the selection.
+     *
+     * The selection is the LENGTH, not the place — the gap opens at the
+     * playhead.  Asking for a length in a dialog when the user has just drawn
+     * one on the timeline would be asking twice.
+     */
+    'daw.insertSilence': () => {
+      const state = daw();
+      const length = selectionLength(state.selection);
+      if (length <= 0) { notify('넣을 길이만큼 구간을 선택하세요', 'warning'); return; }
+      const tracks = state.selection.trackIds.length > 0
+        ? state.selection.trackIds : targetTrackIds();
+      if (tracks.length === 0) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      state.apply((s) => insertSilence(s, tracks, state.playheadSec, length));
+      notify(`${length.toFixed(1)}초를 넣었습니다 — 뒤의 모든 것이 밀렸습니다`);
+    },
+
+    /**
+     * Move the selection's edges to the nearest zero crossing.
+     *
+     * Needs the decoded audio, so it refuses when the file has not been read
+     * yet rather than silently doing nothing — "I pressed it and the edit
+     * still clicks" is the worst outcome for a command whose whole job is
+     * invisible.
+     */
+    'daw.snapZeroCross': () => {
+      const state = daw();
+      const sel = state.selection;
+      if (sel.endSec - sel.startSec <= 0) { notify('구간을 먼저 선택하세요', 'warning'); return; }
+      const source = firstAudioUnder(state, sel);
+      if (!source) { notify('구간 안에 오디오 클립이 없습니다', 'warning'); return; }
+      const cached = getCached(source.clip.fileId);
+      if (!cached) { notify('오디오가 아직 읽히지 않았습니다 — 잠시 후 다시 시도하세요', 'warning'); return; }
+
+      const mono = monoSum(cached.buffer);
+      const rate = cached.buffer.sampleRate;
+      // Selection time → file time, snap there, and back again.
+      const toFile = (t: number): number => t - source.clip.startSec + source.clip.offsetSec;
+      const fromFile = (t: number): number => t + source.clip.startSec - source.clip.offsetSec;
+      const startSec = fromFile(snapSecToZero(mono, toFile(sel.startSec), rate));
+      const endSec = fromFile(snapSecToZero(mono, toFile(sel.endSec), rate));
+      if (endSec - startSec <= 0) { notify('영교차를 찾지 못했습니다', 'warning'); return; }
+
+      state.setSelection({ ...sel, startSec, endSec });
+      const moved = Math.abs(snapDistanceMs(sel.startSec, startSec))
+        + Math.abs(snapDistanceMs(sel.endSec, endSec));
+      notify(moved < 0.001
+        ? '이미 영교차에 있습니다'
+        : `영교차로 옮겼습니다 — 합계 ${moved.toFixed(2)} ms`);
+    },
+
+    /**
+     * Cut the silence out of the clip under the playhead.
+     *
+     * One clip, not the whole track: stripping is a decision about a take, and
+     * a threshold that suits the vocal will shred the drum overheads.
+     */
+    'daw.stripSilence': () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      const clip = findClip(state.session, target.trackId, target.clipId);
+      if (!clip) return;
+      const cached = getCached(clip.fileId);
+      if (!cached) { notify('오디오가 아직 읽히지 않았습니다', 'warning'); return; }
+
+      const mono = monoSum(cached.buffer);
+      const rate = cached.buffer.sampleRate;
+      // The analysis runs over the clip's own span of the file, so trimming a
+      // take does not drag the neighbouring phrase into the decision.
+      const from = Math.max(0, Math.round(clip.offsetSec * rate));
+      const to = Math.min(mono.length, Math.round((clip.offsetSec + clip.durationSec) * rate));
+      const regions = findSoundRegions(mono.subarray(from, to), rate);
+      if (regions.length === 0) {
+        notify('자를 무음을 찾지 못했습니다 — 임계값을 올려 보세요', 'warning');
+        return;
+      }
+
+      let summary = '';
+      state.apply((s: DawSession) => {
+        const result = stripClipSilence(s, target.trackId, target.clipId, regions);
+        summary = describeStrip(result);
+        return result.session;
+      });
+      notify(summary, 'success');
     },
 
     // ── Chord Track ───────────────────────────────────────────────────────
@@ -1047,6 +1164,63 @@ function folderForSelection(state: DawState): string | null {
 }
 
 /** The audio clip under the play head on the focused track. */
+/** The first audio clip the selection touches, for a sample-level question. */
+function firstAudioUnder(
+  state: DawState, sel: TimeSelection,
+): { trackId: string; clip: Clip } | null {
+  for (const trackId of sel.trackIds) {
+    const track = findTrack(state.session, trackId);
+    if (!track) continue;
+    const clip = trackClips(track).find((c) =>
+      c.kind === 'audio' && clipEnd(c) > sel.startSec && c.startSec < sel.endSec);
+    if (clip) return { trackId, clip };
+  }
+  return null;
+}
+
+/**
+ * Cut into the clipboard.
+ *
+ * `ripple` closes the gap, which is what turns cut-then-paste into a MOVE
+ * rather than a copy plus a hole.
+ */
+function cutInto(state: DawState, ripple: boolean, notify: DawCommandDeps['notify']): void {
+  const result = cutRange(state.session, state.selection, ripple);
+  if (!result.clipboard) { notify('구간을 먼저 선택하세요 (2번 툴)', 'warning'); return; }
+  state.setClipboard(result.clipboard);
+  state.apply(() => result.session);
+  notify(`잘라냈습니다 — ${describeClipboard(result.clipboard)}${ripple ? ' (뒤를 당김)' : ''}`);
+}
+
+/**
+ * Paste at the playhead.
+ *
+ * Targets are the selection's tracks when there are any, else whatever the
+ * keyboard is pointing at — the same rule every other edit command here uses,
+ * so paste does not need its own idea of "where".
+ */
+function pasteInto(state: DawState, mode: PasteMode, notify: DawCommandDeps['notify']): void {
+  const board = state.clipboard;
+  if (isEmptyClipboard(board)) { notify('복사된 것이 없습니다', 'warning'); return; }
+  const tracks = state.selection.trackIds.length > 0
+    ? state.selection.trackIds : targetTrackIds();
+  if (tracks.length === 0) { notify('붙여넣을 트랙을 고르세요', 'warning'); return; }
+
+  let problems: string[] = [];
+  let landed = state.selection;
+  state.apply((s: DawSession) => {
+    const result = pasteAt(s, board!, state.playheadSec, tracks, mode);
+    problems = result.problems;
+    landed = result.selection;
+    return result.session;
+  });
+  // The pasted material becomes the selection, so the next edit acts on what
+  // was just put down rather than on where it came from.
+  if (landed.endSec > landed.startSec) state.setSelection(landed);
+  if (problems.length > 0) for (const p of problems.slice(0, 2)) notify(p, 'warning');
+  else notify(mode === 'insert' ? '끼워 넣었습니다 — 뒤가 밀렸습니다' : '붙여넣었습니다');
+}
+
 /** One frame at the picture's own rate, or a complaint when there is none. */
 function stepFramesWith(
   state: DawState, frames: number, notify: DawCommandDeps['notify'],
@@ -1174,6 +1348,23 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
 
     'view.zoomInH':  () => { daw().setPxPerSec(daw().pxPerSec * 1.5); },
     'view.zoomOutH': () => { daw().setPxPerSec(daw().pxPerSec / 1.5); },
+
+    // Cmd+C / Cmd+X / Cmd+V mean the TIMELINE while the DAW is on screen.
+    //
+    // One binding rather than a second chord nobody would guess: Cmd+C means
+    // "copy what I am looking at", and in the DAW that is a range of audio,
+    // not the mastering settings.  With nothing selected it says so rather
+    // than quietly copying something else — a Cmd+C that silently did a
+    // different thing is worse than one that asks for a selection.
+    'edit.copy': () => {
+      const state = daw();
+      const board = copyRange(state.session, state.selection);
+      if (!board) { notify('구간을 먼저 선택하세요 (2번 툴)', 'warning'); return; }
+      state.setClipboard(board);
+      notify(`복사했습니다 — ${describeClipboard(board)}`);
+    },
+    'edit.cut': () => cutInto(daw(), false, notify),
+    'edit.paste': () => pasteInto(daw(), 'overwrite', notify),
 
     'edit.undo': () => {
       if (!daw().canUndo()) { notify('되돌릴 편집이 없습니다'); return; }

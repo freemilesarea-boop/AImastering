@@ -43,7 +43,7 @@ export type CommandId =
   | 'tool.select' | 'tool.range' | 'tool.split' | 'tool.glue' | 'tool.erase'
   | 'tool.zoom' | 'tool.mute' | 'tool.draw' | 'tool.scrub'
   // 4. Editing & tracks
-  | 'edit.undo' | 'edit.redo' | 'edit.copy' | 'edit.paste' | 'edit.duplicate'
+  | 'edit.undo' | 'edit.redo' | 'edit.copy' | 'edit.cut' | 'edit.paste' | 'edit.duplicate'
   | 'edit.repeat' | 'edit.splitAtCursor' | 'edit.toggleSnap'
   | 'track.solo' | 'track.mute' | 'track.clearSoloMute' | 'loop.toSelection'
   // 5. Windows & panels
@@ -70,6 +70,8 @@ export type CommandId =
   | 'daw.detectChords' | 'daw.reharmonize' | 'daw.addChord'
   | 'daw.analyzeVocal' | 'daw.tuneVocal' | 'daw.openVocalEditor'
   | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
+  | 'daw.cutRipple' | 'daw.pasteInsert' | 'daw.insertSilence'
+  | 'daw.stripSilence' | 'daw.snapZeroCross'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.toggleAutomation' | 'daw.automationMode'
   | 'daw.tempoChange' | 'daw.tempoRamp'
@@ -165,9 +167,11 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'edit.redo',   group: 'edit', label: '다시 실행 (Redo)', chords: ['Mod+Shift+Z', 'Mod+Y'],
     note: '되돌린 설정 다시 적용', available: true },
   { id: 'edit.copy',   group: 'edit', label: '복사',             chords: ['Mod+C'],
-    note: '현재 마스터링 설정을 복사', available: true },
+    note: 'DAW 에서 구간을 선택했으면 그 구간 · 아니면 마스터링 설정', available: true },
+  { id: 'edit.cut',    group: 'edit', label: '잘라내기',         chords: ['Mod+X'],
+    note: 'DAW 전용 — 구간을 클립보드로 옮기고 구멍을 남깁니다', available: true },
   { id: 'edit.paste',  group: 'edit', label: '붙여넣기',         chords: ['Mod+V'],
-    note: '복사한 설정을 현재 세션에 적용', available: true },
+    note: 'DAW 에서는 재생헤드에 · 아니면 복사한 마스터링 설정', available: true },
   { id: 'edit.duplicate', group: 'edit', label: '이벤트 연속 복사 (Duplicate)', chords: ['Mod+D'],
     note: '현재 결과를 새 리비전으로 복제 (A/B 비교용)', available: true },
   { id: 'edit.repeat', group: 'edit', label: '반복 (Repeat)',    chords: ['Mod+K'],
@@ -310,6 +314,20 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '분석된 구간을 에디터 스케일에 맞추고 PSOLA 로 렌더 (원본은 보존)', available: true },
   { id: 'daw.openVocalEditor', group: 'daw', label: 'VOCAL 에디터에서 열기', chords: ['Shift+Alt+V'],
     note: '재생 위치의 오디오 클립을 블롭 에디터로 — 노트 하나씩 끌어 고칩니다', available: true },
+
+  // ── 클립보드 · 오디오 편집 ─────────────────────────────────────────────
+  // Mod+C / Mod+X / Mod+V 는 edit.* 쪽에 있습니다 — DAW 에 있으면 타임라인,
+  // 아니면 마스터링 설정으로 갈라집니다.  아래는 DAW 에만 있는 변형입니다.
+  { id: 'daw.cutRipple', group: 'daw', label: '잘라내고 뒤를 당기기', chords: ['Mod+Shift+X'],
+    note: '구멍을 남기지 않습니다 — 이걸로 잘라 붙이면 복사가 아니라 이동입니다', available: true },
+  { id: 'daw.pasteInsert', group: 'daw', label: '끼워 넣기 (뒤를 밀기)', chords: ['Mod+Shift+V'],
+    note: '덮어쓰지 않고 자리를 만들어 넣습니다 — 아무것도 사라지지 않습니다', available: true },
+  { id: 'daw.insertSilence', group: 'daw', label: '무음 삽입', chords: ['Mod+Shift+E'],
+    note: '선택한 길이만큼 재생헤드에 빈 자리를 만듭니다 (리플 삭제의 반대)', available: true },
+  { id: 'daw.stripSilence', group: 'daw', label: '무음 제거', chords: ['Shift+Alt+S'],
+    note: '재생 위치 클립에서 소리 나는 부분만 남깁니다 — 타이밍은 그대로', available: true },
+  { id: 'daw.snapZeroCross', group: 'daw', label: '영교차로 스냅', chords: ['Shift+Alt+Z'],
+    note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
 
   // ── 픽처 (비디오) ──────────────────────────────────────────────────────
   { id: 'daw.togglePicture', group: 'daw', label: '픽처 창 켜기 / 끄기', chords: ['Shift+Alt+P'],
