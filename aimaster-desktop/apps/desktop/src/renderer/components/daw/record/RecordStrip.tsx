@@ -16,6 +16,7 @@ import {
 } from '../../../daw/model/recording.js';
 import { pitchName } from '../../../daw/model/midi.js';
 import { premium } from '../../../theme/premium.js';
+import { describeInput, resolveTrackInput, trackInputRef } from '../../../daw/model/track-input.js';
 
 export default function RecordStrip() {
   const session = useDawStore((s) => s.session);
@@ -172,9 +173,18 @@ export default function RecordStrip() {
           {split.audio.map((track) => {
             const input = inputs[track.id] ?? DEFAULT_TRACK_INPUT;
             const peak = levels[track.id] ?? 0;
+            // What the SESSION says this track records from, and whether the
+            // machine can currently honour it.
+            const saved = trackInputRef(track);
+            const resolution = resolveTrackInput(saved, devices);
+            const missing = resolution.kind === 'missing';
             return (
               <div key={track.id} className="flex items-center gap-1 rounded px-1.5 py-0.5"
-                   style={{ border: `1px solid ${premium.surface.hairline}`, background: premium.surface.well }}>
+                   title={resolution.reason ?? undefined}
+                   style={{
+                     border: `1px solid ${missing ? premium.accent.danger : premium.surface.hairline}`,
+                     background: premium.surface.well,
+                   }}>
                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: track.color }} />
                 <span className="text-[9.5px] truncate" style={{ color: premium.text.muted, maxWidth: 74 }}
                       title={track.name}>{track.name}</span>
@@ -189,17 +199,28 @@ export default function RecordStrip() {
                   }} />
                 </div>
                 <select
-                  value={input.deviceId ?? ''}
+                  value={saved.deviceId ?? input.deviceId ?? ''}
                   onFocus={() => { if (devices.length === 0) void refreshDevices(); }}
                   onChange={(e) => setTrackInput(track.id, { deviceId: e.target.value || null })}
-                  title={`${track.name} 의 입력 장치`}
-                  style={{ ...selectStyle, height: 20, maxWidth: 118 }}
+                  title={`${track.name} 의 입력 장치 — ${describeInput(saved)} (세션에 저장됩니다)`}
+                  style={{
+                    ...selectStyle, height: 20, maxWidth: 118,
+                    borderColor: missing ? premium.accent.danger : premium.surface.hairline,
+                    color: missing ? premium.accent.danger : premium.text.secondary,
+                  }}
                 >
                   <option value="">기본 입력</option>
+                  {/* The saved device, listed even when it is not plugged in.
+                      Dropping it from the list would silently reset the track
+                      to the default the moment the interface is unplugged —
+                      and the assignment would be gone for good. */}
+                  {missing && saved.deviceLabel && saved.deviceId && (
+                    <option value={saved.deviceId}>{saved.deviceLabel} (없음)</option>
+                  )}
                   {devices.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
                 </select>
                 <select
-                  value={input.channels}
+                  value={saved.channels}
                   onChange={(e) => setTrackInput(track.id, { channels: Number(e.target.value) === 2 ? 2 : 1 })}
                   title={`${track.name} 의 캡처 채널`}
                   style={{ ...selectStyle, height: 20, maxWidth: 62 }}

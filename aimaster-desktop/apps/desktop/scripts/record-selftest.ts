@@ -25,6 +25,15 @@ import {
 } from '../src/renderer/daw/model/session-ops.js';
 import { activePlaylist } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
+import {
+  DEFAULT_INPUT_REF, describeInput, hasInputAssignment, inputRefFor, refreshHint,
+  resolveTrackInput, trackInputRef,
+} from '../src/renderer/daw/model/track-input.js';
+import {
+  assignInputDevice, clearTrackInput, describeAssignments, inputFor, planInputs,
+  rememberResolved, setTrackInputChannels,
+} from '../src/renderer/daw/edit/track-input-ops.js';
+import { serializeDawSession, deserializeDawSession } from '../src/renderer/daw/model/session-io.js';
 import type { DawSession, Track } from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
@@ -331,6 +340,152 @@ async function commitTest(name: string, fn: () => Promise<void>): Promise<void> 
   try { await fn(); results.push({ name, pass: true, detail: '' }); }
   catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
 }
+
+// ── Per-track input, saved with the project ───────────────────────────────────
+//
+// The assignment used to live in a Zustand map keyed by track id, which meant
+// it lasted exactly as long as the window.  Saving it is not just moving the
+// map: a MediaDevices id is issued by the browser, scoped to one machine, and
+// rotates.  What travels is the NAME.
+
+const DEVICES = [
+  { id: 'dev-a', label: 'Scarlett 18i20' },
+  { id: 'dev-b', label: 'Built-in Microphone' },
+];
+
+function withInput(name: string, ref: Parameters<typeof inputRefFor>[0], channels: 1 | 2 = 1) {
+  const { session, track } = sessionWithTrack(name);
+  return { session: assignInputDevice(session, track.id, ref, channels), track };
+}
+
+check('an assignment is stored by NAME, with the id only as a hint', () => {
+  const { session, track } = withInput('Vox', DEVICES[0]!);
+  const ref = trackInputRef(findTrack(session, track.id)!);
+  eq(ref.deviceLabel, 'Scarlett 18i20', 'the name travels');
+  eq(ref.deviceId, 'dev-a', 'and the id comes along as a hint');
+  eq(describeInput(ref), 'Scarlett 18i20 · 모노', 'and reads back');
+});
+
+check('a track from before this existed reads as the system default', () => {
+  const { session, track } = sessionWithTrack('Vox');
+  const raw = findTrack(session, track.id)!;
+  assert(raw.recordInput === undefined, 'the fixture has no assignment');
+  eq(trackInputRef(raw).deviceLabel, null, 'no device');
+  eq(hasInputAssignment(raw), false, 'and nothing to report');
+  eq(resolveTrackInput(DEFAULT_INPUT_REF, DEVICES).kind, 'default', 'which is not a failure');
+});
+
+check('the saved id is used when the device still calls itself the same thing', () => {
+  const { session, track } = withInput('Vox', DEVICES[0]!);
+  const r = inputFor(session, track.id, DEVICES);
+  eq(r.kind, 'id', 'found by id');
+  eq(r.deviceId, 'dev-a', 'the right one');
+  eq(r.reason, null, 'nothing to say');
+});
+
+check('an id that has been reissued to a DIFFERENT box is not trusted', () => {
+  // Browsers hand the same id to whatever is plugged into that port next.
+  // Taking it because the number matches is how a vocal ends up recorded
+  // through a guitar DI.
+  const { session, track } = withInput('Vox', DEVICES[0]!);
+  const rotated = [{ id: 'dev-a', label: 'Some Other Interface' }];
+  const r = inputFor(session, track.id, rotated);
+  eq(r.kind, 'missing', 'the id is not enough');
+  assert(r.reason?.includes('Scarlett'), `and it names what it wanted: ${r.reason}`);
+});
+
+check('the same interface after a reboot is found by name', () => {
+  const { session, track } = withInput('Vox', DEVICES[0]!);
+  const newIds = [{ id: 'dev-zz', label: 'Scarlett 18i20' }];
+  const r = inputFor(session, track.id, newIds);
+  eq(r.kind, 'label', 'found by name');
+  eq(r.deviceId, 'dev-zz', 'with the id it has today');
+  eq(r.reason, null, 'and this is normal, not a problem');
+});
+
+check('a device that is not here falls back to the default AND says so', () => {
+  const { session, track } = withInput('Vox', DEVICES[0]!);
+  const r = inputFor(session, track.id, [DEVICES[1]!]);
+  eq(r.kind, 'missing', 'not found');
+  eq(r.deviceId, null, 'the system default is used');
+  assert(r.reason?.includes('Scarlett 18i20'), `named: ${r.reason}`);
+  assert(r.reason?.includes('기본 입력'), `and what happened instead: ${r.reason}`);
+});
+
+check('the refreshed hint is written back only when the name did the finding', () => {
+  const { session, track } = withInput('Vox', DEVICES[0]!);
+  const newIds = [{ id: 'dev-zz', label: 'Scarlett 18i20' }];
+  const found = inputFor(session, track.id, newIds);
+  const after = rememberResolved(session, track.id, found);
+  eq(trackInputRef(findTrack(after, track.id)!).deviceId, 'dev-zz', 'the hint is fresh');
+  eq(trackInputRef(findTrack(after, track.id)!).deviceLabel, 'Scarlett 18i20', 'the name is untouched');
+  // Found by id, or not found at all: nothing to rewrite.
+  const byId = inputFor(session, track.id, DEVICES);
+  eq(rememberResolved(session, track.id, byId), session, 'no write when the id was right');
+  eq(refreshHint(trackInputRef(findTrack(session, track.id)!), byId).deviceId, 'dev-a', 'unchanged');
+});
+
+check('channel count is part of the assignment and survives a device change', () => {
+  const { session, track } = withInput('Drums', DEVICES[0]!, 2);
+  eq(trackInputRef(findTrack(session, track.id)!).channels, 2, 'stereo');
+  const moved = assignInputDevice(session, track.id, DEVICES[1]!);
+  eq(trackInputRef(findTrack(moved, track.id)!).channels, 2, 'still stereo on the new device');
+  const mono = setTrackInputChannels(moved, track.id, 1);
+  eq(trackInputRef(findTrack(mono, track.id)!).channels, 1, 'and can be changed on its own');
+  eq(inputFor(mono, track.id, DEVICES).channels, 1, 'which the resolver carries through');
+});
+
+check('clearing puts a track back on the default', () => {
+  const { session, track } = withInput('Vox', DEVICES[0]!);
+  const cleared = clearTrackInput(session, track.id);
+  eq(hasInputAssignment(findTrack(cleared, track.id)!), false, 'nothing assigned');
+  eq(inputFor(cleared, track.id, DEVICES).kind, 'default', 'and that is the default');
+});
+
+check('setting the same thing twice does not touch the session', () => {
+  const { session, track } = withInput('Vox', DEVICES[0]!);
+  eq(assignInputDevice(session, track.id, DEVICES[0]!), session, 'same object back');
+});
+
+check('the assignment survives a save and a load', () => {
+  const { session, track } = withInput('Vox', DEVICES[0]!, 2);
+  const parsed = deserializeDawSession(serializeDawSession(session));
+  assert(parsed.ok, 'the session loads');
+  if (!parsed.ok) return;
+  const ref = trackInputRef(parsed.session.tracks.find((t) => t.id === track.id)!);
+  eq(ref.deviceLabel, 'Scarlett 18i20', 'the device name came back');
+  eq(ref.channels, 2, 'and the channel count');
+});
+
+check('the plan covers every armed AUDIO track, and names what is missing', () => {
+  resetIds();
+  let s = createSession('band');
+  const vox = createTrack('Vox', 'audio');
+  const gtr = createTrack('Gtr', 'audio');
+  const keys = createTrack('Keys', 'instrument');
+  s = addTrack(addTrack(addTrack(s, vox), gtr), keys);
+  s = assignInputDevice(s, vox.id, DEVICES[0]!);
+  s = assignInputDevice(s, gtr.id, { id: 'gone', label: 'Old Preamp' });
+  for (const id of [vox.id, gtr.id, keys.id]) s = setRecordArm(s, id, true);
+
+  const plan = planInputs(s, DEVICES);
+  eq(plan.items.length, 2, 'the MIDI track is not an input problem');
+  eq(plan.items.map((i) => i.trackName).join(','), 'Vox,Gtr', 'both audio tracks');
+  eq(plan.problems.length, 1, 'one problem');
+  assert(plan.problems[0]?.includes('Gtr') && plan.problems[0]?.includes('Old Preamp'),
+    `naming the track and the device: ${plan.problems[0]}`);
+  eq(plan.items[0]!.resolution.deviceId, 'dev-a', 'and the one that resolved got its device');
+});
+
+check('the read-out lists what each track is on', () => {
+  resetIds();
+  let s = createSession('band');
+  const vox = createTrack('Vox', 'audio');
+  s = addTrack(s, vox);
+  eq(describeAssignments(s), '입력 지정 없음', 'nothing yet');
+  s = assignInputDevice(s, vox.id, DEVICES[0]!, 2);
+  assert(describeAssignments(s).includes('Vox ← Scarlett 18i20 · 스테레오'), describeAssignments(s));
+});
 
 async function run(): Promise<void> {
   await commitTest('committing a plain take adds one lane and one clip', async () => {
