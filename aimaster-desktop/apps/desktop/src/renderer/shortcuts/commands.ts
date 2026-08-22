@@ -262,9 +262,17 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
       notify('다시 실행');
     },
 
+    // Cmd+C / Cmd+X / Cmd+V mean the timeline while the DAW is on screen —
+    // see `DawBridge.overrides`, which is the mechanism for a key that means
+    // two things.  These are the meanings everywhere else.
     'edit.copy': () => {
       workspace().setClipboard(getAudio().options);
       notify('현재 마스터링 설정을 복사했습니다', 'success');
+    },
+
+    /** Cut has no meaning for a settings object; it exists for the DAW. */
+    'edit.cut': () => {
+      notify('잘라내기는 DAW 워크스페이스에서 쓸 수 있습니다', 'warning');
     },
 
     'edit.paste': () => {
