@@ -18,6 +18,8 @@ import { SCALES, PITCH_CLASS_NAMES, suggestScales, scaleName } from '../../../da
 import { detectChord, formatChord, voiceChord, QUALITIES, makeChord } from '../../../daw/model/chords.js';
 import { createNote, from7bit, noteEndBeat, type MidiNote } from '../../../daw/model/midi.js';
 import { beatsToSecAt, partClock, secToBeatsAt } from '../../../daw/model/note-time.js';
+import { describeGroove, onsetsFromNotes, extractGroove } from '../../../daw/model/groove.js';
+import { applyGrooveToPart } from '../../../daw/edit/tempo-groove-actions.js';
 import { tempoMapOf } from '../../../daw/model/tempo-map.js';
 
 const COMMON_QUALITIES = ['maj', 'min', 'sus4', 'sus2', 'dim', 'aug',
@@ -49,6 +51,10 @@ export default function KeyEditorInspector() {
   const setOverlapMs  = useMidiEditorStore((s) => s.setOverlapMs);
   const transposeSemitones = useMidiEditorStore((s) => s.transposeSemitones);
   const setTransposeSemitones = useMidiEditorStore((s) => s.setTransposeSemitones);
+  const groove        = useDawStore((s) => s.groove);
+  const setGroove     = useDawStore((s) => s.setGroove);
+  const [grooveStrength, setGrooveStrength] = React.useState(100);
+  const [grooveVelocity, setGrooveVelocity] = React.useState(0);
   const scaleCorrection = useMidiEditorStore((s) => s.scaleCorrection);
   const toggleScaleCorrection = useMidiEditorStore((s) => s.toggleScaleCorrection);
 
@@ -267,6 +273,34 @@ export default function KeyEditorInspector() {
         <Action onClick={() => { write(glueNotes(notes, targetIds)); notify('노트 결합'); }}>
           Glue Notes
         </Action>
+      </Section>
+
+      {/* ── Groove ──────────────────────────────────────────────────────── */}
+      <Section title="Groove">
+        <div className="text-[9px] leading-snug text-zinc-500 min-h-[1.6rem]">
+          {groove
+            ? <><span className="text-zinc-300">{groove.name}</span><br />{describeGroove(groove)}</>
+            : '아직 떠낸 그루브가 없습니다 — 연주에서 밀고 당김을 먼저 추출하세요'}
+        </div>
+        <Action onClick={() => {
+          const result = extractGroove(onsetsFromNotes(notes, targetIds),
+            { name: `${part.name} 그루브` });
+          if (!result.groove) { notify(result.reason ?? '그루브를 추출할 수 없습니다', 'warning'); return; }
+          setGroove(result.groove);
+          notify(`그루브 추출 — ${describeGroove(result.groove)}`, 'success');
+        }}>Extract from Part</Action>
+        <Slider label="Strength" value={grooveStrength} min={0} max={100} step={1}
+          suffix="%" onChange={setGrooveStrength} />
+        <Slider label="Velocity" value={grooveVelocity} min={0} max={100} step={1}
+          suffix="%" onChange={setGrooveVelocity} />
+        <Action onClick={() => {
+          if (!groove || !open) { notify('먼저 그루브를 추출하세요', 'warning'); return; }
+          const result = applyGrooveToPart(
+            session, open.trackId, open.clipId, groove, targetIds,
+            { strength: grooveStrength / 100, velocityStrength: grooveVelocity / 100 });
+          apply(() => result.session);
+          notify(result.message, result.movedCount > 0 ? 'success' : 'warning');
+        }}>Apply Groove</Action>
       </Section>
 
       {/* ── Velocity ────────────────────────────────────────────────────── */}

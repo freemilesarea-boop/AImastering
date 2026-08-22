@@ -15,6 +15,7 @@ import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
 import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
+import type { Groove } from '../daw/model/groove.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import { autosaveDriver } from '../daw/engine/autosave-driver.js';
 import { snapSecToBeats, tempoMapOf } from '../daw/model/tempo-map.js';
@@ -111,6 +112,17 @@ export interface DawState {
   smartTrackId: TrackId | null;
   openSmartControls: (id: TrackId | null) => void;
 
+  /**
+   * The groove clipboard — one template, lifted off something and waiting.
+   *
+   * It sits beside the session rather than inside it because a groove is a
+   * measurement of one thing being carried to another; it is not part of what
+   * the project IS, and putting it in the undo stack would make lifting a feel
+   * an edit.
+   */
+  groove: Groove | null;
+  setGroove: (g: Groove | null) => void;
+
   /** Non-fatal engine notices (feedback loops, decode failures). */
   engineWarning: string | null;
   setEngineWarning: (w: string | null) => void;
@@ -202,6 +214,9 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   clipboard: null,
   setClipboard: (clipboard) => set({ clipboard }),
+
+  groove: null,
+  setGroove: (groove) => set({ groove }),
 
   metronomeOn: false,
   toggleMetronome: () => {
