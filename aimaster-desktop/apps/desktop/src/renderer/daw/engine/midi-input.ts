@@ -43,7 +43,22 @@ export interface MidiPortLike {
 
 interface WebMidiAccess {
   inputs: Map<string, MidiPortLike> | Iterable<[string, MidiPortLike]>;
+  outputs?: Map<string, MidiOutPortLike> | Iterable<[string, MidiOutPortLike]>;
   onstatechange: ((event: unknown) => void) | null;
+}
+
+/**
+ * The part of a Web MIDI OUTPUT port this module touches.
+ *
+ * Same treatment as `MidiPortLike`: named and exported so the feedback path
+ * can be driven end to end against a fake desk that records what it was sent.
+ */
+export interface MidiOutPortLike {
+  id: string;
+  name?: string | null;
+  manufacturer?: string | null;
+  state?: string;
+  send: (data: number[] | Uint8Array) => void;
 }
 
 type MidiRequester = (options?: { sysex?: boolean }) => Promise<WebMidiAccess>;
@@ -117,6 +132,53 @@ function portsOf(access: WebMidiAccess): MidiPortLike[] {
   }
   for (const entry of inputs) out.push(entry[1]);
   return out;
+}
+
+function outPortsOf(access: WebMidiAccess): MidiOutPortLike[] {
+  const out: MidiOutPortLike[] = [];
+  const outputs = access.outputs;
+  if (!outputs) return out;
+  if (typeof (outputs as { forEach?: unknown })?.forEach === 'function') {
+    (outputs as unknown as Map<string, MidiOutPortLike>).forEach((port) => out.push(port));
+    return out;
+  }
+  for (const entry of outputs as Iterable<[string, MidiOutPortLike]>) out.push(entry[1]);
+  return out;
+}
+
+export async function listMidiOutputs(): Promise<MidiInputDevice[]> {
+  const access = await midiAccess();
+  if (!access) return [];
+  return outPortsOf(access).map((port) => ({
+    id: port.id,
+    name: port.name || 'MIDI 출력',
+    manufacturer: port.manufacturer || '',
+    connected: (port.state ?? 'connected') !== 'disconnected',
+  }));
+}
+
+/**
+ * Open the desk's output.
+ *
+ * `deviceId` null means "the one that matches the input", which is what a
+ * control surface almost always is — one box with a port in each direction,
+ * named the same on both.  Falling back to every output would light up a
+ * synth's panel with fader positions.
+ */
+export async function openMidiOutput(
+  deviceId: string | null, matchName?: string | null,
+): Promise<MidiOutPortLike | null> {
+  const access = await midiAccess();
+  if (!access) return null;
+  const all = outPortsOf(access);
+  if (all.length === 0) return null;
+  if (deviceId) return all.find((p) => p.id === deviceId) ?? null;
+  if (matchName) {
+    const wanted = matchName.toLowerCase();
+    const byName = all.find((p) => (p.name || '').toLowerCase() === wanted);
+    if (byName) return byName;
+  }
+  return null;
 }
 
 export async function listMidiInputs(): Promise<MidiInputDevice[]> {

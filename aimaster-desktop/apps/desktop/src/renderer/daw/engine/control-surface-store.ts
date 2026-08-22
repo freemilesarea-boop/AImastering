@@ -42,11 +42,26 @@ interface Envelope {
   deviceId: string | null;
   /** Off by default: a surface nobody set up must not move anything. */
   enabled: boolean;
+  /**
+   * Which MIDI OUTPUT the desk listens on, or null to use the one whose name
+   * matches the input — which is what a one-box control surface is.
+   */
+  outputId: string | null;
+  /**
+   * Send the session back to the desk.
+   *
+   * Separate from `enabled`, and off by default, because they fail in
+   * opposite directions: a desk that reads but does not light is merely
+   * plain, while a desk being written to that is actually a synth starts
+   * playing notes at whatever CC numbers were bound.
+   */
+  feedback: boolean;
   bindings: ControlBinding[];
 }
 
 const EMPTY: Envelope = {
-  version: SCHEMA_VERSION, deviceId: null, enabled: false, bindings: [],
+  version: SCHEMA_VERSION, deviceId: null, enabled: false,
+  outputId: null, feedback: false, bindings: [],
 };
 
 function isBinding(value: unknown): value is ControlBinding {
@@ -85,6 +100,8 @@ export function readSurface(): Envelope {
       version: SCHEMA_VERSION,
       deviceId: typeof parsed.deviceId === 'string' ? parsed.deviceId : null,
       enabled: parsed.enabled === true,
+      outputId: typeof parsed.outputId === 'string' ? parsed.outputId : null,
+      feedback: parsed.feedback === true,
       bindings: parsed.bindings.filter(isBinding).map(normalise),
     };
   } catch {
@@ -106,6 +123,17 @@ function write(envelope: Envelope): boolean {
 export function listBindings(): ControlBinding[] { return readSurface().bindings; }
 export function surfaceEnabled(): boolean { return readSurface().enabled; }
 export function surfaceDeviceId(): string | null { return readSurface().deviceId; }
+
+export function surfaceFeedback(): boolean { return readSurface().feedback; }
+export function surfaceOutputId(): string | null { return readSurface().outputId; }
+
+export function setSurfaceFeedback(feedback: boolean): boolean {
+  return write({ ...readSurface(), feedback });
+}
+
+export function setSurfaceOutputId(outputId: string | null): boolean {
+  return write({ ...readSurface(), outputId });
+}
 
 export function setSurfaceEnabled(enabled: boolean): boolean {
   return write({ ...readSurface(), enabled });
