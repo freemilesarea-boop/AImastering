@@ -1,6 +1,9 @@
 // Audio Unit host — the native leaf.
 //
-// ⚠️ WRITTEN ON LINUX, NEVER COMPILED, NEVER RUN.  See ../README.md.  Nothing
+// ⚠️ COMPILED AND RUN, BUT NOT AGAINST APPLE'S AudioToolbox.  See ../README.md.
+// `test/` builds this exact source against a fake CoreAudio with real pull
+// semantics, so the logic below is executed; the macOS CI job builds it against
+// the real framework, which is the only thing that can confirm the API.  Nothing
 // above this depends on it working: a failed load, a failed open, or output
 // that does not survive validation all come back as "this stage was not
 // applied", with the reason, and the audio passes through untouched.
@@ -34,6 +37,7 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <AudioUnit/AudioUnit.h>
 #include <napi.h>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -42,6 +46,16 @@ namespace {
 
 /** Small enough that every unit accepts it, large enough to be cheap. */
 constexpr UInt32 BLOCK_FRAMES = 512;
+
+/**
+ * The channel count above which the number is a mistake, not a mix.
+ *
+ * Without a ceiling, `channels` arrives as an unsigned cast of whatever was
+ * passed: -1 becomes four billion, `resize` throws `std::bad_alloc`, and
+ * exceptions are OFF in this build — so the process aborts.  An argument must
+ * never be able to do that; a plugin failing alone is the whole point.
+ */
+constexpr UInt32 MAX_CHANNELS = 64;
 
 struct Instance {
   AudioUnit unit = nullptr;
@@ -125,13 +139,24 @@ AudioStreamBasicDescription FloatFormat(double sampleRate, UInt32 channels) {
 
 Napi::Value Open(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  if (info.Length() < 3 || !info[0].IsString()) {
+  if (info.Length() < 3 || !info[0].IsString() || !info[1].IsNumber() || !info[2].IsNumber()) {
     Napi::TypeError::New(env, "open(uid, sampleRate, channels)").ThrowAsJavaScriptException();
     return env.Null();
   }
   const std::string uid = info[0].As<Napi::String>().Utf8Value();
   const double sampleRate = info[1].As<Napi::Number>().DoubleValue();
-  const UInt32 channels = static_cast<UInt32>(info[2].As<Napi::Number>().Int32Value());
+  const int32_t requested = info[2].As<Napi::Number>().Int32Value();
+
+  if (!(sampleRate > 0.0) || sampleRate > 1.0e7) {
+    Napi::RangeError::New(env, "샘플레이트가 아닙니다").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  if (requested < 1 || static_cast<UInt32>(requested) > MAX_CHANNELS) {
+    Napi::RangeError::New(env, "채널 수가 1.." + std::to_string(MAX_CHANNELS) + " 밖입니다")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  const UInt32 channels = static_cast<UInt32>(requested);
 
   AudioComponentDescription desc;
   if (!ParseUid(uid, &desc)) {
@@ -205,8 +230,9 @@ Instance* Lookup(int32_t handle) {
 
 Napi::Value Parameters(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  Instance* self = Lookup(info[0].As<Napi::Number>().Int32Value());
   Napi::Array out = Napi::Array::New(env);
+  if (info.Length() < 1 || !info[0].IsNumber()) return out;
+  Instance* self = Lookup(info[0].As<Napi::Number>().Int32Value());
   if (self == nullptr) return out;
 
   UInt32 size = 0;
@@ -215,10 +241,20 @@ Napi::Value Parameters(const Napi::CallbackInfo& info) {
       kAudioUnitScope_Global, 0, &size, nullptr);
   if (status != noErr || size == 0) return out;
 
+  // A unit that announces a size which is not a whole number of ids would,
+  // taken at face value, have the second call write past the end of the
+  // vector.  The buffer's real size is what is passed back in, not what was
+  // announced — third-party code does not get to choose how much of our
+  // memory it writes to.
   std::vector<AudioUnitParameterID> ids(size / sizeof(AudioUnitParameterID));
+  if (ids.empty()) return out;
+  size = static_cast<UInt32>(ids.size() * sizeof(AudioUnitParameterID));
   status = AudioUnitGetProperty(self->unit, kAudioUnitProperty_ParameterList,
                                 kAudioUnitScope_Global, 0, ids.data(), &size);
   if (status != noErr) return out;
+  // And it may have filled fewer than it asked for.
+  const size_t filled = size / sizeof(AudioUnitParameterID);
+  if (filled < ids.size()) ids.resize(filled);
 
   uint32_t index = 0;
   for (AudioUnitParameterID id : ids) {
@@ -240,7 +276,13 @@ Napi::Value Parameters(const Napi::CallbackInfo& info) {
         CFRelease(pinfo.cfNameString);
       }
     }
-    if (name.empty()) name = std::string(pinfo.name);
+    // `pinfo.name` is a fixed 52-byte array.  A unit that fills all 52 leaves
+    // it unterminated, and `std::string(const char*)` would read off the end.
+    if (name.empty()) {
+      const void* nul = memchr(pinfo.name, '\0', sizeof(pinfo.name));
+      name = std::string(pinfo.name, nul == nullptr ? sizeof(pinfo.name)
+          : static_cast<size_t>(static_cast<const char*>(nul) - pinfo.name));
+    }
     if (name.empty()) continue;
 
     Napi::Object entry = Napi::Object::New(env);
@@ -255,6 +297,9 @@ Napi::Value Parameters(const Napi::CallbackInfo& info) {
 
 Napi::Value SetParameter(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+    return env.Undefined();
+  }
   Instance* self = Lookup(info[0].As<Napi::Number>().Int32Value());
   if (self == nullptr) return env.Undefined();
   const AudioUnitParameterID id =
@@ -269,13 +314,29 @@ Napi::Value SetParameter(const Napi::CallbackInfo& info) {
 
 Napi::Value Process(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  // The types are checked BEFORE anything is read.  `As<Float32Array>()` on a
+  // plain object leaves an exception pending, and the next throw — even the
+  // right one, with the right message — is then a FATAL ERROR that takes the
+  // whole host process down.  The check has to come first or it is not a check.
+  if (info.Length() < 3 || !info[0].IsNumber() || !info[2].IsNumber()
+      || !info[1].IsTypedArray()
+      || info[1].As<Napi::TypedArray>().TypedArrayType() != napi_float32_array) {
+    Napi::TypeError::New(env, "process(handle, Float32Array, frames)")
+        .ThrowAsJavaScriptException();
+    return env.Null();
+  }
   Instance* self = Lookup(info[0].As<Napi::Number>().Int32Value());
   if (self == nullptr) {
     Napi::Error::New(env, "핸들이 유효하지 않습니다").ThrowAsJavaScriptException();
     return env.Null();
   }
   Napi::Float32Array samples = info[1].As<Napi::Float32Array>();
-  const UInt32 frames = static_cast<UInt32>(info[2].As<Napi::Number>().Int64Value());
+  const double wantFrames = info[2].As<Napi::Number>().DoubleValue();
+  if (!(wantFrames >= 0.0) || wantFrames > 4294967295.0) {
+    Napi::RangeError::New(env, "프레임 수가 아닙니다").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  const UInt32 frames = static_cast<UInt32>(wantFrames);
   const UInt32 channels = self->channels;
   Float32* data = samples.Data();
 
@@ -336,6 +397,7 @@ Napi::Value Process(const Napi::CallbackInfo& info) {
 
 Napi::Value Close(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsNumber()) return env.Undefined();
   const int32_t handle = info[0].As<Napi::Number>().Int32Value();
   Instance* self = Lookup(handle);
   if (self == nullptr) return env.Undefined();

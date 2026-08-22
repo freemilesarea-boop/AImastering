@@ -54,6 +54,15 @@ export interface HostRequirement {
   why: string;
   /** Whether this app currently satisfies it. */
   met: boolean;
+  /**
+   * What was actually observed, when there is something to say.
+   *
+   * A blocker that only says "not met" cannot be acted on.  For the native
+   * module the interesting part is WHERE the app looked — a build that ran
+   * and then could not be resolved is indistinguishable, from the outside,
+   * from a build that never happened.
+   */
+  detail?: string | undefined;
 }
 
 /**
@@ -69,6 +78,10 @@ export interface HostCapabilities {
   platform: string;
   /** The native AU addon actually loaded — not "an adapter exists". */
   auHost: boolean;
+  /** The path it came from, when it loaded. */
+  auLoadedFrom?: string | null;
+  /** Every place that was tried, and what went wrong there. */
+  auTried?: readonly string[];
 }
 
 let capabilities: HostCapabilities = { platform: 'unknown', auHost: false };
@@ -90,6 +103,13 @@ export function requirements(): readonly HostRequirement[] {
     // Measured.  The adapter is written and tested; whether the addon it calls
     // was built for THIS machine is a question only the main process can answer.
     met: capabilities.auHost,
+    // And when it is not met, WHERE it looked — a build that succeeded and
+    // then could not be resolved looks exactly like a build that never ran.
+    detail: capabilities.auHost
+      ? (capabilities.auLoadedFrom ?? undefined)
+      : (capabilities.auTried && capabilities.auTried.length > 0
+          ? capabilities.auTried.join('\n')
+          : undefined),
   },
   {
     id: 'process-isolation',

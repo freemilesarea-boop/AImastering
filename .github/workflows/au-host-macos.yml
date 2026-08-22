@@ -1,0 +1,72 @@
+# The Audio Unit addon, built against Apple's own AudioToolbox.
+#
+# `pnpm test:au-native` compiles the same source against a fake CoreAudio and
+# runs our logic through it, on any machine.  What it cannot answer is whether
+# the API is the API: a struct field with the wrong name, an argument in the
+# wrong order, a constant that does not exist.  Only a Mac can say, so this job
+# builds it there and then runs it against the Audio Units Apple ships.
+#
+# It runs on changes to the addon and its callers, and on demand.
+
+name: AU host (macOS)
+
+on:
+  push:
+    paths:
+      - 'aimaster-desktop/apps/desktop/native/au-host/**'
+      - 'aimaster-desktop/apps/desktop/src/main/plugins/**'
+      - '.github/workflows/au-host-macos.yml'
+  pull_request:
+    paths:
+      - 'aimaster-desktop/apps/desktop/native/au-host/**'
+      - 'aimaster-desktop/apps/desktop/src/main/plugins/**'
+      - '.github/workflows/au-host-macos.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-smoke:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: aimaster-desktop/apps/desktop
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      # `scripts/build-au.mjs` reads Electron's version out of the workspace,
+      # so the install has to come first.
+      - name: Install workspace
+        working-directory: aimaster-desktop
+        run: pnpm install --frozen-lockfile
+
+      # ── Built for plain Node, because that is what runs the smoke test ────
+      - name: Build the addon against the real AudioToolbox (node ABI)
+        run: node scripts/build-au.mjs --for-node
+
+      # ── The checklist from native/au-host/README.md, as a program ─────────
+      - name: Smoke test against Apple's own Audio Units
+        run: node native/au-host/test/au-host-mac-smoke.mjs
+
+      # ── And again for the ABI the app actually loads it with ──────────────
+      # Electron 28 is NODE_MODULE_VERSION 119 and Node 22 is 127; an addon
+      # built the plain way loads in `node` and fails in the app.  The smoke
+      # test cannot run against this one — nothing outside Electron can load
+      # it — so what is checked here is that it builds and lands.
+      - name: Build the addon for Electron's ABI
+        run: |
+          node scripts/build-au.mjs
+          ls -l native/au-host/build/Release/au_host.node
+
+      # ── And the same suite that runs everywhere else, here too ────────────
+      - name: Adapter and fake-CoreAudio self-tests
+        run: |
+          pnpm test:au
+          pnpm test:au-native

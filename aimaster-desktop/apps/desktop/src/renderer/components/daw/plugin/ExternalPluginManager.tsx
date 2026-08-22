@@ -105,6 +105,18 @@ export default function ExternalPluginManager({ onClose, onInsert }: {
                 <span style={{ color: premium.text.secondary }}>· {requirement.what}</span>
                 <br />
                 <span style={{ color: premium.text.faint, paddingLeft: 10 }}>{requirement.why}</span>
+                {requirement.detail ? (
+                  <>
+                    <br />
+                    {/* What was actually observed — the paths that were tried
+                        and what each one said.  Without it, a build that ran
+                        and could not be resolved reads as "never built". */}
+                    <span className="font-mono whitespace-pre-wrap break-all"
+                          style={{ color: premium.text.faint, paddingLeft: 10, fontSize: 9 }}>
+                      {requirement.detail}
+                    </span>
+                  </>
+                ) : null}
               </li>
             ))}
           </ul>

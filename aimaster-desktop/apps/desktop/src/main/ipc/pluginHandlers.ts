@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { scanPlugins, type ScanResult } from '../plugins/scan.js';
-import { hasAuHost } from '../plugins/au-native.js';
+import { auLoadReport, hasAuHost } from '../plugins/au-native.js';
 import { newScratchFile, runHostJob, sweepHostScratch } from '../plugins/host.js';
 import type { HostStage } from '../plugins/host-protocol.js';
 import { log } from '../utils/logger.js';
@@ -92,11 +92,19 @@ export function registerPluginHandlers(ipc: IpcMain): void {
    * A capability flag that has to be remembered in two places is a capability
    * flag that will disagree with itself, so the renderer asks instead.
    */
-  ipc.handle('plugins:capabilities', () => ({
-    platform: process.platform,
-    /** The native AU addon really loaded — not "we wrote an adapter". */
-    auHost: hasAuHost(),
-  }));
+  ipc.handle('plugins:capabilities', () => {
+    const report = auLoadReport();
+    return {
+      platform: process.platform,
+      /** The native AU addon really loaded — not "we wrote an adapter". */
+      auHost: hasAuHost(),
+      auLoadedFrom: report.loadedFrom,
+      // Where it looked and what went wrong there.  "No AU hosting" on its own
+      // is not actionable, and the thing it was hiding — a build whose output
+      // nothing could resolve — stayed hidden for exactly that reason.
+      auTried: report.tried.map((t) => `${t.where}: ${t.error}`),
+    };
+  });
 
   ipc.handle('plugins:scan', (_e, force: unknown): ScanResult => {
     if (cached && force !== true) return cached;
