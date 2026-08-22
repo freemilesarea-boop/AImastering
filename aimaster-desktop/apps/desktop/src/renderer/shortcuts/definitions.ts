@@ -83,6 +83,7 @@ export type CommandId =
   | 'daw.detectTempo' | 'daw.extractGroove' | 'daw.applyGroove'
   | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.pictureBack' | 'daw.pictureForward' | 'daw.pictureToPlayhead'
+  | 'daw.spotClip'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
@@ -396,6 +397,9 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '트랜지언트마다 마커를 찍고 그리드에 스냅', available: true },
   { id: 'daw.toggleWarp', group: 'daw', label: 'Warp 켜기 / 끄기', chords: ['Alt+W'],
     note: '선택한 클립의 워프 on/off', available: true },
+
+  { id: 'daw.spotClip', group: 'daw', label: 'Spot — 클립을 정확한 위치로', chords: ['Mod+Alt+Shift+S'],
+    note: '재생헤드 아래 클립의 위치를 타임코드 · 마디 · 분초 · 샘플로 입력합니다', available: true },
 
   // ── 픽처 ───────────────────────────────────────────────────────────────
   { id: 'daw.pictureBack', group: 'daw', label: '픽처 한 프레임 앞으로', chords: ['Mod+Shift+BracketLeft'],
