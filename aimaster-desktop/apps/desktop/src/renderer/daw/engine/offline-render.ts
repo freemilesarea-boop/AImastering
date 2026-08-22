@@ -94,7 +94,14 @@ export async function renderTrack(
   const isolated: DawSession = {
     ...session,
     tracks: session.tracks.map((t): Track => {
-      if (t.id === trackId) return { ...t, mute: false, solo: false, output: { kind: 'master' } };
+      // `delayMs: 0` matters as much as the routing.  Freeze bakes the
+      // PROCESSING of a channel, not its timing: the track keeps its Track
+      // Delay and the frozen clip is shifted by it at playback, exactly as
+      // the original clips were.  Rendering with the delay applied and then
+      // leaving the delay on the track would move the audio twice.
+      if (t.id === trackId) {
+        return { ...t, mute: false, solo: false, output: { kind: 'master' }, delayMs: 0 };
+      }
       if (t.kind === 'master') return { ...t, inserts: [], volumeDb: 0, pan: 0, mute: false, solo: false };
       return { ...t, mute: true, solo: false };
     }),
@@ -142,6 +149,9 @@ export async function renderTrackWindow(
           mute: false,
           solo: false,
           output: { kind: 'master' },
+          // A device is set from the material, not from where the track sits
+          // in time.  Track Delay would only move the window.
+          delayMs: 0,
           // The fader is not part of what a device hears — it is after the
           // inserts — so the channel is measured at unity either way.
           volumeDb: 0,

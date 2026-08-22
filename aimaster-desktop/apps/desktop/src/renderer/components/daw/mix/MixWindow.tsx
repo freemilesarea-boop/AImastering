@@ -28,6 +28,8 @@ import { ensureLane } from '../../../daw/edit/automation-lanes.js';
 import { stackDepth, isSummingStack } from '../../../daw/model/stacks.js';
 import { activeMacros } from '../../../daw/model/macros.js';
 import { premium } from '../../../theme/premium.js';
+import { MAX_TRACK_DELAY_MS, delayMechanism, trackDelayMs } from '../../../daw/model/track-delay.js';
+import { describeDelay, setTrackDelay } from '../../../daw/edit/track-delay-ops.js';
 
 const VISIBLE_INSERTS = 5;      // A–E, like the top half of a Pro Tools strip
 const VISIBLE_SENDS   = 5;
@@ -126,6 +128,21 @@ function ChannelStrip({
   const release = (target: AutomationTarget): void => {
     useAutomationStore.getState().release(track.id, target);
   };
+  // Track Delay.  The refusal comes back from the model with its reason, so
+  // the strip never has to know why a bus cannot be pulled early.
+  const delayMs = trackDelayMs(track);
+  const applyDelay = (ms: number): void => {
+    if (!Number.isFinite(ms)) return;
+    let refusal: string | null = null;
+    onApply((s) => {
+      const r = setTrackDelay(s, track.id, ms);
+      refusal = r.applied ? null : r.reason;
+      return r.session;
+    });
+    if (refusal) onNotify(refusal, 'warning');
+  };
+  const nudgeDelay = (delta: number): void => applyDelay(delayMs + delta);
+
   const volumeLane = findLane(track.automation, { kind: 'volume' });
   const panLane = findLane(track.automation, { kind: 'pan' });
   const writingVolume = gestureCount > 0
@@ -378,6 +395,42 @@ function ChannelStrip({
           )}
         </div>
       </div>
+
+      {/* Track Delay — ± milliseconds.  Only shown where it can do
+          something: a VCA and a folder carry no signal to delay. */}
+      {delayMechanism(track) !== 'none' && (
+        <div className="px-1.5 py-1 border-b border-zinc-900 flex items-center gap-1">
+          <span className="text-[8px] tracking-[0.12em] text-zinc-600 shrink-0">DLY</span>
+          <button
+            title={delayMechanism(track) === 'signal'
+              ? '버스는 앞당길 수 없습니다'
+              : '1 ms 먼저'}
+            onClick={() => nudgeDelay(-1)}
+            className="w-4 h-4 rounded text-[9px] leading-none bg-zinc-900 border border-zinc-700
+                       text-zinc-500 shrink-0"
+          >◀</button>
+          <input
+            type="number" step={0.1}
+            min={delayMechanism(track) === 'signal' ? 0 : -MAX_TRACK_DELAY_MS}
+            max={MAX_TRACK_DELAY_MS}
+            value={delayMs}
+            onChange={(e) => applyDelay(parseFloat(e.target.value))}
+            title={`트랙 딜레이 ${describeDelay(delayMs)}`
+              + (delayMechanism(track) === 'signal'
+                ? ' — 버스는 신호를 붙잡아 늦추기만 할 수 있습니다'
+                : ' — 클립과 노트를 그만큼 옮겨 재생합니다. 오토메이션은 따라가지 않습니다')}
+            className={`flex-1 min-w-0 h-5 rounded text-[9px] font-mono text-center bg-zinc-900
+                        border ${delayMs === 0 ? 'border-zinc-700 text-zinc-500'
+                          : 'border-amber-700/70 text-amber-300'}`}
+          />
+          <button
+            title="1 ms 늦게"
+            onClick={() => nudgeDelay(1)}
+            className="w-4 h-4 rounded text-[9px] leading-none bg-zinc-900 border border-zinc-700
+                       text-zinc-500 shrink-0"
+          >▶</button>
+        </div>
+      )}
 
       {/* Pan */}
       {!isVca && (

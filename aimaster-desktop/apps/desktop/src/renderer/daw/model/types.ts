@@ -247,6 +247,14 @@ export interface Track {
   automation: AutomationLane[];
   /** UI lane height in px. */
   height: number;
+  /**
+   * Track Delay in milliseconds — negative plays EARLIER.
+   *
+   * Optional so sessions saved before it existed still load; read it through
+   * the helpers in `model/track-delay.ts`, which treat a missing value as 0
+   * and decide which of the two mechanisms a track's kind allows.
+   */
+  delayMs?: number;
   frozen: FrozenState | null;
   /** Sound source for an instrument track (id from the instrument registry). */
   instrumentId: string | null;

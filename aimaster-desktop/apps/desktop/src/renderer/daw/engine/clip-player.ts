@@ -10,6 +10,7 @@
 // pre-fader, pre-insert position clip gain occupies in Pro Tools.
 
 import { clipEnd, findTrack, trackClips } from '../model/session-ops.js';
+import { scheduleShiftSec } from '../model/track-delay.js';
 import { laneKey, pluginParamKey, pointValueAt } from '../model/automation.js';
 import { isLiveAutomation } from './automation-live.js';
 import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
@@ -196,17 +197,24 @@ export class ClipPlayer {
       const channel = this.engine.channel(track.id);
       if (!channel) continue;
 
+      // Track Delay moves this track's events in time — negative plays early,
+      // which is why it lives here and not in a delay line.  The window test
+      // uses the SHIFTED position: a track pulled 30 ms early has to be
+      // scheduled 30 ms before the look-ahead reaches its clip.
+      const shift = scheduleShiftSec(track);
+
       for (const clip of trackClips(track)) {
         if (clip.muted) continue;
-        const end = clipEnd(clip);
-        if (end <= fromSec || clip.startSec >= toSec) continue;
+        const end = clipEnd(clip) + shift;
+        if (end <= fromSec || clip.startSec + shift >= toSec) continue;
 
         if (clip.kind === 'midi') {
-          this.scheduleMidi(session, track, clip, channel.input, fromSec, toSec);
+          this.scheduleMidi(session, track, clip, channel.input, fromSec, toSec, shift);
           continue;
         }
         if (this.scheduled.has(clip.id)) continue;
-        this.scheduleClip(session, clip, channel.input, Math.max(fromSec, clip.startSec));
+        this.scheduleClip(
+          session, clip, channel.input, Math.max(fromSec, clip.startSec + shift), shift);
       }
     }
   }
@@ -220,7 +228,7 @@ export class ClipPlayer {
    */
   private scheduleMidi(
     session: DawSession, track: Track, clip: Clip, destination: AudioNode,
-    fromSec: number, toSec: number,
+    fromSec: number, toSec: number, shiftSec: number,
   ): void {
     const instrument = findInstrument(track.instrumentId ?? 'polysynth');
     if (!instrument) return;
@@ -234,8 +242,12 @@ export class ClipPlayer {
     for (const note of clipNotes(session, clip)) {
       if (note.muted) continue;
       const span = noteSpan(clock, note);
-      const absoluteStart = span.startSec;
-      const absoluteEnd = span.endSec;
+      // The clock reads the tempo map at the note's REAL position, and the
+      // shift is added afterwards.  Track Delay is a physical offset in
+      // milliseconds, not a musical one: it must not change which beat a note
+      // was written on, only when that beat reaches the ear.
+      const absoluteStart = span.startSec + shiftSec;
+      const absoluteEnd = span.endSec + shiftSec;
       // Skip notes that finished before the window and ones not reached yet.
       if (absoluteEnd <= fromSec || absoluteStart >= toSec) continue;
       // A note that is already sounding cannot be started mid-way by a
@@ -300,17 +312,25 @@ export class ClipPlayer {
 
   private scheduleClip(
     session: DawSession, clip: Clip, destination: AudioNode, notBeforeSec: number,
+    shiftSec = 0,
   ): void {
     const ctx = this.engine.ctx;
 
+    // Where the clip SOUNDS, which is where it sits plus the track's delay.
+    // Everything below reads this instead of `clip.startSec`, so entering a
+    // clip mid-way — after a seek, or because a negative delay pushed its
+    // head off the front of the timeline — takes the same path and cuts the
+    // same amount off the front of the material.
+    const soundsAt = clip.startSec + shiftSec;
+
     // A clip already under way when playback starts is entered mid-way.
-    const enterSec  = Math.max(clip.startSec, notBeforeSec);
-    const skipSec   = enterSec - clip.startSec;
+    const enterSec  = Math.max(soundsAt, notBeforeSec);
+    const skipSec   = enterSec - soundsAt;
     const remaining = clip.durationSec - skipSec;
     if (remaining <= 0.001) return;
 
     const startAt = this.origin + enterSec;
-    const stopAt  = this.origin + clip.startSec + clip.durationSec;
+    const stopAt  = this.origin + soundsAt + clip.durationSec;
 
     // A warped clip plays its rendered buffer, which already starts at the
     // clip's first sample — so the read offset is the skip alone.  Warping

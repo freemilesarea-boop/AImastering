@@ -19,6 +19,7 @@ import { DEFAULT_MIDI_CONFIG } from './midi.js';
 import type { ChordEvent, ChordSymbol } from './chords.js';
 import { EMPTY_RACK } from './macros.js';
 import { emptyGrid } from './session-view.js';
+import { scheduleShiftSec } from './track-delay.js';
 
 // ── Construction ──────────────────────────────────────────────────────────────
 
@@ -177,7 +178,12 @@ export function clipAt(track: Track, timeSec: number): Clip | undefined {
 export function sessionEndSec(session: DawSession): number {
   let end = 0;
   for (const t of session.tracks) {
-    for (const c of trackClips(t)) end = Math.max(end, clipEnd(c));
+    // A Track Delay moves when the clips SOUND, and the end of the song is
+    // when the last sound stops — not when the last rectangle stops being
+    // drawn.  Without this a track pushed 200 ms late loses its tail in every
+    // bounce and stem, and only that track.
+    const shift = scheduleShiftSec(t);
+    for (const c of trackClips(t)) end = Math.max(end, clipEnd(c) + shift);
   }
   return end;
 }

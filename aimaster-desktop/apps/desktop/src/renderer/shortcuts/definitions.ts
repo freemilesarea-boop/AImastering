@@ -81,6 +81,7 @@ export type CommandId =
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
   | 'daw.detectTempo' | 'daw.extractGroove' | 'daw.applyGroove'
+  | 'daw.trackDelayEarlier' | 'daw.trackDelayLater' | 'daw.trackDelayClear'
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
@@ -394,6 +395,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '트랜지언트마다 마커를 찍고 그리드에 스냅', available: true },
   { id: 'daw.toggleWarp', group: 'daw', label: 'Warp 켜기 / 끄기', chords: ['Alt+W'],
     note: '선택한 클립의 워프 on/off', available: true },
+
+  // ── 트랙 딜레이 ────────────────────────────────────────────────────────
+  { id: 'daw.trackDelayEarlier', group: 'daw', label: '트랙 딜레이 −1 ms', chords: ['Mod+Alt+Shift+Comma'],
+    note: '커서가 있는 트랙을 1 ms 먼저 재생 — 오토메이션은 따라가지 않습니다', available: true },
+  { id: 'daw.trackDelayLater', group: 'daw', label: '트랙 딜레이 +1 ms', chords: ['Mod+Alt+Shift+Period'],
+    note: '커서가 있는 트랙을 1 ms 늦게 재생', available: true },
+  { id: 'daw.trackDelayClear', group: 'daw', label: '트랙 딜레이 0', chords: ['Mod+Alt+Shift+Digit0'],
+    note: '트랙 딜레이를 없앱니다', available: true },
 
   // ── 템포 검출 · 그루브 ──────────────────────────────────────────────────
   { id: 'daw.detectTempo', group: 'daw', label: '클립에서 템포 검출', chords: ['Mod+Alt+Shift+T'],
