@@ -39,6 +39,7 @@ import { shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import { importSessionData, deserializeDawSession, serializeDawSession } from '../daw/model/session-io.js';
 import { bounceSession, commitTrack, freezeTrack, unfreezeTrack } from '../daw/engine/offline-render.js';
+import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 
 function fmt(sec: number): string {
@@ -216,6 +217,31 @@ export default function DawPage() {
     } finally { setBusy(null); }
   }, [notify, selection]);
 
+  const handleStems = useCallback(async () => {
+    const current = useDawStore.getState().session;
+    const plan = planStems(current);
+    if (plan.items.length === 0) {
+      notify('내보낼 스템이 없습니다 — 들리는 오디오 트랙이 없습니다', 'warning');
+      return;
+    }
+    // What is about to be written, said before the folder dialog: the count,
+    // the length, and anything being left out.
+    notify(`${describePlan(plan)} — 폴더를 선택하세요`);
+    setBusy('스템 렌더링 준비 중…');
+    try {
+      const result = await exportStems(current, {}, (p) => {
+        setBusy(`스템 ${p.index}/${p.total} — ${p.trackName}`);
+      });
+      if (!result.directory) { notify('스템 내보내기를 취소했습니다', 'info'); return; }
+      for (const w of result.warnings) notify(w, 'warning');
+      // Skipped tracks are named, not counted: "3 skipped" sends you hunting.
+      for (const s of result.skipped) notify(`${s.trackName} 제외 — ${s.reason}`, 'info');
+      notify(`스템 ${result.written.length}개 저장 — ${result.directory}`, 'success');
+    } catch (err) {
+      notify(`스템 내보내기 실패: ${(err as Error).message}`, 'error');
+    } finally { setBusy(null); }
+  }, [notify]);
+
   const handleFreeze = useCallback(async () => {
     if (!focusedTrackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
     const current = useDawStore.getState().session;
@@ -358,6 +384,7 @@ export default function DawPage() {
         <ToolbarButton onClick={handleFreeze}>프리즈</ToolbarButton>
         <ToolbarButton onClick={handleCommit}>커밋</ToolbarButton>
         <ToolbarButton onClick={handleBounce}>바운스</ToolbarButton>
+        <ToolbarButton onClick={handleStems}>스템</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 

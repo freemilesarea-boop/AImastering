@@ -3,6 +3,7 @@ import { app, dialog, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import { recordFailure } from '../utils/failureLog.js';
+import { stemFileName, stemFilePath } from '../utils/stemPath.js';
 import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
 import {
   buildSupportBundle,
@@ -391,6 +392,66 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       return dest;
     } catch (err) {
       recordFailure('export', `daw:write-temp-audio failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  // ── Stem export ───────────────────────────────────────────────────────
+  // Stems are MANY files that belong together, so the user picks a folder
+  // once and each stem is written into it — not one save dialog per track,
+  // which for a twenty-track session is twenty dialogs.
+  //
+  // Split in two on purpose: choosing the folder is one gated, user-facing
+  // decision, and writing is then a loop the renderer drives with progress.
+  // The write handler re-checks the destination every time rather than
+  // trusting a path it was handed, because between the two calls anything
+  // could arrive on that channel.
+
+  let stemDestDir: string | null = null;
+
+  ipc.handle('daw:choose-stem-folder', async (_e, req: unknown) => {
+    if (!win) return null;
+    const o = (req && typeof req === 'object' ? req : {}) as { name?: unknown };
+    const name = typeof o.name === 'string' ? o.name : 'Stems';
+    // The same paywall as every other lossless export.
+    const gate = paidStatus();
+    log.info(`[export-gate] daw-stems paid=${gate.paid} source=${gate.source}`);
+    if (!gate.paid) throw new Error(LICENSE_REQUIRED);
+
+    const result = await dialog.showOpenDialog(win, {
+      title: '스템을 저장할 폴더',
+      defaultPath: name,
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const chosen = result.filePaths[0];
+    if (!chosen) return null;
+    // Everything lands in a named subfolder, so a session's stems never mix
+    // with whatever else is in the folder the user picked.
+    const dir = path.join(chosen, stemFileName(name));
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      recordFailure('export', `daw:choose-stem-folder mkdir failed: ${(err as Error).message}`);
+      throw err;
+    }
+    stemDestDir = dir;
+    return dir;
+  });
+
+  ipc.handle('daw:write-stem', (_e, req: unknown) => {
+    const { name, bytes } = readAudioPayload(req);
+    if (!stemDestDir) throw new Error('스템 폴더를 먼저 선택하세요');
+    // The renderer names the file, so the name is untrusted here whatever
+    // sent it: `stemFilePath` sanitises it and proves the result is a direct
+    // child of the chosen folder.
+    const dest = stemFilePath(stemDestDir, name);
+    try {
+      fs.writeFileSync(dest, bytes);
+      log.info(`[daw] stem ${bytes.length} bytes → ${dest}`);
+      return dest;
+    } catch (err) {
+      recordFailure('export', `daw:write-stem failed: ${(err as Error).message}`);
       throw err;
     }
   });
