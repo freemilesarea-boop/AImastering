@@ -72,6 +72,7 @@ export type CommandId =
   | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
   | 'daw.cutRipple' | 'daw.pasteInsert' | 'daw.insertSilence'
   | 'daw.stripSilence' | 'daw.snapZeroCross'
+  | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
   | 'daw.toggleAutomation' | 'daw.automationMode'
   | 'daw.tempoChange' | 'daw.tempoRamp'
@@ -328,6 +329,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '재생 위치 클립에서 소리 나는 부분만 남깁니다 — 타이밍은 그대로', available: true },
   { id: 'daw.snapZeroCross', group: 'daw', label: '영교차로 스냅', chords: ['Shift+Alt+Z'],
     note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
+
+  // ── 클립 처리 ──────────────────────────────────────────────────────────
+  { id: 'daw.normalizeClip', group: 'daw', label: '클립 노멀라이즈', chords: ['Shift+Alt+N'],
+    note: '−1 dBTP 로 — 렌더가 아니라 클립 게인이라 두 번 눌러도 같습니다', available: true },
+  { id: 'daw.reverseClip', group: 'daw', label: '클립 뒤집기', chords: ['Shift+Alt+R'],
+    note: '새 파일로 렌더하고 페이드도 반대쪽으로 옮깁니다 (원본은 그대로)', available: true },
+  { id: 'daw.renameClip', group: 'daw', label: '클립 이름 바꾸기', chords: ['Shift+Alt+M'],
+    note: '구간을 잡고 누르면 선택한 클립 전부에 번호를 붙여 이름을 답니다', available: true },
 
   // ── 픽처 (비디오) ──────────────────────────────────────────────────────
   { id: 'daw.togglePicture', group: 'daw', label: '픽처 창 켜기 / 끄기', chords: ['Shift+Alt+P'],

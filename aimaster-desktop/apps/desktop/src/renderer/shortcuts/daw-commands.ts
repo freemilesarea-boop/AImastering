@@ -79,6 +79,11 @@ import {
 import { snapDistanceMs, snapSecToZero } from '../daw/edit/zero-cross.js';
 import { describeStrip, findSoundRegions, stripClipSilence } from '../daw/edit/strip-silence.js';
 import { getCached, monoSum } from '../daw/engine/audio-cache.js';
+import {
+  applyNormalize, cleanClipName, describeNormalize, measureClip, normalizePlan,
+  renameClip, renameSelection, selectedAudioClips,
+} from '../daw/edit/clip-dsp.js';
+import { reverseClip } from '../daw/edit/clip-dsp-actions.js';
 import { frameSec, videoOf } from '../daw/model/video.js';
 import {
   analyzeClipPitch, applyCorrection, guideNotesFor, renderClipPitch, tuningSummary,
@@ -122,7 +127,8 @@ export type DawCommandId =
   | 'daw.addChord' | 'daw.openVocalEditor'
   | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
   | 'daw.copy' | 'daw.cut' | 'daw.cutRipple' | 'daw.paste' | 'daw.pasteInsert'
-  | 'daw.insertSilence' | 'daw.stripSilence' | 'daw.snapZeroCross';
+  | 'daw.insertSilence' | 'daw.stripSilence' | 'daw.snapZeroCross'
+  | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip';
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -591,6 +597,76 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         return result.session;
       });
       notify(summary, 'success');
+    },
+
+    // ── Clip processing ───────────────────────────────────────────────────
+
+    /**
+     * Normalize the clip under the playhead to −1 dBTP.
+     *
+     * Sets CLIP GAIN rather than rendering: instant, one undo step, no disk,
+     * and pressing it twice does the same thing as pressing it once.  A baked
+     * render could not have that last property.
+     */
+    'daw.normalizeClip': () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      const clip = findClip(state.session, target.trackId, target.clipId);
+      if (!clip) return;
+      const cached = getCached(clip.fileId);
+      if (!cached) { notify('오디오가 아직 읽히지 않았습니다', 'warning'); return; }
+
+      const measure = measureClip(cached.buffer, clip);
+      const plan = normalizePlan(measure);
+      if (plan.refused) { notify(plan.refused, 'warning'); return; }
+      state.apply((s: DawSession) => applyNormalize(s, target.trackId, target.clipId, plan));
+      notify(describeNormalize(measure, plan), plan.clamped ? 'warning' : 'success');
+    },
+
+    /**
+     * Reverse the clip under the playhead.
+     *
+     * The one clip operation that has to make new audio — the original file is
+     * never touched, so undo restores the take exactly.
+     */
+    'daw.reverseClip': async () => {
+      const state = daw();
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      notify('뒤집는 중…');
+      try {
+        const result = await reverseClip(state.session, target.trackId, target.clipId);
+        if (result.error) { notify(result.error, 'error'); return; }
+        state.apply(() => result.session);
+        notify('클립을 뒤집었습니다 — 페이드도 반대쪽으로 옮겼습니다', 'success');
+      } catch (err) {
+        notify(`뒤집지 못했습니다: ${(err as Error).message}`, 'error');
+      }
+    },
+
+    /** Rename the clip under the playhead, or every clip in the selection. */
+    'daw.renameClip': () => {
+      const state = daw();
+      const sel = state.selection;
+      const many = hasRange(sel) && selectedAudioClips(state.session, sel).length > 1;
+      const target = many ? null : audioClipAtPlayhead(state);
+      if (!many && !target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+
+      const current = target
+        ? findClip(state.session, target.trackId, target.clipId)?.name ?? ''
+        : '';
+      const typed = globalThis.prompt?.(many ? '선택한 클립들의 이름 (뒤에 번호가 붙습니다)' : '클립 이름', current);
+      if (typed === null || typed === undefined) return;
+      if (cleanClipName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
+
+      if (many) {
+        state.apply((s: DawSession) => renameSelection(s, sel, typed));
+        notify(`${selectedAudioClips(state.session, sel).length}개 클립의 이름을 바꿨습니다`);
+      } else {
+        state.apply((s: DawSession) => renameClip(s, target!.trackId, target!.clipId, typed));
+        notify(`이름을 ${cleanClipName(typed)} 로 바꿨습니다`);
+      }
     },
 
     // ── Chord Track ───────────────────────────────────────────────────────
