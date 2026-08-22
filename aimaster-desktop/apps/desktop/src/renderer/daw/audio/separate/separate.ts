@@ -1,0 +1,459 @@
+// Four stems out of one mix.
+//
+// ── What this is, and what it is not ─────────────────────────────────────────
+//
+// This is signal processing, not a neural network.  It knows four things about
+// records — drums are vertical stripes and notes are horizontal ones, the lead
+// is in the middle, the backing repeats and the singer does not, and the bass
+// is a note with harmonics — and it acts on them.  A trained model knows what a
+// snare SOUNDS like, which is a different and better kind of knowledge, and on
+// a dense mix it will win.  Nothing here pretends otherwise: every run comes
+// back with a measured confidence per stem and a list of the cues that were
+// not available, and the UI shows both.
+//
+// What it does have is that it runs on any machine, offline, on a file the user
+// has not agreed to upload anywhere, with no download and no licence.
+//
+// ── The one property that is exact ───────────────────────────────────────────
+//
+// The four masks are built so that they sum to one at every bin of every
+// frame.  Writing `h` for the harmonic mask (so the percussive one is `1−h`),
+// `lo` for the bass weight and `q` for the vocal cue:
+//
+//     bass   = h·lo
+//     vocals = (1 − h·lo)·q
+//     drums  = (1−q)·(1−h)
+//     other  = (1−q)·h·(1−lo)
+//
+//     Σ = h·lo + (1−h·lo)·q + (1−q)·[(1−h) + h·(1−lo)]
+//       = h·lo + (1−h·lo)·q + (1−q)·(1 − h·lo)
+//       = h·lo + (1 − h·lo)                                = 1
+//
+// The four stems therefore add back up to the input, and
+// `report.reconstructionDb` says by how much they miss — a number, measured on
+// the actual output, not a promise.  That is what makes the stems usable as an
+// EDIT: mute one, keep the other three, and what is left is the record minus
+// that part, with nothing added to it.
+//
+// ── Order of operations ──────────────────────────────────────────────────────
+//
+// THE BASS IS TAKEN FIRST.  It was not, at first, and the vocal went second —
+// which sounded like the right order until it was measured: a centred bass
+// guitar's harmonics at 110, 165 and 220 Hz look exactly like a centred male
+// voice to the panning cue, and 28 % of the bass ended up singing.  The bass
+// is the one part with a cue nothing else shares — it is a low note with a
+// harmonic series, and `bass.ts` finds it — so it gets to claim its bins
+// before anything else is asked.  Everything after divides what is left.
+
+import { DEFAULT_HPSS, hpssHarmonic, type HpssOptions } from './hpss.js';
+import { DEFAULT_REPET, repetition, type RepetOptions } from './repet.js';
+import { centreness, midMagnitude, type CentrenessOptions } from './stereo.js';
+import { DEFAULT_BASS, bassShelf, bassWeight, trackBass, type BassOptions } from './bass.js';
+import {
+  Overlap, SEPARATION_STFT, analyse, binHz, contextFrames, denominatorFor,
+  frameCount, magnitudes, type HalfSpectrum, type SpectrumOptions,
+} from './spectrum.js';
+
+export type StemKind = 'vocals' | 'drums' | 'bass' | 'other';
+
+export const STEM_KINDS: readonly StemKind[] = ['vocals', 'drums', 'bass', 'other'];
+
+const STEM_LABEL: Record<StemKind, string> = {
+  vocals: '보컬',
+  drums: '드럼',
+  bass: '베이스',
+  other: '그 외',
+};
+
+export function stemLabel(kind: StemKind): string {
+  return STEM_LABEL[kind];
+}
+
+export interface VocalOptions {
+  /** How much the centre cue counts.  Higher = a narrower, cleaner vocal. */
+  centreWeight: number;
+  /** How much the "does not repeat" cue counts. */
+  noveltyWeight: number;
+  /**
+   * How much of the percussive part a vocal may claim.
+   *
+   * Consonants ARE transients — "t", "k", "s" are broadband clicks and hisses —
+   * so a vocal taken purely from the harmonic part comes back lisping.  This
+   * is the fraction of a percussive bin the vocal cue can still win.  Too high
+   * and the snare joins the singer.
+   */
+  consonants: number;
+  /** Below this the vocal cue is treated as noise and zeroed. */
+  floor: number;
+  /**
+   * What the centre cue is worth when there is no centre cue — mono, or a
+   * stereo file whose two channels turn out to be the same signal.
+   *
+   * It cannot be 1.  With the panning cue gone the vocal mask is just "harmonic
+   * and a bit novel", which on a real mix is most of the record: measured on
+   * the test mix, a mono run put 47 % of the total energy in the vocal stem.
+   * Asking more of the one cue that is left is the honest response to losing
+   * the other one, and the note in the report says it happened.
+   *
+   * Leaning HARDER on novelty to compensate was tried and measured worse: at
+   * 0.55 with novelty's power raised 1.8×, the mono run recovered 45 % of the
+   * voice against 58 % at a plain 0.7, because the repetition cue is not
+   * accurate enough to carry that much weight on its own.  So there is one
+   * number here and not two.
+   */
+  monoCentre: number;
+}
+
+export const DEFAULT_VOCAL: VocalOptions = {
+  centreWeight: 1.4,
+  noveltyWeight: 1,
+  consonants: 0.35,
+  floor: 0.06,
+  monoCentre: 0.7,
+};
+
+export interface SeparationOptions {
+  stft: SpectrumOptions;
+  hpss: Partial<HpssOptions>;
+  repet: Partial<RepetOptions>;
+  centre: Partial<CentrenessOptions>;
+  vocal: Partial<VocalOptions>;
+  bass: BassOptions;
+  /**
+   * Frames kept per chunk.  Everything else is context and is thrown away, so
+   * this trades memory against how often the file is re-analysed — it does not
+   * change the answer.  1400 frames is about thirty seconds.
+   */
+  chunkFrames: number;
+  /** Which stems to actually synthesise.  The masks are computed regardless. */
+  wanted: readonly StemKind[];
+}
+
+export const DEFAULT_SEPARATION: SeparationOptions = {
+  stft: SEPARATION_STFT,
+  hpss: {},
+  repet: {},
+  centre: {},
+  vocal: {},
+  bass: DEFAULT_BASS,
+  chunkFrames: 1400,
+  wanted: STEM_KINDS,
+};
+
+export interface StemResult {
+  kind: StemKind;
+  channels: Float32Array[];
+  /** Share of the mix's total energy that landed here, 0…1. */
+  energyShare: number;
+  /**
+   * Share of THIS stem's energy that came from a mask above 0.8 — i.e. from
+   * bins the separator was sure about rather than ones it split down the
+   * middle.  Low means the stem is mostly a blend, and the UI says so.
+   */
+  confidence: number;
+  peak: number;
+}
+
+export interface SeparationReport {
+  stems: StemResult[];
+  sampleRate: number;
+  length: number;
+  stereo: boolean;
+  /** False when the two channels were identical, so the centre cue said nothing. */
+  centreInformative: boolean;
+  /** How repetitive the backing turned out to be, 0…1. */
+  repetitiveness: number;
+  /** dB of `input − Σ stems` relative to the input.  Lower is better. */
+  reconstructionDb: number;
+  /** Plain-language caveats, in the order they matter. */
+  notes: string[];
+  elapsedMs: number;
+}
+
+export type SeparationProgress = (fraction: number, what: string) => void;
+
+/** Vocal plausibility by frequency alone — a prior, not a decision. */
+function vocalPrior(bins: number, fftSize: number, sampleRate: number): Float32Array {
+  const prior = new Float32Array(bins);
+  for (let b = 0; b < bins; b++) {
+    const hz = binHz(b, fftSize, sampleRate);
+    let v: number;
+    // Nothing sings below 70 Hz, and everything below it is bass or kick.
+    if (hz < 70) v = 0;
+    else if (hz < 110) v = (hz - 70) / 40;
+    else if (hz <= 8000) v = 1;
+    // Sibilance lives above 8 k, but so does every cymbal in the mix, so the
+    // cue is weakened rather than cut — the other cues decide up there.
+    else if (hz < 16000) v = 1 - 0.6 * ((hz - 8000) / 8000);
+    else v = 0.4;
+    prior[b] = v;
+  }
+  return prior;
+}
+
+function energyOf(channels: readonly Float32Array[]): number {
+  let sum = 0;
+  for (const ch of channels) for (let i = 0; i < ch.length; i++) sum += (ch[i] ?? 0) ** 2;
+  return sum;
+}
+
+function peakOf(channels: readonly Float32Array[]): number {
+  let peak = 0;
+  for (const ch of channels) {
+    for (let i = 0; i < ch.length; i++) {
+      const v = Math.abs(ch[i] ?? 0);
+      if (v > peak) peak = v;
+    }
+  }
+  return peak;
+}
+
+/**
+ * Separate `channels` into stems.
+ *
+ * Mono is allowed and is not silently treated as stereo: the centre cue is
+ * unavailable, `centreInformative` is false, and a note says so.
+ */
+export function separate(
+  channels: readonly Float32Array[], sampleRate: number,
+  options: Partial<SeparationOptions> = {}, onProgress: SeparationProgress = () => {},
+): SeparationReport {
+  const started = Date.now();
+  const opts: SeparationOptions = { ...DEFAULT_SEPARATION, ...options };
+  const vocal: VocalOptions = { ...DEFAULT_VOCAL, ...opts.vocal };
+  const { fftSize, hopSize } = opts.stft;
+
+  if (channels.length === 0) throw new Error('오디오가 비어 있습니다');
+  if (channels.length > 2) {
+    throw new Error(`${channels.length}채널은 아직 분리하지 못합니다 — 모노나 스테레오만 됩니다`);
+  }
+  const left = channels[0]!;
+  const right = channels[1] ?? left;
+  const stereo = channels.length === 2;
+  const length = left.length;
+  if (length === 0) throw new Error('오디오가 비어 있습니다');
+
+  const total = frameCount(length, opts.stft);
+  // Read from the same defaults the algorithms will read from.  A context
+  // computed against one number while the median filter uses another is a
+  // chunk boundary you can hear.
+  const repetWindow = opts.repet.windowFrames ?? DEFAULT_REPET.windowFrames;
+  const hpssFrames = opts.hpss.harmonicFrames ?? DEFAULT_HPSS.harmonicFrames;
+  // Enough context that a kept frame sees exactly what it would have seen in a
+  // single whole-file pass: the overlap-add reach, the median filter's reach,
+  // and the repetition window's reach.
+  const context = contextFrames(opts.stft, Math.max(repetWindow, hpssFrames));
+
+  const wanted = opts.wanted.length > 0 ? opts.wanted : STEM_KINDS;
+  const outChannels = stereo ? 2 : 1;
+  const denominator = denominatorFor(length, fftSize);
+  const accumulators = new Map<string, Overlap>();
+  for (const kind of wanted) {
+    for (let c = 0; c < outChannels; c++) {
+      accumulators.set(`${kind}:${c}`, new Overlap(length, fftSize, denominator));
+    }
+  }
+
+  const prior = vocalPrior((fftSize >> 1) + 1, fftSize, sampleRate);
+  const shelf = bassShelf((fftSize >> 1) + 1, fftSize, sampleRate, opts.bass);
+
+  let centreInformative = false;
+  let similarityTotal = 0;
+  let similarityChunks = 0;
+  // Energy that came from a mask above this counts as a confident decision.
+  const CONFIDENT = 0.8;
+  const confidentEnergy = new Map<StemKind, number>();
+  const stemEnergy = new Map<StemKind, number>();
+  for (const kind of STEM_KINDS) { confidentEnergy.set(kind, 0); stemEnergy.set(kind, 0); }
+
+  const chunks = Math.max(1, Math.ceil(total / opts.chunkFrames));
+  let chunkIndex = 0;
+
+  for (let start = 0; start < total; start += opts.chunkFrames) {
+    const end = Math.min(total, start + opts.chunkFrames);
+    const from = Math.max(0, start - context);
+    const to = Math.min(total, end + context);
+    const step = (label: string, within: number): void => {
+      onProgress((chunkIndex + within) / chunks, label);
+    };
+
+    step('분석', 0.05);
+    const specL = analyse(left, sampleRate, from, to, opts.stft);
+    const specR = stereo ? analyse(right, sampleRate, from, to, opts.stft) : specL;
+    const frames = specL.frames;
+    const bins = specL.bins;
+
+    step('타악기 분리', 0.25);
+    const magL = magnitudes(specL);
+    const magR = stereo ? magnitudes(specR) : magL;
+    const harmonicL = hpssHarmonic(magL, frames, bins, opts.hpss);
+    const harmonicR = stereo ? hpssHarmonic(magR, frames, bins, opts.hpss) : harmonicL;
+
+    step('가운데 성분', 0.45);
+    const centre = centreness(specL, specR, opts.centre);
+    if (centre.informative) centreInformative = true;
+
+    step('반복 성분', 0.55);
+    const mid = stereo ? midMagnitude(specL, specR) : magL;
+    const repeat = repetition(mid, frames, bins, opts.repet);
+    similarityTotal += repeat.medianSimilarity;
+    similarityChunks++;
+
+    step('스템 만들기', 0.8);
+    // Exactly one writer per chunk counts the overlap-add denominator: every
+    // accumulator covers the same samples with the same window, so counting it
+    // per stem would divide the output by four.
+    let countedThisChunk = false;
+    // One mask buffer, reused for every stem of every channel: at 2049 bins
+    // and two thousand frames each of these is 16 MB, and four of them alive
+    // at once for two channels is a renderer that runs out of memory on a
+    // five-minute file.
+    const mask = new Float32Array(frames * bins);
+    const bassW = new Float32Array(frames * bins);
+    const harmonicMag = new Float32Array(frames * bins);
+    const vocalMask = new Float32Array(frames * bins);
+
+    for (let c = 0; c < outChannels; c++) {
+      const spec = c === 0 ? specL : specR;
+      const mag = c === 0 ? magL : magR;
+      const harmonic = c === 0 ? harmonicL : harmonicR;
+
+      // The bass tracker works on the harmonic magnitude — a bass note is a
+      // sustained thing, and asking a percussive spectrogram where the low
+      // note is just finds the kick drum.
+      for (let i = 0; i < frames * bins; i++) {
+        harmonicMag[i] = (harmonic[i] ?? 0) * (mag[i] ?? 0);
+      }
+      const track = trackBass(harmonicMag, frames, bins, fftSize, sampleRate, opts.bass);
+      bassWeight(bassW, track, shelf, frames, bins, fftSize, sampleRate, opts.bass);
+
+      for (let i = 0; i < frames * bins; i++) {
+        const h = harmonic[i] ?? 0;
+        // What is left after the bass has taken its share.  The vocal cue is
+        // scaled by it, so a bin the bass owns cannot also be sung.
+        const remaining = 1 - h * (bassW[i] ?? 0);
+        const place = centre.informative
+          ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
+        const cue = (prior[i % bins] ?? 0)
+          * place
+          * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight)
+          * (h + vocal.consonants * (1 - h));
+        vocalMask[i] = remaining <= 0 ? 0
+          : cue < vocal.floor ? 0 : Math.min(1, cue);
+      }
+
+      for (const kind of wanted) {
+        for (let i = 0; i < frames * bins; i++) {
+          const q = vocalMask[i] ?? 0;
+          const h = harmonic[i] ?? 0;
+          const lo = bassW[i] ?? 0;
+          mask[i] = kind === 'bass' ? h * lo
+            : kind === 'vocals' ? (1 - h * lo) * q
+            : kind === 'drums' ? (1 - q) * (1 - h)
+            : (1 - q) * h * (1 - lo);
+        }
+        // Measure on the KEPT frames only — the context is analysed twice and
+        // would be counted twice.
+        for (let f = start - from; f < end - from; f++) {
+          const base = f * bins;
+          for (let b = 0; b < bins; b++) {
+            const g = mask[base + b] ?? 0;
+            const e = ((mag[base + b] ?? 0) * g) ** 2;
+            stemEnergy.set(kind, (stemEnergy.get(kind) ?? 0) + e);
+            if (g >= CONFIDENT) confidentEnergy.set(kind, (confidentEnergy.get(kind) ?? 0) + e);
+          }
+        }
+        const keep = keptFrames(spec, start - from, end - start, start * hopSize);
+        const keptMask = mask.subarray((start - from) * bins, (end - from) * bins);
+        const acc = accumulators.get(`${kind}:${c}`);
+        if (!acc) continue;
+        acc.add(keep, keptMask, !countedThisChunk);
+        countedThisChunk = true;
+      }
+    }
+    chunkIndex++;
+  }
+
+  onProgress(1, '마무리');
+
+  const inputEnergy = energyOf(stereo ? [left, right] : [left]);
+  const stems: StemResult[] = wanted.map((kind) => {
+    const out: Float32Array[] = [];
+    for (let c = 0; c < outChannels; c++) {
+      const key = `${kind}:${c}`;
+      const acc = accumulators.get(key);
+      out.push(acc ? acc.finish(denominator) : new Float32Array(length));
+      // Let the accumulator go as soon as its stem exists.  Holding all eight
+      // of them alive while eight output buffers are built beside them doubles
+      // the peak for no reason.
+      accumulators.delete(key);
+    }
+    const energy = energyOf(out);
+    const confident = confidentEnergy.get(kind) ?? 0;
+    const spectral = stemEnergy.get(kind) ?? 0;
+    return {
+      kind,
+      channels: out,
+      energyShare: inputEnergy > 0 ? energy / inputEnergy : 0,
+      confidence: spectral > 0 ? confident / spectral : 0,
+      peak: peakOf(out),
+    };
+  });
+
+  const reconstructionDb = wanted.length === STEM_KINDS.length
+    ? residualDb(stereo ? [left, right] : [left], stems)
+    : Number.NaN;
+
+  const repetitiveness = similarityChunks > 0 ? similarityTotal / similarityChunks : 0;
+  const notes: string[] = [];
+  if (!stereo || !centreInformative) {
+    notes.push(stereo
+      ? '두 채널이 같은 신호입니다 — 가운데 성분 단서를 쓸 수 없어 보컬 분리가 반복 성분에만 의존합니다'
+      : '모노 파일입니다 — 가운데 성분 단서가 없어 보컬 분리가 반복 성분에만 의존합니다');
+  }
+  if (repetitiveness < 0.75) {
+    notes.push(`반복이 뚜렷하지 않은 음악입니다 (유사도 ${repetitiveness.toFixed(2)}) — 보컬에 반주가 섞일 수 있습니다`);
+  }
+  const vague = stems.filter((s) => s.confidence < 0.5 && s.energyShare > 0.02);
+  if (vague.length > 0) {
+    notes.push(`${vague.map((s) => stemLabel(s.kind)).join(' · ')} 은(는) 절반 이상이 애매한 판정입니다 — 섞여 들릴 수 있습니다`);
+  }
+  notes.push('신호 처리 기반 분리입니다 — 학습된 모델이 아니라서 밀도 높은 믹스에서는 한계가 있습니다');
+
+  return {
+    stems, sampleRate, length, stereo,
+    centreInformative: stereo && centreInformative,
+    repetitiveness, reconstructionDb, notes,
+    elapsedMs: Date.now() - started,
+  };
+}
+
+/** A view of `spec` covering only the frames this chunk is responsible for. */
+function keptFrames(
+  spec: HalfSpectrum, offsetFrame: number, count: number, originSample: number,
+): HalfSpectrum {
+  return {
+    ...spec,
+    data: spec.data.subarray(offsetFrame * spec.bins * 2, (offsetFrame + count) * spec.bins * 2),
+    frames: count,
+    originSample,
+  };
+}
+
+/** How far the stems miss the input, in dB.  Measured, not assumed. */
+function residualDb(input: readonly Float32Array[], stems: readonly StemResult[]): number {
+  let residual = 0;
+  let signal = 0;
+  for (let c = 0; c < input.length; c++) {
+    const source = input[c]!;
+    for (let i = 0; i < source.length; i++) {
+      let sum = 0;
+      for (const stem of stems) sum += stem.channels[c]?.[i] ?? 0;
+      const d = (source[i] ?? 0) - sum;
+      residual += d * d;
+      signal += (source[i] ?? 0) ** 2;
+    }
+  }
+  if (signal <= 0) return -Infinity;
+  return 10 * Math.log10(Math.max(residual, Number.MIN_VALUE) / signal);
+}

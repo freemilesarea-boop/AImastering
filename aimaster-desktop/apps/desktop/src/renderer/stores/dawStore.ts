@@ -21,7 +21,7 @@ import { autosaveDriver } from '../daw/engine/autosave-driver.js';
 import { snapSecToBeats, tempoMapOf } from '../daw/model/tempo-map.js';
 
 export type EditMode = 'shuffle' | 'slip' | 'spot' | 'grid';
-export type DawWindow = 'edit' | 'mix' | 'midi' | 'chain' | 'session' | 'spectral' | 'reference' | 'warp' | 'restore' | 'steps' | 'vocal' | 'intel';
+export type DawWindow = 'edit' | 'mix' | 'midi' | 'chain' | 'session' | 'spectral' | 'reference' | 'warp' | 'restore' | 'steps' | 'vocal' | 'stems' | 'intel';
 
 /** Grid values, in seconds — musical values come from the session tempo. */
 export const GRID_PRESETS = [0.01, 0.1, 0.25, 0.5, 1, 2, 4] as const;
@@ -204,7 +204,7 @@ export const useDawStore = create<DawState>((set, get) => ({
   setWindow: (w) => set({ window: w }),
   // Cycles every view, so one key reaches all of them.
   toggleWindow: () => set((s) => {
-    const order: DawWindow[] = ['edit', 'mix', 'midi', 'chain', 'session', 'steps', 'warp', 'spectral', 'vocal', 'restore', 'reference', 'intel'];
+    const order: DawWindow[] = ['edit', 'mix', 'midi', 'chain', 'session', 'steps', 'warp', 'spectral', 'vocal', 'stems', 'restore', 'reference', 'intel'];
     const index = order.indexOf(s.window);
     return { window: order[(index + 1) % order.length] ?? 'edit' };
   }),
