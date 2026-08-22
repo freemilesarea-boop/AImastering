@@ -104,6 +104,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'makeupDb',    name: 'Makeup',    min: 0,   max: 24,  default: 0,   unit: 'dB' },
     ],
     automatableParams: ['attackMs', 'releaseMs'],
+    drivenParams: ['thresholdDb', 'ratio', 'makeupDb'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // A real compressor needs SEPARATE attack and release times, and a
@@ -163,6 +164,37 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           attackMs: { param: comp.attack, map: (v) => Math.max(0, v / 1000) },
           releaseMs: { param: comp.release, map: (v) => Math.max(0, v / 1000) },
         }),
+        // Threshold, ratio and the makeup compensation are three AudioParams
+        // that a single scalar can move consistently — which a macro does and
+        // a lane on one knob cannot, so they are here rather than above.
+        drives: (id) => {
+          const knee = (): number => params['kneeDb'] ?? 6;
+          const compensated = (thresholdDb: number, ratio: number): number =>
+            dbToGain(params['makeupDb'] ?? 0) / webAudioAutoMakeup(thresholdDb, knee(), ratio);
+          if (id === 'thresholdDb') {
+            return [
+              { param: comp.threshold },
+              { param: makeup.gain, map: (v) => compensated(v, params['ratio'] ?? 4) },
+            ];
+          }
+          if (id === 'ratio') {
+            return [
+              { param: comp.ratio, map: (v) => Math.max(1, v) },
+              {
+                param: makeup.gain,
+                map: (v) => compensated(params['thresholdDb'] ?? -18, Math.max(1, v)),
+              },
+            ];
+          }
+          if (id === 'makeupDb') {
+            return [{
+              param: makeup.gain,
+              map: (v) => dbToGain(v) / webAudioAutoMakeup(
+                params['thresholdDb'] ?? -18, knee(), params['ratio'] ?? 4),
+            }];
+          }
+          return null;
+        },
         reduction: () => comp.reduction,
       };
     }),
@@ -394,6 +426,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     // `driveDb` moves the drive AND its level compensation, and `bias`
     // rebuilds the transfer curve; only the blend is one parameter.
     automatableParams: ['mix'],
+    drivenParams: ['driveDb'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const drive = ctx.createGain();
@@ -429,6 +462,12 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           }
         },
         automatable: automatableFrom({ mix: blend.mix }),
+        // The drive and its compensation are one control in two gains: a
+        // scalar that decides both can move both, which is what a macro does.
+        drives: (id) => (id === 'driveDb' ? [
+          { param: drive.gain, map: dbToGain },
+          { param: compensate.gain, map: (v) => 1 / Math.max(1, Math.sqrt(dbToGain(v))) },
+        ] : null),
         dispose: () => {
           blend.dispose();
           try { shaper.disconnect(); } catch { /* ignore */ }
@@ -523,6 +562,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'mix',    name: 'Mix',    min: 0,   max: 1,     default: 0,    unit: '' },
     ],
     automatableParams: ['freqHz', 'mix'],
+    drivenParams: ['amount'],
     latencyFor: () => 0,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Generate harmonics from the top band only, then blend them back —
@@ -554,6 +594,12 @@ const CORE_PLUGINS: PluginDescriptor[] = [
         // and the harmonics it generates are a function of that level, so a
         // lane on it would be ramping a curve's input, not a gain.
         automatable: automatableFrom({ freqHz: band.frequency, mix: wet.gain }),
+        // Not offered as a lane above — as an insert knob it ramps the level
+        // going into a shaper, so the harmonics it makes are a function of a
+        // moving target.  A macro drives it from the same scalar as the mix
+        // it feeds, which is the case that reads as one gesture.
+        drives: (id) => (id === 'amount'
+          ? [{ param: drive.gain, map: (v) => 1 + v * 8 }] : null),
       };
     }),
   },

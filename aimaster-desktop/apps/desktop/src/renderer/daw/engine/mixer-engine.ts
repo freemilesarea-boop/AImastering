@@ -26,7 +26,11 @@ import { findPlugin, type PluginInstance } from './plugins.js';
 import { parsePluginParamKey, pluginParamKey } from '../model/automation.js';
 import type { AutomatableParam } from './plugin-kit.js';
 import { descriptorFor } from './external-device.js';
-import { materializeRack, moduleParams, type RackModuleId } from '../model/macros.js';
+import {
+  MACROS, materializeRack, moduleParams, overrideKey, type RackModuleId,
+} from '../model/macros.js';
+import { macroCoverage } from '../model/macro-automation.js';
+import { paramsDrivenBy } from './plugin-kit.js';
 import { applyChainParams, buildDeviceChain, type BuiltChain } from './device-chain.js';
 
 export interface Channel {
@@ -79,6 +83,31 @@ function insertsKey(track: Track): string {
   return JSON.stringify(track.inserts.map((i) => [i.id, i.slot, i.pluginId, i.sidechainSource]));
 }
 
+/**
+ * Rack modules a channel must actually BUILD.
+ *
+ * Not just the ones a macro is turning on right now: a macro sitting at zero
+ * makes no module active, and if the graph were built from that, a lane
+ * ramping the macro up would have nothing to ramp — the compressor it means
+ * to open would not exist.  So a module a macro LANE can reach is built too,
+ * bypassed-by-neutrality until the lane moves it.
+ */
+function rackModulesNeeded(track: Track): Set<RackModuleId> {
+  const needed = new Set<RackModuleId>();
+  if (!track.macros.enabled) return needed;
+  for (const resolved of materializeRack(track.macros)) {
+    if (resolved.active) needed.add(resolved.module.id);
+  }
+  for (const lane of track.automation) {
+    const target = lane.target;
+    if (target.kind !== 'macro' || lane.mode === 'off') continue;
+    const macro = MACROS.find((m) => m.id === target.macroId);
+    if (!macro) continue;
+    for (const moving of macroCoverage(macro, track.macros).moving) needed.add(moving.module);
+  }
+  return needed;
+}
+
 /** Structural fingerprint — changing it forces a graph rebuild. */
 function structureKey(session: DawSession): string {
   return JSON.stringify({
@@ -88,9 +117,7 @@ function structureKey(session: DawSession): string {
       t.sends.map((s) => [s.id, s.slot, s.target, s.preFader]),
       // A macro that switches a module on or off changes the graph, so the
       // active set is part of the fingerprint.
-      t.macros.enabled
-        ? materializeRack(t.macros).filter((m) => m.active).map((m) => m.module.id)
-        : null,
+      t.macros.enabled ? [...rackModulesNeeded(t)].sort() : null,
       // The device graph's SHAPE is structural; its parameter values are not.
       t.deviceGraph
         ? [
@@ -210,6 +237,37 @@ export class MixerEngine {
   ): AutomatableParam | null {
     const instance = this.channels.get(trackId)?.inserts.get(insertId);
     return instance?.automatable?.(paramId) ?? null;
+  }
+
+  /**
+   * Rack parameters currently being ridden by a macro lane.
+   *
+   * A macro lane is marked automated under its own name, but what it MOVES
+   * is a set of rack parameters — so the two are joined here rather than at
+   * every call site that has to avoid fighting a ramp.
+   */
+  private macroDrivenParams(track: Track): Set<string> {
+    const out = new Set<string>();
+    const automated = this.automated.get(track.id);
+    if (!automated || automated.size === 0) return out;
+    for (const macro of MACROS) {
+      if (!automated.has(`macro:${macro.id}`)) continue;
+      for (const moving of macroCoverage(macro, track.macros).moving) {
+        out.add(overrideKey(moving.module, moving.param));
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Every AudioParam one knob of a RACK MODULE moves.
+   *
+   * A list, not one parameter: a macro decides coupled values from a single
+   * number, so it may legitimately move a pair the insert lane menu refuses.
+   */
+  rackParams(trackId: TrackId, moduleId: RackModuleId, paramId: string): AutomatableParam[] {
+    const instance = this.channels.get(trackId)?.rack.get(moduleId);
+    return instance ? paramsDrivenBy(instance, paramId) : [];
   }
 
   /** Gain reduction an insert is applying right now, in dB, when it knows. */
@@ -353,8 +411,9 @@ export class MixerEngine {
     // engineer's own plugins work on the result.
     const rack = new Map<RackModuleId, PluginInstance>();
     if (track.macros.enabled) {
+      const needed = rackModulesNeeded(track);
       for (const resolved of materializeRack(track.macros)) {
-        if (!resolved.active) continue;
+        if (!needed.has(resolved.module.id)) continue;
         const descriptor = findPlugin(resolved.module.pluginId);
         if (!descriptor) continue;
         const instance = descriptor.create(ctx, moduleParams(resolved));
@@ -443,11 +502,17 @@ export class MixerEngine {
       // Macro rack — every value comes from materializeRack, which is also
       // what the Advanced view shows, so the two can never disagree.
       if (ch.rack.size > 0) {
+        // Parameters a macro LANE is driving are left alone: the store
+        // changes constantly while the transport runs, and writing the
+        // session's value back on every sync would cancel the ramp and snap
+        // the rack to wherever the knob happens to be parked.
+        const ridden = this.macroDrivenParams(track);
         for (const resolved of materializeRack(track.macros)) {
           const instance = ch.rack.get(resolved.module.id);
           if (!instance) continue;
           instance.setBypass(!track.macros.enabled);
           for (const [id, value] of Object.entries(moduleParams(resolved))) {
+            if (ridden.has(overrideKey(resolved.module.id, id))) continue;
             instance.setParam(id, value);
           }
         }

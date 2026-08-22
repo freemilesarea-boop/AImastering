@@ -171,7 +171,14 @@ export type AutomationTarget =
   | { kind: 'sendLevel'; sendId: SendId }
   | { kind: 'sendPan';   sendId: SendId }
   | { kind: 'sendMute';  sendId: SendId }
-  | { kind: 'plugin';    insertId: InsertId; paramId: string };
+  | { kind: 'plugin';    insertId: InsertId; paramId: string }
+  /**
+   * One Smart Control knob, which moves the whole macro rack.
+   *
+   * Not a `plugin` target: the rack's modules are not inserts and have no
+   * insert id — they are materialised from the macro values themselves.
+   */
+  | { kind: 'macro';     macroId: string };
 
 export interface AutomationPoint {
   timeSec: number;
