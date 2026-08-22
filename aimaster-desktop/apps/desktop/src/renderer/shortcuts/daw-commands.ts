@@ -69,6 +69,7 @@ import {
 import { noteEndBeat, type MidiNote } from '../daw/model/midi.js';
 import { detectChordTrack } from '../daw/edit/chord-detect.js';
 import { beatsToSecAt, partClock, secToBeatsAt, type PartClock } from '../daw/model/note-time.js';
+import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.js';
 import { setChordTrack } from '../daw/model/session-ops.js';
 import { reharmonize, formatProgression, makeChord } from '../daw/model/chords.js';
 import { addChord, sortedChords, withChords } from '../daw/edit/chord-edit.js';
@@ -108,7 +109,7 @@ export type DawCommandId =
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
-  | 'daw.freeze' | 'daw.commit' | 'daw.bounce'
+  | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.exportStems'
   | 'daw.importAudio' | 'daw.importSession'
   | 'daw.zoomIn' | 'daw.zoomOut'
   | 'daw.quantize' | 'daw.humanize' | 'daw.selectAllNotes' | 'daw.legatoNotes'
@@ -428,6 +429,27 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         notify(dest ? '바운스 완료' : '바운스를 취소했습니다', dest ? 'success' : 'info');
       } catch (err) {
         notify(`바운스 실패: ${(err as Error).message}`, 'error');
+      }
+    },
+
+    'daw.exportStems': async () => {
+      const state = daw();
+      const plan = planStems(state.session);
+      if (plan.items.length === 0) {
+        notify('내보낼 스템이 없습니다 — 들리는 오디오 트랙이 없습니다', 'warning');
+        return;
+      }
+      notify(`${describePlan(plan)} — 폴더를 선택하세요`);
+      try {
+        const result = await exportStems(state.session, {}, (p) => {
+          notify(`스템 ${p.index}/${p.total} — ${p.trackName}`);
+        });
+        if (!result.directory) { notify('스템 내보내기를 취소했습니다', 'info'); return; }
+        for (const w of result.warnings) notify(w, 'warning');
+        for (const s of result.skipped) notify(`${s.trackName} 제외 — ${s.reason}`, 'info');
+        notify(`스템 ${result.written.length}개 저장`, 'success');
+      } catch (err) {
+        notify(`스템 내보내기 실패: ${(err as Error).message}`, 'error');
       }
     },
 

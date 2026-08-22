@@ -48,6 +48,7 @@ const INVOKE_CHANNELS = [
   'daw:racks-export', 'daw:racks-import',
   // DAW offline render output (Bounce / Freeze / Consolidate)
   'daw:write-temp-audio', 'daw:bounce-audio',
+  'daw:choose-stem-folder', 'daw:write-stem',
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer
   'daw:pcm-source',
   // Installed third-party plugins (scan only — nothing is loaded)
