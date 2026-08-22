@@ -30,8 +30,9 @@ import {
   beatsPerBar, meterAtBeat, secToBeat, tempoAtSec, tempoMapOf, withTempoMap,
 } from '../model/tempo-map.js';
 import {
-  rangeOf, removeSectionMarker, sectionsOf, shiftSections, withSections,
-  type SectionRange,
+  rangeOf, removeSectionMarker, sectionLabel, sectionRanges, sectionsOf, shiftSections,
+  withSections,
+  type Section, type SectionRange,
 } from '../model/arrangement.js';
 import { nextId } from '../model/ids.js';
 import type {
@@ -110,12 +111,22 @@ function deleteFromClips(clips: readonly Clip[], fromSec: number, toSec: number)
   return out.sort((a, b) => a.startSec - b.startSec);
 }
 
-/** The part of a playlist inside a range, rebased to start at zero. */
-function copyClips(clips: readonly Clip[], fromSec: number, toSec: number): Clip[] {
+/**
+ * The part of a playlist inside a range, rebased to start at zero.
+ *
+ * `freshIds` is false when the range is being MOVED rather than copied.  A
+ * moved clip is the same clip — renumbering it would break anything holding
+ * onto it (a selection, an undo diff) for no reason.  A clip that had to be
+ * SPLIT at the range edge is a new object either way, so that half always
+ * gets a new id.
+ */
+function copyClips(
+  clips: readonly Clip[], fromSec: number, toSec: number, freshIds = true,
+): Clip[] {
   const out: Clip[] = [];
   for (const clip of clips) {
     if (clipEnd(clip) <= fromSec + EPS || clip.startSec >= toSec - EPS) continue;
-    let piece: Clip = { ...clip, id: nextId('clip') };
+    let piece: Clip = freshIds ? { ...clip, id: nextId('clip') } : { ...clip };
     if (piece.startSec < fromSec) {
       const [, tail] = splitClip(piece, fromSec);
       piece = { ...tail, id: nextId('clip') };
@@ -169,14 +180,33 @@ function deleteFromLane(lane: AutomationLane, fromSec: number, toSec: number): A
   return { ...lane, points: anchored.sort((a, b) => a.timeSec - b.timeSec) };
 }
 
+/**
+ * A range of a lane, rebased to start at zero, with BOTH ends pinned.
+ *
+ * The points inside a range do not describe it on their own.  A lane is a
+ * continuous curve, so the value at the start of a range is usually set by a
+ * point BEFORE it, and the value at the end by a point AFTER it — a chorus
+ * whose volume climbs across it has that climb defined by where the next
+ * section begins.
+ *
+ * Copy only the inside points and the range arrives somewhere else with its
+ * shape half-rewritten by its new neighbours: it opens on whatever preceded
+ * it there and ramps toward whatever follows.  Pinning both ends is what
+ * makes a moved or duplicated section sound like the one that was there.
+ */
 function copyLane(lane: AutomationLane, fromSec: number, toSec: number): AutomationLane['points'] {
   const inside = lane.points
     .filter((p) => p.timeSec >= fromSec - EPS && p.timeSec < toSec - EPS)
     .map((p) => ({ timeSec: p.timeSec - fromSec, value: p.value }));
-  // The value in force at the start of the range, so the copy begins where the
-  // original did rather than at whatever its first inside point happens to be.
-  if (!inside.some((p) => Math.abs(p.timeSec) < EPS) && lane.points.length > 0) {
-    inside.unshift({ timeSec: 0, value: pointValueAt(lane.points, fromSec, lane.points[0]!.value) });
+  if (lane.points.length === 0) return inside;
+
+  const fallback = lane.points[0]!.value;
+  if (!inside.some((p) => Math.abs(p.timeSec) < EPS)) {
+    inside.unshift({ timeSec: 0, value: pointValueAt(lane.points, fromSec, fallback) });
+  }
+  const length = toSec - fromSec;
+  if (!inside.some((p) => Math.abs(p.timeSec - length) < EPS)) {
+    inside.push({ timeSec: length, value: pointValueAt(lane.points, toSec, fallback) });
   }
   return inside;
 }
@@ -359,48 +389,108 @@ function rangeFor(session: DawSession, sectionId: string): SectionRange | null {
  * section's own tempo events — so a chorus that speeds up still speeds up the
  * second time round.
  */
-export function duplicateSection(
-  session: DawSession, sectionId: string,
-): RippleResult {
-  const range = rangeFor(session, sectionId);
-  if (!range) return { session, problems: ['구간을 찾을 수 없습니다'] };
-  const length = range.endSec - range.startSec;
-  if (!(length > 0)) return { session, problems: ['구간의 길이가 0 입니다'] };
+// ── Lifting a section out, and putting one down ──────────────────────────────
 
+/**
+ * Everything inside a stretch of timeline, rebased so it starts at zero.
+ *
+ * Read BEFORE any gap is opened or closed — the whole point is to hold the
+ * content while the timeline underneath it changes.  Duplicating a section and
+ * moving one are the same lift, put down in different places.
+ */
+export interface SectionContent {
+  /** False when this was lifted to be moved — see `LiftOptions.freshIds`. */
+  freshIds: boolean;
+  lengthSec: number;
+  /** Clips by track id, then playlist id. */
+  clips: Map<string, Map<string, Clip[]>>;
+  /** Automation points by track id, then lane id. */
+  lanes: Map<string, Map<string, AutomationLane['points']>>;
+  markers: Marker[];
+  chords: ChordEvent[];
+  /** Tempo events, as offsets in beats from the start of the range. */
+  tempos: Array<{ bpm: number; curve: TempoEventCurve; offset: number }>;
+  /** Length in beats — what the tempo map has to make room for. */
+  beats: number;
+  /** The section's own label, for the boundary that lands with it. */
+  section: Section;
+}
+
+export interface LiftOptions {
+  /**
+   * Give everything new ids.
+   *
+   * True for a duplicate — the copy is a different clip from the original.
+   * False for a MOVE, where the clip that lands is the same clip that left,
+   * and renumbering it would break anything holding onto it.
+   */
+  freshIds?: boolean;
+}
+
+export function liftSection(
+  session: DawSession, range: SectionRange, options: LiftOptions = {},
+): SectionContent {
+  const freshIds = options.freshIds !== false;
   const map = tempoMapOf(session);
   const startBeat = secToBeat(map, range.startSec);
   const endBeat = secToBeat(map, range.endSec);
-  const beats = endBeat - startBeat;
 
-  // Everything inside the section, rebased to zero, read BEFORE the gap opens.
-  const copiedClips = new Map<string, Map<string, Clip[]>>();
-  const copiedLanes = new Map<string, Map<string, AutomationLane['points']>>();
+  const clips = new Map<string, Map<string, Clip[]>>();
+  const lanes = new Map<string, Map<string, AutomationLane['points']>>();
   for (const track of session.tracks) {
     const byPlaylist = new Map<string, Clip[]>();
     for (const playlist of track.playlists) {
-      byPlaylist.set(playlist.id, copyClips(playlist.clips, range.startSec, range.endSec));
+      byPlaylist.set(playlist.id,
+        copyClips(playlist.clips, range.startSec, range.endSec, freshIds));
     }
-    copiedClips.set(track.id, byPlaylist);
+    clips.set(track.id, byPlaylist);
     const byLane = new Map<string, AutomationLane['points']>();
     for (const lane of track.automation) {
       byLane.set(lane.id, copyLane(lane, range.startSec, range.endSec));
     }
-    copiedLanes.set(track.id, byLane);
+    lanes.set(track.id, byLane);
   }
-  const copiedMarkers = copyStamped<Marker>(session.markers, range.startSec, range.endSec);
-  const copiedChords = copyStamped<ChordEvent>(session.chordTrack, range.startSec, range.endSec);
-  const copiedTempos = map.tempos
-    .filter((t) => t.beat >= startBeat - 1e-9 && t.beat < endBeat - 1e-9)
-    .map((t) => ({ bpm: t.bpm, curve: t.curve, offset: t.beat - startBeat }));
 
-  // Open the gap at the section's END, then fill it.
+  return {
+    freshIds,
+    lengthSec: range.endSec - range.startSec,
+    clips,
+    lanes,
+    markers: copyStamped<Marker>(session.markers, range.startSec, range.endSec),
+    chords: copyStamped<ChordEvent>(session.chordTrack, range.startSec, range.endSec),
+    tempos: map.tempos
+      .filter((t) => t.beat >= startBeat - 1e-9 && t.beat < endBeat - 1e-9)
+      .map((t) => ({ bpm: t.bpm, curve: t.curve, offset: t.beat - startBeat })),
+    beats: endBeat - startBeat,
+    section: range.section,
+  };
+}
+
+/**
+ * Open a gap at `atSec` and lay a lifted section into it.
+ *
+ * `withBoundary` decides whether the copy gets a section marker of its own.
+ * A duplicate wants one — the arrangement should read intro · chorus · chorus
+ * rather than one chorus that is mysteriously twice as long — and so does a
+ * move, because the section has to still exist afterwards.
+ */
+export function dropSection(
+  session: DawSession, content: SectionContent, atSec: number,
+  options: { boundary?: Section | null } = {},
+): RippleResult {
+  const { lengthSec: length, beats } = content;
+  if (!(length > 0)) return { session, problems: ['구간의 길이가 0 입니다'] };
+
   const problems: string[] = [];
-  const at = range.endSec;
+  const map = tempoMapOf(session);
+  const atBeat = secToBeat(map, atSec);
+  const at = atSec;
+
   let next: DawSession = {
     ...session,
     tracks: session.tracks.map((track) => {
-      const clipsFor = copiedClips.get(track.id);
-      const lanesFor = copiedLanes.get(track.id);
+      const clipsFor = content.clips.get(track.id);
+      const lanesFor = content.lanes.get(track.id);
       return {
         ...track,
         playlists: track.playlists.map((playlist): Playlist => ({
@@ -408,7 +498,9 @@ export function duplicateSection(
           clips: [
             ...insertIntoClips(playlist.clips, at, length),
             ...(clipsFor?.get(playlist.id) ?? []).map((c) => ({
-              ...c, id: nextId('clip'), startSec: c.startSec + at,
+              ...c,
+              ...(content.freshIds ? { id: nextId('clip') } : {}),
+              startSec: c.startSec + at,
             })),
           ].sort((a, b) => a.startSec - b.startSec),
         })),
@@ -427,35 +519,152 @@ export function duplicateSection(
     }),
     markers: [
       ...shiftStamped<Marker>(session.markers, at, length),
-      ...copiedMarkers.map((m) => ({ ...m, id: nextId('mk'), timeSec: m.timeSec + at })),
+      ...content.markers.map((m) => ({
+        ...m, ...(content.freshIds ? { id: nextId('mk') } : {}), timeSec: m.timeSec + at,
+      })),
     ].sort((a, b) => a.timeSec - b.timeSec),
     chordTrack: [
       ...shiftStamped<ChordEvent>(session.chordTrack, at, length),
-      ...copiedChords.map((c) => ({ ...c, id: nextId('chord'), timeSec: c.timeSec + at })),
+      ...content.chords.map((c) => ({
+        ...c, ...(content.freshIds ? { id: nextId('chord') } : {}), timeSec: c.timeSec + at,
+      })),
     ].sort((a, b) => a.timeSec - b.timeSec),
   };
 
   const withTempo = insertIntoTempo(
-    map, endBeat, beats,
-    copiedTempos.map((t) => ({ bpm: t.bpm, curve: t.curve })),
-    copiedTempos.map((t) => t.offset),
+    map, atBeat, beats,
+    content.tempos.map((t) => ({ bpm: t.bpm, curve: t.curve })),
+    content.tempos.map((t) => t.offset),
   );
   const meters = shiftMeters(map,
-    Math.floor(endBeat / beatsPerBar(meterAtBeat(map, endBeat))) + 1,
-    barsIn(map, startBeat, beats));
+    Math.floor(atBeat / beatsPerBar(meterAtBeat(map, atBeat))) + 1,
+    barsIn(map, atBeat, beats));
   if (meters === null) {
     problems.push('구간 길이가 마디 단위가 아니라 박자 변경은 그대로 두었습니다');
   }
   next = withTempoMap(next, meters === null ? withTempo : { ...withTempo, meters });
 
-  // The copy gets its own boundary, so the arrangement reads intro · chorus ·
-  // chorus rather than one chorus that is mysteriously twice as long.
   const shiftedSections = shiftSections(sectionsOf(session), at, length);
-  next = withSections(next, [
+  const boundary = options.boundary;
+  next = withSections(next, boundary === null ? shiftedSections : [
     ...shiftedSections,
-    { ...range.section, id: nextId('sect'), startSec: at },
+    {
+      ...(boundary ?? content.section),
+      ...(content.freshIds ? { id: nextId('sect') } : {}),
+      startSec: at,
+    },
   ]);
   return { session: next, problems };
+}
+
+/**
+ * Double a section: copy its contents and lay them down immediately after.
+ *
+ * "Make the last chorus twice as long" is one thought and this is one action.
+ * The copy carries the clips, the automation, the markers, the chords AND the
+ * section's own tempo events — so a chorus that speeds up still speeds up the
+ * second time round.
+ */
+export function duplicateSection(
+  session: DawSession, sectionId: string,
+): RippleResult {
+  const range = rangeFor(session, sectionId);
+  if (!range) return { session, problems: ['구간을 찾을 수 없습니다'] };
+  const content = liftSection(session, range);
+  if (!(content.lengthSec > 0)) return { session, problems: ['구간의 길이가 0 입니다'] };
+  return dropSection(session, content, range.endSec);
+}
+
+// ── Reordering ────────────────────────────────────────────────────────────────
+
+/**
+ * Move a section to a different place in the running order.
+ *
+ * "Put the second chorus before the bridge" is one thought, and doing it by
+ * hand is a morning: select the range, cut with ripple, find the new spot,
+ * paste with ripple, fix the automation that did not come, notice the tempo
+ * ramp stayed behind.
+ *
+ * It is a LIFT and a DROP — the same two halves duplicate is built from — so
+ * everything that rides along there rides along here: clips, automation,
+ * markers, chords, and the section's own tempo events.
+ *
+ * `toIndex` is the position the section should END UP at, which is what a
+ * drag lands on.  It is read against the order WITHOUT the moved section, so
+ * dragging the 3rd of 4 sections to index 1 gives A · C · B · D.
+ */
+export function moveSection(
+  session: DawSession, sectionId: string, toIndex: number,
+): RippleResult {
+  const sections = sectionsOf(session);
+  const ranges = sectionRanges(sections, songEnd(session));
+  const from = ranges.findIndex((r) => r.section.id === sectionId);
+  if (from < 0) return { session, problems: ['구간을 찾을 수 없습니다'] };
+
+  const range = ranges[from]!;
+  // Moved, not copied: everything keeps the id it had.
+  const content = liftSection(session, range, { freshIds: false });
+  if (!(content.lengthSec > 0)) return { session, problems: ['구간의 길이가 0 입니다'] };
+
+  // Where it lands is expressed as "before this section", resolved BEFORE the
+  // cut so it survives everything shifting backwards afterwards.  Null means
+  // the end of the song.
+  const remaining = ranges.filter((r) => r.section.id !== sectionId);
+  const clamped = Math.max(0, Math.min(remaining.length, Math.round(toIndex)));
+  if (clamped === from && remaining.length > 0) {
+    // Landing where it already is: not an error, just nothing to do.  Doing
+    // the cut-and-splice anyway would renumber every id for no change.
+    return { session, problems: [] };
+  }
+  const beforeId = remaining[clamped]?.section.id ?? null;
+
+  // Cut the section's time out.  Its boundary goes with it — the copy that
+  // lands at the destination carries the label.
+  const cut = rippleDelete(session, range.startSec, range.endSec);
+  const withoutMarker = withSections(
+    cut.session, removeSectionMarker(sectionsOf(cut.session), sectionId));
+
+  // The destination, read in the shortened timeline.
+  const after = sectionsOf(withoutMarker);
+  const target = beforeId ? after.find((sec) => sec.id === beforeId) ?? null : null;
+  const atSec = target ? target.startSec : songEnd(withoutMarker);
+
+  const dropped = dropSection(withoutMarker, content, atSec, { boundary: range.section });
+  return {
+    session: dropped.session,
+    problems: [...cut.problems, ...dropped.problems],
+  };
+}
+
+/**
+ * Swap a section with its neighbour — the keyboard version of a drag.
+ *
+ * Expressed in terms of `moveSection` rather than as its own splice: two ways
+ * of reordering would be two chances to disagree about what rides along.
+ */
+export function nudgeSection(
+  session: DawSession, sectionId: string, direction: -1 | 1,
+): RippleResult {
+  const ranges = sectionRanges(sectionsOf(session), songEnd(session));
+  const from = ranges.findIndex((r) => r.section.id === sectionId);
+  if (from < 0) return { session, problems: ['구간을 찾을 수 없습니다'] };
+  const to = from + direction;
+  if (to < 0 || to >= ranges.length) {
+    return { session, problems: [direction < 0 ? '첫 구간입니다' : '마지막 구간입니다'] };
+  }
+  return moveSection(session, sectionId, to);
+}
+
+/**
+ * The order as text — "인트로 · 벌스 · 코러스" — for the toast after a move.
+ *
+ * The point of saying it is that a reorder is invisible until the playhead
+ * gets there; reading the new running order back confirms what happened.
+ */
+export function describeOrder(session: DawSession): string {
+  return sectionRanges(sectionsOf(session), songEnd(session))
+    .map((r) => sectionLabel(r.section))
+    .join(' · ');
 }
 
 /**

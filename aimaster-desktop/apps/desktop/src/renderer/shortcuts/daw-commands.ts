@@ -42,10 +42,12 @@ import { declickClip } from '../daw/edit/restore-actions.js';
 import { useRecordingStore } from '../stores/recordingStore.js';
 import { canRecord } from '../daw/model/recording.js';
 import {
-  addSection, createSection, nextSectionStart, previousSectionStart, sectionAt,
+  addSection, createSection, nextSectionStart, previousSectionStart, rangeOf, sectionAt,
   sectionLabel, sectionsOf, withSections,
 } from '../daw/model/arrangement.js';
-import { selectionForSection } from '../daw/edit/arrange-ops.js';
+import {
+  describeOrder, nudgeSection, selectionForSection, songEnd,
+} from '../daw/edit/arrange-ops.js';
 import { applySlides, arpeggiate, strum } from '../daw/edit/note-tools.js';
 import { captureAsPattern } from '../daw/model/patterns.js';
 import { useIntelStore } from '../stores/intelStore.js';
@@ -122,6 +124,7 @@ export type DawCommandId =
   | 'daw.toggleAutomation' | 'daw.automationMode'
   | 'daw.tempoChange' | 'daw.tempoRamp'
   | 'daw.sectionNext' | 'daw.sectionPrev' | 'daw.sectionSelect' | 'daw.sectionAdd'
+  | 'daw.sectionMoveBack' | 'daw.sectionMoveForward'
   | 'daw.showChain' | 'daw.showSession' | 'daw.launchScene' | 'daw.stopAllClips'
   | 'daw.showSpectral' | 'daw.showReference' | 'daw.analyzeMix'
   | 'daw.showWarp' | 'daw.autoWarp' | 'daw.toggleWarp'
@@ -199,6 +202,36 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         durationSec: Math.max(c.durationSec, beatsToSecAt(clock, lastBeat)),
       };
     }));
+  };
+
+  /**
+   * Reorder the section under the playhead, and follow it.
+   *
+   * Where it landed is read back as the whole running order: a reorder is
+   * invisible until the playhead gets there.
+   */
+  const moveSectionUnderPlayhead = (direction: -1 | 1): void => {
+    const state = daw();
+    const here = sectionAt(sectionsOf(state.session), state.playheadSec);
+    if (!here) { notify('재생헤드에 구간이 없습니다', 'warning'); return; }
+    // Where the playhead sits INSIDE the section, so it can be put back there.
+    const before = rangeOf(sectionsOf(state.session), here.id, songEnd(state.session));
+    const offset = before ? state.playheadSec - before.startSec : 0;
+
+    let problems: string[] = [];
+    let landedAt: number | null = null;
+    let order = '';
+    state.apply((s) => {
+      const result = nudgeSection(s, here.id, direction);
+      problems = result.problems;
+      order = describeOrder(result.session);
+      const after = rangeOf(sectionsOf(result.session), here.id, songEnd(result.session));
+      landedAt = after ? after.startSec : null;
+      return result.session;
+    });
+    if (problems.length > 0) { notify(problems[0]!, 'warning'); return; }
+    if (landedAt !== null) state.seek(landedAt + offset);
+    notify(order, 'success');
   };
 
   const transposeBy = (semitones: number): void => {
@@ -1112,6 +1145,16 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       state.setSelection(selection);
       notify(`${sectionLabel(here)} 선택`);
     },
+
+    /**
+     * Move the section the playhead is in, one place along the running order.
+     *
+     * The playhead follows it: after "put this chorus before the bridge" the
+     * thing you were listening to is somewhere else, and being left where it
+     * used to be means hunting for it.
+     */
+    'daw.sectionMoveBack': () => moveSectionUnderPlayhead(-1),
+    'daw.sectionMoveForward': () => moveSectionUnderPlayhead(1),
 
     // ── FL: step sequencer · patterns · note tools ─────────────────────────
     'daw.showSteps': () => {
