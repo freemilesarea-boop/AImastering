@@ -30,6 +30,12 @@ import {
   DEFAULT_SYNC, VideoFollower, describeSync, syncDecision,
   type VideoElementLike,
 } from '../src/renderer/daw/engine/video-sync.js';
+import { videoSpan } from '../src/renderer/daw/model/video.js';
+import {
+  describeVideoPosition, moveVideoTo, nudgeVideoFrames, nudgeVideoTrim,
+  resetVideoPosition, spotVideoTimecode, spotVideoToPlayhead, trimVideoHead,
+  videoOffsetFrames,
+} from '../src/renderer/daw/edit/video-move.js';
 import { createSession } from '../src/renderer/daw/model/session-ops.js';
 import type { DawSession } from '../src/renderer/daw/model/types.js';
 
@@ -348,6 +354,148 @@ check('a detached follower is inert rather than a null crash', () => {
 });
 
 // ── Report ────────────────────────────────────────────────────────────────────
+
+// ── Moving the picture ────────────────────────────────────────────────────────
+
+const placed = (over: Partial<VideoRef> = {}): DawSession =>
+  withVideo(createSession('score', 48_000), reel(over));
+
+check('a trimmed head does not play the frames that were trimmed off', () => {
+  // The bound that matters is the TRIM, not zero.  Reading from zero shows
+  // the part of the reel the user explicitly cut, which looks exactly like
+  // the picture being out of sync.
+  const v = reel({ startSec: 10, offsetSec: 5, durationSec: 30 });
+  eq(videoTimeAt(v, 9.9), null, 'nothing before the picture starts');
+  close(videoTimeAt(v, 10)!, 5, 'and the first thing shown is the trim point');
+  const span = videoSpan(v);
+  close(span.startSec, 10, 'the span starts where it sits');
+  close(span.endSec, 35, 'and is shorter by the trim');
+});
+
+check('the picture lands on a frame, never between two', () => {
+  // A picture at an arbitrary second shows the wrong image for up to a
+  // frame, and every hit point measured from it inherits the error.
+  const frame = frameSec(FPS_2398);
+  const moved = moveVideoTo(placed(), 1.7);
+  assert(moved.applied, 'moved');
+  const at = videoOf(moved.session)!.startSec;
+  close(at / frame, Math.round(at / frame), 'a whole number of frames', 1e-9);
+  close(at, Math.round(1.7 * FPS_2398) / FPS_2398, 'the nearest one to what was asked');
+  assert(Math.abs(at - 1.7) < frame, 'and within half a frame of it');
+});
+
+check('a nudge is a frame, and it accumulates exactly', () => {
+  let s = placed();
+  for (let i = 0; i < 24; i++) s = nudgeVideoFrames(s, 1).session;
+  eq(videoOffsetFrames(s), 24, 'twenty-four nudges are twenty-four frames');
+  close(videoOf(s)!.startSec, 24 / FPS_2398, 'and the seconds follow the rate', 1e-9);
+  for (let i = 0; i < 24; i++) s = nudgeVideoFrames(s, -1).session;
+  close(videoOf(s)!.startSec, 0, 'and back is exactly back', 1e-9);
+});
+
+check('the picture cannot go before zero, and the refusal says what to do', () => {
+  const r = moveVideoTo(placed({ startSec: 1 }), -2);
+  eq(r.applied, false, 'refused');
+  assert(r.reason?.includes('헤드 트림'), `and points at the trim: ${r.reason}`);
+  close(videoOf(r.session)!.startSec, 1, 'and nothing moved');
+});
+
+check('trimming changes WHAT plays at the start, not WHERE the start is', () => {
+  const before = placed({ startSec: 12 });
+  const after = trimVideoHead(before, 3);
+  assert(after.applied, 'trimmed');
+  const v = videoOf(after.session)!;
+  close(v.startSec, 12, 'the picture did not move');
+  // 3 seconds is 71.93 frames at 23.976, so the trim lands on frame 72 —
+  // asking for a round number of seconds does not make one.
+  const trim = 72 / FPS_2398;
+  close(v.offsetSec, trim, 'the trim is a whole frame', 1e-9);
+  close(videoTimeAt(v, 12)!, trim, 'and that is what plays at the start');
+  close(videoSpan(v).endSec, 12 + 120 - trim, 'and it runs out that much earlier', 1e-9);
+});
+
+check('a trim is a whole number of frames, and cannot eat the whole file', () => {
+  const frame = frameSec(FPS_2398);
+  const t = trimVideoHead(placed(), 1.7);
+  const off = videoOf(t.session)!.offsetSec;
+  close(off / frame, Math.round(off / frame), 'on a frame', 1e-9);
+  const tooMuch = trimVideoHead(placed({ durationSec: 10 }), 30);
+  eq(tooMuch.applied, false, 'refused');
+  assert(tooMuch.reason?.includes('파일보다'), `for the right reason: ${tooMuch.reason}`);
+  let s = placed({ durationSec: 10 });
+  s = nudgeVideoTrim(s, 5).session;
+  eq(Math.round(videoOf(s)!.offsetSec * FPS_2398), 5, 'and nudging the trim counts frames too');
+});
+
+check('spotting solves for the placement — the number a spotting note carries', () => {
+  // "The door slams at 01:02:14:07, and that is 40 seconds into the music."
+  const s = placed();
+  const target = parseTimecode('01:00:14:07', FPS_2398)!;
+  const r = spotVideoTimecode(s, target, 40);
+  assert(r.applied, `spotted: ${r.reason}`);
+  const v = videoOf(r.session)!;
+  // The whole point: read the timecode back at that moment and it is the one
+  // that was asked for.
+  eq(timecodeAt(v, 40), '01:00:14:07', 'the frame is where it was put');
+});
+
+check('spotting with a trimmed head still lands on the right frame', () => {
+  const s = trimVideoHead(placed(), 6).session;
+  const target = parseTimecode('01:00:30:00', FPS_2398)!;
+  const r = spotVideoTimecode(s, target, 40);
+  assert(r.applied, `spotted: ${r.reason}`);
+  eq(timecodeAt(videoOf(r.session)!, 40), '01:00:30:00', 'the trim did not throw the maths off');
+});
+
+check('a timecode outside the reel is refused, not placed anyway', () => {
+  const s = placed();
+  const before = parseTimecode('00:59:00:00', FPS_2398)!;
+  const r = spotVideoTimecode(s, before, 10);
+  eq(r.applied, false, 'refused');
+  assert(r.reason?.includes('이 픽처 안에 없습니다'), `and says why: ${r.reason}`);
+});
+
+check('spotting that would push the picture before zero is refused with the amount', () => {
+  const s = placed();
+  const late = parseTimecode('01:01:00:00', FPS_2398)!;
+  const r = spotVideoTimecode(s, late, 1);      // 60 s of film, 1 s of timeline
+  eq(r.applied, false, 'refused');
+  assert(r.reason?.includes('타임라인 0 보다 앞'), `and says what is wrong: ${r.reason}`);
+  close(videoOf(r.session)!.startSec, 0, 'and the picture is where it was');
+});
+
+check('the play head and the picture are moved by different verbs', () => {
+  const s = spotVideoToPlayhead(placed(), 30);
+  assert(s.applied, 'moved');
+  close(videoOf(s.session)!.startSec, Math.round(30 * FPS_2398) / FPS_2398, 'to the play head, on a frame');
+  const back = resetVideoPosition(s.session);
+  close(videoOf(back.session)!.startSec, 0, 'and reset puts it at zero');
+  close(videoOf(back.session)!.offsetSec, 0, 'with the trim released');
+});
+
+check('moving nothing is a no-op with no complaint, not an error', () => {
+  // Frame-aligned to begin with: asking for 5.000 s would MOVE a picture
+  // that is already there, because five seconds is not a frame boundary at
+  // 23.976 and the snap is not optional.
+  const onGrid = 120 / FPS_2398;
+  const s = placed({ startSec: onGrid });
+  const same = moveVideoTo(s, onGrid);
+  eq(same.applied, false, 'nothing changed');
+  eq(same.reason, null, 'and there was nothing to say about it');
+  const none = moveVideoTo(createSession('empty', 48_000), 5);
+  eq(none.applied, false, 'no picture');
+  assert(none.reason?.includes('픽처가 없습니다'), `and that IS worth saying: ${none.reason}`);
+});
+
+check('the read-out is where the picture is, and what came off the front', () => {
+  eq(describeVideoPosition(createSession('empty', 48_000)), '픽처 없음', 'nothing loaded');
+  const s = trimVideoHead(moveVideoTo(placed(), 65).session, 4).session;
+  const line = describeVideoPosition(s);
+  // 65 s snaps to frame 1558, which is 64.98 s — the read-out shows where the
+  // picture IS, not where it was asked to go.
+  assert(line.includes('1:04.98'), `where it starts: ${line}`);
+  assert(line.includes('96프레임 잘림'), `and the trim in frames: ${line}`);
+});
 
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;

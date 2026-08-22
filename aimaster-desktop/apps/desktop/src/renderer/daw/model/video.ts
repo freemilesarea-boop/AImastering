@@ -204,8 +204,20 @@ export function frameSec(fps: number): number {
  */
 export function videoTimeAt(video: VideoRef, timelineSec: number): number | null {
   const into = timelineSec - video.startSec + video.offsetSec;
-  if (into < 0 || into > video.durationSec) return null;
+  // The lower bound is the TRIM, not zero.  A picture whose head has been
+  // trimmed does not exist before its start on the timeline, and reading
+  // from zero would show the frames that were trimmed off — playing back
+  // the part of the reel the user explicitly cut.
+  if (into < video.offsetSec || into > video.durationSec) return null;
   return into;
+}
+
+/** Where the picture occupies the timeline: start, and where it runs out. */
+export function videoSpan(video: VideoRef): { startSec: number; endSec: number } {
+  return {
+    startSec: video.startSec,
+    endSec: video.startSec + Math.max(0, video.durationSec - video.offsetSec),
+  };
 }
 
 /** The timeline moment a file position lands on — the inverse. */
