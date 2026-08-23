@@ -2368,9 +2368,25 @@ Worker 를 못 만들기 때문입니다 — `daw-reader.worker.js` 와 같은 �
 정답이 있는 실제 스템 폴더가 있으면 그게 고쳐집니다:
 
 ```bash
-pnpm --filter @aimaster/desktop benchmark:stems "~/Downloads/LOOK GOOD Stems"
+cd <저장소>/aimaster-desktop        # ← 워크스페이스 안에서 실행해야 합니다
+pnpm install                        # 처음 한 번만
+
+pnpm --filter @aimaster/desktop benchmark:stems "$HOME/Downloads/LOOK GOOD Stems"
 pnpm --filter @aimaster/desktop benchmark:stems <폴더> --seconds=60 --from=30 --detailed
 ```
+
+`cd` 를 빼먹으면 pnpm 이 워크스페이스를 찾아 홈 디렉터리를 뒤지다가
+macOS 가 보호하는 `~/.Trash` 에서 멈춥니다:
+
+```
+EPERM: operation not permitted, scandir '/Users/…/.Trash'
+```
+
+스크립트와는 아무 상관 없는 오류인데 그렇게 보이지 않으므로 적어 둡니다.
+저장소 루트 · `aimaster-desktop/` · `apps/desktop/` 중 아무 데서나 실행하면
+됩니다 (셋 다 확인했습니다). 경로를 `"~/..."` 로 써도 스크립트가 `~` 를
+펼치지만, 따옴표 안에서 셸이 펼치지 않는 것과 헷갈리지 않으려면 `$HOME`
+쪽이 낫습니다.
 
 **오디오는 읽고 재고 버립니다. 나오는 건 숫자 표뿐입니다.** 스템 폴더는
 누군가의 음반이고, "파일을 보내주세요"는 "실제 음악에서 얼마나 좋냐"에 대한
