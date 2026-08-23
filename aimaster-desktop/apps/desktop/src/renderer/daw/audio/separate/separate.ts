@@ -70,6 +70,7 @@ import {
   type DrumCreditOptions,
 } from './percussive.js';
 import { leadEnvelope, phraseLock, type PhraseOptions } from './phrase.js';
+import { DEFAULT_RANGE, leadRange, type RangeOptions } from './range.js';
 import {
   DETAILED_STEMS, FULL_STEMS, STEM_TREE, TOP_STEMS, coverProblems, needsModel,
   orderStems, stemColor, stemLabel, stemNode, stemRoot, stemSource,
@@ -153,6 +154,7 @@ export interface SeparationOptions {
   phrase: Partial<PhraseOptions>;
   drums: Partial<DrumOptions>;
   credit: Partial<DrumCreditOptions>;
+  range: Partial<RangeOptions>;
   voices: Partial<VoiceSplitOptions>;
   /**
    * Frames kept per chunk.  Everything else is context and is thrown away, so
@@ -180,6 +182,7 @@ export const DEFAULT_SEPARATION: SeparationOptions = {
   phrase: {},
   drums: {},
   credit: {},
+  range: {},
   voices: {},
   chunkFrames: 1400,
   wanted: STEM_KINDS,
@@ -212,6 +215,13 @@ export interface SeparationReport {
   drumOnsets: number;
   /** Whether the lead/코러스 split had a cue to work from at all. */
   voicesSeparable: boolean;
+  /**
+   * The singer's measured range in Hz, or null when it could not be measured.
+   *
+   * Reported because it is the one thing here that adapts to the record, and a
+   * wrong answer is worth being able to see.
+   */
+  vocalRangeHz: { low: number; high: number } | null;
   /** dB of `input − Σ stems` relative to the input.  Lower is better. */
   reconstructionDb: number;
   /** Plain-language caveats, in the order they matter. */
@@ -339,6 +349,9 @@ export function separate(
   const subBins = subBinCount(templates.kick, (fftSize >> 1) + 1);
   let drumOnsets = 0;
   let voicesInformative = false;
+  let rangeLow = 0;
+  let rangeHigh = 0;
+  let rangeFound = false;
 
   const chunks = Math.max(1, Math.ceil(total / opts.chunkFrames));
   let chunkIndex = 0;
@@ -460,6 +473,15 @@ export function separate(
       }
       const envelope = leadEnvelope(vocalMask, mag, frames, bins);
       const phrasing = phraseLock(mag, envelope, frames, bins, fftSize, sampleRate, opts.phrase);
+      // Where pass one put the singer is where the singer is.  This narrows the
+      // fixed prior to it and never widens it — see `range.ts`.
+      const range = leadRange(vocalMask, mag, frames, bins, fftSize, sampleRate,
+        { ...DEFAULT_RANGE, ...opts.range });
+      if (range.informative) {
+        rangeLow = rangeLow === 0 ? range.lowHz : Math.min(rangeLow, range.lowHz);
+        rangeHigh = Math.max(rangeHigh, range.highHz);
+        rangeFound = true;
+      }
 
       // ── Pass two: centred OR phrasing with whoever is ──
       for (let i = 0; i < frames * bins; i++) {
@@ -478,7 +500,7 @@ export function separate(
         // is only in competition with a cymbal when a cymbal was struck; on the
         // real song 51 % of the vocal's 8 kHz band was going to drums for want
         // of this distinction.
-        const cue = (prior[i % bins] ?? 0)
+        const cue = (prior[i % bins] ?? 0) * (range.weight[i % bins] ?? 1)
           * belongs
           * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight)
           * ((1 - p) + vocal.consonants * p);
@@ -592,6 +614,9 @@ export function separate(
   if (vague.length > 0) {
     notes.push(`${vague.map((s) => stemLabel(s.kind)).join(' · ')} 은(는) 절반 이상이 애매한 판정입니다 — 섞여 들릴 수 있습니다`);
   }
+  if (!rangeFound) {
+    notes.push('가수의 음역을 재지 못했습니다 — 보컬 판정이 고정된 음역 가정에만 의존합니다');
+  }
   notes.push('신호 처리 기반 분리입니다 — 학습된 모델이 아니라서 밀도 높은 믹스에서는 한계가 있습니다');
 
   return {
@@ -600,6 +625,7 @@ export function separate(
     repetitiveness, reconstructionDb, notes,
     drumOnsets,
     voicesSeparable: voicesInformative,
+    vocalRangeHz: rangeFound ? { low: rangeLow, high: rangeHigh } : null,
     elapsedMs: Date.now() - started,
   };
 }

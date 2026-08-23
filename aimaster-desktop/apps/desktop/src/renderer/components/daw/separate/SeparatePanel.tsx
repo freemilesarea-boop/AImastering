@@ -333,6 +333,13 @@ function Result({ report }: { report: SeparationReport }) {
         {report.stems.length}개 스템의 합 − 원본 = {report.reconstructionDb.toFixed(0)} dB
         {report.reconstructionDb < -100 ? ' (사실상 완전 복원)' : ''}
         {'   ·   '}반복도 {report.repetitiveness.toFixed(2)}
+        {/* The one thing here that adapts to the record rather than assuming.
+            Shown because a wrong answer is worth being able to see: if this
+            says 800–1200 Hz on a song with a singer in it, the vocal stem is
+            about to be a third of a singer and nothing else would say so. */}
+        {report.vocalRangeHz
+          ? `   ·   가수 음역 ${Math.round(report.vocalRangeHz.low)}–${Math.round(report.vocalRangeHz.high)} Hz`
+          : ''}
       </p>
       <ul className="mt-2 flex flex-col gap-1">
         {report.notes.map((note) => (
