@@ -26,7 +26,7 @@
 
 import { runSeparation, type ProgressListener } from '../audio/separate/run.js';
 import {
-  STEM_KINDS, stemLabel,
+  STEM_KINDS, stemColor, stemLabel,
   type SeparationOptions, type SeparationReport, type StemKind,
 } from '../audio/separate/separate.js';
 import { analyzeBuffer, decodeContext, getCached, loadAudio } from '../engine/audio-cache.js';
@@ -126,7 +126,7 @@ export async function separateClip(
     seedCache(file.id, stem.channels, sampleRate);
 
     const track = createTrack(`${baseName} · ${label}`, 'audio', {
-      color: STEM_COLOR[stem.kind],
+      color: stemColor(stem.kind),
     });
     // Each stem goes one row further down than the last.  Inserting them all
     // at the same index is the obvious thing and it lays them out backwards,
@@ -182,13 +182,6 @@ async function ensureDecoded(
   onProgress?.(0, '오디오 읽는 중');
   await loadAudio(ctx, file.id, file.path);
 }
-
-const STEM_COLOR: Record<StemKind, string> = {
-  vocals: '#d67f4f',
-  drums:  '#4fd68f',
-  bass:   '#4f7fd6',
-  other:  '#9f6fd6',
-};
 
 /** Right below the track that was separated, so the stems are where you look. */
 function indexAfter(session: DawSession, trackId: TrackId, offset: number): number | undefined {

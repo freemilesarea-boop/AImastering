@@ -19,9 +19,19 @@
 
 export const FIXTURE_SR = 44100;
 
+export type FixturePart =
+  | 'vocals' | 'lead' | 'backing'
+  | 'drums' | 'kick' | 'kit' | 'snare' | 'toms' | 'cymbals'
+  | 'bass' | 'other';
+
 export interface Fixture {
   mix: Float32Array[];
-  parts: Record<'vocals' | 'drums' | 'bass' | 'other', Float32Array[]>;
+  /**
+   * Every part, at every level of the tree — the leaves are what was actually
+   * synthesised and the parents are their sums, so a test can measure a split
+   * at whichever depth it cares about.
+   */
+  parts: Record<FixturePart, Float32Array[]>;
   length: number;
   sampleRate: number;
 }
@@ -37,7 +47,12 @@ export function buildFixture(
     return (seed / 0x7fffffff) * 2 - 1;
   };
   const pair = (): Float32Array[] => [new Float32Array(n), new Float32Array(n)];
-  const parts = { vocals: pair(), drums: pair(), bass: pair(), other: pair() };
+  const parts: Record<FixturePart, Float32Array[]> = {
+    vocals: pair(), lead: pair(), backing: pair(),
+    drums: pair(), kick: pair(), kit: pair(),
+    snare: pair(), toms: pair(), cymbals: pair(),
+    bass: pair(), other: pair(),
+  };
   const add = (part: Float32Array[], c: number, i: number, v: number): void => {
     if (i >= 0 && i < n) part[c]![i] = (part[c]![i] ?? 0) + v;
   };
@@ -58,24 +73,49 @@ export function buildFixture(
     }
   }
 
-  // DRUMS — kick and snare centred, hats panned wide.
+  // DRUMS — a kit, one piece at a time, so a test can ask where each went.
+  //
+  // KICK: a pitch-dropping sine, centred, all of it under 100 Hz.
+  // SNARE: shell around 190 Hz plus the wires as broadband noise, centred.
+  // HATS: short metallic noise every eighth, panned wide.
+  // TOMS: a four-hit fill in the last bar of every four — pitched, low-mid,
+  //       almost no noise, which is exactly why it is the hard one.
   for (let step = 0; step * beat < seconds; step++) {
     const at = Math.round(step * beat * sr);
-    const kick = step % 2 === 0;
-    for (let i = 0; i < 3000; i++) {
-      const env = Math.exp(-i / (kick ? 900 : 500));
-      const v = kick
-        ? 0.8 * env * Math.sin((2 * Math.PI * (60 - (25 * i) / 3000) * i) / sr)
-        : 0.5 * env * (rnd() * 0.8 + 0.4 * Math.sin((2 * Math.PI * 190 * i) / sr));
-      add(parts.drums, 0, at + i, v);
-      add(parts.drums, 1, at + i, v);
+    if (step % 2 === 0) {
+      for (let i = 0; i < 3000; i++) {
+        const env = Math.exp(-i / 900);
+        const v = 0.8 * env * Math.sin((2 * Math.PI * (60 - (25 * i) / 3000) * i) / sr);
+        add(parts.kick, 0, at + i, v);
+        add(parts.kick, 1, at + i, v);
+      }
+    } else {
+      const hp = { lp: 0 };
+      for (let i = 0; i < 3000; i++) {
+        const env = Math.exp(-i / 500);
+        const body = 0.4 * env * Math.sin((2 * Math.PI * 190 * i) / sr);
+        const wires = 0.9 * Math.exp(-i / 1400) * highpass(hp, rnd());
+        add(parts.snare, 0, at + i, body + wires);
+        add(parts.snare, 1, at + i, body + wires);
+      }
     }
     for (const off of [0, 0.5]) {
       const h = at + Math.round(off * beat * sr);
+      const hp = { lp: 0 };
       for (let i = 0; i < 1200; i++) {
-        const env = Math.exp(-i / 260) * 0.12 * rnd();
-        add(parts.drums, 0, h + i, env * 1.25);
-        add(parts.drums, 1, h + i, env * 0.55);
+        const env = Math.exp(-i / 260) * 0.25 * highpass(hp, rnd());
+        add(parts.cymbals, 0, h + i, env * 1.25);
+        add(parts.cymbals, 1, h + i, env * 0.55);
+      }
+    }
+    if (step % 16 >= 12) {
+      const tom = [140, 118, 96, 82][step % 4] ?? 110;
+      for (let i = 0; i < 5000; i++) {
+        const env = Math.exp(-i / 1600) * Math.min(1, i / 60);
+        const v = 0.55 * env * (Math.sin((2 * Math.PI * tom * i) / sr)
+          + 0.35 * Math.sin((2 * Math.PI * tom * 2.1 * i) / sr));
+        add(parts.toms, 0, at + i, v);
+        add(parts.toms, 1, at + i, v);
       }
     }
   }
@@ -101,23 +141,67 @@ export function buildFixture(
       const vib = 1 + 0.006 * Math.sin((2 * Math.PI * 5.5 * i) / sr);
       let v = 0;
       for (let k = 1; k <= 6; k++) v += (0.42 / k) * Math.sin((2 * Math.PI * f0 * k * vib * i) / sr);
-      add(parts.vocals, 0, at + i, 0.5 * env * v);
-      add(parts.vocals, 1, at + i, 0.5 * env * v);
+      add(parts.lead, 0, at + i, 0.5 * env * v);
+      add(parts.lead, 1, at + i, 0.5 * env * v);
     }
-    for (let i = 0; i < 900; i++) {
+    for (let i = 0; i < 900; i++) {          // a consonant: a transient, not a note
       const v = 0.25 * Math.exp(-i / 220) * rnd();
-      add(parts.vocals, 0, at + i, v);
-      add(parts.vocals, 1, at + i, v);
+      add(parts.lead, 0, at + i, v);
+      add(parts.lead, 1, at + i, v);
+    }
+    // 코러스: the same line a third and a fifth up, doubled, each double
+    // pushed to one side and detuned against the other — which is how they
+    // are actually recorded, and why they stop reading as "centred".
+    for (const [ratio, pan] of [[1.26, -1], [1.5, 1]] as const) {
+      for (let i = 0; i < 0.75 * sr; i++) {
+        const env = Math.min(1, i / 2600) * Math.min(1, (0.75 * sr - i) / 4200);
+        let v = 0;
+        for (let k = 1; k <= 4; k++) {
+          v += (0.2 / k) * Math.sin((2 * Math.PI * f0 * ratio * k * i) / sr);
+        }
+        const l = 0.5 - 0.34 * pan;
+        add(parts.backing, 0, at + i, env * v * l);
+        add(parts.backing, 1, at + i, env * v * (1 - l));
+      }
     }
   }
 
+  // Parents are the sum of their leaves, so a test can measure at any depth
+  // and the two levels cannot disagree about what the truth is.
+  const roll = (parent: FixturePart, children: FixturePart[]): void => {
+    for (const child of children) {
+      for (let c = 0; c < 2; c++) {
+        for (let i = 0; i < n; i++) {
+          parts[parent][c]![i] = (parts[parent][c]![i] ?? 0) + (parts[child][c]![i] ?? 0);
+        }
+      }
+    }
+  };
+  roll('vocals', ['lead', 'backing']);
+  roll('kit', ['snare', 'toms', 'cymbals']);
+  roll('drums', ['kick', 'kit']);
+
   const mix = pair();
-  for (const key of Object.keys(parts) as (keyof typeof parts)[]) {
+  for (const key of ['vocals', 'drums', 'bass', 'other'] as const) {
     for (let c = 0; c < 2; c++) {
       for (let i = 0; i < n; i++) mix[c]![i] = (mix[c]![i] ?? 0) + (parts[key][c]![i] ?? 0);
     }
   }
   return { mix, parts, length: n, sampleRate: sr };
+}
+
+/**
+ * A one-pole high-pass, applied to the noise itself.
+ *
+ * It has to take the sample as an argument.  The first version took only the
+ * index and filtered a constant, which made it an ENVELOPE that decayed over
+ * twenty samples rather than a filter — so the "wires" and the "hats" it was
+ * shaping came out as half-millisecond clicks with a flat spectrum, and the
+ * drum classifier was being tuned against a kit that did not exist.
+ */
+function highpass(state: { lp: number }, x: number): number {
+  state.lp = 0.82 * state.lp + 0.18 * x;
+  return x - state.lp;
 }
 
 export function toMono(channels: readonly Float32Array[]): Float32Array[] {
@@ -139,8 +223,9 @@ export function toMono(channels: readonly Float32Array[]): Float32Array[] {
 export function leakageMatrix(
   parts: Fixture['parts'],
   stems: readonly { kind: string; channels: Float32Array[] }[],
+  over: readonly FixturePart[] = ['vocals', 'drums', 'bass', 'other'],
 ): Record<string, Record<string, number>> {
-  const kinds = ['vocals', 'drums', 'bass', 'other'] as const;
+  const kinds = over;
   const dot = (a: readonly Float32Array[], b: readonly Float32Array[]): number => {
     let sum = 0;
     for (let c = 0; c < Math.min(a.length, b.length); c++) {

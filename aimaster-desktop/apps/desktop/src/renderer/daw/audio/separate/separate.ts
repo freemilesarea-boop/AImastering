@@ -53,21 +53,27 @@ import {
   Overlap, SEPARATION_STFT, analyse, binHz, contextFrames, denominatorFor,
   frameCount, magnitudes, type HalfSpectrum, type SpectrumOptions,
 } from './spectrum.js';
+import {
+  DEFAULT_DRUMS, DRUM_PARTS, drumMasks, drumPresence, drumTemplates,
+  type DrumOptions, type DrumPart,
+} from './drums.js';
+import { voiceSplit, type VoiceSplitOptions } from './voices.js';
+import { leadEnvelope, phraseLock, type PhraseOptions } from './phrase.js';
+import {
+  DETAILED_STEMS, STEM_TREE, TOP_STEMS, coverProblems, orderStems, stemColor,
+  stemLabel, stemNode, stemRoot, type StemKind, type StemNode,
+} from './stem-tree.js';
 
-export type StemKind = 'vocals' | 'drums' | 'bass' | 'other';
-
-export const STEM_KINDS: readonly StemKind[] = ['vocals', 'drums', 'bass', 'other'];
-
-const STEM_LABEL: Record<StemKind, string> = {
-  vocals: '보컬',
-  drums: '드럼',
-  bass: '베이스',
-  other: '그 외',
-};
-
-export function stemLabel(kind: StemKind): string {
-  return STEM_LABEL[kind];
-}
+/**
+ * The four top-level stems.
+ *
+ * Kept under its old name because it is what "all of them, undivided" means
+ * everywhere else in the app; `DETAILED_STEMS` is the same record split as far
+ * as the cues go.  `stem-tree.ts` owns the taxonomy.
+ */
+export const STEM_KINDS = TOP_STEMS;
+export { DETAILED_STEMS, STEM_TREE, TOP_STEMS, stemColor, stemLabel, stemNode, stemRoot };
+export type { StemKind, StemNode };
 
 export interface VocalOptions {
   /** How much the centre cue counts.  Higher = a narrower, cleaner vocal. */
@@ -102,6 +108,15 @@ export interface VocalOptions {
    * number here and not two.
    */
   monoCentre: number;
+  /**
+   * What a bin that phrases with the singer is worth when it is NOT centred.
+   *
+   * This is how stacked backing vocals get in at all.  They are deliberately
+   * spread and detuned, so they fail the centre test by design — measured, three
+   * quarters of them were landing in "그 외".  A bin whose loudness tracks the
+   * lead's over the whole chunk is given this much credit instead.
+   */
+  phraseCredit: number;
 }
 
 export const DEFAULT_VOCAL: VocalOptions = {
@@ -110,6 +125,7 @@ export const DEFAULT_VOCAL: VocalOptions = {
   consonants: 0.35,
   floor: 0.06,
   monoCentre: 0.7,
+  phraseCredit: 1,
 };
 
 export interface SeparationOptions {
@@ -119,13 +135,22 @@ export interface SeparationOptions {
   centre: Partial<CentrenessOptions>;
   vocal: Partial<VocalOptions>;
   bass: BassOptions;
+  phrase: Partial<PhraseOptions>;
+  drums: Partial<DrumOptions>;
+  voices: Partial<VoiceSplitOptions>;
   /**
    * Frames kept per chunk.  Everything else is context and is thrown away, so
    * this trades memory against how often the file is re-analysed — it does not
    * change the answer.  1400 frames is about thirty seconds.
    */
   chunkFrames: number;
-  /** Which stems to actually synthesise.  The masks are computed regardless. */
+  /**
+   * Which stems to make.
+   *
+   * Must cover the tree exactly once — see `stem-tree.ts`.  Asking for both
+   * 보컬 and 리드 is refused rather than obeyed, because obeying it writes the
+   * singer into two files and playing them together is the singer twice.
+   */
   wanted: readonly StemKind[];
 }
 
@@ -136,6 +161,9 @@ export const DEFAULT_SEPARATION: SeparationOptions = {
   centre: {},
   vocal: {},
   bass: DEFAULT_BASS,
+  phrase: {},
+  drums: {},
+  voices: {},
   chunkFrames: 1400,
   wanted: STEM_KINDS,
 };
@@ -163,6 +191,10 @@ export interface SeparationReport {
   centreInformative: boolean;
   /** How repetitive the backing turned out to be, 0…1. */
   repetitiveness: number;
+  /** Drum hits found, when the kit was taken apart.  Zero is a fact worth saying. */
+  drumOnsets: number;
+  /** Whether the lead/코러스 split had a cue to work from at all. */
+  voicesSeparable: boolean;
   /** dB of `input − Σ stems` relative to the input.  Lower is better. */
   reconstructionDb: number;
   /** Plain-language caveats, in the order they matter. */
@@ -244,7 +276,14 @@ export function separate(
   // and the repetition window's reach.
   const context = contextFrames(opts.stft, Math.max(repetWindow, hpssFrames));
 
-  const wanted = opts.wanted.length > 0 ? opts.wanted : STEM_KINDS;
+  const wanted = orderStems(opts.wanted.length > 0 ? opts.wanted : STEM_KINDS);
+  const cover = coverProblems(wanted);
+  if (cover.overlapping.length > 0) {
+    throw new Error(`${cover.overlapping.map(stemLabel).join(' · ')} 은(는) 상위 스템에 이미 포함됩니다`
+      + ' — 같이 만들면 그 파트가 두 번 들어갑니다');
+  }
+  const wantsDrumParts = wanted.includes('kick') || wanted.includes('kit');
+  const wantsVoiceParts = wanted.includes('lead') || wanted.includes('backing');
   const outChannels = stereo ? 2 : 1;
   const denominator = denominatorFor(length, fftSize);
   const accumulators = new Map<string, Overlap>();
@@ -264,7 +303,11 @@ export function separate(
   const CONFIDENT = 0.8;
   const confidentEnergy = new Map<StemKind, number>();
   const stemEnergy = new Map<StemKind, number>();
-  for (const kind of STEM_KINDS) { confidentEnergy.set(kind, 0); stemEnergy.set(kind, 0); }
+  for (const node of STEM_TREE) { confidentEnergy.set(node.kind, 0); stemEnergy.set(node.kind, 0); }
+  const templates = wantsDrumParts
+    ? drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate) : null;
+  let drumOnsets = 0;
+  let voicesInformative = false;
 
   const chunks = Math.max(1, Math.ceil(total / opts.chunkFrames));
   let chunkIndex = 0;
@@ -312,6 +355,20 @@ export function separate(
     const bassW = new Float32Array(frames * bins);
     const harmonicMag = new Float32Array(frames * bins);
     const vocalMask = new Float32Array(frames * bins);
+    // Only allocated when the tree actually asks for them: four more buffers
+    // this size is another 72 MB per chunk, and most runs want the four
+    // top-level stems and nothing else.
+    const kitMask: Record<DrumPart, Float32Array> | null = wantsDrumParts ? {
+      kick: new Float32Array(frames * bins), snare: new Float32Array(frames * bins),
+      toms: new Float32Array(frames * bins), cymbals: new Float32Array(frames * bins),
+    } : null;
+    const percussiveMag = wantsDrumParts ? new Float32Array(frames * bins) : null;
+
+    // The lead/backing split is a threshold on the centre cue, which is joint
+    // across the channels, so it is the same answer for both of them.
+    const voices = wantsVoiceParts
+      ? voiceSplit(centre, frames, bins, opts.voices) : null;
+    if (voices?.available) voicesInformative = true;
 
     for (let c = 0; c < outChannels; c++) {
       const spec = c === 0 ? specL : specR;
@@ -327,6 +384,23 @@ export function separate(
       const track = trackBass(harmonicMag, frames, bins, fftSize, sampleRate, opts.bass);
       bassWeight(bassW, track, shelf, frames, bins, fftSize, sampleRate, opts.bass);
 
+      // ── Pass one: what is plainly centred ──
+      //
+      // This is the lead, and it is only used to find out WHEN the singing is
+      // happening.  The mask it produces is thrown away and rebuilt below.
+      for (let i = 0; i < frames * bins; i++) {
+        const h = harmonic[i] ?? 0;
+        const place = centre.informative
+          ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
+        const cue = (prior[i % bins] ?? 0) * place
+          * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight)
+          * (h + vocal.consonants * (1 - h));
+        vocalMask[i] = cue < vocal.floor ? 0 : Math.min(1, cue);
+      }
+      const envelope = leadEnvelope(vocalMask, mag, frames, bins);
+      const phrasing = phraseLock(mag, envelope, frames, bins, fftSize, sampleRate, opts.phrase);
+
+      // ── Pass two: centred OR phrasing with whoever is ──
       for (let i = 0; i < frames * bins; i++) {
         const h = harmonic[i] ?? 0;
         // What is left after the bass has taken its share.  The vocal cue is
@@ -334,23 +408,52 @@ export function separate(
         const remaining = 1 - h * (bassW[i] ?? 0);
         const place = centre.informative
           ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
+        // MAX, not sum: the two are alternative reasons to believe the same
+        // thing, and adding them would let a bin that is a bit of both beat
+        // one that is unmistakably centred.
+        const belongs = Math.max(place, vocal.phraseCredit * (phrasing[i] ?? 0));
         const cue = (prior[i % bins] ?? 0)
-          * place
+          * belongs
           * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight)
           * (h + vocal.consonants * (1 - h));
         vocalMask[i] = remaining <= 0 ? 0
           : cue < vocal.floor ? 0 : Math.min(1, cue);
       }
 
+      // The kit is taken apart from the percussive magnitude of THIS channel,
+      // so a hard-panned hat is classified where it actually is.
+      if (kitMask && percussiveMag && templates) {
+        for (let i = 0; i < frames * bins; i++) {
+          percussiveMag[i] = (1 - (harmonic[i] ?? 0)) * (mag[i] ?? 0);
+        }
+        const kit = drumPresence(percussiveMag, frames, bins, templates,
+          hopSize / sampleRate, opts.drums);
+        if (c === 0) drumOnsets += kit.onsets;
+        drumMasks(kitMask, kit.presence, templates, frames, bins);
+      }
+
       for (const kind of wanted) {
+        const root = stemRoot(kind);
+        // A leaf's mask is its parent's mask times its share of it, so the
+        // children of a stem always sum back to that stem — and the whole set
+        // still sums to one however deep it is cut.
+        // 나머지 드럼 is written as 1 − 킥 rather than as the sum of the other
+        // three internal parts: one subtraction cannot leave a residue, and
+        // three additions of rounded floats can.
+        const share = kind === 'lead' || kind === 'backing' ? voices?.lead ?? null
+          : kind === 'kick' || kind === 'kit' ? kitMask?.kick ?? null
+          : null;
+        const invert = kind === 'backing' || kind === 'kit';
         for (let i = 0; i < frames * bins; i++) {
           const q = vocalMask[i] ?? 0;
           const h = harmonic[i] ?? 0;
           const lo = bassW[i] ?? 0;
-          mask[i] = kind === 'bass' ? h * lo
-            : kind === 'vocals' ? (1 - h * lo) * q
-            : kind === 'drums' ? (1 - q) * (1 - h)
+          const parent = root === 'bass' ? h * lo
+            : root === 'vocals' ? (1 - h * lo) * q
+            : root === 'drums' ? (1 - q) * (1 - h)
             : (1 - q) * h * (1 - lo);
+          const s = share === null ? 1 : invert ? 1 - (share[i] ?? 0) : (share[i] ?? 0);
+          mask[i] = parent * s;
         }
         // Measure on the KEPT frames only — the context is analysed twice and
         // would be counted twice.
@@ -400,7 +503,10 @@ export function separate(
     };
   });
 
-  const reconstructionDb = wanted.length === STEM_KINDS.length
+  // Only meaningful when the set covers the whole record — otherwise the
+  // "residual" is just the parts nobody asked for, and reporting it as
+  // reconstruction error would be a lie in the user's favour.
+  const reconstructionDb = cover.missing.length === 0
     ? residualDb(stereo ? [left, right] : [left], stems)
     : Number.NaN;
 
@@ -414,6 +520,15 @@ export function separate(
   if (repetitiveness < 0.75) {
     notes.push(`반복이 뚜렷하지 않은 음악입니다 (유사도 ${repetitiveness.toFixed(2)}) — 보컬에 반주가 섞일 수 있습니다`);
   }
+  if (wantsVoiceParts && !voicesInformative) {
+    notes.push('리드와 코러스를 가를 단서가 없습니다 — 보컬이 전부 리드로 갑니다');
+  }
+  if (wantsDrumParts && drumOnsets === 0) {
+    notes.push('드럼 타격을 하나도 찾지 못했습니다 — 킥 · 스네어 · 탐 · 심벌은 주파수만으로 나뉘었습니다');
+  }
+  if (wanted.includes('kit')) {
+    notes.push('스네어 · 심벌 · 하이햇은 더 못 나눕니다 — 스네어 줄과 하이햇이 같은 대역의 잡음이고 거의 항상 같이 울립니다');
+  }
   const vague = stems.filter((s) => s.confidence < 0.5 && s.energyShare > 0.02);
   if (vague.length > 0) {
     notes.push(`${vague.map((s) => stemLabel(s.kind)).join(' · ')} 은(는) 절반 이상이 애매한 판정입니다 — 섞여 들릴 수 있습니다`);
@@ -424,6 +539,8 @@ export function separate(
     stems, sampleRate, length, stereo,
     centreInformative: stereo && centreInformative,
     repetitiveness, reconstructionDb, notes,
+    drumOnsets,
+    voicesSeparable: voicesInformative,
     elapsedMs: Date.now() - started,
   };
 }

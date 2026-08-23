@@ -545,23 +545,354 @@
     }
   }
 
-  // src/renderer/daw/audio/separate/separate.ts
-  var STEM_KINDS = ["vocals", "drums", "bass", "other"];
-  var STEM_LABEL = {
-    vocals: "\uBCF4\uCEEC",
-    drums: "\uB4DC\uB7FC",
-    bass: "\uBCA0\uC774\uC2A4",
-    other: "\uADF8 \uC678"
+  // src/renderer/daw/audio/separate/drums.ts
+  var DRUM_PARTS = ["kick", "snare", "toms", "cymbals"];
+  var DEFAULT_DRUMS = {
+    onsetThreshold: 1.6,
+    decaySec: { kick: 0.18, snare: 0.25, toms: 0.45, cymbals: 1.2 },
+    presenceFloor: 0.04
   };
-  function stemLabel(kind) {
-    return STEM_LABEL[kind];
+  function drumTemplates(bins, fftSize, sampleRate) {
+    const make = (f) => {
+      const out = new Float32Array(bins);
+      for (let b = 0; b < bins; b++) out[b] = Math.max(0, Math.min(1, f(binHz(b, fftSize, sampleRate))));
+      return out;
+    };
+    const ramp = (hz, from, to) => {
+      if (from === to) return hz >= from ? 1 : 0;
+      const t = (hz - from) / (to - from);
+      if (t <= 0) return 0;
+      if (t >= 1) return 1;
+      return 0.5 * (1 - Math.cos(Math.PI * t));
+    };
+    return {
+      // Bottom octave and a half, gone by 160 Hz.
+      kick: make((hz) => 1 - ramp(hz, 70, 160)),
+      // Two humps: the shell around 150–400 Hz, and the wires from 1.5 kHz up.
+      snare: make((hz) => Math.max(
+        ramp(hz, 110, 190) * (1 - ramp(hz, 320, 620)) * 0.9,
+        ramp(hz, 1200, 2600) * (1 - ramp(hz, 7e3, 11e3))
+      )),
+      // The register between kick and snare, where a tom's fundamental sits.
+      toms: make((hz) => ramp(hz, 60, 110) * (1 - ramp(hz, 260, 520))),
+      // Everything above the snare wires, and nothing below.
+      cymbals: make((hz) => ramp(hz, 3500, 7e3))
+    };
   }
+  function drumPresence(percussive, frames, bins, templates, hopSec, options = {}) {
+    const { onsetThreshold, decaySec, presenceFloor } = { ...DEFAULT_DRUMS, ...options };
+    const presence = {
+      kick: new Float32Array(frames),
+      snare: new Float32Array(frames),
+      toms: new Float32Array(frames),
+      cymbals: new Float32Array(frames)
+    };
+    for (const part of DRUM_PARTS) presence[part].fill(presenceFloor);
+    if (frames === 0) return { presence, onsets: 0 };
+    const scores = {
+      kick: new Float32Array(frames),
+      snare: new Float32Array(frames),
+      toms: new Float32Array(frames),
+      cymbals: new Float32Array(frames)
+    };
+    const total = new Float32Array(frames);
+    for (let f = 0; f < frames; f++) {
+      const base = f * bins;
+      let sum = 0;
+      for (const part of DRUM_PARTS) {
+        const tpl = templates[part];
+        let s = 0;
+        for (let b = 0; b < bins; b++) s += (percussive[base + b] ?? 0) * (tpl[b] ?? 0);
+        scores[part][f] = s;
+        sum += s;
+      }
+      total[f] = sum;
+    }
+    const RUN = 24;
+    let onsets = 0;
+    for (let f = 1; f < frames; f++) {
+      let floor = 0;
+      let count = 0;
+      for (let k = Math.max(0, f - RUN); k < f; k++) {
+        floor += total[k] ?? 0;
+        count++;
+      }
+      const local = count > 0 ? floor / count : 0;
+      const rise = (total[f] ?? 0) - (total[f - 1] ?? 0);
+      if (rise <= 0) continue;
+      if ((total[f] ?? 0) < local * onsetThreshold) continue;
+      onsets++;
+      const hitTotal = DRUM_PARTS.reduce((t, p) => t + (scores[p][f] ?? 0), 0);
+      if (hitTotal <= 0) continue;
+      for (const part of DRUM_PARTS) {
+        const share = (scores[part][f] ?? 0) / hitTotal;
+        const tail = Math.max(1, Math.round((decaySec[part] ?? 0.2) / Math.max(hopSec, 1e-6)));
+        for (let k = 0; k < tail && f + k < frames; k++) {
+          const value = share * Math.exp(-3 * k / tail);
+          if (value > (presence[part][f + k] ?? 0)) presence[part][f + k] = value;
+        }
+      }
+    }
+    return { presence, onsets };
+  }
+  function drumMasks(out, presence, templates, frames, bins) {
+    for (let f = 0; f < frames; f++) {
+      const base = f * bins;
+      for (let b = 0; b < bins; b++) {
+        let sum = 0;
+        for (const part of DRUM_PARTS) {
+          const w = (presence[part][f] ?? 0) * (templates[part][b] ?? 0);
+          out[part][base + b] = w;
+          sum += w;
+        }
+        if (sum > 0) {
+          let given = 0;
+          for (let i = 0; i < DRUM_PARTS.length - 1; i++) {
+            const part = DRUM_PARTS[i];
+            const share = (out[part][base + b] ?? 0) / sum;
+            out[part][base + b] = share;
+            given += share;
+          }
+          out[DRUM_PARTS[DRUM_PARTS.length - 1]][base + b] = 1 - given;
+        } else {
+          const even = 1 / DRUM_PARTS.length;
+          let given = 0;
+          for (let i = 0; i < DRUM_PARTS.length - 1; i++) {
+            out[DRUM_PARTS[i]][base + b] = even;
+            given += even;
+          }
+          out[DRUM_PARTS[DRUM_PARTS.length - 1]][base + b] = 1 - given;
+        }
+      }
+    }
+  }
+
+  // src/renderer/daw/audio/separate/voices.ts
+  var DEFAULT_VOICE_SPLIT = { spread: 0.45, centred: 0.9 };
+  function voiceSplit(centre, frames, bins, options = {}) {
+    const { spread, centred } = { ...DEFAULT_VOICE_SPLIT, ...options };
+    const n = frames * bins;
+    const lead = new Float32Array(n);
+    if (!centre.informative || centred <= spread) {
+      lead.fill(1);
+      return { lead, available: false };
+    }
+    const scale = 1 / (centred - spread);
+    for (let i = 0; i < n; i++) {
+      const t = ((centre.value[i] ?? 0) - spread) * scale;
+      lead[i] = t <= 0 ? 0 : t >= 1 ? 1 : 0.5 * (1 - Math.cos(Math.PI * t));
+    }
+    return { lead, available: true };
+  }
+
+  // src/renderer/daw/audio/separate/phrase.ts
+  function leadEnvelope(vocalMask, magnitude, frames, bins) {
+    const env = new Float32Array(frames);
+    for (let f = 0; f < frames; f++) {
+      const base = f * bins;
+      let sum = 0;
+      for (let b = 0; b < bins; b++) sum += (vocalMask[base + b] ?? 0) * (magnitude[base + b] ?? 0);
+      env[f] = sum;
+    }
+    return env;
+  }
+  var DEFAULT_PHRASE = {
+    floor: 0.2,
+    full: 0.45,
+    perOctave: 3,
+    lowHz: 90,
+    highHz: 12e3
+  };
+  function bandEdges2(bins, fftSize, sampleRate, options) {
+    const binOf = (hz) => Math.max(1, Math.min(bins - 1, Math.round(hz * fftSize / sampleRate)));
+    const edges = [];
+    const step = Math.pow(2, 1 / Math.max(1, options.perOctave));
+    for (let hz = options.lowHz; hz < options.highHz; hz *= step) {
+      const b = binOf(hz);
+      if (edges.length === 0 || b > (edges[edges.length - 1] ?? 0)) edges.push(b);
+    }
+    const top = binOf(options.highHz);
+    if (top > (edges[edges.length - 1] ?? 0)) edges.push(top);
+    return Int32Array.from(edges);
+  }
+  function phraseLock(magnitude, envelope, frames, bins, fftSize, sampleRate, options = {}) {
+    const opts = { ...DEFAULT_PHRASE, ...options };
+    const out = new Float32Array(frames * bins);
+    if (frames < 8 || opts.full <= opts.floor) return out;
+    let envMean = 0;
+    for (let f = 0; f < frames; f++) envMean += envelope[f] ?? 0;
+    envMean /= frames;
+    let envVar = 0;
+    for (let f = 0; f < frames; f++) envVar += ((envelope[f] ?? 0) - envMean) ** 2;
+    if (envVar <= 0) return out;
+    const envSd = Math.sqrt(envVar);
+    const edges = bandEdges2(bins, fftSize, sampleRate, opts);
+    const bandCount = Math.max(0, edges.length - 1);
+    if (bandCount === 0) return out;
+    const band = new Float32Array(bandCount * frames);
+    for (let f = 0; f < frames; f++) {
+      const base = f * bins;
+      for (let k = 0; k < bandCount; k++) {
+        const from = edges[k] ?? 0;
+        const to = edges[k + 1] ?? from;
+        let sum = 0;
+        for (let b = from; b < to; b++) sum += magnitude[base + b] ?? 0;
+        band[k * frames + f] = sum;
+      }
+    }
+    const scale = 1 / (opts.full - opts.floor);
+    const gain = new Float32Array(bandCount);
+    for (let k = 0; k < bandCount; k++) {
+      let mean = 0;
+      for (let f = 0; f < frames; f++) mean += band[k * frames + f] ?? 0;
+      mean /= frames;
+      let sd = 0;
+      let cov = 0;
+      for (let f = 0; f < frames; f++) {
+        const d = (band[k * frames + f] ?? 0) - mean;
+        sd += d * d;
+        cov += d * ((envelope[f] ?? 0) - envMean);
+      }
+      sd = Math.sqrt(sd);
+      const r = sd > 0 ? cov / (sd * envSd) : 0;
+      const t = (r - opts.floor) * scale;
+      gain[k] = t <= 0 ? 0 : t >= 1 ? 1 : 0.5 * (1 - Math.cos(Math.PI * t));
+    }
+    for (let f = 0; f < frames; f++) {
+      const base = f * bins;
+      const active = Math.min(1, Math.max(0, ((envelope[f] ?? 0) - envMean) / envSd + 0.5));
+      if (active <= 0) continue;
+      for (let k = 0; k < bandCount; k++) {
+        const g = (gain[k] ?? 0) * active;
+        if (g <= 0) continue;
+        const from = edges[k] ?? 0;
+        const to = edges[k + 1] ?? from;
+        for (let b = from; b < to; b++) out[base + b] = g;
+      }
+    }
+    return out;
+  }
+
+  // src/renderer/daw/audio/separate/stem-tree.ts
+  var NODES = [
+    {
+      kind: "vocals",
+      parent: null,
+      children: ["lead", "backing"],
+      label: "\uBCF4\uCEEC",
+      what: "\uAC00\uC6B4\uB370\uC5D0 \uC788\uACE0 \uBC18\uBCF5\uD558\uC9C0 \uC54A\uB294 \uC131\uBD84",
+      color: "#d67f4f"
+    },
+    {
+      kind: "lead",
+      parent: "vocals",
+      children: [],
+      label: "\uB9AC\uB4DC",
+      what: "\uC815\uD655\uD788 \uD55C\uAC00\uC6B4\uB370 \u2014 \uBCF4\uD1B5 \uD55C \uC0AC\uB78C",
+      color: "#e09a6a"
+    },
+    {
+      kind: "backing",
+      parent: "vocals",
+      children: [],
+      label: "\uCF54\uB7EC\uC2A4",
+      what: "\uBCF4\uCEEC\uC778\uB370 \uAC00\uC6B4\uB370\uC5D0\uC11C \uBC8C\uC5B4\uC838 \uC788\uB294 \uAC83 \u2014 \uACB9\uCCD0 \uBD80\uB978 \uD654\uC74C",
+      color: "#c06a3a"
+    },
+    {
+      kind: "drums",
+      parent: null,
+      children: ["kick", "kit"],
+      label: "\uB4DC\uB7FC",
+      what: "\uB113\uC740 \uB300\uC5ED\uC744 \uD55C\uC21C\uAC04\uC5D0 \uCE58\uACE0 \uC9C0\uB098\uAC00\uB294 \uC131\uBD84",
+      color: "#4fd68f"
+    },
+    {
+      kind: "kick",
+      parent: "drums",
+      children: [],
+      label: "\uD0A5",
+      what: "\uB9E8 \uC544\uB798\uC5D0\uC11C \uB098\uB294 \uD0C0\uACA9 \u2014 \uD0A5\uB9CC \uB530\uB85C",
+      color: "#3fa870"
+    },
+    {
+      kind: "kit",
+      parent: "drums",
+      children: [],
+      label: "\uB098\uBA38\uC9C0 \uB4DC\uB7FC",
+      what: "\uC2A4\uB124\uC5B4 \xB7 \uD0D0 \xB7 \uC2EC\uBC8C \xB7 \uD558\uC774\uD587 \u2014 \uD0A5\uC744 \uBE80 \uB098\uBA38\uC9C0",
+      color: "#7fd6b0"
+    },
+    {
+      kind: "bass",
+      parent: null,
+      children: [],
+      label: "\uBCA0\uC774\uC2A4",
+      what: "\uB0AE\uC740 \uC74C\uACFC \uADF8 \uBC30\uC74C \u2014 \uC74C\uC744 \uB530\uB77C\uAC11\uB2C8\uB2E4",
+      color: "#4f7fd6"
+    },
+    {
+      kind: "other",
+      parent: null,
+      children: [],
+      label: "\uADF8 \uC678",
+      what: "\uB098\uBA38\uC9C0 \u2014 \uAE30\uD0C0 \xB7 \uAC74\uBC18 \xB7 \uC2E0\uC2A4 \xB7 \uB9AC\uBC84\uBE0C",
+      color: "#9f6fd6"
+    }
+  ];
+  var BY_KIND = new Map(NODES.map((n) => [n.kind, n]));
+  var STEM_TREE = NODES;
+  var TOP_STEMS = ["vocals", "drums", "bass", "other"];
+  function stemNode(kind) {
+    const node = BY_KIND.get(kind);
+    if (!node) throw new Error(`\uC54C \uC218 \uC5C6\uB294 \uC2A4\uD15C: ${kind}`);
+    return node;
+  }
+  function stemLabel(kind) {
+    return stemNode(kind).label;
+  }
+  function stemRoot(kind) {
+    const node = stemNode(kind);
+    return node.parent === null ? kind : stemRoot(node.parent);
+  }
+  function orderStems(kinds) {
+    const wanted = new Set(kinds);
+    const out = [];
+    const visit = (kind) => {
+      if (wanted.has(kind)) out.push(kind);
+      for (const child of stemNode(kind).children) visit(child);
+    };
+    for (const top of TOP_STEMS) visit(top);
+    return out;
+  }
+  function coverProblems(kinds) {
+    const wanted = new Set(kinds);
+    const overlapping = [];
+    const missing = [];
+    const visit = (kind, coveredByAncestor) => {
+      const node = stemNode(kind);
+      const here = wanted.has(kind);
+      if (here && coveredByAncestor) overlapping.push(kind);
+      const covered = coveredByAncestor || here;
+      if (node.children.length === 0) {
+        if (!covered) missing.push(kind);
+        return;
+      }
+      for (const child of node.children) visit(child, covered);
+    };
+    for (const top of TOP_STEMS) visit(top, false);
+    return { overlapping, missing };
+  }
+
+  // src/renderer/daw/audio/separate/separate.ts
+  var STEM_KINDS = TOP_STEMS;
   var DEFAULT_VOCAL = {
     centreWeight: 1.4,
     noveltyWeight: 1,
     consonants: 0.35,
     floor: 0.06,
-    monoCentre: 0.7
+    monoCentre: 0.7,
+    phraseCredit: 1
   };
   var DEFAULT_SEPARATION = {
     stft: SEPARATION_STFT,
@@ -570,6 +901,9 @@
     centre: {},
     vocal: {},
     bass: DEFAULT_BASS,
+    phrase: {},
+    drums: {},
+    voices: {},
     chunkFrames: 1400,
     wanted: STEM_KINDS
   };
@@ -621,7 +955,13 @@
     const repetWindow = opts.repet.windowFrames ?? DEFAULT_REPET.windowFrames;
     const hpssFrames = opts.hpss.harmonicFrames ?? DEFAULT_HPSS.harmonicFrames;
     const context = contextFrames(opts.stft, Math.max(repetWindow, hpssFrames));
-    const wanted = opts.wanted.length > 0 ? opts.wanted : STEM_KINDS;
+    const wanted = orderStems(opts.wanted.length > 0 ? opts.wanted : STEM_KINDS);
+    const cover = coverProblems(wanted);
+    if (cover.overlapping.length > 0) {
+      throw new Error(`${cover.overlapping.map(stemLabel).join(" \xB7 ")} \uC740(\uB294) \uC0C1\uC704 \uC2A4\uD15C\uC5D0 \uC774\uBBF8 \uD3EC\uD568\uB429\uB2C8\uB2E4 \u2014 \uAC19\uC774 \uB9CC\uB4E4\uBA74 \uADF8 \uD30C\uD2B8\uAC00 \uB450 \uBC88 \uB4E4\uC5B4\uAC11\uB2C8\uB2E4`);
+    }
+    const wantsDrumParts = wanted.includes("kick") || wanted.includes("kit");
+    const wantsVoiceParts = wanted.includes("lead") || wanted.includes("backing");
     const outChannels = stereo ? 2 : 1;
     const denominator = denominatorFor(length, fftSize);
     const accumulators = /* @__PURE__ */ new Map();
@@ -638,10 +978,13 @@
     const CONFIDENT = 0.8;
     const confidentEnergy = /* @__PURE__ */ new Map();
     const stemEnergy = /* @__PURE__ */ new Map();
-    for (const kind of STEM_KINDS) {
-      confidentEnergy.set(kind, 0);
-      stemEnergy.set(kind, 0);
+    for (const node of STEM_TREE) {
+      confidentEnergy.set(node.kind, 0);
+      stemEnergy.set(node.kind, 0);
     }
+    const templates = wantsDrumParts ? drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate) : null;
+    let drumOnsets = 0;
+    let voicesInformative = false;
     const chunks = Math.max(1, Math.ceil(total / opts.chunkFrames));
     let chunkIndex = 0;
     for (let start = 0; start < total; start += opts.chunkFrames) {
@@ -675,6 +1018,15 @@
       const bassW = new Float32Array(frames * bins);
       const harmonicMag = new Float32Array(frames * bins);
       const vocalMask = new Float32Array(frames * bins);
+      const kitMask = wantsDrumParts ? {
+        kick: new Float32Array(frames * bins),
+        snare: new Float32Array(frames * bins),
+        toms: new Float32Array(frames * bins),
+        cymbals: new Float32Array(frames * bins)
+      } : null;
+      const percussiveMag = wantsDrumParts ? new Float32Array(frames * bins) : null;
+      const voices = wantsVoiceParts ? voiceSplit(centre, frames, bins, opts.voices) : null;
+      if (voices?.available) voicesInformative = true;
       for (let c = 0; c < outChannels; c++) {
         const spec = c === 0 ? specL : specR;
         const mag = c === 0 ? magL : magR;
@@ -686,17 +1038,46 @@
         bassWeight(bassW, track, shelf, frames, bins, fftSize, sampleRate, opts.bass);
         for (let i = 0; i < frames * bins; i++) {
           const h = harmonic[i] ?? 0;
-          const remaining = 1 - h * (bassW[i] ?? 0);
           const place = centre.informative ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
           const cue = (prior[i % bins] ?? 0) * place * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight) * (h + vocal.consonants * (1 - h));
+          vocalMask[i] = cue < vocal.floor ? 0 : Math.min(1, cue);
+        }
+        const envelope = leadEnvelope(vocalMask, mag, frames, bins);
+        const phrasing = phraseLock(mag, envelope, frames, bins, fftSize, sampleRate, opts.phrase);
+        for (let i = 0; i < frames * bins; i++) {
+          const h = harmonic[i] ?? 0;
+          const remaining = 1 - h * (bassW[i] ?? 0);
+          const place = centre.informative ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
+          const belongs = Math.max(place, vocal.phraseCredit * (phrasing[i] ?? 0));
+          const cue = (prior[i % bins] ?? 0) * belongs * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight) * (h + vocal.consonants * (1 - h));
           vocalMask[i] = remaining <= 0 ? 0 : cue < vocal.floor ? 0 : Math.min(1, cue);
         }
+        if (kitMask && percussiveMag && templates) {
+          for (let i = 0; i < frames * bins; i++) {
+            percussiveMag[i] = (1 - (harmonic[i] ?? 0)) * (mag[i] ?? 0);
+          }
+          const kit = drumPresence(
+            percussiveMag,
+            frames,
+            bins,
+            templates,
+            hopSize / sampleRate,
+            opts.drums
+          );
+          if (c === 0) drumOnsets += kit.onsets;
+          drumMasks(kitMask, kit.presence, templates, frames, bins);
+        }
         for (const kind of wanted) {
+          const root = stemRoot(kind);
+          const share = kind === "lead" || kind === "backing" ? voices?.lead ?? null : kind === "kick" || kind === "kit" ? kitMask?.kick ?? null : null;
+          const invert = kind === "backing" || kind === "kit";
           for (let i = 0; i < frames * bins; i++) {
             const q = vocalMask[i] ?? 0;
             const h = harmonic[i] ?? 0;
             const lo = bassW[i] ?? 0;
-            mask[i] = kind === "bass" ? h * lo : kind === "vocals" ? (1 - h * lo) * q : kind === "drums" ? (1 - q) * (1 - h) : (1 - q) * h * (1 - lo);
+            const parent = root === "bass" ? h * lo : root === "vocals" ? (1 - h * lo) * q : root === "drums" ? (1 - q) * (1 - h) : (1 - q) * h * (1 - lo);
+            const s = share === null ? 1 : invert ? 1 - (share[i] ?? 0) : share[i] ?? 0;
+            mask[i] = parent * s;
           }
           for (let f = start - from; f < end - from; f++) {
             const base = f * bins;
@@ -738,7 +1119,7 @@
         peak: peakOf(out)
       };
     });
-    const reconstructionDb = wanted.length === STEM_KINDS.length ? residualDb(stereo ? [left, right] : [left], stems) : Number.NaN;
+    const reconstructionDb = cover.missing.length === 0 ? residualDb(stereo ? [left, right] : [left], stems) : Number.NaN;
     const repetitiveness = similarityChunks > 0 ? similarityTotal / similarityChunks : 0;
     const notes = [];
     if (!stereo || !centreInformative) {
@@ -746,6 +1127,15 @@
     }
     if (repetitiveness < 0.75) {
       notes.push(`\uBC18\uBCF5\uC774 \uB69C\uB837\uD558\uC9C0 \uC54A\uC740 \uC74C\uC545\uC785\uB2C8\uB2E4 (\uC720\uC0AC\uB3C4 ${repetitiveness.toFixed(2)}) \u2014 \uBCF4\uCEEC\uC5D0 \uBC18\uC8FC\uAC00 \uC11E\uC77C \uC218 \uC788\uC2B5\uB2C8\uB2E4`);
+    }
+    if (wantsVoiceParts && !voicesInformative) {
+      notes.push("\uB9AC\uB4DC\uC640 \uCF54\uB7EC\uC2A4\uB97C \uAC00\uB97C \uB2E8\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4 \u2014 \uBCF4\uCEEC\uC774 \uC804\uBD80 \uB9AC\uB4DC\uB85C \uAC11\uB2C8\uB2E4");
+    }
+    if (wantsDrumParts && drumOnsets === 0) {
+      notes.push("\uB4DC\uB7FC \uD0C0\uACA9\uC744 \uD558\uB098\uB3C4 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 \u2014 \uD0A5 \xB7 \uC2A4\uB124\uC5B4 \xB7 \uD0D0 \xB7 \uC2EC\uBC8C\uC740 \uC8FC\uD30C\uC218\uB9CC\uC73C\uB85C \uB098\uB258\uC5C8\uC2B5\uB2C8\uB2E4");
+    }
+    if (wanted.includes("kit")) {
+      notes.push("\uC2A4\uB124\uC5B4 \xB7 \uC2EC\uBC8C \xB7 \uD558\uC774\uD587\uC740 \uB354 \uBABB \uB098\uB215\uB2C8\uB2E4 \u2014 \uC2A4\uB124\uC5B4 \uC904\uACFC \uD558\uC774\uD587\uC774 \uAC19\uC740 \uB300\uC5ED\uC758 \uC7A1\uC74C\uC774\uACE0 \uAC70\uC758 \uD56D\uC0C1 \uAC19\uC774 \uC6B8\uB9BD\uB2C8\uB2E4");
     }
     const vague = stems.filter((s) => s.confidence < 0.5 && s.energyShare > 0.02);
     if (vague.length > 0) {
@@ -761,6 +1151,8 @@
       repetitiveness,
       reconstructionDb,
       notes,
+      drumOnsets,
+      voicesSeparable: voicesInformative,
       elapsedMs: Date.now() - started
     };
   }
