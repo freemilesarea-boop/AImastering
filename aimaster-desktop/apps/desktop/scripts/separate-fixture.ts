@@ -89,7 +89,13 @@ export function buildFixture(
   const beat = 60 / 120;
 
   // BASS — two-bar loop, centred, harmonics up to ~400 Hz.
-  const notes = [55, 55, 82.41, 65.41];
+  //
+  // The hard loop is an octave down.  Measured on the real song, 26 % of the
+  // bass's energy is below 45 Hz; the easy loop's lowest note is 55 Hz, which
+  // puts 1 % there — so in the easy fixture the bottom octave is 55 % kick and
+  // 1 % bass and telling them apart is not a problem at all.  That is why
+  // 드럼→베이스 was 24 % here and 58 % on the record.
+  const notes = hard ? [41.2, 41.2, 55.0, 49.0] : [55, 55, 82.41, 65.41];
   for (let step = 0; step * beat < seconds; step++) {
     const f0 = notes[step % notes.length]!;
     const at = Math.round(step * beat * sr);
@@ -116,11 +122,28 @@ export function buildFixture(
       // instead of decaying, so its low end sits on top of the bass note for a
       // quarter of a second the way a modern record's does.
       const tail = hard ? 11000 : 3000;
+      // The easy kick sweeps 60 → 35 Hz, which puts 71 % of it below 45 Hz.
+      // A real one measured on the record is 4 % below 45, 52 % at 63 and 29 %
+      // at 125: it starts as a click up at 150 and SETTLES at its note, and
+      // the beater's punch in the low mids is most of what a listener hears.
+      // Sweeping down past the note instead of onto it is a 1980s drum machine,
+      // and it made the bottom octave far easier than it is.
+      let phase = 0;
       for (let i = 0; i < tail; i++) {
         const env = hard
           ? Math.exp(-i / 5200) * (1 - 0.55 * Math.exp(-i / 300))
           : Math.exp(-i / 900);
-        const v = 0.8 * env * Math.sin((2 * Math.PI * (60 - (25 * i) / 3000) * i) / sr);
+        let v: number;
+        if (hard) {
+          const hz = 55 + 105 * Math.exp(-i / 700);
+          phase += (2 * Math.PI * hz) / sr;
+          // The punch: a second, shorter voice an octave and a half up, which
+          // is what fills 125–250 Hz.
+          v = 0.8 * env * Math.sin(phase)
+            + 0.85 * Math.exp(-i / 1300) * Math.sin(phase * 2.4);
+        } else {
+          v = 0.8 * env * Math.sin((2 * Math.PI * (60 - (25 * i) / 3000) * i) / sr);
+        }
         add(parts.kick, 0, at + i, v);
         add(parts.kick, 1, at + i, v);
       }
@@ -192,12 +215,37 @@ export function buildFixture(
       }
     }
     // Strings and brass: sustained, wide, filling the mid and the top.
+    // Bowed strings and a brass section are BRIGHT — the harmonic series of a
+    // sawtooth runs to the end of hearing — and leaving them as pure sines
+    // stopped the whole arrangement at 1.4 kHz.  Measured on the record, 그 외
+    // reaches 16 k and 85–90 % of it up there was landing in the drums stem;
+    // a fixture with nothing up there cannot show that at all.
     for (let i = 0; i < n; i++) {
       const swell = 0.5 + 0.5 * Math.sin((2 * Math.PI * i) / (sr * 4));
       for (const f of [440.0, 554.37, 659.26, 880.0]) {
-        const v = 0.045 * swell * Math.sin((2 * Math.PI * f * i) / sr);
-        parts.other[0]![i] = (parts.other[0]![i] ?? 0) + v;
-        parts.other[1]![i] = (parts.other[1]![i] ?? 0) + v * Math.cos(f * 0.003);
+        for (let k = 1; k <= 14; k++) {
+          if (f * k > sr * 0.45) break;
+          const v = (0.045 / k) * swell * Math.sin((2 * Math.PI * f * k * i) / sr);
+          parts.other[0]![i] = (parts.other[0]![i] ?? 0) + v;
+          parts.other[1]![i] = (parts.other[1]![i] ?? 0) + v * Math.cos(f * k * 0.003);
+        }
+      }
+    }
+    // Synth: sixteenth-note bright stabs, wide.  This is the part that looks
+    // most like a hi-hat to anything that only asks "was this brief and
+    // broadband" — which is the point of putting it here.
+    const shimmer = { lp: 0 };
+    for (let step = 0; step * (beat / 4) < seconds; step++) {
+      const at = Math.round(step * (beat / 4) * sr);
+      for (let i = 0; i < 0.16 * sr; i++) {
+        const env = Math.exp(-i / 1500) * Math.min(1, i / 30);
+        const bright = 0.16 * env * highpass(shimmer, highpass(shimmer, rnd()));
+        let tone = 0;
+        for (const f of [1174.66, 1567.98, 2093.0]) {
+          tone += 0.02 * env * Math.sin((2 * Math.PI * f * i) / sr);
+        }
+        add(parts.other, 0, at + i, (tone + bright) * 0.7);
+        add(parts.other, 1, at + i, (tone + bright) * 1.3);
       }
     }
   }
@@ -218,10 +266,26 @@ export function buildFixture(
       add(parts.lead, 0, at + i, 0.5 * env * v);
       add(parts.lead, 1, at + i, 0.5 * env * v);
     }
-    for (let i = 0; i < 900; i++) {          // a consonant: a transient, not a note
+    // A consonant, in two parts.  The plosive is the transient that was always
+    // here.  The SIBILANT was not, and it is the whole of the third defect the
+    // record showed: an "s" is a couple of hundred milliseconds of noise above
+    // 4 kHz, and the vocal was allowed to claim 35 % of a percussive bin, so
+    // half of every one of them was going to the drums stem.  A fixture whose
+    // vocal has nothing above 2.8 kHz cannot show that.
+    const sib = { lp: 0 };
+    for (let i = 0; i < 900; i++) {          // plosive: a click, not a note
       const v = 0.25 * Math.exp(-i / 220) * rnd();
       add(parts.lead, 0, at + i, v);
       add(parts.lead, 1, at + i, v);
+    }
+    if (hard) {
+      for (let i = 0; i < Math.round(0.22 * sr); i++) {
+        const env = Math.min(1, i / 600) * Math.exp(-i / 3200);
+        // Twice-highpassed, so it is hiss and not a full-band burst.
+        const v = 0.5 * env * highpass(sib, highpass(sib, rnd()));
+        add(parts.lead, 0, at + i, v);
+        add(parts.lead, 1, at + i, v);
+      }
     }
     // 코러스: the same line a third and a fifth up, doubled, each double
     // pushed to one side and detuned against the other — which is how they

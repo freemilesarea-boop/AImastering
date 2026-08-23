@@ -17,17 +17,24 @@
 // ── The one property that is exact ───────────────────────────────────────────
 //
 // The four masks are built so that they sum to one at every bin of every
-// frame.  Writing `h` for the harmonic mask (so the percussive one is `1−h`),
-// `lo` for the bass weight and `q` for the vocal cue:
+// frame.  Writing `p` for the drum credit, `lo` for the bass weight and `q`
+// for the vocal cue:
 //
-//     bass   = h·lo
-//     vocals = (1 − h·lo)·q
-//     drums  = (1−q)·(1−h)
-//     other  = (1−q)·h·(1−lo)
+//     bass   = (1−p)·lo
+//     vocals = (1 − (1−p)·lo)·q
+//     drums  = (1−q)·p
+//     other  = (1−q)·(1−p)·(1−lo)
 //
-//     Σ = h·lo + (1−h·lo)·q + (1−q)·[(1−h) + h·(1−lo)]
-//       = h·lo + (1−h·lo)·q + (1−q)·(1 − h·lo)
-//       = h·lo + (1 − h·lo)                                = 1
+//     Σ = (1−p)lo + (1−(1−p)lo)·q + (1−q)·[p + (1−p)(1−lo)]
+//       = (1−p)lo + (1−(1−p)lo)·q + (1−q)·(1 − (1−p)lo)
+//       = (1−p)lo + (1 − (1−p)lo)                          = 1
+//
+// `p` was `1−h` for a long time, and the identity is the same either way — the
+// proof only needs `p` to be a number in [0,1].  It is now the DRUM CREDIT from
+// `percussive.ts`, which starts from `1−h` and then asks the kit templates
+// whether anything was actually struck.  That file says why; the short version
+// is that a compressed kick's sub tail is horizontal and a picked guitar is
+// vertical, so "vertical stripe" and "drum" are not the same claim.
 //
 // The four stems therefore add back up to the input, and
 // `report.reconstructionDb` says by how much they miss — a number, measured on
@@ -58,6 +65,9 @@ import {
   type DrumOptions, type DrumPart,
 } from './drums.js';
 import { voiceSplit, type VoiceSplitOptions } from './voices.js';
+import {
+  DEFAULT_DRUM_CREDIT, drumCredit, type DrumCreditOptions,
+} from './percussive.js';
 import { leadEnvelope, phraseLock, type PhraseOptions } from './phrase.js';
 import {
   DETAILED_STEMS, FULL_STEMS, STEM_TREE, TOP_STEMS, coverProblems, needsModel,
@@ -141,6 +151,7 @@ export interface SeparationOptions {
   bass: BassOptions;
   phrase: Partial<PhraseOptions>;
   drums: Partial<DrumOptions>;
+  credit: Partial<DrumCreditOptions>;
   voices: Partial<VoiceSplitOptions>;
   /**
    * Frames kept per chunk.  Everything else is context and is thrown away, so
@@ -167,6 +178,7 @@ export const DEFAULT_SEPARATION: SeparationOptions = {
   bass: DEFAULT_BASS,
   phrase: {},
   drums: {},
+  credit: {},
   voices: {},
   chunkFrames: 1400,
   wanted: STEM_KINDS,
@@ -257,6 +269,7 @@ export function separate(
   const started = Date.now();
   const opts: SeparationOptions = { ...DEFAULT_SEPARATION, ...options };
   const vocal: VocalOptions = { ...DEFAULT_VOCAL, ...opts.vocal };
+  const creditOpts: DrumCreditOptions = { ...DEFAULT_DRUM_CREDIT, ...opts.credit };
   const { fftSize, hopSize } = opts.stft;
 
   if (channels.length === 0) throw new Error('오디오가 비어 있습니다');
@@ -318,8 +331,10 @@ export function separate(
   const confidentEnergy = new Map<StemKind, number>();
   const stemEnergy = new Map<StemKind, number>();
   for (const node of STEM_TREE) { confidentEnergy.set(node.kind, 0); stemEnergy.set(node.kind, 0); }
-  const templates = wantsDrumParts
-    ? drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate) : null;
+  // Needed on every run now, not only when the kit is being split: the drum
+  // credit is what DEFINES the drum stem, and the templates are how it knows a
+  // struck drum from a picked guitar.
+  const templates = drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate);
   let drumOnsets = 0;
   let voicesInformative = false;
 
@@ -367,8 +382,13 @@ export function separate(
     // five-minute file.
     const mask = new Float32Array(frames * bins);
     const bassW = new Float32Array(frames * bins);
-    const harmonicMag = new Float32Array(frames * bins);
+    const sustainedMag = new Float32Array(frames * bins);
     const vocalMask = new Float32Array(frames * bins);
+    // The drum credit, and the percussive magnitude the onset detector reads.
+    // Both are per-channel and both are needed before anything else can be
+    // decided, so they are allocated once per chunk and rewritten per channel.
+    const credit = new Float32Array(frames * bins);
+    const percussiveMag = new Float32Array(frames * bins);
     // Only allocated when the tree actually asks for them: four more buffers
     // this size is another 72 MB per chunk, and most runs want the four
     // top-level stems and nothing else.
@@ -376,7 +396,6 @@ export function separate(
       kick: new Float32Array(frames * bins), snare: new Float32Array(frames * bins),
       toms: new Float32Array(frames * bins), cymbals: new Float32Array(frames * bins),
     } : null;
-    const percussiveMag = wantsDrumParts ? new Float32Array(frames * bins) : null;
 
     // The lead/backing split is a threshold on the centre cue, which is joint
     // across the channels, so it is the same answer for both of them.
@@ -389,13 +408,32 @@ export function separate(
       const mag = c === 0 ? magL : magR;
       const harmonic = c === 0 ? harmonicL : harmonicR;
 
-      // The bass tracker works on the harmonic magnitude — a bass note is a
-      // sustained thing, and asking a percussive spectrogram where the low
-      // note is just finds the kick drum.
+      // ── What was struck ──
+      //
+      // Onsets are found in the PERCUSSIVE magnitude, because an onset is a
+      // transient by definition and that is the one thing the median filter is
+      // reliable about.  What the onset means — and how far past it a drum is
+      // still ringing — is what the credit answers.
       for (let i = 0; i < frames * bins; i++) {
-        harmonicMag[i] = (harmonic[i] ?? 0) * (mag[i] ?? 0);
+        percussiveMag[i] = (1 - (harmonic[i] ?? 0)) * (mag[i] ?? 0);
       }
-      const track = trackBass(harmonicMag, frames, bins, fftSize, sampleRate, opts.bass);
+      // Classified from THIS channel's percussive magnitude, so a hard-panned
+      // hat is scored where it actually is.
+      const kit = drumPresence(percussiveMag, frames, bins, templates,
+        hopSize / sampleRate, opts.drums);
+      if (c === 0) drumOnsets += kit.onsets;
+      drumCredit(credit, harmonic, kit.presence, templates, frames, bins, creditOpts);
+
+      // The bass tracker works on what is left after the drums — a bass note is
+      // a sustained thing, and asking a spectrogram that still contains the
+      // kick where the low note is just finds the kick.  This used to be the
+      // harmonic magnitude, which is the same array only while `p` is `1−h`;
+      // a compressed kick's sub tail is harmonic and was landing in the
+      // tracker's search range as a very convincing 40 Hz note.
+      for (let i = 0; i < frames * bins; i++) {
+        sustainedMag[i] = (1 - (credit[i] ?? 0)) * (mag[i] ?? 0);
+      }
+      const track = trackBass(sustainedMag, frames, bins, fftSize, sampleRate, opts.bass);
       bassWeight(bassW, track, shelf, frames, bins, fftSize, sampleRate, opts.bass);
 
       // ── Pass one: what is plainly centred ──
@@ -403,12 +441,12 @@ export function separate(
       // This is the lead, and it is only used to find out WHEN the singing is
       // happening.  The mask it produces is thrown away and rebuilt below.
       for (let i = 0; i < frames * bins; i++) {
-        const h = harmonic[i] ?? 0;
+        const p = credit[i] ?? 0;
         const place = centre.informative
           ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
         const cue = (prior[i % bins] ?? 0) * place
           * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight)
-          * (h + vocal.consonants * (1 - h));
+          * ((1 - p) + vocal.consonants * p);
         vocalMask[i] = cue < vocal.floor ? 0 : Math.min(1, cue);
       }
       const envelope = leadEnvelope(vocalMask, mag, frames, bins);
@@ -416,35 +454,33 @@ export function separate(
 
       // ── Pass two: centred OR phrasing with whoever is ──
       for (let i = 0; i < frames * bins; i++) {
-        const h = harmonic[i] ?? 0;
+        const p = credit[i] ?? 0;
         // What is left after the bass has taken its share.  The vocal cue is
         // scaled by it, so a bin the bass owns cannot also be sung.
-        const remaining = 1 - h * (bassW[i] ?? 0);
+        const remaining = 1 - (1 - p) * (bassW[i] ?? 0);
         const place = centre.informative
           ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
         // MAX, not sum: the two are alternative reasons to believe the same
         // thing, and adding them would let a bin that is a bit of both beat
         // one that is unmistakably centred.
         const belongs = Math.max(place, vocal.phraseCredit * (phrasing[i] ?? 0));
+        // The consonant allowance is spent against the DRUM CREDIT, not
+        // against `1−h`.  A sibilant is a transient wherever it happens, but it
+        // is only in competition with a cymbal when a cymbal was struck; on the
+        // real song 51 % of the vocal's 8 kHz band was going to drums for want
+        // of this distinction.
         const cue = (prior[i % bins] ?? 0)
           * belongs
           * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight)
-          * (h + vocal.consonants * (1 - h));
+          * ((1 - p) + vocal.consonants * p);
         vocalMask[i] = remaining <= 0 ? 0
           : cue < vocal.floor ? 0 : Math.min(1, cue);
       }
 
-      // The kit is taken apart from the percussive magnitude of THIS channel,
-      // so a hard-panned hat is classified where it actually is.
-      if (kitMask && percussiveMag && templates) {
-        for (let i = 0; i < frames * bins; i++) {
-          percussiveMag[i] = (1 - (harmonic[i] ?? 0)) * (mag[i] ?? 0);
-        }
-        const kit = drumPresence(percussiveMag, frames, bins, templates,
-          hopSize / sampleRate, opts.drums);
-        if (c === 0) drumOnsets += kit.onsets;
-        drumMasks(kitMask, kit.presence, templates, frames, bins);
-      }
+      // The kit split reuses the presences the credit was built from, so the
+      // classifier that decided this bin IS a drum and the one that decides
+      // WHICH drum cannot disagree.
+      if (kitMask) drumMasks(kitMask, kit.presence, templates, frames, bins);
 
       for (const kind of wanted) {
         const root = stemRoot(kind);
@@ -460,12 +496,12 @@ export function separate(
         const invert = kind === 'backing' || kind === 'kit';
         for (let i = 0; i < frames * bins; i++) {
           const q = vocalMask[i] ?? 0;
-          const h = harmonic[i] ?? 0;
+          const p = credit[i] ?? 0;
           const lo = bassW[i] ?? 0;
-          const parent = root === 'bass' ? h * lo
-            : root === 'vocals' ? (1 - h * lo) * q
-            : root === 'drums' ? (1 - q) * (1 - h)
-            : (1 - q) * h * (1 - lo);
+          const parent = root === 'bass' ? (1 - p) * lo
+            : root === 'vocals' ? (1 - (1 - p) * lo) * q
+            : root === 'drums' ? (1 - q) * p
+            : (1 - q) * (1 - p) * (1 - lo);
           const s = share === null ? 1 : invert ? 1 - (share[i] ?? 0) : (share[i] ?? 0);
           mask[i] = parent * s;
         }

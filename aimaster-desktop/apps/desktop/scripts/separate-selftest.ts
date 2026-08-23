@@ -39,7 +39,10 @@ import {
   buildReport, describeReport, unreachable, validateDescriptor,
 } from '../src/renderer/daw/audio/separate/model-registry.js';
 import { DEFAULT_PHRASE, leadEnvelope, phraseLock } from '../src/renderer/daw/audio/separate/phrase.js';
-import { drumPresence, drumTemplates } from '../src/renderer/daw/audio/separate/drums.js';
+import { DEFAULT_DRUMS, drumPresence, drumTemplates } from '../src/renderer/daw/audio/separate/drums.js';
+import {
+  DEFAULT_DRUM_CREDIT, drumCredit, evidenceAt,
+} from '../src/renderer/daw/audio/separate/percussive.js';
 import { voiceSplit } from '../src/renderer/daw/audio/separate/voices.js';
 import { buildFixture, leakageMatrix, toMono, FIXTURE_SR } from './separate-fixture.js';
 import { classifyStemFile } from './stem-names.js';
@@ -528,6 +531,203 @@ check('the hard fixture really has the three things it claims to have', () => {
   };
   atLeast(spread(hard.parts.other) / Math.max(spread(easy.parts.other), 1e-9), 2,
     'the hard arrangement reaches much further up than one pad does');
+});
+
+// ── The drum credit ──────────────────────────────────────────────────────────
+
+/** Four presences at one frame, and four one-bin templates to read them with. */
+function creditRig(kick: number, cymbals: number): {
+  presence: Record<'kick' | 'snare' | 'toms' | 'cymbals', Float32Array>;
+  templates: Record<'kick' | 'snare' | 'toms' | 'cymbals', Float32Array>;
+} {
+  const floor = DEFAULT_DRUMS.presenceFloor;
+  const at = (v: number): Float32Array => Float32Array.from([floor + v]);
+  // Bin 0 is where a kick lives and bin 1 is where a cymbal does, and nothing
+  // overlaps, so the arithmetic below is readable.
+  const band = (a: number, b: number): Float32Array => Float32Array.from([a, b]);
+  return {
+    presence: { kick: at(kick), snare: at(0), toms: at(0), cymbals: at(cymbals) },
+    templates: { kick: band(1, 0), snare: band(0, 0), toms: band(0, 0), cymbals: band(0, 1) },
+  };
+}
+
+check('with both knobs off the credit is exactly the percussive mask', () => {
+  // This is not a nicety.  The sum-to-one proof in separate.ts is written
+  // against `p`, and `p` used to BE `1−h`; every stem number the project has
+  // ever recorded was measured with it.  If this identity breaks, the new code
+  // is not a generalisation of the old one and nothing before it compares.
+  const rig = creditRig(0.9, 0.9);
+  const harmonic = Float32Array.from([0, 0.25, 0.5, 0.75, 1]);
+  const out = new Float32Array(5);
+  drumCredit(out, harmonic, rig.presence, rig.templates, 5, 1,
+    { doubt: 0, full: 1e9 });
+  for (let i = 0; i < 5; i++) {
+    eq(Math.round(out[i]! * 1e6) / 1e6, 1 - (harmonic[i] ?? 0),
+      `credit at h=${harmonic[i]} is the percussive mask`);
+  }
+});
+
+check('the presence floor is not evidence that anything was struck', () => {
+  // drums.ts puts a floor under every presence so the KIT SPLIT does not swing
+  // between neighbours in a silent frame.  Reading that floor as evidence gives
+  // every drum template a standing claim on the whole record — measured, 1.9 dB.
+  const quiet = creditRig(0, 0);
+  eq(evidenceAt({ kick: 0, snare: 0, toms: 0, cymbals: 0 },
+    quiet.templates, ['kick', 'snare', 'toms', 'cymbals'], 0, 0.08), 0,
+    'a frame sitting on the floor is not a hit');
+  const out = new Float32Array(1);
+  drumCredit(out, Float32Array.from([1]), quiet.presence, quiet.templates, 1, 1,
+    DEFAULT_DRUM_CREDIT);
+  eq(out[0], 0, 'a fully harmonic bin under no hit at all is not a drum');
+});
+
+check('a struck kick claims a sustained bin and a quiet one does not', () => {
+  // The defect this exists for: a compressed kick's sub tail is HORIZONTAL, so
+  // the median filter calls it a note and the bass shelf takes it.  Measured on
+  // the real song, 102 % of the drums below 45 Hz came back in the bass stem.
+  const harmonic = Float32Array.from([1, 1]);          // both bins fully sustained
+  const struck = new Float32Array(2);
+  const quiet = new Float32Array(2);
+  const hit = creditRig(0.9, 0);
+  const none = creditRig(0, 0.9);
+  drumCredit(struck, harmonic, hit.presence, hit.templates, 1, 2, DEFAULT_DRUM_CREDIT);
+  drumCredit(quiet, harmonic, none.presence, none.templates, 1, 2, DEFAULT_DRUM_CREDIT);
+  atLeast(struck[0]!, 0.9, 'the kick bin under a kick is the drums');
+  eq(quiet[0], 0, 'the same bin with only a cymbal ringing is not');
+  // And only the kick gets this.  A ringing cymbal is already vertical; giving
+  // it sustained material as well cost 그 외 seven points and bought nothing.
+  eq(quiet[1], 0, 'a struck cymbal does not claim sustained material');
+});
+
+check('doubt hands back a percussive bin that no drum was struck for', () => {
+  const harmonic = Float32Array.from([0, 0]);          // both bins fully percussive
+  const out = new Float32Array(2);
+  const hit = creditRig(0.9, 0);                       // a kick, nothing up top
+  drumCredit(out, harmonic, hit.presence, hit.templates, 1, 2, DEFAULT_DRUM_CREDIT);
+  atLeast(out[0]!, 0.99, 'the bin the kick landed in stays with the drums');
+  const kept = out[1]!;
+  atMost(kept, 1 - DEFAULT_DRUM_CREDIT.doubt + 1e-6, 'the far bin is doubted');
+  atLeast(kept, 0.01, 'but not taken away entirely — the detector misses hits');
+});
+
+check('doubt is not spent below the kick, where only the bass could take it', () => {
+  // Doubt hands percussive material back to the arrangement.  Under 90 Hz
+  // there is no arrangement — the bass shelf claims that region
+  // unconditionally — so doubting a sub bin does not return it to 그 외, it
+  // hands the kick to the bass.  Measured on the easy fixture: 킥→베이스 32 %
+  // without this guard against 21 % with it, and 킥 recovery 70 % against 90 %.
+  const harmonic = Float32Array.from([0, 0]);      // both bins fully percussive
+  const out = new Float32Array(2);
+  const silent = creditRig(0, 0);                  // nothing struck anywhere
+  drumCredit(out, harmonic, silent.presence, silent.templates, 1, 2, DEFAULT_DRUM_CREDIT);
+  atLeast(out[0]!, 0.99, 'the kick register keeps its percussive material');
+  atMost(out[1]!, 1 - DEFAULT_DRUM_CREDIT.doubt + 1e-6, 'the top of the spectrum does not');
+});
+
+check('the credit is a mask: nothing outside [0,1], whatever the knobs say', () => {
+  // `doubt` and `full` are independent, and a bin can be both plainly
+  // percussive and under a confident kick.  A credit above one would put more
+  // energy in the drum stem than the mix contains and every other stem would
+  // come back negative to pay for it.
+  const rig = creditRig(5, 5);
+  const out = new Float32Array(6);
+  const harmonic = Float32Array.from([0, 0.5, 1]);
+  for (const doubt of [-2, 0.5, 3]) {
+    drumCredit(out, harmonic, rig.presence, rig.templates, 3, 1, { doubt, full: 0.001 });
+    for (let i = 0; i < 3; i++) {
+      assert((out[i] ?? -1) >= 0 && (out[i] ?? 2) <= 1, `credit ${out[i]} in range at doubt ${doubt}`);
+    }
+  }
+});
+
+check('the drum credit moves the leak the real song showed, on the fixture', () => {
+  // The end-to-end version of the three checks above.  Thresholds are the
+  // measured numbers with a margin, not to the decimal place.
+  const hard = buildFixture(20, { vocalCycles: false, hard: true });
+  // "As it was": `full` enormous so no bin's evidence ever counts as a whole
+  // drum, which makes the second term vanish and the first one exact — so
+  // `p` is `1−h` and this is the separator before percussive.ts existed.
+  const off = { credit: { doubt: 0, full: 1e9 },
+    drums: { decaySec: { kick: 0.18, snare: 0.25, toms: 0.45, cymbals: 1.2 } } };
+  const before = leakageMatrix(hard.parts, separate(hard.mix, FIXTURE_SR, off).stems);
+  const after = leakageMatrix(hard.parts, separate(hard.mix, FIXTURE_SR).stems);
+  // 1. The kick's sub stops going to the bass stem.
+  atMost(after.drums!.bass!, before.drums!.bass! - 4, '드럼→베이스 falls');
+  // 2. The arrangement stops being called percussive.
+  atMost(after.other!.drums!, before.other!.drums! - 2, '그외→드럼 falls');
+  // 3. Sibilance stops going to the drums.
+  atMost(after.vocals!.drums!, before.vocals!.drums! - 2, '보컬→드럼 falls');
+  // And none of it was paid for out of the drum stem itself.
+  atLeast(after.drums!.drums!, before.drums!.drums!, '드럼 recovery does not fall');
+  // The kick in particular, on the easy fixture, where it is the one thing
+  // that was already working: the bass shelf will take it back the moment the
+  // credit stops defending it.
+  const kickBefore = leakageMatrix(fixture.parts,
+    separate(fixture.mix, FIXTURE_SR, { ...off, wanted: DETAILED_STEMS }).stems,
+    ['kick', 'bass'])!;
+  const kickAfter = leakageMatrix(fixture.parts,
+    separate(fixture.mix, FIXTURE_SR, { wanted: DETAILED_STEMS }).stems,
+    ['kick', 'bass'])!;
+  atLeast(kickAfter.kick!.kick!, kickBefore.kick!.kick!, '킥 recovery does not fall');
+  atMost(kickAfter.kick!.bass!, kickBefore.kick!.bass!, '킥→베이스 does not rise');
+});
+
+check('the hard fixture puts the bass and the kick in the same octave', () => {
+  // The defect the record showed could not appear here, and the reason was in
+  // the fixture, not the separator.  Measured band by band: the easy fixture's
+  // bottom octave is 55 % kick and 1 % bass, so telling them apart is not a
+  // problem at all — while on the real song the bass has 26 % of its energy
+  // below 45 Hz, right under a kick with 52 % of its own at 63.  A fixture
+  // where they do not collide cannot show a separator that cannot uncollide
+  // them, and 드럼→베이스 was 24 % here against 58 % there.
+  const easy = buildFixture(12, { hard: false });
+  const hard = buildFixture(12, { hard: true });
+  const shareBelow = (part: Float32Array[], hz: number): number => {
+    const spec = analyse(part[0]!, FIXTURE_SR, 0, frameCount(part[0]!.length));
+    const mag = magnitudes(spec);
+    let low = 0, all = 0;
+    for (let f = 0; f < spec.frames; f++) {
+      for (let b = 1; b < spec.bins; b++) {
+        const e = (mag[f * spec.bins + b] ?? 0) ** 2;
+        all += e;
+        if (binHzOf(b) < hz) low += e;
+      }
+    }
+    return low / Math.max(all, 1e-30);
+  };
+  atMost(shareBelow(easy.parts.bass, 45), 0.05, 'the easy bass has no sub at all');
+  atLeast(shareBelow(hard.parts.bass, 45), 0.15, 'the hard one does');
+  // And the kick has come UP to meet it: sweeping down past the note is a drum
+  // machine, and it put 71 % of the kick below 45 Hz where nothing else was.
+  atLeast(shareBelow(easy.parts.kick, 45), 0.5, 'the easy kick is all sub');
+  atMost(shareBelow(hard.parts.kick, 45), 0.2, 'the hard one settles on a note');
+  atLeast(shareBelow(hard.parts.kick, 160), 0.6, 'and still lives down there');
+});
+
+check('the hard fixture has sibilance and an arrangement that reaches the top', () => {
+  // Two more things the record showed and the fixture could not: 보컬→드럼 was
+  // 51 % at 8 kHz and 그외→드럼 was 90 %, and neither part had any energy up
+  // there to lose.  A fixture that stops at 2.8 kHz makes the whole top of the
+  // spectrum untested while looking like it passes.
+  const easy = buildFixture(12, { hard: false });
+  const hard = buildFixture(12, { hard: true });
+  const shareAbove = (part: Float32Array[], hz: number): number => {
+    const spec = analyse(part[0]!, FIXTURE_SR, 0, frameCount(part[0]!.length));
+    const mag = magnitudes(spec);
+    let high = 0, all = 0;
+    for (let f = 0; f < spec.frames; f++) {
+      for (let b = 1; b < spec.bins; b++) {
+        const e = (mag[f * spec.bins + b] ?? 0) ** 2;
+        all += e;
+        if (binHzOf(b) > hz) high += e;
+      }
+    }
+    return high / Math.max(all, 1e-30);
+  };
+  atMost(shareAbove(easy.parts.lead, 4000), 0.01, 'the easy vocal does not hiss');
+  atLeast(shareAbove(hard.parts.lead, 4000), 0.03, 'the hard one has consonants that do');
+  atMost(shareAbove(easy.parts.other, 5000), 0.005, 'one pad stops well short of the top');
+  atLeast(shareAbove(hard.parts.other, 5000), 0.01, 'an arrangement does not');
 });
 
 check('a room does not break the sum, whatever it does to the separation', () => {

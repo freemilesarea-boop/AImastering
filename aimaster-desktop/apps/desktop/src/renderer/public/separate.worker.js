@@ -549,7 +549,13 @@
   var DRUM_PARTS = ["kick", "snare", "toms", "cymbals"];
   var DEFAULT_DRUMS = {
     onsetThreshold: 1.6,
-    decaySec: { kick: 0.18, snare: 0.25, toms: 0.45, cymbals: 1.2 },
+    // The kick's is not a guess at how long a kick drum rings — it is how long a
+    // kick is still MASKING what is under it, which on a compressed modern record
+    // is far longer than the hit.  At 0.18 s the credit in `percussive.ts` died
+    // before the sub tail did and the tail went back to the bass stem; measured
+    // on the hard fixture, lengthening it moved 킥 from 19 % to 32 % recovered and
+    // cost 나머지 드럼 nothing.
+    decaySec: { kick: 0.45, snare: 0.25, toms: 0.45, cymbals: 1.2 },
     presenceFloor: 0.04
   };
   function drumTemplates(bins, fftSize, sampleRate) {
@@ -683,6 +689,42 @@
       lead[i] = t <= 0 ? 0 : t >= 1 ? 1 : 0.5 * (1 - Math.cos(Math.PI * t));
     }
     return { lead, available: true };
+  }
+
+  // src/renderer/daw/audio/separate/percussive.ts
+  var DEFAULT_DRUM_CREDIT = {
+    doubt: 0.5,
+    full: 0.08
+  };
+  function evidenceAt(above, templates, parts, bin, full) {
+    let raw = 0;
+    for (const part of parts) raw += (above[part] ?? 0) * (templates[part][bin] ?? 0);
+    return Math.min(1, raw / Math.max(full, 1e-6));
+  }
+  var KICK_ONLY = ["kick"];
+  function drumCredit(out, harmonic, presence, templates, frames, bins, options = DEFAULT_DRUM_CREDIT) {
+    const { doubt, full } = options;
+    const floor = options.presenceFloor ?? DEFAULT_DRUMS.presenceFloor;
+    const above = { kick: 0, snare: 0, toms: 0, cymbals: 0 };
+    for (let f = 0; f < frames; f++) {
+      const base = f * bins;
+      let any = 0;
+      for (const part of DRUM_PARTS) {
+        const v = Math.max(0, (presence[part][f] ?? 0) - floor);
+        above[part] = v;
+        any += v;
+      }
+      for (let b = 0; b < bins; b++) {
+        const i = base + b;
+        const h = harmonic[i] ?? 0;
+        const e = any > 0 ? evidenceAt(above, templates, DRUM_PARTS, b, full) : 0;
+        const kick = any > 0 ? evidenceAt(above, templates, KICK_ONLY, b, full) : 0;
+        const room = 1 - (templates.kick[b] ?? 0);
+        const struck = (1 - h) * (1 - doubt * room * (1 - e));
+        const rings = h * kick;
+        out[i] = Math.max(0, Math.min(1, struck + rings));
+      }
+    }
   }
 
   // src/renderer/daw/audio/separate/phrase.ts
@@ -986,6 +1028,7 @@
     bass: DEFAULT_BASS,
     phrase: {},
     drums: {},
+    credit: {},
     voices: {},
     chunkFrames: 1400,
     wanted: STEM_KINDS
@@ -1024,6 +1067,7 @@
     const started = Date.now();
     const opts = { ...DEFAULT_SEPARATION, ...options };
     const vocal = { ...DEFAULT_VOCAL, ...opts.vocal };
+    const creditOpts = { ...DEFAULT_DRUM_CREDIT, ...opts.credit };
     const { fftSize, hopSize } = opts.stft;
     if (channels.length === 0) throw new Error("\uC624\uB514\uC624\uAC00 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4");
     if (channels.length > 2) {
@@ -1069,7 +1113,7 @@
       confidentEnergy.set(node.kind, 0);
       stemEnergy.set(node.kind, 0);
     }
-    const templates = wantsDrumParts ? drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate) : null;
+    const templates = drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate);
     let drumOnsets = 0;
     let voicesInformative = false;
     const chunks = Math.max(1, Math.ceil(total / opts.chunkFrames));
@@ -1103,15 +1147,16 @@
       let countedThisChunk = false;
       const mask = new Float32Array(frames * bins);
       const bassW = new Float32Array(frames * bins);
-      const harmonicMag = new Float32Array(frames * bins);
+      const sustainedMag = new Float32Array(frames * bins);
       const vocalMask = new Float32Array(frames * bins);
+      const credit = new Float32Array(frames * bins);
+      const percussiveMag = new Float32Array(frames * bins);
       const kitMask = wantsDrumParts ? {
         kick: new Float32Array(frames * bins),
         snare: new Float32Array(frames * bins),
         toms: new Float32Array(frames * bins),
         cymbals: new Float32Array(frames * bins)
       } : null;
-      const percussiveMag = wantsDrumParts ? new Float32Array(frames * bins) : null;
       const voices = wantsVoiceParts ? voiceSplit(centre, frames, bins, opts.voices) : null;
       if (voices?.available) voicesInformative = true;
       for (let c = 0; c < outChannels; c++) {
@@ -1119,50 +1164,49 @@
         const mag = c === 0 ? magL : magR;
         const harmonic = c === 0 ? harmonicL : harmonicR;
         for (let i = 0; i < frames * bins; i++) {
-          harmonicMag[i] = (harmonic[i] ?? 0) * (mag[i] ?? 0);
+          percussiveMag[i] = (1 - (harmonic[i] ?? 0)) * (mag[i] ?? 0);
         }
-        const track = trackBass(harmonicMag, frames, bins, fftSize, sampleRate, opts.bass);
+        const kit = drumPresence(
+          percussiveMag,
+          frames,
+          bins,
+          templates,
+          hopSize / sampleRate,
+          opts.drums
+        );
+        if (c === 0) drumOnsets += kit.onsets;
+        drumCredit(credit, harmonic, kit.presence, templates, frames, bins, creditOpts);
+        for (let i = 0; i < frames * bins; i++) {
+          sustainedMag[i] = (1 - (credit[i] ?? 0)) * (mag[i] ?? 0);
+        }
+        const track = trackBass(sustainedMag, frames, bins, fftSize, sampleRate, opts.bass);
         bassWeight(bassW, track, shelf, frames, bins, fftSize, sampleRate, opts.bass);
         for (let i = 0; i < frames * bins; i++) {
-          const h = harmonic[i] ?? 0;
+          const p = credit[i] ?? 0;
           const place = centre.informative ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
-          const cue = (prior[i % bins] ?? 0) * place * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight) * (h + vocal.consonants * (1 - h));
+          const cue = (prior[i % bins] ?? 0) * place * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight) * (1 - p + vocal.consonants * p);
           vocalMask[i] = cue < vocal.floor ? 0 : Math.min(1, cue);
         }
         const envelope = leadEnvelope(vocalMask, mag, frames, bins);
         const phrasing = phraseLock(mag, envelope, frames, bins, fftSize, sampleRate, opts.phrase);
         for (let i = 0; i < frames * bins; i++) {
-          const h = harmonic[i] ?? 0;
-          const remaining = 1 - h * (bassW[i] ?? 0);
+          const p = credit[i] ?? 0;
+          const remaining = 1 - (1 - p) * (bassW[i] ?? 0);
           const place = centre.informative ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
           const belongs = Math.max(place, vocal.phraseCredit * (phrasing[i] ?? 0));
-          const cue = (prior[i % bins] ?? 0) * belongs * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight) * (h + vocal.consonants * (1 - h));
+          const cue = (prior[i % bins] ?? 0) * belongs * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight) * (1 - p + vocal.consonants * p);
           vocalMask[i] = remaining <= 0 ? 0 : cue < vocal.floor ? 0 : Math.min(1, cue);
         }
-        if (kitMask && percussiveMag && templates) {
-          for (let i = 0; i < frames * bins; i++) {
-            percussiveMag[i] = (1 - (harmonic[i] ?? 0)) * (mag[i] ?? 0);
-          }
-          const kit = drumPresence(
-            percussiveMag,
-            frames,
-            bins,
-            templates,
-            hopSize / sampleRate,
-            opts.drums
-          );
-          if (c === 0) drumOnsets += kit.onsets;
-          drumMasks(kitMask, kit.presence, templates, frames, bins);
-        }
+        if (kitMask) drumMasks(kitMask, kit.presence, templates, frames, bins);
         for (const kind of wanted) {
           const root = stemRoot(kind);
           const share = kind === "lead" || kind === "backing" ? voices?.lead ?? null : kind === "kick" || kind === "kit" ? kitMask?.kick ?? null : null;
           const invert = kind === "backing" || kind === "kit";
           for (let i = 0; i < frames * bins; i++) {
             const q = vocalMask[i] ?? 0;
-            const h = harmonic[i] ?? 0;
+            const p = credit[i] ?? 0;
             const lo = bassW[i] ?? 0;
-            const parent = root === "bass" ? h * lo : root === "vocals" ? (1 - h * lo) * q : root === "drums" ? (1 - q) * (1 - h) : (1 - q) * h * (1 - lo);
+            const parent = root === "bass" ? (1 - p) * lo : root === "vocals" ? (1 - (1 - p) * lo) * q : root === "drums" ? (1 - q) * p : (1 - q) * (1 - p) * (1 - lo);
             const s = share === null ? 1 : invert ? 1 - (share[i] ?? 0) : share[i] ?? 0;
             mask[i] = parent * s;
           }
