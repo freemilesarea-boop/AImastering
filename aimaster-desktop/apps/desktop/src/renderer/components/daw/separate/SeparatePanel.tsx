@@ -24,22 +24,13 @@ import { useAppStore } from '../../../stores/appStore.js';
 import { findTrack, trackClips } from '../../../daw/model/session-ops.js';
 import { getCached } from '../../../daw/engine/audio-cache.js';
 import {
-  STEM_KINDS, stemLabel, type SeparationReport, type StemKind,
+  DETAILED_STEMS, STEM_KINDS, stemColor, stemLabel, stemNode,
+  type SeparationReport, type StemKind,
 } from '../../../daw/audio/separate/separate.js';
+import { STEM_TREE, coverProblems, toggleStem } from '../../../daw/audio/separate/stem-tree.js';
 import { canSeparate, separateClip } from '../../../daw/edit/separate-actions.js';
 import { premium } from '../../../theme/premium.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
-
-const STEM_TINT: Record<StemKind, string> = {
-  vocals: '#d67f4f', drums: '#4fd68f', bass: '#4f7fd6', other: '#9f6fd6',
-};
-
-const STEM_WHAT: Record<StemKind, string> = {
-  vocals: '가운데에 있고 반복하지 않는 성분',
-  drums:  '넓은 대역을 한순간에 치고 지나가는 성분',
-  bass:   '낮은 음과 그 배음 — 음을 따라갑니다',
-  other:  '나머지 — 기타 · 건반 · 신스 · 리버브',
-};
 
 export default function SeparatePanel() {
   const session = useDawStore((s) => s.session);
@@ -49,6 +40,7 @@ export default function SeparatePanel() {
   const playheadSec = useDawStore((s) => s.playheadSec);
 
   const [wanted, setWanted] = useState<StemKind[]>([...STEM_KINDS]);
+  const detailed = wanted.some((k) => stemNode(k).parent !== null);
   const [busy, setBusy] = useState<{ fraction: number; what: string } | null>(null);
   const [report, setReport] = useState<SeparationReport | null>(null);
   const [muteSource, setMuteSource] = useState(true);
@@ -104,11 +96,11 @@ export default function SeparatePanel() {
     }
   }, [target, guard.ok, busy, session, wanted, muteSource, apply, notify]);
 
-  const toggle = (kind: StemKind): void => {
-    setWanted((prev) => (prev.includes(kind)
-      ? prev.filter((k) => k !== kind)
-      : STEM_KINDS.filter((k) => k === kind || prev.includes(k))));
-  };
+  // The tree owns the rule that a set has to cover the record exactly once —
+  // see stem-tree.ts.  Turning 킥 on turns its siblings on and 드럼 off, and
+  // the user never has to know why.
+  const toggle = (kind: StemKind): void => { setWanted((prev) => toggleStem(prev, kind)); };
+  const problems = coverProblems(wanted);
 
   return (
     <div className="flex-1 overflow-auto" style={{ background: premium.surface.abyss }}>
@@ -119,8 +111,10 @@ export default function SeparatePanel() {
             스템 분리
           </h2>
           <p className="mt-1" style={{ fontSize: 11, color: premium.text.muted, lineHeight: 1.7 }}>
-            믹스 하나를 보컬 · 드럼 · 베이스 · 그 외로 나눕니다. 네 스템을 다시 더하면
-            원본이 그대로 나오도록 만들어져 있어서, 하나를 끄면 그 파트만 빠진 원본이 됩니다.
+            믹스 하나를 보컬 · 드럼 · 베이스 · 그 외로 나눕니다. 자세히 나누면 보컬은
+            리드와 코러스로, 드럼은 킥과 나머지로 한 단계 더 갈라집니다. 어느 쪽이든
+            스템을 다시 더하면 원본이 그대로 나오도록 만들어져 있어서, 하나를 끄면
+            그 파트만 빠진 원본이 됩니다.
           </p>
         </header>
 
@@ -148,34 +142,78 @@ export default function SeparatePanel() {
 
         {/* ── Which stems ── */}
         <section style={panel}>
-          <div className="flex flex-col gap-1.5">
-            {STEM_KINDS.map((kind) => {
-              const on = wanted.includes(kind);
-              const measured = report?.stems.find((s) => s.kind === kind);
+          <div className="flex items-center justify-between mb-2">
+            <span style={{ fontSize: 11, color: premium.text.secondary }}>
+              {wanted.length}개 스템
+            </span>
+            <button
+              onClick={() => setWanted(detailed ? [...STEM_KINDS] : [...DETAILED_STEMS])}
+              disabled={!!busy}
+              className="h-6 px-2.5 rounded"
+              style={{
+                fontSize: 10,
+                color: detailed ? premium.text.onAccent : premium.text.secondary,
+                background: detailed ? premium.accent.base : premium.surface.well,
+                border: `1px solid ${premium.surface.hairline}`,
+              }}>
+              자세히 나누기
+            </button>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            {STEM_TREE.map((node) => {
+              const on = wanted.includes(node.kind);
+              const measured = report?.stems.find((s) => s.kind === node.kind);
+              const child = node.parent !== null;
+              // A child row only appears once its family is the active level;
+              // showing all ten at once is a wall of switches most of which
+              // cannot be pressed without changing the others.
+              const parentActive = node.parent !== null && wanted.includes(node.parent);
+              if (child && !on && !parentActive) return null;
+              const tint = stemColor(node.kind);
               return (
-                <button key={kind} onClick={() => toggle(kind)} disabled={!!busy}
-                  className="flex items-center gap-3 rounded px-2.5 py-2 text-left"
+                <button key={node.kind} onClick={() => toggle(node.kind)} disabled={!!busy}
+                  className="flex items-center gap-3 rounded px-2.5 py-1.5 text-left"
                   style={{
+                    marginLeft: child ? 18 : 0,
                     background: on ? 'rgba(255,255,255,0.04)' : 'transparent',
-                    border: `1px solid ${on ? STEM_TINT[kind] + '66' : premium.surface.hairline}`,
-                    opacity: busy ? 0.6 : 1,
+                    border: `1px solid ${on ? tint + '66' : premium.surface.hairline}`,
+                    opacity: busy ? 0.6 : on ? 1 : 0.55,
                   }}>
                   <span style={{
-                    width: 8, height: 8, borderRadius: 2, flexShrink: 0,
-                    background: on ? STEM_TINT[kind] : 'transparent',
-                    border: `1px solid ${STEM_TINT[kind]}`,
+                    width: 8, height: 8, borderRadius: child ? 4 : 2, flexShrink: 0,
+                    background: on ? tint : 'transparent',
+                    border: `1px solid ${tint}`,
                   }} />
                   <span className="flex-1 min-w-0">
-                    <span style={{ fontSize: 12, color: premium.text.primary }}>{stemLabel(kind)}</span>
+                    <span style={{ fontSize: child ? 11 : 12, color: premium.text.primary }}>
+                      {node.label}
+                    </span>
                     <span className="block truncate" style={{ fontSize: 10, color: premium.text.faint }}>
-                      {STEM_WHAT[kind]}
+                      {node.what}
                     </span>
                   </span>
-                  {measured && <Confidence stem={measured} tint={STEM_TINT[kind]} />}
+                  {measured && <Confidence stem={measured} tint={tint} />}
                 </button>
               );
             })}
           </div>
+
+          {problems.missing.length > 0 && (
+            <p className="mt-2" style={{ fontSize: 10, color: premium.accent.base }}>
+              {problems.missing.map(stemLabel).join(' · ')} 을(를) 빼면 스템의 합이 원본이 되지 않습니다
+            </p>
+          )}
+          {/* The thing this cannot do, said where the buttons are rather than
+              buried in the result — a user looking for a guitar stem should
+              find out here, not after a two-minute run. */}
+          <p className="mt-2" style={{ fontSize: 10, color: premium.text.faint, lineHeight: 1.6 }}>
+            스네어 · 심벌을 따로 나누는 것과 기타 · 건반 · 스트링을 나누는 것은 못 합니다.
+            여기 있는 모든 분리는 소리의 위치 · 지속 · 음역에 근거하는데, 스네어 줄과
+            하이햇은 같은 대역의 잡음이고 거의 항상 같이 울립니다. 같은 자리에서 같은
+            코드를 치는 기타와 일렉피아노는 음색만 다릅니다. 둘 다 학습된 모델이 있어야
+            합니다.
+          </p>
 
           <label className="flex items-center gap-2 mt-3" style={{ fontSize: 11, color: premium.text.muted }}>
             <input type="checkbox" checked={muteSource} disabled={!!busy}
@@ -258,7 +296,7 @@ function Result({ report }: { report: SeparationReport }) {
       <p className="mt-2 font-mono" style={{ fontSize: 10, color: premium.text.muted }}>
         {/* The number that makes the stems trustworthy as an edit, measured on
             the actual output rather than asserted. */}
-        네 스템의 합 − 원본 = {report.reconstructionDb.toFixed(0)} dB
+        {report.stems.length}개 스템의 합 − 원본 = {report.reconstructionDb.toFixed(0)} dB
         {report.reconstructionDb < -100 ? ' (사실상 완전 복원)' : ''}
         {'   ·   '}반복도 {report.repetitiveness.toFixed(2)}
       </p>
