@@ -8,7 +8,8 @@
 //     드럼 ─┬─ 킥
 //           └─ 나머지 드럼
 //     베이스
-//     그 외
+//     그 외 ─┬─ 기타 · 건반 · 신스 · 스트링 · 브라스 · 목관 · 퍼커션 · 그 밖
+//            └─ (음색으로만 구분되는 것들 — 모델이 있어야 나뉩니다)
 //
 // ── Why the tree, rather than eight flat stems ───────────────────────────────
 //
@@ -53,7 +54,12 @@ export type StemKind =
   | 'vocals' | 'lead' | 'backing'
   | 'drums' | 'kick' | 'kit'
   | 'bass'
-  | 'other';
+  | 'other'
+  | 'guitar' | 'keys' | 'synth' | 'strings' | 'brass' | 'winds' | 'percussion'
+  | 'rest';
+
+/** What is able to produce a stem. */
+export type StemSource = 'dsp' | 'model';
 
 export interface StemNode {
   kind: StemKind;
@@ -64,40 +70,97 @@ export interface StemNode {
   what: string;
   /** Colour, so a stem is the same colour in the panel and on its track. */
   color: string;
+  /**
+   * What can make this stem.
+   *
+   * `dsp` means the signal itself carries a cue that separates it — where a
+   * sound sits between the speakers, whether it is a transient or a note,
+   * which octave it lives in.  `model` means it does not, and no amount of
+   * arithmetic on the waveform will find it: a guitar and an electric piano
+   * playing the same chord in the same place differ only in TIMBRE.
+   *
+   * The `model` stems are in this list even though nothing here can make them,
+   * because a user who wants a guitar stem should learn that it is a known
+   * thing that needs a model — not conclude the app forgot about guitars.
+   */
+  source: StemSource;
 }
 
 const NODES: readonly StemNode[] = [
   {
     kind: 'vocals', parent: null, children: ['lead', 'backing'],
     label: '보컬', what: '가운데에 있고 반복하지 않는 성분', color: '#d67f4f',
+    source: 'dsp',
   },
   {
     kind: 'lead', parent: 'vocals', children: [],
     label: '리드', what: '정확히 한가운데 — 보통 한 사람', color: '#e09a6a',
+    source: 'dsp',
   },
   {
     kind: 'backing', parent: 'vocals', children: [],
     label: '코러스', what: '보컬인데 가운데에서 벌어져 있는 것 — 겹쳐 부른 화음', color: '#c06a3a',
+    source: 'dsp',
   },
   {
     kind: 'drums', parent: null, children: ['kick', 'kit'],
     label: '드럼', what: '넓은 대역을 한순간에 치고 지나가는 성분', color: '#4fd68f',
+    source: 'dsp',
   },
   {
     kind: 'kick', parent: 'drums', children: [],
     label: '킥', what: '맨 아래에서 나는 타격 — 킥만 따로', color: '#3fa870',
+    source: 'dsp',
   },
   {
     kind: 'kit', parent: 'drums', children: [],
     label: '나머지 드럼', what: '스네어 · 탐 · 심벌 · 하이햇 — 킥을 뺀 나머지', color: '#7fd6b0',
+    source: 'dsp',
   },
   {
     kind: 'bass', parent: null, children: [],
     label: '베이스', what: '낮은 음과 그 배음 — 음을 따라갑니다', color: '#4f7fd6',
+    source: 'dsp',
   },
   {
-    kind: 'other', parent: null, children: [],
+    kind: 'other', parent: null,
+    children: ['guitar', 'keys', 'synth', 'strings', 'brass', 'winds', 'percussion', 'rest'],
     label: '그 외', what: '나머지 — 기타 · 건반 · 신스 · 리버브', color: '#9f6fd6',
+    source: 'dsp',
+  },
+  {
+    kind: 'guitar', parent: 'other', children: [],
+    label: '기타', what: '어쿠스틱 · 일렉 기타', color: '#c08f5f', source: 'model',
+  },
+  {
+    kind: 'keys', parent: 'other', children: [],
+    label: '건반', what: '피아노 · 로즈 · 오르간', color: '#8f8fd6', source: 'model',
+  },
+  {
+    kind: 'synth', parent: 'other', children: [],
+    label: '신스', what: '신시사이저 — 패드 · 리드', color: '#b06fd6', source: 'model',
+  },
+  {
+    kind: 'strings', parent: 'other', children: [],
+    label: '스트링', what: '현악 — 바이올린 · 첼로 · 섹션', color: '#6fb0d6', source: 'model',
+  },
+  {
+    kind: 'brass', parent: 'other', children: [],
+    label: '브라스', what: '금관 — 트럼펫 · 트롬본 · 색소폰', color: '#d6b06f', source: 'model',
+  },
+  {
+    kind: 'winds', parent: 'other', children: [],
+    label: '목관', what: '목관 — 플루트 · 클라리넷 · 오보에', color: '#6fd6b0', source: 'model',
+  },
+  {
+    kind: 'percussion', parent: 'other', children: [],
+    label: '퍼커션', what: '드럼 킷이 아닌 타악 — 셰이커 · 탬버린 · 콩가', color: '#d66f9f',
+    source: 'model',
+  },
+  {
+    kind: 'rest', parent: 'other', children: [],
+    label: '그 밖', what: '위 어디에도 안 들어가는 것 — 효과음 · 리버브 꼬리', color: '#8f6fb0',
+    source: 'model',
   },
 ];
 
@@ -108,9 +171,30 @@ export const STEM_TREE: readonly StemNode[] = NODES;
 /** The four top-level stems, in the order they belong in an arrangement. */
 export const TOP_STEMS: readonly StemKind[] = ['vocals', 'drums', 'bass', 'other'];
 
-/** Everything split as far as it goes.  What "자세히" asks for. */
+/** Everything the signal itself can be split into.  What "자세히" asks for. */
 export const DETAILED_STEMS: readonly StemKind[] =
   ['lead', 'backing', 'kick', 'kit', 'bass', 'other'];
+
+/**
+ * The whole taxonomy, including the parts only a model can make.
+ *
+ * This is the Moises / Music.AI set — the twelve categories the commercial
+ * separators produce — written down here so the app can say exactly which of
+ * them it reaches and which it does not, rather than leaving the difference to
+ * be discovered by a user wondering where their guitar stem went.
+ */
+export const FULL_STEMS: readonly StemKind[] =
+  ['lead', 'backing', 'kick', 'kit', 'bass',
+   'guitar', 'keys', 'synth', 'strings', 'brass', 'winds', 'percussion', 'rest'];
+
+export function stemSource(kind: StemKind): StemSource {
+  return stemNode(kind).source;
+}
+
+/** The stems in this set that nothing in this build can make on its own. */
+export function needsModel(kinds: readonly StemKind[]): StemKind[] {
+  return kinds.filter((k) => stemNode(k).source === 'model');
+}
 
 export function stemNode(kind: StemKind): StemNode {
   const node = BY_KIND.get(kind);

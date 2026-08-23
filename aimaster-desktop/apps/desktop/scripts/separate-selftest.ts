@@ -30,9 +30,12 @@ import {
   DEFAULT_SEPARATION, DETAILED_STEMS, STEM_KINDS, separate, stemLabel,
 } from '../src/renderer/daw/audio/separate/separate.js';
 import {
-  STEM_TREE, TOP_STEMS, coverIsValid, coverProblems, family, orderStems,
-  stemRoot, toggleStem, type StemKind,
+  FULL_STEMS, STEM_TREE, TOP_STEMS, coverIsValid, coverProblems, family,
+  needsModel, orderStems, stemRoot, stemSource, toggleStem, type StemKind,
 } from '../src/renderer/daw/audio/separate/stem-tree.js';
+import {
+  buildReport, describeReport, unreachable, validateDescriptor,
+} from '../src/renderer/daw/audio/separate/model-registry.js';
 import { DEFAULT_PHRASE, leadEnvelope, phraseLock } from '../src/renderer/daw/audio/separate/phrase.js';
 import { drumPresence, drumTemplates } from '../src/renderer/daw/audio/separate/drums.js';
 import { voiceSplit } from '../src/renderer/daw/audio/separate/voices.js';
@@ -517,6 +520,107 @@ check('every node in the tree says what it is and what puts a sound there', () =
     assert(node.what.length > 8, `${node.kind} says what lands there: "${node.what}"`);
     assert(/^#[0-9a-f]{6}$/i.test(node.color), `${node.kind} has a colour: ${node.color}`);
   }
+});
+
+// ── What only a model can make ───────────────────────────────────────────────
+
+check('the tree carries the whole taxonomy, not just the reachable half', () => {
+  // The twelve categories the commercial separators produce.  They are written
+  // down even though seven of them cannot be made here, so the app can say
+  // which is which instead of leaving a user to guess whether a guitar stem
+  // was forgotten or is impossible.
+  for (const kind of ['guitar', 'keys', 'synth', 'strings', 'brass', 'winds', 'percussion'] as const) {
+    eq(stemSource(kind), 'model', `${stemLabel(kind)} needs a model`);
+  }
+  for (const kind of ['lead', 'backing', 'kick', 'kit', 'bass', 'other'] as const) {
+    eq(stemSource(kind), 'dsp', `${stemLabel(kind)} does not`);
+  }
+  atLeast(FULL_STEMS.length, 12, 'the full set is at least the twelve');
+});
+
+check('asking for a stem only a model can make is refused, and named', () => {
+  // Not refusing would not fail loudly — every timbre stem shares the "그 외"
+  // mask, so eight files would come back holding the same audio.  That is the
+  // kind of wrong a user would ship before noticing.
+  eq(needsModel(['lead', 'guitar', 'bass']).join(), 'guitar', 'which ones');
+  let threw = '';
+  try {
+    separate(fixture.mix, FIXTURE_SR, { wanted: ['lead', 'backing', 'kick', 'kit', 'bass', 'guitar'] });
+  } catch (e) { threw = String(e); }
+  assert(threw.includes('기타'), `names the stem: ${threw}`);
+  assert(threw.includes('모델'), `and says what is missing: ${threw}`);
+});
+
+check('with no model installed, the report says so rather than nothing', () => {
+  const report = buildReport([]);
+  eq(report.model, null, 'no model');
+  assert(report.available.includes('bass'), 'the DSP stems are still available');
+  assert(!report.available.includes('guitar'), 'and the timbre ones are not');
+  assert(describeReport(report).includes('설치'), `a sentence a person can read: ${describeReport(report)}`);
+  const gap = unreachable(report);
+  assert(gap.stems.includes('guitar'), 'the gap names 기타');
+  assert(gap.why.includes('음색'), `and says why: ${gap.why}`);
+});
+
+check('a descriptor is checked field by field, and the complaint names the field', () => {
+  const good = {
+    id: 'x', name: 'X', stems: ['guitar', 'keys'], sampleRate: 44100, channels: 2,
+    weights: 'w.onnx', sha256: 'a'.repeat(64), license: 'CC-BY-NC 4.0', commercialUse: false,
+  };
+  eq(validateDescriptor(good, 'here'), null, 'a good one passes');
+  const bad = (over: Record<string, unknown>, expect: string): void => {
+    const problem = validateDescriptor({ ...good, ...over }, 'here');
+    assert(problem !== null, `${JSON.stringify(over)} should be refused`);
+    assert(problem!.reason.includes(expect),
+      `${JSON.stringify(over)} → "${problem!.reason}", wanted it to mention ${expect}`);
+  };
+  bad({ id: '' }, 'id');
+  bad({ sha256: 'nope' }, 'sha256');
+  bad({ sha256: 'A'.repeat(64) }, 'sha256');          // upper case is not lower case
+  bad({ license: '' }, 'license');
+  bad({ commercialUse: 'yes' }, 'commercialUse');
+  bad({ sampleRate: 10 }, 'sampleRate');
+  bad({ channels: 6 }, 'channels');
+  bad({ stems: [] }, 'stems');
+  bad({ stems: ['trombone'] }, 'trombone');
+  bad({ stems: ['guitar', 'guitar'] }, 'guitar');
+  bad({ name: undefined }, 'name');
+});
+
+check('a descriptor cannot point at a file outside its own folder', () => {
+  // It is data from wherever the user got the model, so it does not get to
+  // name a path.  The licence field is required for the same reason a path is
+  // restricted: the file is not ours and we are not going to assume.
+  const base = {
+    id: 'x', name: 'X', stems: ['guitar'], sampleRate: 44100, channels: 2,
+    sha256: 'b'.repeat(64), license: 'MIT', commercialUse: true,
+  };
+  for (const weights of ['../../etc/passwd', '/etc/passwd', 'a/../../b']) {
+    const problem = validateDescriptor({ ...base, weights }, 'here');
+    assert(problem !== null && problem.reason.includes('벗어'), `${weights} refused: ${problem?.reason}`);
+  }
+  eq(validateDescriptor({ ...base, weights: 'sub/w.onnx' }, 'here'), null, 'a relative one inside is fine');
+});
+
+check('a model that loads adds its stems, and a broken one is kept in the report', () => {
+  const good = {
+    id: 'demo', name: 'Demo', stems: ['guitar', 'keys'], sampleRate: 44100, channels: 2,
+    weights: 'w.onnx', sha256: 'c'.repeat(64), license: 'CC-BY-NC 4.0', commercialUse: false,
+  };
+  const report = buildReport([
+    { where: '/a', error: '폴더가 없습니다' },
+    { where: '/b', descriptor: { id: 'broken' } },
+    { where: '/c', descriptor: good },
+    { where: '/d', descriptor: good },
+  ]);
+  assert(report.model !== null, 'the good one loaded');
+  eq(report.model!.path, '/c', 'from where it was');
+  assert(report.available.includes('guitar') && report.available.includes('bass'),
+    'its stems join the DSP ones');
+  eq(report.tried.length, 3, 'and every other place is still in the report');
+  assert(report.tried[2]!.reason.includes('Demo'), `including the duplicate: ${report.tried[2]!.reason}`);
+  assert(describeReport(report).includes('비상업'),
+    `and the licence is in the summary: ${describeReport(report)}`);
 });
 
 // ── The deeper cuts ──────────────────────────────────────────────────────────

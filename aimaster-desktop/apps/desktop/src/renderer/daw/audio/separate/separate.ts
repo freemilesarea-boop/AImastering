@@ -60,8 +60,9 @@ import {
 import { voiceSplit, type VoiceSplitOptions } from './voices.js';
 import { leadEnvelope, phraseLock, type PhraseOptions } from './phrase.js';
 import {
-  DETAILED_STEMS, STEM_TREE, TOP_STEMS, coverProblems, orderStems, stemColor,
-  stemLabel, stemNode, stemRoot, type StemKind, type StemNode,
+  DETAILED_STEMS, FULL_STEMS, STEM_TREE, TOP_STEMS, coverProblems, needsModel,
+  orderStems, stemColor, stemLabel, stemNode, stemRoot, stemSource,
+  type StemKind, type StemNode, type StemSource,
 } from './stem-tree.js';
 
 /**
@@ -72,8 +73,11 @@ import {
  * as the cues go.  `stem-tree.ts` owns the taxonomy.
  */
 export const STEM_KINDS = TOP_STEMS;
-export { DETAILED_STEMS, STEM_TREE, TOP_STEMS, stemColor, stemLabel, stemNode, stemRoot };
-export type { StemKind, StemNode };
+export {
+  DETAILED_STEMS, FULL_STEMS, STEM_TREE, TOP_STEMS, needsModel, stemColor,
+  stemLabel, stemNode, stemRoot, stemSource,
+};
+export type { StemKind, StemNode, StemSource };
 
 export interface VocalOptions {
   /** How much the centre cue counts.  Higher = a narrower, cleaner vocal. */
@@ -277,6 +281,16 @@ export function separate(
   const context = contextFrames(opts.stft, Math.max(repetWindow, hpssFrames));
 
   const wanted = orderStems(opts.wanted.length > 0 ? opts.wanted : STEM_KINDS);
+  // Nothing here can make a 기타 stem, and pretending otherwise would not fail
+  // — it would hand every timbre stem the same "그 외" mask and write the same
+  // audio into eight files.  A refusal that names them is the only honest
+  // outcome until a model is installed.
+  const modelOnly = needsModel(wanted);
+  if (modelOnly.length > 0) {
+    throw new Error(`${modelOnly.map(stemLabel).join(' · ')} 은(는) 음색으로만 구분되는 스템이라`
+      + ' 신호 처리로는 나눌 수 없습니다 — 분리 모델이 설치되어야 합니다');
+  }
+
   const cover = coverProblems(wanted);
   if (cover.overlapping.length > 0) {
     throw new Error(`${cover.overlapping.map(stemLabel).join(' · ')} 은(는) 상위 스템에 이미 포함됩니다`

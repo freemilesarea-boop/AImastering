@@ -28,6 +28,7 @@ import {
   type SeparationReport, type StemKind,
 } from '../../../daw/audio/separate/separate.js';
 import { STEM_TREE, coverProblems, toggleStem } from '../../../daw/audio/separate/stem-tree.js';
+import { buildReport, describeReport, unreachable } from '../../../daw/audio/separate/model-registry.js';
 import { canSeparate, separateClip } from '../../../daw/edit/separate-actions.js';
 import { premium } from '../../../theme/premium.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
@@ -101,6 +102,11 @@ export default function SeparatePanel() {
   // the user never has to know why.
   const toggle = (kind: StemKind): void => { setWanted((prev) => toggleStem(prev, kind)); };
   const problems = coverProblems(wanted);
+  // No model is installed — nothing looks for one yet, so the report is the
+  // empty case.  It is built through the same function a real scan would use,
+  // so the panel below is already the shape it will be when one exists.
+  const models = buildReport([]);
+  const gap = unreachable(models);
 
   return (
     <div className="flex-1 overflow-auto" style={{ background: premium.surface.abyss }}>
@@ -171,6 +177,31 @@ export default function SeparatePanel() {
               const parentActive = node.parent !== null && wanted.includes(node.parent);
               if (child && !on && !parentActive) return null;
               const tint = stemColor(node.kind);
+              // A stem nothing here can make is shown, greyed, with the reason
+              // — because a user who wants a guitar stem should find out that
+              // it is a known thing needing a model, not conclude the app
+              // forgot about guitars.
+              if (node.source === 'model') {
+                return (
+                  <div key={node.kind} className="flex items-center gap-3 rounded px-2.5 py-1"
+                       style={{ marginLeft: 18, opacity: 0.4 }}
+                       title="분리 모델이 설치되어야 만들 수 있습니다">
+                    <span style={{
+                      width: 8, height: 8, borderRadius: 4, flexShrink: 0,
+                      border: `1px dashed ${tint}`,
+                    }} />
+                    <span className="flex-1 min-w-0">
+                      <span style={{ fontSize: 11, color: premium.text.muted }}>{node.label}</span>
+                      <span className="block truncate" style={{ fontSize: 10, color: premium.text.faint }}>
+                        {node.what}
+                      </span>
+                    </span>
+                    <span className="shrink-0" style={{ fontSize: 9, color: premium.text.faint }}>
+                      모델 필요
+                    </span>
+                  </div>
+                );
+              }
               return (
                 <button key={node.kind} onClick={() => toggle(node.kind)} disabled={!!busy}
                   className="flex items-center gap-3 rounded px-2.5 py-1.5 text-left"
@@ -207,12 +238,15 @@ export default function SeparatePanel() {
           {/* The thing this cannot do, said where the buttons are rather than
               buried in the result — a user looking for a guitar stem should
               find out here, not after a two-minute run. */}
-          <p className="mt-2" style={{ fontSize: 10, color: premium.text.faint, lineHeight: 1.6 }}>
-            스네어 · 심벌을 따로 나누는 것과 기타 · 건반 · 스트링을 나누는 것은 못 합니다.
-            여기 있는 모든 분리는 소리의 위치 · 지속 · 음역에 근거하는데, 스네어 줄과
-            하이햇은 같은 대역의 잡음이고 거의 항상 같이 울립니다. 같은 자리에서 같은
-            코드를 치는 기타와 일렉피아노는 음색만 다릅니다. 둘 다 학습된 모델이 있어야
-            합니다.
+          <p className="mt-3" style={{ fontSize: 10, color: premium.text.faint, lineHeight: 1.7 }}>
+            {gap.why}
+            {gap.why ? ' ' : ''}
+            여기 있는 모든 분리는 소리의 <b>위치 · 지속 · 음역</b>에 근거합니다. 같은 자리에서
+            같은 코드를 치는 기타와 일렉피아노는 그 셋이 전부 같고 음색만 다릅니다.
+            스네어 줄과 하이햇도 같은 대역의 잡음이라 따로 못 나눕니다.
+          </p>
+          <p className="mt-1 font-mono" style={{ fontSize: 9, color: premium.text.faint }}>
+            {describeReport(models)}
           </p>
 
           <label className="flex items-center gap-2 mt-3" style={{ fontSize: 11, color: premium.text.muted }}>
