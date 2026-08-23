@@ -575,6 +575,19 @@
       // Bottom octave and a half, gone by 160 Hz.
       kick: make((hz) => 1 - ramp(hz, 70, 160)),
       // Two humps: the shell around 150–400 Hz, and the wires from 1.5 kHz up.
+      //
+      // These stop at 620 and start at 1200, and nothing else reaches into the
+      // gap — measured, all four curves are exactly 0 from 620 Hz to 1200 Hz.
+      // That is CORRECT for what they are for: they say where a drum is
+      // DISTINCTIVE, and at 800 Hz a snare is not distinctive from a piano.
+      //
+      // Widening them to close the gap was built and measured and reverted.  It
+      // does close it, and it also tells `percussive.ts` that a snare was struck
+      // across 700–7000 Hz every time one rings — which is most of a record —
+      // so the doubt term stopped reaching the arrangement it exists to reach:
+      // 그외→드럼 improved by 1 point instead of 3.  The gap is real and the right
+      // response to it is for the credit to KNOW the templates say nothing there,
+      // which is what `coverage` in `percussive.ts` is.
       snare: make((hz) => Math.max(
         ramp(hz, 110, 190) * (1 - ramp(hz, 320, 620)) * 0.9,
         ramp(hz, 1200, 2600) * (1 - ramp(hz, 7e3, 11e3))
@@ -694,17 +707,47 @@
   // src/renderer/daw/audio/separate/percussive.ts
   var DEFAULT_DRUM_CREDIT = {
     doubt: 0.5,
-    full: 0.08
+    full: 0.08,
+    floorFrames: 24
   };
+  function subBinCount(kickTemplate, bins) {
+    let last = 0;
+    for (let b = 0; b < bins; b++) if ((kickTemplate[b] ?? 0) > 0) last = b;
+    return Math.min(bins, last + 1);
+  }
+  function kickExcess(out, magnitude, frames, bins, subBins, options = DEFAULT_DRUM_CREDIT) {
+    const width = Math.max(1, options.floorFrames ?? DEFAULT_DRUM_CREDIT.floorFrames ?? 96);
+    const scratch = new Float32Array(width + 1);
+    const column = new Float32Array(frames);
+    const floor = new Float32Array(frames);
+    for (let b = 0; b < subBins; b++) {
+      for (let f = 0; f < frames; f++) column[f] = magnitude[f * bins + b] ?? 0;
+      runningMedian(column, floor, 0, frames, 1, width, scratch);
+      for (let f = 0; f < frames; f++) {
+        const m = column[f] ?? 0;
+        out[f * subBins + b] = m > 0 ? Math.max(0, 1 - (floor[f] ?? 0) / m) : 0;
+      }
+    }
+  }
   function evidenceAt(above, templates, parts, bin, full) {
     let raw = 0;
     for (const part of parts) raw += (above[part] ?? 0) * (templates[part][bin] ?? 0);
     return Math.min(1, raw / Math.max(full, 1e-6));
   }
   var KICK_ONLY = ["kick"];
-  function drumCredit(out, harmonic, presence, templates, frames, bins, options = DEFAULT_DRUM_CREDIT) {
+  function templateCoverage(templates, bins) {
+    const out = new Float32Array(bins);
+    for (let b = 0; b < bins; b++) {
+      let cover = 0;
+      for (const part of DRUM_PARTS) cover = Math.max(cover, templates[part][b] ?? 0);
+      out[b] = cover;
+    }
+    return out;
+  }
+  function drumCredit(out, harmonic, presence, templates, frames, bins, options = DEFAULT_DRUM_CREDIT, excess = null, subBins = 0) {
     const { doubt, full } = options;
     const floor = options.presenceFloor ?? DEFAULT_DRUMS.presenceFloor;
+    const coverage = templateCoverage(templates, bins);
     const above = { kick: 0, snare: 0, toms: 0, cymbals: 0 };
     for (let f = 0; f < frames; f++) {
       const base = f * bins;
@@ -718,8 +761,12 @@
         const i = base + b;
         const h = harmonic[i] ?? 0;
         const e = any > 0 ? evidenceAt(above, templates, DRUM_PARTS, b, full) : 0;
-        const kick = any > 0 ? evidenceAt(above, templates, KICK_ONLY, b, full) : 0;
-        const room = 1 - (templates.kick[b] ?? 0);
+        let kick = any > 0 ? evidenceAt(above, templates, KICK_ONLY, b, full) : 0;
+        if (excess !== null && b < subBins) {
+          const measured = (excess[f * subBins + b] ?? 0) * (templates.kick[b] ?? 0);
+          if (measured > kick) kick = measured;
+        }
+        const room = (coverage[b] ?? 0) * (1 - (templates.kick[b] ?? 0));
         const struck = (1 - h) * (1 - doubt * room * (1 - e));
         const rings = h * kick;
         out[i] = Math.max(0, Math.min(1, struck + rings));
@@ -1114,6 +1161,7 @@
       stemEnergy.set(node.kind, 0);
     }
     const templates = drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate);
+    const subBins = subBinCount(templates.kick, (fftSize >> 1) + 1);
     let drumOnsets = 0;
     let voicesInformative = false;
     const chunks = Math.max(1, Math.ceil(total / opts.chunkFrames));
@@ -1151,6 +1199,7 @@
       const vocalMask = new Float32Array(frames * bins);
       const credit = new Float32Array(frames * bins);
       const percussiveMag = new Float32Array(frames * bins);
+      const excess = new Float32Array(frames * Math.max(1, subBins));
       const kitMask = wantsDrumParts ? {
         kick: new Float32Array(frames * bins),
         snare: new Float32Array(frames * bins),
@@ -1175,7 +1224,18 @@
           opts.drums
         );
         if (c === 0) drumOnsets += kit.onsets;
-        drumCredit(credit, harmonic, kit.presence, templates, frames, bins, creditOpts);
+        if (subBins > 0) kickExcess(excess, mag, frames, bins, subBins, creditOpts);
+        drumCredit(
+          credit,
+          harmonic,
+          kit.presence,
+          templates,
+          frames,
+          bins,
+          creditOpts,
+          subBins > 0 ? excess : null,
+          subBins
+        );
         for (let i = 0; i < frames * bins; i++) {
           sustainedMag[i] = (1 - (credit[i] ?? 0)) * (mag[i] ?? 0);
         }

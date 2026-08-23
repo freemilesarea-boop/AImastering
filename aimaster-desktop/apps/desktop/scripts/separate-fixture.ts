@@ -151,8 +151,21 @@ export function buildFixture(
       const hp = { lp: 0 };
       for (let i = 0; i < 3000; i++) {
         const env = Math.exp(-i / 500);
-        const body = 0.4 * env * Math.sin((2 * Math.PI * 190 * i) / sr);
-        const wires = 0.9 * Math.exp(-i / 1400) * highpass(hp, rnd());
+        // A drum head is a MEMBRANE, and a membrane's modes are not a harmonic
+        // series — they are at roughly 1 : 1.59 : 2.14 : 2.30 : 2.65 : 3.16 of
+        // the fundamental.  The easy snare is one sine at 190 Hz plus hiss
+        // above 1.4 kHz, which leaves 400–1200 Hz empty; the real kit's snare
+        // owns that region and the templates were tuned against a fixture that
+        // did not have it.  Two bugs found by the real song lived in that gap.
+        let body = 0;
+        const modes = hard ? [1, 1.59, 2.14, 2.3, 2.65, 3.16, 4.35, 5.4, 6.7] : [1];
+        for (let m = 0; m < modes.length; m++) {
+          body += (0.2 / (m + 1)) * env * Math.sin((2 * Math.PI * 190 * modes[m]! * i) / sr);
+        }
+        // A lower corner on the hard setting, so the wires reach DOWN to where
+        // the shell's ring is instead of starting above it.
+        const wires = (hard ? 0.62 : 0.9) * Math.exp(-i / 1400)
+          * highpass(hp, rnd(), hard ? 0.09 : 0.18);
         add(parts.snare, 0, at + i, body + wires);
         add(parts.snare, 1, at + i, body + wires);
       }
@@ -160,8 +173,15 @@ export function buildFixture(
     for (const off of [0, 0.5]) {
       const h = at + Math.round(off * beat * sr);
       const hp = { lp: 0 };
+      const shine = { lp: 0 };
       for (let i = 0; i < 1200; i++) {
-        const env = Math.exp(-i / 260) * 0.25 * highpass(hp, rnd());
+        // Band-limited, not just high-passed.  White noise above a corner puts
+        // as much energy in the top octave as in all the others together, and
+        // the real record's kit has NOTHING above 11 kHz — so an unfiltered hat
+        // made the fixture's drums 7 % up there against the record's 0 %.
+        let n = highpass(hp, rnd(), hard ? 0.12 : 0.18);
+        if (hard) { shine.lp = 0.58 * shine.lp + 0.42 * n; n = shine.lp; }
+        const env = Math.exp(-i / 260) * (hard ? 1.6 : 0.25) * n;
         add(parts.cymbals, 0, h + i, env * 1.25);
         add(parts.cymbals, 1, h + i, env * 0.55);
       }
@@ -378,8 +398,8 @@ function reverb(channels: Float32Array[], sr: number, wet: number): void {
   }
 }
 
-function highpass(state: { lp: number }, x: number): number {
-  state.lp = 0.82 * state.lp + 0.18 * x;
+function highpass(state: { lp: number }, x: number, alpha = 0.18): number {
+  state.lp = (1 - alpha) * state.lp + alpha * x;
   return x - state.lp;
 }
 

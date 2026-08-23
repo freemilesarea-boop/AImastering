@@ -66,7 +66,8 @@ import {
 } from './drums.js';
 import { voiceSplit, type VoiceSplitOptions } from './voices.js';
 import {
-  DEFAULT_DRUM_CREDIT, drumCredit, type DrumCreditOptions,
+  DEFAULT_DRUM_CREDIT, drumCredit, kickExcess, subBinCount,
+  type DrumCreditOptions,
 } from './percussive.js';
 import { leadEnvelope, phraseLock, type PhraseOptions } from './phrase.js';
 import {
@@ -335,6 +336,7 @@ export function separate(
   // credit is what DEFINES the drum stem, and the templates are how it knows a
   // struck drum from a picked guitar.
   const templates = drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate);
+  const subBins = subBinCount(templates.kick, (fftSize >> 1) + 1);
   let drumOnsets = 0;
   let voicesInformative = false;
 
@@ -389,6 +391,9 @@ export function separate(
     // decided, so they are allocated once per chunk and rewritten per channel.
     const credit = new Float32Array(frames * bins);
     const percussiveMag = new Float32Array(frames * bins);
+    // Only the kick's register — about fourteen bins — so this is kilobytes
+    // where the buffers above it are megabytes.
+    const excess = new Float32Array(frames * Math.max(1, subBins));
     // Only allocated when the tree actually asks for them: four more buffers
     // this size is another 72 MB per chunk, and most runs want the four
     // top-level stems and nothing else.
@@ -422,7 +427,11 @@ export function separate(
       const kit = drumPresence(percussiveMag, frames, bins, templates,
         hopSize / sampleRate, opts.drums);
       if (c === 0) drumOnsets += kit.onsets;
-      drumCredit(credit, harmonic, kit.presence, templates, frames, bins, creditOpts);
+      // Under the kick's ceiling the onset envelope is a GUESS at how long a hit
+      // lasted; `kickExcess` is a measurement of it.  See `percussive.ts`.
+      if (subBins > 0) kickExcess(excess, mag, frames, bins, subBins, creditOpts);
+      drumCredit(credit, harmonic, kit.presence, templates, frames, bins, creditOpts,
+        subBins > 0 ? excess : null, subBins);
 
       // The bass tracker works on what is left after the drums — a bass note is
       // a sustained thing, and asking a spectrogram that still contains the
