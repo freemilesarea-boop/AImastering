@@ -106,8 +106,36 @@ export function bandProfiles(
 export interface Repetition {
   /** Frame-major novelty in [0,1]: 1 = nothing like this repeats nearby. */
   novelty: Float32Array;
-  /** Median similarity actually achieved — how repetitive this music is at all. */
-  medianSimilarity: number;
+  /**
+   * How much of this music the repetition cue found something to compare
+   * against, 0…1 — one minus the average novelty, weighted by loudness.
+   *
+   * This used to be the median over frames of the BEST match's similarity, and
+   * that number cannot say anything.  The best of eight hundred candidate
+   * frames scores near 1 whatever the music is, so it came back as 1.00 on a
+   * real record and 1.00 on a synthesised one — and the note that warns about
+   * un-repetitive music fires below 0.75, so it could never fire at all.
+   *
+   * The cosine underneath was narrow too — measured on the test mix at eight
+   * bands it ran 0.962 to 1.000, because every component is a loudness and the
+   * cosine between two vectors in the positive orthant cannot approach zero.
+   * Centring the profiles first, so the dot product is a correlation over the
+   * whole of [−1, 1], widened that range sixteen-fold and was measured: it made
+   * separation slightly WORSE at every setting of `excess` and was reverted.
+   * The top-k search was not limited by the metric's resolution.
+   *
+   * What is left is the excess itself — how much of a typical bin is NOT
+   * explained by the same bin in the most similar nearby frames — before the
+   * `excess` knob sharpens it into a mask.  Weighted by magnitude, because a
+   * novelty reading on a silent bin is not an observation about the music.
+   *
+   * 1 means everything here has a near-match nearby and the cue can exclude it
+   * all; 0 means nothing does and the cue has nothing to say.  White noise
+   * reads 0.99 and a two-second loop 0.97 — both are self-similar and both are
+   * correct.  A record with a singer over a repeating band reads around 0.4:
+   * the band matches and the singer does not, which is the whole point.
+   */
+  repetitiveness: number;
 }
 
 /**
@@ -130,7 +158,9 @@ export function repetition(
   const bestScore = new Float64Array(k);
   const bestFrame = new Int32Array(k);
   const gathered = new Float32Array(k);
-  const similarities: number[] = [];
+  // Loudness-weighted running total of the novelty, for the figure returned.
+  let novel = 0;
+  let weight = 0;
 
   for (let f = 0; f < frames; f++) {
     bestScore.fill(-Infinity);
@@ -167,23 +197,25 @@ export function repetition(
       for (let b = 0; b < bins; b++) novelty[base + b] = 0;
       continue;
     }
-    similarities.push(bestScore[0] ?? 0);
-
     for (let b = 0; b < bins; b++) {
       for (let i = 0; i < found; i++) {
         gathered[i] = magnitude[(bestFrame[i] ?? 0) * bins + b] ?? 0;
       }
       const background = medianOf(gathered, found);
       const here = magnitude[base + b] ?? 0;
-      novelty[base + b] = here > 0
-        ? Math.min(1, Math.max(0, ((here - background) / here) * scale)) : 0;
+      const raw = here > 0 ? Math.max(0, (here - background) / here) : 0;
+      novelty[base + b] = Math.min(1, raw * scale);
+      // The figure returned is the RAW excess, before `excess` sharpens it.
+      // A diagnosis of the RECORD must not move when we retune the separator,
+      // and the scaled novelty does: at `excess` 0.2 the same music reads 0.55
+      // and at 0.7 it reads 0.31.
+      novel += raw * here;
+      weight += here;
     }
   }
 
-  similarities.sort((a, b) => a - b);
-  const medianSimilarity = similarities.length > 0
-    ? (similarities[similarities.length >> 1] ?? 0) : 0;
-  return { novelty, medianSimilarity };
+  const repetitiveness = weight > 0 ? 1 - novel / weight : 0;
+  return { novelty, repetitiveness };
 }
 
 function medianOf(values: Float32Array, count: number): number {

@@ -332,7 +332,11 @@ function Result({ report }: { report: SeparationReport }) {
             the actual output rather than asserted. */}
         {report.stems.length}개 스템의 합 − 원본 = {report.reconstructionDb.toFixed(0)} dB
         {report.reconstructionDb < -100 ? ' (사실상 완전 복원)' : ''}
-        {'   ·   '}반복도 {report.repetitiveness.toFixed(2)}
+        {/* The share of the record that has a near-match nearby — which is
+            what the repetition cue can exclude from the vocal.  Said as a
+            percentage because it now IS one; it used to read 1.00 on every
+            input and meant nothing. */}
+        {'   ·   '}반복되는 부분 {(report.repetitiveness * 100).toFixed(0)} %
       </p>
       <ul className="mt-2 flex flex-col gap-1">
         {report.notes.map((note) => (
