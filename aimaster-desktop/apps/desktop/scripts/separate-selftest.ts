@@ -14,6 +14,8 @@
 // drift in them means the construction broke.
 
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,6 +42,41 @@ import { DEFAULT_PHRASE, leadEnvelope, phraseLock } from '../src/renderer/daw/au
 import { drumPresence, drumTemplates } from '../src/renderer/daw/audio/separate/drums.js';
 import { voiceSplit } from '../src/renderer/daw/audio/separate/voices.js';
 import { buildFixture, leakageMatrix, toMono, FIXTURE_SR } from './separate-fixture.js';
+import { classifyStemFile } from './stem-names.js';
+import { readWav } from './wav-read.js';
+
+/** Minimal WAV writer — only the test needs one, and only to feed the reader. */
+function encodeTestWav(channels: Float32Array[], sampleRate: number, depth: 16 | 24 | 32): Buffer {
+  const frames = channels[0]?.length ?? 0;
+  const count = channels.length;
+  const bytes = depth >> 3;
+  const size = 44 + frames * count * bytes;
+  const b = Buffer.alloc(size);
+  b.write('RIFF', 0); b.writeUInt32LE(size - 8, 4); b.write('WAVE', 8);
+  b.write('fmt ', 12); b.writeUInt32LE(16, 16);
+  b.writeUInt16LE(depth === 32 ? 3 : 1, 20);         // 3 = IEEE float
+  b.writeUInt16LE(count, 22); b.writeUInt32LE(sampleRate, 24);
+  b.writeUInt32LE(sampleRate * count * bytes, 28);
+  b.writeUInt16LE(count * bytes, 32); b.writeUInt16LE(depth, 34);
+  b.write('data', 36); b.writeUInt32LE(frames * count * bytes, 40);
+  let at = 44;
+  for (let f = 0; f < frames; f++) {
+    for (let c = 0; c < count; c++) {
+      const v = Math.max(-1, Math.min(1, channels[c]![f] ?? 0));
+      if (depth === 32) { b.writeFloatLE(v, at); at += 4; continue; }
+      if (depth === 24) {
+        const x = Math.round(v * 8388607);
+        b.writeUInt8(x & 0xff, at);
+        b.writeUInt8((x >> 8) & 0xff, at + 1);
+        b.writeUInt8((x >> 16) & 0xff, at + 2);
+        at += 3;
+        continue;
+      }
+      b.writeInt16LE(Math.round(v * 32767), at); at += 2;
+    }
+  }
+  return b;
+}
 
 const results: Array<{ name: string; pass: boolean }> = [];
 function check(name: string, fn: () => void): void {
@@ -780,6 +817,128 @@ check('a singer who never stops gives the phrase cue nothing, and it says nothin
     SEPARATION_STFT.fftSize, FIXTURE_SR);
   assert(Array.from(lock).every((v) => v === 0), 'all zero');
   eq(DEFAULT_PHRASE.perOctave >= 2, true, 'and the bands are wide enough to hold a phrase');
+});
+
+// ── Reading somebody else's stems ────────────────────────────────────────────
+
+check('a WAV comes back as the samples that went in, at every depth', () => {
+  // The benchmark is only worth running if this is right.  A reader that
+  // silently returns zeros reports a separator that works perfectly on
+  // nothing, and a reader that is off by a byte reports one that works on
+  // noise — both look like results.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wav-'));
+  try {
+    const n = 512;
+    const left = new Float32Array(n);
+    const right = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      left[i] = Math.sin((2 * Math.PI * 440 * i) / 44100) * 0.8;
+      right[i] = Math.cos((2 * Math.PI * 220 * i) / 44100) * 0.5;
+    }
+    for (const [depth, tolerance] of [[16, 4e-5], [24, 2e-7], [32, 1e-7]] as const) {
+      const file = path.join(dir, `t${depth}.wav`);
+      fs.writeFileSync(file, encodeTestWav([left, right], 44100, depth));
+      const back = readWav(file);
+      eq(back.sampleRate, 44100, `${depth}-bit sample rate`);
+      eq(back.length, n, `${depth}-bit length`);
+      eq(back.channels.length, 2, `${depth}-bit channel count`);
+      let worst = 0;
+      for (let c = 0; c < 2; c++) {
+        const want = c === 0 ? left : right;
+        for (let i = 0; i < n; i++) {
+          worst = Math.max(worst, Math.abs((back.channels[c]![i] ?? 0) - (want[i] ?? 0)));
+        }
+      }
+      atMost(worst, tolerance, `${depth}-bit round trip`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+check('a WAV with an odd-sized chunk before the audio still reads', () => {
+  // Real exports carry LIST/INFO, bext, iXML.  Chunk sizes are padded to even
+  // and the padding byte is NOT counted in the size, so a reader that walks
+  // `body + size` lands one byte short and reads the rest of the file
+  // misaligned — which comes back as noise, not as an error.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wav-'));
+  try {
+    const n = 256;
+    const tone = new Float32Array(n);
+    for (let i = 0; i < n; i++) tone[i] = Math.sin((2 * Math.PI * 1000 * i) / 44100) * 0.7;
+    const plain = encodeTestWav([tone], 44100, 32);
+
+    // Splice a 5-byte LIST chunk (padded to 6) in between fmt and data.
+    const odd = Buffer.alloc(5 + 8 + 1);
+    odd.write('LIST', 0);
+    odd.writeUInt32LE(5, 4);
+    odd.write('INFOx', 8, 'latin1');
+    const head = plain.subarray(0, 36);
+    const tail = plain.subarray(36);
+    const spliced = Buffer.concat([head, odd, tail]);
+    spliced.writeUInt32LE(spliced.length - 8, 4);
+    const file = path.join(dir, 'odd.wav');
+    fs.writeFileSync(file, spliced);
+
+    const back = readWav(file);
+    eq(back.length, n, 'the audio was found after the odd chunk');
+    let worst = 0;
+    for (let i = 0; i < n; i++) worst = Math.max(worst, Math.abs((back.channels[0]![i] ?? 0) - (tone[i] ?? 0)));
+    atMost(worst, 1e-7, 'and it is the audio, not what is one byte along from it');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+check('a file that is not a WAV is refused by name, not read as silence', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wav-'));
+  try {
+    const bad = path.join(dir, 'bad.wav');
+    fs.writeFileSync(bad, Buffer.from('not a riff at all, really not'));
+    let threw = '';
+    try { readWav(bad); } catch (e) { threw = String(e); }
+    assert(threw.includes('RIFF'), `said what was wrong: ${threw}`);
+
+    // A real header claiming a compressed format.
+    const compressed = encodeTestWav([new Float32Array(8)], 44100, 16);
+    compressed.writeUInt16LE(0x0011, 20);            // IMA ADPCM
+    const file = path.join(dir, 'adpcm.wav');
+    fs.writeFileSync(file, compressed);
+    threw = '';
+    try { readWav(file); } catch (e) { threw = String(e); }
+    assert(threw.includes('압축'), `and names the format: ${threw}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+check('stem filenames land where the separator can actually be scored', () => {
+  // The Moises set, which is what the commercial separators produce.
+  const expect: Array<[string, StemKind]> = [
+    ['0 Lead Vocals.wav', 'lead'],
+    ['1 Backing Vocals.wav', 'backing'],
+    ['2 Drums.wav', 'kit'],
+    ['3 Bass.wav', 'bass'],
+    ['4 Guitar.wav', 'other'],
+    ['5 Keyboard.wav', 'other'],
+    ['6 Percussion.wav', 'kit'],
+    ['7 Strings.wav', 'other'],
+    ['8 Synth.wav', 'other'],
+    ['9 Other.wav', 'other'],
+    ['10 Brass.wav', 'other'],
+    ['11 Woodwinds.wav', 'other'],
+  ];
+  for (const [file, into] of expect) {
+    eq(classifyStemFile(file)?.into, into, file);
+  }
+  // "Backing Vocals" must be tried before "Vocals", or every backing file
+  // becomes a lead file and the 코러스 stem is scored against the wrong truth.
+  eq(classifyStemFile('Backing Vocals.wav')?.into, 'backing', 'order matters');
+  eq(classifyStemFile('Vocals.wav')?.into, 'lead', 'and an undivided vocal is the lead');
+  eq(classifyStemFile('Kick.wav')?.into, 'kick', 'a separate kick is a kick');
+  eq(classifyStemFile('readme.txt'), null, 'and something unrelated is left alone');
+  assert(classifyStemFile('6 Percussion.wav')?.note?.includes('퍼커션'),
+    'percussion says why it went to the kit');
 });
 
 // ── Report ───────────────────────────────────────────────────────────────────
