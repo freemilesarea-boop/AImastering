@@ -781,7 +781,8 @@
       children: ["lead", "backing"],
       label: "\uBCF4\uCEEC",
       what: "\uAC00\uC6B4\uB370\uC5D0 \uC788\uACE0 \uBC18\uBCF5\uD558\uC9C0 \uC54A\uB294 \uC131\uBD84",
-      color: "#d67f4f"
+      color: "#d67f4f",
+      source: "dsp"
     },
     {
       kind: "lead",
@@ -789,7 +790,8 @@
       children: [],
       label: "\uB9AC\uB4DC",
       what: "\uC815\uD655\uD788 \uD55C\uAC00\uC6B4\uB370 \u2014 \uBCF4\uD1B5 \uD55C \uC0AC\uB78C",
-      color: "#e09a6a"
+      color: "#e09a6a",
+      source: "dsp"
     },
     {
       kind: "backing",
@@ -797,7 +799,8 @@
       children: [],
       label: "\uCF54\uB7EC\uC2A4",
       what: "\uBCF4\uCEEC\uC778\uB370 \uAC00\uC6B4\uB370\uC5D0\uC11C \uBC8C\uC5B4\uC838 \uC788\uB294 \uAC83 \u2014 \uACB9\uCCD0 \uBD80\uB978 \uD654\uC74C",
-      color: "#c06a3a"
+      color: "#c06a3a",
+      source: "dsp"
     },
     {
       kind: "drums",
@@ -805,7 +808,8 @@
       children: ["kick", "kit"],
       label: "\uB4DC\uB7FC",
       what: "\uB113\uC740 \uB300\uC5ED\uC744 \uD55C\uC21C\uAC04\uC5D0 \uCE58\uACE0 \uC9C0\uB098\uAC00\uB294 \uC131\uBD84",
-      color: "#4fd68f"
+      color: "#4fd68f",
+      source: "dsp"
     },
     {
       kind: "kick",
@@ -813,7 +817,8 @@
       children: [],
       label: "\uD0A5",
       what: "\uB9E8 \uC544\uB798\uC5D0\uC11C \uB098\uB294 \uD0C0\uACA9 \u2014 \uD0A5\uB9CC \uB530\uB85C",
-      color: "#3fa870"
+      color: "#3fa870",
+      source: "dsp"
     },
     {
       kind: "kit",
@@ -821,7 +826,8 @@
       children: [],
       label: "\uB098\uBA38\uC9C0 \uB4DC\uB7FC",
       what: "\uC2A4\uB124\uC5B4 \xB7 \uD0D0 \xB7 \uC2EC\uBC8C \xB7 \uD558\uC774\uD587 \u2014 \uD0A5\uC744 \uBE80 \uB098\uBA38\uC9C0",
-      color: "#7fd6b0"
+      color: "#7fd6b0",
+      source: "dsp"
     },
     {
       kind: "bass",
@@ -829,20 +835,97 @@
       children: [],
       label: "\uBCA0\uC774\uC2A4",
       what: "\uB0AE\uC740 \uC74C\uACFC \uADF8 \uBC30\uC74C \u2014 \uC74C\uC744 \uB530\uB77C\uAC11\uB2C8\uB2E4",
-      color: "#4f7fd6"
+      color: "#4f7fd6",
+      source: "dsp"
     },
     {
       kind: "other",
       parent: null,
-      children: [],
+      children: ["guitar", "keys", "synth", "strings", "brass", "winds", "percussion", "rest"],
       label: "\uADF8 \uC678",
       what: "\uB098\uBA38\uC9C0 \u2014 \uAE30\uD0C0 \xB7 \uAC74\uBC18 \xB7 \uC2E0\uC2A4 \xB7 \uB9AC\uBC84\uBE0C",
-      color: "#9f6fd6"
+      color: "#9f6fd6",
+      source: "dsp"
+    },
+    {
+      kind: "guitar",
+      parent: "other",
+      children: [],
+      label: "\uAE30\uD0C0",
+      what: "\uC5B4\uCFE0\uC2A4\uD2F1 \xB7 \uC77C\uB809 \uAE30\uD0C0",
+      color: "#c08f5f",
+      source: "model"
+    },
+    {
+      kind: "keys",
+      parent: "other",
+      children: [],
+      label: "\uAC74\uBC18",
+      what: "\uD53C\uC544\uB178 \xB7 \uB85C\uC988 \xB7 \uC624\uB974\uAC04",
+      color: "#8f8fd6",
+      source: "model"
+    },
+    {
+      kind: "synth",
+      parent: "other",
+      children: [],
+      label: "\uC2E0\uC2A4",
+      what: "\uC2E0\uC2DC\uC0AC\uC774\uC800 \u2014 \uD328\uB4DC \xB7 \uB9AC\uB4DC",
+      color: "#b06fd6",
+      source: "model"
+    },
+    {
+      kind: "strings",
+      parent: "other",
+      children: [],
+      label: "\uC2A4\uD2B8\uB9C1",
+      what: "\uD604\uC545 \u2014 \uBC14\uC774\uC62C\uB9B0 \xB7 \uCCBC\uB85C \xB7 \uC139\uC158",
+      color: "#6fb0d6",
+      source: "model"
+    },
+    {
+      kind: "brass",
+      parent: "other",
+      children: [],
+      label: "\uBE0C\uB77C\uC2A4",
+      what: "\uAE08\uAD00 \u2014 \uD2B8\uB7FC\uD3AB \xB7 \uD2B8\uB86C\uBCF8 \xB7 \uC0C9\uC18C\uD3F0",
+      color: "#d6b06f",
+      source: "model"
+    },
+    {
+      kind: "winds",
+      parent: "other",
+      children: [],
+      label: "\uBAA9\uAD00",
+      what: "\uBAA9\uAD00 \u2014 \uD50C\uB8E8\uD2B8 \xB7 \uD074\uB77C\uB9AC\uB137 \xB7 \uC624\uBCF4\uC5D0",
+      color: "#6fd6b0",
+      source: "model"
+    },
+    {
+      kind: "percussion",
+      parent: "other",
+      children: [],
+      label: "\uD37C\uCEE4\uC158",
+      what: "\uB4DC\uB7FC \uD0B7\uC774 \uC544\uB2CC \uD0C0\uC545 \u2014 \uC170\uC774\uCEE4 \xB7 \uD0EC\uBC84\uB9B0 \xB7 \uCF69\uAC00",
+      color: "#d66f9f",
+      source: "model"
+    },
+    {
+      kind: "rest",
+      parent: "other",
+      children: [],
+      label: "\uADF8 \uBC16",
+      what: "\uC704 \uC5B4\uB514\uC5D0\uB3C4 \uC548 \uB4E4\uC5B4\uAC00\uB294 \uAC83 \u2014 \uD6A8\uACFC\uC74C \xB7 \uB9AC\uBC84\uBE0C \uAF2C\uB9AC",
+      color: "#8f6fb0",
+      source: "model"
     }
   ];
   var BY_KIND = new Map(NODES.map((n) => [n.kind, n]));
   var STEM_TREE = NODES;
   var TOP_STEMS = ["vocals", "drums", "bass", "other"];
+  function needsModel(kinds) {
+    return kinds.filter((k) => stemNode(k).source === "model");
+  }
   function stemNode(kind) {
     const node = BY_KIND.get(kind);
     if (!node) throw new Error(`\uC54C \uC218 \uC5C6\uB294 \uC2A4\uD15C: ${kind}`);
@@ -956,6 +1039,10 @@
     const hpssFrames = opts.hpss.harmonicFrames ?? DEFAULT_HPSS.harmonicFrames;
     const context = contextFrames(opts.stft, Math.max(repetWindow, hpssFrames));
     const wanted = orderStems(opts.wanted.length > 0 ? opts.wanted : STEM_KINDS);
+    const modelOnly = needsModel(wanted);
+    if (modelOnly.length > 0) {
+      throw new Error(`${modelOnly.map(stemLabel).join(" \xB7 ")} \uC740(\uB294) \uC74C\uC0C9\uC73C\uB85C\uB9CC \uAD6C\uBD84\uB418\uB294 \uC2A4\uD15C\uC774\uB77C \uC2E0\uD638 \uCC98\uB9AC\uB85C\uB294 \uB098\uB20C \uC218 \uC5C6\uC2B5\uB2C8\uB2E4 \u2014 \uBD84\uB9AC \uBAA8\uB378\uC774 \uC124\uCE58\uB418\uC5B4\uC57C \uD569\uB2C8\uB2E4`);
+    }
     const cover = coverProblems(wanted);
     if (cover.overlapping.length > 0) {
       throw new Error(`${cover.overlapping.map(stemLabel).join(" \xB7 ")} \uC740(\uB294) \uC0C1\uC704 \uC2A4\uD15C\uC5D0 \uC774\uBBF8 \uD3EC\uD568\uB429\uB2C8\uB2E4 \u2014 \uAC19\uC774 \uB9CC\uB4E4\uBA74 \uADF8 \uD30C\uD2B8\uAC00 \uB450 \uBC88 \uB4E4\uC5B4\uAC11\uB2C8\uB2E4`);
