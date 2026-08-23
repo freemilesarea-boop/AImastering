@@ -45,6 +45,7 @@ import {
   templateCoverage,
 } from '../src/renderer/daw/audio/separate/percussive.js';
 import { voiceSplit } from '../src/renderer/daw/audio/separate/voices.js';
+import { DEFAULT_RANGE, leadRange } from '../src/renderer/daw/audio/separate/range.js';
 import { buildFixture, leakageMatrix, toMono, FIXTURE_SR } from './separate-fixture.js';
 import { BAND_NAMES, energyByBand, leakByBand } from './band-leak.js';
 import { classifyStemFile } from './stem-names.js';
@@ -549,6 +550,125 @@ check('the hard fixture really has the three things it claims to have', () => {
   };
   atLeast(spread(hard.parts.other) / Math.max(spread(easy.parts.other), 1e-9), 2,
     'the hard arrangement reaches much further up than one pad does');
+});
+
+// ── The singer's measured range ──────────────────────────────────────────────
+
+/** A vocal mask and a spectrogram whose product lives only between two bins. */
+function rangeRig(bins: number, from: number, to: number): {
+  mask: Float32Array; mag: Float32Array; frames: number;
+} {
+  const frames = 40;
+  const mask = new Float32Array(frames * bins);
+  const mag = new Float32Array(frames * bins);
+  for (let f = 0; f < frames; f++) {
+    for (let b = 1; b < bins; b++) {
+      mag[f * bins + b] = 1;                       // energy everywhere
+      mask[f * bins + b] = b >= from && b <= to ? 1 : 0;   // credited only here
+    }
+  }
+  return { mask, mag, frames };
+}
+
+check('the range is measured from where the mask actually put the singer', () => {
+  // The vocal prior is the one thing in the separator that never looks at the
+  // record: a fixed curve saying nothing under 70 Hz and full credit to 8 kHz.
+  // Measured on a real song, that singer has NOTHING below 180 Hz while the
+  // vocal stem had 12 % of its energy at 125 Hz, and 51 % of the arrangement's
+  // 125 Hz band went to the vocal.  A singer has a range and a range can be
+  // measured.
+  const bins = 512;
+  const rig = rangeRig(bins, 40, 200);
+  const got = leadRange(rig.mask, rig.mag, rig.frames, bins,
+    SEPARATION_STFT.fftSize, FIXTURE_SR);
+  assert(got.informative, 'a clean range is credible');
+  const hzOf = (b: number): number => (b * FIXTURE_SR) / SEPARATION_STFT.fftSize;
+  // Within a couple of bins of the edges — the tail cut is 5 % of the energy.
+  atLeast(got.lowHz, hzOf(38), 'low edge is not below where the mask starts');
+  atMost(got.lowHz, hzOf(50), 'low edge is close to where the mask starts');
+  atLeast(got.highHz, hzOf(190), 'high edge is close to where the mask ends');
+  atMost(got.highHz, hzOf(202), 'high edge is not above where the mask ends');
+});
+
+check('the measured range only ever narrows the prior, never widens it', () => {
+  // The whole safety of this is that it multiplies the fixed prior.  A bad
+  // measurement can throw the vocal away — which is visible and reported — but
+  // it can never hand the vocal a region the prior had ruled out.
+  const bins = 512;
+  const rig = rangeRig(bins, 40, 200);
+  const got = leadRange(rig.mask, rig.mag, rig.frames, bins,
+    SEPARATION_STFT.fftSize, FIXTURE_SR);
+  for (let b = 0; b < bins; b++) {
+    assert((got.weight[b] ?? 2) <= 1 + 1e-6, `weight at bin ${b} is ${got.weight[b]}`);
+    assert((got.weight[b] ?? -1) >= 0, `weight at bin ${b} is ${got.weight[b]}`);
+  }
+  // Inside is whole, well outside is the floor, and the edge is not a cliff.
+  eq(Math.round((got.weight[120] ?? 0) * 100) / 100, 1, 'the middle of the range');
+  atMost(got.weight[bins - 1]!, DEFAULT_RANGE.outside + 0.01, 'two octaves above it');
+  const edge = got.weight[210] ?? 0;
+  assert(edge < 1 && edge > DEFAULT_RANGE.outside, `just outside the edge: ${edge}`);
+});
+
+check('a range too narrow to be a singer is thrown away, not used', () => {
+  // One sustained vowel is not a range.  A window that narrow would cut the
+  // consonants and half the melody, so the measurement is discarded and the
+  // report says the range could not be measured.
+  const bins = 512;
+  const rig = rangeRig(bins, 100, 104);
+  const got = leadRange(rig.mask, rig.mag, rig.frames, bins,
+    SEPARATION_STFT.fftSize, FIXTURE_SR);
+  assert(!got.informative, 'four bins is a note, not a singer');
+  for (let b = 0; b < bins; b++) eq(got.weight[b], 1, `discarded weight at bin ${b}`);
+});
+
+check('the narrowness guard does not fire on a real singer', () => {
+  // This is the bug the guard had.  At three octaves it rejected 237–1755 Hz —
+  // which is a singer — and fell back to the fixed prior, so the measurement
+  // silently did nothing at every setting but the loosest.  A guard that fires
+  // on the good case is worse than no guard, because it fires quietly.
+  const bins = (SEPARATION_STFT.fftSize >> 1) + 1;
+  const binOf = (hz: number): number => Math.round((hz * SEPARATION_STFT.fftSize) / FIXTURE_SR);
+  const rig = rangeRig(bins, binOf(237), binOf(1755));
+  const got = leadRange(rig.mask, rig.mag, rig.frames, bins,
+    SEPARATION_STFT.fftSize, FIXTURE_SR);
+  assert(got.informative, '237–1755 Hz is accepted as a range');
+});
+
+check('nothing credited at all measures no range rather than a wrong one', () => {
+  const bins = 128;
+  const mask = new Float32Array(40 * bins);
+  const mag = new Float32Array(40 * bins);
+  mag.fill(1);
+  const got = leadRange(mask, mag, 40, bins, SEPARATION_STFT.fftSize, FIXTURE_SR);
+  assert(!got.informative, 'silence is not a range');
+  eq(got.lowHz, 0, 'no low edge');
+  eq(got.highHz, 0, 'no high edge');
+});
+
+check('the measured range cuts the arrangement above and below the singer', () => {
+  // Band by band, because that is where it acts and the totals cannot see it:
+  // this fixture keeps 88 % of its 그 외 between 180 and 710 Hz, which is inside
+  // any plausible range, so the aggregate barely moves.  The real song keeps
+  // 19 % of its 그 외 above 1.4 kHz and loses 61 %, 64 % and 34 % of it there.
+  const hard = buildFixture(20, { vocalCycles: false, hard: true });
+  const off = { range: { outside: 1 } };
+  const before = separate(hard.mix, FIXTURE_SR, off);
+  const after = separate(hard.mix, FIXTURE_SR);
+  assert(after.vocalRangeHz !== null, 'a range was measured on the fixture');
+  const vocalOf = (r: typeof before): Float32Array[] =>
+    r.stems.find((s) => s.kind === 'vocals')!.channels;
+  const a = leakByBand(vocalOf(before), hard.parts.other, FIXTURE_SR);
+  const b = leakByBand(vocalOf(after), hard.parts.other, FIXTURE_SR);
+  // The top three bands are above any singer's range on this fixture.
+  let improved = 0;
+  for (let k = a.length - 3; k < a.length; k++) {
+    const was = a[k];
+    const now = b[k];
+    if (was === null || was === undefined || now === null || now === undefined) continue;
+    assert(now <= was + 1e-6, `그외→보컬 at band ${k}: ${was} -> ${now}`);
+    if (now < was - 5) improved++;
+  }
+  atLeast(improved, 2, 'bands above the range that improved by more than 5 points');
 });
 
 // ── The drum credit ──────────────────────────────────────────────────────────
