@@ -299,6 +299,63 @@ check('the repetition profile is too coarse to see the singer, on purpose', () =
   }
 });
 
+check('the repetition figure is a measurement and not a constant', () => {
+  // This is the test that was missing, and its absence is why the figure sat at
+  // 1.00 on every input for four rounds without anyone noticing.  It used to be
+  // the median over frames of the BEST of eight hundred candidate matches, and
+  // the best of eight hundred is near 1 whatever the music is — so the number
+  // said nothing and the note that fires below a threshold could never fire.
+  //
+  // A figure that comes back the same for white noise and for a song is not a
+  // measurement.  So: material that is self-similar by construction must read
+  // high, and a mix with a singer over it must read clearly lower.
+  const n = FIXTURE_SR * 10;
+  let seed = 3;
+  const rnd = (): number => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed / 0x7fffffff) * 2 - 1; };
+  const noise = [new Float32Array(n), new Float32Array(n)];
+  for (let i = 0; i < n; i++) { noise[0]![i] = 0.3 * rnd(); noise[1]![i] = 0.3 * rnd(); }
+  const flat = separate(noise, FIXTURE_SR).repetitiveness;
+  const music = separate(buildFixture(12, { hard: true, vocalCycles: false }).mix, FIXTURE_SR)
+    .repetitiveness;
+  atLeast(flat, 0.9, 'noise has a near-match for everything in it');
+  atMost(music, flat - 0.2, 'a mix with a singer over it does not');
+  assert(music > 0 && music < 1, `a mix reads inside the range, not at an end: ${music}`);
+});
+
+check('the repetition figure describes the record, not our tuning', () => {
+  // `excess` is the knob that sharpens the novelty into a mask.  A number the
+  // report shows the user as a fact about their song must not move when we
+  // retune the separator — and the scaled novelty does: the same music read
+  // 0.55 at one setting and 0.31 at another before this was fixed.
+  const mix = buildFixture(12, { hard: true, vocalCycles: false }).mix;
+  const low = separate(mix, FIXTURE_SR, { repet: { excess: 0.2 } }).repetitiveness;
+  const high = separate(mix, FIXTURE_SR, { repet: { excess: 0.7 } }).repetitiveness;
+  atMost(Math.abs(low - high), 0.01, `${low.toFixed(3)} against ${high.toFixed(3)}`);
+});
+
+check('the note about un-repetitive music can actually fire', () => {
+  // The threshold was 0.75 against a figure that was always 1.00.  A warning
+  // that cannot fire is worse than no warning: it reads as "checked and fine".
+  // Now it has to be false on ordinary music and true on material with nothing
+  // to compare against.
+  const music = separate(buildFixture(12, { hard: true, vocalCycles: false }).mix, FIXTURE_SR);
+  const said = (r: { notes: string[] }): boolean => r.notes.some((x) => x.includes('반복되는 부분이 적은'));
+  assert(!said(music), 'an ordinary mix is not warned about');
+  // A sweep that never repeats anything: every frame is new material.
+  const n = FIXTURE_SR * 10;
+  const sweep = [new Float32Array(n), new Float32Array(n)];
+  let phase = 0;
+  for (let i = 0; i < n; i++) {
+    phase += (2 * Math.PI * (80 + (6000 * i) / n)) / FIXTURE_SR;
+    const v = 0.3 * Math.sin(phase);
+    sweep[0]![i] = v;
+    sweep[1]![i] = v;
+  }
+  const swept = separate(sweep, FIXTURE_SR);
+  atMost(swept.repetitiveness, 0.35, 'a sweep has nothing that comes back');
+  assert(said(swept), `warned about a sweep: ${swept.notes.join(' | ')}`);
+});
+
 check('novelty is higher where the voice is than where the band is', () => {
   const fixture = buildFixture(14, { vocalCycles: false });
   const total = frameCount(fixture.length);

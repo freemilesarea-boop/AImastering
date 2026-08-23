@@ -370,7 +370,7 @@ export function separate(
     step('반복 성분', 0.55);
     const mid = stereo ? midMagnitude(specL, specR) : magL;
     const repeat = repetition(mid, frames, bins, opts.repet);
-    similarityTotal += repeat.medianSimilarity;
+    similarityTotal += repeat.repetitiveness;
     similarityChunks++;
 
     step('스템 만들기', 0.8);
@@ -576,8 +576,18 @@ export function separate(
       ? '두 채널이 같은 신호입니다 — 가운데 성분 단서를 쓸 수 없어 보컬 분리가 반복 성분에만 의존합니다'
       : '모노 파일입니다 — 가운데 성분 단서가 없어 보컬 분리가 반복 성분에만 의존합니다');
   }
-  if (repetitiveness < 0.75) {
-    notes.push(`반복이 뚜렷하지 않은 음악입니다 (유사도 ${repetitiveness.toFixed(2)}) — 보컬에 반주가 섞일 수 있습니다`);
+  // 0.35 and not 0.75.  The old threshold was written against a figure that
+  // came back as 1.00 on everything — the median over frames of the BEST of
+  // eight hundred candidate matches, which is near 1 whatever the music is —
+  // so the note could never fire.  What is measured now is the share of the
+  // record that has a near-match nearby at all, and it sits at 0.57 to 0.65 on
+  // mixes where the cue works, 0.98 on material that is self-similar by
+  // construction.  The line is drawn well below the working range rather than
+  // in the middle of it: this warns about a record the cue cannot help with,
+  // not about a record it merely finds harder.
+  if (repetitiveness < 0.35) {
+    notes.push(`반복되는 부분이 적은 음악입니다 (${(repetitiveness * 100).toFixed(0)} %) — `
+      + '반복 성분 단서가 반주를 걸러내지 못해 보컬에 섞일 수 있습니다');
   }
   if (wantsVoiceParts && !voicesInformative) {
     notes.push('리드와 코러스를 가를 단서가 없습니다 — 보컬이 전부 리드로 갑니다');

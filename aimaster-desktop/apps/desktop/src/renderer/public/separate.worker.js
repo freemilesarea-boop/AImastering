@@ -145,7 +145,8 @@
     const bestScore = new Float64Array(k);
     const bestFrame = new Int32Array(k);
     const gathered = new Float32Array(k);
-    const similarities = [];
+    let novel = 0;
+    let weight = 0;
     for (let f = 0; f < frames; f++) {
       bestScore.fill(-Infinity);
       bestFrame.fill(-1);
@@ -174,19 +175,20 @@
         for (let b = 0; b < bins; b++) novelty[base + b] = 0;
         continue;
       }
-      similarities.push(bestScore[0] ?? 0);
       for (let b = 0; b < bins; b++) {
         for (let i = 0; i < found; i++) {
           gathered[i] = magnitude[(bestFrame[i] ?? 0) * bins + b] ?? 0;
         }
         const background = medianOf(gathered, found);
         const here = magnitude[base + b] ?? 0;
-        novelty[base + b] = here > 0 ? Math.min(1, Math.max(0, (here - background) / here * scale)) : 0;
+        const raw = here > 0 ? Math.max(0, (here - background) / here) : 0;
+        novelty[base + b] = Math.min(1, raw * scale);
+        novel += raw * here;
+        weight += here;
       }
     }
-    similarities.sort((a, b) => a - b);
-    const medianSimilarity = similarities.length > 0 ? similarities[similarities.length >> 1] ?? 0 : 0;
-    return { novelty, medianSimilarity };
+    const repetitiveness = weight > 0 ? 1 - novel / weight : 0;
+    return { novelty, repetitiveness };
   }
   function medianOf(values, count) {
     for (let i = 1; i < count; i++) {
@@ -1189,7 +1191,7 @@
       step("\uBC18\uBCF5 \uC131\uBD84", 0.55);
       const mid = stereo ? midMagnitude(specL, specR) : magL;
       const repeat = repetition(mid, frames, bins, opts.repet);
-      similarityTotal += repeat.medianSimilarity;
+      similarityTotal += repeat.repetitiveness;
       similarityChunks++;
       step("\uC2A4\uD15C \uB9CC\uB4E4\uAE30", 0.8);
       let countedThisChunk = false;
@@ -1316,8 +1318,8 @@
     if (!stereo || !centreInformative) {
       notes.push(stereo ? "\uB450 \uCC44\uB110\uC774 \uAC19\uC740 \uC2E0\uD638\uC785\uB2C8\uB2E4 \u2014 \uAC00\uC6B4\uB370 \uC131\uBD84 \uB2E8\uC11C\uB97C \uC4F8 \uC218 \uC5C6\uC5B4 \uBCF4\uCEEC \uBD84\uB9AC\uAC00 \uBC18\uBCF5 \uC131\uBD84\uC5D0\uB9CC \uC758\uC874\uD569\uB2C8\uB2E4" : "\uBAA8\uB178 \uD30C\uC77C\uC785\uB2C8\uB2E4 \u2014 \uAC00\uC6B4\uB370 \uC131\uBD84 \uB2E8\uC11C\uAC00 \uC5C6\uC5B4 \uBCF4\uCEEC \uBD84\uB9AC\uAC00 \uBC18\uBCF5 \uC131\uBD84\uC5D0\uB9CC \uC758\uC874\uD569\uB2C8\uB2E4");
     }
-    if (repetitiveness < 0.75) {
-      notes.push(`\uBC18\uBCF5\uC774 \uB69C\uB837\uD558\uC9C0 \uC54A\uC740 \uC74C\uC545\uC785\uB2C8\uB2E4 (\uC720\uC0AC\uB3C4 ${repetitiveness.toFixed(2)}) \u2014 \uBCF4\uCEEC\uC5D0 \uBC18\uC8FC\uAC00 \uC11E\uC77C \uC218 \uC788\uC2B5\uB2C8\uB2E4`);
+    if (repetitiveness < 0.35) {
+      notes.push(`\uBC18\uBCF5\uB418\uB294 \uBD80\uBD84\uC774 \uC801\uC740 \uC74C\uC545\uC785\uB2C8\uB2E4 (${(repetitiveness * 100).toFixed(0)} %) \u2014 \uBC18\uBCF5 \uC131\uBD84 \uB2E8\uC11C\uAC00 \uBC18\uC8FC\uB97C \uAC78\uB7EC\uB0B4\uC9C0 \uBABB\uD574 \uBCF4\uCEEC\uC5D0 \uC11E\uC77C \uC218 \uC788\uC2B5\uB2C8\uB2E4`);
     }
     if (wantsVoiceParts && !voicesInformative) {
       notes.push("\uB9AC\uB4DC\uC640 \uCF54\uB7EC\uC2A4\uB97C \uAC00\uB97C \uB2E8\uC11C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4 \u2014 \uBCF4\uCEEC\uC774 \uC804\uBD80 \uB9AC\uB4DC\uB85C \uAC11\uB2C8\uB2E4");
