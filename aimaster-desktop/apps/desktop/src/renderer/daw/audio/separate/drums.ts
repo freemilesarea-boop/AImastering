@@ -113,6 +113,19 @@ export function drumTemplates(
     // Bottom octave and a half, gone by 160 Hz.
     kick: make((hz) => 1 - ramp(hz, 70, 160)),
     // Two humps: the shell around 150–400 Hz, and the wires from 1.5 kHz up.
+    //
+    // These stop at 620 and start at 1200, and nothing else reaches into the
+    // gap — measured, all four curves are exactly 0 from 620 Hz to 1200 Hz.
+    // That is CORRECT for what they are for: they say where a drum is
+    // DISTINCTIVE, and at 800 Hz a snare is not distinctive from a piano.
+    //
+    // Widening them to close the gap was built and measured and reverted.  It
+    // does close it, and it also tells `percussive.ts` that a snare was struck
+    // across 700–7000 Hz every time one rings — which is most of a record —
+    // so the doubt term stopped reaching the arrangement it exists to reach:
+    // 그외→드럼 improved by 1 point instead of 3.  The gap is real and the right
+    // response to it is for the credit to KNOW the templates say nothing there,
+    // which is what `coverage` in `percussive.ts` is.
     snare: make((hz) =>
       Math.max(ramp(hz, 110, 190) * (1 - ramp(hz, 320, 620)) * 0.9,
                ramp(hz, 1200, 2600) * (1 - ramp(hz, 7000, 11000)))),

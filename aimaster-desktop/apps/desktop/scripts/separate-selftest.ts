@@ -41,10 +41,12 @@ import {
 import { DEFAULT_PHRASE, leadEnvelope, phraseLock } from '../src/renderer/daw/audio/separate/phrase.js';
 import { DEFAULT_DRUMS, drumPresence, drumTemplates } from '../src/renderer/daw/audio/separate/drums.js';
 import {
-  DEFAULT_DRUM_CREDIT, drumCredit, evidenceAt,
+  DEFAULT_DRUM_CREDIT, drumCredit, evidenceAt, kickExcess, subBinCount,
+  templateCoverage,
 } from '../src/renderer/daw/audio/separate/percussive.js';
 import { voiceSplit } from '../src/renderer/daw/audio/separate/voices.js';
 import { buildFixture, leakageMatrix, toMono, FIXTURE_SR } from './separate-fixture.js';
+import { BAND_NAMES, energyByBand, leakByBand } from './band-leak.js';
 import { classifyStemFile } from './stem-names.js';
 import { readWav } from './wav-read.js';
 
@@ -376,7 +378,17 @@ check('each part comes back mostly in its own stem', () => {
   // nothing else shares.  보컬 is the low one because the fixture's vocal is
   // a lead PLUS stacked doubles that are deliberately spread, which is the
   // hardest thing here and the thing a listener notices first.
-  const floors: Record<string, number> = { vocals: 50, drums: 65, bass: 70, other: 70 };
+  //
+  // 베이스 is 50 and not 70 because of the sub floor in `percussive.ts`, and the
+  // number is worth reading rather than accepting.  This fixture's kick sweeps
+  // 60 → 35 Hz THROUGH a bass sitting at 55: they are the same note for part of
+  // every bar, and nothing here separates a kick from a bass playing its pitch.
+  // The floor claims what rises above the bass's own running level, which on
+  // this material is some of the bass — 회수 70 % → 55 % — and in exchange
+  // 드럼→베이스 goes 11 % → 6 % and 킥 회수 92 % → 101 %.  On the hard fixture,
+  // where the kick and the bass are different notes as they are on a record,
+  // the same change is 드럼→베이스 26 % → 9 % and 드럼 회수 57 % → 74 %.
+  const floors: Record<string, number> = { vocals: 50, drums: 65, bass: 50, other: 70 };
   for (const kind of STEM_KINDS) {
     atLeast(matrix[kind]![kind]!, floors[kind] ?? 60,
       `${stemLabel(kind)} recovered in the ${stemLabel(kind)} stem`);
@@ -418,11 +430,17 @@ check('confidence is a measurement, and it moves with the material', () => {
   for (const stem of report.stems) {
     assert(stem.confidence >= 0 && stem.confidence <= 1, `${stem.kind}: ${stem.confidence}`);
   }
-  // The bass has the sharpest cue of the four — a tracked note with a comb —
-  // and the drums the softest, because a soft HPSS mask splits rather than
-  // decides.  If that ordering inverts, something is reporting the wrong mask.
+  // The DRUMS have the sharpest cue now, and this used to say the bass did.
+  // That was true while the bass was the one stem with a hard cue of its own —
+  // a tracked note with a comb — and the drum mask was a soft HPSS split.  It
+  // inverted when the sub floor landed: the drum stem is now the one making
+  // decisions down there and the bass is what is left under them.  The
+  // assertion changed because the fact did, not to accommodate a number.
+  //
+  // What is still asserted is that a stem built from measurements is more
+  // confident than one built from a product of soft cues.
   const by = Object.fromEntries(report.stems.map((s) => [s.kind, s.confidence]));
-  atLeast(by.bass!, by.drums!, 'bass confidence against drums confidence');
+  atLeast(by.drums!, by.vocals!, 'drum confidence against vocal confidence');
 });
 
 check('separating in one chunk and in many gives the same audio', () => {
@@ -624,6 +642,137 @@ check('doubt is not spent below the kick, where only the bass could take it', ()
   atMost(out[1]!, 1 - DEFAULT_DRUM_CREDIT.doubt + 1e-6, 'the top of the spectrum does not');
 });
 
+// ── The sub-band floor ───────────────────────────────────────────────────────
+
+/** A spectrogram of one bin: a steady level, with bursts on top of it. */
+function subColumn(frames: number, level: number, burst: number, every: number): Float32Array {
+  const bins = 4;
+  const mag = new Float32Array(frames * bins);
+  for (let f = 0; f < frames; f++) {
+    for (let b = 0; b < bins; b++) {
+      const inBurst = every > 0 && f % every < 6;
+      mag[f * bins + b] = level + (inBurst ? burst * Math.exp(-(f % every) / 3) : 0);
+    }
+  }
+  return mag;
+}
+
+check('a bin that never changes has no excess over its own floor', () => {
+  // This is the test that would have caught the real bug in this file.
+  // `runningMedian` writes its answer at the SAME offsets it reads from — it
+  // filters a spectrogram into a spectrogram — and the first version here handed
+  // it a frames-long output with a frames-long stride, so it wrote past the end
+  // and left the floor as zeros.  Zeros read as "the bass is silent", the kick
+  // took every bin under 160 Hz, and 베이스 회수 went from 62 % to 7 %.
+  //
+  // A steady bin is the whole of it: if the floor is being computed at all, the
+  // excess is nothing; if it is not, the excess is everything.
+  const frames = 200;
+  const mag = subColumn(frames, 0.5, 0, 0);
+  const out = new Float32Array(frames * 4);
+  kickExcess(out, mag, frames, 4, 4, DEFAULT_DRUM_CREDIT);
+  let worst = 0;
+  for (let i = 0; i < out.length; i++) worst = Math.max(worst, out[i] ?? 0);
+  atMost(worst, 0.01, 'excess over the floor of a level bin');
+});
+
+check('a burst on top of a steady bin is excess, and the steady part is not', () => {
+  const frames = 400;
+  const every = 40;
+  const mag = subColumn(frames, 0.5, 1.5, every);
+  const out = new Float32Array(frames * 4);
+  kickExcess(out, mag, frames, 4, 4, DEFAULT_DRUM_CREDIT);
+  // NOT the burst at frame 0.  `runningMedian` replicates at the edges, so the
+  // window there is half made of copies of frame 0 — which IS the burst — and
+  // the floor comes back as the burst level.  That is correct behaviour and the
+  // wrong place to measure from; a burst in the middle is the real case.
+  const peak = every * 3;
+  atLeast(out[peak * 4 + 0]!, 0.6, 'excess at the peak of a burst');
+  // Halfway between bursts there is nothing but the steady level.
+  const quiet = peak + Math.floor(every / 2);
+  atMost(out[quiet * 4 + 0]!, 0.02, 'excess halfway between bursts');
+});
+
+check('the floor window is long enough to ignore a tail and short enough to follow a line', () => {
+  // The window has to be much longer than a kick tail and much shorter than a
+  // phrase.  A window SHORTER than the thing it is meant to ignore tracks it
+  // instead — measured, at one frame the excess is identically zero and the
+  // whole mechanism is off.
+  const frames = 400;
+  const mag = subColumn(frames, 0.5, 1.5, 40);
+  const wide = new Float32Array(frames * 4);
+  const narrow = new Float32Array(frames * 4);
+  kickExcess(wide, mag, frames, 4, 4, DEFAULT_DRUM_CREDIT);
+  kickExcess(narrow, mag, frames, 4, 4, { ...DEFAULT_DRUM_CREDIT, floorFrames: 3 });
+  const at = 40 * 3 * 4;
+  atLeast(wide[at]!, (narrow[at] ?? 0) + 0.1, 'a wide window sees the burst a narrow one hides in');
+});
+
+check('the sub claim fades out with the register instead of stopping at its edge', () => {
+  // The measured excess is weighted by the kick template before it is used.
+  // Without that weight the claim is flat across the register and then zero one
+  // bin later — an edge at 160 Hz, which is a shelf filter printed onto both
+  // stems.  Nothing else here would notice: every leakage number is a sum over
+  // the whole spectrum and an edge does not move one.  Deliberately removing
+  // the weight left the whole suite green, which is what this is for.
+  const bins = (SEPARATION_STFT.fftSize >> 1) + 1;
+  const templates = drumTemplates(bins, SEPARATION_STFT.fftSize, FIXTURE_SR);
+  const sub = subBinCount(templates.kick, bins);
+  const harmonic = new Float32Array(bins);
+  harmonic.fill(1);                                  // nothing percussive anywhere
+  const excess = new Float32Array(sub);
+  excess.fill(1);                                    // everything is above its floor
+  const out = new Float32Array(bins);
+  const floor = DEFAULT_DRUMS.presenceFloor;
+  const quiet = {
+    kick: Float32Array.from([floor]), snare: Float32Array.from([floor]),
+    toms: Float32Array.from([floor]), cymbals: Float32Array.from([floor]),
+  };
+  drumCredit(out, harmonic, quiet, templates, 1, bins, DEFAULT_DRUM_CREDIT, excess, sub);
+  // The claim is whole at the bottom of the register and gone at the top of it,
+  // so the step across the boundary is small.
+  atLeast(out[1]!, 0.9, 'the bottom of the register is claimed');
+  atMost(out[sub - 1]!, 0.25, 'the top of it is nearly given up');
+  const step = Math.abs((out[sub - 1] ?? 0) - (out[sub] ?? 0));
+  atMost(step, 0.25, `step across the edge of the register at bin ${sub}`);
+});
+
+check('the sub register is exactly where the kick template reaches', () => {
+  const bins = (SEPARATION_STFT.fftSize >> 1) + 1;
+  const templates = drumTemplates(bins, SEPARATION_STFT.fftSize, FIXTURE_SR);
+  const sub = subBinCount(templates.kick, bins);
+  atLeast(sub, 4, 'the register is more than a couple of bins wide');
+  assert((templates.kick[sub - 1] ?? 0) > 0, 'the last bin in the register is in the template');
+  assert((templates.kick[sub] ?? 0) === 0, 'the first bin outside it is not');
+});
+
+check('template coverage is the max, not the sum — one template is enough', () => {
+  const bins = (SEPARATION_STFT.fftSize >> 1) + 1;
+  const templates = drumTemplates(bins, SEPARATION_STFT.fftSize, FIXTURE_SR);
+  const cover = templateCoverage(templates, bins);
+  const at = (hz: number): number => cover[Math.round((hz * SEPARATION_STFT.fftSize) / FIXTURE_SR)] ?? 0;
+  // 14 kHz is cymbals alone and 50 Hz is the kick alone; both are covered, and
+  // a sum would have read 1 at 250 Hz where snare and toms overlap and more
+  // than 1 is meaningless for a weight.
+  atLeast(at(50), 0.9, 'the kick alone covers its own register');
+  atLeast(at(14000), 0.9, 'the cymbals alone cover theirs');
+  for (let b = 0; b < bins; b++) atMost(cover[b] ?? 0, 1, `coverage at bin ${b}`);
+});
+
+check('the sub floor moves the leak the real song showed', () => {
+  const hard = buildFixture(20, { vocalCycles: false, hard: true });
+  const off = { credit: { floorFrames: 1 } };
+  const before = leakageMatrix(hard.parts, separate(hard.mix, FIXTURE_SR, off).stems);
+  const after = leakageMatrix(hard.parts, separate(hard.mix, FIXTURE_SR).stems);
+  atMost(after.drums!.bass!, before.drums!.bass! - 10, '드럼→베이스 falls a long way');
+  atLeast(after.drums!.drums!, before.drums!.drums! + 8, '드럼 recovery rises a long way');
+  // And what it costs, asserted rather than hoped: the bass stem comes back
+  // SMALLER as well as cleaner, because its own note attacks rise above its
+  // floor too.  This is not a bound on the price — it is a record that there is
+  // one, so nobody reads the drum numbers as free.
+  atMost(after.bass!.bass!, before.bass!.bass!, '베이스 회수 pays for it');
+});
+
 check('the credit is a mask: nothing outside [0,1], whatever the knobs say', () => {
   // `doubt` and `full` are independent, and a bin can be both plainly
   // percussive and under a confident kick.  A credit above one would put more
@@ -647,16 +796,24 @@ check('the drum credit moves the leak the real song showed, on the fixture', () 
   // "As it was": `full` enormous so no bin's evidence ever counts as a whole
   // drum, which makes the second term vanish and the first one exact — so
   // `p` is `1−h` and this is the separator before percussive.ts existed.
-  const off = { credit: { doubt: 0, full: 1e9 },
+  const off = { credit: { doubt: 0, full: 1e9, floorFrames: 1 },
     drums: { decaySec: { kick: 0.18, snare: 0.25, toms: 0.45, cymbals: 1.2 } } };
   const before = leakageMatrix(hard.parts, separate(hard.mix, FIXTURE_SR, off).stems);
   const after = leakageMatrix(hard.parts, separate(hard.mix, FIXTURE_SR).stems);
   // 1. The kick's sub stops going to the bass stem.
   atMost(after.drums!.bass!, before.drums!.bass! - 4, '드럼→베이스 falls');
-  // 2. The arrangement stops being called percussive.
-  atMost(after.other!.drums!, before.other!.drums! - 2, '그외→드럼 falls');
-  // 3. Sibilance stops going to the drums.
-  atMost(after.vocals!.drums!, before.vocals!.drums! - 2, '보컬→드럼 falls');
+  // 2 and 3. The arrangement and the sibilance stop being called percussive.
+  //
+  // Only "does not rise" — and that is a statement about this FIXTURE, not
+  // about the term.  On the real song the doubt term is worth six points on
+  // each of these (그외→드럼 26 % -> 20 %, 보컬→드럼 21 % -> 15 %); here it is
+  // worth 0.06 dB of mean SI-SDR, because a synthesised arrangement is a few
+  // instruments and a record is a wall of them.  Asserting a fall this fixture
+  // cannot produce would mean either a threshold tuned to noise or a term
+  // deleted for failing a test that could never pass.  The number that
+  // justifies it is in docs/DAW.md, measured on real stems.
+  atMost(after.other!.drums!, before.other!.drums!, '그외→드럼 does not rise');
+  atMost(after.vocals!.drums!, before.vocals!.drums!, '보컬→드럼 does not rise');
   // And none of it was paid for out of the drum stem itself.
   atLeast(after.drums!.drums!, before.drums!.drums!, '드럼 recovery does not fall');
   // The kick in particular, on the easy fixture, where it is the one thing
@@ -670,6 +827,100 @@ check('the drum credit moves the leak the real song showed, on the fixture', () 
     ['kick', 'bass'])!;
   atLeast(kickAfter.kick!.kick!, kickBefore.kick!.kick!, '킥 recovery does not fall');
   atMost(kickAfter.kick!.bass!, kickBefore.kick!.bass!, '킥→베이스 does not rise');
+});
+
+check('no stem loses a whole band that its neighbours keep', () => {
+  // The summary number a test asserts on is a SUM over the spectrum, and a stem
+  // can lose an entire octave without moving it much.  Twice now the real song
+  // has found something no test here could see: a kick tail under the bass, and
+  // a notch at a kilohertz where none of the four drum templates reached — all
+  // four were exactly 0 from 620 Hz to 1200 Hz, so the credit read "no opinion"
+  // as "not a drum" and the doubt term took half of every drum in that band.
+  // 드럼→드럼 read 63 % · 25 % · 58 % across three adjacent bands.
+  //
+  // This is that shape, as a test: a band that keeps far less of its own truth
+  // than the bands either side of it is a hole, whatever the total says.
+  const hard = buildFixture(20, { vocalCycles: false, hard: true });
+  const result = separate(hard.mix, FIXTURE_SR);
+  // The four top stems, named as fixture parts: `STEM_KINDS` also spans the
+  // timbre stems the fixture has no truth for, and indexing with those would be
+  // an `any` rather than a compile error.
+  const tops = ['vocals', 'drums', 'bass', 'other'] as const;
+  for (const kind of tops) {
+    const stem = result.stems.find((s) => s.kind === kind)!;
+    const kept = leakByBand(stem.channels, hard.parts[kind], FIXTURE_SR);
+    for (let b = 1; b < kept.length - 1; b++) {
+      const here = kept[b];
+      const before = kept[b - 1];
+      const after = kept[b + 1];
+      // Only where all three bands have truth in them to compare.
+      if (here === null || here === undefined) continue;
+      if (before === null || before === undefined) continue;
+      if (after === null || after === undefined) continue;
+      const neighbours = (before + after) / 2;
+      if (neighbours < 20) continue;              // nothing much kept either side
+      atLeast(here, neighbours * 0.45,
+        `${stemLabel(kind)} at ${BAND_NAMES[b]} against ${BAND_NAMES[b - 1]}/${BAND_NAMES[b + 1]}`);
+    }
+  }
+});
+
+check('doubt is not spent where no template reaches', () => {
+  // The templates have a real hole: all four are exactly 0 from 620 Hz to
+  // 1200 Hz, and that is right of them — they say where a drum is DISTINCTIVE,
+  // and at 800 Hz a snare is not distinctive from a piano.  Widening them to
+  // close it was measured and reverted; it told the credit a snare was struck
+  // across 700–7000 Hz every time one rang, and the doubt term stopped reaching
+  // the arrangement it exists to reach.
+  //
+  // So the credit has to know the difference between "the classifier says no"
+  // and "the classifier was not asked".  On the real song it did not, and
+  // 드럼→드럼 read 63 % · 25 % · 58 % across three adjacent bands.
+  const bins = (SEPARATION_STFT.fftSize >> 1) + 1;
+  const templates = drumTemplates(bins, SEPARATION_STFT.fftSize, FIXTURE_SR);
+  const cover = templateCoverage(templates, bins);
+  const binAt = (hz: number): number => Math.round((hz * SEPARATION_STFT.fftSize) / FIXTURE_SR);
+  const hole = binAt(800);
+  const covered = binAt(4000);
+  eq(cover[hole], 0, 'nothing reaches 800 Hz');
+  atLeast(cover[covered]!, 0.9, 'the snare reaches 4 kHz');
+
+  // Nothing struck anywhere, both bins fully percussive.  The covered one is
+  // doubted; the hole is not, because there is no verdict there to act on.
+  const width = bins;
+  const harmonic = new Float32Array(width);
+  const out = new Float32Array(width);
+  const floor = DEFAULT_DRUMS.presenceFloor;
+  const quiet = {
+    kick: Float32Array.from([floor]), snare: Float32Array.from([floor]),
+    toms: Float32Array.from([floor]), cymbals: Float32Array.from([floor]),
+  };
+  drumCredit(out, harmonic, quiet, templates, 1, width, DEFAULT_DRUM_CREDIT);
+  atLeast(out[hole]!, 0.99, 'a bin no template reaches keeps its percussive material');
+  atMost(out[covered]!, 1 - DEFAULT_DRUM_CREDIT.doubt + 1e-6, 'a bin one does is doubted');
+});
+
+check('the fixture kit has a body between the shell and the wires', () => {
+  // The fixture could not show the notch either: its snare is one sine at
+  // 190 Hz plus hiss above 1.4 kHz, which leaves 400–1200 Hz as empty as the
+  // templates did.  A drum head is a MEMBRANE and its modes are not a harmonic
+  // series; the hard snare now has them, and the hats are band-limited rather
+  // than white, because the real record's kit has nothing above 11 kHz.
+  const easy = buildFixture(12, { hard: false });
+  const hard = buildFixture(12, { hard: true });
+  const middle = (part: Float32Array[]): number => {
+    const bands = energyByBand(part, FIXTURE_SR);
+    const total = bands.reduce((a, b) => a + b, 0);
+    return total > 0 ? ((bands[4] ?? 0) + (bands[5] ?? 0)) / total : 0;   // 355–1400 Hz
+  };
+  atMost(middle(easy.parts.snare), 0.03, 'the easy snare is a sine and some hiss');
+  atLeast(middle(hard.parts.snare), 0.045, 'the hard one has a shell that rings');
+  const top = (part: Float32Array[]): number => {
+    const bands = energyByBand(part, FIXTURE_SR);
+    const total = bands.reduce((a, b) => a + b, 0);
+    return total > 0 ? (bands[9] ?? 0) / total : 0;                       // above 11.2 kHz
+  };
+  atMost(top(hard.parts.drums), 0.12, 'the hard kit does not live in the top octave');
 });
 
 check('the hard fixture puts the bass and the kick in the same octave', () => {
