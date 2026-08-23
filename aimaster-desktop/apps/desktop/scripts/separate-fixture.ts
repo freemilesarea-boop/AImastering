@@ -36,9 +36,38 @@ export interface Fixture {
   sampleRate: number;
 }
 
+export interface FixtureOptions {
+  /** A melody that cycles like a chorus, or one that keeps moving like a verse. */
+  vocalCycles?: boolean;
+  /**
+   * Make it as hard as a record.
+   *
+   * The easy fixture scored the separator at 4.7 dB.  The same separator, run
+   * on a real song's stems, scored −2.03 dB — the test was seven decibels
+   * optimistic, which is the difference between "usable" and "barely better
+   * than doing nothing".  Three things were missing, and each was measured
+   * against the real run rather than guessed:
+   *
+   *   A KICK THAT SUSTAINS.  The easy kick decays in 70 ms and lives under
+   *   100 Hz.  A modern kick is compressed until its low tail holds for a
+   *   quarter of a second, straight through the bass note underneath it.  On
+   *   the real song 58 % of the drums came back inside the bass stem.
+   *
+   *   REVERB.  Everything on a record is in a room.  A tail turns a transient
+   *   into something that is partly sustained and smears the panning cue that
+   *   the vocal separation runs on.
+   *
+   *   A CROWDED "그 외".  The easy fixture puts one pad there.  The real song
+   *   puts guitar, keys, strings, brass, woodwinds and synth there — most of
+   *   the arrangement, spread across the whole spectrum.
+   */
+  hard?: boolean;
+}
+
 export function buildFixture(
-  seconds = 20, options: { vocalCycles?: boolean } = {},
+  seconds = 20, options: FixtureOptions = {},
 ): Fixture {
+  const hard = options.hard === true;
   const sr = FIXTURE_SR;
   const n = Math.round(sr * seconds);
   let seed = 12345;
@@ -83,8 +112,14 @@ export function buildFixture(
   for (let step = 0; step * beat < seconds; step++) {
     const at = Math.round(step * beat * sr);
     if (step % 2 === 0) {
-      for (let i = 0; i < 3000; i++) {
-        const env = Math.exp(-i / 900);
+      // A compressed kick: the pitch drop is the same, but the envelope holds
+      // instead of decaying, so its low end sits on top of the bass note for a
+      // quarter of a second the way a modern record's does.
+      const tail = hard ? 11000 : 3000;
+      for (let i = 0; i < tail; i++) {
+        const env = hard
+          ? Math.exp(-i / 5200) * (1 - 0.55 * Math.exp(-i / 300))
+          : Math.exp(-i / 900);
         const v = 0.8 * env * Math.sin((2 * Math.PI * (60 - (25 * i) / 3000) * i) / sr);
         add(parts.kick, 0, at + i, v);
         add(parts.kick, 1, at + i, v);
@@ -120,11 +155,50 @@ export function buildFixture(
     }
   }
 
-  // OTHER — a sustained pad, equal in level but decorrelated in phase.
+  // OTHER — a pad, and on the hard setting the rest of an arrangement with it.
   for (let i = 0; i < n; i++) {
     for (const f of [261.63, 329.63, 392.0]) {
       parts.other[0]![i] = (parts.other[0]![i] ?? 0) + 0.09 * Math.sin((2 * Math.PI * f * i) / sr);
       parts.other[1]![i] = (parts.other[1]![i] ?? 0) + 0.09 * Math.sin((2 * Math.PI * f * i) / sr + 1.9);
+    }
+  }
+  if (hard) {
+    // Guitar: eighth-note chords, panned left, with a plucked transient — so
+    // part of it reads as percussive and part as harmonic, like the real thing.
+    for (let step = 0; step * (beat / 2) < seconds; step++) {
+      const at = Math.round(step * (beat / 2) * sr);
+      for (const f of [196.0, 246.94, 293.66]) {
+        for (let i = 0; i < 0.4 * sr; i++) {
+          const env = Math.exp(-i / 3500) * Math.min(1, i / 40);
+          const v = 0.12 * env * (Math.sin((2 * Math.PI * f * i) / sr)
+            + 0.4 * Math.sin((2 * Math.PI * f * 2 * i) / sr)
+            + 0.25 * Math.sin((2 * Math.PI * f * 3 * i) / sr));
+          add(parts.other, 0, at + i, v * 1.3);
+          add(parts.other, 1, at + i, v * 0.5);
+        }
+      }
+    }
+    // Keys: a centred piano-ish figure, right where a vocal lives.
+    const figure = [523.25, 659.26, 587.33, 493.88];
+    for (let step = 0; step * beat < seconds; step++) {
+      const f = figure[step % figure.length]!;
+      const at = Math.round(step * beat * sr);
+      for (let i = 0; i < 0.55 * sr; i++) {
+        const env = Math.exp(-i / 6000) * Math.min(1, i / 60);
+        const v = 0.1 * env * (Math.sin((2 * Math.PI * f * i) / sr)
+          + 0.3 * Math.sin((2 * Math.PI * f * 2.01 * i) / sr));
+        add(parts.other, 0, at + i, v);
+        add(parts.other, 1, at + i, v);
+      }
+    }
+    // Strings and brass: sustained, wide, filling the mid and the top.
+    for (let i = 0; i < n; i++) {
+      const swell = 0.5 + 0.5 * Math.sin((2 * Math.PI * i) / (sr * 4));
+      for (const f of [440.0, 554.37, 659.26, 880.0]) {
+        const v = 0.045 * swell * Math.sin((2 * Math.PI * f * i) / sr);
+        parts.other[0]![i] = (parts.other[0]![i] ?? 0) + v;
+        parts.other[1]![i] = (parts.other[1]![i] ?? 0) + v * Math.cos(f * 0.003);
+      }
     }
   }
 
@@ -166,6 +240,18 @@ export function buildFixture(
     }
   }
 
+  if (hard) {
+    // A room, on everything except the kick.
+    //
+    // This is the setting that matters most and is easiest to leave out.  A
+    // reverb tail turns a transient into something partly sustained, so the
+    // harmonic/percussive split gets less certain; and it decorrelates the two
+    // channels, so the panning cue the whole vocal separation runs on gets
+    // blurred.  Both are exactly what makes a record harder than a synthesis.
+    const roomed: FixturePart[] = ['lead', 'backing', 'snare', 'toms', 'cymbals', 'other'];
+    for (const part of roomed) reverb(parts[part], sr, part === 'other' ? 0.22 : 0.16);
+  }
+
   // Parents are the sum of their leaves, so a test can measure at any depth
   // and the two levels cannot disagree about what the truth is.
   const roll = (parent: FixturePart, children: FixturePart[]): void => {
@@ -199,6 +285,35 @@ export function buildFixture(
  * shaping came out as half-millisecond clicks with a flat spectrum, and the
  * drum classifier was being tuned against a kit that did not exist.
  */
+/**
+ * A small stereo room, added in place.
+ *
+ * Four early reflections and a decaying tail, different per channel so the
+ * result is wide — which is the point.  Not a good reverb; a sufficient one.
+ * What the test needs is a tail that smears transients and decorrelates the
+ * channels, and this is the cheapest thing that does both.
+ */
+function reverb(channels: Float32Array[], sr: number, wet: number): void {
+  const taps = [
+    { delay: 0.0231, gain: 0.62 }, { delay: 0.0411, gain: 0.48 },
+    { delay: 0.0673, gain: 0.36 }, { delay: 0.0977, gain: 0.28 },
+  ];
+  for (let c = 0; c < channels.length; c++) {
+    const dry = channels[c]!;
+    const out = new Float32Array(dry.length);
+    // Offset one channel so the two rooms are not the same room.
+    const skew = c === 0 ? 1 : 1.17;
+    for (const tap of taps) {
+      const d = Math.round(tap.delay * skew * sr);
+      for (let i = d; i < dry.length; i++) out[i] = (out[i] ?? 0) + (dry[i - d] ?? 0) * tap.gain;
+    }
+    // A comb tail on top, so the decay keeps going past the reflections.
+    const loop = Math.round(0.037 * skew * sr);
+    for (let i = loop; i < out.length; i++) out[i] = (out[i] ?? 0) + (out[i - loop] ?? 0) * 0.55;
+    for (let i = 0; i < dry.length; i++) dry[i] = (dry[i] ?? 0) + (out[i] ?? 0) * wet;
+  }
+}
+
 function highpass(state: { lp: number }, x: number): number {
   state.lp = 0.82 * state.lp + 0.18 * x;
   return x - state.lp;

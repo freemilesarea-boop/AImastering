@@ -86,6 +86,9 @@ function check(name: string, fn: () => void): void {
     console.log(`[FAIL] ${name} — ${e instanceof Error ? e.message : String(e)}`);
   }
 }
+const binHzOf = (bin: number): number =>
+  (bin * FIXTURE_SR) / SEPARATION_STFT.fftSize;
+
 function assert(cond: unknown, why: string): asserts cond {
   if (!cond) throw new Error(why);
 }
@@ -447,6 +450,100 @@ check('asking for fewer stems gives the same stems, faster', () => {
   atMost(worst, 1e-6, 'the vocal stem is the same either way');
   assert(Number.isNaN(one.reconstructionDb),
     'and the sum property is NOT reported, because three quarters of the sum is missing');
+});
+
+// ── The harder fixture ───────────────────────────────────────────────────────
+
+check('the hard fixture is harder, and the separator survives it', () => {
+  // The easy fixture scored 4.4 dB.  The same separator on a real song's stems
+  // scored −2.0 — the test was six decibels optimistic, which is the difference
+  // between "usable" and "barely better than doing nothing".  The hard setting
+  // adds the three things the real run showed were missing: a compressed kick
+  // whose low tail sits on the bass, a room on everything, and an arrangement
+  // in "그 외" rather than one pad.
+  //
+  // The floors here are deliberately well below what it manages, because this
+  // is a guard against a change making things much worse, not a record of
+  // today's number.  The number itself is in docs/DAW.md.
+  const hard = buildFixture(20, { vocalCycles: false, hard: true });
+  const result = separate(hard.mix, FIXTURE_SR);
+  const m = leakageMatrix(hard.parts, result.stems);
+  atMost(result.reconstructionDb, -100, 'the sum property survives a harder mix');
+  for (const kind of STEM_KINDS) {
+    atLeast(m[kind]![kind]!, 45, `${stemLabel(kind)} still mostly lands in its own stem`);
+  }
+  // And it IS harder — if this stops being true the hard setting has stopped
+  // doing its job and the suite is measuring the easy case twice.
+  const easy = leakageMatrix(fixture.parts, report.stems);
+  const easyMean = STEM_KINDS.reduce((a, k) => a + easy[k]![k]!, 0);
+  const hardMean = STEM_KINDS.reduce((a, k) => a + m[k]![k]!, 0);
+  assert(hardMean < easyMean, `hard ${(hardMean / 4).toFixed(0)}% vs easy ${(easyMean / 4).toFixed(0)}%`);
+});
+
+check('the hard fixture really has the three things it claims to have', () => {
+  // Testing only "hard scores worse than easy" would pass with any one of the
+  // three present — removing the room and the kick tail both left the suite
+  // green.  A fixture that quietly loses a feature makes every test easier
+  // without anyone noticing, which is worse than not having the feature.
+  const easy = buildFixture(12, { hard: false });
+  const hard = buildFixture(12, { hard: true });
+
+  // 1. A ROOM.  The lead vocal is synthesised identically in both, dead centre,
+  //    so a difference between the channels can only be the reverb.
+  const coherence = (part: Float32Array[]): number => {
+    let dot = 0, ll = 0, rr = 0;
+    for (let i = 0; i < part[0]!.length; i++) {
+      const l = part[0]![i] ?? 0;
+      const r = part[1]![i] ?? 0;
+      dot += l * r; ll += l * l; rr += r * r;
+    }
+    return dot / Math.sqrt(Math.max(ll * rr, 1e-30));
+  };
+  atLeast(coherence(easy.parts.lead), 0.999, 'dry, the two channels are the same signal');
+  atMost(coherence(hard.parts.lead), 0.99, 'wet, the room has pulled them apart');
+
+  // 2. A KICK THAT SUSTAINS.  Energy well after the attack, against the attack.
+  const tailRatio = (part: Float32Array[]): number => {
+    let head = 0, tail = 0;
+    for (let i = 0; i < 3000; i++) head += (part[0]![i] ?? 0) ** 2;
+    for (let i = 4000; i < 11000; i++) tail += (part[0]![i] ?? 0) ** 2;
+    return tail / Math.max(head, 1e-30);
+  };
+  atMost(tailRatio(easy.parts.kick), 0.02, 'the easy kick is gone after the attack');
+  atLeast(tailRatio(hard.parts.kick), 0.2, 'the hard one is still going, on top of the bass');
+
+  // 3. A CROWDED "그 외".  More energy, and spread far wider than one pad.
+  const spread = (part: Float32Array[]): number => {
+    const spec = analyse(part[0]!, FIXTURE_SR, 0, frameCount(part[0]!.length));
+    const mag = magnitudes(spec);
+    let low = 0, high = 0;
+    for (let f = 0; f < spec.frames; f++) {
+      for (let b = 1; b < spec.bins; b++) {
+        const hz = binHzOf(b);
+        const e = (mag[f * spec.bins + b] ?? 0) ** 2;
+        if (hz < 450) low += e; else high += e;
+      }
+    }
+    return high / Math.max(low, 1e-30);
+  };
+  atLeast(spread(hard.parts.other) / Math.max(spread(easy.parts.other), 1e-9), 2,
+    'the hard arrangement reaches much further up than one pad does');
+});
+
+check('a room does not break the sum, whatever it does to the separation', () => {
+  // Reverb is the setting most likely to expose an arithmetic mistake, because
+  // it puts correlated energy in both channels at a delay — which is exactly
+  // what the centre cue is looking at.
+  const hard = buildFixture(8, { hard: true });
+  const detail = separate(hard.mix, FIXTURE_SR, { wanted: DETAILED_STEMS });
+  atMost(detail.reconstructionDb, -100, `six stems on a wet mix: ${detail.reconstructionDb.toFixed(1)} dB`);
+  for (const stem of detail.stems) {
+    for (const ch of stem.channels) {
+      for (let i = 0; i < ch.length; i += 211) {
+        assert(Number.isFinite(ch[i] ?? 0), `${stemLabel(stem.kind)} sample ${i}`);
+      }
+    }
+  }
 });
 
 // ── Mono, and saying so ──────────────────────────────────────────────────────
