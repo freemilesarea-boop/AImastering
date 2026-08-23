@@ -99,7 +99,8 @@
     "test:au-native": "tsx scripts/au-native-selftest.ts",
     "build:au:node": "node scripts/build-au.mjs --for-node",
     "test:separate": "tsx scripts/separate-selftest.ts",
-    "build:separate-worker": "node scripts/build-separate-worker.mjs"
+    "build:separate-worker": "node scripts/build-separate-worker.mjs",
+    "benchmark:stems": "tsx scripts/stem-benchmark.ts"
   },
   "dependencies": {
     "@aimaster/audio-engine": "workspace:*",
