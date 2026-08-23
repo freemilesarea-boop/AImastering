@@ -40,6 +40,8 @@ import path from 'node:path';
 import {
   DETAILED_STEMS, STEM_KINDS, separate, stemLabel, type StemKind,
 } from '../src/renderer/daw/audio/separate/separate.js';
+import { analyse, frameCount, magnitudes, SEPARATION_STFT }
+  from '../src/renderer/daw/audio/separate/spectrum.js';
 import { classifyStemFile } from './stem-names.js';
 import { readWav } from './wav-read.js';
 
@@ -87,6 +89,7 @@ const folder = args.find((a) => !a.startsWith('--'));
 const secondsArg = args.find((a) => a.startsWith('--seconds='));
 const fromArg = args.find((a) => a.startsWith('--from='));
 const detailed = args.includes('--detailed');
+const diagnose = args.includes('--diagnose');
 const seconds = secondsArg ? Number(secondsArg.split('=')[1]) : 60;
 const fromSec = fromArg ? Number(fromArg.split('=')[1]) : 30;
 
@@ -98,6 +101,7 @@ if (!folder) {
   --seconds=60   잴 길이 (기본 60초).  0 이면 전체
   --from=30      시작 지점 (기본 30초 — 인트로는 대표성이 없습니다)
   --detailed     리드/코러스 · 킥/나머지까지 나눠서 잽니다
+  --diagnose     어느 주파수 대역에서 새는지까지 찍습니다 (붙여넣기용)
 
 파일 이름은 Moises 식 이름(0 Lead Vocals.wav, 2 Drums.wav …)에 맞춰
 느슨하게 읽습니다.  이 앱이 못 만드는 스템(기타 · 건반 · 스트링 …)은
@@ -266,3 +270,118 @@ console.log(`  평균 SI-SDR ${mean.toFixed(2)} dB`);
 console.log(`\n비교용: MUSDB18-HQ 에서 학습된 최신 모델이 9.8–12 dB, 믹스를 그대로 내면 약 −5 dB.`);
 console.log('이 숫자는 곡 하나짜리라 그 벤치마크와 직접 비교할 수는 없습니다 — 우리 자신의 변화를 재는 기준선입니다.');
 for (const note of report.notes) console.log(`· ${note}`);
+
+// ── Where it goes wrong, by frequency ────────────────────────────────────────
+//
+// The table above says the bass stem took 58 % of the drums.  It does not say
+// whether that is all sub-100 Hz — the shelf claiming a kick — or spread across
+// the spectrum, which would be a different fault with a different fix.  So the
+// leak is measured again, band by band.
+
+const BAND_EDGES = [0, 45, 90, 180, 355, 710, 1400, 2800, 5600, 11200, 1e9];
+const BAND_NAMES = ['<45', '63', '125', '250', '500', '1k', '2k', '4k', '8k', '16k+'];
+
+/** Magnitude spectrogram of the mono sum, and which band each bin is in. */
+function spectrum(channels: readonly Float32Array[], rate: number): {
+  mag: Float32Array; frames: number; bins: number; band: Int32Array;
+} {
+  const mono = new Float32Array(channels[0]!.length);
+  for (const ch of channels) for (let i = 0; i < mono.length; i++) mono[i] = (mono[i] ?? 0) + (ch[i] ?? 0);
+  const spec = analyse(mono, rate, 0, frameCount(mono.length));
+  const band = new Int32Array(spec.bins);
+  for (let b = 0; b < spec.bins; b++) {
+    const hz = (b * rate) / SEPARATION_STFT.fftSize;
+    let k = BAND_EDGES.length - 2;
+    for (let e = 0; e < BAND_EDGES.length - 1; e++) {
+      if (hz >= (BAND_EDGES[e] ?? 0) && hz < (BAND_EDGES[e + 1] ?? 0)) { k = e; break; }
+    }
+    band[b] = k;
+  }
+  return { mag: magnitudes(spec), frames: spec.frames, bins: spec.bins, band };
+}
+
+function bandShare(bands: number[]): string {
+  const total = bands.reduce((a, b) => a + b, 0);
+  return bands.map((v) => (total > 0 ? Math.round((100 * v) / total) : 0).toString().padStart(5)).join('');
+}
+
+/** Energy per band. */
+function energyByBand(channels: readonly Float32Array[], rate: number): number[] {
+  const { mag, frames, bins, band } = spectrum(channels, rate);
+  const out = new Array<number>(BAND_NAMES.length).fill(0);
+  for (let f = 0; f < frames; f++) {
+    const base = f * bins;
+    for (let b = 1; b < bins; b++) {
+      const k = band[b] ?? 0;
+      out[k] = (out[k] ?? 0) + (mag[base + b] ?? 0) ** 2;
+    }
+  }
+  return out;
+}
+
+/**
+ * How much of `truth` is inside `estimate`, measured within each band.
+ *
+ * The same ratio the summary reports, restricted to the bins of one band —
+ * `Σ|S||T| / Σ|T|²` — so a band where the leak lives reads high and a band
+ * where it does not reads near zero, regardless of how loud the band is.
+ */
+function leakByBand(
+  estimate: readonly Float32Array[], truth: readonly Float32Array[], rate: number,
+): Array<number | null> {
+  const e = spectrum(estimate, rate);
+  const t = spectrum(truth, rate);
+  const frames = Math.min(e.frames, t.frames);
+  const num = new Array<number>(BAND_NAMES.length).fill(0);
+  const den = new Array<number>(BAND_NAMES.length).fill(0);
+  for (let f = 0; f < frames; f++) {
+    const eb = f * e.bins;
+    const tb = f * t.bins;
+    for (let b = 1; b < Math.min(e.bins, t.bins); b++) {
+      const k = e.band[b] ?? 0;
+      const ev = e.mag[eb + b] ?? 0;
+      const tv = t.mag[tb + b] ?? 0;
+      num[k] = (num[k] ?? 0) + ev * tv;
+      den[k] = (den[k] ?? 0) + tv * tv;
+    }
+  }
+  // A band the truth barely occupies gives a ratio with almost nothing on the
+  // bottom of it, and the answer comes out in the hundreds — which reads like
+  // catastrophic leakage and is actually a division by silence.  Those bands
+  // get a dot: there is no truth there to have leaked.
+  const total = den.reduce((a, b) => a + b, 0);
+  return num.map((v, k) => {
+    const bottom = den[k] ?? 0;
+    if (total <= 0 || bottom / total < 0.01) return null;
+    return (100 * v) / bottom;
+  });
+}
+
+if (diagnose) {
+  console.log('\n대역별 에너지 분포 (%) — 각 줄의 합이 100');
+  console.log('              ' + BAND_NAMES.map((n) => n.padStart(5)).join(''));
+  for (const kind of rows) {
+    console.log(`정답 ${stemLabel(kind).padEnd(9)}` + bandShare(energyByBand(roll(kind)!, sampleRate)));
+  }
+  for (const kind of rows) {
+    const stem = report.stems.find((s) => s.kind === kind)!;
+    console.log(`스템 ${stemLabel(kind).padEnd(9)}` + bandShare(energyByBand(stem.channels, sampleRate)));
+  }
+
+  console.log('\n대역 안에서 정답의 몇 %가 그 스템에 들어갔나  (· = 그 대역에 정답이 거의 없음)');
+  console.log('              ' + BAND_NAMES.map((n) => n.padStart(5)).join(''));
+  for (const from of rows) {
+    for (const into of rows) {
+      const stem = report.stems.find((s) => s.kind === into)!;
+      const overall = share(stem.channels, roll(from)!);
+      // Its own stem, or a leak big enough to be worth chasing.
+      if (from !== into && overall < 12) continue;
+      const perBand = leakByBand(stem.channels, roll(from)!, sampleRate);
+      const mark = from === into ? ' ' : '!';
+      console.log(`${mark}${stemLabel(from).padEnd(6)}→${stemLabel(into).padEnd(6)}`
+        + perBand.map((v) => (v === null ? '·' : Math.round(Math.min(999, v)).toString()).padStart(5)).join('')
+        + `  (전체 ${overall.toFixed(0)}%)`);
+    }
+  }
+  console.log('\n※ 이 두 표를 그대로 붙여주세요 — 어느 대역이 문제인지가 여기 나옵니다.');
+}
