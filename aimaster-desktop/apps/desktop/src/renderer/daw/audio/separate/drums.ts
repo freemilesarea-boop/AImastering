@@ -74,7 +74,13 @@ export interface DrumOptions {
 
 export const DEFAULT_DRUMS: DrumOptions = {
   onsetThreshold: 1.6,
-  decaySec: { kick: 0.18, snare: 0.25, toms: 0.45, cymbals: 1.2 },
+  // The kick's is not a guess at how long a kick drum rings — it is how long a
+  // kick is still MASKING what is under it, which on a compressed modern record
+  // is far longer than the hit.  At 0.18 s the credit in `percussive.ts` died
+  // before the sub tail did and the tail went back to the bass stem; measured
+  // on the hard fixture, lengthening it moved 킥 from 19 % to 32 % recovered and
+  // cost 나머지 드럼 nothing.
+  decaySec: { kick: 0.45, snare: 0.25, toms: 0.45, cymbals: 1.2 },
   presenceFloor: 0.04,
 };
 
