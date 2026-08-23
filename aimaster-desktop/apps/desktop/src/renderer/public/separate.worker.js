@@ -862,61 +862,6 @@
     return out;
   }
 
-  // src/renderer/daw/audio/separate/range.ts
-  var DEFAULT_RANGE = {
-    tail: 0.05,
-    fadeOctaves: 1,
-    outside: 0.35,
-    minOctaves: 2
-  };
-  function leadRange(vocalMask, magnitude, frames, bins, fftSize, sampleRate, options = DEFAULT_RANGE) {
-    const weight = new Float32Array(bins);
-    weight.fill(1);
-    const blank = { weight, lowHz: 0, highHz: 0, informative: false };
-    const perBin = new Float32Array(bins);
-    let total = 0;
-    for (let f = 0; f < frames; f++) {
-      const base = f * bins;
-      for (let b = 0; b < bins; b++) {
-        const e = ((vocalMask[base + b] ?? 0) * (magnitude[base + b] ?? 0)) ** 2;
-        perBin[b] = (perBin[b] ?? 0) + e;
-        total += e;
-      }
-    }
-    if (total <= 0) return blank;
-    const cut = total * options.tail;
-    let low = 1;
-    let seen = 0;
-    while (low < bins - 1 && seen + (perBin[low] ?? 0) < cut) {
-      seen += perBin[low] ?? 0;
-      low++;
-    }
-    let high = bins - 1;
-    seen = 0;
-    while (high > low && seen + (perBin[high] ?? 0) < cut) {
-      seen += perBin[high] ?? 0;
-      high--;
-    }
-    const lowHz = binHz(low, fftSize, sampleRate);
-    const highHz = binHz(high, fftSize, sampleRate);
-    if (lowHz <= 0 || highHz <= lowHz) return blank;
-    if (Math.log2(highHz / lowHz) < options.minOctaves) return blank;
-    const fade = Math.max(options.fadeOctaves, 1e-6);
-    for (let b = 0; b < bins; b++) {
-      const hz = binHz(b, fftSize, sampleRate);
-      if (hz <= 0) {
-        weight[b] = options.outside;
-        continue;
-      }
-      const below = hz < lowHz ? Math.log2(lowHz / hz) : 0;
-      const above = hz > highHz ? Math.log2(hz / highHz) : 0;
-      const out = Math.min(1, Math.max(below, above) / fade);
-      const taper = 0.5 * (1 + Math.cos(Math.PI * out));
-      weight[b] = options.outside + (1 - options.outside) * taper;
-    }
-    return { weight, lowHz, highHz, informative: true };
-  }
-
   // src/renderer/daw/audio/separate/stem-tree.ts
   var NODES = [
     {
@@ -1131,7 +1076,6 @@
     phrase: {},
     drums: {},
     credit: {},
-    range: {},
     voices: {},
     chunkFrames: 1400,
     wanted: STEM_KINDS
@@ -1220,9 +1164,6 @@
     const subBins = subBinCount(templates.kick, (fftSize >> 1) + 1);
     let drumOnsets = 0;
     let voicesInformative = false;
-    let rangeLow = 0;
-    let rangeHigh = 0;
-    let rangeFound = false;
     const chunks = Math.max(1, Math.ceil(total / opts.chunkFrames));
     let chunkIndex = 0;
     for (let start = 0; start < total; start += opts.chunkFrames) {
@@ -1308,26 +1249,12 @@
         }
         const envelope = leadEnvelope(vocalMask, mag, frames, bins);
         const phrasing = phraseLock(mag, envelope, frames, bins, fftSize, sampleRate, opts.phrase);
-        const range = leadRange(
-          vocalMask,
-          mag,
-          frames,
-          bins,
-          fftSize,
-          sampleRate,
-          { ...DEFAULT_RANGE, ...opts.range }
-        );
-        if (range.informative) {
-          rangeLow = rangeLow === 0 ? range.lowHz : Math.min(rangeLow, range.lowHz);
-          rangeHigh = Math.max(rangeHigh, range.highHz);
-          rangeFound = true;
-        }
         for (let i = 0; i < frames * bins; i++) {
           const p = credit[i] ?? 0;
           const remaining = 1 - (1 - p) * (bassW[i] ?? 0);
           const place = centre.informative ? Math.pow(centre.value[i] ?? 0, vocal.centreWeight) : vocal.monoCentre;
           const belongs = Math.max(place, vocal.phraseCredit * (phrasing[i] ?? 0));
-          const cue = (prior[i % bins] ?? 0) * (range.weight[i % bins] ?? 1) * belongs * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight) * (1 - p + vocal.consonants * p);
+          const cue = (prior[i % bins] ?? 0) * belongs * Math.pow(repeat.novelty[i] ?? 0, vocal.noveltyWeight) * (1 - p + vocal.consonants * p);
           vocalMask[i] = remaining <= 0 ? 0 : cue < vocal.floor ? 0 : Math.min(1, cue);
         }
         if (kitMask) drumMasks(kitMask, kit.presence, templates, frames, bins);
@@ -1405,9 +1332,6 @@
     if (vague.length > 0) {
       notes.push(`${vague.map((s) => stemLabel(s.kind)).join(" \xB7 ")} \uC740(\uB294) \uC808\uBC18 \uC774\uC0C1\uC774 \uC560\uB9E4\uD55C \uD310\uC815\uC785\uB2C8\uB2E4 \u2014 \uC11E\uC5EC \uB4E4\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4`);
     }
-    if (!rangeFound) {
-      notes.push("\uAC00\uC218\uC758 \uC74C\uC5ED\uC744 \uC7AC\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 \u2014 \uBCF4\uCEEC \uD310\uC815\uC774 \uACE0\uC815\uB41C \uC74C\uC5ED \uAC00\uC815\uC5D0\uB9CC \uC758\uC874\uD569\uB2C8\uB2E4");
-    }
     notes.push("\uC2E0\uD638 \uCC98\uB9AC \uAE30\uBC18 \uBD84\uB9AC\uC785\uB2C8\uB2E4 \u2014 \uD559\uC2B5\uB41C \uBAA8\uB378\uC774 \uC544\uB2C8\uB77C\uC11C \uBC00\uB3C4 \uB192\uC740 \uBBF9\uC2A4\uC5D0\uC11C\uB294 \uD55C\uACC4\uAC00 \uC788\uC2B5\uB2C8\uB2E4");
     return {
       stems,
@@ -1420,7 +1344,6 @@
       notes,
       drumOnsets,
       voicesSeparable: voicesInformative,
-      vocalRangeHz: rangeFound ? { low: rangeLow, high: rangeHigh } : null,
       elapsedMs: Date.now() - started
     };
   }

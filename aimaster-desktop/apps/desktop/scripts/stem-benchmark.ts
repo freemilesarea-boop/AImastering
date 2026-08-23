@@ -218,9 +218,18 @@ const report = separate(mix, sampleRate, { wanted }, (f, what) => {
   process.stdout.write(`\r  ${`${(f * 100).toFixed(0)}% ${what}`.padEnd(36)}`);
 });
 process.stdout.write(`\r${' '.repeat(40)}\r`);
+// The repetition figure is printed because it is the cue that separates the
+// singer from the band in the middle of the spectrum, and it is the one number
+// about the RECORD — not about the separator — that decides how well that can
+// possibly go.  The single largest leak measured so far is 그외→보컬 at 500 Hz,
+// a band where the panning cue says nothing because both are centred and the
+// only thing left is "the band repeats and the singer does not".  Reading a
+// diagnosis of that band without knowing this number is guessing.
 console.log(`분리 ${((Date.now() - began) / 1000).toFixed(1)}초 `
   + `(${(window / sampleRate / ((Date.now() - began) / 1000)).toFixed(1)}배속) · `
-  + `합 − 원본 ${report.reconstructionDb.toFixed(0)} dB\n`);
+  + `합 − 원본 ${report.reconstructionDb.toFixed(0)} dB · `
+  + `반복도 ${report.repetitiveness.toFixed(2)}`
+  + `${report.centreInformative ? '' : ' · 가운데 단서 없음'}\n`);
 
 // Roll the truth up to whatever level is being measured.
 const roll = (kind: StemKind): Float32Array[] | null => {
