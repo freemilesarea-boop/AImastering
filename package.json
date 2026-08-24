@@ -1,15 +1,12 @@
 {
   "name": "aimastering",
   "version": "1.0.0",
-  "description": "AI 음원 자동 마스터링 데스크톱 앱 (legacy root, see aimaster-desktop/)",
+  "description": "AI 음원 자동 마스터링 데스크톱 앱 — 코드는 aimaster-desktop/ 에 있습니다. 이 루트는 개발용 스크립트와 Python 배포 설정만 들고 있습니다.",
   "private": true,
   "scripts": {
-    "test": "jest",
     "setup:python": "bash scripts/setup-python.sh"
   },
   "devDependencies": {
-    "@types/node": "^20.10.6",
-    "jest": "^29.7.0",
-    "@types/jest": "^29.5.11"
+    "@types/node": "^20.10.6"
   }
 }

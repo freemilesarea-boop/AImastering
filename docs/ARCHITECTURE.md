@@ -1,5 +1,11 @@
 # 아키텍처 설계 문서
 
+> **이 문서는 초기 설계본입니다.** 여기 그려진 폴더 구조(`src/main`, `src/renderer`,
+> `AudioEngine.ts`, 루트 `vite.config.ts` …)는 앱이 `aimaster-desktop/` 으로 옮겨가기
+> 전의 것이고, 그 트리는 이제 저장소에 없습니다. 지금 돌아가는 구조는
+> [`aimaster-desktop/docs/ARCHITECTURE.md`](../aimaster-desktop/docs/ARCHITECTURE.md)
+> 를 보세요. 아래 내용은 초기 의도를 읽는 용도로 남겨둡니다.
+
 ## 폴더 구조
 
 ```
