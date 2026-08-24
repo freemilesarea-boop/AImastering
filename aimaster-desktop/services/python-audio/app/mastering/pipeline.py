@@ -1282,7 +1282,24 @@ def run_pipeline(
     try:
         isp_gain = None if skip_isp_safety else apply_isp_safety(
             output_path, ceiling_dbtp=target_tp, headroom_db=0.1)
-        if isp_gain is not None and abs(isp_gain) > 0.01:
+        if isp_gain is None and not skip_isp_safety:
+            # apply_isp_safety returns None — never raises — when numpy/soundfile
+            # are missing, or the output could not be read or written back.  The
+            # alimiter on its own leaves 0.3 dB for inter-sample peaks, and dense
+            # loud material walks straight through that, so what just came out
+            # may be over the ceiling.  Logging it and moving on hands the user a
+            # master that looks finished and is not; say it where they can see it.
+            pipeline_warnings.append({
+                "code": "ISP_SAFETY_UNAVAILABLE",
+                "level": "warning",
+                "userMessage": (
+                    "인터샘플 피크 안전장치를 실행하지 못했습니다 — 출력 트루 피크가 "
+                    f"한계({target_tp:.1f} dBTP)를 넘었을 수 있습니다. "
+                    "스트리밍 플랫폼에 올리기 전에 확인하세요."
+                ),
+            })
+            log("WARN", "[pipeline] ISP safety unavailable — true peak is not guaranteed")
+        elif isp_gain is not None and abs(isp_gain) > 0.01:
             isp_correction_db = isp_gain
             gain_stages["ispCorrectionDb"] = round(float(isp_gain), 3)
             applied_corrections.append(f"ISP safety ({isp_gain:+.2f} dB)")
@@ -1298,6 +1315,16 @@ def run_pipeline(
             except FFmpegError:
                 pass
     except Exception as exc:
+        # Same reasoning as the None branch above: a safety device that did not
+        # run is not a detail for the log file.
+        pipeline_warnings.append({
+            "code": "ISP_SAFETY_FAILED",
+            "level": "warning",
+            "userMessage": (
+                f"인터샘플 피크 안전장치가 실패했습니다 ({exc}) — 출력 트루 피크가 "
+                f"한계({target_tp:.1f} dBTP)를 넘었을 수 있습니다."
+            ),
+        })
         log("WARN", f"[pipeline] ISP safety skipped: {exc}")
 
     # ── Quality checks ────────────────────────────────────────────────────
