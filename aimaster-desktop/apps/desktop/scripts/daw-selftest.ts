@@ -19,6 +19,9 @@ import {
 } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { shouldAdoptQueue } from '../src/renderer/daw/model/import-audio.js';
+import {
+  MASTER_QUEUE_LIMIT, handoffFileName, handoffMessage, handoffProblem,
+} from '../src/renderer/daw/edit/master-handoff.js';
 import { planDrop, isEmptyPlan } from '../src/renderer/daw/model/drop-target.js';
 import { evictionPlan } from '../src/renderer/daw/engine/audio-cache.js';
 import { decodeContext, resetDecodeContext, DECODE_SAMPLE_RATE } from '../src/renderer/audio/decode-context.js';
@@ -991,6 +994,68 @@ check('a session bigger than the budget keeps playing rather than going silent',
   }));
   assert(evictionPlan(stems, 'stem7', 12, 700 * MB).length === 0,
     'every stem survives — an evicted stem is a track missing from the mix');
+});
+
+// ── Mix → mastering handoff ──────────────────────────────────────────────────
+
+check('a mix with audio in it can be sent', () => {
+  const { session } = fixture();
+  eq(handoffProblem(session, { queued: 0 }), null, 'nothing wrong with it');
+});
+
+check('an empty session is refused before anything renders', () => {
+  // The reasons are asked BEFORE the render, not after.  Spending ten seconds
+  // to report something knowable at the start reads as a broken button.
+  const said = handoffProblem(createSession(), { queued: 0 });
+  assert(said !== null, 'refused');
+  assert(said!.includes('클립'), `says what to do: ${said}`);
+});
+
+check('a session where everything is muted is refused, not sent as silence', () => {
+  // Silence in the mastering list is a confusing thing to be handed: the file
+  // is there, it is the right length, and it does nothing.
+  const { session, trackId } = fixture();
+  const muted: DawSession = { ...session, tracks: session.tracks.map(
+    (t) => (t.id === trackId ? { ...t, mute: true } : t)) };
+  const said = handoffProblem(muted, { queued: 0 });
+  assert(said !== null, 'refused');
+  assert(said!.includes('음소거'), `names the cause: ${said}`);
+});
+
+check('solo elsewhere counts as muted here, and says so', () => {
+  const { session, trackId } = fixture();
+  let s: DawSession = addTrack(session, createTrack('other'));
+  const soloed = s.tracks.find((t) => t.name === 'other')!;
+  s = { ...s, tracks: s.tracks.map((t) => (t.id === soloed.id ? { ...t, solo: true } : t)) };
+  // The audio track is not soloed, so nothing of it is heard.
+  const said = handoffProblem(s, { queued: 0 });
+  assert(said !== null, `refused (track ${trackId} is not soloed)`);
+  assert(said!.includes('솔로'), `names solo as the cause: ${said}`);
+});
+
+check('a full mastering queue is refused with the number and the fix', () => {
+  // `addFilesToQueue` silently drops what it cannot hold, so a send into a
+  // full queue would look like a button that does nothing.
+  const { session } = fixture();
+  const said = handoffProblem(session, { queued: MASTER_QUEUE_LIMIT });
+  assert(said !== null, 'refused');
+  assert(said!.includes(String(MASTER_QUEUE_LIMIT)), `says the limit: ${said}`);
+  assert(said!.includes('홈'), `says where to fix it: ${said}`);
+  eq(handoffProblem(session, { queued: MASTER_QUEUE_LIMIT - 1 }), null, 'one slot is enough');
+});
+
+check('the mastering list shows the session name, not a temp filename', () => {
+  eq(handoffFileName('내 곡 v2'), '내 곡 v2.wav', 'kept as typed');
+  eq(handoffFileName('a/b:c*d'), 'a_b_c_d.wav', 'path characters are not names');
+  eq(handoffFileName('   '), 'mix.wav', 'a blank name still names something');
+});
+
+check('the message names the file, because a list just grew a row', () => {
+  const one = handoffMessage('내 곡.wav', 1);
+  assert(one.includes('내 곡.wav'), `names it: ${one}`);
+  assert(!one.includes('대기열'), `no queue count when it is the only one: ${one}`);
+  const many = handoffMessage('내 곡.wav', 3);
+  assert(many.includes('3'), `says how many are waiting: ${many}`);
 });
 
 const passed = results.filter((r) => r.pass).length;

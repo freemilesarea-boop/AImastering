@@ -59,7 +59,7 @@ export type CommandId =
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
-  | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.exportStems'
+  | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.sendToMastering' | 'daw.exportStems'
   | 'daw.importAudio' | 'daw.importSession'
   | 'daw.zoomIn' | 'daw.zoomOut'
   // Key Editor
@@ -281,6 +281,9 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '인서트를 오디오에 확정 렌더링 (되돌릴 수 없음)', available: true },
   { id: 'daw.bounce', group: 'daw', label: '오프라인 바운스', chords: ['Mod+Alt+B'],
     note: '세션(또는 선택 구간)을 WAV 로 렌더링 — 실시간보다 빠름', available: true },
+  { id: 'daw.sendToMastering', group: 'daw', label: '마스터링으로 보내기', chords: ['Mod+Shift+M'],
+    note: '믹스를 렌더링해서 홈 마스터링 대기열에 넣습니다 — 저장 창도 없고 내보내기로 치지도 않습니다',
+    available: true },
   { id: 'daw.exportStems', group: 'daw', label: '스템 내보내기', chords: ['Mod+Alt+Shift+B'],
     note: '트랙마다 WAV 하나 — 합치면 믹스가 됩니다 (마스터 체인 제외)', available: true },
   { id: 'daw.importAudio', group: 'daw', label: '오디오 가져오기', chords: ['Mod+Shift+I'],

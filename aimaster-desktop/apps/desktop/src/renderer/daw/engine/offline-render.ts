@@ -205,6 +205,29 @@ export async function writeTempRender(
   return path;
 }
 
+/**
+ * Render the mix and hand it to the mastering queue.
+ *
+ * Not a bounce.  A bounce is an export — it asks where to put the file and it
+ * goes through the paid-export gate, because the audio is leaving.  This is the
+ * same audio moving from one screen of this app to another, so it does neither:
+ * the person has not got a master yet, and charging them for carrying their own
+ * mix across the app would be charging for the app's own seam.
+ *
+ * 32-bit float rather than the bounce's 24-bit int.  The file's only reader is
+ * the mastering chain in the next room, which works in float; rounding it to 24
+ * bits here would be a loss taken purely so the intermediate looked like a
+ * deliverable.
+ */
+export async function stageForMastering(
+  session: DawSession, range = sessionRange(session), bitDepth: WavBitDepth = 32,
+): Promise<string> {
+  const rendered = await renderSession(session, range);
+  const bytes = encodeAudioBuffer(rendered, bitDepth);
+  return await invoker()('daw:stage-for-mastering',
+    { name: session.name, data: bytes }) as string;
+}
+
 /** Bounce to a user-chosen file.  Returns null when the dialog is cancelled. */
 export async function bounceSession(
   session: DawSession, range = sessionRange(session), bitDepth: WavBitDepth = 24,
