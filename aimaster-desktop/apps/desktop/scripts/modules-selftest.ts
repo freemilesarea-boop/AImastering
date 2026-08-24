@@ -80,6 +80,35 @@ check('every module has copy + a valid visual', () => {
   }
 });
 
+// The status fields above are checked against the renderable maps, so a module
+// cannot claim 'live' without backing.  The DESCRIPTION is not checked by
+// anything, and that is where the untrue claim actually got in: the limiter
+// advertised "True-peak-safe ceiling with lookahead + ISP" while the preview
+// limiter approximates inter-sample peaks with 0.3 dB of fixed headroom and
+// does no oversampling at all (dsp-core .../mastering/limiter.rs says so in its
+// own doc comment).  The lookahead was real; the ISP was not.
+//
+// A description is marketing copy that ships inside the product, so it gets the
+// same rule as a status flag: it may say what the code does.  These are the
+// phrases that were used to claim more than that.
+check('no description claims a true-peak guarantee the preview does not have', () => {
+  const banned = [
+    'True-peak-safe',
+    'true-peak-safe',
+    '+ ISP',
+    'true-peak protected',
+  ];
+  for (const m of LOUI_MODULES) {
+    for (const phrase of banned) {
+      assert(
+        !m.description.includes(phrase),
+        `${m.id}: description claims "${phrase}" — the preview limiter has no oversampling, `
+        + 'so say where the guarantee holds (export) and where it is an approximation (preview)',
+      );
+    }
+  }
+});
+
 check('activeModules excludes planned', () => {
   assert(activeModules().every((m) => m.status !== 'planned'), 'active has planned');
   assert(activeModules().length < LOUI_MODULES.length, 'some planned exist');

@@ -92,13 +92,13 @@ const SUITE: LouiModule[] = [
     id: 'limiter', displayName: 'Limiter', category: 'dynamics', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'medium',
     visual: 'gr-meter', paramModuleId: 'limiter', algorithmName: 'Loui Clean Limit',
-    description: 'True-peak-safe ceiling with lookahead + ISP. Live in preview AND export.',
+    description: 'Lookahead ceiling. The export measures inter-sample peaks at 4× and pulls the file down; the preview only leaves fixed headroom for them.',
   },
   {
     id: 'maximizer', displayName: 'Maximizer', category: 'dynamics', status: 'live',
     previewSupport: 'full', exportSupport: 'full', defaultBypass: false, cpuCost: 'medium',
     visual: 'gr-meter', paramModuleId: 'limiter', algorithmName: 'Loui Loud Push',
-    description: 'Loudness target + push character, true-peak protected. Loudness is export-renderable.',
+    description: 'Loudness target + push character, through the same ceiling as the Limiter. Loudness is export-renderable.',
   },
   {
     id: 'exciter', displayName: 'Exciter', category: 'character', status: 'planned',
