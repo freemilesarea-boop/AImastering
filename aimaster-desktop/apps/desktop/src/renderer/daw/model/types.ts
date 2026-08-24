@@ -104,6 +104,34 @@ export interface Clip {
    * through `clipNotes()` in model/patterns.ts, never `clip.notes` directly.
    */
   patternId?: string;
+  /**
+   * A chain applied to THIS CLIP ALONE, and what it replaced.
+   *
+   * Set when the clip has been through the region lab.  The original file
+   * reference is kept so a re-render always starts from the untouched audio —
+   * without it, changing one knob and applying again would run the chain over
+   * material that had already been through the chain once.
+   *
+   * Absent on every clip that has never been processed, which is nearly all
+   * of them; read it through `clipRegionFx()` rather than reaching in.
+   */
+  regionFx?: RegionFx;
+}
+
+/** How far past the clip's end the chain is allowed to keep ringing. */
+export type TailMode =
+  /** Stop at the clip's end.  Correct for EQ and gain, wrong for a delay. */
+  | 'cut'
+  /** Render the ring too and let the clip run long over what follows. */
+  | 'keep';
+
+export interface RegionFx {
+  inserts: Insert[];
+  tailMode: TailMode;
+  /** Seconds of ring the chain reported when this was rendered. */
+  tailSec: number;
+  /** What the clip pointed at before any of this — the way back. */
+  original: { fileId: FileId; offsetSec: number; durationSec: number };
 }
 
 /** A take lane.  One playlist is active per track; the rest are alternates. */

@@ -10,6 +10,7 @@ import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { useDawStore } from '../stores/dawStore.js';
+import { useWorkspaceStore } from '../stores/workspaceStore.js';
 import EditWindow from '../components/daw/edit/EditWindow.js';
 import MixWindow from '../components/daw/mix/MixWindow.js';
 import KeyEditor from '../components/daw/midi/KeyEditor.js';
@@ -30,6 +31,7 @@ import RecordStrip from '../components/daw/record/RecordStrip.js';
 import StepSequencer from '../components/daw/steps/StepSequencer.js';
 import IntelPanel from '../components/daw/intel/IntelPanel.js';
 import PluginWindowLayer from '../components/daw/plugin/PluginWindowLayer.js';
+import RegionLab from '../components/daw/region/RegionLab.js';
 import { createStack } from '../daw/model/stacks.js';
 import { setSessionTempo } from '../daw/model/warp.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
@@ -62,6 +64,8 @@ export default function DawPage() {
   const notify       = useAppStore((s) => s.notify);
   const session      = useDawStore((s) => s.session);
   const apply        = useDawStore((s) => s.apply);
+  const tool         = useWorkspaceStore((s) => s.tool);
+  const setTool      = useWorkspaceStore((s) => s.setTool);
   const loadSession  = useDawStore((s) => s.loadSession);
   const windowMode   = useDawStore((s) => s.window);
   const setWindow    = useDawStore((s) => s.setWindow);
@@ -429,6 +433,14 @@ export default function DawPage() {
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
+        {/* Scissors.  A toggle rather than a one-shot, because cutting a piece
+            out takes two clicks and switching tools between them is the kind
+            of friction that makes a feature go unused. */}
+        <ToolbarButton
+          onClick={() => setTool(tool === 'split' ? 'select' : 'split')}
+          accent={tool === 'split'}
+        >✂ 가위</ToolbarButton>
+
         <ToolbarButton onClick={handleImportAudio}>오디오 추가</ToolbarButton>
         {queue.length > 0 && (
           <ToolbarButton onClick={() => void importQueue()}>
@@ -498,6 +510,7 @@ export default function DawPage() {
       {/* Floating plugin windows live above every view, so switching from Edit
           to Mix does not close the compressor you were setting. */}
       <PluginWindowLayer />
+      <RegionLab />
 
       <RecordStrip />
 

@@ -39,6 +39,8 @@ import SectionLane, { SectionLaneHeader } from './SectionLane.js';
 import ChordLane, { ChordLaneHeader } from './ChordLane.js';
 import PictureLane, { PictureLaneHeader } from './PictureLane.js';
 import SpotDialog from './SpotDialog.js';
+import { separateAt } from '../../../daw/edit/clip-edit.js';
+import { useRegionLabStore } from '../../../stores/regionLabStore.js';
 import { trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay } from '../../../daw/edit/track-delay-ops.js';
 import {
@@ -213,6 +215,19 @@ export default function EditWindow() {
       setPxPerSec(e.altKey ? pxPerSec / 1.6 : pxPerSec * 1.6);
       return;
     }
+    // Scissors.  `separateAt` and `splitClip` have always been here; what was
+    // missing is a way to say WHERE, because Alt+X can only ever cut at the
+    // play head.  A cut needs a place, and the mouse is holding one.
+    if (tool === 'split') {
+      const raw = secAt(e.clientX);
+      const clip = clipAt(track, raw);
+      // Clicking empty lane with the scissors is a miss, not a command — the
+      // alternative is silently cutting nothing and looking broken.
+      if (!clip) return;
+      apply((sn) => separateAt(sn, [track.id], at));
+      setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
+      return;
+    }
     if (tool === 'select' && !e.shiftKey) {
       // Grabber behaviour: a click ON a clip drags it, empty lane seeks.
       const raw = secAt(e.clientX);
@@ -233,7 +248,7 @@ export default function EditWindow() {
     // range tool or shift-drag → time selection
     setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
     setDrag({ anchorSec: at, trackIds: [track.id] });
-  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode]);
+  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode, apply]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
     if (clipDrag) {
@@ -454,16 +469,33 @@ export default function EditWindow() {
               onMouseDown={(e) => onLaneDown(e, row.track)}
               onDoubleClick={(e) => {
                 // Double-clicking a MIDI part opens it in the Key Editor,
-                // exactly like the reference DAW.
+                // exactly like the reference DAW.  An AUDIO clip opens the
+                // region lab instead — the two are the same gesture asking the
+                // same question ("let me work on this piece"), answered by
+                // whichever editor the piece needs.
                 const at = secAt(e.clientX);
                 const clip = clipAt(row.track, at);
-                if (clip?.kind === 'midi') {
+                if (!clip) return;
+                if (clip.kind === 'midi') {
                   useMidiEditorStore.getState().openPart({ trackId: row.track.id, clipId: clip.id });
                   useDawStore.getState().setWindow('midi');
+                  return;
                 }
+                // Re-opening a piece that has already been processed loads its
+                // saved chain back, so changing one knob and applying again is
+                // an edit rather than a rebuild.
+                const fx = clip.regionFx;
+                useRegionLabStore.getState().openLab(
+                  { trackId: row.track.id, clipId: clip.id },
+                  fx ? fx.inserts.map((i) => ({ ...i })) : [],
+                  fx ? fx.tailMode : 'keep',
+                );
               }}
               className="relative border-b border-zinc-900"
-              style={{ height: row.height }}
+              // The cursor is the only thing telling you the scissors are
+              // armed while the mouse is over the lane, which is exactly when
+              // you need to know.
+              style={{ height: row.height, cursor: tool === 'split' ? 'crosshair' : undefined }}
             >
               {row.track.kind === 'folder' && row.track.collapsed ? (
                 // A collapsed stack still shows where its material sits.
