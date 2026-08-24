@@ -30,7 +30,7 @@ import { PLUGINS, defaultParams, findPlugin } from '../../../daw/engine/plugins.
 import { getMeta } from '../../../daw/engine/audio-cache.js';
 import { chainTailSec, describeTail } from '../../../daw/model/plugin-tail.js';
 import {
-  applyRegionFx, bodyDurationSec, clipRegionFx, revertRegionFx,
+  applyRegionFx, bodyDurationSec, clipRegionFx, revertRegionFx, RINGING_SEC,
 } from '../../../daw/edit/region-fx.js';
 import { liveAuxFor, makeRegionLive } from '../../../daw/edit/region-live.js';
 import { presetsFor, resolvePreset } from '../../../daw/engine/plugin-presets.js';
@@ -291,6 +291,9 @@ export default function RegionLab() {
   const { clip } = found;
   const applied = clipRegionFx(clip);
   const liveAux = target ? liveAuxFor(session, target.trackId, target.clipId) : null;
+  // Not a block: chopping a delay mid-repeat is a real effect and people ask
+  // for it on purpose.  It just must not be something you do by accident.
+  const cuttingARing = tailMode === 'cut' && tailSec >= RINGING_SEC;
   const active = chain.find((i) => i.slot === activeSlot) ?? null;
   const descriptor = active ? findPlugin(active.pluginId) : null;
   const genreChips = active
@@ -349,8 +352,17 @@ export default function RegionLab() {
         </div>
 
         {/* Chain */}
-        <div className="p-3 flex-1" style={{ borderLeft: `1px solid ${premium.surface.hairline}`,
-                                             background: premium.surface.well }}>
+        {/* Bounded and scrolling: the Parametric EQ has fifteen knobs and they
+            ran off the bottom of the screen.  The waveform is the fixed part
+            of this window; the chain is the part that varies. */}
+        <div
+          className="p-3 flex-1 overflow-y-auto"
+          style={{
+            borderLeft: `1px solid ${premium.surface.hairline}`,
+            background: premium.surface.well,
+            maxHeight: WAVE_H + 92,
+          }}
+        >
           <div className="text-[9px] tracking-wider mb-1.5" style={{ color: premium.text.faint }}>
             이 조각만의 체인
           </div>
@@ -457,14 +469,21 @@ export default function RegionLab() {
               >{label}</button>
             ))}
         </div>
-        <span className="text-[10px]" style={{ color: premium.text.muted }}>
+        <span
+          className="text-[10px]"
+          style={{ color: cuttingARing ? premium.accent.danger : premium.text.muted }}
+        >
           {tailMode === 'keep'
             ? '조각이 꼬리만큼 길어져 뒤 오디오와 겹쳐 울립니다'
             : tailMode === 'live'
               ? (liveAux
                 ? '이미 Aux 로 보내고 있습니다 — 다시 누르면 하나 더 생깁니다'
                 : 'Aux 를 만들어 이 조각 동안만 센드를 엽니다. 렌더하지 않습니다')
-              : '조각 끝에서 잘립니다 — EQ·게인처럼 울리지 않는 체인에만'}
+              : cuttingARing
+                // The one combination that is usually a mistake, said before
+                // the button is pressed rather than after.
+                ? `이 체인은 ${tailSec.toFixed(2)}초 울립니다 — 조각 끝에서 자르면 반복이 도중에 끊깁니다`
+                : '조각 끝에서 잘립니다 — 이 체인은 울리지 않으니 잘려나갈 꼬리가 없습니다'}
         </span>
         <span className="flex-1" />
         <button
@@ -477,7 +496,10 @@ export default function RegionLab() {
               : `linear-gradient(180deg, ${premium.accent.light}, ${premium.accent.base})`,
             color: busy ? premium.text.muted : premium.text.onAccent,
           }}
-        >{busy ? '렌더 중…' : tailMode === 'live' ? 'Aux 만들기' : '적용'}</button>
+        >{busy ? '렌더 중…'
+          : tailMode === 'live' ? 'Aux 만들기'
+            : cuttingARing ? '꼬리 버리고 적용'
+              : '적용'}</button>
       </div>
     </div>
   );

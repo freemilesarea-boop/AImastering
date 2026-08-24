@@ -25,7 +25,9 @@ import {
 import { PLUGINS, defaultParams } from '../src/renderer/daw/engine/plugins.js';
 import { tubeSmallSignalGain } from '../src/renderer/daw/engine/plugins-extended.js';
 import { createInsert } from '../src/renderer/daw/model/session-ops.js';
-import { bodyDurationSec, originalSource, clipRegionFx } from '../src/renderer/daw/edit/region-fx.js';
+import {
+  bodyDurationSec, originalSource, clipRegionFx, fadeSeam, RINGING_SEC, SEAM_FADE_SEC,
+} from '../src/renderer/daw/edit/region-fx.js';
 import {
   fullyWet, liveAuxFor, makeRegionLive,
   SEND_CLOSED_DB, SEND_OPEN_DB, SEND_RAMP_SEC,
@@ -251,6 +253,68 @@ check('the uncompensated curve really was divergent — this is not a theory', (
     'the default drive no longer amplifies — if the curve changed, revisit the compensation');
   assert(tubeSmallSignalGain(0.25, 0.05) * 0.45 > 1,
     'the factory tape delay is no longer over unity loop gain');
+});
+
+// ── Cutting at the seam ──────────────────────────────────────────────────────
+//
+// `cut` is the mode for devices that do not outlive their input.  The mode
+// works; what it lacked was any way of knowing it was being used on a device
+// that DOES.  These pin the rule that decides whether a chain counts as
+// ringing, because both the warning and the seam fade hang off it.
+
+check('a chain of EQ and gain does not count as ringing', () => {
+  for (const chain of [[ins('eq8')], [ins('eq3'), ins('trim', {}, 1)],
+                       [ins('comp'), ins('mbcomp', {}, 1)], [ins('widener')]]) {
+    assert(chainTailSec(chain, SR) < RINGING_SEC,
+      `${chain.map((i) => i.pluginId).join('+')} counts as ringing at ${chainTailSec(chain, SR)} s`);
+  }
+});
+
+check('a look-ahead limiter does not count as ringing either', () => {
+  // It reports latency as tail, which is right for the render length and
+  // wrong as a reason to warn: 8 ms cut off the end is inaudible.
+  const chain = [ins('limiter', { lookaheadMs: 10 })];
+  const tail = chainTailSec(chain, SR);
+  assert(tail > 0, 'the limiter reports no tail at all');
+  assert(tail < RINGING_SEC, `a limiter counts as ringing at ${tail} s`);
+});
+
+check('every delay and reverb does count as ringing', () => {
+  for (const id of ['delay', 'pingpong', 'tapedelay', 'reverb', 'plate', 'spring',
+                    'spacereverb', 'shimmer']) {
+    assert(chainTailSec([ins(id)], SR) >= RINGING_SEC,
+      `${id} does not count as ringing — cutting it would warn about nothing`);
+  }
+});
+
+check('the seam fade is short enough to be a declick and not a fade', () => {
+  // Long enough and it stops being "the chop lands cleanly" and becomes "the
+  // last of the piece got quieter", which is a different edit.
+  assert(SEAM_FADE_SEC > 0.001, `${SEAM_FADE_SEC} s is too short to stop a click`);
+  assert(SEAM_FADE_SEC < 0.02, `${SEAM_FADE_SEC} s is long enough to be heard as a fade`);
+});
+
+check('the seam fade lands on zero and leaves the rest alone', () => {
+  const sr = 48000;
+  const ch = new Float32Array(sr);   // one second of DC at full scale
+  ch.fill(1);
+  fadeSeam([ch], sr, SEAM_FADE_SEC);
+  const n = Math.floor(SEAM_FADE_SEC * sr);
+  assert(Math.abs(ch[ch.length - 1] ?? 1) < 1e-6,
+    `the last sample is ${ch[ch.length - 1]}, so the click is still there`);
+  assert(ch[ch.length - n - 1] === 1, 'the fade reached back past its own length');
+  assert(ch[0] === 1, 'the fade touched the start of the piece');
+  // Equal power: halfway through, cos(π/4) ≈ 0.707, not 0.5.
+  near(ch[ch.length - Math.floor(n / 2) - 1] ?? 0, Math.SQRT1_2, 0.02,
+    'the fade is linear, which dips on sustained material');
+});
+
+check('the seam fade refuses to do anything silly', () => {
+  const tiny = new Float32Array(3); tiny.fill(1);
+  fadeSeam([tiny], 48000, SEAM_FADE_SEC);   // asked for more samples than exist
+  assert(tiny[0] === 1 && tiny[2] === 1, 'a buffer shorter than the fade was mangled');
+  const empty: Float32Array[] = [];
+  fadeSeam(empty, 48000, SEAM_FADE_SEC);    // must not throw
 });
 
 // ── The live send: the tail nobody has to compute ────────────────────────────

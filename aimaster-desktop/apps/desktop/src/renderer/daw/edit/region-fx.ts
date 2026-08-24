@@ -138,6 +138,46 @@ function peak(channels: readonly Float32Array[]): number {
 const SILENT_TAIL = 1e-4;   // −80 dBFS
 
 /**
+ * A chain that rings for less than this is not really ringing.
+ *
+ * A look-ahead limiter reports a few milliseconds of latency as tail; cutting
+ * that off is inaudible and warning about it would be noise.
+ */
+export const RINGING_SEC = 0.02;
+
+/**
+ * The fade put on the seam when a RINGING chain is cut there, in seconds.
+ *
+ * Only then.  Cutting a delay mid-repeat leaves the waveform at whatever value
+ * it happened to hold, and a step from that to the next clip's first sample is
+ * a click — the chop is the point, the click is not.  But a chain that does
+ * not ring ends where its input ended, continuous with what follows, and
+ * fading THAT would punch an eight-millisecond hole into audio that was
+ * seamless.  So the fade is conditional, and the condition is the ring.
+ */
+export const SEAM_FADE_SEC = 0.008;
+
+/** Fade the last `seconds` of every channel down to zero, in place. */
+export function fadeSeam(channels: readonly Float32Array[], sampleRate: number, seconds: number): void {
+  // Never more than half the piece: a fade that eats the whole buffer is not a
+  // declick, it is a different edit.  A clip shorter than the fade is left
+  // alone entirely.
+  const n = Math.min(
+    Math.floor(seconds * sampleRate),
+    Math.floor((channels[0]?.length ?? 0) / 2),
+  );
+  if (n <= 1) return;
+  for (const ch of channels) {
+    const start = ch.length - n;
+    for (let i = 0; i < n; i++) {
+      // Equal-power rather than linear: a linear fade this short is audible as
+      // a dip on sustained material.
+      ch[start + i] = (ch[start + i] ?? 0) * Math.cos((i / (n - 1)) * (Math.PI / 2));
+    }
+  }
+}
+
+/**
  * Run one clip through a chain offline and hand back the body and the tail
  * separately, so the caller can decide what to do with the ring.
  */
@@ -219,6 +259,12 @@ export async function applyRegionFx(
     })
     : render.body;
 
+  // Cutting a chain that rings leaves the waveform mid-repeat.  Take the click
+  // off the seam without softening a chain that had nothing to cut.
+  const ringing = render.tailSec >= RINGING_SEC && peak(render.tail) > SILENT_TAIL;
+  const cutARing = options.tailMode === 'cut' && ringing;
+  if (cutARing) fadeSeam(channels, render.sampleRate, SEAM_FADE_SEC);
+
   const grewBySec = keepTail ? (render.tail[0]?.length ?? 0) / render.sampleRate : 0;
   const durationSec = source.durationSec + grewBySec;
 
@@ -259,7 +305,11 @@ export async function applyRegionFx(
     ? ` · 꼬리 ${grewBySec.toFixed(2)}초를 뒤에 얹었습니다`
     : options.tailMode === 'keep'
       ? ' · 이 체인은 울리지 않아 꼬리가 없습니다'
-      : ' · 조각 끝에서 잘랐습니다';
+      : cutARing
+        // Said out loud, because it is the one combination that can be a
+        // mistake: the chain had a ring and the ring is now gone.
+        ? ` · 꼬리 ${render.tailSec.toFixed(2)}초를 버리고 조각 끝에서 잘랐습니다`
+        : ' · 울리지 않는 체인이라 잘라낼 꼬리가 없었습니다';
   return { session: next, message: `${names} 적용${tailNote}`, grewBySec };
 }
 
