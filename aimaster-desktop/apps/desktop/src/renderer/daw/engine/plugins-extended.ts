@@ -140,6 +140,26 @@ function bitCurve(bits: number): Float32Array<ArrayBuffer> {
  * A symmetric shaper only makes odd harmonics, which is why pure tanh sounds
  * like a fuzz pedal and not like a preamp.
  */
+/**
+ * How much `tubeCurve` multiplies a QUIET signal by.
+ *
+ * The curve is normalised so that ±1 maps to ±1, which is the right thing for
+ * a shaper sitting in the signal path — but it means the slope at zero is `k`,
+ * and `k` reaches 25.  A quiet signal comes out nearly seven times louder at
+ * the default drive.  In a straight line that is a level to compensate; inside
+ * a FEEDBACK LOOP it is a loop gain above one, and a loop gain above one is an
+ * oscillator.
+ *
+ * Derived rather than measured: d/dx of (tanh((x+b)k) − tanh(bk)) / tanh(k)
+ * at x = 0 is k·sech²(bk)/tanh(k).  The self-test checks it against the curve
+ * the function actually builds, so the two cannot drift apart.
+ */
+export function tubeSmallSignalGain(drive: number, bias: number): number {
+  const k = 1 + drive * 24;
+  const sech2 = 1 / Math.cosh(bias * k) ** 2;
+  return (k * sech2) / Math.max(1e-6, Math.tanh(k));
+}
+
 function tubeCurve(drive: number, bias: number): Float32Array<ArrayBuffer> {
   const n = 4096;
   const curve = new Float32Array(n);
@@ -1051,6 +1071,17 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
       lowCut.frequency.value = 120;                 // tape has no deep bottom
       let sat = makeShaper(ctx, tubeCurve(p(params, 'drive', 0.25), 0.05));
+      // The saturator amplifies quiet signals — see `tubeSmallSignalGain`.
+      // Left uncompensated the loop gain at the factory settings is 3.07 and
+      // the delay screams instead of repeating; it was audible only once
+      // something rendered a long tail through it.  Normalising HERE, before
+      // the signal splits to the feedback path and to the wet output, also
+      // stops Drive from doubling as a volume knob.
+      const norm = ctx.createGain();
+      const setDriveNorm = (drive: number): void => {
+        norm.gain.value = 1 / Math.max(1, tubeSmallSignalGain(drive, 0.05));
+      };
+      setDriveNorm(p(params, 'drive', 0.25));
       const fb = ctx.createGain();
       fb.gain.value = Math.min(0.95, p(params, 'feedback', 0.45));
 
@@ -1062,8 +1093,9 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
 
       input.connect(delay);
       delay.connect(tone).connect(lowCut).connect(sat);
-      sat.connect(fb).connect(delay);
-      sat.connect(wet).connect(output);
+      sat.connect(norm);
+      norm.connect(fb).connect(delay);
+      norm.connect(wet).connect(output);
       input.connect(output);
 
       return {
@@ -1080,8 +1112,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             sat.disconnect();
             sat = next;
             lowCut.connect(sat);
-            sat.connect(fb);
-            sat.connect(wet);
+            sat.connect(norm);
+            setDriveNorm(v);
           }
         },
         // `drive` rebuilds the saturation curve inside the feedback loop.
