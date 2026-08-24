@@ -42,6 +42,23 @@ files:
   - dist/**/*
   - dist-electron/**/*
   - "!dist/renderer/**/*.map"
+  # The separation model runtime, narrowed by hand.
+  #
+  # `onnxruntime-web` is 133 MB installed because it ships every build variant —
+  # WebGPU, JSEP, asyncify, JSPI, and source maps for all of them.  What this
+  # app uses is the plain WASM build and its loader, which is 13 MB.  Shipping
+  # the package as it comes would put a tenth of a gigabyte into every download
+  # for a feature most users will not turn on.
+  #
+  # NOT YET VERIFIED ON A REAL PACKAGING RUN — the model path is not wired into
+  # the UI yet, so nothing has been built with it.  What to check when it is:
+  # that `onnxruntime-web` resolves at runtime from inside the asar, and that
+  # `openModel`'s `wasmPaths` points at wherever this lands.
+  - node_modules/onnxruntime-web/package.json
+  - node_modules/onnxruntime-web/dist/ort.wasm.min.mjs
+  - node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs
+  - node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm
+  - node_modules/onnxruntime-common/**/*
 
 # ── ASAR layout ──────────────────────────────────────────────────────────────
 # Default asar:true is kept — the main process reads .worklet.js / .wasm via
