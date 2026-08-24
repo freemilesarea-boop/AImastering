@@ -1,59 +1,39 @@
-// safe-boot-flags — emergency feature flags for diagnosing renderer crashes
-// on ProductPage mount.
+// safe-boot-flags — an emergency switch for the one renderer feature that has
+// ever crashed the page on mount.
 //
-// All flags DEFAULT to "safe" (= the suspect feature is DISABLED) so the
-// product page is guaranteed to render the smallest viable shell.  Once the
-// page is alive, toggle flags one by one via the DevTools console to find
-// the culprit:
+// This started as eight flags for hunting a ProductPage crash: every Native*
+// meter, the goniometer, the loudness history, the secondary analyzer, the
+// free-EQ sync.  ProductPage and all of those components are gone, and with
+// them the code that read seven of the eight flags — they were switches wired
+// to nothing.  What is left is `wasmAnalyzer`, which `analyzer-factory-resolver`
+// still consults to fall back to the JS analyzer.
 //
-//   window.__SAFE_BOOT__.enableNativeAnalyzers()
-//   window.__SAFE_BOOT__.enableSecondaryAnalyzer()
-//   window.__SAFE_BOOT__.enableFreeEqSync()
-//   window.__SAFE_BOOT__.enableWasmAnalyzer()
-//   window.__SAFE_BOOT__.enableRealtimeMasteringGraph()
-//   window.__SAFE_BOOT__.reset()   // disable everything again
+// From the DevTools console:
 //
-// Persists across reloads via sessionStorage so toggles survive the
-// reload.  Cleared on full app quit.
+//   window.__SAFE_BOOT__.disable('wasmAnalyzer')   // then reload
+//   window.__SAFE_BOOT__.reset()
+//
+// Persists across reloads via sessionStorage so a toggle survives the reload
+// it needs.  Cleared on full app quit.
 
-type FlagName =
-  | 'nativeAnalyzers'        // useNativeAnalyzer + every Native* meter + LouiGoniometer
-  | 'secondaryAnalyzer'      // useSecondaryAnalyzer hook call itself
-  | 'freeEqSync'             // setGraphFreeEqBands useEffect
-  | 'wasmAnalyzer'           // WasmAnalyzerProvider
-  | 'realtimeMasteringGraph' // useRealtimeMasteringGraph
-  | 'loudnessHistory'        // LouiLoudnessHistory canvas
-  | 'bandMeter'              // NativeBandMeter
-  | 'waveformPeaks';         // useWaveformPeaks (decodes audio file in renderer)
+type FlagName = 'wasmAnalyzer';   // WasmAnalyzerProvider / analyzer factory
 
-// Bump suffix when DEFAULT_ENABLED shape changes so users get the new
-// defaults instead of stale sessionStorage from the previous boot.
-const STORAGE_KEY = '__loui_safe_boot__v3';
-// Defaults after the WASM-lifecycle fixes (init() singleton, stop()
-// idempotency, provider single-stop, asarUnpack).  The two previously
-// "PRIME SUSPECT" flags can now default ON because the root cause of the
-// dlmalloc panic — concurrent init() races and double-stop free() — has
-// been collapsed at the source.  They remain TOGGLEABLE so a future
-// regression can be isolated by hand from DevTools without a redeploy.
+// Bump the suffix when the DEFAULT_ENABLED shape changes, so a session that
+// stored the previous shape gets the new defaults instead of stale keys.
+const STORAGE_KEY = '__loui_safe_boot__v4';
+
+// ON by default: the dlmalloc panic this was built to isolate was fixed at the
+// source (init() singleton, stop() idempotency, provider single-stop,
+// asarUnpack).  The flag stays so a future regression can be cornered by hand
+// without a redeploy.
 const DEFAULT_ENABLED: Record<FlagName, boolean> = {
-  nativeAnalyzers:        true,  // WebAudio AnalyserNode (read-only tap) — confirmed safe
-  secondaryAnalyzer:      true,  // hook runs but does nothing while duoMode=false
-  freeEqSync:             true,  // fast-path bail when no band enabled — confirmed safe
-  wasmAnalyzer:           true,  // safe after WASM lifecycle hardening
-  realtimeMasteringGraph: true,  // safe after WASM lifecycle hardening
-  loudnessHistory:        true,
-  bandMeter:              true,
-  waveformPeaks:          true,
+  wasmAnalyzer: true,
 };
 
 function readFlags(): Record<FlagName, boolean> {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      // First boot — eagerly persist the defaults so other modules
-      // (e.g. realtime-preview-flag) reading sessionStorage on their
-      // own initialisation see the SAFE_BOOT decisions instead of
-      // falling back to their own default-ON behaviour.
       try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(DEFAULT_ENABLED)); } catch { /* ignore */ }
       return { ...DEFAULT_ENABLED };
     }
@@ -83,23 +63,15 @@ export function resetAll(): void {
   current = { ...DEFAULT_ENABLED };
   persist();
   // eslint-disable-next-line no-console
-  console.log('[SAFE_BOOT] reset — all suspect features DISABLED.  Reload to apply.');
+  console.log('[SAFE_BOOT] reset to defaults.  Reload to apply.');
 }
 
-// Expose helpers on window so the user can toggle via DevTools console.
+// Exposed on window so the flag can be toggled from the DevTools console.
 if (typeof window !== 'undefined') {
   (window as unknown as { __SAFE_BOOT__: unknown }).__SAFE_BOOT__ = {
     get state() { return { ...current }; },
     enable(flag: FlagName) { setFlag(flag, true); },
     disable(flag: FlagName) { setFlag(flag, false); },
-    enableNativeAnalyzers() { setFlag('nativeAnalyzers', true); },
-    enableSecondaryAnalyzer() { setFlag('secondaryAnalyzer', true); },
-    enableFreeEqSync() { setFlag('freeEqSync', true); },
-    enableWasmAnalyzer() { setFlag('wasmAnalyzer', true); },
-    enableRealtimeMasteringGraph() { setFlag('realtimeMasteringGraph', true); },
-    enableLoudnessHistory() { setFlag('loudnessHistory', true); },
-    enableBandMeter() { setFlag('bandMeter', true); },
-    enableWaveformPeaks() { setFlag('waveformPeaks', true); },
     reset() { resetAll(); },
   };
   // eslint-disable-next-line no-console
