@@ -15,7 +15,7 @@ import { useAppStore } from '../../../stores/appStore.js';
 import { findTrack, trackClips } from '../../../daw/model/session-ops.js';
 import { getCached, transientsFor } from '../../../daw/engine/audio-cache.js';
 import {
-  detectClipTempo, extractClipGroove, matchSessionTempo,
+  extractClipGroove, matchSessionTempo,
 } from '../../../daw/edit/tempo-groove-actions.js';
 import { describeDetection } from '../../../daw/model/tempo-detect.js';
 import { describeGroove } from '../../../daw/model/groove.js';

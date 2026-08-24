@@ -61,7 +61,7 @@ import {
   frameCount, magnitudes, type HalfSpectrum, type SpectrumOptions,
 } from './spectrum.js';
 import {
-  DEFAULT_DRUMS, DRUM_PARTS, drumMasks, drumPresence, drumTemplates,
+  drumMasks, drumPresence, drumTemplates,
   type DrumOptions, type DrumPart,
 } from './drums.js';
 import { voiceSplit, type VoiceSplitOptions } from './voices.js';

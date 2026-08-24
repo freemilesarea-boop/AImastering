@@ -98,7 +98,7 @@ export async function runModel(
 ): Promise<ModelRunResult> {
   const started = Date.now();
   const opts: ModelRunOptions = { ...DEFAULT_MODEL_RUN, ...options };
-  const { fftSize, hopSize } = opts.stft;
+  const { fftSize } = opts.stft;
 
   if (channels.length === 0) throw new Error('오디오가 비어 있습니다');
   if (sampleRate !== descriptor.sampleRate) {
