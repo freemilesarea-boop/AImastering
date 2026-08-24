@@ -15,6 +15,7 @@ import { findTrack, setInsert } from '../../../daw/model/session-ops.js';
 import { descriptorFor } from '../../../daw/engine/external-device.js';
 import { defaultParams } from '../../../daw/engine/plugins.js';
 import { resolvePreset } from '../../../daw/engine/plugin-presets.js';
+import { partitionGenre } from '../../../daw/engine/plugin-presets-genre.js';
 import {
   allPresetGroups, canSaveUserPreset, deleteUserPreset, exportUserPresets,
   importUserPresets, isUserPresetId, overwriteUserPreset, saveUserPreset, describeImport,
@@ -199,6 +200,9 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   // delete or an import — none of which go through React state.
   void presetTick;
   const groups = allPresetGroups(insert.pluginId);
+  // The ten genres get their own row of chips; everything else stays in the
+  // dropdown.  See `partitionGenre` for why they are not the same control.
+  const { genre: genrePresets, rest: menuGroups } = partitionGenre(groups);
   const loadPreset = (presetId: string): void => {
     const preset = groups.flatMap((g) => g.presets).find((entry) => entry.id === presetId);
     if (!preset) return;
@@ -403,7 +407,37 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         className="px-3.5 py-2 flex flex-col gap-1"
         style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
       >
-        {(groups.length > 0 || canSave) && (
+        {/* The ten genres, as a row you can read rather than a list you open.
+            Every device has the same ten in the same order, so the row becomes
+            a place on the window rather than a menu to search — after a few
+            sessions you reach for 힙합 without looking. */}
+        {genrePresets.length > 0 && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] tracking-wide shrink-0 pt-0.5"
+                  style={{ color: premium.text.faint }}>장르</span>
+            <div className="flex flex-wrap gap-1">
+              {genrePresets.map((preset) => {
+                const on = preset.id === loadedPreset;
+                return (
+                  <button
+                    key={preset.id}
+                    onClick={() => loadPreset(preset.id)}
+                    title={preset.note}
+                    className="h-[18px] px-1.5 rounded text-[9px] leading-none
+                               transition-colors shrink-0"
+                    style={{
+                      border: `1px solid ${on ? premium.accent.deep : 'rgba(255,255,255,0.12)'}`,
+                      background: on ? 'rgba(198,167,104,0.14)' : 'transparent',
+                      color: on ? premium.accent.base : premium.text.muted,
+                    }}
+                  >{preset.name}</button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {(menuGroups.length > 0 || canSave) && (
           <div className="flex items-center gap-2">
             <span className="text-[9px] tracking-wide shrink-0" style={{ color: premium.text.faint }}>
               프리셋
@@ -411,14 +445,12 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             <select
               value={loadedPreset}
               onChange={(e) => loadPreset(e.target.value)}
-              disabled={groups.length === 0}
+              disabled={menuGroups.length === 0}
               className="flex-1 h-6 px-1 text-[10px] rounded bg-transparent outline-none"
               style={{ color: premium.text.primary, border: '1px solid rgba(255,255,255,0.12)' }}
             >
-              <option value="">
-                {groups.length === 0 ? '— 저장된 프리셋 없음 —' : '— 직접 설정 —'}
-              </option>
-              {groups.map((group) => (
+              <option value="">— 직접 설정 —</option>
+              {menuGroups.map((group) => (
                 <optgroup key={group.group} label={group.group}>
                   {group.presets.map((preset) => (
                     <option key={preset.id} value={preset.id}>{preset.name}</option>

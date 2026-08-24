@@ -23,8 +23,9 @@ import { PLUGINS, findPlugin } from '../src/renderer/daw/engine/plugins.js';
 import { presetsFor } from '../src/renderer/daw/engine/plugin-presets.js';
 import {
   GENRE_PRESETS, GENRE_ORDER, GENRE_LABEL, GENRE_TARGET_LUFS, GENRE_GROUP,
-  type GenreId,
+  partitionGenre, type GenreId,
 } from '../src/renderer/daw/engine/plugin-presets-genre.js';
+import { allPresetGroups } from '../src/renderer/daw/engine/user-presets.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -275,6 +276,47 @@ check('앰비언트 has the longest tails and 힙합 the shortest', () => {
       const v = got(id, g)[key]!;
       assert(v <= ambient, `${id}: ${GENRE_LABEL[g]} (${v}) outlasts 앰비언트 (${ambient})`);
       assert(v >= hiphop, `${id}: ${GENRE_LABEL[g]} (${v}) is drier than 힙합 (${hiphop})`);
+    }
+  }
+});
+
+// ── What the window actually draws ───────────────────────────────────────────
+//
+// The window splits the genre group out and draws it as chips.  If that split
+// silently returned nothing, every device would look exactly as it did before
+// these 370 presets existed — the failure would be invisible.
+
+check('the chip row gets all ten, in the declared order', () => {
+  for (const plugin of covered) {
+    const { genre } = partitionGenre(allPresetGroups(plugin.id));
+    assert(genre.length === 10, `${plugin.id}: chip row has ${genre.length}, expected 10`);
+    for (let i = 0; i < GENRE_ORDER.length; i++) {
+      assert(genre[i]!.name === GENRE_LABEL[GENRE_ORDER[i]!],
+        `${plugin.id}: chip ${i} is ${genre[i]!.name}, expected ${GENRE_LABEL[GENRE_ORDER[i]!]}`);
+    }
+  }
+});
+
+check('the dropdown does not list the same ten again', () => {
+  for (const plugin of PLUGINS) {
+    const { rest } = partitionGenre(allPresetGroups(plugin.id));
+    assert(!rest.some((g) => g.group === GENRE_GROUP),
+      `${plugin.id}: the genre group is still in the dropdown`);
+  }
+});
+
+check('the four devices without genre presets get no chip row', () => {
+  for (const id of Object.keys(NO_GENRE)) {
+    const { genre } = partitionGenre(allPresetGroups(id));
+    assert(genre.length === 0, `${id}: has ${genre.length} chips but should have none`);
+  }
+});
+
+check('every chip carries the note it will show on hover', () => {
+  for (const plugin of covered) {
+    const { genre } = partitionGenre(allPresetGroups(plugin.id));
+    for (const preset of genre) {
+      assert(preset.note.trim().length > 0, `${plugin.id}/${preset.name}: chip has no tooltip`);
     }
   }
 });

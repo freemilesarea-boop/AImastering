@@ -104,6 +104,34 @@ export const GENRE_TARGET_LUFS: Record<GenreId, number> = {
 /** The group these appear under in every plugin window. */
 export const GENRE_GROUP = '장르';
 
+/**
+ * Pull the genre group out of a device's preset groups.
+ *
+ * The window draws these as a row of ten chips rather than leaving them in the
+ * dropdown.  A dropdown is the right control for "one of an open-ended list I
+ * mostly do not know" — the source presets, and whatever the user has saved.
+ * The genres are the opposite: a closed set of ten, the same ten on every
+ * device, that you already know the name of before you open the menu.  Making
+ * someone open a list and scroll past 27 reverb rooms to find 힙합 is the
+ * dropdown being used for the one job it is worst at.
+ *
+ * Returns them separately so the caller can draw each with the control that
+ * fits, and so the dropdown does not list the same ten twice.
+ */
+export function partitionGenre(
+  groups: ReadonlyArray<{ group: string; presets: PluginPreset[] }>,
+): { genre: PluginPreset[]; rest: Array<{ group: string; presets: PluginPreset[] }> } {
+  const found = groups.find((g) => g.group === GENRE_GROUP);
+  return {
+    // In GENRE_ORDER, not in whatever order they happen to be stored, so the
+    // chips read the same way on every device.
+    genre: GENRE_ORDER
+      .map((id) => found?.presets.find((p) => p.name === GENRE_LABEL[id]))
+      .filter((p): p is PluginPreset => p !== undefined),
+    rest: groups.filter((g) => g.group !== GENRE_GROUP),
+  };
+}
+
 interface GenreEntry { note: string; params: Record<string, number> }
 
 /**
