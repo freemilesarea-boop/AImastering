@@ -376,12 +376,44 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   //     no dialog and no license gate (nothing leaves the app).
   //   • daw:bounce-audio     — a real export, so it goes through the same
   //     save dialog and paid-export gate as every other master.
+  //   • daw:stage-for-mastering — a handoff between two screens of this app.
+  //     No dialog and no gate for the same reason as the scratch file: nothing
+  //     leaves the app.  Charging here would take the money before the person
+  //     has a master, for the privilege of moving their own audio from the
+  //     mixer to the masterer; the gate stays where it already is, on the way
+  //     out.  It gets its own directory rather than reusing the scratch one
+  //     because this file IS shown to the user — it is the name in the
+  //     mastering list — and the scratch names carry a timestamp prefix.
 
   const dawTempDir = (): string => {
     const dir = path.join(app.getPath('temp'), 'loui-daw');
     fs.mkdirSync(dir, { recursive: true });
     return dir;
   };
+
+  /**
+   * Stage a mix for the mastering queue.
+   *
+   * The timestamp is the DIRECTORY, not the filename, so the mastering list
+   * shows the session's own name.  Two sends of the same session are two
+   * files rather than one overwriting the other — someone who mixes, sends,
+   * changes the mix and sends again is comparing two takes, and silently
+   * replacing the first one would lose the comparison they were making.
+   */
+  ipc.handle('daw:stage-for-mastering', (_e, req: unknown) => {
+    const { name, bytes } = readAudioPayload(req);
+    const safe = name.replace(/[^\w.\-가-힣 ]+/g, '_').slice(0, 80) || 'mix';
+    const dir = path.join(dawTempDir(), 'to-master', String(Date.now()));
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const dest = path.join(dir, `${safe}.wav`);
+      fs.writeFileSync(dest, bytes);
+      return dest;
+    } catch (err) {
+      recordFailure('export', `daw:stage-for-mastering failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
 
   ipc.handle('daw:write-temp-audio', (_e, req: unknown) => {
     const { name, bytes } = readAudioPayload(req);

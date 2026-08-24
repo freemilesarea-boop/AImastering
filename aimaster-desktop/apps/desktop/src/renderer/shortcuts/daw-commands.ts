@@ -31,8 +31,14 @@ import {
 import { isEmptyPlan, planDrop } from '../daw/model/drop-target.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import {
-  bounceSession, commitTrack, consolidateSelection, freezeTrack, renderSession, sessionRange, unfreezeTrack,
+  bounceSession, commitTrack, consolidateSelection, freezeTrack, renderSession, sessionRange,
+  stageForMastering, unfreezeTrack,
 } from '../daw/engine/offline-render.js';
+import {
+  handoffFileName, handoffMessage, handoffProblem,
+} from '../daw/edit/master-handoff.js';
+import { useAudioStore } from '../stores/audioStore.js';
+import { useAppStore } from '../stores/appStore.js';
 import { useReferenceStore } from '../stores/referenceStore.js';
 import {
   autoWarpClip, setWarpEnabled, unwarpClip, warpClipToTempo,
@@ -122,7 +128,7 @@ export type DawCommandId =
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
-  | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.exportStems'
+  | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.sendToMastering' | 'daw.exportStems'
   | 'daw.importAudio' | 'daw.importSession'
   | 'daw.zoomIn' | 'daw.zoomOut'
   | 'daw.quantize' | 'daw.humanize' | 'daw.selectAllNotes' | 'daw.legatoNotes'
@@ -519,6 +525,36 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         notify(dest ? '바운스 완료' : '바운스를 취소했습니다', dest ? 'success' : 'info');
       } catch (err) {
         notify(`바운스 실패: ${(err as Error).message}`, 'error');
+      }
+    },
+
+    'daw.sendToMastering': async () => {
+      const state = daw();
+      const audio = useAudioStore.getState();
+      // Asked before the render, not after: every reason this could fail is
+      // knowable now, and spending ten seconds to report one of them reads as
+      // a broken button rather than a careful one.
+      const problem = handoffProblem(state.session, { queued: audio.queue.length });
+      if (problem) { notify(problem, 'warning'); return; }
+
+      notify('믹스를 렌더링하는 중…');
+      try {
+        const path = await stageForMastering(state.session);
+        const before = useAudioStore.getState().queue.length;
+        useAudioStore.getState().addFilesToQueue([path]);
+        const after = useAudioStore.getState().queue.length;
+        if (after === before) {
+          // The queue silently drops what it cannot hold.  It was checked
+          // above, so getting here means something else filled it in the
+          // seconds the render took — rare, and worth saying out loud rather
+          // than leaving the person looking at a list their mix is not in.
+          notify('대기열에 넣지 못했습니다 — 홈에서 자리를 만든 뒤 다시 보내세요', 'error');
+          return;
+        }
+        useAppStore.getState().setPage('home');
+        notify(handoffMessage(handoffFileName(state.session.name), after), 'success');
+      } catch (err) {
+        notify(`마스터링으로 보내지 못했습니다: ${(err as Error).message}`, 'error');
       }
     },
 

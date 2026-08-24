@@ -39,7 +39,12 @@ import {
 import { shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import { importSessionData, deserializeDawSession, serializeDawSession } from '../daw/model/session-io.js';
-import { bounceSession, commitTrack, freezeTrack, unfreezeTrack } from '../daw/engine/offline-render.js';
+import {
+  bounceSession, commitTrack, freezeTrack, stageForMastering, unfreezeTrack,
+} from '../daw/engine/offline-render.js';
+import {
+  handoffFileName, handoffMessage, handoffProblem,
+} from '../daw/edit/master-handoff.js';
 import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import TemplatePanel from '../components/daw/template/TemplatePanel.js';
@@ -262,6 +267,35 @@ export default function DawPage() {
     } finally { setBusy(null); }
   }, [notify, selection]);
 
+  /**
+   * Render the mix and hand it to the mastering queue, then go there.
+   *
+   * The navigation is part of the action, not a courtesy.  Sending a mix to a
+   * list on another screen and staying put leaves the person to wonder whether
+   * it worked; the whole point of the button is that mixing and mastering stop
+   * being two errands.
+   */
+  const handleSendToMastering = useCallback(async () => {
+    const current = useDawStore.getState().session;
+    const problem = handoffProblem(current, { queued: useAudioStore.getState().queue.length });
+    if (problem) { notify(problem, 'warning'); return; }
+    setBusy('믹스를 렌더링하는 중…');
+    try {
+      const path = await stageForMastering(current);
+      const before = useAudioStore.getState().queue.length;
+      useAudioStore.getState().addFilesToQueue([path]);
+      const after = useAudioStore.getState().queue.length;
+      if (after === before) {
+        notify('대기열에 넣지 못했습니다 — 홈에서 자리를 만든 뒤 다시 보내세요', 'error');
+        return;
+      }
+      setPage('home');
+      notify(handoffMessage(handoffFileName(current.name), after), 'success');
+    } catch (err) {
+      notify(`마스터링으로 보내지 못했습니다: ${(err as Error).message}`, 'error');
+    } finally { setBusy(null); }
+  }, [notify, setPage]);
+
   const [templatesOpen, setTemplatesOpen] = useState(false);
 
   const handleStems = useCallback(async () => {
@@ -432,6 +466,14 @@ export default function DawPage() {
         <ToolbarButton onClick={handleFreeze}>프리즈</ToolbarButton>
         <ToolbarButton onClick={handleCommit}>커밋</ToolbarButton>
         <ToolbarButton onClick={handleBounce}>바운스</ToolbarButton>
+        {/* The seam this app is actually for: mix here, master there, one
+            press.  Highlighted because it is the finish line, and placed next
+            to 바운스 because that is where someone goes looking for "I am
+            done" — the difference being that this one does not ask for a
+            folder or count as an export. */}
+        <ToolbarButton onClick={() => void handleSendToMastering()} accent>
+          마스터링으로 →
+        </ToolbarButton>
         <ToolbarButton onClick={handleStems}>스템</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
@@ -485,7 +527,26 @@ export default function DawPage() {
   );
 }
 
-function ToolbarButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+function ToolbarButton(
+  { onClick, children, accent }:
+  { onClick: () => void; children: React.ReactNode; accent?: boolean },
+) {
+  // One button in this row is the finish line and the rest are tools.  The
+  // accent is the app's own gold rather than a new colour, so the row still
+  // reads as one row.
+  if (accent === true) {
+    return (
+      <button
+        onClick={onClick}
+        className="h-7 px-2.5 rounded text-[11px] transition-colors"
+        style={{
+          background: 'rgba(198,167,104,0.16)',
+          color: premium.accent.light,
+          border: `1px solid ${premium.accent.deep}`,
+        }}
+      >{children}</button>
+    );
+  }
   return (
     <button
       onClick={onClick}
