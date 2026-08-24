@@ -123,11 +123,22 @@ export type TailMode =
   /** Stop at the clip's end.  Correct for EQ and gain, wrong for a delay. */
   | 'cut'
   /** Render the ring too and let the clip run long over what follows. */
-  | 'keep';
+  | 'keep'
+  /**
+   * Do not render at all: an aux carries the chain and an automated send
+   * opens for the clip.  Shutting a send stops FEEDING the aux rather than
+   * silencing it, so the ring continues on its own.
+   *
+   * Never stored in `RegionFx` — nothing was baked, so there is nothing for a
+   * clip to remember.  It exists as a `TailMode` because it is the third
+   * answer to the same question the window asks.
+   */
+  | 'live';
 
 export interface RegionFx {
   inserts: Insert[];
-  tailMode: TailMode;
+  /** `live` never appears: nothing was baked, so there is nothing to remember. */
+  tailMode: Exclude<TailMode, 'live'>;
   /** Seconds of ring the chain reported when this was rendered. */
   tailSec: number;
   /** What the clip pointed at before any of this — the way back. */

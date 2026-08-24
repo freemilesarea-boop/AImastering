@@ -172,7 +172,8 @@ export async function renderClipChain(
 
 export interface ApplyRegionFxOptions {
   inserts: readonly Insert[];
-  tailMode: TailMode;
+  /** `live` is not a render — it is `makeRegionLive` in `region-live.ts`. */
+  tailMode: Exclude<TailMode, 'live'>;
   sampleRate?: number;
 }
 

@@ -26,6 +26,14 @@ import { PLUGINS, defaultParams } from '../src/renderer/daw/engine/plugins.js';
 import { tubeSmallSignalGain } from '../src/renderer/daw/engine/plugins-extended.js';
 import { createInsert } from '../src/renderer/daw/model/session-ops.js';
 import { bodyDurationSec, originalSource, clipRegionFx } from '../src/renderer/daw/edit/region-fx.js';
+import {
+  fullyWet, liveAuxFor, makeRegionLive,
+  SEND_CLOSED_DB, SEND_OPEN_DB, SEND_RAMP_SEC,
+} from '../src/renderer/daw/edit/region-live.js';
+import {
+  addTrack, createSession, createTrack, findTrack, updateClips,
+} from '../src/renderer/daw/model/session-ops.js';
+import type { DawSession } from '../src/renderer/daw/model/types.js';
 import { DEFAULT_MIDI_CONFIG } from '../src/renderer/daw/model/midi.js';
 import type { Clip, Insert } from '../src/renderer/daw/model/types.js';
 
@@ -243,6 +251,155 @@ check('the uncompensated curve really was divergent — this is not a theory', (
     'the default drive no longer amplifies — if the curve changed, revisit the compensation');
   assert(tubeSmallSignalGain(0.25, 0.05) * 0.45 > 1,
     'the factory tape delay is no longer over unity loop gain');
+});
+
+// ── The live send: the tail nobody has to compute ────────────────────────────
+//
+// `keep` needs to know how long the chain rings, because it is rendering that
+// ring into a file.  `live` needs to know nothing: shutting a send stops
+// feeding the aux, and the aux goes on ringing by itself.  These tests are
+// about the two things that make that true — the send closes exactly at the
+// clip's end, and the aux is fully wet.
+
+function sessionWithClip(): { session: DawSession; trackId: string; clipId: string } {
+  let session = createSession('live-test');
+  const track = createTrack('Audio 1', 'audio');
+  session = addTrack(session, track);
+  session = updateClips(session, track.id, () => [{ ...base, id: 'clip-live' }]);
+  return { session, trackId: track.id, clipId: 'clip-live' };
+}
+
+check('a send effect is forced fully wet, whatever it was on the track', () => {
+  // The bug this prevents: an aux delay at its usual 25 % mix returns 75 % dry,
+  // which sums with the track's own dry and combs.
+  for (const id of ['delay', 'tapedelay', 'plate', 'spacereverb', 'shimmer', 'pingpong']) {
+    const wet = fullyWet(ins(id));
+    const descriptor = PLUGINS.find((p) => p.id === id)!;
+    for (const name of ['mix', 'mixPct']) {
+      const def = descriptor.params.find((p) => p.id === name);
+      if (def) {
+        assert(wet.params[name] === def.max,
+          `${id}.${name} is ${wet.params[name]}, expected its maximum ${def.max}`);
+      }
+    }
+  }
+});
+
+check('a device with no mix control is left exactly as it was', () => {
+  const eq = ins('eq8', { b1Db: 4.5 });
+  const wet = fullyWet(eq);
+  assert(JSON.stringify(wet.params) === JSON.stringify(eq.params),
+    'an EQ was altered on its way to the aux');
+});
+
+check('the chain that lands on the aux is the fully wet one', () => {
+  // Checking `fullyWet` on its own proves the function works, not that the
+  // throw CALLS it — and forgetting to call it is the actual failure mode.
+  // So this reads the device that ended up on the aux.
+  const { session, trackId, clipId } = sessionWithClip();
+  const dry = ins('tapedelay', { mix: 25 });
+  const out = makeRegionLive(session, trackId, clipId, [dry]);
+  const aux = findTrack(out.session, out.auxTrackId)!;
+  const onAux = aux.inserts[0]!;
+  const def = PLUGINS.find((p) => p.id === 'tapedelay')!.params.find((p) => p.id === 'mix')!;
+  assert(onAux.params['mix'] === def.max,
+    `the aux delay is at ${onAux.params['mix']} % wet, not ${def.max} — the dry will comb`);
+  // And the chain on the TRACK, if any, is not touched by this.
+  assert(dry.params['mix'] === 25, 'the source insert was mutated');
+});
+
+check('the throw builds an aux, a send and a lane — and nothing else', () => {
+  const { session, trackId, clipId } = sessionWithClip();
+  const before = session.tracks.length;
+  const out = makeRegionLive(session, trackId, clipId, [ins('tapedelay')]);
+  assert(out.session.tracks.length === before + 1, 'the aux was not added');
+  assert(out.session.buses.length === session.buses.length + 1, 'the bus was not added');
+  const aux = findTrack(out.session, out.auxTrackId)!;
+  assert(aux.kind === 'aux', `the new track is a ${aux.kind}`);
+  assert(aux.inserts.length === 1, `the aux carries ${aux.inserts.length} devices`);
+  const source = findTrack(out.session, trackId)!;
+  assert(source.sends.length === 1, `the source has ${source.sends.length} sends`);
+  assert(source.sends[0]!.target === aux.input, 'the send does not point at the aux');
+  // The clip itself must be untouched — nothing was rendered.
+  const clip = source.playlists[0]!.clips[0]!;
+  assert(clip.fileId === base.fileId && clip.durationSec === base.durationSec,
+    'the live path modified the clip');
+  assert(clip.regionFx === undefined, 'the live path wrote a bake onto the clip');
+});
+
+check('the send is shut before the piece, open across it, and shut after', () => {
+  const { session, trackId, clipId } = sessionWithClip();
+  const out = makeRegionLive(session, trackId, clipId, [ins('delay')]);
+  const source = findTrack(out.session, trackId)!;
+  const lane = source.automation.find((l) => l.target.kind === 'sendLevel');
+  assert(lane, 'no send-level lane was written');
+  const at = (t: number): number => {
+    // Linear between points, which is how the engine reads a lane.
+    const pts = lane!.points;
+    if (t <= pts[0]!.timeSec) return pts[0]!.value;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1]!, b = pts[i]!;
+      if (t <= b.timeSec) {
+        const u = b.timeSec === a.timeSec ? 1 : (t - a.timeSec) / (b.timeSec - a.timeSec);
+        return a.value + (b.value - a.value) * u;
+      }
+    }
+    return pts[pts.length - 1]!.value;
+  };
+  const from = base.startSec, to = base.startSec + base.durationSec;
+  near(at(from - 1), SEND_CLOSED_DB, 1e-9, 'the send is not shut before the piece');
+  near(at(from), SEND_OPEN_DB, 1e-9, 'the send is not open at the first sample');
+  near(at((from + to) / 2), SEND_OPEN_DB, 1e-9, 'the send closed in the middle of the piece');
+  near(at(to), SEND_OPEN_DB, 1e-9, 'the send shut before the last sample');
+  near(at(to + SEND_RAMP_SEC), SEND_CLOSED_DB, 1e-9, 'the send never shuts');
+  near(at(to + 5), SEND_CLOSED_DB, 1e-9, 'the send reopened after the piece');
+});
+
+check('the edges ramp instead of stepping', () => {
+  // A step from silence to unity mid-waveform is a click, and a click into a
+  // delay is a click repeated for the length of the tail.
+  const { session, trackId, clipId } = sessionWithClip();
+  const out = makeRegionLive(session, trackId, clipId, [ins('delay')]);
+  const lane = findTrack(out.session, trackId)!.automation
+    .find((l) => l.target.kind === 'sendLevel')!;
+  const times = lane.points.map((p) => p.timeSec);
+  const from = base.startSec, to = base.startSec + base.durationSec;
+  assert(times.some((t) => Math.abs(t - (from - SEND_RAMP_SEC)) < 1e-9),
+    'there is no ramp into the open');
+  assert(times.some((t) => Math.abs(t - (to + SEND_RAMP_SEC)) < 1e-9),
+    'there is no ramp out of the open');
+  assert(SEND_RAMP_SEC > 0 && SEND_RAMP_SEC < 0.05,
+    `the ramp is ${SEND_RAMP_SEC} s — long enough to be heard as a fade`);
+});
+
+check('a piece at the very top of the song does not ask for a negative time', () => {
+  let session = createSession('edge');
+  const track = createTrack('Audio 1', 'audio');
+  session = addTrack(session, track);
+  session = updateClips(session, track.id, () => [{ ...base, id: 'c0', startSec: 0 }]);
+  const out = makeRegionLive(session, track.id, 'c0', [ins('delay')]);
+  const lane = findTrack(out.session, track.id)!.automation
+    .find((l) => l.target.kind === 'sendLevel')!;
+  assert(lane.points.every((p) => p.timeSec >= 0),
+    `a point landed at ${lane.points.find((p) => p.timeSec < 0)?.timeSec}`);
+});
+
+check('an empty chain is refused rather than building an empty aux', () => {
+  const { session, trackId, clipId } = sessionWithClip();
+  let threw = false;
+  try { makeRegionLive(session, trackId, clipId, []); } catch { threw = true; }
+  assert(threw, 'an empty chain built an aux anyway');
+  try { makeRegionLive(session, trackId, clipId, [{ ...ins('delay'), bypass: true }]); }
+  catch { return; }
+  throw new Error('a chain of nothing but bypassed devices built an aux');
+});
+
+check('the window can tell that a piece is already being thrown', () => {
+  const { session, trackId, clipId } = sessionWithClip();
+  assert(liveAuxFor(session, trackId, clipId) === null, 'an untouched piece claims an aux');
+  const out = makeRegionLive(session, trackId, clipId, [ins('delay')]);
+  assert(liveAuxFor(out.session, trackId, clipId) === out.auxTrackId,
+    'the aux built for this piece is not found again');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

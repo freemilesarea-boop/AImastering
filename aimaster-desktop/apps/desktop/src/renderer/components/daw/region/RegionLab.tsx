@@ -27,11 +27,12 @@ import { useAppStore } from '../../../stores/appStore.js';
 import { useRegionLabStore } from '../../../stores/regionLabStore.js';
 import { clipEnd, createInsert, findTrack, trackClips } from '../../../daw/model/session-ops.js';
 import { PLUGINS, defaultParams, findPlugin } from '../../../daw/engine/plugins.js';
-import { getCached } from '../../../daw/engine/audio-cache.js';
+import { getMeta } from '../../../daw/engine/audio-cache.js';
 import { chainTailSec, describeTail } from '../../../daw/model/plugin-tail.js';
 import {
   applyRegionFx, bodyDurationSec, clipRegionFx, revertRegionFx,
 } from '../../../daw/edit/region-fx.js';
+import { liveAuxFor, makeRegionLive } from '../../../daw/edit/region-live.js';
 import { presetsFor, resolvePreset } from '../../../daw/engine/plugin-presets.js';
 import { partitionGenre } from '../../../daw/engine/plugin-presets-genre.js';
 import { premium } from '../../../theme/premium.js';
@@ -47,27 +48,28 @@ const SLOTS = 4;
 const curveFor = (unit: string, min: number): 'linear' | 'log' =>
   ((unit === 'Hz' || unit === 'ms' || unit === 's') && min > 0 ? 'log' : 'linear');
 
-/** Peak envelope of one channel over a window, as [min, max] per column. */
+/**
+ * Peak envelope over a window of a file, one value per column.
+ *
+ * Read from the peak SIDECAR rather than from samples, which is not a detail:
+ * `decodeForDisplay` deliberately does not keep PCM resident — a sixteen-track
+ * session would be gigabytes — so a file that has only been drawn on the
+ * timeline has peaks and no samples at all.  Reading `getCached().buffer` here
+ * drew nothing for every file the user had not played, which is most of them.
+ */
 function envelope(
-  buffer: AudioBuffer, fromSec: number, toSec: number, columns: number,
-): Array<[number, number]> {
-  const sr = buffer.sampleRate;
-  const from = Math.max(0, Math.floor(fromSec * sr));
-  const to = Math.min(buffer.length, Math.ceil(toSec * sr));
-  const out: Array<[number, number]> = [];
-  const span = Math.max(1, to - from);
-  const step = span / Math.max(1, columns);
-  const data = buffer.getChannelData(0);
+  peaks: Float32Array, fileDuration: number, fromSec: number, toSec: number, columns: number,
+): Float32Array {
+  const out = new Float32Array(columns);
+  if (fileDuration <= 0 || peaks.length === 0) return out;
+  const step = (toSec - fromSec) / Math.max(1, columns);
   for (let c = 0; c < columns; c++) {
-    const a = from + Math.floor(c * step);
-    const b = Math.min(to, from + Math.floor((c + 1) * step));
-    let lo = 0, hi = 0;
-    for (let i = a; i < b; i++) {
-      const v = data[i] ?? 0;
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
-    }
-    out.push([lo, hi]);
+    const a = Math.max(0, Math.floor(((fromSec + c * step) / fileDuration) * peaks.length));
+    const b = Math.min(peaks.length,
+      Math.max(a + 1, Math.ceil(((fromSec + (c + 1) * step) / fileDuration) * peaks.length)));
+    let peak = 0;
+    for (let i = a; i < b; i++) peak = Math.max(peak, peaks[i] ?? 0);
+    out[c] = peak;
   }
   return out;
 }
@@ -128,22 +130,23 @@ export default function RegionLab() {
     ctx.fillRect(0, 0, WAVE_W, WAVE_H);
 
     const drawClip = (c: Clip, opacity: number): void => {
-      const cached = getCached(c.fileId);
-      if (!cached) return;
+      const meta = getMeta(c.fileId);
+      if (!meta) return;
       // Where this clip sits, measured from the start of the drawn window.
       const windowStart = clip.startSec - CONTEXT_SEC;
       const left = c.startSec - windowStart;
       const right = clipEnd(c) - windowStart;
       const columns = Math.max(1, Math.round((right - left) * pxPerSec));
-      const env = envelope(cached.buffer, c.offsetSec, c.offsetSec + c.durationSec, columns);
+      const env = envelope(
+        meta.peaks, meta.durationSec, c.offsetSec, c.offsetSec + c.durationSec, columns,
+      );
       ctx.fillStyle = opacity >= 1 ? premium.accent.base : `rgba(255,255,255,${0.16 * opacity})`;
-      for (let i = 0; i < env.length; i++) {
-        const [lo, hi] = env[i] ?? [0, 0];
-        const x = xOf(left) + i;
-        if (x < 0 || x > WAVE_W) continue;
-        const top = mid - hi * (mid - 6);
-        const bottom = mid - lo * (mid - 6);
-        ctx.fillRect(x, top, 1, Math.max(1, bottom - top));
+      for (let i = 0; i < columns; i++) {
+        const peak = env[i] ?? 0;
+        const x = Math.round(xOf(left)) + i;
+        if (x < 0 || x >= WAVE_W) continue;
+        const h = peak * (mid - 6);
+        ctx.fillRect(x, mid - h, 1, Math.max(1, h * 2));
       }
     };
 
@@ -223,6 +226,20 @@ export default function RegionLab() {
   const onApply = useCallback(() => {
     if (!target || !found || busy) return;
     if (live.length === 0) { notify('슬롯에 플러그인을 하나 넣으세요', 'warning'); return; }
+
+    // `live` is not a render at all — it is an arrangement change, so it goes
+    // through `apply` in one step and returns immediately.
+    if (tailMode === 'live') {
+      try {
+        const result = makeRegionLive(session, target.trackId, target.clipId, live);
+        apply(() => result.session);
+        notify(result.message);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : String(err), 'error');
+      }
+      return;
+    }
+
     store.getState().setBusy(true);
     void applyRegionFx(session, target.trackId, target.clipId, { inserts: live, tailMode })
       .then((result) => {
@@ -273,6 +290,7 @@ export default function RegionLab() {
   if (!target || !found) return null;
   const { clip } = found;
   const applied = clipRegionFx(clip);
+  const liveAux = target ? liveAuxFor(session, target.trackId, target.clipId) : null;
   const active = chain.find((i) => i.slot === activeSlot) ?? null;
   const descriptor = active ? findPlugin(active.pluginId) : null;
   const genreChips = active
@@ -421,7 +439,11 @@ export default function RegionLab() {
         <span className="text-[9px] tracking-wider" style={{ color: premium.text.faint }}>꼬리</span>
         <div className="flex rounded overflow-hidden"
              style={{ border: `1px solid ${premium.surface.hairlineStrong}` }}>
-          {([['cut', '조각에서 자름'], ['keep', `꼬리 남김 · ${tailSec.toFixed(2)}초`]] as Array<[TailMode, string]>)
+          {([
+            ['cut', '조각에서 자름'],
+            ['keep', `꼬리 남김 · ${tailSec.toFixed(2)}초`],
+            ['live', '계속 울림'],
+          ] as Array<[TailMode, string]>)
             .map(([mode, label], index) => (
               <button
                 key={mode}
@@ -438,7 +460,11 @@ export default function RegionLab() {
         <span className="text-[10px]" style={{ color: premium.text.muted }}>
           {tailMode === 'keep'
             ? '조각이 꼬리만큼 길어져 뒤 오디오와 겹쳐 울립니다'
-            : '조각 끝에서 잘립니다 — EQ·게인처럼 울리지 않는 체인에만'}
+            : tailMode === 'live'
+              ? (liveAux
+                ? '이미 Aux 로 보내고 있습니다 — 다시 누르면 하나 더 생깁니다'
+                : 'Aux 를 만들어 이 조각 동안만 센드를 엽니다. 렌더하지 않습니다')
+              : '조각 끝에서 잘립니다 — EQ·게인처럼 울리지 않는 체인에만'}
         </span>
         <span className="flex-1" />
         <button
@@ -451,7 +477,7 @@ export default function RegionLab() {
               : `linear-gradient(180deg, ${premium.accent.light}, ${premium.accent.base})`,
             color: busy ? premium.text.muted : premium.text.onAccent,
           }}
-        >{busy ? '렌더 중…' : '적용'}</button>
+        >{busy ? '렌더 중…' : tailMode === 'live' ? 'Aux 만들기' : '적용'}</button>
       </div>
     </div>
   );
