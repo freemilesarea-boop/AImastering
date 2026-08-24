@@ -846,6 +846,36 @@ check('the credit is a mask: nothing outside [0,1], whatever the knobs say', () 
   }
 });
 
+check('the biggest known leak does not get quietly worse', () => {
+  // 그외→보컬 at 500 Hz and a kilohertz is the largest single defect the real
+  // record has left: 66 % and 60 % there, and those two bands hold two thirds
+  // of the arrangement's energy.  It is not in the totals — the total is 26 % —
+  // so nothing else here would notice it moving.
+  //
+  // This fixture reproduces it (64 % and 89 %); it was diluted, not absent,
+  // because this fixture's 그 외 sits at 250 Hz where the leak is only 30 %.
+  //
+  // What has been ruled out, all measured on this fixture: sharpening the
+  // repetition cue (`excess` 0.15 to 0.6 moves it five points and costs the
+  // singer more), leaning on it harder (`noveltyWeight` up to 3.5, four
+  // points), the panning cue (both the singer and a centred keyboard pass it),
+  // and a melody tracker with a comb — see docs/DAW.md for why that one is
+  // deleted rather than tuned.  The ceiling here is not a threshold, it is that
+  // at a kilohertz there is no cue that separates a centred keyboard from a
+  // centred voice.
+  const hard = buildFixture(20, { vocalCycles: false, hard: true });
+  const result = separate(hard.mix, FIXTURE_SR);
+  const vocals = result.stems.find((s) => s.kind === 'vocals')!;
+  const leak = leakByBand(vocals.channels, hard.parts.other, FIXTURE_SR);
+  // Bands 4 and 5 are 355–710 Hz and 710–1400 Hz.
+  const at500 = leak[4];
+  const at1k = leak[5];
+  assert(at500 !== null && at500 !== undefined, '500 Hz band has truth in it');
+  assert(at1k !== null && at1k !== undefined, '1 kHz band has truth in it');
+  atMost(at500, 72, '그외→보컬 at 500 Hz');
+  atMost(at1k, 95, '그외→보컬 at 1 kHz');
+});
+
 check('the drum credit moves the leak the real song showed, on the fixture', () => {
   // The end-to-end version of the three checks above.  Thresholds are the
   // measured numbers with a margin, not to the decimal place.
