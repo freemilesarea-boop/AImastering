@@ -15,7 +15,8 @@
 5. [환경 변수](#환경-변수)
 6. [프로젝트 구조](#프로젝트-구조)
 7. [구현 상태](#구현-상태)
-8. [에러 로그 위치](#에러-로그-위치)
+8. [자주 걸리는 것](#자주-걸리는-것)
+9. [에러 로그 위치](#에러-로그-위치)
 
 ---
 
@@ -248,6 +249,48 @@ aimaster-desktop/
 | 최근 파일 목록 | `file:get-recent` 핸들러가 `[]` 반환하는 스텁 |
 | 배치 처리 | 단일 파일만 지원 |
 | 앱 아이콘 | `public/icon.icns`, `public/icon.ico` 없음 → 빌드 시 기본 아이콘 |
+
+---
+
+## 자주 걸리는 것
+
+### `Electron failed to install correctly`
+
+`pnpm dev` 이 이 에러로 죽으면 `node_modules/electron/dist` 가 비어 있는 것입니다.
+Electron 의 postinstall 이 플랫폼 바이너리(~100 MB)를 받아오는데, pnpm 이
+스토어에서 패키지를 복원하면서 그 postinstall 을 건너뛰면 생깁니다
+(이 저장소는 `node-linker=hoisted` 라 더 잘 일어납니다).
+
+```bash
+pnpm rebuild electron
+```
+
+그래도 안 되면:
+
+```bash
+rm -rf node_modules/electron
+pnpm install
+```
+
+### `setup-python.sh` 가 Python 을 거부함
+
+핀 고정된 `numpy==1.26.4` 는 **cp39–cp312 휠까지만** 있습니다
+(고정한 이유는 `services/python-audio/requirements.txt` 주석 참고).
+3.13 이상에서는 pip 가 소스 빌드로 넘어가고, Fortran 툴체인이 없는 맥에서는
+몇 분 뒤 실패합니다 — 그것도 "파이썬이 너무 최신입니다" 라고는 안 하면서.
+
+스크립트가 PATH 에서 쓸 수 있는 3.10–3.12 를 알아서 찾습니다. 없으면:
+
+```bash
+brew install python@3.12
+PYTHON=python3.12 ./setup-python.sh
+```
+
+### `zsh: command not found: #`
+
+zsh 는 대화형 셸에서 `#` 주석을 기본으로 받지 않습니다.
+주석이 붙은 명령 블록을 통째로 붙여넣으면 주석 줄마다 이 에러가 납니다.
+주석을 빼고 붙여넣거나, `setopt interactive_comments` 를 먼저 실행하세요.
 
 ---
 
