@@ -22,8 +22,11 @@ import {
   shaperFor, detectorFor, shaperOutput, readCurve, detectorGainDb, expanderGainCurve,
   filterPictureFor, widthPictureFor, FILTER_DEVICES, WIDTH_DEVICES,
   lfoPictureFor, combPictureFor, LFO_DEVICES, COMB_DEVICES,
+  delayPictureFor, bandPictureFor, DELAY_DEVICES, BAND_DEVICES,
 } from '../src/renderer/daw/model/plugin-shapes.js';
-import { biquadMagnitudeDb, chainMagnitudeDb } from '../src/renderer/daw/model/plugin-curves.js';
+import {
+  biquadMagnitudeDb, chainMagnitudeDb, compressorOutputDb,
+} from '../src/renderer/daw/model/plugin-curves.js';
 import {
   bitCurve, clipCurve, gateGainCurve, tubeCurve,
 } from '../src/renderer/daw/engine/plugins-extended.js';
@@ -610,6 +613,144 @@ check('every modulation caption says something real', () => {
   }
 });
 
+
+// ── Delays ──────────────────────────────────────────────────────────────────
+
+check('the repeats land on the beat the time knob sets', () => {
+  for (const [id, key] of [['delay', 'timeMs'], ['pingpong', 'timeMs'], ['tapedelay', 'timeMs']] as const) {
+    const ms = 250;
+    const pic = delayPictureFor(id, { ...defaultParams(id), [key]: ms, feedback: 0.5 })!;
+    pic.taps.forEach((tap, i) => {
+      near(tap.timeSec, (ms / 1000) * (i + 1), 1e-9, `${id}: repeat ${i + 1}`);
+    });
+  }
+});
+
+check('the repeats die at the rate the feedback knob sets', () => {
+  const pic = delayPictureFor('delay', { timeMs: 300, feedback: 0.5 })!;
+  pic.taps.forEach((tap, i) => near(tap.gain, Math.pow(0.5, i + 1), 1e-9, `repeat ${i + 1}`));
+  // And more feedback means more of them.
+  const few = delayPictureFor('delay', { timeMs: 300, feedback: 0.2 })!.taps.length;
+  const many = delayPictureFor('delay', { timeMs: 300, feedback: 0.8 })!.taps.length;
+  assert(many > few, `feedback did not lengthen the tail — ${few} vs ${many}`);
+});
+
+check('the ping-pong alternates sides and the others do not', () => {
+  const pp = delayPictureFor('pingpong', { timeMs: 350, feedback: 0.5, toneHz: 6000, mix: 30 })!;
+  assert(pp.taps.length >= 3, 'need a few repeats to see them alternate');
+  pp.taps.forEach((tap, i) => {
+    assert(tap.pan === (i % 2 === 0 ? -1 : 1), `repeat ${i + 1} is on the wrong side: ${tap.pan}`);
+  });
+  // Drawn as one row of bars a ping-pong is any other delay; these two must not
+  // come out the same shape.
+  for (const id of ['delay', 'tapedelay'] as const) {
+    const pic = delayPictureFor(id, defaultParams(id))!;
+    assert(pic.taps.every((t) => t.pan === 0), `${id} must not claim to alternate`);
+  }
+});
+
+check("the tape delay's saturator does not secretly lengthen its tail", () => {
+  // The engine normalises the drive so the loop gain stays at the feedback
+  // knob; a picture that ignored that would draw a tail that never ends.
+  const quiet = delayPictureFor('tapedelay', { ...defaultParams('tapedelay'), drive: 0, feedback: 0.5 })!;
+  const hot = delayPictureFor('tapedelay', { ...defaultParams('tapedelay'), drive: 1, feedback: 0.5 })!;
+  assert(quiet.taps.length === hot.taps.length,
+    `drive changed the tail length — ${quiet.taps.length} vs ${hot.taps.length}`);
+});
+
+check('the picture is wide enough for the last repeat it draws', () => {
+  for (const id of DELAY_DEVICES) {
+    for (const feedback of [0.1, 0.5, 0.9]) {
+      const pic = delayPictureFor(id, { ...defaultParams(id), feedback })!;
+      for (const tap of pic.taps) {
+        assert(tap.timeSec <= pic.spanSec, `${id}: a repeat at ${tap.timeSec}s falls off a ${pic.spanSec}s picture`);
+      }
+    }
+  }
+});
+
+// ── Compressors that work on a band ─────────────────────────────────────────
+
+check('the multiband draws three bands, split where the crossovers are', () => {
+  const pic = bandPictureFor('mbcomp', {
+    ...defaultParams('mbcomp'), lowXHz: 200, highXHz: 4000,
+  })!;
+  assert(pic.bands.length === 3, `three bands, got ${pic.bands.length}`);
+  const [low, mid, high] = pic.bands;
+  near(low!.toHz, 200, 1e-9, 'the low band ends at the first crossover');
+  near(mid!.fromHz, 200, 1e-9, 'and the mid starts there');
+  near(mid!.toHz, 4000, 1e-9, 'the mid ends at the second');
+  near(high!.fromHz, 4000, 1e-9, 'and the high starts there');
+  // No gaps and no overlaps: every frequency belongs to exactly one band.
+  for (let i = 1; i < pic.bands.length; i++) {
+    near(pic.bands[i]!.fromHz, pic.bands[i - 1]!.toHz, 1e-9, `gap before band ${i + 1}`);
+  }
+});
+
+check('each band draws its own threshold and ratio, not a shared one', () => {
+  const pic = bandPictureFor('mbcomp', {
+    ...defaultParams('mbcomp'),
+    lowThrDb: -36, lowRatio: 8, midThrDb: -18, midRatio: 2, hiThrDb: -9, hiRatio: 5,
+  })!;
+  const [low, mid, high] = pic.bands;
+  near(low!.thresholdDb, -36, 1e-9, 'low threshold');
+  near(low!.ratio, 8, 1e-9, 'low ratio');
+  near(mid!.thresholdDb, -18, 1e-9, 'mid threshold');
+  near(mid!.ratio, 2, 1e-9, 'mid ratio');
+  near(high!.thresholdDb, -9, 1e-9, 'high threshold');
+  near(high!.ratio, 5, 1e-9, 'high ratio');
+  // Which means the curves are visibly different, which is the whole point.
+  const at = (b: typeof low, db: number): number =>
+    compressorOutputDb({ thresholdDb: b!.thresholdDb, ratio: b!.ratio, kneeDb: b!.kneeDb, makeupDb: b!.makeupDb }, db);
+  assert(at(low, -6) < at(mid, -6) - 6, `the low band should squeeze far harder — ${at(low, -6).toFixed(1)} vs ${at(mid, -6).toFixed(1)}`);
+});
+
+check("all three bands share the engine's 6 dB knee and its one makeup", () => {
+  const pic = bandPictureFor('mbcomp', { ...defaultParams('mbcomp'), makeupDb: 4 })!;
+  for (const band of pic.bands) {
+    near(band.kneeDb, 6, 1e-9, `${band.label}: the engine sets knee 6 on every band`);
+    near(band.makeupDb, 4, 1e-9, `${band.label}: there is one makeup knob, not three`);
+  }
+});
+
+check('the de-esser draws the band it passes and the band it ducks', () => {
+  const pic = bandPictureFor('deesser', { freqHz: 7000, thresholdDb: -30, amount: 0.5 })!;
+  assert(pic.bands.length === 2, `two bands, got ${pic.bands.length}`);
+  const [pass, ess] = pic.bands;
+  near(pass!.ratio, 1, 1e-9, 'below the split nothing happens');
+  near(pass!.toHz, 7000, 1e-9, 'the split is where the knob says');
+  near(ess!.fromHz, 7000, 1e-9, 'and the ducked band starts there');
+  // The engine maps amount 0..1 to a ratio of 1..12.
+  near(ess!.ratio, 1 + 0.5 * 11, 1e-9, 'ratio follows the amount knob');
+  near(ess!.thresholdDb, -30, 1e-9, 'threshold');
+});
+
+check('a de-esser at zero amount is drawn doing nothing', () => {
+  const pic = bandPictureFor('deesser', { freqHz: 6500, thresholdDb: -24, amount: 0 })!;
+  for (const band of pic.bands) near(band.ratio, 1, 1e-9, `${band.label} must be flat`);
+});
+
+check('only the delays and band compressors claim these pictures', () => {
+  for (const p of PLUGINS) {
+    if (!DELAY_DEVICES.includes(p.id)) {
+      assert(!delayPictureFor(p.id, defaultParams(p.id)), `${p.id} claims a delay picture`);
+    }
+    if (!BAND_DEVICES.includes(p.id)) {
+      assert(!bandPictureFor(p.id, defaultParams(p.id)), `${p.id} claims a band picture`);
+    }
+  }
+  for (const id of DELAY_DEVICES) assert(delayPictureFor(id, defaultParams(id)), `${id} has no delay picture`);
+  for (const id of BAND_DEVICES) assert(bandPictureFor(id, defaultParams(id)), `${id} has no band picture`);
+});
+
+check('every delay and band caption says something real', () => {
+  for (const id of [...DELAY_DEVICES, ...BAND_DEVICES]) {
+    const c = delayPictureFor(id, defaultParams(id))?.caption
+      ?? bandPictureFor(id, defaultParams(id))!.caption;
+    assert(c.trim().length > 0 && !c.includes('NaN'), `${id}: ${c}`);
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 const passed = results.filter((r) => r.pass).length;
@@ -617,7 +758,8 @@ const failed = results.length - passed;
 console.log('\n=== Plugin shapes ===');
 console.log(`${SHAPERS.length} transfer curves, ${DETECTORS.length} detector curves, `
   + `${FILTER_DEVICES.length} filter responses, ${WIDTH_DEVICES.length} width curves, `
-  + `${LFO_DEVICES.length} modulators, ${COMB_DEVICES.length} combs\n`);
+  + `${LFO_DEVICES.length} modulators, ${COMB_DEVICES.length} combs, `
+  + `${DELAY_DEVICES.length} delays, ${BAND_DEVICES.length} band compressors\n`);
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
 console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
 if (failed > 0) process.exit(1);

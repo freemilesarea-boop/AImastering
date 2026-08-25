@@ -11,14 +11,15 @@
 
 import React, { useEffect, useRef } from 'react';
 import {
-  biquadMagnitudeDb, compressorOutputDb, delayTaps, freqToX, limiterOutputDb,
+  biquadMagnitudeDb, compressorOutputDb, freqToX, limiterOutputDb,
   logFrequencies, reverbEnvelope, type BiquadSpec,
 } from '../../../daw/model/plugin-curves.js';
 import { irDisplay, spaceAt } from '../../../daw/engine/reverb-spaces.js';
 import {
-  combPictureFor, detectorFor, detectorGainDb, filterPictureFor, lfoPictureFor,
-  shaperFor, shaperOutput, widthPictureFor,
-  type CombPicture, type DetectorSpec, type LfoPicture, type ShaperSpec,
+  bandPictureFor, combPictureFor, delayPictureFor, detectorFor, detectorGainDb,
+  filterPictureFor, lfoPictureFor, shaperFor, shaperOutput, widthPictureFor,
+  type BandPicture, type CombPicture, type DelayPicture, type DetectorSpec,
+  type LfoPicture, type ShaperSpec,
 } from '../../../daw/model/plugin-shapes.js';
 import { premium } from '../../../theme/premium.js';
 
@@ -292,29 +293,123 @@ function drawReduction(
 
 function drawDelay(
   ctx: CanvasRenderingContext2D, w: number, h: number,
-  params: Record<string, number>, dim: boolean,
+  picture: DelayPicture, dim: boolean,
 ): void {
-  const delaySec = param(params, 'timeMs', 300) / 1000;
-  const taps = delayTaps(delaySec, param(params, 'feedback', 0.35));
-  const span = Math.max(0.5, delaySec * (taps.length + 1));
+  const mid = h - 14;
+  const half = (h - 30) / 2;
 
   ctx.strokeStyle = GRID;
-  ctx.beginPath(); ctx.moveTo(0, h - 12.5); ctx.lineTo(w, h - 12.5); ctx.stroke();
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, mid + 0.5); ctx.lineTo(w, mid + 0.5); ctx.stroke();
 
-  const bar = (t: number, gain: number, colour: string): void => {
-    const x = Math.round((t / span) * (w - 8)) + 4;
-    const height = Math.max(2, gain * (h - 24));
+  // Repeats that alternate sides are drawn on alternate sides: one row of bars
+  // would make a ping-pong look like any other delay, which is the one thing
+  // the picture exists to tell them apart by.
+  const stereo = picture.taps.some((tap) => tap.pan !== 0);
+  const bar = (t: number, gain: number, pan: number, colour: string): void => {
+    const x = Math.round((t / picture.spanSec) * (w - 8)) + 4;
+    const height = Math.max(2, gain * (stereo ? half : half * 2));
     ctx.fillStyle = colour;
-    ctx.fillRect(x - 1, h - 12 - height, 3, height);
+    if (!stereo) { ctx.fillRect(x - 1, mid - height, 3, height); return; }
+    // Left above the line, right below it.
+    if (pan <= 0) ctx.fillRect(x - 1, mid - height, 3, height);
+    if (pan >= 0) ctx.fillRect(x - 1, mid, 3, height);
   };
-  bar(0, 1, 'rgba(235,235,245,0.8)');
-  for (const tap of taps) {
-    bar(tap.timeSec, tap.gain, dim ? 'rgba(140,140,160,0.5)' : premium.accent.base);
+
+  bar(0, 1, stereo ? -1 : 0, 'rgba(235,235,245,0.8)');
+  for (const tap of picture.taps) {
+    bar(tap.timeSec, tap.gain, tap.pan, dim ? 'rgba(140,140,160,0.5)' : premium.accent.base);
   }
 
   ctx.fillStyle = LABEL;
   ctx.font = '9px ui-monospace, monospace';
-  ctx.fillText(`${taps.length} repeats · ${(delaySec * 1000).toFixed(0)} ms`, 4, 11);
+  ctx.fillText(picture.caption, 4, 11);
+  const spanText = `${picture.spanSec.toFixed(2)} s`;
+  ctx.fillText(spanText, w - ctx.measureText(spanText).width - 4, 11);
+  // Beside the centre line, not in the corner the span label owns.
+  if (stereo) { ctx.fillText('L', w - 9, mid - 4); ctx.fillText('R', w - 9, mid + 11); }
+}
+
+/**
+ * Several compressors, side by side, each on its own slice of the spectrum.
+ *
+ * Nine knobs cannot show that the low band is squeezing four times as hard as
+ * the top one, which is the entire reason a multiband exists.  Each band gets
+ * its own panel with its own transfer curve, in the order the crossovers put
+ * them, labelled with the frequencies it covers.
+ */
+function drawBands(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  picture: BandPicture, level: number, dim: boolean,
+): void {
+  const FLOOR = -48;
+  // The caption owns the first line and each band's own label the second, so
+  // neither has to be read out of the other.
+  const top = 30;
+  const bottom = h - 14;
+  const n = picture.bands.length;
+  const gap = 4;
+  const panel = (w - gap * (n - 1)) / n;
+
+  ctx.font = '8px ui-monospace, monospace';
+  picture.bands.forEach((band, index) => {
+    const left = index * (panel + gap);
+    const xFor = (db: number): number => left + ((db - FLOOR) / -FLOOR) * panel;
+    const yFor = (db: number): number => bottom - ((db - FLOOR) / -FLOOR) * (bottom - top);
+
+    ctx.strokeStyle = GRID;
+    ctx.strokeRect(Math.round(left) + 0.5, Math.round(top) + 0.5, panel, bottom - top);
+
+    // The curve this band's compressor actually runs.
+    const spec = {
+      thresholdDb: band.thresholdDb,
+      ratio: band.ratio,
+      kneeDb: band.kneeDb,
+      makeupDb: band.makeupDb,
+    };
+    ctx.beginPath();
+    for (let px = 0; px <= panel; px++) {
+      const inDb = FLOOR + (px / panel) * -FLOOR;
+      const y = yFor(Math.max(FLOOR, Math.min(0, compressorOutputDb(spec, inDb))));
+      if (px === 0) ctx.moveTo(left, y); else ctx.lineTo(left + px, y);
+    }
+    ctx.strokeStyle = dim ? 'rgba(140,140,160,0.5)' : premium.accent.base;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Where it starts working.
+    if (band.ratio > 1) {
+      const tx = Math.round(xFor(band.thresholdDb)) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(tx, top); ctx.lineTo(tx, bottom);
+      ctx.strokeStyle = 'rgba(248,113,113,0.45)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Where the track sits, on every band at once — the level is broadband,
+    // so this is where each band WOULD be if the music were all in it.
+    if (level > 0.0005) {
+      const inDb = Math.max(FLOOR, 20 * Math.log10(level));
+      ctx.beginPath();
+      ctx.arc(xFor(inDb), yFor(Math.max(FLOOR, Math.min(0, compressorOutputDb(spec, inDb)))), 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(110,231,183,0.9)';
+      ctx.fill();
+    }
+
+    const range = band.toHz >= 20_000
+      ? `${(band.fromHz / 1000).toFixed(1)}k+`
+      : band.fromHz <= 20
+        ? `–${band.toHz >= 1000 ? `${(band.toHz / 1000).toFixed(1)}k` : band.toHz.toFixed(0)}`
+        : `${(band.fromHz / 1000).toFixed(1)}–${(band.toHz / 1000).toFixed(1)}k`;
+    ctx.fillStyle = dim ? 'rgba(140,140,160,0.7)' : LABEL;
+    ctx.fillText(`${band.label} ${band.ratio.toFixed(1)}:1`, left + 2, top - 6);
+    ctx.fillText(range, left + 2, bottom + 10);
+  });
+
+  ctx.fillStyle = LABEL;
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.fillText(picture.caption, 4, 10);
 }
 
 /**
@@ -776,40 +871,52 @@ export default function PluginVisual({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
+    // One picture per device, chosen by what the device actually does.  The
+    // order is only about which describer gets asked first; each of them
+    // answers for its own devices and null for everything else, so a device
+    // cannot fall into two branches.
     const specs = eqSpecs(pluginId, params);
+    const shaper = shaperFor(pluginId, params);
+    const detector = detectorFor(pluginId, params);
+    const filter = filterPictureFor(pluginId, params);
+    const widthPic = widthPictureFor(pluginId, params);
+    const lfoPic = lfoPictureFor(pluginId, params);
+    const comb = combPictureFor(pluginId, params);
+    const delayPic = delayPictureFor(pluginId, params);
+    const bands = bandPictureFor(pluginId, params);
+
     if (specs.length > 0) {
       drawEq(ctx, width, height, [{ label: '', specs, colour: premium.accent.base }], bypassed);
-    }
-    else if (pluginId === 'comp' || pluginId === 'limiter' || pluginId === 'transient'
-             || pluginId === 'ducker') {
+    } else if (pluginId === 'comp' || pluginId === 'limiter' || pluginId === 'transient'
+               || pluginId === 'ducker') {
       drawDynamics(ctx, width, height, pluginId, params, level, bypassed);
       if (reduction !== null && reduction < -0.05) drawReduction(ctx, width, height, reduction);
-    } else if (pluginId === 'delay') drawDelay(ctx, width, height, params, bypassed);
-    else if (pluginId === 'reverb' || pluginId === 'spacereverb' || pluginId === 'plate'
-             || pluginId === 'spring' || pluginId === 'shimmer') {
+    } else if (pluginId === 'reverb' || pluginId === 'spacereverb' || pluginId === 'plate'
+               || pluginId === 'spring' || pluginId === 'shimmer') {
       drawReverb(ctx, width, height, pluginId, params, bypassed);
-    }
-    else if (pluginId === 'loudness') drawLoudness(ctx, width, height, analysis, params);
-    else {
-      const shaper = shaperFor(pluginId, params);
-      const detector = shaper ? null : detectorFor(pluginId, params);
-      const filter = filterPictureFor(pluginId, params);
-      const width01 = widthPictureFor(pluginId, params);
-      if (shaper) drawShaper(ctx, width, height, shaper, level, bypassed);
-      else if (detector) drawDetector(ctx, width, height, detector, level, bypassed);
-      else if (filter) {
-        drawEq(ctx, width, height, filter.curves, bypassed, filter.fromHz, filter.toHz);
-        ctx.fillStyle = LABEL;
-        ctx.font = '9px ui-monospace, monospace';
-        ctx.fillText(filter.caption, 4, 11);
-      } else if (width01) drawWidth(ctx, width, height, width01, bypassed);
-      else {
-        const lfoPic = lfoPictureFor(pluginId, params);
-        const comb = lfoPic ? null : combPictureFor(pluginId, params);
-        if (lfoPic) drawLfo(ctx, width, height, lfoPic, bypassed);
-        else if (comb) drawComb(ctx, width, height, comb, bypassed);
-        else drawLevel(ctx, width, height, level);
-      }
+    } else if (pluginId === 'loudness') {
+      drawLoudness(ctx, width, height, analysis, params);
+    } else if (shaper) {
+      drawShaper(ctx, width, height, shaper, level, bypassed);
+    } else if (detector) {
+      drawDetector(ctx, width, height, detector, level, bypassed);
+    } else if (filter) {
+      drawEq(ctx, width, height, filter.curves, bypassed, filter.fromHz, filter.toHz);
+      ctx.fillStyle = LABEL;
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.fillText(filter.caption, 4, 11);
+    } else if (widthPic) {
+      drawWidth(ctx, width, height, widthPic, bypassed);
+    } else if (lfoPic) {
+      drawLfo(ctx, width, height, lfoPic, bypassed);
+    } else if (comb) {
+      drawComb(ctx, width, height, comb, bypassed);
+    } else if (delayPic) {
+      drawDelay(ctx, width, height, delayPic, bypassed);
+    } else if (bands) {
+      drawBands(ctx, width, height, bands, level, bypassed);
+    } else {
+      drawLevel(ctx, width, height, level);
     }
   }, [pluginId, params, bypassed, level, reduction, analysis, width, height]);
 

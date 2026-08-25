@@ -16,7 +16,7 @@
 // Pure, so it is tested without an AudioContext.
 
 import {
-  biquadMagnitudeDb, biquadResponse, cAbs, cAdd, cDiv, cMul,
+  biquadMagnitudeDb, biquadResponse, cAbs, cAdd, cDiv, cMul, delayTaps,
   type BiquadSpec, type Complex,
 } from './plugin-curves.js';
 import { tanhCurve } from '../engine/plugin-kit.js';
@@ -594,6 +594,151 @@ export function combPictureFor(
         return { lo: Math.min(a, b), hi: Math.max(a, b) };
       },
       caption: `${centre.toFixed(0)} Hz ±${(depth * 100).toFixed(0)}% · 올패스 4단 · 믹스 ${(mix * 100).toFixed(0)}%`,
+    };
+  }
+
+  return null;
+}
+
+// ── Delays whose repeats are not all in the same place ──────────────────────
+
+/**
+ * The repeats a delay produces, and which side of the room each lands on.
+ *
+ * A ping-pong's whole point is that the repeats alternate; drawn as one row of
+ * bars it is indistinguishable from an ordinary delay, which is exactly the
+ * information a picture is supposed to add.
+ */
+export interface DelayTap {
+  timeSec: number;
+  gain: number;
+  /** -1 hard left, +1 hard right, 0 centred. */
+  pan: number;
+}
+
+export interface DelayPicture {
+  taps: DelayTap[];
+  spanSec: number;
+  caption: string;
+}
+
+export const DELAY_DEVICES: readonly string[] = ['delay', 'pingpong', 'tapedelay'];
+
+export function delayPictureFor(
+  pluginId: string, params: Record<string, number>,
+): DelayPicture | null {
+  const build = (timeSec: number, feedback: number, pan: (i: number) => number): DelayTap[] =>
+    delayTaps(timeSec, feedback).map((tap, i) => ({ ...tap, pan: pan(i) }));
+
+  if (pluginId === 'delay') {
+    const timeSec = num(params, 'timeMs', 300) / 1000;
+    const taps = build(timeSec, num(params, 'feedback', 0.35), () => 0);
+    return {
+      taps, spanSec: Math.max(0.5, timeSec * (taps.length + 1)),
+      caption: `${taps.length}회 반복 · ${(timeSec * 1000).toFixed(0)} ms`,
+    };
+  }
+
+  if (pluginId === 'pingpong') {
+    const timeSec = num(params, 'timeMs', 350) / 1000;
+    // The graph crosses the two lines into each other, so the first repeat is
+    // left, the second right, and so on.
+    const taps = build(timeSec, Math.min(0.9, num(params, 'feedback', 0.4)), (i) => (i % 2 === 0 ? -1 : 1));
+    return {
+      taps, spanSec: Math.max(0.5, timeSec * (taps.length + 1)),
+      caption: `${taps.length}회 · ${(timeSec * 1000).toFixed(0)} ms · 좌우 번갈아`,
+    };
+  }
+
+  if (pluginId === 'tapedelay') {
+    const timeSec = num(params, 'timeMs', 400) / 1000;
+    // The loop gain is the feedback knob TIMES the normalised saturator, which
+    // the engine holds at or below unity — so the repeats die at the rate the
+    // knob says, and the drive colours them without lengthening the tail.
+    const feedback = Math.min(0.95, num(params, 'feedback', 0.45));
+    const taps = build(timeSec, feedback, () => 0);
+    return {
+      taps, spanSec: Math.max(0.5, timeSec * (taps.length + 1)),
+      caption: `${taps.length}회 · ${(timeSec * 1000).toFixed(0)} ms · 와우 ±${num(params, 'wowMs', 0.6).toFixed(1)} ms`,
+    };
+  }
+
+  return null;
+}
+
+// ── Devices that compress a band, or several ────────────────────────────────
+
+/**
+ * One compressor's static curve, with the band it is working on.
+ *
+ * A multiband is three of these, and the useful thing is seeing them side by
+ * side: the low band squeezing hard while the top is barely touched is the
+ * whole reason to reach for one, and nine knobs in a grid do not show it.
+ */
+export interface BandCurve {
+  label: string;
+  fromHz: number;
+  toHz: number;
+  thresholdDb: number;
+  ratio: number;
+  kneeDb: number;
+  makeupDb: number;
+}
+
+export interface BandPicture {
+  bands: BandCurve[];
+  caption: string;
+}
+
+export const BAND_DEVICES: readonly string[] = ['mbcomp', 'deesser'];
+
+export function bandPictureFor(
+  pluginId: string, params: Record<string, number>,
+): BandPicture | null {
+  if (pluginId === 'mbcomp') {
+    const lowX = num(params, 'lowXHz', 180);
+    const highX = num(params, 'highXHz', 3000);
+    const makeup = num(params, 'makeupDb', 0);
+    // The engine gives all three the same 6 dB knee.
+    return {
+      bands: [
+        {
+          label: 'LOW', fromHz: 20, toHz: lowX,
+          thresholdDb: num(params, 'lowThrDb', -24), ratio: Math.max(1, num(params, 'lowRatio', 3)),
+          kneeDb: 6, makeupDb: makeup,
+        },
+        {
+          label: 'MID', fromHz: lowX, toHz: highX,
+          thresholdDb: num(params, 'midThrDb', -24), ratio: Math.max(1, num(params, 'midRatio', 3)),
+          kneeDb: 6, makeupDb: makeup,
+        },
+        {
+          label: 'HIGH', fromHz: highX, toHz: 20_000,
+          thresholdDb: num(params, 'hiThrDb', -24), ratio: Math.max(1, num(params, 'hiRatio', 3)),
+          kneeDb: 6, makeupDb: makeup,
+        },
+      ],
+      caption: `${lowX.toFixed(0)} Hz / ${(highX / 1000).toFixed(1)} kHz 크로스오버 · 메이크업 ${makeup >= 0 ? '+' : ''}${makeup.toFixed(1)} dB`,
+    };
+  }
+
+  if (pluginId === 'deesser') {
+    const freq = num(params, 'freqHz', 6500);
+    // Below the split the signal passes untouched; only the band above it is
+    // compressed, and the engine maps amount 0..1 to a ratio of 1..12.
+    const ratio = 1 + num(params, 'amount', 0) * 11;
+    return {
+      bands: [
+        {
+          label: '통과', fromHz: 20, toHz: freq,
+          thresholdDb: 0, ratio: 1, kneeDb: 0, makeupDb: 0,
+        },
+        {
+          label: 'S', fromHz: freq, toHz: 20_000,
+          thresholdDb: num(params, 'thresholdDb', -24), ratio, kneeDb: 0, makeupDb: 0,
+        },
+      ],
+      caption: `${(freq / 1000).toFixed(1)} kHz 위만 ${ratio.toFixed(1)}:1 로 누릅니다`,
     };
   }
 
