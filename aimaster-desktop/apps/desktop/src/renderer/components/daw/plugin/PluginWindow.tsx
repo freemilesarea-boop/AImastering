@@ -29,9 +29,17 @@ import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import { premium } from '../../../theme/premium.js';
 import Knob from './Knob.js';
 import PluginVisual from './PluginVisual.js';
+import EqCurveEditor from './EqCurveEditor.js';
+import { eqNodes, type NodeEdit, type ParamRange } from '../../../daw/model/eq-nodes.js';
 
 const VISUAL_WIDTH = 300;
 const VISUAL_HEIGHT = 132;
+/**
+ * An EQ gets a bigger picture, because for an EQ the picture IS the control.
+ * Everything else draws a diagram beside its knobs; an EQ is edited on it.
+ */
+const EQ_WIDTH = 420;
+const EQ_HEIGHT = 200;
 
 /** The insert in this slot, for asking the engine what it is doing. */
 function insertIdOf(
@@ -60,6 +68,10 @@ function curveFor(unit: string, min: number): 'linear' | 'log' {
 export default function PluginWindow({ window: win }: { window: PluginWindowState }) {
   const session = useDawStore((s) => s.session);
   const applyTransient = useDawStore((s) => s.applyTransient);
+  /** Lanes the EQ drag currently in progress has grabbed, so it releases only those. */
+  const grabbed = useRef<Set<string>>(new Set());
+  /** Whether that drag wrote anything transient, so an undo step is only pushed if it did. */
+  const touchedDirect = useRef(false);
   const commitEdit = useDawStore((s) => s.commitEdit);
   const apply = useDawStore((s) => s.apply);
   const close = usePluginWindowStore((s) => s.close);
@@ -201,6 +213,59 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
     }));
   };
 
+  // ── The EQ editor ─────────────────────────────────────────────────────────
+  // A drag on the curve moves TWO parameters at once (frequency and gain), so
+  // it cannot go through `setParam` twice: the second call would read the
+  // insert as it was before the first, and one of the two would be lost.  One
+  // write, both values.
+  const eqBands = eqNodes(insert.pluginId, params);
+  const isEq = eqBands.length > 0;
+
+  const paramRanges: Record<string, ParamRange> = {};
+  for (const def of descriptor.params) paramRanges[def.id] = { min: def.min, max: def.max };
+
+  const applyEdits = (edits: readonly NodeEdit[]): void => {
+    if (edits.length === 0) return;
+    setLoadedPreset('');
+    const automation = useAutomationStore.getState();
+    const direct: NodeEdit[] = [];
+    for (const edit of edits) {
+      const target = targetFor(edit.paramId);
+      if (!target) { direct.push(edit); continue; }
+      // Same contract as a knob: `grab` only bites while a writing transport
+      // is rolling, `move` applies the value either way.
+      automation.grab(win.trackId, target);
+      automation.move(win.trackId, target, edit.value);
+      grabbed.current.add(edit.paramId);
+    }
+    if (direct.length === 0) return;
+    touchedDirect.current = true;
+    const nextParams = { ...insert.params };
+    const merged = { ...params };
+    for (const edit of direct) {
+      nextParams[edit.paramId] = edit.value;
+      merged[edit.paramId] = edit.value;
+    }
+    applyTransient((s) => setInsert(s, win.trackId, {
+      ...insert,
+      params: nextParams,
+      latencySamples: descriptor.latencyFor(merged, session.sampleRate),
+    }));
+  };
+
+  /** End of a drag: release exactly the lanes this drag grabbed, then commit. */
+  const commitEdits = (): void => {
+    const automation = useAutomationStore.getState();
+    for (const paramId of grabbed.current) {
+      const target = targetFor(paramId);
+      if (target) automation.release(win.trackId, target);
+    }
+    grabbed.current.clear();
+    // A pass that only rode automation lanes wrote nothing transient, so there
+    // is no edit to close; committing anyway would push an empty undo step.
+    if (touchedDirect.current) { touchedDirect.current = false; commitEdit(); }
+  };
+
   // `presetTick` is read so the list rebuilds after a save, an overwrite, a
   // delete or an import — none of which go through React state.
   void presetTick;
@@ -338,7 +403,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       className="fixed rounded-xl overflow-hidden"
       style={{
         left: win.x, top: win.y, zIndex: 200 + win.z,
-        width: VISUAL_WIDTH + 28,
+        width: (isEq ? EQ_WIDTH : VISUAL_WIDTH) + 28,
         background: premium.surface.frame,
         border: `1px solid ${insert.bypass ? 'rgba(120,120,140,0.35)' : premium.accent.deep}`,
         boxShadow: premium.shadow.panel,
@@ -562,16 +627,30 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       )}
 
       <div className="p-3.5 flex flex-col gap-3">
-        <PluginVisual
-          pluginId={insert.pluginId}
-          params={params}
-          bypassed={insert.bypass}
-          level={level}
-          reduction={reduction}
-          analysis={analysis}
-          width={VISUAL_WIDTH}
-          height={VISUAL_HEIGHT}
-        />
+        {isEq ? (
+          <EqCurveEditor
+            pluginId={insert.pluginId}
+            params={params}
+            ranges={paramRanges}
+            defaults={defaultParams(insert.pluginId)}
+            bypassed={insert.bypass}
+            width={EQ_WIDTH}
+            height={EQ_HEIGHT}
+            onEdit={applyEdits}
+            onCommit={commitEdits}
+          />
+        ) : (
+          <PluginVisual
+            pluginId={insert.pluginId}
+            params={params}
+            bypassed={insert.bypass}
+            level={level}
+            reduction={reduction}
+            analysis={analysis}
+            width={VISUAL_WIDTH}
+            height={VISUAL_HEIGHT}
+          />
+        )}
 
         {descriptor.params.filter(isChoice).map((def) => {
           const index = Math.round(params[def.id] ?? def.default);

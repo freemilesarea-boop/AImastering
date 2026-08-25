@@ -308,3 +308,14 @@ export function webAudioAutoMakeup(
   // The 0.6 exponent is WebKit's own perceptual fudge, not a derivation.
   return Math.pow(1 / Math.max(1e-9, fullRangeGain), 0.6);
 }
+
+/**
+ * The inverse of `freqToX` — where a click landed, as a frequency.
+ *
+ * A parametric EQ is only parametric if the picture can be grabbed, and that
+ * needs the axis to run both ways.
+ */
+export function xToFreq(x: number, from = 20, to = 20_000): number {
+  const t = Math.max(0, Math.min(1, x));
+  return from * Math.exp(t * Math.log(to / from));
+}

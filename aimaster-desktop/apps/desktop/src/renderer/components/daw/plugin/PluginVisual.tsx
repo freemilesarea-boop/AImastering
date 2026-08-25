@@ -40,25 +40,24 @@ function param(params: Record<string, number>, id: string, fallback: number): nu
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
-/** The filters an EQ plugin is running, in engine order. */
+/**
+ * The filters behind a device that draws its response but is not edited on it.
+ *
+ * Everything with grabbable bands — the parametric, the three-band, the
+ * dynamic EQ — is an editor now, in `EqCurveEditor`, and describes its bands
+ * in `eq-nodes.ts`.  What is left here is the tilt, whose one knob writes two
+ * shelves at once: there is no single handle for that, so it stays a picture.
+ */
 function eqSpecs(pluginId: string, params: Record<string, number>): BiquadSpec[] {
-  if (pluginId === 'eq3') {
+  if (pluginId === 'tilt') {
+    // Tilt up is bright: the low shelf goes down by exactly what the high
+    // shelf goes up by, both at the pivot.
+    const tilt = param(params, 'tiltDb', 0);
+    const pivot = param(params, 'pivotHz', 1000);
     return [
-      // The engine leaves Q at the Web Audio default of 1 dB on this filter.
-      { type: 'highpass',  freq: param(params, 'hpfHz', 20),   gain: 0, q: 1 },
-      { type: 'lowshelf',  freq: 120,                          gain: param(params, 'lowDb', 0),  q: 0.707 },
-      { type: 'peaking',   freq: param(params, 'midHz', 1000), gain: param(params, 'midDb', 0),  q: 1 },
-      { type: 'highshelf', freq: 8000,                         gain: param(params, 'highDb', 0), q: 0.707 },
+      { type: 'lowshelf',  freq: pivot, gain: -tilt, q: 0.707 },
+      { type: 'highshelf', freq: pivot, gain: tilt,  q: 0.707 },
     ];
-  }
-  if (pluginId === 'exciter') {
-    return [{ type: 'highshelf', freq: param(params, 'freqHz', 6000), gain: param(params, 'amountDb', 0), q: 0.707 }];
-  }
-  if (pluginId === 'deesser') {
-    return [{ type: 'peaking', freq: param(params, 'freqHz', 6500), gain: -param(params, 'amountDb', 0), q: 2 }];
-  }
-  if (pluginId === 'dyneq') {
-    return [{ type: 'peaking', freq: param(params, 'freqHz', 300), gain: param(params, 'rangeDb', 0), q: param(params, 'q', 1) }];
   }
   return [];
 }
