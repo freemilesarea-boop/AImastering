@@ -31,6 +31,7 @@ import Knob from './Knob.js';
 import PluginVisual from './PluginVisual.js';
 import EqCurveEditor from './EqCurveEditor.js';
 import { eqNodes, type NodeEdit, type ParamRange } from '../../../daw/model/eq-nodes.js';
+import { wantsSquareVisual } from '../../../daw/model/plugin-shapes.js';
 
 const VISUAL_WIDTH = 300;
 const VISUAL_HEIGHT = 132;
@@ -40,6 +41,11 @@ const VISUAL_HEIGHT = 132;
  */
 const EQ_WIDTH = 420;
 const EQ_HEIGHT = 200;
+/**
+ * A transfer curve is read against the diagonal that means "unchanged", so it
+ * has to be square — and 132 px of a 300 px panel makes it a slot, not a plot.
+ */
+const SQUARE_HEIGHT = 200;
 
 /** The insert in this slot, for asking the engine what it is doing. */
 function insertIdOf(
@@ -220,6 +226,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   // write, both values.
   const eqBands = eqNodes(insert.pluginId, params);
   const isEq = eqBands.length > 0;
+  const visualHeight = wantsSquareVisual(insert.pluginId) ? SQUARE_HEIGHT : VISUAL_HEIGHT;
 
   const paramRanges: Record<string, ParamRange> = {};
   for (const def of descriptor.params) paramRanges[def.id] = { min: def.min, max: def.max };
@@ -648,7 +655,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             reduction={reduction}
             analysis={analysis}
             width={VISUAL_WIDTH}
-            height={VISUAL_HEIGHT}
+            height={visualHeight}
           />
         )}
 

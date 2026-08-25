@@ -109,7 +109,7 @@ function lfo(ctx: BaseAudioContext, rateHz: number, depth: number, type: Oscilla
 }
 
 /** Soft clip: tanh-ish above the ceiling, straight through below it. */
-function clipCurve(ceiling: number, hardness: number): Float32Array<ArrayBuffer> {
+export function clipCurve(ceiling: number, hardness: number): Float32Array<ArrayBuffer> {
   const n = 4096;
   const curve = new Float32Array(n);
   const k = 1 + hardness * 40;
@@ -122,8 +122,30 @@ function clipCurve(ceiling: number, hardness: number): Float32Array<ArrayBuffer>
   return curve;
 }
 
+/**
+ * Envelope -> gain for the noise gate: open above the threshold, closed below.
+ *
+ * Exported because the plugin window draws this curve.  A picture built from a
+ * second copy of the maths is a picture that can disagree with the sound.
+ */
+export function gateGainCurve(thresholdDb: number, rangeDb: number): Float32Array<ArrayBuffer> {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const thr = dbToGain(thresholdDb);
+  const floor = dbToGain(-Math.max(0, rangeDb));
+  for (let i = 0; i < n; i++) {
+    const level = Math.abs((i / (n - 1)) * 2 - 1);
+    // Open above the threshold, closed below, with a short ramp across it so a
+    // signal sitting on the threshold does not chatter.
+    const ratio = thr > 0 ? level / thr : 1;
+    const openness = Math.max(0, Math.min(1, (ratio - 0.5) / 0.5));
+    curve[i] = floor + (1 - floor) * openness;
+  }
+  return curve;
+}
+
 /** Quantise to `bits`, the way a converter would. */
-function bitCurve(bits: number): Float32Array<ArrayBuffer> {
+export function bitCurve(bits: number): Float32Array<ArrayBuffer> {
   const n = 8192;
   const curve = new Float32Array(n);
   const levels = Math.max(2, Math.pow(2, Math.max(1, bits)) / 2);
@@ -160,7 +182,7 @@ export function tubeSmallSignalGain(drive: number, bias: number): number {
   return (k * sech2) / Math.max(1e-6, Math.tanh(k));
 }
 
-function tubeCurve(drive: number, bias: number): Float32Array<ArrayBuffer> {
+export function tubeCurve(drive: number, bias: number): Float32Array<ArrayBuffer> {
   const n = 4096;
   const curve = new Float32Array(n);
   const k = 1 + drive * 24;
@@ -392,23 +414,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const rect = absShaper(ctx);
       const env = smoother(ctx, p(params, 'attackMs', 5));
 
-      const buildCurve = (thresholdDb: number, rangeDb: number): Float32Array<ArrayBuffer> => {
-        const n = 2048;
-        const curve = new Float32Array(n);
-        const thr = dbToGain(thresholdDb);
-        const floor = dbToGain(-Math.max(0, rangeDb));
-        for (let i = 0; i < n; i++) {
-          const level = Math.abs((i / (n - 1)) * 2 - 1);
-          // Open above the threshold, closed below, with a short ramp across
-          // it so a signal sitting on the threshold does not chatter.
-          const ratio = thr > 0 ? level / thr : 1;
-          const openness = Math.max(0, Math.min(1, (ratio - 0.5) / 0.5));
-          curve[i] = floor + (1 - floor) * openness;
-        }
-        return curve;
-      };
-
-      let curve = makeShaper(ctx, buildCurve(
+      let curve = makeShaper(ctx, gateGainCurve(
         p(params, 'thresholdDb', -45), p(params, 'rangeDb', 40),
       ));
       input.connect(rect).connect(env.input);
@@ -421,7 +427,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           params[id] = v;
           if (id === 'attackMs' || id === 'releaseMs') env.setTimeMs(v);
           if (id === 'thresholdDb' || id === 'rangeDb') {
-            const next = makeShaper(ctx, buildCurve(
+            const next = makeShaper(ctx, gateGainCurve(
               p(params, 'thresholdDb', -45), p(params, 'rangeDb', 40),
             ));
             env.output.disconnect();

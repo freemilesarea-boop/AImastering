@@ -15,6 +15,10 @@ import {
   logFrequencies, reverbEnvelope, type BiquadSpec,
 } from '../../../daw/model/plugin-curves.js';
 import { irDisplay, spaceAt } from '../../../daw/engine/reverb-spaces.js';
+import {
+  detectorFor, detectorGainDb, shaperFor, shaperOutput,
+  type DetectorSpec, type ShaperSpec,
+} from '../../../daw/model/plugin-shapes.js';
 import { premium } from '../../../theme/premium.js';
 
 export interface PluginVisualProps {
@@ -390,6 +394,138 @@ function drawLoudness(
   ctx.fillText(`PEAK ${analysis.peakDb.toFixed(1)} dBFS`, 4, h - 6);
 }
 
+
+/**
+ * A waveshaper's transfer curve: what goes in, against what comes out.
+ *
+ * Linear axes, ±1 full scale, because that is the space the curve lives in —
+ * a decibel axis would hide the one thing worth seeing, which is how the line
+ * bends away from the diagonal as the drive comes up.  The faint diagonal is
+ * "unchanged", so the distance from it IS the effect.
+ *
+ * The curve is read out of the same Float32Array the WaveShaperNode is loaded
+ * with, so the bit crusher's staircase has exactly the steps the converter has
+ * and the tube's asymmetry leans the way the tube leans.
+ */
+function drawShaper(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  spec: ShaperSpec, level: number, dim: boolean,
+): void {
+  const pad = 10;
+  const size = Math.min(w, h) - pad * 2;
+  const left = (w - size) / 2;
+  const top = (h - size) / 2;
+  const xFor = (v: number): number => left + ((v + 1) / 2) * size;
+  const yFor = (v: number): number => top + (1 - (v + 1) / 2) * size;
+
+  // The box, its middle, and the "unchanged" diagonal.
+  ctx.strokeStyle = GRID;
+  ctx.strokeRect(Math.round(left) + 0.5, Math.round(top) + 0.5, size, size);
+  ctx.beginPath();
+  ctx.moveTo(left, yFor(0)); ctx.lineTo(left + size, yFor(0));
+  ctx.moveTo(xFor(0), top);  ctx.lineTo(xFor(0), top + size);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.setLineDash([3, 3]);
+  ctx.moveTo(xFor(-1), yFor(-1)); ctx.lineTo(xFor(1), yFor(1));
+  ctx.strokeStyle = 'rgba(255,255,255,0.30)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // The transfer curve. Sampled per pixel so a staircase reads as a staircase.
+  ctx.beginPath();
+  for (let px = 0; px <= size; px++) {
+    const x = (px / size) * 2 - 1;
+    const y = Math.max(-1.2, Math.min(1.2, shaperOutput(spec, x)));
+    if (px === 0) ctx.moveTo(xFor(x), yFor(y)); else ctx.lineTo(xFor(x), yFor(y));
+  }
+  ctx.strokeStyle = dim ? 'rgba(140,140,160,0.5)' : premium.accent.base;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Where the track is sitting on that curve right now, both polarities,
+  // because an asymmetric shaper does different things to the two of them.
+  if (level > 0.0005) {
+    const x = Math.min(1, level);
+    for (const sign of [1, -1]) {
+      const y = Math.max(-1.2, Math.min(1.2, shaperOutput(spec, sign * x)));
+      ctx.beginPath();
+      ctx.arc(xFor(sign * x), yFor(y), 3, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(110,231,183,0.95)';
+      ctx.fill();
+    }
+  }
+
+  ctx.fillStyle = LABEL;
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.fillText(spec.caption, 4, 11);
+  ctx.fillText(level > 0.0005 ? `${(20 * Math.log10(level)).toFixed(1)} dBFS` : '재생하면 표시됩니다', 4, h - 5);
+  // Which way is which, in the two corners the curve never reaches: it runs
+  // bottom-left to top-right, so top-left and bottom-right are always free.
+  ctx.fillText('OUT', left + 4, top + 11);
+  ctx.fillText('IN', left + size - 15, top + size - 4);
+}
+
+/**
+ * A gate or an expander: input level against the gain it earns.
+ *
+ * The compressor's axes, but the curve falls away BELOW the threshold instead
+ * of above it, which is the whole difference between the two families and is
+ * invisible on a row of knobs.
+ */
+function drawDetector(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  spec: DetectorSpec, level: number, dim: boolean,
+): void {
+  const FLOOR = -80;
+  const xFor = (db: number): number => ((db - FLOOR) / -FLOOR) * w;
+  const yFor = (db: number): number => h - ((db - FLOOR) / -FLOOR) * h;
+
+  ctx.strokeStyle = GRID;
+  for (const db of [-60, -40, -20]) {
+    const x = Math.round(xFor(db)) + 0.5;
+    const y = Math.round(yFor(db)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+
+  // Output level against input level, so a closed gate is a floor and an open
+  // one is the diagonal.
+  ctx.beginPath();
+  for (let px = 0; px <= w; px++) {
+    const inDb = FLOOR + (px / w) * -FLOOR;
+    const outDb = inDb + detectorGainDb(spec, inDb);
+    const y = yFor(Math.max(FLOOR, Math.min(0, outDb)));
+    if (px === 0) ctx.moveTo(0, y); else ctx.lineTo(px, y);
+  }
+  ctx.strokeStyle = dim ? 'rgba(140,140,160,0.5)' : premium.accent.base;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  const tx = Math.round(xFor(spec.thresholdDb)) + 0.5;
+  ctx.beginPath();
+  ctx.moveTo(tx, 0); ctx.lineTo(tx, h);
+  ctx.strokeStyle = 'rgba(248,113,113,0.55)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  if (level > 0.00005) {
+    const inDb = Math.max(FLOOR, 20 * Math.log10(level));
+    const outDb = inDb + detectorGainDb(spec, inDb);
+    ctx.beginPath();
+    ctx.arc(xFor(inDb), yFor(Math.max(FLOOR, Math.min(0, outDb))), 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(110,231,183,0.95)';
+    ctx.fill();
+  }
+
+  ctx.fillStyle = LABEL;
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.fillText(spec.caption, 4, 11);
+  ctx.fillText('IN', 4, h - 4);
+  ctx.fillText('OUT', w - 22, 20);
+}
+
 /** A level bar, for plugins whose behaviour is not a curve. */
 function drawLevel(ctx: CanvasRenderingContext2D, w: number, h: number, level: number): void {
   const db = level > 0.0005 ? 20 * Math.log10(level) : -60;
@@ -434,7 +570,13 @@ export default function PluginVisual({
       drawReverb(ctx, width, height, pluginId, params, bypassed);
     }
     else if (pluginId === 'loudness') drawLoudness(ctx, width, height, analysis, params);
-    else drawLevel(ctx, width, height, level);
+    else {
+      const shaper = shaperFor(pluginId, params);
+      const detector = shaper ? null : detectorFor(pluginId, params);
+      if (shaper) drawShaper(ctx, width, height, shaper, level, bypassed);
+      else if (detector) drawDetector(ctx, width, height, detector, level, bypassed);
+      else drawLevel(ctx, width, height, level);
+    }
   }, [pluginId, params, bypassed, level, reduction, analysis, width, height]);
 
   return <canvas ref={ref} className="block rounded-md" style={{ background: 'rgba(0,0,0,0.28)' }} />;
