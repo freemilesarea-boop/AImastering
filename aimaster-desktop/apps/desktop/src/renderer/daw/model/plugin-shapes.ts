@@ -48,6 +48,15 @@ export interface ShaperSpec {
   /** 0..1 wet blend against the dry input. */
   mix: number;
   /**
+   * What the dry path is multiplied by.
+   *
+   * Normally `1 - mix`, but the exciter ADDS its treated band on top of a dry
+   * path that stays at full level — turning its mix up does not uncover
+   * anything, it piles more on.  Defaulting this to `1 - mix` would draw the
+   * exciter quietly cross-fading, which is not what you hear.
+   */
+  dryGain: number;
+  /**
    * After the blend, on both paths.
    *
    * Not the same place as `wetGain`, and the difference is visible: the
@@ -79,7 +88,7 @@ export function shaperOutput(spec: ShaperSpec, x: number): number {
   let wet = x * spec.inputGain;
   for (const curve of spec.curves) wet = readCurve(curve, wet);
   wet *= spec.wetGain;
-  return spec.postGain * (wet * spec.mix + x * (1 - spec.mix));
+  return spec.postGain * (wet * spec.mix + x * spec.dryGain);
 }
 
 /**
@@ -98,7 +107,7 @@ export function shaperOutput(spec: ShaperSpec, x: number): number {
  * builds four-thousand-entry Float32Arrays.
  */
 export const TRANSFER_CURVE_DEVICES: readonly string[] = [
-  'trim', 'saturation', 'tube', 'clipper', 'bitcrush',
+  'trim', 'saturation', 'tube', 'clipper', 'bitcrush', 'exciter',
 ];
 
 /** The devices drawn on the detector axes. */
@@ -114,7 +123,7 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
   if (pluginId === 'trim') {
     const db = num(params, 'gainDb', 0);
     return {
-      inputGain: 1, curves: [], wetGain: 1, mix: 1, postGain: dbToGain(db),
+      inputGain: 1, curves: [], wetGain: 1, mix: 1, dryGain: 0, postGain: dbToGain(db),
       caption: `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB — 기울기만 바뀌는 직선입니다`,
     };
   }
@@ -129,6 +138,7 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
       // also a volume knob.  It is inside the wet path, not after the blend.
       wetGain: 1 / Math.max(1, Math.sqrt(gain)),
       mix: num(params, 'mix', 0),
+      dryGain: 1 - num(params, 'mix', 0),
       postGain: 1,
       caption: `드라이브 ${driveDb.toFixed(1)} dB · 믹스 ${Math.round(num(params, 'mix', 0) * 100)}%`,
     };
@@ -140,10 +150,29 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
       curves: [tubeCurve(num(params, 'drive', 0.3), num(params, 'bias', 0.15))],
       wetGain: 1,
       mix: num(params, 'mix', 100) / 100,
+      dryGain: 1 - num(params, 'mix', 100) / 100,
       postGain: dbToGain(num(params, 'outDb', 0)),
       // The tone control is a lowpass in the wet path; it changes the sound
       // but not this transfer curve, so it is said rather than drawn.
       caption: `바이어스 ${num(params, 'bias', 0.15).toFixed(2)} · 짝수 배음 — 톤은 곡선 밖`,
+    };
+  }
+
+  if (pluginId === 'exciter') {
+    const amount = num(params, 'amount', 0);
+    const mix = num(params, 'mix', 0);
+    // `input -> highpass -> drive(1 + amount*8) -> tanh(0.15) -> wet(mix) -> out`
+    // with `input -> out` at FULL level alongside.  This curve is what content
+    // above the corner meets; the corner is a filter and has no place on a
+    // transfer curve's axes, so it is said in the caption instead of drawn.
+    return {
+      inputGain: 1 + amount * 8,
+      curves: [tanhCurve(0.15)],
+      wetGain: 1,
+      mix,
+      dryGain: 1,
+      postGain: 1,
+      caption: `${(num(params, 'freqHz', 4000) / 1000).toFixed(1)} kHz 위만 · 드라이브 ×${(1 + amount * 8).toFixed(1)} · ${(mix * 100).toFixed(0)}% 더함`,
     };
   }
 
@@ -154,7 +183,7 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
       // Shaper then guard, both of them, because the guard is what makes the
       // ceiling real after oversampling rings past it.
       curves: [clipCurve(ceiling, num(params, 'hardness', 0.5)), clipCurve(ceiling, 1)],
-      wetGain: 1, mix: 1, postGain: 1,
+      wetGain: 1, mix: 1, dryGain: 0, postGain: 1,
       caption: `실링 ${num(params, 'ceilingDb', -1).toFixed(1)} dB · 하드니스 ${num(params, 'hardness', 0.5).toFixed(2)}`,
     };
   }
@@ -166,6 +195,7 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
       curves: [bitCurve(bits)],
       wetGain: 1,
       mix: num(params, 'mix', 100) / 100,
+      dryGain: 1 - num(params, 'mix', 100) / 100,
       postGain: 1,
       // `bitCurve` quantises to 2^bits / 2 levels each side of zero, and the
       // knob is continuous, so the step count is rarely a round number.
@@ -743,4 +773,154 @@ export function bandPictureFor(
   }
 
   return null;
+}
+
+// ── What each output channel is made of ─────────────────────────────────────
+
+/**
+ * The impulses that build each output channel.
+ *
+ * The Haas widener and the phase utility both work by routing and delaying
+ * whole channels, which has no frequency response and no transfer curve — the
+ * honest picture is where each output comes from, when it arrives, and with
+ * which sign.  Four toggles that read "on" tell you nothing about whether the
+ * left output is now the right input upside down.
+ */
+export interface ChannelImpulse {
+  ms: number;
+  /** Signed: negative is a polarity flip, which is the whole point here. */
+  gain: number;
+  from: 'L' | 'R';
+}
+
+export interface ChannelPicture {
+  channels: Array<{ label: string; impulses: ChannelImpulse[] }>;
+  spanMs: number;
+  caption: string;
+}
+
+export const CHANNEL_DEVICES: readonly string[] = ['haas', 'phase'];
+
+export function channelPictureFor(
+  pluginId: string, params: Record<string, number>,
+): ChannelPicture | null {
+  if (pluginId === 'haas') {
+    const delayMs = num(params, 'delayMs', 12);
+    const amount = Math.max(0, Math.min(1, num(params, 'amount', 0.5)));
+    // Left goes straight through; right is a blend of itself and a delayed
+    // copy of itself.  Both arrivals are real and both are audible as one
+    // image pulled sideways.
+    return {
+      channels: [
+        { label: 'L', impulses: [{ ms: 0, gain: 1, from: 'L' }] },
+        {
+          label: 'R',
+          impulses: [
+            { ms: 0, gain: 1 - amount, from: 'R' },
+            { ms: delayMs, gain: amount, from: 'R' },
+          ].filter((i) => Math.abs(i.gain) > 0.001) as ChannelImpulse[],
+        },
+      ],
+      spanMs: Math.max(4, delayMs * 1.25),
+      caption: `오른쪽만 ${delayMs.toFixed(1)} ms 늦게 · ${(amount * 100).toFixed(0)}%`,
+    };
+  }
+
+  if (pluginId === 'phase') {
+    const on = (id: string): boolean => num(params, id, 0) >= 0.5;
+    const lSign = on('invertL') ? -1 : 1;
+    const rSign = on('invertR') ? -1 : 1;
+    const mono = on('mono');
+    const swap = on('swap');
+    // The engine's own routing table.
+    const [lToL, rToL, lToR, rToR] = mono
+      ? [0.5, 0.5, 0.5, 0.5]
+      : swap ? [0, 1, 1, 0] : [1, 0, 0, 1];
+    const chan = (fromL: number, fromR: number): ChannelImpulse[] => ([
+      { ms: 0, gain: fromL * lSign, from: 'L' as const },
+      { ms: 0, gain: fromR * rSign, from: 'R' as const },
+    ].filter((i) => Math.abs(i.gain) > 0.001));
+    const words = [
+      mono ? '모노' : swap ? 'L↔R 교체' : '그대로',
+      on('invertL') ? 'L 반전' : '',
+      on('invertR') ? 'R 반전' : '',
+    ].filter(Boolean);
+    return {
+      channels: [
+        { label: 'L', impulses: chan(lToL, rToL) },
+        { label: 'R', impulses: chan(lToR, rToR) },
+      ],
+      spanMs: 1,
+      caption: words.join(' · '),
+    };
+  }
+
+  return null;
+}
+
+// ── A noise floor, and nothing else ─────────────────────────────────────────
+
+/**
+ * Where the dither noise sits, against the resolution it is dithering for.
+ *
+ * A bits knob and an amount knob do not say "this puts noise at -93 dBFS",
+ * and that number is the only thing about a dither anyone needs to know.
+ */
+export interface FloorPicture {
+  /** The noise the device is adding, in dBFS. */
+  noiseDb: number;
+  /** The quantisation step the target word length has, in dBFS. */
+  lsbDb: number;
+  caption: string;
+}
+
+export const FLOOR_DEVICES: readonly string[] = ['dither'];
+
+export function floorPictureFor(
+  pluginId: string, params: Record<string, number>,
+): FloorPicture | null {
+  if (pluginId !== 'dither') return null;
+  const bits = Math.max(2, num(params, 'bits', 16));
+  const amount = Math.max(0, num(params, 'amount', 1));
+  // The engine's own maths: one LSB is 2^-(bits-1), scaled by the amount.
+  const lsb = Math.pow(2, -(bits - 1));
+  const noise = lsb * amount;
+  return {
+    noiseDb: noise > 0 ? 20 * Math.log10(noise) : -Infinity,
+    lsbDb: 20 * Math.log10(lsb),
+    caption: amount > 0
+      ? `${bits.toFixed(0)} bit · 노이즈 ${(20 * Math.log10(noise)).toFixed(1)} dBFS`
+      : `${bits.toFixed(0)} bit · 디더 꺼짐`,
+  };
+}
+
+// ── Devices that do nothing here ────────────────────────────────────────────
+
+/**
+ * A device whose knobs nothing reads.
+ *
+ * `offline: true` makes the engine bypass the device in the live graph — and
+ * in the render, which builds the same graph.  Nothing else looks at the
+ * insert's parameters.  So the Pitch Correct insert is a no-op wherever it is
+ * placed, and drawing it a retune curve would be inventing a behaviour, the
+ * same mistake the exciter's `amountDb` was.
+ *
+ * Saying so is the picture.
+ */
+export interface NoticePicture {
+  lines: string[];
+}
+
+export const NOTICE_DEVICES: readonly string[] = ['pitchcorrect'];
+
+export function noticeFor(pluginId: string): NoticePicture | null {
+  if (pluginId !== 'pitchcorrect') return null;
+  return {
+    lines: [
+      '이 인서트는 소리를 바꾸지 않습니다.',
+      'offline 장치라 실시간 그래프에서도, 렌더에서도',
+      '바이패스되고 노브를 읽는 곳이 없습니다.',
+      '피치 보정은 VOCAL 탭의 VariAudio 에서 하세요.',
+    ],
+  };
 }

@@ -712,7 +712,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         )}
         {descriptor.offline && (
           <p className="text-[10px] text-center" style={{ color: 'rgb(251,191,36)' }}>
-            OFFLINE — 이 장치는 바운스/렌더에서 적용됩니다
+            OFFLINE — 실시간 그래프에서 바이패스됩니다
           </p>
         )}
       </div>

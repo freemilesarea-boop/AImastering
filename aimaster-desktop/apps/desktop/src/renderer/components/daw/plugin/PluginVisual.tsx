@@ -16,10 +16,12 @@ import {
 } from '../../../daw/model/plugin-curves.js';
 import { irDisplay, spaceAt } from '../../../daw/engine/reverb-spaces.js';
 import {
-  bandPictureFor, combPictureFor, delayPictureFor, detectorFor, detectorGainDb,
-  filterPictureFor, lfoPictureFor, shaperFor, shaperOutput, widthPictureFor,
-  type BandPicture, type CombPicture, type DelayPicture, type DetectorSpec,
-  type LfoPicture, type ShaperSpec,
+  bandPictureFor, channelPictureFor, combPictureFor, delayPictureFor, detectorFor,
+  detectorGainDb, filterPictureFor, floorPictureFor, lfoPictureFor, noticeFor,
+  shaperFor, shaperOutput, widthPictureFor,
+  type BandPicture, type ChannelPicture, type CombPicture, type DelayPicture,
+  type DetectorSpec, type FloorPicture, type LfoPicture, type NoticePicture,
+  type ShaperSpec,
 } from '../../../daw/model/plugin-shapes.js';
 import { premium } from '../../../theme/premium.js';
 
@@ -839,6 +841,129 @@ function drawComb(
   ctx.fillText(`±${RANGE} dB`, w - 42, 11);
 }
 
+
+/**
+ * Where each output channel comes from, when, and with which sign.
+ *
+ * Routing and polarity have no frequency response and no transfer curve, so
+ * the honest picture is the arrivals themselves: a bar up is in phase, a bar
+ * down is flipped, and the colour says which input it came from.  Four
+ * toggles reading "on" do not tell you the left output is now the right input
+ * upside down.
+ */
+function drawChannels(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  picture: ChannelPicture, dim: boolean,
+): void {
+  const top = 24;
+  const rows = picture.channels.length;
+  const rowH = (h - top - 14) / rows;
+  const left = 22;
+  const plot = w - left - 8;
+
+  ctx.font = '9px ui-monospace, monospace';
+  picture.channels.forEach((channel, row) => {
+    const mid = top + row * rowH + rowH / 2;
+    ctx.strokeStyle = GRID;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(left, Math.round(mid) + 0.5); ctx.lineTo(left + plot, Math.round(mid) + 0.5);
+    ctx.stroke();
+    ctx.fillStyle = LABEL;
+    ctx.fillText(channel.label, 4, mid + 3);
+
+    for (const pulse of channel.impulses) {
+      // Two sources arriving at the same instant — which is every mono sum —
+      // would draw one bar on top of another, so they are nudged apart by
+      // source.  The time is still read off the axis; only the hair's breadth
+      // between them is drawn.
+      const nudge = channel.impulses.some((other) => other !== pulse && other.ms === pulse.ms)
+        ? (pulse.from === 'L' ? -3 : 3)
+        : 0;
+      const x = left + (pulse.ms / Math.max(1e-6, picture.spanMs)) * plot + nudge;
+      const height = Math.abs(pulse.gain) * (rowH / 2 - 4);
+      ctx.fillStyle = dim
+        ? 'rgba(140,140,160,0.5)'
+        : pulse.from === 'L' ? 'rgba(230,210,160,0.9)' : 'rgba(126,200,255,0.9)';
+      // Up is in phase, down is inverted.
+      if (pulse.gain >= 0) ctx.fillRect(x - 1.5, mid - height, 3, height);
+      else ctx.fillRect(x - 1.5, mid, 3, height);
+      ctx.fillStyle = LABEL;
+      ctx.font = '8px ui-monospace, monospace';
+      ctx.fillText(pulse.from, x + (nudge < 0 ? -9 : 4), pulse.gain >= 0 ? mid - height + 8 : mid + height - 2);
+      ctx.font = '9px ui-monospace, monospace';
+    }
+  });
+
+  ctx.fillStyle = LABEL;
+  ctx.fillText(picture.caption, 4, 11);
+  if (picture.spanMs > 1.5) ctx.fillText(`${picture.spanMs.toFixed(1)} ms`, w - 46, h - 3);
+}
+
+/**
+ * A noise floor, against the resolution it exists for.
+ *
+ * A bits knob and an amount knob do not say "this is putting noise at
+ * -93 dBFS", and that number is the only thing about a dither anyone needs.
+ */
+function drawFloor(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  picture: FloorPicture, dim: boolean,
+): void {
+  const TOP_DB = 0;
+  const BOTTOM_DB = -150;
+  const yFor = (db: number): number =>
+    12 + ((TOP_DB - Math.max(BOTTOM_DB, Math.min(TOP_DB, db))) / (TOP_DB - BOTTOM_DB)) * (h - 26);
+
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.strokeStyle = GRID;
+  ctx.lineWidth = 1;
+  for (const db of [-24, -48, -72, -96, -120]) {
+    const y = Math.round(yFor(db)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    ctx.fillStyle = LABEL;
+    ctx.fillText(String(db), 2, y - 2);
+  }
+
+  // The step the target word length has, and the noise put under it.
+  const lsbY = Math.round(yFor(picture.lsbDb)) + 0.5;
+  ctx.beginPath();
+  ctx.setLineDash([3, 3]);
+  ctx.moveTo(46, lsbY); ctx.lineTo(w - 4, lsbY);
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = LABEL;
+  ctx.fillText('LSB', w - 26, lsbY - 3);
+
+  if (Number.isFinite(picture.noiseDb)) {
+    const y = yFor(picture.noiseDb);
+    ctx.fillStyle = dim ? 'rgba(140,140,160,0.35)' : 'rgba(126,200,255,0.35)';
+    ctx.fillRect(46, y, w - 50, Math.max(1, yFor(BOTTOM_DB) - y));
+    ctx.strokeStyle = dim ? 'rgba(140,140,160,0.6)' : premium.accent.base;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(46, y); ctx.lineTo(w - 4, y); ctx.stroke();
+  }
+
+  ctx.fillStyle = LABEL;
+  ctx.fillText(picture.caption, 4, 10);
+}
+
+/** A device whose knobs nothing reads, said plainly. */
+function drawNotice(
+  ctx: CanvasRenderingContext2D, w: number, h: number, picture: NoticePicture,
+): void {
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.fillStyle = 'rgb(251,191,36)';
+  ctx.fillText('!', 6, 16);
+  ctx.fillStyle = LABEL;
+  const startY = Math.max(16, h / 2 - (picture.lines.length * 13) / 2 + 8);
+  picture.lines.forEach((line, i) => {
+    ctx.fillText(line, 16, startY + i * 13);
+  });
+  void w;
+}
+
 /** A level bar, for plugins whose behaviour is not a curve. */
 function drawLevel(ctx: CanvasRenderingContext2D, w: number, h: number, level: number): void {
   const db = level > 0.0005 ? 20 * Math.log10(level) : -60;
@@ -884,6 +1009,9 @@ export default function PluginVisual({
     const comb = combPictureFor(pluginId, params);
     const delayPic = delayPictureFor(pluginId, params);
     const bands = bandPictureFor(pluginId, params);
+    const channels = channelPictureFor(pluginId, params);
+    const floor = floorPictureFor(pluginId, params);
+    const notice = noticeFor(pluginId);
 
     if (specs.length > 0) {
       drawEq(ctx, width, height, [{ label: '', specs, colour: premium.accent.base }], bypassed);
@@ -915,6 +1043,12 @@ export default function PluginVisual({
       drawDelay(ctx, width, height, delayPic, bypassed);
     } else if (bands) {
       drawBands(ctx, width, height, bands, level, bypassed);
+    } else if (channels) {
+      drawChannels(ctx, width, height, channels, bypassed);
+    } else if (floor) {
+      drawFloor(ctx, width, height, floor, bypassed);
+    } else if (notice) {
+      drawNotice(ctx, width, height, notice);
     } else {
       drawLevel(ctx, width, height, level);
     }

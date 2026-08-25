@@ -131,7 +131,7 @@ export default function RackPanel({
                         fontFamily: premium.type.mono, fontSize: 8, padding: '0 4px',
                         borderRadius: 3, color: premium.accent.cool,
                         background: 'rgba(110,155,214,0.16)',
-                      }}>OFFLINE — 렌더 시 적용</span>
+                      }}>OFFLINE — 바이패스</span>
                     )}
                   </div>
                   <div className="px-3 py-2 grid grid-cols-2 gap-x-4 gap-y-1">

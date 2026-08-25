@@ -23,6 +23,9 @@ import {
   filterPictureFor, widthPictureFor, FILTER_DEVICES, WIDTH_DEVICES,
   lfoPictureFor, combPictureFor, LFO_DEVICES, COMB_DEVICES,
   delayPictureFor, bandPictureFor, DELAY_DEVICES, BAND_DEVICES,
+  channelPictureFor, floorPictureFor, noticeFor,
+  CHANNEL_DEVICES, FLOOR_DEVICES, NOTICE_DEVICES,
+  TRANSFER_CURVE_DEVICES, DETECTOR_DEVICES,
 } from '../src/renderer/daw/model/plugin-shapes.js';
 import {
   biquadMagnitudeDb, chainMagnitudeDb, compressorOutputDb,
@@ -52,8 +55,11 @@ function sameArray(a: Float32Array, b: Float32Array, m: string): void {
   }
 }
 
-const SHAPERS = ['trim', 'saturation', 'tube', 'clipper', 'bitcrush'] as const;
-const DETECTORS = ['gate', 'denoise'] as const;
+// Driven from the module's own lists, not a second copy: a hand-kept list here
+// went stale the moment the exciter joined, and reported the new device as an
+// intruder rather than reporting itself as out of date.
+const SHAPERS = TRANSFER_CURVE_DEVICES;
+const DETECTORS = DETECTOR_DEVICES;
 
 // ── The picture is the engine's own array ───────────────────────────────────
 
@@ -220,8 +226,8 @@ check('every shaping device has a spec, and nothing else claims one', () => {
   for (const id of SHAPERS) assert(shaperFor(id, defaultParams(id)), `${id} has no shaper spec`);
   for (const id of DETECTORS) assert(detectorFor(id, defaultParams(id)), `${id} has no detector spec`);
   for (const p of PLUGINS) {
-    const isShaper = (SHAPERS as readonly string[]).includes(p.id);
-    const isDetector = (DETECTORS as readonly string[]).includes(p.id);
+    const isShaper = SHAPERS.includes(p.id);
+    const isDetector = DETECTORS.includes(p.id);
     if (!isShaper) assert(!shaperFor(p.id, defaultParams(p.id)), `${p.id} claims a transfer curve`);
     if (!isDetector) assert(!detectorFor(p.id, defaultParams(p.id)), `${p.id} claims a detector curve`);
   }
@@ -751,6 +757,173 @@ check('every delay and band caption says something real', () => {
   }
 });
 
+
+// ── Routing, polarity, and a noise floor ────────────────────────────────────
+
+check('the exciter ADDS its band — its mix does not uncover the dry signal', () => {
+  const spec = shaperFor('exciter', { amount: 0.5, freqHz: 4000, mix: 0.4 })!;
+  near(spec.dryGain, 1, 1e-9, 'the dry path stays at full level');
+  // Which means turning the mix up makes it LOUDER, not merely different.
+  const quiet = shaperFor('exciter', { amount: 0.5, freqHz: 4000, mix: 0 })!;
+  const loud = shaperFor('exciter', { amount: 0.5, freqHz: 4000, mix: 1 })!;
+  near(shaperOutput(quiet, 0.2), 0.2, 1e-6, 'no mix is the input untouched');
+  assert(shaperOutput(loud, 0.2) > 0.2 + 0.05, `mix should pile on — ${shaperOutput(loud, 0.2)}`);
+});
+
+check("the exciter's drive follows its amount knob, 1x to 9x", () => {
+  near(shaperFor('exciter', { amount: 0, mix: 1 })!.inputGain, 1, 1e-9, 'no amount, no drive');
+  near(shaperFor('exciter', { amount: 1, mix: 1 })!.inputGain, 9, 1e-9, 'full amount is 9x');
+});
+
+check('the Haas widener delays one side and leaves the other alone', () => {
+  const pic = channelPictureFor('haas', { delayMs: 15, amount: 0.6 })!;
+  const [l, r] = pic.channels;
+  assert(l!.impulses.length === 1, 'the left channel is untouched');
+  near(l!.impulses[0]!.ms, 0, 1e-9, 'and arrives on time');
+  assert(r!.impulses.length === 2, 'the right arrives twice');
+  near(r!.impulses[0]!.ms, 0, 1e-9, 'once immediately');
+  near(r!.impulses[0]!.gain, 0.4, 1e-9, 'at 1 - amount');
+  near(r!.impulses[1]!.ms, 15, 1e-9, 'and once late');
+  near(r!.impulses[1]!.gain, 0.6, 1e-9, 'at the amount');
+  assert(pic.spanMs >= 15, `a ${pic.spanMs} ms picture cannot show a 15 ms delay`);
+});
+
+check('at zero amount the Haas is drawn doing nothing', () => {
+  const pic = channelPictureFor('haas', { delayMs: 20, amount: 0 })!;
+  const r = pic.channels[1]!;
+  assert(r.impulses.length === 1 && r.impulses[0]!.ms === 0, 'no late arrival when the blend is off');
+});
+
+check('a polarity flip is drawn as a flip, not as a level', () => {
+  const plain = channelPictureFor('phase', {})!;
+  for (const channel of plain.channels) {
+    for (const pulse of channel.impulses) assert(pulse.gain > 0, 'nothing inverted by default');
+  }
+  const flipped = channelPictureFor('phase', { invertL: 1 })!;
+  const lOut = flipped.channels[0]!.impulses.find((i) => i.from === 'L')!;
+  assert(lOut.gain < 0, `inverting L must show as a negative arrival, got ${lOut.gain}`);
+  const rOut = flipped.channels[1]!.impulses.find((i) => i.from === 'R')!;
+  assert(rOut.gain > 0, 'inverting L must not touch R');
+});
+
+check('swap really swaps, and mono really sums', () => {
+  const swapped = channelPictureFor('phase', { swap: 1 })!;
+  assert(swapped.channels[0]!.impulses.every((i) => i.from === 'R'), 'the left output is the right input');
+  assert(swapped.channels[1]!.impulses.every((i) => i.from === 'L'), 'and the other way round');
+  const mono = channelPictureFor('phase', { mono: 1 })!;
+  for (const channel of mono.channels) {
+    assert(channel.impulses.length === 2, 'both outputs carry both inputs');
+    for (const pulse of channel.impulses) near(Math.abs(pulse.gain), 0.5, 1e-9, 'summed at half each');
+  }
+  // Mono wins over swap, the way the engine's own table orders them.
+  const both = channelPictureFor('phase', { swap: 1, mono: 1 })!;
+  assert(both.channels[0]!.impulses.length === 2, 'mono takes precedence');
+});
+
+check('the dither noise sits where the bit depth puts it', () => {
+  // One LSB at n bits is 2^-(n-1); at 16 bits that is -90.3 dBFS.
+  for (const [bits, expected] of [[16, -90.31], [24, -138.47], [8, -42.14]] as const) {
+    const pic = floorPictureFor('dither', { bits, amount: 1 })!;
+    near(pic.noiseDb, expected, 0.02, `${bits} bit`);
+    near(pic.lsbDb, expected, 0.02, `${bits} bit LSB`);
+  }
+  // And the amount scales it: half the amount is 6 dB quieter.
+  const half = floorPictureFor('dither', { bits: 16, amount: 0.5 })!;
+  near(half.noiseDb, -90.31 - 6.02, 0.02, 'half the amount');
+});
+
+check('a dither turned off is drawn as silence, not as a floor at zero', () => {
+  const off = floorPictureFor('dither', { bits: 16, amount: 0 })!;
+  assert(!Number.isFinite(off.noiseDb), `no noise means no floor, got ${off.noiseDb}`);
+  assert(off.caption.includes('꺼짐'), `and it should say so — ${off.caption}`);
+});
+
+check('the pitch correct insert is labelled as doing nothing, because it does nothing', () => {
+  // `offline: true` makes the engine bypass the device in the live graph AND
+  // in the render, which builds the same graph, and nothing else reads the
+  // insert's parameters.  Drawing it a retune curve would invent a behaviour.
+  const notice = noticeFor('pitchcorrect')!;
+  assert(notice.lines.length > 0, 'the notice must say something');
+  assert(notice.lines.join(' ').includes('VOCAL'), 'and point at where the real thing lives');
+  const descriptor = PLUGINS.find((p) => p.id === 'pitchcorrect')!;
+  assert(descriptor.offline === true,
+    'if this device ever stops being offline, the notice becomes a lie and must go');
+  for (const p of PLUGINS) {
+    if (p.id !== 'pitchcorrect') assert(!noticeFor(p.id), `${p.id} claims a notice`);
+  }
+});
+
+// ── The door, closed ────────────────────────────────────────────────────────
+
+check('EVERY device has a picture of its own — none falls back to the level bar', () => {
+  // This is the check that keeps the work done.  A new plugin that ships
+  // without a picture fails here, by name, instead of quietly showing a green
+  // bar that says nothing about it.
+  const CURVE_DRAWN = [
+    // Drawn from `eqSpecs` or `eq-nodes` in the window rather than from here.
+    'eq3', 'eq8', 'dyneq', 'tilt',
+    // Their own long-standing pictures.
+    'comp', 'limiter', 'transient', 'ducker',
+    'reverb', 'spacereverb', 'plate', 'spring', 'shimmer',
+    'loudness',
+  ];
+  const missing: string[] = [];
+  for (const plugin of PLUGINS) {
+    const params = defaultParams(plugin.id);
+    const has = CURVE_DRAWN.includes(plugin.id)
+      || shaperFor(plugin.id, params) !== null
+      || detectorFor(plugin.id, params) !== null
+      || filterPictureFor(plugin.id, params) !== null
+      || widthPictureFor(plugin.id, params) !== null
+      || lfoPictureFor(plugin.id, params) !== null
+      || combPictureFor(plugin.id, params) !== null
+      || delayPictureFor(plugin.id, params) !== null
+      || bandPictureFor(plugin.id, params) !== null
+      || channelPictureFor(plugin.id, params) !== null
+      || floorPictureFor(plugin.id, params) !== null
+      || noticeFor(plugin.id) !== null;
+    if (!has) missing.push(`${plugin.id} (${plugin.name})`);
+  }
+  assert(missing.length === 0,
+    `${missing.length} device(s) would draw only a level bar — ${missing.join(', ')}`);
+});
+
+check('and no device is claimed by two describers at once', () => {
+  const doubled: string[] = [];
+  for (const plugin of PLUGINS) {
+    const params = defaultParams(plugin.id);
+    const claims = [
+      shaperFor(plugin.id, params) && 'transfer',
+      detectorFor(plugin.id, params) && 'detector',
+      filterPictureFor(plugin.id, params) && 'filter',
+      widthPictureFor(plugin.id, params) && 'width',
+      lfoPictureFor(plugin.id, params) && 'lfo',
+      combPictureFor(plugin.id, params) && 'comb',
+      delayPictureFor(plugin.id, params) && 'delay',
+      bandPictureFor(plugin.id, params) && 'bands',
+      channelPictureFor(plugin.id, params) && 'channels',
+      floorPictureFor(plugin.id, params) && 'floor',
+      noticeFor(plugin.id) && 'notice',
+    ].filter(Boolean);
+    if (claims.length > 1) doubled.push(`${plugin.id}: ${claims.join(' + ')}`);
+  }
+  assert(doubled.length === 0, `a device drawn two ways is drawn one way by accident — ${doubled.join('; ')}`);
+});
+
+check('every one-off caption and notice says something real', () => {
+  for (const id of CHANNEL_DEVICES) {
+    const c = channelPictureFor(id, defaultParams(id))!.caption;
+    assert(c.trim().length > 0 && !c.includes('NaN'), `${id}: ${c}`);
+  }
+  for (const id of FLOOR_DEVICES) {
+    const c = floorPictureFor(id, defaultParams(id))!.caption;
+    assert(c.trim().length > 0 && !c.includes('NaN'), `${id}: ${c}`);
+  }
+  for (const id of NOTICE_DEVICES) {
+    assert(noticeFor(id)!.lines.every((l) => l.trim().length > 0), `${id}: blank line`);
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 const passed = results.filter((r) => r.pass).length;
@@ -759,7 +932,8 @@ console.log('\n=== Plugin shapes ===');
 console.log(`${SHAPERS.length} transfer curves, ${DETECTORS.length} detector curves, `
   + `${FILTER_DEVICES.length} filter responses, ${WIDTH_DEVICES.length} width curves, `
   + `${LFO_DEVICES.length} modulators, ${COMB_DEVICES.length} combs, `
-  + `${DELAY_DEVICES.length} delays, ${BAND_DEVICES.length} band compressors\n`);
+  + `${DELAY_DEVICES.length} delays, ${BAND_DEVICES.length} band compressors, `
+  + `${CHANNEL_DEVICES.length} routings, ${FLOOR_DEVICES.length} floor, ${NOTICE_DEVICES.length} notice\n`);
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
 console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
 if (failed > 0) process.exit(1);
