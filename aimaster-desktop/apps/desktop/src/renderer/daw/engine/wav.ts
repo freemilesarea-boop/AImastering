@@ -25,8 +25,18 @@ function writeAscii(view: DataView, offset: number, text: string): void {
 
 /**
  * Encode planar float channels as a RIFF/WAVE file.
- * Samples outside [-1, 1) are clamped — a render that clips should clip at
- * full scale, not wrap around into noise.
+ *
+ * INTEGER depths clamp to [-1, 1): 16- and 24-bit PCM have no room above full
+ * scale, and letting a hot sample wrap around turns a clip into noise.
+ *
+ * 32-bit FLOAT does not clamp, and must not.  Carrying values past full scale
+ * losslessly is the entire reason to reach for float, and every caller that
+ * asks for it is writing an intermediate — a freeze, a region render, the mix
+ * on its way to the mastering stage.  Seven stems summing at unity routinely
+ * peak above 0 dBFS; clamping there hard-clips the mix before the limiter
+ * that was supposed to deal with it ever sees it, and nothing downstream can
+ * get it back.  A bounce, which is a delivery rather than an intermediate,
+ * asks for 24-bit and does clamp.
  */
 export function encodeWav(
   channels: readonly Float32Array[],
@@ -61,11 +71,13 @@ export function encodeWav(
   for (let i = 0; i < frames; i++) {
     for (let c = 0; c < channelCount; c++) {
       const sample = channels[c]?.[i] ?? 0;
-      const clamped = Math.max(-1, Math.min(1, sample));
       if (isFloat) {
-        view.setFloat32(offset, clamped, true);
+        view.setFloat32(offset, sample, true);
         offset += 4;
-      } else if (bitDepth === 24) {
+        continue;
+      }
+      const clamped = Math.max(-1, Math.min(1, sample));
+      if (bitDepth === 24) {
         const v = Math.round(clamped * 0x7fffff);
         view.setUint8(offset,     v & 0xff);
         view.setUint8(offset + 1, (v >> 8) & 0xff);

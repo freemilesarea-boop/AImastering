@@ -11,7 +11,9 @@
 //   Commit      — same render, but the inserts are removed for good
 //   Consolidate — a time range of one track → one new clip
 
-import { clipEnd, findTrack, trackClips, addFile, updateTrack } from '../model/session-ops.js';
+import {
+  clipEnd, findTrack, trackClips, addFile, updateTrack, sessionEndSec,
+} from '../model/session-ops.js';
 import { applyConsolidation, type TimeSelection } from '../edit/clip-edit.js';
 import type { AudioFileRef, DawSession, FileId, Track, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
@@ -33,11 +35,18 @@ export interface RenderOptions {
   tailSec?: number;
 }
 
-/** Longest clip end across the session, i.e. the natural bounce length. */
+/**
+ * The natural bounce length: where the last sound stops.
+ *
+ * `sessionEndSec` rather than a second walk over the clips, because the two
+ * are the same question and only one of them was getting the Track Delay
+ * right.  A track pushed late sounds past the end of its own rectangle, and a
+ * bounce that measured the rectangles would end before it — masked today only
+ * because the render tail is four times the largest delay the control allows.
+ * One copy of the maths cannot drift out of agreement with itself.
+ */
 export function sessionRange(session: DawSession): RenderRange {
-  let end = 0;
-  for (const t of session.tracks) for (const c of trackClips(t)) end = Math.max(end, clipEnd(c));
-  return { startSec: 0, endSec: end };
+  return { startSec: 0, endSec: sessionEndSec(session) };
 }
 
 function makeOfflineContext(channels: number, frames: number, sampleRate: number): OfflineAudioContext {
