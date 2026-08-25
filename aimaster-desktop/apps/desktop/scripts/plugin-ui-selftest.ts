@@ -202,6 +202,55 @@ async function main(): Promise<void> {
       'but the reduction is the same — makeup is not less compression', 1e-6);
   });
 
+  // ── The dot and the GR number have to be describing the same signal ───────
+  //
+  // The compressor window draws a dot for "where the track is now" on the
+  // curve's INPUT axis, and a GR meter beside it.  Those were fed from two
+  // different places — the dot from the channel's POST-FADER meter, the GR
+  // from the insert itself — so the picture said the track was near silent
+  // while the number said it was squeezing 4 dB.  The reading the dot uses is
+  // now taken at the insert's own input, and this is the relationship that
+  // makes the two agree.
+
+  await check('a GR reading pins the input level the dot must be drawn at', () => {
+    const spec = { thresholdDb: -27.2, ratio: 4, kneeDb: 6 };
+    // Solve the curve for the input that produces a given reduction, then
+    // check the curve agrees.  If the dot were drawn from a different signal
+    // this round trip is exactly what would fail.
+    for (const inDb of [-24, -20, -16, -12, -6, -1]) {
+      const gr = gainReductionDb(spec, inDb);
+      assert(gr > 0, `${inDb} dB is over the threshold and should be reduced`);
+      close(compressorOutputDb({ ...spec, makeupDb: 0 }, inDb), inDb - gr,
+        `output = input − GR at ${inDb} dB`, 1e-9);
+    }
+  });
+
+  await check('4 dB of reduction means the input is above the threshold, not below', () => {
+    // The screenshot that started this: threshold −27.2, ratio 4:1, GR −3.9.
+    // Above the knee, GR = (in − T)(1 − 1/R), so 3.9 dB of reduction can only
+    // come from an input around −22 dBFS — well to the RIGHT of the threshold
+    // line.  A dot down at the −60 dB corner cannot be the same moment.
+    const spec = { thresholdDb: -27.2, ratio: 4, kneeDb: 6 };
+    const implied = -27.2 + 3.9 / (1 - 1 / 4);
+    close(gainReductionDb(spec, implied), 3.9, 'the implied input gives back that GR', 0.01);
+    assert(implied > spec.thresholdDb,
+      'a compressing input has to sit above the threshold');
+    assert(gainReductionDb(spec, -60) < 0.001,
+      'and −60 dB in must produce no reduction at all');
+  });
+
+  await check('the knee knob changes the curve, so a drawing may not assume one', () => {
+    // The window hard-coded 6 dB here, which made the Knee knob move the sound
+    // and leave the picture alone.
+    const hard = { thresholdDb: -20, ratio: 4, kneeDb: 0 };
+    const soft = { thresholdDb: -20, ratio: 4, kneeDb: 18 };
+    close(compressorOutputDb(hard, -22), -22, 'a hard knee does nothing below the threshold', 1e-9);
+    assert(compressorOutputDb(soft, -22) < -22.2,
+      'an 18 dB knee is already bending 2 dB below the threshold');
+    assert(gainReductionDb(soft, -20) > gainReductionDb(hard, -20),
+      'at the threshold itself the wide knee is already reducing and the hard one is not');
+  });
+
   await check('the soft knee is smooth where a hard knee has a corner', () => {
     const soft = { thresholdDb: -20, ratio: 4, kneeDb: 6 };
     // Just under the threshold the knee is already bending: that is the point.

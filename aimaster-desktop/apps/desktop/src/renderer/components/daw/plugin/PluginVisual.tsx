@@ -137,7 +137,11 @@ function drawDynamics(
   const spec = {
     thresholdDb: param(params, 'thresholdDb', -18),
     ratio: param(params, 'ratio', 4),
-    kneeDb: 6,
+    // Read, not assumed.  This was hard-coded at 6 dB, so turning the Knee
+    // knob moved the sound and left the drawing where it was — the curve
+    // stopped being a picture of the device and became a picture of a
+    // device with the same threshold.
+    kneeDb: param(params, 'kneeDb', 6),
     makeupDb: param(params, 'makeupDb', 0),
   };
   const ceiling = param(params, 'ceilingDb', -1);

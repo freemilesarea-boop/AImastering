@@ -79,7 +79,12 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   useEffect(() => {
     if (!isPlaying) { setLevel(0); setReduction(null); setAnalysis(null); return; }
     const timer = setInterval(() => {
-      setLevel(dawRuntime.meterLevels().get(win.trackId) ?? 0);
+      // What arrives AT this device, not what leaves the channel.  The channel
+      // meter is post-fader and post-everything; reading it here put the dot
+      // on the input axis using an output number, so the picture and the GR
+      // meter next to it were describing two different signals.
+      const arriving = insertId ? dawRuntime.insertInputLevel(win.trackId, insertId) : null;
+      setLevel(arriving ?? dawRuntime.meterLevels().get(win.trackId) ?? 0);
       setReduction(insertId ? dawRuntime.insertReduction(win.trackId, insertId) : null);
       setAnalysis(insertId ? dawRuntime.insertAnalysis(win.trackId, insertId) : null);
     }, 60);

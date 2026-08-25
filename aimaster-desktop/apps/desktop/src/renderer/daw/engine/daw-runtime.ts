@@ -604,6 +604,11 @@ class DawRuntime {
     return this.engine?.analyse(trackId, insertId) ?? null;
   }
 
+  /** Peak arriving at one insert, linear.  Null when metering is off. */
+  insertInputLevel(trackId: TrackId, insertId: string): number | null {
+    return this.engine?.insertInputLevel(trackId, insertId) ?? null;
+  }
+
   meterLevels(): Map<TrackId, number> {
     return this.engine?.meterLevels() ?? new Map();
   }

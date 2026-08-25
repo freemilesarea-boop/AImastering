@@ -68,6 +68,17 @@ export interface Channel {
   postFaderTap: GainNode;
   sends: Map<string, GainNode>;
   meter: AnalyserNode | null;
+  /**
+   * One analyser per insert, tapped at what ARRIVES at that insert.
+   *
+   * The channel meter is post-fader, which is the right place to meter a
+   * channel and the wrong place to ask "where is this compressor sitting on
+   * its own curve".  That signal has already been through this device and
+   * through the fader, so plotting it on the device's INPUT axis says the
+   * track is quiet while the device's own GR meter says it is squeezing —
+   * two readings of two different signals, disagreeing in public.
+   */
+  insertMeters: Map<string, AnalyserNode>;
 }
 
 /**
@@ -210,12 +221,18 @@ export class MixerEngine {
       instance.dispose();
     }
     ch.inserts.clear();
+    for (const node of ch.insertMeters.values()) {
+      try { node.disconnect(); } catch { /* already gone */ }
+    }
+    ch.insertMeters.clear();
 
     let cursor: AudioNode = ch.insertChainIn;
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
       const instance = descriptor.create(this.ctx, { ...insert.params });
+      const tapped = this.tap(cursor);
+      if (tapped) ch.insertMeters.set(insert.id, tapped);
       cursor.connect(instance.input);
       cursor = instance.output;
       ch.inserts.set(insert.id, instance);
@@ -402,6 +419,20 @@ export class MixerEngine {
     }
   }
 
+  /** An analyser on what reaches this point, or null when metering is off. */
+  private tap(source: AudioNode): AnalyserNode | null {
+    if (!this.withMeters) return null;
+    const ctx = this.ctx as AudioContext;
+    if (typeof ctx.createAnalyser !== 'function') return null;
+    const node = ctx.createAnalyser();
+    // Short window: this reading chases a compressor's detector, and a long
+    // smoothing constant would lag the GR number it sits next to.
+    node.fftSize = 1024;
+    node.smoothingTimeConstant = 0;
+    source.connect(node);
+    return node;
+  }
+
   private buildChannel(track: Track, session: DawSession): Channel {
     const ctx = this.ctx;
     const input        = ctx.createGain();
@@ -451,10 +482,14 @@ export class MixerEngine {
     // devices can be swapped later without rebuilding the channel.
     const insertChainIn = cursor;
     const inserts = new Map<string, PluginInstance>();
+    const insertMeters = new Map<string, AnalyserNode>();
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
       const instance = descriptor.create(ctx, { ...insert.params });
+      // Tapped BEFORE the connection, so it reads the device's input.
+      const tapped = this.tap(cursor);
+      if (tapped) insertMeters.set(insert.id, tapped);
       cursor.connect(instance.input);
       cursor = instance.output;
       inserts.set(insert.id, instance);
@@ -479,7 +514,8 @@ export class MixerEngine {
 
     void session;
     return {
-      trackId: track.id, input, adc, insertIn, insertOut, insertChainIn, inserts, rack, chain,
+      trackId: track.id, input, adc, insertIn, insertOut, insertChainIn, inserts, insertMeters,
+      rack, chain,
       preFaderTap, fader, panner, postFaderTap, sends, meter,
     };
   }
@@ -567,6 +603,27 @@ export class MixerEngine {
   }
 
   /** Post-fader RMS per channel, for the Mix window meters. */
+  /**
+   * Peak of what is arriving at one insert, as a linear amplitude.
+   *
+   * PEAK, not RMS, and that is the point: the compressor's detector follows
+   * the loudest thing hitting it, so a peak reading is the one that lands on
+   * the curve where the GR meter says it should.  An RMS reading of the same
+   * signal sits several dB lower and makes the picture argue with the number.
+   */
+  insertInputLevel(trackId: TrackId, insertId: string): number | null {
+    const node = this.channels.get(trackId)?.insertMeters.get(insertId);
+    if (!node) return null;
+    const data = new Float32Array(node.fftSize);
+    node.getFloatTimeDomainData(data);
+    let peak = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = Math.abs(data[i] ?? 0);
+      if (v > peak) peak = v;
+    }
+    return peak;
+  }
+
   meterLevels(): Map<TrackId, number> {
     const levels = new Map<TrackId, number>();
     for (const [id, ch] of this.channels) {
