@@ -21,6 +21,7 @@
 import {
   shaperFor, detectorFor, shaperOutput, readCurve, detectorGainDb, expanderGainCurve,
   filterPictureFor, widthPictureFor, FILTER_DEVICES, WIDTH_DEVICES,
+  lfoPictureFor, combPictureFor, LFO_DEVICES, COMB_DEVICES,
 } from '../src/renderer/daw/model/plugin-shapes.js';
 import { biquadMagnitudeDb, chainMagnitudeDb } from '../src/renderer/daw/model/plugin-curves.js';
 import {
@@ -400,13 +401,223 @@ check('every filter and width caption says something real', () => {
   }
 });
 
+
+// ── Modulation over time ────────────────────────────────────────────────────
+
+check('the tremolo ducks and never boosts, between 1 - depth and 1', () => {
+  for (const depth of [0.2, 0.6, 1]) {
+    const pic = lfoPictureFor('tremolo', { rateHz: 5, depth, shape: 0 })!;
+    const at = pic.traces[0]!.at;
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i <= 2000; i++) {
+      const v = at((i / 2000) * pic.spanSec);
+      lo = Math.min(lo, v); hi = Math.max(hi, v);
+    }
+    near(hi, 1, 1e-6, `depth ${depth}: the top of the swing is unity`);
+    near(lo, 1 - depth, 1e-6, `depth ${depth}: the bottom is 1 - depth`);
+  }
+});
+
+check('the tremolo shape knob really changes the wave', () => {
+  const sineP = lfoPictureFor('tremolo', { rateHz: 4, depth: 1, shape: 0 })!.traces[0]!.at;
+  const squareP = lfoPictureFor('tremolo', { rateHz: 4, depth: 1, shape: 1 })!.traces[0]!.at;
+  // A square only ever sits at the two ends; a sine spends most of its time between.
+  let sineMid = 0, squareMid = 0;
+  for (let i = 0; i < 1000; i++) {
+    const t = (i / 1000) * 0.5;
+    if (sineP(t) > 0.2 && sineP(t) < 0.8) sineMid++;
+    if (squareP(t) > 0.2 && squareP(t) < 0.8) squareMid++;
+  }
+  assert(squareMid === 0, `a square must not linger in the middle — ${squareMid} samples did`);
+  assert(sineMid > 300, `a sine must — only ${sineMid} samples did`);
+});
+
+check('the auto pan swings exactly as far as the depth knob', () => {
+  for (const depth of [0.3, 1]) {
+    const pic = lfoPictureFor('autopan', { rateHz: 1, depth })!;
+    const at = pic.traces[0]!.at;
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i <= 2000; i++) {
+      const v = at((i / 2000) * pic.spanSec);
+      lo = Math.min(lo, v); hi = Math.max(hi, v);
+    }
+    near(hi, depth, 1e-3, 'right');
+    near(lo, -depth, 1e-3, 'left');
+  }
+});
+
+check('the two chorus voices drift apart — identical ones would just be vibrato', () => {
+  const pic = lfoPictureFor('chorus', { rateHz: 0.6, depthMs: 4, delayMs: 18, mix: 40 })!;
+  assert(pic.traces.length === 2, 'two voices');
+  const [l, r] = pic.traces;
+  assert(l!.colour !== r!.colour, 'two traces in one picture must not share a colour');
+  let apart = 0;
+  for (let i = 0; i <= 500; i++) {
+    const t = (i / 500) * pic.spanSec;
+    apart = Math.max(apart, Math.abs(l!.at(t) - r!.at(t)));
+  }
+  assert(apart > 2, `the voices barely separate — ${apart.toFixed(2)} ms apart at most`);
+});
+
+check('the chorus axis has room for the excursion it draws', () => {
+  const pic = lfoPictureFor('chorus', { rateHz: 0.6, depthMs: 4, delayMs: 18, mix: 40 })!;
+  for (const trace of pic.traces) {
+    for (let i = 0; i <= 500; i++) {
+      const v = trace.at((i / 500) * pic.spanSec);
+      assert(v >= pic.min && v <= pic.max, `${trace.label} reaches ${v} outside ${pic.min}..${pic.max}`);
+    }
+  }
+});
+
+check('a slow modulator and a fast one are drawn the same width, in cycles not seconds', () => {
+  for (const rate of [0.1, 1, 12]) {
+    const pic = lfoPictureFor('tremolo', { rateHz: rate, depth: 1, shape: 0 })!;
+    near(pic.spanSec * rate, 2, 1e-9, `rate ${rate} should span two cycles`);
+  }
+});
+
+// ── Comb and phase interference ─────────────────────────────────────────────
+
+check('the flanger notches land where a comb of that delay puts them', () => {
+  const delayMs = 3;
+  const pic = combPictureFor('flanger', { delayMs, depthMs: 0.0001, feedback: 0, mix: 50 })!;
+  // A delay of T summed with dry cancels at the odd multiples of 1/(2T).
+  const T = delayMs / 1000;
+  for (const k of [0, 1, 2]) {
+    const notch = (2 * k + 1) / (2 * T);
+    const peak = (k + 1) / T;
+    assert(pic.db(notch) < -20, `no notch at ${notch.toFixed(0)} Hz: ${pic.db(notch).toFixed(1)} dB`);
+    // Half wet against half dry adds to exactly unity where they agree, so a
+    // 50% flanger only ever cuts.  Asserting a BOOST here would be asserting
+    // gain the device cannot make without feedback.
+    near(pic.db(peak), 0, 0.01, `the tooth top at ${peak.toFixed(0)} Hz is unity`);
+    assert(pic.db(peak) - pic.db(notch) > 20, `no tooth between ${notch.toFixed(0)} and ${peak.toFixed(0)} Hz`);
+  }
+});
+
+check('a longer delay packs the teeth closer together', () => {
+  const count = (delayMs: number): number => {
+    const pic = combPictureFor('flanger', { delayMs, depthMs: 0.0001, feedback: 0, mix: 50 })!;
+    let n = 0, was = pic.db(100);
+    for (let hz = 100; hz < 2000; hz += 1) {
+      const now = pic.db(hz);
+      if (was > -6 && now <= -6) n++;
+      was = now;
+    }
+    return n;
+  };
+  assert(count(8) > count(2) * 2, `8 ms should have far more teeth than 2 ms — ${count(2)} vs ${count(8)}`);
+});
+
+check('feedback raises the peaks — it resonates, it does not deepen the nulls', () => {
+  // A comb without feedback already nulls completely where wet and dry cancel;
+  // there is nothing left to deepen.  What feedback does is resonate, and the
+  // measured behaviour is the opposite of the intuition: the peaks climb from
+  // 0 to +15 dB while the nulls FILL IN from -120 to -12, because the fed-back
+  // path no longer cancels the dry one exactly.
+  const band = (feedback: number): { hi: number; lo: number } => {
+    const pic = combPictureFor('flanger', { delayMs: 3, depthMs: 0.0001, feedback, mix: 50 })!;
+    let hi = -Infinity, lo = Infinity;
+    for (let hz = 100; hz < 3000; hz += 0.5) { hi = Math.max(hi, pic.db(hz)); lo = Math.min(lo, pic.db(hz)); }
+    return { hi, lo };
+  };
+  const quiet = band(0.1);
+  const loud = band(0.9);
+  assert(loud.hi > quiet.hi + 10, `feedback did not resonate — peaks ${quiet.hi.toFixed(1)} vs ${loud.hi.toFixed(1)} dB`);
+  assert(loud.lo > quiet.lo, `feedback should fill the null in, not deepen it — ${quiet.lo.toFixed(1)} vs ${loud.lo.toFixed(1)} dB`);
+});
+
+check('a fully dry flanger or phaser is drawn doing nothing', () => {
+  for (const [id, params] of [
+    ['flanger', { delayMs: 3, depthMs: 2, feedback: 0.9, mix: 0 }],
+    ['phaser', { centreHz: 900, depth: 0.7, feedback: 0.9, mix: 0 }],
+  ] as const) {
+    const pic = combPictureFor(id, params)!;
+    for (const hz of [80, 400, 2000, 9000]) {
+      near(pic.db(hz), 0, 1e-6, `${id} at ${hz} Hz must be untouched when fully dry`);
+    }
+  }
+});
+
+check('the phaser makes notches out of phase alone, and they follow the centre knob', () => {
+  // Four allpass stages put four notches either side of the centre, and each
+  // one is a near-perfect null — so sampling for "the deepest point" lands on
+  // whichever null the step happened to fall closest to, not on the lowest
+  // one.  Find every local minimum instead and compare the sets.
+  const notchesFor = (centreHz: number): number[] => {
+    const pic = combPictureFor('phaser', { centreHz, depth: 0.0001, feedback: 0, mix: 50 })!;
+    const found: number[] = [];
+    let prev = pic.db(50), prev2 = prev, prevHz = 50;
+    for (let hz = 50 * 1.004; hz < 16_000; hz *= 1.004) {
+      const now = pic.db(hz);
+      if (prev < prev2 && prev < now && prev < -6) found.push(prevHz);
+      prev2 = prev; prev = now; prevHz = hz;
+    }
+    return found;
+  };
+  const low = notchesFor(300);
+  const high = notchesFor(900);
+  assert(low.length === 4, `four allpass stages make four notches, found ${low.length}`);
+  assert(high.length === 4, `four notches at 900 Hz too, found ${high.length}`);
+  // Tripling the centre triples every one of them.
+  low.forEach((hz, i) => {
+    near(high[i]! / hz, 3, 0.15, `notch ${i + 1} did not follow the centre (${hz.toFixed(0)} -> ${high[i]!.toFixed(0)} Hz)`);
+  });
+});
+
+check('the sweep band contains the response, everywhere', () => {
+  for (const [id, params] of [
+    ['flanger', { delayMs: 3, depthMs: 2, feedback: 0.5, mix: 50 }],
+    ['phaser', { centreHz: 900, depth: 0.7, feedback: 0.4, mix: 50 }],
+  ] as const) {
+    const pic = combPictureFor(id, params)!;
+    for (let hz = 25; hz < 18_000; hz *= 1.02) {
+      const { lo, hi } = pic.sweep(hz);
+      assert(lo <= hi, `${id}: sweep inverted at ${hz.toFixed(0)} Hz`);
+      assert(Number.isFinite(lo) && Number.isFinite(hi), `${id}: sweep not finite at ${hz.toFixed(0)} Hz`);
+    }
+  }
+});
+
+check('an allpass is flat on its own — the notches are the dry sum, not filtering', () => {
+  for (const hz of [50, 500, 5000]) {
+    near(biquadMagnitudeDb({ type: 'allpass', freq: 900, gain: 0, q: 0.7 }, hz), 0, 1e-6,
+      `an allpass must not change the level at ${hz} Hz`);
+  }
+});
+
+check('only the modulation devices claim these pictures', () => {
+  for (const p of PLUGINS) {
+    if (!LFO_DEVICES.includes(p.id)) {
+      assert(!lfoPictureFor(p.id, defaultParams(p.id)), `${p.id} claims an LFO picture`);
+    }
+    if (!COMB_DEVICES.includes(p.id)) {
+      assert(!combPictureFor(p.id, defaultParams(p.id)), `${p.id} claims a comb picture`);
+    }
+  }
+  for (const id of LFO_DEVICES) assert(lfoPictureFor(id, defaultParams(id)), `${id} has no LFO picture`);
+  for (const id of COMB_DEVICES) assert(combPictureFor(id, defaultParams(id)), `${id} has no comb picture`);
+});
+
+check('every modulation caption says something real', () => {
+  for (const id of LFO_DEVICES) {
+    const c = lfoPictureFor(id, defaultParams(id))!.caption;
+    assert(c.trim().length > 0 && !c.includes('NaN'), `${id}: ${c}`);
+  }
+  for (const id of COMB_DEVICES) {
+    const c = combPictureFor(id, defaultParams(id))!.caption;
+    assert(c.trim().length > 0 && !c.includes('NaN'), `${id}: ${c}`);
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;
 console.log('\n=== Plugin shapes ===');
 console.log(`${SHAPERS.length} transfer curves, ${DETECTORS.length} detector curves, `
-  + `${FILTER_DEVICES.length} filter responses, ${WIDTH_DEVICES.length} width curves\n`);
+  + `${FILTER_DEVICES.length} filter responses, ${WIDTH_DEVICES.length} width curves, `
+  + `${LFO_DEVICES.length} modulators, ${COMB_DEVICES.length} combs\n`);
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
 console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
 if (failed > 0) process.exit(1);

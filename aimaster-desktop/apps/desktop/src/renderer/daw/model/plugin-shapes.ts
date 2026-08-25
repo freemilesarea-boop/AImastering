@@ -15,7 +15,10 @@
 //
 // Pure, so it is tested without an AudioContext.
 
-import { biquadMagnitudeDb, type BiquadSpec } from './plugin-curves.js';
+import {
+  biquadMagnitudeDb, biquadResponse, cAbs, cAdd, cDiv, cMul,
+  type BiquadSpec, type Complex,
+} from './plugin-curves.js';
 import { tanhCurve } from '../engine/plugin-kit.js';
 import {
   bitCurve, clipCurve, gateGainCurve, tubeCurve,
@@ -392,6 +395,205 @@ export function widthPictureFor(
       cornerHz: corner,
       maxWidth: Math.max(2, width),
       caption: `폭 ${(width * 100).toFixed(0)}% · ${corner.toFixed(0)} Hz 아래는 모노 (12 dB/oct)`,
+    };
+  }
+
+  return null;
+}
+
+// ── Modulation, as what it does over time ───────────────────────────────────
+
+/**
+ * A modulator's own movement.
+ *
+ * "Rate 0.6 Hz, depth 4 ms" is two numbers that only mean something together,
+ * and a chorus is two voices at slightly different rates whose whole character
+ * is the beating between them — which is a picture or it is nothing.
+ */
+export interface LfoTrace {
+  label: string;
+  colour: string;
+  /** The modulated value at `t` seconds. */
+  at: (t: number) => number;
+}
+
+export interface LfoPicture {
+  traces: LfoTrace[];
+  /** Seconds the picture spans, chosen to show a couple of cycles. */
+  spanSec: number;
+  min: number;
+  max: number;
+  unit: string;
+  caption: string;
+}
+
+export const LFO_DEVICES: readonly string[] = ['tremolo', 'autopan', 'chorus'];
+
+const sine = (phase: number): number => Math.sin(2 * Math.PI * phase);
+/** Web Audio's square is a hard two-level wave, not a band-limited one. */
+const square = (phase: number): number => (phase % 1 < 0.5 ? 1 : -1);
+/** Web Audio's triangle starts at zero, rising. */
+function triangle(phase: number): number {
+  const t = ((phase % 1) + 1) % 1;
+  return t < 0.25 ? t * 4 : t < 0.75 ? 2 - t * 4 : t * 4 - 4;
+}
+
+export function lfoPictureFor(
+  pluginId: string, params: Record<string, number>,
+): LfoPicture | null {
+  if (pluginId === 'tremolo') {
+    const rate = num(params, 'rateHz', 5);
+    const depth = num(params, 'depth', 0.5);
+    // The engine sets the VCA to 1 - depth/2 and swings it by depth/2, so the
+    // gain runs between 1 - depth and 1 — it ducks, it never boosts.
+    const wave = num(params, 'shape', 0) >= 0.5 ? square : sine;
+    return {
+      traces: [{
+        label: 'GAIN', colour: MID_COLOUR,
+        at: (t) => 1 - depth / 2 + (depth / 2) * wave(rate * t),
+      }],
+      spanSec: 2 / Math.max(0.05, rate),
+      min: 0, max: 1, unit: '×',
+      caption: `${rate.toFixed(2)} Hz · ${(depth * 100).toFixed(0)}% · ${wave === square ? '사각' : '사인'}`,
+    };
+  }
+
+  if (pluginId === 'autopan') {
+    const rate = num(params, 'rateHz', 0.5);
+    const depth = num(params, 'depth', 0.7);
+    return {
+      traces: [{ label: 'PAN', colour: MID_COLOUR, at: (t) => depth * sine(rate * t) }],
+      spanSec: 2 / Math.max(0.05, rate),
+      min: -1, max: 1, unit: '',
+      caption: `${rate.toFixed(2)} Hz · ${(depth * 100).toFixed(0)}% — L↔R`,
+    };
+  }
+
+  if (pluginId === 'chorus') {
+    const rate = num(params, 'rateHz', 0.6);
+    const depthMs = num(params, 'depthMs', 4);
+    const delayMs = num(params, 'delayMs', 18);
+    // Two voices, hard-panned, at rates 1 and 1.17 — and the second one is a
+    // triangle.  That mismatch IS the chorus; identical voices would just be a
+    // vibrato twice as loud.
+    return {
+      traces: [
+        { label: 'L', colour: MID_COLOUR, at: (t) => delayMs + depthMs * sine(rate * t) },
+        { label: 'R', colour: SIDE_COLOUR, at: (t) => delayMs + depthMs * triangle(rate * 1.17 * t) },
+      ],
+      spanSec: 2 / Math.max(0.05, rate),
+      min: Math.max(0, delayMs - depthMs * 1.3),
+      max: delayMs + depthMs * 1.3,
+      unit: 'ms',
+      caption: `${rate.toFixed(2)} Hz · ±${depthMs.toFixed(1)} ms · 두 성부가 1:1.17 로 어긋납니다`,
+    };
+  }
+
+  return null;
+}
+
+// ── Comb and phase interference ─────────────────────────────────────────────
+
+/**
+ * What a flanger or a phaser does to the spectrum, and where it moves it to.
+ *
+ * Both are interference: a path that is delayed or phase-rotated, summed back
+ * against the dry signal.  Neither has an audible effect until that sum
+ * happens, so neither can be drawn from a magnitude response — the whole thing
+ * has to be evaluated in complex numbers, mix and feedback included.
+ *
+ * The shaded band is where the notches travel as the LFO sweeps.  A still
+ * picture of a moving filter is a lie by omission; the band is the honest part.
+ */
+export interface CombPicture {
+  /** Response now, in dB. */
+  db: (hz: number) => number;
+  /** Lowest and highest dB that frequency reaches across the sweep. */
+  sweep: (hz: number) => { lo: number; hi: number };
+  caption: string;
+}
+
+export const COMB_DEVICES: readonly string[] = ['flanger', 'phaser'];
+
+/** e^-jwT — one delay of `seconds`, as a complex number. */
+function delayResponse(seconds: number, hz: number): Complex {
+  const w = 2 * Math.PI * hz * seconds;
+  return { re: Math.cos(w), im: -Math.sin(w) };
+}
+
+/**
+ * A delay line with feedback, summed against the dry signal.
+ *
+ *   H = mix · z / (1 − g·z) + (1 − mix),   z = e^-jwT
+ *
+ * which is the graph exactly: `input → delay`, `delay → feedback → delay`,
+ * `delay → wet`, `input → dry`.
+ */
+function combDb(delaySec: number, feedback: number, mix: number, hz: number): number {
+  const z = delayResponse(delaySec, hz);
+  const g = Math.min(0.95, Math.max(0, feedback));
+  const den: Complex = { re: 1 - g * z.re, im: -g * z.im };
+  const wet = cDiv({ re: mix * z.re, im: mix * z.im }, den);
+  return 20 * Math.log10(Math.max(1e-6, cAbs(cAdd(wet, { re: 1 - mix, im: 0 }))));
+}
+
+/**
+ * Four allpass stages with feedback, summed against the dry signal.
+ *
+ * The stages have unit magnitude, so everything here comes from their phase
+ * meeting the dry path.
+ */
+function phaserDb(centreHz: number, feedback: number, mix: number, hz: number): number {
+  const stage: BiquadSpec = { type: 'allpass', freq: Math.max(20, centreHz), gain: 0, q: 0.7 };
+  const a = biquadResponse(stage, hz);
+  let chain: Complex = { re: 1, im: 0 };
+  for (let i = 0; i < 4; i++) chain = cMul(chain, a);
+  // The loop closes through a one-sample delay at 48 kHz.
+  const g = Math.min(0.9, Math.max(0, feedback));
+  const loop = cMul(chain, delayResponse(1 / 48_000, hz));
+  const den: Complex = { re: 1 - g * loop.re, im: -g * loop.im };
+  const wet = cDiv({ re: mix * chain.re, im: mix * chain.im }, den);
+  return 20 * Math.log10(Math.max(1e-6, cAbs(cAdd(wet, { re: 1 - mix, im: 0 }))));
+}
+
+export function combPictureFor(
+  pluginId: string, params: Record<string, number>,
+): CombPicture | null {
+  if (pluginId === 'flanger') {
+    const delayMs = num(params, 'delayMs', 3);
+    const depthMs = num(params, 'depthMs', 2);
+    const feedback = num(params, 'feedback', 0.5);
+    const mix = num(params, 'mix', 50) / 100;
+    const lowSec = Math.max(0.00005, (delayMs - depthMs) / 1000);
+    const highSec = (delayMs + depthMs) / 1000;
+    return {
+      db: (hz) => combDb(delayMs / 1000, feedback, mix, hz),
+      sweep: (hz) => {
+        const a = combDb(lowSec, feedback, mix, hz);
+        const b = combDb(highSec, feedback, mix, hz);
+        return { lo: Math.min(a, b), hi: Math.max(a, b) };
+      },
+      caption: `${delayMs.toFixed(1)} ±${depthMs.toFixed(1)} ms · 피드백 ${feedback.toFixed(2)} · 믹스 ${(mix * 100).toFixed(0)}%`,
+    };
+  }
+
+  if (pluginId === 'phaser') {
+    const centre = num(params, 'centreHz', 900);
+    const depth = num(params, 'depth', 0.7);
+    const feedback = num(params, 'feedback', 0.4);
+    const mix = num(params, 'mix', 50) / 100;
+    // The engine's LFO depth is `centreHz * depth`, so the stages swing that
+    // far either side of the centre.
+    const lo = Math.max(20, centre * (1 - depth));
+    const hi = centre * (1 + depth);
+    return {
+      db: (hz) => phaserDb(centre, feedback, mix, hz),
+      sweep: (hz) => {
+        const a = phaserDb(lo, feedback, mix, hz);
+        const b = phaserDb(hi, feedback, mix, hz);
+        return { lo: Math.min(a, b), hi: Math.max(a, b) };
+      },
+      caption: `${centre.toFixed(0)} Hz ±${(depth * 100).toFixed(0)}% · 올패스 4단 · 믹스 ${(mix * 100).toFixed(0)}%`,
     };
   }
 

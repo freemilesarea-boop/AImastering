@@ -16,8 +16,9 @@ import {
 } from '../../../daw/model/plugin-curves.js';
 import { irDisplay, spaceAt } from '../../../daw/engine/reverb-spaces.js';
 import {
-  detectorFor, detectorGainDb, filterPictureFor, shaperFor, shaperOutput, widthPictureFor,
-  type DetectorSpec, type ShaperSpec,
+  combPictureFor, detectorFor, detectorGainDb, filterPictureFor, lfoPictureFor,
+  shaperFor, shaperOutput, widthPictureFor,
+  type CombPicture, type DetectorSpec, type LfoPicture, type ShaperSpec,
 } from '../../../daw/model/plugin-shapes.js';
 import { premium } from '../../../theme/premium.js';
 
@@ -605,6 +606,144 @@ function drawDetector(
   ctx.fillText('OUT', w - 22, 20);
 }
 
+
+/**
+ * A modulator's own movement, over a couple of its own cycles.
+ *
+ * The time axis is scaled to the rate, so a slow sweep and a fast one look
+ * the same width and the SHAPE is what changes — which is the thing the two
+ * knobs cannot show between them.
+ */
+function drawLfo(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  picture: LfoPicture, dim: boolean,
+): void {
+  const top = 16;
+  const bottom = h - 14;
+  const span = Math.max(1e-6, picture.max - picture.min);
+  const yFor = (v: number): number =>
+    bottom - ((Math.max(picture.min, Math.min(picture.max, v)) - picture.min) / span) * (bottom - top);
+
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.strokeStyle = GRID;
+  ctx.lineWidth = 1;
+  // One vertical rule per cycle, so the rate is countable rather than read.
+  const cycles = 2;
+  for (let c = 1; c < cycles; c++) {
+    const x = Math.round((c / cycles) * w) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, top - 4); ctx.lineTo(x, bottom); ctx.stroke();
+  }
+  // The middle of the range, or zero when the range crosses it.
+  const restV = picture.min < 0 && picture.max > 0 ? 0 : (picture.min + picture.max) / 2;
+  const rest = Math.round(yFor(restV)) + 0.5;
+  ctx.strokeStyle = AXIS;
+  ctx.beginPath(); ctx.moveTo(0, rest); ctx.lineTo(w, rest); ctx.stroke();
+
+  picture.traces.forEach((trace, index) => {
+    ctx.beginPath();
+    for (let px = 0; px < w; px++) {
+      const t = (px / Math.max(1, w - 1)) * picture.spanSec;
+      const y = yFor(trace.at(t));
+      if (px === 0) ctx.moveTo(0, y); else ctx.lineTo(px, y);
+    }
+    ctx.strokeStyle = dim ? 'rgba(140,140,160,0.5)' : trace.colour;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    if (picture.traces.length > 1) {
+      ctx.fillStyle = dim ? 'rgba(140,140,160,0.6)' : trace.colour;
+      const text = trace.label;
+      ctx.fillText(text, w - ctx.measureText(text).width - 4, 11 + index * 11);
+    }
+  });
+
+  ctx.fillStyle = LABEL;
+  ctx.fillText(picture.caption, 4, 11);
+  const fmt = (v: number): string =>
+    `${Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2)}${picture.unit}`;
+  ctx.fillText(fmt(picture.max), 4, top + 9);
+  ctx.fillText(fmt(picture.min), 4, bottom - 3);
+  ctx.fillText(`${picture.spanSec.toFixed(2)} s`, w - 32, bottom - 3);
+}
+
+/**
+ * Interference, and where it travels.
+ *
+ * A flanger and a phaser both sum a treated path back against the dry one, so
+ * what you hear is notches — and the notches MOVE.  A still picture of a
+ * moving filter says less than it seems to, so the band behind the line is
+ * everywhere the response reaches across the sweep; the line is only where it
+ * happens to be at the bottom of that sweep.
+ */
+function drawComb(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  picture: CombPicture, dim: boolean,
+): void {
+  const RANGE = 18;
+  const yFor = (db: number): number =>
+    h / 2 - (Math.max(-RANGE, Math.min(RANGE, db)) / RANGE) * (h / 2 - 8);
+
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.strokeStyle = GRID;
+  ctx.lineWidth = 1;
+  for (const hz of [100, 500, 1000, 5000, 10_000]) {
+    const x = Math.round(freqToX(hz) * w) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.fillStyle = LABEL;
+    ctx.fillText(hz >= 1000 ? `${hz / 1000}k` : String(hz), x + 3, h - 4);
+  }
+  ctx.strokeStyle = AXIS;
+  ctx.beginPath();
+  ctx.moveTo(0, Math.round(yFor(0)) + 0.5); ctx.lineTo(w, Math.round(yFor(0)) + 0.5);
+  ctx.stroke();
+
+  const hzAt = (px: number): number => 20 * Math.exp((px / Math.max(1, w - 1)) * Math.log(1000));
+
+  // A comb's teeth are evenly spaced in HERTZ, so on a log axis they crowd
+  // together towards the top until several fall inside one pixel.  Sampling
+  // once per pixel there does not draw the comb, it draws whichever tooth the
+  // sample happened to land on — a different shape at every window width.
+  //
+  // So each pixel is sampled several times and drawn as the range it covers:
+  // where the teeth are wide it comes out a line, and where they are packed it
+  // comes out a solid band, which is what "too dense to resolve" looks like.
+  const SUB = 8;
+  const nowLo: number[] = [];
+  const nowHi: number[] = [];
+  const sweepLo: number[] = [];
+  const sweepHi: number[] = [];
+  for (let px = 0; px < w; px++) {
+    let nLo = Infinity, nHi = -Infinity, sLo = Infinity, sHi = -Infinity;
+    for (let k = 0; k < SUB; k++) {
+      const hz = hzAt(px + k / SUB);
+      const db = picture.db(hz);
+      if (db < nLo) nLo = db;
+      if (db > nHi) nHi = db;
+      const range = picture.sweep(hz);
+      if (range.lo < sLo) sLo = range.lo;
+      if (range.hi > sHi) sHi = range.hi;
+    }
+    nowLo.push(nLo); nowHi.push(nHi);
+    sweepLo.push(Math.min(sLo, nLo)); sweepHi.push(Math.max(sHi, nHi));
+  }
+
+  const band = (lo: number[], hi: number[], fill: string): void => {
+    ctx.beginPath();
+    for (let px = 0; px < w; px++) ctx.lineTo(px, yFor(hi[px] ?? 0));
+    for (let px = w - 1; px >= 0; px--) ctx.lineTo(px, yFor(lo[px] ?? 0));
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+  };
+
+  // Everywhere the notches travel, then where they are right now.
+  band(sweepLo, sweepHi, dim ? 'rgba(140,140,160,0.10)' : 'rgba(126,200,255,0.18)');
+  band(nowLo, nowHi, dim ? 'rgba(140,140,160,0.45)' : 'rgba(230,210,160,0.85)');
+
+  ctx.fillStyle = LABEL;
+  ctx.fillText(picture.caption, 4, 11);
+  ctx.fillText(`±${RANGE} dB`, w - 42, 11);
+}
+
 /** A level bar, for plugins whose behaviour is not a curve. */
 function drawLevel(ctx: CanvasRenderingContext2D, w: number, h: number, level: number): void {
   const db = level > 0.0005 ? 20 * Math.log10(level) : -60;
@@ -664,7 +803,13 @@ export default function PluginVisual({
         ctx.font = '9px ui-monospace, monospace';
         ctx.fillText(filter.caption, 4, 11);
       } else if (width01) drawWidth(ctx, width, height, width01, bypassed);
-      else drawLevel(ctx, width, height, level);
+      else {
+        const lfoPic = lfoPictureFor(pluginId, params);
+        const comb = lfoPic ? null : combPictureFor(pluginId, params);
+        if (lfoPic) drawLfo(ctx, width, height, lfoPic, bypassed);
+        else if (comb) drawComb(ctx, width, height, comb, bypassed);
+        else drawLevel(ctx, width, height, level);
+      }
     }
   }, [pluginId, params, bypassed, level, reduction, analysis, width, height]);
 

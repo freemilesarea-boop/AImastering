@@ -15,7 +15,7 @@
 // Pure, so it is tested without an AudioContext.
 
 export interface BiquadSpec {
-  type: 'lowshelf' | 'highshelf' | 'peaking' | 'highpass' | 'lowpass' | 'notch';
+  type: 'lowshelf' | 'highshelf' | 'peaking' | 'highpass' | 'lowpass' | 'notch' | 'allpass';
   freq: number;
   /** dB, for shelves and peaks. */
   gain: number;
@@ -35,7 +35,37 @@ export interface BiquadSpec {
  * BiquadFilterNode is specified to implement, so this curve is the filter the
  * listener is hearing rather than a sketch of one.
  */
+export interface Complex { re: number; im: number }
+
+export const cMul = (a: Complex, b: Complex): Complex =>
+  ({ re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re });
+export const cDiv = (a: Complex, b: Complex): Complex => {
+  const d = b.re * b.re + b.im * b.im;
+  if (d === 0) return { re: 0, im: 0 };
+  return { re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d };
+};
+export const cAdd = (a: Complex, b: Complex): Complex => ({ re: a.re + b.re, im: a.im + b.im });
+export const cAbs = (a: Complex): number => Math.hypot(a.re, a.im);
+
+/**
+ * H(e^jw) — the full complex response, not just how loud it is.
+ *
+ * An allpass has unit magnitude at every frequency; everything it does is in
+ * the phase, and a phaser's notches are that phase interfering with the dry
+ * signal.  Magnitude alone cannot produce them, so anything summing a filtered
+ * path back against an unfiltered one has to work in complex numbers or it is
+ * drawing a guess.
+ */
+export function biquadResponse(spec: BiquadSpec, hz: number, sampleRate = 48_000): Complex {
+  return biquadEval(spec, hz, sampleRate);
+}
+
 export function biquadMagnitudeDb(spec: BiquadSpec, hz: number, sampleRate = 48_000): number {
+  const h = biquadEval(spec, hz, sampleRate);
+  return 20 * Math.log10(Math.max(1e-9, cAbs(h)));
+}
+
+function biquadEval(spec: BiquadSpec, hz: number, sampleRate: number): Complex {
   const w0 = (2 * Math.PI * Math.max(1, spec.freq)) / sampleRate;
   const cosW0 = Math.cos(w0);
   const sinW0 = Math.sin(w0);
@@ -53,6 +83,19 @@ export function biquadMagnitudeDb(spec: BiquadSpec, hz: number, sampleRate = 48_
   let b0 = 1, b1 = 0, b2 = 0, a0 = 1, a1 = 0, a2 = 0;
 
   switch (spec.type) {
+    case 'allpass': {
+      // Cookbook allpass: unit magnitude everywhere, and all of its effect in
+      // the phase.  Which is why a phaser is inaudible until its output is
+      // summed with the dry signal — the notches are interference, not
+      // filtering, and only a COMPLEX response can show that.
+      b0 = 1 - alpha;
+      b1 = -2 * cosW0;
+      b2 = 1 + alpha;
+      a0 = 1 + alpha;
+      a1 = -2 * cosW0;
+      a2 = 1 - alpha;
+      break;
+    }
     case 'notch': {
       // Cookbook notch: a zero exactly on the unit circle at w0, so the
       // response is minus infinity there and unity everywhere far from it.
@@ -123,10 +166,7 @@ export function biquadMagnitudeDb(spec: BiquadSpec, hz: number, sampleRate = 48_
   const denReal = a0 + a1 * cosW + a2 * cos2W;
   const denImag = -(a1 * sinW + a2 * sin2W);
 
-  const num = Math.hypot(numReal, numImag);
-  const den = Math.hypot(denReal, denImag);
-  if (den === 0) return 0;
-  return 20 * Math.log10(Math.max(1e-9, num / den));
+  return cDiv({ re: numReal, im: numImag }, { re: denReal, im: denImag });
 }
 
 /** Combined response of a chain of biquads, in dB. */
