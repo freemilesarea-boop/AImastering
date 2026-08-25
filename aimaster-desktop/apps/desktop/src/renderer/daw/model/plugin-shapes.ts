@@ -15,6 +15,7 @@
 //
 // Pure, so it is tested without an AudioContext.
 
+import { biquadMagnitudeDb, type BiquadSpec } from './plugin-curves.js';
 import { tanhCurve } from '../engine/plugin-kit.js';
 import {
   bitCurve, clipCurve, gateGainCurve, tubeCurve,
@@ -244,4 +245,155 @@ export function expanderGainCurve(
 export function detectorGainDb(spec: DetectorSpec, inputDb: number): number {
   const gain = readCurve(spec.curve, dbToGain(Math.min(0, inputDb)));
   return 20 * Math.log10(Math.max(1e-6, gain));
+}
+
+// ── Devices whose behaviour is a filter, or a filter per stereo component ────
+
+/**
+ * A named set of biquads to draw together.
+ *
+ * The mid/side EQ is two independent chains that a single summed curve would
+ * misrepresent — "the sides are 4 dB brighter than the centre" is the whole
+ * information, and adding them together destroys exactly that.
+ */
+export interface NamedCurve {
+  label: string;
+  specs: BiquadSpec[];
+  /** Drawn in this colour, so two curves in one picture stay apart. */
+  colour: string;
+}
+
+export interface FilterPicture {
+  curves: NamedCurve[];
+  /** The visible frequency span, which is not always the audible band. */
+  fromHz: number;
+  toHz: number;
+  caption: string;
+}
+
+const MID_COLOUR = 'rgba(230,210,160,0.95)';
+const SIDE_COLOUR = 'rgba(126,200,255,0.9)';
+
+export const FILTER_DEVICES: readonly string[] = ['mseq', 'hum', 'dcblock'];
+
+export function filterPictureFor(
+  pluginId: string, params: Record<string, number>,
+): FilterPicture | null {
+  if (pluginId === 'mseq') {
+    // The engine pins both shelves at 200 Hz and 6 kHz.
+    const shelves = (lowDb: number, highDb: number): BiquadSpec[] => [
+      { type: 'lowshelf', freq: 200, gain: lowDb, q: 0.707 },
+      { type: 'highshelf', freq: 6000, gain: highDb, q: 0.707 },
+    ];
+    const midLow = num(params, 'midLowDb', 0);
+    const midHigh = num(params, 'midHighDb', 0);
+    const sideLow = num(params, 'sideLowDb', 0);
+    const sideHigh = num(params, 'sideHighDb', 0);
+    return {
+      curves: [
+        { label: 'MID', specs: shelves(midLow, midHigh), colour: MID_COLOUR },
+        { label: 'SIDE', specs: shelves(sideLow, sideHigh), colour: SIDE_COLOUR },
+      ],
+      fromHz: 20, toHz: 20_000,
+      caption: `가운데 ${midLow >= 0 ? '+' : ''}${midLow.toFixed(1)}/${midHigh >= 0 ? '+' : ''}${midHigh.toFixed(1)} · 양옆 ${sideLow >= 0 ? '+' : ''}${sideLow.toFixed(1)}/${sideHigh >= 0 ? '+' : ''}${sideHigh.toFixed(1)} dB`,
+    };
+  }
+
+  if (pluginId === 'hum') {
+    const base = num(params, 'baseHz', 60);
+    const count = Math.round(num(params, 'harmonics', 4));
+    const q = num(params, 'q', 30);
+    // The engine builds eight notches always and parks the unused ones at
+    // 20 kHz rather than bypassing them.  A parked notch is still in the
+    // signal path, so drawing only the active ones would draw a response the
+    // device does not have.
+    const specs: BiquadSpec[] = [];
+    for (let i = 0; i < 8; i++) {
+      const hz = base * (i + 1);
+      specs.push({
+        type: 'notch',
+        freq: i < count && hz < 24_000 ? hz : 20_000,
+        gain: 0, q,
+      });
+    }
+    return {
+      curves: [{ label: '', specs, colour: MID_COLOUR }],
+      // A 60 Hz notch and its harmonics live at the bottom; the top two
+      // octaves are empty and would just squash the part worth seeing.
+      fromHz: 20, toHz: 2000,
+      caption: `${base.toFixed(0)} Hz 와 배음 ${count}개 · Q ${q.toFixed(0)}`,
+    };
+  }
+
+  if (pluginId === 'dcblock') {
+    return {
+      curves: [{
+        label: '',
+        specs: [{ type: 'highpass', freq: 5, gain: 0, q: 0.707 }],
+        colour: MID_COLOUR,
+      }],
+      // Drawn from 1 Hz, because a 5 Hz corner seen from 20 Hz upwards is a
+      // flat line — and "it does nothing you can hear" is the point, but it
+      // only reads as a point if the corner it does have is on the picture.
+      fromHz: 1, toHz: 2000,
+      caption: '5 Hz 하이패스 — 들리는 대역은 건드리지 않습니다',
+    };
+  }
+
+  return null;
+}
+
+// ── Devices that set stereo width per frequency ─────────────────────────────
+
+/**
+ * How wide the device leaves each frequency, as a multiple of the input.
+ *
+ * The widener and the mono maker both work by filtering the SIDE component and
+ * scaling it, so "width" is a curve, not a number: below the corner the sides
+ * are gone and the sound is mono no matter where the width knob sits.  A knob
+ * reading 1.4x next to a corner frequency reading 120 Hz does not say that.
+ */
+export interface WidthPicture {
+  /** Width multiplier at a frequency; 1 is untouched, 0 is mono. */
+  widthAt: (hz: number) => number;
+  /** Where the sides are half gone, for the label. */
+  cornerHz: number;
+  maxWidth: number;
+  caption: string;
+}
+
+export const WIDTH_DEVICES: readonly string[] = ['widener', 'monomaker'];
+
+export function widthPictureFor(
+  pluginId: string, params: Record<string, number>,
+): WidthPicture | null {
+  if (pluginId === 'widener') {
+    const width = num(params, 'width', 1);
+    const corner = num(params, 'lowMonoHz', 20);
+    // One highpass on the side path, at Web Audio's default Q of 1 (which on
+    // a highpass is a resonance in dB, not a cookbook Q).
+    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: 1 };
+    return {
+      widthAt: (hz) => width * Math.pow(10, biquadMagnitudeDb(hp, hz) / 20),
+      cornerHz: corner,
+      maxWidth: Math.max(2, width),
+      caption: `폭 ${width.toFixed(2)}× · ${corner.toFixed(0)} Hz 아래는 모노`,
+    };
+  }
+
+  if (pluginId === 'monomaker') {
+    const width = Math.max(0, num(params, 'widthPct', 100)) / 100;
+    const corner = num(params, 'freqHz', 120);
+    // TWO highpasses in series on the side path — 12 dB/oct, a steeper skirt
+    // than the widener's, and the reason this one sounds tighter.
+    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: 0.707 };
+    return {
+      widthAt: (hz) => width * Math.pow(10, (2 * biquadMagnitudeDb(hp, hz)) / 20),
+      cornerHz: corner,
+      maxWidth: Math.max(2, width),
+      caption: `폭 ${(width * 100).toFixed(0)}% · ${corner.toFixed(0)} Hz 아래는 모노 (12 dB/oct)`,
+    };
+  }
+
+  return null;
 }

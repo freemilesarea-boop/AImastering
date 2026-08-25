@@ -20,7 +20,9 @@
 
 import {
   shaperFor, detectorFor, shaperOutput, readCurve, detectorGainDb, expanderGainCurve,
+  filterPictureFor, widthPictureFor, FILTER_DEVICES, WIDTH_DEVICES,
 } from '../src/renderer/daw/model/plugin-shapes.js';
+import { biquadMagnitudeDb, chainMagnitudeDb } from '../src/renderer/daw/model/plugin-curves.js';
 import {
   bitCurve, clipCurve, gateGainCurve, tubeCurve,
 } from '../src/renderer/daw/engine/plugins-extended.js';
@@ -251,12 +253,160 @@ check('a device with no parameters set draws its defaults rather than NaN', () =
   }
 });
 
+
+// ── Devices whose behaviour is a filter ─────────────────────────────────────
+
+check('the mid/side EQ draws two curves, not their sum', () => {
+  const pic = filterPictureFor('mseq', {
+    midLowDb: 6, midHighDb: 0, sideLowDb: 0, sideHighDb: 6,
+  })!;
+  assert(pic.curves.length === 2, `two curves, got ${pic.curves.length}`);
+  const [mid, side] = pic.curves;
+  assert(mid!.label === 'MID' && side!.label === 'SIDE', 'both are named');
+  assert(mid!.colour !== side!.colour, 'two curves in one picture must not share a colour');
+  // The whole information is that they differ; a sum would hide it.
+  near(chainMagnitudeDb(mid!.specs, 60), 6, 0.6, 'the centre is lifted low');
+  near(chainMagnitudeDb(mid!.specs, 12_000), 0, 0.2, 'the centre is flat up top');
+  near(chainMagnitudeDb(side!.specs, 60), 0, 0.2, 'the sides are flat low');
+  near(chainMagnitudeDb(side!.specs, 12_000), 6, 0.6, 'the sides are lifted up top');
+});
+
+check('the mid/side shelves sit where the engine pins them', () => {
+  const pic = filterPictureFor('mseq', { midLowDb: 6, midHighDb: 6, sideLowDb: 0, sideHighDb: 0 })!;
+  const freqs = pic.curves[0]!.specs.map((s) => s.freq).sort((a, b) => a - b);
+  assert(freqs[0] === 200 && freqs[1] === 6000, `200 Hz and 6 kHz, got ${freqs.join(', ')}`);
+});
+
+check('the hum remover notches the mains frequency and its harmonics', () => {
+  const pic = filterPictureFor('hum', { baseHz: 50, harmonics: 3, q: 30 })!;
+  const specs = pic.curves[0]!.specs;
+  // Eight filters always, because the engine builds eight and parks the spare
+  // ones rather than bypassing them — a parked notch is still in the path.
+  assert(specs.length === 8, `8 notches in the graph, got ${specs.length}`);
+  const active = specs.filter((s) => s.freq < 20_000).map((s) => s.freq);
+  assert(active.join(',') === '50,100,150', `50/100/150, got ${active.join(',')}`);
+  // And they are notches, not a shelf that looks like one from a distance.
+  for (const hz of active) {
+    assert(chainMagnitudeDb(specs, hz) < -20, `no notch at ${hz} Hz: ${chainMagnitudeDb(specs, hz)}`);
+  }
+  near(chainMagnitudeDb(specs, 400), 0, 0.6, 'unity away from the harmonics');
+});
+
+check('more harmonics means more notches, and the count is the knob', () => {
+  for (const n of [1, 4, 8]) {
+    const specs = filterPictureFor('hum', { baseHz: 60, harmonics: n, q: 30 })!.curves[0]!.specs;
+    const active = specs.filter((s) => s.freq < 20_000).length;
+    assert(active === n, `harmonics ${n} gave ${active} notches`);
+  }
+});
+
+check('a higher Q makes a narrower notch, which is what the knob claims', () => {
+  const wide = filterPictureFor('hum', { baseHz: 60, harmonics: 1, q: 6 })!.curves[0]!.specs;
+  const tight = filterPictureFor('hum', { baseHz: 60, harmonics: 1, q: 60 })!.curves[0]!.specs;
+  // Probe 2 Hz off centre, which is inside the WIDE notch's skirt and outside
+  // the tight one's: a 60 Hz notch is 10 Hz across at Q 6 and 1 Hz at Q 60.
+  // Measured there, the two are 8.5 dB apart; twenty hertz off centre both have
+  // recovered to within a third of a decibel and the check would not bite.
+  const off = 62;
+  assert(chainMagnitudeDb(tight, off) > chainMagnitudeDb(wide, off) + 6,
+    `Q did not narrow the notch — ${chainMagnitudeDb(wide, off).toFixed(1)} vs ${chainMagnitudeDb(tight, off).toFixed(1)}`);
+});
+
+check('the DC blocker is drawn doing nothing you can hear, which is its job', () => {
+  const pic = filterPictureFor('dcblock', {})!;
+  const specs = pic.curves[0]!.specs;
+  for (const hz of [20, 100, 1000, 10_000]) {
+    near(chainMagnitudeDb(specs, hz), 0, 0.6, `${hz} Hz should be untouched`);
+  }
+  // But it does something, and the picture has to reach far enough down to show it.
+  assert(pic.fromHz <= 2, `a 5 Hz corner needs an axis that goes below it, not ${pic.fromHz} Hz`);
+  assert(chainMagnitudeDb(specs, 2) < -3, `no corner at 2 Hz: ${chainMagnitudeDb(specs, 2)}`);
+});
+
+check('a notch really is a notch — deep at centre, unity away from it', () => {
+  const spec = { type: 'notch' as const, freq: 1000, gain: 0, q: 20 };
+  assert(biquadMagnitudeDb(spec, 1000) < -30, `centre: ${biquadMagnitudeDb(spec, 1000)}`);
+  near(biquadMagnitudeDb(spec, 100), 0, 0.2, 'two decades below');
+  near(biquadMagnitudeDb(spec, 10_000), 0, 0.2, 'a decade above');
+});
+
+// ── Devices that set width per frequency ────────────────────────────────────
+
+check('both wideners leave the bottom mono, whatever the width knob says', () => {
+  for (const [id, params] of [
+    ['widener', { width: 2, lowMonoHz: 200 }],
+    ['monomaker', { widthPct: 200, freqHz: 200 }],
+  ] as const) {
+    const pic = widthPictureFor(id, params)!;
+    assert(pic.widthAt(25) < 0.2, `${id}: 25 Hz is not mono — ${pic.widthAt(25)}`);
+    near(pic.widthAt(8000), 2, 0.05, `${id}: the top should be the full width`);
+  }
+});
+
+check('the mono maker is twice as steep as the widener — two highpasses against one', () => {
+  const one = widthPictureFor('widener', { width: 1, lowMonoHz: 120 })!;
+  const two = widthPictureFor('monomaker', { widthPct: 100, freqHz: 120 })!;
+  // An octave and a half below the corner, where the skirts have separated.
+  const oneDb = 20 * Math.log10(one.widthAt(40));
+  const twoDb = 20 * Math.log10(two.widthAt(40));
+  assert(twoDb < oneDb - 8,
+    `the 12 dB/oct skirt is not steeper — ${oneDb.toFixed(1)} vs ${twoDb.toFixed(1)} dB`);
+});
+
+check('width zero is mono everywhere, which is the one setting that must be exact', () => {
+  for (const [id, params] of [
+    ['widener', { width: 0, lowMonoHz: 20 }],
+    ['monomaker', { widthPct: 0, freqHz: 20 }],
+  ] as const) {
+    const pic = widthPictureFor(id, params)!;
+    for (const hz of [30, 300, 3000]) {
+      near(pic.widthAt(hz), 0, 1e-9, `${id} at ${hz} Hz`);
+    }
+  }
+});
+
+check('the corner drawn is the corner the knob sets', () => {
+  for (const corner of [40, 120, 300]) {
+    near(widthPictureFor('widener', { width: 1, lowMonoHz: corner })!.cornerHz, corner, 1e-9, 'widener');
+    near(widthPictureFor('monomaker', { widthPct: 100, freqHz: corner })!.cornerHz, corner, 1e-9, 'mono maker');
+  }
+});
+
+check('the width axis always has room for the width that is set', () => {
+  for (const width of [0, 1, 1.7, 2]) {
+    const pic = widthPictureFor('widener', { width, lowMonoHz: 20 })!;
+    assert(pic.maxWidth >= width, `${width}x would be drawn off the top of a ${pic.maxWidth}x axis`);
+    assert(pic.maxWidth >= 1, 'the "unchanged" line must be on the picture');
+  }
+});
+
+check('only the devices that are filters or wideners claim to be', () => {
+  for (const p of PLUGINS) {
+    const isFilter = FILTER_DEVICES.includes(p.id);
+    const isWidth = WIDTH_DEVICES.includes(p.id);
+    if (!isFilter) assert(!filterPictureFor(p.id, defaultParams(p.id)), `${p.id} claims a filter picture`);
+    if (!isWidth) assert(!widthPictureFor(p.id, defaultParams(p.id)), `${p.id} claims a width picture`);
+  }
+  for (const id of FILTER_DEVICES) assert(filterPictureFor(id, defaultParams(id)), `${id} has no filter picture`);
+  for (const id of WIDTH_DEVICES) assert(widthPictureFor(id, defaultParams(id)), `${id} has no width picture`);
+});
+
+check('every filter and width caption says something real', () => {
+  for (const id of [...FILTER_DEVICES, ...WIDTH_DEVICES]) {
+    const caption = filterPictureFor(id, defaultParams(id))?.caption
+      ?? widthPictureFor(id, defaultParams(id))!.caption;
+    assert(caption.trim().length > 0, `${id}: empty caption`);
+    assert(!caption.includes('NaN'), `${id}: NaN — ${caption}`);
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;
 console.log('\n=== Plugin shapes ===');
-console.log(`${SHAPERS.length} transfer curves, ${DETECTORS.length} detector curves\n`);
+console.log(`${SHAPERS.length} transfer curves, ${DETECTORS.length} detector curves, `
+  + `${FILTER_DEVICES.length} filter responses, ${WIDTH_DEVICES.length} width curves\n`);
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
 console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
 if (failed > 0) process.exit(1);

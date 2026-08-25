@@ -15,7 +15,7 @@
 // Pure, so it is tested without an AudioContext.
 
 export interface BiquadSpec {
-  type: 'lowshelf' | 'highshelf' | 'peaking' | 'highpass' | 'lowpass';
+  type: 'lowshelf' | 'highshelf' | 'peaking' | 'highpass' | 'lowpass' | 'notch';
   freq: number;
   /** dB, for shelves and peaks. */
   gain: number;
@@ -53,6 +53,17 @@ export function biquadMagnitudeDb(spec: BiquadSpec, hz: number, sampleRate = 48_
   let b0 = 1, b1 = 0, b2 = 0, a0 = 1, a1 = 0, a2 = 0;
 
   switch (spec.type) {
+    case 'notch': {
+      // Cookbook notch: a zero exactly on the unit circle at w0, so the
+      // response is minus infinity there and unity everywhere far from it.
+      b0 = 1;
+      b1 = -2 * cosW0;
+      b2 = 1;
+      a0 = 1 + alpha;
+      a1 = -2 * cosW0;
+      a2 = 1 - alpha;
+      break;
+    }
     case 'lowshelf': {
       const twoSqrtAAlpha = 2 * Math.sqrt(A) * alpha;
       b0 = A * ((A + 1) - (A - 1) * cosW0 + twoSqrtAAlpha);

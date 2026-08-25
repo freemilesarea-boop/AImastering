@@ -16,7 +16,7 @@ import {
 } from '../../../daw/model/plugin-curves.js';
 import { irDisplay, spaceAt } from '../../../daw/engine/reverb-spaces.js';
 import {
-  detectorFor, detectorGainDb, shaperFor, shaperOutput,
+  detectorFor, detectorGainDb, filterPictureFor, shaperFor, shaperOutput, widthPictureFor,
   type DetectorSpec, type ShaperSpec,
 } from '../../../daw/model/plugin-shapes.js';
 import { premium } from '../../../theme/premium.js';
@@ -68,23 +68,27 @@ function eqSpecs(pluginId: string, params: Record<string, number>): BiquadSpec[]
 
 function drawEq(
   ctx: CanvasRenderingContext2D, w: number, h: number,
-  specs: BiquadSpec[], dim: boolean,
+  curves: ReadonlyArray<{ label: string; specs: BiquadSpec[]; colour: string }>,
+  dim: boolean, fromHz = 20, toHz = 20_000, rangeDb = 24,
 ): void {
-  const RANGE = 24;                                // ±24 dB visible
-  const yFor = (db: number): number => h / 2 - (db / RANGE) * (h / 2 - 6);
+  const yFor = (db: number): number => h / 2 - (db / rangeDb) * (h / 2 - 6);
+  const xOf = (hz: number): number => freqToX(hz, fromHz, toHz) * w;
 
-  // Decade grid, labelled where there is room.
+  // Decade grid, labelled where there is room, over whatever span is visible.
+  const ticks = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10_000]
+    .filter((hz) => hz > fromHz * 1.2 && hz < toHz * 0.85);
   ctx.strokeStyle = GRID;
   ctx.lineWidth = 1;
   ctx.font = '9px ui-monospace, monospace';
-  ctx.fillStyle = LABEL;
-  for (const hz of [50, 100, 500, 1000, 5000, 10_000]) {
-    const x = Math.round(freqToX(hz) * w) + 0.5;
+  for (const hz of ticks) {
+    const x = Math.round(xOf(hz)) + 0.5;
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.fillStyle = LABEL;
     ctx.fillText(hz >= 1000 ? `${hz / 1000}k` : String(hz), x + 3, h - 4);
   }
-  for (const db of [-12, 12]) {
+  for (const db of [-rangeDb / 2, rangeDb / 2]) {
     const y = Math.round(yFor(db)) + 0.5;
+    ctx.strokeStyle = GRID;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
   }
   ctx.strokeStyle = AXIS;
@@ -92,25 +96,100 @@ function drawEq(
   ctx.moveTo(0, Math.round(yFor(0)) + 0.5); ctx.lineTo(w, Math.round(yFor(0)) + 0.5);
   ctx.stroke();
 
-  // The response itself, evaluated at one point per pixel column.
-  const points = logFrequencies(w);
-  ctx.beginPath();
-  points.forEach((hz, i) => {
-    let db = 0;
-    for (const spec of specs) db += biquadMagnitudeDb(spec, hz);
-    const y = yFor(Math.max(-RANGE, Math.min(RANGE, db)));
-    if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i, y);
+  // One point per pixel column, per curve.
+  const points = logFrequencies(w, fromHz, toHz);
+  curves.forEach((curve, index) => {
+    ctx.beginPath();
+    points.forEach((hz, i) => {
+      let db = 0;
+      for (const spec of curve.specs) db += biquadMagnitudeDb(spec, hz);
+      const y = yFor(Math.max(-rangeDb, Math.min(rangeDb, db)));
+      if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i, y);
+    });
+    ctx.strokeStyle = dim ? 'rgba(140,140,160,0.5)' : curve.colour;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Fill to the zero line so a cut and a boost are different shapes. Only
+    // for a single curve: two overlapping fills read as a third shape that is
+    // not either of them.
+    if (curves.length === 1) {
+      ctx.lineTo(w, yFor(0));
+      ctx.lineTo(0, yFor(0));
+      ctx.closePath();
+      ctx.fillStyle = dim ? 'rgba(140,140,160,0.06)' : 'rgba(230,210,160,0.10)';
+      ctx.fill();
+    } else if (curve.label) {
+      // Top right, because the caption owns the top left on every picture.
+      ctx.fillStyle = dim ? 'rgba(140,140,160,0.6)' : curve.colour;
+      const text = curve.label;
+      ctx.fillText(text, w - ctx.measureText(text).width - 4, 11 + index * 11);
+    }
   });
+}
+
+/**
+ * How wide a device leaves each frequency.
+ *
+ * A width knob is a number; what the device does is a curve, because both of
+ * these filter the SIDE component before scaling it.  Drawn against a 1.0 line
+ * that means "as it came in", so mono is the floor and the corner where the
+ * sides disappear is a place on the picture rather than a second knob.
+ */
+function drawWidth(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  picture: { widthAt: (hz: number) => number; cornerHz: number; maxWidth: number; caption: string },
+  dim: boolean,
+): void {
+  const top = 16;
+  const bottom = h - 16;
+  const yFor = (width: number): number =>
+    bottom - (Math.max(0, Math.min(picture.maxWidth, width)) / picture.maxWidth) * (bottom - top);
+
+  ctx.font = '9px ui-monospace, monospace';
+  ctx.strokeStyle = GRID;
+  for (const hz of [50, 100, 200, 500, 1000, 5000]) {
+    const x = Math.round(freqToX(hz) * w) + 0.5;
+    ctx.beginPath(); ctx.moveTo(x, top - 4); ctx.lineTo(x, bottom); ctx.stroke();
+    ctx.fillStyle = LABEL;
+    ctx.fillText(hz >= 1000 ? `${hz / 1000}k` : String(hz), x + 3, h - 4);
+  }
+
+  // "As it came in".
+  const unity = Math.round(yFor(1)) + 0.5;
+  ctx.strokeStyle = AXIS;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(0, unity); ctx.lineTo(w, unity); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = LABEL;
+  ctx.fillText('1.0×', w - 26, unity - 3);
+
+  ctx.beginPath();
+  for (let px = 0; px < w; px++) {
+    const hz = 20 * Math.exp((px / Math.max(1, w - 1)) * Math.log(1000));
+    const y = yFor(picture.widthAt(hz));
+    if (px === 0) ctx.moveTo(0, y); else ctx.lineTo(px, y);
+  }
   ctx.strokeStyle = dim ? 'rgba(140,140,160,0.5)' : premium.accent.base;
   ctx.lineWidth = 2;
   ctx.stroke();
-
-  // Fill to the zero line so a cut and a boost are different shapes.
-  ctx.lineTo(w, yFor(0));
-  ctx.lineTo(0, yFor(0));
+  ctx.lineTo(w, bottom);
+  ctx.lineTo(0, bottom);
   ctx.closePath();
-  ctx.fillStyle = dim ? 'rgba(140,140,160,0.06)' : 'rgba(230,210,160,0.10)';
+  ctx.fillStyle = dim ? 'rgba(140,140,160,0.06)' : 'rgba(126,200,255,0.10)';
   ctx.fill();
+
+  // Where the sides go.
+  const cx = Math.round(freqToX(picture.cornerHz) * w) + 0.5;
+  ctx.beginPath();
+  ctx.moveTo(cx, top - 4); ctx.lineTo(cx, bottom);
+  ctx.strokeStyle = 'rgba(248,113,113,0.5)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.fillStyle = LABEL;
+  ctx.fillText(picture.caption, 4, 11);
+  ctx.fillText('MONO', 4, bottom - 3);
 }
 
 function drawDynamics(
@@ -559,7 +638,9 @@ export default function PluginVisual({
     ctx.clearRect(0, 0, width, height);
 
     const specs = eqSpecs(pluginId, params);
-    if (specs.length > 0) drawEq(ctx, width, height, specs, bypassed);
+    if (specs.length > 0) {
+      drawEq(ctx, width, height, [{ label: '', specs, colour: premium.accent.base }], bypassed);
+    }
     else if (pluginId === 'comp' || pluginId === 'limiter' || pluginId === 'transient'
              || pluginId === 'ducker') {
       drawDynamics(ctx, width, height, pluginId, params, level, bypassed);
@@ -573,8 +654,16 @@ export default function PluginVisual({
     else {
       const shaper = shaperFor(pluginId, params);
       const detector = shaper ? null : detectorFor(pluginId, params);
+      const filter = filterPictureFor(pluginId, params);
+      const width01 = widthPictureFor(pluginId, params);
       if (shaper) drawShaper(ctx, width, height, shaper, level, bypassed);
       else if (detector) drawDetector(ctx, width, height, detector, level, bypassed);
+      else if (filter) {
+        drawEq(ctx, width, height, filter.curves, bypassed, filter.fromHz, filter.toHz);
+        ctx.fillStyle = LABEL;
+        ctx.font = '9px ui-monospace, monospace';
+        ctx.fillText(filter.caption, 4, 11);
+      } else if (width01) drawWidth(ctx, width, height, width01, bypassed);
       else drawLevel(ctx, width, height, level);
     }
   }, [pluginId, params, bypassed, level, reduction, analysis, width, height]);
