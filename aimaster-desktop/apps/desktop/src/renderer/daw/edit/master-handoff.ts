@@ -70,6 +70,24 @@ export function handoffMessage(fileName: string, queuedAfter: number): string {
   return `${fileName} 을(를) 마스터링으로 보냈습니다${more}`;
 }
 
+/**
+ * What to say after a send, given what the queue did with it.
+ *
+ * A replacement has to be said out loud.  Silently swapping the row would
+ * look identical to nothing happening, and the person who just changed their
+ * mix and pressed the button needs to know the list now holds the new one.
+ */
+export function stageMessage(
+  fileName: string, outcome: 'added' | 'replaced' | 'added-beside-running', queuedAfter: number,
+): string {
+  const more = queuedAfter > 1 ? ` — 대기열 ${queuedAfter}곡` : '';
+  if (outcome === 'replaced') return `${fileName} 을(를) 새 믹스로 교체했습니다${more}`;
+  if (outcome === 'added-beside-running') {
+    return `${fileName} 을(를) 추가했습니다 — 이전 믹스는 마스터링 중이라 그대로 뒀습니다${more}`;
+  }
+  return handoffMessage(fileName, queuedAfter);
+}
+
 /** The name the mastering list will show for this session. */
 export function handoffFileName(sessionName: string): string {
   const safe = sessionName.replace(/[^\w.\-가-힣 ]+/g, '_').slice(0, 80).trim();

@@ -35,7 +35,10 @@ import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { analyzeBuffer, clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
 import { renderSession, sessionRange } from '../src/renderer/daw/engine/offline-render.js';
 import { encodeAudioBuffer, encodeWav } from '../src/renderer/daw/engine/wav.js';
-import { handoffProblem, handoffFileName } from '../src/renderer/daw/edit/master-handoff.js';
+import {
+  handoffProblem, handoffFileName, stageMessage,
+} from '../src/renderer/daw/edit/master-handoff.js';
+import { useAudioStore, MAX_QUEUE_SIZE } from '../src/renderer/stores/audioStore.js';
 import type { DawSession, Track } from '../src/renderer/daw/model/types.js';
 
 const SR = 48_000;
@@ -327,6 +330,119 @@ async function main(): Promise<void> {
     // And the render really would be silence, which is what makes it worth refusing.
     const out = await render(silent);
     assert(peak(out) < 0.001, `an all-muted mix rendered at ${peak(out)}`);
+  });
+
+
+  // ── One row per session, not one per press ────────────────────────────────
+
+  const resetQueue = (): void => { useAudioStore.getState().clearQueue(); };
+  const stage = (sessionId: string, path: string) =>
+    useAudioStore.getState().stageSessionInQueue(sessionId, path);
+  const queue = () => useAudioStore.getState().queue;
+
+  await check('sending the same session twice leaves ONE row, holding the newer mix', () => {
+    resetQueue();
+    const first = stage('sess-a', '/tmp/to-master/1/Mix.wav');
+    assert(first.outcome === 'added', `first send: ${first.outcome}`);
+    const second = stage('sess-a', '/tmp/to-master/2/Mix.wav');
+    assert(second.outcome === 'replaced', `second send: ${second.outcome}`);
+    assert(queue().length === 1, `${queue().length} rows after two sends of one session`);
+    assert(queue()[0]!.filePath === '/tmp/to-master/2/Mix.wav', 'the row must point at the newer render');
+    assert(second.replacedPath === '/tmp/to-master/1/Mix.wav',
+      'the superseded file has to be named so it can be deleted');
+  });
+
+  await check('eight presses still leave one row', () => {
+    resetQueue();
+    for (let i = 1; i <= 8; i++) stage('sess-a', `/tmp/to-master/${i}/Mix.wav`);
+    assert(queue().length === 1, `eight presses made ${queue().length} rows`);
+    assert(queue()[0]!.filePath === '/tmp/to-master/8/Mix.wav', 'the last press should win');
+  });
+
+  await check('two different sessions keep two rows', () => {
+    resetQueue();
+    stage('sess-a', '/tmp/to-master/1/A.wav');
+    stage('sess-b', '/tmp/to-master/2/B.wav');
+    stage('sess-a', '/tmp/to-master/3/A.wav');
+    assert(queue().length === 2, `${queue().length} rows for two sessions`);
+    const a = queue().find((i) => i.sourceSessionId === 'sess-a')!;
+    const bRow = queue().find((i) => i.sourceSessionId === 'sess-b')!;
+    assert(a.filePath === '/tmp/to-master/3/A.wav', 'A should be the newer render');
+    assert(bRow.filePath === '/tmp/to-master/2/B.wav', 'B must not be touched by a re-send of A');
+  });
+
+  await check('a file opened from disk is never replaced by a mix', () => {
+    resetQueue();
+    useAudioStore.getState().addFilesToQueue(['/music/someone-elses-song.wav']);
+    stage('sess-a', '/tmp/to-master/1/Mix.wav');
+    assert(queue().length === 2, 'the imported file must stay');
+    const imported = queue().find((i) => i.filePath === '/music/someone-elses-song.wav');
+    assert(imported && imported.sourceSessionId === undefined,
+      'an imported file has no session and cannot be superseded');
+  });
+
+  await check('replacing clears the old report — it described audio nobody rendered', () => {
+    resetQueue();
+    stage('sess-a', '/tmp/to-master/1/Mix.wav');
+    const id = queue()[0]!.id;
+    // The row has to actually CARRY a report before "the report is cleared"
+    // means anything — asserting undefined on a key that was never set passes
+    // whatever the code does.
+    useAudioStore.getState().updateQueueItem(id, {
+      status: 'done',
+      progress: 100,
+      progressStage: 'finished',
+      presetId: 'kpop-loud',
+      analysis: { lufs: -9.1 } as never,
+      masteringResult: { outputPath: '/tmp/old-master.wav' } as never,
+      error: { code: 'STALE' } as never,
+    });
+    assert(queue()[0]!.analysis !== undefined, 'the fixture must put a report on the row');
+    stage('sess-a', '/tmp/to-master/2/Mix.wav');
+    const row = queue()[0]!;
+    assert(row.status === 'pending', `the replaced row is still '${row.status}'`);
+    assert(row.progress === 0 && row.progressStage === '', 'progress must reset');
+    assert(row.analysis === undefined, 'the old analysis must not sit under the new file');
+    assert(row.masteringResult === undefined, 'nor the old master');
+    assert(row.error === undefined, 'nor an error about a mix that no longer exists');
+    // But the choice the person made about this song survives.
+    assert(row.presetId === 'kpop-loud', 'the per-file preset should survive a re-send');
+  });
+
+  await check('a mix that is mid-master is left alone and the new one goes beside it', () => {
+    // 'mastering' and 'analyzing' are the two in-flight states the queue has.
+    resetQueue();
+    stage('sess-a', '/tmp/to-master/1/Mix.wav');
+    useAudioStore.getState().updateQueueItem(queue()[0]!.id, { status: 'mastering' });
+    const again = stage('sess-a', '/tmp/to-master/2/Mix.wav');
+    assert(again.outcome === 'added-beside-running', `got ${again.outcome}`);
+    assert(queue().length === 2, 'the running master must not be yanked out from under the person');
+    assert(again.replacedPath === undefined, 'nothing was superseded, so nothing may be deleted');
+  });
+
+  await check('a full queue still refuses a new session but can replace its own', () => {
+    resetQueue();
+    const paths = Array.from({ length: MAX_QUEUE_SIZE }, (_, i) => `/music/song-${i}.wav`);
+    useAudioStore.getState().addFilesToQueue(paths);
+    assert(queue().length === MAX_QUEUE_SIZE, 'the queue should be full');
+    assert(stage('sess-a', '/tmp/to-master/1/Mix.wav').outcome === 'full', 'a full queue must refuse');
+    // Make room, send, fill up again, and the re-send still works because it
+    // replaces rather than adds.
+    useAudioStore.getState().removeFromQueue(queue()[0]!.id);
+    assert(stage('sess-a', '/tmp/to-master/1/Mix.wav').outcome === 'added', 'should fit now');
+    assert(stage('sess-a', '/tmp/to-master/2/Mix.wav').outcome === 'replaced',
+      'a re-send needs no free slot — it takes the one it already has');
+    assert(queue().length === MAX_QUEUE_SIZE, 'and the queue is still exactly full');
+    resetQueue();
+  });
+
+  await check('a replacement is said out loud, not done silently', () => {
+    const replaced = stageMessage('Mix.wav', 'replaced', 1);
+    assert(replaced.includes('교체'), `a swap must be reported: ${replaced}`);
+    const added = stageMessage('Mix.wav', 'added', 1);
+    assert(!added.includes('교체'), `a first send is not a replacement: ${added}`);
+    const beside = stageMessage('Mix.wav', 'added-beside-running', 2);
+    assert(beside.includes('마스터링 중'), `say why it was not replaced: ${beside}`);
   });
 
   // ────────────────────────────────────────────────────────────────────────────

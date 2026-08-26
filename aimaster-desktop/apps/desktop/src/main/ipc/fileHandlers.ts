@@ -415,6 +415,36 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
   });
 
+  /**
+   * Delete a staged mix that a newer render of the same session replaced.
+   *
+   * Refuses anything outside the staging directory.  The renderer hands over a
+   * path it was given by `daw:stage-for-mastering`, but a delete driven by a
+   * string from the other side of the bridge is worth pinning to one place
+   * regardless of who is asking today.
+   */
+  ipc.handle('daw:discard-staged', (_e, req: unknown) => {
+    const target = (req as { path?: unknown } | null)?.path;
+    if (typeof target !== 'string' || target.length === 0) return false;
+    const root = path.join(dawTempDir(), 'to-master');
+    const resolved = path.resolve(target);
+    if (!resolved.startsWith(path.resolve(root) + path.sep)) return false;
+    try {
+      fs.rmSync(resolved, { force: true });
+      // Each staged mix gets its own timestamped directory; once the file is
+      // gone the directory is litter.
+      const dir = path.dirname(resolved);
+      if (path.resolve(dir) !== path.resolve(root) && fs.readdirSync(dir).length === 0) {
+        fs.rmdirSync(dir);
+      }
+      return true;
+    } catch {
+      // A staged file that will not delete is a temp file the OS clears
+      // later, not a reason to fail the send that just succeeded.
+      return false;
+    }
+  });
+
   ipc.handle('daw:write-temp-audio', (_e, req: unknown) => {
     const { name, bytes } = readAudioPayload(req);
     const safe = name.replace(/[^\w.\-가-힣 ]+/g, '_').slice(0, 80) || 'render';

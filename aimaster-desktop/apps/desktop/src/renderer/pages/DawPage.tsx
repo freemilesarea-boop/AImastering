@@ -45,7 +45,7 @@ import {
   bounceSession, commitTrack, freezeTrack, stageForMastering, unfreezeTrack,
 } from '../daw/engine/offline-render.js';
 import {
-  handoffFileName, handoffMessage, handoffProblem,
+  handoffFileName, handoffProblem, stageMessage,
 } from '../daw/edit/master-handoff.js';
 import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
@@ -286,19 +286,24 @@ export default function DawPage() {
     setBusy('믹스를 렌더링하는 중…');
     try {
       const path = await stageForMastering(current);
-      const before = useAudioStore.getState().queue.length;
-      useAudioStore.getState().addFilesToQueue([path]);
-      const after = useAudioStore.getState().queue.length;
-      if (after === before) {
+      const staged = useAudioStore.getState().stageSessionInQueue(current.id, path);
+      if (staged.outcome === 'full') {
         notify('대기열에 넣지 못했습니다 — 홈에서 자리를 만든 뒤 다시 보내세요', 'error');
         return;
       }
+      // The mix this one supersedes is no longer reachable from anywhere, and
+      // eight renders of the same session is a gigabyte of temp nobody asked
+      // for.  A failure here costs nothing worth reporting — the file is in a
+      // temp directory the OS clears anyway.
+      if (staged.replacedPath) {
+        void invoke('daw:discard-staged', { path: staged.replacedPath }).catch(() => undefined);
+      }
       setPage('home');
-      notify(handoffMessage(handoffFileName(current.name), after), 'success');
+      notify(stageMessage(handoffFileName(current.name), staged.outcome, staged.queued), 'success');
     } catch (err) {
       notify(`마스터링으로 보내지 못했습니다: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
-  }, [notify, setPage]);
+  }, [invoke, notify, setPage]);
 
   const [templatesOpen, setTemplatesOpen] = useState(false);
 

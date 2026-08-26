@@ -49,7 +49,7 @@ const INVOKE_CHANNELS = [
   // AAF interchange — binary, so these carry byte arrays rather than text
   'daw:aaf-open', 'daw:aaf-save',
   // DAW offline render output (Bounce / Freeze / Consolidate)
-  'daw:write-temp-audio', 'daw:bounce-audio', 'daw:stage-for-mastering',
+  'daw:write-temp-audio', 'daw:bounce-audio', 'daw:stage-for-mastering', 'daw:discard-staged',
   'daw:choose-stem-folder', 'daw:write-stem',
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer
   'daw:pcm-source',

@@ -104,9 +104,28 @@ export interface QueueItem {
   progressStage: string;
   /** Per-file Loui preset override (undefined = use the global options). */
   presetId: string | undefined;
+  /**
+   * The DAW session this row was rendered from, when it came from the mixer.
+   *
+   * Sending the same session again replaces this row instead of adding
+   * another: a person who mixes, sends, adjusts and sends again wants the
+   * newer mix, not two rows called the same thing with no way to tell which
+   * is which.  Files opened from disk have no session and never replace
+   * anything.
+   */
+  sourceSessionId?: string;
 }
 
 export const MAX_QUEUE_SIZE = 20;
+
+/** What `stageSessionInQueue` did, so the caller can say it out loud. */
+export interface StageResult {
+  outcome: 'added' | 'replaced' | 'added-beside-running' | 'full';
+  /** Rows in the queue after the call. */
+  queued: number;
+  /** The file the replaced row used to point at, so it can be cleaned up. */
+  replacedPath?: string;
+}
 
 // ── Mastering options ─────────────────────────────────────────────────────────
 
@@ -201,6 +220,11 @@ interface AudioStore {
   queue: QueueItem[];
   isBatchRunning: boolean;
   addFilesToQueue: (paths: string[]) => void;
+  /**
+   * Put a freshly rendered DAW mix in the queue, replacing the previous
+   * render of that same session.
+   */
+  stageSessionInQueue: (sessionId: string, path: string) => StageResult;
   removeFromQueue: (id: string) => void;
   clearQueue: () => void;
   updateQueueItem: (id: string, updates: Partial<Omit<QueueItem, 'id'>>) => void;
@@ -266,7 +290,7 @@ function baseName(p: string): string {
   return p.split('/').pop()?.split('\\').pop() ?? p;
 }
 
-export const useAudioStore = create<AudioStore>((set) => ({
+export const useAudioStore = create<AudioStore>((set, get) => ({
   // ── Queue ──────────────────────────────────────────────────────────────
   queue: [],
   isBatchRunning: false,
@@ -288,6 +312,62 @@ export const useAudioStore = create<AudioStore>((set) => ({
       }));
     return { queue: [...s.queue, ...newItems] };
   }),
+
+  stageSessionInQueue: (sessionId, path) => {
+    const before = get().queue;
+    const previous = before.find((i) => i.sourceSessionId === sessionId);
+
+    // A row that is mid-master is not ours to yank out from under the person
+    // watching it; the new mix goes in beside it and they can drop whichever
+    // they do not want.
+    const busy = previous !== undefined
+      && previous.status !== 'pending'
+      && previous.status !== 'done'
+      && previous.status !== 'error';
+
+    if (previous && !busy) {
+      const replacedPath = previous.filePath;
+      set({
+        queue: before.map((item) => {
+          if (item.id !== previous.id) return item;
+          // The analysis, the result and the error describe the OLD mix, so
+          // they are DROPPED rather than set aside — under
+          // `exactOptionalPropertyTypes` an absent key and a key holding
+          // undefined are different things, and leaving them would put a
+          // report under a file nobody rendered.  The per-file preset is a
+          // choice about this song and survives: re-sending a tweaked mix is
+          // not a reason to forget it.
+          const { analysis, masteringResult, error, ...rest } = item;
+          void analysis; void masteringResult; void error;
+          return {
+            ...rest,
+            filePath: path,
+            fileName: baseName(path),
+            status: 'pending' as const,
+            progress: 0,
+            progressStage: '',
+          };
+        }),
+      });
+      return { outcome: 'replaced', queued: before.length, replacedPath };
+    }
+
+    if (before.length >= MAX_QUEUE_SIZE) return { outcome: 'full', queued: before.length };
+
+    set({
+      queue: [...before, {
+        id: crypto.randomUUID(),
+        filePath: path,
+        fileName: baseName(path),
+        status: 'pending' as const,
+        progress: 0,
+        progressStage: '',
+        presetId: undefined,
+        sourceSessionId: sessionId,
+      }],
+    });
+    return { outcome: busy ? 'added-beside-running' : 'added', queued: before.length + 1 };
+  },
 
   removeFromQueue: (id) => set((s) => ({
     queue: s.queue.filter((i) => i.id !== id),
