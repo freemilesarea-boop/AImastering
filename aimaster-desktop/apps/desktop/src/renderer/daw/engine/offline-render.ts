@@ -15,6 +15,10 @@ import {
   clipEnd, findTrack, trackClips, addFile, updateTrack, sessionEndSec,
 } from '../model/session-ops.js';
 import { applyConsolidation, type TimeSelection } from '../edit/clip-edit.js';
+import {
+  applyConsolidatedSpan, consolidationSpans, outcomeOf,
+  type ConsolidationOutcome, type ConsolidationSpan,
+} from '../edit/consolidate.js';
 import type { AudioFileRef, DawSession, FileId, Track, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
@@ -374,7 +378,11 @@ export async function consolidateSelection(
   const dry: DawSession = {
     ...session,
     tracks: session.tracks.map((t): Track => {
-      if (t.id === trackId) return { ...t, inserts: [], mute: false, solo: false, volumeDb: 0, pan: 0, output: { kind: 'master' } };
+      // `delayMs: 0` for the same reason Freeze zeroes it: the render is
+      // the AUDIO, and the clip it becomes goes back on a track that still
+      // carries the delay.  Rendering it shifted and then letting the track
+      // shift it again moves it twice.
+      if (t.id === trackId) return { ...t, inserts: [], mute: false, solo: false, volumeDb: 0, pan: 0, output: { kind: 'master' }, delayMs: 0 };
       if (t.kind === 'master') return { ...t, inserts: [], volumeDb: 0, pan: 0, mute: false, solo: false };
       return { ...t, mute: true, solo: false };
     }),
@@ -387,6 +395,68 @@ export async function consolidateSelection(
 
   const withFile = addFile(session, ref);
   return applyConsolidation(withFile, trackId, sel, ref.id, ref.name);
+}
+
+/**
+ * Bounce Selection — merge the selected events on each track into one file.
+ *
+ * The gaps between events are the point.  Nothing schedules a source there,
+ * so those frames are whatever the offline context was initialised to, and
+ * WebAudio initialises a render buffer to zero: the silence is digital, not
+ * a quiet copy of something.  That is the property the whole verb rests on,
+ * so it is measured in the app rather than assumed here.
+ *
+ * The channel is bypassed on purpose — no inserts, unity fader, centre pan.
+ * This merges events; it does not print the mix.  What DOES get baked is
+ * what belongs to the clips themselves: their gain and their fades, because
+ * those are properties of the events being merged, not of the channel.
+ */
+export async function bounceSelection(
+  session: DawSession, sel: TimeSelection,
+): Promise<{ session: DawSession; outcome: ConsolidationOutcome }> {
+  const spans = consolidationSpans(session, sel);
+  const outcome = outcomeOf(spans);
+  let out = session;
+  for (const span of spans) out = await bounceOneSpan(out, span);
+  return { session: out, outcome };
+}
+
+async function bounceOneSpan(session: DawSession, span: ConsolidationSpan): Promise<DawSession> {
+  const track = findTrack(session, span.trackId);
+  if (!track) return session;
+  const keep = new Set(span.clipIds);
+
+  // Only the selected events play.  An unselected clip inside the span is a
+  // take that was deliberately left out; rendering the whole track would sum
+  // it back in, and the engineer would never see where it came from.
+  const dry: DawSession = {
+    ...session,
+    tracks: session.tracks.map((t): Track => {
+      if (t.id === span.trackId) {
+        return {
+          ...t,
+          inserts: [], mute: false, solo: false, volumeDb: 0, pan: 0,
+          output: { kind: 'master' },
+          // Zeroed for the same reason Freeze zeroes it — see renderTrack.
+          delayMs: 0,
+          playlists: t.playlists.map((p) => (
+            p.id === t.activePlaylistId ? { ...p, clips: p.clips.filter((c) => keep.has(c.id)) } : p
+          )),
+        };
+      }
+      if (t.kind === 'master') return { ...t, inserts: [], volumeDb: 0, pan: 0, mute: false, solo: false };
+      return { ...t, mute: true, solo: false };
+    }),
+  };
+
+  const rendered = await renderSession(
+    dry, { startSec: span.startSec, endSec: span.endSec }, { tailSec: 0 },
+  );
+  const path = await writeTempRender(rendered, `${track.name}-consolidated`);
+  const ref = fileRefFor(path, `${track.name} (consolidated)`, rendered);
+  analyzeBuffer(ref.id, rendered);
+
+  return applyConsolidatedSpan(addFile(session, ref), span, ref.id, ref.name);
 }
 
 /** True when a file's decoded audio is already in the cache. */

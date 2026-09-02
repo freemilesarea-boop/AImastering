@@ -19,6 +19,7 @@ import {
   type TimeSelection,
 } from '../daw/edit/clip-edit.js';
 import { compRange, cyclePlaylist } from '../daw/edit/comping.js';
+import { consolidationSpans, describeOutcome, outcomeOf } from '../daw/edit/consolidate.js';
 import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
 import {
   addTrack, createTrack, findTrack, sessionEndSec,
@@ -31,7 +32,8 @@ import {
 import { isEmptyPlan, planDrop } from '../daw/model/drop-target.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import {
-  bounceSession, commitTrack, consolidateSelection, freezeTrack, renderSession, sessionRange,
+  bounceSelection, bounceSession, commitTrack, consolidateSelection, freezeTrack,
+  renderSession, sessionRange,
   stageForMastering, unfreezeTrack,
 } from '../daw/engine/offline-render.js';
 import {
@@ -123,7 +125,8 @@ import type { CommandId } from './definitions.js';
 export type DawCommandId =
   | 'daw.open' | 'daw.toggleWindow'
   | 'daw.tabNext' | 'daw.tabPrev' | 'daw.toggleTabToTransient'
-  | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate' | 'daw.clearRange'
+  | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate'
+  | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
@@ -392,6 +395,21 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         notify('컨솔리데이트 완료', 'success');
       } catch (err) {
         notify(`컨솔리데이트 실패: ${(err as Error).message}`, 'error');
+      }
+    },
+
+    'daw.bounceSelection': async () => {
+      const sel = needSelection();
+      if (!sel) return;
+      const spans = consolidationSpans(daw().session, sel);
+      if (spans.length === 0) { notify('선택 안에 오디오 클립이 없습니다', 'warning'); return; }
+      notify(`바운스 렌더링 중… (${describeOutcome(outcomeOf(spans))})`);
+      try {
+        const result = await bounceSelection(daw().session, sel);
+        daw().apply(() => result.session);
+        notify(`바운스 완료 — ${describeOutcome(result.outcome)}`, 'success');
+      } catch (err) {
+        notify(`바운스 실패: ${(err as Error).message}`, 'error');
       }
     },
 

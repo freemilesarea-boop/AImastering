@@ -54,7 +54,8 @@ export type CommandId =
   // 6. DAW workspace — multitrack editing, routing and rendering
   | 'daw.open' | 'daw.toggleWindow'
   | 'daw.tabNext' | 'daw.tabPrev' | 'daw.toggleTabToTransient'
-  | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate' | 'daw.clearRange'
+  | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate'
+  | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
@@ -141,8 +142,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '루프 끝점으로 이동', available: true },
   { id: 'view.zoomOutH', group: 'transport', label: '화면 가로 축소', chords: ['KeyG'],
     note: '파형 가로 축소 (재생 헤드 기준)', available: true },
-  { id: 'view.zoomInH',  group: 'transport', label: '화면 가로 확대', chords: ['KeyH'],
-    note: '파형 가로 확대 (재생 헤드 기준)', available: true },
+  { id: 'view.zoomInH',  group: 'transport', label: '화면 가로 확대', chords: ['KeyF'],
+    note: 'F/G 한 쌍 — Cubase 는 H 이지만 그 키는 바운스(H)가 씁니다', available: true },
   { id: 'view.zoomOutV', group: 'transport', label: '화면 세로 축소', chords: ['Shift+G'],
     note: '파형 진폭 축소', available: true },
   { id: 'view.zoomInV',  group: 'transport', label: '화면 세로 확대', chords: ['Shift+H'],
@@ -251,8 +252,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택 밖의 오디오를 잘라냄 (비파괴)', available: true },
   { id: 'daw.clearRange', group: 'daw', label: '선택 구간 삭제', chords: ['Delete', 'Backspace'],
     note: 'SHUFFLE 모드면 뒤 클립을 당겨 붙임', available: true },
-  { id: 'daw.consolidate', group: 'daw', label: '컨솔리데이트', chords: ['Mod+Alt+C'],
-    note: '선택 구간을 하나의 새 오디오 클립으로 렌더링', available: true },
+  { id: 'daw.consolidate', group: 'daw', label: '컨솔리데이트 (구간)', chords: ['Mod+Alt+C'],
+    note: '선택 구간을 그 길이 그대로 하나의 새 오디오 클립으로 렌더링', available: true },
+  { id: 'daw.bounceSelection', group: 'daw', label: '바운스 (Bounce Selection)', chords: ['KeyH'],
+    note: '선택한 클립들을 트랙별로 하나의 파일로 합침 — 사이의 빈 구간은 디지털 무음', available: true },
   { id: 'daw.clipGainUp', group: 'daw', label: '클립 게인 +0.5 dB', chords: ['Mod+Shift+ArrowUp'],
     note: '클립 자체 게인 (페이더 이전)', available: true },
   { id: 'daw.clipGainDown', group: 'daw', label: '클립 게인 −0.5 dB', chords: ['Mod+Shift+ArrowDown'],
