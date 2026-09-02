@@ -45,8 +45,13 @@ pnpm fix:electron
 ```
 
 `pnpm install` 이 electron 의 postinstall 을 건너뛰는 경우가 있다(스토어 재사용,
-사이드이펙트 캐시). 그러면 `node_modules/electron/dist` 가 비어 있어서 실행할
-바이너리가 없다. 위 명령이 없는 것만 받아 온다.
+사이드이펙트 캐시). 그러면 `node_modules/electron/dist` 가 없거나 반쯤 만들어진
+채로 남는다 — 후자는 실행 파일이 있으니 겉보기엔 멀쩡하고, 실행할 때
+`dyld: Library not loaded: @rpath/Electron Framework.framework` 로 죽는다.
+
+그래서 파일 하나가 아니라 electron 자신의 기준(`dist/version` 이 `package.json`
+의 버전과 일치)에 플랫폼별 필수 파일까지 같이 본다. 한 번 다시 받아도 안 되면
+캐시를 건너뛰고 한 번 더 받는다.
 
 `path.txt` 를 손으로 쓸 일이 생기면 **`echo` 를 쓰지 말 것.** electron 의
 `index.js` 는 이 파일을 trim 없이 읽어서 실행 경로에 이어 붙이기 때문에, `echo`

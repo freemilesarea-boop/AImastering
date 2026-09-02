@@ -272,6 +272,20 @@ rm -rf node_modules/electron
 pnpm install
 ```
 
+### `dyld: Library not loaded: @rpath/Electron Framework.framework`
+
+`dist` 가 반쯤 만들어진 상태입니다 — 실행 파일은 있는데 프레임워크가 없습니다.
+압축 해제가 중간에 끊겼거나, 캐시에 깨진 zip 이 남아 있을 때 이렇게 됩니다.
+
+```bash
+pnpm fix:electron
+```
+
+`dist/version` 이 `package.json` 의 버전과 맞는지, 플랫폼마다 반드시 있어야 하는
+파일(맥은 `Electron Framework`, 리눅스는 `libffmpeg.so`)이 있는지까지 봅니다.
+한 번 다시 받아도 안 되면 다운로드 캐시를 건너뛰고 한 번 더 받고, 그래도
+안 되면 무엇이 없는지 말하고 실패합니다.
+
 ### `spawn .../Electron\n ENOENT`
 
 경로 끝의 `\n` 이 전부입니다. `node_modules/electron/path.txt` 를 손으로 쓸 때
