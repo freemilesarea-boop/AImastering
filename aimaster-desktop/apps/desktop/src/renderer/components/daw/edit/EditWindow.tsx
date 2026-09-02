@@ -12,8 +12,16 @@ import { useRecordingStore } from '../../../stores/recordingStore.js';
 import { useAudioStore } from '../../../stores/audioStore.js';
 import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
 import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
-import { activePlaylist, clipAt, sessionEndSec } from '../../../daw/model/session-ops.js';
-import { moveClip } from '../../../daw/edit/clip-edit.js';
+import {
+  activePlaylist, clipAt, clipEnd, findTrack, sessionEndSec, trackClips,
+} from '../../../daw/model/session-ops.js';
+import { moveClip, setClipFade } from '../../../daw/edit/clip-edit.js';
+import {
+  fadeFromDrag, fadeHandleOn, fadeOn, fadeRegionAt, FADE_SHAPES, FADE_SHAPE_LABEL,
+  type FadeSide,
+} from '../../../daw/model/clip-fade.js';
+import { fadeCurve } from '../../../daw/engine/clip-player.js';
+import type { FadeShape } from '../../../daw/model/types.js';
 import { useMidiEditorStore } from '../../../stores/midiEditorStore.js';
 import {
   collapsedOverviewClips, stackDepth, stackSummary, toggleCollapsed, unpackStack,
@@ -112,6 +120,17 @@ export default function EditWindow() {
   const [clipDrag, setClipDrag] = useState<null | {
     trackId: string; clipId: string; grabOffsetSec: number;
   }>(null);
+  // Pulling a clip corner.  Like a clip drag: transient while the mouse is
+  // down, one undo step when it comes up.
+  const [fadeDrag, setFadeDrag] = useState<null | {
+    trackId: string; clipId: string; side: FadeSide;
+  }>(null);
+  /** The fade whose shape menu is open, anchored where it was opened. */
+  const [fadeMenu, setFadeMenu] = useState<null | {
+    trackId: string; clipId: string; side: FadeSide; x: number; y: number;
+  }>(null);
+  /** Which handle the pointer is over, so the lane can show it is grabbable. */
+  const [fadeHover, setFadeHover] = useState<FadeSide | null>(null);
   const applyTransient = useDawStore((s) => s.applyTransient);
   const commitEdit     = useDawStore((s) => s.commitEdit);
 
@@ -208,6 +227,12 @@ export default function EditWindow() {
   }, [apply]);
 
   // ── Lane gestures ───────────────────────────────────────────────────────
+  /** Where in a lane the pointer is, 0 at the top of the row. */
+  const yFracIn = (e: React.MouseEvent): number => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return rect.height > 0 ? (e.clientY - rect.top) / rect.height : 1;
+  };
+
   const onLaneDown = useCallback((e: React.MouseEvent, track: Track) => {
     const at = snapToGrid(secAt(e.clientX));
     setFocusedTrack(track.id);
@@ -236,6 +261,22 @@ export default function EditWindow() {
       // Grabber behaviour: a click ON a clip drags it, empty lane seeks.
       const raw = secAt(e.clientX);
       const clip = clipAt(track, raw);
+      // A corner first.  The handle lives in the top strip of the clip, so
+      // reaching for a fade cannot move the audio by accident — and checking
+      // it before the clip drag is what makes the corner a handle rather than
+      // just another part of the clip.
+      //
+      // Searched across the lane rather than through `clipAt`, because the
+      // fade-out handle sits ON the clip's end and `clipAt` calls the end
+      // outside: the corner would have been a pixel out of reach.
+      const grabbed = fadeHandleOn(trackClips(track), raw, yFracIn(e), pxPerSec);
+      if (grabbed) {
+        setFadeDrag({ trackId: track.id, clipId: grabbed.clip.id, side: grabbed.side });
+        setSelection({
+          startSec: grabbed.clip.startSec, endSec: clipEnd(grabbed.clip), trackIds: [track.id],
+        });
+        return;
+      }
       if (clip) {
         setSelection({ startSec: clip.startSec, endSec: clip.startSec + clip.durationSec, trackIds: [track.id] });
         // Spot mode: the position is known to the frame and the mouse cannot
@@ -255,6 +296,20 @@ export default function EditWindow() {
   }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode, apply]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
+    if (fadeDrag) {
+      const track = findTrack(session, fadeDrag.trackId);
+      const clip = track && trackClips(track).find((c) => c.id === fadeDrag.clipId);
+      if (!clip) return;
+      // NOT snapped: a fade is an ear decision about a few milliseconds, and
+      // a grid that rounds it to the nearest sixteenth makes the short ones —
+      // the declicks, which is most of them — impossible to set.
+      const seconds = fadeFromDrag(clip, fadeDrag.side, secAt(e.clientX));
+      const shape = fadeOn(clip, fadeDrag.side).shape;
+      applyTransient((s) => setClipFade(
+        s, fadeDrag.trackId, fadeDrag.clipId, fadeDrag.side, { durationSec: seconds, shape },
+      ));
+      return;
+    }
     if (clipDrag) {
       const target = snapToGrid(Math.max(0, secAt(e.clientX) - clipDrag.grabOffsetSec));
       applyTransient((s) => moveClip(s, clipDrag.trackId, clipDrag.clipId, target));
@@ -267,12 +322,25 @@ export default function EditWindow() {
       endSec: Math.max(drag.anchorSec, at),
       trackIds: drag.trackIds,
     });
-  }, [drag, clipDrag, secAt, setSelection, applyTransient]);
+  }, [drag, clipDrag, fadeDrag, session, secAt, setSelection, applyTransient]);
+
+  /**
+   * Whether the pointer is over a fade handle, so the row can say so.
+   *
+   * A handle nobody can see is a handle nobody finds.  The cursor changing on
+   * approach is the whole of the affordance in every DAW that does this.
+   */
+  const onRowMove = useCallback((e: React.MouseEvent, track: Track) => {
+    if (fadeDrag || clipDrag || drag || tool !== 'select') { setFadeHover(null); return; }
+    const raw = secAt(e.clientX);
+    setFadeHover(fadeHandleOn(trackClips(track), raw, yFracIn(e), pxPerSec)?.side ?? null);
+  }, [fadeDrag, clipDrag, drag, tool, secAt, pxPerSec]);
 
   const endDrag = useCallback(() => {
     if (clipDrag) { commitEdit(); setClipDrag(null); }
+    if (fadeDrag) { commitEdit(); setFadeDrag(null); }
     setDrag(null);
-  }, [clipDrag, commitEdit]);
+  }, [clipDrag, fadeDrag, commitEdit]);
 
   const rulerDown = useCallback((e: React.MouseEvent) => {
     seek(snapToGrid(secAt(e.clientX)));
@@ -471,6 +539,8 @@ export default function EditWindow() {
             <div
               key={row.key}
               onMouseDown={(e) => onLaneDown(e, row.track)}
+              onMouseMove={(e) => onRowMove(e, row.track)}
+              onMouseLeave={() => setFadeHover(null)}
               onDoubleClick={(e) => {
                 // Double-clicking a MIDI part opens it in the Key Editor,
                 // exactly like the reference DAW.  An AUDIO clip opens the
@@ -480,6 +550,18 @@ export default function EditWindow() {
                 const at = secAt(e.clientX);
                 const clip = clipAt(row.track, at);
                 if (!clip) return;
+                // Double-clicking the FADE asks about the fade, not the clip —
+                // it is the same gesture Cubase uses to open the curve editor,
+                // and it has to be checked before the clip's own double-click
+                // or the fade could never be reached.
+                const fadeSide = fadeRegionAt(clip, at, yFracIn(e));
+                if (fadeSide) {
+                  setFadeMenu({
+                    trackId: row.track.id, clipId: clip.id, side: fadeSide,
+                    x: e.clientX, y: e.clientY,
+                  });
+                  return;
+                }
                 if (clip.kind === 'midi') {
                   useMidiEditorStore.getState().openPart({ trackId: row.track.id, clipId: clip.id });
                   useDawStore.getState().setWindow('midi');
@@ -497,9 +579,13 @@ export default function EditWindow() {
               }}
               className="relative border-b border-zinc-900"
               // The cursor is the only thing telling you the scissors are
-              // armed while the mouse is over the lane, which is exactly when
-              // you need to know.
-              style={{ height: row.height, cursor: tool === 'split' ? 'crosshair' : undefined }}
+              // armed, or that the corner under the pointer is a fade handle —
+              // which is exactly when you need to know either.
+              style={{
+                height: row.height,
+                cursor: tool === 'split' ? 'crosshair'
+                  : (fadeHover || fadeDrag) ? 'ew-resize' : undefined,
+              }}
             >
               {row.track.kind === 'folder' && row.track.collapsed ? (
                 // A collapsed stack still shows where its material sits.
@@ -561,6 +647,109 @@ export default function EditWindow() {
       {spotTarget && (
         <SpotDialog target={spotTarget} onClose={() => setSpotTarget(null)} />
       )}
+
+      {fadeMenu && (
+        <FadeShapeMenu
+          at={fadeMenu}
+          current={(() => {
+            const track = findTrack(session, fadeMenu.trackId);
+            const clip = track && trackClips(track).find((c) => c.id === fadeMenu.clipId);
+            return clip ? fadeOn(clip, fadeMenu.side).shape : 'equalPower';
+          })()}
+          onPick={(shape) => {
+            const track = findTrack(session, fadeMenu.trackId);
+            const clip = track && trackClips(track).find((c) => c.id === fadeMenu.clipId);
+            if (clip) {
+              const seconds = fadeOn(clip, fadeMenu.side).durationSec;
+              apply((sn) => setClipFade(
+                sn, fadeMenu.trackId, fadeMenu.clipId, fadeMenu.side,
+                { durationSec: seconds, shape },
+              ));
+            }
+            setFadeMenu(null);
+          }}
+          onClose={() => setFadeMenu(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The curve picker, at the fade you double-clicked.
+ *
+ * Three shapes, each drawn as the curve it is rather than named and left to
+ * the imagination — the difference between equal-power and linear is a
+ * picture, not a word.
+ */
+function FadeShapeMenu({ at, current, onPick, onClose }: {
+  at: { side: FadeSide; x: number; y: number };
+  current: FadeShape;
+  onPick: (shape: FadeShape) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const away = (): void => onClose();
+    const key = (e: KeyboardEvent): void => { if (e.key === 'Escape') onClose(); };
+    // Deferred: the double-click that opened this is still travelling.
+    const id = window.setTimeout(() => window.addEventListener('mousedown', away), 0);
+    window.addEventListener('keydown', key);
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener('mousedown', away);
+      window.removeEventListener('keydown', key);
+    };
+  }, [onClose]);
+
+  const W = 46;
+  const H = 26;
+  return (
+    <div
+      className="fixed rounded-md p-1.5 flex flex-col gap-1"
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{
+        left: Math.min(at.x, window.innerWidth - 150),
+        top: Math.min(at.y, window.innerHeight - 160),
+        zIndex: 400,
+        background: premium.surface.frame,
+        border: `1px solid ${premium.accent.deep}`,
+        boxShadow: premium.shadow.panel,
+      }}
+    >
+      <span className="text-[9px] px-1" style={{ color: premium.text.faint }}>
+        {at.side === 'in' ? '페이드 인' : '페이드 아웃'} 곡선
+      </span>
+      {FADE_SHAPES.map((shape) => {
+        const curve = fadeCurve(shape, 20);
+        const points: string[] = [];
+        for (let i = 0; i < curve.length; i++) {
+          const v = at.side === 'in' ? (curve[i] ?? 0) : (curve[curve.length - 1 - i] ?? 0);
+          points.push(`${(i / (curve.length - 1)) * W},${H - 2 - v * (H - 4)}`);
+        }
+        const on = shape === current;
+        return (
+          <button
+            key={shape}
+            onClick={() => onPick(shape)}
+            className="flex items-center gap-2 px-1.5 py-1 rounded text-[10px]"
+            style={{
+              color: on ? premium.accent.base : premium.text.muted,
+              background: on ? 'rgba(255,255,255,0.06)' : 'transparent',
+              border: `1px solid ${on ? premium.accent.deep : 'transparent'}`,
+            }}
+          >
+            <svg width={W} height={H} style={{ display: 'block' }}>
+              <polyline
+                points={points.join(' ')}
+                fill="none"
+                stroke={on ? premium.accent.base : 'rgba(200,200,215,0.7)'}
+                strokeWidth={1.5}
+              />
+            </svg>
+            {FADE_SHAPE_LABEL[shape]}
+          </button>
+        );
+      })}
     </div>
   );
 }

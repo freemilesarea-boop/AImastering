@@ -119,9 +119,13 @@ export default function TrackLaneCanvas({
         ctx.fillRect(left, mid - 1, w, 2);
       }
 
-      // Fade shapes
+      // Fade shapes, and the corners you pull to make them.
       drawFade(ctx, clip, toX, height, 'in');
       drawFade(ctx, clip, toX, height, 'out');
+      if (w > 16) {
+        drawFadeHandle(ctx, clip, toX, height, 'in');
+        drawFadeHandle(ctx, clip, toX, height, 'out');
+      }
 
       // Clip gain line — the horizontal line engineers ride with Ctrl+Shift+↑↓
       if (Math.abs(clip.gainDb) > 0.01) {
@@ -174,6 +178,33 @@ function drawFade(
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
+}
+
+/**
+ * The grab marker at a clip corner.
+ *
+ * A handle nobody can see is a handle nobody finds, and this is a gesture that
+ * exists in every DAW precisely because it is discoverable: a small square at
+ * the top corner, sitting at the END of the fade once there is one, because
+ * that is the part you pull.
+ */
+function drawFadeHandle(
+  ctx: CanvasRenderingContext2D, clip: Clip,
+  toX: (sec: number) => number, height: number, side: 'in' | 'out',
+): void {
+  const duration = side === 'in' ? clip.fadeIn.durationSec : clip.fadeOut.durationSec;
+  const at = side === 'in' ? clip.startSec + duration : clipEnd(clip) - duration;
+  const x = toX(at);
+  const size = 5;
+  // Brighter once the fade exists — an untouched corner is an invitation, a
+  // set one is a control.
+  ctx.fillStyle = duration > 0 ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.45)';
+  ctx.fillRect(
+    side === 'in' ? x : x - size,
+    2,
+    size,
+    size,
+  );
 }
 
 function hexToRgba(hex: string, alpha: number): string {

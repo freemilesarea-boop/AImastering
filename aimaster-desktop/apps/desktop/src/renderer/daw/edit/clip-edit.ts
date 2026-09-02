@@ -15,6 +15,7 @@ import {
   activePlaylist, clipEnd, createClip, sortClips, trackClips, updateClips, findTrack,
 } from '../model/session-ops.js';
 import type { Clip, ClipId, DawSession, Fade, TrackId } from '../model/types.js';
+import { withFade, type FadeSide } from '../model/clip-fade.js';
 import { nextId } from '../model/ids.js';
 
 /** An edit selection: a time range across one or more tracks. */
@@ -308,6 +309,20 @@ export function setClipGain(session: DawSession, sel: TimeSelection, db: number)
 /** Nudge clip gain (Pro Tools uses ±0.5 dB, ±1 dB with a modifier). */
 export function nudgeClipGain(session: DawSession, sel: TimeSelection, deltaDb: number): DawSession {
   return mapSelectedClips(session, sel, (c) => ({ ...c, gainDb: clampClipGain(c.gainDb + deltaDb) }));
+}
+
+/**
+ * Set one fade on one clip.
+ *
+ * `setFades` works on a SELECTION, which is the wrong shape for a mouse: the
+ * person is pulling the corner of one specific clip and has selected nothing.
+ */
+export function setClipFade(
+  session: DawSession, trackId: TrackId, clipId: ClipId, side: FadeSide, fade: Fade,
+): DawSession {
+  return updateClips(session, trackId, (clips) => mapClips(clips, (c) => (
+    c.id === clipId ? withFade(c, side, fade) : c
+  )));
 }
 
 export function setFades(
