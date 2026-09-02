@@ -17,8 +17,8 @@ import {
 } from '../../../daw/model/session-ops.js';
 import { moveClip, setClipFade, trackBand } from '../../../daw/edit/clip-edit.js';
 import {
-  fadeFromDrag, fadeHandleOn, fadeOn, fadeRegionAt, FADE_SHAPES, FADE_SHAPE_LABEL,
-  type FadeSide,
+  fadeFromDrag, fadeOn, fadeRegionAt, laneGrab, FADE_SHAPES, FADE_SHAPE_LABEL,
+  type FadeSide, type LaneGrab,
 } from '../../../daw/model/clip-fade.js';
 import { fadeCurve } from '../../../daw/engine/clip-player.js';
 import type { FadeShape } from '../../../daw/model/types.js';
@@ -135,7 +135,7 @@ export default function EditWindow() {
     trackId: string; clipId: string; side: FadeSide; x: number; y: number;
   }>(null);
   /** Which handle the pointer is over, so the lane can show it is grabbable. */
-  const [fadeHover, setFadeHover] = useState<FadeSide | null>(null);
+  const [laneHover, setLaneHover] = useState<LaneGrab['kind'] | null>(null);
   const applyTransient = useDawStore((s) => s.applyTransient);
   const commitEdit     = useDawStore((s) => s.commitEdit);
 
@@ -263,26 +263,23 @@ export default function EditWindow() {
       return;
     }
     if (tool === 'select' && !e.shiftKey) {
-      // Grabber behaviour: a click ON a clip drags it, empty lane seeks.
+      // What the press means depends on WHERE in the lane it landed: the
+      // corner is a fade, the upper half of a clip is a grab, and the lower
+      // half is a marquee whether a clip is there or not.  Before that last
+      // rule a selection box could only be started on empty lane, so a dense
+      // arrangement — the one case where selecting several pieces at once
+      // actually matters — had nowhere to start the drag.
       const raw = secAt(e.clientX);
-      const clip = clipAt(track, raw);
-      // A corner first.  The handle lives in the top strip of the clip, so
-      // reaching for a fade cannot move the audio by accident — and checking
-      // it before the clip drag is what makes the corner a handle rather than
-      // just another part of the clip.
-      //
-      // Searched across the lane rather than through `clipAt`, because the
-      // fade-out handle sits ON the clip's end and `clipAt` calls the end
-      // outside: the corner would have been a pixel out of reach.
-      const grabbed = fadeHandleOn(trackClips(track), raw, yFracIn(e), pxPerSec);
-      if (grabbed) {
-        setFadeDrag({ trackId: track.id, clipId: grabbed.clip.id, side: grabbed.side });
+      const grab = laneGrab(trackClips(track), raw, yFracIn(e), pxPerSec);
+      if (grab.kind === 'fade') {
+        setFadeDrag({ trackId: track.id, clipId: grab.clip.id, side: grab.side });
         setSelection({
-          startSec: grabbed.clip.startSec, endSec: clipEnd(grabbed.clip), trackIds: [track.id],
+          startSec: grab.clip.startSec, endSec: clipEnd(grab.clip), trackIds: [track.id],
         });
         return;
       }
-      if (clip) {
+      if (grab.kind === 'move') {
+        const clip = grab.clip;
         setSelection({ startSec: clip.startSec, endSec: clip.startSec + clip.durationSec, trackIds: [track.id] });
         // Spot mode: the position is known to the frame and the mouse cannot
         // express it, so clicking asks for the number instead of dragging.
@@ -290,7 +287,10 @@ export default function EditWindow() {
         setClipDrag({ trackId: track.id, clipId: clip.id, grabOffsetSec: raw - clip.startSec });
         return;
       }
-      seek(at);
+      // Empty lane still moves the play head, the way clicking a blank part
+      // of the timeline always has.  Over a clip it must not: the marquee is
+      // a selection gesture, and jumping the cursor is not part of it.
+      if (!clipAt(track, raw)) seek(at);
       setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
       setDrag({ anchorSec: at, anchorTrackId: track.id });
       bandTrackRef.current = track.id;
@@ -346,9 +346,9 @@ export default function EditWindow() {
     // Recorded on every move, drag or not, so the lane handler that runs a
     // moment later always knows which row the pointer is on.
     bandTrackRef.current = track.id;
-    if (fadeDrag || clipDrag || drag || tool !== 'select') { setFadeHover(null); return; }
-    const raw = secAt(e.clientX);
-    setFadeHover(fadeHandleOn(trackClips(track), raw, yFracIn(e), pxPerSec)?.side ?? null);
+    if (fadeDrag || clipDrag || drag || tool !== 'select') { setLaneHover(null); return; }
+    const grab = laneGrab(trackClips(track), secAt(e.clientX), yFracIn(e), pxPerSec);
+    setLaneHover(grab.kind);
   }, [fadeDrag, clipDrag, drag, tool, secAt, pxPerSec]);
 
   const endDrag = useCallback(() => {
@@ -555,7 +555,7 @@ export default function EditWindow() {
               key={row.key}
               onMouseDown={(e) => onLaneDown(e, row.track)}
               onMouseMove={(e) => onRowMove(e, row.track)}
-              onMouseLeave={() => setFadeHover(null)}
+              onMouseLeave={() => setLaneHover(null)}
               onDoubleClick={(e) => {
                 // Double-clicking a MIDI part opens it in the Key Editor,
                 // exactly like the reference DAW.  An AUDIO clip opens the
@@ -599,7 +599,9 @@ export default function EditWindow() {
               style={{
                 height: row.height,
                 cursor: tool === 'split' ? 'crosshair'
-                  : (fadeHover || fadeDrag) ? 'ew-resize' : undefined,
+                  : (laneHover === 'fade' || fadeDrag) ? 'ew-resize'
+                  : laneHover === 'move' ? 'grab'
+                  : (tool === 'select' || tool === 'range') ? 'crosshair' : undefined,
               }}
             >
               {row.track.kind === 'folder' && row.track.collapsed ? (

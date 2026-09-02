@@ -22,7 +22,8 @@
 import {
   clampFadeSec, fadeFromDrag, fadeHandleAt, fadeHandleOn, fadeOn, fadeRegionAt, maxFadeSec,
   withFade,
-  FADE_HANDLE_BAND, FADE_HANDLE_PX, FADE_SHAPES, FADE_SHAPE_LABEL,
+  laneGrab,
+  FADE_HANDLE_BAND, FADE_HANDLE_PX, FADE_SHAPES, FADE_SHAPE_LABEL, MARQUEE_BAND,
 } from '../src/renderer/daw/model/clip-fade.js';
 import { setClipFade } from '../src/renderer/daw/edit/clip-edit.js';
 import {
@@ -223,6 +224,55 @@ check('fadeOn reads the side it is asked for', () => {
   near(fadeOn(c, 'in').durationSec, 1, 1e-9, 'in');
   near(fadeOn(c, 'out').durationSec, 2, 1e-9, 'out');
   assert(fadeOn(c, 'out').shape === 'sCurve', 'and its shape');
+});
+
+// ── What a press on the lane means ───────────────────────────────────────────
+//
+// Before this, a selection box could only be started on empty lane: a press
+// on a clip always grabbed it.  A dense arrangement has no empty lane, which
+// is precisely when selecting several pieces at once matters.
+
+check('the lower half of a clip starts a marquee, not a move', () => {
+  const c = clip();
+  assert(laneGrab([c], 8, 0.75, PX).kind === 'marquee', 'below the halfway line');
+});
+
+check('the upper half of a clip still grabs it', () => {
+  const c = clip();
+  const g = laneGrab([c], 8, 0.25, PX);
+  assert(g.kind === 'move', `above it, got ${g.kind}`);
+  assert(g.kind === 'move' && g.clip.id === c.id, 'and it is the right clip');
+});
+
+check('the halfway line itself belongs to the marquee', () => {
+  assert(laneGrab([clip()], 8, MARQUEE_BAND, PX).kind === 'marquee', 'exactly at 0.5');
+});
+
+check('a corner handle beats both — a fade must stay reachable', () => {
+  const c = clip();
+  const g = laneGrab([c], c.startSec + 0.1, 0.1, PX);
+  assert(g.kind === 'fade', `the top corner is a fade, got ${g.kind}`);
+  assert(g.kind === 'fade' && g.side === 'in', 'the in side');
+});
+
+check('the corner rule does not reach into the lower half', () => {
+  // Otherwise the fade band would eat the marquee at the clip edges, and the
+  // one place you most want to start a box — just before a clip — would move
+  // a fade instead.
+  assert(laneGrab([clip()], 4.1, 0.75, PX).kind === 'marquee', 'low and at the edge');
+});
+
+check('empty lane is a marquee at any height', () => {
+  const c = clip();
+  assert(laneGrab([c], 100, 0.1, PX).kind === 'marquee', 'high and empty');
+  assert(laneGrab([c], 100, 0.9, PX).kind === 'marquee', 'low and empty');
+});
+
+check('the clip under the pointer is the one that gets moved', () => {
+  const a = { ...clip(), id: 'a', startSec: 0, durationSec: 2 };
+  const b = { ...clip(), id: 'b', startSec: 5, durationSec: 2 };
+  const g = laneGrab([a, b], 5.5, 0.2, PX);
+  assert(g.kind === 'move' && g.clip.id === 'b', 'the second one');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

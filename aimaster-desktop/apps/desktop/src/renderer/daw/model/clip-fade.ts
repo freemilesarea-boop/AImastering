@@ -27,7 +27,46 @@ export const FADE_HANDLE_PX = 12;
  */
 export const FADE_HANDLE_BAND = 0.4;
 
+/**
+ * Where the lower half of a clip starts, as a fraction of the lane height.
+ *
+ * Above it a clip is a thing you GRAB — move it, or take a fade by the
+ * corner.  Below it the clip is scenery and the drag is a marquee, so a
+ * selection box can be started anywhere on the timeline instead of only
+ * where the track happens to be empty.  A dense arrangement has no empty
+ * space to start from, which is exactly when selecting several pieces at
+ * once matters most.
+ *
+ * Half, not a thin strip: a band you have to aim for is a band that gets
+ * missed, and both halves of a 96 px lane are a comfortable target.
+ */
+export const MARQUEE_BAND = 0.5;
+
 export type FadeSide = 'in' | 'out';
+
+/** What a press on a lane means, given where in the clip it landed. */
+export type LaneGrab =
+  | { kind: 'marquee' }
+  | { kind: 'fade'; clip: Clip; side: FadeSide }
+  | { kind: 'move'; clip: Clip };
+
+/**
+ * Read a press on a track lane.
+ *
+ * A corner handle is checked first because it sits ON the clip that owns it;
+ * looking the clip up first would mean a fade could never be grabbed.  The
+ * two bands do not overlap — the handle lives in the top 40 %, the marquee
+ * starts at 50 % — so between those two the order is incidental.
+ */
+export function laneGrab(
+  clips: readonly Clip[], xSec: number, yFrac: number, pxPerSec: number,
+): LaneGrab {
+  const handle = fadeHandleOn(clips, xSec, yFrac, pxPerSec);
+  if (handle) return { kind: 'fade', clip: handle.clip, side: handle.side };
+  if (yFrac >= MARQUEE_BAND) return { kind: 'marquee' };
+  const clip = clips.find((c) => xSec >= c.startSec && xSec < clipEnd(c));
+  return clip ? { kind: 'move', clip } : { kind: 'marquee' };
+}
 
 export const FADE_SHAPES: readonly FadeShape[] = ['linear', 'equalPower', 'sCurve'];
 
