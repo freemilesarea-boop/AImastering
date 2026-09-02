@@ -8,6 +8,8 @@ import React, { useEffect, useRef } from 'react';
 import { getMeta } from '../../../daw/engine/audio-cache.js';
 import { clipEnd, trackClips } from '../../../daw/model/session-ops.js';
 import { fadeCurve } from '../../../daw/engine/clip-player.js';
+import { gainLineY } from '../../../daw/model/lane-grab.js';
+import { clipPitch, describePitch } from '../../../daw/model/clip-pitch.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
 
 export interface LaneViewport {
@@ -127,11 +129,17 @@ export default function TrackLaneCanvas({
         drawFadeHandle(ctx, clip, toX, height, 'out');
       }
 
-      // Clip gain line — the horizontal line engineers ride with Ctrl+Shift+↑↓
-      if (Math.abs(clip.gainDb) > 0.01) {
-        const y = mid - (clip.gainDb / 24) * (height / 2 - 10);
-        ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-        ctx.setLineDash([3, 3]);
+      // Clip gain line — grab it and ride it, the way Pro Tools does.
+      //
+      // Drawn even at unity, faintly.  A line that only appears once the gain
+      // is already off unity is a handle you cannot find until you have
+      // already used the keyboard to move it, which is the wrong way round:
+      // the affordance has to be there before the first drag.
+      if (w > 8) {
+        const y = gainLineY(clip.gainDb, height);
+        const moved = Math.abs(clip.gainDb) > 0.01;
+        ctx.strokeStyle = moved ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.18)';
+        ctx.setLineDash(moved ? [3, 3] : [2, 5]);
         ctx.beginPath();
         ctx.moveTo(left, y);
         ctx.lineTo(right, y);
@@ -145,9 +153,14 @@ export default function TrackLaneCanvas({
         ctx.fillRect(left, 2, Math.min(w, 160), 12);
         ctx.fillStyle = 'rgba(255,255,255,0.8)';
         ctx.font = '9px ui-sans-serif, system-ui, sans-serif';
-        const label = Math.abs(clip.gainDb) > 0.01
-          ? `${clip.name}  ${clip.gainDb > 0 ? '+' : ''}${clip.gainDb.toFixed(1)} dB`
-          : clip.name;
+        const parts = [clip.name];
+        if (Math.abs(clip.gainDb) > 0.01) {
+          parts.push(`${clip.gainDb > 0 ? '+' : ''}${clip.gainDb.toFixed(1)} dB`);
+        }
+        // A transposed clip that says nothing about it is a clip whose pitch
+        // gets forgotten and then blamed on the source file.
+        if (clipPitch(clip) !== 0) parts.push(describePitch(clipPitch(clip)));
+        const label = parts.join('  ');
         ctx.fillText(label.slice(0, 28), left + 3, 11);
       }
     }

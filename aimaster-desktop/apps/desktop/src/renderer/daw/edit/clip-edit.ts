@@ -16,6 +16,7 @@ import {
 } from '../model/session-ops.js';
 import type { Clip, ClipId, DawSession, Fade, TrackId } from '../model/types.js';
 import { withFade, type FadeSide } from '../model/clip-fade.js';
+import { clipPitch, withClipPitch } from '../model/clip-pitch.js';
 import { nextId } from '../model/ids.js';
 
 /** An edit selection: a time range across one or more tracks. */
@@ -306,9 +307,48 @@ export function setClipGain(session: DawSession, sel: TimeSelection, db: number)
   return mapSelectedClips(session, sel, (c) => ({ ...c, gainDb: clampClipGain(db) }));
 }
 
+/**
+ * Set the gain of ONE clip.
+ *
+ * `setClipGain` works on a selection, which is the wrong shape for a mouse:
+ * the person is riding the line on one specific clip and has selected
+ * nothing — the same reason `setClipFade` exists beside `setFades`.
+ */
+export function setOneClipGain(
+  session: DawSession, trackId: TrackId, clipId: ClipId, db: number,
+): DawSession {
+  return updateClips(session, trackId, (clips) => {
+    let touched = false;
+    const next = clips.map((c) => {
+      if (c.id !== clipId) return c;
+      touched = true;
+      return { ...c, gainDb: clampClipGain(db) };
+    });
+    return touched ? next : clips;
+  });
+}
+
 /** Nudge clip gain (Pro Tools uses ±0.5 dB, ±1 dB with a modifier). */
 export function nudgeClipGain(session: DawSession, sel: TimeSelection, deltaDb: number): DawSession {
   return mapSelectedClips(session, sel, (c) => ({ ...c, gainDb: clampClipGain(c.gainDb + deltaDb) }));
+}
+
+/**
+ * Nudge the transpose of every clip in the selection.
+ *
+ * The audio counterpart of `daw.transposeUp`, which has always been MIDI
+ * only.  Held to the range the render survives, in the model rather than
+ * here, so a session file with a wild number reads back the same way.
+ */
+export function nudgeClipPitch(session: DawSession, sel: TimeSelection, deltaSemitones: number): DawSession {
+  return mapSelectedClips(session, sel, (c) => (
+    c.kind === 'audio' ? withClipPitch(c, clipPitch(c) + deltaSemitones) : c
+  ));
+}
+
+/** Put every selected clip back to its original pitch. */
+export function resetClipPitch(session: DawSession, sel: TimeSelection): DawSession {
+  return mapSelectedClips(session, sel, (c) => (c.kind === 'audio' ? withClipPitch(c, 0) : c));
 }
 
 /**

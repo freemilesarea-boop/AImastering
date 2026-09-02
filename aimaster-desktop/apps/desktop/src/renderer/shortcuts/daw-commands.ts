@@ -20,6 +20,8 @@ import {
   type TimeSelection,
 } from '../daw/edit/clip-edit.js';
 import { compRange, cyclePlaylist } from '../daw/edit/comping.js';
+import { nudgeClipPitch, resetClipPitch } from '../daw/edit/clip-edit.js';
+import { clipPitch, describePitch } from '../daw/model/clip-pitch.js';
 import { alignClipToGuide, describeAlign } from '../daw/edit/align-actions.js';
 import { consolidationSpans, describeOutcome, outcomeOf } from '../daw/edit/consolidate.js';
 import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
@@ -131,6 +133,7 @@ export type DawCommandId =
   | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate'
   | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
+  | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
@@ -314,6 +317,31 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     notify(`${semitones > 0 ? '+' : ''}${semitones} 반음`);
   };
 
+  /**
+   * Transpose the clips under the cursor.
+   *
+   * Audio only, and it says so: pressing it on a MIDI part would otherwise
+   * look broken next to `daw.transposeUp`, which is the MIDI one.
+   */
+  const clipPitchBy = (semitones: number): void => {
+    const sel = selectionOrPlayhead(daw());
+    const range = hasRange(sel) ? sel : clipRangeAtPlayhead(daw());
+    if (!range) { notify('클립 위에 커서를 두세요', 'warning'); return; }
+    let landed = 0;
+    daw().apply((s) => {
+      const next = nudgeClipPitch(s, range, semitones);
+      for (const trackId of range.trackIds) {
+        const track = findTrack(next, trackId);
+        if (!track) continue;
+        for (const c of trackClips(track)) {
+          if (c.kind === 'audio' && overlapsSelection(c, range)) landed = clipPitch(c);
+        }
+      }
+      return next;
+    });
+    notify(`클립 피치 ${describePitch(landed)}`);
+  };
+
   const needSelection = (): TimeSelection | null => {
     const sel = currentSelection(daw());
     if (!hasRange(sel)) { notify('편집할 구간을 먼저 선택하세요', 'warning'); return null; }
@@ -430,6 +458,16 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!range) { notify('클립 위에 커서를 두세요', 'warning'); return; }
       daw().apply((s) => nudgeClipGain(s, range, -CLIP_GAIN_STEP_DB));
       notify(`클립 게인 −${CLIP_GAIN_STEP_DB} dB`);
+    },
+
+    'daw.clipPitchUp':   () => clipPitchBy(1),
+    'daw.clipPitchDown': () => clipPitchBy(-1),
+    'daw.clipPitchReset': () => {
+      const sel = selectionOrPlayhead(daw());
+      const range = hasRange(sel) ? sel : clipRangeAtPlayhead(daw());
+      if (!range) { notify('클립 위에 커서를 두세요', 'warning'); return; }
+      daw().apply((s) => resetClipPitch(s, range));
+      notify('클립 피치 원음');
     },
 
     'daw.nudgeForward': () => {

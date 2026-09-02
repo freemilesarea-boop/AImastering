@@ -15,11 +15,14 @@ import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import {
   activePlaylist, clipAt, clipEnd, findTrack, sessionEndSec, trackClips,
 } from '../../../daw/model/session-ops.js';
-import { moveClip, setClipFade, trackBand } from '../../../daw/edit/clip-edit.js';
+import { moveClip, setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
 import {
-  fadeFromDrag, fadeOn, fadeRegionAt, laneGrab, FADE_SHAPES, FADE_SHAPE_LABEL,
-  type FadeSide, type LaneGrab,
+  fadeFromDrag, fadeOn, fadeRegionAt, FADE_SHAPES, FADE_SHAPE_LABEL,
+  type FadeSide,
 } from '../../../daw/model/clip-fade.js';
+import {
+  gainFromY, laneGrab, type LaneGrab,
+} from '../../../daw/model/lane-grab.js';
 import { fadeCurve } from '../../../daw/engine/clip-player.js';
 import type { FadeShape } from '../../../daw/model/types.js';
 import { useMidiEditorStore } from '../../../stores/midiEditorStore.js';
@@ -139,6 +142,12 @@ export default function EditWindow() {
   }>(null);
   /** Which handle the pointer is over, so the lane can show it is grabbable. */
   const [laneHover, setLaneHover] = useState<LaneGrab['kind'] | null>(null);
+  // The row's geometry is captured at mousedown, not read live: dragging off
+  // a short track onto a tall one must not change what a pixel is worth
+  // halfway through the gesture.
+  const [gainDrag, setGainDrag] = useState<
+    null | { trackId: string; clipId: string; topPx: number; heightPx: number }
+  >(null);
   const applyTransient = useDawStore((s) => s.applyTransient);
   const commitEdit     = useDawStore((s) => s.commitEdit);
 
@@ -273,7 +282,17 @@ export default function EditWindow() {
       // arrangement — the one case where selecting several pieces at once
       // actually matters — had nowhere to start the drag.
       const raw = secAt(e.clientX);
-      const grab = laneGrab(trackClips(track), raw, yFracIn(e), pxPerSec);
+      const grab = laneGrab(trackClips(track), raw, yFracIn(e), pxPerSec, track.height);
+      if (grab.kind === 'gain') {
+        const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        setGainDrag({
+          trackId: track.id, clipId: grab.clip.id, topPx: box.top, heightPx: box.height,
+        });
+        setSelection({
+          startSec: grab.clip.startSec, endSec: clipEnd(grab.clip), trackIds: [track.id],
+        });
+        return;
+      }
       if (grab.kind === 'fade') {
         setFadeDrag({ trackId: track.id, clipId: grab.clip.id, side: grab.side });
         setSelection({
@@ -306,6 +325,11 @@ export default function EditWindow() {
   }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode, apply]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
+    if (gainDrag) {
+      const db = gainFromY(e.clientY - gainDrag.topPx, gainDrag.heightPx);
+      applyTransient((s) => setOneClipGain(s, gainDrag.trackId, gainDrag.clipId, db));
+      return;
+    }
     if (fadeDrag) {
       const track = findTrack(session, fadeDrag.trackId);
       const clip = track && trackClips(track).find((c) => c.id === fadeDrag.clipId);
@@ -337,7 +361,7 @@ export default function EditWindow() {
       endSec: Math.max(drag.anchorSec, at),
       trackIds: trackBand(rows.map((t) => t.id), drag.anchorTrackId, bandTrackRef.current ?? drag.anchorTrackId),
     });
-  }, [drag, clipDrag, fadeDrag, session, secAt, setSelection, applyTransient, rows]);
+  }, [drag, clipDrag, fadeDrag, gainDrag, session, secAt, setSelection, applyTransient, rows]);
 
   /**
    * Whether the pointer is over a fade handle, so the row can say so.
@@ -349,16 +373,17 @@ export default function EditWindow() {
     // Recorded on every move, drag or not, so the lane handler that runs a
     // moment later always knows which row the pointer is on.
     bandTrackRef.current = track.id;
-    if (fadeDrag || clipDrag || drag || tool !== 'select') { setLaneHover(null); return; }
-    const grab = laneGrab(trackClips(track), secAt(e.clientX), yFracIn(e), pxPerSec);
+    if (fadeDrag || clipDrag || gainDrag || drag || tool !== 'select') { setLaneHover(null); return; }
+    const grab = laneGrab(trackClips(track), secAt(e.clientX), yFracIn(e), pxPerSec, track.height);
     setLaneHover(grab.kind);
-  }, [fadeDrag, clipDrag, drag, tool, secAt, pxPerSec]);
+  }, [fadeDrag, clipDrag, gainDrag, drag, tool, secAt, pxPerSec]);
 
   const endDrag = useCallback(() => {
+    if (gainDrag) { commitEdit(); setGainDrag(null); }
     if (clipDrag) { commitEdit(); setClipDrag(null); }
     if (fadeDrag) { commitEdit(); setFadeDrag(null); }
     setDrag(null);
-  }, [clipDrag, fadeDrag, commitEdit]);
+  }, [clipDrag, fadeDrag, gainDrag, commitEdit]);
 
   const rulerDown = useCallback((e: React.MouseEvent) => {
     seek(snapToGrid(secAt(e.clientX)));
@@ -602,6 +627,7 @@ export default function EditWindow() {
               style={{
                 height: row.height,
                 cursor: tool === 'split' ? 'crosshair'
+                  : (laneHover === 'gain' || gainDrag) ? 'ns-resize'
                   : (laneHover === 'fade' || fadeDrag) ? 'ew-resize'
                   : laneHover === 'move' ? 'grab'
                   : (tool === 'select' || tool === 'range') ? 'crosshair' : undefined,

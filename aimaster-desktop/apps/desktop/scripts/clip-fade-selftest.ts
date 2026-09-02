@@ -22,10 +22,14 @@
 import {
   clampFadeSec, fadeFromDrag, fadeHandleAt, fadeHandleOn, fadeOn, fadeRegionAt, maxFadeSec,
   withFade,
-  laneGrab,
-  FADE_HANDLE_BAND, FADE_HANDLE_PX, FADE_SHAPES, FADE_SHAPE_LABEL, MARQUEE_BAND,
+  FADE_HANDLE_BAND, FADE_HANDLE_PX, FADE_SHAPES, FADE_SHAPE_LABEL,
 } from '../src/renderer/daw/model/clip-fade.js';
-import { setClipFade } from '../src/renderer/daw/edit/clip-edit.js';
+import {
+  gainFromY, gainLineY, laneGrab, GAIN_HANDLE_PX, GAIN_SPAN_DB, MARQUEE_BAND,
+} from '../src/renderer/daw/model/lane-grab.js';
+import {
+  setClipFade, CLIP_GAIN_MAX_DB, CLIP_GAIN_MIN_DB,
+} from '../src/renderer/daw/edit/clip-edit.js';
 import {
   addTrack, createClip, createSession, createTrack, findTrack, trackClips, updateClips,
 } from '../src/renderer/daw/model/session-ops.js';
@@ -53,6 +57,7 @@ function clip(over: Partial<Clip> = {}): Clip {
 }
 
 const PX = 40;   // 40 px per second — a handle reaches 12/40 = 0.3 s
+const H = 96;    // the default lane height
 
 // ── Where the handle is ─────────────────────────────────────────────────────
 
@@ -234,23 +239,60 @@ check('fadeOn reads the side it is asked for', () => {
 
 check('the lower half of a clip starts a marquee, not a move', () => {
   const c = clip();
-  assert(laneGrab([c], 8, 0.75, PX).kind === 'marquee', 'below the halfway line');
+  assert(laneGrab([c], 8, 0.75, PX, H).kind === 'marquee', 'below the halfway line');
 });
 
 check('the upper half of a clip still grabs it', () => {
   const c = clip();
-  const g = laneGrab([c], 8, 0.25, PX);
+  const g = laneGrab([c], 8, 0.25, PX, H);
   assert(g.kind === 'move', `above it, got ${g.kind}`);
   assert(g.kind === 'move' && g.clip.id === c.id, 'and it is the right clip');
 });
 
-check('the halfway line itself belongs to the marquee', () => {
-  assert(laneGrab([clip()], 8, MARQUEE_BAND, PX).kind === 'marquee', 'exactly at 0.5');
+check('the halfway line at unity IS the gain line', () => {
+  // The gain line of an untouched clip sits at the centre, which is also the
+  // move/marquee boundary — and the line wins there.  That is the point: the
+  // handle has to be somewhere findable before the first drag.
+  assert(laneGrab([clip()], 8, MARQUEE_BAND, PX, H).kind === 'gain', 'exactly at 0.5');
+});
+
+check('just past the gain band, the lower half is a marquee again', () => {
+  const below = (gainLineY(0, H) + GAIN_HANDLE_PX + 2) / H;
+  assert(laneGrab([clip()], 8, below, PX, H).kind === 'marquee', `at ${below.toFixed(2)}`);
+});
+
+check('the gain line follows the gain, so the handle moves with it', () => {
+  const c = { ...clip(), gainDb: 12 };            // half way to the top
+  const onLine = gainLineY(12, H) / H;
+  assert(laneGrab([c], 8, onLine, PX, H).kind === 'gain', 'found where it is drawn');
+  assert(laneGrab([c], 8, MARQUEE_BAND, PX, H).kind !== 'gain',
+    'and no longer at the centre it left');
+});
+
+check('the gain line is only a handle where there is a clip', () => {
+  assert(laneGrab([clip()], 100, MARQUEE_BAND, PX, H).kind === 'marquee', 'empty lane');
+});
+
+check('pixels and decibels agree in both directions', () => {
+  for (const db of [0, 6, -6, GAIN_SPAN_DB, -GAIN_SPAN_DB]) {
+    near(gainFromY(gainLineY(db, H), H), db, 1e-9, `${db} dB round-trips`);
+  }
+});
+
+check('a drag off either end is held to the model range', () => {
+  // The lane's top pixel is worth 30 dB by the drawing's own scale — the
+  // margin at the top means the +24 mark is not the last pixel — so the
+  // clamp, not the geometry, is what stops the gain going past what the
+  // model allows.  Getting that the wrong way round in a test is easy: the
+  // first version of this asserted the raw 30.3.
+  near(gainFromY(0, H), CLIP_GAIN_MAX_DB, 1e-9, 'the top is the maximum');
+  near(gainFromY(-500, H), CLIP_GAIN_MAX_DB, 1e-9, 'and so is anything above it');
+  near(gainFromY(5000, H), CLIP_GAIN_MIN_DB, 1e-9, 'the bottom is the minimum');
 });
 
 check('a corner handle beats both — a fade must stay reachable', () => {
   const c = clip();
-  const g = laneGrab([c], c.startSec + 0.1, 0.1, PX);
+  const g = laneGrab([c], c.startSec + 0.1, 0.1, PX, H);
   assert(g.kind === 'fade', `the top corner is a fade, got ${g.kind}`);
   assert(g.kind === 'fade' && g.side === 'in', 'the in side');
 });
@@ -259,19 +301,19 @@ check('the corner rule does not reach into the lower half', () => {
   // Otherwise the fade band would eat the marquee at the clip edges, and the
   // one place you most want to start a box — just before a clip — would move
   // a fade instead.
-  assert(laneGrab([clip()], 4.1, 0.75, PX).kind === 'marquee', 'low and at the edge');
+  assert(laneGrab([clip()], 4.1, 0.75, PX, H).kind === 'marquee', 'low and at the edge');
 });
 
 check('empty lane is a marquee at any height', () => {
   const c = clip();
-  assert(laneGrab([c], 100, 0.1, PX).kind === 'marquee', 'high and empty');
-  assert(laneGrab([c], 100, 0.9, PX).kind === 'marquee', 'low and empty');
+  assert(laneGrab([c], 100, 0.1, PX, H).kind === 'marquee', 'high and empty');
+  assert(laneGrab([c], 100, 0.9, PX, H).kind === 'marquee', 'low and empty');
 });
 
 check('the clip under the pointer is the one that gets moved', () => {
   const a = { ...clip(), id: 'a', startSec: 0, durationSec: 2 };
   const b = { ...clip(), id: 'b', startSec: 5, durationSec: 2 };
-  const g = laneGrab([a, b], 5.5, 0.2, PX);
+  const g = laneGrab([a, b], 5.5, 0.2, PX, H);
   assert(g.kind === 'move' && g.clip.id === 'b', 'the second one');
 });
 

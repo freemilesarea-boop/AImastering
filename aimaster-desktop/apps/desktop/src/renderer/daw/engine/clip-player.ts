@@ -24,7 +24,8 @@ import {
   createStreamVoice, ensureStreamRuntime, streamRuntimeReady, type StreamVoice,
 } from './stream-voice.js';
 import { ensureWarpedBufferForSession, prepareWarpsForSession } from './warp-render.js';
-import { clipWarp } from '../model/warp.js';
+
+import { needsRender } from './warp-render.js';
 import { clipNotes } from '../model/patterns.js';
 import { findCoverage } from '../model/macro-automation.js';
 import type { MacroId } from '../model/macros.js';
@@ -335,7 +336,7 @@ export class ClipPlayer {
     // A warped clip plays its rendered buffer, which already starts at the
     // clip's first sample — so the read offset is the skip alone.  Warping
     // produces the buffer up front, so those clips are never streamed.
-    const warped = clipWarp(clip) ? ensureWarpedBufferForSession(ctx, clip, session) : null;
+    const warped = needsRender(clip) ? ensureWarpedBufferForSession(ctx, clip, session) : null;
 
     // Prefer streaming: a track that plays off disk costs a two-second ring
     // instead of its whole length in memory, which is the difference between

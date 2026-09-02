@@ -1,4 +1,4 @@
-// Warp rendering — a warped clip becomes a plain AudioBuffer.
+// Warp and pitch rendering — an edited clip becomes a plain AudioBuffer.
 //
 // The engine rule everywhere else in this DAW is "native WebAudio nodes
 // only", so that a live playback and an offline bounce are the same graph and
@@ -16,6 +16,8 @@ import {
   warpTempoFor, type WarpConfig, type WarpTempo,
 } from '../model/warp.js';
 import { modeOptions, stretchChannels } from '../audio/time-stretch.js';
+import { shiftChannels } from '../audio/pitch-clip.js';
+import { clipPitch } from '../model/clip-pitch.js';
 import { getCached } from './audio-cache.js';
 import type { Clip, DawSession } from '../model/types.js';
 
@@ -42,7 +44,28 @@ export function renderWarpedClip(
   clip: Clip, sessionTempo: number | WarpTempo,
 ): WarpedClipAudio | null {
   const warp = clipWarp(clip);
-  if (!warp) return null;
+  const semitones = clipPitch(clip);
+  if (!warp) {
+    // Transpose with no warp: the clip's own span, shifted.  It still goes
+    // through this path rather than a second one, so pitched and warped clips
+    // share the cache, the key and the player's fallback behaviour.
+    if (semitones === 0) return null;
+    const outLength = Math.max(0, Math.round(clip.durationSec * sampleRate));
+    const startSample = Math.round(clip.offsetSec * sampleRate);
+    const span = channels.map((ch) => {
+      const out = new Float32Array(outLength);
+      for (let i = 0; i < outLength; i++) {
+        const index = startSample + i;
+        out[i] = index >= 0 && index < ch.length ? (ch[index] ?? 0) : 0;
+      }
+      return out;
+    });
+    return {
+      channels: shiftChannels(span, sampleRate, semitones),
+      sampleRate,
+      durationSec: clip.durationSec,
+    };
+  }
 
   const map = buildWarpMap(warp, sessionTempo);
   const outLength = Math.max(0, Math.round(clip.durationSec * sampleRate));
@@ -54,15 +77,16 @@ export function renderWarpedClip(
   // but running WSOLA over it would add artefacts for nothing.
   if (isIdentity(map.rates) || map.source.length < 2) {
     const startSample = Math.round(destToSource(map, destStart) * sampleRate);
+    const span = channels.map((ch) => {
+      const out = new Float32Array(outLength);
+      for (let i = 0; i < outLength; i++) {
+        const index = startSample + i;
+        out[i] = index >= 0 && index < ch.length ? (ch[index] ?? 0) : 0;
+      }
+      return out;
+    });
     return {
-      channels: channels.map((ch) => {
-        const out = new Float32Array(outLength);
-        for (let i = 0; i < outLength; i++) {
-          const index = startSample + i;
-          out[i] = index >= 0 && index < ch.length ? (ch[index] ?? 0) : 0;
-        }
-        return out;
-      }),
+      channels: shiftChannels(span, sampleRate, semitones, warp.mode),
       sampleRate,
       durationSec: clip.durationSec,
     };
@@ -71,11 +95,26 @@ export function renderWarpedClip(
   const sourceSampleAt = (outSample: number): number =>
     destToSource(map, destStart + outSample / sampleRate) * sampleRate;
 
+  // Stretch first, transpose second.  The other order would ask the pitch
+  // shifter to work on material the warp is about to re-time, so its window
+  // choices would be made against the wrong tempo.
+  const stretched = stretchChannels(
+    channels, outLength, sourceSampleAt, modeOptions(warp.mode, sampleRate),
+  );
   return {
-    channels: stretchChannels(channels, outLength, sourceSampleAt, modeOptions(warp.mode, sampleRate)),
+    channels: shiftChannels(stretched, sampleRate, semitones, warp.mode),
     sampleRate,
     durationSec: clip.durationSec,
   };
+}
+
+/**
+ * True when a clip needs rendering before it can play — warped, transposed,
+ * or both.  The one gate every caller asks, so a new reason to render cannot
+ * be added to some paths and forgotten on others.
+ */
+export function needsRender(clip: Clip): boolean {
+  return clipWarp(clip) !== null || clipPitch(clip) !== 0;
 }
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
@@ -87,7 +126,14 @@ export function renderWarpedClip(
  */
 export function warpKey(clip: Clip, sessionTempo: number | WarpTempo): string | null {
   const warp = clipWarp(clip);
-  if (!warp) return null;
+  const semitones = clipPitch(clip);
+  if (!warp) {
+    if (semitones === 0) return null;
+    return [
+      clip.fileId, 'pitch', clip.offsetSec.toFixed(6), clip.durationSec.toFixed(6),
+      semitones.toFixed(4),
+    ].join('|');
+  }
   const markers = warp.markers
     .map((m) => `${m.sourceSec.toFixed(6)}:${m.beat.toFixed(6)}`)
     .join(',');
@@ -98,7 +144,7 @@ export function warpKey(clip: Clip, sessionTempo: number | WarpTempo): string | 
   const tempo = warpTempoFor(warp, sessionTempo);
   return [
     clip.fileId, warp.mode, tempo.key,
-    clip.offsetSec.toFixed(6), clip.durationSec.toFixed(6), markers,
+    clip.offsetSec.toFixed(6), clip.durationSec.toFixed(6), semitones.toFixed(4), markers,
   ].join('|');
 }
 
@@ -187,7 +233,7 @@ export function prepareWarpsForSession(
 ): number {
   let rendered = 0;
   for (const clip of clips) {
-    if (clip.kind !== 'audio' || !clipWarp(clip)) continue;
+    if (clip.kind !== 'audio' || !needsRender(clip)) continue;
     const tempo = sessionWarpTempo(session, clip);
     const key = warpKey(clip, tempo);
     if (!key || getWarped(key)) continue;

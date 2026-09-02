@@ -90,6 +90,14 @@ export interface Clip {
   durationSec: number;
   /** Clip gain — the pre-fader, per-clip trim (Pro Tools "clip gain"). */
   gainDb: number;
+  /**
+   * Transpose, in semitones, WITHOUT changing the clip's length.
+   *
+   * Optional because sessions saved before it existed have no field; read it
+   * through `clipPitch()` in model/clip-pitch.ts, which treats absent, NaN
+   * and out-of-range all as "no transpose".
+   */
+  pitchSemitones?: number;
   fadeIn: Fade;
   fadeOut: Fade;
   muted: boolean;

@@ -57,6 +57,7 @@ export type CommandId =
   | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate'
   | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
+  | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
@@ -260,6 +261,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '클립 자체 게인 (페이더 이전)', available: true },
   { id: 'daw.clipGainDown', group: 'daw', label: '클립 게인 −0.5 dB', chords: ['Mod+Shift+ArrowDown'],
     note: '클립 자체 게인 (페이더 이전)', available: true },
+  { id: 'daw.clipPitchUp', group: 'daw', label: '클립 피치 +1 반음', chords: ['Mod+Alt+ArrowUp'],
+    note: '오디오 클립을 길이 그대로 반음 올립니다 — 클립 게인이 Mod+Shift+화살표, 피치는 Mod+Alt+화살표', available: true },
+  { id: 'daw.clipPitchDown', group: 'daw', label: '클립 피치 −1 반음', chords: ['Mod+Alt+ArrowDown'],
+    note: '오디오 클립을 길이 그대로 반음 내립니다', available: true },
+  { id: 'daw.clipPitchReset', group: 'daw', label: '클립 피치 원음', chords: ['Alt+Digit0'],
+    note: '피치를 0 으로 — 파일 그대로 재생됩니다', available: true },
   { id: 'daw.nudgeForward', group: 'daw', label: '넛지 →', chords: ['NumpadAdd'],
     note: '선택 클립을 넛지 값만큼 뒤로', available: true },
   { id: 'daw.nudgeBack', group: 'daw', label: '넛지 ←', chords: ['NumpadSubtract'],
