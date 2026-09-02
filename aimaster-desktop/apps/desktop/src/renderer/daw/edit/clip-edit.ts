@@ -441,6 +441,25 @@ export function selectionToClipBounds(session: DawSession, sel: TimeSelection): 
   return { ...sel, startSec: start, endSec: end };
 }
 
+/**
+ * The inclusive run of tracks between two rows, in screen order.
+ *
+ * What a marquee actually selects.  Dragging from the third track up to the
+ * first has to give the same three tracks as dragging back down, so the band
+ * is taken between the two positions rather than from the anchor forwards —
+ * and an id that is not on screen (a collapsed stack member) yields just the
+ * anchor rather than an empty selection that looks like the drag did nothing.
+ */
+export function trackBand(
+  order: readonly TrackId[], fromId: TrackId, toId: TrackId,
+): TrackId[] {
+  const from = order.indexOf(fromId);
+  const to = order.indexOf(toId);
+  if (from < 0) return [];
+  if (to < 0) return [fromId];
+  return order.slice(Math.min(from, to), Math.max(from, to) + 1);
+}
+
 /** All clip edges on the given tracks, sorted — used by boundary navigation. */
 export function clipBoundaries(session: DawSession, trackIds: TrackId[]): number[] {
   const edges = new Set<number>();

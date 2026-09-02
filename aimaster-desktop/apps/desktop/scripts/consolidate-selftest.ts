@@ -22,7 +22,7 @@ import {
   applyConsolidatedSpan, consolidationSpans, describeOutcome, gapsBetween, isSilentAt,
   outcomeOf, silenceSec, spanDurationSec, spanForTrack,
 } from '../src/renderer/daw/edit/consolidate.js';
-import type { TimeSelection } from '../src/renderer/daw/edit/clip-edit.js';
+import { trackBand, type TimeSelection } from '../src/renderer/daw/edit/clip-edit.js';
 import {
   addTrack, createClip, createSession, createTrack, findTrack, trackClips,
 } from '../src/renderer/daw/model/session-ops.js';
@@ -218,6 +218,42 @@ check('the new clip carries no fade and no offset of its own', () => {
   near(c.fadeIn.durationSec, 0, 1e-9, 'the fades are IN the file now');
   near(c.fadeOut.durationSec, 0, 1e-9, 'both of them');
   near(c.gainDb, 0, 1e-9, 'and so is the gain');
+});
+
+// ── The marquee's track band ─────────────────────────────────────────────────
+//
+// What a vertical drag actually selects.  Before this the band was fixed to
+// the row the drag started on, so dragging a box down through three tracks
+// selected one — which reads as "drag does nothing".
+
+check('a drag inside one row selects that row', () => {
+  assert(JSON.stringify(trackBand(['a', 'b', 'c'], 'b', 'b')) === JSON.stringify(['b']), 'just b');
+});
+
+check('a drag down three rows selects all three', () => {
+  assert(JSON.stringify(trackBand(['a', 'b', 'c', 'd'], 'a', 'c')) === JSON.stringify(['a', 'b', 'c']),
+    'a through c, including the row in between');
+});
+
+check('dragging UP gives the same band as dragging down', () => {
+  const down = trackBand(['a', 'b', 'c', 'd'], 'a', 'c');
+  const up = trackBand(['a', 'b', 'c', 'd'], 'c', 'a');
+  assert(JSON.stringify(down) === JSON.stringify(up), `${JSON.stringify(down)} vs ${JSON.stringify(up)}`);
+});
+
+check('the band is in screen order, not drag order', () => {
+  assert(JSON.stringify(trackBand(['a', 'b', 'c'], 'c', 'a')) === JSON.stringify(['a', 'b', 'c']),
+    'top to bottom either way');
+});
+
+check('a row that is not on screen leaves the anchor selected', () => {
+  // A collapsed stack member.  Returning nothing here would make the drag
+  // look like it cleared the selection.
+  assert(JSON.stringify(trackBand(['a', 'b'], 'a', 'hidden')) === JSON.stringify(['a']), 'anchor survives');
+});
+
+check('an anchor that is not on screen selects nothing', () => {
+  assert(trackBand(['a', 'b'], 'gone', 'b').length === 0, 'no anchor, no band');
 });
 
 // ── What it reports ──────────────────────────────────────────────────────────

@@ -15,7 +15,7 @@ import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import {
   activePlaylist, clipAt, clipEnd, findTrack, sessionEndSec, trackClips,
 } from '../../../daw/model/session-ops.js';
-import { moveClip, setClipFade } from '../../../daw/edit/clip-edit.js';
+import { moveClip, setClipFade, trackBand } from '../../../daw/edit/clip-edit.js';
 import {
   fadeFromDrag, fadeHandleOn, fadeOn, fadeRegionAt, FADE_SHAPES, FADE_SHAPE_LABEL,
   type FadeSide,
@@ -114,7 +114,12 @@ export default function EditWindow() {
   const laneRef = useRef<HTMLDivElement>(null);
   const [laneWidth, setLaneWidth] = useState(900);
   const [decodeTick, setDecodeTick] = useState(0);
-  const [drag, setDrag] = useState<null | { anchorSec: number; trackIds: string[] }>(null);
+  const [drag, setDrag] = useState<null | { anchorSec: number; anchorTrackId: string }>(null);
+  // The row the pointer is over, as a ref rather than state: the row handler
+  // and the lane handler both see the same mousemove, and the row's runs
+  // first.  A ref is already updated by the time the lane reads it; state
+  // would be one event behind, which is one row behind for the whole drag.
+  const bandTrackRef = useRef<string | null>(null);
   // Clip drag: one gesture = one undo step, so it writes through
   // applyTransient and commits on mouse up.
   const [clipDrag, setClipDrag] = useState<null | {
@@ -287,12 +292,14 @@ export default function EditWindow() {
       }
       seek(at);
       setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
-      setDrag({ anchorSec: at, trackIds: [track.id] });
+      setDrag({ anchorSec: at, anchorTrackId: track.id });
+      bandTrackRef.current = track.id;
       return;
     }
     // range tool or shift-drag → time selection
     setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
-    setDrag({ anchorSec: at, trackIds: [track.id] });
+    setDrag({ anchorSec: at, anchorTrackId: track.id });
+    bandTrackRef.current = track.id;
   }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode, apply]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
@@ -317,12 +324,17 @@ export default function EditWindow() {
     }
     if (!drag) return;
     const at = snapToGrid(secAt(e.clientX));
+    // A marquee gathers ROWS as well as time.  Dragging down through three
+    // tracks selects all three, which is what makes "drag a box round these
+    // pieces and bounce them" work at all — before this the band was fixed to
+    // whichever row the drag started on, so a vertical drag looked like it
+    // did nothing.
     setSelection({
       startSec: Math.min(drag.anchorSec, at),
       endSec: Math.max(drag.anchorSec, at),
-      trackIds: drag.trackIds,
+      trackIds: trackBand(rows.map((t) => t.id), drag.anchorTrackId, bandTrackRef.current ?? drag.anchorTrackId),
     });
-  }, [drag, clipDrag, fadeDrag, session, secAt, setSelection, applyTransient]);
+  }, [drag, clipDrag, fadeDrag, session, secAt, setSelection, applyTransient, rows]);
 
   /**
    * Whether the pointer is over a fade handle, so the row can say so.
@@ -331,6 +343,9 @@ export default function EditWindow() {
    * approach is the whole of the affordance in every DAW that does this.
    */
   const onRowMove = useCallback((e: React.MouseEvent, track: Track) => {
+    // Recorded on every move, drag or not, so the lane handler that runs a
+    // moment later always knows which row the pointer is on.
+    bandTrackRef.current = track.id;
     if (fadeDrag || clipDrag || drag || tool !== 'select') { setFadeHover(null); return; }
     const raw = secAt(e.clientX);
     setFadeHover(fadeHandleOn(trackClips(track), raw, yFracIn(e), pxPerSec)?.side ?? null);
