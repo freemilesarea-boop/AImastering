@@ -6,7 +6,7 @@
 |---------|----------|--------------------------------------|
 | Node.js | ≥ 20     | https://nodejs.org                   |
 | pnpm    | ≥ 9      | `npm i -g pnpm`                      |
-| Python  | ≥ 3.10   | https://python.org                   |
+| Python  | 3.10–3.12| `brew install python@3.12` / python.org |
 | FFmpeg  | any      | `brew install ffmpeg` / apt / winget |
 
 ## Quick Start
@@ -18,7 +18,7 @@ cd aimaster-desktop
 pnpm install
 
 # 2. Set up Python venv + deps
-./scripts/setup-python.sh
+./setup-python.sh
 
 # 3. Start dev mode
 pnpm desktop         # Electron + Vite HMR — 홈 화면에서 시작
@@ -37,6 +37,34 @@ DAW 작업 중이라면 `dev:daw` 쪽이 낫습니다 — 리로드할 때마다
 Electron 앱 자체는 Python 없이 **뜹니다.** DAW · 믹서 · 플러그인 · 에디터는
 전부 Web Audio 라서 브라우저 안에서 끝납니다. Python 이 필요한 건 마스터링
 엔진 쪽(AI Analyze / Master) 호출이고, 그때까지는 없어도 됩니다.
+
+### `pnpm dev` 가 Electron ENOENT 로 죽을 때
+
+```bash
+pnpm fix:electron
+```
+
+`pnpm install` 이 electron 의 postinstall 을 건너뛰는 경우가 있다(스토어 재사용,
+사이드이펙트 캐시). 그러면 `node_modules/electron/dist` 가 비어 있어서 실행할
+바이너리가 없다. 위 명령이 없는 것만 받아 온다.
+
+`path.txt` 를 손으로 쓸 일이 생기면 **`echo` 를 쓰지 말 것.** electron 의
+`index.js` 는 이 파일을 trim 없이 읽어서 실행 경로에 이어 붙이기 때문에, `echo`
+가 붙이는 줄바꿈 하나 때문에 `spawn .../Electron\n ENOENT` 가 난다. 확인도
+바이너리를 직접 `--version` 으로 부르면 안 된다 — 그 경로는 `path.txt` 를 읽지
+않아서 깨진 상태에서도 버전이 멀쩡히 찍힌다. `node -p "require('electron')"` 로
+봐야 한다. `pnpm fix:electron` 이 둘 다 그렇게 한다.
+
+### Python 3.13+ 를 쓰고 있을 때
+
+`setup-python.sh` 가 거부한다. 거부하는 게 맞다 — `requirements.txt` 의
+`numpy==1.26.4` 는 cp312 까지만 휠이 있어서, 그 위에서는 pip 이 소스 빌드로
+떨어지고 Fortran 툴체인 없는 맥에서 몇 분 뒤에 실패한다.
+
+```bash
+brew install python@3.12
+PYTHON=python3.12 ./setup-python.sh
+```
 
 ### 리눅스에서 root 로 실행할 때
 

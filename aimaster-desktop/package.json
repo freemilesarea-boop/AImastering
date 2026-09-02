@@ -10,7 +10,9 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "clean": "turbo run clean",
-    "desktop": "pnpm --filter @aimaster/desktop dev"
+    "desktop": "pnpm --filter @aimaster/desktop dev",
+    "setup:python": "bash setup-python.sh",
+    "fix:electron": "bash scripts/fix-electron.sh"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^7.0.0",

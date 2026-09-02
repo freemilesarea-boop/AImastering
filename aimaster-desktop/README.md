@@ -262,15 +262,30 @@ Electron 의 postinstall 이 플랫폼 바이너리(~100 MB)를 받아오는데,
 (이 저장소는 `node-linker=hoisted` 라 더 잘 일어납니다).
 
 ```bash
-pnpm rebuild electron
+pnpm fix:electron
 ```
 
-그래도 안 되면:
+없는 것만 받아 오고, `path.txt` 가 깨져 있으면 같이 고칩니다. 그래도 안 되면:
 
 ```bash
 rm -rf node_modules/electron
 pnpm install
 ```
+
+### `spawn .../Electron\n ENOENT`
+
+경로 끝의 `\n` 이 전부입니다. `node_modules/electron/path.txt` 를 손으로 쓸 때
+`echo` 를 쓰면 줄바꿈이 붙는데, Electron 의 `index.js` 는 이 파일을 **trim 없이**
+읽어서 실행 경로에 이어 붙이므로 없는 파일을 spawn 하게 됩니다.
+
+```bash
+pnpm fix:electron
+```
+
+직접 쓸 일이 있으면 `printf '%s' ... > path.txt` 로 쓰세요. 확인도
+바이너리를 실제 경로로 `--version` 호출하면 안 됩니다 — 그 경로는 `path.txt` 를
+읽지 않아서 깨진 상태에서도 버전이 멀쩡히 찍힙니다. `node -p "require('electron')"`
+가 주는 경로를 보세요.
 
 ### `setup-python.sh` 가 Python 을 거부함
 
