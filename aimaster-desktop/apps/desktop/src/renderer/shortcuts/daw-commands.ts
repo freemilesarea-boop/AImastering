@@ -15,10 +15,12 @@ import type { DawState } from '../stores/dawStore.js';
 import { snapToGrid, targetTrackIds } from '../stores/dawStore.js';
 import {
   clearRange, crossfadeAt, duplicateSelection, fadeToCursor, healSeparation,
-  nudgeClipGain, nudgeSelection, selectionLength, separateAt, trimToSelection, hasRange,
+  nudgeClipGain, nudgeSelection, overlapsSelection, selectionLength, separateAt,
+  trimToSelection, hasRange,
   type TimeSelection,
 } from '../daw/edit/clip-edit.js';
 import { compRange, cyclePlaylist } from '../daw/edit/comping.js';
+import { alignClipToGuide, describeAlign } from '../daw/edit/align-actions.js';
 import { consolidationSpans, describeOutcome, outcomeOf } from '../daw/edit/consolidate.js';
 import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
 import {
@@ -74,6 +76,7 @@ import {
 } from '../daw/edit/track-delay-ops.js';
 import { useMidiEditorStore, currentGridBeat } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips, updateTrack } from '../daw/model/session-ops.js';
+import { visibleTracks } from '../daw/model/stacks.js';
 import { findLane } from '../daw/model/automation.js';
 import {
   addTempoEvent, barBeatAt, beatsPerBar, meterAtBeat, secToBeat, tempoAtBeat,
@@ -160,7 +163,7 @@ export type DawCommandId =
   | 'daw.addChord' | 'daw.openVocalEditor'
   | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
   | 'daw.copy' | 'daw.cut' | 'daw.cutRipple' | 'daw.paste' | 'daw.pasteInsert'
-  | 'daw.insertSilence' | 'daw.stripSilence' | 'daw.snapZeroCross'
+  | 'daw.insertSilence' | 'daw.stripSilence' | 'daw.alignToGuide' | 'daw.snapZeroCross'
   | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip'
   | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown';
 
@@ -768,6 +771,68 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
      * still falls back to the clip under the cursor, so the old gesture keeps
      * working.
      */
+    /**
+     * Align every other selected track to the topmost one.
+     *
+     * The guide is the top row on purpose: a lead sits above its doubles in
+     * every session anyone has ever built, and a rule you can see beats a
+     * dialog asking which of two identical-looking takes is the reference.
+     *
+     * Clips are paired by overlap.  A double that runs under two phrases of
+     * the lead is aligned to the phrase it actually sits on, not to whichever
+     * one happens to be first in the list.
+     */
+    'daw.alignToGuide': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      const order = visibleTracks(state.session).map((t) => t.id);
+      const rows = order.filter((id) => sel.trackIds.includes(id));
+      if (rows.length < 2) {
+        notify('가이드 트랙과 맞출 트랙을 함께 선택하세요 — 맨 위가 가이드입니다', 'warning');
+        return;
+      }
+      const guideTrack = findTrack(state.session, rows[0]!);
+      if (!guideTrack) return;
+      const guideClips = trackClips(guideTrack).filter(
+        (c) => c.kind === 'audio' && overlapsSelection(c, sel));
+      if (guideClips.length === 0) { notify('가이드 트랙에 오디오가 없습니다', 'warning'); return; }
+
+      let done = 0;
+      let failed = 0;
+      let last = '';
+      let firstError = '';
+      let next = state.session;
+      for (const trackId of rows.slice(1)) {
+        const track = findTrack(next, trackId);
+        if (!track) continue;
+        for (const clip of trackClips(track)) {
+          if (clip.kind !== 'audio' || !overlapsSelection(clip, sel)) continue;
+          const guide = guideClips.find(
+            (g) => g.startSec < clip.startSec + clip.durationSec && g.startSec + g.durationSec > clip.startSec);
+          if (!guide) continue;
+          try {
+            const result = alignClipToGuide(
+              next,
+              { trackId: guideTrack.id, clipId: guide.id },
+              { trackId, clipId: clip.id },
+            );
+            next = result.session;
+            last = describeAlign(result);
+            done += 1;
+          } catch (err) {
+            failed += 1;
+            if (!firstError) firstError = (err as Error).message;
+          }
+        }
+      }
+      if (done === 0) { notify(`정렬 실패: ${firstError || '맞출 클립을 찾지 못했습니다'}`, 'error'); return; }
+      state.apply(() => next);
+      notify(
+        `${done}개 클립 정렬 — ${last}${failed > 0 ? ` · ${failed}개 실패 (${firstError})` : ''}`,
+        'success',
+      );
+    },
+
     'daw.stripSilence': () => {
       const state = daw();
       const sel = currentSelection(state);

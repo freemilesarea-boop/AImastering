@@ -12,7 +12,7 @@ import { findTrack, trackClips, updateClip } from '../model/session-ops.js';
 import { transientsFor } from '../engine/audio-cache.js';
 import type { Clip, ClipId, DawSession, TrackId } from '../model/types.js';
 
-function requireClip(session: DawSession, trackId: TrackId, clipId: ClipId): Clip {
+export function requireAudioClip(session: DawSession, trackId: TrackId, clipId: ClipId): Clip {
   const track = findTrack(session, trackId);
   const clip = track ? trackClips(track).find((c) => c.id === clipId) : undefined;
   if (!clip) throw new Error('클립을 찾을 수 없습니다');
@@ -68,7 +68,7 @@ export interface WarpSetupResult {
 export function warpClipToTempo(
   session: DawSession, trackId: TrackId, clipId: ClipId, sourceBpm?: number,
 ): WarpSetupResult {
-  const clip = requireClip(session, trackId, clipId);
+  const clip = requireAudioClip(session, trackId, clipId);
   const measured = sourceBpm ?? estimateBpm(clipTransients(clip));
   if (measured === null) throw new Error('템포를 추정할 수 없습니다 — BPM 을 직접 입력하세요');
 
@@ -89,7 +89,7 @@ export function autoWarpClip(
   session: DawSession, trackId: TrackId, clipId: ClipId,
   options: { sourceBpm?: number; gridBeats?: number } = {},
 ): WarpSetupResult {
-  const clip = requireClip(session, trackId, clipId);
+  const clip = requireAudioClip(session, trackId, clipId);
   const transients = clipTransients(clip);
   const measured = options.sourceBpm ?? estimateBpm(transients);
   if (measured === null) throw new Error('템포를 추정할 수 없습니다 — BPM 을 직접 입력하세요');
@@ -117,8 +117,11 @@ function clipTransients(clip: Clip): number[] {
  * Install a warp and resize the clip so its whole source span still plays.
  * Without the resize, warping a 128 BPM loop into a 120 BPM session would
  * simply cut the last beats off.
+ *
+ * Exported because alignment installs warps too, and a second copy of the
+ * resize would be a second chance to get it wrong.
  */
-function applyWarp(
+export function applyWarp(
   session: DawSession, trackId: TrackId, clipId: ClipId,
   warp: WarpConfig, sourceDurationSec: number,
 ): DawSession {
@@ -134,7 +137,7 @@ function applyWarp(
 export function unwarpClip(
   session: DawSession, trackId: TrackId, clipId: ClipId,
 ): DawSession {
-  const clip = requireClip(session, trackId, clipId);
+  const clip = requireAudioClip(session, trackId, clipId);
   const warp = clipWarp(clip);
   if (!warp) return session;
   const map = warp.markers;

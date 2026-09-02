@@ -72,7 +72,7 @@ export type CommandId =
   | 'daw.analyzeVocal' | 'daw.tuneVocal' | 'daw.openVocalEditor'
   | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
   | 'daw.cutRipple' | 'daw.pasteInsert' | 'daw.insertSilence'
-  | 'daw.stripSilence' | 'daw.snapZeroCross'
+  | 'daw.stripSilence' | 'daw.alignToGuide' | 'daw.snapZeroCross'
   | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip'
   | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
@@ -347,6 +347,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택한 길이만큼 재생헤드에 빈 자리를 만듭니다 (리플 삭제의 반대)', available: true },
   { id: 'daw.stripSilence', group: 'daw', label: '무음 제거 (Detect Silence)', chords: ['Shift+Alt+S'],
     note: '선택한 클립에서 소리 나는 부분만 남깁니다 — 자르기 전에 얼마나 없어지는지 보여줍니다. 이어서 V(바운스)', available: true },
+  { id: 'daw.alignToGuide', group: 'daw', label: '가이드에 정렬 (Audio Align)', chords: ['Shift+Alt+A'],
+    note: '선택한 트랙 중 맨 위를 가이드로, 나머지 더블링·코러스의 박자를 맞춥니다 (DTW)', available: true },
   { id: 'daw.snapZeroCross', group: 'daw', label: '영교차로 스냅', chords: ['Shift+Alt+Z'],
     note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
 
