@@ -26,7 +26,8 @@ import { PLUGINS, defaultParams } from '../src/renderer/daw/engine/plugins.js';
 import { tubeSmallSignalGain } from '../src/renderer/daw/engine/plugins-extended.js';
 import { createInsert } from '../src/renderer/daw/model/session-ops.js';
 import {
-  bodyDurationSec, originalSource, clipRegionFx, fadeSeam, RINGING_SEC, SEAM_FADE_SEC,
+  bodyDurationSec, originalSource, clipRegionFx, fadeSeam, renderSourceClip,
+  RINGING_SEC, SEAM_FADE_SEC,
 } from '../src/renderer/daw/edit/region-fx.js';
 import { splitClip } from '../src/renderer/daw/edit/clip-edit.js';
 import { createClip } from '../src/renderer/daw/model/session-ops.js';
@@ -521,6 +522,49 @@ check('splitting an ordinary clip is untouched by any of this', () => {
   near(head.durationSec, 1.5, 1e-9, 'head');
   near(tail.durationSec, 2.5, 1e-9, 'tail');
   assert(head.fadeOut.durationSec === 0 && tail.fadeIn.durationSec === 0, 'the new edges are square');
+});
+
+
+check('the clip fades are NOT rendered into the file', () => {
+  // They stay on the clip and are applied once, at playback.  Rendering them
+  // in as well ramped audio that was already ramped — and in `keep` mode the
+  // clip grows by the tail, so the baked fade-out landed on the end of the
+  // ring instead of the end of the note.
+  const withFades: Clip = {
+    ...createClip('src', 'piece', { startSec: 3, offsetSec: 5, durationSec: 8 }),
+    fadeIn: { durationSec: 0.4, shape: 'linear' },
+    fadeOut: { durationSec: 0.9, shape: 'equalPower' },
+  };
+  const forRender = renderSourceClip(withFades);
+  near(forRender.fadeIn.durationSec, 0, 1e-9, 'the fade-in must not be rendered in');
+  near(forRender.fadeOut.durationSec, 0, 1e-9, 'nor the fade-out');
+  // The shapes ride along so the clip's own fades are untouched by any of this.
+  assert(forRender.fadeIn.shape === 'linear', 'the shape is kept for the clip');
+  assert(forRender.fadeOut.shape === 'equalPower', 'both of them');
+  // And the source clip itself keeps its fades — this returns a copy.
+  near(withFades.fadeIn.durationSec, 0.4, 1e-9, 'the clip still fades in');
+  near(withFades.fadeOut.durationSec, 0.9, 1e-9, 'and out');
+});
+
+check('the clip GAIN is rendered in, unlike the fades', () => {
+  // The asymmetry is deliberate: a trim belongs in front of the chain, so the
+  // compressor hears what the person set.  It is zeroed on the clip afterwards,
+  // which is why `original.gainDb` has to exist.
+  const loud: Clip = {
+    ...createClip('src', 'piece', { startSec: 0, offsetSec: 0, durationSec: 4 }),
+    gainDb: -7.5,
+  };
+  near(renderSourceClip(loud).gainDb, -7.5, 1e-9, 'the trim must reach the chain');
+});
+
+check('the render reads the ORIGINAL audio, never the processed audio', () => {
+  // Re-applying a chain to an already-processed clip must start from the
+  // untouched source, or the second pass is a delay of a delay.
+  const again = appliedClip();
+  const forRender = renderSourceClip(again);
+  assert(forRender.fileId === 'source', `re-render must start from the source, got ${forRender.fileId}`);
+  near(forRender.offsetSec, 12, 1e-9, 'at the original offset');
+  near(forRender.durationSec, 2, 1e-9, 'for the original length');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

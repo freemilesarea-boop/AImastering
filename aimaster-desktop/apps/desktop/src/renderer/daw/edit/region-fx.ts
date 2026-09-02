@@ -88,23 +88,38 @@ export interface RegionRender {
  * Clip gain and fades are NOT reset — they belong to the clip, and the chain
  * should hear the clip the way the arrangement does.
  */
-function isolate(
-  session: DawSession, trackId: TrackId, clip: Clip, inserts: readonly Insert[],
-): DawSession {
+/**
+ * The clip as the RENDER sees it: the untouched source, no fades, gain intact.
+ *
+ * The fades stay OFF the render and stay ON the clip.  Baking them would apply
+ * them twice — once into the file, once again on playback — and in `keep` mode
+ * the clip grows by the tail, so a baked fade-out would end up ramping the ring
+ * instead of the note.  Left on the clip they are applied once, in the right
+ * place, and can still be dragged afterwards.
+ *
+ * The GAIN is the other way round: it is rendered in, and `applyRegionFx`
+ * zeroes it on the clip afterwards so it is not applied a second time.  That
+ * is why `RegionFx.original` has to write the number down.
+ *
+ * Exported so both of those can be held to, rather than inferred from a
+ * rendered buffer.
+ */
+export function renderSourceClip(clip: Clip): Clip {
   const source = originalSource(clip);
-  const bare: Clip = {
+  return {
     ...clip,
     fileId: source.fileId,
     offsetSec: source.offsetSec,
     durationSec: source.durationSec,
-    // The fades stay OFF the render and stay ON the clip.  Baking them would
-    // apply them twice — once in the file, once again on playback — and in
-    // `keep` mode the clip grows by the tail, so a baked fade-out would end
-    // up ramping the ring instead of the note.  Left on the clip they are
-    // applied once, in the right place, and can still be dragged afterwards.
     fadeIn: { durationSec: 0, shape: clip.fadeIn.shape },
     fadeOut: { durationSec: 0, shape: clip.fadeOut.shape },
   };
+}
+
+function isolate(
+  session: DawSession, trackId: TrackId, clip: Clip, inserts: readonly Insert[],
+): DawSession {
+  const bare = renderSourceClip(clip);
   return {
     ...session,
     tracks: session.tracks.map((t): Track => {
