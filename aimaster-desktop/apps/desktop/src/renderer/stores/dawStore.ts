@@ -133,6 +133,17 @@ export interface DawState {
   spotTarget: { trackId: TrackId; clipId: string } | null;
   setSpotTarget: (target: { trackId: TrackId; clipId: string } | null) => void;
 
+  /**
+   * The selection the Detect Silence dialog is looking at, or null.
+   *
+   * Here for the same reason as `spotTarget`: the keyboard opens it and the
+   * Edit window draws it, and a local `useState` gives the shortcut nothing
+   * to talk to.  The selection is CAPTURED when it opens rather than read
+   * live, so the preview cannot change under the person reading it.
+   */
+  stripTarget: TimeSelection | null;
+  setStripTarget: (target: TimeSelection | null) => void;
+
   /** Non-fatal engine notices (feedback loops, decode failures). */
   engineWarning: string | null;
   setEngineWarning: (w: string | null) => void;
@@ -230,6 +241,9 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   spotTarget: null,
   setSpotTarget: (spotTarget) => set({ spotTarget }),
+
+  stripTarget: null,
+  setStripTarget: (stripTarget) => set({ stripTarget }),
 
   metronomeOn: false,
   toggleMetronome: () => {

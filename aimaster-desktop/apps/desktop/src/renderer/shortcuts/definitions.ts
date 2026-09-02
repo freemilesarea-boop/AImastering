@@ -345,8 +345,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '덮어쓰지 않고 자리를 만들어 넣습니다 — 아무것도 사라지지 않습니다', available: true },
   { id: 'daw.insertSilence', group: 'daw', label: '무음 삽입', chords: ['Mod+Shift+E'],
     note: '선택한 길이만큼 재생헤드에 빈 자리를 만듭니다 (리플 삭제의 반대)', available: true },
-  { id: 'daw.stripSilence', group: 'daw', label: '무음 제거', chords: ['Shift+Alt+S'],
-    note: '재생 위치 클립에서 소리 나는 부분만 남깁니다 — 타이밍은 그대로', available: true },
+  { id: 'daw.stripSilence', group: 'daw', label: '무음 제거 (Detect Silence)', chords: ['Shift+Alt+S'],
+    note: '선택한 클립에서 소리 나는 부분만 남깁니다 — 자르기 전에 얼마나 없어지는지 보여줍니다. 이어서 V(바운스)', available: true },
   { id: 'daw.snapZeroCross', group: 'daw', label: '영교차로 스냅', chords: ['Shift+Alt+Z'],
     note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
 

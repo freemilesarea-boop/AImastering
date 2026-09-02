@@ -47,6 +47,7 @@ import SectionLane, { SectionLaneHeader } from './SectionLane.js';
 import ChordLane, { ChordLaneHeader } from './ChordLane.js';
 import PictureLane, { PictureLaneHeader } from './PictureLane.js';
 import SpotDialog from './SpotDialog.js';
+import StripSilenceDialog from './StripSilenceDialog.js';
 import { separateAt } from '../../../daw/edit/clip-edit.js';
 import { useRegionLabStore } from '../../../stores/regionLabStore.js';
 import { trackDelayMs } from '../../../daw/model/track-delay.js';
@@ -96,6 +97,8 @@ export default function EditWindow() {
   const setScrollSec = useDawStore((s) => s.setScrollSec);
   const editMode     = useDawStore((s) => s.editMode);
   const spotTarget = useDawStore((s) => s.spotTarget);
+  const stripTarget = useDawStore((s) => s.stripTarget);
+  const setStripTarget = useDawStore((s) => s.setStripTarget);
   const setSpotTarget = useDawStore((s) => s.setSpotTarget);
   const setEditMode  = useDawStore((s) => s.setEditMode);
   const gridDivision = useDawStore((s) => s.gridDivision);
@@ -661,6 +664,9 @@ export default function EditWindow() {
         <span className="text-[10px] font-mono text-zinc-600">{fmt(endSec)}</span>
       </div>
 
+      {stripTarget && (
+        <StripSilenceDialog selection={stripTarget} onClose={() => setStripTarget(null)} />
+      )}
       {spotTarget && (
         <SpotDialog target={spotTarget} onClose={() => setSpotTarget(null)} />
       )}

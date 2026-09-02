@@ -101,7 +101,7 @@ import {
   type PasteMode,
 } from '../daw/edit/clipboard.js';
 import { snapDistanceMs, snapSecToZero } from '../daw/edit/zero-cross.js';
-import { describeStrip, findSoundRegions, stripClipSilence } from '../daw/edit/strip-silence.js';
+
 import { getCached, monoSum } from '../daw/engine/audio-cache.js';
 import {
   applyNormalize, cleanClipName, describeNormalize, measureClip, normalizePlan,
@@ -754,39 +754,34 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     /**
-     * Cut the silence out of the clip under the playhead.
+     * Open Detect Silence on the selection.
      *
-     * One clip, not the whole track: stripping is a decision about a take, and
-     * a threshold that suits the vocal will shred the drum overheads.
+     * It used to cut immediately, on four numbers nobody could reach.  Both
+     * halves were wrong for this job: a threshold that suits a close vocal
+     * shreds a room mic, and a strip is destructive enough that "show me how
+     * much that takes out" is the first thing anyone asks.  The dialog
+     * answers both before anything is cut.
+     *
+     * The selection, not the clip under the play head — the routine this
+     * belongs to is "clean the take, then bounce it", and one clip at a time
+     * is the hand editing the command replaces.  With no range selected it
+     * still falls back to the clip under the cursor, so the old gesture keeps
+     * working.
      */
     'daw.stripSilence': () => {
       const state = daw();
+      const sel = currentSelection(state);
+      if (hasRange(sel) && sel.trackIds.length > 0) { state.setStripTarget(sel); return; }
+
       const target = audioClipAtPlayhead(state);
-      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      if (!target) { notify('클립을 선택하거나 오디오 클립 위에 커서를 두세요', 'warning'); return; }
       const clip = findClip(state.session, target.trackId, target.clipId);
       if (!clip) return;
-      const cached = getCached(clip.fileId);
-      if (!cached) { notify('오디오가 아직 읽히지 않았습니다', 'warning'); return; }
-
-      const mono = monoSum(cached.buffer);
-      const rate = cached.buffer.sampleRate;
-      // The analysis runs over the clip's own span of the file, so trimming a
-      // take does not drag the neighbouring phrase into the decision.
-      const from = Math.max(0, Math.round(clip.offsetSec * rate));
-      const to = Math.min(mono.length, Math.round((clip.offsetSec + clip.durationSec) * rate));
-      const regions = findSoundRegions(mono.subarray(from, to), rate);
-      if (regions.length === 0) {
-        notify('자를 무음을 찾지 못했습니다 — 임계값을 올려 보세요', 'warning');
-        return;
-      }
-
-      let summary = '';
-      state.apply((s: DawSession) => {
-        const result = stripClipSilence(s, target.trackId, target.clipId, regions);
-        summary = describeStrip(result);
-        return result.session;
+      state.setStripTarget({
+        startSec: clip.startSec,
+        endSec: clip.startSec + clip.durationSec,
+        trackIds: [target.trackId],
       });
-      notify(summary, 'success');
     },
 
     // ── Track header ──────────────────────────────────────────────────────
