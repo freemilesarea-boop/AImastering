@@ -41,9 +41,14 @@ export function clipRegionFx(clip: Clip): RegionFx | null {
 }
 
 /** What the clip pointed at before any chain was applied. */
-export function originalSource(clip: Clip): { fileId: string; offsetSec: number; durationSec: number } {
+export function originalSource(
+  clip: Clip,
+): { fileId: string; offsetSec: number; durationSec: number; gainDb: number } {
   return clip.regionFx?.original
-    ?? { fileId: clip.fileId, offsetSec: clip.offsetSec, durationSec: clip.durationSec };
+    ?? {
+      fileId: clip.fileId, offsetSec: clip.offsetSec,
+      durationSec: clip.durationSec, gainDb: clip.gainDb,
+    };
 }
 
 /** The clip's length as the arrangement sees it, tail excluded. */
@@ -92,6 +97,13 @@ function isolate(
     fileId: source.fileId,
     offsetSec: source.offsetSec,
     durationSec: source.durationSec,
+    // The fades stay OFF the render and stay ON the clip.  Baking them would
+    // apply them twice — once in the file, once again on playback — and in
+    // `keep` mode the clip grows by the tail, so a baked fade-out would end
+    // up ramping the ring instead of the note.  Left on the clip they are
+    // applied once, in the right place, and can still be dragged afterwards.
+    fadeIn: { durationSec: 0, shape: clip.fadeIn.shape },
+    fadeOut: { durationSec: 0, shape: clip.fadeOut.shape },
   };
   return {
     ...session,
@@ -334,6 +346,9 @@ export function revertRegionFx(
       fileId: fx.original.fileId,
       offsetSec: fx.original.offsetSec,
       durationSec: fx.original.durationSec,
+      // Applying the chain baked the gain in and zeroed it; reverting without
+      // this hands the audio back at unity and quietly loses the trim.
+      gainDb: fx.original.gainDb,
     };
   }));
   return { session: next, message: '원래 오디오로 되돌렸습니다' };

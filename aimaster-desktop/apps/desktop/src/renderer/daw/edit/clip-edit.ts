@@ -60,17 +60,28 @@ export function separateAt(session: DawSession, trackIds: TrackId[], timeSec: nu
   return out;
 }
 
-/** Split one clip at an absolute timeline position.  Fades follow the edges. */
+/**
+ * Split one clip at an absolute timeline position.  Fades follow the edges.
+ *
+ * A clip that had a chain rendered into it loses its `regionFx` here, and the
+ * audio is untouched by that: the halves still point at the rendered file.
+ * What goes is the offer to revert, and it has to go — `original` describes
+ * the WHOLE clip, so carrying it onto a half would make "되돌리기" replace a
+ * two-second piece with the full-length source.  In `keep` mode the clip is
+ * even longer than its original, so there is no honest way to narrow it
+ * either.
+ */
 export function splitClip(clip: Clip, timeSec: number): [Clip, Clip] {
   const headDuration = timeSec - clip.startSec;
+  const { regionFx: _dropped, ...plain } = clip;
   const head: Clip = {
-    ...clip,
+    ...plain,
     id: nextId('clip'),
     durationSec: headDuration,
     fadeOut: { durationSec: 0, shape: clip.fadeOut.shape },
   };
   const tail: Clip = {
-    ...clip,
+    ...plain,
     id: nextId('clip'),
     startSec: timeSec,
     offsetSec: clip.offsetSec + headDuration,

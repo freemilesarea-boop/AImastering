@@ -142,7 +142,15 @@ export interface RegionFx {
   /** Seconds of ring the chain reported when this was rendered. */
   tailSec: number;
   /** What the clip pointed at before any of this — the way back. */
-  original: { fileId: FileId; offsetSec: number; durationSec: number };
+  /**
+   * Where the clip pointed before the chain was rendered into it.
+   *
+   * `gainDb` is here because applying a chain BAKES the clip gain into the
+   * render and then zeroes it, so that it is not applied a second time on
+   * playback — which means the number is gone unless it is written down, and
+   * a revert would hand back the audio at unity.
+   */
+  original: { fileId: FileId; offsetSec: number; durationSec: number; gainDb: number };
 }
 
 /** A take lane.  One playlist is active per track; the rest are alternates. */

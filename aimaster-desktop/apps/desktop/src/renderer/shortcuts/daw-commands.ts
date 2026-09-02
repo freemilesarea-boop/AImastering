@@ -35,7 +35,7 @@ import {
   stageForMastering, unfreezeTrack,
 } from '../daw/engine/offline-render.js';
 import {
-  handoffFileName, handoffMessage, handoffProblem,
+  handoffFileName, handoffProblem, stageMessage,
 } from '../daw/edit/master-handoff.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { useAppStore } from '../stores/appStore.js';
@@ -534,25 +534,33 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       // Asked before the render, not after: every reason this could fail is
       // knowable now, and spending ten seconds to report one of them reads as
       // a broken button rather than a careful one.
-      const problem = handoffProblem(state.session, { queued: audio.queue.length });
+      const problem = handoffProblem(state.session, {
+        queued: audio.queue.length,
+        replacesExisting: audio.hasReplaceableRow(state.session.id),
+      });
       if (problem) { notify(problem, 'warning'); return; }
 
       notify('믹스를 렌더링하는 중…');
       try {
         const path = await stageForMastering(state.session);
-        const before = useAudioStore.getState().queue.length;
-        useAudioStore.getState().addFilesToQueue([path]);
-        const after = useAudioStore.getState().queue.length;
-        if (after === before) {
-          // The queue silently drops what it cannot hold.  It was checked
-          // above, so getting here means something else filled it in the
-          // seconds the render took — rare, and worth saying out loud rather
-          // than leaving the person looking at a list their mix is not in.
+        // The same staging the toolbar button does.  This used to append, so
+        // the shortcut quietly grew the list one row per press while the
+        // button next to it replaced — two ways to do one thing, disagreeing.
+        const staged = useAudioStore.getState().stageSessionInQueue(state.session.id, path);
+        if (staged.outcome === 'full') {
+          // Checked above, so getting here means something else filled the
+          // queue in the seconds the render took.  Rare, and worth saying out
+          // loud rather than leaving the person looking at a list their mix is
+          // not in — and the render it produced has nowhere to go.
+          void invoke('daw:discard-staged', { path }).catch(() => undefined);
           notify('대기열에 넣지 못했습니다 — 홈에서 자리를 만든 뒤 다시 보내세요', 'error');
           return;
         }
+        if (staged.replacedPath) {
+          void invoke('daw:discard-staged', { path: staged.replacedPath }).catch(() => undefined);
+        }
         useAppStore.getState().setPage('home');
-        notify(handoffMessage(handoffFileName(state.session.name), after), 'success');
+        notify(stageMessage(handoffFileName(state.session.name), staged.outcome, staged.queued), 'success');
       } catch (err) {
         notify(`마스터링으로 보내지 못했습니다: ${(err as Error).message}`, 'error');
       }
@@ -1835,7 +1843,7 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
     },
 
     'file.new': () => {
-      daw().loadSession(createSession('Untitled Session'));
+      daw().loadSession(createSession());
       notify('새 세션', 'success');
     },
     // Mod+O in the mastering app fills the queue and jumps to the home screen.

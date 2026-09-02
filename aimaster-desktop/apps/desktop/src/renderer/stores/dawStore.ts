@@ -138,7 +138,7 @@ export interface DawState {
   setEngineWarning: (w: string | null) => void;
 }
 
-const initialSession = createSession('Untitled Session');
+const initialSession = createSession();
 
 export const useDawStore = create<DawState>((set, get) => ({
   session: initialSession,

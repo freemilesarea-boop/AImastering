@@ -26,6 +26,14 @@ export const MASTER_QUEUE_LIMIT = 20;
 export interface HandoffState {
   /** How many files are already waiting to be mastered. */
   queued: number;
+  /**
+   * Whether this session already has a row that the send would replace.
+   *
+   * A replacement needs no free slot, so a full queue must not refuse it —
+   * otherwise the one thing a full list has to allow, updating a mix that is
+   * already on it, is the one thing it blocks.
+   */
+  replacesExisting?: boolean;
 }
 
 /**
@@ -52,7 +60,10 @@ export function handoffProblem(session: DawSession, state: HandoffState): string
   if (heard.length === 0) {
     return '들리는 트랙이 없습니다 — 전부 음소거되어 있거나 솔로가 다른 트랙에 걸려 있습니다';
   }
-  if (state.queued >= MASTER_QUEUE_LIMIT) {
+  // A re-send takes the row it already has, so a full queue is no obstacle to
+  // it.  Refusing here would mean the one thing a full queue must never block:
+  // updating a mix that is already in the list.
+  if (state.queued >= MASTER_QUEUE_LIMIT && !state.replacesExisting) {
     return `마스터링 대기열이 꽉 찼습니다 (${MASTER_QUEUE_LIMIT}곡)`
       + ' — 홈에서 몇 곡 지운 뒤에 다시 보내세요';
   }

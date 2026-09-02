@@ -225,6 +225,8 @@ interface AudioStore {
    * render of that same session.
    */
   stageSessionInQueue: (sessionId: string, path: string) => StageResult;
+  /** Whether a send of this session would replace a row rather than add one. */
+  hasReplaceableRow: (sessionId: string) => boolean;
   removeFromQueue: (id: string) => void;
   clearQueue: () => void;
   updateQueueItem: (id: string, updates: Partial<Omit<QueueItem, 'id'>>) => void;
@@ -313,19 +315,26 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     return { queue: [...s.queue, ...newItems] };
   }),
 
+  hasReplaceableRow: (sessionId) => get().queue.some((i) => (
+    i.sourceSessionId === sessionId
+    && (i.status === 'pending' || i.status === 'done' || i.status === 'error')
+  )),
+
   stageSessionInQueue: (sessionId, path) => {
     const before = get().queue;
-    const previous = before.find((i) => i.sourceSessionId === sessionId);
+    const mine = before.filter((i) => i.sourceSessionId === sessionId);
 
-    // A row that is mid-master is not ours to yank out from under the person
-    // watching it; the new mix goes in beside it and they can drop whichever
-    // they do not want.
-    const busy = previous !== undefined
-      && previous.status !== 'pending'
-      && previous.status !== 'done'
-      && previous.status !== 'error';
+    // A row that is mid-analysis or mid-master is not ours to yank out from
+    // under the person watching it; the new mix goes in beside it.  But the
+    // NEXT send has to find that new row rather than the running one it was
+    // parked next to — taking the first match would append again, and again,
+    // for as long as the first master lasted.
+    const settled = (i: QueueItem): boolean =>
+      i.status === 'pending' || i.status === 'done' || i.status === 'error';
+    const previous = mine.find(settled);
+    const busy = previous === undefined && mine.length > 0;
 
-    if (previous && !busy) {
+    if (previous) {
       const replacedPath = previous.filePath;
       set({
         queue: before.map((item) => {

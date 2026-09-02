@@ -28,6 +28,9 @@ import { createInsert } from '../src/renderer/daw/model/session-ops.js';
 import {
   bodyDurationSec, originalSource, clipRegionFx, fadeSeam, RINGING_SEC, SEAM_FADE_SEC,
 } from '../src/renderer/daw/edit/region-fx.js';
+import { splitClip } from '../src/renderer/daw/edit/clip-edit.js';
+import { createClip } from '../src/renderer/daw/model/session-ops.js';
+import type { RegionFx } from '../src/renderer/daw/model/types.js';
 import {
   fullyWet, liveAuxFor, makeRegionLive,
   SEND_CLOSED_DB, SEND_OPEN_DB, SEND_RAMP_SEC,
@@ -196,7 +199,7 @@ check('a processed clip still remembers what it replaced', () => {
     fileId: 'file-rendered', offsetSec: 0, durationSec: 12.04,
     regionFx: {
       inserts: [ins('delay')], tailMode: 'keep', tailSec: 2.04,
-      original: { fileId: 'file-orig', offsetSec: 12, durationSec: 10 },
+      original: { fileId: 'file-orig', offsetSec: 12, durationSec: 10, gainDb: 0 },
     },
   };
   const src = originalSource(processed);
@@ -464,6 +467,60 @@ check('the window can tell that a piece is already being thrown', () => {
   const out = makeRegionLive(session, trackId, clipId, [ins('delay')]);
   assert(liveAuxFor(out.session, trackId, clipId) === out.auxTrackId,
     'the aux built for this piece is not found again');
+});
+
+
+// ── What survives applying a chain, and what comes back ─────────────────────
+
+/** A clip that has had a chain rendered into it, as `applyRegionFx` leaves one. */
+function appliedClip(overrides: Partial<Clip> = {}): Clip {
+  const base = createClip('rendered', 'piece', { startSec: 4, offsetSec: 0, durationSec: 2 });
+  const fx: RegionFx = {
+    inserts: [],
+    tailMode: 'cut',
+    tailSec: 0,
+    original: { fileId: 'source', offsetSec: 12, durationSec: 2, gainDb: -4.5 },
+  };
+  return { ...base, gainDb: 0, regionFx: fx, ...overrides };
+}
+
+check('the clip gain is written down before it is baked away', () => {
+  // Applying a chain renders AT the clip gain and then zeroes it so it is not
+  // applied twice.  If the number is not recorded, reverting hands the audio
+  // back at unity and the trim is gone for good.
+  const clip = appliedClip();
+  const source = originalSource(clip);
+  near(source.gainDb, -4.5, 1e-9, 'the original gain must survive in `original`');
+  assert(clip.gainDb === 0, 'the fixture must model a baked gain');
+});
+
+check('a clip that was never processed reports its own gain as the original', () => {
+  const plain = { ...createClip('f', 'c', { startSec: 0, offsetSec: 0, durationSec: 1 }), gainDb: -3 };
+  near(originalSource(plain).gainDb, -3, 1e-9, 'no regionFx means the clip IS the original');
+});
+
+check('splitting a processed clip drops the offer to revert, on BOTH halves', () => {
+  // `original` describes the whole clip, so carrying it onto a half would make
+  // 되돌리기 replace a one-second piece with the full-length source.
+  const [head, tail] = splitClip(appliedClip(), 5);
+  assert(clipRegionFx(head) === null, 'the head still claims a revert');
+  assert(clipRegionFx(tail) === null, 'the tail still claims a revert');
+  // And the key is genuinely absent, not present holding undefined — under
+  // `exactOptionalPropertyTypes` those are different clips.
+  assert(!('regionFx' in head) && !('regionFx' in tail), 'the key must be dropped, not undefined');
+  // The audio is untouched — both halves still point at the rendered file.
+  assert(head.fileId === 'rendered' && tail.fileId === 'rendered',
+    'splitting must not change which file the halves play');
+  near(head.durationSec, 1, 1e-9, 'head length');
+  near(tail.startSec, 5, 1e-9, 'tail start');
+});
+
+check('splitting an ordinary clip is untouched by any of this', () => {
+  const plain = createClip('f', 'c', { startSec: 0, offsetSec: 0, durationSec: 4 });
+  const [head, tail] = splitClip(plain, 1.5);
+  near(head.durationSec, 1.5, 1e-9, 'head');
+  near(tail.durationSec, 2.5, 1e-9, 'tail');
+  assert(head.fadeOut.durationSec === 0 && tail.fadeIn.durationSec === 0, 'the new edges are square');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

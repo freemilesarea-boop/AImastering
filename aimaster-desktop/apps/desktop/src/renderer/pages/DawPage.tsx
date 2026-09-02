@@ -36,7 +36,8 @@ import { createStack } from '../daw/model/stacks.js';
 import { setSessionTempo } from '../daw/model/warp.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
 import {
-  addTrack, createTrack, createBus, createMidiPart, findTrack, sessionEndSec, updateClips,
+  addTrack, createTrack, createBus, createMidiPart, findTrack, renameSession, sessionEndSec,
+  updateClips,
 } from '../daw/model/session-ops.js';
 import { shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
@@ -188,8 +189,16 @@ export default function DawPage() {
   const handleSaveSession = useCallback(async () => {
     const json = serializeDawSession(useDawStore.getState().session);
     const dest = await invoke('session:save', json) as string | null;
-    if (dest) notify('세션 저장 완료', 'success');
-  }, [invoke, notify]);
+    if (!dest) return;
+    // The person has just typed a name for this song; asking them again in a
+    // second place would be silly, and NOT taking it is why every row in the
+    // mastering list said "Untitled Session.wav".
+    const stem = (dest.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '');
+    if (stem.length > 0 && stem !== useDawStore.getState().session.name) {
+      apply((sn) => renameSession(sn, stem));
+    }
+    notify('세션 저장 완료', 'success');
+  }, [apply, invoke, notify]);
 
   const handleOpenSession = useCallback(async () => {
     const loaded = await invoke('session:load') as { path: string; data: string } | null;
@@ -281,13 +290,21 @@ export default function DawPage() {
    */
   const handleSendToMastering = useCallback(async () => {
     const current = useDawStore.getState().session;
-    const problem = handoffProblem(current, { queued: useAudioStore.getState().queue.length });
+    const audio = useAudioStore.getState();
+    const problem = handoffProblem(current, {
+      queued: audio.queue.length,
+      replacesExisting: audio.hasReplaceableRow(current.id),
+    });
     if (problem) { notify(problem, 'warning'); return; }
     setBusy('믹스를 렌더링하는 중…');
     try {
       const path = await stageForMastering(current);
       const staged = useAudioStore.getState().stageSessionInQueue(current.id, path);
       if (staged.outcome === 'full') {
+        // The render is already on disk and now has nowhere to go.  Leaving it
+        // there would be a file nothing points at, kept for the lifetime of
+        // the temp directory.
+        void invoke('daw:discard-staged', { path }).catch(() => undefined);
         notify('대기열에 넣지 못했습니다 — 홈에서 자리를 만든 뒤 다시 보내세요', 'error');
         return;
       }

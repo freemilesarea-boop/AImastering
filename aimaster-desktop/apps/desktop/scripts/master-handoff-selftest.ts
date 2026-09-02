@@ -28,8 +28,8 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import {
-  addFile, addTrack, createClip, createSession, createTrack, sessionEndSec,
-  updateClips, updateTrack,
+  addFile, addTrack, createClip, createSession, createTrack, DEFAULT_SESSION_NAME,
+  isUntitled, renameSession, sessionEndSec, updateClips, updateTrack,
 } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { analyzeBuffer, clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
@@ -420,20 +420,64 @@ async function main(): Promise<void> {
     assert(again.replacedPath === undefined, 'nothing was superseded, so nothing may be deleted');
   });
 
-  await check('a full queue still refuses a new session but can replace its own', () => {
+  await check('a full queue refuses a new session but never blocks a re-send', () => {
     resetQueue();
-    const paths = Array.from({ length: MAX_QUEUE_SIZE }, (_, i) => `/music/song-${i}.wav`);
-    useAudioStore.getState().addFilesToQueue(paths);
+    const { stageSessionInQueue, addFilesToQueue, removeFromQueue, hasReplaceableRow } =
+      useAudioStore.getState();
+    void stageSessionInQueue;
+    addFilesToQueue(Array.from({ length: MAX_QUEUE_SIZE }, (_, i) => `/music/song-${i}.wav`));
     assert(queue().length === MAX_QUEUE_SIZE, 'the queue should be full');
-    assert(stage('sess-a', '/tmp/to-master/1/Mix.wav').outcome === 'full', 'a full queue must refuse');
-    // Make room, send, fill up again, and the re-send still works because it
-    // replaces rather than adds.
-    useAudioStore.getState().removeFromQueue(queue()[0]!.id);
-    assert(stage('sess-a', '/tmp/to-master/1/Mix.wav').outcome === 'added', 'should fit now');
-    assert(stage('sess-a', '/tmp/to-master/2/Mix.wav').outcome === 'replaced',
-      'a re-send needs no free slot — it takes the one it already has');
-    assert(queue().length === MAX_QUEUE_SIZE, 'and the queue is still exactly full');
+
+    // The GATE, as both callers ask it — not the store alone.  A full queue
+    // with no row for this session is a refusal.
+    const { session } = stemSession(FOUR);
+    const gate = (): string | null => handoffProblem(session, {
+      queued: useAudioStore.getState().queue.length,
+      replacesExisting: useAudioStore.getState().hasReplaceableRow(session.id),
+    });
+    assert(gate(), 'a full queue must refuse a session it does not already hold');
+    assert(!hasReplaceableRow(session.id), 'and there is nothing to replace yet');
+
+    // Make room, send once, and the queue is full again — but now the gate
+    // must let this session through, because its send takes a row it owns.
+    removeFromQueue(queue()[0]!.id);
+    assert(gate() === null, 'should fit now');
+    assert(stage(session.id, '/tmp/to-master/1/Mix.wav').outcome === 'added', 'first send');
+    assert(queue().length === MAX_QUEUE_SIZE, 'the queue is exactly full again');
+    assert(useAudioStore.getState().hasReplaceableRow(session.id), 'the row is ours to replace');
+    assert(gate() === null,
+      'a full queue must not block updating a mix it is already holding');
+    assert(stage(session.id, '/tmp/to-master/2/Mix.wav').outcome === 'replaced',
+      'a re-send needs no free slot');
+    assert(queue().length === MAX_QUEUE_SIZE, 'and it is still exactly full');
     resetQueue();
+  });
+
+  await check('sends during a master do not pile up behind the running row', () => {
+    // Taking the FIRST row for the session would keep finding the running one
+    // and appending beside it, once per press, for as long as the master took.
+    resetQueue();
+    stage('sess-a', '/tmp/to-master/1/Mix.wav');
+    useAudioStore.getState().updateQueueItem(queue()[0]!.id, { status: 'mastering' });
+    const second = stage('sess-a', '/tmp/to-master/2/Mix.wav');
+    assert(second.outcome === 'added-beside-running', `second: ${second.outcome}`);
+    assert(queue().length === 2, 'one running, one waiting');
+    for (const n of [3, 4, 5]) {
+      const again = stage('sess-a', `/tmp/to-master/${n}/Mix.wav`);
+      assert(again.outcome === 'replaced', `press ${n} should replace the waiting row, got ${again.outcome}`);
+    }
+    assert(queue().length === 2, `five presses during a master made ${queue().length} rows`);
+    assert(queue()[0]!.status === 'mastering', 'the running master must be untouched');
+    assert(queue()[1]!.filePath === '/tmp/to-master/5/Mix.wav', 'the waiting row holds the newest mix');
+  });
+
+  await check('a row still analysing counts as running too', () => {
+    resetQueue();
+    stage('sess-a', '/tmp/to-master/1/Mix.wav');
+    useAudioStore.getState().updateQueueItem(queue()[0]!.id, { status: 'analyzing' });
+    assert(!useAudioStore.getState().hasReplaceableRow('sess-a'),
+      'a row being analysed is not free to be replaced');
+    assert(stage('sess-a', '/tmp/to-master/2/Mix.wav').outcome === 'added-beside-running', 'goes beside');
   });
 
   await check('a replacement is said out loud, not done silently', () => {
@@ -443,6 +487,47 @@ async function main(): Promise<void> {
     assert(!added.includes('교체'), `a first send is not a replacement: ${added}`);
     const beside = stageMessage('Mix.wav', 'added-beside-running', 2);
     assert(beside.includes('마스터링 중'), `say why it was not replaced: ${beside}`);
+  });
+
+
+  // ── A session with a name ─────────────────────────────────────────────────
+
+  await check('a session can be named at all — nothing used to be able to', () => {
+    resetIds();
+    const fresh = createSession(undefined, SR);
+    assert(fresh.name === DEFAULT_SESSION_NAME, `the default is ${fresh.name}`);
+    assert(isUntitled(fresh), 'a new session starts untitled');
+    const named = renameSession(fresh, '  첫 번째 데모  ');
+    assert(named.name === '첫 번째 데모', `trimmed: "${named.name}"`);
+    assert(!isUntitled(named), 'and it is no longer untitled');
+  });
+
+  await check('a blank name is refused, because nameless is the problem', () => {
+    const fresh = createSession(undefined, SR);
+    for (const blank of ['', '   ', '\n\t']) {
+      assert(renameSession(fresh, blank).name === DEFAULT_SESSION_NAME, `"${blank}" should not stick`);
+    }
+  });
+
+  await check('the name reaches the file the mastering list shows', () => {
+    const named = renameSession(createSession(undefined, SR), '내 곡 · 1번');
+    const file = handoffFileName(named.name);
+    assert(file !== handoffFileName(DEFAULT_SESSION_NAME),
+      'the whole point is that it is no longer the default');
+    assert(file.includes('내 곡'), `the song's name has to survive into the file: ${file}`);
+    assert(file.endsWith('.wav'), file);
+  });
+
+  await check('two named sessions are told apart in the list; two untitled ones are not', () => {
+    const a = renameSession(createSession(undefined, SR), 'Verse Take');
+    const bSession = renameSession(createSession(undefined, SR), 'Chorus Take');
+    assert(handoffFileName(a.name) !== handoffFileName(bSession.name),
+      'two named sessions must not collide');
+    // The state this replaces, for the record.
+    const u1 = createSession(undefined, SR);
+    const u2 = createSession(undefined, SR);
+    assert(handoffFileName(u1.name) === handoffFileName(u2.name),
+      'unnamed sessions were indistinguishable — that is what this fixes');
   });
 
   // ────────────────────────────────────────────────────────────────────────────

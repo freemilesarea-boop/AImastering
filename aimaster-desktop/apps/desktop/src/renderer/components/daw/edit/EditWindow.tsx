@@ -219,8 +219,12 @@ export default function EditWindow() {
     // missing is a way to say WHERE, because Alt+X can only ever cut at the
     // play head.  A cut needs a place, and the mouse is holding one.
     if (tool === 'split') {
-      const raw = secAt(e.clientX);
-      const clip = clipAt(track, raw);
+      // Hit-test where the cut will LAND, not where the mouse is.  With snap
+      // on, `at` can be half a grid division away from the pointer, so testing
+      // the raw position said "yes, there is a clip here" about a place the
+      // cut was never going to happen — and the cut then did nothing, or
+      // landed on the neighbour.
+      const clip = clipAt(track, at);
       // Clicking empty lane with the scissors is a miss, not a command — the
       // alternative is silently cutting nothing and looking broken.
       if (!clip) return;

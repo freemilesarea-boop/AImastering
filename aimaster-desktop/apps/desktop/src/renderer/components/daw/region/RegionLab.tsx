@@ -265,8 +265,12 @@ export default function RegionLab() {
 
   // ── Window drag ────────────────────────────────────────────────────────────
 
+  // Attached ONCE, not gated on the ref.  `mousedown` sets `dragRef` without
+  // re-rendering — that is what a ref is for — so an effect that bailed while
+  // the ref was empty never ran again to attach anything, and the window could
+  // not be dragged at all.  The listeners are cheap and `move` already
+  // no-ops when nothing is being dragged.
   useEffect(() => {
-    if (!dragRef.current) return;
     const move = (e: MouseEvent): void => {
       const d = dragRef.current;
       if (!d) return;
@@ -285,7 +289,7 @@ export default function RegionLab() {
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
     };
-  });
+  }, []);
 
   if (!target || !found) return null;
   const { clip } = found;
