@@ -272,6 +272,21 @@ rm -rf node_modules/electron
 pnpm install
 ```
 
+### `pnpm fix:electron` 이 "install.js 가 아무것도 만들지 않았습니다" 라고 함
+
+`ELECTRON_SKIP_BINARY_DOWNLOAD` 가 환경에 설정되어 있으면 electron 의
+`install.js` 는 첫 줄에서 그대로 0 으로 끝납니다 — 아무것도 받지 않고,
+아무 말도 없이. 고치려고 부를수록 조용히 실패합니다.
+
+```bash
+env | grep ELECTRON
+```
+
+셸 설정(`~/.zshrc` 등)에 있으면 지우고 새 터미널을 여세요. `pnpm fix:electron`
+은 자기 안에서는 이 변수를 무시하고 진행하며, 설정돼 있으면 그 사실을
+알려줍니다. install.js 로 안 되면 릴리스 zip 을 직접 받아
+`checksums.json` 의 sha256 으로 검증한 뒤 풉니다.
+
 ### `dyld: Library not loaded: @rpath/Electron Framework.framework`
 
 `dist` 가 반쯤 만들어진 상태입니다 — 실행 파일은 있는데 프레임워크가 없습니다.
