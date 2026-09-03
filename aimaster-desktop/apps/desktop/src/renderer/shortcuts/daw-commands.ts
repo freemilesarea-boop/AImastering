@@ -23,6 +23,8 @@ import { compRange, cyclePlaylist } from '../daw/edit/comping.js';
 import { nudgeClipPitch, resetClipPitch } from '../daw/edit/clip-edit.js';
 import { clipPitch, describePitch } from '../daw/model/clip-pitch.js';
 import { fitRange } from '../daw/model/viewport.js';
+import { describeGroup, editGroupsOf } from '../daw/edit/edit-groups.js';
+import { addGroup, createGroup, removeGroup } from '../daw/model/session-ops.js';
 import { duplicateTrack } from '../daw/edit/track-ops.js';
 import { formatLabel, TIME_FORMATS } from '../daw/model/spot-time.js';
 import { alignClipToGuide, describeAlign } from '../daw/edit/align-actions.js';
@@ -137,6 +139,7 @@ export type DawCommandId =
   | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
+  | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
@@ -472,6 +475,73 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
      * between every other gesture — the zoom you set to do one edit is never
      * the zoom for the next one.
      */
+    /**
+     * Make an edit group from the selected tracks.
+     *
+     * Named by what is in it, not "Group 1": a session with three of those
+     * is a session where nobody remembers which is the drums.
+     */
+    'daw.createEditGroup': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      const ids = sel.trackIds.length > 1 ? sel.trackIds : targetTrackIds();
+      const members = ids.filter((id) => {
+        const t = findTrack(state.session, id);
+        return t !== undefined && t.kind !== 'master';
+      });
+      if (members.length < 2) { notify('트랙을 두 개 이상 선택하세요', 'warning'); return; }
+      const first = findTrack(state.session, members[0]!);
+      const name = `${first?.name ?? '그룹'} 외 ${members.length - 1}`;
+      const symbol = String.fromCharCode(97 + (state.session.groups.length % 26));
+      let made = '';
+      state.apply((s) => {
+        const group = { ...createGroup(name, symbol, members), linkEdit: true };
+        made = describeGroup(group);
+        return addGroup(s, group);
+      });
+      notify(`편집 그룹 — ${made}`, 'success');
+    },
+
+    /**
+     * Drop the edit groups the selected tracks are in.
+     *
+     * The mixer half goes with it.  A group is one thing in the session file
+     * and pretending it is two — an edit group and a fader group at the same
+     * ids — is a distinction nobody asked for.
+     */
+    'daw.dissolveEditGroup': () => {
+      const state = daw();
+      const ids = currentSelection(state).trackIds.length > 0
+        ? currentSelection(state).trackIds
+        : targetTrackIds();
+      const groups = new Set<string>();
+      for (const id of ids) for (const g of editGroupsOf(state.session, id)) groups.add(g.id);
+      if (groups.size === 0) { notify('선택한 트랙에 편집 그룹이 없습니다', 'warning'); return; }
+      state.apply((s) => {
+        let out = s;
+        for (const id of groups) out = removeGroup(out, id);
+        return out;
+      });
+      notify(`편집 그룹 ${groups.size}개 해제`);
+    },
+
+    /**
+     * Suspend every group, or bring them all back.
+     *
+     * Pro Tools' escape hatch, and the reason groups are usable at all: the
+     * one edit you need to make on a single member should not cost you the
+     * group you spent the session building.
+     */
+    'daw.toggleGroupsEnabled': () => {
+      const state = daw();
+      const any = state.session.groups.some((g) => g.enabled);
+      state.apply((s) => ({
+        ...s,
+        groups: s.groups.map((g) => ({ ...g, enabled: !any })),
+      }));
+      notify(any ? '그룹 일시 정지 — 개별 편집' : '그룹 다시 켬');
+    },
+
     'daw.zoomToSelection': () => {
       const state = daw();
       const sel = currentSelection(state);

@@ -58,6 +58,7 @@ export type CommandId =
   | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
+  | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
@@ -362,6 +363,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
 
   // ── 트랙 헤더 ──────────────────────────────────────────────────────────
+  { id: 'daw.createEditGroup', group: 'daw', label: '편집 그룹 만들기', chords: ['Mod+G'],
+    note: '선택한 트랙들이 한 덩어리처럼 선택·편집됩니다 (페이더·뮤트도 함께)', available: true },
+  { id: 'daw.dissolveEditGroup', group: 'daw', label: '편집 그룹 해제', chords: ['Mod+Shift+H'],
+    note: '선택한 트랙이 속한 그룹을 없앱니다', available: true },
+  { id: 'daw.toggleGroupsEnabled', group: 'daw', label: '그룹 일시 정지 / 재개', chords: ['Mod+Shift+B'],
+    note: '그룹을 지우지 않고 잠깐 꺼서 한 트랙만 편집 — 다시 누르면 복구', available: true },
   { id: 'daw.zoomToSelection', group: 'daw', label: '선택 구간에 맞춰 확대', chords: ['Shift+F'],
     note: '선택이 없으면 세션 전체 — 양쪽에 여유를 두고 맞춥니다', available: true },
   { id: 'daw.toggleFollowPlayhead', group: 'daw', label: '재생헤드 따라가기 on/off', chords: ['KeyL'],

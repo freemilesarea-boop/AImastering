@@ -17,7 +17,8 @@ import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
 import {
   activePlaylist, clipAt, clipEnd, findTrack, sessionEndSec, trackClips,
 } from '../../../daw/model/session-ops.js';
-import { moveClip, setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
+import { setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
+import { describeGroup, moveClipWithGroup } from '../../../daw/edit/edit-groups.js';
 import {
   fadeFromDrag, fadeOn, fadeRegionAt, FADE_SHAPES, FADE_SHAPE_LABEL,
   type FadeSide,
@@ -35,7 +36,7 @@ import {
 import { premium } from '../../../theme/premium.js';
 import { cyclePlaylist } from '../../../daw/edit/comping.js';
 import { toggleMute, toggleSolo } from '../../../daw/model/mixer-math.js';
-import type { Track } from '../../../daw/model/types.js';
+import type { GroupDef, Track } from '../../../daw/model/types.js';
 import TrackLaneCanvas from './TrackLaneCanvas.js';
 import AutomationLaneCanvas, {
   AUTOMATION_LANE_HEIGHT, AutomationLaneHeader,
@@ -368,7 +369,9 @@ export default function EditWindow() {
     }
     if (clipDrag) {
       const target = snapToGrid(Math.max(0, secAt(e.clientX) - clipDrag.grabOffsetSec));
-      applyTransient((s) => moveClip(s, clipDrag.trackId, clipDrag.clipId, target));
+      // Grouped tracks move together.  A drag is the one edit that does not
+      // go through the selection, so it is the one place that has to ask.
+      applyTransient((s) => moveClipWithGroup(s, clipDrag.trackId, clipDrag.clipId, target));
       return;
     }
     if (!drag) return;
@@ -570,6 +573,8 @@ export default function EditWindow() {
             <TrackHeader
               key={row.key}
               track={row.track}
+              editGroup={session.groups.find(
+                (g) => g.linkEdit === true && g.memberIds.includes(row.track.id)) ?? null}
               depth={stackDepth(session, row.track.id)}
               onRename={(name) => apply((st) => renameTrack(st, row.track.id, name))}
               onColor={(hex) => apply((st) => setTrackColor(st, row.track.id, hex))}
@@ -852,11 +857,12 @@ function FadeShapeMenu({ at, current, onPick, onClose }: {
 }
 
 function TrackHeader({
-  track, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
+  track, editGroup, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
   onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
   onToggleAutomation, automationOpen, onRename, onColor, onResize,
 }: {
   track: Track;
+  editGroup: GroupDef | null;
   depth: number;
   summary: string | null;
   focused: boolean;
@@ -940,6 +946,19 @@ function TrackHeader({
             title={`${track.name} — 더블클릭해서 이름 바꾸기`}
             onDoubleClick={(e) => { e.stopPropagation(); setRenaming(true); }}
           >{isFolder ? track.name.toUpperCase() : track.name}</span>
+        )}
+        {/* The group's letter.  A group you cannot see is a group that
+            surprises you the first time one cut moves eight tracks. */}
+        {editGroup && (
+          <span
+            className="px-1 rounded text-[9px] font-mono shrink-0"
+            style={{
+              background: 'rgba(129,140,248,0.22)',
+              color: premium.accent.light,
+              opacity: editGroup.enabled ? 1 : 0.35,
+            }}
+            title={`편집 그룹 ${describeGroup(editGroup)}${editGroup.enabled ? '' : ' — 일시 정지됨'}`}
+          >{editGroup.symbol}</span>
         )}
         {macroCount > 0 && (
           <button

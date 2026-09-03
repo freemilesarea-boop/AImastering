@@ -14,6 +14,7 @@ import {
 import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
 import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
+import { expandSelection } from '../daw/edit/edit-groups.js';
 import type { TimeFormat } from '../daw/model/spot-time.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
 import type { Groove } from '../daw/model/groove.js';
@@ -237,12 +238,21 @@ export const useDawStore = create<DawState>((set, get) => ({
   }),
 
   selection: EMPTY_SELECTION,
+  /**
+   * Set the selection, widened to every member of any edit group it touches.
+   *
+   * Here rather than in each edit verb.  Thirty commands read the selection;
+   * teaching all of them about groups is thirty chances to forget one, and a
+   * group that works for Cut but not for Trim is worse than none.  Widening
+   * where it is STORED also means the highlight covers the whole group, so
+   * what will be edited is visible before anything is pressed.
+   */
   setSelection: (sel) => set({
-    selection: {
+    selection: expandSelection(get().session, {
       startSec: Math.max(0, Math.min(sel.startSec, sel.endSec)),
       endSec: Math.max(sel.startSec, sel.endSec),
       trackIds: sel.trackIds,
-    },
+    }),
   }),
   selectedTrackIds: [],
   setSelectedTracks: (ids) => set({ selectedTrackIds: ids }),

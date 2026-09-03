@@ -359,6 +359,18 @@ export interface GroupDef {
   linkMute: boolean;
   linkSolo: boolean;
   linkPan: boolean;
+  /**
+   * Editing is linked too — Pro Tools' Edit Group.
+   *
+   * Selecting on one member selects the same span on all of them, and every
+   * edit that acts on a selection then acts on the whole group at once.
+   *
+   * Optional because sessions saved before it existed have no field; read it
+   * through `linksEdit()` in edit/edit-groups.ts, which treats a missing
+   * value as OFF.  A group made by a track template links faders and was
+   * never meant to move anyone's audio.
+   */
+  linkEdit?: boolean;
 }
 
 export interface BusDef {
