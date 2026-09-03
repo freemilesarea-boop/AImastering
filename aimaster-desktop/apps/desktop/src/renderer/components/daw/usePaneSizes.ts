@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const STORAGE_KEY = 'loui.daw.panes';
+const COLLAPSED_KEY = 'loui.daw.panes.collapsed';
 
 export interface PaneSizes {
   inspector: number;
@@ -29,6 +30,37 @@ export const PANE_LIMITS = {
 } as const;
 
 export type PaneKey = keyof PaneSizes;
+
+/**
+ * Which panes are folded away.
+ *
+ * Collapsing is not the same as dragging to the minimum: the pane keeps the
+ * width it had, so unfolding puts the layout back exactly as it was rather
+ * than at some default the user never chose. That is what makes Alt+I worth
+ * pressing twice.
+ */
+export type Collapsed = Record<PaneKey, boolean>;
+
+export function loadCollapsed(): Collapsed {
+  const none: Collapsed = { inspector: false, rack: false, console: false };
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    if (!raw) return none;
+    const parsed = JSON.parse(raw) as Partial<Collapsed>;
+    return {
+      inspector: parsed.inspector === true,
+      rack: parsed.rack === true,
+      console: parsed.console === true,
+    };
+  } catch {
+    return none;
+  }
+}
+
+/** The width a pane occupies right now — 0 while folded. */
+export function paneExtent(sizes: PaneSizes, collapsed: Collapsed, key: PaneKey): number {
+  return collapsed[key] ? 0 : sizes[key];
+}
 
 function clampPane(key: PaneKey, value: number): number {
   const { min, max } = PANE_LIMITS[key];
@@ -66,10 +98,16 @@ export function loadPaneSizes(): PaneSizes {
  */
 export function usePaneSizes(): {
   sizes: PaneSizes;
+  /** Live extents — the same as `sizes`, except a folded pane reads 0. */
+  extents: PaneSizes;
+  collapsed: Collapsed;
+  togglePane: (key: PaneKey) => void;
+  setPaneCollapsed: (key: PaneKey, value: boolean) => void;
   startDrag: (key: PaneKey, e: React.PointerEvent) => void;
   dragging: PaneKey | null;
 } {
   const [sizes, setSizes] = useState<PaneSizes>(() => loadPaneSizes());
+  const [collapsed, setCollapsed] = useState<Collapsed>(() => loadCollapsed());
   const [dragging, setDragging] = useState<PaneKey | null>(null);
   const origin = useRef<{ key: PaneKey; start: number; from: number } | null>(null);
 
@@ -77,8 +115,23 @@ export function usePaneSizes(): {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sizes)); } catch { /* not fatal */ }
   }, [sizes]);
 
+  useEffect(() => {
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed)); } catch { /* not fatal */ }
+  }, [collapsed]);
+
+  const togglePane = useCallback((key: PaneKey) => {
+    setCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const setPaneCollapsed = useCallback((key: PaneKey, value: boolean) => {
+    setCollapsed((prev) => (prev[key] === value ? prev : { ...prev, [key]: value }));
+  }, []);
+
   const startDrag = useCallback((key: PaneKey, e: React.PointerEvent) => {
     e.preventDefault();
+    // Dragging a folded pane's edge unfolds it — the handle is still there,
+    // and grabbing it is an unambiguous request for the pane back.
+    setCollapsed((prev) => (prev[key] ? { ...prev, [key]: false } : prev));
     origin.current = {
       key,
       start: key === 'console' ? e.clientY : e.clientX,
@@ -110,5 +163,11 @@ export function usePaneSizes(): {
     };
   }, [dragging]);
 
-  return { sizes, startDrag, dragging };
+  const extents: PaneSizes = {
+    inspector: paneExtent(sizes, collapsed, 'inspector'),
+    rack: paneExtent(sizes, collapsed, 'rack'),
+    console: paneExtent(sizes, collapsed, 'console'),
+  };
+
+  return { sizes, extents, collapsed, togglePane, setPaneCollapsed, startDrag, dragging };
 }

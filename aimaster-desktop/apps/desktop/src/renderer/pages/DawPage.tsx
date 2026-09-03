@@ -57,8 +57,17 @@ import {
   subscribeTrackMetrics, getTrackMetricsMap, getTrackMetricsServer, EMPTY_METRICS,
 } from '../audio/track-metrics-store.js';
 import { usePaneSizes } from '../components/daw/usePaneSizes.js';
+import DawShortcutHelp from '../components/daw/DawShortcutHelp.js';
+import { useDawShortcuts } from '../shortcuts/useDawShortcuts.js';
+import { buildCommands, type CommandDeps } from '../shortcuts/commands.js';
+import {
+  begin, record, undo as undoHistory, redo as redoHistory,
+  type History, type SessionSnapshot,
+} from '../shortcuts/session-history.js';
 
-const LANE_HEIGHT = 68;
+/** Lane heights Shift+G / Shift+H step through — the DAW's vertical zoom. */
+const LANE_HEIGHTS = [40, 52, 68, 92, 124, 168] as const;
+const LANE_HEIGHT_DEFAULT = 68;
 const HEADER_WIDTH = 208;
 
 /**
@@ -247,9 +256,21 @@ export default function DawPage(): React.ReactElement {
     addFiles, clear, analyzePending, setRole, setGain, setPan,
     toggleMute, toggleSolo, remove, setRendering, setRenderResult,
     setMasterPreset, setMasterTargetLufs, setInserts,
+    clearSoloMute, duplicate, replaceAll,
   } = useStemStore();
 
-  const { sizes, startDrag, dragging } = usePaneSizes();
+  const {
+    extents, collapsed, togglePane, setPaneCollapsed, startDrag, dragging,
+  } = usePaneSizes();
+  const [laneHeight, setLaneHeight] = useState<number>(() => {
+    const stored = Number(localStorage.getItem('loui.daw.laneHeight'));
+    return LANE_HEIGHTS.includes(stored as (typeof LANE_HEIGHTS)[number])
+      ? stored : LANE_HEIGHT_DEFAULT;
+  });
+  const [showTransport, setShowTransport] = useState(true);
+  const [helpOpen, setHelpOpen] = useState(false);
+  /** Bumped by F5 to pop the plugin picker open. */
+  const [pickerTick, setPickerTick] = useState(0);
   const [dropActive, setDropActive] = useState(false);
   const [openInsert, setOpenInsert] = useState<ModuleId | null>(null);
   /** Bumped whenever a track's saved chain changes, to re-read the rack. */
@@ -552,6 +573,211 @@ export default function DawPage(): React.ReactElement {
   const canPlay = status.state === 'ready' || playing;
   const playFrac = duration > 0 ? Math.min(1, status.position / duration) : 0;
 
+  // ── Keyboard ─────────────────────────────────────────────────────────────
+  //
+  // One listener, one table (`shortcuts/definitions.ts`), and the same table
+  // renders the ? overlay — so what the keys do and what the help claims
+  // cannot drift apart.
+
+  /** The session as one undoable value. */
+  const snapshot = useCallback((): SessionSnapshot => ({
+    tracks: useStemStore.getState().tracks as unknown[],
+    masterPresetId: useStemStore.getState().masterPresetId,
+    masterTargetLufs: useStemStore.getState().masterTargetLufs,
+    selectedId,
+  }), [selectedId]);
+
+  const historyRef = useRef<History | null>(null);
+  if (historyRef.current === null) historyRef.current = begin(snapshot());
+
+  /**
+   * Take a snapshot before an edit.
+   *
+   * Wrapped rather than called at each site so the key — which decides what
+   * coalesces with what — is always "action + track", and a fader drag stays
+   * one undo step.
+   */
+  const remember = useCallback((key: string) => {
+    historyRef.current = record(historyRef.current!, snapshot(), key);
+  }, [snapshot]);
+
+  const applySnapshot = useCallback((snap: SessionSnapshot) => {
+    replaceAll(snap.tracks as StemTrackState[], {
+      presetId: snap.masterPresetId,
+      targetLufs: snap.masterTargetLufs,
+    });
+    setSelectedId(snap.selectedId);
+    setRackTick((n) => n + 1);
+  }, [replaceAll]);
+
+  const [channelClipboard, setChannelClipboard] = useState<
+    { gainDb: number; pan: number; inserts: ModuleId[] } | null>(null);
+
+  const saveSession = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api) return;
+    const data = JSON.stringify({
+      kind: 'louver.stem-session',
+      version: 1,
+      savedAt: new Date().toISOString(),
+      tracks, masterPresetId, masterTargetLufs,
+    }, null, 2);
+    try {
+      const path = await api.invoke('session:save', data) as string | null;
+      if (path) notify(`세션을 저장했습니다 — ${path.split(/[/\\]/).pop()}`, 'success');
+    } catch (e) {
+      notify(`세션 저장 실패 — ${(e as Error).message}`, 'error');
+    }
+  }, [tracks, masterPresetId, masterTargetLufs, notify]);
+
+  const openSession = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api) return;
+    try {
+      const res = await api.invoke('session:load') as { path: string; data: string } | null;
+      if (!res) return;
+      const parsed = JSON.parse(res.data) as {
+        kind?: string; tracks?: unknown; masterPresetId?: unknown; masterTargetLufs?: unknown;
+      };
+      if (parsed.kind !== 'louver.stem-session' || !Array.isArray(parsed.tracks)) {
+        notify('이 파일은 트랙 세션이 아닙니다', 'warning');
+        return;
+      }
+      remember('session:open');
+      replaceAll(parsed.tracks as StemTrackState[], {
+        presetId: typeof parsed.masterPresetId === 'string' ? parsed.masterPresetId : null,
+        targetLufs: typeof parsed.masterTargetLufs === 'number' ? parsed.masterTargetLufs : null,
+      });
+      setBaked(new Map());
+      setRackTick((n) => n + 1);
+      notify(`세션을 불러왔습니다 — 트랙 ${(parsed.tracks as unknown[]).length}개`, 'success');
+    } catch (e) {
+      notify(`세션 불러오기 실패 — ${(e as Error).message}`, 'error');
+    }
+  }, [notify, remember, replaceAll]);
+
+  const commandDeps = useMemo<CommandDeps>(() => ({
+    notify,
+    setPage: (page) => setPage(page),
+    transport: {
+      playPause: () => {
+        const engine = engineRef.current;
+        if (!engine) return;
+        if (engine.status().state === 'playing') engine.pause();
+        else if (engine.status().state === 'ready') engine.play();
+        else void handlePrepare();
+      },
+      stop: () => engineRef.current?.stop(),
+      seek: (sec) => engineRef.current?.seek(sec),
+    },
+    view: {
+      zoomIn: () => setZoom((z) => Math.min(16, z * 2)),
+      zoomOut: () => setZoom((z) => Math.max(1, z / 2)),
+      laneTaller: () => setLaneHeight((h) => {
+        const i = LANE_HEIGHTS.indexOf(h as (typeof LANE_HEIGHTS)[number]);
+        return LANE_HEIGHTS[Math.min(LANE_HEIGHTS.length - 1, (i < 0 ? 2 : i) + 1)]!;
+      }),
+      laneShorter: () => setLaneHeight((h) => {
+        const i = LANE_HEIGHTS.indexOf(h as (typeof LANE_HEIGHTS)[number]);
+        return LANE_HEIGHTS[Math.max(0, (i < 0 ? 2 : i) - 1)]!;
+      }),
+    },
+    panels: {
+      toggle: (panel) => {
+        if (panel === 'transport') { setShowTransport((v) => !v); return; }
+        if (panel === 'editor') {
+          setOpenInsert((cur) => (cur ? null : rackIds[0] ?? null));
+          return;
+        }
+        togglePane(panel);
+      },
+      toggleLowerZone: () => {
+        // The lower zone is the console and the open plugin together: one
+        // key to get the arrange window back, and one to put the work back.
+        const anyOpen = !collapsed.console || openInsert !== null;
+        setPaneCollapsed('console', anyOpen);
+        setOpenInsert(anyOpen ? null : rackIds[0] ?? null);
+      },
+      toggleHelp: () => setHelpOpen((v) => !v),
+      openPluginPicker: () => {
+        setPaneCollapsed('inspector', false);
+        setPickerTick((n) => n + 1);
+      },
+    },
+    session: {
+      selectedId: () => selectedId ?? useStemStore.getState().tracks[0]?.id ?? null,
+      trackIds: () => useStemStore.getState().tracks.map((t) => t.id),
+      select: (id) => setSelectedId(id),
+      toggleMute: (id) => { remember(`mute:${id}`); toggleMute(id); },
+      toggleSolo: (id) => { remember(`solo:${id}`); toggleSolo(id); },
+      clearSoloMute: () => { remember('clearSoloMute'); clearSoloMute(); },
+      remove: (id) => { remember(`remove:${id}`); remove(id); },
+      duplicate: (id) => {
+        remember(`duplicate:${id}`);
+        const copy = duplicate(id);
+        if (copy) { setSelectedId(copy); notify('트랙을 복제했습니다', 'success'); }
+      },
+      copyChannel: (id) => {
+        const t = useStemStore.getState().tracks.find((x) => x.id === id);
+        if (!t) return;
+        setChannelClipboard({ gainDb: t.gainDb, pan: t.pan, inserts: [...(t.inserts ?? [])] });
+        notify(`${t.name}의 채널 설정을 복사했습니다`, 'success');
+      },
+      pasteChannel: (id) => {
+        if (!channelClipboard) return false;
+        remember(`paste:${id}`);
+        setGain(id, channelClipboard.gainDb);
+        setPan(id, channelClipboard.pan);
+        setInserts(id, [...channelClipboard.inserts]);
+        setRackTick((n) => n + 1);
+        notify('채널 설정을 붙여넣었습니다', 'success');
+        return true;
+      },
+      clearAll: () => { remember('clearAll'); clear(); },
+      addFiles: () => { void handleAdd(); },
+      saveSession: () => { void saveSession(); },
+      openSession: () => { void openSession(); },
+      exportMix: () => { void handleRender(); },
+    },
+    history: {
+      undo: () => {
+        const step = undoHistory(historyRef.current!);
+        if (!step) return false;
+        historyRef.current = step.history;
+        applySnapshot(step.snapshot);
+        return true;
+      },
+      redo: () => {
+        const step = redoHistory(historyRef.current!);
+        if (!step) return false;
+        historyRef.current = step.history;
+        applySnapshot(step.snapshot);
+        return true;
+      },
+    },
+  }), [
+    notify, setPage, handlePrepare, handleAdd, handleRender, saveSession, openSession,
+    togglePane, setPaneCollapsed, collapsed.console, openInsert, rackIds, selectedId,
+    toggleMute, toggleSolo, clearSoloMute, remove, duplicate, clear,
+    setGain, setPan, setInserts, channelClipboard, remember, applySnapshot, notify,
+  ]);
+
+  const commands = useMemo(() => buildCommands(commandDeps), [commandDeps]);
+
+  useDawShortcuts({
+    commands,
+    notify,
+    onEscape: () => {
+      if (helpOpen) { setHelpOpen(false); return true; }
+      if (openInsert) { setOpenInsert(null); return true; }
+      return false;
+    },
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem('loui.daw.laneHeight', String(laneHeight)); } catch { /* not fatal */ }
+  }, [laneHeight]);
+
   // ── Render ───────────────────────────────────────────────────────────────
   //
   // `data-loui-theme="light"` on the root re-points the design-system
@@ -582,6 +808,20 @@ export default function DawPage(): React.ReactElement {
         </div>
       )}
 
+      {helpOpen && <DawShortcutHelp onClose={() => setHelpOpen(false)} />}
+
+      {/* F2 hides the transport bar. Without this strip the only way back is
+          the key that hid it, which is a trap for anyone who pressed it by
+          accident. */}
+      {!showTransport && (
+        <button
+          onClick={() => setShowTransport(true)}
+          title="트랜스포트 바 보이기 (F2)"
+          className="shrink-0 h-4 w-full border-b border-slate-300 bg-slate-100
+                     text-[9px] text-slate-500 hover:text-slate-800 hover:bg-slate-200 transition-colors"
+        >트랜스포트 바 보이기 (F2)</button>
+      )}
+
       {bridgeMissing && (
         <div className="shrink-0 px-3 py-1.5 bg-red-50 border-b border-red-300 text-[11px] text-red-700">
           앱 브릿지에 연결되지 않았습니다 — 분석·재생·믹스다운이 모두 동작하지 않습니다. 앱을 다시 시작해 주세요.
@@ -599,6 +839,7 @@ export default function DawPage(): React.ReactElement {
       )}
 
       {/* ── Toolbar ───────────────────────────────────────────────────── */}
+      {showTransport && (
       <div className="drag-region shrink-0 h-11 flex items-center gap-2 px-3 border-b border-slate-300 bg-slate-50">
         <span className="font-semibold text-[11px] tracking-wide text-slate-600 no-drag">LOUVER</span>
         <span className="text-slate-500">/</span>
@@ -705,10 +946,19 @@ export default function DawPage(): React.ReactElement {
                        hover:bg-slate-900 disabled:opacity-30 transition-colors">
             {rendering ? '합산 중…' : '믹스다운'}
           </button>
+          {/* The keyboard is the point of this screen; the list has to be
+              findable without already knowing the key that opens it. */}
+          <button
+            onClick={() => setHelpOpen(true)}
+            title="키보드 단축키 (? 또는 F1)"
+            className="w-6 h-6 rounded-sm border border-slate-300 text-[11px] text-slate-600
+                       hover:border-slate-400 hover:text-slate-800 transition-colors"
+          >?</button>
           <button onClick={() => setPage('home')}
             className="text-[11px] text-slate-600 hover:text-slate-700 transition-colors">홈</button>
         </div>
       </div>
+      )}
 
       {/* ── Middle: inspector | arrange | rack ────────────────────────── */}
       <div className="flex-1 flex min-h-0">
@@ -716,7 +966,7 @@ export default function DawPage(): React.ReactElement {
         {/* Inspector */}
         <div
           className="shrink-0 border-r border-slate-300 bg-slate-50/70 overflow-y-auto"
-          style={{ width: sizes.inspector }}
+          style={{ width: extents.inspector }}
         >
           <div className="px-3 py-2 border-b border-slate-200">
             <div className="text-[9px] uppercase tracking-widest text-slate-600">Inspector</div>
@@ -759,6 +1009,7 @@ export default function DawPage(): React.ReactElement {
               </label>
 
               <InsertRack
+                openPickerTick={pickerTick}
                 inserts={rack}
                 openId={openInsert}
                 onOpen={setOpenInsert}
@@ -842,7 +1093,7 @@ export default function DawPage(): React.ReactElement {
                   solo={t.solo}
                   audible={audible[i] ?? true}
                   selected={selected?.id === t.id}
-                  height={LANE_HEIGHT}
+                  height={laneHeight}
                   status={t.status}
                   warning={t.warning}
                   onSelect={() => setSelectedId(t.id)}
@@ -868,7 +1119,7 @@ export default function DawPage(): React.ReactElement {
                   key={t.id}
                   onClick={() => setSelectedId(t.id)}
                   className={`border-b border-slate-200 px-px ${selected?.id === t.id ? 'bg-slate-50' : ''}`}
-                  style={{ height: LANE_HEIGHT }}
+                  style={{ height: laneHeight }}
                 >
                   <div className="h-full rounded-sm overflow-hidden" style={{
                     background: trackPalette(t.role, 'light').tint,
@@ -878,7 +1129,7 @@ export default function DawPage(): React.ReactElement {
                       peaks={peaks.get(t.filePath) ?? null}
                       color={trackPalette(t.role, 'light').accent}
                       surface="light"
-                      height={LANE_HEIGHT - 2}
+                      height={laneHeight - 2}
                       zoom={zoom}
                       scroll={scroll}
                       dimmed={!(audible[i] ?? true)}
@@ -954,7 +1205,7 @@ export default function DawPage(): React.ReactElement {
         {/* Rack — the master bus lives here, as a DAW's output section does. */}
         <div
           className="shrink-0 border-l border-slate-300 bg-slate-50/70 overflow-y-auto"
-          style={{ width: sizes.rack }}
+          style={{ width: extents.rack }}
         >
           <div className="px-3 py-2 border-b border-slate-200">
             <div className="text-[9px] uppercase tracking-widest text-slate-600">Master Bus</div>
@@ -1040,7 +1291,7 @@ export default function DawPage(): React.ReactElement {
       {/* ── MixConsole ─────────────────────────────────────────────────── */}
       <div
         className="shrink-0 border-t border-slate-300 bg-slate-100 flex flex-col"
-        style={{ height: sizes.console }}
+        style={{ height: extents.console }}
       >
         {/* Grab strip. Four pixels of target with a visible hairline — a
             resize edge that cannot be found is the same as one that is not

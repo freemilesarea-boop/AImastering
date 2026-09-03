@@ -79,6 +79,14 @@ export interface InsertRackProps {
   onToggleBypass: (id: ModuleId) => void;
   /** Disabled when no track is selected. */
   disabled?: boolean;
+  /**
+   * Open the picker from outside — the F5 shortcut.
+   *
+   * A number rather than a boolean: the rack has to reopen when the key is
+   * pressed a second time, and a boolean that is already `true` says
+   * nothing has changed. Each press bumps this.
+   */
+  openPickerTick?: number;
 }
 
 export function moduleLabel(id: ModuleId): string {
@@ -122,6 +130,14 @@ export function startingValues(id: ModuleId): { bypass: boolean; parameters: Rec
 export default function InsertRack(props: InsertRackProps): React.ReactElement {
   const { inserts, openId, onOpen, onAdd, onRemove, onToggleBypass, disabled = false } = props;
   const [picking, setPicking] = useState(false);
+
+  // An outside request to open the picker (F5). The first render is not a
+  // request, so tick 0 is ignored.
+  const tick = props.openPickerTick ?? 0;
+  const lastTick = React.useRef(tick);
+  React.useEffect(() => {
+    if (tick !== lastTick.current) { lastTick.current = tick; setPicking(true); }
+  }, [tick]);
 
   const ordered = useMemo(() => inEngineOrder(inserts), [inserts]);
   const addable = useMemo(() => addableModules(inserts), [inserts]);

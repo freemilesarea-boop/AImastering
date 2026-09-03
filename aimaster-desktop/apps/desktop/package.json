@@ -24,7 +24,7 @@
     "storybook": "storybook dev -p 6006 --no-open",
     "build-storybook": "storybook build -o storybook-static",
     "lint": "eslint src --ext .ts,.tsx",
-    "test": "pnpm test:export-gate && pnpm test:phase-e-ui && pnpm test:phase-e-render && pnpm test:phase-e-paths && pnpm test:loudness && pnpm test:native-dsp && pnpm test:export-config && pnpm test:module-suite && pnpm test:realtime-preview && pnpm test:eq-graph && pnpm test:dynamics-graph && pnpm test:restoration-views && pnpm test:glossary && pnpm test:vocal-preset && pnpm test:song-settings && pnpm test:loudness-controls && pnpm test:recommended && pnpm test:adaptive && pnpm test:song-profile && pnpm test:stem-role && pnpm test:stem-defaults && pnpm test:stem-render && pnpm test:stem-session && pnpm test:stem-master && pnpm test:stem-studio && pnpm test:stem-preview && pnpm test:master-render-fixes && pnpm test:stems-ui && pnpm test:wasm-resolve && pnpm test:worklet-bootstrap && pnpm test:wav-codec && pnpm test:track-metrics && pnpm test:plugin-visuals && pnpm test:track-colors",
+    "test": "pnpm test:export-gate && pnpm test:phase-e-ui && pnpm test:phase-e-render && pnpm test:phase-e-paths && pnpm test:loudness && pnpm test:native-dsp && pnpm test:export-config && pnpm test:module-suite && pnpm test:realtime-preview && pnpm test:eq-graph && pnpm test:dynamics-graph && pnpm test:restoration-views && pnpm test:glossary && pnpm test:vocal-preset && pnpm test:song-settings && pnpm test:loudness-controls && pnpm test:recommended && pnpm test:adaptive && pnpm test:song-profile && pnpm test:stem-role && pnpm test:stem-defaults && pnpm test:stem-render && pnpm test:stem-session && pnpm test:stem-master && pnpm test:stem-studio && pnpm test:stem-preview && pnpm test:master-render-fixes && pnpm test:stems-ui && pnpm test:wasm-resolve && pnpm test:worklet-bootstrap && pnpm test:wav-codec && pnpm test:track-metrics && pnpm test:plugin-visuals && pnpm test:track-colors && pnpm test:shortcuts",
     "test:eq-graph": "tsx scripts/eq-graph-selftest.ts",
     "test:dynamics-graph": "tsx scripts/dynamics-graph-selftest.ts",
     "test:restoration-views": "tsx scripts/restoration-views-selftest.ts",
@@ -73,7 +73,8 @@
     "test:wav-codec": "tsx scripts/wav-codec-selftest.ts",
     "test:track-metrics": "tsx scripts/track-metrics-selftest.ts",
     "test:plugin-visuals": "tsx scripts/plugin-visuals-selftest.tsx",
-    "test:track-colors": "tsx scripts/track-colors-selftest.ts"
+    "test:track-colors": "tsx scripts/track-colors-selftest.ts",
+    "test:shortcuts": "tsx scripts/shortcuts-selftest.ts"
   },
   "dependencies": {
     "@aimaster/audio-engine": "workspace:*",

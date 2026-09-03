@@ -122,6 +122,23 @@ interface StemStore {
   analyzePending: () => Promise<void>;
   setRendering: (v: boolean) => void;
   setRenderResult: (outputPath: string | null, report: StemRenderReport | null, error: string | null) => void;
+
+  /** Lift every mute and solo in one go — Alt+S / Alt+M. */
+  clearSoloMute: () => void;
+  /**
+   * Copy a track, settings and all, and drop it in beside the original.
+   *
+   * The copy points at the SAME file: duplicating is how you try a second
+   * chain on one stem and A/B them, not how you get a second stem.
+   */
+  duplicate: (id: string) => string | null;
+  /**
+   * Replace the whole session at once.
+   *
+   * The undo stack restores states rather than inverting edits, so it needs
+   * one door to put a whole snapshot back through.
+   */
+  replaceAll: (tracks: StemTrackState[], master?: { presetId: string | null; targetLufs: number | null }) => void;
 }
 
 function basename(p: string): string {
@@ -340,6 +357,41 @@ export const useStemStore = create<StemStore>((set, get) => ({
       persist(tracks);
       set({ tracks });
     }
+  },
+
+  clearSoloMute: () => {
+    const tracks = get().tracks.map((t) => (
+      t.mute || t.solo ? { ...t, mute: false, solo: false } : t));
+    persist(tracks);
+    set({ tracks });
+  },
+
+  duplicate: (id) => {
+    const tracks = get().tracks;
+    const i = tracks.findIndex((t) => t.id === id);
+    const source = tracks[i];
+    if (!source) return null;
+    const copy: StemTrackState = {
+      ...source,
+      id: makeId(),
+      name: `${source.name} (사본)`,
+      // The measurement carries over — it is a property of the file, and
+      // re-running the classifier on a copy of an analysed stem would show
+      // a spinner to arrive at the same answer.
+      ...(source.inserts ? { inserts: [...source.inserts] } : {}),
+    };
+    const next = [...tracks.slice(0, i + 1), copy, ...tracks.slice(i + 1)];
+    persist(next);
+    set({ tracks: next });
+    return copy.id;
+  },
+
+  replaceAll: (tracks, master) => {
+    persist(tracks);
+    set({
+      tracks,
+      ...(master ? { masterPresetId: master.presetId, masterTargetLufs: master.targetLufs } : {}),
+    });
   },
 
   setRendering: (v) => set({ rendering: v }),
