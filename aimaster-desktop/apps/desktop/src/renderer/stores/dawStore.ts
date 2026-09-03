@@ -15,6 +15,7 @@ import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
 import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
 import { expandSelection } from '../daw/edit/edit-groups.js';
+import type { ChannelSettings } from '../daw/edit/channel-ops.js';
 import type { TimeFormat } from '../daw/model/spot-time.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
 import type { Groove } from '../daw/model/groove.js';
@@ -165,6 +166,20 @@ export interface DawState {
   quantizeTarget: TimeSelection | null;
   setQuantizeTarget: (target: TimeSelection | null) => void;
 
+  /** A copied channel's processing, waiting to be pasted onto another. */
+  channelClipboard: ChannelSettings | null;
+  setChannelClipboard: (settings: ChannelSettings | null) => void;
+
+  /**
+   * Write a crossfade whenever a drag leaves two clips overlapping.
+   *
+   * A preference rather than session data — it describes how this person
+   * likes to edit, not what is in the song, so it belongs with the view
+   * settings and not in the file.
+   */
+  autoCrossfade: boolean;
+  setAutoCrossfade: (on: boolean) => void;
+
   /** Non-fatal engine notices (feedback loops, decode failures). */
   engineWarning: string | null;
   setEngineWarning: (w: string | null) => void;
@@ -277,6 +292,12 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   quantizeTarget: null,
   setQuantizeTarget: (quantizeTarget) => set({ quantizeTarget }),
+
+  channelClipboard: null,
+  setChannelClipboard: (channelClipboard) => set({ channelClipboard }),
+
+  autoCrossfade: true,
+  setAutoCrossfade: (autoCrossfade) => set({ autoCrossfade }),
 
   metronomeOn: false,
   toggleMetronome: () => {

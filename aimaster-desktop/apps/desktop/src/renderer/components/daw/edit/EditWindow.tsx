@@ -19,6 +19,7 @@ import {
 } from '../../../daw/model/session-ops.js';
 import { setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
 import { describeGroup, moveClipWithGroup } from '../../../daw/edit/edit-groups.js';
+import { autoCrossfadeTrack } from '../../../daw/edit/auto-fade.js';
 import {
   fadeFromDrag, fadeOn, fadeRegionAt, FADE_SHAPES, FADE_SHAPE_LABEL,
   type FadeSide,
@@ -112,6 +113,8 @@ export default function EditWindow() {
   const stripTarget = useDawStore((s) => s.stripTarget);
   const setStripTarget = useDawStore((s) => s.setStripTarget);
   const quantizeTarget = useDawStore((s) => s.quantizeTarget);
+  const autoCrossfade = useDawStore((s) => s.autoCrossfade);
+  const setAutoCrossfade = useDawStore((s) => s.setAutoCrossfade);
   const setQuantizeTarget = useDawStore((s) => s.setQuantizeTarget);
   const setSpotTarget = useDawStore((s) => s.setSpotTarget);
   const setEditMode  = useDawStore((s) => s.setEditMode);
@@ -408,10 +411,17 @@ export default function EditWindow() {
 
   const endDrag = useCallback(() => {
     if (gainDrag) { commitEdit(); setGainDrag(null); }
-    if (clipDrag) { commitEdit(); setClipDrag(null); }
+    if (clipDrag) {
+      // The drag is over, so this is the moment the overlap is real.  Doing
+      // it during the drag would rewrite the fades on every mousemove and
+      // leave a trail of them behind wherever the pointer passed.
+      if (autoCrossfade) applyTransient((s) => autoCrossfadeTrack(s, clipDrag.trackId));
+      commitEdit();
+      setClipDrag(null);
+    }
     if (fadeDrag) { commitEdit(); setFadeDrag(null); }
     setDrag(null);
-  }, [clipDrag, fadeDrag, gainDrag, commitEdit]);
+  }, [clipDrag, fadeDrag, gainDrag, commitEdit, autoCrossfade, applyTransient]);
 
   const rulerDown = useCallback((e: React.MouseEvent) => {
     seek(snapToGrid(secAt(e.clientX)));
@@ -502,6 +512,15 @@ export default function EditWindow() {
           title="눈금자 단위 (Shift+R)"
           className="px-2 py-1 rounded text-[10px] border bg-zinc-900 border-zinc-700 text-zinc-400"
         >{formatLabel(rulerFormat)}</button>
+
+        <button
+          onClick={() => setAutoCrossfade(!autoCrossfade)}
+          title="겹친 클립에 자동 크로스페이드"
+          className={`px-2 py-1 rounded text-[10px] border transition-colors ${
+            autoCrossfade
+              ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+        >AUTO X</button>
 
         <button
           onClick={() => setFollowPlayhead(!followPlayhead)}

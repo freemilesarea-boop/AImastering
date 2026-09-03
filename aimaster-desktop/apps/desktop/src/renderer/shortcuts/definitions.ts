@@ -59,7 +59,8 @@ export type CommandId =
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
   | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
-  | 'daw.quantizeAudio'
+  | 'daw.quantizeAudio' | 'daw.hideTracks' | 'daw.showAllTracks'
+  | 'daw.copyChannel' | 'daw.pasteChannel'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
@@ -364,6 +365,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
 
   // ── 트랙 헤더 ──────────────────────────────────────────────────────────
+  { id: 'daw.hideTracks', group: 'daw', label: '트랙 숨기기', chords: ['Mod+Alt+Shift+U'],
+    note: '편집 창에서만 감춥니다 — 소리는 그대로 나고 믹서에도 남습니다', available: true },
+  { id: 'daw.showAllTracks', group: 'daw', label: '숨긴 트랙 모두 표시', chords: ['Mod+Alt+Shift+Y'],
+    note: '너무 많이 숨겼을 때의 되돌아오는 길', available: true },
+  { id: 'daw.copyChannel', group: 'daw', label: '채널 설정 복사', chords: ['Mod+Alt+Shift+C'],
+    note: '인서트·센드·페이더·팬 — 클립과 오토메이션은 빼고', available: true },
+  { id: 'daw.pasteChannel', group: 'daw', label: '채널 설정 붙여넣기', chords: ['Mod+Alt+Shift+X'],
+    note: '선택한 트랙 전부에 — 인서트는 새 id 로 복사돼 서로 영향 없음', available: true },
   { id: 'daw.quantizeAudio', group: 'daw', label: '오디오 퀀타이즈', chords: ['Mod+Shift+T'],
     note: '트랜지언트를 그리드로 — 강도·스윙·허용 오차를 정하고, 적용 전에 몇 개가 움직이는지 봅니다', available: true },
   { id: 'daw.createEditGroup', group: 'daw', label: '편집 그룹 만들기', chords: ['Mod+G'],

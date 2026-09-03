@@ -194,7 +194,41 @@ export function toggleCollapsed(session: DawSession, folderId: TrackId): DawSess
 
 /** Is this track hidden because an ancestor stack is collapsed? */
 export function isHidden(session: DawSession, trackId: TrackId): boolean {
+  const track = session.tracks.find((t) => t.id === trackId);
+  // Hidden by its own flag, or folded away inside a collapsed stack.  Two
+  // different reasons for the same answer, and every caller wants both.
+  if (track?.hidden === true) return true;
   return stackAncestors(session, trackId).some((a) => a.collapsed);
+}
+
+/**
+ * Hide or show tracks.
+ *
+ * Never the master: a session with no master row is one where the mix bus
+ * cannot be reached, and "where did my master go" is a support question
+ * rather than a feature.
+ */
+export function setTracksHidden(
+  session: DawSession, trackIds: readonly TrackId[], hidden: boolean,
+): DawSession {
+  const wanted = new Set(trackIds);
+  return {
+    ...session,
+    tracks: session.tracks.map((t) => (
+      wanted.has(t.id) && t.kind !== 'master' ? { ...t, hidden } : t
+    )),
+  };
+}
+
+/** Bring everything back — the way out of having hidden too much. */
+export function showAllTracks(session: DawSession): DawSession {
+  if (!session.tracks.some((t) => t.hidden === true)) return session;
+  return { ...session, tracks: session.tracks.map((t) => ({ ...t, hidden: false })) };
+}
+
+/** How many rows are hidden by their own flag, for the toolbar readout. */
+export function hiddenCount(session: DawSession): number {
+  return session.tracks.filter((t) => t.hidden === true).length;
 }
 
 /** The rows the arrange window should draw, in order. */

@@ -333,6 +333,14 @@ export interface Track {
   parentId: TrackId | null;
   /** Folder UI state — a collapsed stack shows one row instead of ten. */
   collapsed: boolean;
+  /**
+   * Hidden from the arrange window.
+   *
+   * A VIEW state, not a mute: the track still plays, still bounces, and
+   * still follows its edit group.  Optional so sessions saved before it
+   * existed load unchanged.
+   */
+  hidden?: boolean;
   /** Macro (Smart Control) rack driving this channel's processing. */
   macros: MacroRack;
   /**

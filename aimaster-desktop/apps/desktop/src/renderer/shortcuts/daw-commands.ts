@@ -24,6 +24,10 @@ import { nudgeClipPitch, resetClipPitch } from '../daw/edit/clip-edit.js';
 import { clipPitch, describePitch } from '../daw/model/clip-pitch.js';
 import { fitRange } from '../daw/model/viewport.js';
 import { describeGroup, editGroupsOf } from '../daw/edit/edit-groups.js';
+import { hiddenCount, setTracksHidden, showAllTracks } from '../daw/model/stacks.js';
+import {
+  channelSettings, describeChannel, pasteChannelSettings,
+} from '../daw/edit/channel-ops.js';
 import { addGroup, createGroup, removeGroup } from '../daw/model/session-ops.js';
 import { duplicateTrack } from '../daw/edit/track-ops.js';
 import { formatLabel, TIME_FORMATS } from '../daw/model/spot-time.js';
@@ -140,7 +144,8 @@ export type DawCommandId =
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
   | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
-  | 'daw.quantizeAudio'
+  | 'daw.quantizeAudio' | 'daw.hideTracks' | 'daw.showAllTracks'
+  | 'daw.copyChannel' | 'daw.pasteChannel'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
@@ -491,6 +496,58 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
      * and some hits are late".  Collapsing them would mean estimating a tempo
      * for material whose tempo is already known.
      */
+    /** Hide the selected tracks from the arrange window — they still play. */
+    'daw.hideTracks': () => {
+      const state = daw();
+      const ids = currentSelection(state).trackIds.length > 0
+        ? currentSelection(state).trackIds : targetTrackIds();
+      const hideable = ids.filter((id) => findTrack(state.session, id)?.kind !== 'master');
+      if (hideable.length === 0) { notify('숨길 트랙을 고르세요', 'warning'); return; }
+      state.apply((s) => setTracksHidden(s, hideable, true));
+      notify(`${hideable.length}개 트랙 숨김 — 소리는 그대로 납니다 (Mod+Alt+Shift+Y 로 복구)`);
+    },
+
+    'daw.showAllTracks': () => {
+      const state = daw();
+      const count = hiddenCount(state.session);
+      if (count === 0) { notify('숨겨진 트랙이 없습니다'); return; }
+      state.apply((s) => showAllTracks(s));
+      notify(`${count}개 트랙 다시 표시`);
+    },
+
+    'daw.copyChannel': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      const settings = channelSettings(state.session, trackId);
+      if (!settings) return;
+      state.setChannelClipboard(settings);
+      notify(`채널 복사 — ${describeChannel(settings)}`);
+    },
+
+    /**
+     * Paste onto every selected track, not just one.
+     *
+     * The reason to copy a channel is almost always that several channels
+     * need it, and pasting one at a time is the work the command exists to
+     * remove.
+     */
+    'daw.pasteChannel': () => {
+      const state = daw();
+      const settings = state.channelClipboard;
+      if (!settings) { notify('복사한 채널이 없습니다 — 먼저 Mod+Alt+Shift+C', 'warning'); return; }
+      const ids = currentSelection(state).trackIds.length > 0
+        ? currentSelection(state).trackIds : targetTrackIds();
+      const targets = ids.filter((id) => findTrack(state.session, id)?.kind !== 'master');
+      if (targets.length === 0) { notify('붙여넣을 트랙을 고르세요', 'warning'); return; }
+      state.apply((s) => {
+        let out = s;
+        for (const id of targets) out = pasteChannelSettings(out, id, settings);
+        return out;
+      });
+      notify(`${targets.length}개 채널에 붙여넣기 — ${describeChannel(settings)}`, 'success');
+    },
+
     'daw.quantizeAudio': () => {
       const state = daw();
       const sel = currentSelection(state);
