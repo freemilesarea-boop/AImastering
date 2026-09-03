@@ -427,6 +427,19 @@ export interface Marker {
   id: string;
   name: string;
   timeSec: number;
+  /**
+   * 1-10 when the marker sits in a numbered memory slot, absent otherwise.
+   *
+   * Optional because markers written before memory locations existed have no
+   * slot, and a named marker dropped on the ruler still should not take one;
+   * every reader goes through model/memory-locations.ts rather than testing
+   * this field directly.
+   */
+  slot?: number;
+  /** Set when the slot stored a RANGE — a bare position leaves it absent. */
+  endSec?: number;
+  /** The tracks the stored selection covered.  Filtered against the live session on recall. */
+  trackIds?: TrackId[];
 }
 
 export const DAW_SESSION_VERSION = 2 as const;

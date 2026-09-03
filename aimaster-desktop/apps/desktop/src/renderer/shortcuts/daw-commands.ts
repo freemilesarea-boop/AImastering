@@ -13,6 +13,13 @@
 
 import type { DawState } from '../stores/dawStore.js';
 import { snapToGrid, targetTrackIds } from '../stores/dawStore.js';
+import { MEM_DIGITS, type MemDigit } from './definitions.js';
+import {
+  clearLocation, describeLocation, locationAt, memoryLocations, recallLocation,
+  slotForKey, storeLocation,
+} from '../daw/model/memory-locations.js';
+import { SNAP_LABELS, describeSnap } from '../daw/model/snap-modes.js';
+import { describeFill, repeatFill } from '../daw/edit/repeat-fill.js';
 import {
   clearRange, crossfadeAt, duplicateSelection, fadeToCursor, healSeparation,
   nudgeClipGain, nudgeSelection, overlapsSelection, selectionLength, separateAt,
@@ -182,7 +189,13 @@ export type DawCommandId =
   | 'daw.copy' | 'daw.cut' | 'daw.cutRipple' | 'daw.paste' | 'daw.pasteInsert'
   | 'daw.insertSilence' | 'daw.stripSilence' | 'daw.alignToGuide' | 'daw.snapZeroCross'
   | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip'
-  | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown';
+  | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown'
+  | MemCommandId
+  | 'daw.clearMemory' | 'daw.cycleSnapMode' | 'daw.fillSelection'
+  | 'daw.batchRename' | 'daw.historyPanel';
+
+/** One store and one recall verb per memory slot. */
+export type MemCommandId = `daw.memStore.${MemDigit}` | `daw.memRecall.${MemDigit}`;
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -212,6 +225,45 @@ function selectionOrPlayhead(daw: DawState): TimeSelection {
 export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, CommandFn> {
   const { notify, daw, invoke, openWorkspace } = deps;
   const marks = deps.transients ?? transientsFor;
+
+  /**
+   * The twenty memory-location verbs, generated from the digit list.
+   *
+   * Generated rather than written out because a store key with no matching
+   * recall key is a bug you only find when you need the location back, and
+   * forty near-identical hand-written entries is exactly where that happens.
+   */
+  const memoryCommands = (): Record<MemCommandId, CommandFn> => {
+    // The cast is on an EMPTY object that the loop below then fills for every
+    // digit in MEM_DIGITS — the same list the id type is built from, so the
+    // record cannot come out with a key missing.
+    const out = {} as Record<MemCommandId, CommandFn>;
+    for (const digit of MEM_DIGITS) {
+      const slot = slotForKey(digit) as number;
+      out[`daw.memStore.${digit}`] = () => {
+        const state = daw();
+        const sel = currentSelection(state);
+        const req = hasRange(sel) && sel.trackIds.length > 0
+          ? { timeSec: sel.startSec, endSec: sel.endSec, trackIds: sel.trackIds }
+          : { timeSec: state.playheadSec };
+        state.apply((s) => storeLocation(s, slot, req));
+        const stored = locationAt(daw().session, slot);
+        notify(stored ? `저장 — ${describeLocation(stored)}` : `메모리 위치 ${slot} 저장`);
+      };
+      out[`daw.memRecall.${digit}`] = () => {
+        const state = daw();
+        const recall = recallLocation(state.session, slot);
+        if (!recall) {
+          notify(`메모리 위치 ${slot} 이 비어 있습니다 — Mod+Shift+${digit} 로 저장`, 'warning');
+          return;
+        }
+        state.seek(recall.playheadSec);
+        if (recall.selection) state.setSelection(recall.selection);
+        notify(describeLocation(locationAt(state.session, slot) as NonNullable<ReturnType<typeof locationAt>>));
+      };
+    }
+    return out;
+  };
 
   // ── Key Editor helpers ──────────────────────────────────────────────────
 
@@ -1111,6 +1163,91 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     // ── Track header ──────────────────────────────────────────────────────
+
+    /**
+     * Store the play head — or the selection, when there is one — in a slot.
+     *
+     * A selection is stored WITH its tracks, so recalling it puts you back on
+     * the same three tracks in the same eight bars.  Storing a bare play head
+     * deliberately does NOT store an empty selection: recalling it would then
+     * wipe whatever range you had, which is not what "go to the chorus" means.
+     */
+    ...memoryCommands(),
+
+    'daw.clearMemory': () => {
+      const state = daw();
+      const count = memoryLocations(state.session).length;
+      if (count === 0) { notify('저장된 메모리 위치가 없습니다'); return; }
+      state.apply((s) => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].reduce((acc, n) => clearLocation(acc, n), s));
+      notify(`메모리 위치 ${count}개 삭제`);
+    },
+
+    'daw.cycleSnapMode': () => {
+      const state = daw();
+      state.cycleSnapMode();
+      const next = daw().snapMode;
+      notify(`${SNAP_LABELS[next]} — ${describeSnap(next, state.gridDivision)}`);
+    },
+
+    /**
+     * Repeat the clipboard until the selected range is full.
+     *
+     * The selection's own tracks are the targets; `currentSelection` fills in
+     * the focused track when the range was made without one, which is the case
+     * after a ruler drag.
+     */
+    'daw.fillSelection': () => {
+      const state = daw();
+      const board = state.clipboard;
+      if (!board) { notify('먼저 복사하세요 (Mod+C)', 'warning'); return; }
+      const sel = currentSelection(state);
+      if (!hasRange(sel) || sel.trackIds.length === 0) {
+        notify('채울 구간을 먼저 선택하세요', 'warning');
+        return;
+      }
+      const result = repeatFill(state.session, board, sel);
+      if (result.session === state.session) {
+        notify(result.problems[0] ?? '채울 것이 없습니다', 'warning');
+        return;
+      }
+      state.apply(() => result.session);
+      for (const problem of result.problems) notify(problem, 'warning');
+      notify(describeFill(result.plan));
+    },
+
+    /**
+     * Open the rename dialog on the selected tracks, or on the selected clips
+     * when the selection is a range.
+     *
+     * Clips first: a range selection on three tracks is far more likely to
+     * mean "rename these takes" than "rename these three tracks", and the
+     * tracks are one Escape and a header click away either way.
+     */
+    'daw.batchRename': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      if (hasRange(sel) && sel.trackIds.length > 0) {
+        const items = sel.trackIds.flatMap((trackId) => {
+          const track = findTrack(state.session, trackId);
+          return (track ? trackClips(track) : [])
+            .filter((c) => overlapsSelection(c, sel))
+            .map((c) => ({ id: c.id, name: c.name, trackId }));
+        });
+        if (items.length > 0) { state.setRenameTarget({ kind: 'clip', items }); return; }
+      }
+      const trackIds = targetTrackIds();
+      const tracks = trackIds
+        .map((id) => findTrack(state.session, id))
+        .filter((t): t is NonNullable<typeof t> => !!t)
+        .map((t) => ({ id: t.id, name: t.name }));
+      if (tracks.length === 0) { notify('이름을 바꿀 트랙이나 클립을 고르세요', 'warning'); return; }
+      state.setRenameTarget({ kind: 'track', items: tracks });
+    },
+
+    'daw.historyPanel': () => {
+      const state = daw();
+      state.setHistoryOpen(!state.historyOpen);
+    },
 
     'daw.renameTrack': () => {
       const state = daw();
@@ -2133,11 +2270,20 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
       notify('커서에서 분리');
     },
 
+    /**
+     * Snap on / off.
+     *
+     * It used to flip `editMode` between Grid and Slip, because snapping was
+     * a side effect of being in Grid mode.  Those are two different questions
+     * — Slip says a drag leaves its neighbours alone, Grid said it also snaps
+     * — and tying them together meant you could not have one without the
+     * other.  Now J answers only the snap question; Alt+J picks WHICH snap.
+     */
     'edit.toggleSnap': () => {
       const state = daw();
-      const next = state.editMode === 'grid' ? 'slip' : 'grid';
-      state.setEditMode(next);
-      notify(`${next === 'grid' ? 'GRID' : 'SLIP'} 모드`);
+      const next = state.snapMode === 'off' ? 'grid' : 'off';
+      state.setSnapMode(next);
+      notify(next === 'off' ? '스냅 끔' : describeSnap(next, state.gridDivision));
     },
 
     'track.solo': () => {

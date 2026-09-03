@@ -97,7 +97,17 @@ export type CommandId =
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
   | 'daw.sectionNext' | 'daw.sectionPrev' | 'daw.sectionSelect' | 'daw.sectionAdd'
   | 'daw.sectionMoveBack' | 'daw.sectionMoveForward'
-  | 'daw.tuneToGuide' | 'daw.riff';
+  | 'daw.tuneToGuide' | 'daw.riff'
+  // 6b. Memory locations — twenty ids, one store and one recall per slot.
+  //     Written as a template type rather than forty hand-typed lines so a
+  //     slot cannot exist in one half and not the other.
+  | `daw.memStore.${MemDigit}` | `daw.memRecall.${MemDigit}`
+  | 'daw.clearMemory' | 'daw.cycleSnapMode' | 'daw.fillSelection'
+  | 'daw.batchRename' | 'daw.historyPanel';
+
+/** The number-row keys, in slot order: slot 10 is `0`. */
+export type MemDigit = '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0';
+export const MEM_DIGITS: readonly MemDigit[] = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
 
 export interface ShortcutDef {
   id: CommandId;
@@ -510,6 +520,34 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: 'Session View 의 다음 씬을 다음 마디에 실행', available: true },
   { id: 'daw.stopAllClips', group: 'daw', label: '모든 클립 정지', chords: ['Mod+Alt+Period'],
     note: 'Session View 재생 중지', available: true },
+
+  // ── 스냅 · 채우기 · 이름 · 히스토리 ────────────────────────────────────
+  { id: 'daw.cycleSnapMode', group: 'daw', label: '스냅 모드 순환', chords: ['Alt+J'],
+    note: '끔 → 그리드 → 상대 그리드 → 자석 → 이벤트. J 는 스냅 on/off, Alt+J 는 어떤 스냅인지', available: true },
+  { id: 'daw.fillSelection', group: 'daw', label: '선택 구간 반복 채우기', chords: ['Mod+Alt+Shift+R'],
+    note: '클립보드를 선택 구간이 찰 때까지 반복 — 마지막 하나는 구간 끝에서 잘립니다', available: true },
+  { id: 'daw.batchRename', group: 'daw', label: '이름 일괄 변경', chords: ['Mod+Shift+Y'],
+    note: '선택한 트랙·클립 이름을 번호 패턴·찾아바꾸기·앞뒤 붙이기로 — 적용 전에 미리보기', available: true },
+  { id: 'daw.historyPanel', group: 'daw', label: '실행취소 히스토리', chords: ['Mod+Alt+Shift+Z'],
+    note: '되돌릴 수 있는 단계 목록 — 눌러서 그 시점으로 한 번에', available: true },
+  { id: 'daw.clearMemory', group: 'daw', label: '메모리 위치 비우기', chords: ['Mod+Alt+Shift+Backspace'],
+    note: '번호 마커 10개를 모두 지웁니다', available: true },
+
+  // ── 메모리 위치 (번호 마커) ───────────────────────────────────────────
+  // Generated so the store key and the recall key for a slot cannot drift.
+  // Mod+숫자 recalls, Mod+Shift+숫자 stores — the bare number row is already
+  // the tool selector, which is used far more often than a locator.
+  ...MEM_DIGITS.flatMap((digit, i): ShortcutDef[] => {
+    const slot = i + 1;
+    return [
+      { id: `daw.memRecall.${digit}`, group: 'daw', label: `메모리 위치 ${slot} 이동`,
+        chords: [`Mod+Digit${digit}`],
+        note: '저장해 둔 위치로 — 구간을 저장했다면 선택까지 되살립니다', available: true },
+      { id: `daw.memStore.${digit}`, group: 'daw', label: `메모리 위치 ${slot} 저장`,
+        chords: [`Mod+Shift+Digit${digit}`],
+        note: '지금 재생 위치를, 선택 구간이 있으면 구간과 트랙까지 함께', available: true },
+    ];
+  }),
 ];
 
 /** Parsed bindings, in dispatch order (first match wins). */

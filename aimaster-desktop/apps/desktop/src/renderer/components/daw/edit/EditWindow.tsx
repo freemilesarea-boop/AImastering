@@ -6,7 +6,7 @@
 // one model, never two.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useDawStore, snapToGrid, type EditMode } from '../../../stores/dawStore.js';
+import { useDawStore, snapToGrid, snapMoveTo, type EditMode } from '../../../stores/dawStore.js';
 import { followScrollSec, rulerTicks } from '../../../daw/model/viewport.js';
 import { formatLabel, DEFAULT_FPS, TIME_FORMATS } from '../../../daw/model/spot-time.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
@@ -55,6 +55,9 @@ import ChordLane, { ChordLaneHeader } from './ChordLane.js';
 import PictureLane, { PictureLaneHeader } from './PictureLane.js';
 import SpotDialog from './SpotDialog.js';
 import StripSilenceDialog from './StripSilenceDialog.js';
+import BatchRenameDialog from './BatchRenameDialog.js';
+import HistoryPanel from './HistoryPanel.js';
+import { SNAP_LABELS, SNAP_MODES, describeSnap } from '../../../daw/model/snap-modes.js';
 import QuantizeDialog from './QuantizeDialog.js';
 import { separateAt } from '../../../daw/edit/clip-edit.js';
 import { useRegionLabStore } from '../../../stores/regionLabStore.js';
@@ -114,6 +117,12 @@ export default function EditWindow() {
   const setStripTarget = useDawStore((s) => s.setStripTarget);
   const quantizeTarget = useDawStore((s) => s.quantizeTarget);
   const autoCrossfade = useDawStore((s) => s.autoCrossfade);
+  const snapMode = useDawStore((s) => s.snapMode);
+  const setSnapMode = useDawStore((s) => s.setSnapMode);
+  const renameTarget = useDawStore((s) => s.renameTarget);
+  const setRenameTarget = useDawStore((s) => s.setRenameTarget);
+  const historyOpen = useDawStore((s) => s.historyOpen);
+  const setHistoryOpen = useDawStore((s) => s.setHistoryOpen);
   const setAutoCrossfade = useDawStore((s) => s.setAutoCrossfade);
   const setQuantizeTarget = useDawStore((s) => s.setQuantizeTarget);
   const setSpotTarget = useDawStore((s) => s.setSpotTarget);
@@ -144,6 +153,15 @@ export default function EditWindow() {
   // applyTransient and commits on mouse up.
   const [clipDrag, setClipDrag] = useState<null | {
     trackId: string; clipId: string; grabOffsetSec: number;
+    /**
+     * Where the clip started, captured at mouse-down and never updated.
+     *
+     * Relative Grid counts whole grid steps FROM here, so it has to be the
+     * original position: reading the clip's current start each frame would
+     * count the step it already took and the clip would run away down the
+     * timeline a bar per mouse-move.
+     */
+    fromSec: number;
   }>(null);
   // Pulling a clip corner.  Like a clip drag: transient while the mouse is
   // down, one undo step when it comes up.
@@ -335,7 +353,10 @@ export default function EditWindow() {
         // Spot mode: the position is known to the frame and the mouse cannot
         // express it, so clicking asks for the number instead of dragging.
         if (editMode === 'spot') { setSpotTarget({ trackId: track.id, clipId: clip.id }); return; }
-        setClipDrag({ trackId: track.id, clipId: clip.id, grabOffsetSec: raw - clip.startSec });
+        setClipDrag({
+          trackId: track.id, clipId: clip.id,
+          grabOffsetSec: raw - clip.startSec, fromSec: clip.startSec,
+        });
         return;
       }
       // Empty lane still moves the play head, the way clicking a blank part
@@ -374,7 +395,13 @@ export default function EditWindow() {
       return;
     }
     if (clipDrag) {
-      const target = snapToGrid(Math.max(0, secAt(e.clientX) - clipDrag.grabOffsetSec));
+      // snapMoveTo, not snapToGrid: Relative Grid needs to know where the
+      // clip started, and the other four modes give the same answer either
+      // way.
+      const target = snapMoveTo(
+        clipDrag.fromSec,
+        Math.max(0, secAt(e.clientX) - clipDrag.grabOffsetSec),
+      );
       // Grouped tracks move together.  A drag is the one edit that does not
       // go through the selection, so it is the one place that has to ask.
       applyTransient((s) => moveClipWithGroup(s, clipDrag.trackId, clipDrag.clipId, target));
@@ -512,6 +539,24 @@ export default function EditWindow() {
           title="눈금자 단위 (Shift+R)"
           className="px-2 py-1 rounded text-[10px] border bg-zinc-900 border-zinc-700 text-zinc-400"
         >{formatLabel(rulerFormat)}</button>
+
+        {/* Snap mode.  A dropdown rather than a cycle button because five
+            states is one more than a button can teach you by pressing it —
+            Alt+J cycles for the hand that already knows. */}
+        <select
+          value={snapMode}
+          onChange={(e) => setSnapMode(e.target.value as typeof snapMode)}
+          title={describeSnap(snapMode, gridDivision)}
+          className={`px-1 py-1 rounded text-[10px] border transition-colors ${
+            snapMode === 'off'
+              ? 'bg-zinc-900 border-zinc-700 text-zinc-500'
+              : 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'}`}
+          data-testid="snap-mode"
+        >
+          {SNAP_MODES.map((mode) => (
+            <option key={mode} value={mode}>{SNAP_LABELS[mode]}</option>
+          ))}
+        </select>
 
         <button
           onClick={() => setAutoCrossfade(!autoCrossfade)}
@@ -771,6 +816,10 @@ export default function EditWindow() {
       {stripTarget && (
         <StripSilenceDialog selection={stripTarget} onClose={() => setStripTarget(null)} />
       )}
+      {renameTarget && (
+        <BatchRenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />
+      )}
+      {historyOpen && <HistoryPanel onClose={() => setHistoryOpen(false)} />}
       {spotTarget && (
         <SpotDialog target={spotTarget} onClose={() => setSpotTarget(null)} />
       )}
