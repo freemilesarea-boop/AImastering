@@ -22,6 +22,9 @@ import {
 import { compRange, cyclePlaylist } from '../daw/edit/comping.js';
 import { nudgeClipPitch, resetClipPitch } from '../daw/edit/clip-edit.js';
 import { clipPitch, describePitch } from '../daw/model/clip-pitch.js';
+import { fitRange } from '../daw/model/viewport.js';
+import { duplicateTrack } from '../daw/edit/track-ops.js';
+import { formatLabel, TIME_FORMATS } from '../daw/model/spot-time.js';
 import { alignClipToGuide, describeAlign } from '../daw/edit/align-actions.js';
 import { consolidationSpans, describeOutcome, outcomeOf } from '../daw/edit/consolidate.js';
 import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
@@ -134,6 +137,8 @@ export type DawCommandId =
   | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
+  | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
+  | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
@@ -458,6 +463,72 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!range) { notify('클립 위에 커서를 두세요', 'warning'); return; }
       daw().apply((s) => nudgeClipGain(s, range, -CLIP_GAIN_STEP_DB));
       notify(`클립 게인 −${CLIP_GAIN_STEP_DB} dB`);
+    },
+
+    /**
+     * Frame the selection, or the whole session when there is none.
+     *
+     * Both DAWs have this on one key because it is the gesture you make
+     * between every other gesture — the zoom you set to do one edit is never
+     * the zoom for the next one.
+     */
+    'daw.zoomToSelection': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      const range = hasRange(sel)
+        ? { startSec: sel.startSec, endSec: sel.endSec }
+        : { startSec: 0, endSec: sessionEndSec(state.session) };
+      const view = fitRange(range.startSec, range.endSec, state.laneWidthPx);
+      if (!view) { notify('맞출 구간이 없습니다', 'warning'); return; }
+      state.setPxPerSec(view.pxPerSec);
+      state.setScrollSec(view.scrollSec);
+      notify(hasRange(sel) ? '선택 구간에 맞춤' : '세션 전체에 맞춤');
+    },
+
+    'daw.toggleFollowPlayhead': () => {
+      const state = daw();
+      const next = !state.followPlayhead;
+      state.setFollowPlayhead(next);
+      notify(next ? '재생헤드 따라가기 켬' : '재생헤드 따라가기 끔');
+    },
+
+    /**
+     * Play from where the selection starts.
+     *
+     * Space is left alone.  It plays from the play head in both DAWs and in
+     * every muscle memory built on them; quietly redefining it would be the
+     * kind of "improvement" that makes an app feel unpredictable.
+     */
+    'daw.playFromSelection': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      const from = hasRange(sel) ? sel.startSec : state.playheadSec;
+      state.seek(from);
+      if (!state.isPlaying) state.togglePlay();
+    },
+
+    'daw.duplicateTrack': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      const source = findTrack(state.session, trackId);
+      if (!source) return;
+      let name = source.name;
+      state.apply((s) => {
+        const next = duplicateTrack(s, trackId);
+        const made = next.tracks.find((t) => !s.tracks.some((o) => o.id === t.id));
+        if (made) name = made.name;
+        return next;
+      });
+      notify(`트랙 복제 — ${name}`, 'success');
+    },
+
+    'daw.cycleRulerFormat': () => {
+      const state = daw();
+      const at = TIME_FORMATS.indexOf(state.rulerFormat);
+      const next = TIME_FORMATS[(at + 1) % TIME_FORMATS.length] ?? 'barsBeats';
+      state.setRulerFormat(next);
+      notify(`눈금자 — ${formatLabel(next)}`);
     },
 
     'daw.clipPitchUp':   () => clipPitchBy(1),

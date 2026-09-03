@@ -7,6 +7,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDawStore, snapToGrid, type EditMode } from '../../../stores/dawStore.js';
+import { followScrollSec, rulerTicks } from '../../../daw/model/viewport.js';
+import { formatLabel, DEFAULT_FPS, TIME_FORMATS } from '../../../daw/model/spot-time.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
 import { useAudioStore } from '../../../stores/audioStore.js';
@@ -43,7 +45,7 @@ import {
 } from '../../../daw/edit/automation-lanes.js';
 import type { AutomationLane } from '../../../daw/model/types.js';
 import {
-  describeTempoMap, formatBarBeat, gridLines, isConstantTempo, tempoMapOf,
+  describeTempoMap, formatBarBeat, isConstantTempo, tempoMapOf,
 } from '../../../daw/model/tempo-map.js';
 import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 import SectionLane, { SectionLaneHeader } from './SectionLane.js';
@@ -97,6 +99,11 @@ export default function EditWindow() {
   const pxPerSec     = useDawStore((s) => s.pxPerSec);
   const setPxPerSec  = useDawStore((s) => s.setPxPerSec);
   const scrollSec    = useDawStore((s) => s.scrollSec);
+  const followPlayhead = useDawStore((s) => s.followPlayhead);
+  const isPlaying = useDawStore((s) => s.isPlaying);
+  const setFollowPlayhead = useDawStore((s) => s.setFollowPlayhead);
+  const rulerFormat = useDawStore((s) => s.rulerFormat);
+  const setRulerFormat = useDawStore((s) => s.setRulerFormat);
   const setScrollSec = useDawStore((s) => s.setScrollSec);
   const editMode     = useDawStore((s) => s.editMode);
   const spotTarget = useDawStore((s) => s.spotTarget);
@@ -164,14 +171,29 @@ export default function EditWindow() {
   useEffect(() => {
     const el = laneRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
+    const publish = (w: number): void => {
+      const held = Math.max(120, w);
+      setLaneWidth(held);
+      // Also into the store: "zoom to selection" is arithmetic on this width
+      // and the keyboard has no component to ask.
+      useDawStore.getState().setLaneWidthPx(held);
+    };
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width;
-      if (w) setLaneWidth(Math.max(120, w));
+      if (w) publish(w);
     });
     ro.observe(el);
-    setLaneWidth(Math.max(120, el.clientWidth));
+    publish(el.clientWidth);
     return () => ro.disconnect();
   }, []);
+
+  // Follow the play head while it plays.  Paged, not centred — see
+  // followScrollSec: a view that re-centres every frame cannot be read.
+  useEffect(() => {
+    if (!followPlayhead || !isPlaying) return;
+    const next = followScrollSec({ scrollSec, pxPerSec, widthPx: laneWidth }, playheadSec);
+    if (next !== null) setScrollSec(next);
+  }, [followPlayhead, isPlaying, playheadSec, scrollSec, pxPerSec, laneWidth, setScrollSec]);
 
   const endSec = useMemo(() => sessionEndSec(session), [session]);
   const toX = useCallback((sec: number) => (sec - scrollSec) * pxPerSec, [scrollSec, pxPerSec]);
@@ -396,14 +418,23 @@ export default function EditWindow() {
   // second interval would sit next to the music instead of on it.  Beat lines
   // appear once a bar is wide enough to hold them.
   const tempoMap = useMemo(() => tempoMapOf(session), [session]);
-  const viewEndSec = scrollSec + laneWidth / Math.max(1, pxPerSec);
-  const barLines = useMemo(() => {
-    const barWidthPx = 4 * (60 / Math.max(1, session.tempoBpm)) * pxPerSec;
-    return gridLines(tempoMap, scrollSec, viewEndSec, {
-      beats: barWidthPx > 90,
-      maxLines: 400,
-    });
-  }, [tempoMap, scrollSec, viewEndSec, pxPerSec, session.tempoBpm]);
+  // The ruler can count in bars, timecode, minutes or samples.  All four
+  // already existed in spot-time.ts and only the Spot dialog could reach
+  // them; the ruler was bars whatever the material was, which is the wrong
+  // one as soon as the session is a piece of picture rather than a song.
+  const ticks = useMemo(() => rulerTicks(
+    rulerFormat,
+    { scrollSec, pxPerSec, widthPx: laneWidth },
+    {
+      sampleRate: session.sampleRate,
+      tempoMap,
+      fps: DEFAULT_FPS,
+      dropFrame: false,
+      timecodeOffsetSec: 0,
+    },
+    tempoMap,
+    session.tempoBpm,
+  ), [rulerFormat, scrollSec, pxPerSec, laneWidth, session.sampleRate, tempoMap, session.tempoBpm]);
 
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
@@ -458,6 +489,23 @@ export default function EditWindow() {
               : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
         >TAB→TRANSIENT</button>
 
+        <button
+          onClick={() => setRulerFormat(
+            TIME_FORMATS[(TIME_FORMATS.indexOf(rulerFormat) + 1) % TIME_FORMATS.length] ?? 'barsBeats',
+          )}
+          title="눈금자 단위 (Shift+R)"
+          className="px-2 py-1 rounded text-[10px] border bg-zinc-900 border-zinc-700 text-zinc-400"
+        >{formatLabel(rulerFormat)}</button>
+
+        <button
+          onClick={() => setFollowPlayhead(!followPlayhead)}
+          title="재생헤드 따라가기 (L)"
+          className={`px-2 py-1 rounded text-[10px] border transition-colors ${
+            followPlayhead
+              ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+        >FOLLOW</button>
+
         <div className="flex-1" />
 
         <button onClick={() => setPxPerSec(pxPerSec / 1.5)}
@@ -485,18 +533,18 @@ export default function EditWindow() {
           className="relative flex-1 cursor-pointer overflow-hidden"
           style={{ height: RULER_HEIGHT }}
         >
-          {barLines.map((line) => (
+          {ticks.map((tick, i) => (
             <div
-              key={`${line.bar}-${line.beat}`}
+              key={`${tick.sec}-${i}`}
               className="absolute top-0 bottom-0"
               style={{
-                left: toX(line.sec),
-                borderLeft: `1px solid ${line.isBar ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.06)'}`,
+                left: toX(tick.sec),
+                borderLeft: `1px solid ${tick.major ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.06)'}`,
               }}
             >
-              {line.isBar && (
-                <span className="absolute left-1 top-1 text-[9px] font-mono"
-                      style={{ color: premium.text.muted }}>{line.bar}</span>
+              {tick.label !== null && (
+                <span className="absolute left-1 top-1 text-[9px] font-mono whitespace-nowrap"
+                      style={{ color: premium.text.muted }}>{tick.label}</span>
               )}
             </div>
           ))}

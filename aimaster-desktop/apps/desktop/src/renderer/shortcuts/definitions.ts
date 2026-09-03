@@ -58,6 +58,8 @@ export type CommandId =
   | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
+  | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
+  | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
@@ -360,6 +362,16 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
 
   // ── 트랙 헤더 ──────────────────────────────────────────────────────────
+  { id: 'daw.zoomToSelection', group: 'daw', label: '선택 구간에 맞춰 확대', chords: ['Shift+F'],
+    note: '선택이 없으면 세션 전체 — 양쪽에 여유를 두고 맞춥니다', available: true },
+  { id: 'daw.toggleFollowPlayhead', group: 'daw', label: '재생헤드 따라가기 on/off', chords: ['KeyL'],
+    note: '재생 중 화면이 페이지 단위로 넘어갑니다 (큐베이스는 F 이지만 그 키는 가로 확대가 씁니다)', available: true },
+  { id: 'daw.playFromSelection', group: 'daw', label: '선택 지점부터 재생', chords: ['Shift+Space'],
+    note: 'Space 는 그대로 재생헤드에서 — 이건 선택 시작으로 가서 재생', available: true },
+  { id: 'daw.cycleRulerFormat', group: 'daw', label: '눈금자 단위 바꾸기', chords: ['Shift+R'],
+    note: '마디 → 분:초 → 샘플 → 타임코드 순으로 돕니다', available: true },
+  { id: 'daw.duplicateTrack', group: 'daw', label: '트랙 복제', chords: ['Mod+Alt+Shift+D'],
+    note: '클립·인서트·센드·오토메이션까지 복사해 바로 아래에 — 프리즈와 녹음 무장은 빼고', available: true },
   { id: 'daw.renameTrack', group: 'daw', label: '트랙 이름 바꾸기', chords: ['Shift+Alt+K'],
     note: '헤더의 이름을 더블클릭해도 됩니다 · 색은 왼쪽 색 조각을 클릭', available: true },
   { id: 'daw.trackHeightUp', group: 'daw', label: '트랙 높이 키우기', chords: ['Shift+Alt+Equal'],

@@ -14,6 +14,7 @@ import {
 import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
 import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
+import type { TimeFormat } from '../daw/model/spot-time.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
 import type { Groove } from '../daw/model/groove.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
@@ -107,6 +108,21 @@ export interface DawState {
   setPxPerSec: (v: number) => void;
   scrollSec: number;
   setScrollSec: (v: number) => void;
+  /**
+   * How wide the lane area is, in px.
+   *
+   * Measured by the Edit window and kept here because the KEYBOARD needs it:
+   * "zoom to selection" is arithmetic on the window's width, and the shortcut
+   * layer has no component to ask.
+   */
+  laneWidthPx: number;
+  setLaneWidthPx: (v: number) => void;
+  /** Scroll the view to keep the play head on screen while it plays. */
+  followPlayhead: boolean;
+  setFollowPlayhead: (v: boolean) => void;
+  /** What the ruler counts in. */
+  rulerFormat: TimeFormat;
+  setRulerFormat: (f: TimeFormat) => void;
 
   /** Track whose Smart Controls are open, if any. */
   smartTrackId: TrackId | null;
@@ -312,6 +328,12 @@ export const useDawStore = create<DawState>((set, get) => ({
   setPxPerSec: (v) => set({ pxPerSec: Math.max(4, Math.min(2000, v)) }),
   scrollSec: 0,
   setScrollSec: (v) => set({ scrollSec: Math.max(0, v) }),
+  laneWidthPx: 900,
+  setLaneWidthPx: (v) => set({ laneWidthPx: Math.max(120, v) }),
+  followPlayhead: true,
+  setFollowPlayhead: (followPlayhead) => set({ followPlayhead }),
+  rulerFormat: 'barsBeats',
+  setRulerFormat: (rulerFormat) => set({ rulerFormat }),
 
   smartTrackId: null,
   openSmartControls: (id) => set({ smartTrackId: id }),
