@@ -11,6 +11,10 @@ import {
 import { findTrack, trackClips, updateClip } from '../model/session-ops.js';
 import { transientsFor } from '../engine/audio-cache.js';
 import type { Clip, ClipId, DawSession, TrackId } from '../model/types.js';
+import {
+  quantizeHits, quantizeWarp, summariseQuantize,
+  type QuantizeHit, type QuantizeOptions, type QuantizeSummary,
+} from './audio-quantize.js';
 
 export function requireAudioClip(session: DawSession, trackId: TrackId, clipId: ClipId): Clip {
   const track = findTrack(session, trackId);
@@ -131,6 +135,61 @@ export function applyWarp(
     warp,
     durationSec: durationSec > 0.001 ? durationSec : clip.durationSec,
   }));
+}
+
+/**
+ * Quantize the audio clips a selection touches.
+ *
+ * Against the SESSION tempo, not an estimate from the onsets.  Auto-Warp
+ * estimates because it is built for a loop of unknown tempo; a take recorded
+ * to the click has a tempo already, and guessing it can lock onto eighths and
+ * quantize the part to half the grid the person asked for.
+ *
+ * The clips are not resized.  Auto-Warp stretches the clip so its whole source
+ * span still plays, which is right when the material's tempo is being changed;
+ * quantize moves hits WITHIN a take that is already the right length, and
+ * growing the clip would push everything after it out of place.
+ */
+export function quantizeClips(
+  session: DawSession,
+  targets: ReadonlyArray<{ trackId: TrackId; clipId: ClipId }>,
+  options: QuantizeOptions,
+): { session: DawSession; summary: QuantizeSummary } {
+  let out = session;
+  const all: QuantizeHit[] = [];
+  for (const target of targets) {
+    const clip = findTrack(out, target.trackId)
+      ? trackClips(findTrack(out, target.trackId)!).find((c) => c.id === target.clipId)
+      : undefined;
+    if (!clip || clip.kind !== 'audio') continue;
+    const hits = quantizeHits(
+      clipTransients(clip), session.tempoBpm, clip.offsetSec, clip.durationSec, options,
+    );
+    all.push(...hits);
+    if (!hits.some((h) => h.moved)) continue;
+    const warp = quantizeWarp(
+      hits, session.tempoBpm, clip.offsetSec, clip.durationSec, options.gridBeats,
+    );
+    out = updateClip(out, target.trackId, target.clipId, (c) => ({ ...c, warp }));
+  }
+  return { session: out, summary: summariseQuantize(all) };
+}
+
+/** Every audio clip a selection touches — what quantize is asked to act on. */
+export function clipsInSelection(
+  session: DawSession, trackIds: readonly TrackId[], startSec: number, endSec: number,
+): Array<{ trackId: TrackId; clipId: ClipId }> {
+  const out: Array<{ trackId: TrackId; clipId: ClipId }> = [];
+  for (const trackId of trackIds) {
+    const track = findTrack(session, trackId);
+    if (!track) continue;
+    for (const clip of trackClips(track)) {
+      if (clip.kind !== 'audio') continue;
+      if (clip.startSec + clip.durationSec <= startSec || clip.startSec >= endSec) continue;
+      out.push({ trackId, clipId: clip.id });
+    }
+  }
+  return out;
 }
 
 /** Turn warp off and put the clip back to its source length. */

@@ -140,6 +140,7 @@ export type DawCommandId =
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
   | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
+  | 'daw.quantizeAudio'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
@@ -481,6 +482,30 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
      * Named by what is in it, not "Group 1": a session with three of those
      * is a session where nobody remembers which is the drums.
      */
+    /**
+     * Open audio quantize on the selection.
+     *
+     * A separate verb from Auto-Warp rather than a replacement for it.  They
+     * answer different questions: Auto-Warp asks "what tempo is this loop and
+     * put it on the grid", quantize asks "this take is at the session's tempo
+     * and some hits are late".  Collapsing them would mean estimating a tempo
+     * for material whose tempo is already known.
+     */
+    'daw.quantizeAudio': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      if (hasRange(sel) && sel.trackIds.length > 0) { state.setQuantizeTarget(sel); return; }
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('클립을 선택하거나 오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      const clip = findClip(state.session, target.trackId, target.clipId);
+      if (!clip) return;
+      state.setQuantizeTarget({
+        startSec: clip.startSec,
+        endSec: clip.startSec + clip.durationSec,
+        trackIds: [target.trackId],
+      });
+    },
+
     'daw.createEditGroup': () => {
       const state = daw();
       const sel = currentSelection(state);

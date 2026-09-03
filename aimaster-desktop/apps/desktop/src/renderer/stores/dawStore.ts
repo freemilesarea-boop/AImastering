@@ -161,6 +161,10 @@ export interface DawState {
   stripTarget: TimeSelection | null;
   setStripTarget: (target: TimeSelection | null) => void;
 
+  /** The selection the audio-quantize dialog is looking at, or null. */
+  quantizeTarget: TimeSelection | null;
+  setQuantizeTarget: (target: TimeSelection | null) => void;
+
   /** Non-fatal engine notices (feedback loops, decode failures). */
   engineWarning: string | null;
   setEngineWarning: (w: string | null) => void;
@@ -270,6 +274,9 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   stripTarget: null,
   setStripTarget: (stripTarget) => set({ stripTarget }),
+
+  quantizeTarget: null,
+  setQuantizeTarget: (quantizeTarget) => set({ quantizeTarget }),
 
   metronomeOn: false,
   toggleMetronome: () => {

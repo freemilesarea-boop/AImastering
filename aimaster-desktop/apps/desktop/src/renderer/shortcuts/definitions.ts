@@ -59,6 +59,7 @@ export type CommandId =
   | 'daw.clipGainUp' | 'daw.clipGainDown'
   | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
   | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
+  | 'daw.quantizeAudio'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
@@ -363,6 +364,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
 
   // ── 트랙 헤더 ──────────────────────────────────────────────────────────
+  { id: 'daw.quantizeAudio', group: 'daw', label: '오디오 퀀타이즈', chords: ['Mod+Shift+T'],
+    note: '트랜지언트를 그리드로 — 강도·스윙·허용 오차를 정하고, 적용 전에 몇 개가 움직이는지 봅니다', available: true },
   { id: 'daw.createEditGroup', group: 'daw', label: '편집 그룹 만들기', chords: ['Mod+G'],
     note: '선택한 트랙들이 한 덩어리처럼 선택·편집됩니다 (페이더·뮤트도 함께)', available: true },
   { id: 'daw.dissolveEditGroup', group: 'daw', label: '편집 그룹 해제', chords: ['Mod+Shift+H'],
