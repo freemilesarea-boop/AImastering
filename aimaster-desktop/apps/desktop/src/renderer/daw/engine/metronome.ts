@@ -23,11 +23,20 @@
 // ticks far more often than a beat goes by, and a metronome that stacked three
 // clicks on every beat would be its own instrument.
 //
-// ── It is not in the bounce ──────────────────────────────────────────────────
+// ── It is not in the bounce, but it IS in the room ───────────────────────────
 //
-// The click connects to the context DESTINATION, not to the master chain.  It
-// is a thing you listen to, not a thing in the mix, and the offline render
-// never creates one at all.
+// The click never enters the master chain: it is a thing you listen to, not a
+// thing in the mix, and the offline render never creates one at all.
+//
+// It does, however, go through the CONTROL ROOM, which sits after the mixer
+// and before the speakers.  That is the difference between a monitor section
+// and a volume knob: press MUTE to take a phone call and the click has to stop
+// too, or the button did not do what it says.  DIM, the speaker-set trim and
+// the monitor level reach it for the same reason.
+//
+// The output is a constructor-free argument to `attach` with the destination
+// as its default, so a caller with no control room (a test, a headless
+// context) still gets a click.
 
 import { barBeatAt, beatToSec, meterAtBeat, secToBeat } from '../model/tempo-map.js';
 import type { TempoMap } from '../model/types.js';
@@ -134,14 +143,22 @@ interface AudioContextLike {
  */
 export class Metronome {
   private ctx: AudioContextLike | null = null;
+  /** Where the click is heard.  Null means the context destination. */
+  private output: AudioNode | null = null;
   private options: MetronomeOptions = DEFAULT_METRONOME;
   /** Timeline seconds already covered.  −1 means "nothing yet". */
   private scheduledTo = -1;
   private on = false;
 
-  attach(ctx: AudioContextLike | null): void {
+  attach(ctx: AudioContextLike | null, output: AudioNode | null = null): void {
     this.ctx = ctx;
+    this.output = output;
     this.scheduledTo = -1;
+  }
+
+  /** What the next click will connect to — the monitor path, or the speakers. */
+  get destinationNode(): AudioNode | null {
+    return this.output ?? this.ctx?.destination ?? null;
   }
 
   setEnabled(on: boolean): void {
@@ -195,9 +212,10 @@ export class Metronome {
     gain.gain.setValueAtTime(0, at);
     gain.gain.linearRampToValueAtTime(level, at + 0.002);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.06);
-    // The DESTINATION, not the master chain: the click is listened to, not
-    // mixed.  This is why a bounce never contains one.
-    osc.connect(gain).connect(ctx.destination);
+    // The monitor path, not the master chain: the click is listened to, not
+    // mixed.  This is why a bounce never contains one — and why MUTE, DIM and
+    // the monitor level reach it, since they are about the room.
+    osc.connect(gain).connect(this.output ?? ctx.destination);
     osc.start(at);
     osc.stop(at + 0.08);
   }

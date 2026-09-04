@@ -669,6 +669,10 @@ class DawRuntime {
       this.controlRoom.apply(this.controlRoomState);
       this.engine = new MixerEngine(this.ctx, this.controlRoom.input, { meters: true });
       this.player = new ClipPlayer(this.engine);
+      // The click is heard in the room, so it goes through the room.  Attached
+      // here rather than only in `setMetronome`, which never ran at all if the
+      // click was switched on before there was a context to attach to.
+      this.metronome.attach(this.ctx, this.controlRoom.input);
       return true;
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -740,7 +744,7 @@ class DawRuntime {
   /** Move the play head; keeps playing if it was playing. */
   /** Turn the click on or off.  Persisted by the store, not here. */
   setMetronome(on: boolean): void {
-    if (this.ctx) this.metronome.attach(this.ctx);
+    if (this.ctx) this.metronome.attach(this.ctx, this.controlRoom?.input ?? null);
     this.metronome.setEnabled(on);
   }
 

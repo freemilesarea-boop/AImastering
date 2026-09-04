@@ -25,6 +25,8 @@ import {
   toggleMute, type ControlRoomState, type MonitorSource,
 } from '../src/renderer/daw/model/control-room.js';
 import { ControlRoomNode } from '../src/renderer/daw/engine/control-room-node.js';
+import { Metronome } from '../src/renderer/daw/engine/metronome.js';
+import { defaultTempoMap } from '../src/renderer/daw/model/tempo-map.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -268,21 +270,35 @@ class StubParam {
     this.value = target;              // the stub has no clock: land immediately
     return this;
   }
+  setValueAtTime(v: number): StubParam { this.value = v; return this; }
+  linearRampToValueAtTime(v: number): StubParam { this.value = v; return this; }
+  exponentialRampToValueAtTime(v: number): StubParam { this.value = v; return this; }
 }
 class StubNode {
   readonly outs: { node: StubNode; from: number; to: number }[] = [];
   readonly gain = new StubParam(1);
+  readonly frequency = new StubParam(440);
   constructor(readonly kind: string) {}
   connect(n: StubNode, from = 0, to = 0): StubNode { this.outs.push({ node: n, from, to }); return n; }
   disconnect(): void { this.outs.length = 0; }
+  start(): void { /* the stub has no clock */ }
+  stop(): void { /* nor a way to run out of one */ }
 }
+/** Every oscillator the stub has handed out since it was last cleared. */
+const oscillators: StubNode[] = [];
 function stubCtx(): { ctx: BaseAudioContext; dest: StubNode } {
   const dest = new StubNode('destination');
   const ctx = {
     currentTime: 0,
+    destination: dest,
     createGain: () => new StubNode('gain'),
     createChannelSplitter: () => new StubNode('splitter'),
     createChannelMerger: () => new StubNode('merger'),
+    createOscillator: () => {
+      const o = new StubNode('oscillator');
+      oscillators.push(o);
+      return o;
+    },
   };
   return { ctx: ctx as unknown as BaseAudioContext, dest };
 }
@@ -368,6 +384,57 @@ check('disposing lets go of the graph', () => {
   assert(g.input.outs.length === 0, 'the input is released');
   assert(g.level!.outs.length === 0, 'and so is the level');
   g.cr.dispose();  // twice is not a crash
+});
+
+check('the click is heard in the room, so it goes through the room', () => {
+  // Found by looking at the live path rather than at the node: the metronome
+  // connected straight to `ctx.destination`, downstream of everything the
+  // control room does.  Press MUTE to take a phone call and the click keeps
+  // going at full level — which makes MUTE a button that does not do what it
+  // says.  DIM and the speaker trim missed it for the same reason.
+  //
+  // It is still not in the MIX: it never enters the mixer, so no bounce, stem
+  // or master can contain it.  The control room sits after the mixer.
+  // Run the real Metronome against a recording context and see where the
+  // oscillator it makes actually lands.
+  const { ctx, dest } = stubCtx();
+  const room = new StubNode('gain');            // stands in for the room input
+  const m = new Metronome();
+  m.attach(ctx as unknown as never, room as unknown as AudioNode);
+  m.setEnabled(true);
+  m.tick(defaultTempoMap(120), 0, 2, 0);
+  assert(oscillators.length > 0, 'a click was scheduled at all');
+  const landed = oscillators.flatMap((o) => o.outs.map((e) => e.node))
+    .flatMap((g) => g.outs.map((e) => e.node));
+  assert(landed.length > 0 && landed.every((n) => n === room),
+    'every click lands on what it was attached to, not on the speakers');
+  assert(!landed.includes(dest), 'and none of them goes straight to the destination');
+
+  // With nothing to attach to, it still clicks — a test or a headless context
+  // must not go silent just because there is no control room.
+  oscillators.length = 0;
+  const bare = new Metronome();
+  bare.attach(ctx as unknown as never);
+  bare.setEnabled(true);
+  bare.tick(defaultTempoMap(120), 0, 2, 0);
+  const bareLanded = oscillators.flatMap((o) => o.outs.map((e) => e.node))
+    .flatMap((g) => g.outs.map((e) => e.node));
+  assert(bareLanded.length > 0 && bareLanded.every((n) => n === dest),
+    'with no output given, the click falls back to the speakers');
+
+  const runtime = readFileSync('src/renderer/daw/engine/daw-runtime.ts', 'utf8');
+  assert(/this\.metronome\.attach\(this\.ctx, this\.controlRoom\.input\)/.test(runtime),
+    'and the live runtime attaches it to the monitor path when it builds one');
+  // Attached where the context is CREATED, not only where the click is
+  // toggled: switching the click on before there was a context left it
+  // attached to nothing at all.
+  const ensure = runtime.slice(runtime.indexOf('ensure(sampleRate'),
+    runtime.indexOf('/** Push the current session into the graph'));
+  assert(/this\.metronome\.attach\(/.test(ensure),
+    'attached inside ensure(), where the context and the room are made');
+
+  const render = readFileSync('src/renderer/daw/engine/offline-render.ts', 'utf8');
+  assert(!/[Mm]etronome/.test(render), 'and the render still never makes a click');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
