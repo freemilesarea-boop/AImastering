@@ -23,7 +23,7 @@ import {
   curveValueAt, findExpression, setExpression, type ExpressionTarget, type MidiNote,
 } from '../../../daw/model/midi.js';
 import { isInScale, scalePitchClasses } from '../../../daw/model/scales.js';
-import { describeSlot, rowOf, rowsFor } from '../../../daw/model/drum-map.js';
+import { describeSlot, diamondHalfPx, rowOf, rowsFor } from '../../../daw/model/drum-map.js';
 import {
   assignDrumMap, drumMapFor, drumMapsOf,
 } from '../../../daw/model/drum-map-session.js';
@@ -170,6 +170,20 @@ export default function KeyEditor() {
   // the grid with several hundred empty pixels above it.
   const visibleRows = Math.max(1, gridHeight / pitchHeight);
   const axisBottom = rows ? rows.length - visibleRows : bottomPitch;
+
+  /**
+   * Half-width of a drum hit's diamond, in pixels.
+   *
+   * ONE definition, used by the drawing, the hit test, the marquee and the
+   * resize handle alike.  A shape whose target is computed somewhere else is
+   * a shape whose target is not where it is: the diamond was drawn centred on
+   * the note start while the click test used the note's RECTANGLE from that
+   * start rightwards, so the left half of every diamond was dead and the
+   * empty space to its right clicked anyway.
+   */
+  const drumHalf = useCallback(
+    (note: MidiNote): number => diamondHalfPx(note.durationBeat, pxPerBeat, pitchHeight),
+    [pitchHeight, pxPerBeat]);
   const toY = useCallback(
     (pitch: number) => gridHeight - (axisOf(pitch) - axisBottom + 1) * pitchHeight,
     [gridHeight, axisBottom, pitchHeight, axisOf],
@@ -298,13 +312,18 @@ export default function KeyEditor() {
         // A drum hit has no useful length — it is a strike.  Drawn as a
         // diamond at its start, so a 1/32 hi-hat is as visible and as
         // clickable as a whole-bar crash instead of being two pixels wide.
-        const half = Math.max(3, Math.min(pitchHeight, w + 4) / 2 - 1);
-        const cy = y + pitchHeight / 2;
+        const half = drumHalf(note);
+        // Sit on the SAME device pixel the grid line is drawn on.  The line
+        // rounds; a diamond left on the raw coordinate lands up to a pixel
+        // beside it, which on a ten-pixel shape reads as "not quite on the
+        // beat" — and that is the whole thing a drum editor is for.
+        const cx = Math.round(x) + 0.5;
+        const cy = Math.round(y + pitchHeight / 2) + 0.5;
         ctx.beginPath();
-        ctx.moveTo(x, cy - half);
-        ctx.lineTo(x + half, cy);
-        ctx.lineTo(x, cy + half);
-        ctx.lineTo(x - half, cy);
+        ctx.moveTo(cx, cy - half);
+        ctx.lineTo(cx + half, cy);
+        ctx.lineTo(cx, cy + half);
+        ctx.lineTo(cx - half, cy);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
@@ -360,7 +379,8 @@ export default function KeyEditor() {
       }
     }
   }, [notes, size, scale, showGuides, bottomPitch, pitchHeight, pxPerBeat, scrollBeat,
-      selected, drag, gridBeat, tempo, toX, toY, part, playhead, rows, ghostNotes]);
+      selected, drag, gridBeat, tempo, toX, toY, part, playhead, rows, ghostNotes,
+      drumHalf]);
 
   // ── Controller / velocity lane ──────────────────────────────────────────
   useEffect(() => {
@@ -428,10 +448,16 @@ export default function KeyEditor() {
       const n = notes[i];
       if (!n) continue;
       if (n.pitch !== pitch) continue;
+      // A drum hit's target is the diamond that was drawn — centred on the
+      // start — not the note's length, which a strike does not really have.
+      if (rows) {
+        if (Math.abs(toX(n.startBeat) - x) <= drumHalf(n)) return n;
+        continue;
+      }
       if (sec >= n.startBeat && sec <= noteEndBeat(n)) return n;
     }
     return null;
-  }, [notes, toPitch, toBeat]);
+  }, [notes, toPitch, toBeat, toX, rows, drumHalf]);
 
   // ── Grid gestures ───────────────────────────────────────────────────────
   const onGridDown = useCallback((e: React.MouseEvent) => {
@@ -470,13 +496,15 @@ export default function KeyEditor() {
 
     const noteRight = toX(noteEndBeat(hit));
     const originals = notes.filter((n) => ids.includes(n.id));
-    if (Math.abs(x - noteRight) <= RESIZE_HANDLE_PX) {
+    // No resize on a drum row: the diamond has no right edge, so the handle
+    // would sit in empty space well past the shape it claims to belong to.
+    if (!rows && Math.abs(x - noteRight) <= RESIZE_HANDLE_PX) {
       setDrag({ kind: 'resize', noteIds: ids, startX: x, originals });
     } else {
       setDrag({ kind: 'move', noteIds: ids, startX: x, startY: y, originals });
     }
   }, [part, noteAtPoint, tool, notes, writeNotes, setSelection, toBeat, toPitch, tempo,
-      gridBeat, selected, selectedIds, toX]);
+      gridBeat, selected, selectedIds, toX, rows]);
 
   const onGridMove = useCallback((e: React.MouseEvent) => {
     const { x, y } = localPoint(e);
@@ -489,9 +517,12 @@ export default function KeyEditor() {
       const y0 = Math.min(drag.y0, y); const y1 = Math.max(drag.y0, y);
       const inside = notes.filter((n) => {
         const nx = toX(n.startBeat);
-        const nw = n.durationBeat * pxPerBeat;
         const ny = toY(n.pitch);
-        return nx + nw >= x0 && nx <= x1 && ny + pitchHeight >= y0 && ny <= y1;
+        // Rubber-banding has to catch what is DRAWN.  On a drum row that is a
+        // diamond around the start, not a bar running off to the right.
+        const left = rows ? nx - drumHalf(n) : nx;
+        const right = rows ? nx + drumHalf(n) : nx + n.durationBeat * pxPerBeat;
+        return right >= x0 && left <= x1 && ny + pitchHeight >= y0 && ny <= y1;
       });
       setSelection(inside.map((n) => n.id));
       return;
@@ -527,7 +558,7 @@ export default function KeyEditor() {
       writeNotes(next, true);
     }
   }, [drag, notes, pxPerBeat, pitchHeight, toX, toY, toBeat, toPitch, setSelection,
-      writeNotes, tempo, snapPitch, scale]);
+      writeNotes, tempo, snapPitch, scale, rows, drumHalf]);
 
   const endDrag = useCallback(() => {
     if (drag && (drag.kind === 'move' || drag.kind === 'resize')) commit();

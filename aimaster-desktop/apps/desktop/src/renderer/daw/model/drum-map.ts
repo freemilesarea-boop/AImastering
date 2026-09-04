@@ -316,6 +316,29 @@ export function usedSlots(map: DrumMap, notes: readonly MidiNote[]): DrumSlot[] 
   return rowsFor(map, notes).filter((s) => used.has(s.pitch));
 }
 
+/**
+ * Half-width, in pixels, of the diamond a drum hit is drawn as.
+ *
+ * Lives here rather than in the editor because FOUR places need it — the
+ * drawing, the click test, the rubber band and the resize handle — and a
+ * shape whose target is computed somewhere else is a shape whose target is
+ * not where it is.  The first version of this editor drew a centred diamond
+ * and hit-tested the note's RECTANGLE from that start rightwards, so the left
+ * half of every hit was dead and the empty space to its right clicked anyway.
+ *
+ * The size follows the note's length up to the row height, so a long hit
+ * reads slightly larger, and never falls below three pixels, or a 1/32 hat
+ * would be too small to aim at.
+ */
+export const MIN_DIAMOND_HALF_PX = 3;
+
+export function diamondHalfPx(
+  durationBeat: number, pxPerBeat: number, rowHeightPx: number,
+): number {
+  const width = Math.max(2, durationBeat * pxPerBeat);
+  return Math.max(MIN_DIAMOND_HALF_PX, Math.min(rowHeightPx, width + 4) / 2 - 1);
+}
+
 export function describeMap(map: DrumMap, notes: readonly MidiNote[]): string {
   const used = usedSlots(map, notes).length;
   const named = notes.filter((n) => slotFor(map, n.pitch)).length;

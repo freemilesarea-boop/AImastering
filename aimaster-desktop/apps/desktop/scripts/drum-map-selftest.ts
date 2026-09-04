@@ -19,9 +19,9 @@
  */
 
 import {
-  GM_DRUM_MAP, applyChokes, applyDrumMap, createDrumMap, describeMap, describeSlot,
-  moveSlot, outPitchOf, quantizeByMap, remapPitch, rowOf, rowsFor, setSlot, slotFor,
-  usedSlots, type DrumMap,
+  GM_DRUM_MAP, MIN_DIAMOND_HALF_PX, applyChokes, applyDrumMap, createDrumMap,
+  describeMap, describeSlot, diamondHalfPx, moveSlot, outPitchOf, quantizeByMap,
+  remapPitch, rowOf, rowsFor, setSlot, slotFor, usedSlots, type DrumMap,
 } from '../src/renderer/daw/model/drum-map.js';
 import { createNote, resetNoteIds, type MidiNote } from '../src/renderer/daw/model/midi.js';
 import {
@@ -241,6 +241,44 @@ check('the row header says the pitch, the name, and any rewrite', () => {
   assert(describeSlot({ pitch: 36, name: '킥' }) === '36 킥', describeSlot({ pitch: 36, name: '킥' }));
   const remapped = describeSlot({ pitch: 36, name: '킥', outPitch: 24 });
   assert(remapped.includes('→ 24'), `a rewrite is visible: ${remapped}`);
+});
+
+// ── The shape, and the target that has to match it ──────────────────────────
+
+check('the diamond has ONE size, and it is a half-width from the centre', () => {
+  // The editor draws the hit, tests the click, rubber-bands and offers a
+  // resize handle — four places.  When they disagreed, the diamond was drawn
+  // centred on the start while the click test used the note's rectangle
+  // running RIGHT from it: the left half of every hit was dead and the empty
+  // space beside it clicked anyway.
+  const half = diamondHalfPx(0.25, 160, 12);
+  assert(half > 0, 'a real size');
+  // Same inputs, same answer — that is the whole point of it being one call.
+  assert(diamondHalfPx(0.25, 160, 12) === half, 'deterministic');
+});
+
+check('a tiny hit is still big enough to aim at', () => {
+  // A 1/32 hat at a low zoom is two pixels of note.  Its target must not be.
+  assert(diamondHalfPx(1 / 32, 20, 12) >= MIN_DIAMOND_HALF_PX,
+    `${diamondHalfPx(1 / 32, 20, 12)} is at least the floor`);
+  assert(diamondHalfPx(0, 0, 12) >= MIN_DIAMOND_HALF_PX, 'and so is a zero-length one');
+});
+
+check('the diamond never outgrows its row', () => {
+  // A whole-bar crash must not draw a diamond taller than the lane it is in,
+  // or it overlaps the instruments above and below and they become unclickable.
+  for (const [dur, ppb, row] of [[4, 400, 12], [8, 900, 10], [1, 160, 24]] as const) {
+    assert(diamondHalfPx(dur, ppb, row) <= row / 2,
+      `${dur} beats at ${ppb}px/beat in a ${row}px row`);
+  }
+});
+
+check('a longer hit reads larger, until the row stops it', () => {
+  const small = diamondHalfPx(1 / 32, 160, 40);
+  const big = diamondHalfPx(1 / 4, 160, 40);
+  assert(big > small, `${big} > ${small}`);
+  assert(diamondHalfPx(4, 160, 40) === diamondHalfPx(8, 160, 40),
+    'past the row height they are the same size, not runaway');
 });
 
 // ── Where the kit lives ─────────────────────────────────────────────────────
