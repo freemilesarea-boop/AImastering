@@ -23,10 +23,11 @@ import type { WarpConfig } from './warp.js';
 import type { Pattern } from './patterns.js';
 import type { StepPattern } from './step-sequencer.js';
 import type { DrumMap } from './drum-map.js';
+import type { MidiInsert } from './midi-insert.js';
 export type {
   ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment, MacroRack,
   Section,
-  DeviceGraph, Rack, SessionGrid, DrumMap,
+  DeviceGraph, Rack, SessionGrid, DrumMap, MidiInsert,
 };
 
 export type TrackId    = string;
@@ -340,6 +341,14 @@ export interface Track {
    * applying a kit to a piano part would transpose it.
    */
   drumMapId?: string;
+  /**
+   * MIDI inserts — what happens to notes BEFORE the instrument hears them.
+   *
+   * Absent on every track that has none, which is most of them.  Read it
+   * through `midiInsertsOf(track)`: the difference between "no chain" and
+   * "an empty chain" is not one any caller should have to think about.
+   */
+  midiInserts?: MidiInsert[];
   /**
    * Track Delay in milliseconds — negative plays EARLIER.
    *

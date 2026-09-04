@@ -12,6 +12,11 @@ import type { Clip, DawSession, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
 import { trackClips } from '../model/session-ops.js';
 import { ClipPlayer } from './clip-player.js';
+import {
+  arpStepsFor, liveNotes, stepSeconds, timedInsert,
+  type ArpeggiatorInsert,
+} from '../model/midi-insert.js';
+import { midiInsertsOf } from '../model/midi-insert-track.js';
 import { getCached, pinFiles, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
 import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
@@ -22,7 +27,7 @@ import {
   MidiInputHandle, anchorTimebase, midiFailureReason, openMidiInputs,
 } from './midi-input.js';
 import type { CaptureEvent } from '../model/midi-capture.js';
-import type { MidiNote } from '../model/midi.js';
+import { createNote, type MidiNote } from '../model/midi.js';
 import type { RecordPlan } from '../model/recording.js';
 
 export interface LoopState {
@@ -120,6 +125,21 @@ class DawRuntime {
   private midiTapeZeroSec = 0;
   /** One live voice per sounding key, so a note-off finds exactly its own. */
   private liveVoices = new Map<string, LiveVoice>();
+  /**
+   * One running arpeggiator per track, while keys are held.
+   *
+   * Its own clock rather than the transport's, because somebody trying out a
+   * patch is usually not rolling — a hardware arp behaves the same way.  The
+   * STEPS themselves come from `arpStepsFor`, which is the function the
+   * rendered part uses, so what is heard live and what plays back cannot
+   * disagree.
+   */
+  private liveArps = new Map<TrackId, {
+    timer: ReturnType<typeof setInterval>;
+    step: number;
+    held: Map<string, { pitch: number; velocity: number; channel: number }>;
+    insert: ArpeggiatorInsert;
+  }>();
 
   /** Every MIDI message that arrives, for the activity light and the pitch. */
   onMidiActivity: ((event: CaptureEvent) => void) | null = null;
@@ -333,32 +353,55 @@ class DawRuntime {
         const track = this.session?.tracks.find((t) => t.id === trackId);
         const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
         if (!instrument) continue;
-        const key = `${trackId}:${event.channel}:${event.pitch}`;
-        this.releaseLive(key, 0);
 
-        const gate = ctx.createGain();
-        gate.gain.value = 1;
-        gate.connect(channel.input);
+        const chain = midiInsertsOf(track);
+        const arp = timedInsert(chain);
+        if (arp?.kind === 'arpeggiator') {
+          // The key joins the held chord instead of sounding; the arp's own
+          // clock decides what is played and when.
+          this.holdForArp(trackId, arp, event);
+          continue;
+        }
+
+        // The stateless head of the chain — a transpose, a chorder, a split.
+        // One key can turn into several notes or into none, and none is a
+        // real answer: a split keyboard is silent above the split.
+        const shaped = liveNotes(event.pitch, event.velocity, event.channel, chain);
         const params = { ...(track?.instrumentParams ?? {}) };
-        const voice = instrument.playNote({
-          ctx,
-          destination: gate,
-          note: createLiveNote(event.pitch, event.velocity),
-          config: { bendRangeSemitones: 2, mpe: false },
-          when: ctx.currentTime,
-          durationSec: LIVE_HOLD_SEC,
-          params,
-        });
-        this.liveVoices.set(key, {
-          gate, voice, releaseSec: Math.max(0.03, params['release'] ?? LIVE_RELEASE_SEC),
-        });
+        for (const note of shaped) {
+          // Keyed by the PLAYED pitch as well as the pressed one, so a chorder
+          // that adds three notes has three voices to release.
+          const key = `${trackId}:${event.channel}:${event.pitch}:${note.pitch}`;
+          this.releaseLive(key, 0);
+          const gate = ctx.createGain();
+          gate.gain.value = 1;
+          gate.connect(channel.input);
+          const voice = instrument.playNote({
+            ctx,
+            destination: gate,
+            note: { ...createLiveNote(note.pitch, note.velocity), channel: note.channel },
+            config: { bendRangeSemitones: 2, mpe: false },
+            when: ctx.currentTime,
+            durationSec: LIVE_HOLD_SEC,
+            params,
+          });
+          this.liveVoices.set(key, {
+            gate, voice, releaseSec: Math.max(0.03, params['release'] ?? LIVE_RELEASE_SEC),
+          });
+        }
       }
       return;
     }
 
     if (event.kind === 'noteOff') {
       for (const trackId of this.midiTrackIds) {
-        this.releaseLive(`${trackId}:${event.channel}:${event.pitch}`, undefined);
+        this.releaseArp(trackId, event.channel, event.pitch);
+        // Release every voice this key started.  A chorder made several, and
+        // a chain that made none leaves nothing to find, which is fine.
+        const prefix = `${trackId}:${event.channel}:${event.pitch}:`;
+        for (const key of [...this.liveVoices.keys()]) {
+          if (key.startsWith(prefix)) this.releaseLive(key, undefined);
+        }
       }
       return;
     }
@@ -369,6 +412,94 @@ class DawRuntime {
     if (event.kind === 'cc' && (event.controller === 120 || event.controller === 123)) {
       this.allNotesOff();
     }
+  }
+
+  /**
+   * Add a key to a track's held chord, starting the arp if it was not running.
+   *
+   * The step counter is NOT reset when a key joins a chord already playing —
+   * that is what makes adding a note to a held chord change the run rather
+   * than restart it, which is what every hardware arp does and what anybody
+   * playing one expects.
+   */
+  private holdForArp(
+    trackId: TrackId, insert: ArpeggiatorInsert,
+    event: { pitch: number; velocity: number; channel: number },
+  ): void {
+    const key = `${event.channel}:${event.pitch}`;
+    const running = this.liveArps.get(trackId);
+    if (running) {
+      running.held.set(key, { pitch: event.pitch, velocity: event.velocity, channel: event.channel });
+      // A changed setting takes effect on the next step rather than on the
+      // next chord, so turning the rate knob is audible while holding.
+      running.insert = insert;
+      return;
+    }
+
+    const held = new Map([[key,
+      { pitch: event.pitch, velocity: event.velocity, channel: event.channel }]]);
+    const tempo = this.session?.tempoBpm ?? 120;
+    const stepMs = Math.max(20, stepSeconds(insert, tempo) * 1000);
+    const state = {
+      timer: globalThis.setInterval(() => this.arpTick(trackId), stepMs),
+      step: 0, held, insert,
+    };
+    this.liveArps.set(trackId, state);
+    // Sound the first step now rather than one step late — a key press that
+    // makes no sound until 125 ms later reads as the arp being broken.
+    this.arpTick(trackId);
+  }
+
+  /** Play whatever this track's arp owes for one step. */
+  private arpTick(trackId: TrackId): void {
+    const state = this.liveArps.get(trackId);
+    const ctx = this.ctx;
+    if (!state || !ctx) return;
+    const channel = this.engine?.channel(trackId);
+    const track = this.session?.tracks.find((t) => t.id === trackId);
+    const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
+    if (!channel || !instrument) return;
+
+    const held = [...state.held.values()].map((k, i) => createNote({
+      id: `arp-${i}`,
+      pitch: k.pitch, velocity: k.velocity, channel: k.channel,
+      startBeat: 0, durationBeat: 1,
+    }));
+    const steps = arpStepsFor(held, state.insert, state.step, state.step + 1);
+    state.step += 1;
+
+    const gateSec = stepSeconds(state.insert, this.session?.tempoBpm ?? 120)
+      * Math.max(0.05, Math.min(1, state.insert.gate));
+    const params = { ...(track?.instrumentParams ?? {}) };
+    for (const step of steps) {
+      // Finite one-shots — an arp step has a length, unlike a held key, so it
+      // needs no gate of its own and cannot be left hanging by a lost note-off.
+      instrument.playNote({
+        ctx,
+        destination: channel.input,
+        note: createLiveNote(step.pitch, step.velocity),
+        config: { bendRangeSemitones: 2, mpe: false },
+        when: ctx.currentTime,
+        durationSec: gateSec,
+        params,
+      });
+    }
+  }
+
+  /** Take a key out of a track's held chord; stop the arp when none are left. */
+  private releaseArp(trackId: TrackId, channel: number, pitch: number): void {
+    const state = this.liveArps.get(trackId);
+    if (!state) return;
+    state.held.delete(`${channel}:${pitch}`);
+    if (state.held.size > 0) return;
+    clearInterval(state.timer);
+    this.liveArps.delete(trackId);
+  }
+
+  /** Stop every running arp — a panic, a disarm, or the context going away. */
+  private stopAllArps(): void {
+    for (const state of this.liveArps.values()) clearInterval(state.timer);
+    this.liveArps.clear();
   }
 
   private releaseLive(key: string, overrideRelease?: number): void {
@@ -391,6 +522,9 @@ class DawRuntime {
 
   /** Silence everything the keyboard is holding — panic, and every teardown. */
   allNotesOff(): void {
+    // The arps go first: a running one would start new voices immediately
+    // after the panic released the old ones.
+    this.stopAllArps();
     for (const key of [...this.liveVoices.keys()]) this.releaseLive(key, 0.01);
   }
 

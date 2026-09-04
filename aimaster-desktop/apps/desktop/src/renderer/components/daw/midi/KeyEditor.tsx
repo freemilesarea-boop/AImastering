@@ -31,6 +31,8 @@ import { GM_DRUM_MAP } from '../../../daw/model/drum-map.js';
 import DrumMapEditor from './DrumMapEditor.js';
 import LogicalEditor from './LogicalEditor.js';
 import ListEditor from './ListEditor.js';
+import MidiInsertRack from './MidiInsertRack.js';
+import { trackHasInserts } from '../../../daw/model/midi-insert-track.js';
 import { detectChord, formatChord } from '../../../daw/model/chords.js';
 import { notesAt, MIN_NOTE_BEATS } from '../../../daw/edit/midi-edit.js';
 import { beatsToSecAt, partClock, timelineSecToBeat } from '../../../daw/model/note-time.js';
@@ -93,6 +95,7 @@ export default function KeyEditor() {
   const [showKitEditor, setShowKitEditor] = useState(false);
   const [showLogical, setShowLogical] = useState(false);
   const [showList, setShowList] = useState(false);
+  const [showInserts, setShowInserts] = useState(false);
   const [hoverInfo, setHoverInfo] = useState<{ beat: number; pitch: number } | null>(null);
 
   const track = open ? findTrack(session, open.trackId) : undefined;
@@ -638,7 +641,7 @@ export default function KeyEditor() {
           {drumMapsOf(session).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
         {drumMap && (
-          <button onClick={() => { setShowKitEditor((v) => !v); setShowLogical(false); setShowList(false); }}
+          <button onClick={() => { setShowKitEditor((v) => !v); setShowLogical(false); setShowList(false); setShowInserts(false); }}
             title="이름 · 출력 노트 · 초크 그룹 · 악기별 그리드"
             className={`h-6 px-2 rounded text-[10px] border ${showKitEditor
               ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
@@ -681,13 +684,24 @@ export default function KeyEditor() {
           ))}
         </select>
 
-        <button onClick={() => { setShowList((v) => !v); setShowLogical(false); setShowKitEditor(false); }}
+        <button onClick={() => {
+            setShowInserts((v) => !v);
+            setShowLogical(false); setShowKitEditor(false); setShowList(false);
+          }}
+          title="건반과 악기 사이의 체인 — 아르페지에이터·코더·스플릿. 파트는 그대로 두고 들리는 것만 바꿉니다"
+          className={`h-6 px-2 rounded text-[10px] border ${showInserts
+            ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+            : track && trackHasInserts(track)
+              ? 'bg-zinc-900 border-indigo-700/60 text-indigo-400'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}>INS</button>
+
+        <button onClick={() => { setShowList((v) => !v); setShowLogical(false); setShowKitEditor(false); setShowInserts(false); }}
           title="파트의 모든 이벤트를 숫자로 — 유일하게 값을 읽고 타이핑할 수 있는 곳"
           className={`h-6 px-2 rounded text-[10px] border ${showList
             ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
             : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}>LIST</button>
 
-        <button onClick={() => { setShowLogical((v) => !v); setShowKitEditor(false); setShowList(false); }}
+        <button onClick={() => { setShowLogical((v) => !v); setShowKitEditor(false); setShowList(false); setShowInserts(false); }}
           title="규칙으로 고르고 규칙으로 바꿉니다 — 고정된 동사로는 말할 수 없는 편집"
           className={`h-6 px-2 rounded text-[10px] border ${showLogical
             ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
@@ -723,6 +737,9 @@ export default function KeyEditor() {
           area rather than against something above the toolbar — without it
           they sit on top of the very buttons that open and close them. */}
       <div className="flex-1 flex overflow-hidden relative">
+        {showInserts && open && (
+          <MidiInsertRack trackId={open.trackId} onClose={() => setShowInserts(false)} />
+        )}
         {showList && open && <ListEditor onClose={() => setShowList(false)} />}
         {showLogical && open && <LogicalEditor onClose={() => setShowLogical(false)} />}
         {drumMap && showKitEditor && open && (

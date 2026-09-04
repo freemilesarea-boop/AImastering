@@ -29,6 +29,7 @@ import { needsRender } from './warp-render.js';
 import { clipNotes } from '../model/patterns.js';
 import { drumMapFor } from '../model/drum-map-session.js';
 import { playedNotes } from '../model/drum-map-play.js';
+import { insertedNotes, midiInsertsOf } from '../model/midi-insert-track.js';
 import { findCoverage } from '../model/macro-automation.js';
 import type { MacroId } from '../model/macros.js';
 import { noteSpan, partClock } from '../model/note-time.js';
@@ -243,10 +244,14 @@ export class ClipPlayer {
     // Pattern-backed clips carry no notes of their own — resolve the link so
     // every placement of a pattern plays the one copy of the phrase.
     //
-    // A drum track's part is then read through its kit: out-pitches applied,
-    // muted instruments dropped, hi-hats choking each other.  Done here rather
-    // than in the editor so the written part keeps the pitches its rows show.
-    for (const note of playedNotes(drumMapFor(session, track), clipNotes(session, clip))) {
+    // The part goes through the track's MIDI inserts, then its drum kit.
+    //
+    // Inserts first because they are ABOUT the notes as written — an arp is
+    // arpeggiating what the player wrote — while the kit is about which sound
+    // each pitch reaches.  Both leave the stored part alone, which is what
+    // lets the editor keep showing what was actually played.
+    const inserted = insertedNotes(midiInsertsOf(track), clipNotes(session, clip));
+    for (const note of playedNotes(drumMapFor(session, track), inserted.notes)) {
       if (note.muted) continue;
       const span = noteSpan(clock, note);
       // The clock reads the tempo map at the note's REAL position, and the
