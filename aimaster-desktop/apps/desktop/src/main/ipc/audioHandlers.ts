@@ -401,6 +401,10 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       const bd = (options?.bitDepth === 16 ? 16 : 24) as 16 | 24;
       const rendered = await processAudioFileRust(safeSourcePath, chainConfig, {
         sampleRate: sr, bitDepth: bd, outputPath: wavTempPath,
+        // The user's choice, when they made one.  `undefined` leaves the
+        // encoder on its own default (TPDF), which is the right answer for
+        // anyone who has never opened the export panel.
+        ...(typeof options?.dither === 'string' ? { dither: options.dither as never } : {}),
         // Two-pass loudness-normalize toward the same target the UI requests.
         ...(typeof options?.targetLufs === 'number' ? { targetLufs: options.targetLufs } : {}),
         ...(typeof options?.targetTp === 'number' ? { targetTp: options.targetTp } : {}),

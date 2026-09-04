@@ -139,6 +139,14 @@ export interface MasteringOptions {
   targetTp: number;
   sampleRate: number;
   bitDepth: number;
+  /**
+   * How the word length is reduced on export.
+   *
+   * Written out rather than imported from the renderer's dither module: this
+   * package is the boundary between processes and must not depend on either
+   * side of it.  The renderer's `DitherMode` is the same four names.
+   */
+  dither?: 'none' | 'tpdf' | 'shaped' | 'shaped-strong';
   applyAiCorrections: boolean;
   /** v3 — limiter 강도 (low/medium/high). 누락 시 medium. */
   limiterStrength?: LimiterStrength;

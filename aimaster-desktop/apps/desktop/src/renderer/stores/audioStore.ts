@@ -6,6 +6,7 @@ import type {
   MasteringStyle,
   LimiterStrength,
 } from '@aimaster/shared-types';
+import type { DitherMode } from '../daw/audio/dither.js';
 import type { RevisionGroup, RevisionInput } from '../audio/revisions/revision-types.js';
 import {
   addRevision as addRevisionToGroup,
@@ -155,6 +156,11 @@ export interface MasteringOptions {
   targetTp: number;
   sampleRate: number;
   bitDepth: 16 | 24;
+  /**
+   * How the word length is reduced.  Only matters at 16-bit, where the
+   * difference is audible on quiet tails — see daw/audio/dither.ts.
+   */
+  dither?: DitherMode | undefined;
   applyAiCorrections: boolean;
   // v3 신규
   limiterStrength: LimiterStrength;
@@ -206,6 +212,7 @@ const defaultOptions: MasteringOptions = {
   targetTp:           -1.0,
   sampleRate:         44100,
   bitDepth:           24,
+  dither:             'tpdf',
   applyAiCorrections: true,
   limiterStrength:    'medium',
   targetLufsExplicit: false,

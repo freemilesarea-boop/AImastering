@@ -39,6 +39,7 @@ import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
 import { louiPresetToMasteringOptions } from '../audio/presets/preset-to-options.js';
 import { getLastUsedPreset, setLastUsedPreset } from '../audio/presets/preset-storage.js';
 import { LouiHomeHero } from '../components/home/LouiHomeHero.js';
+import AlbumPanel from '../components/AlbumPanel.js';
 import { loui, louiAlpha } from '../theme/loui-home.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -986,6 +987,10 @@ export default function HomePage() {
     if (doneCount > 0) notify(`${doneCount}곡 마스터링 완료`, 'success');
   }, [queue, isBatchRunning, options, updateQueueItem, setIsBatchRunning, notify]);
 
+  // Whether the album panel is open.  Local rather than in the store: it is a
+  // view of the queue, and nothing outside this page needs to ask about it.
+  const [albumOpen, setAlbumOpen] = useState(false);
+
   // ── Derived state ─────────────────────────────────────────────────────
   const pendingCount  = queue.filter((i) => i.status === 'pending' || i.status === 'error').length;
   const doneCount     = queue.filter((i) => i.status === 'done').length;
@@ -1248,6 +1253,20 @@ export default function HomePage() {
                 </div>
               )}
 
+              {/* Two or more finished masters is an album's worth — offer it
+                  there rather than making anyone go looking for the feature. */}
+              {doneCount >= 2 && !isBatchRunning && (
+                <button
+                  onClick={() => setAlbumOpen(true)}
+                  className="no-drag w-full py-2.5 rounded-xl text-xs font-medium
+                             border border-indigo-500/40 text-indigo-300
+                             hover:border-indigo-400 hover:text-indigo-200 transition-colors"
+                  data-testid="open-album"
+                >
+                  앨범으로 묶기 ({doneCount}곡) · 순서 · 간격 · 레벨 · 큐시트
+                </button>
+              )}
+
               {/* All done CTA */}
               {doneCount > 0 && pendingCount === 0 && !isBatchRunning && (
                 <button
@@ -1264,6 +1283,8 @@ export default function HomePage() {
 
         </div>
       </div>
+
+      {albumOpen && <AlbumPanel onClose={() => setAlbumOpen(false)} />}
     </div>
   );
 }

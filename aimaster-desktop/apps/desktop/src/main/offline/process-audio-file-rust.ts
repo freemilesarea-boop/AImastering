@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import { resolveFFmpegPath } from '@aimaster/audio-engine';
 import { encodeWav as encodeWavBytes } from '../../renderer/daw/engine/wav.js';
+import type { DitherMode } from '../../renderer/daw/audio/dither.js';
 import {
   renderStereoBuffer, renderStereoBufferNormalized, deinterleave, interleave,
   type RenderMetrics, type NormalizedRenderMetrics,
@@ -29,6 +30,8 @@ import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-
 export interface RustRenderOptions {
   sampleRate: number;
   bitDepth: 16 | 24;
+  /** How the word length is reduced.  Defaults to TPDF. */
+  dither?: DitherMode;
   outputPath: string;
   /** When set, two-pass loudness-normalize toward this target (LUFS). */
   targetLufs?: number;
@@ -94,9 +97,10 @@ async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promi
  */
 async function encodeWav(
   interleaved: Float32Array, sampleRate: number, bitDepth: 16 | 24, outputPath: string,
+  dither?: DitherMode,
 ): Promise<void> {
   const { left, right } = deinterleave(interleaved, 2);
-  const bytes = encodeWavBytes([left, right], sampleRate, bitDepth);
+  const bytes = encodeWavBytes([left, right], sampleRate, bitDepth, dither);
   await writeFile(outputPath, bytes);
 }
 
@@ -137,6 +141,7 @@ export async function processAudioFileRust(
   }
 
   const interleavedOut = interleave(outL, outR);
-  await encodeWav(interleavedOut, options.sampleRate, options.bitDepth, options.outputPath);
+  await encodeWav(interleavedOut, options.sampleRate, options.bitDepth, options.outputPath,
+                  options.dither);
   return { outputPath: options.outputPath, metrics, backend: 'rust', loudnessNormalized: normalized };
 }

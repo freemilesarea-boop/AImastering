@@ -384,20 +384,28 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
     },
     {
       kind: 'enum', id: 'dither', label: 'Dither',
-      values: ['none', 'tpdf', 'shaped'],
+      values: ['none', 'tpdf', 'shaped', 'shaped-strong'],
       default: 'tpdf',
-      labels: { none: 'None', tpdf: 'TPDF', shaped: 'Shaped' },
+      labels: {
+        'none': 'None', 'tpdf': 'TPDF',
+        'shaped': 'Shaped', 'shaped-strong': 'Shaped (strong)',
+      },
       hints:  {
-        none:   'No noise added',
-        tpdf:   'Standard noise dither',
-        shaped: 'Noise-shaped (recommended)',
+        'none':          'Rounding only — the error follows the signal',
+        'tpdf':          'Standard triangular dither',
+        'shaped':        'Noise pushed above the ear\u2019s sensitive band',
+        'shaped-strong': 'Pushed harder — least audible noise, most total noise',
       },
       automatable: false,
       binding: {
-        moduleType: 'dither',
-        path: 'algorithm',
-        status: 'pending',
-        note: 'EngineSchema has a `dither` module but no adapter implements it yet.',
+        moduleType: null,
+        path: 'export.dither',
+        status: 'unavailable',
+        exportField: 'dither',
+        // Like sampleRate and bitDepth: it changes the EXPORT render, not the
+        // preview, because the preview never leaves float and so has no word
+        // length to reduce.
+        note: 'Export-renderable — applied on Re-master & Export, not preview.',
       },
     },
   ],
