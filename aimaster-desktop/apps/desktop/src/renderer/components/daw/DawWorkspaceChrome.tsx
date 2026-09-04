@@ -14,6 +14,7 @@ import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 import DawTransportBar from './DawTransportBar.js';
 import DawMixConsole from './DawMixConsole.js';
 import DawInspector from './DawInspector.js';
+import ControlRoomPanel from './mix/ControlRoomPanel.js';
 import DawMediaBay from './DawMediaBay.js';
 import DawShortcutHelp from './DawShortcutHelp.js';
 import ControlSurfacePanel from './surface/ControlSurfacePanel.js';
@@ -50,6 +51,12 @@ export default function DawWorkspaceChrome() {
           {showTransport  && <DawTransportBar />}
         </div>
       )}
+
+      {/* The monitor section.  Floating rather than in the bottom zone: it is
+          reached while looking at something else, and a control room that
+          pushes the arrangement up every time you turn the speakers down is
+          one people stop opening. */}
+      {panels.controlRoom && <ControlRoomPanel />}
 
       {panels.mediaBay && <DawMediaBay />}
       {panels.help     && <DawShortcutHelp />}

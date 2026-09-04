@@ -367,6 +367,7 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
     },
 
     // ── 5. 창 및 패널 ───────────────────────────────────────────────────
+    'window.controlRoom':    togglePanelCmd('controlRoom', '컨트롤 룸'),
     'window.mixConsole':     togglePanelCmd('mixConsole', '믹스콘솔'),
     'window.transportPanel': togglePanelCmd('transport',  '트랜스포트'),
     'window.keyEditor':      unavailable('window.keyEditor'),

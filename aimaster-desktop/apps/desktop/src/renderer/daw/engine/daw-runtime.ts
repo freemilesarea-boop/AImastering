@@ -12,6 +12,8 @@ import type { Clip, DawSession, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
 import { trackClips } from '../model/session-ops.js';
 import { ClipPlayer } from './clip-player.js';
+import { ControlRoomNode } from './control-room-node.js';
+import { DEFAULT_CONTROL_ROOM, type ControlRoomState } from '../model/control-room.js';
 import {
   arpStepsFor, liveNotes, stepSeconds, timedInsert,
   type ArpeggiatorInsert,
@@ -71,6 +73,16 @@ class DawRuntime {
   private ctx: AudioContext | null = null;
   private engine: MixerEngine | null = null;
   private player: ClipPlayer | null = null;
+  /**
+   * The monitor path, between the mix and the speakers.
+   *
+   * Built HERE and nowhere else.  `offline-render.ts` hands the mixer the
+   * render destination directly, so a bounce cannot carry the monitor level:
+   * not because a flag is checked, but because in that path this object is
+   * never constructed.
+   */
+  private controlRoom: ControlRoomNode | null = null;
+  private controlRoomState: ControlRoomState = DEFAULT_CONTROL_ROOM;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** The click.  Not in the mix — see engine/metronome.ts. */
   readonly metronome = new Metronome();
@@ -201,6 +213,23 @@ class DawRuntime {
     this.captures.set(trackId, capture);
     if (options.monitor) this.setMonitoring(trackId, true);
     return capture;
+  }
+
+  // ── Control room ────────────────────────────────────────────────────────
+
+  /** What the monitor path is set to.  Never part of a render. */
+  get controlRoomSettings(): ControlRoomState { return this.controlRoomState; }
+
+  /**
+   * Push monitor settings onto the graph.
+   *
+   * Kept even when the context does not exist yet, so a level set before the
+   * first transport gesture is applied the moment the engine comes up rather
+   * than being silently dropped.
+   */
+  setControlRoom(state: ControlRoomState): void {
+    this.controlRoomState = state;
+    this.controlRoom?.apply(state);
   }
 
   /** Route (or unroute) one track's live input through its own channel. */
@@ -636,7 +665,9 @@ class DawRuntime {
     if (typeof AudioContext === 'undefined') return false;
     try {
       this.ctx = new AudioContext({ sampleRate, latencyHint: 'interactive' });
-      this.engine = new MixerEngine(this.ctx, this.ctx.destination, { meters: true });
+      this.controlRoom = new ControlRoomNode(this.ctx, this.ctx.destination);
+      this.controlRoom.apply(this.controlRoomState);
+      this.engine = new MixerEngine(this.ctx, this.controlRoom.input, { meters: true });
       this.player = new ClipPlayer(this.engine);
       return true;
     } catch (err) {

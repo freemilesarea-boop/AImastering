@@ -35,7 +35,8 @@ export const ACTIVE_TOOLS: ToolId[] = ['select', 'range', 'split', 'erase', 'zoo
 
 export type PanelId =
   | 'transport' | 'mixConsole' | 'bottomZone' | 'inspector'
-  | 'rightRack' | 'mediaBay' | 'vstEditor' | 'help' | 'surface';
+  | 'rightRack' | 'mediaBay' | 'vstEditor' | 'help' | 'surface'
+  | 'controlRoom';
 
 export interface TimeRange { startSec: number; endSec: number }
 
@@ -164,6 +165,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   panels: {
     transport:  true,
     mixConsole: false,
+    controlRoom: false,
     bottomZone: true,
     inspector:  false,
     rightRack:  true,

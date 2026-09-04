@@ -50,7 +50,7 @@ export type CommandId =
   | 'window.mixConsole' | 'window.transportPanel' | 'window.keyEditor'
   | 'window.bottomEditor' | 'window.vstEditor' | 'window.mediaBay'
   | 'window.inspector' | 'window.rightRack' | 'window.shortcutHelp'
-  | 'window.controlSurface'
+  | 'window.controlSurface' | 'window.controlRoom'
   // 6. DAW workspace — multitrack editing, routing and rendering
   | 'daw.open' | 'daw.toggleWindow'
   | 'daw.tabNext' | 'daw.tabPrev' | 'daw.toggleTabToTransient'
@@ -221,7 +221,9 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택 구간 → 루프 구간 (선택이 없으면 전체 구간)', available: true },
 
   // ── 5. 창 및 패널 ──────────────────────────────────────────────────────
-  { id: 'window.mixConsole',     group: 'window', label: '믹스콘솔 (MixConsole)', chords: ['F3'],
+  { id: 'window.controlRoom',    group: 'window', label: '컨트롤 룸 (Control Room)', chords: ['F3'],
+    note: '모니터 레벨 · DIM · MONO · 스피커 세트 · 큐 — 믹스에는 들어가지 않습니다', available: true },
+  { id: 'window.mixConsole',     group: 'window', label: '믹스콘솔 (MixConsole)', chords: ['Shift+F3'],
     note: '하단 믹스콘솔 — 모듈별 바이패스 / 마스터 뮤트', available: true },
   { id: 'window.transportPanel', group: 'window', label: '트랜스포트 Panel', chords: ['F2'],
     note: '하단 트랜스포트 바 (파형 · 루프 · 툴) 열기/닫기', available: true },
