@@ -23,7 +23,7 @@ import {
   curveValueAt, findExpression, setExpression, type ExpressionTarget, type MidiNote,
 } from '../../../daw/model/midi.js';
 import { isInScale, scalePitchClasses } from '../../../daw/model/scales.js';
-import { describeSlot, diamondHalfPx, rowOf, rowsFor } from '../../../daw/model/drum-map.js';
+import { describeSlot, drumCellPx, rowOf, rowsFor } from '../../../daw/model/drum-map.js';
 import {
   assignDrumMap, drumMapFor, drumMapsOf,
 } from '../../../daw/model/drum-map-session.js';
@@ -172,18 +172,15 @@ export default function KeyEditor() {
   const axisBottom = rows ? rows.length - visibleRows : bottomPitch;
 
   /**
-   * Half-width of a drum hit's diamond, in pixels.
+   * Width of a drum hit's cell, in pixels.
    *
-   * ONE definition, used by the drawing, the hit test, the marquee and the
-   * resize handle alike.  A shape whose target is computed somewhere else is
-   * a shape whose target is not where it is: the diamond was drawn centred on
-   * the note start while the click test used the note's RECTANGLE from that
-   * start rightwards, so the left half of every diamond was dead and the
-   * empty space to its right clicked anyway.
+   * ONE definition, used by the drawing, the hit test and the marquee alike.
+   * A shape whose target is computed somewhere else is a shape whose target
+   * is not where it is.
    */
-  const drumHalf = useCallback(
-    (note: MidiNote): number => diamondHalfPx(note.durationBeat, pxPerBeat, pitchHeight),
-    [pitchHeight, pxPerBeat]);
+  const drumWidth = useCallback(
+    (note: MidiNote): number => drumCellPx(note.durationBeat, gridBeat, pxPerBeat),
+    [gridBeat, pxPerBeat]);
   const toY = useCallback(
     (pitch: number) => gridHeight - (axisOf(pitch) - axisBottom + 1) * pitchHeight,
     [gridHeight, axisBottom, pitchHeight, axisOf],
@@ -309,24 +306,20 @@ export default function KeyEditor() {
       ctx.lineWidth = 1;
 
       if (rows) {
-        // A drum hit has no useful length — it is a strike.  Drawn as a
-        // diamond at its start, so a 1/32 hi-hat is as visible and as
-        // clickable as a whole-bar crash instead of being two pixels wide.
-        const half = drumHalf(note);
-        // Sit on the SAME device pixel the grid line is drawn on.  The line
-        // rounds; a diamond left on the raw coordinate lands up to a pixel
-        // beside it, which on a ten-pixel shape reads as "not quite on the
-        // beat" — and that is the whole thing a drum editor is for.
-        const cx = Math.round(x) + 0.5;
-        const cy = Math.round(y + pitchHeight / 2) + 0.5;
-        ctx.beginPath();
-        ctx.moveTo(cx, cy - half);
-        ctx.lineTo(cx + half, cy);
-        ctx.lineTo(cx, cy + half);
-        ctx.lineTo(cx - half, cy);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        // A drum hit FILLS ITS CELL.  Between the two grid lines, not balanced
+        // on one — the eye reads a pattern as a row of filled boxes, and a box
+        // is a whole step to aim at instead of a few pixels.
+        //
+        // Both edges are snapped to the same device pixels the grid lines use,
+        // so the block sits flush inside its cell rather than a hair over the
+        // line on one side and a hair short on the other.
+        const left = Math.round(x) + 1;
+        const right = Math.round(x + drumWidth(note)) - 1;
+        const top = Math.round(y) + 2;
+        const height = Math.max(3, pitchHeight - 4);
+        ctx.fillRect(left, top, Math.max(3, right - left), height);
+        ctx.strokeRect(left + 0.5, top + 0.5,
+          Math.max(2, right - left - 1), Math.max(2, height - 1));
         continue;
       }
 
@@ -380,7 +373,7 @@ export default function KeyEditor() {
     }
   }, [notes, size, scale, showGuides, bottomPitch, pitchHeight, pxPerBeat, scrollBeat,
       selected, drag, gridBeat, tempo, toX, toY, part, playhead, rows, ghostNotes,
-      drumHalf]);
+      drumWidth]);
 
   // ── Controller / velocity lane ──────────────────────────────────────────
   useEffect(() => {
@@ -448,16 +441,18 @@ export default function KeyEditor() {
       const n = notes[i];
       if (!n) continue;
       if (n.pitch !== pitch) continue;
-      // A drum hit's target is the diamond that was drawn — centred on the
-      // start — not the note's length, which a strike does not really have.
+      // A drum hit's target is the CELL that was drawn, which starts at the
+      // note and runs to the next step — not the note's raw length, which on a
+      // short hit is a couple of pixels.
       if (rows) {
-        if (Math.abs(toX(n.startBeat) - x) <= drumHalf(n)) return n;
+        const left = toX(n.startBeat);
+        if (x >= left && x <= left + drumWidth(n)) return n;
         continue;
       }
       if (sec >= n.startBeat && sec <= noteEndBeat(n)) return n;
     }
     return null;
-  }, [notes, toPitch, toBeat, toX, rows, drumHalf]);
+  }, [notes, toPitch, toBeat, toX, rows, drumWidth]);
 
   // ── Grid gestures ───────────────────────────────────────────────────────
   const onGridDown = useCallback((e: React.MouseEvent) => {
@@ -518,10 +513,9 @@ export default function KeyEditor() {
       const inside = notes.filter((n) => {
         const nx = toX(n.startBeat);
         const ny = toY(n.pitch);
-        // Rubber-banding has to catch what is DRAWN.  On a drum row that is a
-        // diamond around the start, not a bar running off to the right.
-        const left = rows ? nx - drumHalf(n) : nx;
-        const right = rows ? nx + drumHalf(n) : nx + n.durationBeat * pxPerBeat;
+        // Rubber-banding has to catch what is DRAWN — on a drum row, the cell.
+        const left = nx;
+        const right = nx + (rows ? drumWidth(n) : n.durationBeat * pxPerBeat);
         return right >= x0 && left <= x1 && ny + pitchHeight >= y0 && ny <= y1;
       });
       setSelection(inside.map((n) => n.id));
@@ -558,7 +552,7 @@ export default function KeyEditor() {
       writeNotes(next, true);
     }
   }, [drag, notes, pxPerBeat, pitchHeight, toX, toY, toBeat, toPitch, setSelection,
-      writeNotes, tempo, snapPitch, scale, rows, drumHalf]);
+      writeNotes, tempo, snapPitch, scale, rows, drumWidth]);
 
   const endDrag = useCallback(() => {
     if (drag && (drag.kind === 'move' || drag.kind === 'resize')) commit();

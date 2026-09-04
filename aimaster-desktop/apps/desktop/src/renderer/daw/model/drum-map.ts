@@ -317,26 +317,33 @@ export function usedSlots(map: DrumMap, notes: readonly MidiNote[]): DrumSlot[] 
 }
 
 /**
- * Half-width, in pixels, of the diamond a drum hit is drawn as.
+ * How wide a drum hit is drawn, in pixels.
  *
- * Lives here rather than in the editor because FOUR places need it — the
- * drawing, the click test, the rubber band and the resize handle — and a
- * shape whose target is computed somewhere else is a shape whose target is
- * not where it is.  The first version of this editor drew a centred diamond
- * and hit-tested the note's RECTANGLE from that start rightwards, so the left
- * half of every hit was dead and the empty space to its right clicked anyway.
+ * A drum hit FILLS THE CELL it starts in.  It is not a point balanced on a
+ * grid line, which is how this editor first drew it and which is wrong for
+ * drums in two ways: a point is hard to read as a pattern — the eye wants a
+ * row of filled boxes, the way every drum machine and step sequencer since
+ * the 808 has shown it — and a point is hard to hit, because the target is a
+ * few pixels wide instead of a whole step.
  *
- * The size follows the note's length up to the row height, so a long hit
- * reads slightly larger, and never falls below three pixels, or a 1/32 hat
- * would be too small to aim at.
+ * Nothing about the NOTE changes.  The cell between step N and step N+1 is
+ * the span of time belonging to step N, so filling it says "a hit on step N",
+ * which is exactly where the note is.  The drawing moved; the music did not.
+ *
+ * A hit longer than one cell shows its real length rather than being cut back
+ * to a step, so a ringing crash reads as a ringing crash.  One shorter than a
+ * cell still fills it, because the cell IS the step it lives in.
  */
-export const MIN_DIAMOND_HALF_PX = 3;
+export const MIN_DRUM_CELL_PX = 6;
 
-export function diamondHalfPx(
-  durationBeat: number, pxPerBeat: number, rowHeightPx: number,
+export function drumCellPx(
+  durationBeat: number, gridBeat: number, pxPerBeat: number,
 ): number {
-  const width = Math.max(2, durationBeat * pxPerBeat);
-  return Math.max(MIN_DIAMOND_HALF_PX, Math.min(rowHeightPx, width + 4) / 2 - 1);
+  // The wider of the step and the note.  With snapping off there is no step,
+  // and this leaves the note's own length — which is then the only thing
+  // there is to draw, so it needs no special case of its own.
+  const beats = Math.max(Math.max(0, gridBeat), Math.max(0, durationBeat));
+  return Math.max(MIN_DRUM_CELL_PX, beats * pxPerBeat);
 }
 
 export function describeMap(map: DrumMap, notes: readonly MidiNote[]): string {
