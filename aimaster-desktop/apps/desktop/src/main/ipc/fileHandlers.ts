@@ -105,6 +105,27 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     return result.filePaths.slice(0, 20);
   });
 
+  // ── Open a MIDI file ──────────────────────────────────────────────────
+  //
+  // Its OWN channel, not the audio picker.  "MIDI 가져오기" used
+  // `file:open-dialog-multi`, whose only filter is Audio — so every .mid in
+  // the folder was greyed out and the button could not be completed.  The
+  // reader was fine the whole time; the dialog would not let anyone reach it.
+  ipc.handle('file:open-dialog-midi', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      filters: [
+        { name: 'MIDI', extensions: ['mid', 'midi', 'smf'] },
+        // Some exporters write no extension at all, and macOS hides anything
+        // the filters do not name.  A way through beats a dead button.
+        { name: '모든 파일', extensions: ['*'] },
+      ],
+      properties: ['openFile', 'multiSelections'],
+    });
+    if (result.canceled) return null;
+    return result.filePaths.slice(0, 20);
+  });
+
   // ── Generic save dialog (returns path only, no copy) ─────────────────
   ipc.handle('file:save-dialog', async (_e, defaultName: string) => {
     if (!win) return null;

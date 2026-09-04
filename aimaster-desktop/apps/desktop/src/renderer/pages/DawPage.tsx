@@ -152,7 +152,8 @@ export default function DawPage() {
 
   /** Import a .mid — one instrument track per source track, MPE preserved. */
   const handleImportMidi = useCallback(async () => {
-    const paths = await invoke('file:open-dialog-multi') as string[] | null;
+    // The MIDI picker, not the audio one — the audio filter hid every .mid.
+    const paths = await invoke('file:open-dialog-midi') as string[] | null;
     const first = paths?.[0];
     if (!first) return;
     setBusy('MIDI 읽는 중…');

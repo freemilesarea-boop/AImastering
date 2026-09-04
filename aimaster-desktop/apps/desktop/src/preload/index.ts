@@ -25,7 +25,8 @@ const INVOKE_CHANNELS = [
   // Device id for account device registration (Phase D2).
   'device:get-id',
   // Files
-  'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
+  'file:open-dialog', 'file:open-dialog-multi', 'file:open-dialog-midi',
+  'file:save-dialog', 'file:save-wav',
   'file:batch-save-wav',
   // Save with transcode (M3-P-NEXT-5D-2-d) — separate from file:save-wav
   'file:save-audio',

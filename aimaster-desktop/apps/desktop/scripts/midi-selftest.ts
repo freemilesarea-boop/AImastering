@@ -9,6 +9,7 @@
  * Run: pnpm --filter @aimaster/desktop test:midi
  */
 
+import { readFileSync } from 'node:fs';
 import {
   from7bit, to7bit, from14bit, to14bit, from32bit, to32bit,
   bendFrom14bit, bendTo14bit, createNote, resetNoteIds, noteEndBeat, sortNotes,
@@ -536,6 +537,126 @@ check('tempo changes are integrated, not applied globally', () => {
   close(toSeconds(file.ticksPerQuarter), 0.5, 'first quarter at 120');
   close(toSeconds(file.ticksPerQuarter * 2), 1.5, 'second quarter at 60');
   eq(fileTempoBpm(file), 120, 'reported tempo');
+});
+
+// A file this app did not write.
+//
+// Everything above round-trips through `exportMidiFile`, which only proves
+// the reader agrees with the writer.  A file from Cubase, Logic or Ableton
+// carries three things ours never does, and all three are places a reader
+// quietly loses notes:
+//
+//   * format 1 with the tempo and the metre on their OWN track, no notes;
+//   * RUNNING STATUS — the status byte written once, then omitted;
+//   * note-off written as note-on with velocity 0.
+//
+// Built here as bytes rather than through our writer, so this is the reader
+// being tested and not a conversation between two of our own functions.
+function buildForeignFile(): Uint8Array {
+  const bytes: number[] = [];
+  const vlq = (v: number): number[] => {
+    const out = [v & 0x7f];
+    let x = v >> 7;
+    while (x > 0) { out.unshift((x & 0x7f) | 0x80); x >>= 7; }
+    return out;
+  };
+  const text = (s: string): number[] => [...s].map((c) => c.charCodeAt(0) & 0x7f);
+  const chunk = (tag: string, body: number[]): number[] => [
+    ...text(tag),
+    (body.length >>> 24) & 0xff, (body.length >>> 16) & 0xff,
+    (body.length >>> 8) & 0xff, body.length & 0xff,
+    ...body,
+  ];
+
+  // Track 0 — conductor: 3/4, 100 BPM (600000 µs per quarter), a name.
+  const t0 = [
+    ...vlq(0), 0xff, 0x58, 0x04, 3, 2, 24, 8,
+    ...vlq(0), 0xff, 0x51, 0x03, 0x09, 0x27, 0xc0,
+    ...vlq(0), 0xff, 0x03, ...vlq(5), ...text('Tempo'),
+    ...vlq(0), 0xff, 0x2f, 0x00,
+  ];
+  // Track 1 — ordinary note-on / note-off pairs.
+  const t1 = [
+    ...vlq(0), 0xff, 0x03, ...vlq(4), ...text('Lead'),
+    ...vlq(0), 0xc0, 0x00,
+    ...vlq(0), 0x90, 60, 100, ...vlq(480), 0x80, 60, 0x40,
+    ...vlq(0), 0x90, 62, 80, ...vlq(240), 0x80, 62, 0x40,
+    ...vlq(0), 0x90, 64, 110, ...vlq(240), 0x80, 64, 0x40,
+    ...vlq(0), 0x90, 67, 64, ...vlq(960), 0x80, 67, 0x40,
+    ...vlq(0), 0xff, 0x2f, 0x00,
+  ];
+  // Track 2 — status byte written ONCE, then running status throughout, and
+  // every note-off is a note-on at velocity 0.
+  const t2 = [
+    ...vlq(0), 0xff, 0x03, ...vlq(4), ...text('Bass'),
+    ...vlq(0), 0x91, 36, 90,
+    ...vlq(960), 36, 0,
+    ...vlq(0), 43, 90,
+    ...vlq(960), 43, 0,
+    ...vlq(0), 0xff, 0x2f, 0x00,
+  ];
+  bytes.push(...chunk('MThd', [0, 1, 0, 3, 0x01, 0xe0]));   // format 1, 3 tracks, 480 tpq
+  bytes.push(...chunk('MTrk', t0), ...chunk('MTrk', t1), ...chunk('MTrk', t2));
+  return new Uint8Array(bytes);
+}
+
+check('the MIDI import button opens a dialog that can SEE a MIDI file', () => {
+  // The reader was perfect and the feature was still unusable: "MIDI
+  // 가져오기" called `file:open-dialog-multi`, whose only filter is Audio, so
+  // every .mid in the folder was greyed out.  Nothing in the parser could
+  // ever have caught that — the bug was the door, not the room.
+  const page = readFileSync('src/renderer/pages/DawPage.tsx', 'utf8');
+  const fn = page.slice(page.indexOf('const handleImportMidi'),
+    page.indexOf('const handleCreateStack'));
+  assert(fn.length > 0, 'the import handler is still there to check');
+  assert(/invoke\('file:open-dialog-midi'\)/.test(fn),
+    'the MIDI button asks the MIDI picker');
+  assert(!/open-dialog-multi/.test(fn), 'and not the audio one');
+
+  const handlers = readFileSync('src/main/ipc/fileHandlers.ts', 'utf8');
+  const handler = handlers.slice(handlers.indexOf("ipc.handle('file:open-dialog-midi'"),
+    handlers.indexOf("ipc.handle('file:open-dialog-midi'") + 700);
+  assert(handler.length > 0, 'the main process actually registers it');
+  for (const ext of ['mid', 'midi']) {
+    assert(new RegExp(`'${ext}'`).test(handler), `the dialog admits .${ext}`);
+  }
+
+  // An IPC channel the preload does not list is refused before it is sent,
+  // so the button would throw instead of opening anything.
+  const preload = readFileSync('src/preload/index.ts', 'utf8');
+  assert(/'file:open-dialog-midi'/.test(preload), 'and the preload allows the channel');
+});
+
+check('a file from another DAW imports: foreign tempo, metre and track names', () => {
+  const imported = importMidiFile(buildForeignFile());
+  eq(imported.tempoBpm, 100, 'the tempo comes from the conductor track');
+  eq(imported.timeSignature.join('/'), '3/4', 'and so does the metre');
+  // The conductor track has no notes, so it must not become an empty part.
+  eq(imported.parts.length, 2, 'two parts, not three');
+  eq(imported.parts.map((p) => p.name).join(','), 'Lead,Bass', 'named from the meta events');
+});
+
+check('running status and note-on-velocity-0 are read the way every DAW writes them', () => {
+  // If either is mishandled the Bass part comes back empty, or with notes
+  // that never end — and it is the second half of every real file.
+  const bass = importMidiFile(buildForeignFile()).parts[1];
+  assert(bass !== undefined, 'the running-status track produced a part at all');
+  eq(bass!.notes.length, 2, 'both notes survived');
+  eq(bass!.notes.map((n) => n.pitch).join(','), '36,43', 'pitches');
+  close(bass!.notes[0]!.startBeat, 0, 'first note at the top');
+  close(bass!.notes[0]!.durationBeat, 2, 'and it ENDS — velocity 0 closed it');
+  close(bass!.notes[1]!.startBeat, 2, 'the second follows it');
+  close(bass!.notes[1]!.durationBeat, 2, 'and ends too');
+  eq(to7bit(bass!.notes[0]!.velocity), 90, 'velocity from the note-on, not the 0');
+});
+
+check('the plain track reads back note for note', () => {
+  const lead = importMidiFile(buildForeignFile()).parts[0]!;
+  eq(lead.notes.map((n) => n.pitch).join(','), '60,62,64,67', 'pitches');
+  eq(lead.notes.map((n) => n.startBeat).join(','), '0,1,1.5,2', 'starts in beats');
+  eq(lead.notes.map((n) => n.durationBeat).join(','), '1,0.5,0.5,2', 'lengths in beats');
+  eq(lead.notes.map((n) => to7bit(n.velocity)).join(','), '100,80,110,64', 'velocities');
+  close(lead.durationBeat, 4, 'the part is as long as its last note');
 });
 
 check('rejects files that are not MIDI', () => {
