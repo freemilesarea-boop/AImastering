@@ -66,9 +66,16 @@ check('export sample rate / bit depth are export-only', () => {
   eqStr(support('export', 'bitDepth'), 'export-only', 'bitDepth');
 });
 
-check('export format / dither are planned (no DSP yet)', () => {
+check('dither is export-only now that it has DSP; format is still planned', () => {
+  // This test used to say dither was 'planned', and it was right — the
+  // parameter existed with no adapter behind it.  It has one now
+  // (daw/audio/dither.ts), reached by both encoders, so it grades the same as
+  // sampleRate and bitDepth: it changes the EXPORT render and not the
+  // preview, because the preview never leaves float and has no word length to
+  // reduce.
+  eqStr(support('export', 'dither'), 'export-only', 'dither');
+  // Format genuinely is still planned — nothing writes anything but WAV.
   eqStr(support('export', 'format'), 'planned', 'format');
-  eqStr(support('export', 'dither'), 'planned', 'dither');
 });
 
 check('no param is "approximate" today (honest — none auto-approximated)', () => {
