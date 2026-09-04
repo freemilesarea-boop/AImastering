@@ -8,7 +8,8 @@
 import React from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import {
-  clearSlotField, describeSlot, moveSlot, setSlot, type DrumMap, type DrumSlot,
+  clearSlotField, describeSlot, moveSlot, rowsFor, setSlot,
+  type DrumMap, type DrumSlot,
 } from '../../../daw/model/drum-map.js';
 import {
   setSessionDrumMap, tracksUsingDrumMap,
@@ -42,6 +43,12 @@ export default function DrumMapEditor(
   const part = track ? trackClips(track).find((c) => c.id === clipId) : undefined;
   const notes = part ? clipNotes(session, part) : [];
   const hitCount = (pitch: number): number => notes.filter((n) => n.pitch === pitch).length;
+  // The kit's own rows PLUS any pitch the part uses that the kit does not
+  // name — the same rows the editor draws.  Listing only the named ones would
+  // make a note the part actually plays unreachable from the panel that
+  // exists to name things.
+  const rows = rowsFor(map, notes);
+  const named = new Set(map.slots.map((sl) => sl.pitch));
 
   const edit = (pitch: number, patch: Partial<DrumSlot>): void => {
     apply((s) => setSessionDrumMap(s, setSlot(map, pitch, patch)));
@@ -100,10 +107,17 @@ export default function DrumMapEditor(
             </tr>
           </thead>
           <tbody>
-            {map.slots.map((slot) => {
+            {rows.map((slot) => {
               const hits = hitCount(slot.pitch);
+              const inKit = named.has(slot.pitch);
               return (
-                <tr key={slot.pitch} className="border-t" style={{ borderColor: 'rgba(255,255,255,0.04)' }}>
+                <tr key={slot.pitch} className="border-t"
+                    style={{
+                      borderColor: 'rgba(255,255,255,0.04)',
+                      background: inKit ? undefined : 'rgba(235,180,90,0.07)',
+                    }}
+                    title={inKit ? undefined
+                      : '이 파트에는 있지만 킷에는 없는 노트입니다 — 이름을 넣으면 킷에 추가됩니다'}>
                   <td className="pl-2 py-0.5">
                     <div className="flex items-center gap-1">
                       <input
@@ -171,8 +185,14 @@ export default function DrumMapEditor(
                     />
                   </td>
                   <td className="text-center whitespace-nowrap">
-                    <button onClick={() => move(slot.pitch, -1)} style={moveStyle} title="위로">▲</button>
-                    <button onClick={() => move(slot.pitch, 1)} style={moveStyle} title="아래로">▼</button>
+                    {/* A row that is not in the kit has no place in its order
+                        yet, so the arrows would silently do nothing. */}
+                    {inKit ? (
+                      <>
+                        <button onClick={() => move(slot.pitch, -1)} style={moveStyle} title="위로">▲</button>
+                        <button onClick={() => move(slot.pitch, 1)} style={moveStyle} title="아래로">▼</button>
+                      </>
+                    ) : <span className="text-[8px]" style={{ color: premium.text.faint }}>킷 밖</span>}
                   </td>
                 </tr>
               );

@@ -29,6 +29,7 @@ import {
 } from '../../../daw/model/drum-map-session.js';
 import { GM_DRUM_MAP } from '../../../daw/model/drum-map.js';
 import DrumMapEditor from './DrumMapEditor.js';
+import LogicalEditor from './LogicalEditor.js';
 import { detectChord, formatChord } from '../../../daw/model/chords.js';
 import { notesAt, MIN_NOTE_BEATS } from '../../../daw/edit/midi-edit.js';
 import { beatsToSecAt, partClock, timelineSecToBeat } from '../../../daw/model/note-time.js';
@@ -89,6 +90,7 @@ export default function KeyEditor() {
   const [size, setSize] = useState({ width: 900, height: 460 });
   const [drag, setDrag] = useState<Drag | null>(null);
   const [showKitEditor, setShowKitEditor] = useState(false);
+  const [showLogical, setShowLogical] = useState(false);
   const [hoverInfo, setHoverInfo] = useState<{ beat: number; pitch: number } | null>(null);
 
   const track = open ? findTrack(session, open.trackId) : undefined;
@@ -634,7 +636,7 @@ export default function KeyEditor() {
           {drumMapsOf(session).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
         {drumMap && (
-          <button onClick={() => setShowKitEditor((v) => !v)}
+          <button onClick={() => { setShowKitEditor((v) => !v); setShowLogical(false); }}
             title="이름 · 출력 노트 · 초크 그룹 · 악기별 그리드"
             className={`h-6 px-2 rounded text-[10px] border ${showKitEditor
               ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
@@ -677,6 +679,12 @@ export default function KeyEditor() {
           ))}
         </select>
 
+        <button onClick={() => { setShowLogical((v) => !v); setShowKitEditor(false); }}
+          title="규칙으로 고르고 규칙으로 바꿉니다 — 고정된 동사로는 말할 수 없는 편집"
+          className={`h-6 px-2 rounded text-[10px] border ${showLogical
+            ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+            : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}>LOGIC</button>
+
         <div className="flex-1" />
         <button onClick={() => setPxPerBeat(pxPerBeat / 1.4)}
           className="h-6 px-2 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-400">−</button>
@@ -703,7 +711,11 @@ export default function KeyEditor() {
         <span className="text-zinc-600">{selectedIds.length} selected · {notes.length} notes</span>
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
+      {/* `relative` so the floating panels below position against the CONTENT
+          area rather than against something above the toolbar — without it
+          they sit on top of the very buttons that open and close them. */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {showLogical && open && <LogicalEditor onClose={() => setShowLogical(false)} />}
         {drumMap && showKitEditor && open && (
           <DrumMapEditor map={drumMap} trackId={open.trackId} clipId={open.clipId}
                          onClose={() => setShowKitEditor(false)} />
