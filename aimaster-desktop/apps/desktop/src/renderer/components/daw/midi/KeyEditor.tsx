@@ -23,6 +23,12 @@ import {
   curveValueAt, findExpression, setExpression, type ExpressionTarget, type MidiNote,
 } from '../../../daw/model/midi.js';
 import { isInScale, scalePitchClasses } from '../../../daw/model/scales.js';
+import { describeSlot, rowOf, rowsFor } from '../../../daw/model/drum-map.js';
+import {
+  assignDrumMap, drumMapFor, drumMapsOf,
+} from '../../../daw/model/drum-map-session.js';
+import { GM_DRUM_MAP } from '../../../daw/model/drum-map.js';
+import DrumMapEditor from './DrumMapEditor.js';
 import { detectChord, formatChord } from '../../../daw/model/chords.js';
 import { notesAt, MIN_NOTE_BEATS } from '../../../daw/edit/midi-edit.js';
 import { beatsToSecAt, partClock, timelineSecToBeat } from '../../../daw/model/note-time.js';
@@ -30,6 +36,8 @@ import { barBeatAt, tempoMapOf } from '../../../daw/model/tempo-map.js';
 import KeyEditorInspector from './KeyEditorInspector.js';
 
 const KEYBOARD_WIDTH = 62;
+// Wide enough for '46 오픈 하이햇' without truncating the part that identifies it.
+const DRUM_HEADER_WIDTH = 116;
 const LANE_HEIGHT = 116;
 const RULER_HEIGHT = 22;
 const RESIZE_HANDLE_PX = 6;
@@ -80,6 +88,7 @@ export default function KeyEditor() {
   const areaRef   = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 900, height: 460 });
   const [drag, setDrag] = useState<Drag | null>(null);
+  const [showKitEditor, setShowKitEditor] = useState(false);
   const [hoverInfo, setHoverInfo] = useState<{ beat: number; pitch: number } | null>(null);
 
   const track = open ? findTrack(session, open.trackId) : undefined;
@@ -114,17 +123,49 @@ export default function KeyEditor() {
   );
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
 
+  // A drum track turns the vertical axis into KIT ORDER instead of pitch, so
+  // the kick is one row and the crash is another, in the order a drummer would
+  // list them.  Null on every other track, and everything below then behaves
+  // exactly as it did.
+  const drumMap = useMemo(() => drumMapFor(session, track), [session, track]);
+  const rows = useMemo(
+    () => (drumMap ? rowsFor(drumMap, notes) : null), [drumMap, notes]);
+
   // ── Geometry ────────────────────────────────────────────────────────────
   const toX = useCallback((beat: number) => (beat - scrollBeat) * pxPerBeat, [scrollBeat, pxPerBeat]);
   const toBeat = useCallback((x: number) => scrollBeat + x / pxPerBeat, [scrollBeat, pxPerBeat]);
   const gridHeight = size.height;
+
+  // The two adapters that make the whole editor drum-aware.  Everything below
+  // still speaks pitch; only these know that a drum row is a position in a
+  // list rather than a semitone.  Row 0 is drawn at the TOP, so it takes the
+  // highest value on an axis that counts upward.
+  const axisOf = useCallback((pitch: number): number => {
+    if (!rows) return pitch;
+    const index = rowOf(rows, pitch);
+    // A pitch with no row cannot be placed.  `rowsFor` gives every pitch in
+    // the part a row, so this is only reachable while dragging past the end.
+    return index < 0 ? -1 : rows.length - 1 - index;
+  }, [rows]);
+  const pitchOfAxis = useCallback((value: number): number => {
+    if (!rows) return value;
+    // Held inside the kit rather than allowed to fall off it.  A drag past the
+    // last row would otherwise land on "no row", which the caller clamps to
+    // pitch 0 — a note on an instrument nobody chose, drawn at the bottom of
+    // a kit it does not belong to.
+    const index = Math.max(0, Math.min(rows.length - 1, rows.length - 1 - value));
+    return (rows[index]?.pitch ?? -1);
+  }, [rows]);
+
+  const axisBottom = rows ? 0 : bottomPitch;
   const toY = useCallback(
-    (pitch: number) => gridHeight - (pitch - bottomPitch + 1) * pitchHeight,
-    [gridHeight, bottomPitch, pitchHeight],
+    (pitch: number) => gridHeight - (axisOf(pitch) - axisBottom + 1) * pitchHeight,
+    [gridHeight, axisBottom, pitchHeight, axisOf],
   );
   const toPitch = useCallback(
-    (y: number) => Math.round(bottomPitch + (gridHeight - y) / pitchHeight - 0.5),
-    [gridHeight, bottomPitch, pitchHeight],
+    (y: number) => pitchOfAxis(
+      Math.round(axisBottom + (gridHeight - y) / pitchHeight - 0.5)),
+    [gridHeight, axisBottom, pitchHeight, pitchOfAxis],
   );
 
   useEffect(() => {
@@ -175,13 +216,19 @@ export default function KeyEditor() {
     const inScale = scalePitchClasses(scale);
     const topPitch = bottomPitch + Math.ceil(size.height / pitchHeight);
 
-    // Rows
-    for (let pitch = bottomPitch; pitch <= topPitch; pitch++) {
+    // Rows.  On a drum track the rows are kit instruments, so they are striped
+    // by position rather than by black/white key, and the scale guides are
+    // meaningless and left off — a hi-hat is not in or out of D minor.
+    const rowPitches = rows
+      ? rows.map((r) => r.pitch)
+      : Array.from({ length: topPitch - bottomPitch + 1 }, (_, i) => bottomPitch + i);
+    for (let index = 0; index < rowPitches.length; index++) {
+      const pitch = rowPitches[index] as number;
       const y = toY(pitch);
-      const black = isBlackKey(pitch);
-      const guided = showGuides && inScale.has(((pitch % 12) + 12) % 12);
+      const black = rows ? index % 2 === 1 : isBlackKey(pitch);
+      const guided = !rows && showGuides && inScale.has(((pitch % 12) + 12) % 12);
       ctx.fillStyle = black ? 'rgba(255,255,255,0.03)' : 'rgba(255,255,255,0.06)';
-      if (showGuides) {
+      if (!rows && showGuides) {
         ctx.fillStyle = guided
           ? (black ? 'rgba(120,170,255,0.10)' : 'rgba(120,170,255,0.16)')
           : 'rgba(0,0,0,0.25)';
@@ -232,9 +279,27 @@ export default function KeyEditor() {
       ctx.fillStyle = note.muted
         ? 'rgba(120,120,140,0.35)'
         : isSelected ? `rgba(235,80,80,${intensity})` : `rgba(90,150,240,${intensity})`;
-      ctx.fillRect(x, y + 1, w, pitchHeight - 2);
       ctx.strokeStyle = isSelected ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.45)';
       ctx.lineWidth = 1;
+
+      if (rows) {
+        // A drum hit has no useful length — it is a strike.  Drawn as a
+        // diamond at its start, so a 1/32 hi-hat is as visible and as
+        // clickable as a whole-bar crash instead of being two pixels wide.
+        const half = Math.max(3, Math.min(pitchHeight, w + 4) / 2 - 1);
+        const cy = y + pitchHeight / 2;
+        ctx.beginPath();
+        ctx.moveTo(x, cy - half);
+        ctx.lineTo(x + half, cy);
+        ctx.lineTo(x, cy + half);
+        ctx.lineTo(x - half, cy);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        continue;
+      }
+
+      ctx.fillRect(x, y + 1, w, pitchHeight - 2);
       ctx.strokeRect(x + 0.5, y + 1.5, Math.max(1, w - 1), pitchHeight - 3);
 
       // Per-note expression is visible on the note itself, so MPE data is
@@ -283,7 +348,7 @@ export default function KeyEditor() {
       }
     }
   }, [notes, size, scale, showGuides, bottomPitch, pitchHeight, pxPerBeat, scrollBeat,
-      selected, drag, gridBeat, tempo, toX, toY, part, playhead]);
+      selected, drag, gridBeat, tempo, toX, toY, part, playhead, rows, ghostNotes]);
 
   // ── Controller / velocity lane ──────────────────────────────────────────
   useEffect(() => {
@@ -546,6 +611,38 @@ export default function KeyEditor() {
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
+        {/* The kit.  Choosing one turns the vertical axis from semitones into
+            instruments; "드럼 아님" turns it back, and neither touches a note. */}
+        <select
+          value={drumMap?.id ?? ''}
+          onChange={(e) => {
+            if (!open) return;
+            const id = e.target.value;
+            const picked = id === 'gm' && !drumMapsOf(session).some((m) => m.id === 'gm')
+              ? GM_DRUM_MAP
+              : drumMapsOf(session).find((m) => m.id === id) ?? null;
+            apply((s2) => assignDrumMap(s2, open.trackId, picked));
+            if (!picked) setShowKitEditor(false);
+          }}
+          title="이 트랙을 드럼 트랙으로 읽습니다 — 세로축이 음정 대신 악기가 됩니다"
+          className="h-6 rounded bg-zinc-900 border border-zinc-700 text-[10px] px-1 text-zinc-300 max-w-[140px]"
+        >
+          <option value="">드럼 아님</option>
+          {!drumMapsOf(session).some((m) => m.id === 'gm') && (
+            <option value="gm">{GM_DRUM_MAP.name}</option>
+          )}
+          {drumMapsOf(session).map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        {drumMap && (
+          <button onClick={() => setShowKitEditor((v) => !v)}
+            title="이름 · 출력 노트 · 초크 그룹 · 악기별 그리드"
+            className={`h-6 px-2 rounded text-[10px] border ${showKitEditor
+              ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}>킷</button>
+        )}
+
+        <span className="w-px h-5 bg-zinc-800 mx-1" />
+
         {/* Ghost notes — write a bass line against the chords you can see. */}
         <select
           value={ghost ? `${ghost.trackId}|${ghost.clipId}` : ''}
@@ -607,6 +704,10 @@ export default function KeyEditor() {
       </div>
 
       <div className="flex-1 flex overflow-hidden">
+        {drumMap && showKitEditor && open && (
+          <DrumMapEditor map={drumMap} trackId={open.trackId} clipId={open.clipId}
+                         onClose={() => setShowKitEditor(false)} />
+        )}
         <KeyEditorInspector />
 
         <div className="flex-1 flex flex-col overflow-hidden">
@@ -632,10 +733,33 @@ export default function KeyEditor() {
           </div>
 
           <div className="flex-1 flex overflow-hidden">
-            {/* Piano keys */}
-            <div style={{ width: KEYBOARD_WIDTH }}
+            {/* Piano keys — or, on a drum track, the kit's row headers.
+                A drum part edited against a keyboard is a wall of numbers;
+                this is the whole reason a drum map exists. */}
+            <div style={{ width: rows ? DRUM_HEADER_WIDTH : KEYBOARD_WIDTH }}
                  className="shrink-0 relative border-r border-zinc-800 bg-[#0e0e15] overflow-hidden">
-              {Array.from({ length: Math.ceil(size.height / pitchHeight) + 1 }, (_, i) => {
+              {rows ? rows.map((slot, i) => (
+                <div
+                  key={slot.pitch}
+                  onMouseDown={() => setSelection(
+                    notes.filter((n) => n.pitch === slot.pitch).map((n) => n.id))}
+                  title={`${describeSlot(slot)} — 눌러서 이 악기의 모든 히트를 선택`}
+                  className="absolute left-0 right-0 border-b border-black/40 flex items-center
+                             gap-1 pl-1 pr-1 cursor-pointer hover:bg-white/5"
+                  style={{
+                    top: toY(slot.pitch), height: pitchHeight,
+                    background: i % 2 === 1 ? 'rgba(255,255,255,0.03)' : 'transparent',
+                  }}
+                >
+                  <span className="text-[8px] font-mono shrink-0"
+                        style={{ color: slot.muted ? '#8a5050' : '#5f6070' }}>{slot.pitch}</span>
+                  <span className="text-[9px] truncate"
+                        style={{
+                          color: slot.muted ? '#8a5050' : '#c9ccd8',
+                          textDecoration: slot.muted ? 'line-through' : 'none',
+                        }}>{slot.name}</span>
+                </div>
+              )) : Array.from({ length: Math.ceil(size.height / pitchHeight) + 1 }, (_, i) => {
                 const pitch = bottomPitch + i;
                 const black = isBlackKey(pitch);
                 return (

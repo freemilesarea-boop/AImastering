@@ -22,10 +22,11 @@ import type { SessionGrid } from './session-view.js';
 import type { WarpConfig } from './warp.js';
 import type { Pattern } from './patterns.js';
 import type { StepPattern } from './step-sequencer.js';
+import type { DrumMap } from './drum-map.js';
 export type {
   ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment, MacroRack,
   Section,
-  DeviceGraph, Rack, SessionGrid,
+  DeviceGraph, Rack, SessionGrid, DrumMap,
 };
 
 export type TrackId    = string;
@@ -332,6 +333,14 @@ export interface Track {
     firstChannel?: number;
   };
   /**
+   * The drum kit this track's parts are read and played through.
+   *
+   * Absent on every track that is not a drum track, which is most of them —
+   * see `drumMapFor`, which returns null rather than a default, because
+   * applying a kit to a piano part would transpose it.
+   */
+  drumMapId?: string;
+  /**
    * Track Delay in milliseconds — negative plays EARLIER.
    *
    * Optional so sessions saved before it existed still load; read it through
@@ -482,6 +491,13 @@ export interface DawSession {
    */
   tempoMap?: TempoMap;
   files: AudioFileRef[];
+  /**
+   * Drum kits, referenced by tracks rather than copied onto them.
+   *
+   * Optional because sessions written before drum maps existed do not have
+   * it; every reader goes through `drumMapsOf(session)`.
+   */
+  drumMaps?: DrumMap[];
   tracks: Track[];
   buses: BusDef[];
   groups: GroupDef[];
