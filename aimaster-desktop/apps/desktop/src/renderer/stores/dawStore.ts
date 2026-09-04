@@ -8,7 +8,8 @@
 
 import { create } from 'zustand';
 import {
-  initHistory, record as recordHistory, undo as undoHistory, redo as redoHistory,
+  initHistory, record as recordHistory, sameByReference,
+  undo as undoHistory, redo as redoHistory,
   canUndo, canRedo, type History,
 } from '../audio/options-history.js';
 import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
@@ -288,7 +289,7 @@ export const useDawStore = create<DawState>((set, get) => ({
     const current = get().session;
     const next = fn(current);
     if (next === current) return;
-    set({ session: next, history: recordHistory(get().history, next) });
+    set({ session: next, history: recordHistory(get().history, next, sameByReference) });
     dawRuntime.sync(next);
     // The ONE place a real edit goes through.  Watching store emissions
     // instead would count playback and scrolling as changes — see
@@ -307,7 +308,7 @@ export const useDawStore = create<DawState>((set, get) => ({
   commitEdit: () => {
     const { session, history } = get();
     if (history.present === session) return;
-    set({ history: recordHistory(history, session) });
+    set({ history: recordHistory(history, session, sameByReference) });
   },
 
   loadSession: (session) => {

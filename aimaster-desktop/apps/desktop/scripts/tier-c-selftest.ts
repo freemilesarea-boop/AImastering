@@ -38,6 +38,9 @@ import {
   hasNote, noteSummary, setTrackNote, trackNote, tracksWithNotes,
 } from '../src/renderer/daw/model/track-header.js';
 import {
+  initHistory, record as recordHistory, sameByReference, sameSnapshot,
+} from '../src/renderer/audio/options-history.js';
+import {
   addFile, addTrack, createClip, createPlaylist, createSession, createTrack, findTrack,
   trackClips, updateClips, updateTrack,
 } from '../src/renderer/daw/model/session-ops.js';
@@ -470,6 +473,32 @@ check('tracksWithNotes lists only the ones carrying one', () => {
   assert(tracksWithNotes(s).length === 0, 'none to start');
   const summary = noteSummary({ ...findTrack(noted, vox)!, note: 'y'.repeat(200) }, 20);
   assert(summary.length === 20 && summary.endsWith('…'), `elided: ${summary}`);
+});
+
+// ── History equality ────────────────────────────────────────────────────────
+
+check('the DAW history compares by reference, not by serialising the session', () => {
+  // `sameSnapshot` serialises BOTH sides in full.  Profiled on a 24-track,
+  // 960-clip session it was 16 % of all CPU during editing — 167 ms across
+  // 40 edits — re-deriving a fact `apply` had already established with
+  // `next === current`.  Reference equality is not merely faster here, it is
+  // the correct test: a session is only ever produced by copy-with-changes.
+  const { session: s } = session();
+  const copy = JSON.parse(JSON.stringify(s)) as DawSession;
+
+  assert(sameSnapshot(s, copy), 'JSON equality calls a deep copy the same value');
+  assert(!sameByReference(s, copy), 'reference equality calls it a different one');
+  assert(sameByReference(s, s), 'and the same object the same');
+
+  // The behaviour that matters: recording an equal-but-distinct session must
+  // still push a step, because the store only reaches `record` when the
+  // session actually changed.
+  const h = initHistory(s);
+  assert(recordHistory(h, copy, sameByReference).past.length === 1,
+    'reference equality records it');
+  assert(recordHistory(h, s, sameByReference) === h, 'and the same object is still a no-op');
+  assert(recordHistory(h, copy) === h,
+    'the JSON default would have thrown the step away — which is why the store passes its own');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

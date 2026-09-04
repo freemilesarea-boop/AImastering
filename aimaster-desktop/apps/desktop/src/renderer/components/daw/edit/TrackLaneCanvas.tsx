@@ -164,7 +164,20 @@ export default function TrackLaneCanvas({
         ctx.fillText(label.slice(0, 28), left + 3, 11);
       }
     }
-  }, [track, viewport, selected, decodeTick]);
+  // Depends on the viewport's VALUES, not the object.
+  //
+  // The parent builds `viewport={{ scrollSec, pxPerSec, width, height }}`
+  // inline, so it is a new object on every render of the Edit window — and the
+  // Edit window re-renders on every play-head tick, every selection change and
+  // every hover.  Listing `viewport` here meant each lane repainted its whole
+  // waveform sixty times a second during playback for a view that had not
+  // moved.  Measured at 9.7 % of a profile's self time across 24 lanes.
+  //
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    track, selected, decodeTick,
+    viewport.scrollSec, viewport.pxPerSec, viewport.width, viewport.height,
+  ]);
 
   return <canvas ref={ref} className="block" />;
 }
