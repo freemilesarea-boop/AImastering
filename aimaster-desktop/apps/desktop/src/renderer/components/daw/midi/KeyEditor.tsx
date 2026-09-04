@@ -164,7 +164,12 @@ export default function KeyEditor() {
     return (rows[index]?.pitch ?? -1);
   }, [rows]);
 
-  const axisBottom = rows ? 0 : bottomPitch;
+  // A keyboard is read UPWARD from the bottom, so a piano roll anchors there.
+  // A kit is a list read DOWNWARD from the kick, so the drum rows are anchored
+  // to the TOP instead — otherwise a 26-row kit floats in the lower half of
+  // the grid with several hundred empty pixels above it.
+  const visibleRows = Math.max(1, gridHeight / pitchHeight);
+  const axisBottom = rows ? rows.length - visibleRows : bottomPitch;
   const toY = useCallback(
     (pitch: number) => gridHeight - (axisOf(pitch) - axisBottom + 1) * pitchHeight,
     [gridHeight, axisBottom, pitchHeight, axisOf],
