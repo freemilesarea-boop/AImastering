@@ -15,6 +15,7 @@ import {
   deleteOverlapsPoly, glueNotes, setVelocity, velocityRamp, scaleVelocityRange,
 } from '../../../daw/edit/midi-edit.js';
 import { SCALES, PITCH_CLASS_NAMES, suggestScales, scaleName } from '../../../daw/model/scales.js';
+import { drumMapFor } from '../../../daw/model/drum-map-session.js';
 import { detectChord, formatChord, voiceChord, QUALITIES, makeChord } from '../../../daw/model/chords.js';
 import { createNote, from7bit, noteEndBeat, type MidiNote } from '../../../daw/model/midi.js';
 import { beatsToSecAt, partClock, secToBeatsAt } from '../../../daw/model/note-time.js';
@@ -97,11 +98,26 @@ export default function KeyEditorInspector() {
     return picked.length >= 2 ? detectChord(picked.map((n) => n.pitch)) : null;
   }, [notes, selectedIds]);
 
+  /**
+   * A drum track has no key.
+   *
+   * A hi-hat is not in or out of D minor, and "make a chord from the lowest
+   * selected note" on a kick and a snare produces a transposition of two
+   * unrelated instruments.  Both sections are hidden rather than left there
+   * to be tried once — a control that is meaningless is worse than absent,
+   * because it invites the experiment that ruins the part.
+   *
+   * Everything else — quantize, transpose, length, humanise — is as useful on
+   * drums as anywhere, and stays.
+   */
+  const isDrumTrack = drumMapFor(session, track) !== null;
+
   if (!open || !part) return null;
 
   return (
     <aside className="w-56 shrink-0 overflow-y-auto border-r border-zinc-800 bg-[#0e0e15] px-2 py-2 space-y-2">
       {/* ── Scale Assistant ─────────────────────────────────────────────── */}
+      {!isDrumTrack && (
       <Section title="Scale Assistant">
         <div className="flex gap-1">
           <select
@@ -144,8 +160,10 @@ export default function KeyEditorInspector() {
           Quantize Pitches
         </Action>
       </Section>
+      )}
 
       {/* ── Chord Editing ───────────────────────────────────────────────── */}
+      {!isDrumTrack && (
       <Section title="Chord Editing">
         <div className="h-6 rounded bg-zinc-900 border border-zinc-700 flex items-center justify-center">
           <span className="text-[11px] text-zinc-200">
@@ -186,6 +204,7 @@ export default function KeyEditorInspector() {
           })}
         </div>
       </Section>
+      )}
 
       {/* ── Quantize ────────────────────────────────────────────────────── */}
       <Section title="Quantize">
@@ -236,7 +255,11 @@ export default function KeyEditorInspector() {
       <Section title="Transpose">
         <Slider label="Semitones" value={transposeSemitones} min={-24} max={24} step={1} suffix=""
           onChange={setTransposeSemitones} />
-        <Check label="Scale Correction" checked={scaleCorrection} onChange={toggleScaleCorrection} />
+        {/* Transposing a drum part moves hits between instruments, which is a
+            real thing to want; correcting the result to a scale is not. */}
+        {!isDrumTrack && (
+          <Check label="Scale Correction" checked={scaleCorrection} onChange={toggleScaleCorrection} />
+        )}
         <Action onClick={() => {
           write(transposeNotes(notes, targetIds, {
             semitones: transposeSemitones,
