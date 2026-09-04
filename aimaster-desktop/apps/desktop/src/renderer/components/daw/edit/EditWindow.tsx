@@ -57,6 +57,8 @@ import SpotDialog from './SpotDialog.js';
 import StripSilenceDialog from './StripSilenceDialog.js';
 import BatchRenameDialog from './BatchRenameDialog.js';
 import HistoryPanel from './HistoryPanel.js';
+import PoolPanel from './PoolPanel.js';
+import BatchFadeDialog from './BatchFadeDialog.js';
 import { SNAP_LABELS, SNAP_MODES, describeSnap } from '../../../daw/model/snap-modes.js';
 import QuantizeDialog from './QuantizeDialog.js';
 import { separateAt } from '../../../daw/edit/clip-edit.js';
@@ -123,6 +125,12 @@ export default function EditWindow() {
   const setRenameTarget = useDawStore((s) => s.setRenameTarget);
   const historyOpen = useDawStore((s) => s.historyOpen);
   const setHistoryOpen = useDawStore((s) => s.setHistoryOpen);
+  const poolOpen = useDawStore((s) => s.poolOpen);
+  const setPoolOpen = useDawStore((s) => s.setPoolOpen);
+  const fadeTarget = useDawStore((s) => s.fadeTarget);
+  const setFadeTarget = useDawStore((s) => s.setFadeTarget);
+  const linkSelection = useDawStore((s) => s.linkSelection);
+  const setLinkSelection = useDawStore((s) => s.setLinkSelection);
   const setAutoCrossfade = useDawStore((s) => s.setAutoCrossfade);
   const setQuantizeTarget = useDawStore((s) => s.setQuantizeTarget);
   const setSpotTarget = useDawStore((s) => s.setSpotTarget);
@@ -559,6 +567,16 @@ export default function EditWindow() {
         </select>
 
         <button
+          onClick={() => setLinkSelection(!linkSelection)}
+          title="편집 선택이 루프 구간을 따라갑니다 (Shift+Alt+L)"
+          className={`px-2 py-1 rounded text-[10px] border transition-colors ${
+            linkSelection
+              ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+          data-testid="link-selection"
+        >LINK</button>
+
+        <button
           onClick={() => setAutoCrossfade(!autoCrossfade)}
           title="겹친 클립에 자동 크로스페이드"
           className={`px-2 py-1 rounded text-[10px] border transition-colors ${
@@ -820,6 +838,10 @@ export default function EditWindow() {
         <BatchRenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />
       )}
       {historyOpen && <HistoryPanel onClose={() => setHistoryOpen(false)} />}
+      {poolOpen && <PoolPanel onClose={() => setPoolOpen(false)} />}
+      {fadeTarget && (
+        <BatchFadeDialog selection={fadeTarget} onClose={() => setFadeTarget(null)} />
+      )}
       {spotTarget && (
         <SpotDialog target={spotTarget} onClose={() => setSpotTarget(null)} />
       )}

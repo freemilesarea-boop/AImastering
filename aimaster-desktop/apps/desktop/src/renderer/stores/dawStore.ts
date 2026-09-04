@@ -17,6 +17,12 @@ import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
 import { expandSelection } from '../daw/edit/edit-groups.js';
 import type { ChannelSettings } from '../daw/edit/channel-ops.js';
 import type { TimeFormat } from '../daw/model/spot-time.js';
+import type { DawWindow } from '../daw/model/view-window.js';
+import {
+  linkedTimeline, recallZoom, storeZoom,
+  type WindowLayout, type ZoomSlots, type ZoomView,
+} from '../daw/model/workspace-view.js';
+import { pushSnapshot, type MixSnapshot } from '../daw/model/mix-snapshot.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
 import type { Groove } from '../daw/model/groove.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
@@ -40,7 +46,9 @@ export interface RenameTarget {
   kind: 'track' | 'clip';
   items: { id: string; name: string; trackId?: TrackId }[];
 }
-export type DawWindow = 'edit' | 'mix' | 'midi' | 'chain' | 'session' | 'spectral' | 'reference' | 'warp' | 'restore' | 'steps' | 'vocal' | 'stems' | 'intel';
+// The window names live in model/view-window.ts so pure modules can name one
+// without importing this store (and with it zustand and the audio runtime).
+export type { DawWindow } from '../daw/model/view-window.js';
 
 /** Grid values, in seconds — musical values come from the session tempo. */
 export const GRID_PRESETS = [0.01, 0.1, 0.25, 0.5, 1, 2, 4] as const;
@@ -207,6 +215,50 @@ export interface DawState {
   historyOpen: boolean;
   setHistoryOpen: (open: boolean) => void;
 
+  /** Whether the file pool is on screen. */
+  poolOpen: boolean;
+  setPoolOpen: (open: boolean) => void;
+
+  /** The selection the batch-fade dialog is looking at, or null. */
+  fadeTarget: TimeSelection | null;
+  setFadeTarget: (target: TimeSelection | null) => void;
+
+  /**
+   * Five saved views, by slot.
+   *
+   * Not in the session: where you were looking is a property of this machine
+   * and this sitting, not of the project.  Somebody opening the session on
+   * another screen should not inherit your zoom.
+   */
+  zoomSlots: ZoomSlots;
+  storeZoomSlot: (slot: number) => void;
+  recallZoomSlot: (slot: number) => boolean;
+
+  /** Saved window layouts, same reasoning as the zoom slots. */
+  layouts: WindowLayout[];
+  setLayouts: (layouts: WindowLayout[]) => void;
+
+  /**
+   * Mixer snapshots for A/B.
+   *
+   * Beside the session rather than inside it: a snapshot is a comparison you
+   * are making, not part of what the project IS, and putting them in the undo
+   * stack would make taking one an edit.
+   */
+  snapshots: MixSnapshot[];
+  addSnapshot: (snapshot: MixSnapshot) => void;
+  setSnapshots: (snapshots: MixSnapshot[]) => void;
+
+  /**
+   * Whether the timeline selection follows the edit selection.
+   *
+   * Pro Tools makes this a toggle because the two are genuinely different
+   * when spotting to picture: you keep looking at one place while editing
+   * another.
+   */
+  linkSelection: boolean;
+  setLinkSelection: (linked: boolean) => void;
+
   /** A copied channel's processing, waiting to be pasted onto another. */
   channelClipboard: ChannelSettings | null;
   setChannelClipboard: (settings: ChannelSettings | null) => void;
@@ -307,12 +359,24 @@ export const useDawStore = create<DawState>((set, get) => ({
    * where it is STORED also means the highlight covers the whole group, so
    * what will be edited is visible before anything is pressed.
    */
-  setSelection: (sel) => set({
-    selection: expandSelection(get().session, {
+  setSelection: (sel) => set((state) => {
+    const selection = expandSelection(state.session, {
       startSec: Math.max(0, Math.min(sel.startSec, sel.endSec)),
       endSec: Math.max(sel.startSec, sel.endSec),
       trackIds: sel.trackIds,
-    }),
+    });
+    // The loop range follows the edit selection when the link is on.  Through
+    // `linkedTimeline` rather than inline, so "nothing to do" returns null and
+    // this stays a single set() with no extra keys — a write on every mouse
+    // move of a drag is a re-render on every mouse move of a drag.
+    const loop = linkedTimeline(
+      state.linkSelection,
+      { startSec: state.loopStartSec, endSec: state.loopEndSec },
+      selection,
+    );
+    return loop
+      ? { selection, loopStartSec: loop.startSec, loopEndSec: loop.endSec }
+      : { selection };
   }),
   selectedTrackIds: [],
   setSelectedTracks: (ids) => set({ selectedTrackIds: ids }),
@@ -336,6 +400,48 @@ export const useDawStore = create<DawState>((set, get) => ({
   setRenameTarget: (renameTarget) => set({ renameTarget }),
   historyOpen: false,
   setHistoryOpen: (historyOpen) => set({ historyOpen }),
+  poolOpen: false,
+  setPoolOpen: (poolOpen) => set({ poolOpen }),
+  fadeTarget: null,
+  setFadeTarget: (fadeTarget) => set({ fadeTarget }),
+
+  zoomSlots: {},
+  storeZoomSlot: (slot) => set((s) => ({
+    zoomSlots: storeZoom(s.zoomSlots, slot, {
+      pxPerSec: s.pxPerSec,
+      scrollSec: s.scrollSec,
+      trackHeights: Object.fromEntries(s.session.tracks.map((t) => [t.id, t.height])),
+    }),
+  })),
+  recallZoomSlot: (slot) => {
+    const state = get();
+    const view: ZoomView | null = recallZoom(state.zoomSlots, slot);
+    if (!view) return false;
+    set({ pxPerSec: view.pxPerSec, scrollSec: view.scrollSec });
+    // Track heights are restored through `apply`, because they live in the
+    // session and so belong in the undo stack; the zoom does not.
+    if (view.trackHeights) {
+      const heights = view.trackHeights;
+      state.apply((session) => ({
+        ...session,
+        tracks: session.tracks.map((t) => (
+          heights[t.id] !== undefined && heights[t.id] !== t.height
+            ? { ...t, height: heights[t.id] as number }
+            : t)),
+      }));
+    }
+    return true;
+  },
+
+  layouts: [],
+  setLayouts: (layouts) => set({ layouts }),
+
+  snapshots: [],
+  addSnapshot: (snapshot) => set((s) => ({ snapshots: pushSnapshot(s.snapshots, snapshot) })),
+  setSnapshots: (snapshots) => set({ snapshots }),
+
+  linkSelection: false,
+  setLinkSelection: (linkSelection) => set({ linkSelection }),
   setQuantizeTarget: (quantizeTarget) => set({ quantizeTarget }),
 
   channelClipboard: null,

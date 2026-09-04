@@ -176,3 +176,47 @@ export function describeHeight(px: number): string {
   const preset = TRACK_HEIGHT_PRESETS.find((p) => p.px === px);
   return preset ? `${preset.label} (${px}px)` : `${px}px`;
 }
+
+// ── Notes ───────────────────────────────────────────────────────────────────
+
+/** The longest note worth keeping inline; past this it is a document. */
+export const MAX_TRACK_NOTE = 2000;
+
+/** A track's note, or the empty string.  The one place `note` is read. */
+export function trackNote(track: Track): string {
+  return track.note ?? '';
+}
+
+export function hasNote(track: Track): boolean {
+  return trackNote(track).trim() !== '';
+}
+
+/**
+ * Write a track's note.
+ *
+ * An empty note removes the field rather than storing `''`, so a session that
+ * has never had notes serialises exactly as it did before the feature — and
+ * `hasNote` cannot be fooled by a field full of spaces.
+ */
+export function setTrackNote(session: DawSession, trackId: TrackId, note: string): DawSession {
+  const clean = note.slice(0, MAX_TRACK_NOTE);
+  return updateTrack(session, trackId, (t) => {
+    if (clean.trim() === '') {
+      if (t.note === undefined) return t;
+      const { note: _drop, ...rest } = t;
+      return rest as Track;
+    }
+    return t.note === clean ? t : { ...t, note: clean };
+  });
+}
+
+/** Every track carrying a note, for a session-wide list. */
+export function tracksWithNotes(session: DawSession): Array<{ track: Track; note: string }> {
+  return session.tracks.filter(hasNote).map((track) => ({ track, note: trackNote(track) }));
+}
+
+/** The first line, for a one-line hint on a track header. */
+export function noteSummary(track: Track, max = 60): string {
+  const first = trackNote(track).split('\n')[0] ?? '';
+  return first.length > max ? `${first.slice(0, max - 1)}\u2026` : first;
+}

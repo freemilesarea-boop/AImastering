@@ -13,7 +13,13 @@
 
 import type { DawState } from '../stores/dawStore.js';
 import { snapToGrid, targetTrackIds } from '../stores/dawStore.js';
-import { MEM_DIGITS, type MemDigit } from './definitions.js';
+import { MEM_DIGITS, ZOOM_DIGITS, type MemDigit, type ZoomDigit } from './definitions.js';
+import { clearFades, countSelectedClips } from '../daw/edit/batch-fade.js';
+import { setTrackNote, trackNote } from '../daw/model/track-header.js';
+import { describeSnapshot, diffSnapshot, takeSnapshot } from '../daw/model/mix-snapshot.js';
+import { buildPool, describePool, summarisePool } from '../daw/model/clip-pool.js';
+import { nextId } from '../daw/model/ids.js';
+import { describeZoom, recallZoom } from '../daw/model/workspace-view.js';
 import {
   clearLocation, describeLocation, locationAt, memoryLocations, recallLocation,
   slotForKey, storeLocation,
@@ -194,7 +200,13 @@ export type DawCommandId =
   | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown'
   | MemCommandId
   | 'daw.clearMemory' | 'daw.cycleSnapMode' | 'daw.fillSelection'
-  | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe';
+  | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe'
+  | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
+  | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
+  | ZoomCommandId;
+
+/** One store and one recall verb per zoom preset. */
+export type ZoomCommandId = `daw.zoomStore.${ZoomDigit}` | `daw.zoomRecall.${ZoomDigit}`;
 
 /** One store and one recall verb per memory slot. */
 export type MemCommandId = `daw.memStore.${MemDigit}` | `daw.memRecall.${MemDigit}`;
@@ -227,6 +239,36 @@ function selectionOrPlayhead(daw: DawState): TimeSelection {
 export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, CommandFn> {
   const { notify, daw, invoke, openWorkspace } = deps;
   const marks = deps.transients ?? transientsFor;
+
+  /**
+   * The ten zoom-preset verbs, generated the same way as the memory ones and
+   * for the same reason: a store key with no matching recall key is a bug you
+   * only find when you need the view back.
+   */
+  const zoomCommands = (): Record<ZoomCommandId, CommandFn> => {
+    const out = {} as Record<ZoomCommandId, CommandFn>;
+    for (const digit of ZOOM_DIGITS) {
+      const slot = Number(digit);
+      out[`daw.zoomStore.${digit}`] = () => {
+        const state = daw();
+        state.storeZoomSlot(slot);
+        notify(`줌 프리셋 ${slot} 저장 — ${describeZoom({
+          pxPerSec: state.pxPerSec, scrollSec: state.scrollSec,
+        })}`);
+      };
+      out[`daw.zoomRecall.${digit}`] = () => {
+        const state = daw();
+        const view = recallZoom(state.zoomSlots, slot);
+        if (!view) {
+          notify(`줌 프리셋 ${slot} 이 비어 있습니다 — Shift+F${slot + 5} 로 저장`, 'warning');
+          return;
+        }
+        state.recallZoomSlot(slot);
+        notify(`줌 프리셋 ${slot} — ${describeZoom(view)}`);
+      };
+    }
+    return out;
+  };
 
   /**
    * The twenty memory-location verbs, generated from the digit list.
@@ -1268,6 +1310,92 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       notify(safe
         ? `솔로 세이프 ${tracks.length}개 — 다른 트랙 솔로에도 소리가 납니다 (전체 ${total}개)`
         : `솔로 세이프 해제 ${tracks.length}개 (남은 ${total}개)`);
+    },
+
+    ...zoomCommands(),
+
+    'daw.openPool': () => {
+      const state = daw();
+      state.setPoolOpen(!state.poolOpen);
+      if (!state.poolOpen) {
+        notify(describePool(summarisePool(buildPool(state.session))));
+      }
+    },
+
+    /**
+     * Batch fade over the selection.
+     *
+     * Opens the dialog rather than applying straight away: the fade length and
+     * which edges are the whole decision, and a key that silently puts 5 ms on
+     * forty clips is one nobody will press twice.
+     */
+    'daw.batchFade': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      if (!hasRange(sel) || sel.trackIds.length === 0) {
+        notify('페이드를 넣을 구간을 선택하세요', 'warning');
+        return;
+      }
+      if (countSelectedClips(state.session, sel) === 0) {
+        notify('선택 구간에 클립이 없습니다', 'warning');
+        return;
+      }
+      state.setFadeTarget(sel);
+    },
+
+    'daw.clearFades': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      if (!hasRange(sel) || sel.trackIds.length === 0) {
+        notify('페이드를 지울 구간을 선택하세요', 'warning');
+        return;
+      }
+      const before = state.session;
+      state.apply((s) => clearFades(s, sel));
+      notify(daw().session === before ? '지울 페이드가 없습니다' : '페이드 제거');
+    },
+
+    'daw.trackNote': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      const track = findTrack(state.session, trackId);
+      if (!track) return;
+      const typed = globalThis.prompt?.(`${track.name} 메모`, trackNote(track));
+      if (typed === null || typed === undefined) return;
+      state.apply((s) => setTrackNote(s, trackId, typed));
+      notify(typed.trim() === '' ? '메모 삭제' : `메모 저장 — ${track.name}`);
+    },
+
+    'daw.toggleLinkSelection': () => {
+      const state = daw();
+      const next = !state.linkSelection;
+      state.setLinkSelection(next);
+      notify(next
+        ? '선택 ↔ 루프 연동 켬 — 편집 선택이 루프 구간을 따라갑니다'
+        : '선택 ↔ 루프 연동 끔');
+    },
+
+    'daw.mixSnapshot': () => {
+      const state = daw();
+      const name = globalThis.prompt?.('스냅샷 이름', `믹스 ${state.snapshots.length + 1}`);
+      if (name === null || name === undefined) return;
+      const snapshot = takeSnapshot(state.session, name, nextId('snap'));
+      state.addSnapshot(snapshot);
+      notify(`스냅샷 저장 — ${snapshot.name} (채널 ${snapshot.channels.length}개)`);
+    },
+
+    'daw.mixSnapshotPanel': () => {
+      const state = daw();
+      if (state.snapshots.length === 0) {
+        notify('저장된 스냅샷이 없습니다 — Mod+Alt+Shift+M 으로 찍으세요', 'warning');
+        return;
+      }
+      // Say what the newest one would change; the panel is the mixer's own.
+      const latest = state.snapshots[state.snapshots.length - 1] as NonNullable<
+        (typeof state.snapshots)[number]>;
+      notify(`${latest.name} — ${describeSnapshot(diffSnapshot(state.session, latest))}`);
+      state.setWindow('mix');
     },
 
     'daw.historyPanel': () => {

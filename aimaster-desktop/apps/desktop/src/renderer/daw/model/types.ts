@@ -300,6 +300,16 @@ export interface Track {
   vcaId: TrackId | null;
 
   automation: AutomationLane[];
+  /**
+   * Free text about this track, saved with the session.
+   *
+   * The mic, the take, what to fix next — the things people currently write
+   * into the track NAME until it reads `Vox 3 (U87 -4dB comp OFF fix 1:22)`.
+   *
+   * Optional because sessions written before it existed have none; read it
+   * through `trackNote()` in model/track-header.ts rather than touching it.
+   */
+  note?: string;
   /** UI lane height in px. */
   height: number;
   /**

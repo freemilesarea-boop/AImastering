@@ -103,7 +103,14 @@ export type CommandId =
   //     slot cannot exist in one half and not the other.
   | `daw.memStore.${MemDigit}` | `daw.memRecall.${MemDigit}`
   | 'daw.clearMemory' | 'daw.cycleSnapMode' | 'daw.fillSelection'
-  | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe';
+  | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe'
+  | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
+  | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
+  | `daw.zoomStore.${ZoomDigit}` | `daw.zoomRecall.${ZoomDigit}`;
+
+/** The five zoom-preset slots, on the function keys. */
+export type ZoomDigit = '1' | '2' | '3' | '4' | '5';
+export const ZOOM_DIGITS: readonly ZoomDigit[] = ['1', '2', '3', '4', '5'];
 
 /** The number-row keys, in slot order: slot 10 is `0`. */
 export type MemDigit = '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0';
@@ -532,6 +539,34 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '되돌릴 수 있는 단계 목록 — 눌러서 그 시점으로 한 번에', available: true },
   { id: 'daw.clearMemory', group: 'daw', label: '메모리 위치 비우기', chords: ['Mod+Alt+Shift+Backspace'],
     note: '번호 마커 10개를 모두 지웁니다', available: true },
+  { id: 'daw.openPool', group: 'daw', label: '파일 풀 (Clip List)', chords: ['Mod+Alt+Shift+O'],
+    note: '세션이 가진 모든 파일 — 어디에 쓰이는지, 안 쓰는 게 뭔지, 없어진 게 뭔지', available: true },
+  { id: 'daw.batchFade', group: 'daw', label: '일괄 페이드', chords: ['Shift+Alt+F'],
+    note: '선택한 클립 전부에 같은 페이드 — 클립보다 길면 절반으로 잘라서 넣습니다', available: true },
+  { id: 'daw.clearFades', group: 'daw', label: '페이드 지우기', chords: ['Shift+Alt+Backspace'],
+    note: '선택한 클립의 페이드를 양쪽 다 제거', available: true },
+  { id: 'daw.trackNote', group: 'daw', label: '트랙 메모', chords: ['Mod+Alt+Shift+N'],
+    note: '마이크 · 테이크 · 고칠 것 — 트랙 이름에 적던 것들', available: true },
+  { id: 'daw.toggleLinkSelection', group: 'daw', label: '선택 ↔ 루프 연동', chords: ['Shift+Alt+L'],
+    note: '편집 선택이 움직이면 루프 구간도 따라갑니다 (프로툴스 Link Timeline)', available: true },
+  { id: 'daw.mixSnapshot', group: 'daw', label: '믹스 스냅샷 찍기', chords: ['Mod+Alt+Shift+M'],
+    note: '지금 믹서 상태를 저장 — 페이더 · 인서트 · 라우팅 (오토메이션은 제외)', available: true },
+  { id: 'daw.mixSnapshotPanel', group: 'daw', label: '믹스 스냅샷 목록', chords: ['Mod+Alt+Shift+K'],
+    note: '저장한 믹스들 — 뭐가 다른지 보고 되돌립니다', available: true },
+
+  // Zoom presets on the function keys — the number row is memory locations.
+  ...ZOOM_DIGITS.flatMap((digit, i): ShortcutDef[] => {
+    const slot = i + 1;
+    return [
+      { id: `daw.zoomRecall.${digit}`, group: 'daw', label: `줌 프리셋 ${slot} 불러오기`,
+        chords: [`F${slot + 5}`],
+        note: '저장해 둔 확대 배율과 위치로', available: true },
+      { id: `daw.zoomStore.${digit}`, group: 'daw', label: `줌 프리셋 ${slot} 저장`,
+        chords: [`Shift+F${slot + 5}`],
+        note: '지금 보고 있는 배율 · 위치 · 트랙 높이를 저장', available: true },
+    ];
+  }),
+
   { id: 'daw.toggleSoloSafe', group: 'daw', label: '솔로 세이프', chords: ['Mod+Alt+Shift+E'],
     note: '다른 트랙을 솔로해도 뮤트되지 않습니다 — 리버브 리턴·클릭용. 믹서 S 버튼 Alt+클릭도 같습니다', available: true },
 
