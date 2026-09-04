@@ -158,8 +158,6 @@ export interface MidiNote {
   muted: boolean;
   /** Per-note curves — MPE / MIDI 2.0 per-note controllers. */
   expression: NoteExpression[];
-  /** Expression-map slot (staccato, pizzicato…), null when unset. */
-  articulation: string | null;
   /** 0…1 — Cubase-style play probability for humanised repeats. */
   playProbability: number;
 }
@@ -190,7 +188,6 @@ export function createNote(over: Partial<MidiNote> = {}): MidiNote {
     channel: 0,
     muted: false,
     expression: [],
-    articulation: null,
     playProbability: 1,
     ...over,
   };

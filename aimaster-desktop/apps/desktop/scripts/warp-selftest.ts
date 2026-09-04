@@ -502,7 +502,7 @@ check('MIDI parts follow the tempo, and their notes never have to move', () => {
     notes: [{
       id: 'n1', pitch: 60, pitchOffsetSemitones: 0, startBeat: 2, durationBeat: 1,
       velocity: 0.8, releaseVelocity: 0.5, channel: 0, muted: false,
-      expression: [], articulation: null, playProbability: 1,
+      expression: [], playProbability: 1,
     }],
   });
   const { session, trackId } = sessionWith([part]);

@@ -1,15 +1,25 @@
 // Rust offline file render (RUST-OFFLINE-RENDER-1).
 //
-// Decode → run the Rust MasteringChain over the whole file → encode WAV,
-// using the bundled ffmpeg for I/O.  Additive + experimental: callers fall
-// back to the Python `audio:master` on any failure.
+// Decode → run the Rust MasteringChain over the whole file → encode WAV.
+// ffmpeg does the DECODE and the MP3 preview; the WAV is written by this
+// app's own encoder.  Additive + experimental: callers fall back to the
+// Python `audio:master` on any failure.
+//
+// The encoder is deliberately the SAME module the DAW's bounce uses
+// (renderer/daw/engine/wav.ts).  Handing float samples to ffmpeg and letting
+// it choose the 16-bit rounding meant the two ways out of this app could
+// quantise differently — the mastered file and a bounce of the same audio
+// would not match, and neither would be the one that had been listened to.
+// One encoder, one dither, one answer.
 //
 // NOTE: this runs in the Electron MAIN process and needs ffmpeg + the
 // node-target WASM build; it is exercised on-device (the parity harness
 // validates the DSP core headlessly).
 
 import { spawn } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
 import { resolveFFmpegPath } from '@aimaster/audio-engine';
+import { encodeWav as encodeWavBytes } from '../../renderer/daw/engine/wav.js';
 import {
   renderStereoBuffer, renderStereoBufferNormalized, deinterleave, interleave,
   type RenderMetrics, type NormalizedRenderMetrics,
@@ -75,14 +85,19 @@ async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promi
 }
 
 /** Encode interleaved f32le stereo → WAV at the target bit depth. */
-async function encodeWav(interleaved: Float32Array, sampleRate: number, bitDepth: 16 | 24, outputPath: string): Promise<void> {
-  const codec = bitDepth === 16 ? 'pcm_s16le' : 'pcm_s24le';
-  const stdin = Buffer.from(interleaved.buffer, interleaved.byteOffset, interleaved.byteLength);
-  await runFfmpeg([
-    '-hide_banner', '-loglevel', 'error', '-y',
-    '-f', 'f32le', '-ar', String(sampleRate), '-ac', '2', '-i', 'pipe:0',
-    '-c:a', codec, outputPath,
-  ], stdin);
+/**
+ * Write the render as a WAV, through the app's own dithered encoder.
+ *
+ * De-interleaved first because `encodeWavBytes` takes planar channels — and
+ * because dither has to be independent per channel, which a single
+ * interleaved stream cannot express.
+ */
+async function encodeWav(
+  interleaved: Float32Array, sampleRate: number, bitDepth: 16 | 24, outputPath: string,
+): Promise<void> {
+  const { left, right } = deinterleave(interleaved, 2);
+  const bytes = encodeWavBytes([left, right], sampleRate, bitDepth);
+  await writeFile(outputPath, bytes);
 }
 
 /** Encode a WAV → 320 kbps MP3 preview (reuses the bundled ffmpeg). */

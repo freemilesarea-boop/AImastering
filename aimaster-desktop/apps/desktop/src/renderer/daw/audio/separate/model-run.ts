@@ -46,6 +46,7 @@ import {
 } from './spectrum.js';
 import { stemLabel, type StemKind } from './stem-tree.js';
 import type { ModelDescriptor } from './model-registry.js';
+import { resampleChannels } from '../resample.js';
 
 /** The bit of onnxruntime this needs, named so it can be faked in a test. */
 export interface InferenceLike {
@@ -101,9 +102,18 @@ export async function runModel(
   const { fftSize } = opts.stft;
 
   if (channels.length === 0) throw new Error('오디오가 비어 있습니다');
-  if (sampleRate !== descriptor.sampleRate) {
-    throw new Error(`이 모델은 ${descriptor.sampleRate} Hz 로 학습됐는데 오디오는 ${sampleRate} Hz 입니다`
-      + ' — 리샘플러가 아직 없어서 거절합니다');
+
+  // A model trained at 44.1 kHz used to REFUSE a 48 kHz session — which is
+  // every session this app makes by default, so the ONNX path was effectively
+  // closed.  Convert instead, and convert back at the end so the caller gets
+  // stems at the rate it asked about.  The round trip costs one pass of a
+  // windowed-sinc filter each way; refusing cost the whole feature.
+  const modelRate = descriptor.sampleRate;
+  const needsResample = sampleRate !== modelRate;
+  const fed = needsResample ? resampleChannels(channels, sampleRate, modelRate) : channels;
+  const workRate = modelRate;
+  if (needsResample) {
+    onProgress(0);
   }
   if (descriptor.channels !== 1 && descriptor.channels !== 2) {
     throw new Error(`모델이 ${descriptor.channels}채널을 요구합니다 — 모노나 스테레오만 됩니다`);
@@ -111,14 +121,14 @@ export async function runModel(
   const stemCount = descriptor.stems.length;
   if (stemCount === 0) throw new Error('모델이 스템을 하나도 선언하지 않았습니다');
 
-  const left = channels[0]!;
-  const right = channels[1] ?? left;
+  const left = fed[0]!;
+  const right = fed[1] ?? left;
   const length = left.length;
   if (length === 0) throw new Error('오디오가 비어 있습니다');
   // The model's channel count decides what it is fed; ours decides what comes
   // back out.  A mono model on a stereo stem is run once per channel.
   const modelStereo = descriptor.channels === 2;
-  const outChannels = channels.length === 2 ? 2 : 1;
+  const outChannels = fed.length === 2 ? 2 : 1;
   const bins = (fftSize >> 1) + 1;
 
   const denominator = denominatorFor(length, fftSize);
@@ -131,8 +141,8 @@ export async function runModel(
 
   for (let start = 0; start < total; start += opts.segmentFrames) {
     const stop = Math.min(total, start + opts.segmentFrames);
-    const specL = analyse(left, sampleRate, start, stop, opts.stft);
-    const specR = outChannels === 2 ? analyse(right, sampleRate, start, stop, opts.stft) : specL;
+    const specL = analyse(left, workRate, start, stop, opts.stft);
+    const specR = outChannels === 2 ? analyse(right, workRate, start, stop, opts.stft) : specL;
     const frames = specL.frames;
     if (frames === 0) break;
     const magL = magnitudes(specL);
@@ -187,8 +197,22 @@ export async function runModel(
     kind,
     channels: accumulators[s]!.map((acc) => acc.finish(denominator)),
   }));
+
+  // Reconstruction is measured at the WORKING rate, against the audio the
+  // model actually saw.  Measuring after the conversion back would fold the
+  // resampler's own error into a number that is supposed to describe the
+  // separation, and the two are not the same question.
   const input = outChannels === 2 ? [left, right] : [left];
-  return { stems, reconstructionDb: residualDb(input, stems), elapsedMs: Date.now() - started };
+  const reconstructionDb = residualDb(input, stems);
+
+  const out = needsResample
+    ? stems.map((stem) => ({
+        kind: stem.kind,
+        channels: resampleChannels(stem.channels, workRate, sampleRate),
+      }))
+    : stems;
+
+  return { stems: out, reconstructionDb, elapsedMs: Date.now() - started };
 }
 
 function checkShape(

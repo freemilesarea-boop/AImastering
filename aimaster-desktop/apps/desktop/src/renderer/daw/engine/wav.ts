@@ -4,8 +4,20 @@
 // and it round-trips an OfflineAudioContext render without the truncation
 // artefacts 16-bit would add.  32-bit float is offered for intermediate
 // renders (Freeze / Consolidate) where nothing should be quantised at all.
+//
+// Every reduction to a fixed-point depth goes through a DITHERED quantiser
+// (audio/dither.ts).  It used to be a bare `Math.round`, which correlates the
+// rounding error with the signal and is what makes a quiet reverb tail step
+// and buzz instead of fading.  `dither: 'none'` reproduces the old bytes
+// exactly, for anyone who wants to hear the difference.
+
+import {
+  createQuantizer, defaultDither, type DitherMode, type QuantBitDepth,
+} from '../audio/dither.js';
 
 export type WavBitDepth = 16 | 24 | 32;
+
+export type { DitherMode };
 
 /** Interleave planar channel data into a single frame-major array. */
 export function interleave(channels: readonly Float32Array[], length: number): Float32Array {
@@ -42,6 +54,7 @@ export function encodeWav(
   channels: readonly Float32Array[],
   sampleRate: number,
   bitDepth: WavBitDepth = 24,
+  dither: DitherMode = defaultDither(bitDepth),
 ): Uint8Array {
   const channelCount = Math.max(1, channels.length);
   const frames = channels[0]?.length ?? 0;
@@ -67,24 +80,30 @@ export function encodeWav(
   writeAscii(view, 36, 'data');
   view.setUint32(40, dataBytes, true);
 
+  // One quantiser for the whole file: noise shaping is stateful per channel,
+  // and it has to see a channel's samples in order to have any state worth
+  // keeping.  Float needs none of this and never builds one.
+  const quantizer = isFloat
+    ? null
+    : createQuantizer(bitDepth as QuantBitDepth, dither, channelCount);
+
   let offset = 44;
   for (let i = 0; i < frames; i++) {
     for (let c = 0; c < channelCount; c++) {
       const sample = channels[c]?.[i] ?? 0;
-      if (isFloat) {
+      if (isFloat || !quantizer) {
         view.setFloat32(offset, sample, true);
         offset += 4;
         continue;
       }
-      const clamped = Math.max(-1, Math.min(1, sample));
+      const v = quantizer.code(sample, c);
       if (bitDepth === 24) {
-        const v = Math.round(clamped * 0x7fffff);
         view.setUint8(offset,     v & 0xff);
         view.setUint8(offset + 1, (v >> 8) & 0xff);
         view.setUint8(offset + 2, (v >> 16) & 0xff);
         offset += 3;
       } else {
-        view.setInt16(offset, Math.round(clamped * 0x7fff), true);
+        view.setInt16(offset, v, true);
         offset += 2;
       }
     }
@@ -96,8 +115,9 @@ export function encodeWav(
 export function encodeAudioBuffer(
   buffer: { numberOfChannels: number; sampleRate: number; getChannelData(c: number): Float32Array },
   bitDepth: WavBitDepth = 24,
+  dither: DitherMode = defaultDither(bitDepth),
 ): Uint8Array {
   const channels: Float32Array[] = [];
   for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
-  return encodeWav(channels, buffer.sampleRate, bitDepth);
+  return encodeWav(channels, buffer.sampleRate, bitDepth, dither);
 }

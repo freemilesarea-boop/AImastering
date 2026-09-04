@@ -44,7 +44,9 @@ import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
 import {
   addTrack, createTrack, findTrack, sessionEndSec,
 } from '../daw/model/session-ops.js';
-import { clearAllMute, clearAllSolo, toggleMute, toggleSolo } from '../daw/model/mixer-math.js';
+import {
+  clearAllMute, clearAllSolo, setSoloSafe, soloSafeCount, toggleMute, toggleSolo,
+} from '../daw/model/mixer-math.js';
 import { createSession } from '../daw/model/session-ops.js';
 import {
   deserializeDawSession, importSessionData, serializeDawSession,
@@ -104,7 +106,7 @@ import {
 import {
   availableTargets, ensureLane, setLaneVisible, visibleLanes,
 } from '../daw/edit/automation-lanes.js';
-import type { AutomationMode, Clip, DawSession } from '../daw/model/types.js';
+import type { AutomationMode, Clip, DawSession, Track, TrackId } from '../daw/model/types.js';
 import {
   quantizeNotes, humanizeNotes, transposeNotes, nudgeVelocity, applyLegato,
 } from '../daw/edit/midi-edit.js';
@@ -192,7 +194,7 @@ export type DawCommandId =
   | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown'
   | MemCommandId
   | 'daw.clearMemory' | 'daw.cycleSnapMode' | 'daw.fillSelection'
-  | 'daw.batchRename' | 'daw.historyPanel';
+  | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe';
 
 /** One store and one recall verb per memory slot. */
 export type MemCommandId = `daw.memStore.${MemDigit}` | `daw.memRecall.${MemDigit}`;
@@ -1242,6 +1244,30 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         .map((t) => ({ id: t.id, name: t.name }));
       if (tracks.length === 0) { notify('이름을 바꿀 트랙이나 클립을 고르세요', 'warning'); return; }
       state.setRenameTarget({ kind: 'track', items: tracks });
+    },
+
+    /**
+     * Mark the selected channels solo-safe, or clear them.
+     *
+     * Set rather than toggle across a selection: toggling four tracks where
+     * two are already safe leaves you with two safe and two not, which is
+     * never what selecting four and pressing one key meant.  The majority
+     * decides the direction.
+     */
+    'daw.toggleSoloSafe': () => {
+      const state = daw();
+      const ids = targetTrackIds();
+      if (ids.length === 0) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      const tracks = ids
+        .map((id: TrackId) => findTrack(state.session, id))
+        .filter((t): t is Track => !!t && t.kind !== 'master');
+      if (tracks.length === 0) { notify('마스터는 솔로 세이프가 필요 없습니다'); return; }
+      const safe = !(tracks.filter((t) => t.soloSafe).length > tracks.length / 2);
+      state.apply((s) => setSoloSafe(s, tracks.map((t) => t.id), safe));
+      const total = soloSafeCount(daw().session);
+      notify(safe
+        ? `솔로 세이프 ${tracks.length}개 — 다른 트랙 솔로에도 소리가 납니다 (전체 ${total}개)`
+        : `솔로 세이프 해제 ${tracks.length}개 (남은 ${total}개)`);
     },
 
     'daw.historyPanel': () => {

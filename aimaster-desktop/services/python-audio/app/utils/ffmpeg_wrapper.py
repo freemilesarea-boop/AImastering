@@ -108,6 +108,62 @@ CANONICAL_ARESAMPLE_PARAMS: tuple[tuple[str, str], ...] = (
 CANONICAL_DITHER_POLICY = "none"
 
 
+# ── Delivery word length ─────────────────────────────────────────────────────
+#
+# The chain runs as several ffmpeg passes in series, each writing a WAV the
+# next one reads.  Writing those intermediates at the DELIVERY depth means
+# quantising two or three times instead of once, and it compounds: measured on
+# a 997 Hz tone at -70 dBFS with a real EQ between passes, harmonic distortion
+# above the noise floor went
+#
+#     16-bit once, no dither .................... +53.9 dB
+#     16-bit three times, no dither ............. +66.7 dB
+#     16-bit three times, dithered each time .... +41.3 dB
+#     24-bit intermediates, one dithered 16-bit .. -0.4 dB   ← gone
+#
+# So there are two rules, and both are needed:
+#
+#   1. Intermediates never go below INTERMEDIATE_BIT_DEPTH.  Re-quantising to
+#      a grid the samples already sit on is free; re-quantising after a filter
+#      has moved them off it is not.
+#   2. The one pass that reduces to the delivery depth DITHERS.  ffmpeg does
+#      not do this on its own — measured: a 0.4 LSB tone through
+#      `-acodec pcm_s16le` comes out as digital silence, and comes back with
+#      `aresample=dither_method=triangular_hp`.
+
+INTERMEDIATE_BIT_DEPTH = 24
+
+#: Appended to the filter chain of the pass that reduces the word length.
+DELIVERY_DITHER_FILTER = "aresample=dither_method=triangular_hp"
+
+
+def intermediate_bit_depth(bit_depth: int) -> int:
+    """The depth an intermediate pass should write, given the delivery depth.
+
+    Never lower than the delivery depth (a 32-bit delivery keeps 32) and never
+    lower than 24, so the last pass is the only one that loses anything.
+    """
+    return max(int(bit_depth), INTERMEDIATE_BIT_DEPTH)
+
+
+def pcm_codec(bit_depth: int) -> str:
+    """The PCM codec name for a word length."""
+    if bit_depth <= 16:
+        return "pcm_s16le"
+    return "pcm_s24le" if bit_depth <= 24 else "pcm_s32le"
+
+
+def with_delivery_dither(af_chain: str, bit_depth: int, *, dither: bool) -> str:
+    """Append the dither stage when this pass is the one reducing to `bit_depth`.
+
+    Only 16-bit gets it. At 24 bits the dither would sit 48 dB below anything
+    a 16-bit delivery would keep, so it buys nothing and costs determinism.
+    """
+    if not dither or int(bit_depth) > 16:
+        return af_chain
+    return f"{af_chain},{DELIVERY_DITHER_FILTER}" if af_chain else DELIVERY_DITHER_FILTER
+
+
 class CanonicalProvenanceError(RuntimeError):
     """Canonical analysis cannot prove which ffmpeg binary it would run.
 
@@ -541,6 +597,7 @@ def loudnorm_pass2(
     lra: float = 11.0,
     sample_rate: int = 44100,
     bit_depth: int = 24,
+    dither: bool = False,
     pre_filter: str = "",
     linear: bool = True,
 ) -> str:
@@ -569,7 +626,8 @@ def loudnorm_pass2(
         f":print_format=none"
     )
     af = f"{pre_filter},{loudnorm}" if pre_filter else loudnorm
-    codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
+    af = with_delivery_dither(af, bit_depth, dither=dither)
+    codec = pcm_codec(bit_depth)
 
     _, stderr = _run([
         _FFMPEG_BIN, "-hide_banner", "-y",
@@ -594,6 +652,7 @@ def apply_limiter(
     release_ms: float = 50.0,
     sample_rate: int = 44100,
     bit_depth: int = 24,
+    dither: bool = False,
     level_in_db: float = 0.0,
 ) -> str:
     """
@@ -621,7 +680,8 @@ def apply_limiter(
         f":release={release_ms}"
         f":asc=1"
     )
-    codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
+    limiter = with_delivery_dither(limiter, bit_depth, dither=dither)
+    codec = pcm_codec(bit_depth)
 
     _, stderr = _run([
         _FFMPEG_BIN, "-hide_banner", "-y",
@@ -680,13 +740,15 @@ def apply_filter_chain(
     *,
     sample_rate: int = 44100,
     bit_depth: int = 24,
+    dither: bool = False,
 ) -> str:
     """
     Re-render `input_path` to `output_path` through an arbitrary `-af` chain.
     Used by the v3 correction pass.  No loudnorm involved here — just a single
     ffmpeg pass with the provided filter graph and a PCM WAV codec.
     """
-    codec = "pcm_s16le" if bit_depth == 16 else "pcm_s24le"
+    af_chain = with_delivery_dither(af_chain, bit_depth, dither=dither)
+    codec = pcm_codec(bit_depth)
     _run([
         _FFMPEG_BIN, "-hide_banner", "-y",
         "-i", input_path,

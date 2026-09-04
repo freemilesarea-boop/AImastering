@@ -174,7 +174,7 @@ function legacySession(partStartSec: number, bpm = 120): Record<string, unknown>
     expression: [{ target: { kind: 'pitchBend' }, points: [
       { timeSec: 0, value: 0 }, { timeSec: 0.5, value: 1 },
     ] }],
-    articulation: null, playProbability: 1,
+    playProbability: 1,
   }];
   raw['version'] = 1;
   return raw;

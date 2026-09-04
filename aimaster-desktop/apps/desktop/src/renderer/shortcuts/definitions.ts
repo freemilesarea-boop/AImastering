@@ -103,7 +103,7 @@ export type CommandId =
   //     slot cannot exist in one half and not the other.
   | `daw.memStore.${MemDigit}` | `daw.memRecall.${MemDigit}`
   | 'daw.clearMemory' | 'daw.cycleSnapMode' | 'daw.fillSelection'
-  | 'daw.batchRename' | 'daw.historyPanel';
+  | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe';
 
 /** The number-row keys, in slot order: slot 10 is `0`. */
 export type MemDigit = '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0';
@@ -532,6 +532,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '되돌릴 수 있는 단계 목록 — 눌러서 그 시점으로 한 번에', available: true },
   { id: 'daw.clearMemory', group: 'daw', label: '메모리 위치 비우기', chords: ['Mod+Alt+Shift+Backspace'],
     note: '번호 마커 10개를 모두 지웁니다', available: true },
+  { id: 'daw.toggleSoloSafe', group: 'daw', label: '솔로 세이프', chords: ['Mod+Alt+Shift+E'],
+    note: '다른 트랙을 솔로해도 뮤트되지 않습니다 — 리버브 리턴·클릭용. 믹서 S 버튼 Alt+클릭도 같습니다', available: true },
 
   // ── 메모리 위치 (번호 마커) ───────────────────────────────────────────
   // Generated so the store key and the recall key for a slot cannot drift.

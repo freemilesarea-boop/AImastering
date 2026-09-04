@@ -14,7 +14,7 @@ import {
   updateTrack, findTrack,
 } from '../../../daw/model/session-ops.js';
 import {
-  effectiveFaderDb, toggleMute, toggleSolo, vcaChainDb,
+  effectiveFaderDb, toggleMute, toggleSolo, toggleSoloSafe, vcaChainDb,
 } from '../../../daw/model/mixer-math.js';
 import { describePath, computeDelayCompensation, wouldFeedback } from '../../../daw/model/routing.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
@@ -470,11 +470,29 @@ function ChannelStrip({
         />
         <Meter level={level} />
         <div className="flex flex-col justify-end gap-1">
+          {/* Alt-click is solo-safe, the way Pro Tools and Cubase both put it
+              on the solo button — it belongs next to the thing it modifies,
+              not in a menu three levels away. */}
           <button
-            onClick={() => onApply((s) => toggleSolo(s, track.id))}
-            className={`w-5 h-5 rounded text-[9px] border ${track.solo
-              ? 'bg-yellow-500/30 border-yellow-500/60 text-yellow-300'
-              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+            onClick={(e) => onApply((s) => (e.altKey
+              ? toggleSoloSafe(s, track.id)
+              : toggleSolo(s, track.id)))}
+            title={track.soloSafe
+              ? '솔로 세이프 — 다른 트랙 솔로에 뮤트되지 않습니다 (Alt+클릭으로 해제)'
+              : '솔로 (Alt+클릭 = 솔로 세이프)'}
+            className={`w-5 h-5 rounded text-[9px] ${track.solo
+              ? 'bg-yellow-500/30 text-yellow-300'
+              : track.soloSafe
+                ? 'bg-zinc-900 text-sky-300'
+                : 'bg-zinc-900 text-zinc-500'}`}
+            style={{
+              // A dashed ring rather than another colour: solo-safe is a
+              // STANDING property of the channel, and it has to stay readable
+              // while the button is also lit for an active solo.
+              border: track.soloSafe
+                ? '1px dashed rgb(56,189,248)'
+                : `1px solid ${track.solo ? 'rgba(234,179,8,0.6)' : 'rgb(63,63,70)'}`,
+            }}
           >S</button>
           <button
             onClick={() => onApply((s) => toggleMute(s, track.id))}

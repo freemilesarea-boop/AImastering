@@ -805,7 +805,6 @@ function createLiveNote(pitch: number, velocity: number): MidiNote {
     channel: 0,
     muted: false,
     expression: [],
-    articulation: null,
     playProbability: 1,
   };
 }
