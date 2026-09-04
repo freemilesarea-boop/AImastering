@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDawStore, snapToGrid, snapMoveTo, type EditMode } from '../../../stores/dawStore.js';
 import { followScrollSec, rulerTicks } from '../../../daw/model/viewport.js';
+import UniverseStrip from './UniverseStrip.js';
 import { formatLabel, DEFAULT_FPS, TIME_FORMATS } from '../../../daw/model/spot-time.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
@@ -150,6 +151,7 @@ export default function EditWindow() {
 
   const laneRef = useRef<HTMLDivElement>(null);
   const [laneWidth, setLaneWidth] = useState(900);
+  const [showUniverse, setShowUniverse] = useState(false);
   const [decodeTick, setDecodeTick] = useState(0);
   const [drag, setDrag] = useState<null | { anchorSec: number; anchorTrackId: string }>(null);
   // The row the pointer is over, as a ref rather than state: the row handler
@@ -491,6 +493,14 @@ export default function EditWindow() {
     <div className="relative flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
+        <button
+          onClick={() => setShowUniverse((v) => !v)}
+          title="유니버스 — 곡 전체를 한 띠에 놓고, 지금 보고 있는 창을 끌어서 이동합니다"
+          className={`px-2 py-1 rounded text-[10px] font-mono tracking-wide border ${showUniverse
+            ? 'bg-emerald-600/30 border-emerald-600/50 text-emerald-300'
+            : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}
+        >UNIV</button>
+
         <div className="flex rounded-md overflow-hidden border border-zinc-700">
           {EDIT_MODES.map((m) => (
             <button
@@ -643,6 +653,12 @@ export default function EditWindow() {
           <div className="absolute top-0 bottom-0 w-px bg-red-400" style={{ left: toX(playheadSec) }} />
         </div>
       </div>
+
+      {/* ── Universe ────────────────────────────────────────────────────── */}
+      {/* Above the tracks and below the ruler: the whole song, and the window
+          you are looking through.  Toggled off because on a short session it
+          is a band of nothing, and screen height is the scarce thing here. */}
+      {showUniverse && <UniverseStrip laneWidth={laneWidth} />}
 
       {/* ── Tracks ──────────────────────────────────────────────────────── */}
       <div className="flex-1 flex overflow-y-auto" onMouseUp={endDrag} onMouseLeave={endDrag}>
