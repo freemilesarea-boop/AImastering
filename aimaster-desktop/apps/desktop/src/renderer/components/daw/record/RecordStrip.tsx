@@ -17,6 +17,8 @@ import {
 import { pitchName } from '../../../daw/model/midi.js';
 import { premium } from '../../../theme/premium.js';
 import { describeInput, resolveTrackInput, trackInputRef } from '../../../daw/model/track-input.js';
+import { describePatch, patchOptions } from '../../../daw/model/input-channels.js';
+import { LATENCY_LABELS, describeLatency } from '../../../daw/model/input-latency.js';
 
 export default function RecordStrip() {
   const session = useDawStore((s) => s.session);
@@ -29,7 +31,7 @@ export default function RecordStrip() {
 
   const {
     status, settings, devices, midiDevices, midiOpen, midiNote,
-    inputs, levels, elapsedSec, lastTakeNote, error,
+    inputs, levels, elapsedSec, lastTakeNote, calibrating, error,
   } = useRecordingStore();
   const setSettings = useRecordingStore((s) => s.setSettings);
   const setTrackInput = useRecordingStore((s) => s.setTrackInput);
@@ -37,6 +39,9 @@ export default function RecordStrip() {
   const refreshMidiDevices = useRecordingStore((s) => s.refreshMidiDevices);
   const start = useRecordingStore((s) => s.start);
   const stop = useRecordingStore((s) => s.stop);
+  const setLatency = useRecordingStore((s) => s.setLatency);
+  const calibrateLatency = useRecordingStore((s) => s.calibrateLatency);
+  const widthOf = useRecordingStore((s) => s.widthOf);
 
   const armed = armedTracks(session);
   const rolling = status === 'recording' || status === 'countIn';
@@ -133,6 +138,35 @@ export default function RecordStrip() {
               onClick={() => setSettings({ monitoring: settings.monitoring === 'on' ? 'off' : 'on' })}
               title="입력 모니터링 — 무장한 모든 트랙의 인서트를 통과해서 들립니다">MON</Toggle>
 
+      {/* Round-trip compensation.  The number is shown, not hidden behind a
+          preference, because whether it is measured or merely reported changes
+          how much of it to believe. */}
+      <Toggle on={settings.latencyEnabled && settings.latencySource !== 'none'}
+              onClick={() => setLatency({ enabled: !settings.latencyEnabled })}
+              title={describeLatency({
+                seconds: settings.latencySec,
+                source: settings.latencySource,
+                enabled: settings.latencyEnabled,
+              })}>
+        LAT {(settings.latencySec * 1000).toFixed(1)}
+      </Toggle>
+
+      <button
+        onClick={() => void calibrateLatency()}
+        disabled={calibrating || status !== 'armed'}
+        title={'루프백 보정 — 출력을 입력으로 되돌려 연결(또는 스피커와 마이크)한 뒤 누르세요. '
+          + '클릭을 재생하고 돌아온 시각을 재서 왕복 지연을 구합니다. '
+          + `현재: ${LATENCY_LABELS[settings.latencySource]} · 오차 약 ±3 ms (렌더 블록 경계)`}
+        style={{
+          height: 24, padding: '0 8px', borderRadius: 3,
+          fontFamily: premium.type.sans, fontSize: 9.5, letterSpacing: '0.1em',
+          color: status === 'armed' ? premium.text.muted : premium.text.faint,
+          background: premium.surface.well,
+          border: `1px solid ${premium.surface.hairline}`,
+          cursor: calibrating || status !== 'armed' ? 'default' : 'pointer',
+        }}
+      >{calibrating ? '측정 중…' : '보정'}</button>
+
       <label style={labelStyle} title="녹음 전에 굴러가는 트랜스포트 시간. 이 구간은 버려집니다.">
         PRE
         <input type="number" min={0} max={16} step={0.5} value={settings.preRollSec}
@@ -219,14 +253,32 @@ export default function RecordStrip() {
                   )}
                   {devices.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
                 </select>
+                {/* Which socket of the interface, not just how many channels.
+                    The list is the device's REAL width, learned when its
+                    stream opened — before that it is the two every device
+                    has, because offering input 5 on a box that has two would
+                    be an option that fails when it is used. */}
                 <select
-                  value={saved.channels}
-                  onChange={(e) => setTrackInput(track.id, { channels: Number(e.target.value) === 2 ? 2 : 1 })}
-                  title={`${track.name} 의 캡처 채널`}
-                  style={{ ...selectStyle, height: 20, maxWidth: 62 }}
+                  value={`${saved.firstChannel}:${saved.channels}`}
+                  onChange={(e) => {
+                    const [first, count] = e.target.value.split(':');
+                    setTrackInput(track.id, {
+                      firstChannel: Number(first),
+                      channels: Number(count) === 2 ? 2 : 1,
+                    });
+                  }}
+                  title={`${track.name} 이(가) 읽을 입력 — ${describePatch({
+                    firstChannel: saved.firstChannel, channels: saved.channels,
+                  })}`}
+                  style={{ ...selectStyle, height: 20, maxWidth: 86 }}
                 >
-                  <option value={1}>MONO</option>
-                  <option value={2}>STEREO</option>
+                  {patchOptions(widthOf(saved.deviceId ?? input.deviceId)).map((p) => (
+                    <option key={`${p.firstChannel}:${p.channels}`}
+                            value={`${p.firstChannel}:${p.channels}`}>
+                      {socketLabel(p.firstChannel, p.channels,
+                        widthOf(saved.deviceId ?? input.deviceId))}
+                    </option>
+                  ))}
                 </select>
               </div>
             );
@@ -235,6 +287,19 @@ export default function RecordStrip() {
       )}
     </div>
   );
+}
+
+/**
+ * What to call one socket in the picker.
+ *
+ * On a two-input device the familiar words are what people scan for; past
+ * that the socket number is the only thing that identifies which microphone,
+ * so the number wins.
+ */
+function socketLabel(firstChannel: number, channels: 1 | 2, width: number): string {
+  if (width > 2) return describePatch({ firstChannel, channels });
+  if (channels === 2) return 'STEREO';
+  return firstChannel === 0 ? 'MONO' : 'MONO (R)';
 }
 
 const selectStyle: React.CSSProperties = {

@@ -323,6 +323,13 @@ export interface Track {
     deviceLabel: string | null;
     deviceId: string | null;
     channels: 1 | 2;
+    /**
+     * Zero-based index of the first device channel this track records.
+     *
+     * Optional so sessions saved before multi-channel input existed still
+     * load — absent means input 1, which is what they recorded.
+     */
+    firstChannel?: number;
   };
   /**
    * Track Delay in milliseconds — negative plays EARLIER.

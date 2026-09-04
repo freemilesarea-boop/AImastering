@@ -10,8 +10,10 @@
 // their own offset and length.
 
 import {
-  loopPasses, passClipName, type LoopPass, type RecordPlan, type RecordSettings,
+  loopPasses, passClipName, settingsLatency,
+  type LoopPass, type RecordPlan, type RecordSettings,
 } from '../model/recording.js';
+import { captureShortfall } from '../model/input-latency.js';
 import {
   addFile, createClip, createPlaylist, findTrack, updateTrack,
 } from '../model/session-ops.js';
@@ -36,6 +38,16 @@ export interface CommitResult {
   takes: number;
   /** Playlist the transport should be left on. */
   activePlaylistId: string;
+  /** Round trip actually removed from the take, seconds. */
+  latencyAppliedSec: number;
+  /**
+   * Correction the capture had no audio for, seconds.
+   *
+   * Non-zero when the take ran to the very end of what was captured: shifting
+   * the read window later needs that much more at the tail, and if it is not
+   * there the take is short by this much rather than silently misaligned.
+   */
+  latencyShortSec: number;
 }
 
 /**
@@ -44,6 +56,18 @@ export interface CommitResult {
  * `captured` starts at the plan's `transportStartSec`, so the pre-roll is at
  * the front and is cut here rather than at capture time — stopping the tape
  * mid-pre-roll would lose the run-up if the player wanted it back.
+ *
+ * The round trip comes from the settings, and this is where it is removed.
+ * A sound the player made FOR transport time T reaches the capture at
+ * (T - start) + L, because they were listening to an output that was already
+ * late and their answer took the input path to arrive.  So the read window
+ * moves LATER into the capture by L, and everything downstream — the passes,
+ * the clip positions — keeps working in kept-relative time and needs no idea
+ * that any of this happened.
+ *
+ * Moving the read window rather than the clip is deliberate: pulling the
+ * clip's `startSec` earlier would push a take recorded at the top of the song
+ * before zero, where there is no timeline to put it on.
  */
 export async function commitRecording(
   session: DawSession, trackId: TrackId, captured: CapturedTake,
@@ -56,14 +80,22 @@ export async function commitRecording(
   const totalSec = (captured.channels[0]?.length ?? 0) / sampleRate;
   if (totalSec <= 0) throw new Error('녹음된 오디오가 없습니다');
 
-  // Drop the pre-roll, and the tail past a punch-out.
-  const keepFrom = plan.preRollSec;
-  const plannedEnd = plan.recordEndSec === null
-    ? totalSec
-    : keepFrom + (plan.recordEndSec - plan.recordStartSec);
-  const keepTo = Math.min(totalSec, plannedEnd);
+  // Drop the pre-roll, the round trip, and the tail past a punch-out.
+  const latency = settingsLatency(settings);
+  const keepFrom = plan.preRollSec + latency;
+  // How long the take should be.  A punch says so; an open take runs from the
+  // record point to the end of what was captured.
+  const wantedSec = plan.recordEndSec === null
+    ? Math.max(0, totalSec - plan.preRollSec)
+    : plan.recordEndSec - plan.recordStartSec;
+  const keepTo = Math.min(totalSec, keepFrom + wantedSec);
   const keptSec = Math.max(0, keepTo - keepFrom);
   if (keptSec <= 1e-4) throw new Error('녹음 구간이 비어 있습니다');
+
+  // The window moved later, so it needs that much more at the tail.  When the
+  // capture stopped too soon the take is SHORT by the difference — reported,
+  // not hidden, because a take quietly missing its last 20 ms is worth a line.
+  const latencyShortSec = captureShortfall(keepFrom, wantedSec, totalSec);
 
   const fromFrame = Math.round(keepFrom * sampleRate);
   const toFrame = Math.round(keepTo * sampleRate);
@@ -108,6 +140,8 @@ export async function commitRecording(
     file,
     takes: lanes.length,
     activePlaylistId: active.id,
+    latencyAppliedSec: latency,
+    latencyShortSec,
   };
 }
 

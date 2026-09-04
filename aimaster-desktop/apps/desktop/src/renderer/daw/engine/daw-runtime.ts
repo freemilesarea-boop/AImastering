@@ -157,7 +157,11 @@ class DawRuntime {
    */
   async openInput(
     session: DawSession, trackId: TrackId,
-    options: { deviceId?: string | null; channels?: 1 | 2; monitor?: boolean } = {},
+    options: {
+      deviceId?: string | null; channels?: 1 | 2; monitor?: boolean;
+      /** Zero-based first device channel — which socket of the interface. */
+      firstChannel?: number;
+    } = {},
   ): Promise<InputCapture | null> {
     if (!this.ensure(session.sampleRate)) return null;
     const ctx = this.ctx;
@@ -168,9 +172,11 @@ class DawRuntime {
     this.closeInput(trackId);
     this.sync(session);
 
+    const channels = options.channels ?? 1;
     const capture = await openCapture(ctx, {
       deviceId: options.deviceId ?? null,
-      channels: options.channels ?? 1,
+      channels,
+      patch: { firstChannel: Math.max(0, options.firstChannel ?? 0), channels },
     });
     this.captures.set(trackId, capture);
     if (options.monitor) this.setMonitoring(trackId, true);

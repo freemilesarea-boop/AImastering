@@ -25,8 +25,13 @@ import { useDawStore } from './dawStore.js';
 import type { TrackId } from '../daw/model/types.js';
 import { resolveTrackInput, trackInputRef } from '../daw/model/track-input.js';
 import {
-  assignInputDevice, rememberResolved, setTrackInputChannels,
+  assignInputDevice, rememberResolved, setTrackInputPatch,
 } from '../daw/edit/track-input-ops.js';
+import type { InputPatch } from '../daw/model/input-channels.js';
+import {
+  MAX_LATENCY_SEC, agreeLoopback, latencyFromContext, measureLoopback,
+  type LatencyConfig,
+} from '../daw/model/input-latency.js';
 
 export type RecordStatus = 'idle' | 'armed' | 'countIn' | 'recording' | 'committing';
 
@@ -41,6 +46,8 @@ interface RecordingState {
    * "the input device" cannot record a band.
    */
   inputs: Record<TrackId, TrackInput>;
+  /** True while the loopback click is being played and listened for. */
+  calibrating: boolean;
   /** True once a MIDI input is actually open. */
   midiOpen: boolean;
   /** Last key played, for the activity light.  Cleared when it comes up. */
@@ -52,10 +59,26 @@ interface RecordingState {
   plan: RecordPlan | null;
   /** What the last committed pass laid down. */
   lastTakeNote: string | null;
+  /**
+   * How wide each device turned out to be, keyed by device id.
+   *
+   * Filled in when a stream opens, because that is the only moment the
+   * browser will say.  `''` is the system default's key, since it has no id.
+   */
+  deviceWidths: Record<string, number>;
   error: string | null;
 
   setSettings: (patch: Partial<RecordSettings>) => void;
   setTrackInput: (trackId: TrackId, patch: Partial<TrackInput>) => void;
+  /** Remember an open stream's real width, so the picker can offer it. */
+  noteDeviceWidth: (deviceId: string | null, channels: number) => void;
+  /** How many inputs a device is known to have.  2 until one has been opened. */
+  widthOf: (deviceId: string | null) => number;
+  /** Take the browser's own estimate — free, and better than nothing. */
+  readReportedLatency: () => void;
+  setLatency: (config: Partial<LatencyConfig>) => void;
+  /** Play a click, hear it come back, and time the round trip. */
+  calibrateLatency: () => Promise<void>;
   refreshDevices: () => Promise<void>;
   refreshMidiDevices: () => Promise<void>;
   toggleArm: (trackId: TrackId) => Promise<void>;
@@ -67,6 +90,15 @@ interface RecordingState {
   stop: () => Promise<void>;
   cancel: () => void;
 }
+
+/**
+ * How long after the tape starts the calibration click is played.
+ *
+ * Long enough that the click is nowhere near the first block — the noise-floor
+ * check needs a couple of quiet milliseconds in front of it to tell a hot
+ * input from a click at sample zero.
+ */
+const CALIBRATION_LEAD_SEC = 0.25;
 
 /** One unsubscribe per open input, so closing one track leaves the rest alone. */
 const levelUnsubscribers = new Map<TrackId, () => void>();
@@ -88,12 +120,14 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
   devices: [],
   midiDevices: [],
   inputs: {},
+  calibrating: false,
   midiOpen: false,
   midiNote: null,
   levels: {},
   elapsedSec: 0,
   plan: null,
   lastTakeNote: null,
+  deviceWidths: {},
   error: null,
 
   /**
@@ -143,11 +177,14 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     // with the project and undo with everything else.
     useDawStore.getState().apply((session) => {
       let out = session;
+      const socket: InputPatch = { firstChannel: next.firstChannel, channels: next.channels };
       if (patch.deviceId !== undefined) {
         const device = get().devices.find((d) => d.id === next.deviceId) ?? null;
-        out = assignInputDevice(out, trackId, device, next.channels);
+        out = assignInputDevice(out, trackId, device, socket);
       }
-      if (patch.channels !== undefined) out = setTrackInputChannels(out, trackId, next.channels);
+      if (patch.channels !== undefined || patch.firstChannel !== undefined) {
+        out = setTrackInputPatch(out, trackId, socket);
+      }
       return out;
     });
 
@@ -156,6 +193,7 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     void dawRuntime.openInput(daw.session, trackId, {
       deviceId: next.deviceId,
       channels: next.channels,
+      firstChannel: next.firstChannel,
       monitor: get().settings.monitoring === 'on',
     }).then(
       (capture) => {
@@ -167,6 +205,156 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
       },
       (err: Error) => set({ error: err.message }),
     );
+  },
+
+  noteDeviceWidth: (deviceId, channels) => {
+    const key = deviceId ?? '';
+    if (get().deviceWidths[key] === channels) return;
+    set({ deviceWidths: { ...get().deviceWidths, [key]: channels } });
+  },
+
+  widthOf: (deviceId) => {
+    const known = get().deviceWidths[deviceId ?? ''];
+    if (known) return known;
+    // Fall back to what `enumerateDevices` was willing to say, and to 2 when
+    // it said nothing — never to a guess wide enough to offer sockets that
+    // may not exist.
+    const device = get().devices.find((d) => d.id === (deviceId ?? ''));
+    return device?.channels ?? 2;
+  },
+
+  /**
+   * Read `baseLatency` + `outputLatency` off the live context.
+   *
+   * Never overwrites a MEASURED number: a loopback measurement includes the
+   * interface's input converters, which these two do not, so replacing it
+   * with them would be a downgrade dressed as a refresh.
+   */
+  readReportedLatency: () => {
+    const { settings } = get();
+    if (settings.latencySource === 'measured') return;
+    const config = latencyFromContext(dawRuntime.context);
+    if (config.source === 'none') return;
+    set({
+      settings: {
+        ...settings,
+        latencySec: config.seconds,
+        latencySource: config.source,
+      },
+    });
+  },
+
+  setLatency: (config) => {
+    const { settings } = get();
+    set({
+      settings: {
+        ...settings,
+        ...(config.seconds !== undefined ? { latencySec: config.seconds } : {}),
+        ...(config.source !== undefined ? { latencySource: config.source } : {}),
+        ...(config.enabled !== undefined ? { latencyEnabled: config.enabled } : {}),
+      },
+    });
+  },
+
+  /**
+   * Measure the round trip by playing a click and finding it in the input.
+   *
+   * Three passes of the tape, because one is not evidence:
+   *
+   *   1. SILENCE.  Nothing played.  Anything above the threshold here means
+   *      the input already has signal on it and no click can be told apart
+   *      from it.
+   *   2. and 3. THE CLICK, twice.  The round trip is the same both times; a
+   *      transient that is not our click is not.
+   *
+   * The reference is the moment the click was SCHEDULED, and the capture's
+   * zero is taken the instant the tape starts, so the answer carries up to one
+   * render block (about 3 ms) of uncertainty from the block boundary the
+   * worklet happened to be on.  Said in the panel rather than hidden, because
+   * a measurement that claims more precision than it has is worse than an
+   * estimate that admits what it is.
+   */
+  calibrateLatency: async () => {
+    const ctx = dawRuntime.context;
+    if (!ctx) { set({ error: '오디오 엔진이 아직 열려 있지 않습니다' }); return; }
+    if (get().status !== 'armed') {
+      set({ error: '보정은 무장 상태에서만 — 녹음 중에는 테이프를 건드릴 수 없습니다' });
+      return;
+    }
+    const trackId = armedSplit(useDawStore.getState().session).audio[0]?.id;
+    const capture = trackId ? dawRuntime.inputFor(trackId) : null;
+    if (!capture) { set({ error: '오디오 트랙을 하나 무장한 뒤 보정하세요' }); return; }
+
+    /** One pass of the tape.  `withClick` false listens without playing. */
+    const pass = async (withClick: boolean): Promise<number | null> => {
+      capture.start();
+      const startedAt = ctx.currentTime;
+      const clickAt = startedAt + CALIBRATION_LEAD_SEC;
+
+      if (withClick) {
+        // Short, loud.  Loud so the threshold is nowhere near the room; short
+        // so the FIRST crossing is the front edge and not the middle of a tone.
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = 1000;
+        gain.gain.setValueAtTime(0, clickAt);
+        gain.gain.linearRampToValueAtTime(0.8, clickAt + 0.0005);
+        gain.gain.exponentialRampToValueAtTime(0.0001, clickAt + 0.02);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(clickAt);
+        osc.stop(clickAt + 0.03);
+      }
+
+      await new Promise<void>((resolve) => {
+        globalThis.setTimeout(resolve, (CALIBRATION_LEAD_SEC + MAX_LATENCY_SEC + 0.25) * 1000);
+      });
+
+      const buffer = capture.stop();
+      const found = measureLoopback(
+        buffer.toChannels()[0] ?? new Float32Array(0), buffer.sampleRate,
+        { playedAtSec: clickAt - startedAt },
+      );
+      buffer.clear();
+      return found;
+    };
+
+    set({ calibrating: true, error: null });
+    try {
+      await ctx.resume();
+
+      // Listen first, with nothing played.  Anything crossing the threshold in
+      // a silent pass means the input already has signal on it, and a click
+      // measured against that would return whatever the room did — which is
+      // exactly how an unplugged input produces a confident number.
+      if (await pass(false) !== null) {
+        set({
+          error: '입력에 이미 신호가 들어오고 있어 보정할 수 없습니다 — '
+            + '연주를 멈추고 입력 레벨을 확인한 뒤 다시 시도하세요',
+        });
+        return;
+      }
+
+      // Then the same click twice.  The round trip does not change between
+      // them; anything else does.
+      const seconds = agreeLoopback([await pass(true), await pass(true)]);
+      if (seconds === null) {
+        set({
+          error: '클릭을 확인하지 못했습니다 — 출력을 입력으로 되돌려 연결했는지, '
+            + '입력 레벨이 너무 낮지 않은지 확인하세요',
+        });
+        return;
+      }
+      set({
+        settings: {
+          ...get().settings,
+          latencySec: seconds, latencySource: 'measured', latencyEnabled: true,
+        },
+      });
+    } catch (err) {
+      set({ error: `보정 실패: ${(err as Error).message}` });
+    } finally {
+      set({ calibrating: false });
+    }
   },
 
   refreshDevices: async () => {
@@ -216,9 +404,15 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
       const saved = trackInputRef(track);
       const resolution = resolveTrackInput(saved, get().devices);
       const input: TrackInput = saved.deviceLabel || saved.deviceId
-        ? { deviceId: resolution.deviceId, channels: resolution.channels }
+        ? {
+          deviceId: resolution.deviceId,
+          channels: resolution.patch.channels,
+          firstChannel: resolution.patch.firstChannel,
+        }
         : (get().inputs[trackId] ?? {
-          deviceId: settings.inputDeviceId, channels: settings.channels,
+          deviceId: settings.inputDeviceId,
+          channels: settings.channels,
+          firstChannel: 0,
         });
       set({ inputs: { ...get().inputs, [trackId]: input } });
       if (resolution.reason) set({ error: `${track.name}: ${resolution.reason}` });
@@ -229,9 +423,28 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
       const capture = await dawRuntime.openInput(useDawStore.getState().session, trackId, {
         deviceId: input.deviceId,
         channels: input.channels,
+        firstChannel: input.firstChannel,
         monitor: settings.monitoring === 'on',
       });
       if (!capture) throw new Error('입력을 열 수 없습니다');
+
+      // The open stream is the only honest answer to "how many inputs does
+      // this box have" — `enumerateDevices` usually will not say.  Recording
+      // it here is what lets the picker offer input 5 at all, and what tells
+      // the user when the socket they chose was pulled back to a real one.
+      get().noteDeviceWidth(input.deviceId, capture.deviceChannels);
+      if (capture.patch.firstChannel !== input.firstChannel
+        || capture.patch.channels !== input.channels) {
+        set({
+          inputs: {
+            ...get().inputs,
+            [trackId]: { ...input, ...capture.patch },
+          },
+          error: `${track.name}: 선택한 입력이 이 장치에 없어 ${capture.patchLabel} 로 열었습니다`,
+        });
+      }
+      // The context can finally be asked what it costs, now that it is running.
+      get().readReportedLatency();
       dropLevelListener(trackId);
       levelUnsubscribers.set(trackId,
         capture.onLevel((peak) => set({ levels: { ...get().levels, [trackId]: peak } })));

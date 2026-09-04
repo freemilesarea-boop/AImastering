@@ -23,6 +23,7 @@
 import { activePlaylist } from './session-ops.js';
 import { meterAtBeat, secToBeat, tempoAtSec, tempoMapOf } from './tempo-map.js';
 import type { DawSession, Track, TrackId } from './types.js';
+import { activeLatency, type LatencyConfig, type LatencySource } from './input-latency.js';
 
 export type MonitorMode = 'off' | 'on';
 
@@ -47,6 +48,19 @@ export interface RecordSettings {
   midiInputId: string | null;
   /** Read CC64 as note length.  Off for gear that sends it as a plain lane. */
   midiSustainPedal: boolean;
+  /**
+   * Recording round trip, in seconds, removed from every take.
+   *
+   * Lives with the settings rather than with the session because it is a
+   * property of THIS machine's interface and driver buffer — carrying it to
+   * another studio in the project file would apply one box's delay to
+   * another's.
+   */
+  latencySec: number;
+  /** Where that number came from, so an estimate is never shown as a fact. */
+  latencySource: LatencySource;
+  /** Off keeps the number but stops applying it, for an A/B. */
+  latencyEnabled: boolean;
 }
 
 export const DEFAULT_RECORD_SETTINGS: RecordSettings = {
@@ -61,6 +75,9 @@ export const DEFAULT_RECORD_SETTINGS: RecordSettings = {
   loopTakes: true,
   midiInputId: null,
   midiSustainPedal: true,
+  latencySec: 0,
+  latencySource: 'none',
+  latencyEnabled: true,
 };
 
 export interface RecordPlan {
@@ -266,14 +283,32 @@ export function armedSplit(session: DawSession): ArmedSplit {
   };
 }
 
+/** The three latency fields as the one thing they are. */
+export function latencyConfig(settings: RecordSettings): LatencyConfig {
+  return {
+    seconds: settings.latencySec,
+    source: settings.latencySource,
+    enabled: settings.latencyEnabled,
+  };
+}
+
+/** Seconds actually removed from a take under these settings. */
+export function settingsLatency(settings: RecordSettings): number {
+  return activeLatency(latencyConfig(settings));
+}
+
 /** What ONE armed track listens to. */
 export interface TrackInput {
   /** MediaDevices id, or null for the system default. */
   deviceId: string | null;
   channels: 1 | 2;
+  /** Zero-based first device channel — which socket of a multi-input box. */
+  firstChannel: number;
 }
 
-export const DEFAULT_TRACK_INPUT: TrackInput = { deviceId: null, channels: 1 };
+export const DEFAULT_TRACK_INPUT: TrackInput = {
+  deviceId: null, channels: 1, firstChannel: 0,
+};
 
 /**
  * How many tracks can roll at once.
