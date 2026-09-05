@@ -572,7 +572,22 @@ function QueueRow({
       {/* Row 1: file name + status + tweak + remove */}
       <div className="flex items-center gap-2.5">
         <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
-        <span className="flex-1 text-xs text-zinc-300 truncate">{item.fileName}</span>
+        <span className="text-xs text-zinc-300 truncate">{item.fileName}</span>
+        {/* Which one is this?  Two rows can carry the same name — the song as
+            delivered and the song as remixed — and the difference is the whole
+            question when you are deciding what to release. */}
+        <span
+          className={`shrink-0 px-1.5 py-px rounded text-[9px] font-medium tracking-wide ${
+            item.origin === 'mix'
+              ? 'bg-violet-500/15 text-violet-300 border border-violet-500/30'
+              : 'bg-zinc-700/40 text-zinc-500 border border-zinc-600/40'}`}
+          title={item.origin === 'mix'
+            ? 'DAW 에서 믹스한 것을 마스터링으로 보낸 결과입니다'
+            : '홈 화면에서 불러온 원본 파일입니다'}
+        >
+          {item.origin === 'mix' ? 'DAW 믹스' : '원본'}
+        </span>
+        <span className="flex-1" />
         <span className="text-[10px] text-zinc-600 shrink-0">{statusLabel}</span>
         {/* Per-file preset selector (pending only) */}
         {item.status === 'pending' && (

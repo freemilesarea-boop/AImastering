@@ -115,6 +115,16 @@ export interface QueueItem {
    * anything.
    */
   sourceSessionId?: string;
+  /**
+   * Where this row's audio came from.  'mix' is a render of a DAW session;
+   * 'file' is something opened from disk.
+   *
+   * Two rows CAN legitimately coexist — the song as delivered and the song as
+   * remixed — and when they do they are called the same thing, because a
+   * session takes its name from the first file dropped into it.  Then nobody
+   * can tell which one to release.  The list has to say.
+   */
+  origin: 'file' | 'mix';
 }
 
 export const MAX_QUEUE_SIZE = 20;
@@ -232,6 +242,16 @@ interface AudioStore {
    * render of that same session.
    */
   stageSessionInQueue: (sessionId: string, path: string) => StageResult;
+  /**
+   * Mark the rows a session was built from, so sending its mix REPLACES them
+   * instead of adding a twin.
+   *
+   * Opening the DAW adopts whatever is on the home screen, and those rows kept
+   * no memory of it.  So the mix came back as a second row with the same name
+   * as the file it was made from — same song, two entries, no way to tell
+   * which to release.
+   */
+  adoptQueueIntoSession: (sessionId: string, paths: readonly string[]) => void;
   /** Whether a send of this session would replace a row rather than add one. */
   hasReplaceableRow: (sessionId: string) => boolean;
   removeFromQueue: (id: string) => void;
@@ -318,6 +338,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
         progress:      0,
         progressStage: '',
         presetId:      undefined,
+        origin:        'file' as const,
       }));
     return { queue: [...s.queue, ...newItems] };
   }),
@@ -359,6 +380,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
             ...rest,
             filePath: path,
             fileName: baseName(path),
+            origin: 'mix' as const,
             status: 'pending' as const,
             progress: 0,
             progressStage: '',
@@ -380,9 +402,21 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
         progressStage: '',
         presetId: undefined,
         sourceSessionId: sessionId,
+        origin: 'mix' as const,
       }],
     });
     return { outcome: busy ? 'added-beside-running' : 'added', queued: before.length + 1 };
+  },
+
+  adoptQueueIntoSession: (sessionId, paths) => {
+    const wanted = new Set(paths);
+    set((s) => ({
+      queue: s.queue.map((item) => (
+        wanted.has(item.filePath) && item.sourceSessionId === undefined
+          ? { ...item, sourceSessionId: sessionId }
+          : item
+      )),
+    }));
   },
 
   removeFromQueue: (id) => set((s) => ({

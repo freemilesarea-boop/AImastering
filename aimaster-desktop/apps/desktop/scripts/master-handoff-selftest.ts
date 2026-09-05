@@ -22,6 +22,7 @@
  * Run via:  pnpm --filter @aimaster/desktop test:master-handoff
  */
 
+import { readFileSync } from 'node:fs';
 import { OfflineAudioContext } from 'node-web-audio-api';
 
 // `renderSession` reads OfflineAudioContext off globalThis (the browser has it).
@@ -339,6 +340,52 @@ async function main(): Promise<void> {
   const stage = (sessionId: string, path: string) =>
     useAudioStore.getState().stageSessionInQueue(sessionId, path);
   const queue = () => useAudioStore.getState().queue;
+
+  await check('the mix REPLACES the file the DAW was built from', async () => {
+    // The reported bug, in full.  You load a song on the home screen, open the
+    // DAW (which adopts it), mix, and send to mastering — and the list shows
+    // TWO rows with the SAME name, because the session takes its name from the
+    // file it adopted.  One is the delivered song, one is your remix, and
+    // nothing on screen says which is which.  You cannot tell what to release.
+    resetQueue();
+    const source = '/tmp/songs/You Make Me Wanna.wav';
+    useAudioStore.getState().addFilesToQueue([source]);
+    assert(queue().length === 1, 'the song is on the home screen');
+    assert(queue()[0]!.origin === 'file', 'and it is marked as a file');
+
+    // Opening the DAW adopts it into the session.
+    useAudioStore.getState().adoptQueueIntoSession('sess-daw', [source]);
+
+    // Now send the mix.  The session is named after the file, so the render
+    // is called the same thing — which is precisely why it must not be a
+    // second row.
+    const sent = stage('sess-daw', '/tmp/to-master/1/You Make Me Wanna.wav');
+    assert(sent.outcome === 'replaced',
+      `the mix must replace the row it came from — got '${sent.outcome}'`);
+    assert(queue().length === 1,
+      `one song, one row — got ${queue().length}: ${queue().map((i) => i.fileName).join(', ')}`);
+    assert(queue()[0]!.origin === 'mix', 'and the row now holds the mix');
+    assert(queue()[0]!.filePath.includes('to-master'), 'pointing at the render');
+  });
+
+  await check('a row always says whether it is the original or the mix', () => {
+    // When two rows DO legitimately coexist they are called the same thing,
+    // so the name cannot be what tells them apart.
+    resetQueue();
+    useAudioStore.getState().addFilesToQueue(['/tmp/songs/Track.wav']);
+    stage('sess-other', '/tmp/to-master/9/Track.wav');
+    assert(queue().length === 2, 'a file and an unrelated session both present');
+    const origins = queue().map((i) => i.origin).sort();
+    assert(origins.join(',') === 'file,mix',
+      `each row says what it is — got ${origins.join(',')}`);
+    // Same displayed name, different origin: the badge is the only difference.
+    const names = new Set(queue().map((i) => i.fileName));
+    assert(names.size === 1, 'and the names really are identical');
+
+    const home = readFileSync('src/renderer/pages/HomePage.tsx', 'utf8');
+    assert(/item\.origin === 'mix'/.test(home), 'the list renders that difference');
+    assert(/DAW 믹스/.test(home) && /원본/.test(home), 'in words a person can read');
+  });
 
   await check('sending the same session twice leaves ONE row, holding the newer mix', () => {
     resetQueue();

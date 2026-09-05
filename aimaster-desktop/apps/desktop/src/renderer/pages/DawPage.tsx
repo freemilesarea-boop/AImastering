@@ -105,6 +105,12 @@ export default function DawPage() {
       // Decoding is sequential, so the count is real progress, not a spinner.
       const report = await importIntoSession(paths, [], 0,
         (done, total) => setBusy(`홈에서 불러온 곡을 가져오는 중… ${done}/${total}`));
+      // These rows are now this session's source material.  Without this the
+      // mix comes back as a SECOND row beside the file it was made from, with
+      // the same name — and nobody can tell which one to release.
+      const failed = new Set(report.failed);
+      useAudioStore.getState().adoptQueueIntoSession(
+        useDawStore.getState().session.id, paths.filter((p) => !failed.has(p)));
       notify(describeImport(report), report.failed.length ? 'warning' : 'success');
     } catch (err) {
       notify(`가져오기 실패: ${(err as Error).message}`, 'error');
