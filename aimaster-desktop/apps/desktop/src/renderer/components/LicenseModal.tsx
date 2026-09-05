@@ -8,6 +8,7 @@
  *   - Success feedback before auto-close
  *   - Upgrade prompt is present but minimal; one action line only
  */
+import { LICENSE_ENFORCED } from '@aimaster/license-core';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useLicenseStore, selectRemainingTrials } from '../stores/licenseStore.js';
 
@@ -31,6 +32,9 @@ function formatKey(raw: string): string {
   }
   return PREFIX + parts.join('-');
 }
+
+/** A complete key is exactly this long — the input's cap must not be shorter. */
+export const KEY_LENGTH = 'AIMASTER-XXXX-XXXX-XXXX'.length;
 
 function isComplete(key: string): boolean {
   return /^AIMASTER-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(key);
@@ -115,6 +119,10 @@ export default function LicenseModal() {
     if (e.target === e.currentTarget) setShowModal(false);
   }, [setShowModal]);
 
+  // This build ships unlicensed, so there is nothing to activate.  Checked
+  // here as well as at the gate: a license record left over from an older
+  // build must not be able to put this dialog in front of anybody.
+  if (!LICENSE_ENFORCED) return null;
   if (!showModal) return null;
 
   return (
@@ -193,7 +201,11 @@ export default function LicenseModal() {
                     placeholder="AIMASTER-XXXX-XXXX-XXXX"
                     spellCheck={false}
                     autoComplete="off"
-                    maxLength={22}   // PREFIX(9) + 3×4 + 2 dashes = 22
+                    // 'AIMASTER-'(9) + 4 + '-' + 4 + '-' + 4 = 23.  This said 22,
+                    // which is not a rounding error but a dead dialog: the
+                    // browser refuses the last character, the key is never
+                    // complete, and the 활성화 button can never leave grey.
+                    maxLength={KEY_LENGTH}
                     className="w-full px-3 py-2.5 rounded-lg text-sm font-mono
                                bg-zinc-800 border border-zinc-700 text-zinc-100
                                placeholder-zinc-600 outline-none

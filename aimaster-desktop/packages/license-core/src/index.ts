@@ -2,8 +2,12 @@
  * AIMASTER License Core — v1
  *
  * Policy:
- *   Free  : up to TRIAL_MAX processing runs; WAV save locked, MP3 preview open
- *   Pro   : unlimited; all features unlocked
+ *   This build SHIPS UNLICENSED — see LICENSE_ENFORCED below.  Nothing is
+ *   counted and nothing is locked.
+ *
+ *   When enforcement is switched back on:
+ *     Free  : up to TRIAL_MAX processing runs; WAV save locked, MP3 preview open
+ *     Pro   : unlimited; all features unlocked
  *
  * Storage layout (electron-store, AES-256-CBC encrypted at rest):
  *   'license'  → StoredLicense  (key + tier + HMAC binding to machineId)
@@ -42,6 +46,17 @@ function devLog(level: 'warn' | 'error', msg: string, extra?: unknown): void {
 
 const KEY_REGEX   = /^AIMASTER-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 const TRIAL_MAX   = 3;
+
+/**
+ * THE SWITCH.  False means this build is free: no trial counting, no export
+ * paywall, no activation dialog.
+ *
+ * The licensing machinery below is left intact and tested rather than deleted,
+ * so turning it back on is one word here and nothing else.  Every gate in the
+ * app reads its answer from `canProcess()`, so this is the only place that
+ * decides — there is no second copy to forget.
+ */
+export const LICENSE_ENFORCED = false;
 
 /**
  * Remote license server (Supabase edge function) — injected at build time via
@@ -448,9 +463,14 @@ export class LicenseService {
         trialMax: TRIAL_MAX,
         ...(stored?.key ? { key: stored.key } : {}),
         ...(stored?.expiresAt ? { expiresAt: stored.expiresAt } : {}),
-        canSaveMasterWav: false,
-        canExportReport:  false,
-        canUseAllPresets: false,
+        // Unlicensed BUILD, not a locked user: the tier stays honestly 'free'
+        // (nobody bought anything) while the capability flags say what is
+        // actually true.  A status that says "you cannot save a master" while
+        // the gate happily saves one is a second source of truth, and the next
+        // person to read it will believe the wrong half.
+        canSaveMasterWav: !LICENSE_ENFORCED,
+        canExportReport:  !LICENSE_ENFORCED,
+        canUseAllPresets: !LICENSE_ENFORCED,
       };
     }
     return {
@@ -514,6 +534,8 @@ export class LicenseService {
    * (Spec: decrementTrialUsage)
    */
   decrementTrialUsage(): void {
+    // Nothing to count when nothing is limited.
+    if (!LICENSE_ENFORCED) return;
     // Dev bypass: don't consume trial counts in development mode
     if (process.env['NODE_ENV'] === 'development' || process.env['AIMASTER_DEV_LICENSE'] === '1') {
       return;
@@ -529,6 +551,11 @@ export class LicenseService {
    * (Spec: canProcess)
    */
   canProcess(): { allowed: boolean; isPaid: boolean; remaining: number; reason?: string } {
+    // This build ships unlicensed.  Answering "paid" here is what opens the
+    // export gates in the main process, which all read this one function.
+    if (!LICENSE_ENFORCED) {
+      return { allowed: true, isPaid: true, remaining: Infinity };
+    }
     // Dev bypass: skip all license checks in development mode
     if (process.env['NODE_ENV'] === 'development' || process.env['AIMASTER_DEV_LICENSE'] === '1') {
       return { allowed: true, isPaid: true, remaining: Infinity };
@@ -559,6 +586,7 @@ export class LicenseService {
    * (Spec: getRemainingTrials)
    */
   getRemainingTrials(): number {
+    if (!LICENSE_ENFORCED) return Infinity;
     const stored = this._readLicense();
     if (this._isPaid(stored)) return Infinity;
     return Math.max(0, TRIAL_MAX - this._readTrialUsed());
