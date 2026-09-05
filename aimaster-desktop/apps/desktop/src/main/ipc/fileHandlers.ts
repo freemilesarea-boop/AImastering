@@ -14,6 +14,7 @@ import { licenseService } from './licenseHandlers.js';
 import { getEntitlementPaid } from '../services/entitlementBridge.js';
 import { log } from '../utils/logger.js';
 import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
+import { AUDIO_IMPORT_EXTENSIONS, MIDI_IMPORT_EXTENSIONS } from '@aimaster/shared-types';
 
 const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
   wav:  { name: 'WAV Audio',  extensions: ['wav'] },
@@ -83,12 +84,30 @@ function readAudioPayload(req: unknown): { name: string; bytes: Buffer } {
   return { name, bytes };
 }
 
+// The dialog filters, built from the SHARED list so the Open dialog and
+// drag-and-drop accept the same files.  They used to be written out by hand
+// here and the hand-written one was shorter.
+//
+// "모든 파일" is last on purpose: some exporters write no extension, and macOS
+// hides whatever the filters do not name.  A file that cannot be decoded fails
+// visibly on import, so a way through costs nothing and a dead button costs
+// the whole feature.
+const ALL_FILES = { name: '모든 파일', extensions: ['*'] };
+const AUDIO_FILTERS = [
+  { name: 'Audio', extensions: [...AUDIO_IMPORT_EXTENSIONS] },
+  ALL_FILES,
+];
+const MIDI_FILTERS = [
+  { name: 'MIDI', extensions: [...MIDI_IMPORT_EXTENSIONS] },
+  ALL_FILES,
+];
+
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   // ── Open file picker (single) ─────────────────────────────────────────
   ipc.handle('file:open-dialog', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
-      filters: [{ name: 'Audio', extensions: ['wav', 'flac', 'aiff', 'aif', 'mp3', 'm4a'] }],
+      filters: AUDIO_FILTERS,
       properties: ['openFile'],
     });
     return result.canceled ? null : result.filePaths[0];
@@ -98,7 +117,7 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   ipc.handle('file:open-dialog-multi', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
-      filters: [{ name: 'Audio', extensions: ['wav', 'flac', 'aiff', 'aif', 'mp3', 'm4a'] }],
+      filters: AUDIO_FILTERS,
       properties: ['openFile', 'multiSelections'],
     });
     if (result.canceled) return null;
@@ -114,12 +133,7 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   ipc.handle('file:open-dialog-midi', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
-      filters: [
-        { name: 'MIDI', extensions: ['mid', 'midi', 'smf'] },
-        // Some exporters write no extension at all, and macOS hides anything
-        // the filters do not name.  A way through beats a dead button.
-        { name: '모든 파일', extensions: ['*'] },
-      ],
+      filters: MIDI_FILTERS,
       properties: ['openFile', 'multiSelections'],
     });
     if (result.canceled) return null;

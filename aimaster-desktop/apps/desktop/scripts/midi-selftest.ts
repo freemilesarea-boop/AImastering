@@ -10,6 +10,8 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { AUDIO_IMPORT_EXTENSIONS, MIDI_IMPORT_EXTENSIONS } from '@aimaster/shared-types';
+import { AUDIO_EXTENSIONS, MIDI_EXTENSIONS } from '../src/renderer/daw/model/drop-target.js';
 import {
   from7bit, to7bit, from14bit, to14bit, from32bit, to32bit,
   bendFrom14bit, bendTo14bit, createNote, resetNoteIds, noteEndBeat, sortNotes,
@@ -600,6 +602,55 @@ function buildForeignFile(): Uint8Array {
   return new Uint8Array(bytes);
 }
 
+check('the Open dialog accepts every file drag-and-drop does', () => {
+  // The app disagreed with itself.  Drag-and-drop read its own extension set
+  // in the renderer; the Open dialog carried a hand-written filter in the
+  // main process, and the hand-written one was shorter — no ogg, no opus.
+  // So dropping a file worked and reaching for the SAME file through the
+  // button showed it greyed out.  Whether a format is supported must not
+  // depend on how you reached for it.
+  const handlers = readFileSync('src/main/ipc/fileHandlers.ts', 'utf8');
+  assert(/AUDIO_IMPORT_EXTENSIONS/.test(handlers),
+    'the dialog filter is built from the shared list');
+  assert(!/extensions: \['wav', 'flac'/.test(handlers),
+    'and not from a second list written out by hand');
+
+  const drop = readFileSync('src/renderer/daw/model/drop-target.ts', 'utf8');
+  assert(/AUDIO_IMPORT_EXTENSIONS/.test(drop), 'and so is the drop list');
+  assert(/MIDI_IMPORT_EXTENSIONS/.test(drop), 'for MIDI too');
+
+  // Formats verified by decoding a real file of each in the running app.
+  for (const ext of ['wav', 'flac', 'aiff', 'mp3', 'm4a', 'ogg', 'opus', 'aac',
+    'mp4', 'caf', 'w64']) {
+    assert(AUDIO_IMPORT_EXTENSIONS.includes(ext), `.${ext} decodes, so it is offered`);
+    assert(AUDIO_EXTENSIONS.has(`.${ext}`), `.${ext} can also be dropped`);
+  }
+  for (const ext of ['mid', 'midi']) {
+    assert(MIDI_IMPORT_EXTENSIONS.includes(ext), `.${ext} is offered`);
+    assert(MIDI_EXTENSIONS.has(`.${ext}`), `.${ext} can be dropped`);
+  }
+  // MIDI is not audio and audio is not MIDI — a .mid routed to the decoder
+  // just fails, and a .wav routed to the parser throws.
+  assert(!AUDIO_IMPORT_EXTENSIONS.some((e) => MIDI_IMPORT_EXTENSIONS.includes(e)),
+    'the two lists do not overlap');
+});
+
+check('a dialog that lists file types offers a way past the list', () => {
+  // Some exporters write no extension, and macOS hides whatever the filters
+  // do not name.  An undecodable file already fails visibly on import, so the
+  // escape hatch costs nothing and its absence costs the whole feature.
+  const handlers = readFileSync('src/main/ipc/fileHandlers.ts', 'utf8');
+  assert(/ALL_FILES/.test(handlers), 'there is an all-files filter');
+  for (const which of ['AUDIO_FILTERS', 'MIDI_FILTERS']) {
+    const from = handlers.indexOf(`const ${which} = [`);
+    assert(from >= 0, `${which} exists`);
+    // To the end of ITS OWN array — a fixed-size slice runs into the next
+    // one, which has its own ALL_FILES, and the check passes for free.
+    const block = handlers.slice(from, handlers.indexOf('];', from));
+    assert(/ALL_FILES/.test(block), `${which} offers it`);
+  }
+});
+
 check('the MIDI import button opens a dialog that can SEE a MIDI file', () => {
   // The reader was perfect and the feature was still unusable: "MIDI
   // 가져오기" called `file:open-dialog-multi`, whose only filter is Audio, so
@@ -614,11 +665,14 @@ check('the MIDI import button opens a dialog that can SEE a MIDI file', () => {
   assert(!/open-dialog-multi/.test(fn), 'and not the audio one');
 
   const handlers = readFileSync('src/main/ipc/fileHandlers.ts', 'utf8');
-  const handler = handlers.slice(handlers.indexOf("ipc.handle('file:open-dialog-midi'"),
-    handlers.indexOf("ipc.handle('file:open-dialog-midi'") + 700);
-  assert(handler.length > 0, 'the main process actually registers it');
+  const at = handlers.indexOf("ipc.handle('file:open-dialog-midi'");
+  assert(at >= 0, 'the main process actually registers it');
+  assert(/filters: MIDI_FILTERS/.test(handlers.slice(at, at + 400)),
+    'and hands it the MIDI filters');
+  // The extensions themselves live in the shared list, so the dialog and
+  // drag-and-drop cannot drift apart again.
   for (const ext of ['mid', 'midi']) {
-    assert(new RegExp(`'${ext}'`).test(handler), `the dialog admits .${ext}`);
+    assert(MIDI_IMPORT_EXTENSIONS.includes(ext), `the dialog admits .${ext}`);
   }
 
   // An IPC channel the preload does not list is refused before it is sent,

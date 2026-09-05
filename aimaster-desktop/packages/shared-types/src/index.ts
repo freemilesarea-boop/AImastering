@@ -918,3 +918,27 @@ export interface SaveAudioResponse {
   /** Fatal error message (when the save failed). */
   error?: string;
 }
+
+// ── Importable file types ─────────────────────────────────────────────────────
+//
+// One list, two consumers that used to disagree.  Drag-and-drop read its own
+// set in the renderer while the Open dialog carried a hand-written filter in
+// the main process, and the dialog's was shorter: dropping an .ogg worked,
+// but the same file was greyed out and unpickable in the file dialog.  A
+// format is either supported or it is not — how you reached for it is not
+// supposed to be part of the answer.
+//
+// Verified by decoding a real file of each in the running app (Chromium's
+// decodeAudioData is what actually reads them), except the two marked below.
+
+/** Audio containers the app accepts, WITHOUT the leading dot. */
+export const AUDIO_IMPORT_EXTENSIONS: readonly string[] = [
+  'wav', 'flac', 'aiff', 'aif', 'mp3', 'm4a',
+  'ogg', 'oga', 'opus', 'aac', 'mp4', 'caf', 'w64',
+  // Not decodable in every build — kept because they are decodable in some,
+  // and an undecodable file fails visibly ("N개 실패") rather than silently.
+  'wma', 'alac',
+];
+
+/** MIDI files the DAW imports as parts, WITHOUT the leading dot. */
+export const MIDI_IMPORT_EXTENSIONS: readonly string[] = ['mid', 'midi', 'smf'];
