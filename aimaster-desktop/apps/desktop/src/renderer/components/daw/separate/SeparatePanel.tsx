@@ -18,6 +18,7 @@
 //   between a user who reaches for it when it suits and one who concludes the
 //   app is broken.
 
+import { recordAiStep } from '../../../daw/model/provenance-session.js';
 import React, { useCallback, useMemo, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
@@ -87,7 +88,13 @@ export default function SeparatePanel() {
         muteSource,
         onProgress: (fraction, what) => setBusy({ fraction, what }),
       });
-      apply(() => result.session);
+      // A machine pulled this apart, and the file has to say so.  Recorded
+      // here, where it actually happened, rather than inferred at export from
+      // the shape of the session.
+      apply(() => recordAiStep(result.session, {
+        kind: 'separation',
+        detail: `${[...wanted].join('/')} 분리`,
+      }));
       setReport(result.report);
       notify(result.message, 'success');
     } catch (err) {

@@ -9,6 +9,7 @@
 // (HomePage, ResultPage…) do not need to restructure their layout; pages that
 // have content near the bottom add padding via `useBottomZoneHeight`.
 
+import ProvenancePanel from './meta/ProvenancePanel.js';
 import React from 'react';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 import DawTransportBar from './DawTransportBar.js';
@@ -57,6 +58,7 @@ export default function DawWorkspaceChrome() {
           pushes the arrangement up every time you turn the speakers down is
           one people stop opening. */}
       {panels.controlRoom && <ControlRoomPanel />}
+      {panels.provenance && <ProvenancePanel />}
 
       {panels.mediaBay && <DawMediaBay />}
       {panels.help     && <DawShortcutHelp />}

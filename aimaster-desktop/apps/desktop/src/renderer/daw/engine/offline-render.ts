@@ -24,7 +24,8 @@ import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
 import { analyzeBuffer, getCached, preloadAll } from './audio-cache.js';
 import { applyExternalInserts, type ExternalRenderResult } from './external-render.js';
-import { encodeAudioBuffer, encodeWav, type WavBitDepth } from './wav.js';
+import { encodeAudioBuffer, encodeWav, type WavBitDepth, type WavMetadata } from './wav.js';
+import { provenanceOf } from '../model/provenance-session.js';
 import { nextId } from '../model/ids.js';
 import { DEFAULT_MIDI_CONFIG } from '../model/midi.js';
 
@@ -236,9 +237,21 @@ export async function stageForMastering(
   session: DawSession, range = sessionRange(session), bitDepth: WavBitDepth = 32,
 ): Promise<string> {
   const rendered = await renderSession(session, range);
-  const bytes = encodeAudioBuffer(rendered, bitDepth);
+  const bytes = encodeAudioBuffer(rendered, bitDepth, undefined, sessionMetadata(session));
   return await invoker()('daw:stage-for-mastering',
     { name: session.name, data: bytes }) as string;
+}
+
+/**
+ * What to write into a delivered file besides the audio.
+ *
+ * Only the two DELIVERIES carry it — the mix on its way to mastering, and a
+ * bounce.  Freezes, region renders and consolidations are intermediates that
+ * get re-rendered on the next change, and stamping authorship on scratch
+ * files just makes a stale record easier to believe.
+ */
+function sessionMetadata(session: DawSession): WavMetadata {
+  return { provenance: provenanceOf(session), appVersion: __APP_VERSION__ };
 }
 
 /** Bounce to a user-chosen file.  Returns null when the dialog is cancelled. */
@@ -246,7 +259,7 @@ export async function bounceSession(
   session: DawSession, range = sessionRange(session), bitDepth: WavBitDepth = 24,
 ): Promise<string | null> {
   const rendered = await renderSession(session, range);
-  const bytes = encodeAudioBuffer(rendered, bitDepth);
+  const bytes = encodeAudioBuffer(rendered, bitDepth, undefined, sessionMetadata(session));
   return await invoker()('daw:bounce-audio', { name: session.name, data: bytes }) as string | null;
 }
 

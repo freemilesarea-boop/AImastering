@@ -14,6 +14,9 @@
 import {
   createQuantizer, defaultDither, type DitherMode, type QuantBitDepth,
 } from '../audio/dither.js';
+import {
+  codingHistory, infoTags, provenanceJson, type Provenance,
+} from '../model/provenance.js';
 
 export type WavBitDepth = 16 | 24 | 32;
 
@@ -33,6 +36,121 @@ export function interleave(channels: readonly Float32Array[], length: number): F
 
 function writeAscii(view: DataView, offset: number, text: string): void {
   for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+}
+
+// ── Metadata chunks ──────────────────────────────────────────────────────────
+//
+// Three, because three different readers matter and none of them reads all
+// three:
+//
+//   LIST/INFO  every player, tagger and file browser
+//   bext       the Broadcast Wave standard — what mastering and broadcast
+//              tools read to find out what happened to a file
+//   LOUI       the exact record, as JSON, for reading back without guessing
+//
+// RIFF rules that are easy to get wrong and silent when you do: every chunk
+// is id(4) + size(4) + data, the SIZE EXCLUDES the pad byte an odd-length
+// chunk needs, and the RIFF size field counts everything after itself.  A
+// file that gets any of these wrong opens fine in some tools and is rejected
+// by others, which is the worst way to find out.
+
+/** UTF-8, because titles and notes are Korean far more often than not. */
+const utf8 = new TextEncoder();
+
+function chunkBytes(id: string, body: Uint8Array): Uint8Array {
+  const pad = body.length % 2;
+  const out = new Uint8Array(8 + body.length + pad);
+  const view = new DataView(out.buffer);
+  writeAscii(view, 0, id);
+  view.setUint32(4, body.length, true);      // the pad byte is NOT counted
+  out.set(body, 8);
+  return out;
+}
+
+/** LIST/INFO — the tags everything reads. */
+function infoChunk(tags: readonly [string, string][]): Uint8Array {
+  const parts: Uint8Array[] = [utf8.encode('INFO')];
+  for (const [id, value] of tags) {
+    // NUL-terminated by the spec; readers that ignore the terminator still
+    // stop at it, and readers that honour it need it.
+    parts.push(chunkBytes(id, utf8.encode(`${value}\u0000`)));
+  }
+  return chunkBytes('LIST', concat(parts));
+}
+
+/** Fixed-width ASCII field, truncated and NUL-padded as the bext spec wants. */
+function fixed(text: string, length: number): Uint8Array {
+  const out = new Uint8Array(length);
+  const src = utf8.encode(text);
+  out.set(src.subarray(0, length));
+  return out;
+}
+
+/**
+ * Broadcast Wave `bext`, version 2.
+ *
+ * The loudness fields are written as 0x7FFF — the spec's "not measured".
+ * Writing a plausible-looking zero would claim a measurement nobody made,
+ * and a mastering engineer reading −0.0 LUFS off a file believes it.
+ */
+function bextChunk(p: Provenance, appVersion: string, at: Date): Uint8Array {
+  const body = new Uint8Array(602);
+  const view = new DataView(body.buffer);
+  const pad2 = (n: number): string => n.toString().padStart(2, '0');
+
+  body.set(fixed(describeForBext(p), 256), 0);
+  body.set(fixed(`${p.artist || 'unknown'}`, 32), 256);
+  body.set(fixed(`Louver Mastering AI ${appVersion}`, 32), 288);
+  body.set(fixed(
+    `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}`, 10), 320);
+  body.set(fixed(
+    `${pad2(at.getHours())}:${pad2(at.getMinutes())}:${pad2(at.getSeconds())}`, 8), 330);
+  view.setUint32(338, 0, true);                 // TimeReference low
+  view.setUint32(342, 0, true);                 // TimeReference high
+  view.setUint16(346, 2, true);                 // bext version 2
+  // 348..411 UMID — left zero, which the spec reads as "none".
+  for (let off = 412; off <= 420; off += 2) view.setInt16(off, 0x7fff, true);
+  // 422..601 reserved, zero.
+
+  return chunkBytes('bext', concat([body, utf8.encode(codingHistory(p, appVersion))]));
+}
+
+/** bext Description is one line, 256 bytes — the headline, not the essay. */
+function describeForBext(p: Provenance): string {
+  const ai = p.aiWork.length > 0 ? `AI:${p.aiWork.map((s) => s.kind).join('+')}` : 'AI:none';
+  const derived = p.derivedFrom.length > 0
+    ? `derivative of ${p.derivedFrom.map((s) => s.title).join(' + ')}`
+    : 'original work';
+  return `${p.title || 'untitled'} / ${p.artist || 'unknown'} | ${ai} | ${derived}`;
+}
+
+function concat(parts: readonly Uint8Array[]): Uint8Array {
+  const total = parts.reduce((n, b) => n + b.length, 0);
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const b of parts) { out.set(b, at); at += b.length; }
+  return out;
+}
+
+/** Everything that goes between `fmt ` and `data`. */
+function metadataChunks(
+  meta: WavMetadata | undefined,
+): Uint8Array {
+  if (!meta) return new Uint8Array(0);
+  const { provenance, appVersion, at = new Date() } = meta;
+  return concat([
+    infoChunk(infoTags(provenance, appVersion, at)),
+    bextChunk(provenance, appVersion, at),
+    chunkBytes('LOUI', utf8.encode(provenanceJson(provenance, appVersion, at))),
+  ]);
+}
+
+/** What to write into the file besides the audio. */
+export interface WavMetadata {
+  provenance: Provenance;
+  appVersion: string;
+  /** Injectable so a test gets the same bytes twice. */
+  at?: Date;
 }
 
 /**
@@ -55,6 +173,7 @@ export function encodeWav(
   sampleRate: number,
   bitDepth: WavBitDepth = 24,
   dither: DitherMode = defaultDither(bitDepth),
+  meta?: WavMetadata,
 ): Uint8Array {
   const channelCount = Math.max(1, channels.length);
   const frames = channels[0]?.length ?? 0;
@@ -63,11 +182,19 @@ export function encodeWav(
   const dataBytes = frames * blockAlign;
   const isFloat = bitDepth === 32;
 
-  const buffer = new ArrayBuffer(44 + dataBytes);
+  // Metadata sits between `fmt ` and `data`, where the spec puts it and where
+  // ffmpeg and every DAW writes it.  It moves the audio off byte 44, so
+  // nothing may assume that offset any more — the reason `dataStart` is
+  // computed below rather than written as a literal.
+  const extra = metadataChunks(meta);
+
+  const buffer = new ArrayBuffer(44 + extra.length + dataBytes);
   const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
 
   writeAscii(view, 0, 'RIFF');
-  view.setUint32(4, 36 + dataBytes, true);
+  // Everything after this field: 'WAVE' + fmt chunk + metadata + data chunk.
+  view.setUint32(4, 36 + extra.length + dataBytes, true);
   writeAscii(view, 8, 'WAVE');
   writeAscii(view, 12, 'fmt ');
   view.setUint32(16, 16, true);                       // PCM fmt chunk size
@@ -77,8 +204,10 @@ export function encodeWav(
   view.setUint32(28, sampleRate * blockAlign, true);
   view.setUint16(32, blockAlign, true);
   view.setUint16(34, bitDepth, true);
-  writeAscii(view, 36, 'data');
-  view.setUint32(40, dataBytes, true);
+  bytes.set(extra, 36);
+  writeAscii(view, 36 + extra.length, 'data');
+  view.setUint32(40 + extra.length, dataBytes, true);
+  const dataStart = 44 + extra.length;
 
   // One quantiser for the whole file: noise shaping is stateful per channel,
   // and it has to see a channel's samples in order to have any state worth
@@ -87,7 +216,7 @@ export function encodeWav(
     ? null
     : createQuantizer(bitDepth as QuantBitDepth, dither, channelCount);
 
-  let offset = 44;
+  let offset = dataStart;
   for (let i = 0; i < frames; i++) {
     for (let c = 0; c < channelCount; c++) {
       const sample = channels[c]?.[i] ?? 0;
@@ -116,8 +245,9 @@ export function encodeAudioBuffer(
   buffer: { numberOfChannels: number; sampleRate: number; getChannelData(c: number): Float32Array },
   bitDepth: WavBitDepth = 24,
   dither: DitherMode = defaultDither(bitDepth),
+  meta?: WavMetadata,
 ): Uint8Array {
   const channels: Float32Array[] = [];
   for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
-  return encodeWav(channels, buffer.sampleRate, bitDepth, dither);
+  return encodeWav(channels, buffer.sampleRate, bitDepth, dither, meta);
 }

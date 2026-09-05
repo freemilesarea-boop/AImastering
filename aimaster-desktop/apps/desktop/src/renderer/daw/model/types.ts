@@ -15,6 +15,7 @@ import type { Section } from './arrangement.js';
 import type { ChordEvent } from './chords.js';
 import type { VariSegment } from '../audio/pitch-analysis.js';
 import type { MacroRack } from './macros.js';
+import type { Provenance } from './provenance.js';
 import type { VideoRef } from './video.js';
 import type { DeviceGraph } from './device-graph.js';
 import type { Rack } from './racks.js';
@@ -499,6 +500,15 @@ export interface DawSession {
    * `tempoMapOf(session)` instead of touching this.
    */
   tempoMap?: TempoMap;
+  /**
+   * What made this recording — what a person did, what a machine did, and
+   * what it is built on.  Written into every export.
+   *
+   * Optional because sessions saved before it existed have none; read it
+   * through `provenanceOf(session)`, which seeds a record from the session
+   * rather than handing back undefined.
+   */
+  provenance?: Provenance;
   files: AudioFileRef[];
   /**
    * Drum kits, referenced by tracks rather than copied onto them.
