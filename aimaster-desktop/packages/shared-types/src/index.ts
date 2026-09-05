@@ -942,3 +942,20 @@ export const AUDIO_IMPORT_EXTENSIONS: readonly string[] = [
 
 /** MIDI files the DAW imports as parts, WITHOUT the leading dot. */
 export const MIDI_IMPORT_EXTENSIONS: readonly string[] = ['mid', 'midi', 'smf'];
+
+
+// ── Licensing ─────────────────────────────────────────────────────────────────
+
+/**
+ * THE SWITCH.  False means this build is free: no trial counting, no export
+ * paywall, no activation dialog.
+ *
+ * It lives HERE, in a package with no imports at all, because both sides need
+ * it: the main process enforces with it and the renderer decides whether to
+ * render a dialog with it.  It was briefly in `license-core`, which pulls in
+ * node:crypto, child_process and electron-store — importing that from the
+ * renderer put Node builtins in the browser bundle and the window came up
+ * black.  A constant two processes share belongs in the package that costs
+ * nothing to import.
+ */
+export const LICENSE_ENFORCED = false;

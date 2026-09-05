@@ -8,7 +8,7 @@
  *   - Success feedback before auto-close
  *   - Upgrade prompt is present but minimal; one action line only
  */
-import { LICENSE_ENFORCED } from '@aimaster/license-core';
+import { LICENSE_ENFORCED } from '@aimaster/shared-types';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useLicenseStore, selectRemainingTrials } from '../stores/licenseStore.js';
 

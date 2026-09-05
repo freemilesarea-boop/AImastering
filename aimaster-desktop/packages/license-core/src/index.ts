@@ -29,6 +29,7 @@
 import crypto from 'node:crypto';
 import { machineIdSync } from 'node-machine-id';
 import type { LicenseInfo, LicenseTier } from '@aimaster/shared-types';
+import { LICENSE_ENFORCED } from '@aimaster/shared-types';
 
 // ── Developer log shim (avoids a circular dep on apps/desktop/logger) ─────────
 // In production this is picked up by the Electron logger; in tests it goes
@@ -47,16 +48,8 @@ function devLog(level: 'warn' | 'error', msg: string, extra?: unknown): void {
 const KEY_REGEX   = /^AIMASTER-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 const TRIAL_MAX   = 3;
 
-/**
- * THE SWITCH.  False means this build is free: no trial counting, no export
- * paywall, no activation dialog.
- *
- * The licensing machinery below is left intact and tested rather than deleted,
- * so turning it back on is one word here and nothing else.  Every gate in the
- * app reads its answer from `canProcess()`, so this is the only place that
- * decides — there is no second copy to forget.
- */
-export const LICENSE_ENFORCED = false;
+// The switch lives in shared-types — see the note there for why.
+export { LICENSE_ENFORCED } from '@aimaster/shared-types';
 
 /**
  * Remote license server (Supabase edge function) — injected at build time via

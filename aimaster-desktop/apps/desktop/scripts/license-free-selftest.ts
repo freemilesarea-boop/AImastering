@@ -13,8 +13,8 @@
  * Run via:  pnpm --filter @aimaster/desktop test:license-free
  */
 
-import { readFileSync } from 'node:fs';
-import { LICENSE_ENFORCED } from '@aimaster/license-core';
+import { readFileSync, readdirSync } from 'node:fs';
+import { LICENSE_ENFORCED } from '@aimaster/shared-types';
 import { KEY_LENGTH } from '../src/renderer/components/LicenseModal.js';
 
 interface T { name: string; pass: boolean; detail: string }
@@ -112,11 +112,47 @@ check('the key field can hold a whole key', () => {
     'and matches what license-core validates');
 });
 
+check('the renderer never imports the Node-side licensing package', () => {
+  // This one shipped and broke the app: LicenseModal imported the switch from
+  // `license-core`, which pulls in node:crypto, node-machine-id (child_process)
+  // and electron-store.  Vite externalises those for the browser, and the
+  // window came up BLACK — the renderer never finished loading.
+  //
+  // Typecheck passed, every suite passed, and the main-process gate answered
+  // correctly, because none of them load the renderer.  So the check has to be
+  // this: renderer source must not name the package at all.
+  const files = readdirSync('src/renderer', { recursive: true, encoding: 'utf8' })
+    .filter((f) => /\.tsx?$/.test(f));
+  assert(files.length > 50, `walked the renderer — found ${files.length} files`);
+  const offenders = files.filter((f) => {
+    const body = readFileSync(`src/renderer/${f}`, 'utf8');
+    // A type-only import is erased and harmless; a value import is not.
+    return /from '@aimaster\/license-core'/.test(body)
+      && !/import type .* from '@aimaster\/license-core'/.test(body);
+  });
+  assert(offenders.length === 0,
+    `the renderer must not pull in license-core — ${offenders.join(', ')}`);
+});
+
+check('the switch lives where both sides can reach it for free', () => {
+  const shared = readFileSync('../../packages/shared-types/src/index.ts', 'utf8');
+  assert(/export const LICENSE_ENFORCED/.test(shared),
+    'the switch is declared in shared-types');
+  // shared-types must stay importable from a browser: no imports at all.
+  assert(!/^import /m.test(shared), 'and shared-types imports nothing itself');
+  assert(!/require\(/.test(shared), 'and requires nothing');
+
+  const modal = readFileSync('src/renderer/components/LicenseModal.tsx', 'utf8');
+  assert(/import \{ LICENSE_ENFORCED \} from '@aimaster\/shared-types'/.test(modal),
+    'and the modal reads it from there');
+});
+
 check('the machinery is still here, so selling it later is one word', () => {
   // The point of a switch rather than a deletion.  If somebody strips the
   // licensing out, this fails and they find out now instead of when the
   // business decision changes.
-  assert(/export const LICENSE_ENFORCED/.test(core), 'the switch itself');
+  assert(/export \{ LICENSE_ENFORCED \} from '@aimaster\/shared-types'/.test(core),
+    'license-core still surfaces the switch for its own callers');
   for (const kept of ['activate', 'canProcess', 'revalidate', 'TRIAL_MAX']) {
     assert(new RegExp(kept).test(core), `${kept} is still there to switch back on`);
   }
