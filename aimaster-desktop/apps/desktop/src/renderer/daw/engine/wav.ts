@@ -93,7 +93,7 @@ function fixed(text: string, length: number): Uint8Array {
  * Writing a plausible-looking zero would claim a measurement nobody made,
  * and a mastering engineer reading −0.0 LUFS off a file believes it.
  */
-function bextChunk(p: Provenance, appVersion: string, at: Date): Uint8Array {
+function bextChunk(p: Provenance, appVersion: string, at: Date, meta: WavMetadata): Uint8Array {
   const body = new Uint8Array(602);
   const view = new DataView(body.buffer);
   const pad2 = (n: number): string => n.toString().padStart(2, '0');
@@ -109,7 +109,20 @@ function bextChunk(p: Provenance, appVersion: string, at: Date): Uint8Array {
   view.setUint32(342, 0, true);                 // TimeReference high
   view.setUint16(346, 2, true);                 // bext version 2
   // 348..411 UMID — left zero, which the spec reads as "none".
-  for (let off = 412; off <= 420; off += 2) view.setInt16(off, 0x7fff, true);
+  //
+  // 0x7FFF is the spec's "not measured".  A plausible-looking zero would
+  // claim a measurement nobody made, and an engineer reading 0.0 LUFS off a
+  // file believes it.  Real numbers go in only when something really measured
+  // them — which, for a mastered file, it did.
+  const l = meta.loudness;
+  const centi = (v: number | undefined): number =>
+    (v === undefined || !Number.isFinite(v)) ? 0x7fff
+      : Math.max(-32768, Math.min(32767, Math.round(v * 100)));
+  view.setInt16(412, centi(l?.integratedLufs), true);
+  view.setInt16(414, centi(l?.lra), true);
+  view.setInt16(416, centi(l?.truePeakDbtp), true);
+  view.setInt16(418, 0x7fff, true);        // max momentary — not measured
+  view.setInt16(420, 0x7fff, true);        // max short-term — not measured
   // 422..601 reserved, zero.
 
   return chunkBytes('bext', concat([body, utf8.encode(codingHistory(p, appVersion))]));
@@ -140,7 +153,7 @@ function metadataChunks(
   const { provenance, appVersion, at = new Date() } = meta;
   return concat([
     infoChunk(infoTags(provenance, appVersion, at)),
-    bextChunk(provenance, appVersion, at),
+    bextChunk(provenance, appVersion, at, meta),
     chunkBytes('LOUI', utf8.encode(provenanceJson(provenance, appVersion, at))),
   ]);
 }
@@ -151,6 +164,96 @@ export interface WavMetadata {
   appVersion: string;
   /** Injectable so a test gets the same bytes twice. */
   at?: Date;
+  /**
+   * The file's measured loudness, when something measured it.
+   *
+   * Omitted for a render nobody has analysed — bext then says "not measured"
+   * rather than zero, because zero is a number an engineer will believe.
+   */
+  loudness?: { integratedLufs?: number; lra?: number; truePeakDbtp?: number };
+}
+
+// ── Reading it back, and stamping a file somebody else wrote ─────────────────
+
+/** Walk a RIFF file's chunk list.  Returns null for anything malformed. */
+function riffChunks(bytes: Uint8Array): { id: string; at: number; size: number }[] | null {
+  if (bytes.length < 12) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const ascii = (at: number): string => String.fromCharCode(...bytes.subarray(at, at + 4));
+  if (ascii(0) !== 'RIFF' || ascii(8) !== 'WAVE') return null;
+  const out: { id: string; at: number; size: number }[] = [];
+  let at = 12;
+  while (at + 8 <= bytes.length) {
+    const size = view.getUint32(at + 4, true);
+    if (at + 8 + size > bytes.length) return null;      // a size that lies
+    out.push({ id: ascii(at), at, size });
+    at += 8 + size + (size % 2);
+  }
+  return out;
+}
+
+/**
+ * Recover the record a previous export wrote.
+ *
+ * This is how provenance survives the mastering engine: the mix carries it in,
+ * a separate program writes the master out, and the record is copied across
+ * from the input rather than looked up in a store that may no longer hold the
+ * session it came from.
+ */
+export function readWavProvenance(bytes: Uint8Array): Provenance | null {
+  const chunks = riffChunks(bytes);
+  const loui = chunks?.find((c) => c.id === 'LOUI');
+  if (!loui) return null;
+  try {
+    const parsed = JSON.parse(
+      new TextDecoder().decode(bytes.subarray(loui.at + 8, loui.at + 8 + loui.size)),
+    ) as Partial<Provenance> & { schema?: string };
+    if (parsed.schema !== 'loui.provenance/1') return null;
+    return {
+      title: parsed.title ?? '', artist: parsed.artist ?? '',
+      year: parsed.year ?? null, copyright: parsed.copyright ?? '',
+      humanWork: parsed.humanWork ?? [], aiWork: parsed.aiWork ?? [],
+      derivedFrom: parsed.derivedFrom ?? [],
+    };
+  } catch { return null; }
+}
+
+/**
+ * Put metadata into a WAV that already exists — the mastered file, written by
+ * the Python engine, which knows nothing about any of this.
+ *
+ * Existing metadata chunks are REPLACED, not appended to.  Saving the same
+ * master twice would otherwise stack two LOUI chunks, and a reader taking the
+ * first would report whichever one it happened to reach.
+ *
+ * Returns the input unchanged when it is not a WAV this can safely rewrite —
+ * an MP3 preview, or a file whose chunk sizes do not add up.  Refusing to
+ * touch it beats writing a corrupt master.
+ */
+export function stampWav(bytes: Uint8Array, meta: WavMetadata): Uint8Array {
+  const chunks = riffChunks(bytes);
+  if (!chunks) return bytes;
+  const data = chunks.find((c) => c.id === 'data');
+  const fmt = chunks.find((c) => c.id === 'fmt ');
+  if (!data || !fmt) return bytes;
+
+  const drop = new Set(['LIST', 'bext', 'LOUI']);
+  const keep = chunks.filter((c) => !drop.has(c.id) && c.id !== 'data');
+  const extra = metadataChunks(meta);
+
+  const parts: Uint8Array[] = [];
+  for (const c of keep) parts.push(bytes.subarray(c.at, c.at + 8 + c.size + (c.size % 2)));
+  parts.push(extra);
+  parts.push(bytes.subarray(data.at, data.at + 8 + data.size + (data.size % 2)));
+
+  const body = concat(parts);
+  const out = new Uint8Array(12 + body.length);
+  const view = new DataView(out.buffer);
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 4 + body.length, true);     // 'WAVE' + every chunk
+  writeAscii(view, 8, 'WAVE');
+  out.set(body, 12);
+  return out;
 }
 
 /**

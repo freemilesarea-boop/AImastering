@@ -7,6 +7,7 @@
  * - "모두 마스터링 시작" processes each file sequentially
  * - Per-item inline: progress bar, WAV download, MP3 download, preview player
  */
+import { chainLabel, stampMaster } from '../daw/edit/master-stamp.js';
 import React, { useCallback, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import TopBar from '../components/TopBar.js';
@@ -527,13 +528,33 @@ function QueueRow({
 
   const handleSaveWav = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!item.masteringResult?.outputPath) return;
+    const result = item.masteringResult;
+    if (!result?.outputPath) return;
     try {
-      const dest = await window.electronAPI!.invoke('file:save-wav', item.masteringResult.outputPath) as string | null;
-      if (dest) notify('WAV 저장 완료', 'success');
+      // The master comes out of the Python engine with no metadata at all.
+      // Stamp it on the way out: the record the mix carried in, plus the
+      // chain that just ran and the loudness it actually measured.
+      const options = useAudioStore.getState().options;
+      const after = result.loudnessAfter;
+      const bytes = await stampMaster({
+        outputPath: result.outputPath,
+        sourcePath: item.filePath,
+        chain: chainLabel(options.style, options.targetLufs),
+        loudness: {
+          integratedLufs: after?.integratedLufs,
+          lra: after?.lra,
+          truePeakDbtp: after?.truePeakDbtp,
+        },
+        fallbackTitle: item.fileName.replace(/\.[^.]+$/, ''),
+        appVersion: __APP_VERSION__,
+      });
+      const dest = await window.electronAPI!.invoke('daw:bounce-audio', {
+        name: item.fileName, data: bytes,
+      }) as string | null;
+      if (dest) notify('WAV 저장 완료 — 메타데이터 포함', 'success');
     } catch (err) {
       if (handleLicenseRequired(err)) notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
-      else notify('WAV 저장 실패', 'error');
+      else notify(`WAV 저장 실패: ${(err as Error).message}`, 'error');
     }
   }, [item, notify]);
 

@@ -10,7 +10,7 @@
  * Run via:  pnpm --filter @aimaster/desktop test:provenance
  */
 
-import { encodeWav } from '../src/renderer/daw/engine/wav.js';
+import { encodeWav, readWavProvenance, stampWav } from '../src/renderer/daw/engine/wav.js';
 import {
   BASIS_LABELS, describeProvenance, emptyProvenance, isDerivative, provenanceProblem,
   usedAi, withAiStep, withHumanWork, withSource, type Provenance,
@@ -241,6 +241,86 @@ check('a nameless track is caught before it is sent anywhere', () => {
   assert(provenanceProblem(emptyProvenance('', 'someone')) !== null, 'no title');
   assert(provenanceProblem(emptyProvenance('song', '')) !== null, 'no artist');
   assert(provenanceProblem(emptyProvenance('song', 'someone')) === null, 'both present is fine');
+});
+
+// ── Stamping a file somebody else wrote ─────────────────────────────────────
+//
+// The master comes out of the Python engine with no metadata.  The record is
+// carried in by the mix and copied across at save time, so these are the
+// operations that make that possible.
+
+check('a record written into a file can be read back out of it', () => {
+  const recovered = readWavProvenance(encoded(remix()));
+  assert(recovered !== null, 'the record is found');
+  assert(recovered!.title === 'You Make Me Wanna (Loui Remix)', 'title survives');
+  assert(recovered!.humanWork.join(',') === '편곡·믹스,보컬 재녹음', 'the Korean survives');
+  assert(recovered!.derivedFrom[0]!.isrc === 'KRA382600001', 'and the ISRC');
+  assert(recovered!.aiWork.length === 2, 'and both AI steps');
+});
+
+check('a plain WAV has no record, and says so rather than inventing one', () => {
+  assert(readWavProvenance(encodeWav(silence, 48000, 24, 'none')) === null,
+    'a file with no LOUI chunk returns null');
+  assert(readWavProvenance(new Uint8Array([1, 2, 3])) === null, 'and so does rubbish');
+});
+
+check('stamping a bare master gives it the record and keeps the audio', () => {
+  // This is the real operation: the Python engine wrote `bare`, and the mix
+  // that went in carried the record.
+  const bare = encodeWav(silence, 48000, 24, 'none');
+  const stamped = stampWav(bare, { provenance: remix(), appVersion: APP, at: AT });
+  const { chunks } = parseRiff(stamped);          // throws on any bad size
+  const dataOf = (cs: Chunk[]): Uint8Array => cs.find((c) => c.id === 'data')!.body;
+  assert(dataOf(chunks).every((b, i) => b === dataOf(parseRiff(bare).chunks)[i]),
+    'every sample is untouched');
+  assert(readWavProvenance(stamped)!.title === 'You Make Me Wanna (Loui Remix)',
+    'and the record is now in it');
+});
+
+check('stamping twice leaves ONE of each chunk, not a stack', () => {
+  // Saving the same master again would otherwise append a second LOUI, and a
+  // reader taking the first reports whichever it happened to reach.
+  const once = stampWav(encodeWav(silence, 48000, 24, 'none'),
+    { provenance: remix(), appVersion: APP, at: AT });
+  let p2 = remix();
+  p2 = { ...p2, title: 'Corrected Title' };
+  const twice = stampWav(once, { provenance: p2, appVersion: APP, at: AT });
+  const ids = parseRiff(twice).chunks.map((c) => c.id);
+  for (const id of ['LIST', 'bext', 'LOUI']) {
+    assert(ids.filter((x) => x === id).length === 1,
+      `one ${id}, got ${ids.filter((x) => x === id).length}`);
+  }
+  assert(readWavProvenance(twice)!.title === 'Corrected Title', 'and the newer one won');
+});
+
+check('a file it cannot safely rewrite is handed back untouched', () => {
+  // An MP3 preview goes through the same button.  Refusing to touch it beats
+  // writing a corrupt master.
+  const mp3ish = new Uint8Array([0x49, 0x44, 0x33, 3, 0, 0, 0, 0, 0, 0, 1, 2, 3]);
+  assert(stampWav(mp3ish, { provenance: remix(), appVersion: APP }) === mp3ish,
+    'not a RIFF file — returned as-is');
+  // And a WAV whose sizes lie: rewriting it would move the audio somewhere
+  // the header no longer points at.
+  const broken = encodeWav(silence, 48000, 24, 'none').slice();
+  new DataView(broken.buffer).setUint32(40, 0xfffffff0, true);   // data size lies
+  assert(stampWav(broken, { provenance: remix(), appVersion: APP }) === broken,
+    'a lying size is refused, not patched');
+});
+
+check('bext carries the loudness once something has measured it', () => {
+  const stamped = stampWav(encodeWav(silence, 48000, 24, 'none'), {
+    provenance: remix(), appVersion: APP, at: AT,
+    loudness: { integratedLufs: -9.7, lra: 4.2, truePeakDbtp: -1.1 },
+  });
+  const bext = parseRiff(stamped).chunks.find((c) => c.id === 'bext')!;
+  const view = new DataView(bext.body.buffer, bext.body.byteOffset, bext.body.byteLength);
+  // The spec stores these ×100.
+  assert(view.getInt16(412, true) === -970, `LUFS: ${view.getInt16(412, true)}`);
+  assert(view.getInt16(414, true) === 420, `LRA: ${view.getInt16(414, true)}`);
+  assert(view.getInt16(416, true) === -110, `true peak: ${view.getInt16(416, true)}`);
+  // Momentary and short-term were NOT measured, and must still say so.
+  assert(view.getInt16(418, true) === 0x7fff, 'max momentary stays unmeasured');
+  assert(view.getInt16(420, true) === 0x7fff, 'max short-term stays unmeasured');
 });
 
 const passed = results.filter((r) => r.pass).length;
