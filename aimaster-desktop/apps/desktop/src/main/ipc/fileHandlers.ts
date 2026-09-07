@@ -556,13 +556,23 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   ipc.handle('daw:bounce-audio', async (_e, req: unknown) => {
     if (!win) return null;
     const { name, bytes } = readAudioPayload(req);
-    // Same paywall as every other lossless master export.
-    const gate = paidStatus();
-    log.info(`[export-gate] daw-bounce paid=${gate.paid} source=${gate.source}`);
-    if (!gate.paid) throw new Error(LICENSE_REQUIRED);
+    // The format decides the extension, the dialog filter AND the paywall —
+    // an MP3 preview is free, the same as everywhere else.  It used to be
+    // hardcoded to wav, which gated the free export and named the file
+    // `song.mp3.wav`.
+    const format: ExportFormat =
+      (req as { format?: unknown })?.format === 'mp3' ? 'mp3' : 'wav';
+    if (isMasterExport(format)) {
+      const gate = paidStatus();
+      log.info(`[export-gate] daw-bounce fmt=${format} paid=${gate.paid} source=${gate.source}`);
+      if (!gate.paid) throw new Error(LICENSE_REQUIRED);
+    }
+    // The caller's name may already carry an extension — the mastering list
+    // hands over `song.wav`.  Appending another gives `song.wav.wav`.
+    const stem = (name || 'bounce').replace(/\.[^.]+$/, '') || 'bounce';
     const result = await dialog.showSaveDialog(win, {
-      defaultPath: `${name || 'bounce'}.wav`,
-      filters: [FORMAT_FILTERS.wav],
+      defaultPath: `${stem}.${format}`,
+      filters: [FORMAT_FILTERS[format]],
     });
     if (result.canceled || !result.filePath) return null;
     try {

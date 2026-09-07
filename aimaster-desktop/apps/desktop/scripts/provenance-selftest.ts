@@ -11,6 +11,7 @@
  */
 
 import { encodeWav, readWavProvenance, stampWav } from '../src/renderer/daw/engine/wav.js';
+import { PROVENANCE_FIELD, id3TagLength, stampMp3 } from '../src/renderer/daw/engine/id3.js';
 import {
   BASIS_LABELS, describeProvenance, emptyProvenance, isDerivative, provenanceProblem,
   usedAi, withAiStep, withHumanWork, withSource, type Provenance,
@@ -321,6 +322,119 @@ check('bext carries the loudness once something has measured it', () => {
   // Momentary and short-term were NOT measured, and must still say so.
   assert(view.getInt16(418, true) === 0x7fff, 'max momentary stays unmeasured');
   assert(view.getInt16(420, true) === 0x7fff, 'max short-term stays unmeasured');
+});
+
+// ── The preview MP3 ─────────────────────────────────────────────────────────
+//
+// The preview is the file that actually gets passed around, so it cannot be
+// the one export that says nothing.  MP3 carries none of the RIFF chunks, so
+// the same record goes in as ID3v2.4.
+//
+// Parsed here the way a player parses it — synchsafe sizes honoured, frames
+// walked — because a tag whose sizes are wrong still contains all the right
+// text, and the player decodes the difference as noise.
+
+interface Id3Frame { id: string; body: Uint8Array }
+
+function parseId3(bytes: Uint8Array): { frames: Id3Frame[]; audioAt: number } {
+  assert(String.fromCharCode(...bytes.subarray(0, 3)) === 'ID3', 'starts with an ID3 tag');
+  assert(bytes[3] === 4, `v2.4, got v2.${bytes[3]}`);
+  const sync = (at: number): number =>
+    ((bytes[at]! & 0x7f) << 21) | ((bytes[at + 1]! & 0x7f) << 14)
+    | ((bytes[at + 2]! & 0x7f) << 7) | bytes[at + 3]!;
+  for (let i = 6; i < 10; i++) {
+    assert((bytes[i]! & 0x80) === 0,
+      `size byte ${i} has its top bit set — that is not synchsafe`);
+  }
+  const size = sync(6);
+  const frames: Id3Frame[] = [];
+  let at = 10;
+  while (at + 10 <= 10 + size) {
+    const id = String.fromCharCode(...bytes.subarray(at, at + 4));
+    if (id.trim().length === 0) break;                     // padding
+    const fsize = sync(at + 4);
+    assert(at + 10 + fsize <= 10 + size, `frame ${id} runs past the tag`);
+    frames.push({ id, body: bytes.subarray(at + 10, at + 10 + fsize) });
+    at += 10 + fsize;
+  }
+  return { frames, audioAt: 10 + size };
+}
+
+/**
+ * Read a text frame — and check it DECLARES what it holds.
+ *
+ * The first byte names the encoding.  Decoding as UTF-8 regardless is what
+ * my own test did at first, so a tag claiming latin-1 while holding UTF-8
+ * bytes passed here and showed mojibake in every real player.
+ */
+const textOf = (f: Id3Frame): string => {
+  assert(f.body[0] === 3, `${f.id} must declare UTF-8 (3), declares ${f.body[0]}`);
+  return new TextDecoder().decode(f.body.subarray(1)).replace(/\0+$/, '');
+};
+
+/** Two frames of something that looks enough like an MP3 to be one. */
+function fakeMp3(): Uint8Array {
+  const out = new Uint8Array(64);
+  out[0] = 0xff; out[1] = 0xfb; out[2] = 0x90; out[3] = 0x00;
+  for (let i = 4; i < out.length; i++) out[i] = i & 0xff;
+  return out;
+}
+
+check('the preview carries the same record, as ID3', () => {
+  const tagged = stampMp3(fakeMp3(), remix(), APP, AT);
+  const { frames } = parseId3(tagged);
+  const by = (id: string): Id3Frame | undefined => frames.find((f) => f.id === id);
+  assert(textOf(by('TIT2')!) === 'You Make Me Wanna (Loui Remix)', 'title');
+  assert(textOf(by('TPE1')!) === 'theblank', 'artist');
+  assert(textOf(by('TCOP')!).includes('©'), 'copyright, © intact');
+  assert(textOf(by('TSSE')!).includes('Louver Mastering AI'), 'the app');
+  assert(by('COMM')!.body[0] === 3, 'the comment declares UTF-8 too');
+  const comment = new TextDecoder().decode(by('COMM')!.body.subarray(5));
+  assert(comment.includes('편곡·믹스'), 'the Korean survives');
+  assert(comment.includes('2차 창작'), 'and it says it is a derivative');
+});
+
+check('the exact record rides along in a TXXX field', () => {
+  const { frames } = parseId3(stampMp3(fakeMp3(), remix(), APP, AT));
+  const txxx = frames.find((f) => f.id === 'TXXX');
+  assert(txxx !== undefined, 'the user field is written');
+  assert(txxx!.body[0] === 3, 'the user field declares UTF-8');
+  const raw = new TextDecoder().decode(txxx!.body.subarray(1));
+  const [description, json] = raw.split('\0');
+  assert(description === PROVENANCE_FIELD, `named for finding: ${description}`);
+  const record = JSON.parse(json!) as { derivative: boolean; derivedFrom: { isrc?: string }[] };
+  assert(record.derivative === true, 'and holds the whole record');
+  assert(record.derivedFrom[0]!.isrc === 'KRA382600001', 'down to the ISRC');
+});
+
+check('the audio is untouched and starts exactly where the tag says', () => {
+  const mp3 = fakeMp3();
+  const tagged = stampMp3(mp3, remix(), APP, AT);
+  const { audioAt } = parseId3(tagged);
+  assert(audioAt === id3TagLength(tagged), 'the writer and the reader agree on the length');
+  const audio = tagged.subarray(audioAt);
+  assert(audio.length === mp3.length, `${audio.length} bytes of audio, was ${mp3.length}`);
+  assert(audio.every((b, i) => b === mp3[i]), 'byte for byte');
+});
+
+check('tagging twice replaces the tag rather than stacking two', () => {
+  // A reader takes the FIRST tag.  Two of them means saving again shows the
+  // older record, which is worse than none.
+  const once = stampMp3(fakeMp3(), remix(), APP, AT);
+  const twice = stampMp3(once, { ...remix(), title: 'Corrected Title' }, APP, AT);
+  const { frames, audioAt } = parseId3(twice);
+  assert(textOf(frames.find((f) => f.id === 'TIT2')!) === 'Corrected Title', 'the newer one won');
+  const rest = twice.subarray(audioAt);
+  assert(rest[0] === 0xff && (rest[1]! & 0xe0) === 0xe0,
+    'and the audio, not a second tag, follows it');
+  assert(rest.length === fakeMp3().length, `${rest.length} bytes — no tag left buried inside`);
+});
+
+check('something that is not an MP3 is handed back untouched', () => {
+  const wav = encodeWav(silence, 48000, 24, 'none');
+  assert(stampMp3(wav, remix(), APP, AT) === wav, 'a WAV is refused, not wrapped');
+  const rubbish = new Uint8Array([1, 2, 3, 4]);
+  assert(stampMp3(rubbish, remix(), APP, AT) === rubbish, 'and so is rubbish');
 });
 
 const passed = results.filter((r) => r.pass).length;

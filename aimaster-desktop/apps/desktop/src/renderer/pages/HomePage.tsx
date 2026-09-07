@@ -7,7 +7,7 @@
  * - "모두 마스터링 시작" processes each file sequentially
  * - Per-item inline: progress bar, WAV download, MP3 download, preview player
  */
-import { chainLabel, stampMaster } from '../daw/edit/master-stamp.js';
+import { chainLabel, stampMaster, stampPreview } from '../daw/edit/master-stamp.js';
 import React, { useCallback, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import TopBar from '../components/TopBar.js';
@@ -560,9 +560,24 @@ function QueueRow({
 
   const handleSaveMp3 = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!item.masteringResult?.previewPath) return;
-    const dest = await window.electronAPI!.invoke('file:save-wav', item.masteringResult.previewPath) as string | null;
-    if (dest) notify('MP3 저장 완료', 'success');
+    const result = item.masteringResult;
+    if (!result?.previewPath) return;
+    try {
+      const options = useAudioStore.getState().options;
+      const bytes = await stampPreview({
+        outputPath: result.previewPath,
+        sourcePath: item.filePath,
+        chain: chainLabel(options.style, options.targetLufs),
+        fallbackTitle: item.fileName.replace(/\.[^.]+$/, ''),
+        appVersion: __APP_VERSION__,
+      });
+      const dest = await window.electronAPI!.invoke('daw:bounce-audio', {
+        name: item.fileName, data: bytes, format: 'mp3',
+      }) as string | null;
+      if (dest) notify('MP3 저장 완료 — 메타데이터 포함', 'success');
+    } catch (err) {
+      notify(`MP3 저장 실패: ${(err as Error).message}`, 'error');
+    }
   }, [item, notify]);
 
   const statusDot = {

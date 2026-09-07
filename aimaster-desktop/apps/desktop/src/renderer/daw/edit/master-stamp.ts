@@ -10,6 +10,7 @@
 // chain that ran, and the loudness it actually achieved.
 
 import { readWavProvenance, stampWav } from '../engine/wav.js';
+import { stampMp3 } from '../engine/id3.js';
 import {
   emptyProvenance, withAiStep, type Provenance,
 } from '../model/provenance.js';
@@ -69,4 +70,21 @@ export async function stampMaster(input: MasterStampInput): Promise<Uint8Array> 
 /** `AI Pop · −10 LUFS` — the chain, as a person would name it. */
 export function chainLabel(style: string, targetLufs: number): string {
   return `${style} · ${targetLufs.toFixed(0)} LUFS`;
+}
+
+/**
+ * The same record on the preview MP3.
+ *
+ * The preview is the file that actually gets passed around — emailed to a
+ * label, dropped in a chat, uploaded for a first listen.  Leaving it as the
+ * only export that says nothing about who made the track would be exactly
+ * backwards.
+ */
+export async function stampPreview(input: MasterStampInput): Promise<Uint8Array> {
+  const preview = await bytesAt(input.outputPath);
+  let carried: Provenance | null = null;
+  try { carried = readWavProvenance(await bytesAt(input.sourcePath)); } catch { carried = null; }
+  const base = carried ?? emptyProvenance(input.fallbackTitle);
+  const provenance = withAiStep(base, { kind: 'mastering', detail: input.chain });
+  return stampMp3(preview, provenance, input.appVersion);
 }
