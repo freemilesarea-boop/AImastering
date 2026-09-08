@@ -55,13 +55,38 @@ check('canProcess answers paid, because that is what opens the export gates', ()
   assert(/remaining: Infinity/.test(body), 'with no runs left to count down');
 });
 
-check('every export gate reads that one answer, not its own copy', () => {
-  const handlers = readFileSync('src/main/ipc/fileHandlers.ts', 'utf8');
-  assert(/licenseService\.canProcess\(\)\.isPaid/.test(handlers),
-    'the gate asks canProcess');
-  // Any gate that decided for itself would survive the switch being off.
+/** Source with comments removed, so a check reads code and not prose. */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n')
+    .map((line) => {
+      // Naive but adequate here: no `//` appears inside a string literal in
+      // the files this walks, and a false strip would only ever make the
+      // check weaker in a way the break-test below would catch.
+      const i = line.indexOf('//');
+      return i >= 0 ? line.slice(0, i) : line;
+    })
+    .join('\n');
+}
+
+check('no export path stops anyone — there is no gate left to read', () => {
+  // This used to assert the gate asked `canProcess`, so that one switch
+  // decided for every export.  The gate is gone from this file altogether
+  // now, which is the stronger version of the same promise: an export that
+  // never asks cannot refuse, whatever a stale licence record on disk says.
+  //
+  // Read as CODE, not as prose.  The file still explains in a comment what
+  // the `LICENSE_REQUIRED:` prefix used to mean, and a plain text search
+  // calls that explanation a paywall — the same mistake as grepping a
+  // source file for a symbol and matching the sentence describing it.
+  const handlers = stripComments(readFileSync('src/main/ipc/fileHandlers.ts', 'utf8'));
+  assert(!/LICENSE_REQUIRED/.test(handlers),
+    'no export throws the licence error');
+  assert(!/paidStatus\(\)|canProcess\(\)/.test(handlers),
+    'no export asks whether the user has paid');
   assert(!/TRIAL_MAX|trialUsed|_readTrialUsed/.test(handlers),
-    'and no gate counts trials on its own');
+    'and nothing counts trials of its own');
 });
 
 check('the activation dialog cannot appear', () => {

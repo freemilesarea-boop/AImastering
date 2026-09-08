@@ -6,7 +6,7 @@
 // harness drives this directly).
 
 import {
-  createOfflineChain, applyOfflineConfig,
+  createOfflineChain, applyChainConfigForRender,
   type OfflineChainConfig, type WasmMasteringChain,
 } from './load-mastering-chain-node.js';
 import { measureStereoLoudness, solveLoudnessGain, type LoudnessGainPolicy } from './offline-loudness.js';
@@ -57,7 +57,7 @@ export function renderStereoBuffer(
   try {
     chain = createOfflineChain(sampleRate);
     chain.reset();
-    applyOfflineConfig(chain, config);
+    applyChainConfigForRender(chain, config);
 
     for (let pos = 0; pos < n; pos += blockSize) {
       const end = Math.min(pos + blockSize, n);

@@ -24,6 +24,23 @@ impl Window {
         Self { coeffs, sum }
     }
 
+    /// Periodic (DFT-even) Hann window of `n` samples.
+    ///
+    /// Unlike [`Window::hann`] the denominator is `n`, not `n - 1`.  That is
+    /// what makes Hann² satisfy COLA exactly at 50 % / 75 % overlap, so
+    /// overlap-add resynthesis reconstructs the input without ripple.  Use
+    /// this for STFT processing; use [`Window::hann`] for one-shot analysis.
+    pub fn hann_periodic(n: usize) -> Self {
+        assert!(n >= 2, "window length must be at least 2");
+        let mut coeffs = vec![0.0f32; n];
+        let denom = n as f32;
+        for (i, c) in coeffs.iter_mut().enumerate() {
+            *c = 0.5 - 0.5 * ((2.0 * std::f32::consts::PI * i as f32) / denom).cos();
+        }
+        let sum = coeffs.iter().sum::<f32>();
+        Self { coeffs, sum }
+    }
+
     /// Rectangular (no-op) window.
     pub fn rectangular(n: usize) -> Self {
         let coeffs = vec![1.0f32; n];

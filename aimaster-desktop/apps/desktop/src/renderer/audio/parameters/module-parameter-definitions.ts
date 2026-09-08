@@ -14,6 +14,7 @@ import type {
   AllModulesDefinitions,
   ModuleParameterDefinitions,
 } from './parameter-state.js';
+import { SUITE_PARAMETER_DEFS } from './suite-parameter-definitions.js';
 
 // ── Number formatters ────────────────────────────────────────────────────
 
@@ -51,9 +52,24 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       },
     },
     {
+      kind: 'number', id: 'lowCutQ', label: 'Low Cut Q',
+      hint: 'Resonance at the corner',
+      min: 0.3, max: 6, default: 0.707, step: 0.01,
+      format: fmt.ratio, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[lowCut].q', status: 'pending' },
+    },
+    {
+      kind: 'number', id: 'lowShelfHz', label: 'Low Shelf Freq',
+      unit: 'Hz', min: 20, max: 1000, default: 120, step: 1,
+      format: fmt.integer, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[lowShelf].freqHz', status: 'pending' },
+    },
+    {
       kind: 'number', id: 'lowShelfDb', label: 'Low Shelf',
-      hint: '120 Hz / Q=0.7',
-      unit: 'dB', min: -6, max: 6, default: 1.2, step: 0.1,
+      // The gain range is ±18 rather than ±6: a graph you can drag is only
+      // as expressive as the axis it is drawn on, and ±6 makes every move
+      // look identical.
+      unit: 'dB', min: -18, max: 18, default: 1.2, step: 0.1,
       format: fmt.signedDb, automatable: true,
       binding: {
         moduleType: 'adaptive-eq',
@@ -62,9 +78,20 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       },
     },
     {
+      kind: 'number', id: 'lowShelfQ', label: 'Low Shelf Slope',
+      min: 0.3, max: 2, default: 0.707, step: 0.01,
+      format: fmt.ratio, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[lowShelf].q', status: 'pending' },
+    },
+    {
+      kind: 'number', id: 'presenceHz', label: 'Presence Freq',
+      unit: 'Hz', min: 100, max: 16_000, default: 3000, step: 1,
+      format: fmt.integer, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[presence].freqHz', status: 'pending' },
+    },
+    {
       kind: 'number', id: 'presenceDb', label: 'Presence',
-      hint: '3 kHz peak / Q=1.1',
-      unit: 'dB', min: -6, max: 6, default: 1.4, step: 0.1,
+      unit: 'dB', min: -18, max: 18, default: 1.4, step: 0.1,
       format: fmt.signedDb, automatable: true,
       binding: {
         moduleType: 'adaptive-eq',
@@ -73,15 +100,33 @@ const EQ_DEFS: ModuleParameterDefinitions = {
       },
     },
     {
+      kind: 'number', id: 'presenceQ', label: 'Presence Q',
+      hint: 'Higher is narrower',
+      min: 0.3, max: 12, default: 1.1, step: 0.01,
+      format: fmt.ratio, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[presence].q', status: 'pending' },
+    },
+    {
+      kind: 'number', id: 'airHz', label: 'Air Freq',
+      unit: 'Hz', min: 2000, max: 20_000, default: 12_000, step: 10,
+      format: fmt.integer, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[air].freqHz', status: 'pending' },
+    },
+    {
       kind: 'number', id: 'airDb', label: 'Air',
-      hint: '12 kHz shelf',
-      unit: 'dB', min: -6, max: 6, default: 2.0, step: 0.1,
+      unit: 'dB', min: -18, max: 18, default: 2.0, step: 0.1,
       format: fmt.signedDb, automatable: true,
       binding: {
         moduleType: 'adaptive-eq',
         path: 'bands[air].gainDb',
         status: 'pending',
       },
+    },
+    {
+      kind: 'number', id: 'airQ', label: 'Air Slope',
+      min: 0.3, max: 2, default: 0.707, step: 0.01,
+      format: fmt.ratio, automatable: true,
+      binding: { moduleType: 'adaptive-eq', path: 'bands[air].q', status: 'pending' },
     },
     {
       kind: 'number', id: 'outputGainDb', label: 'Output Gain',
@@ -249,8 +294,43 @@ const LIMITER_DEFS: ModuleParameterDefinitions = {
         moduleType: 'loudness-norm',
         path: 'targetLufs',
         status: 'wired',
-        note: 'Routes to loudness-norm.targetLufs (separate engine module).',
+        note: 'Drives the chain loudness loop: gain at the input from a measurement of the output.',
       },
+    },
+    {
+      // The switch that makes Target LUFS audible while listening.
+      //
+      // It exists because the target has two honest meanings and they are
+      // not the same job: "render the file at this loudness" (a two-pass
+      // measurement, which the export does) and "let me HEAR it at this
+      // loudness now" (a converging loop, which is this). Off leaves the
+      // export behaviour exactly as it was.
+      kind: 'boolean', id: 'autoGain', label: 'Auto Gain',
+      hint: 'Reach Target LUFS while listening',
+      default: true,
+      onLabel: 'Auto', offLabel: 'Manual',
+      automatable: false,
+      binding: { moduleType: 'loudness-norm', path: 'enabled', status: 'wired' },
+    },
+    {
+      kind: 'number', id: 'maxBoostDb', label: 'Max Boost',
+      hint: 'Most Auto Gain may add',
+      unit: 'dB', min: 0, max: 24, default: 12, step: 0.5,
+      format: fmt.oneDec, automatable: false,
+      binding: { moduleType: 'loudness-norm', path: 'maxBoostDb', status: 'wired' },
+    },
+    {
+      // The manual counterpart, and the control that was missing entirely.
+      //
+      // `chain-config.ts` has always read `limiter.driveDb`, and the Rust
+      // limiter has always used it as the maximizer input — but no
+      // parameter defined it, so it read its default of 0 forever. The one
+      // control that makes a master louder was unreachable from the UI.
+      kind: 'number', id: 'driveDb', label: 'Drive',
+      hint: 'Level pushed into the limiter',
+      unit: 'dB', min: 0, max: 12, default: 0, step: 0.1,
+      format: fmt.oneDec, automatable: true,
+      binding: { moduleType: 'limiter', path: 'driveDb', status: 'wired' },
     },
     {
       kind: 'number', id: 'ceilingDbtp', label: 'True-Peak Ceiling',
@@ -379,7 +459,7 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
         path: 'export.bitDepth',
         status: 'unavailable',
         exportField: 'bitDepth',
-        note: 'Export-renderable (M3-P-NEXT-5D-2-c) — applied on Re-master & Export, not preview.',
+        note: 'Export-renderable, and now also the target the chain\'s dither stage quantises to — so the preview hears the same bit depth the file will have.',
       },
     },
     {
@@ -398,14 +478,21 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
       },
       automatable: false,
       binding: {
-        moduleType: null,
-        path: 'export.dither',
-        status: 'unavailable',
-        exportField: 'dither',
-        // Like sampleRate and bitDepth: it changes the EXPORT render, not the
-        // preview, because the preview never leaves float and so has no word
-        // length to reduce.
-        note: 'Export-renderable — applied on Re-master & Export, not preview.',
+        moduleType: 'dither',
+        path: 'dither.mode',
+        status: 'wired',
+        note: 'Applied by the chain\'s dither stage, against `bitDepth`. Audible in the preview as well as the export, so the choice can be auditioned.',
+      },
+    },
+    {
+      kind: 'boolean', id: 'ditherAutoBlank', label: 'Auto-blank',
+      hint: '무음 구간에서는 디더 노이즈를 멈춥니다',
+      default: true,
+      automatable: false,
+      binding: {
+        moduleType: 'dither',
+        path: 'dither.autoBlank',
+        status: 'wired',
       },
     },
   ],
@@ -414,9 +501,13 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
 // ── Aggregate ────────────────────────────────────────────────────────────
 
 export const ALL_MODULE_PARAMETER_DEFS: AllModulesDefinitions = {
+  // The original product-layout five.
   eq:       EQ_DEFS,
   dynamics: DYNAMICS_DEFS,
   imager:   IMAGER_DEFS,
   limiter:  LIMITER_DEFS,
   export:   EXPORT_DEFS,
+  // Everything the Ozone-class suite added — see
+  // `suite-parameter-definitions.ts`.
+  ...SUITE_PARAMETER_DEFS,
 };

@@ -21,6 +21,7 @@ import { writeFile } from 'node:fs/promises';
 import { resolveFFmpegPath } from '@aimaster/audio-engine';
 import { encodeWav as encodeWavBytes } from '../../renderer/daw/engine/wav.js';
 import type { DitherMode } from '../../renderer/daw/audio/dither.js';
+import { chainDithersOutput, type ChainConfigWire } from '../../renderer/audio/chain-config.js';
 import {
   renderStereoBuffer, renderStereoBufferNormalized, deinterleave, interleave,
   type RenderMetrics, type NormalizedRenderMetrics,
@@ -47,6 +48,15 @@ export interface RustRenderFileResult {
   metrics: RenderMetrics | NormalizedRenderMetrics;
   backend: 'rust';
   loudnessNormalized: boolean;
+  /**
+   * True when the chain's dither stage quantised this render to
+   * `options.bitDepth`.
+   *
+   * Callers MUST forward it to `file:save-audio` as `sourceAlreadyDithered`
+   * — otherwise the file writer dithers a second time and the master ends
+   * up with two uncorrelated noise floors.
+   */
+  dithered: boolean;
 }
 
 /** Whether the Rust offline backend is usable (node WASM present). */
@@ -75,7 +85,7 @@ function runFfmpeg(args: string[], stdin?: Buffer): Promise<Buffer> {
 }
 
 /** Decode any input → interleaved f32le stereo PCM at `sampleRate`. */
-async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promise<Float32Array> {
+export async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promise<Float32Array> {
   const buf = await runFfmpeg([
     '-hide_banner', '-loglevel', 'error',
     '-i', inputPath,
@@ -141,7 +151,39 @@ export async function processAudioFileRust(
   }
 
   const interleavedOut = interleave(outL, outR);
-  await encodeWav(interleavedOut, options.sampleRate, options.bitDepth, options.outputPath,
-                  options.dither);
-  return { outputPath: options.outputPath, metrics, backend: 'rust', loudnessNormalized: normalized };
+
+  // Whether the chain dithered depends on the suite config it was given —
+  // the flat config has no dither stage at all.  Asked of the chain-config
+  // module rather than re-derived here: two copies of this predicate is
+  // exactly how a file ends up dithered twice or not at all.
+  const suite = config.suiteConfig as ChainConfigWire | undefined;
+  const dithered = suite ? chainDithersOutput(suite) : false;
+
+  // Exactly one of the two reduces the word length.  `encodeWavBytes`
+  // defaults its dither ON, so leaving the argument off after the chain has
+  // already dithered would add a second, independent noise floor to a file
+  // that was already at its final bit depth — audibly worse than either
+  // alone, and invisible in a diff.  So the writer is told explicitly:
+  // stand down when the chain did the job, do it when there was no dither
+  // stage to do it.
+  await encodeWav(
+    interleavedOut, options.sampleRate, options.bitDepth, options.outputPath,
+    dithered ? 'none' : options.dither,
+  );
+
+  return {
+    outputPath: options.outputPath, metrics, backend: 'rust',
+    loudnessNormalized: normalized, dithered,
+  };
+}
+
+/** Split interleaved stereo into planar left/right.  Exported for the
+ *  reference-curve measurement, which needs the same decode path the render
+ *  uses so a reference is read exactly as a master would be. */
+export function deinterleaveStereo(data: Float32Array): { left: Float32Array; right: Float32Array } {
+  const n = Math.floor(data.length / 2);
+  const left = new Float32Array(n);
+  const right = new Float32Array(n);
+  for (let i = 0; i < n; i++) { left[i] = data[i * 2]!; right[i] = data[i * 2 + 1]!; }
+  return { left, right };
 }

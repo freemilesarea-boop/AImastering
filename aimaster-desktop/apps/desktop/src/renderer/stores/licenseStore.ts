@@ -66,28 +66,15 @@ export const useLicenseStore = create<LicenseStore>((set, _get) => ({
   },
 }));
 
-// ── License-error helpers ────────────────────────────────────────────────────
-
-/** True when an error/response came from the main-process export paywall. */
-export function isLicenseRequiredError(msg: unknown): boolean {
-  return typeof msg === 'string'
-    ? msg.includes('LICENSE_REQUIRED')
-    : msg instanceof Error && msg.message.includes('LICENSE_REQUIRED');
-}
-
-/**
- * If `err` is the paywall error, open the activation modal and return true.
- * Save handlers call this so a blocked export prompts activation instead of
- * surfacing a raw error.
- */
-export function handleLicenseRequired(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : err;
-  if (isLicenseRequiredError(msg)) {
-    useLicenseStore.getState().setShowModal(true);
-    return true;
-  }
-  return false;
-}
+// ── Export paywall: removed ─────────────────────────────────────────────────
+// Lossless master export used to be licence-gated in the main process, which
+// answered `LICENSE_REQUIRED:` and made the renderer open the activation
+// dialog.  The app is sold as a paid download, so that gate could only ever
+// fire on a customer who had already paid — it did, on every WAV save.  The
+// main-process gate is gone, so the error string can no longer be produced;
+// the helpers that recognised it and opened the modal were deleted with it.
+// Nothing outside this file calls `setShowModal`, so the dialog now appears
+// only when the user opens it themselves.
 
 // ── Selector helpers ─────────────────────────────────────────────────────────
 

@@ -7,10 +7,15 @@
 //!   * ceiling in dBTP; `isp` adds a small extra headroom to approximate
 //!     inter-sample (true-peak) safety without 4× oversampling in preview
 //!
-//! NOT an Ozone-grade multi-stage limiter — a stable preview limiter that
-//! never lets the output exceed the ceiling and never clicks.
+//! It doubles as the **maximizer**: `drive_db` pushes level into the
+//! limiter, and `character` picks the release behaviour and how much soft
+//! clip runs ahead of it.  Clean is the transparent safety setting;
+//! Aggressive trades transparency for loudness the way an engineer expects.
+//!
+//! Whatever the settings, the output can never exceed the ceiling — the
+//! final clamp is unconditional.
 
-use super::config::{db_to_lin, LimiterConfig};
+use super::config::{db_to_lin, LimiterCharacter, LimiterConfig};
 use super::StereoModule;
 
 /// Extra headroom (dB) applied when ISP (true-peak) guard is on.
@@ -43,6 +48,34 @@ fn release_coeff(ms: f64, sr: f64) -> f64 {
     (-1.0 / (ms * 0.001 * sr)).exp()
 }
 
+/// Release time and soft-clip depth for each character.
+fn character_curve(c: LimiterCharacter) -> (f64, f64) {
+    match c {
+        LimiterCharacter::Clean       => (50.0, 0.0),
+        LimiterCharacter::Transparent => (180.0, 0.0),
+        LimiterCharacter::Punchy      => (20.0, 0.25),
+        LimiterCharacter::Smooth      => (280.0, 0.0),
+        LimiterCharacter::Aggressive  => (8.0, 0.6),
+    }
+}
+
+/// Soft clip that leaves everything below `knee` of the ceiling untouched
+/// and rounds the rest, so it shaves peaks without dulling the body.
+#[inline]
+fn soft_clip(x: f64, ceiling: f64, amount: f64) -> f64 {
+    if amount <= 0.0 || ceiling <= 0.0 {
+        return x;
+    }
+    let knee = ceiling * (1.0 - 0.5 * amount);
+    let a = x.abs();
+    if a <= knee {
+        return x;
+    }
+    let over = (a - knee) / (ceiling - knee).max(1e-9);
+    let shaped = knee + (ceiling - knee) * over.tanh();
+    x.signum() * (a * (1.0 - amount) + shaped * amount)
+}
+
 impl Limiter {
     /// Construct from a sample rate + config.  Pre-allocates the delay
     /// lines for the maximum lookahead — no allocation in `process`.
@@ -53,7 +86,7 @@ impl Limiter {
             sr: sample_rate,
             cfg,
             ceiling_lin: Self::ceiling_lin(&cfg),
-            release_coeff: release_coeff(50.0, sample_rate),
+            release_coeff: release_coeff(character_curve(cfg.character).0, sample_rate),
             delay_l: vec![0.0; max_la + 1],
             delay_r: vec![0.0; max_la + 1],
             write: 0,
@@ -78,6 +111,7 @@ impl Limiter {
     pub fn set_config(&mut self, cfg: LimiterConfig) {
         self.cfg = cfg;
         self.ceiling_lin = Self::ceiling_lin(&cfg);
+        self.release_coeff = release_coeff(character_curve(cfg.character).0, self.sr);
         let max = self.delay_l.len().saturating_sub(1).max(1);
         self.lookahead = Self::lookahead_samples(cfg.lookahead_ms, self.sr, max);
     }
@@ -107,9 +141,15 @@ impl StereoModule for Limiter {
         let cap = self.delay_l.len();
         let n = left.len().min(right.len());
         let mut max_gr = 0.0_f64;
+        let drive = db_to_lin(self.cfg.drive_db.clamp(0.0, 24.0));
+        let (_, clip_amount) = character_curve(self.cfg.character);
+        let ceiling = self.ceiling_lin;
         for i in 0..n {
-            let in_l = left[i];
-            let in_r = right[i];
+            // Maximizer drive, then the character's soft clip — both ahead of
+            // the lookahead stage, so the limiter only has to catch what the
+            // clip did not already round off.
+            let in_l = soft_clip(left[i] as f64 * drive, ceiling, clip_amount) as f32;
+            let in_r = soft_clip(right[i] as f64 * drive, ceiling, clip_amount) as f32;
             // Push the incoming sample's peak into the ring.
             let peak_in = (in_l.abs().max(in_r.abs())) as f64;
             self.peak_ring[self.peak_write] = peak_in;
@@ -163,7 +203,7 @@ mod tests {
     use super::*;
 
     fn cfg(ceiling: f64) -> LimiterConfig {
-        LimiterConfig { ceiling_dbtp: ceiling, lookahead_ms: 1.0, isp: false, bypass: false }
+        LimiterConfig { ceiling_dbtp: ceiling, lookahead_ms: 1.0, isp: false, bypass: false, ..Default::default() }
     }
 
     #[test]

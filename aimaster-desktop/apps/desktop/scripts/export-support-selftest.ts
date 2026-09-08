@@ -83,12 +83,25 @@ check('no param is "approximate" today (honest — none auto-approximated)', () 
 });
 
 check('module-suite statuses are consistent with export support', () => {
-  // Modules with an export-exact core claim live; EQ/Dynamics claim preview-only.
+  // These read 'preview-only' for EQ and Dynamics while the only renderer
+  // was the Python engine, which takes five scalars and knows nothing about
+  // the rack — so a band the user drew really did stay in the preview.
+  //
+  // There is a second renderer now.  `renderSong` sends the whole chain
+  // config to the Rust `MasteringChain` on the export path, the same chain
+  // the preview plays, and `eq` and `dynamics` are stages that chain runs.
+  // What a user sets there now reaches the file, so 'live' is the true word
+  // and holding these at 'preview-only' would make the app understate
+  // itself.
+  //
+  // The caveat, stated because the status cannot: this holds on the studio
+  // path.  A song with no saved Studio work still falls through to the
+  // Python engine, and there the rack is still not rendered.
   eqStr(getModule('limiter')!.status, 'live', 'limiter live');
   eqStr(getModule('maximizer')!.status, 'live', 'maximizer live');
   eqStr(getModule('imager')!.status, 'live', 'imager live');
-  eqStr(getModule('eq')!.status, 'preview-only', 'eq preview-only');
-  eqStr(getModule('dynamics')!.status, 'preview-only', 'dynamics preview-only');
+  eqStr(getModule('eq')!.status, 'live', 'eq live — the Rust chain renders it on export');
+  eqStr(getModule('dynamics')!.status, 'live', 'dynamics live — the Rust chain renders it on export');
 });
 
 check('summarizeChangedExport buckets correctly', () => {

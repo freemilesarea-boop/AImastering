@@ -10,6 +10,7 @@
 import { LOUI_MODULES, getModule, CHAIN_MODULE_IDS, activeModules } from '../src/renderer/audio/modules/loui-module-suite.js';
 import { validateAllModules } from '../src/renderer/audio/modules/module-support-matrix.js';
 import { RENDERABLE_MAP_LOOKUP } from '../src/renderer/audio/engine-bridge/renderable-map.js';
+import { ALL_MODULE_PARAMETER_DEFS } from '../src/renderer/audio/parameters/module-parameter-definitions.js';
 
 interface T { name: string; pass: boolean; detail: string; }
 const results: T[] = [];
@@ -30,7 +31,13 @@ check('status honesty rules hold for every module', () => {
 });
 
 check('paramModuleId references a real param module', () => {
-  const valid = new Set(['eq', 'dynamics', 'imager', 'limiter', 'export']);
+  // Against the registry itself, not a copy of it.  This used to be a
+  // hand-written list of five ids; the suite grew to twenty-five and the
+  // list did not, so a module could point at a panel that existed and the
+  // test would still call it broken — and, worse, a module pointing at a
+  // panel that does NOT exist would have passed had its id been in the
+  // stale five.  The registry is the only thing that knows.
+  const valid = new Set(Object.keys(ALL_MODULE_PARAMETER_DEFS));
   for (const m of LOUI_MODULES) {
     if (m.paramModuleId) assert(valid.has(m.paramModuleId), `${m.id}: bad paramModuleId ${m.paramModuleId}`);
   }
@@ -65,8 +72,24 @@ check('chain modules map to the Rust signal flow order', () => {
   assert(CHAIN_MODULE_IDS.indexOf('dynamics') < CHAIN_MODULE_IDS.indexOf('imager'), 'dynamics before imager');
 });
 
-check('AI modules are preset-backed + honestly preview-only/planned', () => {
+check('an AI module claims only what something behind it can do', () => {
+  // The rule this replaces said an AI module may only ever be preview-only
+  // or planned.  That was true while every AI module was a preset facade
+  // with no DSP of its own, and it stopped being true the moment one was
+  // built on a real stage — at which point a category test would have
+  // forced an honest 'live' module to lie about itself.
+  //
+  // What actually needs guarding is unchanged: an AI badge must not promise
+  // processing that nothing performs.  So the question is backing, not
+  // category.  A preset facade carries presets and cannot claim export; a
+  // module that claims 'live' has to name a stage the chain really runs.
+  const chain = new Set<string>(CHAIN_MODULE_IDS as readonly string[]);
   for (const m of LOUI_MODULES.filter((x) => x.category === 'ai')) {
+    if (m.status === 'live') {
+      assert(!!m.paramModuleId, `${m.id}: 'live' AI module names no engine module`);
+      assert(chain.has(m.paramModuleId!), `${m.id}: 'live' but ${m.paramModuleId} is not a chain module`);
+      continue;
+    }
     if (m.status === 'preview-only') assert(m.presetBacked === true, `${m.id}: preview-only AI module must be preset-backed`);
     assert(m.status === 'preview-only' || m.status === 'planned', `${m.id}: AI module unexpected status ${m.status}`);
   }

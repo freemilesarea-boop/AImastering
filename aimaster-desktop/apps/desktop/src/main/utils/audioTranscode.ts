@@ -19,6 +19,12 @@ export interface TranscodeSpec {
   sampleRate?: number | undefined;
   bitDepth?: number | undefined;
   dither?: ExportDither | undefined;
+  /**
+   * Set when the render engine already dithered and quantised to this bit
+   * depth.  ffmpeg must then NOT dither again: two independent dither
+   * stages give you two noise floors and the benefit of neither.
+   */
+  sourceAlreadyDithered?: boolean | undefined;
 }
 
 export interface TranscodePlan {
@@ -83,7 +89,10 @@ export function buildTranscodePlan(spec: TranscodeSpec): TranscodePlan {
 
   // ── PCM / lossless (wav / aiff / flac) ──
   const depth = spec.bitDepth ?? 24;
-  const dm = ditherMethod(spec.dither);
+  // A source the engine already dithered is passed through untouched: the
+  // samples are exact multiples of the target LSB, so ffmpeg's rounding is
+  // an identity and adding its own dither would only re-randomise them.
+  const dm = spec.sourceAlreadyDithered ? null : ditherMethod(spec.dither);
 
   if (spec.format === 'flac') {
     // FLAC: integer only, max 24-bit.
@@ -110,7 +119,9 @@ export function needsTranscode(sourceExt: string, spec: TranscodeSpec): boolean 
   if (spec.format !== 'wav' || !srcIsWav) return true;
   if (typeof spec.sampleRate === 'number') return true;
   if (typeof spec.bitDepth === 'number') return true;
-  if (spec.dither && spec.dither !== 'none') return true;
+  // Dither alone forces a transcode — unless the engine already applied it,
+  // in which case there is nothing left for ffmpeg to do.
+  if (!spec.sourceAlreadyDithered && spec.dither && spec.dither !== 'none') return true;
   return false;
 }
 

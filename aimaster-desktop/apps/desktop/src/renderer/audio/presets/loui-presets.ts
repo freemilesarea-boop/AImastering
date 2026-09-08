@@ -314,6 +314,69 @@ const AI_SPECIAL: LouiPreset[] = [
     }),
   },
   {
+    id: 'ai-vocal-texture',
+    displayName: 'AI Vocal Texture',
+    category: 'ai-special',
+    description: 'Removes the watery, swirling sheen generative tools leave on vocal consonants — rebuilds the top end from a healthy midrange instead of boosting the damaged one, then tightens what is left.',
+    intendedPlatform: ['Spotify', 'Apple Music', 'YouTube', 'TikTok'],
+    loudnessProfile: 'streaming',
+    tonalBalance: 'neutral',
+    aiOptimized: true,
+    monoSafe: true,
+    recommendedGenres: ['AI Pop', 'AI Vocal', 'Suno', 'Cover'],
+    accent: ACCENT.green,
+    version: '1.0.0',
+    // The five moves that address the artefact, in the order they matter.
+    //
+    //   1. Top Rebuild does the actual repair — the damaged band leaves and
+    //      a replacement built from 4.5 kHz arrives in its place.  70 %
+    //      rather than 100 % because cymbals share that band and a full
+    //      replacement makes them sound synthetic.
+    //   2. Spectral Shaper catches the frame-to-frame swirl that survives,
+    //      above the rebuild's crossover.
+    //   3. De-esser at a modest range: generated sibilance is broader than
+    //      a real 's', so a little over a wide band beats a lot of a narrow
+    //      one.
+    //   4. The imager narrows the top only.  The artefact is partly a
+    //      phase smear, and pulling the top in is what makes the voice sit
+    //      in the centre again — the single most audible move here.
+    //   5. Impact restores the consonant attack the rebuild cannot: the
+    //      envelope is copied from a band that had its transients smeared.
+    //
+    // Loudness is left at streaming defaults: this preset fixes a texture,
+    // it does not decide how loud the record is.
+    tuning: tune({
+      'top-rebuild': {
+        bypass: false,
+        parameters: {
+          amountPct: 70, crossoverHz: 9000, sourceHz: 4500,
+          characterPct: 60, followMs: 12,
+        },
+      },
+      'spectral-shaper': {
+        bypass: false,
+        parameters: {
+          amountPct: 60, thresholdDb: 4.5, lowHz: 8000, highHz: 16000, blurBins: 12,
+        },
+      },
+      deess: {
+        bypass: false,
+        parameters: {
+          frequencyHz: 6500, rangeDb: 5, thresholdDb: -30, ratio: 4,
+          attackMs: 1, releaseMs: 60, wideband: false,
+        },
+      },
+      imager: { parameters: { widthPct: 100, lowMonoHz: 120, bandHighPct: 78, bandMidHighPct: 92 } },
+      impact: {
+        bypass: false,
+        parameters: { crossover1Hz: 120, crossover2Hz: 800, crossover3Hz: 5000, band2Pct: 18 },
+      },
+      eq: { parameters: { lowCutHz: 34, lowShelfDb: 0, presenceDb: -0.5, airDb: 0.6, outputGainDb: 0 } },
+      dynamics: { parameters: { thresholdDb: -14, ratio: 2.0, attackMs: 12, releaseMs: 140, mixPct: 100 } },
+      limiter: { parameters: { targetLufs: -14, ceilingDbtp: -1.0, lookaheadMs: 3.0, character: 'glue' } },
+    }),
+  },
+  {
     id: 'cymbal-smooth',
     displayName: 'Cymbal Smooth',
     category: 'ai-special',

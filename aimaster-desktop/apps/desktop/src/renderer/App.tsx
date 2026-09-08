@@ -15,6 +15,7 @@ import { isAccountAuthEnabled, isEntitlementGateEnabled } from './audio/account-
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
+import StudioPage   from './pages/StudioPage.js';
 import QCPage       from './pages/QCPage.js';
 import DawPage      from './pages/DawPage.js';
 import SettingsPage from './pages/SettingsPage.js';
@@ -388,9 +389,9 @@ function AppInner() {
       console.warn('[AppInner] page=tweak with no selectedFile — redirecting to home');
       setPage('home');
     }
-    // Mobile policy: never enter the Pro fine-tuning page.  Bounce tweak to
-    // the result (if a master exists) or home.
-    if (isMobile && page === 'tweak') {
+    // Mobile policy: never enter the Pro fine-tuning pages.  Bounce tweak
+    // and the Studio rack to the result (if a master exists) or home.
+    if (isMobile && (page === 'tweak' || page === 'studio')) {
       setPage(selectedFile && masteringResult?.outputPath ? 'result' : 'home');
     }
   }, [page, selectedFile, masteringResult, setPage, isMobile]);
@@ -420,11 +421,17 @@ function AppInner() {
   // On mobile the Pro fine-tuning page is never shown (guard above redirects).
   const tweakSlot = isMobile ? homeEl : (Boolean(selectedFile) ? <TweakPage /> : homeEl);
 
+  // studio: the full module rack.  Unlike tweak it does NOT require a file —
+  // the rack is a chain editor, and building a chain before picking a track
+  // is a normal way to work.  Mobile never reaches it (guard above).
+  const studioSlot = isMobile ? homeEl : <StudioPage />;
+
   const pages: Record<string, React.ReactNode> = {
     home:      homeEl,
     mastering: <MasteringPage />,
     result:    resultSlot,
     tweak:     tweakSlot,
+    studio:    studioSlot,
     qc:        <QCPage />,
     // Pro Tools-shaped multitrack workspace (Edit + Mix windows).
     daw:       isMobile ? homeEl : <DawPage />,

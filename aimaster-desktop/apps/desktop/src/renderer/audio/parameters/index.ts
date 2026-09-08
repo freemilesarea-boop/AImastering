@@ -32,6 +32,11 @@ export {
 } from './parameter-state.js';
 
 export { ALL_MODULE_PARAMETER_DEFS } from './module-parameter-definitions.js';
+export {
+  SUITE_PARAMETER_DEFS,
+  DYN_EQ_BAND_COUNT,
+  MULTIBAND_BAND_COUNT,
+} from './suite-parameter-definitions.js';
 
 export type {
   EngineCommand,

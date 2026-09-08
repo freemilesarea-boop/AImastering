@@ -35,6 +35,7 @@
 pub mod analyzer;
 pub mod biquad;
 pub mod buffer;
+pub mod crossover;
 pub mod fft;
 pub mod k_weighting;
 pub mod lufs;
@@ -43,6 +44,7 @@ pub mod oversample;
 pub mod peak_rms;
 pub mod spectrum;
 pub mod stereo;
+pub mod stft;
 pub mod true_peak;
 pub mod window;
 

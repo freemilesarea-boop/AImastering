@@ -33,7 +33,49 @@
 /* global registerProcessor, AudioWorkletProcessor, sampleRate, currentTime */
 /* eslint-disable */
 
-const METRIC_INTERVAL = 64; // post metrics every N blocks
+// Metrics are posted on a WALL-CLOCK throttle, not a block count.
+//
+// This used to be "every 64 blocks", which is ~6 Hz at 128-sample quanta —
+// fine, until an error path called _postMetrics() directly and the rate
+// became per-block.  A host that turns each message into a React state
+// update then re-renders at audio rate, and the previous integration's
+// re-render re-attached this worklet, which produced more messages: the
+// runaway that got realtime preview disabled in the first place.
+//
+// A hard ceiling here means no host can be driven faster than this,
+// whatever it does with the messages.
+const METRIC_MIN_INTERVAL_S = 0.1;   // ≤ 10 Hz
+
+/** Log bands the noise profile is folded into before it crosses the port. */
+const PROFILE_BANDS = 48;
+const PROFILE_MIN_HZ = 20;
+const PROFILE_MAX_HZ = 20000;
+
+/**
+ * Fold a linear FFT magnitude array (dB) onto a log-frequency grid, taking
+ * the MAXIMUM in each band.
+ *
+ * Maximum rather than mean on purpose: a noise floor display exists to show
+ * what the de-noiser will treat as noise, and averaging a narrow hum spike
+ * with its quiet neighbours hides exactly the thing you are looking for.
+ */
+function foldToLogBands(binsDb, sr) {
+  const out = new Array(PROFILE_BANDS).fill(-140);
+  const n = binsDb.length;
+  if (n < 2) return out;
+  const binHz = (sr / 2) / (n - 1);
+  const ratio = Math.log(PROFILE_MAX_HZ / PROFILE_MIN_HZ);
+  for (let i = 1; i < n; i++) {
+    const hz = i * binHz;
+    if (hz < PROFILE_MIN_HZ || hz > PROFILE_MAX_HZ) continue;
+    let b = Math.floor((Math.log(hz / PROFILE_MIN_HZ) / ratio) * PROFILE_BANDS);
+    if (b < 0) b = 0;
+    if (b >= PROFILE_BANDS) b = PROFILE_BANDS - 1;
+    const v = binsDb[i];
+    if (typeof v === 'number' && v > out[b]) out[b] = v;
+  }
+  return out;
+}
 
 class MasteringChainProcessor extends AudioWorkletProcessor {
   constructor(options) {
@@ -41,6 +83,8 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
     this._ready = false;
     this._chain = null;
     this._bypass = true;          // safe default until configured
+    this._pendingConfigJson = null;
+    this._lastMetricT = 0;
     this._pendingConfig = null;
 
     // Metrics state.
@@ -76,7 +120,14 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       if (!msg) return;
       if (msg.type === 'config') {
         this._pendingConfig = msg.config;
+        this._pendingConfigJson = null;
         this._bypass = !!msg.config && msg.config.masterBypass === true;
+      } else if (msg.type === 'configJson') {
+        // Full module suite.  Sent as a string so the audio thread never has
+        // to walk an object graph — the chain parses it in Rust.
+        this._pendingConfigJson = msg.json;
+        this._pendingConfig = null;
+        this._bypass = !!msg.masterBypass;
       } else if (msg.type === 'bypass') {
         this._bypass = !!msg.bypass;
       } else if (msg.type === 'reset') {
@@ -86,7 +137,26 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
   }
 
   _applyPendingConfig() {
-    if (!this._ready || !this._chain || !this._pendingConfig) return;
+    if (!this._ready || !this._chain) return;
+
+    // JSON path first — it is the only one that can address every module.
+    if (this._pendingConfigJson) {
+      const json = this._pendingConfigJson;
+      this._pendingConfigJson = null;
+      try {
+        if (typeof this._chain.setConfigJson === 'function') {
+          this._chain.setConfigJson(json);
+        }
+        // On an older WASM build without the JSON path we keep the previous
+        // config rather than pretending the new one took effect.
+      } catch (e) {
+        // A bad config must never crash the audio thread → drop to bypass.
+        this._bypass = true;
+      }
+      return;
+    }
+
+    if (!this._pendingConfig) return;
     const c = this._pendingConfig;
     this._pendingConfig = null;
     try {
@@ -170,7 +240,7 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
           if (inCh && output[c]) output[c].set(inCh);
         }
         this._bypass = true;
-        this._postMetrics();
+        this._postMetrics(true);
         return true;
       }
       const dtMs = (currentTime - t0) * 1000;
@@ -179,28 +249,95 @@ class MasteringChainProcessor extends AudioWorkletProcessor {
       if (dtMs > this._blockPeriodMs) this._xruns++;
     }
 
-    // Post telemetry every window REGARDLESS of passthrough, so the panel
-    // sees process activity even before/without the chain processing.
+    // Post telemetry REGARDLESS of passthrough, so the panel sees process
+    // activity even before/without the chain processing — but never faster
+    // than the wall-clock ceiling.
     this._blockCount++;
-    if (this._blockCount >= METRIC_INTERVAL) this._postMetrics();
+    this._postMetrics();
 
     return true;
   }
 
-  _postMetrics() {
-    if (this._blockCount === 0) return;
+  /**
+   * Post telemetry, rate-limited to METRIC_MIN_INTERVAL_S.
+   *
+   * `force` is honoured only for the interval check being *due*; it never
+   * bypasses the ceiling, because the failure mode this guards against is
+   * precisely an error path firing every block.
+   */
+  _postMetrics(force) {
+    if (this._blockCount === 0 && !force) return;
+    if (currentTime - this._lastMetricT < METRIC_MIN_INTERVAL_S) return;
+    this._lastMetricT = currentTime;
+
+    // Chain readouts are optional: an older WASM build may not have them,
+    // and a missing meter must never take the audio thread down.
+    let latency = 0, monitorActive = false;
+    let loudnessDeltaDb = 0, matchGainDb = 0, dryLufs = -Infinity, wetLufs = -Infinity;
+    // Per-band gain reduction, for the dynamics meters.  Sampled HERE and
+    // not per block on purpose: `multibandGrDb()` returns a fresh array
+    // across the WASM boundary, which is an allocation, and this function
+    // is the one place on the audio thread that is already rate-limited to
+    // ten calls a second.
+    let multibandGrDb = null, deessGrDb = 0, dehumDepthDb = 0;
+    let dynamicEqGainsDb = null, impactMoveDb = 0, lowEndFocusMoveDb = 0;
+    // Curves for the restoration displays.  Same reasoning as the band GR:
+    // these cross the WASM boundary as fresh arrays, so they are read here
+    // and nowhere else on the audio thread.
+    let tonalCurveDb = null, denoiseProfileDb = null;
+    try {
+      const c = this._chain;
+      if (c) {
+        if (c.latencySamples) latency = c.latencySamples();
+        if (c.monitoringActive) monitorActive = c.monitoringActive();
+        if (c.monitorLoudnessDeltaDb) loudnessDeltaDb = c.monitorLoudnessDeltaDb();
+        if (c.monitorMatchGainDb) matchGainDb = c.monitorMatchGainDb();
+        if (c.monitorDryLufs) dryLufs = c.monitorDryLufs();
+        if (c.monitorWetLufs) wetLufs = c.monitorWetLufs();
+        if (c.multibandGrDb) multibandGrDb = Array.from(c.multibandGrDb());
+        if (c.deessGrDb) deessGrDb = c.deessGrDb();
+        if (c.dehumDepthDb) dehumDepthDb = c.dehumDepthDb();
+        if (c.dynamicEqGainsDb) dynamicEqGainsDb = Array.from(c.dynamicEqGainsDb());
+        if (c.impactMoveDb) impactMoveDb = c.impactMoveDb();
+        if (c.lowEndFocusMoveDb) lowEndFocusMoveDb = c.lowEndFocusMoveDb();
+        if (c.tonalCurveDb) tonalCurveDb = Array.from(c.tonalCurveDb());
+        if (c.denoiseProfileDb) {
+          // 1025 FFT bins is far more than a 700 px display can show, and
+          // ten times a second it is real traffic.  Fold to log bands here
+          // — the display would do it anyway, and this way the message is
+          // fifty numbers instead of a thousand.
+          denoiseProfileDb = foldToLogBands(c.denoiseProfileDb(), sampleRate);
+        }
+      }
+    } catch (e) { /* readouts are diagnostics; never fatal */ }
+
     this.port.postMessage({
       type: 'metrics',
-      avgProcessMs: this._sumMs / this._blockCount,
+      avgProcessMs: this._blockCount > 0 ? this._sumMs / this._blockCount : 0,
       peakProcessMs: this._peakMs,
       blockPeriodMs: this._blockPeriodMs,
       xruns: this._xruns,
       limiterGrDb: this._grDb,
       dynamicsGrDb: this._dynGrDb,
+      multibandGrDb,
+      deessGrDb,
+      dehumDepthDb,
+      dynamicEqGainsDb,
+      impactMoveDb,
+      lowEndFocusMoveDb,
+      tonalCurveDb,
+      denoiseProfileDb,
       safetyEvents: this._safetyEvents,
       processCalls: this._processCalls,
       audioBlocks: this._audioBlocks,
       nonSilentBlocks: this._nonSilentBlocks,
+      bypass: this._bypass,
+      latencySamples: latency,
+      monitorActive,
+      loudnessDeltaDb,
+      matchGainDb,
+      dryLufs,
+      wetLufs,
     });
     this._sumMs = 0; this._peakMs = 0; this._xruns = 0; this._blockCount = 0;
   }
