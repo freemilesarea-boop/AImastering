@@ -1,4 +1,4 @@
-name: Build Louver Mastering AI
+name: Build LV DAW
 
 on:
   push:
@@ -135,7 +135,7 @@ jobs:
       - name: Upload Linux artifacts (AppImage + deb)
         uses: actions/upload-artifact@v4
         with:
-          name: Louver-Mastering-AI-linux
+          name: LV-DAW-linux
           path: |
             aimaster-desktop/apps/desktop/out/*.AppImage
             aimaster-desktop/apps/desktop/out/*.deb
@@ -361,14 +361,20 @@ jobs:
           APP="$(find out -maxdepth 2 -name '*.app' -type d | head -1)"
           if [[ -z "$APP" ]]; then echo "FAIL: no .app found under out/"; exit 1; fi
           echo "Inspecting packaged app: $APP"
+          # The main executable is named after productName, so hardcoding it
+          # means every rename silently breaks this gate — and it is a HARD
+          # gate, so it fails the build rather than skipping.  Ask the bundle.
+          MAIN="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f | head -1)"
+          if [[ -z "$MAIN" ]]; then echo "FAIL: no executable in $APP/Contents/MacOS"; exit 1; fi
+          echo "Main executable: $MAIN"
           bash "$GITHUB_WORKSPACE/scripts/verify-macos-binary-arch.sh" ${{ matrix.arch }} \
             "$APP/Contents/Resources/bin" \
-            "$APP/Contents/MacOS/Louver Mastering AI"
+            "$MAIN"
 
       - name: Upload Mac artifacts (${{ matrix.arch }})
         uses: actions/upload-artifact@v4
         with:
-          name: Louver-Mastering-AI-mac-${{ matrix.arch }}
+          name: LV-DAW-mac-${{ matrix.arch }}
           path: |
             aimaster-desktop/apps/desktop/out/*.dmg
             aimaster-desktop/apps/desktop/out/*.zip
@@ -617,7 +623,7 @@ jobs:
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Louver-Mastering-AI-windows
+          name: LV-DAW-windows
           # Junction is transparent — files written under D:\w\... are also
           # visible under $GITHUB_WORKSPACE\... so the relative path works.
           path: |
@@ -650,24 +656,24 @@ jobs:
       - name: Download Linux AppImage
         uses: actions/download-artifact@v4
         with:
-          name: Louver-Mastering-AI-linux
+          name: LV-DAW-linux
           path: artifacts/linux
 
       - name: Download macOS artifacts (arm64 + x64)
         uses: actions/download-artifact@v4
         with:
           # v3.6.1 packaging hotfix — mac is now built as two per-arch jobs, so
-          # merge both artifacts (Louver-Mastering-AI-mac-x64 / -arm64) into one
+          # merge both artifacts (LV-DAW-mac-x64 / -arm64) into one
           # dir.  merge-multiple flattens them; the release `files:` globs pick
           # up every .dmg / .zip regardless of which arch job produced it.
-          pattern: Louver-Mastering-AI-mac-*
+          pattern: LV-DAW-mac-*
           path: artifacts/mac
           merge-multiple: true
 
       - name: Download Windows NSIS installer
         uses: actions/download-artifact@v4
         with:
-          name: Louver-Mastering-AI-windows
+          name: LV-DAW-windows
           path: artifacts/win
 
       - name: Inspect downloaded artifacts
@@ -688,18 +694,27 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create GitHub Release (draft + prerelease)
+      - name: Create GitHub Release (published prerelease)
         uses: softprops/action-gh-release@v2
         with:
           tag_name:               ${{ steps.resolve_tag.outputs.tag }}
-          name:                   ${{ steps.resolve_tag.outputs.tag }}
-          # v3.6.0-rc.1 — body_path uses the current major.minor's release
-          # notes.  When bumping versions, copy/update RELEASE_DRAFT_v<NEW>.md
-          # and change this line to match the new tag.
-          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.6.0.md
-          draft:                  true
-          # RC builds are pre-releases.  Flip to false once v3.6.0 final
-          # is signed off (and bump body_path / tag accordingly).
+          name:                   LV DAW ${{ steps.resolve_tag.outputs.tag }}
+          # body_path uses the current version's release notes.  When bumping
+          # versions, copy/update RELEASE_DRAFT_v<NEW>.md and change this line.
+          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.6.1.md
+          # PUBLISHED, not a draft.  A draft's assets cannot be downloaded
+          # without signing in and cannot be linked to, which defeats the
+          # point of building four platforms for people to test.
+          #
+          # Use the workflow_dispatch path (Run workflow + release_tag) for
+          # this.  On a TAG push the publish flag becomes 'always' and
+          # electron-builder also publishes to the same tag as a DRAFT
+          # (electron-builder.yml `releaseType: draft`), so two jobs would
+          # be writing one release in different states.
+          draft:                  false
+          # Still a prerelease: unsigned on macOS, and the mac/Windows
+          # binaries have not been launch-tested.  Saying otherwise would
+          # oversell it.
           prerelease:             true
           fail_on_unmatched_files: true
           # workflow_dispatch 트리거 시 tag 가 아직 없으면 softprops 가

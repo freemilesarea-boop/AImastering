@@ -27,6 +27,8 @@
 // therefore appended by the pipeline, and only the human-authored fields are
 // free text.
 
+import { APP_NAME } from '@aimaster/shared-types';
+
 /** What a machine did. */
 export type AiKind =
   | 'mastering'      // the loudness / tonal chain
@@ -173,7 +175,7 @@ export function infoTags(p: Provenance, appVersion: string, at = new Date()): [s
   if (p.artist.trim()) tags.push(['IART', p.artist.trim()]);
   if (p.copyright.trim()) tags.push(['ICOP', p.copyright.trim()]);
   tags.push(['ICRD', (p.year ?? at.getFullYear()).toString()]);
-  tags.push(['ISFT', `Louver Mastering AI ${appVersion}`]);
+  tags.push(['ISFT', `${APP_NAME} ${appVersion}`]);
   tags.push(['ICMT', describeProvenance(p)]);
   return tags;
 }
@@ -190,7 +192,7 @@ export function codingHistory(p: Provenance, appVersion: string): string {
   for (const s of p.derivedFrom) {
     lines.push(`A=ANALOGUE,T=원곡: ${s.title} / ${s.artist} — ${BASIS_LABELS[s.basis]}`);
   }
-  lines.push(`A=PCM,T=Louver Mastering AI ${appVersion}`);
+  lines.push(`A=PCM,T=${APP_NAME} ${appVersion}`);
   return lines.join('\r\n') + '\r\n';
 }
 
@@ -199,7 +201,7 @@ export function provenanceJson(p: Provenance, appVersion: string, at = new Date(
   return JSON.stringify({
     schema: 'loui.provenance/1',
     writtenAt: at.toISOString(),
-    writtenBy: `Louver Mastering AI ${appVersion}`,
+    writtenBy: `${APP_NAME} ${appVersion}`,
     title: p.title,
     artist: p.artist,
     year: p.year,

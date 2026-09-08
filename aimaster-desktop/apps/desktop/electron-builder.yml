@@ -1,5 +1,5 @@
 appId: com.louver.mastering
-productName: Louver Mastering AI
+productName: LV DAW
 copyright: Copyright © 2025 루베르
 
 # Pin electron version explicitly so electron-builder doesn't fall back to
@@ -179,10 +179,10 @@ linux:
     - audio/mpeg
     - audio/mp4
   desktop:
-    Name: Louver Mastering AI
-    Comment: AI-powered audio mastering
+    Name: LV DAW
+    Comment: Multitrack DAW with AI mastering
     Categories: Audio;AudioVideo;Music;
-    Keywords: mastering;audio;music;louver;
+    Keywords: daw;multitrack;mastering;audio;music;lv;
   target:
     - target: AppImage
       arch:

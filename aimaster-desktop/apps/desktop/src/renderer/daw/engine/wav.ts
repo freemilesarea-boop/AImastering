@@ -11,6 +11,7 @@
 // and buzz instead of fading.  `dither: 'none'` reproduces the old bytes
 // exactly, for anyone who wants to hear the difference.
 
+import { APP_NAME } from '@aimaster/shared-types';
 import {
   createQuantizer, defaultDither, type DitherMode, type QuantBitDepth,
 } from '../audio/dither.js';
@@ -100,7 +101,7 @@ function bextChunk(p: Provenance, appVersion: string, at: Date, meta: WavMetadat
 
   body.set(fixed(describeForBext(p), 256), 0);
   body.set(fixed(`${p.artist || 'unknown'}`, 32), 256);
-  body.set(fixed(`Louver Mastering AI ${appVersion}`, 32), 288);
+  body.set(fixed(`${APP_NAME} ${appVersion}`, 32), 288);
   body.set(fixed(
     `${at.getFullYear()}-${pad2(at.getMonth() + 1)}-${pad2(at.getDate())}`, 10), 320);
   body.set(fixed(

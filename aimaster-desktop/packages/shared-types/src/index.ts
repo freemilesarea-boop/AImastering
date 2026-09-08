@@ -965,3 +965,19 @@ export const MIDI_IMPORT_EXTENSIONS: readonly string[] = ['mid', 'midi', 'smf'];
  * nothing to import.
  */
 export const LICENSE_ENFORCED = false;
+
+/**
+ * The product's name, in one place.
+ *
+ * It was in seven: the builder config, the package description, the window
+ * title, the wordmark, and three different metadata writers that stamp it
+ * into every exported file.  A rename that misses one of those ships a build
+ * whose window says one thing and whose files say another — and the file is
+ * the half that outlives the app and gets sent to a distributor.
+ *
+ * The two that cannot import this (electron-builder.yml and package.json are
+ * not TypeScript) are checked against it by `pnpm test:app-name`, so they
+ * cannot drift either.
+ */
+export const APP_NAME = 'LV DAW';
+

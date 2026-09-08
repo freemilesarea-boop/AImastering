@@ -6,6 +6,7 @@ import SupportBundleButton from './SupportBundleButton.js';
 import { detectPlatform } from '../shortcuts/keys.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
+import { APP_NAME } from '@aimaster/shared-types';
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ export default function TopBar({ subtitle, actions }: TopBarProps) {
          style={{ paddingLeft: isMac ? 82 : 16 }}>
       {/* App wordmark — left side of drag region */}
       <span className="font-semibold text-[12px] tracking-wide text-zinc-300 select-none">
-        Louver Mastering AI
+        {APP_NAME}
       </span>
 
       {subtitle && (

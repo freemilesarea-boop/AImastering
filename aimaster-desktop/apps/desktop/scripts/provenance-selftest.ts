@@ -12,6 +12,7 @@
 
 import { encodeWav, readWavProvenance, stampWav } from '../src/renderer/daw/engine/wav.js';
 import { PROVENANCE_FIELD, id3TagLength, stampMp3 } from '../src/renderer/daw/engine/id3.js';
+import { APP_NAME } from '@aimaster/shared-types';
 import {
   BASIS_LABELS, describeProvenance, emptyProvenance, isDerivative, provenanceProblem,
   usedAi, withAiStep, withHumanWork, withSource, type Provenance,
@@ -137,7 +138,7 @@ check('the tags every player reads carry the title, artist and comment', () => {
   assert(tags.get('IART') === 'theblank', `IART: ${tags.get('IART')}`);
   assert(tags.get('ICOP') === '© 2026 theblank', `ICOP: ${tags.get('ICOP')}`);
   assert(tags.get('ICRD') === '2026', `ICRD: ${tags.get('ICRD')}`);
-  assert((tags.get('ISFT') ?? '').includes('Louver Mastering AI'), 'ISFT names the app');
+  assert((tags.get('ISFT') ?? '').includes(APP_NAME), 'ISFT names the app');
 });
 
 check('Korean and the © sign survive the round trip', () => {
@@ -184,7 +185,7 @@ check('bext is exactly the size the standard says, with room for history', () =>
   const view = new DataView(bext!.body.buffer, bext!.body.byteOffset, bext!.body.byteLength);
   assert(view.getUint16(346, true) === 2, 'declares bext version 2');
   const history = new TextDecoder().decode(bext!.body.subarray(602));
-  assert(history.includes('Louver Mastering AI'), 'the history names the app');
+  assert(history.includes(APP_NAME), 'the history names the app');
   assert(history.includes('원곡'), 'and the source work');
   assert(history.split('\r\n').length > 2, 'as CRLF lines, which is the format');
 });
@@ -387,7 +388,7 @@ check('the preview carries the same record, as ID3', () => {
   assert(textOf(by('TIT2')!) === 'You Make Me Wanna (Loui Remix)', 'title');
   assert(textOf(by('TPE1')!) === 'theblank', 'artist');
   assert(textOf(by('TCOP')!).includes('©'), 'copyright, © intact');
-  assert(textOf(by('TSSE')!).includes('Louver Mastering AI'), 'the app');
+  assert(textOf(by('TSSE')!).includes(APP_NAME), 'the app');
   assert(by('COMM')!.body[0] === 3, 'the comment declares UTF-8 too');
   const comment = new TextDecoder().decode(by('COMM')!.body.subarray(5));
   assert(comment.includes('편곡·믹스'), 'the Korean survives');
