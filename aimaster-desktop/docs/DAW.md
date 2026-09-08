@@ -992,6 +992,40 @@ Diffusion 은 반사면이 몇 개냐입니다. 야외 무대는 몇 개뿐이�
 | Shimmer | 4 |
 | Reverb (구형) | 3 |
 | Compressor · Limiter · Delay | 5 |
+| **모든 장치 (악기)** | **7** — 아래 참조 |
+| **모든 장치 (장르)** | **10** |
+
+### 두 개의 축 — 악기와 장르
+
+모든 장치 위에 칩이 **두 줄** 있습니다.
+
+| 줄 | 묻는 것 | 개수 |
+| --- | --- | --- |
+| **악기** | 이 트랙에 실제로 뭐가 들어 있나 | 7 |
+| **장르** | 이 곡이 어떤 레코드가 돼야 하나 | 10 |
+
+**둘은 서로를 대신하지 않습니다.** 베이스가 저중역에서 너무 부풀어 있다는 건
+베이스에 대한 사실이고, 곡이 재즈든 EDM이든 같은 사실입니다. 반대로 −8 LUFS로
+간다는 건 레코드에 대한 결정이지 트랙에 뭐가 있는지와 무관합니다.
+
+악기 줄이 위에 있습니다 — 트랙에 뭐가 있는지는 그걸 뭘로 만들고 싶은지보다
+먼저 알게 되니까요.
+
+**7종:** 드럼 루프 · 베이스 · 일렉 기타 · 어쿠스틱 기타 · 피아노 · 스트링 · 신스.
+36개 장치 × 7 = **252개**.
+
+> **통기타 = 어쿠스틱 기타**입니다. 같은 악기라 하나로 뒀습니다. 그리고 일렉과
+> 어쿠스틱이 따로 있으면 총칭 "기타"는 셋 다 거의 같은 프리셋이 되는데, 그건
+> 이 레포가 계속 지워온 것이고 `test:instrument-presets` 가 실제로 거부합니다.
+
+각 악기가 뭔지는 주파수와 시간으로 `plugin-presets-instrument.ts` 헤더에 적어
+놨습니다 — 반박할 수 있게. "통기타 몸통 울림은 200 Hz가 아니라 120 Hz다"는
+취향이 아니라 표에 적힌 숫자에 대한 주장입니다.
+
+**악기 프리셋이 없는 장치 5개**와 그 이유도 소스에 적혀 있습니다: `dcblock`
+(파라미터 없음), `phase`(배선), `trim`(게인 하나), `dither`(파일에 대한 것),
+`loudness`(**LUFS 목표는 곡의 사실입니다 — 베이스 트랙에는 목표 라우드니스가
+없습니다**). 없는 걸 채우려고 숫자를 지어내지 않았습니다.
 
 ### 내 프리셋 — 귀로 찾은 걸 남기는 곳
 
@@ -2158,6 +2192,7 @@ pnpm --filter @aimaster/desktop test:shortcuts    # 키보드 레이어 (34)
 pnpm --filter @aimaster/desktop test:plugin-scan  # 서드파티 스캔 (16)
 pnpm --filter @aimaster/desktop test:plugin-host  # 호스트 프로세스 + 오프라인 적용 (22)
 pnpm --filter @aimaster/desktop test:reverb       # 공간 · 리버브 · 프리셋 (41)
+pnpm --filter @aimaster/desktop test:instrument-presets   # 악기 프리셋 252개 (19)
 pnpm --filter @aimaster/desktop test:automation   # 레인 · 모드 · 제스처 (22)
 pnpm --filter @aimaster/desktop test:tempo        # 비트 · 마디 · 램프 (27)
 pnpm --filter @aimaster/desktop test:advice       # AI 추천 — 측정과 근거 (25)

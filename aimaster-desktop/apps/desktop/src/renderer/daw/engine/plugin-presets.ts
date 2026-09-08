@@ -32,6 +32,10 @@ import { spaceIndex } from './reverb-spaces.js';
 // by source, and it is ten times as long as this one.  Same shape, appended so
 // every device's menu shows both.
 import { GENRE_PRESETS } from './plugin-presets-genre.js';
+// The instrument set is the other axis: the genre set answers "what should the
+// RECORD sound like", this one answers "what is actually on this track".  Both
+// are on every device because neither answers the other.
+import { INSTRUMENT_PRESETS } from './plugin-presets-instrument.js';
 
 const S = spaceIndex;
 
@@ -299,7 +303,9 @@ const SOURCE_PRESETS: readonly PluginPreset[] = [
   },
 ];
 
-export const PLUGIN_PRESETS: readonly PluginPreset[] = [...SOURCE_PRESETS, ...GENRE_PRESETS];
+export const PLUGIN_PRESETS: readonly PluginPreset[] = [
+  ...SOURCE_PRESETS, ...INSTRUMENT_PRESETS, ...GENRE_PRESETS,
+];
 
 /** Presets for one device, in the order they are listed. */
 export function presetsFor(pluginId: string): PluginPreset[] {

@@ -35,6 +35,7 @@ import {
 import { liveAuxFor, makeRegionLive } from '../../../daw/edit/region-live.js';
 import { presetsFor, resolvePreset } from '../../../daw/engine/plugin-presets.js';
 import { partitionGenre } from '../../../daw/engine/plugin-presets-genre.js';
+import { partitionInstrument } from '../../../daw/engine/plugin-presets-instrument.js';
 import { premium } from '../../../theme/premium.js';
 import Knob from '../plugin/Knob.js';
 import type { Clip, Insert, TailMode, Track } from '../../../daw/model/types.js';
@@ -300,9 +301,12 @@ export default function RegionLab() {
   const cuttingARing = tailMode === 'cut' && tailSec >= RINGING_SEC;
   const active = chain.find((i) => i.slot === activeSlot) ?? null;
   const descriptor = active ? findPlugin(active.pluginId) : null;
-  const genreChips = active
-    ? partitionGenre(groupsFor(active.pluginId)).genre
-    : [];
+  // The same two closed sets the plugin window draws, in the same order —
+  // a preset row that exists in one window and not the other is the kind of
+  // gap people learn to distrust the whole feature for.
+  const groupsHere = active ? groupsFor(active.pluginId) : [];
+  const genreChips = active ? partitionGenre(groupsHere).genre : [];
+  const instrumentChips = active ? partitionInstrument(groupsHere).instrument : [];
 
   return (
     <div
@@ -416,7 +420,7 @@ export default function RegionLab() {
                 {descriptor.name}
               </div>
               <div className="flex flex-wrap gap-1 mb-2">
-                {genreChips.map((preset) => (
+                {[...instrumentChips, ...genreChips].map((preset) => (
                   <button
                     key={preset.id}
                     onClick={() => loadPreset(active.slot, preset.id)}

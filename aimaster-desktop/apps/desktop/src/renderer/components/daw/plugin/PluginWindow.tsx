@@ -15,7 +15,9 @@ import { findTrack, setInsert } from '../../../daw/model/session-ops.js';
 import { descriptorFor } from '../../../daw/engine/external-device.js';
 import { defaultParams } from '../../../daw/engine/plugins.js';
 import { resolvePreset } from '../../../daw/engine/plugin-presets.js';
+import type { PluginPreset } from '../../../daw/engine/plugin-presets.js';
 import { partitionGenre } from '../../../daw/engine/plugin-presets-genre.js';
+import { partitionInstrument } from '../../../daw/engine/plugin-presets-instrument.js';
 import {
   allPresetGroups, canSaveUserPreset, deleteUserPreset, exportUserPresets,
   importUserPresets, isUserPresetId, overwriteUserPreset, saveUserPreset, describeImport,
@@ -32,6 +34,48 @@ import PluginVisual from './PluginVisual.js';
 import EqCurveEditor from './EqCurveEditor.js';
 import { eqNodes, type NodeEdit, type ParamRange } from '../../../daw/model/eq-nodes.js';
 import { wantsSquareVisual } from '../../../daw/model/plugin-shapes.js';
+
+/**
+ * A row of preset chips for one closed set.
+ *
+ * Both the instrument row and the genre row are the same control with a
+ * different label, and they were the same twenty-five lines twice before this
+ * existed — which is how one of them ends up with the hover note and the
+ * other without it.
+ */
+function ChipRow({ label, presets, loadedPreset, onPick }: {
+  label: string;
+  presets: readonly PluginPreset[];
+  loadedPreset: string | null;
+  onPick: (id: string) => void;
+}): React.ReactElement | null {
+  if (presets.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[9px] tracking-wide shrink-0 pt-0.5"
+            style={{ color: premium.text.faint }}>{label}</span>
+      <div className="flex flex-wrap gap-1">
+        {presets.map((preset) => {
+          const on = preset.id === loadedPreset;
+          return (
+            <button
+              key={preset.id}
+              onClick={() => onPick(preset.id)}
+              title={preset.note}
+              className="h-[18px] px-1.5 rounded text-[9px] leading-none
+                         transition-colors shrink-0"
+              style={{
+                border: `1px solid ${on ? premium.accent.deep : 'rgba(255,255,255,0.12)'}`,
+                background: on ? 'rgba(198,167,104,0.14)' : 'transparent',
+                color: on ? premium.accent.base : premium.text.muted,
+              }}
+            >{preset.name}</button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const VISUAL_WIDTH = 300;
 const VISUAL_HEIGHT = 132;
@@ -279,7 +323,11 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   const groups = allPresetGroups(insert.pluginId);
   // The ten genres get their own row of chips; everything else stays in the
   // dropdown.  See `partitionGenre` for why they are not the same control.
-  const { genre: genrePresets, rest: menuGroups } = partitionGenre(groups);
+  // Two closed sets, two rows.  The instrument answers "what is on this
+  // track" and the genre answers "what should the record sound like";
+  // neither answers the other, so neither replaces the other.
+  const { genre: genrePresets, rest: afterGenre } = partitionGenre(groups);
+  const { instrument: instrumentPresets, rest: menuGroups } = partitionInstrument(afterGenre);
   const loadPreset = (presetId: string): void => {
     const preset = groups.flatMap((g) => g.presets).find((entry) => entry.id === presetId);
     if (!preset) return;
@@ -488,31 +536,14 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             Every device has the same ten in the same order, so the row becomes
             a place on the window rather than a menu to search — after a few
             sessions you reach for 힙합 without looking. */}
-        {genrePresets.length > 0 && (
-          <div className="flex items-center gap-1.5">
-            <span className="text-[9px] tracking-wide shrink-0 pt-0.5"
-                  style={{ color: premium.text.faint }}>장르</span>
-            <div className="flex flex-wrap gap-1">
-              {genrePresets.map((preset) => {
-                const on = preset.id === loadedPreset;
-                return (
-                  <button
-                    key={preset.id}
-                    onClick={() => loadPreset(preset.id)}
-                    title={preset.note}
-                    className="h-[18px] px-1.5 rounded text-[9px] leading-none
-                               transition-colors shrink-0"
-                    style={{
-                      border: `1px solid ${on ? premium.accent.deep : 'rgba(255,255,255,0.12)'}`,
-                      background: on ? 'rgba(198,167,104,0.14)' : 'transparent',
-                      color: on ? premium.accent.base : premium.text.muted,
-                    }}
-                  >{preset.name}</button>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        {/* Two rows of chips rather than two more dropdown entries.  Both are
+            closed sets you already know the names of before you open the
+            window — the instrument you have, and the record you are making —
+            so they become places on the window rather than menus to search.
+            Instrument first, because you know what is on the track before you
+            know what you want it to become. */}
+        <ChipRow label="악기" presets={instrumentPresets} loadedPreset={loadedPreset} onPick={loadPreset} />
+        <ChipRow label="장르" presets={genrePresets} loadedPreset={loadedPreset} onPick={loadPreset} />
 
         {(menuGroups.length > 0 || canSave) && (
           <div className="flex items-center gap-2">
