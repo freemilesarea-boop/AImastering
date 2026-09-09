@@ -22,6 +22,8 @@ import { GM_DRUM_MAP } from './drum-map.js';
 import { partClock } from './note-time.js';
 import { tempoMapOf } from './tempo-map.js';
 import type { MidiNote } from './midi.js';
+import { kitGenreOf } from '../engine/drum-presets.js';
+import { GENRE_LABEL, type GenreId } from '../engine/plugin-presets-genre.js';
 
 export interface RackSlot {
   /** 1-based, the way a rack numbers its slots. */
@@ -37,6 +39,8 @@ export interface RackSlot {
   firstPartId: string | null;
   muted: boolean;
   frozen: boolean;
+  /** For a drum slot: the genre kit loaded on it, or null for the built-in. */
+  kit: GenreId | null;
 }
 
 /** Every instrument track, in session order. */
@@ -57,6 +61,7 @@ export function rackSlots(session: DawSession): RackSlot[] {
       firstPartId: clips[0]?.id ?? null,
       muted: track.mute,
       frozen: track.frozen !== null,
+      kit: kitGenreOf(track.instrumentParams?.['kit']),
     });
   }
   return out;
@@ -183,9 +188,10 @@ export function addInstrumentSlot(
 
 /** One line for the slot row: what this instrument is actually carrying. */
 export function describeSlot(slot: RackSlot): string {
-  if (slot.parts === 0) return '파트 없음';
+  const kit = slot.kit ? `${GENRE_LABEL[slot.kit]} 킷` : '';
+  if (slot.parts === 0) return [kit, '파트 없음'].filter(Boolean).join(' · ');
   const parts = `${slot.parts}파트`;
   const notes = slot.notes === 0 ? '노트 없음' : `${slot.notes}노트`;
   const flags = [slot.muted ? '뮤트' : '', slot.frozen ? '프리즈' : ''].filter(Boolean);
-  return [parts, notes, ...flags].join(' · ');
+  return [kit, parts, notes, ...flags].filter(Boolean).join(' · ');
 }

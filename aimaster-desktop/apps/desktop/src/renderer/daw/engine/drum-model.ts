@@ -69,6 +69,17 @@ export interface DrumSpec {
   sweep: number;
   /** Noise brightness: the highpass corner as a multiple of `hz`. */
   tone: number;
+  /**
+   * The ceiling, in Hz — a LOWPASS over the noise voices.
+   *
+   * `tone` alone cannot make a kit dark, and it took a measurement to see it:
+   * every noise voice here is HIGHPASSED, so lowering that corner passes MORE
+   * top, not less.  A 로파이 kit asked for "no air above 9 kHz" and measured
+   * 2.3x K-POP's rather than a third of it.  Darkness needs its own control.
+   *
+   * Effectively open by default: 18 kHz is above anything these voices make.
+   */
+  air: number;
 }
 
 /**
@@ -81,36 +92,36 @@ export interface DrumSpec {
  */
 export const DRUM_KIT: Readonly<Record<number, DrumSpec>> = {
   // ── Kicks ────────────────────────────────────────────────────────────────
-  35: { family: 'kick',  name: '킥 2',            hz: 48,   decay: 0.42, level: 1.00, pan:  0.00, sweep: 3.6, tone: 1 },
-  36: { family: 'kick',  name: '킥',              hz: 55,   decay: 0.34, level: 1.00, pan:  0.00, sweep: 4.2, tone: 1 },
+  35: { family: 'kick',  name: '킥 2',            hz: 48,   decay: 0.42, level: 1.00, pan:  0.00, sweep: 3.6, tone: 1, air: 18000 },
+  36: { family: 'kick',  name: '킥',              hz: 55,   decay: 0.34, level: 1.00, pan:  0.00, sweep: 4.2, tone: 1, air: 18000 },
   // ── Snares and their relatives ───────────────────────────────────────────
-  37: { family: 'rim',   name: '사이드 스틱',      hz: 1700, decay: 0.06, level: 0.55, pan: -0.05, sweep: 1, tone: 2.2 },
-  38: { family: 'snare', name: '스네어',          hz: 190,  decay: 0.20, level: 0.90, pan: -0.05, sweep: 1, tone: 8.5 },
-  39: { family: 'clap',  name: '핸드 클랩',        hz: 1000, decay: 0.24, level: 0.75, pan:  0.15, sweep: 1, tone: 1.6 },
-  40: { family: 'snare', name: '스네어 (림)',      hz: 240,  decay: 0.16, level: 0.85, pan: -0.05, sweep: 1, tone: 11 },
+  37: { family: 'rim',   name: '사이드 스틱',      hz: 1700, decay: 0.06, level: 0.55, pan: -0.05, sweep: 1, tone: 2.2, air: 18000 },
+  38: { family: 'snare', name: '스네어',          hz: 190,  decay: 0.20, level: 0.90, pan: -0.05, sweep: 1, tone: 8.5, air: 18000 },
+  39: { family: 'clap',  name: '핸드 클랩',        hz: 1000, decay: 0.24, level: 0.75, pan:  0.15, sweep: 1, tone: 1.6, air: 18000 },
+  40: { family: 'snare', name: '스네어 (림)',      hz: 240,  decay: 0.16, level: 0.85, pan: -0.05, sweep: 1, tone: 11, air: 18000 },
   // ── Toms, low to high ────────────────────────────────────────────────────
-  41: { family: 'tom',   name: '로우 플로어 톰',    hz: 72,   decay: 0.62, level: 0.85, pan:  0.34, sweep: 1.6, tone: 1 },
-  43: { family: 'tom',   name: '하이 플로어 톰',    hz: 88,   decay: 0.56, level: 0.85, pan:  0.26, sweep: 1.6, tone: 1 },
-  45: { family: 'tom',   name: '로우 톰',          hz: 105,  decay: 0.50, level: 0.85, pan:  0.14, sweep: 1.6, tone: 1 },
-  47: { family: 'tom',   name: '로우-미드 톰',      hz: 128,  decay: 0.45, level: 0.85, pan:  0.02, sweep: 1.6, tone: 1 },
-  48: { family: 'tom',   name: '하이-미드 톰',      hz: 156,  decay: 0.40, level: 0.85, pan: -0.10, sweep: 1.6, tone: 1 },
-  50: { family: 'tom',   name: '하이 톰',          hz: 190,  decay: 0.36, level: 0.85, pan: -0.22, sweep: 1.6, tone: 1 },
+  41: { family: 'tom',   name: '로우 플로어 톰',    hz: 72,   decay: 0.62, level: 0.85, pan:  0.34, sweep: 1.6, tone: 1, air: 18000 },
+  43: { family: 'tom',   name: '하이 플로어 톰',    hz: 88,   decay: 0.56, level: 0.85, pan:  0.26, sweep: 1.6, tone: 1, air: 18000 },
+  45: { family: 'tom',   name: '로우 톰',          hz: 105,  decay: 0.50, level: 0.85, pan:  0.14, sweep: 1.6, tone: 1, air: 18000 },
+  47: { family: 'tom',   name: '로우-미드 톰',      hz: 128,  decay: 0.45, level: 0.85, pan:  0.02, sweep: 1.6, tone: 1, air: 18000 },
+  48: { family: 'tom',   name: '하이-미드 톰',      hz: 156,  decay: 0.40, level: 0.85, pan: -0.10, sweep: 1.6, tone: 1, air: 18000 },
+  50: { family: 'tom',   name: '하이 톰',          hz: 190,  decay: 0.36, level: 0.85, pan: -0.22, sweep: 1.6, tone: 1, air: 18000 },
   // ── Hats.  The map chokes them; the decays are what make them different. ─
-  42: { family: 'hat',   name: '클로즈드 하이햇',   hz: 7600, decay: 0.045, level: 0.55, pan: -0.28, sweep: 1, tone: 1 },
-  44: { family: 'hat',   name: '페달 하이햇',       hz: 6400, decay: 0.085, level: 0.50, pan: -0.28, sweep: 1, tone: 1 },
-  46: { family: 'hat',   name: '오픈 하이햇',       hz: 7000, decay: 0.90,  level: 0.55, pan: -0.28, sweep: 1, tone: 1 },
+  42: { family: 'hat',   name: '클로즈드 하이햇',   hz: 7600, decay: 0.045, level: 0.55, pan: -0.28, sweep: 1, tone: 1, air: 18000 },
+  44: { family: 'hat',   name: '페달 하이햇',       hz: 6400, decay: 0.085, level: 0.50, pan: -0.28, sweep: 1, tone: 1, air: 18000 },
+  46: { family: 'hat',   name: '오픈 하이햇',       hz: 7000, decay: 0.90,  level: 0.55, pan: -0.28, sweep: 1, tone: 1, air: 18000 },
   // ── Cymbals ──────────────────────────────────────────────────────────────
-  49: { family: 'cymbal', name: '크래시 1',        hz: 5200, decay: 3.20, level: 0.70, pan: -0.42, sweep: 1, tone: 1 },
-  57: { family: 'cymbal', name: '크래시 2',        hz: 4600, decay: 3.60, level: 0.70, pan:  0.40, sweep: 1, tone: 1 },
-  51: { family: 'bell',  name: '라이드',           hz: 5800, decay: 2.00, level: 0.55, pan:  0.36, sweep: 1, tone: 1 },
-  59: { family: 'bell',  name: '라이드 2',         hz: 5400, decay: 2.20, level: 0.55, pan:  0.36, sweep: 1, tone: 1 },
-  53: { family: 'bell',  name: '라이드 벨',        hz: 6200, decay: 1.50, level: 0.60, pan:  0.36, sweep: 1, tone: 1 },
-  52: { family: 'cymbal', name: '차이니즈',        hz: 3800, decay: 2.60, level: 0.65, pan:  0.46, sweep: 1, tone: 1 },
-  55: { family: 'cymbal', name: '스플래시',        hz: 6800, decay: 1.10, level: 0.55, pan: -0.36, sweep: 1, tone: 1 },
+  49: { family: 'cymbal', name: '크래시 1',        hz: 5200, decay: 3.20, level: 0.70, pan: -0.42, sweep: 1, tone: 1, air: 18000 },
+  57: { family: 'cymbal', name: '크래시 2',        hz: 4600, decay: 3.60, level: 0.70, pan:  0.40, sweep: 1, tone: 1, air: 18000 },
+  51: { family: 'bell',  name: '라이드',           hz: 5800, decay: 2.00, level: 0.55, pan:  0.36, sweep: 1, tone: 1, air: 18000 },
+  59: { family: 'bell',  name: '라이드 2',         hz: 5400, decay: 2.20, level: 0.55, pan:  0.36, sweep: 1, tone: 1, air: 18000 },
+  53: { family: 'bell',  name: '라이드 벨',        hz: 6200, decay: 1.50, level: 0.60, pan:  0.36, sweep: 1, tone: 1, air: 18000 },
+  52: { family: 'cymbal', name: '차이니즈',        hz: 3800, decay: 2.60, level: 0.65, pan:  0.46, sweep: 1, tone: 1, air: 18000 },
+  55: { family: 'cymbal', name: '스플래시',        hz: 6800, decay: 1.10, level: 0.55, pan: -0.36, sweep: 1, tone: 1, air: 18000 },
   // ── Hand percussion ──────────────────────────────────────────────────────
-  54: { family: 'shaker', name: '탬버린',          hz: 8200, decay: 0.16, level: 0.45, pan:  0.22, sweep: 1, tone: 1 },
-  56: { family: 'cowbell', name: '카우벨',         hz: 540,  decay: 0.30, level: 0.50, pan:  0.18, sweep: 1, tone: 1 },
-  58: { family: 'shaker', name: '비브라슬랩',       hz: 3200, decay: 0.45, level: 0.45, pan:  0.30, sweep: 1, tone: 1 },
+  54: { family: 'shaker', name: '탬버린',          hz: 8200, decay: 0.16, level: 0.45, pan:  0.22, sweep: 1, tone: 1, air: 18000 },
+  56: { family: 'cowbell', name: '카우벨',         hz: 540,  decay: 0.30, level: 0.50, pan:  0.18, sweep: 1, tone: 1, air: 18000 },
+  58: { family: 'shaker', name: '비브라슬랩',       hz: 3200, decay: 0.45, level: 0.45, pan:  0.30, sweep: 1, tone: 1, air: 18000 },
 };
 
 /**

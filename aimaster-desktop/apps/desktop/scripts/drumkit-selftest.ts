@@ -404,7 +404,10 @@ async function main(): Promise<void> {
     const body = engine.slice(at, engine.indexOf('\n}\n', at));
     assert(!/pitchToFrequency/.test(body),
       'the kit calls pitchToFrequency — pitch chooses the PIECE, not the note');
-    assert(/drumSpecFor\(/.test(body), 'the kit does not look the piece up by pitch');
+    // `drumSpecIn` since the genre kits landed — same claim, one more
+    // argument: which kit, then which piece.
+    assert(/drumSpecIn\(/.test(body), 'the kit does not look the piece up by pitch');
+    assert(/kitGenreOf\(/.test(body), 'the kit does not read which kit is loaded');
   });
 
   await check('the kit covers a real part, end to end', async () => {

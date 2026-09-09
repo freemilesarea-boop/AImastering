@@ -35,6 +35,10 @@ import {
 } from '../../daw/model/instrument-rack.js';
 import { assignDrumMap, drumMapFor } from '../../daw/model/drum-map-session.js';
 import { GM_DRUM_MAP } from '../../daw/model/drum-map.js';
+import {
+  describeKitPreset, kitGenreOf, kitParamOf, kitPresetParams,
+} from '../../daw/engine/drum-presets.js';
+import { GENRE_LABEL, GENRE_ORDER, type GenreId } from '../../daw/engine/plugin-presets-genre.js';
 import { exportMidiFile } from '../../daw/io/midi-file.js';
 
 export default function InstrumentRack({ onClose }: { onClose: () => void }) {
@@ -89,6 +93,24 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
     });
     const label = INSTRUMENTS.find((i) => i.id === instrumentId)?.name ?? instrumentId;
     notify(`악기를 ${label} 로 바꿨습니다`);
+  }, [apply, notify]);
+
+  /**
+   * Load a genre kit onto a slot.
+   *
+   * This is the first thing in the app that writes `instrumentParams` at all.
+   * The field has been on the Track, carried through save, undo, templates
+   * and the bounce, and read by three places in the engine, with nothing ever
+   * setting it — so every instrument has been running on its defaults.
+   */
+  const setKit = useCallback((trackId: string, genre: GenreId | null) => {
+    apply((s) => updateTrack(s, trackId, (t) => ({
+      ...t,
+      // Whole, not merged: a preset is a set of decisions, and half of one
+      // laid over half of another is a kit nobody designed.
+      instrumentParams: kitPresetParams(genre),
+    })));
+    notify(describeKitPreset(genre));
   }, [apply, notify]);
 
   /** Open a slot's part — or make one first, so the button is never dead. */
@@ -234,6 +256,21 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               <span className="flex-1 truncate" style={{ fontSize: 10, color: premium.text.muted }}>
                 {describeSlot(slot)}
               </span>
+              {/* Genre kits, on the slot that has them.  A jazz kick is not
+                  a pop kick turned down — see `drum-presets.ts`. */}
+              {slot.instrumentId === 'drumkit' && (
+                <select
+                  value={kitParamOf(slot.kit)}
+                  onChange={(e) => setKit(slot.trackId, kitGenreOf(Number(e.target.value)))}
+                  title="장르별 킷 — 조각마다 튜닝·감쇠·레벨이 다릅니다"
+                  className="h-6 px-1.5 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-200"
+                >
+                  <option value={0}>기본 킷</option>
+                  {GENRE_ORDER.map((g) => (
+                    <option key={g} value={kitParamOf(g)}>{GENRE_LABEL[g]}</option>
+                  ))}
+                </select>
+              )}
               <Small onClick={() => editSlot(slot.trackId)}>편집</Small>
               <Small onClick={() => addPart(slot.trackId)}>+ 파트</Small>
               <Small onClick={() => { void exportSlot(slot.trackId); }}>MIDI</Small>

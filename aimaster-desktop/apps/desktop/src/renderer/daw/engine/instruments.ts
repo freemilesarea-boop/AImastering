@@ -14,8 +14,9 @@ import {
 } from '../model/midi.js';
 import { pluckedString } from './string-model.js';
 import {
-  CLAP_OFFSETS, drumSpecFor, noiseSamples, type DrumSpec,
+  CLAP_OFFSETS, noiseSamples, type DrumSpec,
 } from './drum-model.js';
+import { drumSpecIn, kitGenreOf } from './drum-presets.js';
 import { bufferFor, loadedLibrary } from './sample-library.js';
 import { pickZone, playbackRateFor, zonesFor } from './sampler.js';
 
@@ -246,16 +247,25 @@ function drumNoise(
   ctx: BaseAudioContext, out: AudioNode, seed: number,
   when: number, peak: number, decay: number,
   filterType: BiquadFilterType, cutoff: number, q: number,
+  airHz = 18000,
 ): number {
+  const nyquist = ctx.sampleRate / 2 - 100;
   const src = ctx.createBufferSource();
   src.buffer = noiseBuffer(ctx, seed);
   const filter = ctx.createBiquadFilter();
   filter.type = filterType;
-  filter.frequency.value = Math.max(20, Math.min(ctx.sampleRate / 2 - 100, cutoff));
+  filter.frequency.value = Math.max(20, Math.min(nyquist, cutoff));
   filter.Q.value = q;
+  // The ceiling.  Every voice here is highpassed, so `tone` can only make a
+  // kit brighter or leave it alone — a dark kit needs a lowpass of its own,
+  // which is a thing a measurement found rather than a thing anyone noticed.
+  const air = ctx.createBiquadFilter();
+  air.type = 'lowpass';
+  air.frequency.value = Math.max(200, Math.min(nyquist, airHz));
+  air.Q.value = 0.7;
   const gain = ctx.createGain();
   const end = hit(gain, when, peak, decay);
-  src.connect(filter).connect(gain).connect(out);
+  src.connect(filter).connect(air).connect(gain).connect(out);
   // Each hit reads a different window of the shared buffer, so two hats in a
   // row are not bit-identical — which is what a real pair of hats is.
   //
@@ -277,12 +287,18 @@ function drumNoise(
  */
 function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
   const { ctx, destination, note, when, params } = v;
-  const spec = drumSpecFor(Math.round(soundingPitch(note)));
+  // Which KIT, then which piece.  The kit is a number in `instrumentParams`
+  // so it survives save, undo, freeze and the offline bounce without any of
+  // them being taught what a kit is.
+  const spec = drumSpecIn(kitGenreOf(params['kit']), Math.round(soundingPitch(note)));
 
   const tune = Math.pow(2, (params['tune'] ?? 0) / 12);
   const decayScale = Math.max(0.1, params['decay'] ?? 1);
   const toneScale = Math.max(0.25, params['tone'] ?? 1);
   const snap = Math.max(0, Math.min(1, params['snap'] ?? 0.5));
+  // `tone` moves the ceiling as well as the floor, so one knob still darkens
+  // or opens the whole kit.
+  const air = spec.air * toneScale;
   // Velocity on a drum is dynamics, not a trim: a ghost note is a different
   // sound from a rimshot, so it moves the level a long way.
   const level = (params['level'] ?? 0.8) * spec.level * (0.08 + 0.92 * Math.pow(note.velocity, 1.4));
@@ -306,13 +322,13 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
       later(drumTone(ctx, master, spec, when, level, decay, tune));
       // The click: a beater on a head, not part of the tone.
       later(drumNoise(ctx, master, seed, when, level * 0.30 * snap, 0.012,
-        'highpass', 1800 * toneScale, 0.7));
+        'highpass', 1800 * toneScale, 0.7, air));
       break;
 
     case 'tom':
       later(drumTone(ctx, master, spec, when, level, decay, tune));
       later(drumNoise(ctx, master, seed, when, level * 0.16 * snap, 0.03,
-        'bandpass', 900 * toneScale, 1.2));
+        'bandpass', 900 * toneScale, 1.2, air));
       break;
 
     case 'snare':
@@ -322,12 +338,12 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
       later(drumTone(ctx, master, { ...spec, hz: spec.hz * 1.48, sweep: 1.2 },
         when, level * 0.28, decay * 0.42, tune));
       later(drumNoise(ctx, master, seed, when, level * 0.85, decay,
-        'highpass', spec.hz * spec.tone * toneScale, 0.6));
+        'highpass', spec.hz * spec.tone * toneScale, 0.6, air));
       break;
 
     case 'rim':
       later(drumNoise(ctx, master, seed, when, level, decay,
-        'bandpass', spec.hz * toneScale, 6));
+        'bandpass', spec.hz * toneScale, 6, air));
       later(drumTone(ctx, master, { ...spec, hz: 420, sweep: 1.1 },
         when, level * 0.35, 0.03, tune));
       break;
@@ -338,26 +354,26 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
         const last = i === CLAP_OFFSETS.length - 1;
         later(drumNoise(ctx, master, seed + i * 7919, when + offset,
           level * (last ? 0.8 : 0.55), last ? decay : 0.02,
-          'bandpass', spec.hz * spec.tone * toneScale, 1.4));
+          'bandpass', spec.hz * spec.tone * toneScale, 1.4, air));
       });
       break;
 
     case 'hat':
       later(drumNoise(ctx, master, seed, when, level, decay,
-        'highpass', spec.hz * toneScale, 0.8));
+        'highpass', spec.hz * toneScale, 0.8, air));
       break;
 
     case 'cymbal':
       later(drumNoise(ctx, master, seed, when, level, decay,
-        'highpass', spec.hz * 0.55 * toneScale, 0.5));
+        'highpass', spec.hz * 0.55 * toneScale, 0.5, air));
       later(drumNoise(ctx, master, seed + 104729, when, level * 0.45, decay * 0.35,
-        'bandpass', spec.hz * 1.4 * toneScale, 0.9));
+        'bandpass', spec.hz * 1.4 * toneScale, 0.9, air));
       break;
 
     case 'bell':
       // A ride is a cymbal you can hear the stick on.
       later(drumNoise(ctx, master, seed, when, level * 0.55, decay,
-        'highpass', spec.hz * 0.7 * toneScale, 0.6));
+        'highpass', spec.hz * 0.7 * toneScale, 0.6, air));
       later(drumTone(ctx, master, { ...spec, hz: spec.hz * 0.22, sweep: 1.05 },
         when, level * 0.5 * (0.4 + snap), 0.09, tune));
       break;
@@ -385,7 +401,7 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
 
     case 'shaker':
       later(drumNoise(ctx, master, seed, when, level, decay,
-        'bandpass', spec.hz * toneScale, 1.1));
+        'bandpass', spec.hz * toneScale, 1.1, air));
       break;
   }
 
@@ -760,6 +776,10 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'decay', name: 'Decay', min: 0.2,  max: 2,  default: 1,   unit: 'x' },
       { id: 'tone',  name: 'Tone',  min: 0.4,  max: 2,  default: 1,   unit: 'x' },
       { id: 'snap',  name: 'Snap',  min: 0,    max: 1,  default: 0.5, unit: '' },
+      // Which kit — 0 is the built-in one, 1..10 are the genres in
+      // GENRE_ORDER.  A number rather than an enum so every carrier of a
+      // track moves it for free; see `drum-presets.ts`.
+      { id: 'kit',   name: 'Kit',   min: 0,    max: 10, default: 0,   unit: '' },
     ],
     // The pitch chooses the PIECE, not the note.  Every other instrument here
     // turns the note number into a frequency; a kit that did that would answer
