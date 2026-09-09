@@ -15,8 +15,10 @@
 // the numbering, the naming and the note gathering can be tested without a
 // store, a canvas or an audio context.
 
-import type { DawSession, Track, TrackId } from './types.js';
-import { trackClips } from './session-ops.js';
+import type { Clip, DawSession, Track, TrackId } from './types.js';
+import { addTrack, trackClips, updateClips } from './session-ops.js';
+import { assignDrumMap } from './drum-map-session.js';
+import { GM_DRUM_MAP } from './drum-map.js';
 import { partClock } from './note-time.js';
 import { tempoMapOf } from './tempo-map.js';
 import type { MidiNote } from './midi.js';
@@ -137,6 +139,46 @@ export function midiFileName(trackName: string): string {
     .replace(/^[\s.]+|[\s.]+$/g, '')
     .slice(0, 64);
   return `${cleaned || 'part'}.mid`;
+}
+
+/**
+ * The id of the one instrument that is a kit rather than a keyboard.
+ *
+ * Named here rather than compared inline in three places: a drum track needs
+ * a DRUM MAP as well as a sound, and the two have to be decided together or
+ * you get a working kit whose piano roll is still a wall of numbers.
+ */
+export const DRUM_INSTRUMENT_ID = 'drumkit';
+
+/**
+ * Does picking this instrument also mean giving the track a kit map?
+ *
+ * The map is what turns the piano roll into named lanes — 킥, 스네어, 하이햇 —
+ * and what chokes the hats.  Without it the drum kit still SOUNDS right,
+ * because the sound is chosen by pitch either way, and the editor is still
+ * unusable.  Half a feature is the failure mode this whole area keeps having.
+ */
+export function needsDrumMap(instrumentId: string): boolean {
+  return instrumentId === DRUM_INSTRUMENT_ID;
+}
+
+/**
+ * Add a slot to a session: the track, its first part, and its kit if it needs
+ * one — as ONE function, so the three cannot drift apart.
+ *
+ * They were three statements in the panel first, and a test could only grep
+ * for them.  Removing the map assignment then left every check green while a
+ * new drum track opened onto a piano roll of anonymous numbers, which is the
+ * exact half-working state this whole area keeps producing.  Here it is a
+ * value a test can call and inspect.
+ */
+export function addInstrumentSlot(
+  session: DawSession, track: Track, part: Clip,
+): DawSession {
+  const withPart = updateClips(addTrack(session, track), track.id, () => [part]);
+  return needsDrumMap(track.instrumentId ?? '')
+    ? assignDrumMap(withPart, track.id, GM_DRUM_MAP)
+    : withPart;
 }
 
 /** One line for the slot row: what this instrument is actually carrying. */

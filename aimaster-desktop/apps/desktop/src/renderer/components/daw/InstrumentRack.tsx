@@ -27,12 +27,14 @@ import {
 } from '../../daw/engine/sample-library.js';
 import { dawRuntime } from '../../daw/engine/daw-runtime.js';
 import {
-  addTrack, createMidiPart, createTrack, findTrack, trackClips, updateClips, updateTrack,
+  createMidiPart, createTrack, findTrack, trackClips, updateClips, updateTrack,
 } from '../../daw/model/session-ops.js';
 import {
-  describeSlot, midiFileName, newPartPlacement, nextInstrumentName, rackSlots,
-  trackNotesInBeats,
+  addInstrumentSlot, describeSlot, midiFileName, needsDrumMap, newPartPlacement,
+  nextInstrumentName, rackSlots, trackNotesInBeats,
 } from '../../daw/model/instrument-rack.js';
+import { assignDrumMap, drumMapFor } from '../../daw/model/drum-map-session.js';
+import { GM_DRUM_MAP } from '../../daw/model/drum-map.js';
 import { exportMidiFile } from '../../daw/io/midi-file.js';
 
 export default function InstrumentRack({ onClose }: { onClose: () => void }) {
@@ -63,7 +65,10 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
     const track = createTrack(name, 'instrument', { instrumentId });
     const place = newPartPlacement(current, undefined);
     const part = createMidiPart(`${name} 1`, place);
-    apply((s) => updateClips(addTrack(s, track), track.id, () => [part]));
+    // Track, part and (for a kit) its map arrive as one value — see
+    // `addInstrumentSlot`, which exists so a test can check the map is there
+    // rather than grep for the call that adds it.
+    apply((s) => addInstrumentSlot(s, track, part));
     useDawStore.getState().setFocusedTrack(track.id);
     useMidiEditorStore.getState().openPart({ trackId: track.id, clipId: part.id });
     setWindow('midi');
@@ -73,7 +78,15 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
 
   /** Change what a slot plays.  The notes do not move; only the voice does. */
   const setInstrument = useCallback((trackId: string, instrumentId: string) => {
-    apply((s) => updateTrack(s, trackId, (t) => ({ ...t, instrumentId })));
+    apply((s) => {
+      const next = updateTrack(s, trackId, (t) => ({ ...t, instrumentId }));
+      // Switching TO the kit gives the track a map if it has none.  Switching
+      // AWAY leaves whatever map it had: the names are the user's work, and
+      // throwing them out because they auditioned a synth would be rude.
+      if (!needsDrumMap(instrumentId)) return next;
+      return drumMapFor(next, findTrack(next, trackId))
+        ? next : assignDrumMap(next, trackId, GM_DRUM_MAP);
+    });
     const label = INSTRUMENTS.find((i) => i.id === instrumentId)?.name ?? instrumentId;
     notify(`악기를 ${label} 로 바꿨습니다`);
   }, [apply, notify]);

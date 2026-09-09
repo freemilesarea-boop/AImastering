@@ -13,6 +13,9 @@ import {
   type MidiNote, type MidiPartConfig,
 } from '../model/midi.js';
 import { pluckedString } from './string-model.js';
+import {
+  CLAP_OFFSETS, drumSpecFor, noiseSamples, type DrumSpec,
+} from './drum-model.js';
 import { bufferFor, loadedLibrary } from './sample-library.js';
 import { pickZone, playbackRateFor, zonesFor } from './sampler.js';
 
@@ -169,6 +172,236 @@ function noteSeed(note: MidiNote): number {
  */
 let roundRobinCount = 0;
 function nextRoundRobin(): number { return roundRobinCount++; }
+
+// ── The kit ─────────────────────────────────────────────────────────────────
+
+/**
+ * Noise, as an AudioBuffer, cached per context and seed.
+ *
+ * One second is longer than any noise voice here needs, so every hit reads a
+ * different window of the same buffer rather than allocating its own — a
+ * sixteenth-note hat pattern is 8 hits a second, and building a fresh
+ * Float32Array for each of them is work the audio thread does not need.
+ */
+const NOISE_CACHE = new Map<string, AudioBuffer>();
+const NOISE_SECONDS = 2;
+
+function noiseBuffer(ctx: BaseAudioContext, seed: number): AudioBuffer {
+  const key = `${ctx.sampleRate}|${seed}`;
+  const hit = NOISE_CACHE.get(key);
+  if (hit) return hit;
+  const length = Math.round(ctx.sampleRate * NOISE_SECONDS);
+  const buf = ctx.createBuffer(1, length, ctx.sampleRate);
+  // Written through the channel rather than `copyToChannel`, for the same
+  // reason `stringBuffer` does: the array is typed over ArrayBufferLike.
+  buf.getChannelData(0).set(noiseSamples(length, seed));
+  if (NOISE_CACHE.size >= 8) {
+    const oldest = NOISE_CACHE.keys().next().value;
+    if (oldest !== undefined) NOISE_CACHE.delete(oldest);
+  }
+  NOISE_CACHE.set(key, buf);
+  return buf;
+}
+
+/**
+ * A percussive amplitude envelope: instant on, exponential off.
+ *
+ * Every piece of a kit has this shape and nothing else — there is no sustain
+ * and no release, because a drum does not care when the key came up.  The
+ * note's LENGTH is therefore ignored on purpose: a kick written as a whole
+ * note and a kick written as a sixteenth are the same kick, which is what
+ * every drum machine and every sampler does, and what a drummer does.
+ */
+function hit(gain: GainNode, when: number, peak: number, decay: number): number {
+  const end = when + decay;
+  gain.gain.setValueAtTime(0.0001, when);
+  gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), when + 0.0015);
+  gain.gain.exponentialRampToValueAtTime(0.0001, end);
+  return end;
+}
+
+/** A pitched drum: a sine that falls.  Kick and toms are the same voice. */
+function drumTone(
+  ctx: BaseAudioContext, out: AudioNode, spec: DrumSpec,
+  when: number, peak: number, decay: number, tune: number,
+): number {
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  const base = spec.hz * tune;
+  // The sweep IS the drum.  Held at a constant frequency the same oscillator
+  // is a bass note; the fast fall from a few times the fundamental is the
+  // beater arriving.
+  osc.frequency.setValueAtTime(base * spec.sweep, when);
+  osc.frequency.exponentialRampToValueAtTime(base, when + Math.min(0.09, decay * 0.35));
+  const gain = ctx.createGain();
+  const end = hit(gain, when, peak, decay);
+  osc.connect(gain).connect(out);
+  osc.start(when);
+  osc.stop(end + 0.02);
+  return end;
+}
+
+/** Filtered noise, which is the other half of every kit. */
+function drumNoise(
+  ctx: BaseAudioContext, out: AudioNode, seed: number,
+  when: number, peak: number, decay: number,
+  filterType: BiquadFilterType, cutoff: number, q: number,
+): number {
+  const src = ctx.createBufferSource();
+  src.buffer = noiseBuffer(ctx, seed);
+  const filter = ctx.createBiquadFilter();
+  filter.type = filterType;
+  filter.frequency.value = Math.max(20, Math.min(ctx.sampleRate / 2 - 100, cutoff));
+  filter.Q.value = q;
+  const gain = ctx.createGain();
+  const end = hit(gain, when, peak, decay);
+  src.connect(filter).connect(gain).connect(out);
+  // Each hit reads a different window of the shared buffer, so two hats in a
+  // row are not bit-identical — which is what a real pair of hats is.
+  //
+  // And it LOOPS, because a source that starts 1.35 s into a 2 s buffer stops
+  // 0.65 s later whatever its envelope says.  Measured: a crash with a 1.6 s
+  // decay went silent at 0.67 s, and the reading was easy to misdiagnose as
+  // the decay being too short — the envelope was fine, the audio ran out.
+  src.loop = true;
+  src.start(when, (seed % 1000) / 1000 * (NOISE_SECONDS - 0.6));
+  src.stop(end + 0.02);
+  return end;
+}
+
+/**
+ * One drum, built from its spec.
+ *
+ * The families differ in WHICH of the two generators above they use and how
+ * many, not in kind — which is why a kit this small can cover a GM map.
+ */
+function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
+  const { ctx, destination, note, when, params } = v;
+  const spec = drumSpecFor(Math.round(soundingPitch(note)));
+
+  const tune = Math.pow(2, (params['tune'] ?? 0) / 12);
+  const decayScale = Math.max(0.1, params['decay'] ?? 1);
+  const toneScale = Math.max(0.25, params['tone'] ?? 1);
+  const snap = Math.max(0, Math.min(1, params['snap'] ?? 0.5));
+  // Velocity on a drum is dynamics, not a trim: a ghost note is a different
+  // sound from a rimshot, so it moves the level a long way.
+  const level = (params['level'] ?? 0.8) * spec.level * (0.08 + 0.92 * Math.pow(note.velocity, 1.4));
+  const decay = spec.decay * decayScale;
+  const seed = noteSeed(note);
+
+  // A master gain in front of the panner exists only so a stop can FADE.
+  // The other instruments disconnect on stop, which is instant and therefore
+  // clicks; a kit is the one instrument where that would be heard on every
+  // transport stop, because something is always still ringing.
+  const master = ctx.createGain();
+  const pan = ctx.createStereoPanner();
+  pan.pan.value = Math.max(-1, Math.min(1, spec.pan));
+  master.connect(pan).connect(destination);
+
+  let end = when + 0.05;
+  const later = (t: number): void => { end = Math.max(end, t); };
+
+  switch (spec.family) {
+    case 'kick':
+      later(drumTone(ctx, master, spec, when, level, decay, tune));
+      // The click: a beater on a head, not part of the tone.
+      later(drumNoise(ctx, master, seed, when, level * 0.30 * snap, 0.012,
+        'highpass', 1800 * toneScale, 0.7));
+      break;
+
+    case 'tom':
+      later(drumTone(ctx, master, spec, when, level, decay, tune));
+      later(drumNoise(ctx, master, seed, when, level * 0.16 * snap, 0.03,
+        'bandpass', 900 * toneScale, 1.2));
+      break;
+
+    case 'snare':
+      // Two bodies a fifth apart, then the wires.  The wires are most of what
+      // you hear and all of what makes it a snare rather than a small tom.
+      later(drumTone(ctx, master, spec, when, level * 0.45, decay * 0.55, tune));
+      later(drumTone(ctx, master, { ...spec, hz: spec.hz * 1.48, sweep: 1.2 },
+        when, level * 0.28, decay * 0.42, tune));
+      later(drumNoise(ctx, master, seed, when, level * 0.85, decay,
+        'highpass', spec.hz * spec.tone * toneScale, 0.6));
+      break;
+
+    case 'rim':
+      later(drumNoise(ctx, master, seed, when, level, decay,
+        'bandpass', spec.hz * toneScale, 6));
+      later(drumTone(ctx, master, { ...spec, hz: 420, sweep: 1.1 },
+        when, level * 0.35, 0.03, tune));
+      break;
+
+    case 'clap':
+      // Several hands, not quite together — the spread is the clap.
+      CLAP_OFFSETS.forEach((offset, i) => {
+        const last = i === CLAP_OFFSETS.length - 1;
+        later(drumNoise(ctx, master, seed + i * 7919, when + offset,
+          level * (last ? 0.8 : 0.55), last ? decay : 0.02,
+          'bandpass', spec.hz * spec.tone * toneScale, 1.4));
+      });
+      break;
+
+    case 'hat':
+      later(drumNoise(ctx, master, seed, when, level, decay,
+        'highpass', spec.hz * toneScale, 0.8));
+      break;
+
+    case 'cymbal':
+      later(drumNoise(ctx, master, seed, when, level, decay,
+        'highpass', spec.hz * 0.55 * toneScale, 0.5));
+      later(drumNoise(ctx, master, seed + 104729, when, level * 0.45, decay * 0.35,
+        'bandpass', spec.hz * 1.4 * toneScale, 0.9));
+      break;
+
+    case 'bell':
+      // A ride is a cymbal you can hear the stick on.
+      later(drumNoise(ctx, master, seed, when, level * 0.55, decay,
+        'highpass', spec.hz * 0.7 * toneScale, 0.6));
+      later(drumTone(ctx, master, { ...spec, hz: spec.hz * 0.22, sweep: 1.05 },
+        when, level * 0.5 * (0.4 + snap), 0.09, tune));
+      break;
+
+    case 'cowbell': {
+      // Two squares a fifth-ish apart: the classic, and genuinely how it is
+      // built in every drum machine since the 808.
+      for (const ratio of [1, 1.485]) {
+        const osc = ctx.createOscillator();
+        osc.type = 'square';
+        osc.frequency.value = spec.hz * ratio * tune;
+        const gain = ctx.createGain();
+        const stop = hit(gain, when, level * 0.5, decay);
+        const band = ctx.createBiquadFilter();
+        band.type = 'bandpass';
+        band.frequency.value = spec.hz * 1.6 * toneScale;
+        band.Q.value = 1.4;
+        osc.connect(band).connect(gain).connect(master);
+        osc.start(when);
+        osc.stop(stop + 0.02);
+        later(stop);
+      }
+      break;
+    }
+
+    case 'shaker':
+      later(drumNoise(ctx, master, seed, when, level, decay,
+        'bandpass', spec.hz * toneScale, 1.1));
+      break;
+  }
+
+  return {
+    stop: (at: number) => {
+      // A drum has already decided how long it rings — a stop can only cut it
+      // short, and it has to do that with a ramp.  Every source here already
+      // has its own `stop` scheduled, so nothing is left running afterwards.
+      if (at >= end) return;
+      try {
+        master.gain.cancelScheduledValues(at);
+        master.gain.setTargetAtTime(0.0001, at, 0.004);
+      } catch { /* context gone */ }
+    },
+  };
+}
 
 /** One plucked-string voice, shared by the two guitars. */
 function pluckVoice(
@@ -516,6 +749,24 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       pick: v.params['pick'] ?? 0.09,
       bodyHz: 2500, bodyQ: 1.6, toneHz: 3400,
     }),
+  },
+
+  {
+    id: 'drumkit',
+    name: 'Drum Kit',
+    params: [
+      { id: 'level', name: 'Level', min: 0,    max: 1,  default: 0.8, unit: '' },
+      { id: 'tune',  name: 'Tune',  min: -12,  max: 12, default: 0,   unit: 'st' },
+      { id: 'decay', name: 'Decay', min: 0.2,  max: 2,  default: 1,   unit: 'x' },
+      { id: 'tone',  name: 'Tone',  min: 0.4,  max: 2,  default: 1,   unit: 'x' },
+      { id: 'snap',  name: 'Snap',  min: 0,    max: 1,  default: 0.5, unit: '' },
+    ],
+    // The pitch chooses the PIECE, not the note.  Every other instrument here
+    // turns the note number into a frequency; a kit that did that would answer
+    // a drum part with a chromatic run of bleeps — which is exactly what this
+    // app did before, since the drum map named and ordered and choked the rows
+    // and then handed the part to a poly synth.
+    playNote: drumVoice,
   },
 
   {
