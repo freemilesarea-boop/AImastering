@@ -12,7 +12,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import {
-  useMidiEditorStore, currentGridBeat, snapBeatToGrid, CONTROLLER_TARGETS,
+  useMidiEditorStore, currentGridBeat, snapBeatToGrid, drawStartBeat, CONTROLLER_TARGETS,
   GRID_DIVISIONS, type GridDivision,
 } from '../../../stores/midiEditorStore.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
@@ -60,6 +60,7 @@ export default function KeyEditor() {
   const playhead  = useDawStore((s) => s.playheadSec);
   const seek      = useDawStore((s) => s.seek);
   const tool      = useWorkspaceStore((s) => s.tool);
+  const setTool   = useWorkspaceStore((s) => s.setTool);
 
   const open            = useMidiEditorStore((s) => s.open);
   const closeEditor     = useMidiEditorStore((s) => s.close);
@@ -455,6 +456,34 @@ export default function KeyEditor() {
   }, [notes, toPitch, toBeat, toX, rows, drumWidth]);
 
   // ── Grid gestures ───────────────────────────────────────────────────────
+  /**
+   * Put a note where the pointer is.
+   *
+   * Shared by the pencil, Ctrl/Cmd-click and the double-click, because those
+   * were one body of code copied into one place and then reachable three
+   * ways — and only one of the three was discoverable.
+   */
+  const placeNote = useCallback((x: number, y: number) => {
+    // FLOOR to the cell under the cursor, not `snapBeatToGrid`'s round-to-
+    // nearest.  Rounding is right when you MOVE a note — you are nudging it
+    // to the closest line — and wrong when you make one, because past the
+    // half-way point of a cell it puts the note in the NEXT cell, to the
+    // right of the pointer that asked for it.  Measured before the change:
+    // pointer at beat 2.94, note created at 3.000, with a 0.25 grid; the
+    // cell the user clicked starts at 2.75.
+    const startBeat = drawStartBeat(
+      toBeat(x), gridBeat, useMidiEditorStore.getState().snapEnabled,
+    );
+    const note = createNote({
+      pitch: Math.max(0, Math.min(127, toPitch(y))),
+      startBeat,
+      durationBeat: gridBeat > 0 ? gridBeat : 0.25,
+      velocity: from7bit(100),
+    });
+    writeNotes([...notes, note]);
+    setSelection([note.id]);
+  }, [toPitch, toBeat, gridBeat, notes, writeNotes, setSelection, tempo]);
+
   const onGridDown = useCallback((e: React.MouseEvent) => {
     if (!part) return;
     const { x, y } = localPoint(e);
@@ -467,15 +496,7 @@ export default function KeyEditor() {
 
     if (!hit) {
       if (tool === 'draw' || e.metaKey || e.ctrlKey) {
-        const startBeat = snapBeatToGrid(toBeat(x));
-        const note = createNote({
-          pitch: Math.max(0, Math.min(127, toPitch(y))),
-          startBeat,
-          durationBeat: gridBeat > 0 ? gridBeat : 0.25,
-          velocity: from7bit(100),
-        });
-        writeNotes([...notes, note]);
-        setSelection([note.id]);
+        placeNote(x, y);
         return;
       }
       setDrag({ kind: 'marquee', x0: x, y0: y, x1: x, y1: y });
@@ -498,8 +519,8 @@ export default function KeyEditor() {
     } else {
       setDrag({ kind: 'move', noteIds: ids, startX: x, startY: y, originals });
     }
-  }, [part, noteAtPoint, tool, notes, writeNotes, setSelection, toBeat, toPitch, tempo,
-      gridBeat, selected, selectedIds, toX, rows]);
+  }, [part, noteAtPoint, tool, notes, writeNotes, setSelection, toBeat, toPitch,
+      placeNote, selected, selectedIds, toX, rows]);
 
   const onGridMove = useCallback((e: React.MouseEvent) => {
     const { x, y } = localPoint(e);
@@ -714,6 +735,32 @@ export default function KeyEditor() {
           ))}
         </select>
 
+        {/* The pencil, on screen.
+            It already existed — `tool === 'draw'` has always drawn notes —
+            but this editor's toolbar offered no way to reach it, so the only
+            people who ever found it were the ones who happened to switch
+            tools in the arrange window first.  A feature nobody can find is
+            indistinguishable from one that is missing, and the bug report
+            this fixes was exactly that: "피아노 건반 안찍히던데". */}
+        {([
+          ['select', '선택', '↖', '드래그로 범위 선택 · 노트를 잡아 옮깁니다'],
+          ['draw',   '연필', '✎', '빈 곳을 클릭하면 노트가 찍힙니다'],
+          ['erase',  '삭제', '⌫', '클릭한 노트를 지웁니다'],
+        ] as const).map(([id, label, glyph, hint]) => (
+          <button
+            key={id}
+            onClick={() => setTool(id)}
+            title={`${label} — ${hint}`}
+            className={`h-6 w-7 rounded text-[11px] border ${tool === id
+              ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+          >{glyph}</button>
+        ))}
+        <span className="text-[9px] text-zinc-600 px-1"
+              title="더블클릭으로 노트를 찍고, Alt+더블클릭으로 재생 위치를 옮깁니다">
+          더블클릭 = 노트
+        </span>
+
         <button onClick={() => {
             setShowInserts((v) => !v);
             setShowLogical(false); setShowKitEditor(false); setShowList(false);
@@ -862,8 +909,23 @@ export default function KeyEditor() {
               onMouseUp={endDrag}
               onMouseLeave={endDrag}
               onDoubleClick={(e) => {
-                const { x } = localPoint(e);
-                if (part) seek(part.startSec + toBeat(x));
+                if (!part) return;
+                const { x, y } = localPoint(e);
+                // Double-click WRITES a note.  It used to move the playhead,
+                // and that cost more than it gave: a piano roll's whole job is
+                // putting notes in, and the two gestures anyone tries first —
+                // click, then double-click — both did nothing visible, because
+                // the only way in was a Ctrl/Cmd-click that nothing on screen
+                // mentioned.  Measured on a fresh instrument track: click → 0
+                // notes, double-click → 0 notes, Ctrl-click → 1.
+                //
+                // Seeking is not dropped, it moves to Alt+double-click and is
+                // named in the toolbar's tooltip, because this editor has no
+                // ruler and that was the only way to move the playhead from
+                // inside it.
+                if (e.altKey) { seek(part.startSec + toBeat(x)); return; }
+                if (noteAtPoint(x, y)) return;   // a note is dragged, not doubled
+                placeNote(x, y);
               }}
             >
               <canvas ref={canvasRef} className="block" />
