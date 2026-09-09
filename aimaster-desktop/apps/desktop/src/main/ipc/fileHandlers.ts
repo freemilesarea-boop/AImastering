@@ -5,6 +5,7 @@ import path from 'node:path';
 import { log } from '../utils/logger.js';
 import { recordFailure } from '../utils/failureLog.js';
 import { stemFileName, stemFilePath } from '../utils/stemPath.js';
+import { samplePathIn } from '../utils/samplePath.js';
 import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
 import {
   buildSupportBundle,
@@ -458,6 +459,43 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   // could arrive on that channel.
 
   let stemDestDir: string | null = null;
+
+  // ── Sample libraries (.sfz) ─────────────────────────────────────────────
+  //
+  // Two channels rather than one: opening the library is a user-facing choice
+  // that needs a dialog, and reading its samples is a loop the renderer
+  // drives.  The read handler re-derives the path from the root every time
+  // instead of trusting one it was handed, because between the two calls
+  // anything could arrive on that channel — the same rule the stem writer
+  // follows.
+
+  ipc.handle('daw:sfz-open', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      title: '샘플 라이브러리 (.sfz)',
+      properties: ['openFile'],
+      filters: [{ name: 'SFZ 라이브러리', extensions: ['sfz'] }, ALL_FILES],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const chosen = result.filePaths[0];
+    if (!chosen) return null;
+    const text = fs.readFileSync(chosen, 'utf8');
+    const root = path.dirname(chosen);
+    log.info(`[sampler] opened ${chosen} (${text.length} chars)`);
+    return { path: chosen, root, name: path.basename(chosen, '.sfz'), text };
+  });
+
+  ipc.handle('daw:sample-read', (_e, req: unknown) => {
+    const o = (req && typeof req === 'object' ? req : {}) as { root?: unknown; path?: unknown };
+    if (typeof o.root !== 'string' || typeof o.path !== 'string') {
+      throw new Error('daw:sample-read: root and path must be strings');
+    }
+    // Throws rather than returning null: a library pointing outside itself is
+    // a fact worth surfacing, not a missing file to skip past.
+    const resolved = samplePathIn(o.root, o.path);
+    const bytes = fs.readFileSync(resolved);
+    return { path: resolved, bytes: new Uint8Array(bytes) };
+  });
 
   ipc.handle('daw:choose-stem-folder', async (_e, req: unknown) => {
     if (!win) return null;

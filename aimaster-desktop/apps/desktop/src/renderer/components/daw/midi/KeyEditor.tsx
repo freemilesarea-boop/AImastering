@@ -11,7 +11,10 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
+import { useAppStore } from '../../../stores/appStore.js';
 import { INSTRUMENTS } from '../../../daw/engine/instruments.js';
+import { describeLoad, loadedLibrary, openSampleLibrary } from '../../../daw/engine/sample-library.js';
+import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import {
   useMidiEditorStore, currentGridBeat, snapBeatToGrid, drawStartBeat, CONTROLLER_TARGETS,
   GRID_DIVISIONS, type GridDivision,
@@ -60,6 +63,7 @@ export default function KeyEditor() {
   const commit    = useDawStore((s) => s.commitEdit);
   const playhead  = useDawStore((s) => s.playheadSec);
   const seek      = useDawStore((s) => s.seek);
+  const notify    = useAppStore((s) => s.notify);
   const tool      = useWorkspaceStore((s) => s.tool);
   const setTool   = useWorkspaceStore((s) => s.setTool);
 
@@ -99,6 +103,9 @@ export default function KeyEditor() {
   const [showList, setShowList] = useState(false);
   const [showInserts, setShowInserts] = useState(false);
   const [hoverInfo, setHoverInfo] = useState<{ beat: number; pitch: number } | null>(null);
+  // The loaded library lives in a module, not in a store, so the button that
+  // shows its name needs a local reason to re-render after a load.
+  const [libName, setLibName] = useState<string | null>(loadedLibrary()?.set.name ?? null);
 
   const track = open ? findTrack(session, open.trackId) : undefined;
   const part = track ? trackClips(track).find((c) => c.id === open?.clipId) : undefined;
@@ -756,6 +763,31 @@ export default function KeyEditor() {
               <option key={i.id} value={i.id}>{i.name}</option>
             ))}
           </select>
+        )}
+
+        {/* Loading a library, next to the instrument that plays it.
+            The sampler is silent with nothing loaded — deliberately, since a
+            fallback tone would make an empty sampler sound like a working
+            one — so the way to load has to sit where you notice it. */}
+        {track?.instrumentId === 'sampler' && (
+          <button
+            onClick={() => { void (async () => {
+              try {
+                // No gate on the live context: it does not exist until the
+                // first play, and loading a library is a thing people do
+                // before they press play.  The loader decodes with its own.
+                notify('샘플 라이브러리를 읽는 중…', 'info');
+                const lib = await openSampleLibrary(dawRuntime.context);
+                if (!lib) return;   // cancelled
+                setLibName(lib.set.name);
+                notify(describeLoad(lib), lib.missing.length ? 'warning' : 'success');
+              } catch (err) {
+                notify(`라이브러리 열기 실패: ${(err as Error).message}`, 'error');
+              }
+            })(); }}
+            title="SFZ 샘플 라이브러리를 엽니다 (Salamander Grand Piano 등)"
+            className="h-6 px-2 rounded text-[10px] border bg-zinc-900 border-zinc-700 text-zinc-300"
+          >{libName ? `♪ ${libName}` : '♪ 라이브러리'}</button>
         )}
 
         {/* The pencil, on screen.

@@ -13,6 +13,8 @@ import {
   type MidiNote, type MidiPartConfig,
 } from '../model/midi.js';
 import { pluckedString } from './string-model.js';
+import { bufferFor, loadedLibrary } from './sample-library.js';
+import { pickZone, playbackRateFor, zonesFor } from './sampler.js';
 
 export interface InstrumentParamDef {
   id: string;
@@ -157,6 +159,16 @@ function noteSeed(note: MidiNote): number {
   const beat = Math.round(note.startBeat * 96);
   return ((pitch * 2654435761) ^ (beat * 40503) ^ 0x9E3779B9) >>> 0;
 }
+
+/**
+ * The round robin's position.
+ *
+ * Module-level on purpose: it has to survive between notes, and it must NOT
+ * be per-voice — a counter created with the voice is always zero, which picks
+ * take one every time and defeats the entire mechanism.
+ */
+let roundRobinCount = 0;
+function nextRoundRobin(): number { return roundRobinCount++; }
 
 /** One plucked-string voice, shared by the two guitars. */
 function pluckVoice(
@@ -504,6 +516,80 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       pick: v.params['pick'] ?? 0.09,
       bodyHz: 2500, bodyQ: 1.6, toneHz: 3400,
     }),
+  },
+
+  {
+    id: 'sampler',
+    name: 'Sampler (SFZ)',
+    params: [
+      { id: 'level',   name: 'Level',   min: 0,    max: 1,   default: 0.7,  unit: '' },
+      { id: 'attack',  name: 'Attack',  min: 0,    max: 0.5, default: 0.001, unit: 's' },
+      { id: 'release', name: 'Release', min: 0.02, max: 3,   default: 0.4,  unit: 's' },
+      { id: 'rrOff',   name: 'RR Off',  min: 0,    max: 1,   default: 0,    unit: '' },
+    ],
+    // Plays whatever library is loaded.  With none loaded it is SILENT, and
+    // that is the honest behaviour: the alternative is a fallback synth tone
+    // that makes an empty sampler sound like a working one, and then the
+    // first thing anyone reports is that their piano sounds like a beep.
+    playNote: ({ ctx, destination, note, config, when, durationSec, params }) => {
+      const lib = loadedLibrary();
+      const pitch = Math.round(soundingPitch(note));
+      const candidates = lib ? zonesFor(lib.set, pitch, note.velocity) : [];
+      // The round robin counts per library, not per note: a counter reset on
+      // every note would always choose take one, which is the bug a round
+      // robin exists to prevent.
+      const zone = pickZone(candidates, (params['rrOff'] ?? 0) >= 0.5 ? 0 : nextRoundRobin());
+      const buffer = zone ? bufferFor(zone.resolvedPath) : undefined;
+      if (!zone || !buffer) return { stop: () => { /* nothing sounding */ } };
+
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      // The zone knows the pitch it was recorded at, so the rate is a
+      // function of the sounding pitch and nothing else.
+      src.playbackRate.value = playbackRateFor(zone, soundingPitch(note));
+
+      if (zone.loopMode === 'loop_continuous' || zone.loopMode === 'loop_sustain') {
+        const rate = buffer.sampleRate;
+        src.loop = true;
+        src.loopStart = zone.loopStart / rate;
+        src.loopEnd = zone.loopEnd > zone.loopStart ? zone.loopEnd / rate : buffer.duration;
+      }
+
+      const pan = ctx.createStereoPanner();
+      pan.pan.value = Math.max(-1, Math.min(1, zone.pan / 100));
+
+      const amp = ctx.createGain();
+      scheduleCurve(
+        src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+        (val) => val * config.bendRangeSemitones * 100, 0,
+      );
+      src.connect(pan).connect(amp).connect(destination);
+
+      // The library's own volume, then velocity, then the instrument's level.
+      const zoneGain = Math.pow(10, zone.volumeDb / 20);
+      const peak = (params['level'] ?? 0.7) * zoneGain * (0.15 + 0.85 * note.velocity);
+      const start = Math.max(0, when);
+      const attack = Math.max(0.0005, params['attack'] ?? 0.001);
+      // A library that states its own release gets it; otherwise the panel's.
+      const release = zone.ampegRelease > 0
+        ? zone.ampegRelease
+        : Math.max(0.02, params['release'] ?? 0.4);
+      const noteEnd = start + Math.max(0.02, durationSec);
+      amp.gain.setValueAtTime(0.0001, start);
+      amp.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), start + attack);
+      amp.gain.setValueAtTime(Math.max(0.0002, peak), Math.max(start + attack + 0.001, noteEnd));
+      const releaseEnd = noteEnd + release;
+      amp.gain.exponentialRampToValueAtTime(0.0001, releaseEnd);
+
+      src.start(start);
+      src.stop(releaseEnd + 0.02);
+      return {
+        stop: (at: number) => {
+          try { src.stop(at); } catch { /* already stopped */ }
+          try { src.disconnect(); pan.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+        },
+      };
+    },
   },
 ];
 
