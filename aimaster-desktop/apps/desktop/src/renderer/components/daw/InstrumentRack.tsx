@@ -39,6 +39,9 @@ import {
   describeKitPreset, kitGenreOf, kitParamOf, kitPresetParams,
 } from '../../daw/engine/drum-presets.js';
 import { GENRE_LABEL, GENRE_ORDER, type GenreId } from '../../daw/engine/plugin-presets-genre.js';
+import {
+  DRUM_PATTERNS, describePattern, findPattern, patternFill, patternNotes,
+} from '../../daw/engine/drum-patterns.js';
 import { exportMidiFile } from '../../daw/io/midi-file.js';
 
 export default function InstrumentRack({ onClose }: { onClose: () => void }) {
@@ -57,6 +60,7 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
   // The loaded library lives in a module rather than a store, so the button
   // that names it needs a local reason to re-render after a load.
   const [libName, setLibName] = useState<string | null>(loadedLibrary()?.set.name ?? null);
+  const [patternId, setPatternId] = useState(DRUM_PATTERNS[0]?.id ?? '');
 
   const slots = useMemo(() => rackSlots(session), [session]);
 
@@ -131,6 +135,31 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
     setWindow('midi');
     onClose();
   }, [apply, setWindow, onClose]);
+
+  /**
+   * Drop a genre beat on the track as a new part.
+   *
+   * The chart goes through the step sequencer's own converter, so swing,
+   * ratchets and velocity mean here exactly what they mean there — a second
+   * converter would be a second definition of where a swung sixteenth falls.
+   */
+  const addPattern = useCallback((trackId: string, id: string) => {
+    const pattern = findPattern(id);
+    if (!pattern) { notify('그런 패턴이 없습니다', 'warning'); return; }
+    const current = useDawStore.getState().session;
+    const track = findTrack(current, trackId);
+    if (!track) return;
+    const beatsPerBar = current.timeSignature[0] || 4;
+    const { repeats, beats } = patternFill(pattern, beatsPerBar);
+    const start = newPartPlacement(current, track).startSec;
+    const part = createMidiPart(`${pattern.name}`, {
+      startSec: start,
+      durationSec: beats * (60 / current.tempoBpm),
+      notes: patternNotes(pattern, repeats),
+    });
+    apply((s) => updateClips(s, trackId, (clips) => [...clips, part]));
+    notify(`${describePattern(pattern)} · ${beats / beatsPerBar}마디`, 'success');
+  }, [apply, notify]);
 
   /** Another four bars, after what is already there rather than on top. */
   const addPart = useCallback((trackId: string) => {
@@ -233,8 +262,9 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
           )}
           {slots.map((slot) => (
             <div key={slot.trackId}
-                 className="flex items-center gap-2 px-2 py-1.5 rounded mb-1"
+                 className="px-2 py-1.5 rounded mb-1"
                  style={{ background: premium.surface.frame, border: `1px solid ${premium.surface.hairline}` }}>
+            <div className="flex items-center gap-2">
               <span className="w-5 text-right tabular-nums"
                     style={{ fontSize: 10, color: premium.text.muted }}>{slot.index}</span>
               <span className="w-[130px] truncate" style={{ fontSize: 11, color: premium.text.primary }}
@@ -256,13 +286,22 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               <span className="flex-1 truncate" style={{ fontSize: 10, color: premium.text.muted }}>
                 {describeSlot(slot)}
               </span>
-              {/* Genre kits, on the slot that has them.  A jazz kick is not
-                  a pop kick turned down — see `drum-presets.ts`. */}
-              {slot.instrumentId === 'drumkit' && (
+              <Small onClick={() => editSlot(slot.trackId)}>편집</Small>
+              <Small onClick={() => addPart(slot.trackId)}>+ 파트</Small>
+              <Small onClick={() => { void exportSlot(slot.trackId); }}>MIDI</Small>
+            </div>
+
+            {/* Drums get a second line: what the kit SOUNDS like, and what it
+                PLAYS.  Both are per-genre and they are different questions —
+                a 힙합 kit playing a 팝 beat is a real and useful thing. */}
+            {slot.instrumentId === 'drumkit' && (
+              <div className="flex items-center gap-2 mt-1.5 pt-1.5"
+                   style={{ borderTop: `1px solid ${premium.surface.hairline}` }}>
+                <span style={{ fontSize: 9, color: premium.text.muted }}>킷</span>
                 <select
                   value={kitParamOf(slot.kit)}
                   onChange={(e) => setKit(slot.trackId, kitGenreOf(Number(e.target.value)))}
-                  title="장르별 킷 — 조각마다 튜닝·감쇠·레벨이 다릅니다"
+                  title="장르별 킷 — 조각마다 튜닝·감쇠·레벨·팬이 다릅니다"
                   className="h-6 px-1.5 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-200"
                 >
                   <option value={0}>기본 킷</option>
@@ -270,10 +309,27 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
                     <option key={g} value={kitParamOf(g)}>{GENRE_LABEL[g]}</option>
                   ))}
                 </select>
-              )}
-              <Small onClick={() => editSlot(slot.trackId)}>편집</Small>
-              <Small onClick={() => addPart(slot.trackId)}>+ 파트</Small>
-              <Small onClick={() => { void exportSlot(slot.trackId); }}>MIDI</Small>
+                <span style={{ fontSize: 9, color: premium.text.muted }}>패턴</span>
+                <select
+                  value={patternId}
+                  onChange={(e) => setPatternId(e.target.value)}
+                  title={findPattern(patternId)?.note ?? ''}
+                  className="h-6 px-1.5 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-200"
+                >
+                  {GENRE_ORDER.map((g) => (
+                    <optgroup key={g} label={GENRE_LABEL[g]}>
+                      {DRUM_PATTERNS.filter((p) => p.genre === g).map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <Small onClick={() => addPattern(slot.trackId, patternId)}>+ 패턴</Small>
+                <span className="flex-1 truncate" style={{ fontSize: 10, color: premium.text.muted }}>
+                  {findPattern(patternId)?.note ?? ''}
+                </span>
+              </div>
+            )}
             </div>
           ))}
         </div>
