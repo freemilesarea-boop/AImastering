@@ -11,12 +11,13 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
+import { INSTRUMENTS } from '../../../daw/engine/instruments.js';
 import {
   useMidiEditorStore, currentGridBeat, snapBeatToGrid, drawStartBeat, CONTROLLER_TARGETS,
   GRID_DIVISIONS, type GridDivision,
 } from '../../../stores/midiEditorStore.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
-import { findTrack, trackClips, updateClip } from '../../../daw/model/session-ops.js';
+import { findTrack, trackClips, updateClip, updateTrack } from '../../../daw/model/session-ops.js';
 import { clipNotes, notesInClipTime, writeClipNotes } from '../../../daw/model/patterns.js';
 import {
   createNote, isBlackKey, pitchName, targetLabel, to7bit, from7bit, noteEndBeat,
@@ -734,6 +735,28 @@ export default function KeyEditor() {
             <option key={targetLabel(t)} value={JSON.stringify(t)}>{targetLabel(t)}</option>
           ))}
         </select>
+
+        {/* Which instrument the part plays through.
+            `instrumentId` has been on the track model all along and every
+            track was hardcoded to 'polysynth', because nothing anywhere could
+            set it — so the FM e-piano shipped unreachable.  Same shape as the
+            missing pencil: the feature was written, and no control existed to
+            ask for it. */}
+        {track && (
+          <select
+            value={track.instrumentId ?? 'polysynth'}
+            onChange={(e) => {
+              const id = e.target.value;
+              apply((sess) => updateTrack(sess, track.id, (t) => ({ ...t, instrumentId: id })));
+            }}
+            title="이 파트를 연주할 악기"
+            className="h-6 rounded text-[10px] px-1 bg-zinc-900 border border-zinc-700 text-zinc-300"
+          >
+            {INSTRUMENTS.map((i) => (
+              <option key={i.id} value={i.id}>{i.name}</option>
+            ))}
+          </select>
+        )}
 
         {/* The pencil, on screen.
             It already existed — `tool === 'draw'` has always drawn notes —
