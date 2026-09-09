@@ -69,6 +69,7 @@ import {
 } from '../daw/edit/master-handoff.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { useAppStore } from '../stores/appStore.js';
+import { useWorkspaceStore } from '../stores/workspaceStore.js';
 import { useReferenceStore } from '../stores/referenceStore.js';
 import {
   autoWarpClip, setWarpEnabled, unwarpClip, warpClipToTempo,
@@ -2369,6 +2370,16 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
     },
     'transport.gotoLoopStart': () => { daw().seek(daw().loopStartSec); },
     'transport.gotoLoopEnd':   () => { daw().seek(daw().loopEndSec); },
+
+    // F11 is Cubase's VST Instruments rack, and in the DAW that is what it
+    // has to be.  On the mastering page the same key still opens the advanced
+    // parameter panel — the two screens have different work, and the key
+    // belongs to whichever one you are looking at.
+    'window.vstEditor': () => {
+      const ws = useWorkspaceStore.getState();
+      ws.togglePanel('vstEditor');
+      notify(ws.panels.vstEditor ? '인스트루먼트 랙 (F11)' : '인스트루먼트 랙 닫힘');
+    },
 
     'view.zoomInH':  () => { daw().setPxPerSec(daw().pxPerSec * 1.5); },
     'view.zoomOutH': () => { daw().setPxPerSec(daw().pxPerSec / 1.5); },

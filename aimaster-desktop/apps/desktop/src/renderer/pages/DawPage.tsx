@@ -14,6 +14,7 @@ import { useWorkspaceStore } from '../stores/workspaceStore.js';
 import EditWindow from '../components/daw/edit/EditWindow.js';
 import MixWindow from '../components/daw/mix/MixWindow.js';
 import KeyEditor from '../components/daw/midi/KeyEditor.js';
+import InstrumentRack from '../components/daw/InstrumentRack.js';
 import SmartControlPanel from '../components/daw/smart/SmartControlPanel.js';
 import DeviceChainView from '../components/daw/chain/DeviceChainView.js';
 import SessionViewGrid from '../components/daw/session/SessionViewGrid.js';
@@ -36,8 +37,7 @@ import { createStack } from '../daw/model/stacks.js';
 import { setSessionTempo } from '../daw/model/warp.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
 import {
-  addTrack, createTrack, createBus, createMidiPart, findTrack, renameSession, sessionEndSec,
-  updateClips,
+  addTrack, createTrack, createBus, findTrack, renameSession, sessionEndSec,
 } from '../daw/model/session-ops.js';
 import { shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
@@ -67,6 +67,8 @@ export default function DawPage() {
   const apply        = useDawStore((s) => s.apply);
   const tool         = useWorkspaceStore((s) => s.tool);
   const setTool      = useWorkspaceStore((s) => s.setTool);
+  const rackOpen     = useWorkspaceStore((s) => s.panels.vstEditor);
+  const setPanel     = useWorkspaceStore((s) => s.setPanel);
   const loadSession  = useDawStore((s) => s.loadSession);
   const windowMode   = useDawStore((s) => s.window);
   const setWindow    = useDawStore((s) => s.setWindow);
@@ -143,18 +145,17 @@ export default function DawPage() {
     } finally { setBusy(null); }
   }, [invoke, notify, playheadSec]);
 
-  /** New instrument track with an empty four-bar part, opened for editing. */
+  /**
+   * Adding an instrument means CHOOSING one.
+   *
+   * This button used to make a `polysynth` called `Synth N` without asking,
+   * which is how four working instruments ended up unreachable from the only
+   * place anyone looks for them.  It opens the rack instead — the same window
+   * F11 opens, so there is one door rather than two that behave differently.
+   */
   const handleAddInstrument = useCallback(() => {
-    const current = useDawStore.getState().session;
-    const barSec = (60 / current.tempoBpm) * current.timeSignature[0];
-    const track = createTrack(`Synth ${current.tracks.filter((t) => t.kind === 'instrument').length + 1}`, 'instrument');
-    const part = createMidiPart(`${track.name} 1`, { startSec: 0, durationSec: barSec * 4 });
-    apply((s) => updateClips(addTrack(s, track), track.id, () => [part]));
-    useDawStore.getState().setFocusedTrack(track.id);
-    useMidiEditorStore.getState().openPart({ trackId: track.id, clipId: part.id });
-    setWindow('midi');
-    notify('인스트루먼트 트랙을 만들고 Key Editor 를 열었습니다', 'success');
-  }, [apply, notify, setWindow]);
+    setPanel('vstEditor', true);
+  }, [setPanel]);
 
   /** Import a .mid — one instrument track per source track, MPE preserved. */
   const handleImportMidi = useCallback(async () => {
@@ -560,6 +561,11 @@ export default function DawPage() {
         : <ReferencePanel />}
 
       {templatesOpen && <TemplatePanel onClose={() => setTemplatesOpen(false)} />}
+
+      {/* F11 — the instrument rack.  It reuses the `vstEditor` panel flag that
+          already existed under that name, so the key, the label and the panel
+          finally mean the same thing. */}
+      {rackOpen && <InstrumentRack onClose={() => setPanel('vstEditor', false)} />}
 
       {/* Floats over every window — scoring means watching the picture WHILE
           arranging, not instead of it. */}

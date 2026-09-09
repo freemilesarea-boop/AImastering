@@ -57,6 +57,8 @@ const INVOKE_CHANNELS = [
   'daw:write-temp-audio', 'daw:bounce-audio', 'daw:stage-for-mastering', 'daw:discard-staged',
   'daw:choose-stem-folder', 'daw:write-stem',
   'daw:sfz-open', 'daw:sample-read',
+  // Writing a .mid back out — the other half of the MIDI importer
+  'daw:midi-save',
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer
   'daw:pcm-source',
   // Installed third-party plugins (scan only — nothing is loaded)

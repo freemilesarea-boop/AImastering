@@ -469,6 +469,35 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   // anything could arrive on that channel — the same rule the stem writer
   // follows.
 
+  // ── MIDI export ─────────────────────────────────────────────────────────
+  //
+  // `exportMidiFile` has been in the renderer, written and tested, since the
+  // MIDI importer landed — with nothing in the app calling it.  A DAW that
+  // reads .mid and cannot write one back is a one-way door, and the way out
+  // is this channel.
+  ipc.handle('daw:midi-save', async (_e, req: unknown) => {
+    if (!win) return null;
+    const { name, bytes } = readAudioPayload(req);
+    // The renderer names the file, so the name is untrusted here whatever
+    // sent it — the same rule the stem writer follows.  `.mid` is forced
+    // rather than appended: a track called "Piano.mid" must not save as
+    // "Piano.mid.mid".
+    const stem = path.basename(name).replace(/\.[^.]+$/, '').replace(/[^\w.\-가-힣 ]+/g, '_').slice(0, 80) || 'part';
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `${stem}.mid`,
+      filters: [{ name: 'MIDI', extensions: ['mid', 'midi'] }, ALL_FILES],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, bytes);
+      log.info(`[daw] midi ${bytes.length} bytes -> ${result.filePath}`);
+      return result.filePath;
+    } catch (err) {
+      recordFailure('export', `daw:midi-save failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
   ipc.handle('daw:sfz-open', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
