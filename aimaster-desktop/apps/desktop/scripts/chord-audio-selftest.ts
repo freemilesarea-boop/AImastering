@@ -65,6 +65,17 @@ import {
   describeChordBlock, isUnsure, nextUnsureAfter, unsureChords, UNSURE_MARGIN,
 } from '../src/renderer/daw/edit/chord-confidence.js';
 import { setChord, moveChord, transposeChords } from '../src/renderer/daw/edit/chord-edit.js';
+import {
+  voiceLead, voiceDistance, totalMovement, voicingCandidates, DEFAULT_VOICING,
+} from '../src/renderer/daw/model/chord-voicing.js';
+import {
+  backingNotes, BACKING_STYLES, backingInstrumentFor, generateBackingPart,
+  type BackingSpan,
+} from '../src/renderer/daw/edit/chord-parts.js';
+import { withChords } from '../src/renderer/daw/edit/chord-edit.js';
+import { createSession } from '../src/renderer/daw/model/session-ops.js';
+import { voiceChord } from '../src/renderer/daw/model/chords.js';
+import { to7bit } from '../src/renderer/daw/model/midi.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -1306,6 +1317,231 @@ async function main(): Promise<void> {
     assert(unsureChords(reopened).length === 1,
       'the margin did not survive the round trip through the session file');
     assert(reopened[0]!.margin === 0.9, 'a confident margin was lost');
+  });
+
+  // ── Playing the chart ─────────────────────────────────────────────────────
+
+  const symbols = (...names: string[]) => names.map((n) => parseChord(n)!);
+
+  await check('the hand stays still — voice leading beats root position', () => {
+    // The one thing about a voicing that is objectively measurable, so it is
+    // measured rather than admired.  Root position is right for a chord on
+    // its own and wrong for a progression: the top note swings and the hand
+    // jumps a fifth between every pair.
+    const cases: [string, string[]][] = [
+      ['pop', ['C', 'G', 'Am', 'F']],
+      ['sevenths', ['Cmaj7', 'Am7', 'Dm7', 'G7']],
+      ['jazz', ['Dm7', 'G7', 'Cmaj7', 'Am7', 'Dm7', 'G7', 'Em7', 'A7']],
+    ];
+    const top = (v: readonly number[][]): number => {
+      const tops = v.map((x) => Math.max(...x));
+      return Math.max(...tops) - Math.min(...tops);
+    };
+    for (const [name, names] of cases) {
+      const chords = symbols(...names);
+      const rooted = chords.map((c) => voiceChord(c, 60));
+      const led = voiceLead(chords);
+      const rootMove = totalMovement(rooted);
+      const ledMove = totalMovement(led);
+      assert(ledMove * 2 <= rootMove,
+        `${name}: voice leading moved ${ledMove} against root position's ${rootMove} — `
+        + 'it should be at least half');
+      // Stated against root position rather than as a fixed number of
+      // semitones.  An absolute threshold here was set from one register and
+      // had to be retuned the moment the register changed, which is a test
+      // measuring the settings instead of the claim.
+      assert(top(led) * 2 <= top(rooted),
+        `${name}: the top note swings ${top(led)} against root position's ${top(rooted)} — `
+        + 'it should be at most half');
+      console.log(`      (${name}: 이동 ${rootMove} → ${ledMove} 반음, 최고음 폭 ${top(rooted)} → ${top(led)})`);
+    }
+  });
+
+  await check('a held note is free, and that is what connects a progression', () => {
+    // Distance is measured to the NEAREST previous note, not by pairing up
+    // index by index.  Pairing would charge a triad for following a seventh
+    // with one fewer voice, and would charge nothing for the common tone that
+    // is the whole reason a progression sounds joined up.
+    assert(voiceDistance([60, 64, 67], [60, 64, 67]) === 0, 'the same voicing must be free');
+    assert(voiceDistance([60, 64, 67], [60, 65, 69]) === 3,
+      `C→F should be three semitones of work, got ${voiceDistance([60, 64, 67], [60, 65, 69])}`);
+    // Four voices onto three: the extra voice finds a home, it is not a fine.
+    assert(voiceDistance([60, 64, 67, 71], [60, 64, 67]) === 0,
+      'dropping to a triad on notes that were already sounding must be free');
+    assert(voiceDistance([], [60, 64, 67]) === 0, 'the first chord has nothing to lead from');
+  });
+
+  await check('the chart decides the bass, not the voicer', () => {
+    // A slash chord is a statement.  A voicer that overruled it to save
+    // movement would be answering a question nobody asked.
+    const slash = parseChord('C/E')!;
+    for (const voicing of voicingCandidates(slash)) {
+      assert(voicing[0]! % 12 === 4,
+        `every C/E voicing must sit on E, got ${voicing.join(',')}`);
+    }
+    const led = voiceLead(symbols('C', 'C/E', 'F'));
+    assert((led[1]?.[0] ?? 0) % 12 === 4, `C/E was voiced as ${led[1]?.join(',')}`);
+  });
+
+  await check('the leading is doing the work, not just the centring', () => {
+    // The check above compares against ROOT POSITION, and it turns out that
+    // is too easy: simply choosing the inversion nearest the middle of the
+    // register beats root position almost as well.  Measured, the travel term
+    // changed one voicing in nine and one semitone of total travel — it was
+    // very nearly decoration, and nothing here would have said so.
+    //
+    // So this compares against the honest rival: the same candidates, chosen
+    // by register alone.  (The fix was to widen the register — in two octaves
+    // there is barely a choice to make.)
+    const chords = symbols('C', 'Am', 'F', 'G', 'Em', 'Am', 'Dm7', 'G7', 'Cmaj7');
+    const centre = (DEFAULT_VOICING.lowPitch + DEFAULT_VOICING.highPitch) / 2;
+    const anchorOnly = chords.map((chord) => {
+      const candidates = voicingCandidates(chord);
+      let best = candidates[0] ?? [];
+      let bestCost = Infinity;
+      for (const candidate of candidates) {
+        const middle = candidate.reduce((a, b) => a + b, 0) / candidate.length;
+        const cost = Math.abs(middle - centre);
+        if (cost < bestCost) { bestCost = cost; best = candidate; }
+      }
+      return best;
+    });
+    const led = voiceLead(chords);
+    const ledMove = totalMovement(led);
+    const centredMove = totalMovement(anchorOnly);
+    assert(ledMove < centredMove * 0.85,
+      `leading moved ${ledMove} against centring's ${centredMove} — the travel term is not earning its place`);
+    const differ = led.filter((v, i) => v.join(',') !== (anchorOnly[i] ?? []).join(',')).length;
+    assert(differ >= 3,
+      `leading and centring chose the same voicing ${led.length - differ} times out of ${led.length}`);
+    console.log(`      (리딩 ${ledMove} vs 앵커만 ${centredMove} 반음, 다른 보이싱 ${differ}/${led.length})`);
+  });
+
+  await check('the register is anchored, so a long song does not walk away', () => {
+    // Cheapest-move alone lets a progression drift for eighty bars, because
+    // every individual step is cheap.  Sixteen repeats of a loop that has a
+    // natural downward pull is what finds it.
+    const loop = symbols('C', 'G', 'Am', 'F');
+    const long = Array.from({ length: 16 }, () => loop).flat();
+    const led = voiceLead(long);
+    const lows = led.map((v) => Math.min(...v));
+    const highs = led.map((v) => Math.max(...v));
+    // Tighter than the register allows on purpose: the point is not that it
+    // stayed legal, it is that it stayed PUT.  The allowed range is three
+    // octaves and every fixture measured used about one.
+    assert(Math.min(...lows) >= 58 && Math.max(...highs) <= 76,
+      `after 64 chords the voicing ran to ${Math.min(...lows)}–${Math.max(...highs)}, `
+      + `out of an allowed ${DEFAULT_VOICING.lowPitch}–${DEFAULT_VOICING.highPitch}`);
+    // And the first loop and the last should be in the same place.
+    assert(Math.abs((led[0]?.[0] ?? 0) - (led[60]?.[0] ?? 0)) <= 2,
+      `the loop drifted: bar 1 ${led[0]?.join(',')} vs bar 61 ${led[60]?.join(',')}`);
+  });
+
+  await check('each backing style plays something different', () => {
+    const spans: BackingSpan[] = ['C', 'G', 'Am', 'F'].map((s, i) => ({
+      startBeat: i * 4, endBeat: i * 4 + 4, chord: parseChord(s)!,
+    }));
+    const counts = new Map<string, number>();
+    for (const style of BACKING_STYLES) {
+      const notes = backingNotes(spans, { style });
+      assert(notes.length > 0, `${style} produced nothing`);
+      counts.set(style, notes.length);
+      // Everything must land inside the chords it was written for.
+      for (const note of notes) {
+        assert(note.startBeat >= 0 && note.startBeat < 16 + 1e-9,
+          `${style} wrote a note at beat ${note.startBeat}`);
+        assert(note.startBeat + note.durationBeat <= 16 + 1e-6,
+          `${style} wrote a note running past the last chord`);
+      }
+      assert(backingInstrumentFor(style).length > 0, `${style} has no instrument`);
+    }
+    // A pad is one chord held; a comp is many; they must not be the same
+    // thing under two names.
+    assert(new Set(counts.values()).size === BACKING_STYLES.length,
+      `two styles produced the same number of notes: ${[...counts].map(([k, v]) => `${k} ${v}`).join(', ')}`);
+    assert((counts.get('pad') ?? 0) < (counts.get('comp') ?? 0), 'a pad should be sparser than a comp');
+    console.log(`      (음 개수: ${[...counts].map(([k, v]) => `${k} ${v}`).join(', ')})`);
+  });
+
+  await check('the arpeggio does not stutter at the turn', () => {
+    // Up then down repeats the top note at the turn and the bottom at the
+    // wrap unless BOTH ends are dropped from the descent.  Measured as
+    // 64 67 72 67 64 *64* 67 72 — twice a bar, and easy to miss by ear.
+    const spans: BackingSpan[] = [{ startBeat: 0, endBeat: 8, chord: parseChord('C')! }];
+    const notes = backingNotes(spans, { style: 'arp' }).sort((a, b) => a.startBeat - b.startBeat);
+    for (let i = 1; i < notes.length; i++) {
+      assert(notes[i]!.pitch !== notes[i - 1]!.pitch,
+        `the arpeggio repeated ${notes[i]!.pitch} at beat ${notes[i]!.startBeat}: `
+        + notes.map((n) => n.pitch).join(' '));
+    }
+  });
+
+  await check('a chord held for four bars still gets a bass note in each', () => {
+    // The failure this rule exists for: a bass line that plays once and then
+    // leaves four bars empty is not a bass line.
+    const spans: BackingSpan[] = [{ startBeat: 0, endBeat: 16, chord: parseChord('C')! }];
+    const notes = backingNotes(spans, { style: 'bass', beatsPerBar: 4 });
+    assert(notes.length === 4, `expected one per bar, got ${notes.length}`);
+    assert(notes.every((n) => n.pitch === notes[0]!.pitch), 'the bass wandered off the root');
+    // The downbeat of the chord is the loud one.
+    assert(to7bit(notes[0]!.velocity) > to7bit(notes[1]!.velocity),
+      'the chord change should land harder than the repeats');
+  });
+
+  await check('every chord in the chart reaches the part', () => {
+    // Found in the running app: an eight-bar skeleton generated a part with
+    // SEVEN chords in it.  `songEnd` measures clips, so a session whose only
+    // content is a chord chart returns zero, the last chord's range came out
+    // zero-length and it vanished.  The lane never showed the problem because
+    // it draws to the edge of the viewport — the chart and the part generated
+    // from it disagreed about how many chords there were.
+    const names = ['C', 'G', 'Am', 'F', 'C', 'G', 'F', 'F'];
+    const bar = (60 / 120) * 4;
+    const events = names.map((symbol, i) => ({
+      id: `s${i}`, timeSec: i * bar, chord: parseChord(symbol)!,
+    }));
+    const session = withChords(createSession(), events);
+    const made = generateBackingPart(session, { style: 'pad' });
+    assert(made.ok, made.ok ? '' : made.reason);
+    if (!made.ok) return;
+    // Three notes per chord, held: eight chords is 24 notes, not 21.
+    assert(made.noteCount === names.length * 3,
+      `expected ${names.length * 3} notes for ${names.length} chords, got ${made.noteCount}`);
+    assert(made.message.includes(`코드 ${names.length}개`),
+      `the message dropped a chord: ${made.message}`);
+
+    // And the part has to cover the last chord, not stop at its downbeat.
+    const track = made.session.tracks.find((t) => t.id === made.trackId);
+    const part = track?.playlists[0]?.clips[0];
+    assert(part !== undefined, 'the part was not added to the session');
+    assert((part?.durationSec ?? 0) >= names.length * bar - 1e-6,
+      `the part is ${part?.durationSec}s for ${names.length * bar}s of chords`);
+  });
+
+  await check('generating a part never writes over what is there', () => {
+    // A new track every time.  Generating four bars of piano on top of
+    // somebody's vocal take is not the kind of accident undo fixes — they
+    // have to notice first.
+    const bar = (60 / 120) * 4;
+    const session = withChords(createSession(), [
+      { id: 'a', timeSec: 0, chord: parseChord('C')! },
+      { id: 'b', timeSec: bar, chord: parseChord('F')! },
+    ]);
+    const before = session.tracks.length;
+    const made = generateBackingPart(session, { style: 'comp' });
+    assert(made.ok, made.ok ? '' : made.reason);
+    if (!made.ok) return;
+    assert(made.session.tracks.length === before + 1,
+      `expected one new track, went from ${before} to ${made.session.tracks.length}`);
+    // The chord track itself is untouched — generating is not editing.
+    assert(made.session.chordTrack.length === session.chordTrack.length,
+      'generating a part changed the chord track');
+  });
+
+  await check('an empty chord track says so instead of making an empty part', () => {
+    const made = generateBackingPart(createSession(), { style: 'pad' });
+    assert(!made.ok, 'an empty chart produced a part');
+    if (!made.ok) assert(made.reason.includes('코드'), `unhelpful reason: ${made.reason}`);
   });
 
   console.log('\n=== Chords from audio — did it name what was played? ===');

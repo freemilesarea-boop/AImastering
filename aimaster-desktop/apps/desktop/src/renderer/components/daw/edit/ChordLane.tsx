@@ -28,6 +28,9 @@ import {
 import { songEnd } from '../../../daw/edit/arrange-ops.js';
 import { barSeconds } from '../../../daw/edit/chord-detect.js';
 import { detectChordsForClip } from '../../../daw/edit/chord-actions.js';
+import {
+  BACKING_STYLES, backingStyleLabel, generateBackingPart, type BackingStyle,
+} from '../../../daw/edit/chord-parts.js';
 import { trackClips } from '../../../daw/model/session-ops.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
 import { premium } from '../../../theme/premium.js';
@@ -43,15 +46,26 @@ export function ChordLaneHeader() {
   const seekTo = useDawStore((s) => s.seek);
   const notify = useAppStore((s) => s.notify);
   const [busy, setBusy] = useState<string | null>(null);
+  const [style, setStyle] = useState<BackingStyle>('pad');
 
   // The bars the detector was least sure of.  Counting them is not the point
   // — REACHING them is: a number in a toast tells you there is work and not
   // where, and a chart of ninety bars with six doubtful ones in it is only
   // checkable if the six can be jumped to.
   const unsure = unsureChords(sortedChords(session));
+  const chordCount = sortedChords(session).length;
   const goToNextUnsure = (): void => {
     const next = nextUnsureAfter(sortedChords(session), playheadSec);
     if (next) seekTo(next.timeSec);
+  };
+
+  /** The chord track, played — a new track so nothing existing is written over. */
+  const makePart = (): void => {
+    const result = generateBackingPart(useDawStore.getState().session, { style });
+    if (!result.ok) { notify(result.reason, 'warning'); return; }
+    apply(() => result.session);
+    useDawStore.getState().setFocusedTrack(result.trackId);
+    notify(result.message, 'success');
   };
 
   const addHere = (): void => {
@@ -121,6 +135,30 @@ export function ChordLaneHeader() {
         >{`불확실 ${unsure.length} →`}</button>
       )}
       <span className="flex-1" />
+      <select
+        value={style}
+        onChange={(e) => setStyle(e.target.value as BackingStyle)}
+        title="만들 반주의 종류"
+        className="h-4 rounded text-[8px] leading-none border bg-transparent"
+        style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
+      >
+        {BACKING_STYLES.map((s) => (
+          <option key={s} value={s} style={{ background: '#14141c' }}>{backingStyleLabel(s)}</option>
+        ))}
+      </select>
+      <button
+        onClick={makePart}
+        disabled={chordCount === 0}
+        title={chordCount === 0
+          ? '코드 트랙이 비어 있습니다'
+          : `코드 트랙을 ${backingStyleLabel(style)} 파트로 만들어 새 트랙에 놓습니다`}
+        className="h-4 px-1 rounded text-[8px] leading-none border"
+        style={{
+          borderColor: 'rgba(255,255,255,0.14)',
+          color: chordCount === 0 ? premium.text.faint : premium.text.muted,
+          opacity: chordCount === 0 ? 0.45 : 1,
+        }}
+      >파트</button>
       <button
         onClick={() => { void readChords(); }}
         disabled={!target || busy !== null}
