@@ -282,16 +282,26 @@ export function lowestPitchClass(
 }
 
 /** The commonest non-null value, or null — a vote over a span's frames. */
-export function majorityPitchClass(votes: readonly (number | null)[]): number | null {
+export function majorityPitchClass(
+  votes: readonly (number | null)[], minShare = 0,
+): number | null {
   const counts = new Map<number, number>();
+  let voted = 0;
   for (const v of votes) {
     if (v === null) continue;
     counts.set(v, (counts.get(v) ?? 0) + 1);
+    voted += 1;
   }
   let best: number | null = null;
   let bestCount = 0;
   for (const [pc, count] of counts) if (count > bestCount) { bestCount = count; best = pc; }
-  return best;
+  if (best === null || voted === 0) return null;
+  // A PLURALITY is not a bass note.  The lowest sounding note of an arpeggio
+  // is whichever chord tone the pattern is on, so over a beat it might be the
+  // root 40 % of the time and the third and fifth 30 % each — and answering
+  // "the root" there states something about the harmony that the audio did
+  // not say.  `minShare` is what makes it say "nothing" instead.
+  return bestCount >= voted * minShare ? best : null;
 }
 
 // ── Folding ─────────────────────────────────────────────────────────────────

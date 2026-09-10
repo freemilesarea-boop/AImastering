@@ -252,3 +252,45 @@ export function bassPitchOf(chroma: Float32Array, ratio = 1.3): number | null {
   if (best <= 0) return null;
   return best >= second * ratio ? bestPc : null;
 }
+
+/**
+ * Every template's score for this chroma, in template order.
+ *
+ * The same arithmetic `matchChord` does, without the argmax — the smoother
+ * needs all of them, because the whole point of it is that the best answer
+ * for one beat is not always the best answer for the beat in the song.
+ *
+ * Returns null for silence, which is a different statement from "every chord
+ * scores badly" and has to stay distinguishable downstream.
+ */
+export function chordScores(
+  chroma: Float32Array, options: MatchOptions = {},
+): Float32Array | null {
+  const {
+    vocabulary = DEFAULT_VOCABULARY,
+    bassPitchClass = null,
+    bassWeight = DEFAULT_BASS_WEIGHT,
+  } = options;
+
+  let energy = 0;
+  for (let i = 0; i < PITCH_CLASSES; i++) energy += (chroma[i] ?? 0) ** 2;
+  if (energy <= 1e-12) return null;
+  const scale = 1 / Math.sqrt(energy);
+
+  const templates = chordTemplates(vocabulary);
+  const out = new Float32Array(templates.length);
+  for (let t = 0; t < templates.length; t++) {
+    const template = templates[t];
+    if (!template) continue;
+    let dot = 0;
+    for (let i = 0; i < PITCH_CLASSES; i++) {
+      dot += (chroma[i] ?? 0) * scale * (template.vector[i] ?? 0);
+    }
+    if (bassPitchClass !== null) {
+      if (template.chord.root === bassPitchClass) dot += bassWeight;
+      else if (template.members.has(bassPitchClass)) dot += bassWeight * 0.5;
+    }
+    out[t] = dot;
+  }
+  return out;
+}

@@ -327,11 +327,13 @@
     }
     return null;
   }
-  function majorityPitchClass(votes) {
+  function majorityPitchClass(votes, minShare = 0) {
     const counts = /* @__PURE__ */ new Map();
+    let voted = 0;
     for (const v of votes) {
       if (v === null) continue;
       counts.set(v, (counts.get(v) ?? 0) + 1);
+      voted += 1;
     }
     let best = null;
     let bestCount = 0;
@@ -339,7 +341,8 @@
       bestCount = count;
       best = pc;
     }
-    return best;
+    if (best === null || voted === 0) return null;
+    return bestCount >= voted * minShare ? best : null;
   }
   function foldToChroma(frame, layout, out = new Float32Array(PITCH_CLASSES)) {
     out.fill(0);
@@ -585,6 +588,128 @@
     if (best <= 0) return null;
     return best >= second * ratio ? bestPc : null;
   }
+  function chordScores(chroma, options = {}) {
+    const {
+      vocabulary = DEFAULT_VOCABULARY,
+      bassPitchClass = null,
+      bassWeight = DEFAULT_BASS_WEIGHT
+    } = options;
+    let energy = 0;
+    for (let i = 0; i < PITCH_CLASSES; i++) energy += (chroma[i] ?? 0) ** 2;
+    if (energy <= 1e-12) return null;
+    const scale = 1 / Math.sqrt(energy);
+    const templates = chordTemplates(vocabulary);
+    const out = new Float32Array(templates.length);
+    for (let t = 0; t < templates.length; t++) {
+      const template = templates[t];
+      if (!template) continue;
+      let dot = 0;
+      for (let i = 0; i < PITCH_CLASSES; i++) {
+        dot += (chroma[i] ?? 0) * scale * (template.vector[i] ?? 0);
+      }
+      if (bassPitchClass !== null) {
+        if (template.chord.root === bassPitchClass) dot += bassWeight;
+        else if (template.members.has(bassPitchClass)) dot += bassWeight * 0.5;
+      }
+      out[t] = dot;
+    }
+    return out;
+  }
+
+  // src/renderer/daw/audio/chroma/chord-hmm.ts
+  var DEFAULT_SHARPNESS = 10;
+  var DEFAULT_SWITCH_COST = 1.5;
+  var DEFAULT_SIZE_PENALTY = 0.02;
+  function smoothChords(spanChroma, options = {}) {
+    const {
+      sharpness = DEFAULT_SHARPNESS,
+      switchCost = DEFAULT_SWITCH_COST,
+      sizePenalty = DEFAULT_SIZE_PENALTY,
+      noChordScore = DEFAULT_MIN_SCORE,
+      vocabulary = DEFAULT_VOCABULARY,
+      bassPitches,
+      ...match
+    } = options;
+    const templates = chordTemplates(vocabulary);
+    const chordCount = templates.length;
+    const stateCount = chordCount + 1;
+    const NO_CHORD = chordCount;
+    const spanCount = spanChroma.length;
+    if (spanCount === 0) return { path: [], scores: [], margins: [] };
+    const emission = spanChroma.map((chroma, i) => {
+      const bass = bassPitches ? bassPitches[i] ?? null : match.bassPitchClass ?? null;
+      return chordScores(chroma, { ...match, vocabulary, bassPitchClass: bass });
+    });
+    const penalty = new Float64Array(chordCount);
+    for (let t = 0; t < chordCount; t++) {
+      penalty[t] = sizePenalty * Math.max(0, (templates[t]?.members.size ?? 3) - 3);
+    }
+    const scoreAt = (t, state) => {
+      const row = emission[t];
+      if (!row) return state === NO_CHORD ? 0 : -Infinity;
+      return state === NO_CHORD ? noChordScore : (row[state] ?? 0) - (penalty[state] ?? 0);
+    };
+    let prev = new Float64Array(stateCount);
+    for (let j = 0; j < stateCount; j++) prev[j] = sharpness * scoreAt(0, j);
+    const back = [];
+    for (let t = 1; t < spanCount; t++) {
+      let bestPrev = -Infinity;
+      let bestPrevState = 0;
+      for (let i = 0; i < stateCount; i++) {
+        const v = prev[i] ?? -Infinity;
+        if (v > bestPrev) {
+          bestPrev = v;
+          bestPrevState = i;
+        }
+      }
+      const fromElsewhere = bestPrev - switchCost;
+      const next = new Float64Array(stateCount);
+      const pointers = new Int32Array(stateCount);
+      for (let j = 0; j < stateCount; j++) {
+        const stay = prev[j] ?? -Infinity;
+        const carried = stay >= fromElsewhere ? stay : fromElsewhere;
+        pointers[j] = stay >= fromElsewhere ? j : bestPrevState;
+        next[j] = carried + sharpness * scoreAt(t, j);
+      }
+      back.push(pointers);
+      prev = next;
+    }
+    let end = 0;
+    let bestEnd = -Infinity;
+    for (let j = 0; j < stateCount; j++) {
+      const v = prev[j] ?? -Infinity;
+      if (v > bestEnd) {
+        bestEnd = v;
+        end = j;
+      }
+    }
+    const states = new Int32Array(spanCount);
+    states[spanCount - 1] = end;
+    for (let t = spanCount - 1; t > 0; t--) {
+      const pointers = back[t - 1];
+      states[t - 1] = pointers ? pointers[states[t] ?? 0] ?? 0 : 0;
+    }
+    const path = [];
+    const scores = [];
+    const margins = [];
+    for (let t = 0; t < spanCount; t++) {
+      const state = states[t] ?? NO_CHORD;
+      const row = emission[t];
+      const chosen = scoreAt(t, state);
+      let bestOther = -Infinity;
+      if (row) {
+        for (let j = 0; j < stateCount; j++) {
+          if (j === state) continue;
+          const v = scoreAt(t, j);
+          if (v > bestOther) bestOther = v;
+        }
+      }
+      path.push(state === NO_CHORD ? null : templates[state]?.chord ?? null);
+      scores.push(state === NO_CHORD ? 0 : chosen);
+      margins.push(bestOther > -Infinity ? chosen - bestOther : 0);
+    }
+    return { path, scores, margins };
+  }
 
   // src/renderer/daw/audio/chroma/chord-segment.ts
   var MIN_TEMPO_CONFIDENCE = 0.35;
@@ -631,13 +756,34 @@
   }
   var DEFAULT_MIN_BEATS = 2;
   function segmentChords(spanChroma, grid, options = {}) {
-    const { bassPitches, minBeats = DEFAULT_MIN_BEATS, ...match } = options;
-    const spans = spanChroma.map((chroma, i) => {
-      const bass = bassPitches ? bassPitches[i] ?? null : match.bassPitchClass ?? null;
-      const hit = matchChord(chroma, { ...match, bassPitchClass: bass });
-      if (!hit) return null;
-      return { label: formatChord(hit.chord), chord: hit.chord, score: hit.score, margin: hit.margin };
-    });
+    const {
+      bassPitches,
+      bassIsStem = false,
+      minBeats = DEFAULT_MIN_BEATS,
+      smooth = true,
+      ...match
+    } = options;
+    let spans;
+    if (smooth) {
+      const result = smoothChords(spanChroma, {
+        ...match,
+        ...typeof smooth === "object" ? smooth : {},
+        ...bassPitches ? { bassPitches } : {}
+      });
+      spans = result.path.map((chord, i) => chord === null ? null : {
+        label: formatChord(chord),
+        chord,
+        score: result.scores[i] ?? 0,
+        margin: result.margins[i] ?? 0
+      });
+    } else {
+      spans = spanChroma.map((chroma, i) => {
+        const bass = bassPitches ? bassPitches[i] ?? null : match.bassPitchClass ?? null;
+        const hit = matchChord(chroma, { ...match, bassPitchClass: bass });
+        if (!hit) return null;
+        return { label: formatChord(hit.chord), chord: hit.chord, score: hit.score, margin: hit.margin };
+      });
+    }
     const runs = [];
     for (let i = 0; i < spans.length; i++) {
       const span = spans[i];
@@ -706,7 +852,7 @@
       const beats = (next?.from ?? spanChroma.length) - run.from;
       const evidence = Math.max(1, run.matched);
       return {
-        chord: run.chord,
+        chord: bassIsStem ? slashFor(run.chord, bassPitches, run.from, next?.from ?? spanChroma.length) : run.chord,
         startSec: grid[run.from] ?? 0,
         // A segment runs until the next one starts, not until its own last
         // matched beat ends.
@@ -719,6 +865,27 @@
         beats
       };
     });
+  }
+  function slashFor(chord, bassPitches, from, to) {
+    if (!bassPitches) return chord;
+    const counts = /* @__PURE__ */ new Map();
+    let voted = 0;
+    for (let i = from; i < to; i++) {
+      const pc = bassPitches[i];
+      if (pc === null || pc === void 0) continue;
+      counts.set(pc, (counts.get(pc) ?? 0) + 1);
+      voted += 1;
+    }
+    if (voted === 0) return chord;
+    let best = -1;
+    let bestCount = 0;
+    for (const [pc, count] of counts) if (count > bestCount) {
+      bestCount = count;
+      best = pc;
+    }
+    if (best < 0 || bestCount * 2 <= voted) return chord;
+    if (best === chord.root) return chord;
+    return chordMembers(chord).has(best) ? makeChord(chord.root, chord.qualityId, best) : chord;
   }
   var UNSURE_MARGIN = 0.04;
   function toChordEvents(segments) {
@@ -752,6 +919,7 @@
       gram.hopSec,
       grid.times
     );
+    let bassIsStem = false;
     if (bass && bass.length > 0) {
       onProgress?.(0.75, "\uBCA0\uC774\uC2A4 \uBD84\uC11D");
       const bassGram = chromagram(bass, sampleRate, {
@@ -761,11 +929,13 @@
         harmonicSuppression: 0.6
       });
       bassPitches = bassPitchesFor(bassGram.frames, bassGram.hopSec, grid.times);
+      bassIsStem = true;
     }
     onProgress?.(0.85, "\uCF54\uB4DC \uB9E4\uCE6D");
     const segments = segmentChords(spans, grid.times, {
       ...options.segment,
       vocabulary,
+      bassIsStem,
       ...bassPitches ? { bassPitches } : {}
     });
     onProgress?.(1, "\uC644\uB8CC");
@@ -778,12 +948,13 @@
       unsure: segments.filter((s) => s.margin < UNSURE_MARGIN).length
     };
   }
+  var MIX_BASS_MAJORITY = 0.6;
   function spanVotes(votes, hopSec, grid) {
     const out = [];
     for (let i = 0; i + 1 < grid.length; i++) {
       const from = Math.max(0, Math.ceil((grid[i] ?? 0) / hopSec));
       const to = Math.min(votes.length, Math.ceil((grid[i + 1] ?? 0) / hopSec));
-      out.push(majorityPitchClass(votes.slice(from, to)));
+      out.push(majorityPitchClass(votes.slice(from, to), MIX_BASS_MAJORITY));
     }
     return out;
   }

@@ -94,6 +94,7 @@ export function detectChordsFromAudio(
   let bassPitches: (number | null)[] | undefined = spanVotes(
     gram.lowPitches, gram.hopSec, grid.times,
   );
+  let bassIsStem = false;
   if (bass && bass.length > 0) {
     onProgress?.(0.75, '베이스 분석');
     const bassGram = chromagram(bass, sampleRate, {
@@ -103,12 +104,14 @@ export function detectChordsFromAudio(
       harmonicSuppression: 0.6,
     });
     bassPitches = bassPitchesFor(bassGram.frames, bassGram.hopSec, grid.times);
+    bassIsStem = true;
   }
 
   onProgress?.(0.85, '코드 매칭');
   const segments = segmentChords(spans, grid.times, {
     ...options.segment,
     vocabulary,
+    bassIsStem,
     ...(bassPitches ? { bassPitches } : {}),
   });
 
@@ -123,7 +126,16 @@ export function detectChordsFromAudio(
   };
 }
 
-/** One value per grid span, by majority over the frames inside it. */
+/**
+ * The bass reading the MIX can support, one per grid span.
+ *
+ * Held to a real majority rather than a plurality.  Without that gate an
+ * arpeggio — where the lowest sounding note is simply whichever chord tone
+ * the pattern has reached — reports a confident bass that walks, and a
+ * walking bass read as an inversion turns one chord into three labels.
+ */
+export const MIX_BASS_MAJORITY = 0.6;
+
 function spanVotes(
   votes: readonly (number | null)[], hopSec: number, grid: readonly number[],
 ): (number | null)[] {
@@ -131,7 +143,7 @@ function spanVotes(
   for (let i = 0; i + 1 < grid.length; i++) {
     const from = Math.max(0, Math.ceil((grid[i] ?? 0) / hopSec));
     const to = Math.min(votes.length, Math.ceil((grid[i + 1] ?? 0) / hopSec));
-    out.push(majorityPitchClass(votes.slice(from, to)));
+    out.push(majorityPitchClass(votes.slice(from, to), MIX_BASS_MAJORITY));
   }
   return out;
 }
