@@ -243,6 +243,57 @@ export function suppressHarmonics(
   return out;
 }
 
+// ── The lowest note ─────────────────────────────────────────────────────────
+
+/**
+ * The pitch class of the LOWEST note sounding, or null.
+ *
+ * This is the bass, read out of the mix itself, and it settles a question no
+ * chroma can: Am7 and C6 are the same four pitch classes — A C E G — and so
+ * are Dm7 and F6, Em7 and G6, and every other minor seventh and its relative
+ * major sixth.  Folding octaves throws away exactly the information that
+ * tells them apart, and this puts one bit of it back.
+ *
+ * A dedicated bass stem is better and is used when there is one.  But the
+ * ambiguity is not rare enough to leave to a setting: a measured progression
+ * of Cmaj7–Am7–Dm7–G7 came back as Cmaj7–C6–F6–G7, which is the same notes,
+ * the same sound, and the wrong chart.
+ *
+ * Read AFTER harmonic suppression on purpose.  A fundamental is not predicted
+ * by anything below it so it survives suppression, while the partials that
+ * would otherwise be mistaken for lower notes do not.
+ */
+export function lowestPitchClass(
+  frame: Float32Array, layout: CqtLayout, floorRatio = 0.25,
+): number | null {
+  let peak = 0;
+  for (let k = 0; k < frame.length; k++) peak = Math.max(peak, frame[k] ?? 0);
+  if (peak <= 0) return null;
+  const floor = peak * floorRatio;
+  for (let k = 1; k < frame.length - 1; k++) {
+    const v = frame[k] ?? 0;
+    if (v < floor) continue;
+    // A local maximum, so the rising skirt of a strong note does not read as
+    // a quieter note a third of a semitone below it.
+    if (v <= (frame[k - 1] ?? 0) || v < (frame[k + 1] ?? 0)) continue;
+    return binPitchClass(layout, k);
+  }
+  return null;
+}
+
+/** The commonest non-null value, or null — a vote over a span's frames. */
+export function majorityPitchClass(votes: readonly (number | null)[]): number | null {
+  const counts = new Map<number, number>();
+  for (const v of votes) {
+    if (v === null) continue;
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  let best: number | null = null;
+  let bestCount = 0;
+  for (const [pc, count] of counts) if (count > bestCount) { bestCount = count; best = pc; }
+  return best;
+}
+
 // ── Folding ─────────────────────────────────────────────────────────────────
 
 /**
@@ -302,6 +353,13 @@ export function normalize(vector: Float32Array): Float32Array {
 export interface Chromagram {
   /** One 12-vector per frame, L2-normalised.  Silence is all zeros. */
   frames: Float32Array[];
+  /**
+   * The lowest note sounding in each frame, as a pitch class, or null.
+   *
+   * The bass, read out of the mix — see `lowestPitchClass` for why it is
+   * worth carrying alongside a vector that deliberately discards octaves.
+   */
+  lowPitches: (number | null)[];
   /** Seconds between frames. */
   hopSec: number;
   /** What the tuning estimate found, in cents from A = 440. */
@@ -354,6 +412,7 @@ export function chromagram(
   const shifted = new Float32Array(layout.bins);
   const suppressed = new Float32Array(layout.bins);
   const frames: Float32Array[] = [];
+  const lowPitches: (number | null)[] = [];
   let silentFrames = 0;
 
   for (const [index, frame] of gram.frames.entries()) {
@@ -361,6 +420,7 @@ export function chromagram(
     for (let k = 0; k < frame.length; k++) sum += frame[k] ?? 0;
     if (sum <= floor || frameRms(index) < SILENCE_RMS) {
       frames.push(new Float32Array(PITCH_CLASSES));
+      lowPitches.push(null);
       silentFrames += 1;
       continue;
     }
@@ -372,12 +432,13 @@ export function chromagram(
     // split into 0.43 / 0.36 — the compression was not lifting quiet notes,
     // it was erasing the difference between every note and every artefact.
     // log(1 + γ·x) only means anything when x is already 0…1.
+    lowPitches.push(lowestPitchClass(suppressed, layout));
     peakNormalize(chroma);
     normalize(compress(chroma, opt.gamma));
     frames.push(chroma);
   }
 
-  return { frames, hopSec: hopSize / sampleRate, tuningCents, silentFrames };
+  return { frames, lowPitches, hopSec: hopSize / sampleRate, tuningCents, silentFrames };
 }
 
 /** The pitch class a CQT bin belongs to — exported for the self-test. */

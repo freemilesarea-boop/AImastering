@@ -14,7 +14,7 @@
 // what is sounding at 1:12 is the last change at or before it — so gaps and
 // overlaps are not representable and dragging a boundary is one edit.
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { snapToGrid, useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import {
@@ -24,6 +24,9 @@ import {
 import { formatChord, makeChord } from '../../../daw/model/chords.js';
 import { songEnd } from '../../../daw/edit/arrange-ops.js';
 import { barSeconds } from '../../../daw/edit/chord-detect.js';
+import { detectChordsForClip } from '../../../daw/edit/chord-actions.js';
+import { trackClips } from '../../../daw/model/session-ops.js';
+import type { Clip, Track } from '../../../daw/model/types.js';
 import { premium } from '../../../theme/premium.js';
 
 export const CHORD_LANE_HEIGHT = 24;
@@ -35,6 +38,7 @@ export function ChordLaneHeader() {
   const apply = useDawStore((s) => s.apply);
   const playheadSec = useDawStore((s) => s.playheadSec);
   const notify = useAppStore((s) => s.notify);
+  const [busy, setBusy] = useState<string | null>(null);
 
   const addHere = (): void => {
     const at = snapToGrid(playheadSec);
@@ -54,6 +58,34 @@ export function ChordLaneHeader() {
     notify('8마디 뼈대를 만들었습니다 — 블록을 더블클릭해서 코드를 쓰세요');
   };
 
+  // The audio clip the analysis would read: the one under the playhead on the
+  // focused track, the same rule the separation and restoration panels use.
+  const target = useMemo((): { track: Track; clip: Clip } | null => {
+    for (const track of session.tracks) {
+      const audio = trackClips(track).filter((c) => c.kind === 'audio');
+      const under = audio.find(
+        (c) => playheadSec >= c.startSec && playheadSec < c.startSec + c.durationSec);
+      if (under) return { track, clip: under };
+    }
+    return null;
+  }, [session, playheadSec]);
+
+  const readChords = useCallback(async () => {
+    if (!target || busy) return;
+    setBusy('분석 시작');
+    try {
+      const result = await detectChordsForClip(session, target.track.id, target.clip.id, {
+        onProgress: (fraction, what) => setBusy(`${what} ${Math.round(fraction * 100)}%`),
+      });
+      apply(() => result.session);
+      notify(result.message, result.separationNote || result.workerNote ? 'warning' : 'success');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'warning');
+    } finally {
+      setBusy(null);
+    }
+  }, [target, busy, session, apply, notify]);
+
   return (
     <div
       className="flex items-center gap-1 px-2 border-b border-zinc-800"
@@ -62,6 +94,19 @@ export function ChordLaneHeader() {
       <span className="text-[9px] tracking-wide flex-1" style={{ color: premium.text.faint }}>
         코드
       </span>
+      <button
+        onClick={() => { void readChords(); }}
+        disabled={!target || busy !== null}
+        title={target
+          ? `"${target.clip.name}" 의 코드를 읽어서 코드 트랙에 씁니다 (드럼 분리 후 분석 — 느립니다)`
+          : '재생헤드 아래에 오디오 클립이 없습니다'}
+        className="h-4 px-1 rounded text-[8px] leading-none border"
+        style={{
+          borderColor: 'rgba(255,255,255,0.14)',
+          color: target && !busy ? premium.text.muted : premium.text.faint,
+          opacity: target ? 1 : 0.45,
+        }}
+      >{busy ?? '오디오에서'}</button>
       <button onClick={seed} title="8마디 뼈대 만들기"
               className="h-4 px-1 rounded text-[8px] leading-none border"
               style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>8마디</button>
