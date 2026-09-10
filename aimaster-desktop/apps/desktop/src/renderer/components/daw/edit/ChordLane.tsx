@@ -22,6 +22,9 @@ import {
   setChord, sortedChords, transposeChords, withChords,
 } from '../../../daw/edit/chord-edit.js';
 import { formatChord, makeChord } from '../../../daw/model/chords.js';
+import {
+  describeChordBlock, isUnsure, nextUnsureAfter, unsureChords,
+} from '../../../daw/edit/chord-confidence.js';
 import { songEnd } from '../../../daw/edit/arrange-ops.js';
 import { barSeconds } from '../../../daw/edit/chord-detect.js';
 import { detectChordsForClip } from '../../../daw/edit/chord-actions.js';
@@ -37,8 +40,19 @@ export function ChordLaneHeader() {
   const session = useDawStore((s) => s.session);
   const apply = useDawStore((s) => s.apply);
   const playheadSec = useDawStore((s) => s.playheadSec);
+  const seekTo = useDawStore((s) => s.seek);
   const notify = useAppStore((s) => s.notify);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // The bars the detector was least sure of.  Counting them is not the point
+  // — REACHING them is: a number in a toast tells you there is work and not
+  // where, and a chart of ninety bars with six doubtful ones in it is only
+  // checkable if the six can be jumped to.
+  const unsure = unsureChords(sortedChords(session));
+  const goToNextUnsure = (): void => {
+    const next = nextUnsureAfter(sortedChords(session), playheadSec);
+    if (next) seekTo(next.timeSec);
+  };
 
   const addHere = (): void => {
     const at = snapToGrid(playheadSec);
@@ -91,9 +105,22 @@ export function ChordLaneHeader() {
       className="flex items-center gap-1 px-2 border-b border-zinc-800"
       style={{ height: CHORD_LANE_HEIGHT, background: '#14141c' }}
     >
-      <span className="text-[9px] tracking-wide flex-1" style={{ color: premium.text.faint }}>
+      <span className="text-[9px] tracking-wide" style={{ color: premium.text.faint }}>
         코드
       </span>
+      {unsure.length > 0 && (
+        <button
+          onClick={goToNextUnsure}
+          title={`검출기가 확신하지 못한 코드 ${unsure.length}개 — 눌러서 다음 위치로 이동합니다`}
+          className="h-4 px-1 rounded text-[8px] leading-none border flex items-center gap-1"
+          style={{
+            borderColor: premium.accent.glow,
+            color: premium.accent.light,
+            background: 'rgba(198,167,104,0.12)',
+          }}
+        >{`불확실 ${unsure.length} →`}</button>
+      )}
+      <span className="flex-1" />
       <button
         onClick={() => { void readChords(); }}
         disabled={!target || busy !== null}
@@ -174,17 +201,23 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
         const left = (range.startSec - scrollSec) * pxPerSec;
         const w = (range.endSec - range.startSec) * pxPerSec;
         if (left + w < -40 || left > width + 40) return null;
+        const doubtful = isUnsure(range.event);
         return (
           <div
             key={range.event.id}
             className="absolute top-0 bottom-0 flex items-center gap-1 px-1.5 overflow-hidden group"
             style={{
               left, width: Math.max(2, w),
-              background: 'rgba(122,106,168,0.16)',
-              borderLeft: '2px solid rgba(150,130,200,0.7)',
+              // Amber, not red: the detector is not reporting an error, it is
+              // reporting that it nearly went the other way.  Red would say
+              // "this is wrong", which is a claim nobody here can make.
+              background: doubtful ? 'rgba(198,167,104,0.14)' : 'rgba(122,106,168,0.16)',
+              borderLeft: doubtful
+                ? `2px solid ${premium.accent.base}`
+                : '2px solid rgba(150,130,200,0.7)',
             }}
             onClick={() => seek(range.startSec)}
-            title={`${formatChord(range.event.chord)} — 더블클릭해서 고쳐 쓰세요`}
+            title={describeChordBlock(range.event)}
           >
             {editing === range.event.id ? (
               <input
@@ -202,9 +235,12 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
             ) : (
               <span
                 className="text-[10px] truncate"
-                style={{ color: premium.text.secondary, fontFamily: premium.type.mono }}
+                style={{
+                  color: doubtful ? premium.accent.light : premium.text.secondary,
+                  fontFamily: premium.type.mono,
+                }}
                 onDoubleClick={(e) => { e.stopPropagation(); setEditing(range.event.id); }}
-              >{formatChord(range.event.chord)}</span>
+              >{formatChord(range.event.chord)}{doubtful ? '?' : ''}</span>
             )}
 
             {w > 96 && (

@@ -202,6 +202,20 @@ export interface ChordEvent {
   /** Timeline position in seconds. */
   timeSec: number;
   chord: ChordSymbol;
+  /**
+   * How far the detector's answer led its runner-up, 0…1.
+   *
+   * ABSENT means a person put this chord here, and that is the important
+   * case: a chord somebody typed is not a guess with unknown confidence, it
+   * is the answer, and marking it "unsure" because we have no number for it
+   * would be the display lying in the other direction.
+   *
+   * Kept on the event rather than in a side table so it survives saving,
+   * loading and undo — the same choice `pitchSegments` makes on a clip. A
+   * chart that forgot which bars were doubtful the moment the file was closed
+   * would be a chart nobody checks.
+   */
+  margin?: number;
 }
 
 export function chordAt(events: readonly ChordEvent[], timeSec: number): ChordEvent | null {

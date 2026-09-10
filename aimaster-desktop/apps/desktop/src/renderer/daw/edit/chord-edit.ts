@@ -108,10 +108,23 @@ export function removeChord(events: readonly ChordEvent[], id: string): ChordEve
   return events.filter((e) => e.id !== id);
 }
 
+/**
+ * Retype a chord.
+ *
+ * Retyping CLEARS the detector's confidence, because it is no longer the
+ * detector's answer.  Leaving the old margin behind would leave the lane
+ * marking a bar as doubtful after the person who was doubting it has said
+ * what it is — and worse, would keep it in the "go and check these" list for
+ * ever.
+ */
 export function setChord(
   events: readonly ChordEvent[], id: string, chord: ChordSymbol,
 ): ChordEvent[] {
-  return events.map((e) => (e.id === id ? { ...e, chord } : e));
+  return events.map((e) => {
+    if (e.id !== id) return e;
+    const { margin: _wasDetected, ...rest } = e;
+    return { ...rest, chord };
+  });
 }
 
 /**

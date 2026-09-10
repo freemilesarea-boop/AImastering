@@ -59,8 +59,12 @@ import {
   detectChordsFromAudio, describeReadout, MIX_BASS_MAJORITY,
 } from '../src/renderer/daw/audio/chroma/chord-detect-audio.js';
 import {
-  beatPhaseFor, replaceChordsInSpan,
+  beatPhaseFor, chordEventsFor, replaceChordsInSpan,
 } from '../src/renderer/daw/edit/chord-actions.js';
+import {
+  describeChordBlock, isUnsure, nextUnsureAfter, unsureChords, UNSURE_MARGIN,
+} from '../src/renderer/daw/edit/chord-confidence.js';
+import { setChord, moveChord, transposeChords } from '../src/renderer/daw/edit/chord-edit.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -1200,6 +1204,108 @@ async function main(): Promise<void> {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // ── The chart, on screen ──────────────────────────────────────────────────
+
+  const chordEvent = (
+    timeSec: number, symbol: string, margin?: number,
+  ): ChordEvent => ({
+    id: `e${timeSec}`, timeSec, chord: parseChord(symbol)!,
+    ...(margin === undefined ? {} : { margin }),
+  });
+
+  await check('a chord a person wrote is never marked doubtful', () => {
+    // The rule that matters most here, and the easy one to get backwards.  A
+    // typed chord has no margin, and "no number" must not read as "no
+    // confidence" — that would put the user's own decisions into the list of
+    // things to go back and check.
+    assert(!isUnsure(chordEvent(0, 'C')), 'a hand-written chord was marked doubtful');
+    assert(isUnsure(chordEvent(0, 'C', 0.01)), 'a coin-toss margin was not marked');
+    assert(!isUnsure(chordEvent(0, 'C', 0.5)), 'a confident margin was marked');
+    assert(!isUnsure(chordEvent(0, 'C', UNSURE_MARGIN)),
+      'the threshold itself should not count as doubtful');
+  });
+
+  await check('retyping a chord clears the doubt', () => {
+    // Otherwise the lane keeps marking a bar after the person doubting it has
+    // said what it is, and it stays in the "go and check these" list for ever.
+    const events = [chordEvent(0, 'C', 0.01), chordEvent(4, 'G', 0.9)];
+    assert(unsureChords(events).length === 1, 'setup: one doubtful chord');
+    const fixed = setChord(events, 'e0', parseChord('Am')!);
+    assert(fixed[0]!.margin === undefined, 'retyping left the old margin behind');
+    assert(unsureChords(fixed).length === 0, 'the chord is still in the doubtful list');
+    assert(formatChord(fixed[0]!.chord) === 'Am', 'the retyped chord did not take');
+
+    // Moving or transposing is not answering the question, so those keep it.
+    const moved = moveChord(events, 'e0', 1);
+    assert(moved.find((e) => e.id === 'e0')?.margin === 0.01,
+      'dragging a chord should not change how sure the detector was');
+    const shifted = transposeChords(events, 2);
+    assert(shifted[0]?.margin === 0.01,
+      'transposing the whole song does not make its chords more certain');
+  });
+
+  await check('the doubtful bars can be walked through, and they wrap', () => {
+    // A count with no way to reach the bars is a number that tells you there
+    // is work and not where.  Ninety bars cannot be checked; six can, if you
+    // can get to them.
+    const events = [
+      chordEvent(0, 'C', 0.9), chordEvent(4, 'G', 0.01),
+      chordEvent(8, 'Am', 0.9), chordEvent(12, 'F', 0.02),
+    ];
+    assert(unsureChords(events).map((e) => e.timeSec).join(',') === '4,12',
+      `the doubtful list was ${unsureChords(events).map((e) => e.timeSec).join(',')}`);
+    assert(nextUnsureAfter(events, 0)?.timeSec === 4, 'from the top, the first doubtful bar');
+    assert(nextUnsureAfter(events, 4)?.timeSec === 12, 'standing on one, the next');
+    // Wrapping, so working through the list does not go dead at the end.
+    assert(nextUnsureAfter(events, 12)?.timeSec === 4, 'past the last one it should wrap to the first');
+    assert(nextUnsureAfter([chordEvent(0, 'C')], 0) === null, 'nothing doubtful, nowhere to go');
+  });
+
+  await check('the block says which of the three things it is', () => {
+    // A chord somebody typed, one the detector is sure of, and one it nearly
+    // called something else are three different situations, and one tooltip
+    // for all of them would tell the user nothing.
+    const typed = describeChordBlock(chordEvent(0, 'C'));
+    const sure = describeChordBlock(chordEvent(0, 'C', 0.42));
+    const doubtful = describeChordBlock(chordEvent(0, 'C', 0.01));
+    assert(new Set([typed, sure, doubtful]).size === 3,
+      `the three cases share wording: ${[typed, sure, doubtful].join(' | ')}`);
+    assert(!typed.includes('%'), `a typed chord should not quote a margin: ${typed}`);
+    assert(sure.includes('오디오에서 읽음'), `a detected chord should say so: ${sure}`);
+    assert(doubtful.includes('비등'), `a doubtful chord should say why: ${doubtful}`);
+    assert(doubtful.includes('1.0%'), `the margin should be quoted: ${doubtful}`);
+  });
+
+  await check('the margin reaches the chart from the detector', () => {
+    // The step between the two: the action itself needs a decoded clip, so a
+    // version of it that quietly dropped the margin would go on passing every
+    // other check in this file.  Everything above tests what the lane does
+    // with a margin; this tests that it ever gets one.
+    const segments = [
+      { startSec: 0, endSec: 2, chord: parseChord('C')!, margin: 0.42, score: 1, beats: 4 },
+      { startSec: 2, endSec: 4, chord: parseChord('G')!, margin: 0.01, score: 1, beats: 4 },
+    ];
+    const events = chordEventsFor(segments, 10);
+    assert(events.length === 2, `expected 2 events, got ${events.length}`);
+    assert(events[0]!.timeSec === 10 && events[1]!.timeSec === 12,
+      `the clip offset was not applied: ${events.map((e) => e.timeSec).join(',')}`);
+    assert(events[0]!.margin === 0.42 && events[1]!.margin === 0.01,
+      'the margin did not survive the trip from the detector to the chart');
+    assert(unsureChords(events).length === 1,
+      'the doubtful chord did not arrive marked');
+  });
+
+  await check('the doubt survives being saved and reopened', () => {
+    // Kept on the event rather than in a side table precisely so that it
+    // does.  A chart that forgot which bars were doubtful the moment the file
+    // was closed is a chart nobody checks.
+    const events = [chordEvent(0, 'C', 0.9), chordEvent(4, 'G', 0.01)];
+    const reopened = JSON.parse(JSON.stringify(events)) as ChordEvent[];
+    assert(unsureChords(reopened).length === 1,
+      'the margin did not survive the round trip through the session file');
+    assert(reopened[0]!.margin === 0.9, 'a confident margin was lost');
   });
 
   console.log('\n=== Chords from audio — did it name what was played? ===');

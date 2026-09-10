@@ -37,7 +37,7 @@ import { trackClips } from '../model/session-ops.js';
 import { nextId } from '../model/ids.js';
 import { sortedChords, withChords } from './chord-edit.js';
 import { clipAudio } from './spectral-repair.js';
-import type { ChordEvent } from '../model/chords.js';
+import type { ChordEvent, ChordSymbol } from '../model/chords.js';
 import type { ClipId, DawSession, TrackId } from '../model/types.js';
 
 export interface DetectChordsForClipOptions {
@@ -197,11 +197,7 @@ export async function detectChordsForClip(
   const events = replaceChordsInSpan(
     sortedChords(session),
     clip.startSec, clip.startSec + clip.durationSec,
-    readout.segments.map((segment) => ({
-      id: nextId('chord'),
-      timeSec: clip.startSec + segment.startSec,
-      chord: segment.chord,
-    })),
+    chordEventsFor(readout.segments, clip.startSec),
   );
   const placed = readout.segments;
 
@@ -215,6 +211,31 @@ export async function detectChordsForClip(
     ...(separationNote ? { separationNote } : {}),
     ...(workerNote ? { workerNote } : {}),
   };
+}
+
+/**
+ * The detector's segments as chord-track events, placed on the timeline.
+ *
+ * A named function rather than three lines inside the action, because of what
+ * it carries: the MARGIN travels with the chord.  Without it the readout's
+ * "불확실 6개" is a number in a toast that disappears, and the chart cannot
+ * show WHICH six — which is the whole of the promise, since nobody can check
+ * ninety bars and anybody can check six.
+ *
+ * Out here it can be tested.  Inside the action it could not: the action
+ * needs a decoded clip, so a version of it that quietly dropped the margin
+ * would go on passing everything.
+ */
+export function chordEventsFor(
+  segments: readonly { startSec: number; chord: ChordSymbol; margin: number }[],
+  offsetSec: number,
+): ChordEvent[] {
+  return segments.map((segment) => ({
+    id: nextId('chord'),
+    timeSec: offsetSec + segment.startSec,
+    chord: segment.chord,
+    margin: segment.margin,
+  }));
 }
 
 /**
