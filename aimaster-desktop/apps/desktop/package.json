@@ -111,6 +111,7 @@
     "test:separate": "tsx scripts/separate-selftest.ts",
     "build:separate-worker": "node scripts/build-separate-worker.mjs",
     "benchmark:stems": "tsx scripts/stem-benchmark.ts",
+    "benchmark:chords": "tsx scripts/chord-benchmark.ts",
     "test:genre-presets": "tsx scripts/genre-presets-selftest.ts",
     "test:region-fx": "tsx scripts/region-fx-selftest.ts",
     "test:eq-nodes": "tsx scripts/eq-nodes-selftest.ts",

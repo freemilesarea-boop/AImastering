@@ -47,6 +47,15 @@ import {
 } from '../src/renderer/daw/audio/chroma/chord-hmm.js';
 import { chromagram, majorityPitchClass } from '../src/renderer/daw/audio/chroma/chroma.js';
 import {
+  formatHarteLabel, formatLab, parseHarteLabel, parseLab, scoreChords,
+  segmentsToSpans, SCORE_TIERS, type LabSpan,
+} from '../src/renderer/daw/audio/chroma/chord-lab.js';
+import { writeWav24 } from './lib/wav-codec.js';
+import { describeGrid } from './lib/grid-label.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
   detectChordsFromAudio, describeReadout, MIX_BASS_MAJORITY,
 } from '../src/renderer/daw/audio/chroma/chord-detect-audio.js';
 import {
@@ -925,6 +934,272 @@ async function main(): Promise<void> {
       'the built worker does not contain the detector');
     assert(worker.length > 10_000,
       `the built worker is only ${worker.length} bytes — it cannot contain the CQT`);
+  });
+
+  // ── Stage D: measuring against a real annotation ──────────────────────────
+
+  await check('the reference format is read as it is actually written', () => {
+    // Harte's syntax, which is what every public reference set uses.  Getting
+    // this wrong does not produce an error, it produces a WRONG SCORE — the
+    // one number in the measurement that has to be trusted.
+    const cases: [string, string | null][] = [
+      ['C', 'C'], ['C:maj', 'C'], ['A:min', 'Am'], ['G:7', 'G7'],
+      ['F:maj7', 'Fmaj7'], ['B:hdim7', 'Bm7b5'], ['D:minmaj7', 'DmMaj7'],
+      ['Bb:maj', 'A#'], ['C#:min7', 'C#m7'], ['Db:maj', 'C#'],
+      ['E:sus4', 'Esus4'], ['A:maj6', 'A6'], ['G:min6', 'Gm6'],
+      ['N', null], ['', null],
+    ];
+    for (const [label, want] of cases) {
+      const got = parseHarteLabel(label).chord;
+      const text = got ? formatChord(got) : null;
+      assert(text === want, `${label} → ${text}, expected ${want}`);
+    }
+    // X is not "no chord" — it is "the annotator could not tell", and the
+    // difference decides whether those seconds are scored or skipped.
+    assert(parseHarteLabel('X').unknown, 'X should be unknown');
+    assert(!parseHarteLabel('N').unknown, 'N is a statement, not a shrug');
+
+    // An inversion is a bass DEGREE above the root, not a note name.
+    const slash = parseHarteLabel('C:maj/3').chord;
+    assert(slash !== null && formatChord(slash) === 'C/E', `C:maj/3 → ${slash ? formatChord(slash) : 'null'}`);
+    const seventh = parseHarteLabel('G:7/b7').chord;
+    assert(seventh !== null && formatChord(seventh) === 'G7/F', `G:7/b7 → ${seventh ? formatChord(seventh) : 'null'}`);
+
+    // An unknown shorthand is REPORTED, never quietly turned into something
+    // plausible: a silent mapping would corrupt the reference itself.
+    assert(parseHarteLabel('C:wat').problem !== undefined, 'an unknown quality passed silently');
+    assert(parseHarteLabel('H:maj').problem !== undefined, 'an unknown root passed silently');
+  });
+
+  await check('our own labels survive the round trip', () => {
+    // The benchmark can write what it found as a .lab so it can be diffed by
+    // eye against the reference.  If that spelling does not read back, the
+    // file is a dead end.
+    for (const symbol of ['C', 'Am7', 'G7', 'Fmaj7', 'Bm7b5', 'D#dim7', 'C/E', 'Esus4', 'A6']) {
+      const chord = parseChord(symbol)!;
+      const round = parseHarteLabel(formatHarteLabel(chord)).chord;
+      assert(round !== null && formatChord(round) === symbol,
+        `${symbol} → ${formatHarteLabel(chord)} → ${round ? formatChord(round) : 'null'}`);
+    }
+    assert(formatHarteLabel(null) === 'N', 'no chord should be written as N');
+  });
+
+  await check('a reference file is read, and its bad lines are named', () => {
+    const parsed = parseLab([
+      '# a comment',
+      '',
+      '0.000000\t2.500000\tC:maj',
+      '2.500000\t5.000000\tA:min7',
+      'nonsense',
+      '5.000000\t7.500000\tC:wat',
+    ].join('\n'));
+    assert(parsed.spans.length === 3, `expected 3 spans, got ${parsed.spans.length}`);
+    assert(parsed.problems.length === 2,
+      `expected 2 problems, got ${parsed.problems.length}: ${parsed.problems.join(' | ')}`);
+    assert(parsed.problems.some((p) => p.includes('5행')), 'the bad line was not named');
+  });
+
+  await check('the score is weighted by seconds, not by chord', () => {
+    // Eight bars of C and one passing F#dim7 are one chord each, and they are
+    // not one unit each of being right: the listener hears the C for eight
+    // bars.  A benchmark that counts chords rewards a detector for getting
+    // the blips right and missing the song.
+    const span = (startSec: number, endSec: number, symbol: string): LabSpan => ({
+      startSec, endSec, label: symbol,
+      chord: symbol === 'N' ? null : parseChord(symbol)!, unknown: false,
+    });
+    const reference = [span(0, 16, 'C'), span(16, 17, 'F#dim7')];
+    const longRight = [span(0, 16, 'C'), span(16, 17, 'G')];
+    const shortRight = [span(0, 16, 'G'), span(16, 17, 'F#dim7')];
+    const a = scoreChords(reference, longRight).scores.exact;
+    const b = scoreChords(reference, shortRight).scores.exact;
+    assert(Math.abs(a - 16 / 17) < 1e-9, `sixteen of seventeen seconds → ${a}`);
+    assert(Math.abs(b - 1 / 17) < 1e-9, `one of seventeen seconds → ${b}`);
+    assert(a > b, 'getting the long chord right must be worth more than the blip');
+  });
+
+  await check('the four tiers say different things', () => {
+    const span = (startSec: number, endSec: number, symbol: string): LabSpan => ({
+      startSec, endSec, label: symbol, chord: parseChord(symbol)!, unknown: false,
+    });
+    const reference = [span(0, 4, 'C')];
+    // Right harmony, wrong colour: the root is right, the triad is right, the
+    // seventh is not.  A single number would call this a total miss and hide
+    // the fact that the chart is usable.
+    const asSeventh = scoreChords(reference, [span(0, 4, 'Cmaj7')]).scores;
+    assert(asSeventh.root === 1 && asSeventh.triad === 1, 'Cmaj7 should keep the root and the triad');
+    assert(asSeventh.sevenths === 0 && asSeventh.exact === 0, 'Cmaj7 is not C');
+    // Right root, wrong third.
+    const asMinor = scoreChords(reference, [span(0, 4, 'Cm')]).scores;
+    assert(asMinor.root === 1 && asMinor.triad === 0, 'Cm should keep the root and lose the triad');
+    // An inversion is the same chord until the last tier.
+    const asSlash = scoreChords(reference, [span(0, 4, 'C/E')]).scores;
+    assert(asSlash.sevenths === 1 && asSlash.exact === 0,
+      'an inversion is the same chord except at the exact tier');
+    // A suspended fourth is not a bad major.  Forcing everything into
+    // major-or-minor would score a detector as right for answering C where
+    // the record plainly says Csus4, which is the distinction a chart is for.
+    const susRef = [span(0, 4, 'Csus4')];
+    const asMajor = scoreChords(susRef, [span(0, 4, 'C')]).scores;
+    assert(asMajor.root === 1, 'a sus chord keeps its root');
+    assert(asMajor.triad === 0, 'C should not count as Csus4 at the triad tier');
+    assert(scoreChords(susRef, [span(0, 4, 'Csus4')]).scores.triad === 1,
+      'a sus chord should match itself');
+
+    // Nothing at all.
+    const wrong = scoreChords(reference, [span(0, 4, 'F#')]).scores;
+    assert(SCORE_TIERS.every((t) => wrong[t] === 0), 'F# should score nothing against C');
+  });
+
+  await check('X is skipped and a gap is not', () => {
+    const reference: LabSpan[] = [
+      { startSec: 0, endSec: 4, label: 'C', chord: parseChord('C')!, unknown: false },
+      { startSec: 4, endSec: 8, label: 'X', chord: null, unknown: true },
+    ];
+    const estimate: LabSpan[] = [
+      { startSec: 0, endSec: 8, label: 'C', chord: parseChord('C')!, unknown: false },
+    ];
+    const score = scoreChords(reference, estimate);
+    assert(score.scoredSec === 4 && score.skippedSec === 4,
+      `scored ${score.scoredSec}s and skipped ${score.skippedSec}s`);
+    assert(score.scores.exact === 1, 'the scored half was right and should score 1');
+
+    // But a detector that simply stopped answering must be scored as wrong on
+    // what it did not answer, not excused from it.
+    const halfAnswered = segmentsToSpans(
+      [{ startSec: 0, endSec: 4, chord: parseChord('C')! }], 8);
+    const strict = scoreChords([
+      { startSec: 0, endSec: 8, label: 'C', chord: parseChord('C')!, unknown: false },
+    ], halfAnswered);
+    assert(Math.abs(strict.scores.exact - 0.5) < 1e-9,
+      `answering half the song scored ${strict.scores.exact}`);
+
+    // The same at the front.  A detector that says nothing until the intro is
+    // over has not answered the intro, and the gap before its first segment
+    // has to be filled in as "no chord" or those seconds vanish from the
+    // denominator and the score goes UP for answering less.
+    const lateStart = segmentsToSpans(
+      [{ startSec: 4, endSec: 8, chord: parseChord('C')! }], 8);
+    const scored = scoreChords([
+      { startSec: 0, endSec: 8, label: 'C', chord: parseChord('C')!, unknown: false },
+    ], lateStart);
+    assert(Math.abs(scored.scoredSec - 8) < 1e-9,
+      `the unanswered intro left the denominator at ${scored.scoredSec}s instead of 8`);
+    assert(Math.abs(scored.scores.exact - 0.5) < 1e-9,
+      `starting halfway through scored ${scored.scores.exact}`);
+
+    // And the file it writes has to cover the whole recording, because that
+    // is what a reference annotation is.  This is the property the explicit
+    // `N` spans exist for — the scoring reads a hole as no chord either way,
+    // so nothing above would notice if they stopped being written.
+    const text = formatLab(lateStart);
+    const back = parseLab(text).spans;
+    assert(Math.abs((back[0]?.startSec ?? -1)) < 1e-9,
+      `the written file starts at ${back[0]?.startSec} instead of 0`);
+    assert(Math.abs((back[back.length - 1]?.endSec ?? 0) - 8) < 1e-9,
+      `the written file ends at ${back[back.length - 1]?.endSec} instead of 8`);
+    for (let i = 1; i < back.length; i++) {
+      assert(Math.abs((back[i]!.startSec) - (back[i - 1]!.endSec)) < 1e-6,
+        `the written file has a hole at ${back[i - 1]!.endSec}s`);
+    }
+  });
+
+  await check('a chart with the right names in the wrong places is caught', () => {
+    // The tier scores can look respectable while every change lands half a bar
+    // late, and a chart like that is not a usable chart.
+    const span = (startSec: number, endSec: number, symbol: string): LabSpan => ({
+      startSec, endSec, label: symbol, chord: parseChord(symbol)!, unknown: false,
+    });
+    const reference = [span(0, 4, 'C'), span(4, 8, 'G'), span(8, 12, 'Am')];
+    const onTime = [span(0, 4, 'C'), span(4, 8, 'G'), span(8, 12, 'Am')];
+    const late = [span(0, 5, 'C'), span(5, 9, 'G'), span(9, 12, 'Am')];
+    assert(scoreChords(reference, onTime).medianBoundaryErrorSec === 0, 'an exact chart has no boundary error');
+    const shifted = scoreChords(reference, late);
+    assert(shifted.medianBoundaryErrorSec >= 1 - 1e-9,
+      `a second late everywhere reported ${shifted.medianBoundaryErrorSec}s`);
+    assert(shifted.scores.exact > 0.7,
+      'the tier score should still look respectable — that is why the boundary number exists');
+  });
+
+  await check('a rejected tempo is never printed as the grid', () => {
+    // The chord detector refuses a tempo it does not trust and lays a fixed
+    // window instead.  A report that prints the rejected BPM next to the
+    // results is telling the reader the chart is on a grid it is not on —
+    // which is exactly what this benchmark found on its own first run, where
+    // 96 BPM was detected, rejected at 28 % confidence, and the chart came
+    // out on half-second windows.
+    const accepted = describeGrid({
+      detectedBpm: 96, detectedConfidence: 0.9, fromTempo: true, gridBpm: 96,
+    });
+    assert(accepted === '96.0 BPM', `an accepted tempo read as ${accepted}`);
+
+    const rejected = describeGrid({
+      detectedBpm: 96, detectedConfidence: 0.28, fromTempo: false, gridBpm: 0,
+    });
+    assert(rejected.includes('고정 창'), `a rejected tempo read as ${rejected}`);
+    assert(rejected.includes('기각'), `the rejection was not named: ${rejected}`);
+    assert(!/^\s*96/.test(rejected), `the rejected BPM was printed as the grid: ${rejected}`);
+
+    const none = describeGrid({
+      detectedBpm: 0, detectedConfidence: 0, fromTempo: false, gridBpm: 0,
+    });
+    assert(none.includes('고정 창') && !none.includes('기각'),
+      `no tempo at all read as ${none}`);
+  });
+
+  await check('the benchmark command runs, end to end', () => {
+    // The whole stage-D path on a real file: WAV in, tempo from the audio,
+    // chords, scored against a .lab on disk.  A benchmark nothing runs is a
+    // benchmark that rots, and this one cannot be run on real music here.
+    const dir = mkdtempSync(join(tmpdir(), 'chord-bench-'));
+    try {
+      const bpm = 96;
+      const barSec = (60 / bpm) * 4;
+      const prog = ['C', 'G', 'Am', 'F'];
+      // A simple additive render — no instruments needed, and it keeps this
+      // check fast enough to live in the chain.
+      const rate = 44_100;
+      const total = Math.round(rate * (prog.length * barSec));
+      const mono = new Float32Array(total);
+      const lab: string[] = [];
+      prog.forEach((symbol, index) => {
+        const chord = parseChord(symbol)!;
+        const quality = QUALITIES.find((q) => q.id === chord.qualityId)!;
+        const at = index * barSec;
+        lab.push(`${at.toFixed(6)}\t${(at + barSec).toFixed(6)}\t${formatHarteLabel(chord)}`);
+        for (const interval of quality.intervals) {
+          const hz = 440 * 2 ** ((48 + chord.root + interval - 69) / 12);
+          const from = Math.round(at * rate);
+          const to = Math.min(total, Math.round((at + barSec * 0.98) * rate));
+          for (let i = from; i < to; i++) {
+            const t = (i - from) / rate;
+            // A short attack and a slow decay, so the transient detector has
+            // something to find and the tempo is discoverable.
+            const env = Math.min(1, t * 200) * Math.exp(-t * 1.2);
+            mono[i] = (mono[i] ?? 0) + 0.2 * env * Math.sin(2 * Math.PI * hz * t);
+          }
+        }
+      });
+      writeWav24(join(dir, 'take.wav'), [mono], rate);
+      writeFileSync(join(dir, 'take.lab'), lab.join('\n') + '\n');
+
+      const run = spawnSync('npx', ['tsx', 'scripts/chord-benchmark.ts', dir], {
+        cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', timeout: 600_000,
+      });
+      const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+      assert(run.status === 0, `the benchmark exited ${run.status}: ${out.slice(0, 400)}`);
+      assert(out.includes('take.wav'), `the file was not reported: ${out.slice(0, 400)}`);
+      assert(/정답과 비교/.test(out), `no scored table was printed: ${out.slice(0, 400)}`);
+      // The numbers themselves are the point: a benchmark that runs and
+      // reports 0 % on audio built from the reference is broken.
+      const row = out.split('\n').find((l) => l.includes('take.wav')) ?? '';
+      const first = Number((row.match(/(\d+\.\d)/) ?? [])[1] ?? '0');
+      assert(first >= 75,
+        `the benchmark scored its own reference at ${first}% — the harness is wrong, not the detector`);
+      console.log(`      (benchmark on a generated take: 근음 ${first.toFixed(1)}%)`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   console.log('\n=== Chords from audio — did it name what was played? ===');

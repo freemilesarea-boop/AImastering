@@ -856,6 +856,12 @@
         startSec: grid[run.from] ?? 0,
         // A segment runs until the next one starts, not until its own last
         // matched beat ends.
+        // A segment runs until the next one starts, and the last one runs to
+        // the end.  Ending it early where the audio goes quiet was tried and
+        // backed out: it truncated the ring-out of a chord struck once and left
+        // the last bar of the chart empty, and the benchmark that suggested it
+        // turned out to be measuring an annotation that was stricter than its
+        // own audio.
         endSec: next ? grid[next.from] ?? 0 : grid[grid.length - 1] ?? 0,
         // Averaged over the beats that carried evidence, not over the beats it
         // covers: a chord held through four bars of silence is not four bars
