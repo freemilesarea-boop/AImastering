@@ -15,6 +15,7 @@ import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
 import { isMidiSupported, midiFailureReason, listMidiOutputs } from '../../../daw/engine/midi-input.js';
 import { trackRecordKind, armedSplit } from '../../../daw/model/recording.js';
+import { pitchName } from '../../../daw/model/midi.js';
 import {
   deviceSetupReport, deviceSetupStatus, type DeviceLine, type DevicePort,
 } from '../../../daw/model/device-setup.js';
@@ -145,7 +146,9 @@ export default function DeviceSetupPanel() {
                  fontFamily: premium.type.mono,
                  color: midiNote ? premium.accent.light : premium.text.faint,
                }}>
-            {midiNote ? `note ${midiNote.pitch} · vel ${midiNote.velocity}` : '건반을 누르면 여기에 표시됩니다'}
+            {midiNote
+              ? `${pitchName(midiNote.pitch)} · vel ${Math.round(midiNote.velocity * 127)}`
+              : '건반을 누르면 여기에 표시됩니다'}
           </div>
         </div>
 
