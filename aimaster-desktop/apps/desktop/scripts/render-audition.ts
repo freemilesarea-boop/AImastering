@@ -10,9 +10,17 @@
  *   ONE PHRASE for every melodic instrument, and one two-bar beat for every
  *   kit.  A patch that sounds better on its own demo is not a finding.
  *
- *   NORMALISED to −3 dBFS.  Without it the level differences below read as
- *   timbre differences, and they are not the same thing — the RAW peak is
- *   printed beside each file instead, which is where the level problem shows.
+ *   Rendered under node, not under Chromium, so the poly synth and the kit
+ *   sit about a decibel from where the app puts them (see instrument-level.ts
+ *   — the two renderers disagree about oscillators).  Fine for judging TONE,
+ *   which is what these files are for; not evidence about level.
+ *
+ *   ONE GAIN for every file, not one per file.  Normalising each to −3 dBFS
+ *   was right while the instruments were 16 LU apart — it stopped a level
+ *   difference reading as a timbre difference.  Now that they are calibrated
+ *   (see instrument-level.ts) per-file normalising would DESTROY the thing
+ *   worth hearing, so every file gets the same +20 dB and the differences
+ *   left are real ones.  The measured loudness is printed beside each.
  *
  * Run:  pnpm --filter @aimaster/desktop render:audition -- <출력 폴더>
  */
@@ -24,16 +32,18 @@ import { createNote, DEFAULT_MIDI_CONFIG } from '../src/renderer/daw/model/midi.
 import { DRUM_GENRE_PRESETS } from '../src/renderer/daw/engine/drum-presets.js';
 import { GENRE_ORDER, GENRE_LABEL } from '../src/renderer/daw/engine/plugin-presets-genre.js';
 import { writeWav24 } from './lib/wav-codec.js';
+import { getLoudnessMetrics } from '../src/renderer/audio/loudnessCore.js';
+import {
+  REFERENCE_BEAT_SECONDS, REFERENCE_PHRASE_SECONDS, REFERENCE_ROOT,
+  referenceBeat, referencePhrase, type LevelEvent,
+} from '../src/renderer/daw/engine/instrument-level.js';
 
 const SR = 44100;
 const OUT = process.argv[2] ?? '.';
-const BPM = 92;
-const BEAT = 60 / BPM;
 
-interface Ev { pitch: number; at: number; dur: number; vel: number }
 
 async function render(
-  instrumentId: string, events: readonly Ev[], seconds: number,
+  instrumentId: string, events: readonly LevelEvent[], seconds: number,
   params: Record<string, number> = {},
 ): Promise<Float32Array[]> {
   const inst = findInstrument(instrumentId)!;
@@ -51,65 +61,69 @@ async function render(
   return [Float32Array.from(buf.getChannelData(0)), Float32Array.from(buf.getChannelData(1))];
 }
 
-/** Normalise to −3 dBFS so quiet and loud patches compare fairly by ear. */
-function normalise(ch: Float32Array[]): Float32Array[] {
+/** Where the loudest single sample in the whole set is put. */
+const AUDITION_CEILING_DBFS = -1;
+
+interface Rendered { name: string; ch: Float32Array[]; lufs: number; peak: number }
+const rendered: Rendered[] = [];
+
+/**
+ * Render now, write later.
+ *
+ * The gain has to be ONE number across the whole set — that is the only way
+ * the files still say to each other what the instruments say — and it has to
+ * be a number that cannot clip.  A constant is not: picking +20 dB by eye
+ * clipped the acoustic guitar by 14 dB the first time, because its phrase
+ * peaks 20 dB above its own loudness, and the next revoicing would have done
+ * it again silently.  So the set is rendered first and the gain is measured
+ * off the loudest sample in it.
+ */
+function collect(name: string, ch: Float32Array[]): void {
+  const l = ch[0] ?? new Float32Array(0);
+  const r = ch[1] ?? l;
+  const m = getLoudnessMetrics({
+    sampleRate: SR, length: l.length, numberOfChannels: 2,
+    getChannelData: (c: number) => (c === 0 ? l : r),
+  });
+  rendered.push({ name, ch, lufs: m.integratedLufs, peak: m.truePeakDbtp });
+  // What is printed is the instrument's OWN level — what a track in a session
+  // sits at.  The file on disk is that plus the shared gain, reported at the
+  // end once every file has been measured.
+  console.log(`  ${name.padEnd(28)} ${m.integratedLufs.toFixed(1).padStart(6)} LUFS  `
+    + `${m.truePeakDbtp.toFixed(1).padStart(5)} dBTP`);
+}
+
+function writeAll(): void {
   let peak = 0;
-  for (const c of ch) for (const v of c) peak = Math.max(peak, Math.abs(v));
-  if (peak <= 0) return ch;
-  const g = 0.708 / peak;
-  return ch.map((c) => Float32Array.from(c, (v) => v * g));
-}
-
-function save(name: string, ch: Float32Array[]): void {
-  writeWav24(`${OUT}/${name}.wav`, normalise(ch), SR);
-  let peak = 0;
-  for (const c of ch) for (const v of c) peak = Math.max(peak, Math.abs(v));
-  console.log(`  ${name.padEnd(28)} ${(20 * Math.log10(peak || 1e-9)).toFixed(1)} dBFS raw`);
-}
-
-// ── Melodic phrase: a chord, then a line, then the chord again ──────────────
-function phrase(root: number): Ev[] {
-  const chord = [0, 4, 7, 11].map((i) => root + i);
-  const line = [12, 11, 9, 7, 4, 7, 9, 11];
-  const out: Ev[] = [];
-  for (const p of chord) out.push({ pitch: p, at: 0, dur: BEAT * 2.2, vel: 0.62 });
-  line.forEach((s, i) => out.push({
-    pitch: root + s, at: BEAT * (2.2 + i * 0.5), dur: BEAT * 0.45, vel: 0.7 - (i % 2) * 0.12,
-  }));
-  for (const p of chord) out.push({ pitch: p + 5, at: BEAT * 6.4, dur: BEAT * 2.6, vel: 0.7 });
-  return out;
-}
-
-// ── Two bars of a beat, so a kit is heard as a kit ──────────────────────────
-const KICK = 36, SNARE = 38, HAT = 42, HAT_OPEN = 46, CRASH = 49, RIDE = 51;
-function beat(): Ev[] {
-  const out: Ev[] = [];
-  const hit = (pitch: number, beatPos: number, vel: number): void => {
-    out.push({ pitch, at: beatPos * BEAT, dur: 0.3, vel });
-  };
-  hit(CRASH, 0, 0.8);
-  for (const b of [0, 2.5, 4, 6.5]) hit(KICK, b, 0.95);
-  for (const b of [1, 3, 5, 7]) hit(SNARE, b, 0.85);
-  for (let i = 0; i < 16; i++) {
-    hit(i % 8 === 7 ? HAT_OPEN : HAT, i * 0.5, i % 2 === 0 ? 0.55 : 0.38);
+  for (const f of rendered) for (const c of f.ch) for (const v of c) peak = Math.max(peak, Math.abs(v));
+  const ceiling = Math.pow(10, AUDITION_CEILING_DBFS / 20);
+  const g = peak > 0 ? Math.min(1e6, ceiling / peak) : 1;
+  for (const f of rendered) {
+    writeWav24(`${OUT}/${f.name}.wav`, f.ch.map((c) => Float32Array.from(c, (v) => v * g)), SR);
   }
-  for (const b of [4.25, 5.75]) hit(RIDE, b, 0.5);
-  return out;
+  const loudest = rendered.reduce((a, b) => (a.peak > b.peak ? a : b));
+  console.log(`\n${rendered.length}개 파일, 전부 같은 +${(20 * Math.log10(g)).toFixed(1)} dB.  `
+    + `가장 센 건 ${loudest.name} (${loudest.peak.toFixed(1)} dBTP), 파일에서 ${AUDITION_CEILING_DBFS} dBFS.`);
 }
 
 async function main(): Promise<void> {
-  console.log('멜로디 악기 (기본 파라미터, 같은 프레이즈):');
-  for (const [id, root] of [['polysynth', 48], ['epiano', 48], ['agtr', 52], ['egtr', 52]] as const) {
-    save(`inst-${id}`, await render(id, phrase(root), 9.5));
+  console.log(`같은 프레이즈 / 같은 비트, 기본 파라미터.  아래 숫자는 트랙에서의 실제 레벨이고,`);
+  console.log('파일은 전부 똑같은 양만큼 올려서 씁니다 — 서로의 차이는 그대로 남습니다.\n');
+  console.log('멜로디 악기:');
+  for (const id of ['polysynth', 'epiano', 'agtr', 'egtr']) {
+    const root = REFERENCE_ROOT[id] ?? 48;
+    collect(`inst-${id}`, await render(id, referencePhrase(root), REFERENCE_PHRASE_SECONDS));
   }
 
   console.log('\n드럼 킷 (같은 2마디 비트):');
-  save('kit-00-builtin', await render('drumkit', beat(), 6, { kit: 0 }));
+  collect('kit-00-builtin', await render('drumkit', referenceBeat(), REFERENCE_BEAT_SECONDS, { kit: 0 }));
   for (let i = 0; i < GENRE_ORDER.length; i++) {
     const g = GENRE_ORDER[i]!;
-    const label = GENRE_LABEL[g];
-    save(`kit-${String(i + 1).padStart(2, '0')}-${g}`, await render('drumkit', beat(), 6, { kit: i + 1 }));
-    console.log(`      ${label} — ${DRUM_GENRE_PRESETS[g].note}`);
+    collect(`kit-${String(i + 1).padStart(2, '0')}-${g}`,
+      await render('drumkit', referenceBeat(), REFERENCE_BEAT_SECONDS, { kit: i + 1 }));
+    console.log(`      ${GENRE_LABEL[g]} — ${DRUM_GENRE_PRESETS[g].note}`);
   }
+
+  writeAll();
 }
 void main();

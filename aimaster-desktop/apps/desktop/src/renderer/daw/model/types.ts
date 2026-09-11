@@ -479,7 +479,7 @@ export interface Marker {
   trackIds?: TrackId[];
 }
 
-export const DAW_SESSION_VERSION = 2 as const;
+export const DAW_SESSION_VERSION = 3 as const;
 
 export interface DawSession {
   version: typeof DAW_SESSION_VERSION;

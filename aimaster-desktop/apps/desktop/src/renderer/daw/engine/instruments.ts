@@ -9,6 +9,9 @@
 // part renders identically in an offline bounce.
 
 import {
+  INSTRUMENT_TRIM, CALIBRATED_LEVEL,
+} from './instrument-level.js';
+import {
   curveValueAt, findExpression, pitchToFrequency, soundingPitch,
   type MidiNote, type MidiPartConfig,
 } from '../model/midi.js';
@@ -54,6 +57,15 @@ export interface InstrumentDescriptor {
   /** Build and schedule one voice.  Returns its nodes for cleanup. */
   playNote: (voice: VoiceContext) => { stop: (at: number) => void };
 }
+
+/**
+ * How hard the Rhodes' pickup waveshaper is driven, at full velocity.
+ *
+ * Was the instrument's old default Level, which is where its voicing was
+ * judged; kept as a constant so that moving Level past the waveshaper (see
+ * the epiano voice) changed the instrument's loudness and not its character.
+ */
+const EPIANO_PICKUP_DRIVE = 0.25;
 
 /** Points at which per-note curves are sampled when scheduling. */
 const CURVE_STEPS = 24;
@@ -301,7 +313,8 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
   const air = spec.air * toneScale;
   // Velocity on a drum is dynamics, not a trim: a ghost note is a different
   // sound from a rimshot, so it moves the level a long way.
-  const level = (params['level'] ?? 0.8) * spec.level * (0.08 + 0.92 * Math.pow(note.velocity, 1.4));
+  const level = (params['level'] ?? CALIBRATED_LEVEL) * INSTRUMENT_TRIM.drumkit
+    * spec.level * (0.08 + 0.92 * Math.pow(note.velocity, 1.4));
   const decay = spec.decay * decayScale;
   const seed = noteSeed(note);
 
@@ -422,11 +435,16 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
 /** One plucked-string voice, shared by the two guitars. */
 function pluckVoice(
   v: VoiceContext,
-  tuning: { damping: number; brightness: number; pick: number; bodyHz: number; bodyQ: number; toneHz: number },
+  tuning: {
+    damping: number; brightness: number; pick: number;
+    bodyHz: number; bodyQ: number; toneHz: number;
+    /** This guitar's output trim — the two share a voice, not a level. */
+    trim: number;
+  },
 ): { stop: (at: number) => void } {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const freq = pitchToFrequency(soundingPitch(note));
-  const level = (params['level'] ?? 0.3) * (0.25 + 0.75 * note.velocity);
+  const level = (params['level'] ?? CALIBRATED_LEVEL) * tuning.trim * (0.25 + 0.75 * note.velocity);
 
   // How long the string is allowed to ring, independent of the note's length:
   // a plucked string does not stop when the key is released, it decays.  The
@@ -495,7 +513,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'cutoffHz', name: 'Cutoff',  min: 200,   max: 12000, default: 2800, unit: 'Hz' },
       { id: 'resonance', name: 'Reso',   min: 0.1,   max: 12,   default: 1.2,   unit: '' },
       { id: 'detune',   name: 'Detune',  min: 0,     max: 40,   default: 8,     unit: 'ct' },
-      { id: 'level',    name: 'Level',   min: 0,     max: 1,    default: 0.22,  unit: '' },
+      { id: 'level',    name: 'Level',   min: 0,     max: 1,    default: CALIBRATED_LEVEL, unit: '' },
     ],
     playNote: ({ ctx, destination, note, config, when, durationSec, params }) => {
       const freq = pitchToFrequency(soundingPitch(note));
@@ -537,7 +555,8 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       oscB.connect(filter);
       filter.connect(amp).connect(destination);
 
-      const peak = (params['level'] ?? 0.22) * (0.25 + 0.75 * note.velocity);
+      const peak = (params['level'] ?? CALIBRATED_LEVEL) * INSTRUMENT_TRIM.polysynth
+        * (0.25 + 0.75 * note.velocity);
       const releaseEnd = adsr(
         amp.gain, when, durationSec,
         params['attack'] ?? 0.008, params['decay'] ?? 0.18,
@@ -570,7 +589,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'index',    name: 'Index',    min: 0,    max: 12,  default: 3.2,  unit: '' },
       { id: 'decay',    name: 'Decay',    min: 0.1,  max: 6,   default: 1.6,  unit: 's' },
       { id: 'release',  name: 'Release',  min: 0.02, max: 3,   default: 0.35, unit: 's' },
-      { id: 'level',    name: 'Level',    min: 0,    max: 1,   default: 0.25, unit: '' },
+      { id: 'level',    name: 'Level',    min: 0,    max: 1,   default: CALIBRATED_LEVEL, unit: '' },
       { id: 'bark',     name: 'Bark',     min: 0,    max: 1,   default: 0.7,  unit: '' },
       { id: 'tine',     name: 'Tine',     min: 0,    max: 1,   default: 0.5,  unit: '' },
       { id: 'pickup',   name: 'Pickup',   min: 0,    max: 1,   default: 0.35, unit: '' },
@@ -670,6 +689,15 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       // everything else so it moves the whole voice.
       const tremRate = params['tremRate'] ?? 0;
       const out = ctx.createGain();
+      // Level is a GAIN, and a gain must not change the sound.  It sits here,
+      // AFTER the pickup, because the pickup is a waveshaper: driven from the
+      // amp envelope instead, turning Level down would have quietened the
+      // Rhodes AND cleaned it up, and turning it up would have growled.  That
+      // is a drive control wearing a level control's name.  Measured: it was
+      // the one instrument of the five whose crest factor moved when nothing
+      // but its gain changed.
+      const lvl = (params['level'] ?? CALIBRATED_LEVEL) * INSTRUMENT_TRIM.epiano;
+      out.gain.value = lvl;
       let lfo: OscillatorNode | null = null;
       let lfoGain: GainNode | null = null;
       if (tremRate > 0.01) {
@@ -678,8 +706,10 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         lfoGain = ctx.createGain();
         lfo.type = 'sine';
         lfo.frequency.value = tremRate;
-        lfoGain.gain.value = depth * 0.5;
-        out.gain.value = 1 - depth * 0.5;
+        // Both scaled by the level, so the tremolo is the same DEPTH at any
+        // level rather than the same number of decibels of swing.
+        lfoGain.gain.value = lvl * depth * 0.5;
+        out.gain.value = lvl * (1 - depth * 0.5);
         lfo.connect(lfoGain).connect(out.gain);
         lfo.start(start);
       }
@@ -687,7 +717,10 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       const tail = shaper ? amp.connect(shaper) : amp;
       (tail as AudioNode).connect(out).connect(destination);
 
-      const peak = (params['level'] ?? 0.25) * (0.2 + 0.8 * vel);
+      // What the pickup is driven by: velocity, and nothing else.  The
+      // constant is the level the voice was originally tuned at, kept so the
+      // move above did not also change how barky the instrument is.
+      const peak = EPIANO_PICKUP_DRIVE * (0.2 + 0.8 * vel);
       const releaseEnd = adsr(
         amp.gain, when, durationSec,
         0.004, params['decay'] ?? 1.6, 0.35, params['release'] ?? 0.35, peak,
@@ -729,7 +762,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'pick',    name: 'Pick',    min: 0.02, max: 0.5,  default: 0.14, unit: '' },
       { id: 'sustain', name: 'Sustain', min: 0.4, max: 8,     default: 3,    unit: 's' },
       { id: 'release', name: 'Release', min: 0.03, max: 1.2,  default: 0.18, unit: 's' },
-      { id: 'level',   name: 'Level',   min: 0,   max: 1,     default: 0.32, unit: '' },
+      { id: 'level',   name: 'Level',   min: 0,   max: 1,     default: CALIBRATED_LEVEL, unit: '' },
     ],
     // A steel-string body: the big air resonance sits near 100 Hz and the
     // top plate around 200.  Bright, and it loses its highs quickly, which
@@ -737,7 +770,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     playNote: (v) => pluckVoice(v, {
       damping: 0.9955, brightness: 0.85,
       pick: v.params['pick'] ?? 0.14,
-      bodyHz: 110, bodyQ: 1.1, toneHz: 7000,
+      bodyHz: 110, bodyQ: 1.1, toneHz: 7000, trim: INSTRUMENT_TRIM.agtr,
     }),
   },
 
@@ -750,7 +783,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'pick',    name: 'Pick',    min: 0.02, max: 0.5,  default: 0.09, unit: '' },
       { id: 'sustain', name: 'Sustain', min: 0.4, max: 8,     default: 5,    unit: 's' },
       { id: 'release', name: 'Release', min: 0.03, max: 1.2,  default: 0.1,  unit: 's' },
-      { id: 'level',   name: 'Level',   min: 0,   max: 1,     default: 0.3,  unit: '' },
+      { id: 'level',   name: 'Level',   min: 0,   max: 1,     default: CALIBRATED_LEVEL, unit: '' },
     ],
     // Rings far longer than the acoustic — an electric's string is not asked
     // to move any air, so it keeps its energy — and the pickup's resonance
@@ -763,7 +796,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     playNote: (v) => pluckVoice(v, {
       damping: 0.9987, brightness: 0.7,
       pick: v.params['pick'] ?? 0.09,
-      bodyHz: 2500, bodyQ: 1.6, toneHz: 3400,
+      bodyHz: 2500, bodyQ: 1.6, toneHz: 3400, trim: INSTRUMENT_TRIM.egtr,
     }),
   },
 
@@ -771,7 +804,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     id: 'drumkit',
     name: 'Drum Kit',
     params: [
-      { id: 'level', name: 'Level', min: 0,    max: 1,  default: 0.8, unit: '' },
+      { id: 'level', name: 'Level', min: 0,    max: 1,  default: CALIBRATED_LEVEL, unit: '' },
       { id: 'tune',  name: 'Tune',  min: -12,  max: 12, default: 0,   unit: 'st' },
       { id: 'decay', name: 'Decay', min: 0.2,  max: 2,  default: 1,   unit: 'x' },
       { id: 'tone',  name: 'Tone',  min: 0.4,  max: 2,  default: 1,   unit: 'x' },

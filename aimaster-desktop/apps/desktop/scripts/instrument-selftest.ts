@@ -25,6 +25,8 @@
 
 import { INSTRUMENTS, findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
 import { pluckedString, stringDelay } from '../src/renderer/daw/engine/string-model.js';
+import { LEGACY_LEVEL_DEFAULTS } from '../src/renderer/daw/engine/instrument-level.js';
+import { migrateSession } from '../src/renderer/daw/model/session-migrate.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -180,11 +182,36 @@ check('the Rhodes keeps the parameters sessions were saved with', () => {
   // Its ids and defaults are a compatibility surface: a part saved before the
   // rebuild has to open sounding like the same instrument.
   const rhodes = findInstrument('epiano')!;
-  for (const [id, def] of [['ratio', 3], ['index', 3.2], ['decay', 1.6], ['release', 0.35], ['level', 0.25]] as const) {
+  for (const [id, def] of [['ratio', 3], ['index', 3.2], ['decay', 1.6], ['release', 0.35]] as const) {
     const p = rhodes.params.find((x) => x.id === id);
     assert(p, `the Rhodes dropped ${id}, which old sessions store`);
     assert(p!.default === def, `${id}'s default moved from ${def} to ${p!.default}`);
   }
+});
+
+check('Level is the one default allowed to move, and only behind a migration', () => {
+  // `level` was pinned alongside the four above until calibration moved it —
+  // the instruments were 16 LU apart and the knob was carrying the
+  // difference.  What the pin was FOR still holds, so it is asserted here
+  // rather than deleted: an old session must still open sounding like the
+  // instrument it was saved with.  That is now the migration's job, so the
+  // check follows it there.
+  //
+  // 0.25 stays written down because a migration that has forgotten what it is
+  // converting FROM converts nothing.
+  const rhodes = findInstrument('epiano')!;
+  const level = rhodes.params.find((x) => x.id === 'level');
+  assert(level, 'the Rhodes dropped level, which old sessions store');
+  assert(LEGACY_LEVEL_DEFAULTS['epiano'] === 0.25,
+    `the migration thinks the old Rhodes rested at ${String(LEGACY_LEVEL_DEFAULTS['epiano'])}, not 0.25`);
+  const opened = migrateSession({
+    version: 2,
+    tracks: [{ id: 't', instrumentId: 'epiano', instrumentParams: { level: 0.25, index: 3.2 } }],
+  }).session as unknown as { tracks: Array<{ instrumentParams: Record<string, number> }> };
+  assert(opened.tracks[0]!.instrumentParams['level'] === level!.default,
+    'a Rhodes saved at the old default does not open at the new one');
+  assert(opened.tracks[0]!.instrumentParams['index'] === 3.2,
+    'the migration lost the parameters it was not asked to touch');
 });
 
 console.log('\n=== Instruments — a Rhodes and two guitars ===');
