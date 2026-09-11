@@ -18,13 +18,18 @@
 // Every number in that table is MEASURED, not chosen — rendered through the
 // reference material below and metered with the app's own loudness meter.
 //
-// Measured IN THE APP, which turned out to matter: `node-web-audio-api`,
-// which the test suite renders under, agrees with Chromium exactly on the two
-// guitars and disagrees by 1.40 dB on the poly synth and 1.17 dB on the kit,
-// because a band-limited oscillator is each implementation's own choice.  The
-// user hears Chromium, so `measure-levels-in-app.mjs` derives these against
-// the running app; `instrument-level-selftest.ts` then re-measures under node
-// and fails on drift from what THAT renderer saw when they were set.
+// Measured IN THE APP, which turned out to matter: `node-web-audio-api`, the
+// renderer the test suite uses, is not the one the user hears.  The two agree
+// exactly wherever the audio is arithmetic this repo wrote — buffers through
+// biquads, and now the synth, whose waves are built from explicit harmonic
+// coefficients — and disagree wherever an implementation gets to choose,
+// which is its own band-limited oscillators.  It was 1.40 dB on the poly
+// synth until that synth stopped using the built-in `sawtooth`; the drum kit,
+// still built from them, is 0.85 LU apart.
+//
+// So `measure-levels-in-app.mjs` derives these against the running app, and
+// `instrument-level-selftest.ts` re-measures under node and fails on drift
+// from what THAT renderer saw when they were set.
 
 /** One note in the reference material.  Seconds, not beats: no session here. */
 export interface LevelEvent {
@@ -83,7 +88,7 @@ export const CALIBRATED_LEVEL = 0.7;
  * user dropped in, and no constant here can know that.
  */
 export const INSTRUMENT_TRIM = {
-  polysynth: 0.0943,
+  polysynth: 0.1326,
   epiano: 0.2276,
   agtr: 0.4783,
   egtr: 0.3022,

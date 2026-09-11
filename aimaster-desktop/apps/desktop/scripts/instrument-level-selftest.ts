@@ -16,10 +16,13 @@
  *
  * ONE THING THIS SUITE CANNOT DO, stated up front because it looks like it
  * can: it is not rendering in the renderer the app runs on.  `node-web-audio-
- * api` and Chromium agree exactly on the two guitars — buffers through
- * biquads, which is arithmetic — and DISAGREE on the two instruments built
- * from oscillators, by 1.40 dB on the poly synth and 1.17 dB on the kit,
- * because a band-limited oscillator is each implementation's own choice.
+ * api` and Chromium agree exactly wherever the audio is arithmetic this repo
+ * wrote — the guitars (buffers through biquads) and the synth (waves built
+ * from explicit harmonic coefficients) — and DISAGREE wherever the
+ * implementation chooses, which is its own band-limited oscillators.  The
+ * drum kit is still built from those and sits 0.85 LU apart; the poly synth
+ * was 1.40 dB apart until it stopped using the built-in `sawtooth`, and now
+ * lands within 0.01.
  *
  * The user hears Chromium, so the trims are derived THERE (see
  * measure-levels-in-app.mjs) and what this file pins is that nothing has
@@ -86,12 +89,12 @@ const TOLERANCE_LU = 0.4;
  * What the calibrated instruments measure as HERE, under this suite's
  * renderer — not what they measure as in the app.
  *
- * Re-measured whenever the trims change, by running this file.  The two
- * guitars land on the target because the two renderers agree about them; the
- * poly synth sits 1.4 LU high and the kit 1.85 LU low because they do not.
+ * Re-measured whenever the trims change, by running this file.  Everything
+ * but the kit lands on the target, because those are the instruments the two
+ * renderers agree about; the kit sits 1.85 LU low because it does not.
  */
 const NODE_REFERENCE_LUFS: Readonly<Record<string, number>> = {
-  polysynth: -24.60, epiano: -26.00, agtr: -26.07, egtr: -26.00,
+  polysynth: -26.01, epiano: -26.06, agtr: -26.07, egtr: -26.00,
 };
 const NODE_REFERENCE_KIT_MEDIAN_LUFS = -27.85;
 
@@ -101,7 +104,9 @@ const NODE_REFERENCE_KIT_MEDIAN_LUFS = -27.85;
  * This is what stops the reference table above from being a licence to put
  * any number in it: a revoicing that moved an instrument 5 dB could be made
  * to pass by editing its reference, and this check is what would still fail.
- * 2.0 is the measured worst case (1.85 on the kit) with a little room.
+ * 2.0 is the measured worst case (1.85 on the kit) with a little room.  It
+ * was nearly the poly synth's as well, and that is a reason to keep the room
+ * rather than to tighten it: an instrument can move back into the gap.
  */
 const RENDERER_GAP_LU = 2.0;
 

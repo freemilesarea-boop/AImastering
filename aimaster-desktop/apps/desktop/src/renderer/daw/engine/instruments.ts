@@ -501,47 +501,275 @@ function pluckVoice(
   };
 }
 
+// ── The poly synth's oscillator bank ────────────────────────────────────────
+
+/**
+ * The shapes the `wave` parameter selects, in its own order.
+ *
+ * An index rather than a name for the same reason the kit is one (see
+ * drum-presets.ts): `instrumentParams` is `Record<string, number>`, and
+ * everything that carries a track — save, undo, template, freeze, bounce,
+ * automation — carries a number without being taught what it means.
+ */
+const SYNTH_WAVES = ['saw', 'square', 'pulse', 'triangle', 'sine'] as const;
+type SynthWave = typeof SYNTH_WAVES[number];
+
+/** Most voices one note may stack.  Seven is already seven oscillators. */
+const MAX_UNISON = 7;
+
+/**
+ * Where each unison voice starts in its cycle.
+ *
+ * These are not evenly spaced, and the first attempt at this was — which is
+ * the worst possible choice and it took a measurement to see it.  Summing n
+ * copies of a wave at phases k/n cancels every harmonic that is not a
+ * multiple of n: measured, the stack lost up to 188 dB of a harmonic, and a
+ * seven-voice unison at zero detune came out 8.35 dB QUIETER than one voice.
+ * A comb filter, not a unison.
+ *
+ * What unison needs is phases that behave like random ones — where the n
+ * voices sum to about √n, the way incoherent sources do.  Low-discrepancy
+ * sequences are no good either, for the same reason: being evenly spread is
+ * exactly the property that cancels.  So these were SEARCHED for, scored on
+ * two things at once over every prefix of 2…7 voices and the first 24
+ * harmonics:
+ *
+ *   · each harmonic sums to within 7.3 dB of √n — no systematic comb
+ *   · the summed waveform's PEAK stays within 2.8 dB of √n — the onset does
+ *     not grow with the voice count, which is what would click and clip
+ */
+const UNISON_PHASES = [0, 0.0073, 0.5701, 0.2179, 0.3942, 0.9949, 0.2544] as const;
+
+/** Harmonics each built wave carries. */
+const WAVE_HARMONICS = 64;
+
+/**
+ * Built waves, per context.
+ *
+ * Keyed by the context and not only by the shape, because a PeriodicWave
+ * belongs to the context that made it — the same trap `stringBuffer` avoids
+ * by caching samples rather than an AudioBuffer, and the offline bounce runs
+ * in a different context from the preview.
+ */
+const WAVE_CACHE = new WeakMap<BaseAudioContext, Map<string, PeriodicWave>>();
+
+/**
+ * One wave shape, BUILT rather than picked.
+ *
+ * `OscillatorNode.type` covers saw, square and triangle, and not the two
+ * things patches need most:
+ *
+ *   A PULSE WIDTH, which is a different waveform at every setting — narrowing
+ *   a pulse is what turns a synth brass into a reedy lead, and the type-based
+ *   oscillators have exactly one duty cycle.
+ *
+ *   A STARTING PHASE, which the API does not expose at all.  Every oscillator
+ *   starts at phase zero, so a unison stack built from them begins perfectly
+ *   in step: it sums coherently for the first milliseconds (a click, and a
+ *   peak that grows with the voice count) and reads thin afterwards, because
+ *   the whole point of unison is voices that are NOT in step.  Rotating
+ *   harmonic n by n·φ shifts the wave in time without changing its shape,
+ *   which is the per-voice phase offset the API will not give.
+ */
+function synthWave(
+  ctx: BaseAudioContext, kind: SynthWave, pulseWidth: number, phase: number,
+): PeriodicWave {
+  let perContext = WAVE_CACHE.get(ctx);
+  if (!perContext) { perContext = new Map(); WAVE_CACHE.set(ctx, perContext); }
+  const key = `${kind}|${kind === 'pulse' ? pulseWidth.toFixed(3) : '-'}|${phase.toFixed(4)}`;
+  const hit = perContext.get(key);
+  if (hit) return hit;
+
+  const real = new Float32Array(WAVE_HARMONICS + 1);
+  const imag = new Float32Array(WAVE_HARMONICS + 1);
+  for (let n = 1; n <= WAVE_HARMONICS; n++) {
+    let a = 0, b = 0;
+    const odd = n % 2 === 1;
+    if (kind === 'saw') b = 1 / n;
+    else if (kind === 'square') b = odd ? 1 / n : 0;
+    // A pulse of duty w: the sine terms cancel and the cosine ones carry
+    // sin(nπw) — which is why w = 0.5 silences every even harmonic and hands
+    // back a square, and why narrowing it brings them all in.
+    else if (kind === 'pulse') a = (2 / (n * Math.PI)) * Math.sin(n * Math.PI * pulseWidth);
+    else if (kind === 'triangle') b = odd ? (8 / (Math.PI * Math.PI * n * n)) * (((n - 1) / 2) % 2 === 0 ? 1 : -1) : 0;
+    else b = n === 1 ? 1 : 0;
+
+    const angle = 2 * Math.PI * n * phase;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    real[n] = a * cos + b * sin;
+    imag[n] = b * cos - a * sin;
+  }
+
+  const wave = ctx.createPeriodicWave(real, imag);
+  perContext.set(key, wave);
+  return wave;
+}
+
+/**
+ * The drive curve, gain-compensated so that Drive is a TIMBRE control.
+ *
+ * Same rule the Rhodes' Level had to be taught (see instrument-level.ts): a
+ * control that shapes the sound must not also move the loudness, or the user
+ * cannot tell which of the two they are hearing.
+ *
+ * Dividing by `tanh(k)` — which is what this did first — does NOT achieve
+ * that, and a break test is what said so.  It normalises the curve's
+ * ENDPOINTS, and by k = 2 (drive 0.07) tanh(k) is already 0.96 and on its way
+ * to 1, so past the very bottom of the knob it divides by nothing.  What
+ * actually moves is the RMS: squaring off a sine raises it by 3 dB however
+ * the endpoints are scaled.
+ *
+ * So the compensation is measured from the curve instead — the RMS it gives
+ * a full-scale sine, against the RMS of that sine.  A sine because it is the
+ * worst case for this: the more a waveform already resembles what tanh turns
+ * it into, the less the shaper changes, and a sine resembles it least.
+ */
+function driveCurve(amount: number): Float32Array<ArrayBuffer> {
+  const n = 1024;
+  const k = 1 + 14 * amount;
+  const shape = (x: number): number => Math.tanh(x * k) / Math.tanh(k);
+
+  let sum = 0;
+  const STEPS = 512;
+  for (let i = 0; i < STEPS; i++) {
+    const y = shape(Math.sin((2 * Math.PI * i) / STEPS));
+    sum += y * y;
+  }
+  const outRms = Math.sqrt(sum / STEPS);
+  const compensation = outRms > 1e-6 ? Math.SQRT1_2 / outRms : 1;
+
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = shape((i / (n - 1)) * 2 - 1) * compensation;
+  }
+  return out;
+}
+
 export const INSTRUMENTS: InstrumentDescriptor[] = [
   {
     id: 'polysynth',
     name: 'Poly Synth',
+    // Two detuned saws through a fixed lowpass is one sound with an envelope
+    // on it, and no number of presets makes it more than one.  The parameters
+    // below the original eight are what a patch can actually differ BY: a
+    // shape, a width, a stack, a filter that moves, something to move it.
+    //
+    // Every one of them rests at "off", so the eight that were here keep both
+    // their ids and their behaviour and a session saved before this opens
+    // sounding like itself.
     params: [
-      { id: 'attack',   name: 'Attack',  min: 0.001, max: 2,    default: 0.008, unit: 's' },
-      { id: 'decay',    name: 'Decay',   min: 0.01,  max: 3,    default: 0.18,  unit: 's' },
-      { id: 'sustain',  name: 'Sustain', min: 0,     max: 1,    default: 0.65,  unit: '' },
-      { id: 'release',  name: 'Release', min: 0.01,  max: 4,    default: 0.22,  unit: 's' },
-      { id: 'cutoffHz', name: 'Cutoff',  min: 200,   max: 12000, default: 2800, unit: 'Hz' },
-      { id: 'resonance', name: 'Reso',   min: 0.1,   max: 12,   default: 1.2,   unit: '' },
-      { id: 'detune',   name: 'Detune',  min: 0,     max: 40,   default: 8,     unit: 'ct' },
-      { id: 'level',    name: 'Level',   min: 0,     max: 1,    default: CALIBRATED_LEVEL, unit: '' },
+      { id: 'wave',      name: 'Wave',    min: 0,     max: 4,     default: 0,     unit: '' },
+      { id: 'pulseWidth', name: 'Width',  min: 0.05,  max: 0.5,   default: 0.25,  unit: '' },
+      { id: 'voices',    name: 'Unison',  min: 1,     max: 7,     default: 2,     unit: '' },
+      { id: 'detune',    name: 'Detune',  min: 0,     max: 40,    default: 8,     unit: 'ct' },
+      { id: 'sub',       name: 'Sub',     min: 0,     max: 1,     default: 0,     unit: '' },
+      { id: 'noise',     name: 'Noise',   min: 0,     max: 1,     default: 0,     unit: '' },
+
+      { id: 'cutoffHz',  name: 'Cutoff',  min: 200,   max: 12000, default: 2800,  unit: 'Hz' },
+      { id: 'resonance', name: 'Reso',    min: 0.1,   max: 12,    default: 1.2,   unit: '' },
+      { id: 'keyTrack',  name: 'Key Trk', min: 0,     max: 1,     default: 0,     unit: '' },
+      { id: 'fegAmount', name: 'Env Amt', min: -4,    max: 6,     default: 0,     unit: 'oct' },
+      { id: 'fegAttack', name: 'Env Atk', min: 0.001, max: 2,     default: 0.005, unit: 's' },
+      { id: 'fegDecay',  name: 'Env Dec', min: 0.02,  max: 4,     default: 0.4,   unit: 's' },
+
+      { id: 'attack',    name: 'Attack',  min: 0.001, max: 2,     default: 0.008, unit: 's' },
+      { id: 'decay',     name: 'Decay',   min: 0.01,  max: 3,     default: 0.18,  unit: 's' },
+      { id: 'sustain',   name: 'Sustain', min: 0,     max: 1,     default: 0.65,  unit: '' },
+      { id: 'release',   name: 'Release', min: 0.01,  max: 4,     default: 0.22,  unit: 's' },
+
+      { id: 'lfoRate',   name: 'LFO',     min: 0,     max: 12,    default: 0,     unit: 'Hz' },
+      { id: 'lfoPitch',  name: 'Vibrato', min: 0,     max: 100,   default: 0,     unit: 'ct' },
+      { id: 'lfoFilter', name: 'Wobble',  min: 0,     max: 4,     default: 0,     unit: 'oct' },
+
+      { id: 'drive',     name: 'Drive',   min: 0,     max: 1,     default: 0,     unit: '' },
+      { id: 'level',     name: 'Level',   min: 0,     max: 1,     default: CALIBRATED_LEVEL, unit: '' },
     ],
     playNote: ({ ctx, destination, note, config, when, durationSec, params }) => {
       const freq = pitchToFrequency(soundingPitch(note));
+      const start = Math.max(0, when);
       const detune = params['detune'] ?? 8;
+      const bendCents = (normalized: number): number => normalized * config.bendRangeSemitones * 100;
 
       const amp = ctx.createGain();
       const filter = ctx.createBiquadFilter();
       filter.type = 'lowpass';
       filter.Q.value = params['resonance'] ?? 1.2;
 
-      const oscA = ctx.createOscillator();
-      const oscB = ctx.createOscillator();
-      oscA.type = 'sawtooth';
-      oscB.type = 'sawtooth';
-      oscA.frequency.value = freq;
-      oscB.frequency.value = freq;
-      oscA.detune.value = -detune;
-      oscB.detune.value = detune;
+      // ── The stack ───────────────────────────────────────────────────────
+      const voices = Math.max(1, Math.min(MAX_UNISON, Math.round(params['voices'] ?? 2)));
+      const kind = SYNTH_WAVES[Math.max(0, Math.min(SYNTH_WAVES.length - 1,
+        Math.round(params['wave'] ?? 0)))] ?? 'saw';
+      const pulseWidth = params['pulseWidth'] ?? 0.25;
 
-      // Per-note pitch bend → this voice's detune, in cents.
-      const bendCents = (normalized: number): number => normalized * config.bendRangeSemitones * 100;
-      scheduleCurve(oscA.detune, note, { kind: 'pitchBend' }, when, durationSec, (v) => bendCents(v) - detune, 0);
-      scheduleCurve(oscB.detune, note, { kind: 'pitchBend' }, when, durationSec, (v) => bendCents(v) + detune, 0);
+      const oscMix = ctx.createGain();
+      // Power, not amplitude.  Detuned voices drift out of step within a cycle
+      // or two, so they add the way noise does rather than the way one louder
+      // oscillator would — dividing by the count instead would make Unison a
+      // volume knob that gets quieter as it gets wider.
+      oscMix.gain.value = 1 / Math.sqrt(voices);
+      oscMix.connect(filter);
 
-      // Pressure and timbre open the filter — the two expressive dimensions
-      // an MPE controller sends continuously.
-      const baseCutoff = params['cutoffHz'] ?? 2800;
+      const oscs: OscillatorNode[] = [];
+      for (let i = 0; i < voices; i++) {
+        const osc = ctx.createOscillator();
+        osc.setPeriodicWave(synthWave(ctx, kind, pulseWidth, UNISON_PHASES[i] ?? 0));
+        osc.frequency.value = freq;
+        // Spread evenly across ±detune, so an odd count always keeps one
+        // voice at pitch and an even one stays symmetric about it.
+        const spread = voices === 1 ? 0 : (i / (voices - 1)) * 2 - 1;
+        const cents = spread * detune;
+        scheduleCurve(osc.detune, note, { kind: 'pitchBend' }, when, durationSec,
+          (v) => bendCents(v) + cents, 0);
+        osc.connect(oscMix);
+        oscs.push(osc);
+      }
+
+      // The sub and the noise join AFTER the unison scaling: neither of them
+      // is part of the stack, and neither should get quieter for widening it.
+      const subAmount = params['sub'] ?? 0;
+      let subOsc: OscillatorNode | null = null;
+      if (subAmount > 0.001) {
+        subOsc = ctx.createOscillator();
+        subOsc.setPeriodicWave(synthWave(ctx, 'square', 0.5, 0));
+        subOsc.frequency.value = freq / 2;
+        scheduleCurve(subOsc.detune, note, { kind: 'pitchBend' }, when, durationSec, bendCents, 0);
+        const g = ctx.createGain();
+        g.gain.value = subAmount * 0.8;
+        subOsc.connect(g).connect(filter);
+      }
+
+      const noiseAmount = params['noise'] ?? 0;
+      let noise: AudioBufferSourceNode | null = null;
+      if (noiseAmount > 0.001) {
+        noise = ctx.createBufferSource();
+        noise.buffer = noiseBuffer(ctx, noteSeed(note));
+        noise.loop = true;
+        const g = ctx.createGain();
+        g.gain.value = noiseAmount * 0.3;
+        noise.connect(g).connect(filter);
+      }
+
+      // ── The filter ──────────────────────────────────────────────────────
+      // A cutoff that does not follow the keyboard sounds duller the higher
+      // you play, because the same frequency takes more off a higher note.
+      const keyTrack = Math.max(0, Math.min(1, params['keyTrack'] ?? 0));
+      const baseCutoff = (params['cutoffHz'] ?? 2800) * Math.pow(freq / 261.6256, keyTrack);
       const velocityCutoff = baseCutoff * (0.45 + 0.85 * note.velocity);
+
+      const fegAmount = params['fegAmount'] ?? 0;
+      if (Math.abs(fegAmount) > 0.001) {
+        // On `detune`, not on `frequency`.  Frequency already carries the MPE
+        // timbre curve, and two writers on one AudioParam is one of them
+        // silently losing — which is how a filter envelope would appear to
+        // work everywhere except under an expressive controller.  Cents are
+        // the right unit anyway: an octave is 1200 of them at any pitch.
+        const fa = Math.max(0.001, params['fegAttack'] ?? 0.005);
+        const fd = Math.max(0.02, params['fegDecay'] ?? 0.4);
+        filter.detune.setValueAtTime(0, start);
+        filter.detune.linearRampToValueAtTime(fegAmount * 1200, start + fa);
+        filter.detune.linearRampToValueAtTime(0, start + fa + fd);
+      }
+
       scheduleCurve(
         filter.frequency, note, { kind: 'timbre' }, when, durationSec,
         (v) => Math.min(18_000, velocityCutoff * (0.6 + 1.6 * v)), 0.5,
@@ -551,9 +779,42 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         () => 1, 1,
       );
 
-      oscA.connect(filter);
-      oscB.connect(filter);
-      filter.connect(amp).connect(destination);
+      // ── The LFO ─────────────────────────────────────────────────────────
+      const lfoRate = params['lfoRate'] ?? 0;
+      let lfo: OscillatorNode | null = null;
+      if (lfoRate > 0.01) {
+        lfo = ctx.createOscillator();
+        lfo.type = 'sine';
+        lfo.frequency.value = lfoRate;
+        const pitchDepth = params['lfoPitch'] ?? 0;
+        if (pitchDepth > 0.01) {
+          const g = ctx.createGain();
+          g.gain.value = pitchDepth;
+          lfo.connect(g);
+          // Connected, not scheduled: the pitch bend curve is already the
+          // intrinsic value of these params, and a connection SUMS with it
+          // instead of replacing it.
+          for (const o of oscs) g.connect(o.detune);
+          if (subOsc) g.connect(subOsc.detune);
+        }
+        const filterDepth = params['lfoFilter'] ?? 0;
+        if (filterDepth > 0.001) {
+          const g = ctx.createGain();
+          g.gain.value = filterDepth * 1200;
+          lfo.connect(g).connect(filter.detune);
+        }
+      }
+
+      // ── Out ─────────────────────────────────────────────────────────────
+      const drive = params['drive'] ?? 0;
+      let shaper: WaveShaperNode | null = null;
+      if (drive > 0.001) {
+        shaper = ctx.createWaveShaper();
+        shaper.curve = driveCurve(drive);
+        shaper.oversample = '2x';
+      }
+      const tail = shaper ? filter.connect(shaper) : filter;
+      (tail as AudioNode).connect(amp).connect(destination);
 
       const peak = (params['level'] ?? CALIBRATED_LEVEL) * INSTRUMENT_TRIM.polysynth
         * (0.25 + 0.75 * note.velocity);
@@ -563,16 +824,23 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         params['sustain'] ?? 0.65, params['release'] ?? 0.22, peak,
       );
 
-      oscA.start(Math.max(0, when));
-      oscB.start(Math.max(0, when));
-      oscA.stop(releaseEnd + 0.02);
-      oscB.stop(releaseEnd + 0.02);
+      const stopAt = releaseEnd + 0.02;
+      for (const o of oscs) { o.start(start); o.stop(stopAt); }
+      if (subOsc) { subOsc.start(start); subOsc.stop(stopAt); }
+      if (noise) { noise.start(start); noise.stop(stopAt); }
+      if (lfo) { lfo.start(start); lfo.stop(stopAt); }
 
       return {
         stop: (at: number) => {
-          try { oscA.stop(at); oscB.stop(at); } catch { /* already stopped */ }
-          try { oscA.disconnect(); oscB.disconnect(); filter.disconnect(); amp.disconnect(); }
-          catch { /* ignore */ }
+          for (const o of [...oscs, subOsc, lfo]) {
+            if (o) { try { o.stop(at); } catch { /* already stopped */ } }
+          }
+          if (noise) { try { noise.stop(at); } catch { /* already stopped */ } }
+          try {
+            for (const o of oscs) o.disconnect();
+            subOsc?.disconnect(); noise?.disconnect(); lfo?.disconnect();
+            oscMix.disconnect(); filter.disconnect(); shaper?.disconnect(); amp.disconnect();
+          } catch { /* ignore */ }
         },
       };
     },
