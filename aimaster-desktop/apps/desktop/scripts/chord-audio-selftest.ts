@@ -739,6 +739,61 @@ async function main(): Promise<void> {
     console.log(`      (jazz turnaround: ${(score * 100).toFixed(0)}% — ${got.join(' ')})`);
   });
 
+  await check('arpeggiated sevenths are exact — once there is a bass', async () => {
+    // The case that sat at 75 %.  An arpeggiated seventh sounds one or two of
+    // its four notes at a time, so the CHORD is only in the bar; and the two
+    // spellings a bar of A C E G can have — Am7 and C6 — are the same four
+    // pitch classes, which no chroma can separate.  The bass can, and that is
+    // what it is for.
+    //
+    // Four shapes, because one turnaround can be right by luck: two
+    // progressions × one chord a bar and one every two beats.
+    const shapes = [
+      { name: 'sevenths, 1 bar',   prog: SEVENTHS, bars: 1 },
+      { name: 'sevenths, 2 beats', prog: SEVENTHS, bars: 0.5 },
+      { name: 'jazz, 1 bar',       prog: JAZZ,     bars: 1 },
+      { name: 'jazz, 2 beats',     prog: JAZZ,     bars: 0.5 },
+    ];
+    let blindTotal = 0;
+    for (const shape of shapes) {
+      const audio = await render(shape.prog, {
+        arpeggio: true, withBass: true, barsPerChord: shape.bars,
+      });
+      const got = labelsFor(audio, shape.prog, shape.bars);
+      assert(accuracy(shape.prog, got) === 1,
+        `${shape.name}: ${shape.prog.join(' ')} → ${got.join(' ')}`);
+      // And the bass has to be what did it, or this check is decoration.
+      const blind = labelsFor({ mix: audio.mix, bass: null }, shape.prog, shape.bars);
+      blindTotal += accuracy(shape.prog, blind);
+      console.log(`      (${shape.name}: with bass 100% — `
+        + `without ${(accuracy(shape.prog, blind) * 100).toFixed(0)}% ${blind.join(' ')})`);
+    }
+    assert(blindTotal / shapes.length <= 0.8,
+      `the bass earned nothing: blind average ${((blindTotal / shapes.length) * 100).toFixed(0)}%`);
+  });
+
+  await check('without a bass, an arpeggio names the right NOTES, not the right root', async () => {
+    // What the detector can still be held to when the bass is missing — a
+    // solo guitar picking jazz chords, say.  Am7 and C6 are A C E G either
+    // way; reporting one for the other is a spelling, not a wrong reading.
+    //
+    // So the requirement is the pitch-class SET, and the exact-label number
+    // is printed beside it rather than asserted.
+    const audio = await render(SEVENTHS, { arpeggio: true });
+    const got = labelsFor(audio, SEVENTHS);
+    let sameNotes = 0;
+    for (const [bar, symbol] of SEVENTHS.entries()) {
+      const want = pitchClassesOf(symbol);
+      const named = pitchClassesOf(got[bar] ?? '');
+      const same = named.size === want.size && [...want].every((pc) => named.has(pc));
+      if (same) sameNotes += 1;
+    }
+    assert(sameNotes === SEVENTHS.length,
+      `blind arpeggio got the notes wrong somewhere: ${SEVENTHS.join(' ')} → ${got.join(' ')}`);
+    console.log(`      (blind arpeggiated sevenths: notes 100%, exact label `
+      + `${(accuracy(SEVENTHS, got) * 100).toFixed(0)}% — ${got.join(' ')})`);
+  });
+
   await check('a wrong beat grid costs boundary accuracy — which is why it is reported', async () => {
     // Not a failure of the detector; a demonstration of what the grid is
     // worth, so that "비트 그리드 없음" in the readout is understood as a
