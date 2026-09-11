@@ -240,3 +240,65 @@ export function keyPitchClasses(key: Scale): Set<number> {
   for (const interval of isMajorKey(key) ? major : minor) out.add(pitchClass(key.root + interval));
   return out;
 }
+
+// ── Spelling ────────────────────────────────────────────────────────────────
+//
+// `formatChord` writes every accidental as a sharp, because a pitch class is
+// a number and something had to be picked.  For one chord in isolation that
+// is fine.  On a CHART it is wrong in a way musicians notice immediately: in
+// F major the fourth chord is B♭ and nobody writes A♯ there, and the moment
+// you transpose a progression into a flat key every accidental in it turns
+// into a name that is technically the same note and reads as a mistake.
+//
+// Now that a key can be estimated, the chart can be spelled in it.
+
+/** How many sharps (positive) or flats (negative) a major key is written with. */
+const MAJOR_SIGNATURE: Readonly<Record<number, number>> = {
+  0: 0, 7: 1, 2: 2, 9: 3, 4: 4, 11: 5, 6: 6,   // C G D A E B F#
+  5: -1, 10: -2, 3: -3, 8: -4, 1: -5,          // F B♭ E♭ A♭ D♭
+};
+
+const SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const FLAT_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+/**
+ * Does this key write its accidentals as flats?
+ *
+ * A minor key takes its signature from its relative major, which is three
+ * semitones up — A minor and C major are the same signature, and that is the
+ * whole reason the relative pair is a pair.
+ */
+export function keyUsesFlats(key: Scale | null | undefined): boolean {
+  if (!key) return false;
+  const major = isMajorKey(key) ? pitchClass(key.root) : pitchClass(key.root + 3);
+  return (MAJOR_SIGNATURE[major] ?? 0) < 0;
+}
+
+/** A pitch class named the way this key would write it. */
+export function spellPitchClass(pc: number, key: Scale | null | undefined): string {
+  const names = keyUsesFlats(key) ? FLAT_NAMES : SHARP_NAMES;
+  return names[pitchClass(pc)] ?? 'C';
+}
+
+/**
+ * A chord symbol spelled for a key — `Bb` in F major, `A#` in B major.
+ *
+ * Deliberately NOT a change to `formatChord`.  That function is what the
+ * `.lab` writer, the tests and every stored label go through, and quietly
+ * changing how a chord prints everywhere in order to make one lane prettier
+ * is how a file format starts disagreeing with itself.  This is for display.
+ */
+export function formatChordIn(chord: ChordSymbol, key: Scale | null | undefined): string {
+  const quality = findQuality(chord.qualityId);
+  const root = spellPitchClass(chord.root, key);
+  const suffix = quality?.suffix ?? '';
+  const slash = chord.bass !== null && chord.bass !== undefined && chord.bass !== chord.root
+    ? `/${spellPitchClass(chord.bass, key)}`
+    : '';
+  return `${root}${suffix}${slash}`;
+}
+
+/** `C Major` spelled for its own signature — `Bb Major`, not `A# Major`. */
+export function keyNameIn(key: Scale): string {
+  return `${spellPitchClass(key.root, key)} ${isMajorKey(key) ? 'Major' : 'Minor'}`;
+}

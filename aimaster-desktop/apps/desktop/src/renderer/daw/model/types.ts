@@ -555,6 +555,16 @@ export interface DawSession {
    * the Key Editor, note snapping, the riff machine — can read it.
    */
   key?: Scale;
+  /**
+   * Capo position for reading the chord chart, 0 for none.
+   *
+   * DISPLAY state, not music.  A capo does not change what sounds — the chart
+   * still says B♭ and the record is still in B♭; it changes which SHAPE the
+   * player fingers.  Transposing is the other thing, and it is an edit.
+   * Keeping them apart is the whole design here: a capo that rewrote the
+   * chart would put the player in the wrong key against their own recording.
+   */
+  capoFret?: number;
   /** Delay compensation on/off — mirrors the Pro Tools engine switch. */
   delayCompensation: boolean;
   /** Clip grid for the Session View (empty until someone uses it). */

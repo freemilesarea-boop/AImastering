@@ -64,7 +64,16 @@ import {
 import {
   describeChordBlock, isUnsure, nextUnsureAfter, unsureChords, UNSURE_MARGIN,
 } from '../src/renderer/daw/edit/chord-confidence.js';
-import { setChord, moveChord, transposeChords } from '../src/renderer/daw/edit/chord-edit.js';
+import {
+  setChord, setCapo, moveChord, transposeChords, transposeChordTrack, withChords as _wc2,
+} from '../src/renderer/daw/edit/chord-edit.js';
+import {
+  capoOptions, isOpenShape, shapeFor, suggestCapo, MAX_CAPO_FRET,
+} from '../src/renderer/daw/model/capo.js';
+import {
+  formatChordIn, keyNameIn, keyUsesFlats, spellPitchClass,
+} from '../src/renderer/daw/model/key.js';
+import { transposeChord } from '../src/renderer/daw/model/chords.js';
 import {
   voiceLead, voiceDistance, totalMovement, voicingCandidates, DEFAULT_VOICING,
 } from '../src/renderer/daw/model/chord-voicing.js';
@@ -1744,6 +1753,164 @@ async function main(): Promise<void> {
     const types = stripComments(
       readFileSync(new URL('../src/renderer/daw/model/types.ts', import.meta.url), 'utf8'));
     assert(/key\?: Scale;/.test(types), 'the session has nowhere to put a key');
+  });
+
+  // ── Transpose and capo ────────────────────────────────────────────────────
+
+  await check('transposing the chart takes the key with it', () => {
+    // The key HAS to follow.  A chart moved up two semitones whose session
+    // still says C major will spell the new accidentals wrong, hand the wrong
+    // scale to the Key Editor and snap notes to a key the music has left —
+    // all quietly, because nothing about it looks broken.
+    const base = withChords(createSession(), [
+      { id: 'a', timeSec: 0, chord: parseChord('C')! },
+      { id: 'b', timeSec: 2, chord: parseChord('Am')! },
+    ]);
+    const session = { ...base, key: { root: 0, scaleId: 'major' } };
+    const up = transposeChordTrack(session, 2);
+    assert(formatChord(up.chordTrack[0]!.chord) === 'D',
+      `C +2 → ${formatChord(up.chordTrack[0]!.chord)}`);
+    assert(up.key?.root === 2 && up.key.scaleId === 'major',
+      `the key went to ${up.key ? keyNameIn(up.key) : 'nothing'}`);
+
+    // Down past zero has to wrap, not go negative.
+    const down = transposeChordTrack(session, -2);
+    assert(down.key?.root === 10, `C −2 → key root ${down.key?.root}`);
+    assert(formatChord(down.chordTrack[0]!.chord) === 'A#',
+      `C −2 → ${formatChord(down.chordTrack[0]!.chord)}`);
+
+    // And a session with no key estimated must not gain one from being moved.
+    const keyless = transposeChordTrack(base, 5);
+    assert(keyless.key === undefined, 'transposing invented a key that was never estimated');
+  });
+
+  await check('transposing does not touch the capo', () => {
+    // A capo is a statement about the player's hands, not about the music.
+    // Someone who moves a chart up a tone has not moved their capo by doing it.
+    const session = setCapo(withChords(createSession(), [
+      { id: 'a', timeSec: 0, chord: parseChord('C')! },
+    ]), 3);
+    assert(session.capoFret === 3, 'setup: the capo did not take');
+    assert(transposeChordTrack(session, 2).capoFret === 3, 'transposing moved the capo');
+    assert(setCapo(session, 0).capoFret === undefined,
+      'clearing the capo should remove it, not store a zero');
+    assert(setCapo(session, 99).capoFret === MAX_CAPO_FRET, 'the capo ran off the neck');
+  });
+
+  await check('a capo lowers the shape, it does not raise it', () => {
+    // The direction is the whole thing and it is easy to get backwards: a
+    // capo RAISES what comes out, so to sound B♭ from the third fret you
+    // finger the shape three semitones BELOW it.  Backwards, the chart is a
+    // tritone out at fret 6 and looks plausible everywhere else.
+    const bFlat = parseChord('A#')!;
+    assert(formatChord(shapeFor(bFlat, 3)) === 'G',
+      `B♭ with capo 3 should be a G shape, got ${formatChord(shapeFor(bFlat, 3))}`);
+    assert(formatChord(shapeFor(parseChord('E')!, 4)) === 'C',
+      `E with capo 4 → ${formatChord(shapeFor(parseChord('E')!, 4))}`);
+    // And the shape, played at that fret, must sound the original back.
+    for (const name of ['C', 'A#', 'F#m', 'Ebmaj7', 'G7']) {
+      const chord = parseChord(name)!;
+      for (let fret = 0; fret <= MAX_CAPO_FRET; fret++) {
+        const back = transposeChord(shapeFor(chord, fret), fret);
+        assert(formatChord(back) === formatChord(chord),
+          `${name} through capo ${fret} came back as ${formatChord(back)}`);
+      }
+    }
+  });
+
+  await check('the capo suggestion is the one guitarists already know', () => {
+    // B♭ major with a capo on 3 is G D Em C.  Every guitarist knows this one,
+    // which makes it the right thing to check a heuristic against.
+    const inBFlat = ['A#', 'F', 'Gm', 'D#'].map((n) => ({ chord: parseChord(n)! }));
+    const best = suggestCapo(inBFlat);
+    assert(best !== null && best.fret === 3,
+      `B♭ suggested capo ${best?.fret ?? 'none'}`);
+    assert(best!.shapes.map((c) => formatChord(c)).join(' ') === 'G D Em C',
+      `capo 3 shapes came out ${best!.shapes.map((c) => formatChord(c)).join(' ')}`);
+    assert(best!.openShare === 1, `only ${(best!.openShare * 100).toFixed(0)}% open`);
+
+    // A chart that is already open gets no suggestion — advice that is not
+    // worth taking should not be offered.
+    assert(suggestCapo(['Dm7', 'G7', 'Cmaj7', 'Am7'].map((n) => ({ chord: parseChord(n)! }))) === null,
+      'a chart that is already playable was told to fetch a capo');
+
+    // And neither does a chart a capo would barely improve.  One barre chord
+    // in eight bars is 88 % open already; capo 5 makes it 100 %, and nobody
+    // stops to fit a capo for that.  Without a worth-it threshold this is the
+    // case that produces confident, useless advice.
+    const oneBarre = ['C', 'G', 'Am', 'F', 'C', 'G', 'Am', 'C']
+      .map((n) => ({ chord: parseChord(n)! }));
+    const options = capoOptions(oneBarre);
+    const gain = (options[0]?.openShare ?? 0)
+      - (options.find((o) => o.fret === 0)?.openShare ?? 0);
+    assert(gain > 0 && gain < 0.2,
+      `the fixture should offer a small gain, measured ${(gain * 100).toFixed(0)}%`);
+    assert(suggestCapo(oneBarre) === null,
+      `a ${(gain * 100).toFixed(0)}% gain was offered as advice — not worth interrupting for`);
+  });
+
+  await check('the capo is weighted by time, like everything else', () => {
+    // A capo that makes the passing chord easy and the four-bar chord hard
+    // has not helped.
+    // Contrived on purpose, because the weighting is what is under test: two
+    // chords that last four bars each and are only open at fret 1, against
+    // six that last a beat between them and are only open at fret 3.  By the
+    // clock the answer is fret 1; by the chord COUNT the short ones are the
+    // majority and drag it to 3.
+    const chords = [
+      { chord: parseChord('C#')!, weight: 16 },
+      { chord: parseChord('G#')!, weight: 16 },
+      ...['C', 'G', 'C', 'G', 'C', 'G'].map((name) => ({
+        chord: parseChord(name)!, weight: 0.25,
+      })),
+    ];
+    const weighted = suggestCapo(chords);
+    const flat = suggestCapo(chords.map((c) => ({ chord: c.chord })));
+    assert(weighted !== null, 'no capo suggested for a chart full of barre chords');
+    assert(weighted?.fret === 1, `the four-bar chords want fret 1, got ${weighted?.fret}`);
+    // Counting chords equally, the six quick ones are the majority and they
+    // are already open as written — so it concludes no capo is worth it, and
+    // leaves the player barring the two chords they spend the song on.
+    assert(flat === null,
+      `counting chords equally suggested fret ${flat?.fret} — expected it to see no reason `
+      + 'for a capo at all, which is the mistake the weighting exists to avoid');
+  });
+
+  await check('an open shape is an open shape, and a barre is not', () => {
+    for (const name of ['C', 'D', 'E', 'G', 'A', 'Am', 'Em', 'Dm', 'G7', 'E7']) {
+      assert(isOpenShape(parseChord(name)!), `${name} should be an open shape`);
+    }
+    for (const name of ['A#', 'C#', 'Fm', 'Bm', 'D#7', 'Cdim7', 'Caug']) {
+      assert(!isOpenShape(parseChord(name)!), `${name} should need a barre or worse`);
+    }
+    // Every fret is offered, so a caller can show the whole neck.
+    assert(capoOptions([{ chord: parseChord('C')! }]).length === MAX_CAPO_FRET + 1,
+      'the capo options do not cover the neck');
+  });
+
+  await check('a chart in a flat key is spelled with flats', () => {
+    // `formatChord` writes every accidental as a sharp because a pitch class
+    // is a number.  On a chart that is wrong in a way musicians see instantly:
+    // in F major the fourth chord is B♭ and nobody writes A♯ there.
+    const fMajor = { root: 5, scaleId: 'major' };
+    const bMajor = { root: 11, scaleId: 'major' };
+    assert(keyUsesFlats(fMajor) && !keyUsesFlats(bMajor), 'the signatures are backwards');
+    assert(spellPitchClass(10, fMajor) === 'Bb', `F major spelled 10 as ${spellPitchClass(10, fMajor)}`);
+    assert(spellPitchClass(10, bMajor) === 'A#', `B major spelled 10 as ${spellPitchClass(10, bMajor)}`);
+    assert(formatChordIn(parseChord('A#')!, fMajor) === 'Bb',
+      `F major printed ${formatChordIn(parseChord('A#')!, fMajor)}`);
+    assert(keyNameIn({ root: 10, scaleId: 'major' }) === 'Bb Major',
+      `the key itself printed ${keyNameIn({ root: 10, scaleId: 'major' })}`);
+    // A minor key takes its signature from its relative major.
+    assert(keyUsesFlats({ root: 2, scaleId: 'aeolian' }),
+      'D minor is one flat and should spell flats');
+    assert(!keyUsesFlats({ root: 9, scaleId: 'aeolian' }),
+      'A minor has no accidentals and should not go flat');
+
+    // And `formatChord` itself must be left alone — the .lab writer, the
+    // stored labels and every other test go through it.
+    assert(formatChord(parseChord('A#')!) === 'A#',
+      'formatChord was changed to spell flats — that moves the file format');
   });
 
   console.log('\n=== Chords from audio — did it name what was played? ===');
