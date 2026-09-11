@@ -121,13 +121,94 @@ function voicing(chord: ChordSymbol, bassOctave = 3): number[] {
   return intervals.map((i) => root + (i % 24));
 }
 
+const PITCH_CLASS_COUNT = 12;
+
+/**
+ * A melody: chord tones on the strong eighths, passing tones between them.
+ *
+ * Eight eighth notes in the octave above the chord.  EVERY off-beat note is
+ * outside the chord — that is the point of the fixture — but they are passing
+ * notes, chromatic or scalar, that do not stack with the chord into anything.
+ *
+ * That last clause is the whole finding, and it was measured, not assumed.
+ * See `thirdsBar`.
+ */
+function melodyBar(chord: ChordSymbol, bar: number): number[] {
+  const quality = QUALITIES.find((q) => q.id === chord.qualityId);
+  const intervals = quality?.intervals ?? [0, 4, 7];
+  const tones = intervals.map((i) => 72 + ((chord.root + i) % PITCH_CLASS_COUNT));
+  // A different contour each bar, so the line moves instead of repeating.
+  const shapes = [[0, 1, 2, 1], [2, 1, 0, 1], [0, 2, 1, 2], [1, 2, 1, 0]];
+  const shape = shapes[bar % shapes.length] ?? [0, 1, 2, 1];
+  const strong = shape.map((i) => tones[i % tones.length] ?? 72);
+  const out: number[] = [];
+  for (let step = 0; step < strong.length; step++) {
+    const here = strong[step] ?? 72;
+    const next = strong[(step + 1) % strong.length] ?? 72;
+    out.push(here);
+    // Step toward the next chord tone: a passing note when they are apart, a
+    // chromatic neighbour when they are the same.
+    const gap = next - here;
+    out.push(here + (gap === 0 ? 1 : Math.sign(gap) * (Math.abs(gap) > 2 ? 2 : 1)));
+  }
+  return out;
+}
+
+/**
+ * The melody this fixture used to have — and why it is no longer the melody.
+ *
+ * `scale[(bar * 3 + step * 2) % 7]`: scale degrees stacked in THIRDS.  Over
+ * C that spells C E G B, so the only note outside the triad is the major
+ * seventh and the bar's entire pitch content is a Cmaj7.  Over G it spells
+ * F A C E, and the bar then contains all seven notes of the key.
+ *
+ * Scored against the written chart that read 0 %, and it was recorded as the
+ * one place smoothing made things worse.  It was not: the detector answered
+ * Cmaj7 to a bar that contains exactly the notes of Cmaj7 and nothing else.
+ * A test that asks for an answer the audio contradicts is not a test.
+ *
+ * It is kept, because genuinely ambiguous material is worth having — but what
+ * is asserted about it is now something true: every chord it names has to be
+ * notes that are actually sounding.
+ */
+function thirdsBar(bar: number): number[] {
+  const scale = [0, 2, 4, 5, 7, 9, 11];
+  const out: number[] = [];
+  for (let step = 0; step < 4; step++) {
+    out.push(72 + (scale[(bar * 3 + step * 2) % scale.length] ?? 0));
+  }
+  return out;
+}
+
+/** The pitch classes a chord symbol actually contains. */
+function pitchClassesOf(symbol: string): Set<number> {
+  const chord = parseChord(symbol);
+  if (!chord) return new Set();
+  const quality = QUALITIES.find((q) => q.id === chord.qualityId);
+  const intervals = quality?.intervals ?? [0, 4, 7];
+  const out = new Set<number>();
+  for (const i of intervals) out.add((chord.root + i) % PITCH_CLASS_COUNT);
+  if (chord.bass !== undefined && chord.bass !== null) out.add(chord.bass % PITCH_CLASS_COUNT);
+  return out;
+}
+
 interface RenderOptions {
   instrumentId?: string;
   barsPerChord?: number;
   /** Cents to detune the whole render — a record that is not at A = 440. */
   detuneCents?: number;
-  /** Add a melody of chord tones AND passing tones over the top. */
-  melody?: boolean;
+  /**
+   * Put a tune over the top.
+   *
+   *   'line'   a real melody — chord tones on the strong eighths, non-chord
+   *            tones passing between them.  This is the case a chart has to
+   *            survive, and it is HARD: every off-beat note is outside the
+   *            chord.
+   *   'thirds' the melody this fixture used to have: scale degrees stacked in
+   *            thirds.  Kept because it is a genuinely ambiguous case, NOT as
+   *            a chart to be matched — see the note on `melodyBar`.
+   */
+  melody?: 'line' | 'thirds';
   /** Play the root an octave down as a separate part, and return its audio. */
   withBass?: boolean;
   /**
@@ -216,24 +297,22 @@ async function render(
       }
       }
       if (which === 'mix' && melody) {
-        // Four eighth notes, two of them NOT in the chord.  This is what a
-        // real lead sheet has over it and what makes a chart hard.
-        const scale = [0, 2, 4, 5, 7, 9, 11];
-        for (let step = 0; step < 4; step++) {
-          const degree = scale[(index * 3 + step * 2) % scale.length] ?? 0;
+        const line = melody === 'thirds' ? thirdsBar(index) : melodyBar(chord, index);
+        const each = (BAR_SEC * barsPerChord) / line.length;
+        line.forEach((pitch, step) => {
           instrument.playNote({
             ctx: ctx as unknown as BaseAudioContext,
             destination: ctx.destination as unknown as AudioNode,
             note: createNote({
-              pitch: 72 + degree, velocity: 0.55,
+              pitch, velocity: 0.55,
               startBeat: 0, durationBeat: 1,
               pitchOffsetSemitones: cents,
             }),
             config: DEFAULT_MIDI_CONFIG,
-            when: at + step * (BAR_SEC / 4),
-            durationSec: BAR_SEC / 4 * 0.9, params,
+            when: at + step * each,
+            durationSec: each * 0.9, params,
           });
-        }
+        });
       }
     });
     return ctx.startRendering().then((buf) => Float32Array.from(buf.getChannelData(0)));
@@ -503,10 +582,84 @@ async function main(): Promise<void> {
   await check('a melody over the chords does not rewrite them', async () => {
     // Non-chord tones in the melody are what a template matcher gets wrong,
     // and what beat-averaging exists to survive.
-    const audio = await render(POP, { melody: true });
+    const audio = await render(POP, { melody: 'line' });
     const got = labelsFor(audio, POP);
     assert(accuracy(POP, got) >= 0.75, `${POP.join(' ')} → ${got.join(' ')}`);
     console.log(`      (melody over chords: ${(accuracy(POP, got) * 100).toFixed(0)}% — ${got.join(' ')})`);
+  });
+
+  await check('a melody over an ARPEGGIO does not rewrite them either', async () => {
+    // The hard version, and the one that was recorded as smoothing's only
+    // regression.  A block chord holds its triad under the tune; an arpeggio
+    // sounds one or two notes at a time, so the melody is half the evidence
+    // on every beat.
+    //
+    // Measured on both progressions, because four chords can be half right by
+    // accident.
+    for (const prog of [POP, MINOR]) {
+      const audio = await render(prog, { arpeggio: true, melody: 'line' });
+      const got = labelsFor(audio, prog);
+      assert(accuracy(prog, got) >= 0.75,
+        `arpeggio under a melody: ${prog.join(' ')} → ${got.join(' ')}`);
+      console.log(`      (melody over an arpeggio: `
+        + `${(accuracy(prog, got) * 100).toFixed(0)}% — ${got.join(' ')})`);
+    }
+  });
+
+  await check('the melody really is outside the chords, or it proves nothing', async () => {
+    // The guard on the fixture above.  A "melody" that happens to stay inside
+    // the triad would make that test pass while testing nothing, and the
+    // whole reason this fixture was rewritten is that its old tune was not
+    // the thing it claimed to be.
+    for (const [bar, symbol] of POP.entries()) {
+      const chord = parseChord(symbol);
+      assert(chord !== null, `cannot parse ${symbol}`);
+      const tones = pitchClassesOf(symbol);
+      const line = melodyBar(chord!, bar);
+      const strong = line.filter((_, i) => i % 2 === 0).map((p) => p % 12);
+      const weak = line.filter((_, i) => i % 2 === 1).map((p) => p % 12);
+      assert(strong.every((pc) => tones.has(pc)),
+        `bar ${bar}: a strong beat left the chord — ${strong.join(' ')}`);
+      assert(weak.every((pc) => !tones.has(pc)),
+        `bar ${bar}: an off-beat note was IN the chord, so it is not a passing tone`);
+      // And the tune must not stack with the chord into one nice extension —
+      // that is exactly the trap the old fixture fell into.
+      const union = new Set([...tones, ...weak, ...strong]);
+      assert(union.size >= 5, `bar ${bar}: only ${union.size} pitch classes — too easy`);
+    }
+  });
+
+  await check('when the melody spells an extension, the chart is genuinely ambiguous', async () => {
+    // The old fixture's tune, kept and told the truth about.  Over C it plays
+    // C E G B: the bar contains the notes of Cmaj7 and NOTHING else, so
+    // "Cmaj7" is not an error and scoring it against a written "C" measures
+    // the annotation, not the detector.
+    //
+    // What IS required is that the detector never names a note that is not
+    // playing.  That is checkable and it is the real requirement.
+    const audio = await render(POP, { arpeggio: true, melody: 'thirds' });
+    const got = labelsFor(audio, POP);
+    for (const [bar, symbol] of POP.entries()) {
+      const sounding = new Set([
+        ...pitchClassesOf(symbol),
+        ...thirdsBar(bar).map((p) => p % 12),
+      ]);
+      const named = pitchClassesOf(got[bar] ?? '');
+      assert(named.size > 0, `bar ${bar} got no chord at all (${got[bar]})`);
+      for (const pc of named) {
+        assert(sounding.has(pc),
+          `bar ${bar}: called it ${got[bar]}, which needs pitch class ${pc} — `
+          + `not among the notes playing (${[...sounding].sort((a, b) => a - b).join(' ')})`);
+      }
+    }
+    // And the ambiguity is real, not an excuse: the bar over C contains four
+    // pitch classes and they are exactly Cmaj7.
+    const barZero = new Set([...pitchClassesOf('C'), ...thirdsBar(0).map((p) => p % 12)]);
+    const cmaj7 = pitchClassesOf('Cmaj7');
+    assert(barZero.size === cmaj7.size && [...cmaj7].every((pc) => barZero.has(pc)),
+      `bar 0 should be exactly Cmaj7's notes, got ${[...barZero].join(' ')}`);
+    console.log(`      (melody spelling extensions: ${got.join(' ')} `
+      + `— every note named is a note playing)`);
   });
 
   await check('a record 30 cents sharp is read correctly', async () => {
