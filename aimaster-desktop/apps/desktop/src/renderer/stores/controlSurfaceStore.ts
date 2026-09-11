@@ -298,13 +298,13 @@ function stopListening(): void {
   unsubscribe?.();
   unsubscribe = null;
   bindingStates.clear();
-  dawRuntime.releaseMidiHold();
+  dawRuntime.releaseMidiHold('surface');
 }
 
 async function startListening(set: SetState): Promise<void> {
   const daw = useDawStore.getState();
   try {
-    const open = await dawRuntime.holdMidiOpen(daw.session, surfaceDeviceId());
+    const open = await dawRuntime.holdMidiOpen(daw.session, surfaceDeviceId(), 'surface');
     if (!open) { set({ error: 'MIDI 입력 장치를 찾을 수 없습니다' }); return; }
   } catch (err) {
     set({ enabled: false, error: err instanceof Error ? err.message : String(err) });

@@ -51,6 +51,7 @@ export type CommandId =
   | 'window.bottomEditor' | 'window.vstEditor' | 'window.mediaBay'
   | 'window.inspector' | 'window.rightRack' | 'window.shortcutHelp'
   | 'window.controlSurface' | 'window.controlRoom' | 'window.provenance'
+  | 'window.deviceSetup'
   // 6. DAW workspace — multitrack editing, routing and rendering
   | 'daw.open' | 'daw.toggleWindow'
   | 'daw.tabNext' | 'daw.tabPrev' | 'daw.toggleTabToTransient'
@@ -243,6 +244,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '우측 세밀 조정 패널 열기/닫기', available: true },
   { id: 'window.shortcutHelp',   group: 'window', label: '단축키 도움말', chords: ['Shift+Slash', 'F1'],
     note: '이 목록 열기/닫기', available: true },
+  { id: 'window.deviceSetup',    group: 'window', label: '디바이스 셋업', chords: ['F4'],
+    note: '오디오 · MIDI 입출력 목록과 왜 소리가 안 나는지 진단 · 오디션 스위치 (DAW 워크스페이스)', available: true },
   { id: 'window.controlSurface', group: 'window', label: '컨트롤 서피스', chords: ['Alt+K'],
     note: 'MIDI 컨트롤러 매핑 패널 열기/닫기 — 학습 · 픽업 · 내보내기', available: true },
 

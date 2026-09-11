@@ -14,7 +14,7 @@
 import { create } from 'zustand';
 import {
   DEFAULT_RECORD_SETTINGS, DEFAULT_TRACK_INPUT, armedSplit, armedTracks, canRecord,
-  clearRecordArm, planRecording, setRecordArm, trackRecordKind,
+  clearRecordArm, midiTargets, planRecording, setRecordArm, trackRecordKind,
   type RecordPlan, type RecordSettings, type TrackInput,
 } from '../daw/model/recording.js';
 import { commitPass, describePass, passIsEmpty } from '../daw/edit/record-pass.js';
@@ -50,6 +50,13 @@ interface RecordingState {
   calibrating: boolean;
   /** True once a MIDI input is actually open. */
   midiOpen: boolean;
+  /**
+   * Hear the keyboard without arming anything.
+   *
+   * A separate permission from arming on purpose — see `midiTargets`.  Armed
+   * tracks always win; this only decides what happens when nothing is armed.
+   */
+  audition: boolean;
   /** Last key played, for the activity light.  Cleared when it comes up. */
   midiNote: { pitch: number; velocity: number } | null;
   /** Peak of each track's live input, 0…1. */
@@ -84,6 +91,8 @@ interface RecordingState {
   toggleArm: (trackId: TrackId) => Promise<void>;
   /** Match the one MIDI handle to whichever instrument tracks are armed. */
   syncMidiArm: () => Promise<void>;
+  /** Hear the keyboard without arming anything.  Off leaves MIDI closed. */
+  setAudition: (on: boolean) => Promise<void>;
   disarmTrack: (trackId: TrackId) => void;
   disarmAll: () => void;
   start: () => Promise<void>;
@@ -122,6 +131,7 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
   inputs: {},
   calibrating: false,
   midiOpen: false,
+  audition: false,
   midiNote: null,
   levels: {},
   elapsedSec: 0,
@@ -459,36 +469,91 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
   },
 
   /**
+   * Turn audition on or off.  Turning it off closes the keyboard unless
+   * something is armed, so an idle session is not holding a port open.
+   */
+  setAudition: async (on: boolean) => {
+    set({ audition: on });
+    await get().syncMidiArm();
+  },
+
+  /**
    * Open, re-open or close the ONE keyboard, matched to the armed instrument
    * tracks.  There is a single MIDI handle no matter how many tracks are
    * armed — the keyboard is one device; what changes is who hears it.
    */
   syncMidiArm: async () => {
     const daw = useDawStore.getState();
-    const midiTracks = armedSplit(daw.session).midi.map((t) => t.id);
+    const audition = get().audition;
+    const midiTracks = midiTargets(daw.session, {
+      focusedTrackId: daw.focusedTrackId,
+      audition,
+    });
     if (midiTracks.length === 0) {
       dawRuntime.onMidiActivity = null;
+      // Let go of OUR hold first, or the port stays open with nothing to play
+      // into and the light claims a keyboard is live when nothing can hear it.
+      // Nobody else's hold is touched — a mapped control surface keeps its
+      // port whatever arming and audition do.
+      dawRuntime.releaseMidiHold('audition');
       dawRuntime.closeMidiInput();
       set({ midiOpen: false, midiNote: null });
       return;
     }
+    // Monitoring is forced on when nothing is armed, because then the only
+    // reason the port is open is that somebody wants to HEAR the keyboard —
+    // the record monitor setting is about a take, and there is no take.
+    const monitor = get().settings.monitoring === 'on'
+      || armedSplit(daw.session).midi.length === 0;
+
+    // The activity light is attached on EVERY path, including the one where
+    // the port was already open.  Something else can be holding it (a mapped
+    // control surface, or audition itself), and a light that only works when
+    // this call happened to be the one that opened the port is a light that
+    // reads as a dead keyboard.
+    const attachActivity = (): void => {
+      dawRuntime.onMidiActivity = (event) => {
+        if (event.kind !== 'noteOn') return;
+        if (midiNoteClear) clearTimeout(midiNoteClear);
+        set({ midiNote: { pitch: event.pitch, velocity: event.velocity } });
+        // The light stays lit briefly after the key comes up, otherwise a
+        // staccato note is a flicker nobody sees.
+        midiNoteClear = globalThis.setTimeout(() => set({ midiNote: null }), 320);
+      };
+    };
+
     if (dawRuntime.isMidiOpen) {
       // Already listening — just widen or narrow who it plays through.
       dawRuntime.setMidiTracks(midiTracks);
+      dawRuntime.setMidiMonitoring(monitor);
+      // Keep our claim in step with the switch even when the port was opened
+      // by someone else, so turning audition off never leaves a stale hold
+      // that keeps the port alive after the last track is disarmed.
+      if (audition) {
+        void dawRuntime.holdMidiOpen(
+          daw.session, get().settings.midiInputId ?? null, 'audition').catch(() => {});
+      } else {
+        dawRuntime.releaseMidiHold('audition');
+      }
+      attachActivity();
+      set({ midiOpen: dawRuntime.midiDeviceNames().length > 0 });
       return;
     }
-    const handle = await dawRuntime.openMidiInput(daw.session, midiTracks, {
-      deviceId: get().settings.midiInputId,
-      monitor: get().settings.monitoring === 'on',
-    });
-    dawRuntime.onMidiActivity = (event) => {
-      if (event.kind !== 'noteOn') return;
-      if (midiNoteClear) clearTimeout(midiNoteClear);
-      set({ midiNote: { pitch: event.pitch, velocity: event.velocity } });
-      // The light stays lit briefly after the key comes up, otherwise a
-      // staccato note is a flicker nobody sees.
-      midiNoteClear = globalThis.setTimeout(() => set({ midiNote: null }), 320);
-    };
+
+    // Audition holds the port open itself, so disarming the last track does
+    // not close the keyboard out from under someone who is still playing it.
+    if (audition && armedSplit(daw.session).midi.length === 0) {
+      await dawRuntime.holdMidiOpen(daw.session, get().settings.midiInputId ?? null, 'audition');
+      dawRuntime.setMidiTracks(midiTracks);
+      dawRuntime.setMidiMonitoring(true);
+    }
+    const handle = dawRuntime.isMidiOpen
+      ? { deviceCount: dawRuntime.midiDeviceNames().length }
+      : await dawRuntime.openMidiInput(daw.session, midiTracks, {
+        deviceId: get().settings.midiInputId,
+        monitor,
+      });
+    attachActivity();
     set({ midiOpen: handle.deviceCount > 0 });
   },
 
@@ -605,3 +670,20 @@ dawRuntime.onPunchOut = () => {
   const state = useRecordingStore.getState();
   if (state.status === 'recording' || state.status === 'countIn') void state.stop();
 };
+
+/**
+ * Audition follows the focused track.
+ *
+ * Without this the "focused instrument" branch of `midiTargets` would be
+ * decoration: whichever track happened to be focused when audition was turned
+ * on would keep the keyboard forever, and clicking another instrument would
+ * change the highlight and nothing else.  Armed tracks are unaffected —
+ * `midiTargets` ignores focus as soon as anything is armed.
+ */
+useDawStore.subscribe((state, prev) => {
+  if (state.focusedTrackId === prev.focusedTrackId) return;
+  const rec = useRecordingStore.getState();
+  if (!rec.audition) return;
+  if (armedSplit(state.session).midi.length > 0) return;
+  void rec.syncMidiArm();
+});

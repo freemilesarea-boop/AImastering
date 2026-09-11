@@ -29,6 +29,7 @@ import {
   MidiInputHandle, anchorTimebase, midiFailureReason, openMidiInputs,
 } from './midi-input.js';
 import type { CaptureEvent } from '../model/midi-capture.js';
+import { MidiHolds, type MidiHolder } from '../model/midi-hold.js';
 import { createNote, type MidiNote } from '../model/midi.js';
 import type { RecordPlan } from '../model/recording.js';
 
@@ -163,8 +164,15 @@ class DawRuntime {
    * disarmed underneath it, and learn is a listener that removes itself.
    */
   private midiListeners = new Set<(event: CaptureEvent) => void>();
-  /** True while something other than a track wants the port kept open. */
-  private midiHeldOpen = false;
+  /**
+   * Who, other than a track, wants the port kept open.
+   *
+   * The rule lives in `MidiHolds` rather than here because this class cannot
+   * be imported into a test (it builds an AudioContext) and the rule is the
+   * part that was wrong: one shared flag meant turning audition off closed
+   * the port out from under a mapped control surface.
+   */
+  private midiHolds = new MidiHolds();
 
   get isReady(): boolean { return this.ctx !== null; }
   get isPlaying(): boolean { return this.player?.isPlaying ?? false; }
@@ -266,11 +274,11 @@ class DawRuntime {
     options: { deviceId?: string | null; monitor?: boolean } = {},
   ): Promise<MidiInputHandle> {
     this.ensure(session.sampleRate);
-    // A re-open really does replace the port, hold or no hold.
-    const held = this.midiHeldOpen;
-    this.midiHeldOpen = false;
-    this.closeMidiInput();
-    this.midiHeldOpen = held;
+    // A re-open really does replace the port, hold or no hold — the holders
+    // keep their claim on the NEW port, which is what they actually wanted.
+    this.detachMidi();
+    this.midi?.close();
+    this.midi = null;
     this.sync(session);
 
     const handle = await openMidiInputs(options.deviceId ?? null);
@@ -288,13 +296,18 @@ class DawRuntime {
    * only the tracks are detached and the surface keeps hearing the desk.
    */
   closeMidiInput(): void {
+    this.detachMidi();
+    if (!this.midiHolds.shouldClose(this.midiTrackIds.length)) return;
+    this.midi?.close();
+    this.midi = null;
+  }
+
+  /** Let go of the tracks without deciding the port's fate. */
+  private detachMidi(): void {
     this.allNotesOff();
     this.midiTrackIds = [];
     this.midiRecording = false;
     this.midiEvents = [];
-    if (this.midiHeldOpen) return;
-    this.midi?.close();
-    this.midi = null;
   }
 
   setMidiMonitoring(on: boolean): void {
@@ -326,31 +339,40 @@ class DawRuntime {
    * Open the MIDI port for something that is not a track, and keep it open.
    *
    * Arming opens the port too, and disarming closes it — which would take the
-   * control surface down with it.  `midiHeldOpen` is what stops that: once
-   * something is holding the port, `closeMidiInput` only detaches the tracks.
+   * control surface down with it.  The holder set is what stops that: while
+   * anyone is holding the port, `closeMidiInput` only detaches the tracks.
    */
-  async holdMidiOpen(session: DawSession, deviceId: string | null): Promise<boolean> {
-    this.midiHeldOpen = true;
+  async holdMidiOpen(
+    session: DawSession, deviceId: string | null, holder: MidiHolder,
+  ): Promise<boolean> {
+    this.midiHolds.hold(holder);
     if (this.midi) return this.midi.deviceCount > 0;
     try {
       const handle = await this.openMidiInput(session, [], { deviceId, monitor: false });
-      this.midiHeldOpen = true;
       return handle.deviceCount > 0;
     } catch {
-      this.midiHeldOpen = false;
+      this.midiHolds.release(holder);
       throw new Error(midiFailureReason() ?? 'MIDI 입력을 열 수 없습니다');
     }
   }
+
+  /** Whether this holder currently has a claim — for reporting, not deciding. */
+  hasMidiHold(holder: MidiHolder): boolean { return this.midiHolds.has(holder); }
 
   /** Names of the inputs currently open — how feedback finds the matching output. */
   midiDeviceNames(): string[] {
     return this.midi?.deviceNames ?? [];
   }
 
-  /** Let go of the port.  It closes unless a track still wants it. */
-  releaseMidiHold(): void {
-    this.midiHeldOpen = false;
-    if (this.midiTrackIds.length === 0) this.closeMidiInput();
+  /**
+   * Let go of ONE holder's claim.
+   *
+   * The port closes only when nobody else is holding it and no track wants it,
+   * so switching audition off never takes a mapped control surface with it.
+   */
+  releaseMidiHold(holder: MidiHolder): void {
+    this.midiHolds.release(holder);
+    if (this.midiHolds.shouldClose(this.midiTrackIds.length)) this.closeMidiInput();
   }
 
   private receiveMidi(event: CaptureEvent): void {
@@ -930,7 +952,7 @@ class DawRuntime {
     this.stop();
     this.closeInput();
     this.midiListeners.clear();
-    this.midiHeldOpen = false;
+    this.midiHolds.clear();
     this.closeMidiInput();
     this.engine?.dispose();
     void this.ctx?.close();

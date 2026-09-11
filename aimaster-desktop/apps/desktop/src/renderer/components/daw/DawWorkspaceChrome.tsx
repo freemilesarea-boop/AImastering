@@ -19,6 +19,7 @@ import ControlRoomPanel from './mix/ControlRoomPanel.js';
 import DawMediaBay from './DawMediaBay.js';
 import DawShortcutHelp from './DawShortcutHelp.js';
 import ControlSurfacePanel from './surface/ControlSurfacePanel.js';
+import DeviceSetupPanel from './devices/DeviceSetupPanel.js';
 
 /** Approximate height (px) the fixed bottom zone occupies right now. */
 export function useBottomZoneHeight(): number {
@@ -63,6 +64,7 @@ export default function DawWorkspaceChrome() {
       {panels.mediaBay && <DawMediaBay />}
       {panels.help     && <DawShortcutHelp />}
       {panels.surface  && <ControlSurfacePanel />}
+      {panels.deviceSetup && <DeviceSetupPanel />}
     </>
   );
 }

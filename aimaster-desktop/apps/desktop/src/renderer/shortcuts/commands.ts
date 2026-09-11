@@ -387,6 +387,13 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
 
     'window.shortcutHelp': () => { workspace().togglePanel('help'); },
     'window.controlSurface': () => { workspace().togglePanel('surface'); },
+
+    // Device setup is drawn by the DAW workspace only, so on the mastering
+    // screen the key says where to find it rather than toggling a panel that
+    // nothing renders — a dead key reads as a broken one.
+    'window.deviceSetup': () => {
+      notify('디바이스 셋업은 DAW 워크스페이스(Mod+Alt+D)에서 F4 로 엽니다', 'warning');
+    },
   } as CommandMap;
 
   // DAW-only verbs — registered even without the workspace so the key says

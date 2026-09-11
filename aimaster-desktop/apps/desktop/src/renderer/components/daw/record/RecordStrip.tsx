@@ -10,6 +10,7 @@ import React, { useEffect, useMemo } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
+import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import {
   DEFAULT_TRACK_INPUT, armedSplit, armedTracks, canRecord, describeArmed, describePlan,
   planRecording,
@@ -94,6 +95,24 @@ export default function RecordStrip() {
       {status === 'committing' && (
         <span style={{ fontSize: 11, color: premium.accent.base }}>테이크 기록 중…</span>
       )}
+
+      {/* Device setup.  Always here, unlike the MIDI block below it, which
+          only appears once an instrument track is armed — and "I plugged a
+          keyboard in and nothing happens" is asked BEFORE anything is armed,
+          so the way to answer it cannot be hidden behind arming. */}
+      <button
+        onClick={() => useWorkspaceStore.getState().togglePanel('deviceSetup')}
+        title="디바이스 셋업 (F4) — 오디오 · MIDI 장치와, 소리가 안 나는 이유"
+        className="h-5 px-2 rounded-sm shrink-0"
+        style={{
+          fontSize: 9.5, letterSpacing: '0.06em',
+          color: premium.text.muted,
+          background: premium.surface.well,
+          border: `1px solid ${premium.surface.hairline}`,
+        }}
+      >
+        장치
+      </button>
 
       {hasMidi && (
         <>

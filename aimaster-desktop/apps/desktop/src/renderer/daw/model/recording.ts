@@ -283,6 +283,49 @@ export function armedSplit(session: DawSession): ArmedSplit {
   };
 }
 
+/**
+ * Which tracks the keyboard plays into — armed, or the one you are looking at.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ *
+ * Until now MIDI input opened ONLY when an instrument track was armed, which
+ * meant plugging a keyboard in and pressing a key did nothing at all.  That is
+ * Cubase's rule and it is defensible for RECORDING — you should not be able to
+ * print a take you did not ask for.  It is a bad rule for the first thirty
+ * seconds with a new keyboard, where the only question is "is this thing
+ * connected", and the app answered it with silence.
+ *
+ * So auditioning is a separate permission from arming:
+ *
+ *   ARMED tracks always win.  If something is armed, that is what the player
+ *   chose to record into, and an audition target quietly stealing the notes
+ *   would be the worst kind of surprise.
+ *
+ *   Otherwise, with audition on, the FOCUSED instrument track hears it — the
+ *   one whose name is highlighted, because that is the one the person is
+ *   looking at.  Falling back to the first instrument track means a fresh
+ *   session with one piano in it works without clicking anything first.
+ *
+ * Returned as ids rather than applied, so the rule can be checked without a
+ * runtime, an audio device or a keyboard.
+ */
+export function midiTargets(
+  session: DawSession,
+  options: { focusedTrackId?: TrackId | null; audition?: boolean } = {},
+): TrackId[] {
+  const armed = armedSplit(session).midi;
+  if (armed.length > 0) return armed.map((t) => t.id);
+  if (!options.audition) return [];
+
+  const instruments = session.tracks.filter((t) => trackRecordKind(t) === 'midi');
+  if (instruments.length === 0) return [];
+  const focused = options.focusedTrackId
+    ? instruments.find((t) => t.id === options.focusedTrackId)
+    : undefined;
+  const target = focused ?? instruments[0];
+  return target ? [target.id] : [];
+}
+
 /** The three latency fields as the one thing they are. */
 export function latencyConfig(settings: RecordSettings): LatencyConfig {
   return {

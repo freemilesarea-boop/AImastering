@@ -2381,6 +2381,14 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
       notify(ws.panels.vstEditor ? '인스트루먼트 랙 (F11)' : '인스트루먼트 랙 닫힘');
     },
 
+    // F4 — every input and output in one window, and the reason the keyboard
+    // is silent when it is.
+    'window.deviceSetup': () => {
+      const ws = useWorkspaceStore.getState();
+      ws.togglePanel('deviceSetup');
+      notify(ws.panels.deviceSetup ? '디바이스 셋업 (F4)' : '디바이스 셋업 닫힘');
+    },
+
     'view.zoomInH':  () => { daw().setPxPerSec(daw().pxPerSec * 1.5); },
     'view.zoomOutH': () => { daw().setPxPerSec(daw().pxPerSec / 1.5); },
 

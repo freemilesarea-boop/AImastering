@@ -36,7 +36,30 @@ export const ACTIVE_TOOLS: ToolId[] = ['select', 'range', 'split', 'erase', 'zoo
 export type PanelId =
   | 'transport' | 'mixConsole' | 'bottomZone' | 'inspector'
   | 'rightRack' | 'mediaBay' | 'vstEditor' | 'help' | 'surface'
-  | 'controlRoom' | 'provenance';
+  | 'controlRoom' | 'provenance' | 'deviceSetup';
+
+/**
+ * Panels that occupy the same corner of the screen.
+ *
+ * Two panels drawn at the same coordinates with the same z-index are one
+ * panel with an invisible one behind it — the second one's buttons are still
+ * there, still clickable in the DOM, and doing nothing you can see.  Opening
+ * one closes the others in its group instead.
+ */
+export const PANEL_SLOTS: readonly (readonly PanelId[])[] = [
+  // The right-hand MIDI window: control surface bindings and device setup.
+  ['surface', 'deviceSetup'],
+];
+
+/** Which panels have to close for `opening` to be the only one in its slot. */
+export function panelsSharingSlot(opening: PanelId): PanelId[] {
+  const out: PanelId[] = [];
+  for (const slot of PANEL_SLOTS) {
+    if (!slot.includes(opening)) continue;
+    for (const id of slot) if (id !== opening) out.push(id);
+  }
+  return out;
+}
 
 export interface TimeRange { startSec: number; endSec: number }
 
@@ -112,6 +135,14 @@ export interface WorkspaceState {
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+/** The slot-mate closures to merge in when `id` is being opened. */
+function closeSlotMates(id: PanelId, opening: boolean): Partial<Record<PanelId, boolean>> {
+  if (!opening) return {};
+  const patch: Partial<Record<PanelId, boolean>> = {};
+  for (const mate of panelsSharingSlot(id)) patch[mate] = false;
+  return patch;
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   tool: 'select',
   setTool: (t) => set({ tool: t }),
@@ -174,9 +205,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     vstEditor:  false,
     help:       false,
     surface:    false,
+    deviceSetup: false,
   },
-  togglePanel: (id) => set((s) => ({ panels: { ...s.panels, [id]: !s.panels[id] } })),
-  setPanel: (id, v) => set((s) => ({ panels: { ...s.panels, [id]: v } })),
+  togglePanel: (id) => set((s) => {
+    const open = !s.panels[id];
+    return { panels: { ...s.panels, ...closeSlotMates(id, open), [id]: open } };
+  }),
+  setPanel: (id, v) => set((s) => ({
+    panels: { ...s.panels, ...closeSlotMates(id, v), [id]: v },
+  })),
 
   history: null,
   applyingHistory: false,
