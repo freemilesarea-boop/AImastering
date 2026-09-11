@@ -44,6 +44,7 @@
     "test:multitrack": "tsx scripts/multitrack-selftest.ts",
     "test:record": "tsx scripts/record-selftest.ts",
     "test:run-preset": "tsx scripts/run-preset-selftest.ts",
+    "render:audition": "tsx scripts/render-audition.ts",
     "test:device-setup": "tsx scripts/device-setup-selftest.ts",
     "test:fl": "tsx scripts/fl-selftest.ts",
     "test:intel": "tsx scripts/intel-selftest.ts",
