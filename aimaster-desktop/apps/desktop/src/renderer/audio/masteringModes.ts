@@ -216,7 +216,30 @@ export function processMasteringWithMode(
   input: AudioBufferLike,
   mode: MasteringMode,
 ): ModePipelineResult {
-  const cfg = MODE_CONFIGS[mode];
+  return processMasteringWithConfig(input, MODE_CONFIGS[mode]);
+}
+
+/**
+ * The same pipeline, driven by a config the caller built.
+ *
+ * `processMasteringWithMode` takes a bucket NAME and looks the config up, and
+ * for the three built-in modes that is exactly right.  It is wrong for a
+ * preset: `presetToModeConfig` reads the preset's own loudness target, its
+ * true-peak ceiling and its limiter strength, builds a `ModeConfig` out of
+ * them — and the old `runPreset` then threw that away and re-looked-up the
+ * bucket, so every preset in a bucket rendered identically.
+ *
+ * Measured before this existed, on the seven built-in presets: seven presets
+ * produced THREE distinct waveforms.  `warm` asked for −14 LUFS and got −12,
+ * bit-identical to `balanced`.  `kpop_loud` asked for −9 with a −0.8 dB
+ * ceiling and got −8.1 at −1, bit-identical to `loud`.  Not one preset's own
+ * target was honoured, while the adapter report said `loudness-norm: applied`.
+ */
+export function processMasteringWithConfig(
+  input: AudioBufferLike,
+  cfg: ModeConfig,
+): ModePipelineResult {
+  const mode = cfg.mode;
 
   const inputMetrics = getLoudnessMetrics(input);
 
