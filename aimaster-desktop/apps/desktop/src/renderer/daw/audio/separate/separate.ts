@@ -66,7 +66,8 @@ import {
 } from './drums.js';
 import { voiceSplit, type VoiceSplitOptions } from './voices.js';
 import {
-  DEFAULT_DRUM_CREDIT, drumCredit, kickExcess, subBinCount,
+  DEFAULT_DRUM_CREDIT, cymbalBinStart, cymbalExcess, drumCredit, kickExcess,
+  subBinCount,
   type DrumCreditOptions,
 } from './percussive.js';
 import { leadEnvelope, phraseLock, type PhraseOptions } from './phrase.js';
@@ -337,6 +338,8 @@ export function separate(
   // struck drum from a picked guitar.
   const templates = drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate);
   const subBins = subBinCount(templates.kick, (fftSize >> 1) + 1);
+  const cymbalFrom = cymbalBinStart(
+    templates.cymbals, (fftSize >> 1) + 1, creditOpts.cymbalRegisterAt);
   let drumOnsets = 0;
   let voicesInformative = false;
 
@@ -394,6 +397,14 @@ export function separate(
     // Only the kick's register — about fourteen bins — so this is kilobytes
     // where the buffers above it are megabytes.
     const excess = new Float32Array(frames * Math.max(1, subBins));
+    // The cymbal register is the top of the spectrum rather than fourteen bins,
+    // so this one is the size of the other frame×bin buffers.  Allocated only
+    // when the floor is switched on.
+    const cymbalWidth = Math.max(0, bins - cymbalFrom);
+    const useCymbalFloor = (creditOpts.cymbalFloorFrames ?? 0) > 0 && cymbalWidth > 0;
+    const cymbalHigh = useCymbalFloor
+      ? new Float32Array(frames * cymbalWidth)
+      : null;
     // Only allocated when the tree actually asks for them: four more buffers
     // this size is another 72 MB per chunk, and most runs want the four
     // top-level stems and nothing else.
@@ -430,8 +441,11 @@ export function separate(
       // Under the kick's ceiling the onset envelope is a GUESS at how long a hit
       // lasted; `kickExcess` is a measurement of it.  See `percussive.ts`.
       if (subBins > 0) kickExcess(excess, mag, frames, bins, subBins, creditOpts);
+      // And above the snare wires the template is a constant, so the evidence
+      // there is a frame-level gate; `cymbalExcess` gives it a per-bin opinion.
+      if (cymbalHigh) cymbalExcess(cymbalHigh, mag, frames, bins, cymbalFrom, creditOpts);
       drumCredit(credit, harmonic, kit.presence, templates, frames, bins, creditOpts,
-        subBins > 0 ? excess : null, subBins);
+        subBins > 0 ? excess : null, subBins, cymbalHigh, cymbalFrom);
 
       // The bass tracker works on what is left after the drums — a bass note is
       // a sustained thing, and asking a spectrogram that still contains the

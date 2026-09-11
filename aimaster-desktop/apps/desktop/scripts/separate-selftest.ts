@@ -41,8 +41,8 @@ import {
 import { DEFAULT_PHRASE, leadEnvelope, phraseLock } from '../src/renderer/daw/audio/separate/phrase.js';
 import { DEFAULT_DRUMS, drumPresence, drumTemplates } from '../src/renderer/daw/audio/separate/drums.js';
 import {
-  DEFAULT_DRUM_CREDIT, drumCredit, evidenceAt, kickExcess, subBinCount,
-  templateCoverage,
+  DEFAULT_DRUM_CREDIT, cymbalBinStart, drumCredit, evidenceAt, kickExcess,
+  subBinCount, templateCoverage,
 } from '../src/renderer/daw/audio/separate/percussive.js';
 import { voiceSplit } from '../src/renderer/daw/audio/separate/voices.js';
 import { buildFixture, leakageMatrix, toMono, FIXTURE_SR } from './separate-fixture.js';
@@ -828,6 +828,101 @@ check('the sub floor moves the leak the real song showed', () => {
   // floor too.  This is not a bound on the price — it is a record that there is
   // one, so nobody reads the drum numbers as free.
   atMost(after.bass!.bass!, before.bass!.bass!, '베이스 회수 pays for it');
+});
+
+check('the cymbal floor stops the bright arrangement being called a drum', () => {
+  // The register above the snare wires is the one place the drum classifier
+  // has no per-bin opinion at all: `cymbals` is `ramp(hz, 3500, 7000)` with no
+  // ceiling, so the evidence is the same number for every bin up there and the
+  // doubt term — the only path that hands material back — switches off
+  // whenever a hat was struck, which on a record is every eighth note.
+  //
+  // Measured before the floor existed: 그외→드럼 read 84 %, 104 % and 120 % at
+  // 4 k, 8 k and 16 k while 그외→그외 read 50 %, 41 % and 42 %.  More of the
+  // bright arrangement was in the drum stem than in its own.
+  const hard = buildFixture(20, { vocalCycles: false, hard: true });
+  const off = { credit: { cymbalFloorStrength: 0 } };
+  const before = separate(hard.mix, FIXTURE_SR, off);
+  const after = separate(hard.mix, FIXTURE_SR);
+  const drumsOf = (r: typeof before): Float32Array[] =>
+    r.stems.find((x) => x.kind === 'drums')!.channels;
+  const otherOf = (r: typeof before): Float32Array[] =>
+    r.stems.find((x) => x.kind === 'other')!.channels;
+
+  const wasToDrums = leakByBand(drumsOf(before), hard.parts.other, FIXTURE_SR);
+  const nowToDrums = leakByBand(drumsOf(after), hard.parts.other, FIXTURE_SR);
+  const wasToOther = leakByBand(otherOf(before), hard.parts.other, FIXTURE_SR);
+  const nowToOther = leakByBand(otherOf(after), hard.parts.other, FIXTURE_SR);
+  // Bands 7, 8, 9 are 2.8–5.6 k, 5.6–11.2 k and everything above.
+  for (const band of [7, 8, 9]) {
+    const wasD = wasToDrums[band]; const nowD = nowToDrums[band];
+    const wasO = wasToOther[band]; const nowO = nowToOther[band];
+    assert(wasD != null && nowD != null && wasO != null && nowO != null,
+      `band ${BAND_NAMES[band]} has 그 외 in it to measure`);
+    atMost(nowD, wasD - 4, `그외→드럼 at ${BAND_NAMES[band]} falls`);
+    atLeast(nowO, wasO + 4, `그외→그외 at ${BAND_NAMES[band]} rises`);
+  }
+  console.log(`      (그외→드럼 4k/8k/16k: ${[7, 8, 9].map((b) => wasToDrums[b]?.toFixed(0)).join('/')}`
+    + ` → ${[7, 8, 9].map((b) => nowToDrums[b]?.toFixed(0)).join('/')}`
+    + `,  그외→그외: ${[7, 8, 9].map((b) => wasToOther[b]?.toFixed(0)).join('/')}`
+    + ` → ${[7, 8, 9].map((b) => nowToOther[b]?.toFixed(0)).join('/')})`);
+});
+
+check('and what the cymbal floor costs, so nobody reads it as free', () => {
+  // A cymbal WASH is sustained by definition, so a floor that keeps only what
+  // stands above the sustained level takes some of the cymbals with the
+  // arrangement.  That is a trade and the strength is where the two curves
+  // cross, not a setting that avoids it.
+  const hard = buildFixture(20, { vocalCycles: false, hard: true });
+  const off = { credit: { cymbalFloorStrength: 0 } };
+  const before = separate(hard.mix, FIXTURE_SR, off);
+  const after = separate(hard.mix, FIXTURE_SR);
+  const drumsOf = (r: typeof before): Float32Array[] =>
+    r.stems.find((x) => x.kind === 'drums')!.channels;
+  const wasOwn = leakByBand(drumsOf(before), hard.parts.drums, FIXTURE_SR);
+  const nowOwn = leakByBand(drumsOf(after), hard.parts.drums, FIXTURE_SR);
+  // 1. There IS a price, and it is recorded rather than hoped away.
+  const was8k = wasOwn[8]; const now8k = nowOwn[8];
+  assert(was8k != null && now8k != null, '8 kHz band has drums in it');
+  atMost(now8k, was8k, '드럼→드럼 at 8 kHz pays for it');
+  // 2. But the drum stem must not COLLAPSE up there — a kit with no cymbals is
+  //    a worse stem than a kit with somebody else's guitar in it.
+  for (const band of [7, 8, 9]) {
+    const v = nowOwn[band];
+    assert(v != null, `band ${BAND_NAMES[band]} has drums in it`);
+    atLeast(v, 60, `드럼→드럼 at ${BAND_NAMES[band]} survives`);
+  }
+  // 3. And the TOTAL drum recovery is unchanged, which is what chose 0.5 over
+  //    the stronger settings: at 0.75 and 1 it starts falling.
+  const wasM = leakageMatrix(hard.parts, before.stems);
+  const nowM = leakageMatrix(hard.parts, after.stems);
+  atLeast(nowM.drums!.drums!, wasM.drums!.drums! - 1,
+    '드럼 total recovery holds at the chosen strength');
+  console.log(`      (드럼→드럼 4k/8k/16k: ${[7, 8, 9].map((b) => wasOwn[b]?.toFixed(0)).join('/')}`
+    + ` → ${[7, 8, 9].map((b) => nowOwn[b]?.toFixed(0)).join('/')}`
+    + `,  드럼 총 회수 ${wasM.drums!.drums!.toFixed(0)}% → ${nowM.drums!.drums!.toFixed(0)}%)`);
+});
+
+check('the cymbal register starts where the template does, or 4 kHz is missed', () => {
+  // The register is taken from the template's own curve rather than a written
+  // frequency.  Starting it at the TOP of the ramp — where the curve goes flat
+  // at 7 kHz — leaves the 4 kHz band, which is inside the ramp, uncovered:
+  // measured, 그외→드럼 there did not move a single point.
+  // The real bin count: 64 bins at a 4096-point transform reaches 689 Hz, so
+  // the cymbal curve would be zero everywhere and both answers would be "never".
+  const bins = (4096 >> 1) + 1;
+  const templates = drumTemplates(bins, 4096, 44100);
+  const wide = cymbalBinStart(templates.cymbals, bins);
+  const narrow = cymbalBinStart(templates.cymbals, bins, 0.999);
+  assert(wide < narrow, `the ramp's foot (${wide}) must be below its top (${narrow})`);
+  assert((templates.cymbals[wide] ?? 0) > 0, 'the register starts where the curve reaches');
+  assert(wide > 0, 'and not at DC — the floor must not touch the kick');
+  // The whole point: the 4 kHz band starts at 2800 Hz and the ramp's top is at
+  // 7000, so a register that begins at the top misses the band the complaint
+  // is about.
+  const fourK = Math.floor((4000 * 4096) / 44100);
+  assert(wide < fourK, `the register (bin ${wide}) has to reach 4 kHz (bin ${fourK})`);
+  assert(narrow > fourK, `the ramp's top (bin ${narrow}) is above 4 kHz — which is why it missed`);
 });
 
 check('the credit is a mask: nothing outside [0,1], whatever the knobs say', () => {

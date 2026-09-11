@@ -98,12 +98,73 @@ export interface DrumCreditOptions {
    * 48 % against 67 % at 8.  24 is where the two curves cross.
    */
   floorFrames?: number;
+  /**
+   * How many frames the CYMBAL-register floor looks over.  0 disables it.
+   *
+   * Above the snare wires the cymbal template is a constant 1 — see
+   * `drums.ts`, "everything above the snare wires, and nothing below" — so it
+   * covers nine octaves with the same number.  `evidenceAt` therefore returns
+   * the same value for every bin up there: the drum evidence in that whole
+   * register is a FRAME-LEVEL GATE with no per-bin opinion at all, and the
+   * doubt term, which is the only path that hands material back to the
+   * arrangement, switches itself off whenever a hat was struck.  On a record a
+   * hat is struck every eighth note.
+   *
+   * Measured on the hard fixture: 그외→드럼 read 84 %, 104 % and 120 % at 4 k,
+   * 8 k and 16 k while 그외→그외 read 50 %, 41 % and 42 % — more of the bright
+   * arrangement landed in the drum stem than in its own.
+   *
+   * The separation is the same one `kickExcess` makes at the other end, and
+   * for the same reason: not frequency, PERSISTENCE.
+   *
+   *   the string section, the pad, the synth wash are what is always there;
+   *   the hat is what is sometimes there.
+   *
+   * A window longer than a hat's tail and shorter than a phrase, so the median
+   * of each high bin is the sustained arrangement and everything above it is
+   * the hit.  The number is swept in `separate-selftest.ts`.
+   */
+  cymbalFloorFrames?: number;
+  /** Where the cymbal register starts, as a height on the template's ramp. */
+  cymbalRegisterAt?: number;
+  /**
+   * How much of the floor's opinion to take, 0…1.
+   *
+   * This one is a TRADE and the number is where the two curves cross, not a
+   * free win.  At 1 the drum stem keeps only what stands above its own
+   * sustained floor, and a cymbal WASH — which is sustained by definition —
+   * is most of what it loses: measured on the hard fixture at 1, 드럼→드럼 at
+   * 8 kHz falls 77 % → 66 % while 그외→드럼 there falls 104 % → 83 %.  Gaining
+   * more arrangement than the drums lose is the right direction and losing a
+   * quarter of the cymbals to get it is not.
+   *
+   * THIS NUMBER IS NOT MEASURED, and that is worth saying where it lives
+   * rather than only in the docs.  Swept over 0…1 both sides are monotonic —
+   * stronger recovers more arrangement and loses more cymbal — with no knee
+   * and no crossing, and the whole suite passes at 1.0 as well as at 0.5.
+   * The fixture does not choose.  0.5 is the conservative half; the place it
+   * gets decided is real material, where 그외→드럼 reached 90 % and a stronger
+   * setting may well be right.  Sweep it with `benchmark:stems`.
+   */
+  cymbalFloorStrength?: number;
 }
+
+/**
+ * How far up the cymbal template's ramp the floor's register starts.
+ *
+ * Anywhere the curve reaches at all.  At the top of the ramp instead, the
+ * 4 kHz band — which is inside the ramp, and is where the complaint starts —
+ * is not covered: measured, 그외→드럼 at 4 kHz did not move one point.
+ */
+export const CYMBAL_REGISTER_AT = 0.01;
 
 export const DEFAULT_DRUM_CREDIT: DrumCreditOptions = {
   doubt: 0.5,
   full: 0.08,
   floorFrames: 24,
+  cymbalFloorFrames: 24,
+  cymbalRegisterAt: CYMBAL_REGISTER_AT,
+  cymbalFloorStrength: 0.5,
 };
 
 // A note on something that is NOT here.  The measured excess was gated on the
@@ -197,6 +258,64 @@ export function kickExcess(
 
 }
 
+/**
+ * The first bin the cymbal template fully covers — where its opinion runs out.
+ *
+ * Asked of the template rather than written as a frequency, the same way
+ * `subBinCount` asks the kick's, so changing one curve changes both.
+ */
+export function cymbalBinStart(
+  cymbalTemplate: Float32Array, bins: number, atLeast = CYMBAL_REGISTER_AT,
+): number {
+  for (let b = 0; b < bins; b++) if ((cymbalTemplate[b] ?? 0) >= atLeast) return b;
+  return bins;
+}
+
+
+/**
+ * How much of each high bin is NOT the sustained arrangement, 0…1.
+ *
+ * `kickExcess` at the other end of the spectrum, and the same argument: the
+ * median of a window far longer than a hit is what is ALWAYS there, and what
+ * stands above it is what was struck.  Below the kick that separates a kick
+ * from a bass note; above the snare wires it separates a hat from a string
+ * section, a pad or a synth wash — which the cymbal template cannot, because
+ * it is the same number across the whole register.
+ *
+ * `out` is frames × (bins − fromBin), not frames × bins: the register is the
+ * top two thirds of the spectrum, so this one is not small, but it is still
+ * one buffer rather than the six the separator already holds.
+ *
+ * The failure mode this has and the kick version does not: a hat playing
+ * straight eighths for a whole song is, to a long median, ALWAYS THERE. The
+ * window has to be short enough that a run of hats does not become its own
+ * floor and long enough that a chord does not. That is what the sweep in the
+ * self-test is for, and it is why this is a knob rather than a constant.
+ */
+export function cymbalExcess(
+  out: Float32Array, magnitude: Float32Array, frames: number, bins: number,
+  fromBin: number, options: DrumCreditOptions = DEFAULT_DRUM_CREDIT,
+): void {
+  const width = Math.max(1, options.cymbalFloorFrames
+    ?? DEFAULT_DRUM_CREDIT.cymbalFloorFrames ?? 48);
+  const highBins = Math.max(0, bins - fromBin);
+  if (highBins === 0) return;
+  const scratch = new Float32Array(width + 1);
+  // Copied out for the same reason `kickExcess` copies: `runningMedian` writes
+  // at the offsets it reads from, so a strided call would write past the end.
+  const column = new Float32Array(frames);
+  const floor = new Float32Array(frames);
+  for (let b = fromBin; b < bins; b++) {
+    for (let f = 0; f < frames; f++) column[f] = magnitude[f * bins + b] ?? 0;
+    runningMedian(column, floor, 0, frames, 1, width, scratch);
+    const k = b - fromBin;
+    for (let f = 0; f < frames; f++) {
+      const m = column[f] ?? 0;
+      out[f * highBins + k] = m > 0 ? Math.max(0, 1 - (floor[f] ?? 0) / m) : 0;
+    }
+  }
+}
+
 // A note on something that is NOT here.  The second term once had a weight of
 // its own — how much of a harmonic bin a struck kick was allowed to claim —
 // and it was swept from 0 to 1 against the fixture.  It was monotonic: the
@@ -257,8 +376,11 @@ export function drumCredit(
   frames: number, bins: number,
   options: DrumCreditOptions = DEFAULT_DRUM_CREDIT,
   excess: Float32Array | null = null, subBins = 0,
+  cymbal: Float32Array | null = null, cymbalFrom = 0,
 ): void {
   const { doubt, full } = options;
+  const strength = options.cymbalFloorStrength
+    ?? DEFAULT_DRUM_CREDIT.cymbalFloorStrength ?? 1;
   const floor = options.presenceFloor ?? DEFAULT_DRUMS.presenceFloor;
   const coverage = templateCoverage(templates, bins);
   const above: Record<DrumPart, number> = { kick: 0, snare: 0, toms: 0, cymbals: 0 };
@@ -273,7 +395,15 @@ export function drumCredit(
     for (let b = 0; b < bins; b++) {
       const i = base + b;
       const h = harmonic[i] ?? 0;
-      const e = any > 0 ? evidenceAt(above, templates, DRUM_PARTS, b, full) : 0;
+      let e = any > 0 ? evidenceAt(above, templates, DRUM_PARTS, b, full) : 0;
+      // In the cymbal's register the template says the same thing about every
+      // bin, so the evidence there is a frame-level gate.  Scale it by how far
+      // this bin stands above its own sustained floor: a hat does, a held
+      // string does not, and only the first should switch the doubt off.
+      if (cymbal !== null && b >= cymbalFrom) {
+        const above0 = cymbal[f * (bins - cymbalFrom) + (b - cymbalFrom)] ?? 0;
+        e *= 1 - strength + strength * above0;
+      }
       let kick = any > 0 ? evidenceAt(above, templates, KICK_ONLY, b, full) : 0;
       // In the kick's register, prefer the measured excess over the guessed
       // envelope.  MAX, not multiply: they are two ways of knowing the same
