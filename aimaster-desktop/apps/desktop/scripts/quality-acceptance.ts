@@ -31,16 +31,13 @@
  */
 
 import {
-  getLoudnessMetrics,
   AudioBufferLike,
-  LoudnessAnalyzer,
-} from '../src/renderer/audio/loudnessCore.js';
+  LoudnessAnalyzer,} from '../src/renderer/audio/loudnessCore.js';
 import {
   processMasteringWithMode,
   MODE_CONFIGS,
-  MasteringMode,
-} from '../src/renderer/audio/masteringModes.js';
-import { Biquad, rbjLowPass, rbjHighPass } from '../src/renderer/audio/biquad.js';
+  MasteringMode,} from '../src/renderer/audio/masteringModes.js';
+import { Biquad, rbjLowPass, rbjHighPass} from '../src/renderer/audio/biquad.js';
 
 // ── Content-type synthesizers ────────────────────────────────────────────────
 

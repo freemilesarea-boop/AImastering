@@ -10,9 +10,9 @@ process.env['LOUI_WASM_NODE_PATH'] = path.resolve(
   __dirname, '../../../packages/dsp-wasm/pkg-node/loui_dsp_wasm.cjs',
 );
 
-import { renderStereoBufferNormalized } from '../src/main/offline/rust-offline-render-core.js';
-import { measureStereoLoudness, solveLoudnessGain } from '../src/main/offline/offline-loudness.js';
-import { loadWasmModule, type OfflineChainConfig } from '../src/main/offline/load-mastering-chain-node.js';
+import { renderStereoBufferNormalized} from '../src/main/offline/rust-offline-render-core.js';
+import { solveLoudnessGain} from '../src/main/offline/offline-loudness.js';
+import { loadWasmModule, type OfflineChainConfig} from '../src/main/offline/load-mastering-chain-node.js';
 
 const SR = 48000;
 const N = SR * 3; // 3 s — enough gated blocks for a stable integrated LUFS.

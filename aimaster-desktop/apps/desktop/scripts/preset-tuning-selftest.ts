@@ -19,14 +19,12 @@ import {
   LOUI_PRESETS,
   presetsByCategory,
   getPreset,
-  DEFAULT_PRESET_ID,
-  type LouiPreset,
-} from '../src/renderer/audio/presets/loui-presets.js';
-import { presetToParameterState, presetApplyPlan } from '../src/renderer/audio/presets/preset-to-state.js';
-import { diffPresets } from '../src/renderer/audio/presets/preset-compare.js';
-import { ALL_MODULE_PARAMETER_DEFS } from '../src/renderer/audio/parameters/module-parameter-definitions.js';
-import { MODULE_IDS } from '../src/renderer/audio/parameters/parameter-state.js';
-import { stateToChainConfig } from '../src/renderer/audio/realtime-mastering-chain.js';
+  DEFAULT_PRESET_ID,} from '../src/renderer/audio/presets/loui-presets.js';
+import { presetToParameterState, presetApplyPlan} from '../src/renderer/audio/presets/preset-to-state.js';
+import { diffPresets} from '../src/renderer/audio/presets/preset-compare.js';
+import { ALL_MODULE_PARAMETER_DEFS} from '../src/renderer/audio/parameters/module-parameter-definitions.js';
+import { MODULE_IDS} from '../src/renderer/audio/parameters/parameter-state.js';
+import { stateToChainConfig} from '../src/renderer/audio/realtime-mastering-chain.js';
 
 // ── Tiny harness ────────────────────────────────────────────────────────────
 

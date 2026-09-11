@@ -82,13 +82,6 @@ function toneLevel(x: Float32Array, hz: number, sampleRate = SR): number {
   return Math.sqrt(Math.max(0, power)) / (n / 2);
 }
 
-function rms(x: ArrayLike<number>, from = 0, to = x.length): number {
-  let sum = 0;
-  let n = 0;
-  for (let i = Math.max(0, from); i < Math.min(x.length, to); i++) { sum += (x[i] ?? 0) ** 2; n++; }
-  return n > 0 ? Math.sqrt(sum / n) : 0;
-}
-
 function bufferOf(channels: Float32Array[], sampleRate = SR): AudioBufferLike {
   return {
     sampleRate,

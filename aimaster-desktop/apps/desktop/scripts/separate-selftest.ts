@@ -13,42 +13,37 @@
 // sum — it is asserted tightly, because those are exact by construction and a
 // drift in them means the construction broke.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath} from 'node:url';
 
 import {
   Overlap, SEPARATION_STFT, analyse, binsFor, contextFrames, denominatorFor,
-  frameCount, magnitudes,
-} from '../src/renderer/daw/audio/separate/spectrum.js';
-import { runningMedian } from '../src/renderer/daw/audio/separate/median.js';
-import { DEFAULT_HPSS, hpssHarmonic } from '../src/renderer/daw/audio/separate/hpss.js';
-import { bandProfiles, repetition } from '../src/renderer/daw/audio/separate/repet.js';
-import { centreness, midMagnitude } from '../src/renderer/daw/audio/separate/stereo.js';
-import { DEFAULT_BASS, bassShelf, bassWeight, trackBass } from '../src/renderer/daw/audio/separate/bass.js';
+  frameCount, magnitudes,} from '../src/renderer/daw/audio/separate/spectrum.js';
+import { runningMedian} from '../src/renderer/daw/audio/separate/median.js';
+import { hpssHarmonic} from '../src/renderer/daw/audio/separate/hpss.js';
+import { bandProfiles, repetition} from '../src/renderer/daw/audio/separate/repet.js';
+import { centreness, midMagnitude} from '../src/renderer/daw/audio/separate/stereo.js';
+import { DEFAULT_BASS, bassShelf, bassWeight, trackBass} from '../src/renderer/daw/audio/separate/bass.js';
 import {
-  DEFAULT_SEPARATION, DETAILED_STEMS, STEM_KINDS, separate, stemLabel,
-} from '../src/renderer/daw/audio/separate/separate.js';
+  DEFAULT_SEPARATION, DETAILED_STEMS, STEM_KINDS, separate, stemLabel,} from '../src/renderer/daw/audio/separate/separate.js';
 import {
   FULL_STEMS, STEM_TREE, TOP_STEMS, coverIsValid, coverProblems, family,
-  needsModel, orderStems, stemRoot, stemSource, toggleStem, type StemKind,
-} from '../src/renderer/daw/audio/separate/stem-tree.js';
+  needsModel, orderStems, stemRoot, stemSource, toggleStem, type StemKind,} from '../src/renderer/daw/audio/separate/stem-tree.js';
 import {
-  buildReport, describeReport, unreachable, validateDescriptor,
-} from '../src/renderer/daw/audio/separate/model-registry.js';
-import { DEFAULT_PHRASE, leadEnvelope, phraseLock } from '../src/renderer/daw/audio/separate/phrase.js';
-import { DEFAULT_DRUMS, drumPresence, drumTemplates } from '../src/renderer/daw/audio/separate/drums.js';
+  buildReport, describeReport, unreachable, validateDescriptor,} from '../src/renderer/daw/audio/separate/model-registry.js';
+import { DEFAULT_PHRASE, leadEnvelope, phraseLock} from '../src/renderer/daw/audio/separate/phrase.js';
+import { DEFAULT_DRUMS, drumTemplates} from '../src/renderer/daw/audio/separate/drums.js';
 import {
   DEFAULT_DRUM_CREDIT, cymbalBinStart, drumCredit, evidenceAt, kickExcess,
-  subBinCount, templateCoverage,
-} from '../src/renderer/daw/audio/separate/percussive.js';
-import { voiceSplit } from '../src/renderer/daw/audio/separate/voices.js';
-import { buildFixture, leakageMatrix, toMono, FIXTURE_SR } from './separate-fixture.js';
-import { BAND_NAMES, energyByBand, leakByBand } from './band-leak.js';
-import { classifyStemFile } from './stem-names.js';
-import { readWav } from './wav-read.js';
+  subBinCount, templateCoverage,} from '../src/renderer/daw/audio/separate/percussive.js';
+import { voiceSplit} from '../src/renderer/daw/audio/separate/voices.js';
+import { buildFixture, leakageMatrix, toMono, FIXTURE_SR} from './separate-fixture.js';
+import { BAND_NAMES, energyByBand, leakByBand} from './band-leak.js';
+import { classifyStemFile} from './stem-names.js';
+import { readWav} from './wav-read.js';
 
 /** Minimal WAV writer — only the test needs one, and only to feed the reader. */
 function encodeTestWav(channels: Float32Array[], sampleRate: number, depth: 16 | 24 | 32): Buffer {

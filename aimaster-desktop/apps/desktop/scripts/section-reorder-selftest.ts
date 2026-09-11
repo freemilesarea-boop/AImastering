@@ -20,23 +20,20 @@
  */
 
 import {
-  addFile, addTrack, createClip, createSession, createTrack, findTrack,
-  updateClips, updateTrack,
-} from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
+  addFile, addTrack, createClip, createSession, createTrack,
+  updateClips, updateTrack,} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
 import {
-  addSection, createSection, sectionRanges, sectionsOf, withSections,
-} from '../src/renderer/daw/model/arrangement.js';
+  addSection, createSection, sectionRanges, sectionsOf, withSections,} from '../src/renderer/daw/model/arrangement.js';
 import {
-  describeOrder, moveSection, nudgeSection, songEnd,
-} from '../src/renderer/daw/edit/arrange-ops.js';
-import { createLane } from '../src/renderer/daw/model/automation.js';
-import { tempoMapOf, withTempoMap, addTempoEvent, defaultTempoMap, secToBeat }
+  describeOrder, moveSection, nudgeSection, songEnd,} from '../src/renderer/daw/edit/arrange-ops.js';
+import { createLane} from '../src/renderer/daw/model/automation.js';
+import { tempoMapOf, withTempoMap, addTempoEvent, secToBeat}
   from '../src/renderer/daw/model/tempo-map.js';
-import { makeChord } from '../src/renderer/daw/model/chords.js';
-import { setChordTrack } from '../src/renderer/daw/model/session-ops.js';
-import { pointValueAt } from '../src/renderer/daw/model/automation.js';
-import type { DawSession } from '../src/renderer/daw/model/types.js';
+import { makeChord} from '../src/renderer/daw/model/chords.js';
+import { setChordTrack} from '../src/renderer/daw/model/session-ops.js';
+import { pointValueAt} from '../src/renderer/daw/model/automation.js';
+import type { DawSession} from '../src/renderer/daw/model/types.js';
 
 const results: { name: string; pass: boolean }[] = [];
 function check(name: string, fn: () => void): void {

@@ -16,25 +16,21 @@ import {
   DEFAULT_RECORD_SETTINGS, beatSeconds, countInSeconds, planRecording, plannedDuration,
   describePlan, loopPasses, armedTracks, setRecordArm, clearRecordArm, canRecord,
   takeName, passClipName, wouldOverlap, MIN_PASS_SEC,
-  type RecordSettings,
-} from '../src/renderer/daw/model/recording.js';
-import { RecordBuffer } from '../src/renderer/daw/engine/record-buffer.js';
-import { commitRecording, type AudioWriter } from '../src/renderer/daw/edit/record-actions.js';
+  type RecordSettings,} from '../src/renderer/daw/model/recording.js';
+import { RecordBuffer} from '../src/renderer/daw/engine/record-buffer.js';
+import { commitRecording, type AudioWriter} from '../src/renderer/daw/edit/record-actions.js';
 import {
-  addTrack, createClip, createSession, createTrack, findTrack, trackClips, updateClips,
-} from '../src/renderer/daw/model/session-ops.js';
-import { activePlaylist } from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
+  addTrack, createClip, createSession, createTrack, findTrack, updateClips,} from '../src/renderer/daw/model/session-ops.js';
+import { activePlaylist} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
 import {
   DEFAULT_INPUT_REF, describeInput, hasInputAssignment, inputRefFor, refreshHint,
-  resolveTrackInput, trackInputRef,
-} from '../src/renderer/daw/model/track-input.js';
+  resolveTrackInput, trackInputRef,} from '../src/renderer/daw/model/track-input.js';
 import {
   assignInputDevice, clearTrackInput, describeAssignments, inputFor, planInputs,
-  rememberResolved, setTrackInputChannels,
-} from '../src/renderer/daw/edit/track-input-ops.js';
-import { serializeDawSession, deserializeDawSession } from '../src/renderer/daw/model/session-io.js';
-import type { DawSession, Track } from '../src/renderer/daw/model/types.js';
+  rememberResolved, setTrackInputChannels,} from '../src/renderer/daw/edit/track-input-ops.js';
+import { serializeDawSession, deserializeDawSession} from '../src/renderer/daw/model/session-io.js';
+import type { DawSession, Track} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];

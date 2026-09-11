@@ -44,9 +44,6 @@ function near(a: number, b: number, eps: number, m: string): void {
 }
 
 const FOUR = defaultTempoMap(120, [4, 4]);
-const rowOf = (rows: readonly ListRow[], id: string): ListRow =>
-  rows.find((r) => r.id === id) as ListRow;
-
 function part(spec: readonly [number, number, number?, number?][]): MidiNote[] {
   resetNoteIds();
   return spec.map(([pitch, startBeat, vel, len]) => createNote({

@@ -16,17 +16,16 @@
  * Run via:  pnpm --filter @aimaster/desktop test:control-room
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync} from 'node:fs';
 import {
   DEFAULT_CONTROL_ROOM, DEFAULT_DIM_DB, MAX_CUES, MAX_LEVEL_DB, MIN_LEVEL_DB,
   MONITOR_LABELS, NOT_IN_THE_MIX, SILENCE_DB, addCue, clampLevelDb, cueGain,
   dbToGain, describeCue, describeMonitor, monitorDb, monitorGain, nudgeLevel,
-  removeCue, setCue, setLevel, setSource, setTrim, toggleDim, toggleMono,
-  toggleMute, type ControlRoomState, type MonitorSource,
-} from '../src/renderer/daw/model/control-room.js';
-import { ControlRoomNode } from '../src/renderer/daw/engine/control-room-node.js';
-import { Metronome } from '../src/renderer/daw/engine/metronome.js';
-import { defaultTempoMap } from '../src/renderer/daw/model/tempo-map.js';
+  removeCue, setCue, setSource, setTrim, toggleDim, toggleMono,
+  toggleMute, type ControlRoomState, type MonitorSource,} from '../src/renderer/daw/model/control-room.js';
+import { ControlRoomNode} from '../src/renderer/daw/engine/control-room-node.js';
+import { Metronome} from '../src/renderer/daw/engine/metronome.js';
+import { defaultTempoMap} from '../src/renderer/daw/model/tempo-map.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];

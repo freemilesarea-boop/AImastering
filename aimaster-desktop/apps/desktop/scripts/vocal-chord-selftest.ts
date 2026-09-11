@@ -21,24 +21,20 @@
 
 import {
   bakeSegment, bakeSegments, correctedLine, describeSegment, editedPitch,
-  findClipSegments, hasPendingEdits, isEdited, mapSegments, moveToPitch,
+  findClipSegments, isEdited, mapSegments, moveToPitch,
   nudgeCents, patchSegment, performanceLine, pitchName, pitchRange,
-  resetSegment, segmentAt, segmentsInSpan, tuningErrorCents,
-} from '../src/renderer/daw/edit/vocal-edit.js';
+  resetSegment, segmentAt, segmentsInSpan, tuningErrorCents,} from '../src/renderer/daw/edit/vocal-edit.js';
 import {
   MIN_CHORD_GAP_SEC, addChord, chordGrid, chordRanges, describeChords,
   moveChord, parseChordInput, removeChord, setChord, shiftChords, sortedChords,
-  transposeChords, withChords,
-} from '../src/renderer/daw/edit/chord-edit.js';
+  transposeChords, withChords,} from '../src/renderer/daw/edit/chord-edit.js';
 import {
-  NEUTRAL_EDIT, targetPitchAt, curveCentsAt, type VariSegment,
-} from '../src/renderer/daw/audio/pitch-analysis.js';
-import { formatChord, makeChord, parseChord } from '../src/renderer/daw/model/chords.js';
+  NEUTRAL_EDIT, targetPitchAt, curveCentsAt, type VariSegment,} from '../src/renderer/daw/audio/pitch-analysis.js';
+import { formatChord, makeChord, parseChord} from '../src/renderer/daw/model/chords.js';
 import {
-  addTrack, createClip, createSession, createTrack, updateClips,
-} from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import type { DawSession, TrackId, ClipId } from '../src/renderer/daw/model/types.js';
+  addTrack, createClip, createSession, createTrack, updateClips,} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import type { DawSession, TrackId, ClipId} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];

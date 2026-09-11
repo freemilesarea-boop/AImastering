@@ -24,22 +24,18 @@
 import {
   DEFAULT_FPS, TIME_FORMATS, barBeatToBeat, describeAllFormats, formatHint,
   formatLabel, formatPosition, parsePosition,
-  type SpotContext, type TimeFormat,
-} from '../src/renderer/daw/model/spot-time.js';
+  type SpotContext,} from '../src/renderer/daw/model/spot-time.js';
 import {
-  addMeterEvent, addTempoEvent, barBeatAt, beatToSec, defaultTempoMap, secToBeat,
-} from '../src/renderer/daw/model/tempo-map.js';
-import type { TempoMap } from '../src/renderer/daw/model/tempo-map.js';
-import { parseTimecode } from '../src/renderer/daw/model/video.js';
+  addMeterEvent, addTempoEvent, barBeatAt, beatToSec, defaultTempoMap,} from '../src/renderer/daw/model/tempo-map.js';
+import type { TempoMap} from '../src/renderer/daw/model/tempo-map.js';
+import { parseTimecode} from '../src/renderer/daw/model/video.js';
 import {
-  anchorSec, describeDelta, spotClip, spotDeltaSec, spotProblem,
-} from '../src/renderer/daw/edit/spot-actions.js';
+  anchorSec, describeDelta, spotClip, spotDeltaSec, spotProblem,} from '../src/renderer/daw/edit/spot-actions.js';
 import {
   addFile, addTrack, createClip, createSession, createTrack, findTrack, trackClips,
-  updateClips,
-} from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import type { DawSession } from '../src/renderer/daw/model/types.js';
+  updateClips,} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import type { DawSession} from '../src/renderer/daw/model/types.js';
 
 const results: { name: string; pass: boolean }[] = [];
 function check(name: string, fn: () => void): void {

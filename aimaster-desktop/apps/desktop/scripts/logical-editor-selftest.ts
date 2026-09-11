@@ -18,13 +18,11 @@
 
 import {
   EMPTY_RULE, RULE_PRESETS, describeAction, describeCondition, describeResult,
-  describeRule, matches, readProperty, ruleProblem, runRule, selectNotes,
-  type Action, type Condition, type Rule, type RuleContext,
-} from '../src/renderer/daw/edit/logical-editor.js';
+  describeRule, readProperty, ruleProblem, runRule, selectNotes,
+  type Action, type Condition, type Rule, type RuleContext,} from '../src/renderer/daw/edit/logical-editor.js';
 import {
-  createNote, from7bit, resetNoteIds, to7bit, type MidiNote,
-} from '../src/renderer/daw/model/midi.js';
-import { defaultTempoMap } from '../src/renderer/daw/model/tempo-map.js';
+  createNote, from7bit, resetNoteIds, to7bit, type MidiNote,} from '../src/renderer/daw/model/midi.js';
+import { defaultTempoMap} from '../src/renderer/daw/model/tempo-map.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];

@@ -12,27 +12,23 @@
  */
 
 import {
-  yinF0, analyzePitch, segmentPitch, analyzeVocal, decimate, median, linearSlope,
+  yinF0, analyzePitch, analyzeVocal, decimate, median, linearSlope,
   measureVibrato, targetPitchAt, shiftSemitonesAt, curveCentsAt, withEdit,
   quantizePitch, quantizeToPitches, straighten, tuneToPitch, resetSegmentIds,
-  NEUTRAL_EDIT, type VariSegment,
-} from '../src/renderer/daw/audio/pitch-analysis.js';
+  NEUTRAL_EDIT, type VariSegment,} from '../src/renderer/daw/audio/pitch-analysis.js';
 import {
-  correctSegment, guideNoteFor, guideNotesFor,
-} from '../src/renderer/daw/audio/varia-actions.js';
+  correctSegment, guideNoteFor, guideNotesFor,} from '../src/renderer/daw/audio/varia-actions.js';
 import {
-  describeTiming, editedSpan, isEdited, moveSegmentTime, resetSegmentTime, timingRange,
-} from '../src/renderer/daw/edit/vocal-edit.js';
-import { createNote } from '../src/renderer/daw/model/midi.js';
+  describeTiming, editedSpan, isEdited, moveSegmentTime, resetSegmentTime, timingRange,} from '../src/renderer/daw/edit/vocal-edit.js';
+import { createNote} from '../src/renderer/daw/model/midi.js';
 import {
-  addTrack, createClip, createMidiPart, createSession, createTrack, updateClips,
-} from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import { renderVariAudioChannel, isNeutral } from '../src/renderer/daw/audio/pitch-shift.js';
-import { frequencyToPitch, pitchToFrequency, pitchName } from '../src/renderer/daw/model/midi.js';
-import { scalePitchClasses } from '../src/renderer/daw/model/scales.js';
-import { partClock } from '../src/renderer/daw/model/note-time.js';
-import { defaultTempoMap } from '../src/renderer/daw/model/tempo-map.js';
+  addTrack, createClip, createMidiPart, createSession, createTrack, updateClips,} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import { renderVariAudioChannel, isNeutral} from '../src/renderer/daw/audio/pitch-shift.js';
+import { frequencyToPitch, pitchToFrequency, pitchName} from '../src/renderer/daw/model/midi.js';
+import { scalePitchClasses} from '../src/renderer/daw/model/scales.js';
+import { partClock} from '../src/renderer/daw/model/note-time.js';
+import { defaultTempoMap} from '../src/renderer/daw/model/tempo-map.js';
 
 const SR = 44_100;
 

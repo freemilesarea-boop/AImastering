@@ -96,6 +96,16 @@ jobs:
         working-directory: aimaster-desktop
         run: pnpm -s typecheck
 
+      # Lint covers src AND scripts.  scripts/ was excluded from the config
+      # until it was measured — it had 39 dead imports and two findings in it,
+      # because a directory nothing checks is where unused code goes to live.
+      # Nothing ran lint in CI either, which is the same problem one level up.
+      # Only ERRORS fail the build: the config marks correctness rules as
+      # errors and style as warnings on purpose.
+      - name: Lint (correctness rules — src and scripts)
+        working-directory: aimaster-desktop
+        run: pnpm -s lint
+
       # v3.4.5 — bake AUTO_UPDATE_ENABLED into the main bundle.
       # Tag push (refs/tags/v*) → true → installer will check GitHub Releases.
       # Branch / workflow_dispatch artefact → false → updater stays silent.

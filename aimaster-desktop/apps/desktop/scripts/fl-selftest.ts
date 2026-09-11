@@ -18,28 +18,24 @@
  */
 
 import {
-  DEFAULT_STEP, GM_DRUM_MAP, createPattern as createStepPattern, createChannel,
+  GM_DRUM_MAP, createPattern as createStepPattern,
   toggleStep, setStep, clearChannel, addChannel, removeChannel, resizePattern,
   rotateChannel, euclidFill, stepBeats, patternBeats, stepTime,
   stepsToNotes, notesToSteps, activeStepCount, describePattern as describeSteps,
-  type StepPattern,
-} from '../src/renderer/daw/model/step-sequencer.js';
+  type StepPattern,} from '../src/renderer/daw/model/step-sequencer.js';
 import {
   createPattern, addPattern, findPattern, updatePattern, renamePattern,
   patternUsage, removePattern, clipNotes, writeClipNotes, patternClip,
-  unlinkClip, captureAsPattern, describePattern, notesInClipTime,
-} from '../src/renderer/daw/model/patterns.js';
+  unlinkClip, captureAsPattern, describePattern, notesInClipTime,} from '../src/renderer/daw/model/patterns.js';
 import {
   stampChord, arpeggiate, chordGroups, strum, applySlides, clearSlides, flam,
-  snapToScale,
-} from '../src/renderer/daw/edit/note-tools.js';
-import { createNote, from7bit, noteEndBeat, type MidiNote } from '../src/renderer/daw/model/midi.js';
-import { makeChord } from '../src/renderer/daw/model/chords.js';
+  snapToScale,} from '../src/renderer/daw/edit/note-tools.js';
+import { createNote, from7bit, noteEndBeat, type MidiNote} from '../src/renderer/daw/model/midi.js';
+import { makeChord} from '../src/renderer/daw/model/chords.js';
 import {
-  addTrack, createMidiPart, createSession, createTrack, findTrack, trackClips, updateClips,
-} from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import type { DawSession } from '../src/renderer/daw/model/types.js';
+  addTrack, createMidiPart, createSession, createTrack, findTrack, trackClips, updateClips,} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import type { DawSession} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -55,7 +51,6 @@ function close(a: number, b: number, m: string, tol = 1e-9): void {
   if (Math.abs(a - b) > tol) throw new Error(`${m} — got ${a}, want ${b} ±${tol}`);
 }
 
-const BPM = 120;                       // a sixteenth is 0.125 s
 
 function pattern4(): StepPattern {
   resetIds();

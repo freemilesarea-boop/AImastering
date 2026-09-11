@@ -188,6 +188,11 @@ check('the same seed gives the same file, a different seed does not', () => {
     const q = createQuantizer(16, 'tpdf', 1, seed);
     return Array.from(input, (v) => q.code(v, 0)).join(',');
   };
+  // Two separate CALLS, not one expression twice: the point is that the
+  // generator is reseeded per call, so bouncing the same file twice is
+  // byte-identical.  `no-self-compare` matches the two sides syntactically
+  // and cannot see that.
+  // eslint-disable-next-line no-self-compare
   assert(bytesFor(DEFAULT_DITHER_SEED) === bytesFor(DEFAULT_DITHER_SEED), 'a bounce is reproducible');
   assert(bytesFor(1) !== bytesFor(2), 'and the seed actually reaches the noise');
 });

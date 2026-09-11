@@ -68,19 +68,6 @@ function tone(hz: number, seconds: number, amp = 0.5, sampleRate = SR): Float32A
   return out;
 }
 
-/** Goertzel — level at one frequency. */
-function toneLevel(x: Float32Array, hz: number, sampleRate = SR): number {
-  const n = x.length;
-  if (n === 0) return 0;
-  const coeff = 2 * Math.cos((2 * Math.PI * hz) / sampleRate);
-  let s1 = 0, s2 = 0;
-  for (let i = 0; i < n; i++) {
-    const s0 = (x[i] ?? 0) + coeff * s1 - s2;
-    s2 = s1; s1 = s0;
-  }
-  return Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2)) / (n / 2);
-}
-
 /**
  * Pitch, measured with the project's own YIN estimator rather than a hand-
  * rolled autocorrelation — a plain autocorrelation octave-errors on a pure

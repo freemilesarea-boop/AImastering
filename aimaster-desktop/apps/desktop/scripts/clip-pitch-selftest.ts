@@ -19,7 +19,6 @@ import {
 } from '../src/renderer/daw/model/clip-pitch.js';
 import { shiftChannels } from '../src/renderer/daw/audio/pitch-clip.js';
 import { createClip } from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
 import type { Clip } from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }

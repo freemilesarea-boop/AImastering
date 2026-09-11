@@ -9,38 +9,33 @@
  * Run: pnpm --filter @aimaster/desktop test:midi
  */
 
-import { readFileSync } from 'node:fs';
-import { AUDIO_IMPORT_EXTENSIONS, MIDI_IMPORT_EXTENSIONS } from '@aimaster/shared-types';
-import { AUDIO_EXTENSIONS, MIDI_EXTENSIONS } from '../src/renderer/daw/model/drop-target.js';
+import { readFileSync} from 'node:fs';
+import { AUDIO_IMPORT_EXTENSIONS, MIDI_IMPORT_EXTENSIONS} from '@aimaster/shared-types';
+import { AUDIO_EXTENSIONS, MIDI_EXTENSIONS} from '../src/renderer/daw/model/drop-target.js';
 import {
   from7bit, to7bit, from14bit, to14bit, from32bit, to32bit,
-  bendFrom14bit, bendTo14bit, createNote, resetNoteIds, noteEndBeat, sortNotes,
+  bendFrom14bit, bendTo14bit, createNote, resetNoteIds,
   pitchName, isBlackKey, pitchToFrequency, frequencyToPitch, curveValueAt,
   setExpression, removeExpression, findExpression, pitchOffsetAt, noteExpressionAt,
   targetKey, targetLabel, soundingPitch, DEFAULT_MIDI_CONFIG,
-  type MidiNote,
-} from '../src/renderer/daw/model/midi.js';
+  type MidiNote,} from '../src/renderer/daw/model/midi.js';
 import {
   SCALES, scalePitchClasses, isInScale, scaleDegree, snapPitchToScale,
-  suggestScales, detectScale, scaleName, pitchClass, type Scale,
-} from '../src/renderer/daw/model/scales.js';
+  suggestScales, detectScale, scaleName, pitchClass, type Scale,} from '../src/renderer/daw/model/scales.js';
 import {
   parseChord, formatChord, detectChord, chordPitchClasses, voiceChord,
   transposeChord, jazzifyChord, simplifyChord, tritoneSub, relatedTwo,
   reharmonize, formatProgression, chordAt, chordScales, makeChord,
-  type ChordEvent,
-} from '../src/renderer/daw/model/chords.js';
+  type ChordEvent,} from '../src/renderer/daw/model/chords.js';
 import {
-  addNote, deleteNotes, moveNotes, resizeNotes, setVelocity, nudgeVelocity,
+  addNote, deleteNotes, moveNotes, setVelocity, nudgeVelocity,
   scaleVelocityRange, velocityRamp, transposeNotes, quantizePitches,
   quantizeNotes, nearestGridTime, humanizeNotes, applyLegato, scaleLegato,
   fixedLengths, extendToNextSelected, deleteOverlapsMono, deleteOverlapsPoly,
-  pedalsToNoteLength, splitNotesAt, glueNotes, notesAt, noteBounds, makeRng,
-} from '../src/renderer/daw/edit/midi-edit.js';
+  pedalsToNoteLength, splitNotesAt, glueNotes, notesAt, noteBounds, makeRng,} from '../src/renderer/daw/edit/midi-edit.js';
 import {
   parseMidiFile, importMidiFile, exportMidiFile, makeTickToSeconds,
-  fileTempoBpm, looksLikeMpe, trackToPart,
-} from '../src/renderer/daw/io/midi-file.js';
+  fileTempoBpm, looksLikeMpe, trackToPart,} from '../src/renderer/daw/io/midi-file.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];

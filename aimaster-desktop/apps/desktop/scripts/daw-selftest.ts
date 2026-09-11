@@ -14,50 +14,41 @@
 
 import {
   addTrack, createSession, createTrack, createClip, createBus, createGroup, addGroup,
-  removeTrack, moveTrack, updateClips, trackClips, activePlaylist, clipAt, clipEnd,
-  sessionEndSec, createInsert, setInsert, createSend, setSend, findTrack, addFile,
-} from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import { shouldAdoptQueue } from '../src/renderer/daw/model/import-audio.js';
+  removeTrack, moveTrack, updateClips, trackClips, activePlaylist, clipAt,
+  sessionEndSec, createInsert, setInsert, createSend, setSend, findTrack, addFile,} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import { shouldAdoptQueue} from '../src/renderer/daw/model/import-audio.js';
 import {
-  MASTER_QUEUE_LIMIT, handoffFileName, handoffMessage, handoffProblem,
-} from '../src/renderer/daw/edit/master-handoff.js';
-import { planDrop, isEmptyPlan } from '../src/renderer/daw/model/drop-target.js';
-import { evictionPlan } from '../src/renderer/daw/engine/audio-cache.js';
-import { decodeContext, resetDecodeContext, DECODE_SAMPLE_RATE } from '../src/renderer/audio/decode-context.js';
+  MASTER_QUEUE_LIMIT, handoffFileName, handoffMessage, handoffProblem,} from '../src/renderer/daw/edit/master-handoff.js';
+import { planDrop, isEmptyPlan} from '../src/renderer/daw/model/drop-target.js';
+import { evictionPlan} from '../src/renderer/daw/engine/audio-cache.js';
+import { decodeContext, resetDecodeContext, DECODE_SAMPLE_RATE} from '../src/renderer/audio/decode-context.js';
 import {
   separateAt, splitClip, healSeparation, isHealable, trimToSelection, clearRange,
   duplicateSelection, nudgeSelection, slipSelection, setClipGain, nudgeClipGain,
   fadeToCursor, crossfadeAt, clipBoundaries, selectionToClipBounds, trimClipStart,
-  trimClipEnd, applyConsolidation, CLIP_GAIN_MAX_DB, type TimeSelection,
-} from '../src/renderer/daw/edit/clip-edit.js';
+  trimClipEnd, applyConsolidation, CLIP_GAIN_MAX_DB, type TimeSelection,} from '../src/renderer/daw/edit/clip-edit.js';
 import {
-  detectTransients, peakEnvelope, mergeMarks, nextAfter, prevBefore,
-} from '../src/renderer/daw/edit/transient.js';
-import { editPoints, tabForward, tabBackward, extendToNextPoint } from '../src/renderer/daw/edit/navigation.js';
+  detectTransients, peakEnvelope, mergeMarks, nextAfter, prevBefore,} from '../src/renderer/daw/edit/transient.js';
+import { editPoints, tabForward, tabBackward, extendToNextPoint} from '../src/renderer/daw/edit/navigation.js';
 import {
-  createLane, valueAt, insertPoint, removePointsInRange, writeRange, touchWrite,
-  trimRange, thinPoints, isWritingMode,
-} from '../src/renderer/daw/model/automation.js';
+  createLane, valueAt, insertPoint, writeRange, touchWrite,
+  trimRange, thinPoints, isWritingMode,} from '../src/renderer/daw/model/automation.js';
 import {
   dbToGain, gainToDb, panGains, vcaChainDb, effectiveFaderDb, anySoloActive,
   isImplicitlyMuted, isAudible, isMutedByVca, setVolumeDb, setPan, toggleMute,
-  toggleSolo, clearAllSolo, linkedMembers,
-} from '../src/renderer/daw/model/mixer-math.js';
+  toggleSolo, clearAllSolo, linkedMembers,} from '../src/renderer/daw/model/mixer-math.js';
 import {
   buildRouteGraph, detectFeedback, wouldFeedback, insertLatency, pathLatency,
-  computeDelayCompensation, describePath, trackNode, busNode, MASTER_NODE,
-} from '../src/renderer/daw/model/routing.js';
+  computeDelayCompensation, describePath, trackNode, busNode, MASTER_NODE,} from '../src/renderer/daw/model/routing.js';
 import {
   addPlaylist, duplicatePlaylist, cyclePlaylist, compRange, sliceClips,
-  flattenComp, removePlaylist, setActivePlaylist, alternateLanes,
-} from '../src/renderer/daw/edit/comping.js';
+  flattenComp, removePlaylist, setActivePlaylist, alternateLanes,} from '../src/renderer/daw/edit/comping.js';
 import {
-  serializeDawSession, deserializeDawSession, importSessionData, uniqueName,
-} from '../src/renderer/daw/model/session-io.js';
-import { encodeWav, interleave } from '../src/renderer/daw/engine/wav.js';
-import { PLUGINS, defaultParams, findPlugin, pluginLatencySamples, timeConstantToHz } from '../src/renderer/daw/engine/plugins.js';
-import type { Clip, DawSession, Track } from '../src/renderer/daw/model/types.js';
+  serializeDawSession, deserializeDawSession, importSessionData, uniqueName,} from '../src/renderer/daw/model/session-io.js';
+import { encodeWav, interleave} from '../src/renderer/daw/engine/wav.js';
+import { PLUGINS, defaultParams, findPlugin, pluginLatencySamples, timeConstantToHz} from '../src/renderer/daw/engine/plugins.js';
+import type { Clip, DawSession, Track} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
