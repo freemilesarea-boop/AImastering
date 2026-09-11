@@ -204,8 +204,14 @@ export async function detectChordsForClip(
   const parts = [`코드 ${placed.length}개를 코드 트랙에 썼습니다`, describeReadout(readout)];
   if (separationNote) parts.push(`분리 없이 믹스에서 읽었습니다 — ${separationNote}`);
   if (workerNote) parts.push(`창이 잠시 멈췄습니다 (워커 없이 분석) — ${workerNote}`);
+  // The key goes onto the session, not just into a toast: it is what the Key
+  // Editor's scale, note snapping and the riff machine all want, and a key
+  // that vanished with the message would have to be worked out again by hand.
+  const withKey = (next: DawSession): DawSession =>
+    (readout.key ? { ...next, key: readout.key.key } : next);
+
   return {
-    session: withChords(session, events),
+    session: withKey(withChords(session, events)),
     readout,
     message: parts.join(' · '),
     ...(separationNote ? { separationNote } : {}),

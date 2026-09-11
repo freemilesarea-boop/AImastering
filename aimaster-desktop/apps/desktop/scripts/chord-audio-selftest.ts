@@ -76,6 +76,11 @@ import { withChords } from '../src/renderer/daw/edit/chord-edit.js';
 import { createSession } from '../src/renderer/daw/model/session-ops.js';
 import { voiceChord } from '../src/renderer/daw/model/chords.js';
 import { to7bit } from '../src/renderer/daw/model/midi.js';
+import {
+  keyFromChords, keyFromChroma, keyIsAmbiguous, keyName, keyPitchClasses,
+  KEY_AMBIGUOUS_MARGIN, MAJOR_ID, MINOR_ID, type KeyChord,
+} from '../src/renderer/daw/model/key.js';
+import { DEFAULT_KEY_PRIOR } from '../src/renderer/daw/audio/chroma/chord-hmm.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -1542,6 +1547,203 @@ async function main(): Promise<void> {
     const made = generateBackingPart(createSession(), { style: 'pad' });
     assert(!made.ok, 'an empty chart produced a part');
     if (!made.ok) assert(made.reason.includes('코드'), `unhelpful reason: ${made.reason}`);
+  });
+
+  // ── What key is this in ───────────────────────────────────────────────────
+
+  const progression = (...names: string[]): KeyChord[] =>
+    names.map((n) => ({ chord: parseChord(n)! }));
+
+  await check('the key of a progression', () => {
+    const cases: [string[], string][] = [
+      [['C', 'G', 'Am', 'F'], 'C Major'],
+      [['Dm7', 'G7', 'Cmaj7', 'Cmaj7'], 'C Major'],
+      [['F', 'G', 'C', 'C'], 'C Major'],
+      [['Bb', 'F', 'Gm', 'Eb', 'Bb'], 'A# Major'],
+      [['Cm', 'Ab', 'Eb', 'Bb'], 'C Minor'],
+      [['Em', 'C', 'G', 'D'], 'E Minor'],
+      [['F#m', 'D', 'A', 'E'], 'F# Minor'],
+      [['D', 'A', 'Bm', 'G'], 'D Major'],
+      [['Dm7b5', 'G7', 'Cm', 'Cm'], 'C Minor'],
+    ];
+    let right = 0;
+    for (const [names, want] of cases) {
+      const estimate = keyFromChords(progression(...names));
+      const got = estimate ? keyName(estimate.key) : '—';
+      if (got === want) right += 1;
+      else console.log(`         ${names.join(' ')} → ${got}, expected ${want}`);
+    }
+    assert(right >= cases.length - 1,
+      `${right}/${cases.length} keys — the estimator regressed`);
+    console.log(`      (조성: ${right}/${cases.length})`);
+  });
+
+  await check('the relative minor is not the relative major', () => {
+    // The single most common way a key detector is wrong: C major and A minor
+    // contain exactly the same seven notes, so only WEIGHT on the tonic can
+    // tell them apart.  Same four chords, two orders, two keys.
+    const major = keyFromChords(progression('C', 'G', 'Am', 'F'));
+    const minor = keyFromChords(progression('Am', 'F', 'C', 'G'));
+    assert(major !== null && keyName(major.key) === 'C Major',
+      `C G Am F → ${major ? keyName(major.key) : 'null'}`);
+    assert(minor !== null && keyName(minor.key) === 'A Minor',
+      `Am F C G → ${minor ? keyName(minor.key) : 'null'}`);
+    // And when they are that close, the chart should offer both rather than
+    // pick one and look certain.
+    assert(minor !== null && keyIsAmbiguous(minor),
+      `the relative pair should be flagged ambiguous, margin was ${minor?.margin}`);
+    assert(minor?.alternative !== null && keyName(minor!.alternative!) === 'C Major',
+      `the runner-up should be the relative major, got ${minor?.alternative ? keyName(minor.alternative) : 'none'}`);
+  });
+
+  await check('a progression that only reaches its tonic at the end', () => {
+    // ii–V–I: the tonic chord is not played until the last bar, and the
+    // chord before it is the dominant, whose own root has been sitting in the
+    // histogram the whole time.  Without extra weight on chord ROOTS this
+    // reads as G major — measured, it is the one thing the root bonus buys,
+    // and an aggregate "8 of 9" check absorbed its removal without noticing.
+    const inC = keyFromChords(progression('Dm7', 'G7', 'Cmaj7', 'Cmaj7'));
+    assert(inC !== null && keyName(inC.key) === 'C Major',
+      `Dm7 G7 Cmaj7 → ${inC ? keyName(inC.key) : 'null'}`);
+    const inBb = keyFromChords(progression('Cm7', 'F7', 'Bbmaj7', 'Bbmaj7'));
+    assert(inBb !== null && keyName(inBb.key) === 'A# Major',
+      `Cm7 F7 Bbmaj7 → ${inBb ? keyName(inBb.key) : 'null'}`);
+  });
+
+  await check('a long chord outvotes a passing one', () => {
+    // Weighted by how long each chord lasts, like everything else here.  Four
+    // bars of C with a one-beat F#dim7 in them is in C; counting chords
+    // instead of seconds lets the blip argue as loudly as the song.
+    // Eight bars of C and G against a fast run of six foreign chords that
+    // together last a beat and a half.  By the clock this is plainly in C; by
+    // the chord COUNT the run is the majority and wins.
+    const weighted: KeyChord[] = [
+      { chord: parseChord('C')!, weight: 16 },
+      { chord: parseChord('G')!, weight: 16 },
+      ...['F#', 'C#', 'G#', 'D#', 'A#', 'B'].map((name) => ({
+        chord: parseChord(name)!, weight: 0.25,
+      })),
+      { chord: parseChord('C')!, weight: 16 },
+    ];
+    const withWeights = keyFromChords(weighted);
+    assert(withWeights !== null && keyName(withWeights.key) === 'C Major',
+      `weighted → ${withWeights ? keyName(withWeights.key) : 'null'}`);
+    // And the same chords counted equally must give a DIFFERENT answer, or
+    // this fixture proves nothing about the weighting.
+    const flat = keyFromChords(weighted.map((w) => ({ chord: w.chord })));
+    assert(flat === null || keyName(flat.key) !== 'C Major',
+      `counting chords equally also said C Major — the fixture does not test the weighting`);
+  });
+
+  await check('the margin is not sold as a confidence', () => {
+    // Measured over 26 progressions: the margin does NOT separate right
+    // answers from wrong ones — mean 0.145 correct against 0.128 wrong, with
+    // 15 of 24 correct answers scoring below the worst wrong one.  So it must
+    // not be named or used as trust; it exists to say "the runner-up is
+    // close", which is a different and true statement.
+    const src = stripComments(
+      readFileSync(new URL('../src/renderer/daw/model/key.ts', import.meta.url), 'utf8'));
+    assert(!/\bconfidence\b/.test(src),
+      'key.ts is calling the margin a confidence again');
+    // A tight pair is flagged; a clear key is not.
+    const tight = keyFromChords(progression('Am', 'F', 'C', 'G'));
+    const clear = keyFromChords(progression('Bb', 'F', 'Gm', 'Eb', 'Bb'));
+    assert(tight !== null && tight.margin < KEY_AMBIGUOUS_MARGIN, 'a relative pair should be tight');
+    assert(clear !== null && clear.margin >= KEY_AMBIGUOUS_MARGIN,
+      `an unambiguous key was flagged, margin ${clear?.margin.toFixed(3)}`);
+  });
+
+  await check('a key is a scale the rest of the app already understands', () => {
+    // Expressed as a `Scale` so the Key Editor, note snapping and the riff
+    // machine can read it without a translation layer that would drift.
+    const estimate = keyFromChords(progression('C', 'G', 'Am', 'F'))!;
+    assert(estimate.key.scaleId === MAJOR_ID, `major key used scaleId ${estimate.key.scaleId}`);
+    const minor = keyFromChords(progression('Am', 'F', 'C', 'G'))!;
+    assert(minor.key.scaleId === MINOR_ID, `minor key used scaleId ${minor.key.scaleId}`);
+    // And its notes are the notes of that scale.
+    const notes = [...keyPitchClasses(estimate.key)].sort((a, b) => a - b);
+    assert(notes.join(',') === '0,2,4,5,7,9,11', `C major came out as ${notes.join(',')}`);
+    const aMinor = [...keyPitchClasses(minor.key)].sort((a, b) => a - b);
+    assert(aMinor.join(',') === '0,2,4,5,7,9,11',
+      `A minor should be the same seven notes, got ${aMinor.join(',')}`);
+  });
+
+  await check('a chroma can be read for a key too, and is worse at it', () => {
+    // The estimator that needs no chords — for callers that have none.  It is
+    // kept honest about being the weaker one: measured 6 of 11 rendered
+    // fixtures against 10 of 11 for the chord route.
+    const chroma = new Float32Array(12);
+    // A C major scale's worth of energy, tonic-heavy.
+    const weights: [number, number][] = [
+      [0, 6], [2, 3], [4, 4], [5, 3], [7, 5], [9, 3], [11, 2],
+    ];
+    for (const [pc, w] of weights) chroma[pc] = w;
+    const estimate = keyFromChroma(chroma);
+    assert(estimate !== null && keyName(estimate.key) === 'C Major',
+      `a C major profile read as ${estimate ? keyName(estimate.key) : 'null'}`);
+    assert(keyFromChroma(new Float32Array(12)) === null, 'silence has no key');
+  });
+
+  await check('the key prior is off, because it was measured', () => {
+    // Stage C said: estimate the key, condition on it, then measure whether
+    // it helped.  It did not — 85.2 % at zero, 84.7 % at 0.03, 85.8 % at 0.06
+    // across eleven fixtures, a spread smaller than one fixture.  Turning it
+    // on for that would be fitting the setting to the fixtures.
+    assert(DEFAULT_KEY_PRIOR === 0,
+      `the key prior is on at ${DEFAULT_KEY_PRIOR} without a measurement that says it helps`);
+    // But it must still WORK when asked for, or the knob is a lie.
+    const chroma = (...pcs: number[]): Float32Array => {
+      const v = new Float32Array(12);
+      for (const pc of pcs) v[pc] = 1;
+      return v;
+    };
+    // C#dim is not in C major; C is.  With a strong prior the diatonic one
+    // should win a tie it would otherwise lose.
+    const bar = [chroma(1, 4, 7), chroma(1, 4, 7), chroma(1, 4, 7), chroma(1, 4, 7)];
+    const free = smoothChords(bar, { keyPrior: 0 }).path.map((c) => (c ? formatChord(c) : '—'));
+    const keyed = smoothChords(bar, {
+      key: { root: 0, scaleId: MAJOR_ID }, keyPrior: 0.5,
+    }).path.map((c) => (c ? formatChord(c) : '—'));
+    assert(free.join(' ') !== keyed.join(' '),
+      `the key prior changed nothing even at 0.5: ${free.join(' ')}`);
+  });
+
+  await check('the key is read from the chords, not from the chroma', async () => {
+    // Two routes, measured: from the raw chroma 6 of 11 rendered fixtures, from
+    // the chords 10 of 11.  A pitch-class histogram cannot see a cadence, and
+    // C major and A minor are the same seven notes — so an arpeggiated C–G–Am–F
+    // reads as A minor from the chroma and as C major from its own chords.
+    const audio = await render(POP, { arpeggio: true });
+    const readout = detectChordsFromAudio(audio.mix, SR, { tempo: TEMPO });
+    assert(readout.key !== null, 'no key was estimated at all');
+    assert(readout.key !== null && keyName(readout.key.key) === 'C Major',
+      `C G Am F read as ${readout.key ? keyName(readout.key.key) : 'null'}`);
+
+    // The chroma route on the same audio is the weaker one, and saying so is
+    // what stops this check passing for the wrong reason.
+    const gram = chromagram(audio.mix, SR);
+    const grid = beatGrid(audio.mix.length / SR, TEMPO);
+    const spans = beatChroma(gram.frames, gram.hopSec, grid.times);
+    const average = new Float32Array(12);
+    for (const span of spans) for (let k = 0; k < 12; k++) average[k] = (average[k] ?? 0) + (span[k] ?? 0);
+    const fromChroma = keyFromChroma(average);
+    assert(fromChroma !== null && keyName(fromChroma.key) !== 'C Major',
+      `the chroma route also got it right (${fromChroma ? keyName(fromChroma.key) : 'null'}) — `
+      + 'this fixture does not show why the chords are used');
+    console.log(`      (조성: 코드에서 ${keyName(readout.key!.key)}, 크로마에서 ${keyName(fromChroma!.key)})`);
+  });
+
+  await check('the key reaches the session, not just a toast', () => {
+    // A key that vanished with the message would have to be worked out again
+    // by hand every time, and the Key Editor's scale and the note snapping
+    // both want it.
+    const src = stripComments(
+      readFileSync(new URL('../src/renderer/daw/edit/chord-actions.ts', import.meta.url), 'utf8'));
+    assert(/readout\.key/.test(src) && /key: readout\.key\.key/.test(src),
+      'the detected key is not written onto the session');
+    const types = stripComments(
+      readFileSync(new URL('../src/renderer/daw/model/types.ts', import.meta.url), 'utf8'));
+    assert(/key\?: Scale;/.test(types), 'the session has nowhere to put a key');
   });
 
   console.log('\n=== Chords from audio — did it name what was played? ===');

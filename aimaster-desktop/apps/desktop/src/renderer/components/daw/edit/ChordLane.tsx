@@ -31,6 +31,7 @@ import { detectChordsForClip } from '../../../daw/edit/chord-actions.js';
 import {
   BACKING_STYLES, backingStyleLabel, generateBackingPart, type BackingStyle,
 } from '../../../daw/edit/chord-parts.js';
+import { keyName } from '../../../daw/model/key.js';
 import { trackClips } from '../../../daw/model/session-ops.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
 import { premium } from '../../../theme/premium.js';
@@ -122,6 +123,13 @@ export function ChordLaneHeader() {
       <span className="text-[9px] tracking-wide" style={{ color: premium.text.faint }}>
         코드
       </span>
+      {session.key && (
+        <span
+          className="text-[9px] px-1 rounded"
+          title="오디오에서 추정한 조성 — Key Editor 의 스케일과 스냅이 같은 값을 씁니다"
+          style={{ color: premium.text.muted, background: 'rgba(255,255,255,0.05)' }}
+        >{keyName(session.key)}</span>
+      )}
       {unsure.length > 0 && (
         <button
           onClick={goToNextUnsure}

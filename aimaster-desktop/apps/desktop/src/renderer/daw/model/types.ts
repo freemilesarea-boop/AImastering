@@ -10,6 +10,7 @@
 //   • Time is seconds (double).  Sample conversion happens only at the
 //     engine boundary — mixing units is how DAW code rots.
 
+import type { Scale } from './scales.js';
 import type { ControllerLane, MidiNote, MidiPartConfig } from './midi.js';
 import type { Section } from './arrangement.js';
 import type { ChordEvent } from './chords.js';
@@ -543,6 +544,17 @@ export interface DawSession {
    * reharmonising, suggesting scales, or generating a part that fits.
    */
   chordTrack: ChordEvent[];
+  /**
+   * The key, once something has estimated one.
+   *
+   * Optional so sessions saved before it existed still load, and absent
+   * rather than defaulted to C major — "we have not looked" and "it is in C"
+   * are different states and only one of them should put a C on the screen.
+   *
+   * A `Scale`, not a bespoke type, so everything that already takes a scale —
+   * the Key Editor, note snapping, the riff machine — can read it.
+   */
+  key?: Scale;
   /** Delay compensation on/off — mirrors the Pro Tools engine switch. */
   delayCompensation: boolean;
   /** Clip grid for the Session View (empty until someone uses it). */

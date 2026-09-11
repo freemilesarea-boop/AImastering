@@ -616,15 +616,131 @@
     return out;
   }
 
+  // src/renderer/daw/model/key.ts
+  var MAJOR_ID = "major";
+  var MINOR_ID = "aeolian";
+  var KK_MAJOR = [
+    6.35,
+    2.23,
+    3.48,
+    2.33,
+    4.38,
+    4.09,
+    2.52,
+    5.19,
+    2.39,
+    3.66,
+    2.29,
+    2.88
+  ];
+  var KK_MINOR = [
+    6.33,
+    2.68,
+    3.52,
+    5.38,
+    2.6,
+    3.53,
+    2.54,
+    4.75,
+    3.98,
+    2.69,
+    3.34,
+    3.17
+  ];
+  function correlate(a, b) {
+    const n = Math.min(a.length, b.length);
+    if (n === 0) return 0;
+    let sa = 0;
+    let sb = 0;
+    for (let i = 0; i < n; i++) {
+      sa += a[i] ?? 0;
+      sb += b[i] ?? 0;
+    }
+    const ma = sa / n;
+    const mb = sb / n;
+    let num = 0;
+    let da = 0;
+    let db = 0;
+    for (let i = 0; i < n; i++) {
+      const x = (a[i] ?? 0) - ma;
+      const y = (b[i] ?? 0) - mb;
+      num += x * y;
+      da += x * x;
+      db += y * y;
+    }
+    if (da <= 0 || db <= 0) return 0;
+    return num / Math.sqrt(da * db);
+  }
+  function rank(histogram) {
+    let total = 0;
+    for (const v of histogram) total += v;
+    if (!(total > 0)) return null;
+    const scored = [];
+    for (let root = 0; root < 12; root++) {
+      const rotated = [];
+      for (let i = 0; i < 12; i++) rotated.push(histogram[pitchClass(root + i)] ?? 0);
+      scored.push({ key: { root, scaleId: MAJOR_ID }, score: correlate(rotated, KK_MAJOR) });
+      scored.push({ key: { root, scaleId: MINOR_ID }, score: correlate(rotated, KK_MINOR) });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const best = scored[0];
+    const second = scored[1];
+    if (!best) return null;
+    const margin = second ? Math.max(0, Math.min(1, (best.score - second.score) / 2)) : 1;
+    return { key: best.key, margin, alternative: second?.key ?? null };
+  }
+  function keyFromChroma(chroma) {
+    const histogram = [];
+    for (let i = 0; i < 12; i++) histogram.push(Math.max(0, chroma[i] ?? 0));
+    return rank(histogram);
+  }
+  function keyFromChords(chords) {
+    if (chords.length === 0) return null;
+    const histogram = new Array(12).fill(0);
+    let total = 0;
+    chords.forEach((entry, index) => {
+      const weight = Math.max(0, entry.weight ?? 1);
+      if (weight <= 0) return;
+      total += weight;
+      const intervals = findQuality(entry.chord.qualityId)?.intervals ?? [0, 4, 7];
+      for (const interval of intervals) {
+        const pc = pitchClass(entry.chord.root + interval);
+        histogram[pc] = (histogram[pc] ?? 0) + weight;
+      }
+      const root = pitchClass(entry.chord.root);
+      histogram[root] = (histogram[root] ?? 0) + weight * ROOT_BONUS;
+      const cadence = (index === 0 ? OPENING_BONUS : 0) + (index === chords.length - 1 ? CLOSING_BONUS : 0);
+      if (cadence > 0) histogram[root] = (histogram[root] ?? 0) + weight * cadence;
+    });
+    if (total <= 0) return null;
+    return rank(histogram);
+  }
+  var ROOT_BONUS = 0.3;
+  var OPENING_BONUS = 1.2;
+  var CLOSING_BONUS = 0.6;
+  function isMajorKey(key) {
+    return key.scaleId !== MINOR_ID;
+  }
+  function keyPitchClasses(key) {
+    const major = [0, 2, 4, 5, 7, 9, 11];
+    const minor = [0, 2, 3, 5, 7, 8, 10];
+    const out = /* @__PURE__ */ new Set();
+    for (const interval of isMajorKey(key) ? major : minor) out.add(pitchClass(key.root + interval));
+    return out;
+  }
+
   // src/renderer/daw/audio/chroma/chord-hmm.ts
   var DEFAULT_SHARPNESS = 10;
   var DEFAULT_SWITCH_COST = 1.5;
   var DEFAULT_SIZE_PENALTY = 0.02;
+  var DEFAULT_KEY_PRIOR = 0;
   function smoothChords(spanChroma, options = {}) {
     const {
       sharpness = DEFAULT_SHARPNESS,
       switchCost = DEFAULT_SWITCH_COST,
       sizePenalty = DEFAULT_SIZE_PENALTY,
+      key = null,
+      keyPrior = DEFAULT_KEY_PRIOR,
       noChordScore = DEFAULT_MIN_SCORE,
       vocabulary = DEFAULT_VOCABULARY,
       bassPitches,
@@ -640,9 +756,17 @@
       const bass = bassPitches ? bassPitches[i] ?? null : match.bassPitchClass ?? null;
       return chordScores(chroma, { ...match, vocabulary, bassPitchClass: bass });
     });
+    const inKey = key && keyPrior !== 0 ? keyPitchClasses(key) : null;
     const penalty = new Float64Array(chordCount);
     for (let t = 0; t < chordCount; t++) {
-      penalty[t] = sizePenalty * Math.max(0, (templates[t]?.members.size ?? 3) - 3);
+      const template = templates[t];
+      let value = sizePenalty * Math.max(0, (template?.members.size ?? 3) - 3);
+      if (inKey && template) {
+        let outside = 0;
+        for (const pc of template.members) if (!inKey.has(pc)) outside += 1;
+        value += keyPrior * outside;
+      }
+      penalty[t] = value;
     }
     const scoreAt = (t, state) => {
       const row = emission[t];
@@ -937,11 +1061,34 @@
       bassPitches = bassPitchesFor(bassGram.frames, bassGram.hopSec, grid.times);
       bassIsStem = true;
     }
+    onProgress?.(0.8, "\uC870\uC131 \uCD94\uC815");
+    const asked = options.segment?.smooth;
+    const smoothWith = (extra) => asked === false ? false : {
+      ...typeof asked === "object" ? asked : {},
+      ...extra
+    };
+    const keyOptions = {
+      ...options.segment,
+      vocabulary,
+      bassIsStem,
+      ...bassPitches ? { bassPitches } : {}
+    };
+    const firstPass = segmentChords(spans, grid.times, {
+      ...keyOptions,
+      smooth: smoothWith({ keyPrior: 0 })
+    });
+    const key = firstPass.length > 0 ? keyFromChords(firstPass.map((segment) => ({
+      chord: segment.chord,
+      // By how long each chord lasts, for the same reason everything else
+      // here is: a bar of C and a passing F#dim7 are not one vote each.
+      weight: Math.max(1e-6, segment.endSec - segment.startSec)
+    }))) : keyFromChroma(averageChroma(spans));
     onProgress?.(0.85, "\uCF54\uB4DC \uB9E4\uCE6D");
     const segments = segmentChords(spans, grid.times, {
       ...options.segment,
       vocabulary,
       bassIsStem,
+      smooth: smoothWith(key ? { key: key.key } : {}),
       ...bassPitches ? { bassPitches } : {}
     });
     onProgress?.(1, "\uC644\uB8CC");
@@ -951,8 +1098,16 @@
       grid,
       tuningCents: gram.tuningCents,
       vocabulary,
+      key,
       unsure: segments.filter((s) => s.margin < UNSURE_MARGIN).length
     };
+  }
+  function averageChroma(spans) {
+    const out = new Float32Array(PITCH_CLASSES);
+    for (const span of spans) {
+      for (let k = 0; k < PITCH_CLASSES; k++) out[k] = (out[k] ?? 0) + (span[k] ?? 0);
+    }
+    return out;
   }
   var MIX_BASS_MAJORITY = 0.6;
   function spanVotes(votes, hopSec, grid) {

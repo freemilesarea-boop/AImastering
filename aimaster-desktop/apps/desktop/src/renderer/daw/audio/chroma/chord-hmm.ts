@@ -49,6 +49,8 @@ import {
   type MatchOptions,
 } from './chord-match.js';
 import type { ChordSymbol } from '../../model/chords.js';
+import { keyPitchClasses } from '../../model/key.js';
+import type { Scale } from '../../model/scales.js';
 
 export interface SmoothingOptions {
   /**
@@ -76,6 +78,21 @@ export interface SmoothingOptions {
    */
   sizePenalty?: number;
   /**
+   * The key, when one has been estimated — and what it is worth.
+   *
+   * This is the thing stage C said it would not guess at: "V goes to I more
+   * often than to ♭II" is real and it is MEANINGLESS without a tonic, so it
+   * waited until there was a key estimator.  What it buys is a prior: a chord
+   * whose notes are all in the key is more likely than one that needs an
+   * accidental, in proportion to how many notes are outside.
+   *
+   * A prior, not a rule.  A borrowed chord is a real thing that real songs
+   * do, and a key prior strong enough to forbid one would be worse than no
+   * key at all.
+   */
+  key?: Scale | null;
+  keyPrior?: number;
+  /**
    * The score the "no chord" state emits.
    *
    * A beat whose best chord scores below this is better explained by silence
@@ -94,6 +111,28 @@ export interface SmoothingOptions {
 export const DEFAULT_SHARPNESS = 10;
 export const DEFAULT_SWITCH_COST = 1.5;
 export const DEFAULT_SIZE_PENALTY = 0.02;
+
+/**
+ * OFF, because it was measured and it did not earn its place.
+ *
+ * Stage C said the honest order was: estimate the key, condition on it, then
+ * measure whether it helped.  It was, it is, and it did not.  Across eleven
+ * rendered fixtures the chord accuracy went 85.2 % at zero, 84.7 % at 0.03
+ * and 85.8 % at 0.06 — a spread smaller than one fixture, which is noise.
+ * Turning it on for the 0.06 would be fitting the setting to the fixtures.
+ *
+ * The reason it does so little is visible in the errors it was supposed to
+ * fix: the mistakes this detector makes on this material are DIATONIC ones —
+ * C against Cmaj7, Am against C6, Dm7 against F6.  A prior that discourages
+ * accidentals has nothing to say about any of them.
+ *
+ * It is kept as a knob rather than deleted because the measurement is the
+ * finding and the code that produced it should stay reproducible, and because
+ * material with real non-diatonic noise in it — which none of these fixtures
+ * has — is exactly where it might pay.  The benchmark can sweep it on real
+ * music.  Until someone does, it is zero.
+ */
+export const DEFAULT_KEY_PRIOR = 0;
 
 export interface SmoothingResult {
   /** One chord per span, or null where the path chose "no chord". */
@@ -124,6 +163,8 @@ export function smoothChords(
     sharpness = DEFAULT_SHARPNESS,
     switchCost = DEFAULT_SWITCH_COST,
     sizePenalty = DEFAULT_SIZE_PENALTY,
+    key = null,
+    keyPrior = DEFAULT_KEY_PRIOR,
     noChordScore = DEFAULT_MIN_SCORE,
     vocabulary = DEFAULT_VOCABULARY,
     bassPitches,
@@ -148,10 +189,20 @@ export function smoothChords(
     return chordScores(chroma, { ...match, vocabulary, bassPitchClass: bass });
   });
 
-  // One subtraction per template, computed once.
+  // One subtraction per template, computed once.  The key prior folds into
+  // the same number: both are constants per state, so they cost nothing per
+  // beat and the recurrence stays O(N).
+  const inKey = key && keyPrior !== 0 ? keyPitchClasses(key) : null;
   const penalty = new Float64Array(chordCount);
   for (let t = 0; t < chordCount; t++) {
-    penalty[t] = sizePenalty * Math.max(0, (templates[t]?.members.size ?? 3) - 3);
+    const template = templates[t];
+    let value = sizePenalty * Math.max(0, (template?.members.size ?? 3) - 3);
+    if (inKey && template) {
+      let outside = 0;
+      for (const pc of template.members) if (!inKey.has(pc)) outside += 1;
+      value += keyPrior * outside;
+    }
+    penalty[t] = value;
   }
 
   const scoreAt = (t: number, state: number): number => {

@@ -55,6 +55,7 @@ import {
   type ChordVocabulary, type MatchOptions,
 } from './chord-match.js';
 import { smoothChords, type SmoothingOptions } from './chord-hmm.js';
+import type { KeyEstimate } from '../../model/key.js';
 import { makeChord } from '../../model/chords.js';
 
 // ── The grid ────────────────────────────────────────────────────────────────
@@ -408,6 +409,8 @@ export interface ChordReadout {
   grid: BeatGrid;
   tuningCents: number;
   vocabulary: ChordVocabulary;
+  /** The key the passage was read in, when one could be estimated. */
+  key: KeyEstimate | null;
   /** Segments whose margin is below `UNSURE_MARGIN` — worth a second look. */
   unsure: number;
 }

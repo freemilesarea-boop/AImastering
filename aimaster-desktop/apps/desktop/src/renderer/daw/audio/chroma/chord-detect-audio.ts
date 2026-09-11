@@ -26,13 +26,17 @@
 // could not be tested on a signal built in a test.
 
 import {
-  chromagram, majorityPitchClass, type ChromaOptions, type Chromagram,
+  chromagram, majorityPitchClass, PITCH_CLASSES,
+  type ChromaOptions, type Chromagram,
 } from './chroma.js';
 import {
   beatChroma, beatGrid, bassPitchesFor, segmentChords, toChordEvents,
   UNSURE_MARGIN, type ChordReadout, type SegmentOptions,
 } from './chord-segment.js';
 import { DEFAULT_VOCABULARY, type ChordVocabulary } from './chord-match.js';
+import {
+  keyFromChords, keyFromChroma, keyIsAmbiguous, keyName,
+} from '../../model/key.js';
 
 export interface DetectChordsOptions {
   /** How much harmony to allow.  Sevenths by default. */
@@ -107,11 +111,54 @@ export function detectChordsFromAudio(
     bassIsStem = true;
   }
 
+  // The key — in two passes, and the reason is measured.
+  //
+  // Estimating it from the raw chroma is the obvious single-pass route and it
+  // is WEAK: 6 of 11 fixtures, because a pitch-class histogram cannot see a
+  // cadence and C major and A minor contain the same seven notes.  Feeding
+  // that estimate back as a prior made the chords WORSE — 85.2 % to 82.4 % —
+  // which is what a prior pointed at the wrong key does.
+  //
+  // Chords carry the evidence a histogram lacks, and this function is in the
+  // business of finding chords.  So: decode once with no key at all, read the
+  // key off that unbiased chart, then decode again knowing it.  Not circular
+  // — the first pass cannot have been biased by a prior it never saw.
+  onProgress?.(0.8, '조성 추정');
+  // `smooth: false` is the caller saying "decide each beat alone", and it has
+  // to survive both passes.  Replacing it with an options object here turned
+  // it silently back on — every caller that asked for the stage-B behaviour
+  // quietly got stage C, which the selftest caught only because a check that
+  // compares the two suddenly measured them as identical.
+  const asked = options.segment?.smooth;
+  const smoothWith = (
+    extra: Record<string, unknown>,
+  ): NonNullable<SegmentOptions['smooth']> =>
+    (asked === false ? false : {
+      ...(typeof asked === 'object' ? asked : {}),
+      ...extra,
+    });
+
+  const keyOptions = { ...options.segment, vocabulary, bassIsStem,
+    ...(bassPitches ? { bassPitches } : {}) };
+  const firstPass = segmentChords(spans, grid.times, {
+    ...keyOptions,
+    smooth: smoothWith({ keyPrior: 0 }),
+  });
+  const key = firstPass.length > 0
+    ? keyFromChords(firstPass.map((segment) => ({
+      chord: segment.chord,
+      // By how long each chord lasts, for the same reason everything else
+      // here is: a bar of C and a passing F#dim7 are not one vote each.
+      weight: Math.max(1e-6, segment.endSec - segment.startSec),
+    })))
+    : keyFromChroma(averageChroma(spans));
+
   onProgress?.(0.85, '코드 매칭');
   const segments = segmentChords(spans, grid.times, {
     ...options.segment,
     vocabulary,
     bassIsStem,
+    smooth: smoothWith(key ? { key: key.key } : {}),
     ...(bassPitches ? { bassPitches } : {}),
   });
 
@@ -122,8 +169,18 @@ export function detectChordsFromAudio(
     grid,
     tuningCents: gram.tuningCents,
     vocabulary,
+    key,
     unsure: segments.filter((s) => s.margin < UNSURE_MARGIN).length,
   };
+}
+
+/** The whole passage's pitch-class distribution — the fallback key evidence. */
+function averageChroma(spans: readonly Float32Array[]): Float32Array {
+  const out = new Float32Array(PITCH_CLASSES);
+  for (const span of spans) {
+    for (let k = 0; k < PITCH_CLASSES; k++) out[k] = (out[k] ?? 0) + (span[k] ?? 0);
+  }
+  return out;
 }
 
 /**
@@ -151,6 +208,14 @@ function spanVotes(
 /** One line for a toast: what was found, and how much to trust it. */
 export function describeReadout(readout: ChordReadout): string {
   const parts = [`코드 ${readout.segments.length}개`];
+  if (readout.key) {
+    // The runner-up is named when it is close, which for a key means "the
+    // relative major or minor", and that is a question a person answers in a
+    // second and a histogram cannot answer at all.
+    parts.push(keyIsAmbiguous(readout.key) && readout.key.alternative
+      ? `${keyName(readout.key.key)} 또는 ${keyName(readout.key.alternative)}`
+      : keyName(readout.key.key));
+  }
   if (readout.grid.fromTempo) {
     parts.push(`${readout.grid.bpm.toFixed(1)} BPM 그리드`);
   } else {
