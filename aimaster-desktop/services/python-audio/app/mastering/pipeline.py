@@ -356,6 +356,7 @@ def _apply_final_tonal_guard(
     applied_corrections: list[str],
     pipeline_warnings: list[dict[str, str]],
     pre_report: dict[str, Any],
+    loudness_policy_reason: str | None = None,
 ) -> dict[str, Any]:
     """Run the final tonal-balance correction pass if needed.
 
@@ -423,6 +424,9 @@ def _apply_final_tonal_guard(
             input_path     = input_path,
             output_path    = output_path,
             pipeline_stages = pipeline_stages,
+            # Carried through, or the re-measured report would drop the field
+            # the first one had and the panel would change after a correction.
+            loudness_policy_reason = loudness_policy_reason,
         )
         log("INFO",
             f"[final-guard] post-correction lowEnergyRatio="
@@ -894,7 +898,12 @@ def run_pipeline(
         log("INFO", f"[pipeline] loudness policy: target {target_lufs:.1f} LUFS "
                     f"({_target_decision.reason})")
     target_lufs = _target_decision.target_lufs
-    gain_stages["loudnessPolicyReason"] = _target_decision.reason
+    # NOT into `gain_stages` — that is a dict of decibels and the report turns
+    # every entry into a float.  Putting this string there raised ValueError
+    # inside `build_gain_staging_report`, which the caller catches and logs as
+    # a warning, so the gain-staging panel came back empty on every job with
+    # nobody the wiser.  It has a parameter of its own now.
+    loudness_policy_reason = _target_decision.reason
     # target_lufs changed → the linear/dynamic loudnorm choice must follow it.
     use_linear_loudnorm = target_lufs <= _LOUDNORM_DYNAMIC_THRESHOLD
 
@@ -1587,6 +1596,7 @@ def run_pipeline(
             input_path     = input_path,
             output_path    = output_path,
             pipeline_stages = gain_stages,
+            loudness_policy_reason = loudness_policy_reason,
         )
         # v3.4.6 — diagnostic spectral table (kpop_loud telephone-sound debug).
         # Logs per-band before/after RMS so we can correlate user complaints
@@ -1621,6 +1631,7 @@ def run_pipeline(
                     applied_corrections=applied_corrections,
                     pipeline_warnings=pipeline_warnings,
                     pre_report=gain_staging_report,
+                    loudness_policy_reason=loudness_policy_reason,
                 )
             except Exception as exc:
                 log("WARN", f"[pipeline] final tonal guard failed: {exc}")

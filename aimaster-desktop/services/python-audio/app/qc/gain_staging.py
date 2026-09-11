@@ -116,6 +116,34 @@ def _measure_bands(file_path: str, max_seconds: float = 60.0) -> dict[str, float
     }
 
 
+def _numeric_stages(pipeline_stages: dict[str, Any]) -> dict[str, float]:
+    """The entries of ``pipeline_stages`` that are actually decibels.
+
+    ``stages`` is a table of dB and its schema says so — six numbers.  This
+    used to be ``{k: round(float(v), 2) for k, v in ...}`` over the whole dict,
+    which is correct right up until somebody records something that is not a
+    number in it.  Somebody did: ``pipeline.py`` wrote the loudness policy's
+    REASON there — the string ``"explicit_target"`` — and ``float()`` raised.
+
+    The caller wraps this in ``except Exception`` and logs a warning, so the
+    report did not crash the job.  It came back ``None``, and the whole
+    gain-staging panel was empty, on EVERY job, silently.  A warning in a log
+    nobody reads is how a feature disappears for a year.
+
+    So: anything that is not a finite number is skipped rather than fatal.
+    The reason has a field of its own now — see ``loudness_policy_reason`` —
+    and this is the guard that keeps the next one from doing it again.
+    """
+    out: dict[str, float] = {}
+    for key, value in pipeline_stages.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if not math.isfinite(float(value)):
+            continue
+        out[key] = round(float(value), 2)
+    return out
+
+
 def build_gain_staging_report(
     *,
     input_metrics: dict[str, Any] | None,
@@ -123,6 +151,7 @@ def build_gain_staging_report(
     input_path: str,
     output_path: str,
     pipeline_stages: dict[str, float],
+    loudness_policy_reason: str | None = None,
 ) -> dict[str, Any]:
     """
     Build a single dict capturing every dB added during the mastering job:
@@ -346,7 +375,8 @@ def build_gain_staging_report(
         _bump("warn")
 
     # Total applied gain
-    total = sum(float(pipeline_stages.get(k, 0.0)) for k in (
+    stages = _numeric_stages(pipeline_stages)
+    total = sum(stages.get(k, 0.0) for k in (
         "compressorMakeupDb", "preGainDb", "limiterInputGainDb",
         "correctionGainDb", "ispCorrectionDb",
     ))
@@ -361,9 +391,12 @@ def build_gain_staging_report(
 
     return {
         "stages": {
-            **{k: round(float(v), 2) for k, v in pipeline_stages.items()},
+            **stages,
             "totalAppliedGainDb": round(total, 2),
         },
+        # Why the loudness target ended up where it did.  A string, so it lives
+        # here rather than in `stages`, which is a table of decibels.
+        "loudnessPolicyReason": loudness_policy_reason,
         "bandsBefore":        bands_before,
         "bandsAfter":         bands_after,
         "bandDeltaDb":        band_delta,

@@ -511,6 +511,16 @@ export interface GainStagingReport {
   issues:             string[];
   recommendations:    string[];
   available:          boolean;
+  /**
+   * Why the loudness target ended up where it did — 'explicit_target',
+   * 'loud_style', 'no_input_measurement' and so on.
+   *
+   * A string, so it is here and not in `stages`, which is a table of
+   * decibels.  It was briefly written into `stages` instead, and since the
+   * report turns every entry there into a float, that raised and the whole
+   * report came back empty on every job.
+   */
+  loudnessPolicyReason?: string | null;
 }
 
 // ── Debug-quality system shared types ────────────────────────────────────────
