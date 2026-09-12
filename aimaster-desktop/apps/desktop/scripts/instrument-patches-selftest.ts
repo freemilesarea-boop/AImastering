@@ -409,6 +409,35 @@ async function main(): Promise<void> {
     }
   });
 
+  await check('no patch is loud by accident either', () => {
+    // The asymmetric one, and the asymmetry is the point.  A patch being
+    // quiet costs the user a fader move; a patch being much LOUDER than the
+    // instrument was calibrated at spends the headroom the calibration
+    // exists to guarantee, and it does it without clipping — density, not
+    // peak, so the ceiling check never sees it.
+    //
+    // Measured against the init patch because that IS the calibrated sound.
+    // Written after an FM bass came out 10.2 dB above it — a 1:1 ratio with
+    // the pickup driven hard is simply dense — which nothing in the suite
+    // noticed, because the bank's total spread was still inside every bound
+    // there was.
+    //
+    // 9 dB, and the first attempt at 7 is why it is written down: that
+    // flagged the poly synth's organ at +7.7, which is not an accident but
+    // an ENVELOPE — a patch that holds at full level against an init patch
+    // that decays, the same difference this suite already refuses to flatten
+    // elsewhere.  So the bound sits between the loudest legitimate patch
+    // (7.7) and the accident (10.2), with room on both sides.
+    for (const id of INSTRUMENT_IDS) {
+      const rows = loud.filter((r) => r.id === id);
+      const init = rows.find((r) => r.patch === 'init')!;
+      for (const row of rows) {
+        assert(row.lufs - init.lufs <= 9,
+          `${id}/${row.patch} is ${(row.lufs - init.lufs).toFixed(1)} dB above its init patch`);
+      }
+    }
+  });
+
   await check('no patch is quiet by accident', () => {
     // The loose one, and deliberately loose: it exists to catch a patch that
     // is 30 dB down because a decay was typed with an extra zero, not to

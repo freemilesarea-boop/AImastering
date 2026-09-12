@@ -198,6 +198,55 @@ const EPIANO: InstrumentPatch[] = [
     note: '배음이 거의 없는 순한 FM — 나무를 때린 소리에 가깝습니다',
     params: { index: 1.1, decay: 0.5, release: 0.12, bark: 0.3,
       tine: 0.08, pickup: 0.02 } },
+
+  // The corners the first ten left empty.  Two operators is not many, but
+  // the RATIO is where almost all of an FM instrument's identity lives, and
+  // the bank above only ever used 1.5 to 7 — integers mostly, which is the
+  // half of the space that sounds like a piano.  Below 1 the modulator is
+  // sub-harmonic and growls; a half-integer is inharmonic and rings like
+  // metal; a high ratio with a LOW index is a bell rather than a bark.
+  { id: 'sub-rhodes', name: 'Sub Rhodes', category: 'keys',
+    note: '모듈레이터가 음보다 한 옥타브 아래 — 으르렁거리는 로즈',
+    params: { ratio: 0.5, index: 4, decay: 2.4, release: 0.5, bark: 0.6,
+      tine: 0.2, pickup: 0.45 } },
+  { id: 'dyno', name: 'Dyno', category: 'keys',
+    note: '타인을 끝까지 올린 개조 로즈 — 80년대 발라드의 그 반짝임',
+    params: { index: 6.5, decay: 1.8, release: 0.4, bark: 0.85,
+      tine: 1, pickup: 0.5 } },
+  { id: 'tremolo-wide', name: 'Wide Tremolo', category: 'keys',
+    note: '느리고 깊은 트레몰로 — 수트케이스보다 훨씬 넓게 흔듭니다',
+    params: { index: 2.6, decay: 3, bark: 0.5, pickup: 0.4,
+      tremRate: 2.2, tremDepth: 0.95 } },
+  { id: 'soft-keys', name: 'Soft Keys', category: 'keys',
+    note: '인덱스를 거의 0 으로 — 배음이 없어 노래 뒤에 숨습니다',
+    params: { ratio: 2, index: 1.3, decay: 5.5, release: 2.6, bark: 0.15,
+      tine: 0.05, pickup: 0.25 } },
+  { id: 'metal-tine', name: 'Metal Tine', category: 'keys',
+    note: '인덱스와 픽업을 함께 올렸습니다 — 금속을 때린 쪽에 가깝습니다',
+    params: { ratio: 3.5, index: 8.5, decay: 1, release: 0.15, bark: 0.75,
+      tine: 1, pickup: 0.95 } },
+  { id: 'harpsi', name: 'Harpsichord', category: 'keys',
+    note: '짧고 날카롭게 뜯긴 소리 — 릴리스가 0.06 초입니다',
+    params: { ratio: 4.5, index: 5.5, decay: 0.75, release: 0.06, bark: 0.95,
+      tine: 0.9, pickup: 0.75 } },
+  { id: 'fm-bass', name: 'FM Bass', category: 'bass',
+    note: '1:1 비율에 픽업을 세게 — 왼손으로 치는 베이스',
+    // Trimmed: a 1:1 ratio driven into the pickup is the densest thing this
+    // instrument makes, and it came out 10 dB above the calibrated init.
+    params: { ratio: 1, index: 3.5, decay: 0.8, release: 0.12, bark: 0.5,
+      tine: 0.05, pickup: 0.9, level: 0.4 } },
+  { id: 'glass-keys', name: 'Glass Keys', category: 'pluck',
+    note: '5.5 라는 반정수 비율을 짧게 끊습니다 — 배음이 어긋난 채로 사라집니다',
+    params: { ratio: 5.5, index: 3.8, decay: 1.2, release: 0.3, bark: 0.55,
+      tine: 0.25, pickup: 0.2 } },
+  { id: 'tubular', name: 'Tubular', category: 'pluck',
+    note: '높은 비율에 낮은 인덱스 — 짖지 않고 종처럼 오래 남습니다',
+    params: { ratio: 7.5, index: 1.6, decay: 5.5, release: 2.2, bark: 0.15,
+      tine: 0.85, pickup: 0.03 } },
+  { id: 'celeste', name: 'Celeste', category: 'pluck',
+    note: '가장 높은 비율에 거의 없는 인덱스 — 작고 맑은 종',
+    params: { ratio: 8, index: 0.8, decay: 2, release: 0.6, bark: 0.1,
+      tine: 0.3, pickup: 0.02 } },
 ];
 
 // ── The guitars ──────────────────────────────────────────────────────────────
