@@ -43,6 +43,10 @@ import {
   DRUM_PATTERNS, describePattern, findPattern, patternFill, patternNotes,
 } from '../../daw/engine/drum-patterns.js';
 import { exportMidiFile } from '../../daw/io/midi-file.js';
+import {
+  CATEGORY_LABEL, categoriesFor, patchParams, patchesFor,
+} from '../../daw/engine/instrument-patches.js';
+import { findInstrument } from '../../daw/engine/instruments.js';
 
 export default function InstrumentRack({ onClose }: { onClose: () => void }) {
   const session = useDawStore((s) => s.session);
@@ -61,6 +65,8 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
   // that names it needs a local reason to re-render after a load.
   const [libName, setLibName] = useState<string | null>(loadedLibrary()?.set.name ?? null);
   const [patternId, setPatternId] = useState(DRUM_PATTERNS[0]?.id ?? '');
+  /** Which slot has its parameters open.  One at a time — 21 knobs is a page. */
+  const [openSlot, setOpenSlot] = useState<string | null>(null);
 
   const slots = useMemo(() => rackSlots(session), [session]);
 
@@ -116,6 +122,40 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
     })));
     notify(describeKitPreset(genre));
   }, [apply, notify]);
+
+  /**
+   * Load a factory patch onto a slot.
+   *
+   * Whole, not merged — the same rule the kit picker follows, and for the
+   * same reason: a preset is a set of decisions, and half of one laid over
+   * half of another is a sound nobody designed.
+   */
+  const setPatch = useCallback((trackId: string, instrumentId: string, patchId: string) => {
+    apply((s) => updateTrack(s, trackId, (t) => ({
+      ...t, instrumentParams: patchParams(instrumentId, patchId),
+    })));
+    const patch = patchesFor(instrumentId).find((p) => p.id === patchId);
+    notify(patch ? `${patch.name} — ${patch.note}` : '패치를 불러왔습니다');
+  }, [apply, notify]);
+
+  /**
+   * Move one parameter.
+   *
+   * Transient while the pointer is down and committed on release, so a drag
+   * across a slider lands as ONE undo step rather than as sixty.  The engine
+   * reads these at note-on, so the next note is what you hear the change on.
+   */
+  const dragParam = useCallback((trackId: string, instrumentId: string, id: string, value: number) => {
+    useDawStore.getState().applyTransient((s) => updateTrack(s, trackId, (t) => ({
+      ...t,
+      // Filled out from the instrument's defaults on first touch: a track
+      // that has never been edited stores nothing, and writing a lone key
+      // into that would leave the rest implicit and the patch unreadable.
+      instrumentParams: {
+        ...patchParams(instrumentId, 'init'), ...t.instrumentParams, [id]: value,
+      },
+    })));
+  }, []);
 
   /** Open a slot's part — or make one first, so the button is never dead. */
   const editSlot = useCallback((trackId: string) => {
@@ -291,6 +331,48 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               <Small onClick={() => { void exportSlot(slot.trackId); }}>MIDI</Small>
             </div>
 
+            {/* Every melodic instrument gets a patch picker.  The kit does
+                not: its presets are the eleven genre kits below, which are a
+                patch per DRUM rather than one per instrument. */}
+            {patchesFor(slot.instrumentId).length > 0 && (
+              <div className="flex items-center gap-2 mt-1.5 pt-1.5"
+                   style={{ borderTop: `1px solid ${premium.surface.hairline}` }}>
+                <span style={{ fontSize: 9, color: premium.text.muted }}>패치</span>
+                <select
+                  // Empty value = 편집됨.  The picker is told what the numbers
+                  // ARE rather than what was last clicked, so moving a knob
+                  // shows it immediately and no stored state can disagree.
+                  value={slot.patch?.id ?? ''}
+                  onChange={(e) => setPatch(slot.trackId, slot.instrumentId, e.target.value)}
+                  className="h-6 px-1.5 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-200"
+                >
+                  {slot.patch === null && <option value="">편집됨</option>}
+                  {categoriesFor(slot.instrumentId).map((c) => (
+                    <optgroup key={c} label={CATEGORY_LABEL[c]}>
+                      {patchesFor(slot.instrumentId).filter((p) => p.category === c).map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <Small onClick={() => setOpenSlot(openSlot === slot.trackId ? null : slot.trackId)}>
+                  {openSlot === slot.trackId ? '노브 닫기' : '노브'}
+                </Small>
+                <span className="flex-1 truncate" style={{ fontSize: 10, color: premium.text.muted }}>
+                  {slot.patch?.note ?? '패치에서 값을 바꿨습니다 — 다시 고르면 되돌아갑니다'}
+                </span>
+              </div>
+            )}
+
+            {openSlot === slot.trackId && (
+              <ParamKnobs
+                instrumentId={slot.instrumentId}
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
             {/* Drums get a second line: what the kit SOUNDS like, and what it
                 PLAYS.  Both are per-genre and they are different questions —
                 a 힙합 kit playing a 팝 beat is a real and useful thing. */}
@@ -334,6 +416,63 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Every parameter of one instrument, as sliders.
+ *
+ * Until this existed, nothing in the app wrote `instrumentParams` except the
+ * kit picker — so every instrument ran on its defaults and not one of its
+ * knobs was reachable.  A patch is a starting point; without these it would
+ * be the only point.
+ *
+ * The value shown is the instrument's default until the track stores
+ * something, which is what the engine does too — so the slider reads what
+ * will be played rather than what happens to be on the track.
+ */
+function ParamKnobs({ instrumentId, params, onDrag, onCommit }: {
+  instrumentId: string;
+  params: Readonly<Record<string, number>>;
+  onDrag: (id: string, value: number) => void;
+  onCommit: () => void;
+}) {
+  const instrument = findInstrument(instrumentId);
+  if (!instrument) return null;
+  return (
+    <div className="grid gap-x-3 gap-y-1 mt-1.5 pt-1.5"
+         style={{
+           gridTemplateColumns: 'repeat(auto-fill, minmax(168px, 1fr))',
+           borderTop: `1px solid ${premium.surface.hairline}`,
+         }}>
+      {instrument.params.map((p) => {
+        const value = params[p.id] ?? p.default;
+        return (
+          <label key={p.id} className="flex items-center gap-1.5" title={`${p.min} … ${p.max} ${p.unit}`}>
+            <span className="w-[52px] shrink-0 truncate"
+                  style={{ fontSize: 9, color: premium.text.muted }}>{p.name}</span>
+            <input
+              type="range"
+              min={p.min} max={p.max}
+              // A hundred steps across whatever the range happens to be, so a
+              // 0…1 control and a 200…12000 Hz one both move usefully.
+              step={(p.max - p.min) / 100}
+              value={value}
+              onChange={(e) => onDrag(p.id, Number(e.target.value))}
+              // The drag is transient; THIS is what lands it in the undo
+              // stack, once, however far the pointer travelled.
+              onPointerUp={onCommit}
+              onKeyUp={onCommit}
+              className="flex-1 min-w-0 h-1 accent-zinc-400"
+            />
+            <span className="w-[44px] shrink-0 text-right tabular-nums"
+                  style={{ fontSize: 9, color: premium.text.primary }}>
+              {value >= 1000 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(3)}
+            </span>
+          </label>
+        );
+      })}
     </div>
   );
 }

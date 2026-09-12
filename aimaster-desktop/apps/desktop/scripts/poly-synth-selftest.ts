@@ -368,6 +368,32 @@ async function main(): Promise<void> {
     }
   });
 
+  await check('the filter cannot be modulated past Nyquist', async () => {
+    // A biquad has no coefficients above Nyquist.  `frequency` is clamped,
+    // but the envelope and the LFO write CENTS to `detune`, and cents
+    // multiply — so a bright cutoff with a positive envelope walks straight
+    // past it.
+    //
+    // What that looked like: the filter went non-finite, the samples reached
+    // the drive shaper's oversampler, and the renderer removed the node from
+    // the graph mid-render.  The patch played SILENCE, and the only evidence
+    // was a line on stderr that no test reads.  Hence: assert it sounds.
+    const extremes: Array<Record<string, number>> = [
+      { cutoffHz: 12000, fegAmount: 6, fegDecay: 0.4, drive: 0.7 },
+      { cutoffHz: 12000, lfoRate: 4, lfoFilter: 4, drive: 0.7 },
+      { cutoffHz: 5200, fegAmount: 1.6, lfoRate: 4, lfoFilter: 4, drive: 0.7, resonance: 8 },
+      { cutoffHz: 12000, fegAmount: 6, lfoRate: 6, lfoFilter: 4, resonance: 12, drive: 1 },
+    ];
+    for (const over of extremes) {
+      const x = await play({ ...over, sustain: 1 });
+      for (let i = 0; i < x.length; i += 17) {
+        assert(Number.isFinite(x[i]!), `${JSON.stringify(over)} rendered a non-finite sample`);
+      }
+      assert(db(rms(x, SR / 4, SR / 2)) > -60,
+        `${JSON.stringify(over)} rendered silence — a node was dropped from the graph`);
+    }
+  });
+
   await check('every parameter the synth advertises is one it reads', async () => {
     // A parameter in the list that the voice never looks at is a knob that
     // does nothing, and the rack draws it exactly like the ones that work.

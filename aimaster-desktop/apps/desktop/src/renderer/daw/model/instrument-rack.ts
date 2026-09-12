@@ -23,6 +23,7 @@ import { partClock } from './note-time.js';
 import { tempoMapOf } from './tempo-map.js';
 import type { MidiNote } from './midi.js';
 import { kitGenreOf } from '../engine/drum-presets.js';
+import { activePatch, type InstrumentPatch } from '../engine/instrument-patches.js';
 import { GENRE_LABEL, type GenreId } from '../engine/plugin-presets-genre.js';
 
 export interface RackSlot {
@@ -41,6 +42,18 @@ export interface RackSlot {
   frozen: boolean;
   /** For a drum slot: the genre kit loaded on it, or null for the built-in. */
   kit: GenreId | null;
+  /** What the track stores — empty means "the instrument's defaults". */
+  params: Readonly<Record<string, number>>;
+  /**
+   * The factory patch these parameters ARE, or null once they have been
+   * edited away from all of them.
+   *
+   * Derived here rather than stored on the track, so it cannot go stale and
+   * cannot disagree with what the engine will actually play — see
+   * instrument-patches.ts.  Computed in the model rather than in the rack
+   * component so that a test can ask the question without rendering React.
+   */
+  patch: InstrumentPatch | null;
 }
 
 /** Every instrument track, in session order. */
@@ -49,19 +62,23 @@ export function rackSlots(session: DawSession): RackSlot[] {
   for (const track of session.tracks) {
     if (track.kind !== 'instrument') continue;
     const clips = trackClips(track).filter((c) => c.kind === 'midi');
+    const instrumentId = track.instrumentId ?? 'polysynth';
+    const params = track.instrumentParams ?? {};
     out.push({
       index: out.length + 1,
       trackId: track.id,
       trackName: track.name,
       // A track whose instrument was never set still PLAYS the default, so
       // the rack shows the default rather than an empty slot that lies.
-      instrumentId: track.instrumentId ?? 'polysynth',
+      instrumentId,
       parts: clips.length,
       notes: clips.reduce((n, c) => n + (c.notes?.length ?? 0), 0),
       firstPartId: clips[0]?.id ?? null,
       muted: track.mute,
       frozen: track.frozen !== null,
       kit: kitGenreOf(track.instrumentParams?.['kit']),
+      params,
+      patch: activePatch(instrumentId, params),
     });
   }
   return out;

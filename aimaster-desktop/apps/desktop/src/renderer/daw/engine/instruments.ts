@@ -514,6 +514,15 @@ function pluckVoice(
 const SYNTH_WAVES = ['saw', 'square', 'pulse', 'triangle', 'sine'] as const;
 type SynthWave = typeof SYNTH_WAVES[number];
 
+/**
+ * The highest a filter cutoff is allowed to reach.
+ *
+ * Taken with the sample rate: a biquad's coefficients are only defined below
+ * Nyquist, and the offline bounce can run at a different rate from the
+ * preview.
+ */
+const FILTER_CEILING_HZ = 18_000;
+
 /** Most voices one note may stack.  Seven is already seven oscillators. */
 const MAX_UNISON = 7;
 
@@ -756,6 +765,22 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       const baseCutoff = (params['cutoffHz'] ?? 2800) * Math.pow(freq / 261.6256, keyTrack);
       const velocityCutoff = baseCutoff * (0.45 + 0.85 * note.velocity);
 
+      // How far the modulation may push the cutoff.
+      //
+      // `frequency` is clamped below, but the envelope and the LFO both write
+      // CENTS to `detune`, and cents are unclamped — so a bright patch with a
+      // positive envelope multiplies its way straight past Nyquist.  A biquad
+      // has no coefficients up there: it went non-finite, the samples reached
+      // the drive shaper's oversampler, and the whole node was removed from
+      // the graph mid-render.  Which is to say the patch went silent and the
+      // only sign was a line on stderr.
+      //
+      // So the two modulators share a budget, measured from the highest the
+      // cutoff can already be driven by velocity and the timbre curve.
+      const ceilingHz = Math.min(FILTER_CEILING_HZ, ctx.sampleRate * 0.45);
+      const reachableHz = Math.min(ceilingHz, velocityCutoff * 2.2);
+      const headroomCents = 1200 * Math.log2(Math.max(1, ceilingHz / reachableHz));
+
       const fegAmount = params['fegAmount'] ?? 0;
       if (Math.abs(fegAmount) > 0.001) {
         // On `detune`, not on `frequency`.  Frequency already carries the MPE
@@ -765,14 +790,15 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         // the right unit anyway: an octave is 1200 of them at any pitch.
         const fa = Math.max(0.001, params['fegAttack'] ?? 0.005);
         const fd = Math.max(0.02, params['fegDecay'] ?? 0.4);
+        const peakCents = Math.max(-4800, Math.min(fegAmount * 1200, headroomCents));
         filter.detune.setValueAtTime(0, start);
-        filter.detune.linearRampToValueAtTime(fegAmount * 1200, start + fa);
+        filter.detune.linearRampToValueAtTime(peakCents, start + fa);
         filter.detune.linearRampToValueAtTime(0, start + fa + fd);
       }
 
       scheduleCurve(
         filter.frequency, note, { kind: 'timbre' }, when, durationSec,
-        (v) => Math.min(18_000, velocityCutoff * (0.6 + 1.6 * v)), 0.5,
+        (v) => Math.min(ceilingHz, velocityCutoff * (0.6 + 1.6 * v)), 0.5,
       );
       scheduleCurve(
         amp.gain, note, { kind: 'pressure' }, when, durationSec,
@@ -799,8 +825,12 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         }
         const filterDepth = params['lfoFilter'] ?? 0;
         if (filterDepth > 0.001) {
+          // What the envelope did not spend.  The LFO is the one that gives
+          // way, because an envelope that is cut short changes the patch's
+          // shape while a wobble that is narrower is still a wobble.
+          const spent = Math.max(0, Math.min((params['fegAmount'] ?? 0) * 1200, headroomCents));
           const g = ctx.createGain();
-          g.gain.value = filterDepth * 1200;
+          g.gain.value = Math.min(filterDepth * 1200, Math.max(0, headroomCents - spent));
           lfo.connect(g).connect(filter.detune);
         }
       }

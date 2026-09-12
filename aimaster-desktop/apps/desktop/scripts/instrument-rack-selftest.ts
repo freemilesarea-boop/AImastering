@@ -23,8 +23,9 @@ import {
   trackNotesInBeats,
 } from '../src/renderer/daw/model/instrument-rack.js';
 import {
-  addTrack, createMidiPart, createSession, createTrack, updateClips,
+  addTrack, createMidiPart, createSession, createTrack, updateClips, updateTrack,
 } from '../src/renderer/daw/model/session-ops.js';
+import { patchParams } from '../src/renderer/daw/engine/instrument-patches.js';
 import { createNote } from '../src/renderer/daw/model/midi.js';
 import { exportMidiFile, importMidiFile } from '../src/renderer/daw/io/midi-file.js';
 import type { DawSession } from '../src/renderer/daw/model/types.js';
@@ -241,6 +242,53 @@ check('MIDI export is reachable from the app, not just from a test', () => {
   assert(/'daw:midi-save'/.test(preload), 'daw:midi-save is not on the preload allowlist');
   const main = source('main/ipc/fileHandlers.ts');
   assert(/ipc\.handle\('daw:midi-save'/.test(main), 'no main-process handler for daw:midi-save');
+});
+
+check('a slot reports which patch it is on, and says so when it is not', () => {
+  // The patch is DERIVED from the parameters rather than stored beside them
+  // (see instrument-patches.ts), so this is the check that the derivation is
+  // actually wired to what the rack draws.
+  let s = createSession('Patches', 48_000);
+  const track = createTrack('Synth 1', 'instrument', { instrumentId: 'polysynth' });
+  s = addTrack(s, track);
+
+  // Never touched: the defaults, which are the init patch.
+  assert(rackSlots(s)[0]?.patch?.id === 'init',
+    `a fresh slot reports ${String(rackSlots(s)[0]?.patch?.id)}`);
+
+  s = updateTrack(s, track.id, (t) => ({
+    ...t, instrumentParams: patchParams('polysynth', 'warm-pad'),
+  }));
+  assert(rackSlots(s)[0]?.patch?.id === 'warm-pad',
+    `after loading warm-pad the slot reports ${String(rackSlots(s)[0]?.patch?.id)}`);
+  assert(rackSlots(s)[0]?.params['attack'] === patchParams('polysynth', 'warm-pad')['attack'],
+    'the slot does not carry the parameters the engine will play');
+
+  // One knob moved, and it must stop claiming the patch — this is what the
+  // picker shows as 편집됨, and a stored patch id could not have known.
+  s = updateTrack(s, track.id, (t) => ({
+    ...t, instrumentParams: { ...t.instrumentParams, cutoffHz: 5000 },
+  }));
+  assert(rackSlots(s)[0]?.patch === null,
+    `after an edit the slot still claims ${String(rackSlots(s)[0]?.patch?.id)}`);
+});
+
+check('the rack can load a patch and move a knob', () => {
+  const rack = source('renderer/components/daw/InstrumentRack.tsx');
+  assert(/patchesFor\(/.test(rack), 'the rack never enumerates patches');
+  assert(/patchParams\(/.test(rack), 'nothing in the rack applies a patch');
+  assert(/categoriesFor\(/.test(rack), 'the picker is not grouped by category');
+  // Hardcoding the categories here is how the list would go stale the first
+  // time one is added — the same trap the instrument picker avoids.
+  assert(!/'bass'\s*,\s*'lead'/.test(rack), 'the rack hardcodes a category list');
+  assert(/type="range"/.test(rack), 'the rack has no parameter controls');
+  // A drag has to land as ONE undo step, which means transient while the
+  // pointer is down and committed on release.  Both halves or neither.
+  assert(/applyTransient\(/.test(rack), 'a knob drag goes straight into the undo stack');
+  assert(/commitEdit\(\)/.test(rack), 'a knob drag is never committed');
+  assert(/onPointerUp=/.test(rack), 'nothing ends the drag');
+  // The picker must read the DERIVED patch, not a stored id.
+  assert(/slot\.patch\?\.id/.test(rack), 'the picker does not read the derived patch');
 });
 
 console.log('\n=== Instrument rack — F11, and the way out to a .mid ===');
