@@ -90,9 +90,9 @@ export const CALIBRATED_LEVEL = 0.7;
 export const INSTRUMENT_TRIM = {
   polysynth: 0.1326,
   epiano: 0.2276,
-  agtr: 0.4783,
-  egtr: 0.3022,
-  drumkit: 0.5526,
+  agtr: 0.4307,
+  egtr: 0.2709,
+  drumkit: 0.5640,
   sampler: 1,
 } as const;
 

@@ -508,8 +508,29 @@ function pluckVoice(
   // two patches.  Nylon is not a darker steel string; it is a string that
   // loses its highs faster and starts with fewer of them.
   const damping = Math.min(0.9999, Math.max(0.97, params['damp'] ?? tuning.damping));
-  const brightness = Math.min(1, Math.max(0, params['bright'] ?? tuning.brightness));
   const pickPos = params['pick'] ?? tuning.pick;
+
+  // How hard the string was actually plucked.
+  //
+  // Measured before this existed: normalised for level, a guitar plucked at a
+  // quarter velocity and at full velocity differed by 0.002 — a hundred times
+  // less than the poly synth, three hundred times less than the Rhodes, and
+  // against the kick's 0.620 it is nothing at all.  Velocity was a volume
+  // knob, which on a plucked instrument is the wrong knob: a string displaced
+  // further is released from a SHARPER corner, and a sharper corner is more
+  // high partials.  That is the whole difference between a strum and a
+  // caress, and none of it was there.
+  //
+  // `brightness` is the excitation's low-pass, which is exactly that corner —
+  // so velocity belongs on it and not on a filter further down the chain,
+  // where it would be an amp's tone control rather than a player's hand.
+  //
+  // It does not reach zero at zero velocity: a string touched at all still
+  // rings, and the floor is what keeps a ghost note from vanishing into a
+  // thud.
+  const strike = 0.25 + 0.75 * note.velocity;
+  const brightness = Math.min(1, Math.max(0,
+    (params['bright'] ?? tuning.brightness) * strike));
   const src = ctx.createBufferSource();
   src.buffer = stringBuffer(ctx, freq, ring, damping, brightness, pickPos, noteSeed(note));
 

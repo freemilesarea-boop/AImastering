@@ -48,6 +48,30 @@ async function renderStereo(
   return [Float32Array.from(buf.getChannelData(0)), Float32Array.from(buf.getChannelData(1))];
 }
 
+/** One held note at a given velocity, for the questions about the hand. */
+async function renderStereo2(id: string, pitch: number, velocity: number): Promise<Float32Array[]> {
+  const inst = findInstrument(id)!;
+  const ctx = new OfflineAudioContext(2, STEREO_SR * 3, STEREO_SR);
+  inst.playNote({
+    ctx: ctx as unknown as BaseAudioContext,
+    destination: ctx.destination as unknown as AudioNode,
+    note: createNote({ pitch, velocity, startBeat: 0, durationBeat: 4 }),
+    config: DEFAULT_MIDI_CONFIG, when: 0, durationSec: 2,
+    params: defaultInstrumentParams(id),
+  });
+  const buf = await ctx.startRendering();
+  return [Float32Array.from(buf.getChannelData(0)), Float32Array.from(buf.getChannelData(1))];
+}
+
+/** Amplitude at one frequency — enough for a spectral shape. */
+function goertzel(x: Float32Array, freq: number): number {
+  const w = (2 * Math.PI * freq) / STEREO_SR;
+  const c = 2 * Math.cos(w);
+  let s1 = 0, s2 = 0;
+  for (let i = 0; i < x.length; i++) { const s = x[i]! + c * s1 - s2; s2 = s1; s1 = s; }
+  return Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - c * s1 * s2)) / x.length;
+}
+
 /** Side energy against total, in dB.  −inf is a signal with no width at all. */
 async function sideDb(id: string, pitch: number, over: Record<string, number>): Promise<number> {
   const [l, r] = await renderStereo(id, pitch, over) as [Float32Array, Float32Array];
@@ -306,6 +330,43 @@ check('width is given only where there are two sources', async () => {
     } else {
       assert(side < -60, `${id} (${label}) came out at ${side.toFixed(1)} dB of side — it is one source`);
     }
+  }
+});
+
+check('plucking harder is a brighter string, not a louder one', async () => {
+  // Measured before this was true: normalised for level, a guitar plucked at
+  // a quarter velocity and at full velocity differed by 0.002 — against the
+  // poly synth's 0.024, the Rhodes' 0.347 and the kick's 0.620.  Velocity was
+  // a volume knob, which on a plucked instrument is the wrong knob.
+  //
+  // A string displaced further is released from a SHARPER corner, and a
+  // sharper corner is more high partials.  That is the difference between a
+  // strum and a caress, and it belongs on the EXCITATION — on the string
+  // model's `brightness`, not on a filter further down the chain, where it
+  // would be an amp's tone control rather than a player's hand.
+  //
+  // Floor 0.04: the two guitars now measure 0.123 and 0.089 on this helper,
+  // against 0.002 and 0.005 before, and the drum kit's weakest piece — a
+  // crash, which is pure noise and has the least to answer with — sits at
+  // 0.096 under the same kind of check.
+  const shape = async (id: string, velocity: number): Promise<number[]> => {
+    const [l, r] = await renderStereo2(id, 52, velocity);
+    const mono = new Float32Array(l!.length);
+    for (let i = 0; i < mono.length; i++) mono[i] = (l![i]! + r![i]!) / 2;
+    const out: number[] = [];
+    for (let i = 0; i < 22; i++) {
+      const f = 50 * Math.pow(2, i / 2.2);
+      out.push(f >= STEREO_SR / 2 ? 0 : goertzel(mono, f));
+    }
+    const total = out.reduce((a, b) => a + b, 0) || 1;
+    return out.map((v) => v / total);
+  };
+  for (const id of ['agtr', 'egtr']) {
+    const soft = await shape(id, 0.25), hard = await shape(id, 1);
+    let d = 0;
+    for (let i = 0; i < soft.length; i++) d += Math.abs(soft[i]! - hard[i]!);
+    assert(d > 0.04,
+      `${id}: soft and hard differ by ${d.toFixed(3)} once levelled — velocity is a volume knob`);
   }
 });
 
