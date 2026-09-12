@@ -23,16 +23,77 @@
  * Run via:  pnpm --filter @aimaster/desktop test:instruments
  */
 
+import { OfflineAudioContext } from 'node-web-audio-api';
+(globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 import { INSTRUMENTS, findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
 import { pluckedString, stringDelay } from '../src/renderer/daw/engine/string-model.js';
+import { createNote, DEFAULT_MIDI_CONFIG } from '../src/renderer/daw/model/midi.js';
+
+const STEREO_SR = 48_000;
+
+/** One held note as two channels, through the real voice. */
+async function renderStereo(
+  id: string, pitch: number, over: Record<string, number>,
+): Promise<Float32Array[]> {
+  const inst = findInstrument(id)!;
+  const ctx = new OfflineAudioContext(2, STEREO_SR * 2, STEREO_SR);
+  inst.playNote({
+    ctx: ctx as unknown as BaseAudioContext,
+    destination: ctx.destination as unknown as AudioNode,
+    note: createNote({ pitch, velocity: 0.85, startBeat: 0, durationBeat: 4 }),
+    config: DEFAULT_MIDI_CONFIG, when: 0, durationSec: 1.6,
+    params: { ...defaultInstrumentParams(id), ...over },
+  });
+  const buf = await ctx.startRendering();
+  return [Float32Array.from(buf.getChannelData(0)), Float32Array.from(buf.getChannelData(1))];
+}
+
+/** Side energy against total, in dB.  −inf is a signal with no width at all. */
+async function sideDb(id: string, pitch: number, over: Record<string, number>): Promise<number> {
+  const [l, r] = await renderStereo(id, pitch, over) as [Float32Array, Float32Array];
+  let side = 0, total = 0;
+  for (let i = 0; i < l.length; i++) {
+    side += (l[i]! - r[i]!) ** 2;
+    total += l[i]! ** 2 + r[i]! ** 2;
+  }
+  return total > 0 ? 10 * Math.log10(Math.max(1e-30, side / total)) : -Infinity;
+}
+
+/** Total power across BOTH channels — what a placement must not change. */
+async function totalDb(id: string, pitch: number, over: Record<string, number>): Promise<number> {
+  const ch = await renderStereo(id, pitch, over);
+  let sum = 0, n = 0;
+  for (const c of ch) { for (const v of c) sum += v * v; n += c.length; }
+  return 10 * Math.log10(Math.max(1e-30, sum / Math.max(1, n)));
+}
 import { LEGACY_LEVEL_DEFAULTS } from '../src/renderer/daw/engine/instrument-level.js';
 import { migrateSession } from '../src/renderer/daw/model/session-migrate.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
-function check(name: string, fn: () => void): void {
-  try { fn(); results.push({ name, pass: true, detail: '' }); }
-  catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+/**
+ * Run a check now if it is synchronous, or queue it if it is not.
+ *
+ * The stereo checks have to RENDER, and the rest of this file was written
+ * before anything here did.  Queueing rather than converting every check
+ * keeps the sync ones reading as they did.
+ */
+const pending: Array<Promise<void>> = [];
+function check(name: string, fn: () => void | Promise<void>): void {
+  try {
+    const out = fn();
+    if (out instanceof Promise) {
+      pending.push(out
+        .then(() => { results.push({ name, pass: true, detail: '' }); })
+        .catch((e: unknown) => {
+          results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) });
+        }));
+      return;
+    }
+    results.push({ name, pass: true, detail: '' });
+  } catch (e) {
+    results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) });
+  }
 }
 function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
 
@@ -214,8 +275,83 @@ check('Level is the one default allowed to move, and only behind a migration', (
     'the migration lost the parameters it was not asked to touch');
 });
 
-console.log('\n=== Instruments — a Rhodes and two guitars ===');
-for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ' — ' + r.detail : ''}`);
-const bad = results.filter((r) => !r.pass).length;
-console.log(`\n${results.length - bad}/${results.length} passed${bad ? `, ${bad} FAILED` : ''}`);
-if (bad) process.exit(1);
+// ── Where the sound sits ────────────────────────────────────────────────────
+
+check('width is given only where there are two sources', async () => {
+  // Measured before any of this: every melodic instrument's side channel sat
+  // at negative infinity.  Dead mono is a real quality gap against any
+  // commercial library — and the fix is NOT to widen everything.  One
+  // plucked string is one source, and spreading it would be inventing a room
+  // rather than modelling an instrument.  So:
+  //
+  //   one guitar          mono           two strings (12-string, double)  wide
+  //   a Rhodes on its DI  mono           a suitcase's tremolo             wide
+  //
+  // A suitcase's tremolo IS a pan — the cabinet has two speakers and the
+  // oscillator moves the signal between them — which is why one sounds
+  // enormous next to a stage piano through the same amp.  Modelling it as
+  // amplitude alone got the wobble and threw away the reason for it.
+  const cases: Array<[string, number, Record<string, number>, boolean, string]> = [
+    ['agtr', 52, {}, false, 'one string'],
+    ['agtr', 52, { double: 0.9 }, true, 'twelve-string'],
+    ['egtr', 52, {}, false, 'one string'],
+    ['egtr', 52, { double: 0.85 }, true, 'double-tracked'],
+    ['epiano', 48, {}, false, 'straight out of the DI'],
+    ['epiano', 48, { tremRate: 5.2, tremDepth: 0.5 }, true, 'suitcase'],
+  ];
+  for (const [id, pitch, over, wide, label] of cases) {
+    const side = await sideDb(id, pitch, over);
+    if (wide) {
+      assert(side > -25, `${id} (${label}) came out at ${side.toFixed(1)} dB of side — it is mono`);
+    } else {
+      assert(side < -60, `${id} (${label}) came out at ${side.toFixed(1)} dB of side — it is one source`);
+    }
+  }
+});
+
+check('placing the two strings does not change the level', async () => {
+  // A StereoPanner does not up-mix, so putting one in a path that had none
+  // costs exactly 3 dB of total power.  Without a makeup gain Width would be
+  // a level control — which is what it was, measured, on the synth.
+  for (const id of ['agtr', 'egtr']) {
+    const centred = await totalDb(id, 52, { double: 0.9, width: 0 });
+    for (const width of [0.4, 1]) {
+      const placed = await totalDb(id, 52, { double: 0.9, width });
+      assert(Math.abs(placed - centred) < 0.7,
+        `${id}: width ${width} moved the level by ${(placed - centred).toFixed(2)} dB`);
+    }
+  }
+});
+
+check('the suitcase tremolo still swings, and swings less as it spreads', async () => {
+  // Width trades the amplitude swing for a pan, so at full width the level
+  // should barely move while the image does.  A tremolo that kept BOTH would
+  // be twice the effect it was asked for.
+  const swing = async (width: number): Promise<number> => {
+    const ch = await renderStereo('epiano', 48, { tremRate: 5.2, tremDepth: 0.8, width });
+    const mono = ch[0]!.map((v, i) => (v + ch[1]![i]!) / 2);
+    const win = Math.round(48_000 * 0.02);
+    const levels: number[] = [];
+    for (let at = Math.round(48_000 * 0.2); at + win < 48_000 * 1.2; at += win) {
+      let sum = 0;
+      for (let i = at; i < at + win; i++) sum += mono[i]! * mono[i]!;
+      levels.push(Math.sqrt(sum / win));
+    }
+    return 20 * Math.log10(Math.max(1e-9, Math.max(...levels) / Math.max(1e-9, Math.min(...levels))));
+  };
+  const amplitude = await swing(0), spread = await swing(1);
+  assert(amplitude > 6, `with width 0 the tremolo only swings ${amplitude.toFixed(1)} dB`);
+  assert(spread < amplitude - 3,
+    `at full width the level still swings ${spread.toFixed(1)} dB — the pan was added, not traded`);
+});
+
+async function main(): Promise<void> {
+  await Promise.all(pending);
+  console.log('\n=== Instruments — a Rhodes and two guitars ===');
+  for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ' — ' + r.detail : ''}`);
+  const bad = results.filter((r) => !r.pass).length;
+  console.log(`\n${results.length - bad}/${results.length} passed${bad ? `, ${bad} FAILED` : ''}`);
+  if (bad) process.exit(1);
+}
+
+main().catch((err) => { console.error(err); process.exit(1); });

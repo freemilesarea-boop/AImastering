@@ -67,6 +67,39 @@ async function play(
   return out;
 }
 
+/** The same note, kept as two channels — for the questions about width. */
+async function playStereo(over: Record<string, number>, seconds = 2, pitch = C3): Promise<Float32Array[]> {
+  const inst = findInstrument('polysynth')!;
+  const params = { ...defaultInstrumentParams('polysynth'), ...over };
+  const ctx = new OfflineAudioContext(2, Math.round(SR * seconds), SR);
+  inst.playNote({
+    ctx: ctx as unknown as BaseAudioContext,
+    destination: ctx.destination as unknown as AudioNode,
+    note: createNote({ pitch, velocity: 0.8, startBeat: 0, durationBeat: 4 }),
+    config: DEFAULT_MIDI_CONFIG, when: 0, durationSec: seconds * 0.8, params,
+  });
+  const buf = await ctx.startRendering();
+  return [Float32Array.from(buf.getChannelData(0)), Float32Array.from(buf.getChannelData(1))];
+}
+
+/** Side energy against total, in dB.  −inf is a signal with no width at all. */
+function sideDb(ch: Float32Array[]): number {
+  const [l, r] = ch as [Float32Array, Float32Array];
+  let side = 0, total = 0;
+  for (let i = 0; i < l.length; i++) {
+    side += (l[i]! - r[i]!) ** 2;
+    total += l[i]! ** 2 + r[i]! ** 2;
+  }
+  return total > 0 ? 10 * Math.log10(Math.max(1e-30, side / total)) : -Infinity;
+}
+
+/** Total power across BOTH channels — what a level must not depend on. */
+function totalDb(ch: Float32Array[]): number {
+  let sum = 0, n = 0;
+  for (const c of ch) { for (const v of c) sum += v * v; n += c.length; }
+  return 10 * Math.log10(Math.max(1e-30, sum / Math.max(1, n)));
+}
+
 // ── Measurement ─────────────────────────────────────────────────────────────
 
 /**
@@ -392,6 +425,78 @@ async function main(): Promise<void> {
       assert(db(rms(x, SR / 4, SR / 2)) > -60,
         `${JSON.stringify(over)} rendered silence — a node was dropped from the graph`);
     }
+  });
+
+  await check('the oscillator is the same instrument at every pitch', async () => {
+    // A fixed harmonic count is a spectrum that depends on WHICH NOTE is
+    // played.  Measured, a sawtooth at C1 ran out at 2 kHz while the same
+    // wave at C4 reached 16.7 kHz — so a bass line got brighter as it
+    // climbed, and every bass patch was dull for a reason no knob explained.
+    //
+    // The harmonic count now follows the pitch, so what this asserts is that
+    // the top of the spectrum stands still while the note moves.
+    const reach: number[] = [];
+    for (const pitch of [24, 36, 48, 60]) {
+      const f0 = freqOf(pitch);
+      const x = await play({ cutoffHz: 12000, voices: 1, sustain: 1, resonance: 0.7 }, 2, pitch);
+      const first = db(tone(x, f0, SR / 4, SR / 2));
+      let top = f0;
+      for (let n = 1; n * f0 < SR / 2; n++) {
+        if (db(tone(x, n * f0, SR / 4, SR / 2)) > first - 60) top = n * f0;
+      }
+      reach.push(top);
+    }
+    const spread = Math.max(...reach) / Math.min(...reach);
+    assert(spread < 1.5,
+      `the spectrum reaches ${Math.min(...reach).toFixed(0)} Hz on one note and `
+      + `${Math.max(...reach).toFixed(0)} Hz on another — brightness follows the pitch`);
+    assert(Math.min(...reach) > 10_000,
+      `the lowest note only reaches ${Math.min(...reach).toFixed(0)} Hz`);
+  });
+
+  await check('the top of the keyboard does not alias', async () => {
+    // The other end of the same mistake: 64 harmonics at C8 reach 268 kHz,
+    // and what comes back is energy at frequencies that are harmonics of
+    // nothing.  It measured −20.6 dB before the count was tied to Nyquist.
+    for (const pitch of [96, 108]) {
+      const f0 = freqOf(pitch);
+      const x = await play({ cutoffHz: 12000, voices: 1, sustain: 1, resonance: 0.7 }, 2, pitch);
+      const first = db(tone(x, f0, SR / 4, SR / 2));
+      let worst = -200, at = 0;
+      for (let f = 200; f < 12_000; f += 173) {
+        if (Math.abs(f - Math.round(f / f0) * f0) < f0 * 0.2) continue;
+        const v = db(tone(x, f, SR / 4, SR / 2));
+        if (v > worst) { worst = v; at = f; }
+      }
+      assert(worst - first < -60,
+        `pitch ${pitch}: ${(worst - first).toFixed(1)} dB at ${at} Hz, which is no harmonic of it`);
+    }
+  });
+
+  await check('Width places the stack without changing its level', async () => {
+    // The mistake this is here for, made and measured: a StereoPanner does
+    // not up-mix, so inserting one in a path that had none costs exactly
+    // 3 dB of total power — the synth went from −26.0 to −29.0 LUFS the day
+    // Width was added.  Width would have been a level control.
+    const mono = await playStereo({ voices: 5, width: 0, sustain: 1 });
+    const narrow = await playStereo({ voices: 5, width: 0.3, sustain: 1 });
+    const wide = await playStereo({ voices: 5, width: 1, sustain: 1 });
+
+    assert(sideDb(mono) < -60, `Width 0 still has ${sideDb(mono).toFixed(1)} dB of side`);
+    assert(sideDb(wide) > sideDb(narrow) + 4,
+      `Width 1 (${sideDb(wide).toFixed(1)} dB) is not meaningfully wider than 0.3 (${sideDb(narrow).toFixed(1)})`);
+    for (const [label, ch] of [['0.3', narrow], ['1', wide]] as const) {
+      const delta = totalDb(ch) - totalDb(mono);
+      assert(Math.abs(delta) < 0.7,
+        `Width ${label} moved the total level by ${delta.toFixed(2)} dB`);
+    }
+  });
+
+  await check('one voice stays where it is put', async () => {
+    // Width spreads a STACK.  With a single oscillator there is nothing to
+    // spread, and inventing width for it would be inventing a room.
+    assert(sideDb(await playStereo({ voices: 1, width: 1, sustain: 1 })) < -60,
+      'a single voice came out wide');
   });
 
   await check('every parameter the synth advertises is one it reads', async () => {

@@ -280,8 +280,11 @@ const AGTR: InstrumentPatch[] = [
       tone: 12000, sustain: 4.5, release: 0.15, level: 0.5 } },
   { id: 'twelve', name: '12-String', category: 'guitar',
     note: '코스마다 줄이 둘 — EQ 로는 흉내 낼 수 없는 맥놀이가 생깁니다',
+    // Trimmed again when the two courses were placed apart: holding the
+    // total power across the pair raises what EACH channel peaks at, because
+    // the strings no longer sum into both.
     params: { double: 0.9, damp: 0.997, bright: 0.9, bodyHz: 105, body: 8,
-      plate: 4, tone: 9000, sustain: 4.5, release: 0.2, level: 0.6 } },
+      plate: 4, tone: 9000, sustain: 4.5, release: 0.2, level: 0.56 } },
   { id: 'resonator', name: 'Resonator', category: 'guitar',
     note: '나무가 아니라 금속 콘 — 공명이 300 Hz 로 올라가고 날카롭습니다',
     params: { damp: 0.992, bright: 1, pick: 0.08, bodyHz: 300, bodyQ: 4.5,

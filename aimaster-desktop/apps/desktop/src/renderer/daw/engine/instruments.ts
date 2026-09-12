@@ -468,6 +468,7 @@ function pluckVoice(
   // and a doubled electric are the same trick, and it is a trick no amount of
   // EQ imitates: two strings beat against each other, one string does not.
   const doubling = Math.max(0, Math.min(1, params['double'] ?? 0));
+  const sides: StereoPannerNode[] = [];
   let twin: AudioBufferSourceNode | null = null;
   let twinGain: GainNode | null = null;
   if (doubling > 0.01) {
@@ -479,9 +480,17 @@ function pluckVoice(
     twinGain = ctx.createGain();
     twinGain.gain.value = doubling;
   }
+  // Where the two strings sit.  One guitar is one source and stays mono —
+  // measured, every melodic instrument here was at negative infinity on the
+  // side channel, and widening a single plucked string would be inventing a
+  // room rather than modelling an instrument.  A DOUBLED string is two
+  // sources, which is exactly what a twelve-string's courses and a
+  // double-tracked electric are, and they are what gets placed.
+  const spread = Math.max(0, Math.min(1, params['width'] ?? 0.6));
   // Power, not amplitude — the same rule the synth's unison follows.
   const pairGain = ctx.createGain();
-  pairGain.gain.value = 1 / Math.sqrt(1 + doubling * doubling);
+  const placed = twin !== null && spread > 0.001;
+  pairGain.gain.value = (1 / Math.sqrt(1 + doubling * doubling)) * (placed ? PANNER_MAKEUP : 1);
 
   // The body (or the pickup): resonances and a roll-off.  This is what makes
   // the same string a guitar rather than a synth pluck — and WHERE the
@@ -516,8 +525,18 @@ function pluckVoice(
     (val) => val * config.bendRangeSemitones * 100, 0,
   );
 
-  src.connect(pairGain);
-  if (twin && twinGain) twin.connect(twinGain).connect(pairGain);
+  if (twin && twinGain && placed) {
+    const left = ctx.createStereoPanner();
+    const right = ctx.createStereoPanner();
+    left.pan.value = -spread;
+    right.pan.value = spread;
+    src.connect(left).connect(pairGain);
+    twin.connect(twinGain).connect(right).connect(pairGain);
+    sides.push(left, right);
+  } else {
+    src.connect(pairGain);
+    if (twin && twinGain) twin.connect(twinGain).connect(pairGain);
+  }
   const shaped = plate ? pairGain.connect(body).connect(plate) : pairGain.connect(body);
   (shaped as AudioNode).connect(tone).connect(amp).connect(destination);
 
@@ -542,6 +561,7 @@ function pluckVoice(
       if (twin) { try { twin.stop(at); } catch { /* already stopped */ } }
       try {
         src.disconnect(); twin?.disconnect(); twinGain?.disconnect();
+        for (const p of sides) p.disconnect();
         pairGain.disconnect(); body.disconnect(); plate?.disconnect();
         tone.disconnect(); amp.disconnect();
       } catch { /* ignore */ }
@@ -571,6 +591,26 @@ type SynthWave = typeof SYNTH_WAVES[number];
  */
 const FILTER_CEILING_HZ = 18_000;
 
+/**
+ * What inserting a StereoPanner costs, and why it has to be given back.
+ *
+ * A mono node connected straight to a stereo destination is UP-MIXED: both
+ * channels carry the whole signal, so the total power is twice the source's.
+ * A StereoPanner does not up-mix — it divides one signal between two
+ * channels, and equal-power panning keeps the sum at exactly the source's
+ * power whatever the position, centre included.
+ *
+ * So the moment a panner appears in a path that had none, the total drops
+ * 3 dB — measured, the synth went from −26.0 to −29.0 LUFS on the day Width
+ * was added, and the unison check caught it as "Unison is a volume knob".
+ * Without this factor Width would BE a level control, which is the one thing
+ * every control here is not allowed to be.
+ *
+ * Exactly √2, and exactly independent of the pan position: cos²x + sin²x = 1
+ * for every x.
+ */
+const PANNER_MAKEUP = Math.SQRT2;
+
 /** Most voices one note may stack.  Seven is already seven oscillators. */
 const MAX_UNISON = 7;
 
@@ -597,8 +637,35 @@ const MAX_UNISON = 7;
  */
 const UNISON_PHASES = [0, 0.0073, 0.5701, 0.2179, 0.3942, 0.9949, 0.2544] as const;
 
-/** Harmonics each built wave carries. */
-const WAVE_HARMONICS = 64;
+/**
+ * Most harmonics a built wave may carry, and how many it actually gets.
+ *
+ * A fixed 64 was wrong in both directions at once, and measuring the
+ * oscillator across the keyboard is what showed it:
+ *
+ *   LOW notes were truncated.  A sawtooth at C1 ran out of harmonics at
+ *   2 kHz while the same wave at C4 reached 16.7 kHz — so brightness
+ *   depended on WHICH NOTE was played, and a bass line got brighter as it
+ *   climbed.  No oscillator behaves that way; every bass patch was dull.
+ *
+ *   HIGH notes aliased.  At C8, 64 harmonics reach 268 kHz, and what comes
+ *   back is −20.6 dB of energy at frequencies that are not harmonics of
+ *   anything.
+ *
+ * Both are the same mistake — a harmonic count that ignores the pitch it is
+ * played at.  The count is now the largest power of two that fits under
+ * Nyquist, which is one table per octave rather than one per note: at worst
+ * it spends half the harmonics available, and on a spectrum falling at
+ * 6 dB/octave the ones it gives up are the quietest there are.
+ */
+const WAVE_HARMONICS_MAX = 512;
+const WAVE_HARMONICS_MIN = 4;
+
+function harmonicsFor(freqHz: number, sampleRate: number): number {
+  const fits = sampleRate / 2 / Math.max(1, freqHz);
+  const pow2 = Math.pow(2, Math.floor(Math.log2(Math.max(1, fits))));
+  return Math.max(WAVE_HARMONICS_MIN, Math.min(WAVE_HARMONICS_MAX, pow2));
+}
 
 /**
  * Built waves, per context.
@@ -630,16 +697,17 @@ const WAVE_CACHE = new WeakMap<BaseAudioContext, Map<string, PeriodicWave>>();
  */
 function synthWave(
   ctx: BaseAudioContext, kind: SynthWave, pulseWidth: number, phase: number,
+  harmonics: number,
 ): PeriodicWave {
   let perContext = WAVE_CACHE.get(ctx);
   if (!perContext) { perContext = new Map(); WAVE_CACHE.set(ctx, perContext); }
-  const key = `${kind}|${kind === 'pulse' ? pulseWidth.toFixed(3) : '-'}|${phase.toFixed(4)}`;
+  const key = `${kind}|${kind === 'pulse' ? pulseWidth.toFixed(3) : '-'}|${phase.toFixed(4)}|${harmonics}`;
   const hit = perContext.get(key);
   if (hit) return hit;
 
-  const real = new Float32Array(WAVE_HARMONICS + 1);
-  const imag = new Float32Array(WAVE_HARMONICS + 1);
-  for (let n = 1; n <= WAVE_HARMONICS; n++) {
+  const real = new Float32Array(harmonics + 1);
+  const imag = new Float32Array(harmonics + 1);
+  for (let n = 1; n <= harmonics; n++) {
     let a = 0, b = 0;
     const odd = n % 2 === 1;
     if (kind === 'saw') b = 1 / n;
@@ -739,6 +807,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'lfoFilter', name: 'Wobble',  min: 0,     max: 4,     default: 0,     unit: 'oct' },
 
       { id: 'drive',     name: 'Drive',   min: 0,     max: 1,     default: 0,     unit: '' },
+      { id: 'width',     name: 'Width',   min: 0,     max: 1,     default: 0.35,  unit: '' },
       { id: 'level',     name: 'Level',   min: 0,     max: 1,     default: CALIBRATED_LEVEL, unit: '' },
     ],
     playNote: ({ ctx, destination, note, config, when, durationSec, params }) => {
@@ -758,18 +827,28 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         Math.round(params['wave'] ?? 0)))] ?? 'saw';
       const pulseWidth = params['pulseWidth'] ?? 0.25;
 
+      // Every instrument here was dead mono until Width — measured, the side
+      // channel of all four sat at negative infinity.  It is given where
+      // there is something physical to spread and not otherwise: a unison
+      // stack is many sources and belongs across the field; one plucked
+      // string is one source and does not.
+      const width = Math.max(0, Math.min(1, params['width'] ?? 0.35));
+
       const oscMix = ctx.createGain();
       // Power, not amplitude.  Detuned voices drift out of step within a cycle
       // or two, so they add the way noise does rather than the way one louder
       // oscillator would — dividing by the count instead would make Unison a
       // volume knob that gets quieter as it gets wider.
-      oscMix.gain.value = 1 / Math.sqrt(voices);
+      const spreadVoices = width > 0.001 && voices > 1;
+      oscMix.gain.value = (1 / Math.sqrt(voices)) * (spreadVoices ? PANNER_MAKEUP : 1);
       oscMix.connect(filter);
 
       const oscs: OscillatorNode[] = [];
+      const pans: StereoPannerNode[] = [];
       for (let i = 0; i < voices; i++) {
         const osc = ctx.createOscillator();
-        osc.setPeriodicWave(synthWave(ctx, kind, pulseWidth, UNISON_PHASES[i] ?? 0));
+        osc.setPeriodicWave(synthWave(ctx, kind, pulseWidth, UNISON_PHASES[i] ?? 0,
+          harmonicsFor(freq, ctx.sampleRate)));
         osc.frequency.value = freq;
         // Spread evenly across ±detune, so an odd count always keeps one
         // voice at pitch and an even one stays symmetric about it.
@@ -777,7 +856,19 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         const cents = spread * detune;
         scheduleCurve(osc.detune, note, { kind: 'pitchBend' }, when, durationSec,
           (v) => bendCents(v) + cents, 0);
-        osc.connect(oscMix);
+        // The same spread that detunes it places it.  The voice a listener
+        // hears as furthest out of tune is the one furthest to the side,
+        // which is what a real stack of oscillators through a real desk
+        // does, and it is why a wide unison reads as wide rather than as
+        // merely blurred.
+        if (spreadVoices) {
+          const pan = ctx.createStereoPanner();
+          pan.pan.value = spread * width;
+          osc.connect(pan).connect(oscMix);
+          pans.push(pan);
+        } else {
+          osc.connect(oscMix);
+        }
         oscs.push(osc);
       }
 
@@ -787,7 +878,10 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       let subOsc: OscillatorNode | null = null;
       if (subAmount > 0.001) {
         subOsc = ctx.createOscillator();
-        subOsc.setPeriodicWave(synthWave(ctx, 'square', 0.5, 0));
+        // Its own count: the sub is an octave down, so twice as many
+        // harmonics fit under Nyquist as the note above it.
+        subOsc.setPeriodicWave(synthWave(ctx, 'square', 0.5, 0,
+          harmonicsFor(freq / 2, ctx.sampleRate)));
         subOsc.frequency.value = freq / 2;
         scheduleCurve(subOsc.detune, note, { kind: 'pitchBend' }, when, durationSec, bendCents, 0);
         const g = ctx.createGain();
@@ -916,6 +1010,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
           if (noise) { try { noise.stop(at); } catch { /* already stopped */ } }
           try {
             for (const o of oscs) o.disconnect();
+            for (const p of pans) p.disconnect();
             subOsc?.disconnect(); noise?.disconnect(); lfo?.disconnect();
             oscMix.disconnect(); filter.disconnect(); shaper?.disconnect(); amp.disconnect();
           } catch { /* ignore */ }
@@ -941,6 +1036,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'pickup',   name: 'Pickup',   min: 0,    max: 1,   default: 0.35, unit: '' },
       { id: 'tremRate', name: 'Trem Rate', min: 0,   max: 10,  default: 0,    unit: 'Hz' },
       { id: 'tremDepth', name: 'Trem',    min: 0,    max: 1,   default: 0.35, unit: '' },
+      { id: 'width',    name: 'Width',   min: 0,    max: 1,   default: 0.5,  unit: '' },
     ],
     playNote: ({ ctx, destination, note, config, when, durationSec, params }) => {
       const freq = pitchToFrequency(soundingPitch(note));
@@ -1046,22 +1142,47 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       out.gain.value = lvl;
       let lfo: OscillatorNode | null = null;
       let lfoGain: GainNode | null = null;
+      let panner: StereoPannerNode | null = null;
+      let panDepth: GainNode | null = null;
       if (tremRate > 0.01) {
         const depth = Math.min(1, Math.max(0, params['tremDepth'] ?? 0.35));
+        // How much of the tremolo is a PAN rather than a level swing.
+        //
+        // This is what a suitcase actually does, and it is why a suitcase
+        // sounds enormous next to a stage piano through the same amp: the
+        // cabinet has two speakers and the oscillator moves the signal
+        // between them.  Modelling it as amplitude alone — which is what was
+        // here — gets the wobble and throws away the reason anyone wants it.
+        //
+        // The Rhodes stays MONO when its tremolo is off, which is correct: a
+        // stage piano taken from the DI is one source.
+        const width = Math.max(0, Math.min(1, params['width'] ?? 0.5));
         lfo = ctx.createOscillator();
-        lfoGain = ctx.createGain();
         lfo.type = 'sine';
         lfo.frequency.value = tremRate;
-        // Both scaled by the level, so the tremolo is the same DEPTH at any
-        // level rather than the same number of decibels of swing.
-        lfoGain.gain.value = lvl * depth * 0.5;
-        out.gain.value = lvl * (1 - depth * 0.5);
+
+        const swing = depth * (1 - width);
+        // The makeup goes in here, not on a node of its own: a panner in this
+        // path costs 3 dB (see PANNER_MAKEUP), and the tremolo's two halves
+        // have to be scaled together or the swing would change with it.
+        const makeup = width > 0.001 ? PANNER_MAKEUP : 1;
+        lfoGain = ctx.createGain();
+        lfoGain.gain.value = lvl * makeup * swing * 0.5;
+        out.gain.value = lvl * makeup * (1 - swing * 0.5);
         lfo.connect(lfoGain).connect(out.gain);
+
+        if (width > 0.001) {
+          panner = ctx.createStereoPanner();
+          panDepth = ctx.createGain();
+          panDepth.gain.value = depth * width;
+          lfo.connect(panDepth).connect(panner.pan);
+        }
         lfo.start(start);
       }
 
       const tail = shaper ? amp.connect(shaper) : amp;
-      (tail as AudioNode).connect(out).connect(destination);
+      const wet = (tail as AudioNode).connect(out);
+      (panner ? wet.connect(panner) : wet).connect(destination);
 
       // What the pickup is driven by: velocity, and nothing else.  The
       // constant is the level the voice was originally tuned at, kept so the
@@ -1112,6 +1233,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'body',    name: 'Body',    min: -6,  max: 12,    default: 5,    unit: 'dB' },
       { id: 'plate',   name: 'Plate',   min: 0,   max: 12,    default: 0,    unit: 'dB' },
       { id: 'tone',    name: 'Tone',    min: 800, max: 16000, default: 7000, unit: 'Hz' },
+      { id: 'width',   name: 'Width',   min: 0,   max: 1,     default: 0.6,  unit: '' },
       { id: 'sustain', name: 'Sustain', min: 0.4, max: 8,     default: 3,    unit: 's' },
       { id: 'release', name: 'Release', min: 0.03, max: 1.2,  default: 0.18, unit: 's' },
       { id: 'level',   name: 'Level',   min: 0,   max: 1,     default: CALIBRATED_LEVEL, unit: '' },
@@ -1139,6 +1261,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'body',    name: 'Pickup',  min: -6,  max: 12,    default: 6,    unit: 'dB' },
       { id: 'plate',   name: 'Plate',   min: 0,   max: 12,    default: 0,    unit: 'dB' },
       { id: 'tone',    name: 'Tone',    min: 800, max: 12000, default: 3400, unit: 'Hz' },
+      { id: 'width',   name: 'Width',   min: 0,   max: 1,     default: 0.6,  unit: '' },
       { id: 'sustain', name: 'Sustain', min: 0.4, max: 8,     default: 5,    unit: 's' },
       { id: 'release', name: 'Release', min: 0.03, max: 1.2,  default: 0.1,  unit: 's' },
       { id: 'level',   name: 'Level',   min: 0,   max: 1,     default: CALIBRATED_LEVEL, unit: '' },
