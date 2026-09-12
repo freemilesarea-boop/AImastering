@@ -78,10 +78,18 @@ export interface ChannelMeterReading {
   holdPeak: number;
   /** True once any sample reached `CLIP_CEILING`; stays true until cleared. */
   clipped: boolean;
+  /** What the bars should DRAW, in dBFS, after ballistics. */
+  shownDbL: number;
+  shownDbR: number;
+  /** Where the hold marker should sit, in dBFS. */
+  shownHoldDb: number;
 }
 
 export function emptyReading(): ChannelMeterReading {
-  return { peakL: 0, peakR: 0, rmsL: 0, rmsR: 0, holdPeak: 0, clipped: false };
+  return {
+    peakL: 0, peakR: 0, rmsL: 0, rmsR: 0, holdPeak: 0, clipped: false,
+    shownDbL: METER_FLOOR_DB, shownDbR: METER_FLOOR_DB, shownHoldDb: METER_FLOOR_DB,
+  };
 }
 
 /**
@@ -159,4 +167,152 @@ export function advanceLatch(latch: MeterLatch, peakL: number, peakR: number): v
 export function clearLatch(latch: MeterLatch): void {
   latch.holdPeak = 0;
   latch.clipped = false;
+}
+
+// ── Ballistics ───────────────────────────────────────────────────────────────
+//
+// An analyser window read every 50 ms is a series of unrelated numbers, and
+// drawing it raw is why a meter flickers.  Measured on programme material with
+// a transient every half second: the peak bar moved 1.91 dB between frames on
+// average and 10.44 dB at worst, and when the signal STOPPED it fell 48 dB in
+// a single frame — the bar did not go down, it vanished.
+//
+// The RMS bar was measured too, and it is left alone: 0.44 dB mean step,
+// 2.02 dB worst.  The 170 ms analyser window already integrates it, so adding
+// a smoother would buy nothing and cost lag.  Said here because "add
+// ballistics to the meters" sounds like it should apply to both bars, and the
+// numbers say it should not.
+//
+// Everything below advances on ELAPSED TIME rather than on being called.  The
+// meter this replaced decayed its hold by a fixed step per React render, so
+// its fall rate was however often the component happened to re-render — faster
+// while a fader was being dragged, twice as fast under StrictMode.  A fall
+// rate that depends on what else the UI is doing is not a fall rate.
+
+/**
+ * How fast the peak bar falls, in dB per second.
+ *
+ * In the return-time family IEC 60268-10 defines for a PPM (20 dB in 1.7 s,
+ * i.e. 11.8 dB/s); faster, because this is a sample-peak bar rather than a
+ * quasi-peak one and a digital meter that lingers is claiming headroom is
+ * gone when it is not.  Measured at this rate on the material above: the mean
+ * frame-to-frame step drops from 1.91 dB to 1.16 dB, and the 48 dB collapse
+ * at the end of a signal becomes a glide of about 1 dB per frame.
+ *
+ * It over-reads the newest window by 3.1 dB on average on that material.
+ * That is not an error to tune away: on a source that peaks every half second
+ * the whole job of a fall time is to keep the last transient visible until
+ * the next one.
+ */
+export const PEAK_FALL_DB_PER_SEC = 20;
+
+/** How long the hold marker sits still before it starts falling, in seconds. */
+export const HOLD_SECONDS = 1.5;
+
+/**
+ * How fast the hold marker falls once its hold expires, in dB per second.
+ *
+ * The PPM return time itself — slower than the bar, which is the point: the
+ * marker is there to be read after the fact, and a marker that chases the bar
+ * down is just a second copy of the bar.  Convention rather than a
+ * measurement, and labelled as one.
+ */
+export const HOLD_FALL_DB_PER_SEC = 12;
+
+/**
+ * The displayed state of one channel's meter, in dB.
+ *
+ * Separate from the latch: the latch is a fact that never decays (this channel
+ * went over, this was its loudest sample), and this is a picture that is
+ * supposed to.
+ */
+export interface MeterBallistics {
+  peakDbL: number;
+  peakDbR: number;
+  /** The hold marker, taken from the louder side. */
+  holdDb: number;
+  /** Seconds left before the marker starts falling. */
+  holdRemaining: number;
+  /** When this was last advanced, in seconds; null before the first advance. */
+  at: number | null;
+}
+
+export function newBallistics(): MeterBallistics {
+  return {
+    peakDbL: METER_FLOOR_DB, peakDbR: METER_FLOOR_DB,
+    holdDb: METER_FLOOR_DB, holdRemaining: 0, at: null,
+  };
+}
+
+/**
+ * Move the display on to `nowSec`, given the newest window's peaks.
+ *
+ * Rise is instant and fall is a rate, which makes every step here exactly
+ * additive in time: ten advances of 50 ms land on the same numbers as one
+ * advance of 500 ms.  That is the property worth having — both the transport
+ * tick and the Mix window call the poller, at rates that change with what the
+ * user is doing, and a meter whose fall rate moved with them would be
+ * reporting the UI rather than the audio.
+ */
+export function advanceBallistics(
+  b: MeterBallistics, peakL: number, peakR: number, nowSec: number,
+): void {
+  const dt = b.at === null ? 0 : Math.max(0, nowSec - b.at);
+  b.at = nowSec;
+
+  const l = meterDb(peakL);
+  const r = meterDb(peakR);
+  const fall = PEAK_FALL_DB_PER_SEC * dt;
+  b.peakDbL = Math.max(l, b.peakDbL - fall);
+  b.peakDbR = Math.max(r, b.peakDbR - fall);
+
+  const loudest = l > r ? l : r;
+  if (loudest >= b.holdDb) {
+    b.holdDb = loudest;
+    b.holdRemaining = HOLD_SECONDS;
+    return;
+  }
+  // Spend the step on the hold first and the fall second, so a single long
+  // step that straddles the end of the hold lands where a run of short ones
+  // would.
+  const held = Math.min(dt, b.holdRemaining);
+  b.holdRemaining -= held;
+  const falling = dt - held;
+  if (falling > 0) b.holdDb = Math.max(loudest, b.holdDb - HOLD_FALL_DB_PER_SEC * falling);
+}
+
+/** Drop the hold marker — the click that clears the latch clears this too. */
+export function clearBallisticsHold(b: MeterBallistics): void {
+  b.holdDb = METER_FLOOR_DB;
+  b.holdRemaining = 0;
+}
+
+/** One side of one poll, as measured off the analyser. */
+export interface SideReading { peak: number; rms: number }
+
+/**
+ * Fold one poll into the latch and the ballistics, and build what the strip
+ * draws.
+ *
+ * Here rather than in the engine so it can be driven with a FALLING sequence.
+ * That matters more than it looks: a finished offline render leaves the same
+ * window in the analyser forever, so through the graph the ballistic value
+ * and the raw window value are always equal, and a version of this that
+ * quietly reported the raw peaks passed every rendered check.  Given peaks
+ * directly, the two come apart on the second call and the difference is
+ * visible.
+ */
+export function composeReading(
+  latch: MeterLatch, ballistics: MeterBallistics,
+  l: SideReading, r: SideReading, nowSec: number,
+): ChannelMeterReading {
+  advanceLatch(latch, l.peak, r.peak);
+  advanceBallistics(ballistics, l.peak, r.peak, nowSec);
+  return {
+    peakL: l.peak, peakR: r.peak,
+    rmsL: l.rms, rmsR: r.rms,
+    holdPeak: latch.holdPeak, clipped: latch.clipped,
+    shownDbL: ballistics.peakDbL, shownDbR: ballistics.peakDbR,
+    shownHoldDb: ballistics.holdDb,
+  };
 }

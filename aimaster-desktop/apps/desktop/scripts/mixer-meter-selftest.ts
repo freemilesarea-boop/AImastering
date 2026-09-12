@@ -35,9 +35,11 @@
 import { OfflineAudioContext } from 'node-web-audio-api';
 
 import {
-  CLIP_CEILING, METER_FLOOR_DB, METER_POLL_MS, METER_TOP_DB,
-  advanceLatch, clearLatch, emptyReading, meterDb, meterFftSize, meterFraction,
-  newLatch, readingPeak,
+  CLIP_CEILING, HOLD_FALL_DB_PER_SEC, HOLD_SECONDS, METER_FLOOR_DB, METER_POLL_MS,
+  METER_TOP_DB, PEAK_FALL_DB_PER_SEC,
+  advanceBallistics, advanceLatch, clearBallisticsHold, clearLatch, emptyReading,
+  composeReading, meterDb, meterFftSize, meterFraction, newBallistics, newLatch, readingPeak,
+  type MeterBallistics,
 } from '../src/renderer/daw/model/channel-meter.js';
 import { MixerEngine } from '../src/renderer/daw/engine/mixer-engine.js';
 import { addTrack, createSession, createTrack, updateTrack } from '../src/renderer/daw/model/session-ops.js';
@@ -168,6 +170,173 @@ check('readingPeak takes the louder side', () => {
   close(readingPeak({ ...emptyReading(), peakL: 0.8, peakR: 0.3 }), 0.8, 'left side won', 1e-9);
 });
 
+
+// ── Ballistics ───────────────────────────────────────────────────────────────
+
+/** Run the ballistics over `seconds` in `steps` equal advances. */
+function run(peak: number, seconds: number, steps: number, from?: MeterBallistics): MeterBallistics {
+  const b = from ?? newBallistics();
+  const dt = seconds / steps;
+  const start = b.at ?? 0;
+  for (let i = 1; i <= steps; i++) advanceBallistics(b, peak, peak, start + i * dt);
+  return b;
+}
+
+check('the display advances on elapsed time, not on being called', () => {
+  // The whole point of the rewrite.  The meter this replaced decayed by a
+  // fixed step per React render, so dragging a fader — which re-renders the
+  // strip — made the bar fall faster.  Ten small advances and one big one
+  // cover the same second, so they must land on the same number.
+  const many = newBallistics();
+  advanceBallistics(many, 1, 1, 0);
+  run(0, 1, 20, many);
+
+  const one = newBallistics();
+  advanceBallistics(one, 1, 1, 0);
+  advanceBallistics(one, 0, 0, 1);
+
+  close(many.peakDbL, one.peakDbL, 'the bar disagreed with itself over call count', 1e-9);
+  close(many.holdDb, one.holdDb, 'and so did the hold marker', 1e-9);
+});
+
+check('including a step that straddles the end of the hold', () => {
+  // The awkward case: one advance long enough to use up the hold AND fall
+  // afterwards.  Spending the step on the hold first and the fall second is
+  // what makes that land where a run of short steps would.
+  const span = HOLD_SECONDS + 1;
+  const many = newBallistics();
+  advanceBallistics(many, 1, 1, 0);
+  run(0, span, 200, many);
+
+  const one = newBallistics();
+  advanceBallistics(one, 1, 1, 0);
+  advanceBallistics(one, 0, 0, span);
+
+  close(many.holdDb, one.holdDb, 'the marker landed somewhere else', 1e-6);
+});
+
+check('rise is instant — a transient is never drawn smaller than it was', () => {
+  const b = newBallistics();
+  advanceBallistics(b, 0.01, 0.01, 0);
+  advanceBallistics(b, 1, 0.5, 0.05);
+  close(b.peakDbL, 0, 'the loud side', 1e-9);
+  close(b.peakDbR, meterDb(0.5), 'and the quiet one, on its own', 1e-9);
+});
+
+check('the bar falls at the rate it claims', () => {
+  const b = newBallistics();
+  advanceBallistics(b, 1, 1, 0);
+  close(b.peakDbL, 0, 'starts at full scale', 1e-9);
+  run(0, 0.5, 10, b);
+  close(b.peakDbL, -PEAK_FALL_DB_PER_SEC * 0.5, 'after half a second', 1e-6);
+});
+
+check('and never below the window it is reading', () => {
+  const b = newBallistics();
+  advanceBallistics(b, 1, 1, 0);
+  run(0.25, 10, 100, b);
+  close(b.peakDbL, meterDb(0.25), 'the bar undershot the signal that is still there', 1e-6);
+});
+
+check('nor below the bottom of the scale', () => {
+  const b = newBallistics();
+  advanceBallistics(b, 1, 1, 0);
+  run(0, 60, 600, b);
+  assert(b.peakDbL >= METER_FLOOR_DB, `ran off the scale to ${b.peakDbL}`);
+  assert(b.holdDb >= METER_FLOOR_DB, `and so did the marker, to ${b.holdDb}`);
+});
+
+check('the hold marker sits still for its hold, then falls', () => {
+  const b = newBallistics();
+  advanceBallistics(b, 1, 1, 0);
+  run(0, HOLD_SECONDS * 0.9, 20, b);
+  close(b.holdDb, 0, 'it moved before its hold was up', 1e-6);
+  run(0, HOLD_SECONDS * 0.1 + 1, 40, b);
+  close(b.holdDb, -HOLD_FALL_DB_PER_SEC, 'and then fell at its own rate', 1e-5);
+});
+
+check('and falls slower than the bar, or it would just be a second bar', () => {
+  assert(HOLD_FALL_DB_PER_SEC < PEAK_FALL_DB_PER_SEC,
+    `hold ${HOLD_FALL_DB_PER_SEC} dB/s vs bar ${PEAK_FALL_DB_PER_SEC} dB/s`);
+  const b = newBallistics();
+  advanceBallistics(b, 1, 1, 0);
+  run(0, HOLD_SECONDS + 1, 100, b);
+  assert(b.holdDb > b.peakDbL, `the marker sank to the bar: ${b.holdDb} vs ${b.peakDbL}`);
+});
+
+check('a louder peak renews the hold rather than waiting out the old one', () => {
+  const b = newBallistics();
+  advanceBallistics(b, 0.5, 0.5, 0);
+  run(0, HOLD_SECONDS * 0.9, 20, b);
+  advanceBallistics(b, 1, 1, b.at! + 0.05);
+  close(b.holdDb, 0, 'the new peak did not take the marker', 1e-9);
+  close(b.holdRemaining, HOLD_SECONDS, 'and did not restart its clock', 1e-9);
+});
+
+check('the first advance does not fall — a clock read once is not a duration', () => {
+  // Seeding `at` with 0 instead of null would make the very first advance
+  // elapse however many seconds the page had been open.
+  //
+  // This starts from a ballistics object that ALREADY carries a reading, and
+  // that is the whole reason the check exists in this shape.  From a fresh
+  // one the bug is invisible: every field starts at the floor and the fall
+  // clamps there, so `at: 0` and `at: null` land on the same numbers for any
+  // input — measured, after a deliberate break seeding 0 passed a version of
+  // this check that started fresh.  Carrying a reading over is also the real
+  // case, the one a meter hits if its state ever survives a graph rebuild.
+  const carried = {
+    ...newBallistics(), peakDbL: -6, peakDbR: -6, holdDb: -6, holdRemaining: HOLD_SECONDS,
+  };
+  advanceBallistics(carried, 0, 0, 12345);
+  close(carried.peakDbL, -6, 'the bar fell by the age of the clock', 1e-9);
+  close(carried.holdDb, -6, 'and so did the marker', 1e-9);
+});
+
+check('a clock that does not move, or moves backwards, freezes rather than jumps', () => {
+  const b = newBallistics();
+  advanceBallistics(b, 1, 1, 10);
+  advanceBallistics(b, 0, 0, 10);
+  close(b.peakDbL, 0, 'a repeated timestamp moved the bar', 1e-9);
+  advanceBallistics(b, 0, 0, 5);
+  close(b.peakDbL, 0, 'and a backwards one made it climb', 1e-9);
+});
+
+check('clearing the marker drops it without touching the bar', () => {
+  const b = newBallistics();
+  advanceBallistics(b, 1, 1, 0);
+  advanceBallistics(b, 0.5, 0.5, 0.01);
+  clearBallisticsHold(b);
+  assert(b.holdDb === METER_FLOOR_DB, 'the marker stayed up');
+  assert(b.peakDbL > METER_FLOOR_DB, 'and the bar came down with it');
+});
+
+check('the reading the strip draws is the ballistic value, not the raw window', () => {
+  // The check the rendered ones cannot make.  A loud frame then a silent one
+  // 50 ms later: the raw peak is gone, and the bar must still be at -1 dB,
+  // one frame of fall.  Reporting the window instead would read -60.
+  const latch = newLatch();
+  const b = newBallistics();
+  composeReading(latch, b, { peak: 1, rms: 0.7 }, { peak: 1, rms: 0.7 }, 0);
+  const after = composeReading(latch, b, { peak: 0, rms: 0 }, { peak: 0, rms: 0 }, 0.05);
+
+  close(after.peakL, 0, 'the raw fields still report the window, untouched', 1e-9);
+  close(after.shownDbL, -PEAK_FALL_DB_PER_SEC * 0.05, 'the left bar is the ballistic one', 1e-9);
+  close(after.shownDbR, -PEAK_FALL_DB_PER_SEC * 0.05, 'and so is the right', 1e-9);
+  close(after.shownHoldDb, 0, 'while the marker is still inside its hold', 1e-9);
+  assert(after.clipped && after.holdPeak === 1, 'and the latch kept the fact of the over');
+});
+
+check('the RMS fields stay raw — measured as already steady enough', () => {
+  // Deliberate, and easy to "fix" by mistake.  Measured on programme
+  // material, the RMS bar moves 0.44 dB between frames against the peak bar's
+  // 1.91, because the 170 ms analyser window has already integrated it.  A
+  // smoother on top would buy nothing and cost lag.
+  const r = composeReading(newLatch(), newBallistics(),
+    { peak: 1, rms: 0.25 }, { peak: 1, rms: 0.125 }, 0);
+  close(r.rmsL, 0.25, 'left RMS passed through', 1e-9);
+  close(r.rmsR, 0.125, 'right RMS passed through', 1e-9);
+});
+
 // ── Through the real graph ───────────────────────────────────────────────────
 
 interface Rendered {
@@ -295,6 +464,56 @@ async function main(): Promise<void> {
     engine.clearMeterHold(track.id);
     const after = engine.meterReadings().get(track.id)!;
     assert(!after.clipped && after.holdPeak === 0, 'the light stayed on after a reset');
+  });
+
+  await checkAsync('the strip draws the ballistic fields, and the engine fills them in', async () => {
+    // Rise is instant, so with a signal in the window these equal the raw
+    // reading.  That they exist AT ALL is the point: if the strip drew
+    // `peakL` the ballistics would be a module nothing uses.
+    const { engine, track } = await render(1, 0);
+    const r = engine.pollMeters(100).get(track.id)!;
+    close(r.shownDbL, meterDb(r.peakL), 'left bar', 1e-9);
+    close(r.shownDbR, meterDb(r.peakR), 'right bar', 1e-9);
+    close(r.shownHoldDb, meterDb(readingPeak(r)), 'and the marker, from the louder side', 1e-9);
+  });
+
+  await checkAsync('and passes its clock through, rather than advancing by one poll', async () => {
+    // What cannot be seen from the reading: a finished offline render leaves
+    // the SAME window in the analyser forever, and the bar is not allowed to
+    // fall below what it is reading, so no decay is observable through it.
+    // The clock reaching the ballistics is checked where it lands instead.
+    const { engine, track } = await render(1, 0);
+    const tap = engine.channel(track.id)!.meter;
+    assert(tap !== null, 'no meter was built');
+    engine.pollMeters(100);
+    close(tap!.ballistics.at ?? -1, 100, 'the engine substituted its own idea of now', 1e-9);
+    engine.pollMeters(101.25);
+    close(tap!.ballistics.at ?? -1, 101.25, 'and did not advance by a fixed step', 1e-9);
+
+    // The default is a real monotonic clock, not a counter starting at zero.
+    const before = performance.now() / 1000;
+    engine.pollMeters();
+    const at = tap!.ballistics.at ?? -1;
+    assert(at >= before && at <= performance.now() / 1000 + 1,
+      `the default clock read ${at}, which is not wall time`);
+  });
+
+  await checkAsync('a bar is never drawn below the window it is reading', async () => {
+    // The floor property, through the real graph: however long the poller
+    // waits between calls, a channel that is still making noise keeps its bar.
+    const { engine, track } = await render(1, 0);
+    engine.pollMeters(0);
+    const late = engine.pollMeters(600).get(track.id)!;
+    close(late.shownDbL, meterDb(late.peakL), 'ten minutes later the signal is still there', 1e-9);
+  });
+
+  await checkAsync('resetting a channel drops its marker as well as its latch', async () => {
+    const { engine, track } = await render(1, 0);
+    engine.pollMeters(0);
+    assert(engine.meterReadings().get(track.id)!.shownHoldDb > METER_FLOOR_DB, 'setup');
+    engine.clearMeterHold(track.id);
+    close(engine.meterReadings().get(track.id)!.shownHoldDb, METER_FLOOR_DB,
+      'the line stayed where it was after a reset', 1e-9);
   });
 
   await checkAsync('the last reading is available without re-reading the analysers', async () => {

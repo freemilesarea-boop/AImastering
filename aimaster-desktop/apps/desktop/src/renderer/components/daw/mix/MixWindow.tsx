@@ -23,6 +23,7 @@ import {
   METER_POLL_MS, emptyReading, meterDb, meterFraction,
   type ChannelMeterReading,
 } from '../../../daw/model/channel-meter.js';
+
 import type {
   AutomationMode, AutomationTarget, DawSession, Track,
 } from '../../../daw/model/types.js';
@@ -563,8 +564,8 @@ function Meter({ level, onClearHold }: { level: ChannelMeterReading; onClearHold
           : 'bg-zinc-900 border-zinc-800'}`}
       />
       <div className="flex-1 flex gap-px">
-        <MeterBar peak={level.peakL} rms={level.rmsL} hold={level.holdPeak} />
-        <MeterBar peak={level.peakR} rms={level.rmsR} hold={level.holdPeak} />
+        <MeterBar db={level.shownDbL} rms={level.rmsL} holdDb={level.shownHoldDb} />
+        <MeterBar db={level.shownDbR} rms={level.rmsR} holdDb={level.shownHoldDb} />
       </div>
       <p
         className={`text-[8px] font-mono text-center tabular-nums ${level.clipped
@@ -576,19 +577,27 @@ function Meter({ level, onClearHold }: { level: ChannelMeterReading; onClearHold
   );
 }
 
-function MeterBar({ peak, rms, hold }: { peak: number; rms: number; hold: number }) {
-  const peakDb = meterDb(peak);
-  const peakPct = meterFraction(peakDb);
+/**
+ * One side of one channel.
+ *
+ * `db` is the BALLISTIC peak — instant rise, timed fall, computed in the
+ * engine off a wall clock.  It used to be computed here, as a fixed decrement
+ * per render, which made the fall rate a function of how often React happened
+ * to redraw.  The RMS is the raw window value: measured at 0.44 dB of movement
+ * between frames, it is already as steady as a smoother would make it.
+ */
+function MeterBar({ db, rms, holdDb }: { db: number; rms: number; holdDb: number }) {
+  const peakPct = meterFraction(db);
   const rmsPct = meterFraction(meterDb(rms));
-  const holdPct = meterFraction(meterDb(hold));
+  const holdPct = meterFraction(holdDb);
   // Thresholds are on a PEAK reading now, so they mean what they say: red is
   // at or over full scale, amber is the last 6 dB of headroom.
-  const color = peakDb >= 0 ? 'bg-red-500' : peakDb > -6 ? 'bg-amber-400' : 'bg-emerald-500';
+  const color = db >= 0 ? 'bg-red-500' : db > -6 ? 'bg-amber-400' : 'bg-emerald-500';
   return (
     <div className="relative flex-1 rounded-sm bg-zinc-900 border border-zinc-800 overflow-hidden">
       <div className={`absolute bottom-0 left-0 right-0 ${color}`} style={{ height: `${peakPct * 100}%` }} />
       <div className="absolute bottom-0 left-0 right-0 bg-black/35" style={{ height: `${rmsPct * 100}%` }} />
-      {hold > 0 && (
+      {holdPct > 0 && (
         <div className="absolute left-0 right-0 h-px bg-zinc-100/80" style={{ bottom: `${holdPct * 100}%` }} />
       )}
     </div>

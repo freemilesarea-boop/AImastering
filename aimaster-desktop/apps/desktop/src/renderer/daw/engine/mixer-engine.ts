@@ -33,8 +33,9 @@ import {
 } from '../model/mixer-math.js';
 import type { BusId, DawSession, Track, TrackId } from '../model/types.js';
 import {
-  advanceLatch, clearLatch, emptyReading, meterFftSize, newLatch,
-  type ChannelMeterReading, type MeterLatch,
+  clearBallisticsHold, clearLatch, composeReading, emptyReading,
+  meterFftSize, newBallistics, newLatch,
+  type ChannelMeterReading, type MeterBallistics, type MeterLatch,
 } from '../model/channel-meter.js';
 import { findPlugin, type PluginInstance } from './plugins.js';
 import { parsePluginParamKey, pluginParamKey } from '../model/automation.js';
@@ -55,7 +56,7 @@ import { applyChainParams, buildDeviceChain, type BuiltChain } from './device-ch
  * panned hard.  A splitter gives each analyser a one-channel stream, and a
  * one-channel stream has nothing to down-mix.
  */
-interface ChannelMeterTap {
+export interface ChannelMeterTap {
   splitter: ChannelSplitterNode;
   left: AnalyserNode;
   right: AnalyserNode;
@@ -63,6 +64,8 @@ interface ChannelMeterTap {
   scratch: Float32Array<ArrayBuffer>;
   /** The latch, carried across polls. */
   latch: MeterLatch;
+  /** What the bars draw — rise instant, fall by the clock. */
+  ballistics: MeterBallistics;
   /** The newest window, so a reader that did not poll still gets a number. */
   last: ChannelMeterReading;
 }
@@ -484,7 +487,7 @@ export class MixerEngine {
     return {
       splitter, left, right,
       scratch: new Float32Array(size),
-      latch: newLatch(), last: emptyReading(),
+      latch: newLatch(), ballistics: newBallistics(), last: emptyReading(),
     };
   }
 
@@ -686,11 +689,11 @@ export class MixerEngine {
    * plainly because it is a real limit and not a bug: with nothing running and
    * nobody watching there is also no signal to be over.
    */
-  pollMeters(): Map<TrackId, ChannelMeterReading> {
+  pollMeters(nowSec = monotonicSeconds()): Map<TrackId, ChannelMeterReading> {
     const levels = new Map<TrackId, ChannelMeterReading>();
     for (const [id, ch] of this.channels) {
       if (!ch.meter) continue;
-      levels.set(id, readMeter(ch.meter));
+      levels.set(id, readMeter(ch.meter, nowSec));
     }
     return levels;
   }
@@ -712,7 +715,11 @@ export class MixerEngine {
     for (const ch of targets) {
       if (!ch.meter) continue;
       clearLatch(ch.meter.latch);
-      ch.meter.last = { ...ch.meter.last, holdPeak: 0, clipped: false };
+      clearBallisticsHold(ch.meter.ballistics);
+      ch.meter.last = {
+        ...ch.meter.last,
+        holdPeak: 0, clipped: false, shownHoldDb: ch.meter.ballistics.holdDb,
+      };
     }
   }
 
@@ -759,7 +766,7 @@ export class MixerEngine {
  * was 0 dBFS, which is how a channel could sit 15.7 dB into the red without
  * the strip changing colour.
  */
-function readMeter(m: ChannelMeterTap): ChannelMeterReading {
+function readMeter(m: ChannelMeterTap, nowSec: number): ChannelMeterReading {
   const side = (analyser: AnalyserNode): { peak: number; rms: number } => {
     analyser.getFloatTimeDomainData(m.scratch);
     let peak = 0;
@@ -772,13 +779,18 @@ function readMeter(m: ChannelMeterTap): ChannelMeterReading {
     }
     return { peak, rms: Math.sqrt(sum / m.scratch.length) };
   };
-  const l = side(m.left);
-  const r = side(m.right);
-  advanceLatch(m.latch, l.peak, r.peak);
-  m.last = {
-    peakL: l.peak, peakR: r.peak,
-    rmsL: l.rms, rmsR: r.rms,
-    holdPeak: m.latch.holdPeak, clipped: m.latch.clipped,
-  };
+  m.last = composeReading(m.latch, m.ballistics, side(m.left), side(m.right), nowSec);
   return m.last;
+}
+
+/**
+ * A monotonic clock in seconds, for the meter ballistics.
+ *
+ * `performance.now()` rather than `AudioContext.currentTime`: the latter is
+ * the right clock for SCHEDULING and the wrong one for a display, because it
+ * stops when the context is suspended and the bars would then freeze at
+ * whatever they last read instead of falling to silence.
+ */
+function monotonicSeconds(): number {
+  return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
 }
