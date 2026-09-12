@@ -450,19 +450,59 @@ function pluckVoice(
   // a plucked string does not stop when the key is released, it decays.  The
   // amp envelope below is what ends it.
   const ring = Math.min(8, Math.max(0.35, (params['sustain'] ?? 2.4)));
-  const src = ctx.createBufferSource();
-  src.buffer = stringBuffer(
-    ctx, freq, ring,
-    tuning.damping, tuning.brightness, tuning.pick, noteSeed(note),
-  );
 
-  // The body (or the pickup): a resonance and a roll-off.  This is what makes
-  // the same string a guitar rather than a synth pluck.
+  // The STRING, which is what a patch was previously unable to change.
+  //
+  // Damping and brightness were fixed per instrument, so every acoustic patch
+  // was the same steel string behind a different EQ — measured, the whole
+  // five-patch bank fitted into a band narrower than the poly synth's closest
+  // two patches.  Nylon is not a darker steel string; it is a string that
+  // loses its highs faster and starts with fewer of them.
+  const damping = Math.min(0.9999, Math.max(0.97, params['damp'] ?? tuning.damping));
+  const brightness = Math.min(1, Math.max(0, params['bright'] ?? tuning.brightness));
+  const pickPos = params['pick'] ?? tuning.pick;
+  const src = ctx.createBufferSource();
+  src.buffer = stringBuffer(ctx, freq, ring, damping, brightness, pickPos, noteSeed(note));
+
+  // A second string, slightly out with the first.  A twelve-string's courses
+  // and a doubled electric are the same trick, and it is a trick no amount of
+  // EQ imitates: two strings beat against each other, one string does not.
+  const doubling = Math.max(0, Math.min(1, params['double'] ?? 0));
+  let twin: AudioBufferSourceNode | null = null;
+  let twinGain: GainNode | null = null;
+  if (doubling > 0.01) {
+    twin = ctx.createBufferSource();
+    // A different seed, so the two are plucked independently — the same
+    // buffer twice would sum coherently and only be 6 dB louder.
+    twin.buffer = stringBuffer(ctx, freq, ring, damping, brightness, pickPos, noteSeed(note) ^ 0x5bf03635);
+    twin.detune.value = 6 + 10 * doubling;
+    twinGain = ctx.createGain();
+    twinGain.gain.value = doubling;
+  }
+  // Power, not amplitude — the same rule the synth's unison follows.
+  const pairGain = ctx.createGain();
+  pairGain.gain.value = 1 / Math.sqrt(1 + doubling * doubling);
+
+  // The body (or the pickup): resonances and a roll-off.  This is what makes
+  // the same string a guitar rather than a synth pluck — and WHERE the
+  // resonance sits is which guitar it is, so it is a parameter now and not a
+  // constant.  A real acoustic has two: the air inside the box, and the top
+  // plate about an octave above it.
   const body = ctx.createBiquadFilter();
   body.type = 'peaking';
-  body.frequency.value = tuning.bodyHz;
-  body.Q.value = tuning.bodyQ;
+  body.frequency.value = Math.max(40, params['bodyHz'] ?? tuning.bodyHz);
+  body.Q.value = Math.max(0.2, params['bodyQ'] ?? tuning.bodyQ);
   body.gain.value = params['body'] ?? 4;
+
+  const plateGain = params['plate'] ?? 0;
+  let plate: BiquadFilterNode | null = null;
+  if (Math.abs(plateGain) > 0.1) {
+    plate = ctx.createBiquadFilter();
+    plate.type = 'peaking';
+    plate.frequency.value = Math.max(80, (params['bodyHz'] ?? tuning.bodyHz) * 1.9);
+    plate.Q.value = 1.8;
+    plate.gain.value = plateGain;
+  }
 
   const tone = ctx.createBiquadFilter();
   tone.type = 'lowpass';
@@ -476,7 +516,10 @@ function pluckVoice(
     (val) => val * config.bendRangeSemitones * 100, 0,
   );
 
-  src.connect(body).connect(tone).connect(amp).connect(destination);
+  src.connect(pairGain);
+  if (twin && twinGain) twin.connect(twinGain).connect(pairGain);
+  const shaped = plate ? pairGain.connect(body).connect(plate) : pairGain.connect(body);
+  (shaped as AudioNode).connect(tone).connect(amp).connect(destination);
 
   // A plucked string has no sustain stage — it decays from the moment it is
   // hit.  The envelope's job is only to open cleanly and to close when the
@@ -492,11 +535,16 @@ function pluckVoice(
 
   src.start(start);
   src.stop(releaseEnd + 0.02);
+  if (twin) { twin.start(start); twin.stop(releaseEnd + 0.02); }
   return {
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
-      try { src.disconnect(); body.disconnect(); tone.disconnect(); amp.disconnect(); }
-      catch { /* ignore */ }
+      if (twin) { try { twin.stop(at); } catch { /* already stopped */ } }
+      try {
+        src.disconnect(); twin?.disconnect(); twinGain?.disconnect();
+        pairGain.disconnect(); body.disconnect(); plate?.disconnect();
+        tone.disconnect(); amp.disconnect();
+      } catch { /* ignore */ }
     },
   };
 }
@@ -1055,9 +1103,15 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     id: 'agtr',
     name: 'Acoustic Guitar',
     params: [
-      { id: 'tone',    name: 'Tone',    min: 800, max: 16000, default: 7000, unit: 'Hz' },
-      { id: 'body',    name: 'Body',    min: -6,  max: 12,    default: 5,    unit: 'dB' },
+      { id: 'damp',    name: 'Damping', min: 0.97, max: 0.9999, default: 0.9955, unit: '' },
+      { id: 'bright',  name: 'String',  min: 0,   max: 1,     default: 0.85, unit: '' },
       { id: 'pick',    name: 'Pick',    min: 0.02, max: 0.5,  default: 0.14, unit: '' },
+      { id: 'double',  name: 'Double',  min: 0,   max: 1,     default: 0,    unit: '' },
+      { id: 'bodyHz',  name: 'Body Hz', min: 60,  max: 400,   default: 110,  unit: 'Hz' },
+      { id: 'bodyQ',   name: 'Body Q',  min: 0.3, max: 6,     default: 1.1,  unit: '' },
+      { id: 'body',    name: 'Body',    min: -6,  max: 12,    default: 5,    unit: 'dB' },
+      { id: 'plate',   name: 'Plate',   min: 0,   max: 12,    default: 0,    unit: 'dB' },
+      { id: 'tone',    name: 'Tone',    min: 800, max: 16000, default: 7000, unit: 'Hz' },
       { id: 'sustain', name: 'Sustain', min: 0.4, max: 8,     default: 3,    unit: 's' },
       { id: 'release', name: 'Release', min: 0.03, max: 1.2,  default: 0.18, unit: 's' },
       { id: 'level',   name: 'Level',   min: 0,   max: 1,     default: CALIBRATED_LEVEL, unit: '' },
@@ -1076,9 +1130,15 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     id: 'egtr',
     name: 'Electric Guitar',
     params: [
-      { id: 'tone',    name: 'Tone',    min: 800, max: 12000, default: 3400, unit: 'Hz' },
-      { id: 'body',    name: 'Pickup',  min: -6,  max: 12,    default: 6,    unit: 'dB' },
+      { id: 'damp',    name: 'Damping', min: 0.97, max: 0.9999, default: 0.9987, unit: '' },
+      { id: 'bright',  name: 'String',  min: 0,   max: 1,     default: 0.7,  unit: '' },
       { id: 'pick',    name: 'Pick',    min: 0.02, max: 0.5,  default: 0.09, unit: '' },
+      { id: 'double',  name: 'Double',  min: 0,   max: 1,     default: 0,    unit: '' },
+      { id: 'bodyHz',  name: 'Pickup Hz', min: 60, max: 4000, default: 2500, unit: 'Hz' },
+      { id: 'bodyQ',   name: 'Pickup Q', min: 0.3, max: 6,    default: 1.6,  unit: '' },
+      { id: 'body',    name: 'Pickup',  min: -6,  max: 12,    default: 6,    unit: 'dB' },
+      { id: 'plate',   name: 'Plate',   min: 0,   max: 12,    default: 0,    unit: 'dB' },
+      { id: 'tone',    name: 'Tone',    min: 800, max: 12000, default: 3400, unit: 'Hz' },
       { id: 'sustain', name: 'Sustain', min: 0.4, max: 8,     default: 5,    unit: 's' },
       { id: 'release', name: 'Release', min: 0.03, max: 1.2,  default: 0.1,  unit: 's' },
       { id: 'level',   name: 'Level',   min: 0,   max: 1,     default: CALIBRATED_LEVEL, unit: '' },

@@ -109,6 +109,84 @@ function hitLevelDb(buffer: AudioBufferLike): number {
   return 20 * Math.log10(Math.max(1e-9, best));
 }
 
+/**
+ * Energy in 1/3-octave bands over one window, normalised.
+ *
+ * Normalised because this asks whether two patches SOUND different, and a
+ * patch that is merely 3 dB louder does not.  Level is the other checks' job.
+ */
+function bands(x: Float32Array, fromSec: number, toSec: number): number[] {
+  const out: number[] = [];
+  const a = Math.round(SR * fromSec), b = Math.round(SR * toSec);
+  for (let i = 0; i < 24; i++) {
+    const f = 60 * Math.pow(2, i / 3);
+    if (f >= SR / 2) { out.push(0); continue; }
+    const w = (2 * Math.PI * f) / SR, c = 2 * Math.cos(w);
+    let s1 = 0, s2 = 0;
+    for (let k = a; k < b; k++) {
+      const win = 0.5 * (1 - Math.cos((2 * Math.PI * (k - a)) / (b - a - 1)));
+      const s = x[k]! * win + c * s1 - s2;
+      s2 = s1; s1 = s;
+    }
+    out.push(Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - c * s1 * s2)));
+  }
+  const total = out.reduce((p, q) => p + q, 0) || 1;
+  return out.map((v) => v / total);
+}
+
+/**
+ * What a patch SOUNDS like, as a number per band and per slice.
+ *
+ * Timbre in TWO windows, not one.  A single window starting after the attack
+ * misses most of what a struck instrument is: the Rhodes' FM index has its
+ * own fast decay and is down to a few percent within 400 ms, so two patches
+ * with completely different attacks measured 0.25 apart while sounding
+ * nothing alike.  The attack gets a window of its own.
+ *
+ * Plus the ENVELOPE, normalised to its own peak, because a stab and a pad can
+ * hold the same spectrum and still be two patches.
+ */
+function fingerprint(x: Float32Array): { spectrum: number[]; envelope: number[] } {
+  const spectrum = [...bands(x, 0, 0.35), ...bands(x, 0.35, 3)];
+  const span = Math.round(SR * 1.6), n = 16, step = Math.floor(span / n);
+  const envelope: number[] = [];
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let k = i * step; k < (i + 1) * step; k++) sum += x[k]! * x[k]!;
+    envelope.push(Math.sqrt(sum / step));
+  }
+  const peak = Math.max(...envelope) || 1;
+  return { spectrum, envelope: envelope.map((v) => v / peak) };
+}
+
+function distance(a: ReturnType<typeof fingerprint>, b: ReturnType<typeof fingerprint>): number {
+  let d = 0;
+  for (let i = 0; i < a.spectrum.length; i++) d += Math.abs(a.spectrum[i]! - b.spectrum[i]!);
+  for (let i = 0; i < a.envelope.length; i++) {
+    d += Math.abs(a.envelope[i]! - b.envelope[i]!) / a.envelope.length;
+  }
+  return d;
+}
+
+/**
+ * How far apart two patches have to sound.
+ *
+ * Measured, not chosen.  Across the four banks the closest genuine pair sits
+ * at 0.40, and the one pair that WAS a near-copy — a clav and a marimba
+ * separated by little more than their tine level — came in at 0.223 before it
+ * was fixed.  0.30 sits between the two with room on both sides.
+ */
+const MIN_DISTINCTNESS = 0.30;
+
+/**
+ * How wide a bank has to be, end to end.
+ *
+ * 2.0 sits above the acoustic guitar's 1.79 before this work and below every
+ * bank's width after it — so it fails on the condition that was actually
+ * found, which is what a threshold has to do to be worth writing down.
+ */
+const MIN_BANK_WIDTH = 2.0;
+
 async function main(): Promise<void> {
   await check('every patch names parameters its instrument actually has', () => {
     for (const id of INSTRUMENT_IDS) {
@@ -284,6 +362,7 @@ async function main(): Promise<void> {
   // ── The rendered checks ───────────────────────────────────────────────────
 
   const loud: Array<{ id: string; patch: string; lufs: number; hard: number }> = [];
+  const prints = new Map<string, ReturnType<typeof fingerprint>>();
   for (const id of INSTRUMENT_IDS) {
     const root = REFERENCE_ROOT[id] ?? 48;
     for (const patch of patchesFor(id)) {
@@ -291,6 +370,11 @@ async function main(): Promise<void> {
       const phrase = await render(id, params, referencePhrase(root), REFERENCE_PHRASE_SECONDS);
       const hard = getLoudnessMetrics(await render(id, params, hardChord(root), 3));
       loud.push({ id, patch: patch.id, lufs: hitLevelDb(phrase), hard: hard.truePeakDbtp });
+
+      const l = phrase.getChannelData(0), r = phrase.getChannelData(1);
+      const mono = new Float32Array(phrase.length ?? 0);
+      for (let i = 0; i < mono.length; i++) mono[i] = (l[i]! + r[i]!) / 2;
+      prints.set(`${id}/${patch.id}`, fingerprint(mono));
     }
   }
 
@@ -336,6 +420,70 @@ async function main(): Promise<void> {
         assert(hi.lufs - row.lufs <= 18,
           `${id}/${row.patch} is ${(hi.lufs - row.lufs).toFixed(1)} dB below ${hi.patch}`);
       }
+    }
+  });
+
+  await check('no two patches of an instrument SOUND the same', () => {
+    // The parameter-distance checks above catch a patch pasted from its
+    // neighbour.  They cannot catch the other half of the problem: two
+    // patches whose numbers differ everywhere and whose sound differs
+    // nowhere, which is what a bank looks like when the engine has run out of
+    // axes to differ ON.
+    //
+    // What this does NOT catch is stated below, in the check that does: a
+    // floor on the closest pair says nothing about whether the bank is wide.
+    // This one is for the near-copy — two patches nudged apart by a value or
+    // two, which measured 0.223 when it was real (a clav and a marimba
+    // separated by little more than their tine level).
+    for (const id of INSTRUMENT_IDS) {
+      const list = patchesFor(id);
+      for (let a = 0; a < list.length; a++) {
+        for (let b = a + 1; b < list.length; b++) {
+          const pa = prints.get(`${id}/${list[a]!.id}`)!;
+          const pb = prints.get(`${id}/${list[b]!.id}`)!;
+          const d = distance(pa, pb);
+          assert(d >= MIN_DISTINCTNESS,
+            `${id}: ${list[a]!.id} and ${list[b]!.id} are ${d.toFixed(3)} apart — `
+            + 'they are the same sound under two names');
+        }
+      }
+    }
+  });
+
+  await check('the bank uses the width the engine has', () => {
+    // The other half of the question, and the half a floor on the closest
+    // pair cannot answer: a bank can have no two patches alike and still be
+    // one sound with the knobs nudged, if the engine has no axes to differ
+    // ON.  That is a property of the FURTHEST pair.
+    //
+    // Which is the condition that was actually found here, and not by any
+    // threshold — by comparing the banks' ranges.  The acoustic guitar's five
+    // patches spanned 1.79 where the poly synth's twenty spanned 3.70,
+    // because damping and brightness, the two things that make a string a
+    // different string, were fixed per instrument and no patch could reach
+    // them: every "nylon" was a steel string behind a darker EQ.
+    //
+    // Measured on the same fingerprint, with the contributions separated:
+    //
+    //     1.790   five patches, before
+    //     2.236   the nine patches now, with the new axes switched off
+    //     2.714   the nine patches now
+    //
+    // — so for the acoustic roughly half the gain is bolder authoring and
+    // half is the new axes.  For the electric (2.734 → 2.803 → 3.458) it is
+    // almost entirely the axes.
+    for (const id of INSTRUMENT_IDS) {
+      const list = patchesFor(id);
+      let widest = 0, pair = '';
+      for (let a = 0; a < list.length; a++) {
+        for (let b = a + 1; b < list.length; b++) {
+          const d = distance(prints.get(`${id}/${list[a]!.id}`)!, prints.get(`${id}/${list[b]!.id}`)!);
+          if (d > widest) { widest = d; pair = `${list[a]!.id} ↔ ${list[b]!.id}`; }
+        }
+      }
+      assert(widest >= MIN_BANK_WIDTH,
+        `${id}: its widest pair is only ${widest.toFixed(3)} apart (${pair}) — `
+        + 'the engine has run out of ways for a patch to differ');
     }
   });
 
