@@ -1381,6 +1381,8 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       { id: 'attack',  name: 'Attack',  min: 0,    max: 0.5, default: 0.001, unit: 's' },
       { id: 'release', name: 'Release', min: 0.02, max: 3,   default: 0.4,  unit: 's' },
       { id: 'rrOff',   name: 'RR Off',  min: 0,    max: 1,   default: 0,    unit: '' },
+      { id: 'velTone', name: 'Vel Tone', min: 0,   max: 1,   default: 0.5,  unit: '' },
+      { id: 'spread',  name: 'Spread',  min: 0,    max: 1,   default: 0,    unit: '' },
     ],
     // Plays whatever library is loaded.  With none loaded it is SILENT, and
     // that is the honest behaviour: the alternative is a fallback synth tone
@@ -1410,15 +1412,49 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         src.loopEnd = zone.loopEnd > zone.loopStart ? zone.loopEnd / rate : buffer.duration;
       }
 
+      // Where the note sits.  The library's own pan first, then — only if
+      // asked — the player's-seat spread that puts low keys left and high
+      // keys right.  Default 0: a sampler's stereo image belongs to whoever
+      // recorded it, and inventing one is a decision the user makes, not a
+      // decision an instrument makes for them.
+      const spread = Math.max(0, Math.min(1, params['spread'] ?? 0));
+      const keyPlace = Math.max(-1, Math.min(1, (pitch - 60) / 36));
       const pan = ctx.createStereoPanner();
-      pan.pan.value = Math.max(-1, Math.min(1, zone.pan / 100));
+      pan.pan.value = Math.max(-1, Math.min(1, zone.pan / 100 + spread * keyPlace));
+
+      // Velocity, where the library left it to us.
+      //
+      // Measured on a library with one layer per key and on the same library
+      // split in two: 0.009 and 0.811.  A sampler's velocity response IS its
+      // layers, and a library that has them needs nothing from the engine —
+      // adding a fixed amount on top would double what its author already
+      // decided.  A library with ONE layer per key gets pure volume, which
+      // is what every other instrument here has just stopped doing.
+      //
+      // So the amount is scaled by how much of the velocity range this zone
+      // covers: a zone spanning the whole range said nothing about velocity
+      // and is filled in; anything narrower said something and is left
+      // alone.  The fade runs out by the time a zone covers half, which is
+      // two layers.
+      const coverage = (zone.hiVel - zone.loVel + 1) / 128;
+      const libraryGap = Math.max(0, Math.min(1, (coverage - 0.6) / 0.4));
+      const velTone = Math.max(0, Math.min(1, params['velTone'] ?? 0.5)) * libraryGap;
+      let tone: BiquadFilterNode | null = null;
+      if (velTone > 0.001) {
+        const ceiling = Math.min(FILTER_CEILING_HZ, ctx.sampleRate * 0.45);
+        tone = ctx.createBiquadFilter();
+        tone.type = 'lowpass';
+        tone.Q.value = 0.7;
+        tone.frequency.value = ceiling * Math.pow(0.25 + 0.75 * note.velocity, 2.2 * velTone);
+      }
 
       const amp = ctx.createGain();
       scheduleCurve(
         src.detune, note, { kind: 'pitchBend' }, when, durationSec,
         (val) => val * config.bendRangeSemitones * 100, 0,
       );
-      src.connect(pan).connect(amp).connect(destination);
+      const shaped = tone ? src.connect(tone) : src;
+      (shaped as AudioNode).connect(pan).connect(amp).connect(destination);
 
       // The library's own volume, then velocity, then the instrument's level.
       const zoneGain = Math.pow(10, zone.volumeDb / 20);
@@ -1441,7 +1477,9 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       return {
         stop: (at: number) => {
           try { src.stop(at); } catch { /* already stopped */ }
-          try { src.disconnect(); pan.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+          try {
+            src.disconnect(); tone?.disconnect(); pan.disconnect(); amp.disconnect();
+          } catch { /* ignore */ }
         },
       };
     },

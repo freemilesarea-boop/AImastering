@@ -26,7 +26,63 @@ import {
   resolveSamplePath, zonesFor,
 } from '../src/renderer/daw/engine/sampler.js';
 import { samplePathIn, SamplePathError } from '../src/main/utils/samplePath.js';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { OfflineAudioContext } from 'node-web-audio-api';
+(globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
+
+import { clearLibrary, loadLibraryFrom } from '../src/renderer/daw/engine/sample-library.js';
+import { findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
+import { createNote, DEFAULT_MIDI_CONFIG } from '../src/renderer/daw/model/midi.js';
+import { writeWav24 } from './lib/wav-codec.js';
+
+const RENDER_SR = 44_100;
+
+/**
+ * A library built here rather than shipped, because the question is about
+ * the ENGINE and a real library would answer it with its own recordings.
+ *
+ * Two samples that differ only in how much high harmonic content they carry
+ * — which is what a velocity layer IS — and the same pair wired once as one
+ * layer per key and once as two.
+ */
+const probeDir = mkdtempSync(join(tmpdir(), 'sampler-probe-'));
+function writeProbeSample(name: string, bright: number): void {
+  const n = RENDER_SR * 2;
+  const ch = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const t = i / RENDER_SR, env = Math.exp(-2.2 * t);
+    let v = Math.sin(2 * Math.PI * 220 * t);
+    for (let h = 2; h * 220 < 20_000; h++) v += (bright / h) * Math.sin(2 * Math.PI * 220 * h * t);
+    ch[i] = (env * 0.5 * v) / (1 + bright);
+  }
+  writeWav24(join(probeDir, name), [ch, ch], RENDER_SR);
+}
+writeProbeSample('soft.wav', 0.25);
+writeProbeSample('hard.wav', 2.2);
+
+const ONE_LAYER_SFZ = '<region> sample=soft.wav lokey=48 hikey=72 pitch_keycenter=57';
+const TWO_LAYER_SFZ = [
+  '<region> sample=soft.wav lokey=48 hikey=72 pitch_keycenter=57 lovel=0 hivel=63',
+  '<region> sample=hard.wav lokey=48 hikey=72 pitch_keycenter=57 lovel=64 hivel=127',
+].join('\n');
+
+/** Drive the real load path, with the dialog and the IPC stubbed out. */
+async function loadProbe(text: string): Promise<void> {
+  (globalThis as unknown as { window: unknown }).window = {
+    electronAPI: {
+      invoke: async (_channel: string, arg: { path: string }) => ({
+        path: arg.path, bytes: new Uint8Array(readFileSync(join(probeDir, arg.path))),
+      }),
+    },
+  };
+  clearLibrary();
+  await loadLibraryFrom(null, {
+    path: join(probeDir, 'probe.sfz'), root: probeDir, name: 'probe', text,
+  });
+}
 
 /** Read code, not prose: a claim must not be satisfied by a comment. */
 function stripComments(src: string): string {
@@ -38,6 +94,22 @@ const results: T[] = [];
 function check(name: string, fn: () => void): void {
   try { fn(); results.push({ name, pass: true, detail: '' }); }
   catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+}
+
+/**
+ * A check that has to render, queued to run ONE AT A TIME.
+ *
+ * Serial, and not as a matter of taste: the loaded library is module-global
+ * — there is one sampler and one library in an app — so two of these running
+ * at once swap it under each other.  Which they did, and the failure read as
+ * a single-layer library answering with 0.850, the two-layer number.
+ *
+ * The thunk is stored rather than called, because calling it to find out
+ * whether it returned a promise is already starting it.
+ */
+const queued: Array<{ name: string; fn: () => Promise<void> }> = [];
+function checkAsync(name: string, fn: () => Promise<void>): void {
+  queued.push({ name, fn });
 }
 function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
 const near = (a: number, b: number, eps = 1e-9): boolean => Math.abs(a - b) < eps;
@@ -294,8 +366,122 @@ check('nothing opens an output device just to decode', () => {
   assert(!/엔진이 아직 준비되지/.test(ui), 'the load button still refuses when the engine is not running');
 });
 
-console.log('\n=== Sampler — which recording, and how fast ===');
-for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ' — ' + r.detail : ''}`);
-const bad = results.filter((r) => !r.pass).length;
-console.log(`\n${results.length - bad}/${results.length} passed${bad ? `, ${bad} FAILED` : ''}`);
-if (bad) process.exit(1);
+// ── What it sounds like ─────────────────────────────────────────────────────
+//
+// A sampler's velocity response IS its layers, so the engine must fill in
+// only where the library left the question unanswered.  Measured on one
+// library with a single layer per key and on the same library split in two:
+//
+//     engine off    0.008    0.850
+//     engine on     0.046    0.850
+//
+// — six times the response where there was none, and nothing at all where
+// the author had already decided.  Adding a fixed amount would have doubled
+// what a layered library already says.
+
+/** One note with a given velocity, through a library built for the occasion. */
+async function renderNote(
+  velocity: number, over: Record<string, number> = {}, pitch = 57,
+): Promise<Float32Array[]> {
+  const inst = findInstrument('sampler')!;
+  const ctx = new OfflineAudioContext(2, Math.round(RENDER_SR * 2), RENDER_SR);
+  inst.playNote({
+    ctx: ctx as unknown as BaseAudioContext,
+    destination: ctx.destination as unknown as AudioNode,
+    note: createNote({ pitch, velocity, startBeat: 0, durationBeat: 2 }),
+    config: DEFAULT_MIDI_CONFIG, when: 0, durationSec: 1.5,
+    params: { ...defaultInstrumentParams('sampler'), ...over },
+  });
+  const buf = await ctx.startRendering();
+  return [Float32Array.from(buf.getChannelData(0)), Float32Array.from(buf.getChannelData(1))];
+}
+
+/** Normalised band shape — so only the TIMBRE counts, never the level. */
+function shapeOf(ch: Float32Array[]): number[] {
+  const [l, r] = ch as [Float32Array, Float32Array];
+  const mono = new Float32Array(l.length);
+  for (let i = 0; i < mono.length; i++) mono[i] = (l[i]! + r[i]!) / 2;
+  const out: number[] = [];
+  for (let i = 0; i < 22; i++) {
+    const f = 50 * Math.pow(2, i / 2.2);
+    if (f >= RENDER_SR / 2) { out.push(0); continue; }
+    const w = (2 * Math.PI * f) / RENDER_SR, c = 2 * Math.cos(w);
+    let s1 = 0, s2 = 0;
+    for (let k = 0; k < mono.length; k++) { const s = mono[k]! + c * s1 - s2; s2 = s1; s1 = s; }
+    out.push(Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - c * s1 * s2)));
+  }
+  const total = out.reduce((a, b) => a + b, 0) || 1;
+  return out.map((v) => v / total);
+}
+
+function apart(a: number[], b: number[]): number {
+  return a.reduce((s, v, i) => s + Math.abs(v - b[i]!), 0);
+}
+
+checkAsync('a library that layers its velocities is left alone', async () => {
+  // The half that matters most, because getting it wrong is invisible: the
+  // sound still changes with velocity, just twice as much as its author
+  // asked for.  Checked across the WHOLE knob, not only at its default.
+  await loadProbe(TWO_LAYER_SFZ);
+  const base = apart(shapeOf(await renderNote(0.25, { velTone: 0 })),
+    shapeOf(await renderNote(1, { velTone: 0 })));
+  assert(base > 0.4, `the two-layer fixture only differs by ${base.toFixed(3)} — it is not layered`);
+  for (const velTone of [0.25, 0.5, 0.75, 1]) {
+    const d = apart(shapeOf(await renderNote(0.25, { velTone })), shapeOf(await renderNote(1, { velTone })));
+    assert(Math.abs(d - base) < 0.01,
+      `velTone ${velTone} moved a layered library by ${(d - base).toFixed(3)}`);
+  }
+});
+
+checkAsync('a library that does not gets the response from the engine', async () => {
+  await loadProbe(ONE_LAYER_SFZ);
+  const off = apart(shapeOf(await renderNote(0.25, { velTone: 0 })),
+    shapeOf(await renderNote(1, { velTone: 0 })));
+  assert(off < 0.02, `one layer already differs by ${off.toFixed(3)} without the engine`);
+  const on = apart(shapeOf(await renderNote(0.25, { velTone: 1 })),
+    shapeOf(await renderNote(1, { velTone: 1 })));
+  assert(on > off * 3,
+    `velTone 1 took it from ${off.toFixed(3)} to ${on.toFixed(3)} — velocity is still a volume knob`);
+});
+
+checkAsync('Spread places the keyboard, and only when asked', async () => {
+  // A sampler's stereo image belongs to whoever recorded it.  Default 0, and
+  // a mono recording stays mono until the user says otherwise.
+  await loadProbe(ONE_LAYER_SFZ);
+  const sideOf = async (over: Record<string, number>, pitch: number): Promise<number> => {
+    const [l, r] = await renderNote(0.9, over, pitch) as [Float32Array, Float32Array];
+    let side = 0, total = 0;
+    for (let i = 0; i < l.length; i++) {
+      side += (l[i]! - r[i]!) ** 2; total += l[i]! ** 2 + r[i]! ** 2;
+    }
+    return total > 0 ? 10 * Math.log10(Math.max(1e-30, side / total)) : -Infinity;
+  };
+  assert(await sideOf({}, 57) < -60, 'a mono sample came out wide with Spread at its default');
+  const low = await sideOf({ spread: 1 }, 48);
+  const high = await sideOf({ spread: 1 }, 72);
+  assert(low > -30 && high > -30,
+    `Spread 1 left the keyboard centred (${low.toFixed(1)} / ${high.toFixed(1)} dB)`);
+  // And the two ends must go to OPPOSITE sides, not merely both be wide.
+  const sign = async (pitch: number): Promise<number> => {
+    const [l, r] = await renderNote(0.9, { spread: 1 }, pitch) as [Float32Array, Float32Array];
+    let el = 0, er = 0;
+    for (let i = 0; i < l.length; i++) { el += l[i]! ** 2; er += r[i]! ** 2; }
+    return el - er;
+  };
+  assert(await sign(48) > 0 && await sign(72) < 0,
+    'Spread did not put the low keys and the high keys on opposite sides');
+});
+
+async function main(): Promise<void> {
+  for (const { name, fn } of queued) {
+    try { await fn(); results.push({ name, pass: true, detail: '' }); }
+    catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+  }
+  console.log('\n=== Sampler — which recording, and how fast ===');
+  for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ' — ' + r.detail : ''}`);
+  const bad = results.filter((r) => !r.pass).length;
+  console.log(`\n${results.length - bad}/${results.length} passed${bad ? `, ${bad} FAILED` : ''}`);
+  if (bad) process.exit(1);
+}
+
+main().catch((err) => { console.error(err); process.exit(1); });

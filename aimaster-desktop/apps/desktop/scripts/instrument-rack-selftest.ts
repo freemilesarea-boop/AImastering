@@ -25,7 +25,8 @@ import {
 import {
   addTrack, createMidiPart, createSession, createTrack, updateClips, updateTrack,
 } from '../src/renderer/daw/model/session-ops.js';
-import { patchParams } from '../src/renderer/daw/engine/instrument-patches.js';
+import { patchParams, patchesFor } from '../src/renderer/daw/engine/instrument-patches.js';
+import { findInstrument } from '../src/renderer/daw/engine/instruments.js';
 import { createNote } from '../src/renderer/daw/model/midi.js';
 import { exportMidiFile, importMidiFile } from '../src/renderer/daw/io/midi-file.js';
 import type { DawSession } from '../src/renderer/daw/model/types.js';
@@ -271,6 +272,27 @@ check('a slot reports which patch it is on, and says so when it is not', () => {
   }));
   assert(rackSlots(s)[0]?.patch === null,
     `after an edit the slot still claims ${String(rackSlots(s)[0]?.patch?.id)}`);
+});
+
+check('an instrument with no patches can still reach its knobs', () => {
+  // Found by opening the rack, not by reading it: the knob button lived
+  // INSIDE the patch row, and the two instruments that have no patches — the
+  // kit, whose presets are per-drum, and the sampler, whose sound is the file
+  // someone loaded — therefore had no way to reach their parameters at all.
+  // Fourteen knobs between them, drawn nowhere.
+  const rack = source('renderer/components/daw/InstrumentRack.tsx');
+  const gate = rack.indexOf('patchesFor(slot.instrumentId).length > 0 && (');
+  const knobButton = rack.indexOf('setOpenSlot(openSlot === slot.trackId');
+  assert(gate > 0 && knobButton > 0, 'the rack no longer has both a knob button and a patch gate');
+  // The gate's fragment has to CLOSE before the knob button opens.
+  const gateEnd = rack.indexOf('</>', gate);
+  assert(gateEnd > 0, 'the patch gate is no longer a fragment — re-read this check');
+  assert(knobButton > gateEnd,
+    'the knob button sits inside the patch gate — instruments without patches lose their knobs');
+  for (const id of ['drumkit', 'sampler']) {
+    assert(patchesFor(id).length === 0, `${id} has patches now, so this check is measuring nothing`);
+    assert((findInstrument(id)?.params.length ?? 0) > 0, `${id} has no parameters to reach`);
+  }
 });
 
 check('the rack can load a patch and move a knob', () => {

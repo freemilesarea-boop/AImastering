@@ -331,12 +331,16 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               <Small onClick={() => { void exportSlot(slot.trackId); }}>MIDI</Small>
             </div>
 
-            {/* Every melodic instrument gets a patch picker.  The kit does
-                not: its presets are the eleven genre kits below, which are a
-                patch per DRUM rather than one per instrument. */}
-            {patchesFor(slot.instrumentId).length > 0 && (
-              <div className="flex items-center gap-2 mt-1.5 pt-1.5"
-                   style={{ borderTop: `1px solid ${premium.surface.hairline}` }}>
+            {/* Every instrument gets its knobs; only some get a PATCH picker.
+                The kit's presets are the eleven genre kits below (a patch per
+                DRUM rather than one per instrument) and the sampler's sound is
+                the file someone loaded — but both still have parameters, and
+                gating this whole row on the picker is how they ended up with
+                no way to reach them. */}
+            <div className="flex items-center gap-2 mt-1.5 pt-1.5"
+                 style={{ borderTop: `1px solid ${premium.surface.hairline}` }}>
+              {patchesFor(slot.instrumentId).length > 0 && (
+                <>
                 <span style={{ fontSize: 9, color: premium.text.muted }}>패치</span>
                 <select
                   // Empty value = 편집됨.  The picker is told what the numbers
@@ -355,14 +359,17 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
                     </optgroup>
                   ))}
                 </select>
-                <Small onClick={() => setOpenSlot(openSlot === slot.trackId ? null : slot.trackId)}>
-                  {openSlot === slot.trackId ? '노브 닫기' : '노브'}
-                </Small>
-                <span className="flex-1 truncate" style={{ fontSize: 10, color: premium.text.muted }}>
-                  {slot.patch?.note ?? '패치에서 값을 바꿨습니다 — 다시 고르면 되돌아갑니다'}
-                </span>
-              </div>
-            )}
+                </>
+              )}
+              <Small onClick={() => setOpenSlot(openSlot === slot.trackId ? null : slot.trackId)}>
+                {openSlot === slot.trackId ? '노브 닫기' : '노브'}
+              </Small>
+              <span className="flex-1 truncate" style={{ fontSize: 10, color: premium.text.muted }}>
+                {patchesFor(slot.instrumentId).length === 0
+                  ? '이 악기는 패치 대신 아래 설정과 노브로 만듭니다'
+                  : slot.patch?.note ?? '패치에서 값을 바꿨습니다 — 다시 고르면 되돌아갑니다'}
+              </span>
+            </div>
 
             {openSlot === slot.trackId && (
               <ParamKnobs
