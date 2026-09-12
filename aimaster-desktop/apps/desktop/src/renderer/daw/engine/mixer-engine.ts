@@ -32,6 +32,10 @@ import {
   dbToGain, effectiveFaderDb, isAudible,
 } from '../model/mixer-math.js';
 import type { BusId, DawSession, Track, TrackId } from '../model/types.js';
+import {
+  advanceLatch, clearLatch, emptyReading, meterFftSize, newLatch,
+  type ChannelMeterReading, type MeterLatch,
+} from '../model/channel-meter.js';
 import { findPlugin, type PluginInstance } from './plugins.js';
 import { parsePluginParamKey, pluginParamKey } from '../model/automation.js';
 import type { AutomatableParam } from './plugin-kit.js';
@@ -42,6 +46,26 @@ import {
 import { macroCoverage } from '../model/macro-automation.js';
 import { paramsDrivenBy } from './plugin-kit.js';
 import { applyChainParams, buildDeviceChain, type BuiltChain } from './device-chain.js';
+
+/**
+ * The post-fader meter: one analyser per side, so nothing is down-mixed.
+ *
+ * A single `AnalyserNode` on a stereo tap reads (L+R)/2, which silently
+ * subtracts exactly what the pan added — measured at 6.02 dB for a channel
+ * panned hard.  A splitter gives each analyser a one-channel stream, and a
+ * one-channel stream has nothing to down-mix.
+ */
+interface ChannelMeterTap {
+  splitter: ChannelSplitterNode;
+  left: AnalyserNode;
+  right: AnalyserNode;
+  /** Reused between polls; allocating 8192 floats at 20 Hz is not free. */
+  scratch: Float32Array<ArrayBuffer>;
+  /** The latch, carried across polls. */
+  latch: MeterLatch;
+  /** The newest window, so a reader that did not poll still gets a number. */
+  last: ChannelMeterReading;
+}
 
 export interface Channel {
   trackId: TrackId;
@@ -67,7 +91,7 @@ export interface Channel {
   panner: StereoPannerNode;
   postFaderTap: GainNode;
   sends: Map<string, GainNode>;
-  meter: AnalyserNode | null;
+  meter: ChannelMeterTap | null;
   /**
    * One analyser per insert, tapped at what ARRIVES at that insert.
    *
@@ -433,6 +457,37 @@ export class MixerEngine {
     return node;
   }
 
+  /**
+   * The post-fader meter for one channel, or null when metering is off.
+   *
+   * `smoothingTimeConstant` is deliberately absent.  The old meter set it to
+   * 0.2 and it did nothing: that property smooths the FFT magnitude data, and
+   * this reads `getFloatTimeDomainData`, which it does not touch.  Measured —
+   * 0.0 and 0.99 gave the same reading to within a quarter of a dB, and that
+   * quarter was which block the render happened to end on.  Ballistics belong
+   * to the reader, not to a setting that looks like it does them.
+   */
+  private buildMeter(source: AudioNode): ChannelMeterTap | null {
+    if (!this.withMeters) return null;
+    const ctx = this.ctx as AudioContext;
+    if (typeof ctx.createAnalyser !== 'function') return null;
+    if (typeof ctx.createChannelSplitter !== 'function') return null;
+    const size = meterFftSize(ctx.sampleRate);
+    const splitter = ctx.createChannelSplitter(2);
+    const left = ctx.createAnalyser();
+    const right = ctx.createAnalyser();
+    left.fftSize = size;
+    right.fftSize = size;
+    source.connect(splitter);
+    splitter.connect(left, 0);
+    splitter.connect(right, 1);
+    return {
+      splitter, left, right,
+      scratch: new Float32Array(size),
+      latch: newLatch(), last: emptyReading(),
+    };
+  }
+
   private buildChannel(track: Track, session: DawSession): Channel {
     const ctx = this.ctx;
     const input        = ctx.createGain();
@@ -501,13 +556,7 @@ export class MixerEngine {
     fader.connect(panner);
     panner.connect(postFaderTap);
 
-    let meter: AnalyserNode | null = null;
-    if (this.withMeters && typeof (ctx as AudioContext).createAnalyser === 'function') {
-      meter = ctx.createAnalyser();
-      meter.fftSize = 2048;
-      meter.smoothingTimeConstant = 0.2;
-      postFaderTap.connect(meter);
-    }
+    const meter = this.buildMeter(postFaderTap);
 
     const sends = new Map<string, GainNode>();
     for (const send of track.sends) sends.set(send.id, ctx.createGain());
@@ -624,17 +673,47 @@ export class MixerEngine {
     return peak;
   }
 
-  meterLevels(): Map<TrackId, number> {
-    const levels = new Map<TrackId, number>();
+  /**
+   * Read every channel meter and advance its latch.
+   *
+   * The latch is the reason this is a POLL and not a getter: an over that
+   * happened two windows ago is gone from the analyser, and the only place it
+   * can survive is a number somebody kept.  Whoever calls this drives the
+   * latch, which means an over is caught exactly as often as somebody is
+   * looking — the transport tick and the Mix window both call it, so during
+   * playback that is every 50 ms whether the console is open or not, and with
+   * the transport stopped and no console open, nothing is metered.  Stated
+   * plainly because it is a real limit and not a bug: with nothing running and
+   * nobody watching there is also no signal to be over.
+   */
+  pollMeters(): Map<TrackId, ChannelMeterReading> {
+    const levels = new Map<TrackId, ChannelMeterReading>();
     for (const [id, ch] of this.channels) {
       if (!ch.meter) continue;
-      const data = new Float32Array(ch.meter.fftSize);
-      ch.meter.getFloatTimeDomainData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) { const v = data[i] ?? 0; sum += v * v; }
-      levels.set(id, Math.sqrt(sum / data.length));
+      levels.set(id, readMeter(ch.meter));
     }
     return levels;
+  }
+
+  /** The last poll's readings, without touching the analysers again. */
+  meterReadings(): Map<TrackId, ChannelMeterReading> {
+    const levels = new Map<TrackId, ChannelMeterReading>();
+    for (const [id, ch] of this.channels) {
+      if (ch.meter) levels.set(id, ch.meter.last);
+    }
+    return levels;
+  }
+
+  /** Clear the over latch and peak hold — one channel, or all of them. */
+  clearMeterHold(trackId?: TrackId): void {
+    const targets = trackId !== undefined
+      ? [this.channels.get(trackId)].filter((c) => c !== undefined)
+      : [...this.channels.values()];
+    for (const ch of targets) {
+      if (!ch.meter) continue;
+      clearLatch(ch.meter.latch);
+      ch.meter.last = { ...ch.meter.last, holdPeak: 0, clipped: false };
+    }
   }
 
   teardown(): void {
@@ -648,6 +727,11 @@ export class MixerEngine {
         try { node.disconnect(); } catch { /* ignore */ }
       }
       for (const s of ch.sends.values()) { try { s.disconnect(); } catch { /* ignore */ } }
+      if (ch.meter) {
+        for (const node of [ch.meter.splitter, ch.meter.left, ch.meter.right]) {
+          try { node.disconnect(); } catch { /* ignore */ }
+        }
+      }
     }
     for (const bus of this.buses.values()) { try { bus.disconnect(); } catch { /* ignore */ } }
     this.channels.clear();
@@ -662,4 +746,39 @@ export class MixerEngine {
   }
 
   get session(): DawSession | null { return this.lastSession; }
+}
+
+/**
+ * One poll of one channel's meter: peak and RMS per side, plus the latch.
+ *
+ * Peak and RMS both, and reported separately rather than folded into one bar,
+ * because they answer different questions and neither substitutes for the
+ * other: peak says whether this channel will survive being written to
+ * anything, RMS says how loud it sounds against the channel next to it.  The
+ * meter this replaced reported only RMS and drew it against a scale whose top
+ * was 0 dBFS, which is how a channel could sit 15.7 dB into the red without
+ * the strip changing colour.
+ */
+function readMeter(m: ChannelMeterTap): ChannelMeterReading {
+  const side = (analyser: AnalyserNode): { peak: number; rms: number } => {
+    analyser.getFloatTimeDomainData(m.scratch);
+    let peak = 0;
+    let sum = 0;
+    for (let i = 0; i < m.scratch.length; i++) {
+      const v = m.scratch[i] ?? 0;
+      sum += v * v;
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+    }
+    return { peak, rms: Math.sqrt(sum / m.scratch.length) };
+  };
+  const l = side(m.left);
+  const r = side(m.right);
+  advanceLatch(m.latch, l.peak, r.peak);
+  m.last = {
+    peakL: l.peak, peakR: r.peak,
+    rmsL: l.rms, rmsR: r.rms,
+    holdPeak: m.latch.holdPeak, clipped: m.latch.clipped,
+  };
+  return m.last;
 }

@@ -28,6 +28,7 @@ import { automatableParamsOf } from '../../../daw/edit/automation-lanes.js';
 import { adviseFor, canAdvise, LOW_CONFIDENCE } from '../../../daw/ai/plugin-advice.js';
 import { describeWindow, profileForInsert } from '../../../daw/ai/advice-runner.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
+import { readingPeak } from '../../../daw/model/channel-meter.js';
 import { premium } from '../../../theme/premium.js';
 import Knob from './Knob.js';
 import PluginVisual from './PluginVisual.js';
@@ -146,7 +147,11 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       // on the input axis using an output number, so the picture and the GR
       // meter next to it were describing two different signals.
       const arriving = insertId ? dawRuntime.insertInputLevel(win.trackId, insertId) : null;
-      setLevel(arriving ?? dawRuntime.meterLevels().get(win.trackId) ?? 0);
+      // The fallback is the channel's PEAK, matching what `insertInputLevel`
+      // returns.  It used to be that reading's RMS, so whether the dot landed
+      // on the curve depended on which of the two branches had run.
+      const channel = dawRuntime.meterReadings().get(win.trackId);
+      setLevel(arriving ?? (channel ? readingPeak(channel) : 0));
       setReduction(insertId ? dawRuntime.insertReduction(win.trackId, insertId) : null);
       setAnalysis(insertId ? dawRuntime.insertAnalysis(win.trackId, insertId) : null);
     }, 60);

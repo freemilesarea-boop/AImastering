@@ -6,7 +6,7 @@
 // mixer engine re-syncs on every change, so a fader move is audible on the
 // next block.
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import {
@@ -19,6 +19,10 @@ import {
 import { describePath, computeDelayCompensation, wouldFeedback } from '../../../daw/model/routing.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
+import {
+  METER_POLL_MS, emptyReading, meterDb, meterFraction,
+  type ChannelMeterReading,
+} from '../../../daw/model/channel-meter.js';
 import type {
   AutomationMode, AutomationTarget, DawSession, Track,
 } from '../../../daw/model/types.js';
@@ -40,11 +44,13 @@ export default function MixWindow() {
   const session = useDawStore((s) => s.session);
   const apply   = useDawStore((s) => s.apply);
   const notify  = useAppStore((s) => s.notify);
-  const [levels, setLevels] = useState<Map<string, number>>(new Map());
+  const [levels, setLevels] = useState<Map<string, ChannelMeterReading>>(new Map());
 
   // Meter poll — cheap enough at 20 Hz and only while the window is open.
+  // The interval comes from the same constant the analyser window is sized
+  // from: shorten one without the other and the meter starts reading a gap.
   useEffect(() => {
-    const timer = setInterval(() => setLevels(dawRuntime.meterLevels()), 50);
+    const timer = setInterval(() => setLevels(dawRuntime.pollMeters()), METER_POLL_MS);
     return () => clearInterval(timer);
   }, []);
 
@@ -79,7 +85,7 @@ export default function MixWindow() {
             session={session}
             track={track}
             depth={stackDepth(session, track.id)}
-            level={levels.get(track.id) ?? 0}
+            level={levels.get(track.id) ?? emptyReading()}
             compensationSamples={compensation.perTrack.get(track.id) ?? 0}
             onApply={apply}
             onNotify={notify}
@@ -97,7 +103,7 @@ function ChannelStrip({
   session: DawSession;
   track: Track;
   depth: number;
-  level: number;
+  level: ChannelMeterReading;
   compensationSamples: number;
   onApply: (fn: (s: DawSession) => DawSession) => void;
   onNotify: (m: string, t?: 'info' | 'success' | 'warning' | 'error') => void;
@@ -468,7 +474,7 @@ function ChannelStrip({
           }}
           title={writingVolume ? '오토메이션 기록 중' : undefined}
         />
-        <Meter level={level} />
+        <Meter level={level} onClearHold={() => dawRuntime.clearMeterHold(track.id)} />
         <div className="flex flex-col justify-end gap-1">
           {/* Alt-click is solo-safe, the way Pro Tools and Cubase both put it
               on the solo button — it belongs next to the thing it modifies,
@@ -534,17 +540,57 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-/** Post-fader RMS meter with a slow-falling peak hold. */
-function Meter({ level }: { level: number }) {
-  const holdRef = useRef(0);
-  const db = level > 1e-6 ? 20 * Math.log10(level) : -90;
-  const pct = Math.max(0, Math.min(1, (db + 60) / 66));
-  holdRef.current = Math.max(pct, holdRef.current - 0.01);
-  const color = db > -1 ? 'bg-red-500' : db > -8 ? 'bg-amber-400' : 'bg-emerald-500';
+/**
+ * Post-fader meter: peak and RMS, one bar per side, with an over latch.
+ *
+ * The bar is the PEAK and the darker fill inside it is the RMS, so the two
+ * are readable at once without either pretending to be the other.  The line
+ * across both bars is the peak hold; the block above them is the clip light,
+ * which stays lit until it is clicked.
+ *
+ * The numbers under the strip are the hold, in dBFS, because a meter you can
+ * only read by eye cannot answer "how much do I pull this down by".
+ */
+function Meter({ level, onClearHold }: { level: ChannelMeterReading; onClearHold: () => void }) {
+  const holdDb = meterDb(level.holdPeak);
   return (
-    <div className="relative w-2 rounded-sm bg-zinc-900 border border-zinc-800 overflow-hidden">
-      <div className={`absolute bottom-0 left-0 right-0 ${color}`} style={{ height: `${pct * 100}%` }} />
-      <div className="absolute left-0 right-0 h-px bg-zinc-300/70" style={{ bottom: `${holdRef.current * 100}%` }} />
+    <div className="flex flex-col items-stretch gap-0.5" style={{ width: 22 }}>
+      <button
+        onClick={onClearHold}
+        title={level.clipped ? '0 dBFS를 넘었습니다 — 클릭해서 리셋' : '피크 홀드 리셋'}
+        className={`h-1.5 rounded-sm border ${level.clipped
+          ? 'bg-red-500 border-red-400'
+          : 'bg-zinc-900 border-zinc-800'}`}
+      />
+      <div className="flex-1 flex gap-px">
+        <MeterBar peak={level.peakL} rms={level.rmsL} hold={level.holdPeak} />
+        <MeterBar peak={level.peakR} rms={level.rmsR} hold={level.holdPeak} />
+      </div>
+      <p
+        className={`text-[8px] font-mono text-center tabular-nums ${level.clipped
+          ? 'text-red-400'
+          : 'text-zinc-500'}`}
+        title="이 채널이 기록한 최대 피크 (dBFS)"
+      >{level.holdPeak > 0 ? (holdDb > -60 ? holdDb.toFixed(1) : '−∞') : '−∞'}</p>
+    </div>
+  );
+}
+
+function MeterBar({ peak, rms, hold }: { peak: number; rms: number; hold: number }) {
+  const peakDb = meterDb(peak);
+  const peakPct = meterFraction(peakDb);
+  const rmsPct = meterFraction(meterDb(rms));
+  const holdPct = meterFraction(meterDb(hold));
+  // Thresholds are on a PEAK reading now, so they mean what they say: red is
+  // at or over full scale, amber is the last 6 dB of headroom.
+  const color = peakDb >= 0 ? 'bg-red-500' : peakDb > -6 ? 'bg-amber-400' : 'bg-emerald-500';
+  return (
+    <div className="relative flex-1 rounded-sm bg-zinc-900 border border-zinc-800 overflow-hidden">
+      <div className={`absolute bottom-0 left-0 right-0 ${color}`} style={{ height: `${peakPct * 100}%` }} />
+      <div className="absolute bottom-0 left-0 right-0 bg-black/35" style={{ height: `${rmsPct * 100}%` }} />
+      {hold > 0 && (
+        <div className="absolute left-0 right-0 h-px bg-zinc-100/80" style={{ bottom: `${holdPct * 100}%` }} />
+      )}
     </div>
   );
 }

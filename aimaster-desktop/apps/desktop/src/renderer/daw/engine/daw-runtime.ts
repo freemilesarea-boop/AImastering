@@ -10,6 +10,7 @@
 
 import type { Clip, DawSession, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
+import type { ChannelMeterReading } from '../model/channel-meter.js';
 import { trackClips } from '../model/session-ops.js';
 import { ClipPlayer } from './clip-player.js';
 import { ControlRoomNode } from './control-room-node.js';
@@ -806,8 +807,26 @@ class DawRuntime {
     return this.engine?.insertInputLevel(trackId, insertId) ?? null;
   }
 
-  meterLevels(): Map<TrackId, number> {
-    return this.engine?.meterLevels() ?? new Map();
+  /**
+   * Read the meters and advance every channel's over latch.
+   *
+   * Called from the transport tick as well as from the Mix window, so a take
+   * that went over is still flagged when the console is opened afterwards —
+   * a clip light that only exists while you are looking at it is not a clip
+   * light.
+   */
+  pollMeters(): Map<TrackId, ChannelMeterReading> {
+    return this.engine?.pollMeters() ?? new Map();
+  }
+
+  /** The last poll's readings, without re-reading the analysers. */
+  meterReadings(): Map<TrackId, ChannelMeterReading> {
+    return this.engine?.meterReadings() ?? new Map();
+  }
+
+  /** Clear the over latch and peak hold — one channel, or all of them. */
+  clearMeterHold(trackId?: TrackId): void {
+    this.engine?.clearMeterHold(trackId);
   }
 
   private startTicking(): void {
@@ -834,6 +853,10 @@ class DawRuntime {
         this.onPosition?.(this.loop.startSec);
         return;
       }
+
+      // Meters ride the transport tick so the over latch is fed during
+      // playback whether or not the Mix window is open.
+      this.engine?.pollMeters();
 
       player.tick(session, LOOKAHEAD_SEC);
       // The click rides the same tick and the same origin as the clips, so a
