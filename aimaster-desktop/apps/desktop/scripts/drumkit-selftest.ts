@@ -335,6 +335,75 @@ async function main(): Promise<void> {
     assert(same < first.length * 0.9, 'the second hat is a copy of the first');
   });
 
+  await check('a tonal drum varies from hit to hit as well', async () => {
+    // The check above uses a HAT, which draws a different window of the noise
+    // buffer every time and so varies whatever else is true.  The kick has no
+    // noise in its body at all, and measured, two strikes of it were
+    // bit-identical — a spectral distance of 0.000.  Correct for a drum
+    // machine, wrong for every acoustic kit in the list, and invisible to a
+    // check that only ever asks a hat.
+    for (const pitch of [36, 45]) {
+      const kit = findInstrument('drumkit')!;
+      const ctx = new OfflineAudioContext(2, Math.round(SR * 3), SR);
+      const params = defaultInstrumentParams('drumkit');
+      for (const [i, beat] of [0, 1].entries()) {
+        kit.playNote({
+          ctx: ctx as unknown as BaseAudioContext,
+          destination: ctx.destination as unknown as AudioNode,
+          note: createNote({ pitch, velocity: 0.85, startBeat: beat, durationBeat: 1 }),
+          config: DEFAULT_MIDI_CONFIG, when: i * 1.2, durationSec: 0.5, params,
+        });
+      }
+      const buf = await ctx.startRendering();
+      const x = Float32Array.from(buf.getChannelData(0));
+      const span = Math.round(SR * 0.5);
+      const first = x.slice(0, span);
+      const second = x.slice(Math.round(SR * 1.2), Math.round(SR * 1.2) + span);
+      let same = 0;
+      for (let i = 0; i < span; i++) if (first[i] === second[i]) same++;
+      assert(same < span * 0.9,
+        `pitch ${pitch}: ${(100 * same / span).toFixed(1)}% of the second hit is a copy of the first`);
+    }
+  });
+
+  await check('velocity changes the sound, not only the level', async () => {
+    // Measured before this was true: normalised for level, a tom at a quarter
+    // velocity and a tom at full velocity were the same spectrum to within
+    // 0.032 — velocity was a volume knob with nothing else attached.  A head
+    // struck softly puts less into its high partials, a drum struck harder
+    // stretches further and starts its sweep higher, and a cymbal answers the
+    // only way pure noise can: which of its modes get excited at all.
+    //
+    // Measured on this file's own band helper, before and after:
+    //
+    //     kick  0.115 → 0.620      tom    0.075 → 0.430
+    //     snare 0.057 → 0.155      crash  0.021 → 0.096
+    //     hat   0.034 → 0.238      ride   0.045 → 0.264
+    //
+    // 0.08 sits under the weakest of the six now (the crash — pure noise has
+    // the least to answer with) and over five of the six before.  Stated
+    // plainly: the kick alone was already at 0.115 and would have passed
+    // this floor unfixed; it is the other five that make it bite.
+    const shape = (x: Float32Array): number[] => {
+      const out: number[] = [];
+      for (let i = 0; i < 22; i++) {
+        const f = 50 * Math.pow(2, i / 2.2);
+        if (f >= SR / 2) { out.push(0); continue; }
+        out.push(bandEnergy(x, f / 1.15, f * 1.15, 8));
+      }
+      const total = out.reduce((a, b) => a + b, 0) || 1;
+      return out.map((v) => v / total);
+    };
+    for (const pitch of [36, 38, 42, 45, 49, 51]) {
+      const soft = shape(await renderHit(pitch, 0.25));
+      const hard = shape(await renderHit(pitch, 1));
+      let d = 0;
+      for (let i = 0; i < soft.length; i++) d += Math.abs(soft[i]! - hard[i]!);
+      assert(d > 0.08,
+        `pitch ${pitch}: soft and hard differ by ${d.toFixed(3)} once levelled — velocity is a volume knob`);
+    }
+  });
+
   await check('decay and tune reach the sound', async () => {
     const normal = decaySec(await renderHit(46));
     const shorter = decaySec(await renderHit(46, 0.9, 2.5, { decay: 0.3 }));

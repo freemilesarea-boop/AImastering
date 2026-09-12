@@ -237,6 +237,8 @@ function hit(gain: GainNode, when: number, peak: number, decay: number): number 
 function drumTone(
   ctx: BaseAudioContext, out: AudioNode, spec: DrumSpec,
   when: number, peak: number, decay: number, tune: number,
+  /** How hard the stick arrived, 0…1 — how much of the sweep it earns. */
+  strike = 1,
 ): number {
   const osc = ctx.createOscillator();
   osc.type = 'sine';
@@ -244,7 +246,12 @@ function drumTone(
   // The sweep IS the drum.  Held at a constant frequency the same oscillator
   // is a bass note; the fast fall from a few times the fundamental is the
   // beater arriving.
-  osc.frequency.setValueAtTime(base * spec.sweep, when);
+  //
+  // And how FAR it falls from is how hard it was hit.  A head struck harder
+  // stretches further and its pitch starts higher — which is why a soft tom
+  // is not a quiet loud tom, and why scaling this with velocity is the
+  // difference between a kit and a sampler with one sample per drum.
+  osc.frequency.setValueAtTime(base * (1 + (spec.sweep - 1) * strike), when);
   osc.frequency.exponentialRampToValueAtTime(base, when + Math.min(0.09, decay * 0.35));
   const gain = ctx.createGain();
   const end = hit(gain, when, peak, decay);
@@ -304,17 +311,43 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
   // them being taught what a kit is.
   const spec = drumSpecIn(kitGenreOf(params['kit']), Math.round(soundingPitch(note)));
 
-  const tune = Math.pow(2, (params['tune'] ?? 0) / 12);
-  const decayScale = Math.max(0.1, params['decay'] ?? 1);
+  // How hard the stick arrived.  Measured before this existed: normalised
+  // for level, a tom hit at a quarter velocity and at full velocity were the
+  // same spectrum to within 0.032 — velocity was a volume knob and nothing
+  // else.  A real head struck softly puts less energy into its high
+  // partials, so what velocity moves here is the BRIGHTNESS ceiling and the
+  // depth of the pitch sweep, not only the amplitude.
+  const strike = 0.35 + 0.65 * note.velocity;
+
+  // And no two hits are the same hit.  The kick was bit-identical every
+  // time — a spectral distance of 0.000 between two strikes — which is
+  // correct for a drum machine and wrong for every acoustic kit here.  The
+  // wobble is derived from the note, so a part still renders identically
+  // every time it is rendered; it is variation, not randomness.
+  const wobble = (((noteSeed(note) >>> 9) % 2000) / 1000) - 1;
+
+  // Pitch moves least of the three on purpose: one of these kits is an 808
+  // whose kick IS the bass line, and detuning that would be a wrong note
+  // rather than a livelier drum.  0.5% is four cents.
+  const tune = Math.pow(2, (params['tune'] ?? 0) / 12) * (1 + wobble * 0.005);
+  const decayScale = Math.max(0.1, params['decay'] ?? 1) * (1 + wobble * 0.06);
   const toneScale = Math.max(0.25, params['tone'] ?? 1);
-  const snap = Math.max(0, Math.min(1, params['snap'] ?? 0.5));
+  const snap = Math.max(0, Math.min(1, params['snap'] ?? 0.5)) * (1 + wobble * 0.12);
   // `tone` moves the ceiling as well as the floor, so one knob still darkens
   // or opens the whole kit.
-  const air = spec.air * toneScale;
+  // The ceiling follows the stick: 45% of the way open at the softest hit
+  // and all the way at the hardest.
+  const air = spec.air * toneScale * (0.45 + 0.55 * strike);
   // Velocity on a drum is dynamics, not a trim: a ghost note is a different
   // sound from a rimshot, so it moves the level a long way.
   const level = (params['level'] ?? CALIBRATED_LEVEL) * INSTRUMENT_TRIM.drumkit
     * spec.level * (0.08 + 0.92 * Math.pow(note.velocity, 1.4));
+  // Tried and dropped: scaling this with velocity too.  "Less energy in is
+  // less time to get out" is true of a real cymbal, and measuring it made
+  // five of the six pieces LESS different between a soft hit and a hard one,
+  // not more — a shorter tail moves the balance back toward the body the
+  // hard hit already has.  The hypothesis was reasonable and the numbers
+  // said no.
   const decay = spec.decay * decayScale;
   const seed = noteSeed(note);
 
@@ -332,14 +365,16 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
 
   switch (spec.family) {
     case 'kick':
-      later(drumTone(ctx, master, spec, when, level, decay, tune));
+      later(drumTone(ctx, master, spec, when, level, decay, tune, strike));
       // The click: a beater on a head, not part of the tone.
-      later(drumNoise(ctx, master, seed, when, level * 0.30 * snap, 0.012,
+      // The beater click needs the energy to exist at all: it is most of
+      // what separates a thump from a kick, and a brush stroke has none.
+      later(drumNoise(ctx, master, seed, when, level * 0.30 * snap * strike, 0.012,
         'highpass', 1800 * toneScale, 0.7, air));
       break;
 
     case 'tom':
-      later(drumTone(ctx, master, spec, when, level, decay, tune));
+      later(drumTone(ctx, master, spec, when, level, decay, tune, strike));
       later(drumNoise(ctx, master, seed, when, level * 0.16 * snap, 0.03,
         'bandpass', 900 * toneScale, 1.2, air));
       break;
@@ -347,10 +382,15 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
     case 'snare':
       // Two bodies a fifth apart, then the wires.  The wires are most of what
       // you hear and all of what makes it a snare rather than a small tom.
-      later(drumTone(ctx, master, spec, when, level * 0.45, decay * 0.55, tune));
+      later(drumTone(ctx, master, spec, when, level * 0.45, decay * 0.55, tune, strike));
       later(drumTone(ctx, master, { ...spec, hz: spec.hz * 1.48, sweep: 1.2 },
-        when, level * 0.28, decay * 0.42, tune));
-      later(drumNoise(ctx, master, seed, when, level * 0.85, decay,
+        when, level * 0.28, decay * 0.42, tune, strike));
+      // The wires need to be driven.  A ghost note is a dull thud with
+      // barely any rattle in it, and a rimshot is almost all rattle — the
+      // ceiling alone never reached this, because a snare's wires sit well
+      // below it and it measured 0.057 against a kick's 0.115.  They never
+      // vanish, because a snare with the wires off is a tom.
+      later(drumNoise(ctx, master, seed, when, level * 0.85 * (0.25 + 0.75 * strike), decay,
         'highpass', spec.hz * spec.tone * toneScale, 0.6, air));
       break;
 
@@ -358,7 +398,7 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
       later(drumNoise(ctx, master, seed, when, level, decay,
         'bandpass', spec.hz * toneScale, 6, air));
       later(drumTone(ctx, master, { ...spec, hz: 420, sweep: 1.1 },
-        when, level * 0.35, 0.03, tune));
+        when, level * 0.35, 0.03, tune, strike));
       break;
 
     case 'clap':
@@ -372,6 +412,10 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
       break;
 
     case 'hat':
+      // Also tried: a short bright stick transient, the way the kick has a
+      // beater click.  Worth 0.005 of extra velocity response, for a node on
+      // the most frequently struck drum in any pattern — so a hat stays one
+      // burst of noise and answers the stick through its ceiling alone.
       later(drumNoise(ctx, master, seed, when, level, decay,
         'highpass', spec.hz * toneScale, 0.8, air));
       break;
@@ -379,7 +423,11 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
     case 'cymbal':
       later(drumNoise(ctx, master, seed, when, level, decay,
         'highpass', spec.hz * 0.55 * toneScale, 0.5, air));
-      later(drumNoise(ctx, master, seed + 104729, when, level * 0.45, decay * 0.35,
+      // A cymbal is pure noise, so it has no sweep to deepen — its only
+      // way to answer the stick is WHICH of its modes get excited.  The
+      // high, short component is the "crash"; without it the same cymbal is
+      // a wash, which is exactly what one sounds like brushed.
+      later(drumNoise(ctx, master, seed + 104729, when, level * 0.45 * strike, decay * 0.35,
         'bandpass', spec.hz * 1.4 * toneScale, 0.9, air));
       break;
 
@@ -387,8 +435,9 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
       // A ride is a cymbal you can hear the stick on.
       later(drumNoise(ctx, master, seed, when, level * 0.55, decay,
         'highpass', spec.hz * 0.7 * toneScale, 0.6, air));
+      // The stick on a ride is the part that comes and goes with the arm.
       later(drumTone(ctx, master, { ...spec, hz: spec.hz * 0.22, sweep: 1.05 },
-        when, level * 0.5 * (0.4 + snap), 0.09, tune));
+        when, level * 0.5 * (0.4 + snap) * strike, 0.09, tune, strike));
       break;
 
     case 'cowbell': {
