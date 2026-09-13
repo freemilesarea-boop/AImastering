@@ -26,6 +26,7 @@
  * Run: pnpm --filter @aimaster/desktop test:model-install
  */
 
+import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 import {
@@ -130,28 +131,59 @@ check('a second valid model is skipped, and says why', () => {
 
 // ── The constant, held against the thing it describes ───────────────────────
 
-check('dispatch is off, and the built worker agrees that it has to be', () => {
-  // A boolean that documents an architecture goes stale the moment the
-  // architecture moves.  So this reads the worker that was actually built.
+check('dispatch is off exactly while nothing dispatches', () => {
+  // The first version of this check was wrong in an instructive way.  It
+  // asserted that `separate.worker.js` carries no inference runtime — reading
+  // that as proof dispatch was impossible.  It was proof of nothing: the right
+  // design puts the runtime in a SECOND worker, so that assertion would have
+  // stayed true straight through dispatch being built, and the check would
+  // never have fired.
   //
-  // Two facts make dispatch impossible from in there: the bundle is a classic
-  // IIFE (no module system to resolve a bare specifier with), and it carries
-  // no ONNX runtime.  If either changes, this fails — which is the message.
-  const worker = readFileSync('src/renderer/public/separate.worker.js', 'utf8');
-  const hasRuntime = /onnxruntime|ort\.InferenceSession|InferenceSession\.create/.test(worker);
-  const isModule = /\bexport\s|\bimport\s+[\w{*]/.test(worker);
+  // What the constant actually claims is that no separation run reaches a
+  // model.  So that is what is checked, against the app rather than against a
+  // bundle: if anybody calls `runModel` from `src/`, or flips the constant
+  // without doing so, this fails and says which way round it is.
+  // A CALL, not a mention: this file's own explanation names `runModel`, and
+  // so does the comment beside the constant.  Prose is not dispatch.
+  const appFiles = execSync(
+    "grep -rl 'runModel(' src/ --include=*.ts --include=*.tsx || true",
+    { encoding: 'utf8' },
+  ).split('\n').filter((f) => f.trim() !== '' && !f.endsWith('model-run.ts'));
 
   if (MODEL_DISPATCH_READY) {
-    assert(hasRuntime,
-      'MODEL_DISPATCH_READY is true but the worker carries no inference runtime');
+    assert(appFiles.length > 0,
+      'MODEL_DISPATCH_READY is true but nothing in src/ calls runModel');
     return;
   }
-  assert(!hasRuntime,
-    'the worker now carries an inference runtime — dispatch may be possible, so '
-    + 'flip MODEL_DISPATCH_READY and wire the run to it');
-  assert(!isModule,
-    'the worker is no longer a classic script — a module worker CAN resolve the '
-    + 'runtime, so revisit MODEL_DISPATCH_READY');
+  assert(appFiles.length === 0,
+    `something now dispatches to a model (${appFiles.join(', ')}) — `
+    + 'flip MODEL_DISPATCH_READY so the panel stops saying it does not');
+});
+
+check('and the route that would turn it on is still available', () => {
+  // Measured rather than assumed, because the reason written next to the
+  // constant was wrong once already.  Two facts carry the plan:
+  //
+  //   · `onnxruntime-web/wasm` bundles to a classic IIFE — 71 KB, no warnings
+  //     — so a model worker needs no module system, exactly like the
+  //     separator worker that already exists.
+  //   · `env.wasm.wasmBinary` accepts the 12.86 MB runtime as BYTES and makes
+  //     `wasmPaths` irrelevant, so nothing has to be fetched from `file://`.
+  //
+  // If either goes away in a dependency bump, the plan changes and this says
+  // so before somebody spends a day on it.
+  const ortRoot = '../../node_modules/onnxruntime-common';
+  const env = readFileSync(`${ortRoot}/lib/env.ts`, 'utf8');
+  assert(/wasmBinary\?:\s*ArrayBufferLike/.test(env),
+    'onnxruntime no longer accepts the runtime as bytes — dispatch would need a fetch again');
+  assert(/wasmPaths.*will\s*\n?\s*\*\s*be ignored|wasmPaths` property will/.test(env),
+    'wasmBinary no longer documents that it overrides wasmPaths');
+
+  const pkg = JSON.parse(readFileSync('../../node_modules/onnxruntime-web/package.json', 'utf8')) as {
+    exports: Record<string, { require?: string }>;
+  };
+  assert(typeof pkg.exports['./wasm']?.require === 'string',
+    'onnxruntime-web/wasm no longer ships a classic build to bundle');
 });
 
 check('the runtime loader still hides its specifier from the bundler', () => {
