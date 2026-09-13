@@ -99,8 +99,6 @@ export function buildSession(snap: AudioSnapshot, createdAt: string): LouiSessio
     allModulesState:   defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS),
     presetId:          snap.options.quickPreset,
     baseOptions:       snap.options,
-    freeEqEnabled:     false,
-    freeEqBands:       [],
   };
 }
 

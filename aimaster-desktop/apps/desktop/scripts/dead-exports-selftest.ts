@@ -71,13 +71,6 @@ function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
  * can add it back in one line.
  */
 const ALLOWED = new Set<string>([
-  // The only thing that can ever create `graph.freeEq`, and nothing calls it —
-  // so the `useFreeEq` branch of `rewire()` is unreachable and the free-tier EQ
-  // is a feature with no handle on it.  Deleting the setter would not fix that,
-  // it would only hide it: the branch, the chain type and the node would all
-  // have to go too, and whether the free EQ is meant to come back is a product
-  // question, not a sweep's.  Kept, named here, and raised.
-  'setFreeEqBands',
   // The entitlement bridge's only reader.  `setEntitlement` is still called
   // from `entitlementHandlers`, so deleting this turns the bridge write-only —
   // exactly the shape this file exists to catch.  It is left over from the
