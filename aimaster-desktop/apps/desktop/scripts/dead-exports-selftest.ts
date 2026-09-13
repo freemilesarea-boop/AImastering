@@ -322,6 +322,42 @@ check('and no import was left standing with nothing in it', () => {
     `${empty.length} file(s) import nothing by name:\n    ${empty.join('\n    ')}`);
 });
 
+check('and every selftest on disk is reachable from `pnpm test`', () => {
+  // A suite nobody runs is the same failure as an export nobody calls, and it
+  // is worse for being reassuring: the file exists, it is green when you run
+  // it by hand, and it has never once guarded the thing it describes.
+  //
+  // Three were found this way.  `free-eq-offline-selftest` had tested the free
+  // parametric EQ against the real WASM chain since the day it was written and
+  // had never run in the chain.  `session-schema-selftest` and
+  // `undo-redo-selftest` were the same.  All three passed when finally run —
+  // which is luck, not evidence.
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
+    scripts: Record<string, string>;
+  };
+  const chain = pkg.scripts['test'] ?? '';
+  const inChain = new Set([...chain.matchAll(/pnpm (test:[a-z0-9-]+)/g)].map((m) => m[1]!));
+
+  // file → the package scripts that run it
+  const runs = new Map<string, string[]>();
+  for (const [name, cmd] of Object.entries(pkg.scripts)) {
+    for (const m of cmd.matchAll(/scripts\/([A-Za-z0-9_-]+\.ts)/g)) {
+      const list = runs.get(m[1]!) ?? [];
+      list.push(name);
+      runs.set(m[1]!, list);
+    }
+  }
+
+  const stranded = execSync(String.raw`find scripts -name '*-selftest.ts' -printf '%f\n'`,
+    { encoding: 'utf8', shell: '/bin/bash' })
+    .split('\n').filter((f) => f.trim() !== '')
+    .filter((f) => !(runs.get(f) ?? []).some((n) => inChain.has(n)));
+
+  assert(stranded.length === 0,
+    `${stranded.length} selftest(s) never run in \`pnpm test\`:\n    ${stranded.join('\n    ')}`
+    + '\n  Register each one and add it to the `test` chain.');
+});
+
 check('and the sweep is actually looking at the app', () => {
   // Guards the checks above from passing because they found nothing to check.
   // A broken `find`, a renamed directory, a parser that stops matching — all

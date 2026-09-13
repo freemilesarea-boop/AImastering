@@ -1029,7 +1029,7 @@ function TrackHeader({
           <button
             onClick={(e) => { e.stopPropagation(); setPicking(!picking); }}
             title="트랙 색"
-            className="w-1.5 h-4 rounded-sm shrink-0"
+            className="relative w-1.5 h-4 rounded-sm shrink-0 before:absolute before:-inset-x-1.5 before:inset-y-0 before:content-['']"
             style={{ background: track.color, border: 'none', padding: 0, cursor: 'pointer' }}
           />
         )}

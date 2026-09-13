@@ -56,7 +56,7 @@ export function SectionLaneHeader() {
       <button
         onClick={addHere}
         title="재생헤드에 구간 경계를 추가합니다"
-        className="w-5 h-4 rounded text-[10px] leading-none border"
+        className="w-5 h-4 shrink-0 rounded text-[10px] leading-none border"
         style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
       >+</button>
     </div>

@@ -14,6 +14,8 @@ import {
   parseChord, matchesChord, normalizeKeyToken, formatChord, keyLabel,
   type KeyEventLike,
 } from '../src/renderer/shortcuts/keys.js';
+import { readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { SHORTCUTS, BINDINGS, findShortcut, type CommandId } from '../src/renderer/shortcuts/definitions.js';
 import { buildCommands, buildSession, type CommandDeps, type AudioSnapshot } from '../src/renderer/shortcuts/commands.js';
 import {
@@ -124,15 +126,48 @@ check('all five Cubase groups are covered', () => {
   eq(SHORTCUTS.filter((s) => s.group === 'tools').length, 9, '9 toolbar tools');
 });
 
-check('unavailable commands are the documented three', () => {
-  // Two have left this list as the app grew: the Key Editor when the MIDI
-  // layer shipped, and the metronome when the tempo map got a click that
-  // follows it.  The list is asserted exactly so leaving a shipped feature
-  // marked "not applicable" fails here instead of in a user's hands.
-  const off = SHORTCUTS.filter((s) => !s.available).map((s) => s.id).sort();
-  eq(off.join(','), 'tool.draw,tool.glue,transport.record', 'unavailable set');
-  assert(SHORTCUTS.find((s) => s.id === 'window.keyEditor')?.available === true,
-    'the Key Editor is implemented');
+check('nothing that ships is still marked "not applicable"', () => {
+  // `available: false` draws the row STRUCK THROUGH in the DAW's shortcut
+  // help, over the words "해당 없음".  Saying that about a key that works is
+  // worse than saying nothing: the user stops pressing it.
+  //
+  // This used to assert the off-list verbatim — `tool.draw,tool.glue,
+  // transport.record` — with a comment saying the point was that a shipped
+  // feature left marked "not applicable" would fail here.  It could not: a
+  // frozen list only moves when somebody edits it, which is exactly what a
+  // stale flag means nobody did.  Two of the three had shipped in the DAW and
+  // the list never budged.  Record even contradicted itself in one sentence:
+  // struck through, note reading "DAW 워크스페이스에서는 이 키가 녹음을 시작합니다".
+  //
+  // So the flag is checked against the evidence instead — the DAW's own
+  // command map for verbs, and the surfaces that branch on a tool id for
+  // tools.  A feature landing now flips the flag or fails here.
+  const dawCommands = readFileSync('src/renderer/shortcuts/daw-commands.ts', 'utf8');
+  const dawUi = execSync(
+    String.raw`grep -rho "tool === '[a-z]*'" src/renderer/components/daw || true`,
+    { encoding: 'utf8', shell: '/bin/bash' });
+
+  const shipped = (id: CommandId): string | null => {
+    if (new RegExp(`'${id}':`).test(dawCommands)) return 'the DAW command map implements it';
+    const tool = /^tool\.([a-z]+)$/.exec(id)?.[1];
+    if (tool !== undefined && dawUi.includes(`tool === '${tool}'`)) {
+      return `a DAW surface branches on tool === '${tool}'`;
+    }
+    return null;
+  };
+
+  const wrong = SHORTCUTS.filter((s) => !s.available)
+    .map((s) => ({ id: s.id, why: shipped(s.id) }))
+    .filter((x) => x.why !== null);
+  assert(wrong.length === 0,
+    'marked unavailable, but shipped:\n    '
+    + wrong.map((x) => `${x.id} — ${x.why!}`).join('\n    '));
+
+  // And the converse, so the flag cannot simply be set true everywhere: the
+  // one genuinely-off key must stay off while nothing acts on it.
+  const glue = SHORTCUTS.find((s) => s.id === 'tool.glue');
+  assert(glue !== undefined && !glue.available && shipped('tool.glue') === null,
+    'tool.glue is still unimplemented and must stay marked so');
 });
 
 // ── options history ──────────────────────────────────────────────────────────

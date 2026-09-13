@@ -524,7 +524,7 @@ function ChannelStrip({
             onKeyDown={() => grab({ kind: 'pan' })}
             onKeyUp={() => release({ kind: 'pan' })}
             onChange={(e) => move({ kind: 'pan' }, parseFloat(e.target.value))}
-            className="w-full h-1 accent-zinc-400"
+            className="w-full h-4 accent-zinc-400 [&::-webkit-slider-runnable-track]:h-1"
           />
           <p className="text-[8px] font-mono text-zinc-600 text-center">
             {shownPan === 0 ? 'C' : shownPan < 0 ? `L${Math.round(-shownPan * 100)}` : `R${Math.round(shownPan * 100)}`}
@@ -651,7 +651,8 @@ function MasterLoudness() {
         <button
           onClick={() => { dawRuntime.resetMasterLoudness(); setM(null); }}
           title="적분 라우드니스를 0에서 다시 시작합니다"
-          className="text-[8px] px-1 rounded border border-zinc-700 text-zinc-500 hover:text-zinc-300"
+          className="relative text-[8px] px-1 rounded border border-zinc-700 text-zinc-500
+            hover:text-zinc-300 before:absolute before:-inset-2 before:content-['']"
         >R</button>
       </div>
       {state !== 'on' && m === null ? (
@@ -766,7 +767,8 @@ function Section({ label, children, expanded, onToggle }: {
           <button
             onClick={onToggle}
             title={expanded ? '쓰는 슬롯만 보기' : '슬롯 A–E 전부 보기'}
-            className={`text-[8px] leading-none px-1 rounded border ${expanded
+            className={`relative text-[8px] leading-none px-1 rounded border
+              before:absolute before:-inset-2 before:content-[''] ${expanded
               ? 'border-zinc-600 text-zinc-300'
               : 'border-zinc-800 text-zinc-600'}`}
           >A–E</button>
@@ -795,7 +797,8 @@ function Meter({ level, onClearHold }: { level: ChannelMeterReading; onClearHold
       <button
         onClick={onClearHold}
         title={level.clipped ? '0 dBFS를 넘었습니다 — 클릭해서 리셋' : '피크 홀드 리셋'}
-        className={`h-1.5 rounded-sm border ${level.clipped
+        className={`relative h-1.5 rounded-sm border before:absolute before:-inset-y-2
+          before:inset-x-0 before:content-[''] ${level.clipped
           ? 'bg-red-500 border-red-400'
           : 'bg-zinc-900 border-zinc-800'}`}
       />

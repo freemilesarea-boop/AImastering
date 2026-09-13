@@ -228,7 +228,7 @@ export function ChordLaneHeader() {
               className="h-4 px-1 rounded text-[8px] leading-none border"
               style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>8마디</button>
       <button onClick={addHere} title="재생헤드에 코드를 추가합니다"
-              className="w-5 h-4 rounded text-[10px] leading-none border"
+              className="w-5 h-4 shrink-0 rounded text-[10px] leading-none border"
               style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>+</button>
     </div>
   );
