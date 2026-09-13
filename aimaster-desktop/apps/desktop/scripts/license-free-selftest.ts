@@ -172,6 +172,50 @@ check('the switch lives where both sides can reach it for free', () => {
     'and the modal reads it from there');
 });
 
+check('the entitlement half is dormant, and dormant in a way that is written down', () => {
+  // The licence half of the gate is one word away: `LICENSE_ENFORCED` flips
+  // and `canProcess` is waiting for it.  The ENTITLEMENT half is not, and the
+  // difference is worth pinning rather than leaving somebody to find out.
+  //
+  // Its cache is still built — the renderer pushes a snapshot, main caches it
+  // — but the consumer was DELETED rather than switched off, so turning it on
+  // means re-adding a gate and updating the two suites that forbid one.  The
+  // bridge's own docblock used to claim `fileHandlers` already called it.  It
+  // did not, and a reader trusting that would have shipped a paywall with one
+  // half silently open.
+  const bridge = readFileSync('src/main/services/entitlementBridge.ts', 'utf8');
+  const code = stripComments(bridge);
+
+  // 1. The machinery is still here, same promise as the licence half.
+  for (const kept of ['setEntitlement', 'getEntitlementPaid', 'EntitlementSnapshot']) {
+    assert(new RegExp(`\\b${kept}\\b`).test(code), `${kept} is still there to switch back on`);
+  }
+
+  // 2. And it is still genuinely unconsumed, in main and in the renderer.
+  //    `entitlementBridge` itself and this file are the two legitimate
+  //    mentions; a third means somebody wired a gate without telling the
+  //    suites that forbid one.
+  const callers: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = `${dir}/${e.name}`;
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!/\.tsx?$/.test(e.name)) continue;
+      if (full.endsWith('services/entitlementBridge.ts')) continue;
+      if (/getEntitlementPaid/.test(stripComments(readFileSync(full, 'utf8')))) callers.push(full);
+    }
+  };
+  walk('src');
+  assert(callers.length === 0,
+    `getEntitlementPaid has a caller again — update this suite and export-gate-selftest `
+    + `in the same commit as the gate:\n    ${callers.join('\n    ')}`);
+
+  // 3. The file says so itself, so the next reader does not have to run this.
+  assert(/NOTHING READS THIS TODAY/.test(bridge),
+    'the bridge no longer states that it is dormant — a stale comment here is '
+    + 'how the last one got it wrong');
+});
+
 check('the machinery is still here, so selling it later is one word', () => {
   // The point of a switch rather than a deletion.  If somebody strips the
   // licensing out, this fails and they find out now instead of when the

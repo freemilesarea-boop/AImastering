@@ -71,12 +71,17 @@ function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
  * can add it back in one line.
  */
 const ALLOWED = new Set<string>([
-  // The entitlement bridge's only reader.  `setEntitlement` is still called
-  // from `entitlementHandlers`, so deleting this turns the bridge write-only —
-  // exactly the shape this file exists to catch.  It is left over from the
-  // export gate that was deliberately removed (`export-gate-selftest` asserts
-  // `fileHandlers.ts` must NOT read it), so the bridge itself is probably what
-  // should go.  Also a product question.
+  // The entitlement bridge's only reader, and dormant ON PURPOSE rather than
+  // by neglect.  `license-free-selftest` holds that the licensing machinery
+  // stays put so selling later is one word rather than a rebuild, and this is
+  // the Phase C/D2 half of it; deleting it would also leave `setEntitlement`
+  // writing into nothing, which is the very shape this file exists to catch.
+  //
+  // What made it worth an entry rather than a shrug is that the dormancy used
+  // to be undocumented — the bridge's docblock claimed `fileHandlers` already
+  // called it, which was false since the export gate was removed.  That is
+  // fixed, and `license-free-selftest` now fails if a caller reappears without
+  // the two suites that forbid a gate being updated with it.
   'getEntitlementPaid',
 ]);
 
