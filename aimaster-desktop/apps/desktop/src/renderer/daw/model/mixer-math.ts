@@ -8,7 +8,6 @@ import type { DawSession, GroupDef, Track, TrackId } from './types.js';
 import { findTrack, updateTrack } from './session-ops.js';
 import { stackAncestors } from './stacks.js';
 
-export const MIN_FADER_DB = -Infinity;
 
 export function dbToGain(db: number): number {
   return db <= -144 ? 0 : Math.pow(10, db / 20);

@@ -28,8 +28,6 @@ export const TOOL_LABELS: Record<ToolId, string> = {
   erase: '삭제', zoom: '줌', mute: '뮤트', draw: '연필', scrub: '스크럽',
 };
 
-/** Tools that actually do something on the transport waveform. */
-export const ACTIVE_TOOLS: ToolId[] = ['select', 'range', 'split', 'erase', 'zoom', 'mute', 'scrub'];
 
 // ── Panels ────────────────────────────────────────────────────────────────────
 

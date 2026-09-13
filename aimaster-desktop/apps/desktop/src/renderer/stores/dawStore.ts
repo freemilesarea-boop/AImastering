@@ -51,8 +51,6 @@ export interface RenameTarget {
 // without importing this store (and with it zustand and the audio runtime).
 export type { DawWindow } from '../daw/model/view-window.js';
 
-/** Grid values, in seconds — musical values come from the session tempo. */
-export const GRID_PRESETS = [0.01, 0.1, 0.25, 0.5, 1, 2, 4] as const;
 
 export interface DawState {
   session: DawSession;

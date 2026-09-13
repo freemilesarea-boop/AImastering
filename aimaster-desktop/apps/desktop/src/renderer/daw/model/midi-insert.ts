@@ -23,7 +23,8 @@
 import { arpeggiate, chordGroups, type ArpDirection } from '../edit/note-tools.js';
 import { MIN_NOTE_BEATS } from '../edit/midi-edit.js';
 import {
-  clamp01, createNote, from7bit, noteEndBeat, sortNotes, to7bit, type MidiNote,
+  clamp01, createNote, from7bit, MAX_PITCH, MIN_PITCH, noteEndBeat, sortNotes, to7bit,
+  type MidiNote,
 } from './midi.js';
 
 export type MidiInsertKind =
@@ -132,7 +133,7 @@ export function defaultInsert(kind: MidiInsertKind, id: string): MidiInsert {
 // ── The individual inserts ──────────────────────────────────────────────────
 
 function clampPitch(pitch: number): number {
-  return Math.max(0, Math.min(127, Math.round(pitch)));
+  return Math.max(MIN_PITCH, Math.min(MAX_PITCH, Math.round(pitch)));
 }
 
 function applyTranspose(notes: readonly MidiNote[], insert: TransposeInsert): MidiNote[] {

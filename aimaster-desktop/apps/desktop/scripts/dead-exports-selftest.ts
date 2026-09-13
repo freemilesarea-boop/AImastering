@@ -1,45 +1,50 @@
 /**
  * dead-exports-selftest — a ratchet against code nothing reaches.
  *
- * This repo has now had the same problem twice.  An earlier audit found 31
- * FILES nothing imported and deleted them; a later one found 87 exported
- * FUNCTIONS nothing called — 639 lines, plus orphaned imports and two
- * counters that existed only to feed them.  Both were found by sweeping by
- * hand, months apart, which is not a plan.
+ * This repo has now had the same problem three times.  An audit found 31 FILES
+ * nothing imported; a later one found 87 exported FUNCTIONS nothing called;
+ * a code review of the ratchet written to stop the next one found that it was
+ * counting the wrong thing, and behind that 10 more functions and 21 exported
+ * CONSTANTS.  Sweeping by hand, months apart, is not a plan.
  *
- * ── Why this does not just count names ──────────────────────────────────────
+ * ── Why this uses the compiler's parser ─────────────────────────────────────
  *
- * The first version of this file counted how often each exported name appeared
- * across the tree and called a name dead when it appeared once.  A code review
- * of the commit that added it found the hole: the count is per IDENTIFIER, not
- * per DECLARATION.  Two modules exporting `bandPointDb`, or a module exporting
- * `xToHz` while a component declares a private one, put the count at two before
- * anybody calls either — so BOTH are exempt for as long as the other exists.
- * 34 names were declared in two or more files, and five genuinely unreachable
- * exports were hiding behind that: `findNode` (io/cfb.ts), `bandPointDb`
- * (parametric-eq-model.ts), `xToHz` (spectrum-axis.ts), `sameTarget`
- * (model/automation.ts) and `dumpGraph` (shared-audio-graph.ts).
+ * Two earlier versions of this file read the source as text, and text lies:
  *
- * So liveness is resolved per declaration instead.  An exported function in
- * file F is live when
+ *   · counting how often a NAME appears cannot tell two declarations apart.
+ *     Two modules exporting `bandPointDb`, or a module exporting `xToHz` while
+ *     a component declares a private one, put the count at two before anybody
+ *     calls either — so BOTH were exempt for as long as the other existed.
+ *   · blanking comments and string bodies by hand, to stop a function's own
+ *     error messages vouching for it, cannot see a regex literal.  On
+ *     `.replace(/[<>:"/\\|?*]/g, ' ')` the `"` inside the character class
+ *     opened a string that swallowed the next 25 lines, and `DRUM_INSTRUMENT_ID`
+ *     — used one line below its declaration — was reported dead.  That is the
+ *     direction that deletes working code.
  *
- *   · F's own text mentions it more than once — a recursive helper, or one
- *     called twice inside its module, is live code; or
+ * So nothing here reads the source as text.  TypeScript parses each file and
+ * this walks the tree: an identifier in the AST is an identifier, never a word
+ * inside a comment, a string or a regex, and a declaration is a node with a
+ * position rather than a name that might belong to somebody else.
+ *
+ * ── The rule ────────────────────────────────────────────────────────────────
+ *
+ * An exported function or const in file F is live when
+ *
+ *   · F's own code mentions it again — a recursive helper, or one used twice
+ *     inside its module, is live code; or
  *   · some file imports that NAME from a specifier that resolves to F; or
- *   · some file imports F wholesale (`import * as ns`, or `export * from`),
- *     which could reach anything F exports; or
- *   · a build script (.mjs/.cjs, which this cannot resolve) mentions the name.
+ *   · some file pulls F in wholesale — `import * as ns`, `export * from`, or a
+ *     dynamic `import()`, any of which could reach anything F exports; or
+ *   · a `.mjs`/`.cjs` build script mentions the name.
  *
  * The last two are deliberately generous.  Being wrong towards "alive" leaves
  * dead code in the tree; being wrong towards "dead" tells somebody to delete
  * working code, which is how the first sweep here broke the build.
  *
- * ── What it still cannot see ────────────────────────────────────────────────
- *
- * A function reached only through a computed key (`handlers[name]`) looks dead
- * and is not.  Nothing in this repo does that to an exported function today; if
- * something starts, this will say so and the honest fix is an entry in ALLOWED
- * below, with the reason.
+ * What it still cannot see: a function reached only through a computed key
+ * (`handlers[name]`).  Nothing in this repo does that to an export today; if
+ * something starts, this will say so and the fix is an ALLOWED entry.
  *
  * Run: pnpm --filter @aimaster/desktop test:dead-exports
  */
@@ -47,6 +52,7 @@
 import { execSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve, relative } from 'node:path';
+import ts from 'typescript';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -58,11 +64,11 @@ function check(name: string, fn: () => void): void {
 function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
 
 /**
- * Exported functions that are genuinely unreferenced and genuinely wanted.
+ * Exports that are genuinely unreferenced and genuinely wanted.
  *
- * Empty, and that is the point: every entry has to earn its place with a
- * reason somebody can check.  "It might be useful later" is not one — the
- * file it would have been useful in can add it back in one line.
+ * Every entry has to earn its place with a reason somebody can check.  "It
+ * might be useful later" is not one — the file it would have been useful in
+ * can add it back in one line.
  */
 const ALLOWED = new Set<string>([
   // The only thing that can ever create `graph.freeEq`, and nothing calls it —
@@ -102,8 +108,36 @@ function find(exts: string[]): string[] {
  */
 function sourceFiles(): string[] { return find(['ts', 'tsx']); }
 
-/** …plus the build scripts, which import from `src` and are not TypeScript. */
+/** …plus the build scripts, which are not TypeScript and are not parsed. */
 function scriptFiles(): string[] { return find(['mjs', 'cjs']); }
+
+/**
+ * …minus the files whose exports are a framework's contract, not a caller's.
+ *
+ * Storybook discovers a story by enumerating the module's named exports; no
+ * file imports `SpotifyLoud` from `StereoScopePanel.stories.tsx` and none ever
+ * will.  Judging those by who imports them marks all 170 of them dead.
+ *
+ * They stay in `sourceFiles` — and so in the import graph — because a story IS
+ * one of the real callers of the component it renders.  Dropping them from the
+ * search entirely made eleven live components (`LouiTopBar`, `LouiABCompare`,
+ * `DraggableEQCurveEditor` …) read as dead: their story file was the importer
+ * that had been vouching for them.  Candidate and reference are two different
+ * sets, and conflating them breaks it in both directions.
+ */
+function declaringFiles(): string[] {
+  return sourceFiles().filter((f) => !/\.stories\.tsx?$/.test(f));
+}
+
+function parse(file: string, text: string): ts.SourceFile {
+  return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
+    file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+}
+
+function walk(node: ts.Node, fn: (n: ts.Node) => void): void {
+  fn(node);
+  node.forEachChild((c) => { walk(c, fn); });
+}
 
 /**
  * Turn a module specifier into the file it means, or null for a bare package.
@@ -126,134 +160,132 @@ function resolveSpec(spec: string, fromFile: string, known: Set<string>): string
   return null;
 }
 
-/** Every `import`/`export … from '…'` in a file, clause and specifier. */
-const FROM = /(?:^|\n)\s*(?:import|export)\s+([\s\S]*?)\s*from\s*['"]([^'"]+)['"]/g;
+interface Decl { name: string; file: string; what: 'function' | 'const'; isDefault: boolean }
 
-/**
- * Every dynamic `import('…')`, which reaches its target by a route no static
- * clause describes.
- *
- * This repo uses three shapes of it — `React.lazy(() => import(p).then((m) =>
- * ({ default: m.Page })))` for the dev pages, `const { a, b } = await
- * import(p)` for the heavy main-process modules, and a bare side-effect load —
- * and the names come off the module object, not out of a brace list.  Rather
- * than parse all three, a dynamically imported module is treated as reached
- * WHOLESALE.  Leaving the first version of this blind to it made four live
- * functions — `DevAnalyzerStreamPage`, `processAudioFileRust`,
- * `encodePreviewMp3`, `measureReferenceCurve` — read as dead.
- */
-const DYNAMIC = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-
-interface Graph {
-  /** file → names some other file imports from it by name */
+interface FileFacts {
+  decls: Decl[];
+  /** how many times each identifier appears in this file's own code */
+  idents: Map<string, number>;
+  /** names this file imports, per resolved target file */
   named: Map<string, Set<string>>;
-  /** files somebody pulls in wholesale, so anything they export may be reached */
+  /** target files this file pulls in wholesale */
   wholesale: Set<string>;
+  /** target files this file takes the DEFAULT export of */
+  defaults: Set<string>;
 }
 
-function buildGraph(texts: Map<string, string>): Graph {
+function factsOf(file: string, source: ts.SourceFile, known: Set<string>): FileFacts {
+  const decls: Decl[] = [];
+  const idents = new Map<string, number>();
   const named = new Map<string, Set<string>>();
   const wholesale = new Set<string>();
-  const known = new Set(texts.keys());
-  for (const [file, text] of texts) {
-    for (const m of text.matchAll(FROM)) {
-      const target = resolveSpec(m[2]!, file, known);
-      if (target === null) continue;
-      const clause = m[1]!;
-      if (/^\*/.test(clause) || /\*\s+as\s+/.test(clause)) { wholesale.add(target); continue; }
-      const braces = /\{([\s\S]*)\}/.exec(clause);
-      if (braces === null) continue; // default import only — reaches no named export
-      for (const part of braces[1]!.split(',')) {
-        const id = /([A-Za-z0-9_$]+)\s*$/.exec(part.trim().split(/\s+as\s+/)[0]!.trim());
-        if (id !== null) {
-          let set = named.get(target);
-          if (set === undefined) { set = new Set(); named.set(target, set); }
-          set.add(id[1]!);
-        }
-      }
-    }
-    for (const m of text.matchAll(DYNAMIC)) {
-      const target = resolveSpec(m[1]!, file, known);
-      if (target !== null) wholesale.add(target);
-    }
-  }
-  return { named, wholesale };
-}
+  const defaults = new Set<string>();
 
-/**
- * The same text with comments and string bodies blanked out — code only.
- *
- * `dumpGraph` hid from the first version of this check behind its own error
- * messages: `logAudioEvent('error', 'dumpGraph: no element')` mentions the name
- * twice more, and "mentioned more than once in its own file" read that as a
- * function calling itself.  A `${...}` interpolation is kept, because that IS
- * code and often the only call site of a formatter.
- *
- * Blanking rather than deleting keeps every offset, so nothing shifts.
- */
-function codeOnly(text: string): string {
-  const out = text.split('');
-  const blank = (from: number, to: number): void => {
-    for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' ';
+  const addNamed = (target: string, name: string): void => {
+    let set = named.get(target);
+    if (set === undefined) { set = new Set(); named.set(target, set); }
+    set.add(name);
   };
-  let i = 0;
-  while (i < text.length) {
-    const c = text[i]!;
-    const next = text[i + 1];
-    if (c === '/' && next === '/') {
-      const end = text.indexOf('\n', i); const to = end === -1 ? text.length : end;
-      blank(i, to); i = to; continue;
+  const has = (n: ts.Node, k: ts.SyntaxKind): boolean =>
+    ts.getModifiers(n as ts.HasModifiers)?.some((m) => m.kind === k) === true;
+  const exported = (n: ts.Node): boolean => has(n, ts.SyntaxKind.ExportKeyword);
+  // `export default function Foo` is reached by a DEFAULT import, which names
+  // no name.  Judging it by who imports `Foo` marks every default-exported
+  // component dead — `LicenseModal`, `TopBar`, `AlbumPanel` and 90 more.
+  const isDefault = (n: ts.Node): boolean => has(n, ts.SyntaxKind.DefaultKeyword);
+
+  walk(source, (n) => {
+    if (ts.isIdentifier(n)) idents.set(n.text, (idents.get(n.text) ?? 0) + 1);
+
+    if (ts.isFunctionDeclaration(n) && exported(n) && n.name !== undefined) {
+      decls.push({ name: n.name.text, file, what: 'function', isDefault: isDefault(n) });
     }
-    if (c === '/' && next === '*') {
-      const end = text.indexOf('*/', i + 2); const to = end === -1 ? text.length : end + 2;
-      blank(i, to); i = to; continue;
-    }
-    if (c === "'" || c === '"') {
-      let j = i + 1;
-      while (j < text.length && text[j] !== c) { if (text[j] === '\\') j++; j++; }
-      blank(i, Math.min(j + 1, text.length)); i = j + 1; continue;
-    }
-    if (c === '`') {
-      let j = i + 1;
-      let run = i;                       // start of the literal run being blanked
-      while (j < text.length && text[j] !== '`') {
-        if (text[j] === '\\') { j += 2; continue; }
-        if (text[j] === '$' && text[j + 1] === '{') {
-          blank(run, j);                 // literal text before the hole
-          let depth = 1; j += 2;
-          while (j < text.length && depth > 0) {
-            if (text[j] === '{') depth++;
-            else if (text[j] === '}') depth--;
-            j++;
-          }
-          run = j; continue;             // the `${...}` body itself is left alone
+    if (ts.isVariableStatement(n) && exported(n)) {
+      for (const d of n.declarationList.declarations) {
+        // Destructured forms (`export const { a, b } = …`) are skipped rather
+        // than half-parsed; guessing at a binding list is how a sweep starts
+        // deleting things it did not understand.
+        if (ts.isIdentifier(d.name)) {
+          decls.push({ name: d.name.text, file, what: 'const', isDefault: false });
         }
-        j++;
       }
-      blank(run, Math.min(j, text.length));
-      i = j + 1; continue;
     }
-    i++;
-  }
-  return out.join('');
+
+    if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) {
+      const target = resolveSpec(n.moduleSpecifier.text, file, known);
+      if (target === null) return;
+      if (n.importClause?.name !== undefined) defaults.add(target);
+      const b = n.importClause?.namedBindings;
+      if (b !== undefined && ts.isNamespaceImport(b)) { wholesale.add(target); return; }
+      if (b !== undefined && ts.isNamedImports(b)) {
+        for (const el of b.elements) addNamed(target, (el.propertyName ?? el.name).text);
+      }
+    }
+    if (ts.isExportDeclaration(n) && n.moduleSpecifier !== undefined
+      && ts.isStringLiteral(n.moduleSpecifier)) {
+      const target = resolveSpec(n.moduleSpecifier.text, file, known);
+      if (target === null) return;
+      // `export * from './x.js'` re-exports everything, name unknown here.
+      if (n.exportClause === undefined) { wholesale.add(target); return; }
+      if (ts.isNamedExports(n.exportClause)) {
+        for (const el of n.exportClause.elements) {
+          const from = (el.propertyName ?? el.name).text;
+          if (from === 'default') defaults.add(target); else addNamed(target, from);
+        }
+      } else wholesale.add(target);
+    }
+    // `import('./x.js')` — React.lazy, and the main process's deferred loads.
+    // The names come off the module object, not a brace list, so the target is
+    // treated as reached wholesale rather than parsed three different ways.
+    // …and `require('./x.js')`, which the selftests use to defer a load past a
+    // top-level side effect.  `glossary-selftest.ts` reaches `GRAPH_EQ_MODULES`
+    // that way and no other, so missing it reported a live constant dead.
+    if (ts.isCallExpression(n)
+      && (n.expression.kind === ts.SyntaxKind.ImportKeyword
+        || (ts.isIdentifier(n.expression) && n.expression.text === 'require'))) {
+      const a = n.arguments[0];
+      if (a !== undefined && ts.isStringLiteral(a)) {
+        const target = resolveSpec(a.text, file, known);
+        if (target !== null) wholesale.add(target);
+      }
+    }
+  });
+
+  return { decls, idents, named, wholesale, defaults };
 }
 
-interface Dead { name: string; file: string }
+function findDead(
+  texts: Map<string, string>, scripts: string[] = [], declaring?: string[],
+): Decl[] {
+  const known = new Set(texts.keys());
+  const facts = new Map<string, FileFacts>();
+  for (const [file, text] of texts) facts.set(file, factsOf(file, parse(file, text), known));
 
-function findDead(texts: Map<string, string>, scripts: string[] = []): Dead[] {
-  const graph = buildGraph(texts);
-  const code = new Map([...texts].map(([f, t]) => [f, codeOnly(t)] as const));
-  const scriptText = scripts.map((f) => codeOnly(readFileSync(f, 'utf8'))).join('\n');
-  const dead: Dead[] = [];
-  for (const [file, text] of texts) {
-    for (const m of text.matchAll(/^export (?:async )?function ([A-Za-z0-9_]+)/gm)) {
-      const name = m[1]!;
-      if (ALLOWED.has(name)) continue;
-      if (graph.wholesale.has(file)) continue;
-      if (graph.named.get(file)?.has(name) === true) continue;
-      if ([...code.get(file)!.matchAll(new RegExp(`\\b${name}\\b`, 'g'))].length > 1) continue;
-      if (scriptText !== '' && new RegExp(`\\b${name}\\b`).test(scriptText)) continue;
-      dead.push({ name, file });
+  const named = new Map<string, Set<string>>();
+  const wholesale = new Set<string>();
+  const defaults = new Set<string>();
+  for (const f of facts.values()) {
+    for (const t of f.wholesale) wholesale.add(t);
+    for (const t of f.defaults) defaults.add(t);
+    for (const [t, set] of f.named) {
+      let all = named.get(t);
+      if (all === undefined) { all = new Set(); named.set(t, all); }
+      for (const n of set) all.add(n);
+    }
+  }
+
+  const scriptText = scripts.map((f) => readFileSync(f, 'utf8')).join('\n');
+  const dead: Decl[] = [];
+  for (const file of declaring ?? [...texts.keys()]) {
+    const f = facts.get(file);
+    if (f === undefined) continue;
+    if (wholesale.has(file)) continue;
+    for (const d of f.decls) {
+      if (ALLOWED.has(d.name)) continue;
+      if (d.isDefault ? defaults.has(file) : named.get(file)?.has(d.name) === true) continue;
+      if ((f.idents.get(d.name) ?? 0) > 1) continue;
+      if (scriptText !== '' && new RegExp(`\\b${d.name}\\b`).test(scriptText)) continue;
+      dead.push(d);
     }
   }
   return dead;
@@ -265,42 +297,54 @@ function readAll(files: string[]): Map<string, string> {
   return texts;
 }
 
-check('no exported function is left with nothing calling it', () => {
-  const dead = findDead(readAll(sourceFiles()), scriptFiles());
-  const listed = dead.slice(0, 99).map((d) => `${d.name} (${d.file})`).join('\n    ');
+check('no export is left with nothing referencing it', () => {
+  const dead = findDead(readAll(sourceFiles()), scriptFiles(), declaringFiles());
+  const listed = dead.slice(0, 14).map((d) => `${d.what} ${d.name} (${d.file})`).join('\n    ');
   assert(dead.length === 0,
-    `${dead.length} exported function(s) nothing references:\n    ${listed}`
-    + (dead.length > 99 ? `\n    … and ${dead.length - 99} more` : '')
-    + '\n  Delete them, call them, or add one to ALLOWED with a reason.');
+    `${dead.length} export(s) nothing references:\n    ${listed}`
+    + (dead.length > 14 ? `\n    … and ${dead.length - 14} more` : '')
+    + '\n  Delete them, use them, or add one to ALLOWED with a reason.');
 });
 
 check('and no import was left standing with nothing in it', () => {
   // `import { } from './x.js'` is what an orphan-clearing pass leaves when it
   // takes the last specifier off a line and stops there.  It is legal, and it
   // is not nothing: it still imports the module for its side effects, which is
-  // the opposite of what the sweep meant.  Four survived the first pass here.
-  const empty = sourceFiles().filter((f) => /^import \{\s*\} from /m.test(readFileSync(f, 'utf8')));
+  // the opposite of what the sweep meant.  Four survived an earlier pass here.
+  const empty = sourceFiles().filter((f) => {
+    let bad = false;
+    walk(parse(f, readFileSync(f, 'utf8')), (n) => {
+      if (!ts.isImportDeclaration(n)) return;
+      const b = n.importClause?.namedBindings;
+      if (b !== undefined && ts.isNamedImports(b) && b.elements.length === 0) bad = true;
+    });
+    return bad;
+  });
   assert(empty.length === 0,
     `${empty.length} file(s) import nothing by name:\n    ${empty.join('\n    ')}`);
 });
 
 check('and the sweep is actually looking at the app', () => {
-  // Guards the check above from passing because it found nothing to check.
-  // A broken `find`, a renamed directory, a regex that stops matching — all
+  // Guards the checks above from passing because they found nothing to check.
+  // A broken `find`, a renamed directory, a parser that stops matching — all
   // of them turn this file into a test that always passes.
   const files = sourceFiles();
   assert(files.length > 400, `only ${files.length} source files found`);
-  const declaring = files.filter((f) => /^export (?:async )?function /m.test(readFileSync(f, 'utf8')));
-  assert(declaring.length > 150, `only ${declaring.length} files declare an exported function`);
-  const graph = buildGraph(readAll(files));
-  assert(graph.named.size > 300, `only ${graph.named.size} files are imported from by name`);
+  const known = new Set(files);
+  let declaring = 0, importing = 0;
+  for (const f of files) {
+    const facts = factsOf(f, parse(f, readFileSync(f, 'utf8')), known);
+    if (facts.decls.length > 0) declaring++;
+    if (facts.named.size > 0 || facts.wholesale.size > 0) importing++;
+  }
+  assert(declaring > 300, `only ${declaring} files declare an export`);
+  assert(importing > 300, `only ${importing} files import from another source file`);
 });
 
 check('liveness is decided per declaration, not per name', () => {
-  // Everything the review caught, as a fixture.  `dup` is exported twice and
-  // reached in neither place; the old name-counting rule scored it 2 and let
-  // both copies through.  `shadowed` is exported once and shadowed by a
-  // private function of the same name, which is the same bug wearing a hat.
+  // `dup` is exported twice and reached in neither place; counting names
+  // scored it 2 and let both copies through.  `shadowed` is exported once and
+  // shadowed by a private function of the same name — the same bug in a hat.
   const dead = findDead(new Map([
     ['a.ts', 'export function loop(n: number): number { return n > 0 ? loop(n - 1) : 0; }'],
     ['b.ts', 'export function dup(): void {}'],
@@ -314,53 +358,100 @@ check('liveness is decided per declaration, not per name', () => {
     `expected both dups and the shadowed export, got: ${names || '(none)'}`);
 });
 
+check('and an exported const is judged the same way as a function', () => {
+  // `parametric-eq-model.ts` finished a function-only sweep as eight exported
+  // constants nothing had read since the curve code they bounded was deleted,
+  // and the ratchet called that file clean.  An `export const f = () => {}` is
+  // a function wearing a const, and was invisible for the same reason.
+  const dead = findDead(new Map([
+    ['g.ts', 'export const KEPT = 1;\nexport const GONE = 2;\nexport const arrow = () => KEPT;'],
+    ['h.ts', "import { KEPT } from './g.js';\nKEPT;"],
+  ]));
+  const names = dead.map((d) => `${d.what} ${d.name}`).sort().join(', ');
+  assert(names === 'const GONE, const arrow', `expected GONE and arrow, got: ${names || '(none)'}`);
+});
+
+check('and a default export is judged by who default-imports it', () => {
+  // `export default function LicenseModal()` is reached by `import LicenseModal
+  // from …`, which names no name.  Matching it against NAMED imports — which is
+  // what an AST-blind rule does by accident — reported 90 live components dead,
+  // `LicenseModal`, `TopBar` and `AlbumPanel` among them.
+  const dead = findDead(new Map([
+    ['t.ts', 'export default function Taken(): void {}'],
+    ['u.ts', "import Taken from './t.js';\nTaken();"],
+    ['v.ts', 'export default function Untaken(): void {}'],
+  ]));
+  const names = dead.map((d) => d.name).sort().join(', ');
+  assert(names === 'Untaken', `expected only Untaken, got: ${names || '(none)'}`);
+});
+
+check('and a require() reaches what an import would', () => {
+  // The selftests use `require` to defer a load past a top-level side effect.
+  // `glossary-selftest.ts` reaches `GRAPH_EQ_MODULES` that way and no other, and
+  // `LouiToneDynamicsViews`'s `REGISTRY_ONLY_VIEWS` the same — both read as dead
+  // until the walk learned the call.
+  const dead = findDead(new Map([
+    ['w.ts', 'export const TABLE = new Set<string>();'],
+    ['x.ts', "const m = require('./w.js') as { TABLE: Set<string> };\nm.TABLE.has('a');"],
+  ]));
+  assert(dead.length === 0, `require did not keep it alive: ${dead.map((d) => d.name).join()}`);
+});
+
 check('and a module pulled in wholesale keeps all of its exports', () => {
   // `import * as ops` could reach anything, and so could a barrel's
-  // `export * from`.  Guessing otherwise would delete working code, so this
-  // errs towards alive — and says so rather than leaving it to be discovered.
-  const star = findDead(new Map([
-    ['g.ts', 'export function viaNamespace(): void {}'],
-    ['h.ts', "import * as g from './g.js';\ng;"],
-  ]));
-  assert(star.length === 0, `namespace import did not keep it alive: ${star.map((d) => d.name).join()}`);
-  const barrel = findDead(new Map([
-    ['i.ts', 'export function viaBarrel(): void {}'],
-    ['j.ts', "export * from './i.js';"],
-  ]));
-  assert(barrel.length === 0, `barrel re-export did not keep it alive: ${barrel.map((d) => d.name).join()}`);
+  // `export * from`, and so could a dynamic import — React.lazy and the main
+  // process's deferred loads are the only route into several modules.  Missing
+  // the last one made `DevAnalyzerStreamPage`, `processAudioFileRust`,
+  // `encodePreviewMp3` and `measureReferenceCurve` read as dead while every
+  // one of them was reachable from the running app.
+  const cases: Array<[string, Map<string, string>]> = [
+    ['namespace', new Map([
+      ['i.ts', 'export function viaNamespace(): void {}'],
+      ['j.ts', "import * as i from './i.js';\ni;"],
+    ])],
+    ['barrel', new Map([
+      ['k.ts', 'export function viaBarrel(): void {}'],
+      ['l.ts', "export * from './k.js';"],
+    ])],
+    ['lazy', new Map([
+      ['m.ts', 'export function Page(): void {}'],
+      ['n.ts', "const L = () => import('./m.js').then((x) => ({ default: x.Page }));\nL;"],
+    ])],
+    ['awaited', new Map([
+      ['o.ts', 'export function heavy(): void {}'],
+      ['p.ts', "async function go() { const { heavy } = await import('./o.js'); heavy(); }\ngo;"],
+    ])],
+  ];
+  for (const [label, files] of cases) {
+    const dead = findDead(files);
+    assert(dead.length === 0, `${label} did not keep it alive: ${dead.map((d) => d.name).join()}`);
+  }
 });
 
-check('and a module reached only by a dynamic import keeps its exports', () => {
-  // React.lazy and the main process's deferred loads are the only route in for
-  // a handful of modules.  Missing them made `DevAnalyzerStreamPage`,
-  // `processAudioFileRust`, `encodePreviewMp3` and `measureReferenceCurve` —
-  // all four of them live, all four reachable from the running app — read as
-  // dead, which is the direction that gets working code deleted.
-  const lazy = findDead(new Map([
-    ['k.ts', 'export function Page(): void {}'],
-    ['l.ts', "React.lazy(() => import('./k.js').then((m) => ({ default: m.Page })));"],
+check('and a name in a comment, a string or a regex is not a reference', () => {
+  // This is what the hand-written stripper was for, and what it got wrong: on
+  // `.replace(/[<>:"/\\|?*]/g, ' ')` the `"` inside the character class opened
+  // a string that swallowed the next 25 lines, and `DRUM_INSTRUMENT_ID` — used
+  // one line below its declaration — was reported dead.  The parser has no
+  // such ambiguity, and a `${...}` hole stays code because it IS code.
+  const dead = findDead(new Map([
+    ['q.ts', [
+      'export function alibi(): void {}',      // only ever "used" in prose
+      "const s = 'alibi';",
+      '// alibi',
+      '/* alibi */',
+      'const r = /["alibi]/g;',
+      'void s; void r;',
+    ].join('\n')],
+    ['r.ts', [
+      'export function fmt(n: number): string { return `${n}`; }',
+      'export function shout(n: number): string { return `say ${fmt(n)}!`; }',
+    ].join('\n')],
+    ['s.ts', "import { shout } from './r.js';\nshout(1);"],
   ]));
-  assert(lazy.length === 0, `lazy import did not keep it alive: ${lazy.map((d) => d.name).join()}`);
-  const awaited = findDead(new Map([
-    ['m.ts', 'export function heavy(): void {}'],
-    ['n.ts', "async function go() { const { heavy } = await import('./m.js'); heavy(); }"],
-  ]));
-  assert(awaited.length === 0, `awaited import did not keep it alive: ${awaited.map((d) => d.name).join()}`);
-});
-
-check('and stripping prose does not strip the code inside a template hole', () => {
-  // `codeOnly` blanks strings so a name in an error message cannot vouch for
-  // itself.  A `${...}` body is not prose, though, and is often a formatter's
-  // only call site — blanking it too would report live code as dead.
-  const stripped = codeOnly([
-    "const a = 'callMe(1)';",
-    '// callMe(2)',
-    '/* callMe(3) */',
-    'const b = `text ${callMe(4)} more`;',
-  ].join('\n'));
-  const hits = [...stripped.matchAll(/\bcallMe\b/g)].length;
-  assert(hits === 1, `expected only the template hole to survive, ${hits} did:\n${stripped}`);
-  assert(stripped.split('\n').length === 4, 'blanking must not move any line');
+  const names = dead.map((d) => d.name).sort().join(', ');
+  assert(names === 'alibi',
+    `prose must not vouch and a template hole must: expected alibi, got: ${names || '(none)'}`);
 });
 
 const failed = results.filter((r) => !r.pass);

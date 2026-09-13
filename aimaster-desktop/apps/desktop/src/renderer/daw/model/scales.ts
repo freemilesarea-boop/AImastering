@@ -39,7 +39,6 @@ export interface Scale {
   scaleId: string;
 }
 
-export const DEFAULT_SCALE: Scale = { root: 0, scaleId: 'aeolian' };
 
 export const pitchClass = (pitch: number): number => ((Math.round(pitch) % 12) + 12) % 12;
 

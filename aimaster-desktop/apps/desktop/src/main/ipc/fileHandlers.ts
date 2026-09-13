@@ -14,6 +14,9 @@ import {
 import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
 import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
 import { AUDIO_IMPORT_EXTENSIONS, MIDI_IMPORT_EXTENSIONS } from '@aimaster/shared-types';
+import {
+  MODEL_FOLDER, DESCRIPTOR_NAME,
+} from '../../renderer/daw/audio/separate/model-registry.js';
 
 const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
   wav:  { name: 'WAV Audio',  extensions: ['wav'] },
@@ -542,7 +545,7 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
    * what the entries mean stays in the renderer, where the rules live.
    */
   ipc.handle('daw:stem-models', () => {
-    const root = path.join(app.getPath('userData'), 'stem-models');
+    const root = path.join(app.getPath('userData'), MODEL_FOLDER);
     const entries: Array<{ where: string; descriptor?: unknown; error?: string }> = [];
     let names: string[] = [];
     try {
@@ -557,7 +560,7 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       let stat: fs.Stats;
       try { stat = fs.statSync(dir); } catch { continue; }
       if (!stat.isDirectory()) continue;
-      const descriptorPath = path.join(dir, 'model.json');
+      const descriptorPath = path.join(dir, DESCRIPTOR_NAME);
       try {
         const text = fs.readFileSync(descriptorPath, 'utf8');
         entries.push({ where: dir, descriptor: JSON.parse(text) });

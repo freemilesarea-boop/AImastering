@@ -456,6 +456,4 @@ export function writeAaf(session: InterchangeSession, options: WriteOptions = {}
   return { bytes: writeCfb(root, auidToBytes(ROOT_CLASS)), problems };
 }
 
-/** Exported for the tests: the file kind stamped on an AAF's root storage. */
-export const AAF_ROOT_CLASS = ROOT_CLASS;
 export { AAF_FILE_KIND };

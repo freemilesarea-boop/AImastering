@@ -26,10 +26,3 @@ export interface ParametricEqBand {
   enabled: boolean;
 }
 
-export const MIN_FREQ_HZ = 20;
-export const MAX_FREQ_HZ = 20000;
-export const MIN_GAIN_DB = -24;
-export const MAX_GAIN_DB = 24;
-export const MIN_Q = 0.3;
-export const MAX_Q = 12;
-export const MAX_BANDS = 7;

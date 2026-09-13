@@ -20,7 +20,6 @@
 // timeline that is missing a crossfade they can hear in the Avid.
 
 import { readCfb } from './cfb.js';
-import type { CfbFile } from './cfb.js';
 import {
   AafError, CLASS, PID, USAGE_TOP_LEVEL, auidFromBytes, clsidHex, collectionName,
   decodeInt64, decodeRational, decodeString, decodeUint32, hex, join,
@@ -267,6 +266,4 @@ export function looksLikeAaf(bytes: Uint8Array): boolean {
   return sig.every((b, i) => bytes[i] === b);
 }
 
-/** Named so the caller can keep the CFB layer out of its imports. */
-export const parseCfb = (bytes: Uint8Array): CfbFile => readCfb(bytes);
 export { join as joinPath };

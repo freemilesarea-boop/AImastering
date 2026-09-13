@@ -13,7 +13,7 @@
 // you heard, and `Math.random()` would make every render different.
 
 import {
-  createNote, noteEndBeat, sortNotes, clamp01, type MidiNote,
+  createNote, noteEndBeat, sortNotes, clamp01, MAX_PITCH, MIN_PITCH, type MidiNote,
 } from '../model/midi.js';
 import { snapPitchToScale, type Scale } from '../model/scales.js';
 
@@ -84,7 +84,7 @@ export function moveNotes(
   return sortNotes(mapSelected(notes, ids, (n) => {
     let start = Math.max(0, n.startBeat + deltaBeat);
     if (gridBeat > 0) start = Math.max(0, Math.round(start / gridBeat) * gridBeat);
-    let pitch = Math.min(127, Math.max(0, n.pitch + deltaPitch));
+    let pitch = Math.min(MAX_PITCH, Math.max(MIN_PITCH, n.pitch + deltaPitch));
     if (scale) pitch = snapPitchToScale(pitch, scale);
     return { ...n, startBeat: start, pitch };
   }));
