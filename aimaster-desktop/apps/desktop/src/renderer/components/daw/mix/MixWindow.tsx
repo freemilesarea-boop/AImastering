@@ -11,7 +11,7 @@ import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import {
   createBus, createInsert, createSend, removeInsert, removeSend, setInsert, setOutput, setSend,
-  updateTrack, findTrack,
+  updateTrack,
 } from '../../../daw/model/session-ops.js';
 import {
   busUsage, busUsageCount, nextBusName, removeBus, renameBus, setBusChannels,
@@ -37,11 +37,9 @@ import { ensureLane } from '../../../daw/edit/automation-lanes.js';
 import { stackDepth, isSummingStack } from '../../../daw/model/stacks.js';
 import { activeMacros } from '../../../daw/model/macros.js';
 import { premium } from '../../../theme/premium.js';
+import { slotLetter, slotsToShow } from '../../../daw/model/strip-slots.js';
 import { MAX_TRACK_DELAY_MS, delayMechanism, trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay, setTrackDelay } from '../../../daw/edit/track-delay-ops.js';
-
-const VISIBLE_INSERTS = 5;      // A–E, like the top half of a Pro Tools strip
-const VISIBLE_SENDS   = 5;
 
 const AUTOMATION_MODES: AutomationMode[] = ['off', 'read', 'touch', 'latch', 'write', 'trim'];
 
@@ -121,6 +119,8 @@ function ChannelStrip({
   onNotify: (m: string, t?: 'info' | 'success' | 'warning' | 'error') => void;
   onSmart: () => void;
 }) {
+  const [insertsOpen, setInsertsOpen] = useState(false);
+  const [sendsOpen, setSendsOpen] = useState(false);
   const isMaster = track.kind === 'master';
   const isVca    = track.kind === 'vca';
   const isFolder = track.kind === 'folder';
@@ -200,6 +200,19 @@ function ChannelStrip({
         boxShadow: depth > 0 ? `inset ${depth * 3}px 0 0 rgba(198,167,104,0.25)` : undefined,
       }}
     >
+      {/*
+        Everything above the fader scrolls; the fader, the meter, solo/mute and
+        the nameplate do not.  `min-h-0` is the load-bearing half: a flex item
+        defaults to `min-height: auto`, which refuses to shrink below its
+        content, so the strip did not overflow into a scrollbar — it overflowed
+        past the bottom of the window.  Measured at a 720 px viewport, the
+        track's own NAME sat 123 px below the screen with nothing to scroll and
+        no way to reach it.
+
+        The fader keeps `flex-1`, so a tall window still gives a long fader;
+        this part simply gives back the space when there is none.
+      */}
+      <div className="min-h-0 overflow-y-auto overflow-x-hidden">
       {isMaster && <MasterLoudness />}
 
       {/* Smart Controls — the macro layer, always one click away */}
@@ -240,11 +253,21 @@ function ChannelStrip({
         </div>
       )}
       {/* Inserts */}
-      <Section label="INSERTS A-E">
-        {Array.from({ length: VISIBLE_INSERTS }, (_, slot) => {
+      <Section
+        label="INSERTS"
+        expanded={insertsOpen}
+        onToggle={() => setInsertsOpen((v) => !v)}
+      >
+        {slotsToShow(track.inserts.map((i) => i.slot), insertsOpen).map((slot) => {
           const insert = track.inserts.find((i) => i.slot === slot);
           return (
             <div key={slot} className="flex items-center gap-0.5">
+              {/* The letter, because a collapsed list still has to say WHERE a
+                  device sits — "the compressor is in C" is how an engineer
+                  remembers a chain. */}
+              <span className={`w-2 text-[8px] font-mono leading-5 ${insert ? 'text-zinc-500' : 'text-zinc-700'}`}>
+                {slotLetter(slot)}
+              </span>
               <select
                 value={insert?.pluginId ?? ''}
                 onChange={(e) => {
@@ -281,12 +304,19 @@ function ChannelStrip({
       </Section>
 
       {/* Sends */}
-      <Section label="SENDS A-E">
-        {Array.from({ length: VISIBLE_SENDS }, (_, slot) => {
+      <Section
+        label="SENDS"
+        expanded={sendsOpen}
+        onToggle={() => setSendsOpen((v) => !v)}
+      >
+        {slotsToShow(track.sends.map((x) => x.slot), sendsOpen).map((slot) => {
           const send = track.sends.find((s) => s.slot === slot);
           return (
             <div key={slot} className="space-y-0.5">
               <div className="flex items-center gap-0.5">
+                <span className={`w-2 text-[8px] font-mono leading-5 ${send ? 'text-zinc-500' : 'text-zinc-700'}`}>
+                  {slotLetter(slot)}
+                </span>
                 <select
                   value={send?.target ?? ''}
                   onChange={(e) => {
@@ -503,7 +533,9 @@ function ChannelStrip({
       )}
 
       {/* Fader + meter */}
-      <div className="flex-1 flex gap-1 px-1.5 py-2 min-h-[150px]">
+      </div>
+
+      <div className="flex-1 shrink-0 flex gap-1 px-1.5 py-2 min-h-[150px]">
         <input
           type="range" min={-60} max={12} step={0.1} value={shownVolumeDb}
           onPointerDown={() => grab({ kind: 'volume' })}
@@ -554,8 +586,8 @@ function ChannelStrip({
         </div>
       </div>
 
-      {/* Name plate */}
-      <div className="px-1.5 py-1 border-t border-zinc-800" style={{ background: `${track.color}22` }}>
+      {/* Name plate — pinned: it is how you tell which strip you are on. */}
+      <div className="shrink-0 px-1.5 py-1 border-t border-zinc-800" style={{ background: `${track.color}22` }}>
         <p
           className="text-[10px] truncate"
           style={{
@@ -719,10 +751,27 @@ function BusPanel({ session, onApply, onNotify }: {
   );
 }
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+function Section({ label, children, expanded, onToggle }: {
+  label: string;
+  children: React.ReactNode;
+  /** Present only on the slot sections, which can show all five or not. */
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
   return (
     <div className="px-1.5 py-1 border-b border-zinc-900 space-y-0.5">
-      <p className="text-[8px] tracking-[0.12em] text-zinc-600">{label}</p>
+      <div className="flex items-center justify-between">
+        <p className="text-[8px] tracking-[0.12em] text-zinc-600">{label}</p>
+        {onToggle && (
+          <button
+            onClick={onToggle}
+            title={expanded ? '쓰는 슬롯만 보기' : '슬롯 A–E 전부 보기'}
+            className={`text-[8px] leading-none px-1 rounded border ${expanded
+              ? 'border-zinc-600 text-zinc-300'
+              : 'border-zinc-800 text-zinc-600'}`}
+          >A–E</button>
+        )}
+      </div>
       {children}
     </div>
   );
@@ -793,11 +842,4 @@ function MeterBar({ db, rms, holdDb }: { db: number; rms: number; holdDb: number
 
 function pluginName(id: string): string {
   return PLUGINS.find((p) => p.id === id)?.name ?? id;
-}
-
-/** Exported for the strip tests. */
-export function stripSummary(session: DawSession, trackId: string): string {
-  const track = findTrack(session, trackId);
-  if (!track) return '';
-  return `${track.name} ${effectiveFaderDb(session, track).toFixed(1)}dB`;
 }
