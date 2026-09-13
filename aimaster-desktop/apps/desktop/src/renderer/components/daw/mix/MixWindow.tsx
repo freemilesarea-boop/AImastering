@@ -19,6 +19,7 @@ import {
 import { describePath, computeDelayCompensation, wouldFeedback } from '../../../daw/model/routing.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
+import type { LiveLoudnessMetrics } from '../../../audio/loudnessStream.js';
 import {
   METER_POLL_MS, emptyReading, meterDb, meterFraction,
   type ChannelMeterReading,
@@ -189,6 +190,8 @@ function ChannelStrip({
         boxShadow: depth > 0 ? `inset ${depth * 3}px 0 0 rgba(198,167,104,0.25)` : undefined,
       }}
     >
+      {isMaster && <MasterLoudness />}
+
       {/* Smart Controls — the macro layer, always one click away */}
       <button
         onClick={onSmart}
@@ -528,6 +531,70 @@ function ChannelStrip({
           )}
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * BS.1770 on the master bus — momentary, short-term, integrated, true peak.
+ *
+ * The channel meters answer "will this survive being written to something".
+ * This answers "how loud is the record", which is a different question with a
+ * different unit, and until now the console could not answer it at all: the
+ * numbers existed, in the mastering half of the app, and the mixer had no way
+ * to see them while there was still something to do about them.
+ *
+ * Integrated and LRA are the slow ones and are shown to one decimal; M and S
+ * move at 100 ms and are shown the same way so the column does not jitter in
+ * width.
+ */
+function MasterLoudness() {
+  const [m, setM] = useState<LiveLoudnessMetrics | null>(null);
+  const [state, setState] = useState<'off' | 'starting' | 'on' | 'failed'>('off');
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setM(dawRuntime.masterLoudness());
+      setState(dawRuntime.masterLoudnessState());
+    }, 100);
+    return () => clearInterval(timer);
+  }, []);
+
+  const lu = (v: number | undefined): string =>
+    (v === undefined || !Number.isFinite(v) ? '−∞' : v.toFixed(1));
+
+  if (state === 'failed') {
+    return (
+      <div className="mx-1.5 mt-1.5 px-1.5 py-1 rounded border border-red-900/60 bg-red-950/20">
+        <p className="text-[8px] text-red-300/80">라우드니스 미터를 열지 못했습니다</p>
+      </div>
+    );
+  }
+
+  const overTp = m !== null && m.truePeakDbtp > -1;
+  return (
+    <div className="mx-1.5 mt-1.5 px-1.5 py-1 rounded border border-zinc-800 bg-black/30">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[8px] tracking-[0.12em] text-zinc-600">LUFS</span>
+        <button
+          onClick={() => { dawRuntime.resetMasterLoudness(); setM(null); }}
+          title="적분 라우드니스를 0에서 다시 시작합니다"
+          className="text-[8px] px-1 rounded border border-zinc-700 text-zinc-500 hover:text-zinc-300"
+        >R</button>
+      </div>
+      {state !== 'on' && m === null ? (
+        <p className="text-[9px] font-mono text-zinc-600 py-0.5">
+          {state === 'starting' ? '여는 중…' : '재생하면 측정합니다'}
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 gap-x-1 text-[9px] font-mono tabular-nums leading-[1.35]">
+          <span className="text-zinc-600">M</span><span className="text-zinc-300 text-right">{lu(m?.momentaryLufs)}</span>
+          <span className="text-zinc-600">S</span><span className="text-zinc-300 text-right">{lu(m?.shortTermLufs)}</span>
+          <span className="text-zinc-600">I</span><span className="text-amber-300 text-right">{lu(m?.integratedLufs)}</span>
+          <span className="text-zinc-600">LRA</span><span className="text-zinc-400 text-right">{lu(m?.loudnessRange)}</span>
+          <span className="text-zinc-600">TP</span>
+          <span className={`text-right ${overTp ? 'text-red-400' : 'text-zinc-300'}`}>{lu(m?.truePeakDbtp)}</span>
+        </div>
+      )}
     </div>
   );
 }

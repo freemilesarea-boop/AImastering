@@ -35,6 +35,8 @@ export interface LiveLoudnessMetrics {
   integratedLufs: number;
   truePeakDbtp:   number;
   perChannelTpDb: number[];
+  /** EBU R128 Loudness Range, in LU. */
+  loudnessRange:  number;
   durationSec:    number;
   blocksAnalyzed: number;
 }
@@ -107,6 +109,7 @@ export class LoudnessStream {
           integratedLufs: msg.integratedLufs,
           truePeakDbtp:   msg.truePeakDbtp,
           perChannelTpDb: msg.perChannelTpDb || [],
+          loudnessRange:  msg.loudnessRange ?? 0,
           durationSec:    msg.durationSec,
           blocksAnalyzed: msg.blocksAnalyzed,
         });

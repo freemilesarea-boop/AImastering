@@ -11,6 +11,7 @@
 import type { Clip, DawSession, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
 import type { ChannelMeterReading } from '../model/channel-meter.js';
+import { LoudnessStream, type LiveLoudnessMetrics } from '../../audio/loudnessStream.js';
 import { trackClips } from '../model/session-ops.js';
 import { ClipPlayer } from './clip-player.js';
 import { ControlRoomNode } from './control-room-node.js';
@@ -84,6 +85,10 @@ class DawRuntime {
    * never constructed.
    */
   private controlRoom: ControlRoomNode | null = null;
+  /** BS.1770 metering on the master bus.  Null until the context exists. */
+  private loudness: LoudnessStream | null = null;
+  private loudnessMetrics: LiveLoudnessMetrics | null = null;
+  private loudnessState: 'off' | 'starting' | 'on' | 'failed' = 'off';
   private controlRoomState: ControlRoomState = DEFAULT_CONTROL_ROOM;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** The click.  Not in the mix — see engine/metronome.ts. */
@@ -696,6 +701,7 @@ class DawRuntime {
       // here rather than only in `setMetronome`, which never ran at all if the
       // click was switched on before there was a context to attach to.
       this.metronome.attach(this.ctx, this.controlRoom.input);
+      this.startLoudness(this.ctx, this.controlRoom.input);
       return true;
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -827,6 +833,51 @@ class DawRuntime {
   /** Clear the over latch and peak hold — one channel, or all of them. */
   clearMeterHold(trackId?: TrackId): void {
     this.engine?.clearMeterHold(trackId);
+  }
+
+  /**
+   * BS.1770 loudness on the master bus, or null until the first block lands.
+   *
+   * Tapped at the control room's INPUT, which is the mix — before the monitor
+   * level, the DIM and the mono fold.  Those are things you do to your ears,
+   * not to the record, and a loudness number that moved when you turned the
+   * speakers down would be worse than none.
+   */
+  masterLoudness(): LiveLoudnessMetrics | null { return this.loudnessMetrics; }
+
+  /** Whether the master meter is running, and if not, why not. */
+  masterLoudnessState(): 'off' | 'starting' | 'on' | 'failed' { return this.loudnessState; }
+
+  /**
+   * Start the integration again from zero.
+   *
+   * Manual only — there is deliberately no reset on transport start.  Silence
+   * is gated out of the integrated measurement by BS.1770's own -70 LUFS
+   * absolute gate, so leaving the meter running between passes costs nothing,
+   * while an automatic reset would throw away a measurement the moment
+   * somebody pressed play to hear one more bar.
+   */
+  resetMasterLoudness(): void {
+    this.loudness?.reset();
+    this.loudnessMetrics = null;
+  }
+
+  private startLoudness(ctx: AudioContext, source: AudioNode): void {
+    this.loudnessState = 'starting';
+    const stream = new LoudnessStream();
+    this.loudness = stream;
+    stream.onMetrics = (m) => { this.loudnessMetrics = m; };
+    // Fire and forget: `addModule` is a fetch, and a transport that waited for
+    // it would be waiting on the network to play a note.  A failure downgrades
+    // the panel to "unavailable" rather than taking the engine with it.
+    void stream.attachNode(source, ctx).then(
+      () => { this.loudnessState = 'on'; },
+      (err: unknown) => {
+        this.loudnessState = 'failed';
+        // eslint-disable-next-line no-console
+        console.error('[DawRuntime] 마스터 라우드니스 미터를 열지 못했습니다:', err);
+      },
+    );
   }
 
   private startTicking(): void {
@@ -978,6 +1029,10 @@ class DawRuntime {
     this.midiHolds.clear();
     this.closeMidiInput();
     this.engine?.dispose();
+    void this.loudness?.close();
+    this.loudness = null;
+    this.loudnessMetrics = null;
+    this.loudnessState = 'off';
     void this.ctx?.close();
     this.ctx = null;
     this.engine = null;
