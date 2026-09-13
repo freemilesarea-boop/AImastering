@@ -54,27 +54,86 @@ const DSP_STEMS = STEM_TREE.filter((n) => n.source === 'dsp').map((n) => n.kind)
 
 // ── What the run may claim, versus what is on disk ──────────────────────────
 
-check('a validated model does NOT widen what the stem picker offers', () => {
-  // The lie this prevents.  `buildReport` answers "what is installed", which
-  // is the right question for the install list and the wrong one for the
-  // picker: until a run can dispatch to a model, a file appearing in a folder
-  // must not make the picker stop saying "needs a model".
+check('the picker offers exactly what a RUN can produce', () => {
+  // The invariant, written so it survives dispatch being switched on or off.
+  //
+  // `buildReport` answers "what is installed", which is right for the install
+  // list and wrong for the picker.  With dispatch off, a file appearing in a
+  // folder must not make the picker stop saying "needs a model" — it would be
+  // promising a stem nothing can deliver.  With dispatch on, the opposite is
+  // the lie: the run CAN make those stems and a picker still refusing them
+  // would hide a feature the user installed.
   const installed = buildReport([{ where: '/m/demo', descriptor: GOOD }]);
   assert(installed.model !== null, 'setup: the descriptor should validate');
   assert(installed.available.includes('guitar'), 'setup: the install report counts its stems');
 
   const forTheRun = runnableReport(installed);
-  assert(!forTheRun.available.includes('guitar'),
-    'the picker was told it can make a guitar stem, and the run cannot');
-  assert(forTheRun.available.length === DSP_STEMS.length,
-    `the run should offer exactly the DSP stems, got ${forTheRun.available.length}`);
+  if (MODEL_DISPATCH_READY) {
+    assert(forTheRun.available.includes('guitar'),
+      'the run can make a guitar stem and the picker is refusing to offer it');
+    assert(forTheRun.available.includes('keys'), 'and keys, the model\'s other stem');
+  } else {
+    assert(!forTheRun.available.includes('guitar'),
+      'the picker was told it can make a guitar stem, and the run cannot');
+    assert(forTheRun.available.length === DSP_STEMS.length,
+      `the run should offer exactly the DSP stems, got ${forTheRun.available.length}`);
+  }
 });
 
-check('and the "needs a model" sentence survives a model being installed', () => {
-  const installed = buildReport([{ where: '/m/demo', descriptor: GOOD }]);
-  const gap = unreachable(runnableReport(installed));
-  assert(gap.stems.includes('guitar'), 'guitar quietly became reachable');
-  assert(gap.why.length > 0, 'and the sentence explaining why went away');
+check('and never a stem the model did not declare', () => {
+  // The failure available now that dispatch is on.  This model makes guitar
+  // and keys; `strings` and `brass` are model-only stems it says nothing
+  // about, and offering them because SOME model is installed would be the
+  // same promise-you-cannot-keep in a new place.
+  const installed = runnableReport(buildReport([{ where: '/m/demo', descriptor: GOOD }]));
+  for (const absent of ['strings', 'brass', 'winds'] as const) {
+    assert(!installed.available.includes(absent),
+      `${absent} is offered and no installed model makes it`);
+  }
+});
+
+check('the "needs a model" sentence tracks what is actually reachable', () => {
+  const nothing = unreachable(runnableReport(buildReport([])));
+  assert(nothing.stems.includes('guitar'), 'with no model, guitar is out of reach');
+  assert(nothing.why.length > 0, 'and the sentence says why');
+
+  const installed = unreachable(runnableReport(
+    buildReport([{ where: '/m/demo', descriptor: GOOD }]),
+  ));
+  if (MODEL_DISPATCH_READY) {
+    assert(!installed.stems.includes('guitar'),
+      'the model makes guitar and the panel still calls it unreachable');
+    assert(installed.stems.includes('strings'),
+      'strings is still out of reach and the sentence should still say so');
+  } else {
+    assert(installed.stems.includes('guitar'), 'guitar quietly became reachable');
+  }
+});
+
+check('what the picker greys out is exactly what the sentence calls unreachable', () => {
+  // Found by opening the panel, not by reading it.  The stem tree's `source`
+  // field says what KIND of thing can make a stem, which is a fact about the
+  // taxonomy; whether one is installed is a fact about this machine.  The row
+  // was drawn from the first and the sentence under it from the second, so
+  // with a guitar model installed the picker greyed out 기타 while the
+  // sentence beneath said 기타 was reachable.
+  //
+  // One source of truth for both: the run's own capability set.
+  const installed = runnableReport(buildReport([{ where: '/m/demo', descriptor: GOOD }]));
+  const unreached = new Set(unreachable(installed).stems);
+  const modelOnly = STEM_TREE.filter((n) => n.source === 'model').map((n) => n.kind);
+
+  for (const kind of modelOnly) {
+    const covered = installed.available.includes(kind);
+    assert(covered !== unreached.has(kind),
+      `${kind} is ${covered ? 'reachable' : 'unreachable'} and the sentence ${
+        unreached.has(kind) ? 'calls it unreachable' : 'does not'} — the row and the sentence disagree`);
+  }
+  if (MODEL_DISPATCH_READY) {
+    assert(!unreached.has('guitar') && !unreached.has('keys'),
+      'the installed model makes these and the sentence still lists them');
+    assert(unreached.has('strings'), 'nothing makes strings and the sentence should say so');
+  }
 });
 
 check('the two sentences say different things, and both are true', () => {
@@ -83,8 +142,11 @@ check('the two sentences say different things, and both are true', () => {
   const status = describeInstall(installed, '/m');
   assert(named.includes('Demo Four'), `the install line must name the model: ${named}`);
   assert(status.includes('비상업'), `and its licence: ${status}`);
-  assert(!MODEL_DISPATCH_READY && !/사용됩니다$/.test(status),
-    `the status must not claim the run uses it: ${status}`);
+  // The status line is the one that has to move with the constant.  It is
+  // what a user reads to decide whether the 300 MB they downloaded is doing
+  // anything, and it was wrong in one direction for a while already.
+  assert(status.includes(MODEL_DISPATCH_READY ? '사용됩니다' : '쓰지 않습니다'),
+    `the status disagrees with MODEL_DISPATCH_READY=${String(MODEL_DISPATCH_READY)}: ${status}`);
 });
 
 check('with nothing installed, the message says WHERE to put one', () => {

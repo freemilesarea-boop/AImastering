@@ -42,23 +42,27 @@ files:
   - dist/**/*
   - dist-electron/**/*
   - "!dist/renderer/**/*.map"
-  # The separation model runtime, narrowed by hand.
+  # The separation model runtime — ONE file.
   #
-  # `onnxruntime-web` is 133 MB installed because it ships every build variant —
-  # WebGPU, JSEP, asyncify, JSPI, and source maps for all of them.  What this
-  # app uses is the plain WASM build and its loader, which is 13 MB.  Shipping
-  # the package as it comes would put a tenth of a gigabyte into every download
-  # for a feature most users will not turn on.
+  # `onnxruntime-web` is 133 MB installed because it ships every build variant,
+  # and this list used to carry four entries plus all of onnxruntime-common,
+  # on the assumption that the renderer would import the package at runtime.
+  # It does not, and the difference was measured rather than guessed:
   #
-  # NOT YET VERIFIED ON A REAL PACKAGING RUN — the model path is not wired into
-  # the UI yet, so nothing has been built with it.  What to check when it is:
-  # that `onnxruntime-web` resolves at runtime from inside the asar, and that
-  # `openModel`'s `wasmPaths` points at wherever this lands.
-  - node_modules/onnxruntime-web/package.json
-  - node_modules/onnxruntime-web/dist/ort.wasm.min.mjs
-  - node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs
+  #   · the runtime's JAVASCRIPT is bundled into dist/renderer/model.worker.js
+  #     at build time — `onnxruntime-web/wasm` folds into a classic IIFE, which
+  #     is why the model worker needs no module system and no resolution.
+  #   · the runtime's 12.86 MB `.wasm` is the only thing left, and it is never
+  #     fetched: the main process reads it with Node fs (which understands
+  #     asar) and hands the bytes over, and `env.wasm.wasmBinary` takes them.
+  #     ONNX documents that this makes `wasmPaths` irrelevant, so there is no
+  #     path that has to be right.
+  #
+  # So the earlier note's "check that `wasmPaths` points at wherever this
+  # lands" is moot — nothing points anywhere.  What DOES still need a real
+  # packaging run: that `daw:model-runtime` finds this file inside the asar.
+  # It tries app.getAppPath() first and logs which candidate won.
   - node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm
-  - node_modules/onnxruntime-common/**/*
 
 # ── ASAR layout ──────────────────────────────────────────────────────────────
 # Default asar:true is kept — the main process reads .worklet.js / .wasm via

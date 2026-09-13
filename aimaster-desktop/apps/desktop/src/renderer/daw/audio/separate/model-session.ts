@@ -24,7 +24,7 @@ export interface OrtLike {
     create(model: Uint8Array, options?: { executionProviders?: string[] }): Promise<unknown>;
   };
   Tensor: new (type: 'float32', data: Float32Array, dims: number[]) => TensorLike;
-  env: { wasm: { numThreads: number; wasmPaths?: string } };
+  env: { wasm: { numThreads: number; wasmPaths?: string; wasmBinary?: ArrayBufferLike } };
 }
 
 export interface OpenedModel {
@@ -43,6 +43,17 @@ export interface OpenOptions {
    * this asks for what it can actually get.
    */
   numThreads?: number;
+  /**
+   * The runtime's own `.wasm`, as bytes.
+   *
+   * Set when the caller already has the binary and there is nothing to fetch
+   * it with — which is the packaged case: the renderer is a `file://`
+   * document and the runtime lives inside the asar, so main reads it with
+   * Node fs and hands the bytes over, exactly as this app already does for
+   * the mastering WASM.  ONNX documents that this makes `wasmPaths`
+   * irrelevant, so the two are never both used.
+   */
+  wasmBinary?: ArrayBufferLike;
   /** Injected for the test; production leaves it out and the import happens. */
   ort?: OrtLike;
 }
@@ -92,7 +103,11 @@ export async function openModel(
 
   const ort = options.ort ?? await loadRuntime();
   ort.env.wasm.numThreads = options.numThreads ?? 1;
-  if (options.wasmPaths !== undefined) ort.env.wasm.wasmPaths = options.wasmPaths;
+  if (options.wasmBinary !== undefined) {
+    (ort.env.wasm as { wasmBinary?: ArrayBufferLike }).wasmBinary = options.wasmBinary;
+  } else if (options.wasmPaths !== undefined) {
+    ort.env.wasm.wasmPaths = options.wasmPaths;
+  }
 
   let session: unknown;
   try {

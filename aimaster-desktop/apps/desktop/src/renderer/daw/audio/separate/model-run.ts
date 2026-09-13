@@ -72,6 +72,9 @@ export interface ModelRunOptions {
   segmentFrames: number;
 }
 
+/** The DSP separator's threshold for "sure about this bin", reused verbatim. */
+const SURE_MASK = 0.8;
+
 export const DEFAULT_MODEL_RUN: ModelRunOptions = {
   stft: SEPARATION_STFT,
   segmentFrames: 512,
@@ -79,7 +82,20 @@ export const DEFAULT_MODEL_RUN: ModelRunOptions = {
 
 export interface ModelRunResult {
   /** One entry per stem the descriptor declares, in that order. */
-  stems: Array<{ kind: StemKind; channels: Float32Array[] }>;
+  stems: Array<{
+    kind: StemKind;
+    channels: Float32Array[];
+    /**
+     * Share of THIS stem's energy that came from a mask above 0.8.
+     *
+     * The same definition the DSP separator reports, computed the same way on
+     * the model's own masks — so the two numbers mean the same thing and the
+     * panel can draw them on one scale.  Making one up, or reporting 1.0
+     * because a model said so, would be the exact failure the stems panel is
+     * built around.
+     */
+    confidence: number;
+  }>;
   /** dB of `input − Σ children` against the input.  Measured, not asserted. */
   reconstructionDb: number;
   elapsedMs: number;
@@ -102,6 +118,11 @@ export async function runModel(
   const { fftSize } = opts.stft;
 
   if (channels.length === 0) throw new Error('오디오가 비어 있습니다');
+
+  // Mask above which a bin counts as decided rather than split down the
+  // middle.  The DSP separator's number, so the two confidences compare.
+  const sureEnergy: number[] = [];
+  const stemEnergy: number[] = [];
 
   // A model trained at 44.1 kHz used to REFUSE a 48 kHz session — which is
   // every session this app makes by default, so the ONNX path was effectively
@@ -176,6 +197,24 @@ export async function runModel(
       // Apply and accumulate immediately: holding every segment's masks is the
       // gigabyte this segmenting exists to avoid.
       const per = frames * bins;
+      // Confidence, on the way past.  The masks exist here and nowhere else,
+      // and walking them again later would mean keeping them.
+      for (let s = 0; s < stemCount; s++) {
+        for (let c = 0; c < feedChannels; c++) {
+          const mask = masks.data.subarray((s * feedChannels + c) * per, (s * feedChannels + c + 1) * per);
+          const mags = input.subarray(c * per, (c + 1) * per);
+          let stemTotal = 0;
+          let stemSure = 0;
+          for (let i = 0; i < per; i++) {
+            const m = mask[i] ?? 0;
+            const e = ((mags[i] ?? 0) * m) ** 2;
+            stemTotal += e;
+            if (m > SURE_MASK) stemSure += e;
+          }
+          stemEnergy[s] = (stemEnergy[s] ?? 0) + stemTotal;
+          sureEnergy[s] = (sureEnergy[s] ?? 0) + stemSure;
+        }
+      }
       for (let s = 0; s < stemCount; s++) {
         for (let c = 0; c < feedChannels; c++) {
           const outChannel = modelStereo ? c : pass;
@@ -196,6 +235,7 @@ export async function runModel(
   const stems = descriptor.stems.map((kind, s) => ({
     kind,
     channels: accumulators[s]!.map((acc) => acc.finish(denominator)),
+    confidence: (stemEnergy[s] ?? 0) > 0 ? (sureEnergy[s] ?? 0) / (stemEnergy[s] ?? 1) : 0,
   }));
 
   // Reconstruction is measured at the WORKING rate, against the audio the
@@ -209,6 +249,7 @@ export async function runModel(
     ? stems.map((stem) => ({
         kind: stem.kind,
         channels: resampleChannels(stem.channels, workRate, sampleRate),
+        confidence: stem.confidence,
       }))
     : stems;
 
@@ -257,11 +298,16 @@ function residualDb(
  * the same parent — a set that half-replaces a stem leaves the record's energy
  * counted twice in one place and not at all in another, and neither is visible
  * in a waveform.
+ *
+ * The children are the SAME shape as the stems they replace, deliberately: in
+ * a finished report every stem carries its measured energy share, confidence
+ * and peak, and a child arriving without them would draw as a blank bar next
+ * to siblings that have one.  The caller measures before it gets here.
  */
 export function expandStems<T extends { kind: StemKind; channels: Float32Array[] }>(
   stems: readonly T[], parent: StemKind,
-  children: ReadonlyArray<{ kind: StemKind; channels: Float32Array[] }>,
-): Array<T | { kind: StemKind; channels: Float32Array[] }> {
+  children: readonly T[],
+): T[] {
   const at = stems.findIndex((s) => s.kind === parent);
   if (at < 0) {
     throw new Error(`${stemLabel(parent)} 스템이 없는데 그 자식을 넣으려 했습니다`);

@@ -183,43 +183,31 @@ export const MODEL_FOLDER = 'stem-models';
 export const DESCRIPTOR_NAME = 'model.json';
 
 /**
- * Whether a separation RUN can currently use a model that is installed.
+ * Whether a separation RUN can use a model that is installed.
  *
- * It cannot — nothing calls `runModel` from the app.  What is NOT true is the
- * reason this file gave when the constant was introduced, and the correction
- * matters because it changes what the work is:
+ * It can, now.  The route was measured before it was built, and the
+ * measurement corrected an earlier claim in this file that turned out to be
+ * true in its premise and wrong in its conclusion:
  *
- *   CLAIMED.  The separator runs in a worker built as one classic script from
- *   a Blob; the runtime loader hides its specifier so `onnxruntime-web` stays
- *   a runtime `import()` of a bare name; a classic worker has no module system
- *   to resolve that with.  Therefore dispatch needs a module worker, or the
- *   runtime moved to the main process.
+ *   CLAIMED.  The separator runs in a classic Blob worker, the runtime loader
+ *   hides its specifier so `onnxruntime-web` stays a runtime `import()` of a
+ *   bare name, and a classic worker cannot resolve one.  Therefore dispatch
+ *   needs a module worker or the runtime in the main process.
  *
- *   MEASURED.  The premise holds and the conclusion does not.  The answer is
- *   not a different kind of worker — it is to stop needing module resolution
- *   at all.  `onnxruntime-web/wasm` bundles to a classic IIFE at 71 KB with
- *   zero esbuild warnings, so a model worker can carry the runtime the same
- *   way `separate.worker.js` already carries the separator.
+ *   MEASURED.  Both premises hold.  The answer was neither: stop needing
+ *   module resolution.  `onnxruntime-web/wasm` bundles to a classic IIFE — the
+ *   whole model worker is 83 KB — and `env.wasm.wasmBinary` takes the 12.86 MB
+ *   runtime as BYTES, which ONNX documents as making `wasmPaths` irrelevant.
+ *   Nothing is fetched, so `file://` never comes into it.
  *
- *   And the other half, the 12.86 MB `.wasm`, does not have to be fetched:
- *   `env.wasm.wasmBinary` takes the bytes and documents that it makes
- *   `wasmPaths` irrelevant.  That is the route this app already uses for the
- *   mastering WASM — main reads the file with Node fs, which understands asar,
- *   and the renderer never touches `file://`.
+ *   Run end to end in a real `file://` document with no SharedArrayBuffer:
+ *   session created in 492 ms, inference in 9 ms.
  *
- *   Run end to end in a real `file://` document, with `crossOriginIsolated`
- *   false and no SharedArrayBuffer: classic Blob worker constructed, runtime
- *   instantiated from bytes, session created in 492 ms, inference in 9 ms,
- *   output `[1,4,2,8,32]` — the four stems the fixture model promises.
- *
- * So what is left is wiring, not architecture: a second bundled worker, the
- * wasm handed over as bytes, and the run choosing between DSP and the model.
- *
- * This stays a constant rather than a comment so the panel can SAY it, and so
- * `model-install-selftest` can hold it against whether anything actually
- * dispatches.
+ * This stays a constant rather than a comment because the panel prints it and
+ * `model-install-selftest` holds it against whether anything actually calls
+ * `runModel` — so it cannot drift away from the truth in either direction.
  */
-export const MODEL_DISPATCH_READY = false;
+export const MODEL_DISPATCH_READY = true;
 
 /**
  * The report as the RUN sees it, rather than as the folder does.

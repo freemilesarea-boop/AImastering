@@ -574,6 +574,69 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     return { root, entries };
   });
 
+  /**
+   * The ONNX runtime's own `.wasm`, as bytes.
+   *
+   * Read here rather than fetched there for the reason this app already reads
+   * the mastering WASM here: the packaged renderer is a `file://` document and
+   * the binary lives inside the asar, which Node fs understands and Chromium's
+   * fetch does not reliably.  ONNX takes it through `env.wasm.wasmBinary` and
+   * documents that `wasmPaths` is then ignored, so no path ever has to be
+   * right.
+   *
+   * Several candidate locations because dev and packaged differ, and the one
+   * that worked is RETURNED — a 13 MB file resolved from the wrong place is
+   * the kind of thing that works on one machine and not another, and the only
+   * cheap defence is being able to see which it was.
+   */
+  ipc.handle('daw:model-runtime', () => {
+    const name = 'ort-wasm-simd-threaded.wasm';
+    const relative = path.join('node_modules', 'onnxruntime-web', 'dist', name);
+    const candidates = [
+      // Packaged: electron-builder copies the narrowed onnxruntime files into
+      // the asar next to dist/ and dist-electron/.
+      path.join(app.getAppPath(), relative),
+      // Dev, app-local install.
+      path.join(__dirname, '../..', relative),
+      // Dev, pnpm workspace root — this is a monorepo and the package hoists.
+      path.join(__dirname, '../../../..', relative),
+    ];
+    const tried: string[] = [];
+    for (const full of candidates) {
+      try {
+        const bytes = fs.readFileSync(full);
+        log.info(`[model-runtime] ${full} ${bytes.byteLength} bytes`);
+        return { bytes: new Uint8Array(bytes), from: full, size: bytes.byteLength };
+      } catch {
+        tried.push(full);
+      }
+    }
+    throw new Error(`분리 모델 런타임(${name})을 찾지 못했습니다 — 확인한 곳: ${tried.join(' · ')}`);
+  });
+
+  /**
+   * One model's weights, from the folder its descriptor was found in.
+   *
+   * The path is rebuilt from the folder and the descriptor's `weights` field
+   * rather than taken whole from the renderer, and `path.resolve` has to land
+   * back inside that folder — a descriptor is a file the user downloaded from
+   * somewhere, so `"weights": "../../../etc/passwd"` is a thing it can say.
+   */
+  ipc.handle('daw:model-weights', (_e, req: unknown) => {
+    const o = (req && typeof req === 'object' ? req : {}) as { dir?: unknown; weights?: unknown };
+    if (typeof o.dir !== 'string' || typeof o.weights !== 'string') {
+      throw new Error('daw:model-weights: dir 과 weights 가 필요합니다');
+    }
+    const root = path.resolve(o.dir);
+    const full = path.resolve(root, o.weights);
+    if (full !== root && !full.startsWith(root + path.sep)) {
+      throw new Error(`model.json 의 weights 가 모델 폴더 밖을 가리킵니다 — ${o.weights}`);
+    }
+    const bytes = fs.readFileSync(full);
+    log.info(`[model-weights] ${full} ${bytes.byteLength} bytes`);
+    return { bytes: new Uint8Array(bytes), from: full, size: bytes.byteLength };
+  });
+
   ipc.handle('daw:choose-stem-folder', async (_e, req: unknown) => {
     if (!win) return null;
     const o = (req && typeof req === 'object' ? req : {}) as { name?: unknown };

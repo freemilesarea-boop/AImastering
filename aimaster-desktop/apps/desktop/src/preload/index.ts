@@ -57,7 +57,7 @@ const INVOKE_CHANNELS = [
   'daw:write-temp-audio', 'daw:bounce-audio', 'daw:stage-for-mastering', 'daw:discard-staged',
   'daw:choose-stem-folder', 'daw:write-stem',
   // Separation models the user installed — listing only; nothing is loaded here
-  'daw:stem-models',
+  'daw:stem-models', 'daw:model-runtime', 'daw:model-weights',
   'daw:sfz-open', 'daw:sample-read',
   // Writing a .mid back out — the other half of the MIDI importer
   'daw:midi-save',

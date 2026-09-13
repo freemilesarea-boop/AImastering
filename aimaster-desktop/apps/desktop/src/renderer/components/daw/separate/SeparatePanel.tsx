@@ -99,6 +99,12 @@ export default function SeparatePanel() {
       const result = await separateClip(session, target.track.id, target.clip.id, {
         wanted,
         muteSource,
+        // The scan the panel already did, handed straight over — scanning is
+        // an IPC round trip and asking twice would be a second answer to a
+        // question that already has one.
+        ...(install?.report.model
+          ? { model: { descriptor: install.report.model, dir: install.report.model.path } }
+          : {}),
         onProgress: (fraction, what) => setBusy({ fraction, what }),
       });
       // A machine pulled this apart, and the file has to say so.  Recorded
@@ -115,7 +121,7 @@ export default function SeparatePanel() {
     } finally {
       setBusy(null);
     }
-  }, [target, guard.ok, busy, session, wanted, muteSource, apply, notify]);
+  }, [target, guard.ok, busy, session, wanted, muteSource, install, apply, notify]);
 
   // The tree owns the rule that a set has to cover the record exactly once —
   // see stem-tree.ts.  Turning 킥 on turns its siblings on and 드럼 off, and
@@ -128,7 +134,9 @@ export default function SeparatePanel() {
   // model" the moment a file appeared in the folder would be promising a stem
   // it cannot deliver.
   const models = install?.report ?? null;
-  const gap = unreachable(models ? runnableReport(models) : { model: null, tried: [], available: [] });
+  const forTheRun = models ? runnableReport(models) : { model: null, tried: [], available: [] };
+  const gap = unreachable(forTheRun);
+  const reachable = forTheRun.available;
 
   return (
     <div className="flex-1 overflow-auto" style={{ background: premium.surface.abyss }}>
@@ -203,7 +211,12 @@ export default function SeparatePanel() {
               // — because a user who wants a guitar stem should find out that
               // it is a known thing needing a model, not conclude the app
               // forgot about guitars.
-              if (node.source === 'model') {
+              // A model-only stem is greyed unless an INSTALLED model makes
+              // it.  The tree's `source` says what kind of thing can produce
+              // this stem, which is a fact about the taxonomy; whether one is
+              // on this machine is a fact about this machine, and the row has
+              // to answer the second or it contradicts the sentence below it.
+              if (node.source === 'model' && !reachable.includes(node.kind)) {
                 return (
                   <div key={node.kind} className="flex items-center gap-3 rounded px-2.5 py-1"
                        style={{ marginLeft: 18, opacity: 0.4 }}
@@ -391,6 +404,12 @@ function ModelInstall({ install, scanning, onRescan, busy }: {
         <p className="mt-1" style={{ fontSize: 9, color: premium.accent.base, lineHeight: 1.6 }}>
           ⚠ 모델은 정상이지만 분리 실행 경로가 아직 연결되어 있지 않습니다 — 이번 분리는
           신호 처리만 씁니다
+        </p>
+      )}
+      {install !== null && install.report.model !== null && MODEL_DISPATCH_READY && (
+        <p className="mt-1" style={{ fontSize: 9, color: premium.text.muted, lineHeight: 1.6 }}>
+          이 모델이 만드는 스템을 고르면 신호 처리 뒤에 한 번 더 나눕니다 — 부모 스템을
+          대체하므로 합은 그대로 원본입니다
         </p>
       )}
     </div>
