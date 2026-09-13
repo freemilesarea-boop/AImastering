@@ -14,6 +14,9 @@ import {
   updateTrack, findTrack,
 } from '../../../daw/model/session-ops.js';
 import {
+  busUsage, busUsageCount, nextBusName, removeBus, renameBus, setBusChannels,
+} from '../../../daw/model/buses.js';
+import {
   effectiveFaderDb, toggleMute, toggleSolo, toggleSoloSafe, vcaChainDb,
 } from '../../../daw/model/mixer-math.js';
 import { describePath, computeDelayCompensation, wouldFeedback } from '../../../daw/model/routing.js';
@@ -47,6 +50,7 @@ export default function MixWindow() {
   const apply   = useDawStore((s) => s.apply);
   const notify  = useAppStore((s) => s.notify);
   const [levels, setLevels] = useState<Map<string, ChannelMeterReading>>(new Map());
+  const [busesOpen, setBusesOpen] = useState(false);
 
   // Meter poll — cheap enough at 20 Hz and only while the window is open.
   // The interval comes from the same constant the analyser window is sized
@@ -70,15 +74,21 @@ export default function MixWindow() {
           className="px-2 py-0.5 rounded text-[10px] border border-zinc-700 bg-zinc-900 text-zinc-400"
         >지연 보정 {session.delayCompensation ? '끄기' : '켜기'}</button>
         <button
-          onClick={() => apply((s) => {
-            const bus = createBus(`Bus ${s.buses.length + 1}`);
-            return { ...s, buses: [...s.buses, bus] };
-          })}
+          onClick={() => apply((s) => ({ ...s, buses: [...s.buses, createBus(nextBusName(s))] }))}
           className="px-2 py-0.5 rounded text-[10px] border border-zinc-700 bg-zinc-900 text-zinc-400"
         >+ 버스</button>
+        <button
+          onClick={() => setBusesOpen((v) => !v)}
+          title="버스 이름 바꾸기 · 모노 · 삭제"
+          className={`px-2 py-0.5 rounded text-[10px] border ${busesOpen
+            ? 'border-zinc-600 bg-zinc-800 text-zinc-200'
+            : 'border-zinc-700 bg-zinc-900 text-zinc-400'}`}
+        >버스 {session.buses.length}</button>
         <div className="flex-1" />
         <span className="text-[10px] font-mono text-zinc-600">{session.tracks.length} ch</span>
       </div>
+
+      {busesOpen && <BusPanel session={session} onApply={apply} onNotify={notify} />}
 
       <div className="flex-1 flex overflow-x-auto">
         {session.tracks.map((track) => (
@@ -292,27 +302,58 @@ function ChannelStrip({
                   {session.buses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
                 {send && (
-                  <button
-                    title={send.preFader ? '프리 페이더' : '포스트 페이더'}
-                    onClick={() => onApply((s) => setSend(s, track.id, { ...send, preFader: !send.preFader }))}
-                    className={`w-6 h-5 rounded text-[8px] border ${send.preFader
-                      ? 'bg-sky-600/30 border-sky-500/50 text-sky-300'
-                      : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
-                  >{send.preFader ? 'PRE' : 'PST'}</button>
+                  <>
+                    <button
+                      title={send.preFader ? '프리 페이더' : '포스트 페이더'}
+                      onClick={() => onApply((s) => setSend(s, track.id, { ...send, preFader: !send.preFader }))}
+                      className={`w-6 h-5 rounded text-[8px] border ${send.preFader
+                        ? 'bg-sky-600/30 border-sky-500/50 text-sky-300'
+                        : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+                    >{send.preFader ? 'PRE' : 'PST'}</button>
+                    {/* `Send.mute` was honoured by the engine and had no
+                        control anywhere — the only way to silence one send was
+                        to pull its level to the bottom and lose the setting. */}
+                    <button
+                      title={send.mute ? '센드 뮤트 해제' : '이 센드만 뮤트'}
+                      onClick={() => onApply((s) => setSend(s, track.id, { ...send, mute: !send.mute }))}
+                      className={`w-4 h-5 rounded text-[8px] border ${send.mute
+                        ? 'bg-red-600/30 border-red-500/50 text-red-300'
+                        : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+                    >M</button>
+                  </>
                 )}
               </div>
               {send && (
-                <input
-                  type="range" min={-60} max={12} step={0.5} value={send.levelDb}
-                  onPointerDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
-                  onPointerUp={() => release({ kind: 'sendLevel', sendId: send.id })}
-                  onLostPointerCapture={() => release({ kind: 'sendLevel', sendId: send.id })}
-                  onKeyDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
-                  onKeyUp={() => release({ kind: 'sendLevel', sendId: send.id })}
-                  onChange={(e) => move(
-                    { kind: 'sendLevel', sendId: send.id }, parseFloat(e.target.value))}
-                  className="w-full h-1 accent-emerald-500"
-                />
+                <div className="flex items-center gap-1">
+                  <input
+                    type="range" min={-60} max={12} step={0.5} value={send.levelDb}
+                    title={`레벨 ${send.levelDb.toFixed(1)} dB`}
+                    onPointerDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
+                    onPointerUp={() => release({ kind: 'sendLevel', sendId: send.id })}
+                    onLostPointerCapture={() => release({ kind: 'sendLevel', sendId: send.id })}
+                    onKeyDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
+                    onKeyUp={() => release({ kind: 'sendLevel', sendId: send.id })}
+                    onChange={(e) => move(
+                      { kind: 'sendLevel', sendId: send.id }, parseFloat(e.target.value))}
+                    className={`flex-1 min-w-0 h-1 ${send.mute ? 'accent-zinc-600' : 'accent-emerald-500'}`}
+                  />
+                  {/* Send pan.  Narrower than the level and centre-detented by
+                      double-click, because it is the control you want at zero
+                      almost always and somewhere else occasionally. */}
+                  <input
+                    type="range" min={-1} max={1} step={0.02} value={send.pan}
+                    title={`센드 팬 ${send.pan === 0 ? 'C' : send.pan < 0 ? `L${Math.round(-send.pan * 100)}` : `R${Math.round(send.pan * 100)}`} (더블클릭 = 센터)`}
+                    onDoubleClick={() => onApply((s) => setSend(s, track.id, { ...send, pan: 0 }))}
+                    onPointerDown={() => grab({ kind: 'sendPan', sendId: send.id })}
+                    onPointerUp={() => release({ kind: 'sendPan', sendId: send.id })}
+                    onLostPointerCapture={() => release({ kind: 'sendPan', sendId: send.id })}
+                    onKeyDown={() => grab({ kind: 'sendPan', sendId: send.id })}
+                    onKeyUp={() => release({ kind: 'sendPan', sendId: send.id })}
+                    onChange={(e) => move(
+                      { kind: 'sendPan', sendId: send.id }, parseFloat(e.target.value))}
+                    className="w-[34px] shrink-0 h-1 accent-sky-400"
+                  />
+                </div>
               )}
             </div>
           );
@@ -595,6 +636,85 @@ function MasterLoudness() {
           <span className={`text-right ${overTp ? 'text-red-400' : 'text-zinc-300'}`}>{lu(m?.truePeakDbtp)}</span>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The bus list — the only place a bus can be anything but created.
+ *
+ * Before this, "+ 버스" was the entire bus interface: a session accumulated
+ * `Bus 1`, `Bus 2`, `Bus 3` with no way to say what one was for and no way to
+ * remove one.  Two of the three controls here are for fields that already
+ * existed and did nothing — the NAME could only ever be the one it was born
+ * with, and `channels` was stored, saved and imported while a mono bus
+ * rendered identically to a stereo one.
+ *
+ * Delete says what it is about to disconnect BEFORE it does it.  A bus is
+ * referenced from four directions, and the count is the only thing that makes
+ * the choice an informed one.
+ */
+function BusPanel({ session, onApply, onNotify }: {
+  session: DawSession;
+  onApply: (fn: (s: DawSession) => DawSession) => void;
+  onNotify: (m: string, t?: 'info' | 'success' | 'warning' | 'error') => void;
+}) {
+  const [confirming, setConfirming] = useState<string | null>(null);
+  if (session.buses.length === 0) {
+    return (
+      <div className="px-3 py-2 border-b border-zinc-800 bg-[#101018]">
+        <p className="text-[10px] text-zinc-600">
+          버스가 없습니다 — 센드와 서브믹스를 쓰려면 먼저 하나 만드세요.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="px-3 py-2 border-b border-zinc-800 bg-[#101018] flex flex-wrap gap-2">
+      {session.buses.map((bus) => {
+        const usage = busUsage(session, bus.id);
+        const count = busUsageCount(usage);
+        const armed = confirming === bus.id;
+        return (
+          <div key={bus.id}
+               className="flex items-center gap-1 rounded border border-zinc-800 bg-zinc-900/60 pl-1.5 pr-1 py-1">
+            <input
+              value={bus.name}
+              onChange={(e) => onApply((s) => renameBus(s, bus.id, e.target.value))}
+              className="w-[88px] h-5 rounded text-[10px] px-1 bg-zinc-950 border border-zinc-800 text-zinc-200"
+            />
+            <button
+              onClick={() => onApply((s) => setBusChannels(s, bus.id, bus.channels === 1 ? 2 : 1))}
+              title={bus.channels === 1
+                ? '모노 버스 — L+R을 합쳐서 양쪽으로 보냅니다'
+                : '스테레오 버스'}
+              className={`px-1 h-5 rounded text-[9px] font-mono border ${bus.channels === 1
+                ? 'bg-amber-600/25 border-amber-600/50 text-amber-300'
+                : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+            >{bus.channels === 1 ? 'MONO' : 'ST'}</button>
+            <span className="text-[9px] font-mono text-zinc-600 px-0.5" title="이 버스를 참조하는 곳">
+              {count}
+            </span>
+            <button
+              onClick={() => {
+                if (!armed) { setConfirming(bus.id); return; }
+                setConfirming(null);
+                onApply((s) => removeBus(s, bus.id));
+                onNotify(count > 0
+                  ? `${bus.name} 삭제 — 연결 ${count}곳을 정리했습니다`
+                  : `${bus.name} 삭제`, 'info');
+              }}
+              onBlur={() => setConfirming((c) => (c === bus.id ? null : c))}
+              title={count > 0
+                ? `출력 ${usage.outputs.length} · 입력 ${usage.inputs.length} · 센드 ${usage.sends.length} · 사이드체인 ${usage.sidechains.length}`
+                : '아무것도 이 버스를 쓰고 있지 않습니다'}
+              className={`px-1 h-5 rounded text-[9px] border ${armed
+                ? 'bg-red-600/40 border-red-500/70 text-red-200'
+                : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+            >{armed ? (count > 0 ? `${count}곳 끊고 삭제?` : '삭제?') : '×'}</button>
+          </div>
+        );
+      })}
     </div>
   );
 }

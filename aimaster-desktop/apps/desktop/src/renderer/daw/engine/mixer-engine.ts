@@ -70,6 +70,44 @@ export interface ChannelMeterTap {
   last: ChannelMeterReading;
 }
 
+/**
+ * One send: a level, then a pan, then the bus.
+ *
+ * The pan is new, and it is new because `Send.pan` did nothing.  It was in the
+ * model, written by `createSend`, saved into every session file and carried
+ * through import — and measured through a render, hard left, centre and hard
+ * right produced byte-identical output, because the send was a bare GainNode
+ * with no panner behind it.
+ *
+ * A POST-fader send taps the channel's own panner, so this is a second pan
+ * over a signal that is already stereo, which is what a console does: the
+ * send pan places the channel within the effect, and at centre a
+ * `StereoPannerNode` passes a stereo input through at unity.  A PRE-fader send
+ * taps ahead of the channel pan, so for a mono source this panner is the only
+ * one there is.
+ */
+interface SendNodes {
+  /** Level and mute; the automation lane for `sendLevel` rides this. */
+  gain: GainNode;
+  panner: StereoPannerNode;
+}
+
+/**
+ * A bus, as two ends rather than one node.
+ *
+ * They are the same object for a stereo bus.  For a MONO bus they are not:
+ * everything writing into the bus connects to `input`, everything reading it
+ * takes `output`, and the fold sits between them.  `BusDef.channels` has been
+ * in the model, in saved sessions and in the import path all along and — again
+ * measured rather than assumed — a mono bus rendered identically to a stereo
+ * one.
+ */
+interface BusNodes {
+  input: GainNode;
+  output: AudioNode;
+  extra: AudioNode[];
+}
+
 export interface Channel {
   trackId: TrackId;
   /** Where clip players (or a bus, for auxes) feed in. */
@@ -93,7 +131,7 @@ export interface Channel {
   fader: GainNode;
   panner: StereoPannerNode;
   postFaderTap: GainNode;
-  sends: Map<string, GainNode>;
+  sends: Map<string, SendNodes>;
   meter: ChannelMeterTap | null;
   /**
    * One analyser per insert, tapped at what ARRIVES at that insert.
@@ -190,7 +228,7 @@ export class MixerEngine {
   private readonly withMeters: boolean;
 
   private channels = new Map<TrackId, Channel>();
-  private buses = new Map<BusId, GainNode>();
+  private buses = new Map<BusId, BusNodes>();
   private key = '';
   private lastSession: DawSession | null = null;
   /** Latest feedback report — the UI shows this instead of blowing up. */
@@ -270,7 +308,7 @@ export class MixerEngine {
     for (const insert of track.inserts) {
       if (!insert.sidechainSource) continue;
       const instance = ch.inserts.get(insert.id);
-      const bus = this.buses.get(insert.sidechainSource);
+      const bus = this.buses.get(insert.sidechainSource)?.output;
       if (!instance?.sidechain || !bus) continue;
       bus.connect(instance.sidechain);
       instance.setSidechainActive(true);
@@ -366,8 +404,9 @@ export class MixerEngine {
     const plugin = parsePluginParamKey(param);
     const target: AudioParam | undefined = param === 'volume' ? ch.fader.gain
       : param === 'pan' ? ch.panner.pan
-        : param.startsWith('send:') ? ch.sends.get(param.slice(5))?.gain
-          : plugin
+        : param.startsWith('sendPan:') ? ch.sends.get(param.slice(8))?.panner.pan
+          : param.startsWith('send:') ? ch.sends.get(param.slice(5))?.gain.gain
+            : plugin
             ? ch.inserts.get(plugin.insertId)?.automatable?.(plugin.paramId)?.param ?? undefined
             : undefined;
     if (!target) return;
@@ -381,7 +420,11 @@ export class MixerEngine {
   }
 
   channel(trackId: TrackId): Channel | undefined { return this.channels.get(trackId); }
-  bus(busId: BusId): GainNode | undefined { return this.buses.get(busId); }
+  /** Where things WRITE into a bus. */
+  busInput(busId: BusId): GainNode | undefined { return this.buses.get(busId)?.input; }
+
+  /** Where things READ a bus — the far side of the mono fold, when there is one. */
+  busOutput(busId: BusId): AudioNode | undefined { return this.buses.get(busId)?.output; }
   get trackIds(): TrackId[] { return [...this.channels.keys()]; }
 
   // ── Build ───────────────────────────────────────────────────────────────
@@ -389,10 +432,7 @@ export class MixerEngine {
     this.teardown();
     this.feedbackPaths = detectFeedback(session);
 
-    for (const bus of session.buses) {
-      const node = this.ctx.createGain();
-      this.buses.set(bus.id, node);
-    }
+    for (const bus of session.buses) this.buses.set(bus.id, this.buildBus(bus.channels));
 
     for (const track of session.tracks) {
       if (!carriesAudio(track)) continue;
@@ -412,27 +452,28 @@ export class MixerEngine {
         if (masterCh) ch.postFaderTap.connect(masterCh.input);
         else ch.postFaderTap.connect(this.destination);
       } else if (track.output.kind === 'bus') {
-        const bus = this.buses.get(track.output.busId);
+        const bus = this.buses.get(track.output.busId)?.input;
         if (bus) ch.postFaderTap.connect(bus);
       }
 
       // Aux input: a bus feeds this channel.
-      if (track.input) this.buses.get(track.input)?.connect(ch.input);
+      if (track.input) this.buses.get(track.input)?.output.connect(ch.input);
 
       // Sends.
       for (const send of track.sends) {
         const node = ch.sends.get(send.id);
-        const bus = this.buses.get(send.target);
+        const bus = this.buses.get(send.target)?.input;
         if (!node || !bus) continue;
-        (send.preFader ? ch.preFaderTap : ch.panner).connect(node);
-        node.connect(bus);
+        (send.preFader ? ch.preFaderTap : ch.panner).connect(node.gain);
+        node.gain.connect(node.panner);
+        node.panner.connect(bus);
       }
 
       // Sidechain keys.
       for (const insert of track.inserts) {
         if (!insert.sidechainSource) continue;
         const instance = ch.inserts.get(insert.id);
-        const bus = this.buses.get(insert.sidechainSource);
+        const bus = this.buses.get(insert.sidechainSource)?.output;
         if (!instance?.sidechain || !bus) continue;
         bus.connect(instance.sidechain);
         instance.setSidechainActive(true);
@@ -491,6 +532,36 @@ export class MixerEngine {
     };
   }
 
+  /**
+   * A bus, folded to mono when it asks to be.
+   *
+   * The fold is an explicit splitter and merger rather than a `channelCount`
+   * trick, for the same reason the control room does it that way: a stereo
+   * pair collapsed by the browser's own down-mix rules is not the sum a
+   * console makes, and on a bus the whole point of asking for mono is to hear
+   * that exact sum.  The halving keeps a centred source at the level it
+   * arrived at; a hard-panned one correctly loses 6 dB, because that is what
+   * folding it does.
+   */
+  private buildBus(channels: 1 | 2): BusNodes {
+    const ctx = this.ctx;
+    const input = ctx.createGain();
+    if (channels === 2 || typeof ctx.createChannelSplitter !== 'function') {
+      return { input, output: input, extra: [] };
+    }
+    const splitter = ctx.createChannelSplitter(2);
+    const merger = ctx.createChannelMerger(2);
+    const trim = ctx.createGain();
+    trim.gain.value = 0.5;
+    input.connect(splitter);
+    for (const side of [0, 1]) {
+      splitter.connect(merger, 0, side);
+      splitter.connect(merger, 1, side);
+    }
+    merger.connect(trim);
+    return { input, output: trim, extra: [splitter, merger, trim] };
+  }
+
   private buildChannel(track: Track, session: DawSession): Channel {
     const ctx = this.ctx;
     const input        = ctx.createGain();
@@ -527,7 +598,7 @@ export class MixerEngine {
     let chain: BuiltChain | null = null;
     if (track.deviceGraph) {
       chain = buildDeviceChain(
-        { ctx, busFor: (id) => this.buses.get(id), racks: track.racks },
+        { ctx, busFor: (id) => this.buses.get(id)?.input, racks: track.racks },
         track.deviceGraph,
       );
       if (chain) {
@@ -561,8 +632,10 @@ export class MixerEngine {
 
     const meter = this.buildMeter(postFaderTap);
 
-    const sends = new Map<string, GainNode>();
-    for (const send of track.sends) sends.set(send.id, ctx.createGain());
+    const sends = new Map<string, SendNodes>();
+    for (const send of track.sends) {
+      sends.set(send.id, { gain: ctx.createGain(), panner: ctx.createStereoPanner() });
+    }
 
     void session;
     return {
@@ -643,8 +716,11 @@ export class MixerEngine {
       for (const send of track.sends) {
         const node = ch.sends.get(send.id);
         if (!node) continue;
+        if (!this.isAutomated(track.id, `sendPan:${send.id}`)) {
+          node.panner.pan.value = Math.max(-1, Math.min(1, send.pan));
+        }
         if (this.isAutomated(track.id, `send:${send.id}`) && !send.mute) continue;
-        node.gain.value = send.mute ? 0 : dbToGain(send.levelDb);
+        node.gain.gain.value = send.mute ? 0 : dbToGain(send.levelDb);
       }
     }
   }
@@ -733,14 +809,22 @@ export class MixerEngine {
         ch.preFaderTap, ch.fader, ch.panner, ch.postFaderTap]) {
         try { node.disconnect(); } catch { /* ignore */ }
       }
-      for (const s of ch.sends.values()) { try { s.disconnect(); } catch { /* ignore */ } }
+      for (const s of ch.sends.values()) {
+        for (const node of [s.gain, s.panner]) {
+          try { node.disconnect(); } catch { /* ignore */ }
+        }
+      }
       if (ch.meter) {
         for (const node of [ch.meter.splitter, ch.meter.left, ch.meter.right]) {
           try { node.disconnect(); } catch { /* ignore */ }
         }
       }
     }
-    for (const bus of this.buses.values()) { try { bus.disconnect(); } catch { /* ignore */ } }
+    for (const bus of this.buses.values()) {
+      for (const node of [bus.input, ...bus.extra]) {
+        try { node.disconnect(); } catch { /* ignore */ }
+      }
+    }
     this.channels.clear();
     this.buses.clear();
   }

@@ -150,9 +150,14 @@ export function automatableParamsOf(insert: Track['inserts'][number]): PluginPar
  * What this track can automate today, in the order a channel is read.
  *
  * Deliberately only the targets the ENGINE PLAYS BACK.  `AutomationTarget`
- * has more members — mute, send pan — and a lane for one of those would draw
- * beautifully and do nothing, which is the worst outcome available: you would
- * spend an afternoon wondering why the move you drew has no effect.
+ * still has more members — channel mute, send mute — and a lane for one of
+ * those would draw beautifully and do nothing, which is the worst outcome
+ * available: you would spend an afternoon wondering why the move you drew has
+ * no effect.  (Send mute has a working substitute in any case: a send level
+ * lane taken to the bottom of its range is silence, on the same node.)
+ *
+ * Send PAN used to be in that excluded group and no longer is — the send grew
+ * a real panner, so the lane now moves something.
  *
  * Plugin parameters are now here too, but only the ones the device says are a
  * single AudioParam: those take the same ramp as the fader, on the same clock,
@@ -163,6 +168,7 @@ export function availableTargets(track: Track): AutomationTarget[] {
   const out: AutomationTarget[] = [{ kind: 'volume' }, { kind: 'pan' }];
   for (const send of [...track.sends].sort((a, b) => a.slot - b.slot)) {
     out.push({ kind: 'sendLevel', sendId: send.id });
+    out.push({ kind: 'sendPan', sendId: send.id });
   }
   // Macro knobs, before the plugins — the rack sits first in the chain, so
   // the menu reads down the channel the way the signal does.  Only the ones
@@ -190,7 +196,8 @@ export function availableTargets(track: Track): AutomationTarget[] {
  * insert and dead afterwards, and saying so is better than pretending.
  */
 export function isPlayable(target: AutomationTarget, track?: Track): boolean {
-  if (target.kind === 'volume' || target.kind === 'pan' || target.kind === 'sendLevel') {
+  if (target.kind === 'volume' || target.kind === 'pan'
+    || target.kind === 'sendLevel' || target.kind === 'sendPan') {
     return true;
   }
   if (target.kind === 'macro') {

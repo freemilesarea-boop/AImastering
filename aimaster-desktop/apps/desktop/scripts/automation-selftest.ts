@@ -126,10 +126,19 @@ check('only the targets the engine plays are offered', () => {
   assert(targets.some((t) => t.kind === 'volume'), 'volume');
   assert(targets.some((t) => t.kind === 'pan'), 'pan');
   assert(targets.some((t) => t.kind === 'sendLevel'), 'send level');
+  // Send pan joined this list when the send grew a real panner.  It was
+  // excluded here for the right reason — until then `Send.pan` was read by
+  // nothing, and a render at hard left, centre and hard right came out
+  // byte-identical.
+  assert(targets.some((t) => t.kind === 'sendPan'), 'send pan');
   for (const target of targets) {
     assert(isPlayable(target), `${targetKey(target)} is reproduced by the player`);
   }
-  assert(!targets.some((t) => t.kind === 'plugin' || t.kind === 'mute' || t.kind === 'sendPan'),
+  // Still excluded, and each for a live reason: channel mute has no node to
+  // ramp, and send mute would be a second lane fighting send level over the
+  // same gain — a send level lane at the bottom of its range is the same
+  // silence with no ambiguity about which lane wins.
+  assert(!targets.some((t) => t.kind === 'plugin' || t.kind === 'mute' || t.kind === 'sendMute'),
     'and nothing the scheduler would ignore');
 });
 

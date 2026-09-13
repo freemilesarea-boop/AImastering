@@ -439,6 +439,7 @@ export class ClipPlayer {
    */
   private paramNameOf(target: AutomationTarget): string {
     if (target.kind === 'sendLevel') return `send:${target.sendId}`;
+    if (target.kind === 'sendPan') return `sendPan:${target.sendId}`;
     if (target.kind === 'plugin') return pluginParamKey(target.insertId, target.paramId);
     if (target.kind === 'macro') return `macro:${target.macroId}`;
     return target.kind;
@@ -477,7 +478,16 @@ export class ClipPlayer {
           const node = channel.sends.get(lane.target.sendId);
           if (!node) continue;
           this.engine.markAutomated(track.id, `send:${lane.target.sendId}`);
-          this.rampParam(node.gain, lane.points, fromSec, toSec, (db) => dbToGain(db));
+          this.rampParam(node.gain.gain, lane.points, fromSec, toSec, (db) => dbToGain(db));
+        } else if (lane.target.kind === 'sendPan') {
+          // New here only because the send had nowhere to put a pan until it
+          // grew a panner.  Same ramp, same clock, same code as the channel
+          // pan, so a bounce reproduces the sweep that was monitored.
+          const node = channel.sends.get(lane.target.sendId);
+          if (!node) continue;
+          this.engine.markAutomated(track.id, `sendPan:${lane.target.sendId}`);
+          this.rampParam(node.panner.pan, lane.points, fromSec, toSec,
+            (v) => Math.max(-1, Math.min(1, v)));
         } else if (lane.target.kind === 'plugin') {
           // A plugin parameter is not a fader, but the ones offered as lanes
           // ARE single AudioParams — so they take the same ramp, on the same
