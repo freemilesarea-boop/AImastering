@@ -126,13 +126,6 @@ export function frameCount(length: number, options: SpectrumOptions = SEPARATION
   return Math.max(1, Math.ceil(length / options.hopSize) + 1);
 }
 
-export function magnitudeAt(spec: HalfSpectrum, frame: number, bin: number): number {
-  const i = (frame * spec.bins + bin) * 2;
-  const re = spec.data[i] ?? 0;
-  const im = spec.data[i + 1] ?? 0;
-  return Math.hypot(re, im);
-}
-
 /** Magnitudes for a whole chunk, frame-major.  One pass, reused everywhere. */
 export function magnitudes(spec: HalfSpectrum, out?: Float32Array): Float32Array {
   const n = spec.frames * spec.bins;

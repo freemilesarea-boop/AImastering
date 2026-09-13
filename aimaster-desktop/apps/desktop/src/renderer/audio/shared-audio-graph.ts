@@ -49,28 +49,18 @@ export type AudioGraphEventKind =
   | 'fallback-activated'
   | 'error';
 
-export interface AudioGraphEvent {
-  /** Monotonic id for stable React keys. */
-  id: number;
-  /** epoch ms */
-  t: number;
-  kind: AudioGraphEventKind;
-  msg: string;
-}
-
-const LOG_CAP = 60;
-const log: AudioGraphEvent[] = [];
-const logListeners = new Set<() => void>();
-let nextEventId = 1;
-
-/** Append a diagnostic event (shown in the in-app debug panel + console in dev). */
+/**
+ * Trace a graph event to the dev console.
+ *
+ * This used to also append to a 60-event ring that `getAudioLog` and
+ * `subscribeAudioLog` fed to an in-app debug panel.  The panel is gone and
+ * both readers went with it, which left the ring write-only and the listener
+ * set permanently empty — a notify loop over nothing, run on every audio
+ * event.  The console trace is what was still doing work, so it is what is
+ * left.  A panel that wants the history again should take the ring back with
+ * its reader, in one piece.
+ */
 export function logAudioEvent(kind: AudioGraphEventKind, msg = ''): void {
-  const ev: AudioGraphEvent = { id: nextEventId++, t: Date.now(), kind, msg };
-  log.push(ev);
-  if (log.length > LOG_CAP) log.splice(0, log.length - LOG_CAP);
-  for (const cb of logListeners) {
-    try { cb(); } catch { /* ignore */ }
-  }
   try {
     const dev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
     // eslint-disable-next-line no-console
@@ -343,19 +333,6 @@ export function removePassiveTap(media: HTMLMediaElement, node: AudioNode): void
   try { g.masterGain.disconnect(node); } catch { /* ignore */ }
   try { node.disconnect(g.silentSink); } catch { /* ignore */ }
   g.passiveTaps.delete(node);
-}
-
-/** Dump the actual graph edges + node states to the event log (req: graph dump). */
-export function dumpGraph(media: HTMLMediaElement | null): void {
-  if (!media) { logAudioEvent('error', 'dumpGraph: no element'); return; }
-  const g = graphs.get(media);
-  if (!g) { logAudioEvent('error', 'dumpGraph: no graph for element'); return; }
-  const insert = g.wasmInsert ? 'WASM-node' : g.nativeDsp ? 'native-DSP' : 'none(direct)';
-  logAudioEvent('dsp-chain-connected',
-    `GRAPH DUMP — ctx=${g.ctx.state}@${g.ctx.sampleRate}Hz | insert=${insert} | `
-    + `edges: source→${insert === 'none(direct)' ? 'masterGain' : insert}→masterGain→destination; `
-    + `masterGain→[mainAnalyser,splitter(L/R)]→silentSink(0)→destination; `
-    + `passiveTaps=${g.passiveTaps.size} | masterGain.gain=${g.masterGain.gain.value} silentSink.gain=${g.silentSink.gain.value}`);
 }
 
 export type RouteKind = 'wasm' | 'fallback' | 'direct' | 'none';

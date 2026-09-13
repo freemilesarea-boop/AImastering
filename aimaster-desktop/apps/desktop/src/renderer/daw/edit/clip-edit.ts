@@ -361,17 +361,6 @@ export function setClipFade(
   )));
 }
 
-export function setFades(
-  session: DawSession, sel: TimeSelection,
-  fadeIn: Fade | null, fadeOut: Fade | null,
-): DawSession {
-  return mapSelectedClips(session, sel, (c) => ({
-    ...c,
-    ...(fadeIn  ? { fadeIn }  : {}),
-    ...(fadeOut ? { fadeOut } : {}),
-  }));
-}
-
 /**
  * Fade to the play head — the "F" workhorse.  A cursor inside a clip fades
  * from the clip start up to the cursor (or from the cursor to the clip end

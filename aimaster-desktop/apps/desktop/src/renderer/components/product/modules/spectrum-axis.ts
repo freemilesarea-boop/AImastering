@@ -29,11 +29,6 @@ export function hzToX(hz: number, width: number, pad: AxisPad = AXIS_PAD): numbe
   return pad.left + t * (width - pad.left - pad.right);
 }
 
-export function xToHz(x: number, width: number, pad: AxisPad = AXIS_PAD): number {
-  const t = (x - pad.left) / Math.max(1, width - pad.left - pad.right);
-  return AXIS_MIN_HZ * Math.pow(AXIS_MAX_HZ / AXIS_MIN_HZ, Math.min(1, Math.max(0, t)));
-}
-
 /** Ruler formatting — terse, because the tick already says where it is. */
 export function fmtAxisHz(hz: number): string {
   return hz >= 1000 ? `${hz / 1000}k` : `${hz}`;

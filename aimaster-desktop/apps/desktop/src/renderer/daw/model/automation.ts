@@ -89,10 +89,6 @@ export function laneKey(trackId: string, target: AutomationTarget): string {
   return `${trackId}|${targetKey(target)}`;
 }
 
-export function sameTarget(a: AutomationTarget, b: AutomationTarget): boolean {
-  return targetKey(a) === targetKey(b);
-}
-
 /** The lane on this track for a target, if it has one yet. */
 export function findLane(
   lanes: readonly AutomationLane[], target: AutomationTarget,
