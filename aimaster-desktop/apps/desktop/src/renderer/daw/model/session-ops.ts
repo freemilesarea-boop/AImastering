@@ -16,7 +16,7 @@ import {
 } from './types.js';
 import { nextId } from './ids.js';
 import { DEFAULT_MIDI_CONFIG } from './midi.js';
-import type { ChordEvent, ChordSymbol } from './chords.js';
+import type { ChordEvent } from './chords.js';
 import { EMPTY_RACK } from './macros.js';
 import { emptyGrid } from './session-view.js';
 import { scheduleShiftSec } from './track-delay.js';
@@ -389,21 +389,6 @@ export function removeGroup(session: DawSession, groupId: string): DawSession {
 
 export function setChordTrack(session: DawSession, events: ChordEvent[]): DawSession {
   return { ...session, chordTrack: [...events].sort((a, b) => a.timeSec - b.timeSec) };
-}
-
-export function addChordEvent(session: DawSession, timeSec: number, chord: ChordSymbol): DawSession {
-  const events = session.chordTrack.filter((e) => Math.abs(e.timeSec - timeSec) > 1e-6);
-  return setChordTrack(session, [...events, { id: nextId('chord'), timeSec, chord }]);
-}
-
-export function removeChordEvent(session: DawSession, id: string): DawSession {
-  return { ...session, chordTrack: session.chordTrack.filter((e) => e.id !== id) };
-}
-
-// ── Automation lanes ──────────────────────────────────────────────────────────
-
-export function addLane(session: DawSession, trackId: TrackId, lane: AutomationLane): DawSession {
-  return updateTrack(session, trackId, (t) => ({ ...t, automation: [...t.automation, lane] }));
 }
 
 export function updateLane(

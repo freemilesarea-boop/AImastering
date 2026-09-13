@@ -127,14 +127,3 @@ export class RealtimeMetrics {
     this.count = 0;
   }
 }
-
-/** Format a snapshot as a compact debug string. */
-export function describeMetrics(s: RealtimeMetricsSnapshot): string {
-  return [
-    `cpu ${(s.cpuLoad * 100).toFixed(1)}%`,
-    `avg ${s.avgProcessMs.toFixed(3)}ms`,
-    `peak ${s.peakProcessMs.toFixed(3)}ms`,
-    `xruns ${s.totalXruns}`,
-    `GR ${s.limiterGrDb.toFixed(1)}dB`,
-  ].join(' · ');
-}

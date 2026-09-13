@@ -80,15 +80,3 @@ export function dragToValue(bandId: EqBandId, px: number, py: number, g: EqGeom)
   const raw = spec.axis === 'x' ? xToFreq(px, g) : yToGain(py, g);
   return { paramId: spec.paramId, value: quantize(raw, spec.step, spec.min, spec.max) };
 }
-
-/** The dot's current (x, y) for a band given its values. */
-export function bandDotXY(bandId: EqBandId, freq: number, gainDb: number, curveYAtFreq: number, g: EqGeom): { x: number; y: number } {
-  const spec = EQ_BAND_DRAG[bandId];
-  if (spec.axis === 'x') {
-    // Low cut: x follows frequency, y sits on the curve.
-    return { x: freqToX(Math.max(g.minHz, Math.min(g.maxHz, freq)), g), y: curveYAtFreq };
-  }
-  // Gain bands: x fixed at the band frequency, y follows the curve value there.
-  const fx = spec.fixedFreq ?? freq;
-  return { x: freqToX(fx, g), y: curveYAtFreq, ...(bandId === 'output' ? { y: gainToY(gainDb, g) } : {}) };
-}

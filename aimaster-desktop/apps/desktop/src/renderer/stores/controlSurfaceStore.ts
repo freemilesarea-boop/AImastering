@@ -288,12 +288,6 @@ function stopFeedback(bindings: readonly ControlBinding[]): void {
   feedbackDriver.attach(null);
 }
 
-/** Re-send everything — for a bank switch, where meanings changed but values did not. */
-export function refreshSurfaceFeedback(): void {
-  feedbackDriver.invalidate();
-  pushFeedback(true);
-}
-
 function stopListening(): void {
   unsubscribe?.();
   unsubscribe = null;

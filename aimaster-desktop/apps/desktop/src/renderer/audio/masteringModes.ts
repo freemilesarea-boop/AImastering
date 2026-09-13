@@ -183,10 +183,6 @@ export const MODE_CONFIGS: Record<MasteringMode, ModeConfig> = {
   },
 };
 
-export function getModeConfig(mode: MasteringMode): ModeConfig {
-  return MODE_CONFIGS[mode];
-}
-
 // ── Pipeline orchestrator ────────────────────────────────────────────────────
 
 export interface ModePipelineResult {

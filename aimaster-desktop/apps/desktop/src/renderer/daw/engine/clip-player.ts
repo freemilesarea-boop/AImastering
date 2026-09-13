@@ -9,13 +9,13 @@
 // gainDb, fade curves ramped at the clip edges.  That is exactly the
 // pre-fader, pre-insert position clip gain occupies in Pro Tools.
 
-import { clipEnd, findTrack, trackClips } from '../model/session-ops.js';
+import { clipEnd, trackClips } from '../model/session-ops.js';
 import { scheduleShiftSec } from '../model/track-delay.js';
 import { laneKey, pluginParamKey, pointValueAt } from '../model/automation.js';
 import { isLiveAutomation } from './automation-live.js';
 import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
 import type {
-  AutomationTarget, Clip, DawSession, Fade, Track, TrackId,
+  AutomationTarget, Clip, DawSession, Fade, Track,
 } from '../model/types.js';
 import type { MidiNote } from '../model/midi.js';
 import { getCached, loadAudio, preloadAll } from './audio-cache.js';
@@ -602,11 +602,4 @@ export class ClipPlayer {
     }
     this.noteVoices = aliveNotes;
   }
-}
-
-/** Total playable length of a track's clips — used for bounce bounds. */
-export function trackEndSec(session: DawSession, trackId: TrackId): number {
-  const track: Track | undefined = findTrack(session, trackId);
-  if (!track) return 0;
-  return trackClips(track).reduce((max, c) => Math.max(max, clipEnd(c)), 0);
 }

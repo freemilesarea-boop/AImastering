@@ -23,7 +23,6 @@
 //   other one being broken.
 
 import type { AutomationTarget, TrackId } from './types.js';
-import { targetKey } from './automation.js';
 
 // ── What the hardware sent ────────────────────────────────────────────────────
 
@@ -381,15 +380,6 @@ export const SWITCH_LABELS: Record<TrackSwitch, string> = {
   solo: '솔로',
   recordArm: '녹음 무장',
 };
-
-/** A stable key for an action, so two bindings on one thing can be spotted. */
-export function actionKey(action: ControlAction): string {
-  switch (action.kind) {
-    case 'param':       return `param:${action.trackId}:${targetKey(action.target)}`;
-    case 'transport':   return `transport:${action.command}`;
-    case 'trackSwitch': return `switch:${action.trackId}:${action.what}`;
-  }
-}
 
 export const MODE_LABELS: Record<ControlMode, string> = {
   absolute: '절대값 (페이더/노브)',

@@ -94,10 +94,6 @@ export function secToFrames(sec: number): number {
   return Math.max(0, Math.round(sec * CD_FRAMES_PER_SEC));
 }
 
-export function framesToSec(frames: number): number {
-  return frames / CD_FRAMES_PER_SEC;
-}
-
 /** Minutes:Seconds:Frames, the way every PQ sheet and cue file writes it. */
 export function framesToMsf(frames: number): string {
   const f = Math.max(0, Math.round(frames));

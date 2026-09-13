@@ -606,10 +606,6 @@ export function displayChords(def: ShortcutDef, platform: Platform): string[] {
   return def.chords.map((spec) => formatChord(parseChord(spec), platform));
 }
 
-export function shortcutsByGroup(group: ShortcutGroupId): ShortcutDef[] {
-  return SHORTCUTS.filter((s) => s.group === group);
-}
-
 /** The definition owning a command id (undefined for an unknown id). */
 export function findShortcut(id: CommandId): ShortcutDef | undefined {
   return SHORTCUTS.find((s) => s.id === id);

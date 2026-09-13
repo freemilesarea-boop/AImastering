@@ -120,15 +120,3 @@ export function deleteCustomPreset(id: string): boolean {
   writeEnvelope(env);
   return true;
 }
-
-/** Rename a custom preset.  Returns the updated entry, or null if not found / invalid name. */
-export function renameCustomPreset(id: string, nextName: string): CustomPreset | null {
-  const clean = sanitisePresetName(nextName);
-  if (!clean) return null;
-  const env = readEnvelope();
-  const idx = env.items.findIndex((p) => p.id === id);
-  if (idx === -1) return null;
-  env.items[idx] = { ...env.items[idx]!, name: clean };
-  writeEnvelope(env);
-  return env.items[idx]!;
-}

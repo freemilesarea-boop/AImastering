@@ -378,10 +378,6 @@ export interface Chromagram {
   silentFrames: number;
 }
 
-export function chromaTimeSec(gram: Chromagram, index: number): number {
-  return index * gram.hopSec;
-}
-
 /**
  * Audio in, chroma out.
  *

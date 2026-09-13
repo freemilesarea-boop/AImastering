@@ -23,18 +23,10 @@ export function useRealtimeGr(): RealtimeGr {
   return React.useContext(RealtimeGrContext);
 }
 
-export function RealtimeGrProvider({ value, children }: { value: RealtimeGr; children: React.ReactNode }) {
-  return <RealtimeGrContext.Provider value={value}>{children}</RealtimeGrContext.Provider>;
-}
-
 // Dynamics (compressor) GR — separate channel from the limiter so the
 // Dynamics panel shows the REAL compressor gain reduction, never faked.
 const RealtimeDynamicsGrContext = React.createContext<RealtimeGr>(DEFAULT);
 
 export function useRealtimeDynamicsGr(): RealtimeGr {
   return React.useContext(RealtimeDynamicsGrContext);
-}
-
-export function RealtimeDynamicsGrProvider({ value, children }: { value: RealtimeGr; children: React.ReactNode }) {
-  return <RealtimeDynamicsGrContext.Provider value={value}>{children}</RealtimeDynamicsGrContext.Provider>;
 }

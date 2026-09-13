@@ -15,8 +15,6 @@
 // per-segment form (drive-in-path or drive-as-host) so an in-flight URL from
 // an older renderer bundle never hard-fails.
 
-import { pathToFileURL } from 'node:url';
-
 const PREFIX = 'aimaster-local://';
 const LOCAL_HOST = 'local';
 // Matches a leading-slash-before-drive-letter, e.g. `/C:/` or `/C:\` (legacy).
@@ -40,11 +38,4 @@ export function localUrlToFsPath(rawUrl: string): string {
     const legacy = decodeURIComponent(rawUrl.slice(PREFIX.length));
     return legacy.replace(LEADING_SLASH_DRIVE, '$1');
   }
-}
-
-/** Decode an `aimaster-local://…` URL into a `file://…` URL.  (Legacy helper —
- *  the protocol handler now streams the file directly via fs, but this is kept
- *  for any caller that still wants a file:// URL.) */
-export function localUrlToFileUrl(rawUrl: string): string {
-  return pathToFileURL(localUrlToFsPath(rawUrl)).toString();
 }

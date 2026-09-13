@@ -35,7 +35,7 @@ import {
   from7bit, sortNotes, to7bit, type MidiNote,
 } from '../model/midi.js';
 import {
-  barBeatAt, beatsPerBar, defaultTempoMap, meterAtBeat, type TempoMap,
+  barBeatAt, defaultTempoMap, type TempoMap,
 } from '../model/tempo-map.js';
 
 // ── What a rule can look at ─────────────────────────────────────────────────
@@ -548,8 +548,3 @@ export const RULE_PRESETS: readonly Rule[] = [
     actions: [{ property: 'position', operation: 'randomize', value: 0.012 }],
   },
 ];
-
-/** Bars are the one place a rule needs the song's meter, so expose the width. */
-export function barWidthBeats(map: TempoMap | undefined, atBeat: number): number {
-  return beatsPerBar(meterAtBeat(map ?? FOUR_FOUR, atBeat));
-}

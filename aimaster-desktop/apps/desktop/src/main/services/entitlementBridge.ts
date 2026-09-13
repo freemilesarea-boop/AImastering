@@ -46,8 +46,3 @@ export function setEntitlement(next: {
 export function getEntitlementPaid(): boolean {
   return _state.entitlementPaid === true && _state.deviceAllowed === true;
 }
-
-/** Non-sensitive snapshot for diagnostics. */
-export function getEntitlementSnapshot(): EntitlementSnapshot {
-  return { ..._state };
-}

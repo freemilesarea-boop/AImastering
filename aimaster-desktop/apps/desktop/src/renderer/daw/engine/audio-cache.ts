@@ -62,7 +62,6 @@ const meta = new Map<FileId, FileMeta>();
 /** Onset marks, found the first time something asks — see `transientsFor`. */
 const onsets = new Map<FileId, TransientMark[]>();
 const pending = new Map<FileId, Promise<CachedAudio>>();
-let residentBytes = 0;
 let pinnedIds: ReadonlySet<FileId> = new Set();
 
 /**
@@ -79,12 +78,6 @@ let pinnedIds: ReadonlySet<FileId> = new Set();
  */
 export function pinFiles(ids: Iterable<FileId>): void {
   pinnedIds = new Set(ids);
-}
-
-export function pinnedBytes(): number {
-  let total = 0;
-  for (const [id, entry] of cache) if (pinnedIds.has(id)) total += bufferBytes(entry.buffer);
-  return total;
 }
 
 /** float32 per sample per channel — what the buffer actually costs. */
@@ -125,10 +118,9 @@ export function getMeta(fileId: FileId): FileMeta | undefined {
 }
 
 export function cacheSize(): number { return cache.size; }
-export function cacheBytes(): number { return residentBytes; }
 
 export function clearAudioCache(): void {
-  cache.clear(); meta.clear(); onsets.clear(); pending.clear(); residentBytes = 0;
+  cache.clear(); meta.clear(); onsets.clear(); pending.clear();
   pinnedIds = new Set();
 }
 
@@ -219,7 +211,6 @@ function evictDownTo(keep: FileId): void {
     const entry = cache.get(id);
     if (!entry) continue;
     cache.delete(id);
-    residentBytes -= bufferBytes(entry.buffer);
   }
 }
 
@@ -241,11 +232,8 @@ export function analyzeBuffer(fileId: FileId, buffer: AudioBuffer): CachedAudio 
     peaks,
   });
 
-  const previous = cache.get(fileId);
-  if (previous) residentBytes -= bufferBytes(previous.buffer);
   cache.delete(fileId);
   cache.set(fileId, entry);
-  residentBytes += bufferBytes(buffer);
   evictDownTo(fileId);
   return entry;
 }

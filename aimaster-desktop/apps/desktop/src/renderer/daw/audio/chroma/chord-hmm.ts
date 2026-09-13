@@ -43,7 +43,6 @@
 // add and it is a KEY-DEPENDENT claim, so it is left out here rather than
 // guessed at.  See the note at the bottom.
 
-import { PITCH_CLASSES } from './chroma.js';
 import {
   chordScores, chordTemplates, DEFAULT_MIN_SCORE, DEFAULT_VOCABULARY,
   type MatchOptions,
@@ -286,22 +285,4 @@ export function smoothChords(
     margins.push(bestOther > -Infinity ? chosen - bestOther : 0);
   }
   return { path, scores, margins };
-}
-
-// ── What is deliberately not modelled ───────────────────────────────────────
-//
-// A transition matrix that knows music — V→I more likely than V→♭II — is the
-// obvious next thing and it is not here, for a reason worth writing down: it
-// is only meaningful RELATIVE TO A KEY, and this detector does not estimate
-// one.  Applied without a key it is not "musical knowledge", it is a bias
-// towards C major, which would make the detector better on the material a
-// developer happens to test with and worse on everything else.
-//
-// The honest order is: estimate the key, then condition the transitions on it,
-// then measure whether it helped.  That is a stage of its own.
-
-/** Pitch-class distance on the circle of fifths, 0…6.  For the doc's tables. */
-export function fifthsDistance(a: number, b: number): number {
-  const step = (((a - b) * 7) % PITCH_CLASSES + PITCH_CLASSES) % PITCH_CLASSES;
-  return Math.min(step, PITCH_CLASSES - step);
 }

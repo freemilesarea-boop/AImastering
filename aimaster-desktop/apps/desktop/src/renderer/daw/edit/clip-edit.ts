@@ -231,10 +231,6 @@ export function clearRange(session: DawSession, sel: TimeSelection, ripple = fal
   return out;
 }
 
-export function deleteClip(session: DawSession, trackId: TrackId, clipId: ClipId): DawSession {
-  return updateClips(session, trackId, (clips) => clips.filter((c) => c.id !== clipId));
-}
-
 // ── Move / nudge / slip ───────────────────────────────────────────────────────
 
 export function moveClip(session: DawSession, trackId: TrackId, clipId: ClipId, toSec: number): DawSession {

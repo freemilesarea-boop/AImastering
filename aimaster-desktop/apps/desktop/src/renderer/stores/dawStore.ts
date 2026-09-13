@@ -602,11 +602,6 @@ export function snapMoveTo(fromSec: number, toSec: number): number {
   return snapMoveMode(snapMode, snapContext(snapMode), fromSec, toSec);
 }
 
-/** The same move as a delta, for dragging several clips as one. */
-export function snapMoveDelta(fromSec: number, toSec: number): number {
-  return snapMoveTo(fromSec, toSec) - fromSec;
-}
-
 /** The tracks an edit command applies to: the selection, else the focus. */
 export function targetTrackIds(): TrackId[] {
   const { selection, selectedTrackIds, focusedTrackId } = useDawStore.getState();

@@ -93,8 +93,3 @@ export function redo<T>(h: History<T>): History<T> {
     future:  h.future.slice(1),
   };
 }
-
-/** Drop everything and restart from `present` (used when the file changes). */
-export function resetHistory<T>(present: T): History<T> {
-  return initHistory(present);
-}

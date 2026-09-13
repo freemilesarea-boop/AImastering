@@ -34,35 +34,6 @@ export const MIN_Q = 0.3;
 export const MAX_Q = 12;
 export const MAX_BANDS = 7;
 
-let nextBandId = 1;
-export function makeBandId(): string {
-  return `band-${nextBandId++}-${Math.random().toString(36).slice(2, 6)}`;
-}
-
-export function defaultBand(frequencyHz = 1000, gainDb = 0): ParametricEqBand {
-  return {
-    id: makeBandId(),
-    type: 'bell',
-    frequencyHz,
-    gainDb,
-    q: 1.0,
-    enabled: true,
-  };
-}
-
-export function clampFrequency(hz: number): number {
-  if (!Number.isFinite(hz)) return 1000;
-  return Math.max(MIN_FREQ_HZ, Math.min(MAX_FREQ_HZ, hz));
-}
-export function clampGainDb(db: number): number {
-  if (!Number.isFinite(db)) return 0;
-  return Math.max(MIN_GAIN_DB, Math.min(MAX_GAIN_DB, db));
-}
-export function clampQ(q: number): number {
-  if (!Number.isFinite(q)) return 1;
-  return Math.max(MIN_Q, Math.min(MAX_Q, q));
-}
-
 // ── RBJ cookbook biquad magnitude (mirrors eq-curve-model.ts) ──────────
 //
 // Kept local so this model has no dependency on the legacy 5-band model.

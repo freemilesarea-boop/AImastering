@@ -205,12 +205,3 @@ export function describeInput(ref: TrackInputRef): string {
   const socket = ref.firstChannel > 0 ? ` · ${describePatch(refPatch(ref))}` : '';
   return `${name}${socket} · ${ref.channels === 2 ? '스테레오' : '모노'}`;
 }
-
-export function describeResolution(resolution: InputResolution): string {
-  switch (resolution.kind) {
-    case 'id':      return '저장된 장치';
-    case 'label':   return '이름으로 다시 찾음';
-    case 'default': return '시스템 기본 입력';
-    default:        return '장치 없음 — 기본 입력';
-  }
-}

@@ -66,23 +66,6 @@ export const useLicenseStore = create<LicenseStore>((set, _get) => ({
   },
 }));
 
-// ── Export paywall: removed ─────────────────────────────────────────────────
-// Lossless master export used to be licence-gated in the main process, which
-// answered `LICENSE_REQUIRED:` and made the renderer open the activation
-// dialog.  The app is sold as a paid download, so that gate could only ever
-// fire on a customer who had already paid — it did, on every WAV save.  The
-// main-process gate is gone, so the error string can no longer be produced;
-// the helpers that recognised it and opened the modal were deleted with it.
-// Nothing outside this file calls `setShowModal`, so the dialog now appears
-// only when the user opens it themselves.
-
-// ── Selector helpers ─────────────────────────────────────────────────────────
-
-/** True when the user is on the free tier (or info not yet loaded). */
-export function selectIsFree(store: LicenseStore): boolean {
-  return store.licenseInfo?.tier !== 'pro';
-}
-
 /** Remaining free trial count, or 0 if paid (WAV save unlocked regardless). */
 export function selectRemainingTrials(store: LicenseStore): number {
   const info = store.licenseInfo;

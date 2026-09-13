@@ -247,15 +247,6 @@ export function soloSafeCount(session: DawSession): number {
   return session.tracks.filter((t) => t.soloSafe && t.kind !== 'master').length;
 }
 
-/** Drop solo-safe everywhere.  Identity when nothing carries it. */
-export function clearAllSoloSafe(session: DawSession): DawSession {
-  if (!session.tracks.some((t) => t.soloSafe)) return session;
-  return {
-    ...session,
-    tracks: session.tracks.map((t) => (t.soloSafe ? { ...t, soloSafe: false } : t)),
-  };
-}
-
 export function clearAllSolo(session: DawSession): DawSession {
   if (!session.tracks.some((t) => t.solo)) return session;
   return { ...session, tracks: session.tracks.map((t) => (t.solo ? { ...t, solo: false } : t)) };

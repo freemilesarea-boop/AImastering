@@ -158,7 +158,6 @@ export function getWarped(key: string): AudioBuffer | undefined {
 }
 
 export function clearWarpCache(): void { cache.clear(); }
-export function warpCacheSize(): number { return cache.size; }
 
 function store(key: string, buffer: AudioBuffer): AudioBuffer {
   cache.set(key, buffer);
@@ -200,26 +199,6 @@ export function ensureWarpedBuffer(
     buffer.getChannelData(c).set(rendered.channels[c] ?? new Float32Array(length));
   }
   return store(key, buffer);
-}
-
-/** Pre-render every warped clip in a session — called before playback. */
-export function prepareWarps(
-  ctx: BaseAudioContext, clips: readonly Clip[], sessionTempo: number | WarpTempo,
-): number {
-  let rendered = 0;
-  for (const clip of clips) {
-    if (clip.kind !== 'audio') continue;
-    const key = warpKey(clip, sessionTempo);
-    if (!key || getWarped(key)) continue;
-    if (ensureWarpedBuffer(ctx, clip, sessionTempo)) rendered++;
-  }
-  return rendered;
-}
-
-/** True when a warped clip still needs rendering before it can play. */
-export function warpPending(clip: Clip, sessionTempo: number | WarpTempo): boolean {
-  const key = warpKey(clip, sessionTempo);
-  return key !== null && getWarped(key) === undefined;
 }
 
 /**

@@ -86,8 +86,6 @@ interface Entry { key: string; profile: SourceProfile }
 const cache: Entry[] = [];
 const CACHE_MAX = 12;
 
-export function clearProfileCache(): void { cache.length = 0; }
-
 export interface ProfileRequest {
   session: DawSession;
   trackId: TrackId;

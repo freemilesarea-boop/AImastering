@@ -47,7 +47,7 @@
 // struck once and left to ring is silent for most of its bar, and it is still
 // that chord for the whole bar.
 
-import { chordAt, formatChord, type ChordEvent, type ChordSymbol } from '../../model/chords.js';
+import { formatChord, type ChordEvent, type ChordSymbol } from '../../model/chords.js';
 import { nextId } from '../../model/ids.js';
 import { PITCH_CLASSES } from './chroma.js';
 import {
@@ -440,11 +440,6 @@ export function describeProgression(
   const names = segments.map((s) => formatChord(s.chord));
   if (names.length <= limit) return names.join(' · ');
   return `${names.slice(0, limit).join(' · ')} … (${names.length}개)`;
-}
-
-/** The chord sounding at a time, from a readout — for the playhead display. */
-export function chordAtTime(readout: ChordReadout, timeSec: number): ChordEvent | null {
-  return chordAt(readout.events, timeSec);
 }
 
 /** Per-span bass pitch classes from a bass stem's chroma. */

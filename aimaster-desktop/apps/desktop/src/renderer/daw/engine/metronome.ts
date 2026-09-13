@@ -119,12 +119,6 @@ function isDownbeat(map: TempoMap, beat: number): boolean {
   return Math.abs(position.beat - 1) < 1e-6;
 }
 
-/** How many beats are in the bar containing this beat — for the UI read-out. */
-export function beatsInBarAt(map: TempoMap, beat: number): number {
-  const meter = meterAtBeat(map, beat);
-  return meter.numerator;
-}
-
 // ── Sounding it ───────────────────────────────────────────────────────────────
 
 interface AudioContextLike {

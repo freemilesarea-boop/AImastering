@@ -323,10 +323,6 @@ export function presetGroups(pluginId: string): Array<{ group: string; presets: 
   return out;
 }
 
-export function findPreset(id: string): PluginPreset | undefined {
-  return PLUGIN_PRESETS.find((preset) => preset.id === id);
-}
-
 /**
  * A preset resolved against a device's defaults.
  *

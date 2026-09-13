@@ -24,10 +24,6 @@ import type { BusDef, DawSession, Track, TrackId } from './types.js';
 
 export type StackKind = 'folder' | 'summing';
 
-export function isStack(track: Track): boolean {
-  return track.kind === 'folder';
-}
-
 /** True for a stack that sums its children through a bus. */
 export function isSummingStack(track: Track): boolean {
   return track.kind === 'folder' && track.input !== null;

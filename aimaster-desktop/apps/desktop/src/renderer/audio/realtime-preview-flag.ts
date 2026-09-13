@@ -62,23 +62,3 @@ export function isRealtimePreviewEnabled(): boolean {
   if (env === 'false' || env === '0') return false;
   return true;
 }
-
-/**
- * Persist the dev/QA realtime toggle (localStorage + the runtime window
- * flag).  The hook reads the flag once per mount, so callers should reload
- * the renderer afterwards to (de)activate the graph.  NEVER changes the
- * export path — final export remains the Python/Rust offline render.
- */
-export function setRealtimePreviewEnabled(on: boolean): void {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(REALTIME_PREVIEW_LS_KEY, on ? 'true' : 'false');
-    }
-  } catch { /* ignore */ }
-  if (typeof window !== 'undefined') window.__LOUI_REALTIME_PREVIEW__ = on;
-}
-
-/** Diagnostic label. */
-export function realtimePreviewLabel(): string {
-  return isRealtimePreviewEnabled() ? 'Realtime (Rust chain)' : 'Re-render (offline)';
-}

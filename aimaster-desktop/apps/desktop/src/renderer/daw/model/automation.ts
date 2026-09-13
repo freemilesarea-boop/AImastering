@@ -201,13 +201,6 @@ export function insertPoint(
   return { ...lane, points: sortPoints([...kept, point]) };
 }
 
-export function removePointsInRange(
-  lane: AutomationLane, startSec: number, endSec: number,
-): AutomationLane {
-  const points = lane.points.filter((p) => p.timeSec < startSec - EPS || p.timeSec > endSec + EPS);
-  return points.length === lane.points.length ? lane : { ...lane, points };
-}
-
 /**
  * Replace a range with new breakpoints.
  *

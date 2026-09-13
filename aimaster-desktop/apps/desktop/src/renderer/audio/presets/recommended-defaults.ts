@@ -287,18 +287,6 @@ export function recommendedFor(moduleId: ModuleId): RecommendedEntry | undefined
   return RECOMMENDED[moduleId];
 }
 
-/** Parameter edits for one module, in the shape `setParams` takes. */
-export function recommendedEdits(moduleId: ModuleId): Array<[string, ParameterValue]> {
-  const entry = RECOMMENDED[moduleId];
-  if (!entry) return [];
-  return Object.entries(entry.parameters);
-}
-
-/** Modules whose recommendation is "leave it off". */
-export function recommendedOffModules(): ModuleId[] {
-  return (Object.keys(RECOMMENDED) as ModuleId[]).filter((id) => RECOMMENDED[id].off);
-}
-
 /** How the basis reads in the UI. */
 export const BASIS_LABEL: Record<RecommendedBasis, string> = {
   spec: '배급 규격',

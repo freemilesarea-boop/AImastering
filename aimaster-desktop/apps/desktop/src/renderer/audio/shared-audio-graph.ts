@@ -78,17 +78,6 @@ export function logAudioEvent(kind: AudioGraphEventKind, msg = ''): void {
   } catch { /* ignore */ }
 }
 
-/** Snapshot of the event log (most-recent last). */
-export function getAudioLog(): readonly AudioGraphEvent[] {
-  return log;
-}
-
-/** Subscribe to log changes.  Returns an unsubscribe fn. */
-export function subscribeAudioLog(cb: () => void): () => void {
-  logListeners.add(cb);
-  return () => { logListeners.delete(cb); };
-}
-
 // ── Shared context ──────────────────────────────────────────────────────
 
 let ctx: AudioContext | null = null;
@@ -100,16 +89,6 @@ export function getSharedAudioContext(sampleRate = 48_000): AudioContext {
   ctx = new AudioContext({ sampleRate });
   logAudioEvent('context-created', `${ctx.sampleRate} Hz, ${ctx.state}`);
   return ctx;
-}
-
-/** Current context state, or 'none' before creation. */
-export function sharedContextState(): AudioContextState | 'none' {
-  return ctx ? ctx.state : 'none';
-}
-
-/** Most recent graph-level error (null when healthy). */
-export function sharedGraphLastError(): string | null {
-  return lastError;
 }
 
 /** Resume the context (call from a user gesture — play button). */
@@ -195,7 +174,6 @@ function rerouteBus(g: ElementGraph): void {
 }
 
 const graphs = new WeakMap<HTMLMediaElement, ElementGraph>();
-let activeGraph: ElementGraph | null = null;
 
 /**
  * Get-or-create the full graph for a media element.  Idempotent: a second
@@ -206,7 +184,7 @@ let activeGraph: ElementGraph | null = null;
  */
 export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000): ElementGraph {
   const existing = graphs.get(media);
-  if (existing) { activeGraph = existing; return existing; }
+  if (existing) return existing;
 
   const context = getSharedAudioContext(sampleRate);
   let source: MediaElementAudioSourceNode;
@@ -260,20 +238,12 @@ export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000)
     passiveTaps: new Set(), sourceCreated: true,
   };
   graphs.set(media, graph);
-  activeGraph = graph;
   return graph;
 }
 
 /** Native analysers for an element (creates the graph if needed). */
 export function getNativeAnalysers(media: HTMLMediaElement, sampleRate = 48_000): NativeAnalysers {
   return ensureElementGraph(media, sampleRate).analysers;
-}
-
-/** Whether a MediaElementSource has been created for this element. */
-export function isSourceCreated(media: HTMLMediaElement | null): boolean {
-  if (!media) return false;
-  const g = graphs.get(media);
-  return !!g && g.sourceCreated;
 }
 
 /**
@@ -375,35 +345,6 @@ export function removePassiveTap(media: HTMLMediaElement, node: AudioNode): void
   g.passiveTaps.delete(node);
 }
 
-/** The shared source node for an element (graph must already exist). */
-export function getSharedSource(media: HTMLMediaElement): MediaElementAudioSourceNode | null {
-  return graphs.get(media)?.source ?? null;
-}
-
-/** The masterGain (post-DSP bus) for an element. */
-export function getMasterGain(media: HTMLMediaElement): GainNode | null {
-  return graphs.get(media)?.masterGain ?? null;
-}
-
-/** The most-recently-touched element graph (for status panels). */
-export function activeContextState(): AudioContextState | 'none' {
-  return activeGraph ? activeGraph.ctx.state : sharedContextState();
-}
-
-/**
- * Human-readable description of the CURRENT audio route for an element, for
- * the debug panel.  The analyser/tap is always post-insert (it reads
- * masterGain), so it is shown inline in every route.
- */
-export function currentRouteLabel(media: HTMLMediaElement | null): string {
-  if (!media) return 'no element';
-  const g = graphs.get(media);
-  if (!g) return 'no graph';
-  if (g.wasmInsert) return 'WASM: source → WASM DSP → analyser/tap → master';
-  if (g.nativeDsp) return 'FALLBACK: source → Native DSP → analyser/tap → master';
-  return 'DIRECT: source → analyser/tap → master';
-}
-
 /** Dump the actual graph edges + node states to the event log (req: graph dump). */
 export function dumpGraph(media: HTMLMediaElement | null): void {
   if (!media) { logAudioEvent('error', 'dumpGraph: no element'); return; }
@@ -418,32 +359,3 @@ export function dumpGraph(media: HTMLMediaElement | null): void {
 }
 
 export type RouteKind = 'wasm' | 'fallback' | 'direct' | 'none';
-
-/** Machine-readable current route for an element. */
-export function currentRouteKind(media: HTMLMediaElement | null): RouteKind {
-  if (!media) return 'none';
-  const g = graphs.get(media);
-  if (!g) return 'none';
-  if (g.wasmInsert) return 'wasm';
-  if (g.nativeDsp) return 'fallback';
-  return 'direct';
-}
-
-/**
- * A minimal MasteringGraphSession backed by the shared graph (not the WASM
- * analyzer session).  Lets the realtime DSP attach + splice its node even
- * when the WASM analyzer fails to start, so module edits stay audible.
- */
-export function makeSharedMasteringSession(media: HTMLMediaElement, sampleRate = 48_000): {
-  audioContext: () => AudioContext | null;
-  setInsertNode: (node: AudioNode | null) => void;
-} {
-  return {
-    audioContext: () => {
-      try { return ensureElementGraph(media, sampleRate).ctx; } catch { return null; }
-    },
-    setInsertNode: (node: AudioNode | null) => {
-      try { ensureElementGraph(media, sampleRate); setRealtimeInsert(media, node); } catch { /* ignore */ }
-    },
-  };
-}

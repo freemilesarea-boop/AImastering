@@ -8,7 +8,7 @@
 // target range, removes what was there, and drops in the source's audio
 // trimmed to exactly that range.
 
-import { activePlaylist, createPlaylist, sortClips, updateTrack, findTrack } from '../model/session-ops.js';
+import { activePlaylist, createPlaylist, sortClips, updateTrack } from '../model/session-ops.js';
 import { clipEnd } from '../model/session-ops.js';
 import { nextId } from '../model/ids.js';
 import type { Clip, DawSession, PlaylistId, Track, TrackId } from '../model/types.js';
@@ -145,9 +145,4 @@ export function flattenComp(session: DawSession, trackId: TrackId): DawSession {
     if (!active || t.playlists.length === 1) return t;
     return { ...t, playlists: [active], activePlaylistId: active.id };
   });
-}
-
-/** Take count for the track header readout. */
-export function takeCount(session: DawSession, trackId: TrackId): number {
-  return findTrack(session, trackId)?.playlists.length ?? 0;
 }

@@ -22,7 +22,7 @@ import {
 import type { AudioFileRef, DawSession, FileId, Track, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
-import { analyzeBuffer, getCached, preloadAll } from './audio-cache.js';
+import { analyzeBuffer, preloadAll } from './audio-cache.js';
 import { applyExternalInserts, type ExternalRenderResult } from './external-render.js';
 import { encodeAudioBuffer, encodeWav, type WavBitDepth, type WavMetadata } from './wav.js';
 import { provenanceOf } from '../model/provenance-session.js';
@@ -470,9 +470,4 @@ async function bounceOneSpan(session: DawSession, span: ConsolidationSpan): Prom
   analyzeBuffer(ref.id, rendered);
 
   return applyConsolidatedSpan(addFile(session, ref), span, ref.id, ref.name);
-}
-
-/** True when a file's decoded audio is already in the cache. */
-export function isDecoded(fileId: FileId): boolean {
-  return getCached(fileId) !== undefined;
 }

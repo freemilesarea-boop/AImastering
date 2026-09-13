@@ -27,7 +27,6 @@
 
 import type { DawSession, Track, TrackId } from '../model/types.js';
 import { findTrack, trackClips } from '../model/session-ops.js';
-import { clipEnd } from '../model/session-ops.js';
 import { isAudible } from '../model/mixer-math.js';
 import { renderSession, sessionRange, type RenderRange } from './offline-render.js';
 import { encodeAudioBuffer, type WavBitDepth } from './wav.js';
@@ -206,16 +205,6 @@ export function describePlan(plan: StemPlan): string {
   const parts = [`스템 ${plan.items.length}개`, `${length.toFixed(1)}초`];
   if (plan.skipped.length > 0) parts.push(`제외 ${plan.skipped.length}개`);
   return parts.join(' · ');
-}
-
-/** Longest clip end, exported for callers that need the natural length. */
-export function stemRange(session: DawSession): RenderRange {
-  let end = 0;
-  for (const t of session.tracks) {
-    if (!SOURCE_KINDS.has(t.kind)) continue;
-    for (const c of trackClips(t)) end = Math.max(end, clipEnd(c));
-  }
-  return { startSec: 0, endSec: end };
 }
 
 

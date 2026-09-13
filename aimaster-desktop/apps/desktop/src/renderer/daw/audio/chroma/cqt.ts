@@ -269,8 +269,3 @@ export function cqtgram(
   }
   return { frames, layout, sampleRate, hopSize };
 }
-
-/** Seconds of the frame at this index. */
-export function cqtFrameSec(gram: Cqtgram, index: number): number {
-  return (index * gram.hopSize) / gram.sampleRate;
-}

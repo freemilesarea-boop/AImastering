@@ -15,17 +15,6 @@ export interface ModuleSupportRow {
   presetBacked: boolean;
 }
 
-export function moduleSupportMatrix(): ModuleSupportRow[] {
-  return LOUI_MODULES.map((m) => ({
-    id: m.id,
-    displayName: m.displayName,
-    status: m.status,
-    preview: m.previewSupport,
-    export: m.exportSupport,
-    presetBacked: Boolean(m.presetBacked),
-  }));
-}
-
 /**
  * Honesty rules — return a list of violations (empty = honest):
  *   live         ⇒ preview != none AND export != none

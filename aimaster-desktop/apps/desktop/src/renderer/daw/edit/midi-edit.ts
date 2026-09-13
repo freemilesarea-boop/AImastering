@@ -90,15 +90,6 @@ export function moveNotes(
   }));
 }
 
-/** Drag the right edge.  `minBeat` keeps a note from collapsing to nothing. */
-export function resizeNotes(
-  notes: readonly MidiNote[], ids: ReadonlySet<string>, deltaBeat: number, minBeat = MIN_NOTE_BEATS,
-): MidiNote[] {
-  return mapSelected(notes, ids, (n) => ({
-    ...n, durationBeat: Math.max(minBeat, n.durationBeat + deltaBeat),
-  }));
-}
-
 export function setVelocity(
   notes: readonly MidiNote[], ids: ReadonlySet<string>, velocity: number,
 ): MidiNote[] {
