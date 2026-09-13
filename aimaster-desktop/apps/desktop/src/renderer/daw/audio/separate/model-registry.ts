@@ -181,3 +181,53 @@ export function unreachable(report: ModelReport): { stems: StemKind[]; why: stri
 /** Where a model can be installed, in the order they are tried. */
 export const MODEL_FOLDER = 'stem-models';
 export const DESCRIPTOR_NAME = 'model.json';
+
+/**
+ * Whether a separation RUN can currently use a model that is installed.
+ *
+ * It cannot, and the reason is structural rather than unfinished.  The
+ * separator runs in a worker built as ONE self-contained classic script and
+ * constructed from a Blob, because that is the only route that works both
+ * under the dev server and in a packaged build served from `file://`.  The
+ * runtime loader in `model-session.ts` deliberately hides its specifier from
+ * the bundler so that `onnxruntime-web` stays a RUNTIME decision — and a bare
+ * specifier cannot be resolved inside a classic worker with no module system.
+ *
+ * So the two halves are each correct and cannot meet: discovery, validation
+ * and inference are written and tested, and there is no thread they can run on
+ * together.  Closing that needs its own design — a module worker for the model
+ * alone, or the runtime moved to the main process — not a line here.
+ *
+ * This is a constant rather than a comment so the panel can SAY it, and so
+ * `separate-selftest` can hold it against the built worker: the day the worker
+ * carries a runtime, the check fails and tells whoever did it to flip this.
+ */
+export const MODEL_DISPATCH_READY = false;
+
+/**
+ * The report as the RUN sees it, rather than as the folder does.
+ *
+ * `buildReport` answers "what is installed and valid", which is the right
+ * question for the install list and the wrong one for the stem picker.  Until
+ * dispatch exists, a validated model adds nothing a separation can produce,
+ * and a panel that quietly stopped saying "needs a model" the moment a file
+ * appeared on disk would be promising a stem it cannot deliver.
+ */
+export function runnableReport(report: ModelReport): ModelReport {
+  if (MODEL_DISPATCH_READY) return report;
+  return { ...report, available: [...DSP_STEMS] };
+}
+
+/** One line about the install, separate from what the run can do with it. */
+export function describeInstall(report: ModelReport, root: string): string {
+  if (report.model === null) {
+    return report.tried.length === 0
+      ? `설치된 분리 모델이 없습니다 — ${root} 아래에 폴더를 만들고 model.json 과 가중치를 넣으세요`
+      : `${root} 에서 ${report.tried.length}곳을 확인했지만 쓸 수 있는 모델이 없습니다`;
+  }
+  const licence = report.model.commercialUse ? '상업 사용 가능' : '비상업 라이선스';
+  const runs = MODEL_DISPATCH_READY
+    ? '분리에 사용됩니다'
+    : '검증은 통과했지만 분리 실행은 아직 이 모델을 쓰지 않습니다';
+  return `${report.model.name} · ${report.model.stems.length}개 스템 · ${licence} — ${runs}`;
+}

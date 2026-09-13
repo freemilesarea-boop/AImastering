@@ -19,7 +19,7 @@
 //   app is broken.
 
 import { recordAiStep } from '../../../daw/model/provenance-session.js';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { findTrack, trackClips } from '../../../daw/model/session-ops.js';
@@ -29,7 +29,10 @@ import {
   type SeparationReport, type StemKind,
 } from '../../../daw/audio/separate/separate.js';
 import { STEM_TREE, coverProblems, toggleStem } from '../../../daw/audio/separate/stem-tree.js';
-import { buildReport, describeReport, unreachable } from '../../../daw/audio/separate/model-registry.js';
+import {
+  MODEL_DISPATCH_READY, describeInstall, describeReport, runnableReport, unreachable,
+} from '../../../daw/audio/separate/model-registry.js';
+import { scanInstalledModels, type InstallScan } from '../../../daw/audio/separate/model-install.js';
 import { canSeparate, separateClip } from '../../../daw/edit/separate-actions.js';
 import { premium } from '../../../theme/premium.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
@@ -46,6 +49,16 @@ export default function SeparatePanel() {
   const [busy, setBusy] = useState<{ fraction: number; what: string } | null>(null);
   const [report, setReport] = useState<SeparationReport | null>(null);
   const [muteSource, setMuteSource] = useState(true);
+  // The model folder, scanned for real.  Null until the first scan comes back;
+  // the panel draws "확인 중" rather than "none installed", because those are
+  // different answers and only one of them is true before the scan lands.
+  const [install, setInstall] = useState<InstallScan | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const rescan = useCallback(() => {
+    setScanning(true);
+    void scanInstalledModels().then((s) => { setInstall(s); setScanning(false); });
+  }, []);
+  useEffect(() => { rescan(); }, [rescan]);
 
   const target = useMemo((): { track: Track; clip: Clip } | null => {
     const ordered = focusedTrackId
@@ -109,11 +122,13 @@ export default function SeparatePanel() {
   // the user never has to know why.
   const toggle = (kind: StemKind): void => { setWanted((prev) => toggleStem(prev, kind)); };
   const problems = coverProblems(wanted);
-  // No model is installed — nothing looks for one yet, so the report is the
-  // empty case.  It is built through the same function a real scan would use,
-  // so the panel below is already the shape it will be when one exists.
-  const models = buildReport([]);
-  const gap = unreachable(models);
+  // What is on disk, and — separately — what a RUN can make of it.  The two
+  // are not the same thing while dispatch does not exist, and the stem picker
+  // has to be told the second one: a picker that stopped saying "needs a
+  // model" the moment a file appeared in the folder would be promising a stem
+  // it cannot deliver.
+  const models = install?.report ?? null;
+  const gap = unreachable(models ? runnableReport(models) : { model: null, tried: [], available: [] });
 
   return (
     <div className="flex-1 overflow-auto" style={{ background: premium.surface.abyss }}>
@@ -252,9 +267,12 @@ export default function SeparatePanel() {
             같은 코드를 치는 기타와 일렉피아노는 그 셋이 전부 같고 음색만 다릅니다.
             스네어 줄과 하이햇도 같은 대역의 잡음이라 따로 못 나눕니다.
           </p>
-          <p className="mt-1 font-mono" style={{ fontSize: 9, color: premium.text.faint }}>
-            {describeReport(models)}
-          </p>
+          <ModelInstall
+            install={install}
+            scanning={scanning}
+            onRescan={rescan}
+            busy={!!busy}
+          />
 
           <label className="flex items-center gap-2 mt-3" style={{ fontSize: 11, color: premium.text.muted }}>
             <input type="checkbox" checked={muteSource} disabled={!!busy}
@@ -306,6 +324,75 @@ export default function SeparatePanel() {
 
         {report && <Result report={report} />}
       </div>
+    </div>
+  );
+}
+
+/**
+ * What is installed in the model folder, and what the run can do with it.
+ *
+ * Two sentences rather than one, because they are two facts and conflating
+ * them is the failure this panel is built to avoid.  `describeReport` names
+ * what passed validation; `describeInstall` says whether a separation will
+ * actually use it, and right now it will not — the separator worker is a
+ * classic script built from a Blob and the runtime loader needs a module
+ * system, so discovery and inference are each correct and have no thread they
+ * can share.  A user who has just downloaded 300 MB deserves to know their
+ * file is the right one (the hash is checked) BEFORE they find out it is not
+ * wired up yet.
+ */
+function ModelInstall({ install, scanning, onRescan, busy }: {
+  install: InstallScan | null;
+  scanning: boolean;
+  onRescan: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="mt-2 pt-2" style={{ borderTop: `1px solid ${premium.surface.hairline}` }}>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="font-mono" style={{ fontSize: 9, color: premium.text.faint }}>
+          {install === null
+            ? '분리 모델 폴더를 확인하는 중…'
+            : describeReport(install.report)}
+        </span>
+        <button
+          onClick={onRescan}
+          disabled={scanning || busy}
+          className="h-5 px-2 rounded shrink-0"
+          style={{
+            fontSize: 9,
+            color: premium.text.secondary,
+            background: premium.surface.well,
+            border: `1px solid ${premium.surface.hairline}`,
+            opacity: scanning || busy ? 0.5 : 1,
+          }}
+        >{scanning ? '확인 중' : '다시 확인'}</button>
+      </div>
+      {install !== null && (
+        <p className="mt-1" style={{ fontSize: 9, color: premium.text.faint, lineHeight: 1.7 }}>
+          {describeInstall(install.report, install.root)}
+        </p>
+      )}
+      {/* Every place that was looked at and did not yield a model, with the
+          reason.  This is the whole point of scanning: "there is a model here
+          and its hash is wrong" is the answer somebody needs, and silence is
+          not. */}
+      {install !== null && install.report.tried.length > 0 && (
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {install.report.tried.map((problem) => (
+            <li key={`${problem.where}:${problem.reason}`}
+                style={{ fontSize: 9, color: premium.accent.base, lineHeight: 1.6 }}>
+              · <span className="font-mono">{problem.where}</span> — {problem.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+      {install !== null && install.report.model !== null && !MODEL_DISPATCH_READY && (
+        <p className="mt-1" style={{ fontSize: 9, color: premium.accent.base, lineHeight: 1.6 }}>
+          ⚠ 모델은 정상이지만 분리 실행 경로가 아직 연결되어 있지 않습니다 — 이번 분리는
+          신호 처리만 씁니다
+        </p>
+      )}
     </div>
   );
 }

@@ -526,6 +526,54 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     return { path: resolved, bytes: new Uint8Array(bytes) };
   });
 
+  /**
+   * Look for separation models, and say what was in each place.
+   *
+   * The registry in the renderer has been able to validate a descriptor and
+   * report on it since it was written; what it never had was anything to
+   * validate, because nothing listed the folder.  Every call to `buildReport`
+   * in the app passed an empty array, so 570 lines of model code — the ONNX
+   * session, the hash check, the mask expansion, all of it tested — had no
+   * door.
+   *
+   * This returns ONE ENTRY PER FOLDER looked at, including the ones that
+   * failed, because "there is a model here and it is broken" is the answer a
+   * user needs when their 300 MB download is not showing up.  Judgement about
+   * what the entries mean stays in the renderer, where the rules live.
+   */
+  ipc.handle('daw:stem-models', () => {
+    const root = path.join(app.getPath('userData'), 'stem-models');
+    const entries: Array<{ where: string; descriptor?: unknown; error?: string }> = [];
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(root);
+    } catch {
+      // Not an error: nobody has installed one.  The folder is reported
+      // anyway, because the panel's job is to say WHERE to put a model.
+      return { root, entries };
+    }
+    for (const name of names.sort()) {
+      const dir = path.join(root, name);
+      let stat: fs.Stats;
+      try { stat = fs.statSync(dir); } catch { continue; }
+      if (!stat.isDirectory()) continue;
+      const descriptorPath = path.join(dir, 'model.json');
+      try {
+        const text = fs.readFileSync(descriptorPath, 'utf8');
+        entries.push({ where: dir, descriptor: JSON.parse(text) });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        entries.push({
+          where: dir,
+          error: /ENOENT/.test(message)
+            ? 'model.json 이 없습니다'
+            : `model.json 을 읽지 못했습니다 — ${message}`,
+        });
+      }
+    }
+    return { root, entries };
+  });
+
   ipc.handle('daw:choose-stem-folder', async (_e, req: unknown) => {
     if (!win) return null;
     const o = (req && typeof req === 'object' ? req : {}) as { name?: unknown };
