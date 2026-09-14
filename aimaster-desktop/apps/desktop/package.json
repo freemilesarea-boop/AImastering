@@ -118,6 +118,7 @@
     "test:au-native": "tsx scripts/au-native-selftest.ts",
     "build:au:node": "node scripts/build-au.mjs --for-node",
     "test:dead-exports": "tsx scripts/dead-exports-selftest.ts",
+    "ui:hit-test": "node scripts/ui-hit-test.mjs",
     "test:free-eq-offline": "tsx scripts/free-eq-offline-selftest.ts",
     "test:session-schema": "tsx scripts/session-schema-selftest.ts",
     "test:undo-redo": "tsx scripts/undo-redo-selftest.ts",
