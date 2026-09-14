@@ -37,7 +37,29 @@ import { trackClips } from '../../../daw/model/session-ops.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
 import { premium } from '../../../theme/premium.js';
 
-export const CHORD_LANE_HEIGHT = 24;
+/**
+ * Tall enough for the header's controls to FIT in the track column.
+ *
+ * At 24 the row was laid out as if it had the width of the arrangement — a
+ * `flex-1` spacer pushing the actions to a right edge that does not exist
+ * here.  Rendered inside the 168 px track header the spacer collapses, the row
+ * asks for 270 px, and `overflow: visible` paints the overflow straight over
+ * the chip strip: 파트, 오디오에서, 8마디 and + all sat at x 184–270, covered
+ * by the lane's own blocks and unclickable.  Four of the seven chord-track
+ * actions could not be pressed at all, and only a test that drives the mouse
+ * by coordinate rather than by element would ever have said so.
+ *
+ * So the row wraps, and the lane is as tall as the wrapped row actually needs.
+ * That is three lines, measured, not two: the controls want 270 px of width in
+ * a 167 px column even after the two longest labels were cut to 분석 and 뼈대,
+ * and 40 px clipped the last line by 6.  A lane that is permanently in the
+ * arrangement paying 56 px is the cost of every one of its actions being
+ * clickable, which at 24 px four of seven were not.
+ *
+ * The chips get the same height, which they wanted anyway — 8 px type in a
+ * 24 px block was the tightest text in the window.
+ */
+export const CHORD_LANE_HEIGHT = 56;
 
 interface Viewport { scrollSec: number; pxPerSec: number; width: number }
 
@@ -126,7 +148,7 @@ export function ChordLaneHeader() {
 
   return (
     <div
-      className="flex items-center gap-1 px-2 border-b border-zinc-800"
+      className="flex flex-wrap items-center content-center gap-1 px-2 border-b border-zinc-800 overflow-hidden"
       style={{ height: CHORD_LANE_HEIGHT, background: '#14141c' }}
     >
       <span className="text-[9px] tracking-wide" style={{ color: premium.text.faint }}>
@@ -186,7 +208,6 @@ export function ChordLaneHeader() {
           }}
         >{`불확실 ${unsure.length} →`}</button>
       )}
-      <span className="flex-1" />
       <select
         value={style}
         onChange={(e) => setStyle(e.target.value as BackingStyle)}
@@ -223,10 +244,10 @@ export function ChordLaneHeader() {
           color: target && !busy ? premium.text.muted : premium.text.faint,
           opacity: target ? 1 : 0.45,
         }}
-      >{busy ?? '오디오에서'}</button>
-      <button onClick={seed} title="8마디 뼈대 만들기"
+      >{busy ?? '분석'}</button>
+      <button onClick={seed} title="8마디 코드 뼈대를 만듭니다 — 블록을 더블클릭해서 코드를 씁니다"
               className="h-4 px-1 rounded text-[8px] leading-none border"
-              style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>8마디</button>
+              style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>뼈대</button>
       <button onClick={addHere} title="재생헤드에 코드를 추가합니다"
               className="w-5 h-4 shrink-0 rounded text-[10px] leading-none border"
               style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>+</button>
