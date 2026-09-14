@@ -272,24 +272,6 @@ function AccountButton() {
   );
 }
 
-/** Entry point into the multitrack workspace (also on Mod+Alt+D). */
-function DawButton() {
-  const page = useAppStore((s) => s.currentPage);
-  const setPage = useAppStore((s) => s.setPage);
-  if (page === 'daw') return null;
-  return (
-    <button
-      onClick={() => setPage('daw')}
-      title="멀티트랙 Edit / Mix 워크스페이스 (Mod+Alt+D)"
-      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-      className="fixed top-2.5 right-24 z-40 text-[12px] px-3 py-1.5 rounded-lg
-                 bg-zinc-900/70 border border-zinc-700 text-zinc-400 hover:text-zinc-100"
-    >
-      DAW
-    </button>
-  );
-}
-
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -464,7 +446,6 @@ function AppInner() {
       <Toast />
 
       {/* Multitrack workspace entry point (desktop only). */}
-      {!isMobile && <DawButton />}
 
       {/* DAW workspace chrome — transport / mix console / inspector /
           MediaBay / shortcut help.  Desktop only; all parts are keyboard

@@ -16,6 +16,37 @@ interface TopBarProps {
   actions?: React.ReactNode;
 }
 
+/**
+ * Nav chip into the multitrack workspace.
+ *
+ * It used to be a `fixed top-2.5 right-24 z-40` button floating over this bar
+ * from `App`, and a fixed overlay above a flex row collides at some width.  It
+ * did: at 1100 px it covered x 950–992 of the 스튜디오 chip at 926–992 — two
+ * thirds of it, centre included — so clicking the middle of 스튜디오 opened the
+ * DAW instead.  Two destinations, and the wrong one won most of the target.
+ *
+ * In the row it cannot overlap anything, at any width.
+ */
+function DawLink() {
+  const page = useAppStore((s) => s.currentPage);
+  const setPage = useAppStore((s) => s.setPage);
+  const isMobile = useIsMobile();
+  if (isMobile || page === 'daw') return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setPage('daw')}
+      title="멀티트랙 Edit / Mix 워크스페이스 (Mod+Alt+D)"
+      className="no-drag shrink-0 text-[11px] font-medium rounded-md px-2.5 py-1 transition-colors"
+      style={{
+        color: 'rgba(255,255,255,0.55)',
+        border: '1px solid rgba(255,255,255,0.10)',
+        background: 'transparent',
+      }}
+    >DAW</button>
+  );
+}
+
 /** Nav chip to the Studio rack.  Hidden on mobile, which never routes there. */
 function StudioLink() {
   const page = useAppStore((s) => s.currentPage);
@@ -69,6 +100,7 @@ export default function TopBar({ subtitle, actions }: TopBarProps) {
           editor that works with or without a loaded file; burying it behind
           a per-file button made the twenty modules effectively invisible. */}
       <StudioLink />
+      <DawLink />
 
       {/* Action area — must be no-drag so buttons are clickable */}
       {actions && <div className="no-drag">{actions}</div>}
