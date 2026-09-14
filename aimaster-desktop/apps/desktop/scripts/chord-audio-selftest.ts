@@ -74,6 +74,7 @@ import {
   formatChordIn, keyNameIn, keyUsesFlats, spellPitchClass,
 } from '../src/renderer/daw/model/key.js';
 import { transposeChord } from '../src/renderer/daw/model/chords.js';
+import { PITCH_CLASS_NAMES } from '../src/renderer/daw/model/scales.js';
 import {
   voiceLead, voiceDistance, totalMovement, voicingCandidates, DEFAULT_VOICING,
 } from '../src/renderer/daw/model/chord-voicing.js';
@@ -1811,6 +1812,61 @@ async function main(): Promise<void> {
       `the relative pair should be flagged ambiguous, margin was ${minor?.margin}`);
     assert(minor?.alternative !== null && keyName(minor!.alternative!) === 'C Major',
       `the runner-up should be the relative major, got ${minor?.alternative ? keyName(minor.alternative) : 'none'}`);
+  });
+
+  await check('the key is right in all twelve, through audio, not just in C', async () => {
+    // Every key check above runs on chord SYMBOLS.  That leaves the path the
+    // app actually uses — render, detect, `readout.key` — tested in C and
+    // nowhere else, so a key-specific bias (a tuning offset, a chroma bin
+    // boundary, a profile rotated the wrong way) would pass everything.
+    //
+    // Measured over all 24: I V vi IV 12/12, I IV V7 I 12/12, i iv V7 i 12/12.
+    // Both cadences are swept here because minor is the harder mode and the
+    // raised leading tone of V7 is the thing a natural-minor profile misses.
+    const cases: Array<[readonly string[], string, 'Major' | 'Minor']> = [
+      [['C', 'F', 'G7', 'C'], 'C', 'Major'],
+      [['Am', 'Dm', 'E7', 'Am'], 'A', 'Minor'],
+    ];
+    const wrong: string[] = [];
+    for (const [prog, tonic, quality] of cases) {
+      for (let semis = 0; semis < 12; semis++) {
+        const names = prog.map((n) => formatChord(transposeChord(parseChord(n)!, semis)));
+        const names12: readonly string[] = PITCH_CLASS_NAMES;
+        const want = `${names12[(names12.indexOf(tonic) + semis) % 12]!} ${quality}`;
+        const audio = await render(names, { withBass: true });
+        const readout = detectChordsFromAudio(audio.mix, SR,
+          audio.bass ? { bass: audio.bass } : {});
+        const got = readout.key ? keyName(readout.key.key) : '—';
+        if (got !== want) wrong.push(`${names.join(' ')} → ${got}, expected ${want}`);
+      }
+    }
+    assert(wrong.length === 0, `${wrong.length}/24 transpositions wrong:\n    ${wrong.join('\n    ')}`);
+    console.log('      (전조 24/24)');
+  });
+
+  await check('a loop that never lands on its tonic is called ambiguous, not wrong', async () => {
+    // `Am F C G` is the one the symbolic check above pins to A Minor, and that
+    // answer is narrower than it looks: it holds for ONE loop weighted flat.
+    // Measured through audio, where chords are weighted by how long they
+    // sound, all twelve transpositions come back as the relative MAJOR — and
+    // so do two loops even weighted flat.  The phrase ends on G, which is a
+    // half cadence in A minor and the dominant of C, and nothing in it ever
+    // lands on the tonic.  Capping any one chord's weight at 1.5x the median
+    // was tried against the long final ring and changed nothing: 0/12.
+    //
+    // So this does not assert a tonic.  It asserts the behaviour that makes
+    // the answer usable either way — the chart says it is close, and offers
+    // the other reading — because claiming certainty here would be the lie.
+    const audio = await render(['Am', 'F', 'C', 'G'], { withBass: true });
+    const readout = detectChordsFromAudio(audio.mix, SR,
+      audio.bass ? { bass: audio.bass } : {});
+    assert(readout.key !== null, 'no key at all');
+    const pair = new Set([keyName(readout.key!.key),
+      readout.key!.alternative ? keyName(readout.key!.alternative) : '']);
+    assert(pair.has('C Major') && pair.has('A Minor'),
+      `expected the C Major / A Minor pair, got ${[...pair].join(' + ')}`);
+    assert(keyIsAmbiguous(readout.key!),
+      `a loop that never lands on its tonic must be flagged, margin ${readout.key!.margin}`);
   });
 
   await check('a progression that only reaches its tonic at the end', () => {
