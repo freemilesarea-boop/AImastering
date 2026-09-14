@@ -20,6 +20,7 @@ import { recordFailure } from './utils/failureLog.js';
 import { localUrlToFsPath } from './utils/localFileUrl.js';
 import { parseRangeHeader, contentTypeForPath } from './utils/localFileResponse.js';
 import { applyBundledFfmpegEnv } from './utils/ffmpegEnv.js';
+import { devServerUrl } from './utils/devServerUrl.js';
 
 // ── License gate REMOVED (v3.6.0-rc.1+1) ─────────────────────────────────────
 // The previous LICENSE_HMAC_SECRET startup gate has been removed for the
@@ -148,13 +149,22 @@ function createWindow(): void {
   });
 
   if (isDev) {
-    // LOUI_DEV_PAGE=daw opens straight into the DAW instead of the home
-    // screen — see stores/appStore.ts.  Dev only; the packaged branch below
-    // never reads it.
-    const page = process.env['LOUI_DEV_PAGE'];
-    void mainWindow.loadURL(page
-      ? `http://localhost:5173/?page=${encodeURIComponent(page)}`
-      : 'http://localhost:5173');
+    // Two dev-only environment variables, neither read by the packaged branch
+    // below:
+    //   LOUI_DEV_PAGE=daw       opens straight into the DAW (stores/appStore.ts)
+    //   VITE_DEV_SERVER_URL=…   the dev server to load, when it is not on 5173
+    //
+    // The second used to be ignored: the URL was hardcoded, so a dev server on
+    // another port was simply not what the window loaded and nothing said so.
+    // `devServerUrl` refuses anything that is not loopback http(s) and hands
+    // back the reason, which is logged rather than swallowed.
+    const choice = devServerUrl(
+      process.env['VITE_DEV_SERVER_URL'], process.env['LOUI_DEV_PAGE']);
+    if (choice.rejected !== undefined) {
+      log.warn(`[dev] ignoring VITE_DEV_SERVER_URL: ${choice.rejected}`);
+    }
+    log.info(`[dev] loading ${choice.origin}`);
+    void mainWindow.loadURL(choice.origin);
   } else {
     // Main process is at dist-electron/main/index.js; renderer is at
     // dist/renderer/index.html.  Both live inside app.asar at runtime, so

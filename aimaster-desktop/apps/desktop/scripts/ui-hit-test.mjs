@@ -61,11 +61,14 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 const APP = path.resolve(HERE, '..');
 const CDP_PORT = Number(process.env.UI_HIT_TEST_CDP_PORT ?? 9333);
 /**
- * 5173, because `main/index.ts` hardcodes `http://localhost:5173` and reads no
- * override — `VITE_DEV_SERVER_URL` looks like one and is not consulted.  A
- * server already listening there is used as-is rather than fought over.
+ * Its own port, so a run never fights the dev server a developer already has.
+ *
+ * This used to have to be 5173: `main/index.ts` hardcoded that URL and read no
+ * override, so a server on any other port was simply not what the window
+ * loaded.  `VITE_DEV_SERVER_URL` is honoured now — loopback http only — and
+ * this passes it through.
  */
-const VITE_PORT = 5173;
+const VITE_PORT = Number(process.env.UI_HIT_TEST_VITE_PORT ?? 5199);
 const DISPLAY_NUM = process.env.UI_HIT_TEST_DISPLAY ?? ':98';
 const KEEP = process.argv.includes('--keep');
 
@@ -388,7 +391,7 @@ async function main() {
   console.log(`electron with CDP on ${CDP_PORT} …`);
   bg(electronBin, [...sandbox, `--remote-debugging-port=${CDP_PORT}`, '.'], {
     cwd: APP,
-    env,
+    env: { ...env, VITE_DEV_SERVER_URL: `http://localhost:${VITE_PORT}` },
   });
   await until(`the app's debugger on ${CDP_PORT}`, async () => await pageTarget() !== undefined);
 
