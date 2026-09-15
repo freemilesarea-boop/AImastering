@@ -235,9 +235,13 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
     'transport.gotoLoopStart': () => { transport.seek(workspace().loop.startSec); },
     'transport.gotoLoopEnd':   () => { transport.seek(workspace().loop.endSec); },
 
-    'view.zoomOutH': () => { workspace().zoomOutH(); notify(`가로 확대 ×${workspace().zoomH}`); },
+    // Both directions used to announce themselves as 확대.  Press the zoom-OUT
+    // key, watch the view shrink, and read "가로 확대" — which is how a pair of
+    // keys that do exactly what they are bound to comes to feel swapped.  The
+    // arithmetic was never wrong; only the sentence was.
+    'view.zoomOutH': () => { workspace().zoomOutH(); notify(`가로 축소 ×${workspace().zoomH}`); },
     'view.zoomInH':  () => { workspace().zoomInH();  notify(`가로 확대 ×${workspace().zoomH}`); },
-    'view.zoomOutV': () => { workspace().zoomOutV(); notify(`세로 확대 ×${workspace().zoomV.toFixed(1)}`); },
+    'view.zoomOutV': () => { workspace().zoomOutV(); notify(`세로 축소 ×${workspace().zoomV.toFixed(1)}`); },
     'view.zoomInV':  () => { workspace().zoomInV();  notify(`세로 확대 ×${workspace().zoomV.toFixed(1)}`); },
 
     // ── 3. 메인 툴바 ────────────────────────────────────────────────────

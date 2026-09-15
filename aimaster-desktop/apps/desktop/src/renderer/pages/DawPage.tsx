@@ -52,12 +52,42 @@ import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import TemplatePanel from '../components/daw/template/TemplatePanel.js';
 import { describeFailure, exportAaf, importAaf } from '../daw/io/aaf-actions.js';
+import PanelWindowLayer from '../components/daw/PanelWindowLayer.js';
+import { usePanelWindowStore } from '../stores/panelWindowStore.js';
+import { DAW_PANELS, type DawWindow } from '../daw/model/view-window.js';
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00.000';
   const m = Math.floor(sec / 60);
   const s = sec - m * 60;
   return `${m}:${s.toFixed(3).padStart(6, '0')}`;
+}
+
+/**
+ * One panel, by name — the only place a window id becomes a component.
+ *
+ * Both the dock and the floating layer call this, so a panel torn off the tab
+ * strip is the same component the tab shows and not a second implementation
+ * of it.  Module scope rather than inside the component: it closes over
+ * nothing, and rebuilding it every render would remount every floating panel
+ * on every keystroke.
+ */
+function renderPanel(id: DawWindow): React.ReactElement {
+  switch (id) {
+    case 'edit':      return <EditWindow />;
+    case 'mix':       return <MixWindow />;
+    case 'midi':      return <KeyEditor />;
+    case 'chain':     return <DeviceChainView />;
+    case 'session':   return <SessionViewGrid />;
+    case 'steps':     return <StepSequencer />;
+    case 'warp':      return <WarpEditor />;
+    case 'spectral':  return <SpectralEditor />;
+    case 'vocal':     return <VocalEditor />;
+    case 'stems':     return <SeparatePanel />;
+    case 'restore':   return <RestorePanel />;
+    case 'intel':     return <IntelPanel />;
+    case 'reference': return <ReferencePanel />;
+  }
 }
 
 export default function DawPage() {
@@ -71,6 +101,10 @@ export default function DawPage() {
   const setPanel     = useWorkspaceStore((s) => s.setPanel);
   const loadSession  = useDawStore((s) => s.loadSession);
   const windowMode   = useDawStore((s) => s.window);
+  const floatPanel   = usePanelWindowStore((s) => s.float);
+  // Ids only: subscribing to the window objects would re-render the whole
+  // page on every drag of a floating panel.
+  const floatingIds  = usePanelWindowStore((s) => s.windows.map((w) => w.id));
   const setWindow    = useDawStore((s) => s.setWindow);
   const isPlaying    = useDawStore((s) => s.isPlaying);
   const togglePlay   = useDawStore((s) => s.togglePlay);
@@ -398,25 +432,24 @@ export default function DawPage() {
       {/* Transport / session chrome */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
         <div className="flex rounded-md overflow-hidden border border-zinc-700 mr-1">
-          {(['edit', 'mix', 'midi', 'chain', 'session', 'steps', 'warp', 'spectral', 'vocal', 'stems', 'restore', 'reference', 'intel'] as const).map((w) => (
-            <button key={w} onClick={() => setWindow(w)}
-              className={`px-3 py-1 text-[11px] font-medium transition-colors ${
+          {/* One list, from view-window.ts.  The labels used to be spelled out
+              here in a thirteen-arm ternary and the bodies repeated the same
+              thirteen names further down — two parallel lists that drift. */}
+          {DAW_PANELS.map(({ id: w, label }) => (
+            <button key={w}
+              onClick={() => setWindow(w)}
+              onDoubleClick={() => floatPanel(w)}
+              title={`${label} — 더블클릭하면 따로 띄웁니다`}
+              className={`px-3 py-1 text-[11px] font-medium transition-colors relative ${
                 windowMode === w ? 'bg-indigo-600/30 text-indigo-300' : 'bg-zinc-900 text-zinc-500 hover:text-zinc-300'}`}
-            >{
-              w === 'edit' ? 'EDIT'
-              : w === 'mix' ? 'MIX'
-              : w === 'midi' ? 'KEY'
-              : w === 'chain' ? 'CHAIN'
-              : w === 'session' ? 'SESSION'
-              : w === 'steps' ? 'STEPS'
-              : w === 'warp' ? 'WARP'
-              : w === 'spectral' ? 'SPECTRAL'
-              : w === 'vocal' ? 'VOCAL'
-              : w === 'stems' ? 'STEMS'
-              : w === 'restore' ? 'RESTORE'
-              : w === 'reference' ? 'REFERENCE'
-              : 'AI'
-            }</button>
+            >
+              {label}
+              {/* A dot on a tab whose panel is also floating, so the strip says
+                  where the second copy went rather than leaving it a surprise. */}
+              {floatingIds.includes(w) && (
+                <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400/80" />
+              )}
+            </button>
           ))}
         </div>
 
@@ -546,19 +579,12 @@ export default function DawPage() {
 
       <SmartControlPanel />
 
-      {windowMode === 'edit' ? <EditWindow />
-        : windowMode === 'mix' ? <MixWindow />
-        : windowMode === 'midi' ? <KeyEditor />
-        : windowMode === 'chain' ? <DeviceChainView />
-        : windowMode === 'session' ? <SessionViewGrid />
-        : windowMode === 'steps' ? <StepSequencer />
-        : windowMode === 'warp' ? <WarpEditor />
-        : windowMode === 'spectral' ? <SpectralEditor />
-        : windowMode === 'vocal' ? <VocalEditor />
-        : windowMode === 'stems' ? <SeparatePanel />
-        : windowMode === 'restore' ? <RestorePanel />
-        : windowMode === 'intel' ? <IntelPanel />
-        : <ReferencePanel />}
+      {renderPanel(windowMode)}
+
+      {/* Torn-off panels, over everything the workspace draws.  They render
+          the SAME component the dock does — one renderer, so a floating MIX
+          and a docked MIX cannot come to show different things. */}
+      <PanelWindowLayer render={renderPanel} />
 
       {templatesOpen && <TemplatePanel onClose={() => setTemplatesOpen(false)} />}
 
