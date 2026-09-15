@@ -12,6 +12,7 @@ import {
   supportBundleToJson,
 } from '../utils/supportBundle.js';
 import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
+import { defaultSavePath, outputDir } from '../utils/settingsStore.js';
 import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
 import { AUDIO_IMPORT_EXTENSIONS, MIDI_IMPORT_EXTENSIONS } from '@aimaster/shared-types';
 import {
@@ -142,7 +143,7 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
     try {
       const result = await dialog.showSaveDialog(win, {
-        defaultPath: path.basename(safeSrc),
+        defaultPath: defaultSavePath(path.basename(safeSrc)),
         filters,
       });
       if (result.canceled || !result.filePath) return null;
@@ -184,7 +185,7 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       const defaultBase = (req.suggestedName ?? path.basename(req.sourcePath, path.extname(req.sourcePath)))
         .replace(/\.[^.]+$/, '');
       const result = await dialog.showSaveDialog(win, {
-        defaultPath: `${defaultBase}.${filter.extensions[0]}`,
+        defaultPath: defaultSavePath(`${defaultBase}.${filter.extensions[0]}`),
         filters: [filter],
       });
       if (result.canceled || !result.filePath) {
@@ -337,9 +338,11 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
     if (!validSrcs.length) return null;
 
+    const chosenOutputDir = outputDir();
     const folderResult = await dialog.showOpenDialog(win, {
       title: '저장할 폴더 선택',
       buttonLabel: '이 폴더에 저장',
+      ...(chosenOutputDir === null ? {} : { defaultPath: chosenOutputDir }),
       properties: ['openDirectory', 'createDirectory'],
     });
     if (folderResult.canceled || !folderResult.filePaths[0]) return null;
@@ -693,7 +696,7 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     // hands over `song.wav`.  Appending another gives `song.wav.wav`.
     const stem = (name || 'bounce').replace(/\.[^.]+$/, '') || 'bounce';
     const result = await dialog.showSaveDialog(win, {
-      defaultPath: `${stem}.${format}`,
+      defaultPath: defaultSavePath(`${stem}.${format}`),
       filters: [FORMAT_FILTERS[format]],
     });
     if (result.canceled || !result.filePath) return null;
