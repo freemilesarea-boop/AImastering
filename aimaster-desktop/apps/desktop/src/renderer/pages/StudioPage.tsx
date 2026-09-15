@@ -731,8 +731,8 @@ export default function StudioPage() {
               )}
             </>
           )}
-          <HeaderButton label="Reset all" onClick={resetAll} />
-          <HeaderButton label="Back" onClick={() => setPage('home')} />
+          <HeaderButton label="전체 초기화" onClick={resetAll} />
+          <HeaderButton label="뒤로" onClick={() => setPage('home')} />
         </div>
       </header>
 
@@ -829,7 +829,7 @@ export default function StudioPage() {
                     {registryEntry.description}
                   </span>
                 </div>
-                <HeaderButton label="Reset" onClick={() => resetModule(paramModule)} />
+                <HeaderButton label="초기화" onClick={() => resetModule(paramModule)} />
               </div>
 
               <ModuleParameterPanel

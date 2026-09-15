@@ -252,7 +252,7 @@ export default function WarpEditor() {
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-2 flex-wrap"
            style={{ borderBottom: `1px solid ${premium.surface.hairline}`, background: premium.surface.panel }}>
-        <span style={{ fontFamily: premium.type.display, fontSize: 17, color: premium.accent.light }}>Warp</span>
+        <span style={{ fontFamily: premium.type.display, fontSize: 17, color: premium.accent.light }}>워프</span>
         <span style={{ fontFamily: premium.type.sans, fontSize: 11, color: premium.text.muted }}>
           {target.track.name} · {clip.name}
         </span>
@@ -293,9 +293,9 @@ export default function WarpEditor() {
 
         <input placeholder="소스 BPM" value={bpmDraft} onChange={(e) => setBpmDraft(e.target.value)}
                style={{ ...numberStyle, width: 78 }} />
-        <Action onClick={() => runSetup('tempo')}>Warp to Tempo</Action>
-        <Action onClick={() => runSetup('auto')}>Auto-Warp</Action>
-        <Action onClick={() => apply((s) => unwarpClip(s, target.track.id, clip.id))}>Unwarp</Action>
+        <Action onClick={() => runSetup('tempo')}>템포에 맞추기</Action>
+        <Action onClick={() => runSetup('auto')}>자동 워프</Action>
+        <Action onClick={() => apply((s) => unwarpClip(s, target.track.id, clip.id))}>워프 해제</Action>
 
         <span className="w-px h-5" style={{ background: premium.surface.hairline }} />
 

@@ -854,12 +854,12 @@ export default function KeyEditor() {
 
       {/* Info line — the selected note's data, like the reference editor */}
       <div className="flex items-center gap-4 px-3 py-1 border-b border-zinc-800 bg-[#12121a] text-[10px] font-mono">
-        <Readout label="Start"    value={firstSelected ? `${firstSelected.startBeat.toFixed(3)}박` : '—'} />
-        <Readout label="Length"   value={firstSelected ? `${firstSelected.durationBeat.toFixed(3)}박` : '—'} />
-        <Readout label="Pitch"    value={firstSelected ? pitchName(firstSelected.pitch) : '—'} />
-        <Readout label="Velocity" value={firstSelected ? String(to7bit(firstSelected.velocity)) : '—'} />
-        <Readout label="Channel"  value={firstSelected ? String(firstSelected.channel + 1) : '—'} />
-        <Readout label="Chord"    value={chord ? formatChord(chord.chord) : '—'} />
+        <Readout label="시작"   value={firstSelected ? `${firstSelected.startBeat.toFixed(3)}박` : '—'} />
+        <Readout label="길이"   value={firstSelected ? `${firstSelected.durationBeat.toFixed(3)}박` : '—'} />
+        <Readout label="음정"   value={firstSelected ? pitchName(firstSelected.pitch) : '—'} />
+        <Readout label="세기"   value={firstSelected ? String(to7bit(firstSelected.velocity)) : '—'} />
+        <Readout label="채널"   value={firstSelected ? String(firstSelected.channel + 1) : '—'} />
+        <Readout label="코드"   value={chord ? formatChord(chord.chord) : '—'} />
         <Readout label="Mouse"    value={hoverInfo ? `${hoverInfo.beat.toFixed(2)}박 ${pitchName(hoverInfo.pitch)}` : '—'} />
         <div className="flex-1" />
         <span className="text-zinc-600">{selectedIds.length} selected · {notes.length} notes</span>

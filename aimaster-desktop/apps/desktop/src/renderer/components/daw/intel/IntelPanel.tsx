@@ -84,7 +84,7 @@ export default function IntelPanel() {
         {state.tab === 'analyze' && <AnalyzeTab />}
         {state.tab === 'mix' && (
           <SuggestionTab
-            title="AI Mix"
+            title="AI 믹스"
             blurb="밸런스는 LU 기준으로, 마스킹은 두 트랙이 실제로 겹치는 주파수에서, 스프레드는 역할이 겹칠 때만. 취향은 건드리지 않습니다."
             run={state.runMix} runLabel="믹스 제안 만들기"
             suggestions={state.mixSuggestions}
@@ -93,7 +93,7 @@ export default function IntelPanel() {
         {state.tab === 'master' && <MasterTab />}
         {state.tab === 'reference' && (
           <SuggestionTab
-            title="Reference Intelligence"
+            title="레퍼런스 매칭"
             blurb="REFERENCE 창의 비교표를 그대로 실행으로 바꿉니다. 이미 일치하는 항목은 아무것도 제안하지 않습니다."
             run={state.runMatch} runLabel="레퍼런스에 맞추기"
             suggestions={state.matchSuggestions}
@@ -546,7 +546,7 @@ function CommandTab() {
   return (
     <div className="flex flex-col gap-3">
       <div style={{ fontFamily: premium.type.display, fontSize: 15, color: premium.accent.light }}>
-        Natural Language Control
+        자연어 제어
       </div>
       <p style={hint}>
         먼저 <b>규칙 파서</b>가 봅니다 — 아는 문장이면 아무것도 밖으로 나가지 않고 즉시 해석합니다.

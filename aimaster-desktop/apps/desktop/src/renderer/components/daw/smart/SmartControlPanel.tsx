@@ -91,7 +91,7 @@ export default function SmartControlPanel() {
               letterSpacing: '0.02em',
               color: premium.accent.light,
               lineHeight: 1.1,
-            }}>Smart Controls</p>
+            }}>스마트 컨트롤</p>
             <p style={{
               fontFamily: premium.type.sans, fontSize: 11, color: premium.text.muted,
             }} className="truncate">{track.name}</p>
