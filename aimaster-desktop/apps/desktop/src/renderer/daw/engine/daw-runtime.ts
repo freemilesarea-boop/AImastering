@@ -49,6 +49,14 @@ const LIVE_HOLD_SEC = 30;
 const LIVE_HOLD_BEATS = 64;
 /** Fallback release when the instrument has no release parameter. */
 const LIVE_RELEASE_SEC = 0.12;
+/**
+ * How long an auditioned note sounds.
+ *
+ * Long enough to hear what an instrument DOES — a Rhodes' bell, a pad's
+ * opening — and short enough that running a finger down the keyboard does not
+ * leave a chord behind.
+ */
+const PREVIEW_SEC = 0.7;
 
 /**
  * One pass of the transport, as captured.
@@ -91,6 +99,8 @@ class DawRuntime {
   private loudnessState: 'off' | 'starting' | 'on' | 'failed' = 'off';
   private controlRoomState: ControlRoomState = DEFAULT_CONTROL_ROOM;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Animation-frame handle for the cursor — see `startPositionFrames`. */
+  private raf: number | null = null;
   /** The click.  Not in the mix — see engine/metronome.ts. */
   readonly metronome = new Metronome();
   private session: DawSession | null = null;
@@ -379,6 +389,56 @@ class DawRuntime {
   releaseMidiHold(holder: MidiHolder): void {
     this.midiHolds.release(holder);
     if (this.midiHolds.shouldClose(this.midiTrackIds.length)) this.closeMidiInput();
+  }
+
+  /**
+   * Sound one note now, on a track's own instrument.
+   *
+   * The audition a piano roll's keyboard owes you: press a key, hear what
+   * that track will play there.
+   *
+   * It takes the session because an audition is very often the FIRST sound
+   * the app makes.  The context is created on a user gesture and the channels
+   * are built by `sync`, so a preview that merely looked both up would return
+   * false on a freshly opened project — and from the user's side a key that
+   * silently does nothing is the same key we already had.
+   *
+   * The LITERAL pitch is played, not the pitch a MIDI insert would shape it
+   * into.  A transpose in the chain would answer the C key with a D, and the
+   * question this gesture asks is which sound sits on this key.
+   *
+   * Finite: the instrument descriptors schedule attack through release from a
+   * duration known up front, so unlike a held key this needs no gate and
+   * cannot be left hanging by a note-off that never comes.
+   *
+   * Returns whether anything sounded, so a caller can say so when nothing did.
+   */
+  previewNote(
+    session: DawSession, trackId: TrackId, pitch: number,
+    velocity = 0.8, durationSec = PREVIEW_SEC,
+  ): boolean {
+    if (!this.ensure()) return false;
+    const ctx = this.ctx;
+    if (!ctx) return false;
+    // Only when the channel is missing.  `sync` rebuilds the whole graph, and
+    // doing that on every keypress would tear down voices still ringing from
+    // the key before it.
+    if (!this.engine?.channel(trackId)) this.sync(session);
+    const channel = this.engine?.channel(trackId);
+    if (!channel) return false;
+    const track = session.tracks.find((t) => t.id === trackId);
+    const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
+    if (!instrument) return false;
+    instrument.playNote({
+      ctx,
+      destination: channel.input,
+      note: createLiveNote(pitch, Math.max(0, Math.min(1, velocity))),
+      config: { bendRangeSemitones: 2, mpe: false },
+      when: ctx.currentTime,
+      durationSec,
+      params: { ...(track?.instrumentParams ?? {}) },
+    });
+    return true;
   }
 
   private receiveMidi(event: CaptureEvent): void {
@@ -881,6 +941,7 @@ class DawRuntime {
   }
 
   private startTicking(): void {
+    this.startPositionFrames();
     if (this.timer) return;
     this.timer = setInterval(() => {
       const session = this.session;
@@ -913,7 +974,7 @@ class DawRuntime {
       // The click rides the same tick and the same origin as the clips, so a
       // beat and a kick on that beat are scheduled to the same context time.
       this.metronome.tick(tempoMapOf(session), pos, LOOKAHEAD_SEC, player.originSec);
-      this.onPosition?.(pos);
+      // The cursor is NOT reported from here — see `startPositionFrames`.
 
       // Stop at the end of the last clip (plus a tail for effects).
       const end = sessionEnd(session);
@@ -924,8 +985,51 @@ class DawRuntime {
     }, TICK_MS);
   }
 
+  /**
+   * The cursor, on its own clock, at screen rate.
+   *
+   * Scheduling and drawing are different jobs and were sharing one 50 ms
+   * timer.  That is the right cadence for handing the audio thread its next
+   * window — a look-ahead does not need to be finer — and much too coarse for
+   * a cursor: the position was sampled once per tick and drawn unchanged
+   * until the next, so the cursor sat up to 50 ms behind the transport, 25 ms
+   * on average, in a visible stair.
+   *
+   * It matters here because the two errors point OPPOSITE ways.  The cursor
+   * was drawn from the WRITE clock, which runs `outputLatency` ahead of the
+   * sound, and then held back by up to a tick.  Correcting the latency alone
+   * removes the half that was pointing the right way and leaves the staleness
+   * uncancelled — a real fix that can measure worse than the bug it fixes.
+   * Both halves, or neither.
+   *
+   * The sizes are not symmetric and not fixed: `outputLatency` is whatever
+   * the driver reports (30 ms on the machine this was measured on, and a
+   * different number on any other), while the staleness is bounded by
+   * TICK_MS.  Which is to say this is an argument about signs, not a claim
+   * that the two used to cancel exactly.
+   *
+   * A frame is the finest a cursor can usefully be — nothing sees between two
+   * paints — and it costs one clock read.
+   */
+  private startPositionFrames(): void {
+    if (this.raf !== null || typeof requestAnimationFrame === 'undefined') return;
+    const frame = (): void => {
+      const player = this.player;
+      if (player?.isPlaying) this.onPosition?.(player.audiblePosition());
+      this.raf = requestAnimationFrame(frame);
+    };
+    this.raf = requestAnimationFrame(frame);
+  }
+
+  private stopPositionFrames(): void {
+    if (this.raf === null) return;
+    if (typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(this.raf);
+    this.raf = null;
+  }
+
   private stopTicking(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    this.stopPositionFrames();
   }
 
   // ── Session clip launching ──────────────────────────────────────────────

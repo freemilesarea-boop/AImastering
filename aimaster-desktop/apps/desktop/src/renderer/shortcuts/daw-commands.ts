@@ -115,7 +115,7 @@ import {
 } from '../daw/edit/automation-lanes.js';
 import type { AutomationMode, Clip, DawSession, Track, TrackId } from '../daw/model/types.js';
 import {
-  quantizeNotes, humanizeNotes, transposeNotes, nudgeVelocity, applyLegato,
+  quantizeNotes, humanizeNotes, transposeNotes, nudgeVelocity, applyLegato, deleteNotes,
 } from '../daw/edit/midi-edit.js';
 import { noteEndBeat, type MidiNote } from '../daw/model/midi.js';
 import { detectChordTrack } from '../daw/edit/chord-detect.js';
@@ -518,6 +518,32 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     'daw.clearRange': () => {
+      // Delete means "get rid of what is selected", and with the Key Editor
+      // open what is selected is notes.
+      //
+      // This chord only ever reached `clearRange`, which wants a TIMELINE
+      // range.  In the Key Editor there is none, so `needSelection()` handed
+      // back null and the command returned without a word — the one gesture
+      // every editor in the world shares did nothing and did not say why.
+      // Meanwhile `deleteNotes` had sat in midi-edit.ts since it was written
+      // with no caller at all: the verb existed, the route to it did not.
+      //
+      // Only an EXPLICIT selection counts.  `midiContext` helpfully falls
+      // back to every note in the part when nothing is picked, which is right
+      // for quantize and catastrophic here — one keypress would empty the
+      // part.  So the store is asked directly, and an empty selection falls
+      // through to the timeline meaning rather than guessing.
+      const editor = useMidiEditorStore.getState();
+      if (editor.open && editor.selectedNoteIds.length > 0) {
+        const context = midiContext();
+        if (!context) return;
+        const doomed = new Set(editor.selectedNoteIds);
+        writeNotes(context.trackId, context.clipId, deleteNotes(context.notes, doomed));
+        editor.setSelection([]);
+        notify(`노트 ${doomed.size}개 삭제`);
+        return;
+      }
+
       const sel = needSelection();
       if (!sel) return;
       const ripple = daw().editMode === 'shuffle';

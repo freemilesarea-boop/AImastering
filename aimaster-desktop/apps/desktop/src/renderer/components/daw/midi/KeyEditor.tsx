@@ -24,7 +24,7 @@ import { findTrack, trackClips, updateClip, updateTrack } from '../../../daw/mod
 import { clipNotes, notesInClipTime, writeClipNotes } from '../../../daw/model/patterns.js';
 import {
   createNote, isBlackKey, pitchName, targetLabel, to7bit, from7bit, noteEndBeat,
-  curveValueAt, findExpression, setExpression, type ExpressionTarget, type MidiNote,
+  curveValueAt, findExpression, setExpression, targetKey, type ExpressionTarget, type MidiNote,
 } from '../../../daw/model/midi.js';
 import { isInScale, scalePitchClasses } from '../../../daw/model/scales.js';
 import { describeSlot, drumCellPx, rowOf, rowsFor } from '../../../daw/model/drum-map.js';
@@ -38,8 +38,9 @@ import ListEditor from './ListEditor.js';
 import MidiInsertRack from './MidiInsertRack.js';
 import { trackHasInserts } from '../../../daw/model/midi-insert-track.js';
 import { detectChord, formatChord } from '../../../daw/model/chords.js';
-import { notesAt, MIN_NOTE_BEATS } from '../../../daw/edit/midi-edit.js';
-import { beatsToSecAt, partClock, timelineSecToBeat } from '../../../daw/model/note-time.js';
+import { notesAt, draggedDuration } from '../../../daw/edit/midi-edit.js';
+import { SUSTAIN_CC, pedalSpans } from '../../../daw/edit/sustain.js';
+import { beatsToSecAt, partClock, secToBeatsAt, timelineSecToBeat } from '../../../daw/model/note-time.js';
 import { barBeatAt, tempoMapOf } from '../../../daw/model/tempo-map.js';
 import KeyEditorInspector from './KeyEditorInspector.js';
 
@@ -213,6 +214,43 @@ export default function KeyEditor() {
   }, []);
 
   // ── Note updates ────────────────────────────────────────────────────────
+  /** Whether the lane is showing the sustain pedal rather than a curve. */
+  const isPedal = controllerTarget.kind === 'cc' && controllerTarget.controller === SUSTAIN_CC;
+
+  /** The part's pedal lane, as the engine and MIDI export both read it. */
+  const pedal = useMemo(() => {
+    if (!part) return [];
+    const key = targetKey({ kind: 'cc', controller: SUSTAIN_CC });
+    return part.controllers.find((l) => targetKey(l.target) === key)?.points ?? [];
+  }, [part]);
+
+  /**
+   * Press or release the pedal at a beat.
+   *
+   * Replaces whatever was already within half a grid cell, so dragging along
+   * the lane redraws rather than piling points on top of each other.
+   */
+  const writePedal = useCallback((beat: number, value: number) => {
+    if (!open) return;
+    const at = Math.max(0, beat);
+    const tolerance = Math.max(0.01, gridBeat / 2);
+    const key = targetKey({ kind: 'cc', controller: SUSTAIN_CC });
+    apply((s) => updateClip(s, open.trackId, open.clipId, (c) => {
+      const lane = c.controllers.find((l) => targetKey(l.target) === key);
+      const points = [...(lane?.points ?? [])]
+        .filter((p) => Math.abs(p.timeBeat - at) > tolerance)
+        .concat({ timeBeat: at, value })
+        .sort((a, b) => a.timeBeat - b.timeBeat);
+      const next = { target: { kind: 'cc' as const, controller: SUSTAIN_CC }, points };
+      return {
+        ...c,
+        controllers: lane
+          ? c.controllers.map((l) => (targetKey(l.target) === key ? { ...l, points } : l))
+          : [...c.controllers, { id: `lane-${SUSTAIN_CC}`, visible: true, ...next }],
+      };
+    }));
+  }, [open, apply, gridBeat]);
+
   const writeNotes = useCallback((next: MidiNote[], transient = false) => {
     if (!open) return;
     const mutate = (s: typeof session) => {
@@ -408,6 +446,25 @@ export default function KeyEditor() {
         ctx.fillStyle = selected.has(note.id) ? 'rgba(235,80,80,0.95)' : 'rgba(90,150,240,0.9)';
         ctx.fillRect(x, LANE_HEIGHT - h - 2, 3, h);
       }
+    } else if (isPedal) {
+      // Drawn as the spans it is, not as a line through points.  A pedal is
+      // held down or it is not, and a curve sloping between two presses would
+      // show a half-pedalling this engine cannot produce.
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.beginPath();
+      ctx.moveTo(0, LANE_HEIGHT - 2);
+      ctx.lineTo(size.width, LANE_HEIGHT - 2);
+      ctx.stroke();
+      const partEnd = secToBeatsAt(clock, part?.durationSec ?? 0);
+      for (const span of pedalSpans(pedal)) {
+        const from = toX(span.from);
+        const to = toX(Math.min(span.to, partEnd));
+        if (to < 0 || from > size.width) continue;
+        ctx.fillStyle = 'rgba(120,200,255,0.30)';
+        ctx.fillRect(from, 8, Math.max(2, to - from), LANE_HEIGHT - 18);
+        ctx.fillStyle = 'rgba(120,200,255,0.95)';
+        ctx.fillRect(from, 8, 2, LANE_HEIGHT - 18);
+      }
     } else {
       // Bipolar targets (pitch bend) draw from the centre.
       const bipolar = controllerTarget.kind === 'pitchBend';
@@ -435,7 +492,7 @@ export default function KeyEditor() {
         ctx.stroke();
       }
     }
-  }, [notes, size.width, laneMode, controllerTarget, selected, toX]);
+  }, [notes, size.width, laneMode, controllerTarget, selected, toX, isPedal, pedal, clock, part?.durationSec]);
 
   // ── Hit testing ─────────────────────────────────────────────────────────
   const localPoint = (e: React.MouseEvent): { x: number; y: number } => {
@@ -471,6 +528,25 @@ export default function KeyEditor() {
    * were one body of code copied into one place and then reachable three
    * ways — and only one of the three was discoverable.
    */
+  /**
+   * Hear one pitch on this track's instrument.
+   *
+   * The keyboard down the left side of a piano roll has always been a control
+   * — you press it to find out what a note will sound like — and this one was
+   * decoration.  Its handler cleared the selection and returned, under a
+   * comment claiming it auditioned, which is how it survived: the comment was
+   * the only place the behaviour existed.
+   *
+   * Says so when nothing sounds, rather than leaving a key that looks broken.
+   * The usual cause is a track with no instrument, and that is fixable —
+   * silently swallowing it is not.
+   */
+  const audition = useCallback((pitch: number) => {
+    if (!open) return;
+    const ok = dawRuntime.previewNote(session, open.trackId, pitch);
+    if (!ok) notify('소리를 낼 수 없습니다 — 이 트랙에 악기가 지정되어 있는지 확인하세요', 'warning');
+  }, [open, session, notify]);
+
   const placeNote = useCallback((x: number, y: number) => {
     // FLOOR to the cell under the cursor, not `snapBeatToGrid`'s round-to-
     // nearest.  Rounding is right when you MOVE a note — you are nudging it
@@ -490,7 +566,12 @@ export default function KeyEditor() {
     });
     writeNotes([...notes, note]);
     setSelection([note.id]);
-  }, [toPitch, toBeat, gridBeat, notes, writeNotes, setSelection, tempo]);
+    // Writing a note is the other half of the same question the keyboard
+    // answers, and it is the half people ask far more often.
+    audition(note.pitch);
+    // Returned so the caller can keep dragging it longer — see `onGridDown`.
+    return note;
+  }, [toPitch, toBeat, gridBeat, notes, writeNotes, setSelection, tempo, audition]);
 
   const onGridDown = useCallback((e: React.MouseEvent) => {
     if (!part) return;
@@ -504,7 +585,20 @@ export default function KeyEditor() {
 
     if (!hit) {
       if (tool === 'draw' || e.metaKey || e.ctrlKey) {
-        placeNote(x, y);
+        // Draw by DRAGGING, not by clicking once.
+        //
+        // A new note was always exactly one grid cell, and the only way to
+        // make it longer was to find a 6px handle on its right edge — so an
+        // instrument that holds, which is most of them, could not be written
+        // the way anyone writes one.  A whole note at the 1/16 grid on screen
+        // took sixteen cells drawn one at a time, or one cell plus a hunt for
+        // six pixels.
+        //
+        // Handing the new note straight to the resize drag is the entire fix:
+        // press, pull right, release.  Release without moving and it stays one
+        // cell, so the old gesture still does the old thing.
+        const made = placeNote(x, y);
+        setDrag({ kind: 'resize', noteIds: [made.id], startX: x, originals: [made] });
         return;
       }
       setDrag({ kind: 'marquee', x0: x, y0: y, x1: x, y1: y });
@@ -575,13 +669,16 @@ export default function KeyEditor() {
       const next = notes.map((n) => {
         const original = byId.get(n.id);
         if (!original) return n;
-        const end = snapBeatToGrid(noteEndBeat(original) + deltaBeat);
-        return { ...n, durationBeat: Math.max(MIN_NOTE_BEATS, end - n.startBeat) };
+        return {
+          ...n,
+          durationBeat: draggedDuration(
+            n.startBeat, noteEndBeat(original) + deltaBeat, gridBeat, snapEnabled),
+        };
       });
       writeNotes(next, true);
     }
   }, [drag, notes, pxPerBeat, pitchHeight, toX, toY, toBeat, toPitch, setSelection,
-      writeNotes, tempo, snapPitch, scale, rows, drumWidth]);
+      writeNotes, tempo, snapPitch, scale, rows, drumWidth, gridBeat, snapEnabled]);
 
   const endDrag = useCallback(() => {
     if (drag && (drag.kind === 'move' || drag.kind === 'resize')) commit();
@@ -589,11 +686,6 @@ export default function KeyEditor() {
   }, [drag, commit]);
 
   // ── Lane gestures ───────────────────────────────────────────────────────
-  const onLaneDown = useCallback((e: React.MouseEvent) => {
-    setDrag({ kind: 'lane', lastX: 0 });
-    applyLanePoint(e);
-  }, []);
-
   const applyLanePoint = useCallback((e: React.MouseEvent) => {
     if (!part) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -607,6 +699,26 @@ export default function KeyEditor() {
       if (target.length === 0) return;
       const targetIds = new Set(target.map((n) => n.id));
       writeNotes(notes.map((n) => (targetIds.has(n.id) ? { ...n, velocity: value } : n)), true);
+      return;
+    }
+
+    // The pedal is a PART lane, not a per-note curve.
+    //
+    // Everything else in this lane belongs to one note — a bend, a breath,
+    // a brightness — and is stored on it.  A pedal is not like that: it goes
+    // down, several notes ring through it, and it comes up.  Stored per note
+    // it could never hold the note next to it, which is the only thing a
+    // pedal does.
+    //
+    // `clip.controllers` is where it already belonged: an imported .mid puts
+    // its CC64 there, MIDI export writes it back from there, and the engine
+    // now reads it from there.  Drawing one by hand lands in the same place,
+    // so a drawn pedal and a recorded one are the same object.
+    if (isPedal) {
+      // A switch, not a fader.  Top half presses, bottom half releases; the
+      // lane draws it as the steps it is, so there is nothing in between to
+      // mean anything.
+      writePedal(beat, y < LANE_HEIGHT / 2 ? 1 : 0);
       return;
     }
 
@@ -628,7 +740,30 @@ export default function KeyEditor() {
         .sort((a, b) => a.timeBeat - b.timeBeat);
       return setExpression(n, { target: controllerTarget, points });
     }), true);
-  }, [part, notes, laneMode, controllerTarget, toBeat, toX, writeNotes]);
+  }, [part, notes, laneMode, controllerTarget, toBeat, toX, writeNotes, isPedal, writePedal]);
+
+  /**
+   * Below `applyLanePoint`, and depending on it, which is the whole fix.
+   *
+   * This used to sit ABOVE it with an empty dependency array — and it had to,
+   * because naming a `const` declared further down inside a deps array is a
+   * temporal-dead-zone error at render time.  The empty array was the way
+   * around that, and it froze this handler on the FIRST render's
+   * `applyLanePoint`, which had closed over a `part` that did not exist yet.
+   * So every press in the lane ran `if (!part) return;` and stopped there.
+   *
+   * Nothing in the lane worked: not velocity, not a bend, not a CC — the
+   * whole bottom half of the piano roll took mouse-downs and discarded them.
+   * It reads as "the pedal does not work" only because the pedal is what
+   * someone tried most recently.
+   *
+   * Moving the declaration is the entire cure: the dependency can be named
+   * now, so the handler is rebuilt whenever the thing it calls changes.
+   */
+  const onLaneDown = useCallback((e: React.MouseEvent) => {
+    setDrag({ kind: 'lane', lastX: 0 });
+    applyLanePoint(e);
+  }, [applyLanePoint]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
     if (drag?.kind !== 'lane') return;
@@ -911,9 +1046,13 @@ export default function KeyEditor() {
               {rows ? rows.map((slot, i) => (
                 <div
                   key={slot.pitch}
-                  onMouseDown={() => setSelection(
-                    notes.filter((n) => n.pitch === slot.pitch).map((n) => n.id))}
-                  title={`${describeSlot(slot)} — 눌러서 이 악기의 모든 히트를 선택`}
+                  onMouseDown={() => {
+                    setSelection(notes.filter((n) => n.pitch === slot.pitch).map((n) => n.id));
+                    // A kit row is the one place the NAME is not enough: two
+                    // toms a semitone apart read the same on screen.
+                    audition(slot.pitch);
+                  }}
+                  title={`${describeSlot(slot)} — 눌러서 소리를 듣고 이 악기의 모든 히트를 선택`}
                   className="absolute left-0 right-0 border-b border-black/40 flex items-center
                              gap-1 pl-1 pr-1 cursor-pointer hover:bg-white/5"
                   style={{
@@ -935,13 +1074,10 @@ export default function KeyEditor() {
                 return (
                   <div
                     key={pitch}
-                    onMouseDown={() => {
-                      // Auditioning by clicking a key writes a short note only
-                      // when the pencil is active; otherwise it just scrolls
-                      // the selection focus.
-                      setSelection([]);
-                    }}
+                    onMouseDown={() => { setSelection([]); audition(pitch); }}
+                    title={`${pitchName(pitch)} — 눌러서 이 트랙의 소리를 들어봅니다`}
                     className={`absolute left-0 right-0 border-b border-black/40 flex items-center justify-end pr-1
+                                cursor-pointer active:brightness-125
                                 ${black ? 'bg-zinc-900' : 'bg-zinc-300'}`}
                     style={{ top: toY(pitch), height: pitchHeight }}
                   >

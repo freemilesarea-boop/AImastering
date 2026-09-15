@@ -27,6 +27,33 @@ const EPS = 1e-9;
  */
 export const MIN_NOTE_BEATS = 1 / 32;
 
+/**
+ * How long a note is after its right edge is dragged to `rawEnd`.
+ *
+ * ROUNDS to the grid, where `drawStartBeat` floors — and the difference is
+ * the gesture, not an inconsistency.  Placing a note puts it in the cell you
+ * pointed at, so the cell's own start is the answer.  Pulling an edge aims AT
+ * a line, and the nearest line is the one you were aiming for; flooring would
+ * make the last half of every cell unreachable.
+ *
+ * Never returns less than `MIN_NOTE_BEATS`, so an edge dragged back past the
+ * note's own start leaves a short note rather than a note of negative length
+ * — which draws as a sliver pointing the wrong way and plays as silence.
+ *
+ * Lives here, pure, rather than inline in the editor, because this is the
+ * arithmetic that decides whether an instrument can hold a note at all: it
+ * used to be reachable only through a six-pixel handle, so a drawn note was
+ * always exactly one cell and nothing tested the alternative.
+ */
+export function draggedDuration(
+  startBeat: number, rawEnd: number, gridBeat: number, snapEnabled: boolean,
+): number {
+  const snapped = !snapEnabled || gridBeat <= 0
+    ? Math.max(0, rawEnd)
+    : Math.max(0, Math.round(rawEnd / gridBeat) * gridBeat);
+  return Math.max(MIN_NOTE_BEATS, snapped - startBeat);
+}
+
 // ── Deterministic randomness ──────────────────────────────────────────────────
 
 /** Mulberry32 — small, fast, good enough, and identical on every machine. */

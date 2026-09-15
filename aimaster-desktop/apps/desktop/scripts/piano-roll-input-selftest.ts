@@ -104,8 +104,16 @@ check('a modifier is not the only way in', () => {
   const at = editor.indexOf('const onGridDown');
   assert(at >= 0, 'the grid has no mousedown handler');
   const body = editor.slice(at, at + 1200);
+  // The SECOND bad proxy, for the record.  This anchored on `placeNote`
+  // following the brace immediately, so it broke the moment the call started
+  // returning something: drawing now hands the new note to a resize drag, so
+  // the line reads `const made = placeNote(x, y)` and the pattern missed it —
+  // while the branch it was checking still honoured the pencil and the
+  // modifier exactly as before.  A check that fails on working code is as
+  // expensive as one that passes on broken code, and both come from anchoring
+  // on the shape of a line rather than on what it does.
   const branch = /if\s*\(([^)]*placeNote[\s\S]{0,80}?)\)/.exec(body)
-    ?? /if\s*\(([^{]*)\)\s*{\s*placeNote/.exec(body);
+    ?? /if\s*\(([^{]*)\)\s*\{\s*(?:const\s+\w+\s*=\s*)?placeNote/.exec(body);
   assert(branch, 'nothing on the grid places a note');
   const condition = branch![1]!;
   assert(/tool\s*===\s*'draw'/.test(condition),

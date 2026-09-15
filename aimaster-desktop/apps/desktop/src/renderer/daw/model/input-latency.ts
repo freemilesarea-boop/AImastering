@@ -71,6 +71,36 @@ export function reportedLatency(ctx: {
   return clampLatency(base + out);
 }
 
+/**
+ * How far the PLAYHEAD is ahead of what you can hear.
+ *
+ * `AudioContext.currentTime` is the write head: the moment the graph is
+ * filling into the output buffer.  What reaches the speaker right now was
+ * written `outputLatency` seconds ago.  A play position taken straight off
+ * `currentTime` therefore runs AHEAD of the sound by that much, and the
+ * waveform under the cursor is a little further along than the note you are
+ * hearing — small, constant, and exactly the kind of wrong that feels like
+ * the app is not quite in time with itself.
+ *
+ * `outputLatency` ALONE, unlike the recording number next to it, which sums
+ * `baseLatency` too.  The two are answering different questions: a take has
+ * to be moved by everything between the player and the file, the app's own
+ * processing included, while the cursor only has to be moved by what sits
+ * between the graph's output and the air.  Adding baseLatency here would
+ * overshoot and put the cursor BEHIND the sound instead, which is the same
+ * defect facing the other way.
+ *
+ * Zero when the browser will not say — the cursor is then no worse than it
+ * was, and nothing pretends to a precision it does not have.
+ */
+export function playbackLatency(ctx: {
+  baseLatency?: number; outputLatency?: number;
+} | null | undefined): number {
+  if (!ctx) return 0;
+  const out = Number.isFinite(ctx.outputLatency) ? (ctx.outputLatency as number) : 0;
+  return clampLatency(out);
+}
+
 export function latencyFromContext(ctx: Parameters<typeof reportedLatency>[0]): LatencyConfig {
   const seconds = reportedLatency(ctx);
   return seconds > 0
