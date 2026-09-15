@@ -38,7 +38,7 @@ import ListEditor from './ListEditor.js';
 import MidiInsertRack from './MidiInsertRack.js';
 import { trackHasInserts } from '../../../daw/model/midi-insert-track.js';
 import { detectChord, formatChord } from '../../../daw/model/chords.js';
-import { notesAt, MIN_NOTE_BEATS } from '../../../daw/edit/midi-edit.js';
+import { notesAt, draggedDuration } from '../../../daw/edit/midi-edit.js';
 import { beatsToSecAt, partClock, timelineSecToBeat } from '../../../daw/model/note-time.js';
 import { barBeatAt, tempoMapOf } from '../../../daw/model/tempo-map.js';
 import KeyEditorInspector from './KeyEditorInspector.js';
@@ -471,6 +471,25 @@ export default function KeyEditor() {
    * were one body of code copied into one place and then reachable three
    * ways — and only one of the three was discoverable.
    */
+  /**
+   * Hear one pitch on this track's instrument.
+   *
+   * The keyboard down the left side of a piano roll has always been a control
+   * — you press it to find out what a note will sound like — and this one was
+   * decoration.  Its handler cleared the selection and returned, under a
+   * comment claiming it auditioned, which is how it survived: the comment was
+   * the only place the behaviour existed.
+   *
+   * Says so when nothing sounds, rather than leaving a key that looks broken.
+   * The usual cause is a track with no instrument, and that is fixable —
+   * silently swallowing it is not.
+   */
+  const audition = useCallback((pitch: number) => {
+    if (!open) return;
+    const ok = dawRuntime.previewNote(session, open.trackId, pitch);
+    if (!ok) notify('소리를 낼 수 없습니다 — 이 트랙에 악기가 지정되어 있는지 확인하세요', 'warning');
+  }, [open, session, notify]);
+
   const placeNote = useCallback((x: number, y: number) => {
     // FLOOR to the cell under the cursor, not `snapBeatToGrid`'s round-to-
     // nearest.  Rounding is right when you MOVE a note — you are nudging it
@@ -490,7 +509,12 @@ export default function KeyEditor() {
     });
     writeNotes([...notes, note]);
     setSelection([note.id]);
-  }, [toPitch, toBeat, gridBeat, notes, writeNotes, setSelection, tempo]);
+    // Writing a note is the other half of the same question the keyboard
+    // answers, and it is the half people ask far more often.
+    audition(note.pitch);
+    // Returned so the caller can keep dragging it longer — see `onGridDown`.
+    return note;
+  }, [toPitch, toBeat, gridBeat, notes, writeNotes, setSelection, tempo, audition]);
 
   const onGridDown = useCallback((e: React.MouseEvent) => {
     if (!part) return;
@@ -504,7 +528,20 @@ export default function KeyEditor() {
 
     if (!hit) {
       if (tool === 'draw' || e.metaKey || e.ctrlKey) {
-        placeNote(x, y);
+        // Draw by DRAGGING, not by clicking once.
+        //
+        // A new note was always exactly one grid cell, and the only way to
+        // make it longer was to find a 6px handle on its right edge — so an
+        // instrument that holds, which is most of them, could not be written
+        // the way anyone writes one.  A whole note at the 1/16 grid on screen
+        // took sixteen cells drawn one at a time, or one cell plus a hunt for
+        // six pixels.
+        //
+        // Handing the new note straight to the resize drag is the entire fix:
+        // press, pull right, release.  Release without moving and it stays one
+        // cell, so the old gesture still does the old thing.
+        const made = placeNote(x, y);
+        setDrag({ kind: 'resize', noteIds: [made.id], startX: x, originals: [made] });
         return;
       }
       setDrag({ kind: 'marquee', x0: x, y0: y, x1: x, y1: y });
@@ -575,13 +612,16 @@ export default function KeyEditor() {
       const next = notes.map((n) => {
         const original = byId.get(n.id);
         if (!original) return n;
-        const end = snapBeatToGrid(noteEndBeat(original) + deltaBeat);
-        return { ...n, durationBeat: Math.max(MIN_NOTE_BEATS, end - n.startBeat) };
+        return {
+          ...n,
+          durationBeat: draggedDuration(
+            n.startBeat, noteEndBeat(original) + deltaBeat, gridBeat, snapEnabled),
+        };
       });
       writeNotes(next, true);
     }
   }, [drag, notes, pxPerBeat, pitchHeight, toX, toY, toBeat, toPitch, setSelection,
-      writeNotes, tempo, snapPitch, scale, rows, drumWidth]);
+      writeNotes, tempo, snapPitch, scale, rows, drumWidth, gridBeat, snapEnabled]);
 
   const endDrag = useCallback(() => {
     if (drag && (drag.kind === 'move' || drag.kind === 'resize')) commit();
@@ -911,9 +951,13 @@ export default function KeyEditor() {
               {rows ? rows.map((slot, i) => (
                 <div
                   key={slot.pitch}
-                  onMouseDown={() => setSelection(
-                    notes.filter((n) => n.pitch === slot.pitch).map((n) => n.id))}
-                  title={`${describeSlot(slot)} — 눌러서 이 악기의 모든 히트를 선택`}
+                  onMouseDown={() => {
+                    setSelection(notes.filter((n) => n.pitch === slot.pitch).map((n) => n.id));
+                    // A kit row is the one place the NAME is not enough: two
+                    // toms a semitone apart read the same on screen.
+                    audition(slot.pitch);
+                  }}
+                  title={`${describeSlot(slot)} — 눌러서 소리를 듣고 이 악기의 모든 히트를 선택`}
                   className="absolute left-0 right-0 border-b border-black/40 flex items-center
                              gap-1 pl-1 pr-1 cursor-pointer hover:bg-white/5"
                   style={{
@@ -935,13 +979,10 @@ export default function KeyEditor() {
                 return (
                   <div
                     key={pitch}
-                    onMouseDown={() => {
-                      // Auditioning by clicking a key writes a short note only
-                      // when the pencil is active; otherwise it just scrolls
-                      // the selection focus.
-                      setSelection([]);
-                    }}
+                    onMouseDown={() => { setSelection([]); audition(pitch); }}
+                    title={`${pitchName(pitch)} — 눌러서 이 트랙의 소리를 들어봅니다`}
                     className={`absolute left-0 right-0 border-b border-black/40 flex items-center justify-end pr-1
+                                cursor-pointer active:brightness-125
                                 ${black ? 'bg-zinc-900' : 'bg-zinc-300'}`}
                     style={{ top: toY(pitch), height: pitchHeight }}
                   >

@@ -49,6 +49,14 @@ const LIVE_HOLD_SEC = 30;
 const LIVE_HOLD_BEATS = 64;
 /** Fallback release when the instrument has no release parameter. */
 const LIVE_RELEASE_SEC = 0.12;
+/**
+ * How long an auditioned note sounds.
+ *
+ * Long enough to hear what an instrument DOES — a Rhodes' bell, a pad's
+ * opening — and short enough that running a finger down the keyboard does not
+ * leave a chord behind.
+ */
+const PREVIEW_SEC = 0.7;
 
 /**
  * One pass of the transport, as captured.
@@ -379,6 +387,56 @@ class DawRuntime {
   releaseMidiHold(holder: MidiHolder): void {
     this.midiHolds.release(holder);
     if (this.midiHolds.shouldClose(this.midiTrackIds.length)) this.closeMidiInput();
+  }
+
+  /**
+   * Sound one note now, on a track's own instrument.
+   *
+   * The audition a piano roll's keyboard owes you: press a key, hear what
+   * that track will play there.
+   *
+   * It takes the session because an audition is very often the FIRST sound
+   * the app makes.  The context is created on a user gesture and the channels
+   * are built by `sync`, so a preview that merely looked both up would return
+   * false on a freshly opened project — and from the user's side a key that
+   * silently does nothing is the same key we already had.
+   *
+   * The LITERAL pitch is played, not the pitch a MIDI insert would shape it
+   * into.  A transpose in the chain would answer the C key with a D, and the
+   * question this gesture asks is which sound sits on this key.
+   *
+   * Finite: the instrument descriptors schedule attack through release from a
+   * duration known up front, so unlike a held key this needs no gate and
+   * cannot be left hanging by a note-off that never comes.
+   *
+   * Returns whether anything sounded, so a caller can say so when nothing did.
+   */
+  previewNote(
+    session: DawSession, trackId: TrackId, pitch: number,
+    velocity = 0.8, durationSec = PREVIEW_SEC,
+  ): boolean {
+    if (!this.ensure()) return false;
+    const ctx = this.ctx;
+    if (!ctx) return false;
+    // Only when the channel is missing.  `sync` rebuilds the whole graph, and
+    // doing that on every keypress would tear down voices still ringing from
+    // the key before it.
+    if (!this.engine?.channel(trackId)) this.sync(session);
+    const channel = this.engine?.channel(trackId);
+    if (!channel) return false;
+    const track = session.tracks.find((t) => t.id === trackId);
+    const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
+    if (!instrument) return false;
+    instrument.playNote({
+      ctx,
+      destination: channel.input,
+      note: createLiveNote(pitch, Math.max(0, Math.min(1, velocity))),
+      config: { bendRangeSemitones: 2, mpe: false },
+      when: ctx.currentTime,
+      durationSec,
+      params: { ...(track?.instrumentParams ?? {}) },
+    });
+    return true;
   }
 
   private receiveMidi(event: CaptureEvent): void {
