@@ -52,7 +52,8 @@ export default function DawMediaBay() {
       >
         <div className="flex items-baseline justify-between">
           <p className="text-sm font-semibold text-zinc-100">MediaBay — 프리셋</p>
-          <button onClick={close} className="text-zinc-500 hover:text-zinc-300 text-sm">×</button>
+          <button onClick={close} title="닫기"
+                  className="hit-target text-zinc-500 hover:text-zinc-300 text-sm">×</button>
         </div>
 
         <section className="space-y-2">

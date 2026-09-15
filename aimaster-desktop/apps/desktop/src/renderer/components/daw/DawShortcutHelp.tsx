@@ -47,7 +47,8 @@ export default function DawShortcutHelp() {
               {platform === 'mac' ? 'macOS — ⌘ / Option' : 'Windows — Ctrl / Alt'} 기준 · 입력창에 포커스가 있을 때는 동작하지 않습니다
             </p>
           </div>
-          <button onClick={close} className="text-zinc-500 hover:text-zinc-300 text-lg leading-none">×</button>
+          <button onClick={close} title="닫기"
+                  className="hit-target text-zinc-500 hover:text-zinc-300 text-lg leading-none">×</button>
         </div>
 
         <div className="grid gap-5 sm:grid-cols-2">

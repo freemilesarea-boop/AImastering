@@ -49,6 +49,26 @@ export interface LevelOptions {
   maxAdjustDb: number;
 }
 
+/**
+ * What a target loudness may be, for a UI that has to refuse something.
+ *
+ * The album panel's 목표 field had no bounds and no clamp: `Number('')` is 0,
+ * so clearing the field asked for 0 LUFS and every track was pinned at the
+ * +6 dB the model allows.  Bounded here rather than in the panel so the number
+ * the UI refuses and the number the model expects are the same number.
+ *
+ * -30 is quieter than any release and -5 louder than the loudest master
+ * anyone ships; outside that the user has mistyped, not chosen.
+ */
+export const TARGET_LUFS_MIN = -30;
+export const TARGET_LUFS_MAX = -5;
+
+/** Hold a typed target inside the range, or fall back when it is not a number. */
+export function clampTargetLufs(value: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(TARGET_LUFS_MIN, Math.min(TARGET_LUFS_MAX, value));
+}
+
 export const DEFAULT_LEVELS: LevelOptions = {
   mode: 'album', targetLufs: -14, ceilingDbtp: -1, maxAdjustDb: 6,
 };

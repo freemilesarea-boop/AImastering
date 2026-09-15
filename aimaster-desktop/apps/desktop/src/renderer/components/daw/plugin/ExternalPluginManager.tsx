@@ -74,6 +74,7 @@ export default function ExternalPluginManager({ onClose, onInsert }: {
         >{status === 'scanning' ? '스캔 중…' : '다시 스캔'}</button>
         <button
           onClick={onClose}
+          title="닫기"
           className="h-6 w-6 text-[13px] leading-none"
           style={{ color: premium.text.muted }}
         >×</button>

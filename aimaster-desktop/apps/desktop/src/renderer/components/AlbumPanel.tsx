@@ -27,6 +27,7 @@ import {
 } from '../daw/album/album.js';
 import {
   DEFAULT_LEVELS, LEVEL_LABELS, describeLevels, loudnessSpread, planLevels,
+  TARGET_LUFS_MIN, TARGET_LUFS_MAX, clampTargetLufs,
   type LevelMode, type TrackLoudness,
 } from '../daw/album/album-levels.js';
 import { toCueSheet, toPqLog } from '../daw/album/cue-sheet.js';
@@ -161,8 +162,11 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
           </select>
           <label style={{ fontSize: 11, color: premium.text.muted }}>목표</label>
           <input
-            type="number" step={0.5} value={targetLufs} style={{ ...field, width: 66 }}
-            onChange={(e) => setTargetLufs(Number(e.target.value))}
+            type="number" step={0.5}
+            min={TARGET_LUFS_MIN} max={TARGET_LUFS_MAX}
+            value={targetLufs} style={{ ...field, width: 66 }}
+            title={`앨범 목표 라우드니스 — ${TARGET_LUFS_MIN} ~ ${TARGET_LUFS_MAX} LUFS`}
+            onChange={(e) => setTargetLufs(clampTargetLufs(Number(e.target.value), targetLufs))}
             disabled={mode === 'off'}
           />
           <span style={{ fontSize: 11, color: premium.text.muted }}>LUFS</span>

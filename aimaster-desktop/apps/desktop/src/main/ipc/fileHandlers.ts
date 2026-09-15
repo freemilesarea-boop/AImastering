@@ -118,16 +118,6 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     return result.filePaths.slice(0, 20);
   });
 
-  // ── Generic save dialog (returns path only, no copy) ─────────────────
-  ipc.handle('file:save-dialog', async (_e, defaultName: string) => {
-    if (!win) return null;
-    const result = await dialog.showSaveDialog(win, {
-      defaultPath: defaultName,
-      filters: [{ name: 'WAV', extensions: ['wav'] }],
-    });
-    return result.canceled ? null : result.filePath;
-  });
-
   // ── Save WAV or MP3 — shows dialog, then copies from src ─────────────
   // Used by ResultPage for both WAV and MP3 export.
   ipc.handle('file:save-wav', async (_e, srcPath: unknown) => {
@@ -710,8 +700,6 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
   });
 
-  // ── Recent files (v1 stub) ────────────────────────────────────────────
-  ipc.handle('file:get-recent', () => []);
 
   // ── Session save / load (.louisession) ────────────────────────────────
 

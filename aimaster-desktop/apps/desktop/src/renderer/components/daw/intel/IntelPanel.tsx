@@ -527,6 +527,7 @@ function CommandTab() {
   const applyIt = useIntelStore((s) => s.applyInterpretation);
   const clearChat = useIntelStore((s) => s.clearChat);
   const vocab = useMemo(() => vocabulary(), []);
+  const notify = useAppStore((s) => s.notify);
   const [model, setModel] = useState<AssistantStatus>({ ok: false });
   const [keyDraft, setKeyDraft] = useState('');
 
@@ -535,11 +536,27 @@ function CommandTab() {
   }, []);
   useEffect(refreshStatus, [refreshStatus]);
 
+  /**
+   * Save the key and say what happened, in the app's own voice.
+   *
+   * This was the only `window.alert` left in the renderer — a native modal
+   * that stops the whole window, in an app that says everything else through
+   * the toast.  And the two branches it chose between did the SAME THING:
+   *
+   *   if (!result.ok && result.reason) window.alert(result.reason);
+   *   else if (result.reason)          window.alert(result.reason);
+   *
+   * `ok` is the part that was being thrown away.  `reason` on a successful
+   * save is not a failure — it is the note about the OS refusing to encrypt,
+   * so the key is held for this run only, which is a warning.  Without a key
+   * `reason` means the save failed.  Same string, different colour, and the
+   * difference is the thing the user needs.
+   */
   const saveKey = async (): Promise<void> => {
     const result = await setAssistantKey(keyDraft);
     setKeyDraft('');
-    if (!result.ok && result.reason) window.alert(result.reason);
-    else if (result.reason) window.alert(result.reason);
+    if (result.reason) notify(result.reason, result.ok ? 'warning' : 'error');
+    else if (result.ok) notify('키를 저장했습니다', 'success');
     refreshStatus();
   };
 

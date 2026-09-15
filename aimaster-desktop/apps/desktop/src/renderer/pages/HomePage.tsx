@@ -1182,6 +1182,9 @@ export default function HomePage() {
                 <button
                   onClick={handleOpenMulti}
                   disabled={isBatchRunning || queue.length >= MAX_QUEUE_SIZE}
+                  title={queue.length >= MAX_QUEUE_SIZE
+                    ? `큐가 가득 찼습니다 — 한 번에 최대 ${MAX_QUEUE_SIZE}곡`
+                    : isBatchRunning ? '처리 중에는 추가할 수 없습니다' : '파일 열기'}
                   className="no-drag px-3 rounded-xl border border-zinc-800 text-xs text-zinc-600
                              hover:border-zinc-700 hover:text-zinc-400 transition-colors
                              disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1194,6 +1197,12 @@ export default function HomePage() {
               <div className="flex items-center justify-between text-[11px]">
                 <span className="text-zinc-600">
                   {queue.length}곡
+                  {/* The two controls above go dead at the limit.  Greyed-out
+                      with no reason is the thing that makes people click
+                      twice and then wonder; this is the reason. */}
+                  {queue.length >= MAX_QUEUE_SIZE && (
+                    <span className="text-amber-600 ml-1.5">· 큐가 찼습니다 (최대 {MAX_QUEUE_SIZE}곡)</span>
+                  )}
                   {doneCount > 0 && (
                     <span className="text-emerald-500 ml-1.5">· {doneCount}곡 완료</span>
                   )}

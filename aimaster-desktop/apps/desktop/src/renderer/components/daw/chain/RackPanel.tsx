@@ -76,7 +76,8 @@ export default function RackPanel({
           <button onClick={() => setOpen((v) => !v)} style={pill}>
             {open ? '접기' : '열기'}
           </button>
-          <button onClick={onClose} style={{ ...pill, borderColor: 'transparent' }}>✕</button>
+          <button onClick={onClose} title="닫기"
+                  style={{ ...pill, borderColor: 'transparent' }}>×</button>
         </div>
 
         {/* Macros */}

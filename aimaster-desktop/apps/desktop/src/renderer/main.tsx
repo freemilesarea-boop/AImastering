@@ -50,6 +50,24 @@ import { useAudioStore as _audioStoreForDefaults } from './stores/audioStore.js'
   }
 }
 
+// Whether this machine can encode anything but WAV.  The main process has
+// computed this since the beginning and nothing ever asked; the first a user
+// heard of a missing FFmpeg was an export dying on a raw error message.  A
+// short delay so the warning lands after the window has drawn rather than
+// into a page that is still mounting.
+import { readFfmpegWarning } from './lib/ffmpeg-notice.js';
+import { useAppStore as _appStoreForFfmpeg } from './stores/appStore.js';
+{
+  const api = (window as Window & { electronAPI?: { invoke(c: string, ...a: unknown[]): Promise<unknown> } }).electronAPI;
+  if (api) {
+    setTimeout(() => {
+      void readFfmpegWarning((channel, ...args) => api.invoke(channel, ...args))
+        .then((warning) => { if (warning !== null) _appStoreForFfmpeg.getState().notify(warning, 'warning'); })
+        .catch(() => { /* an older main, or not Electron */ });
+    }, 2500);
+  }
+}
+
 // ── 시작 진단 로그 ─────────────────────────────────────────────────────────────
 // DevTools(Ctrl+Shift+I) 콘솔에서 이 로그로 preload 상태를 확인하세요.
 // eslint-disable-next-line no-console

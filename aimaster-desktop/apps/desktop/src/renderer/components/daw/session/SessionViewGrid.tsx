@@ -121,7 +121,7 @@ export default function SessionViewGrid() {
                   onClick={() => writeGrid(removeScene(grid, index))}
                   title="씬 삭제"
                   style={{ color: premium.text.faint, fontSize: 11, background: 'none', border: 'none' }}
-                >✕</button>
+                >×</button>
               </div>
             ))}
           </div>

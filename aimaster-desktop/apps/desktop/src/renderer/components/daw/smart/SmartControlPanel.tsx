@@ -141,7 +141,8 @@ export default function SmartControlPanel() {
             ))}
           </div>
 
-          <button onClick={() => close(null)} style={{ ...pillStyle, borderColor: 'transparent' }}>✕</button>
+          <button onClick={() => close(null)} title="닫기"
+                  style={{ ...pillStyle, borderColor: 'transparent' }}>×</button>
         </div>
 
         {/* ── Body ───────────────────────────────────────────────────── */}

@@ -20,7 +20,15 @@ const INVOKE_CHANNELS = [
   // rust-offline flag is ON (default).  Free parametric EQ bands flow
   // through here (Phase 3b).
   'audio:master-rust-experimental',
-  // License IPC channels (v3.6 — re-enabled for commercial release).
+  // License IPC channels.
+  //
+  // DORMANT, on purpose.  LICENSE_ENFORCED is false, so `canProcess` always
+  // answers paid and nothing counts a trial — see license-free-selftest, which
+  // holds both that the switch is off and that the machinery is still here to
+  // switch back on.  Only `license:status` and `license:activate` have a
+  // renderer caller today; the other five are the paid build's surface,
+  // registered so turning the switch back on is one word and not a hunt.
+  // Listed here rather than deleted for the same reason the service is.
   'license:status', 'license:can-process', 'license:get-remaining',
   'license:activate', 'license:deactivate', 'license:decrement-trial',
   'license:revalidate',
@@ -30,11 +38,17 @@ const INVOKE_CHANNELS = [
   'device:get-id',
   // Files
   'file:open-dialog', 'file:open-dialog-multi', 'file:open-dialog-midi',
-  'file:save-dialog', 'file:save-wav',
+  'file:save-wav',
   'file:batch-save-wav',
   // Save with transcode (M3-P-NEXT-5D-2-d) — separate from file:save-wav
   'file:save-audio',
-  'file:get-info', 'file:open-in-finder', 'file:get-recent',
+  // `file:get-info` has no caller yet: it is the validated stat() — absolute
+  // path, no null byte, regular file — that any future "how big is this"
+  // needs, and writing it a second time badly is the likelier outcome of
+  // deleting it.  `file:save-dialog` and `file:get-recent` used to sit here
+  // and were deleted instead: the first was a save dialog that could not
+  // honour the output directory, the second returned [].
+  'file:get-info', 'file:open-in-finder',
   // Settings
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // System
