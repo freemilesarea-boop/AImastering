@@ -19,6 +19,7 @@ import { resolvePreset } from '../../../daw/engine/plugin-presets.js';
 import type { PluginPreset } from '../../../daw/engine/plugin-presets.js';
 import { partitionGenre } from '../../../daw/engine/plugin-presets-genre.js';
 import { partitionInstrument } from '../../../daw/engine/plugin-presets-instrument.js';
+import { partitionVoice } from '../../../daw/engine/plugin-presets-voice.js';
 import {
   allPresetGroups, canSaveUserPreset, deleteUserPreset, exportUserPresets,
   importUserPresets, isUserPresetId, overwriteUserPreset, saveUserPreset, describeImport,
@@ -333,7 +334,10 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   // track" and the genre answers "what should the record sound like";
   // neither answers the other, so neither replaces the other.
   const { genre: genrePresets, rest: afterGenre } = partitionGenre(groups);
-  const { instrument: instrumentPresets, rest: menuGroups } = partitionInstrument(afterGenre);
+  const { instrument: instrumentPresets, rest: afterInstrument } = partitionInstrument(afterGenre);
+  // Two chips, and the narrowest question of the three: genre asks about the
+  // record, instrument about the track, this about who is singing.
+  const { voice: voicePresets, rest: menuGroups } = partitionVoice(afterInstrument);
   const loadPreset = (presetId: string): void => {
     const preset = groups.flatMap((g) => g.presets).find((entry) => entry.id === presetId);
     if (!preset) return;
@@ -548,6 +552,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             so they become places on the window rather than menus to search.
             Instrument first, because you know what is on the track before you
             know what you want it to become. */}
+        <ChipRow label="목소리" presets={voicePresets} loadedPreset={loadedPreset} onPick={loadPreset} />
         <ChipRow label="악기" presets={instrumentPresets} loadedPreset={loadedPreset} onPick={loadPreset} />
         <ChipRow label="장르" presets={genrePresets} loadedPreset={loadedPreset} onPick={loadPreset} />
 

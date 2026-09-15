@@ -36,6 +36,10 @@ import { GENRE_PRESETS } from './plugin-presets-genre.js';
 // RECORD sound like", this one answers "what is actually on this track".  Both
 // are on every device because neither answers the other.
 import { INSTRUMENT_PRESETS } from './plugin-presets-instrument.js';
+// The third axis.  Genre asks what the RECORD should sound like, instrument
+// asks what is on the track, and this one asks who is singing — which moves
+// every landmark by roughly an octave and so moves most of the numbers.
+import { VOICE_PRESETS } from './plugin-presets-voice.js';
 
 const S = spaceIndex;
 
@@ -304,7 +308,7 @@ const SOURCE_PRESETS: readonly PluginPreset[] = [
 ];
 
 export const PLUGIN_PRESETS: readonly PluginPreset[] = [
-  ...SOURCE_PRESETS, ...INSTRUMENT_PRESETS, ...GENRE_PRESETS,
+  ...SOURCE_PRESETS, ...VOICE_PRESETS, ...INSTRUMENT_PRESETS, ...GENRE_PRESETS,
 ];
 
 /** Presets for one device, in the order they are listed. */
