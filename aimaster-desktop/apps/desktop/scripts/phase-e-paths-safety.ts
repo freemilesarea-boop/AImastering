@@ -13,6 +13,8 @@
  *   pnpm --filter @aimaster/desktop test:phase-e-paths
  */
 
+import { readFileSync } from 'node:fs';
+import { devServerUrl, DEFAULT_DEV_SERVER } from '../src/main/utils/devServerUrl.js';
 import { toFileUrl, fromFileUrl } from '../src/renderer/utils/fileUrl.js';
 import { localUrlToFsPath } from '../src/main/utils/localFileUrl.js';
 import { resolveBundledFfmpegEnv } from '../src/main/utils/ffmpegEnv.js';
@@ -351,6 +353,65 @@ check('failureCounts: per-category rollup', () => {
 });
 
 // ── Print summary ──────────────────────────────────────────────────────────
+
+// ── The dev server URL, which decides what the dev window loads ─────────────
+
+check('devServerUrl: nothing asked for → the port the app has always used', () => {
+  eq(devServerUrl(undefined).origin, DEFAULT_DEV_SERVER, 'undefined');
+  eq(devServerUrl('').origin, DEFAULT_DEV_SERVER, 'empty');
+  eq(devServerUrl('   ').origin, DEFAULT_DEV_SERVER, 'whitespace');
+  assert(devServerUrl(undefined).rejected === undefined,
+    'asking for nothing is not a rejection worth logging');
+});
+
+check('devServerUrl: a loopback dev server is honoured, on any port', () => {
+  eq(devServerUrl('http://localhost:5199').origin, 'http://localhost:5199', 'localhost');
+  eq(devServerUrl('http://127.0.0.1:4000').origin, 'http://127.0.0.1:4000', '127.0.0.1');
+  // The whole point: this used to be ignored, and a dev server on 5199 was
+  // simply not what the window loaded.
+  assert(devServerUrl('http://localhost:5199').origin !== DEFAULT_DEV_SERVER,
+    'the override must actually change the URL');
+});
+
+check('devServerUrl: anything not a loopback http server is refused, with a reason', () => {
+  for (const bad of [
+    'http://example.com:5173',        // someone else's machine
+    'https://evil.test/',             // ditto, over TLS
+    'file:///etc/passwd',             // not even a server
+    'data:text/html,<script>0</script>',
+    'javascript:alert(1)',
+    'not a url at all',
+  ]) {
+    const choice = devServerUrl(bad);
+    eq(choice.origin, DEFAULT_DEV_SERVER, `refused ${bad}`);
+    assert(choice.rejected !== undefined && choice.rejected.includes(bad),
+      `${bad} must say why it was refused rather than vanish`);
+  }
+});
+
+check('devServerUrl: the start page rides along, escaped, exactly once', () => {
+  eq(devServerUrl(undefined, 'daw').origin, `${DEFAULT_DEV_SERVER}/?page=daw`, 'default host');
+  eq(devServerUrl('http://localhost:5199', 'daw').origin,
+    'http://localhost:5199/?page=daw', 'overridden host');
+  eq(devServerUrl(undefined, 'a b&c').origin,
+    `${DEFAULT_DEV_SERVER}/?page=a%20b%26c`, 'escaped');
+  // A path or query on the override would otherwise produce two `?`.
+  eq(devServerUrl('http://localhost:5199/?page=mix', 'daw').origin,
+    'http://localhost:5199/?page=daw', 'the override brings no query of its own');
+  eq(devServerUrl(undefined, '').origin, DEFAULT_DEV_SERVER, 'no page, no query');
+});
+
+check('the packaged branch cannot read either dev variable', () => {
+  // The guard that actually matters is the `isDev` branch in main/index.ts.
+  // Read as CODE: the file explains these variables in prose as well.
+  const main = readFileSync('src/main/index.ts', 'utf8');
+  const packaged = main.slice(main.indexOf('} else {', main.indexOf('if (isDev)')));
+  const body = packaged.slice(0, packaged.indexOf('\n}'));
+  for (const nope of ['VITE_DEV_SERVER_URL', 'LOUI_DEV_PAGE', 'loadURL']) {
+    assert(!body.includes(nope),
+      `the packaged branch reads ${nope} — it must only loadFile from the asar`);
+  }
+});
 
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;

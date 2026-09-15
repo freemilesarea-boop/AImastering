@@ -19,24 +19,22 @@
  * Run: pnpm --filter @aimaster/desktop test:aaf
  */
 
-import { readFileSync } from 'node:fs';
-import { compareNames, readCfb, writeCfb, CfbError } from '../src/renderer/daw/io/cfb.js';
-import type { CfbNode } from '../src/renderer/daw/io/cfb.js';
-import { readAaf, looksLikeAaf } from '../src/renderer/daw/io/aaf-read.js';
-import { writeAaf } from '../src/renderer/daw/io/aaf-write.js';
-import { OMF_REFUSAL, looksLikeOmf } from '../src/renderer/daw/io/omf.js';
-import { exportAaf, importAaf } from '../src/renderer/daw/io/aaf-actions.js';
+import { readFileSync} from 'node:fs';
+import { compareNames, readCfb, writeCfb} from '../src/renderer/daw/io/cfb.js';
+import type { CfbNode} from '../src/renderer/daw/io/cfb.js';
+import { readAaf, looksLikeAaf} from '../src/renderer/daw/io/aaf-read.js';
+import { writeAaf} from '../src/renderer/daw/io/aaf-write.js';
+import { OMF_REFUSAL, looksLikeOmf} from '../src/renderer/daw/io/omf.js';
+import { exportAaf, importAaf} from '../src/renderer/daw/io/aaf-actions.js';
 import {
-  interchangeFromSession, pathToUrl, sessionFromInterchange, urlToPath,
-} from '../src/renderer/daw/io/interchange.js';
-import type { InterchangeSession } from '../src/renderer/daw/io/interchange.js';
+  interchangeFromSession, pathToUrl, sessionFromInterchange, urlToPath,} from '../src/renderer/daw/io/interchange.js';
+import type { InterchangeSession} from '../src/renderer/daw/io/interchange.js';
 import {
   addFile, addTrack, createClip, createInsert, createSession, createTrack,
-  setInsert, trackClips, updateClips, updateTrack,
-} from '../src/renderer/daw/model/session-ops.js';
-import { createLane } from '../src/renderer/daw/model/automation.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import type { DawSession } from '../src/renderer/daw/model/types.js';
+  setInsert, trackClips, updateClips, updateTrack,} from '../src/renderer/daw/model/session-ops.js';
+import { createLane} from '../src/renderer/daw/model/automation.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import type { DawSession} from '../src/renderer/daw/model/types.js';
 
 const results: { name: string; pass: boolean }[] = [];
 function check(name: string, fn: () => void): void {

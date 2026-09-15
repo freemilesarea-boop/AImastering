@@ -48,10 +48,6 @@ export function getSource(fileId: FileId): PcmSource | undefined {
   return sources.get(fileId);
 }
 
-export function sourceCount(): number { return sources.size; }
-
-export function clearSources(): void { sources.clear(); pending.clear(); }
-
 /** True where main can decode for us - false in the Node self-tests. */
 export function canUseStore(): boolean {
   return (globalThis as unknown as { electronAPI?: Bridge }).electronAPI !== undefined;

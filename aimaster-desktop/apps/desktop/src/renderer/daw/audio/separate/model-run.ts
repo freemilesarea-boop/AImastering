@@ -46,6 +46,7 @@ import {
 } from './spectrum.js';
 import { stemLabel, type StemKind } from './stem-tree.js';
 import type { ModelDescriptor } from './model-registry.js';
+import { resampleChannels } from '../resample.js';
 
 /** The bit of onnxruntime this needs, named so it can be faked in a test. */
 export interface InferenceLike {
@@ -71,6 +72,9 @@ export interface ModelRunOptions {
   segmentFrames: number;
 }
 
+/** The DSP separator's threshold for "sure about this bin", reused verbatim. */
+const SURE_MASK = 0.8;
+
 export const DEFAULT_MODEL_RUN: ModelRunOptions = {
   stft: SEPARATION_STFT,
   segmentFrames: 512,
@@ -78,7 +82,20 @@ export const DEFAULT_MODEL_RUN: ModelRunOptions = {
 
 export interface ModelRunResult {
   /** One entry per stem the descriptor declares, in that order. */
-  stems: Array<{ kind: StemKind; channels: Float32Array[] }>;
+  stems: Array<{
+    kind: StemKind;
+    channels: Float32Array[];
+    /**
+     * Share of THIS stem's energy that came from a mask above 0.8.
+     *
+     * The same definition the DSP separator reports, computed the same way on
+     * the model's own masks — so the two numbers mean the same thing and the
+     * panel can draw them on one scale.  Making one up, or reporting 1.0
+     * because a model said so, would be the exact failure the stems panel is
+     * built around.
+     */
+    confidence: number;
+  }>;
   /** dB of `input − Σ children` against the input.  Measured, not asserted. */
   reconstructionDb: number;
   elapsedMs: number;
@@ -98,12 +115,26 @@ export async function runModel(
 ): Promise<ModelRunResult> {
   const started = Date.now();
   const opts: ModelRunOptions = { ...DEFAULT_MODEL_RUN, ...options };
-  const { fftSize, hopSize } = opts.stft;
+  const { fftSize } = opts.stft;
 
   if (channels.length === 0) throw new Error('오디오가 비어 있습니다');
-  if (sampleRate !== descriptor.sampleRate) {
-    throw new Error(`이 모델은 ${descriptor.sampleRate} Hz 로 학습됐는데 오디오는 ${sampleRate} Hz 입니다`
-      + ' — 리샘플러가 아직 없어서 거절합니다');
+
+  // Mask above which a bin counts as decided rather than split down the
+  // middle.  The DSP separator's number, so the two confidences compare.
+  const sureEnergy: number[] = [];
+  const stemEnergy: number[] = [];
+
+  // A model trained at 44.1 kHz used to REFUSE a 48 kHz session — which is
+  // every session this app makes by default, so the ONNX path was effectively
+  // closed.  Convert instead, and convert back at the end so the caller gets
+  // stems at the rate it asked about.  The round trip costs one pass of a
+  // windowed-sinc filter each way; refusing cost the whole feature.
+  const modelRate = descriptor.sampleRate;
+  const needsResample = sampleRate !== modelRate;
+  const fed = needsResample ? resampleChannels(channels, sampleRate, modelRate) : channels;
+  const workRate = modelRate;
+  if (needsResample) {
+    onProgress(0);
   }
   if (descriptor.channels !== 1 && descriptor.channels !== 2) {
     throw new Error(`모델이 ${descriptor.channels}채널을 요구합니다 — 모노나 스테레오만 됩니다`);
@@ -111,14 +142,14 @@ export async function runModel(
   const stemCount = descriptor.stems.length;
   if (stemCount === 0) throw new Error('모델이 스템을 하나도 선언하지 않았습니다');
 
-  const left = channels[0]!;
-  const right = channels[1] ?? left;
+  const left = fed[0]!;
+  const right = fed[1] ?? left;
   const length = left.length;
   if (length === 0) throw new Error('오디오가 비어 있습니다');
   // The model's channel count decides what it is fed; ours decides what comes
   // back out.  A mono model on a stereo stem is run once per channel.
   const modelStereo = descriptor.channels === 2;
-  const outChannels = channels.length === 2 ? 2 : 1;
+  const outChannels = fed.length === 2 ? 2 : 1;
   const bins = (fftSize >> 1) + 1;
 
   const denominator = denominatorFor(length, fftSize);
@@ -131,8 +162,8 @@ export async function runModel(
 
   for (let start = 0; start < total; start += opts.segmentFrames) {
     const stop = Math.min(total, start + opts.segmentFrames);
-    const specL = analyse(left, sampleRate, start, stop, opts.stft);
-    const specR = outChannels === 2 ? analyse(right, sampleRate, start, stop, opts.stft) : specL;
+    const specL = analyse(left, workRate, start, stop, opts.stft);
+    const specR = outChannels === 2 ? analyse(right, workRate, start, stop, opts.stft) : specL;
     const frames = specL.frames;
     if (frames === 0) break;
     const magL = magnitudes(specL);
@@ -166,6 +197,24 @@ export async function runModel(
       // Apply and accumulate immediately: holding every segment's masks is the
       // gigabyte this segmenting exists to avoid.
       const per = frames * bins;
+      // Confidence, on the way past.  The masks exist here and nowhere else,
+      // and walking them again later would mean keeping them.
+      for (let s = 0; s < stemCount; s++) {
+        for (let c = 0; c < feedChannels; c++) {
+          const mask = masks.data.subarray((s * feedChannels + c) * per, (s * feedChannels + c + 1) * per);
+          const mags = input.subarray(c * per, (c + 1) * per);
+          let stemTotal = 0;
+          let stemSure = 0;
+          for (let i = 0; i < per; i++) {
+            const m = mask[i] ?? 0;
+            const e = ((mags[i] ?? 0) * m) ** 2;
+            stemTotal += e;
+            if (m > SURE_MASK) stemSure += e;
+          }
+          stemEnergy[s] = (stemEnergy[s] ?? 0) + stemTotal;
+          sureEnergy[s] = (sureEnergy[s] ?? 0) + stemSure;
+        }
+      }
       for (let s = 0; s < stemCount; s++) {
         for (let c = 0; c < feedChannels; c++) {
           const outChannel = modelStereo ? c : pass;
@@ -186,9 +235,25 @@ export async function runModel(
   const stems = descriptor.stems.map((kind, s) => ({
     kind,
     channels: accumulators[s]!.map((acc) => acc.finish(denominator)),
+    confidence: (stemEnergy[s] ?? 0) > 0 ? (sureEnergy[s] ?? 0) / (stemEnergy[s] ?? 1) : 0,
   }));
+
+  // Reconstruction is measured at the WORKING rate, against the audio the
+  // model actually saw.  Measuring after the conversion back would fold the
+  // resampler's own error into a number that is supposed to describe the
+  // separation, and the two are not the same question.
   const input = outChannels === 2 ? [left, right] : [left];
-  return { stems, reconstructionDb: residualDb(input, stems), elapsedMs: Date.now() - started };
+  const reconstructionDb = residualDb(input, stems);
+
+  const out = needsResample
+    ? stems.map((stem) => ({
+        kind: stem.kind,
+        channels: resampleChannels(stem.channels, workRate, sampleRate),
+        confidence: stem.confidence,
+      }))
+    : stems;
+
+  return { stems: out, reconstructionDb, elapsedMs: Date.now() - started };
 }
 
 function checkShape(
@@ -233,11 +298,16 @@ function residualDb(
  * the same parent — a set that half-replaces a stem leaves the record's energy
  * counted twice in one place and not at all in another, and neither is visible
  * in a waveform.
+ *
+ * The children are the SAME shape as the stems they replace, deliberately: in
+ * a finished report every stem carries its measured energy share, confidence
+ * and peak, and a child arriving without them would draw as a blank bar next
+ * to siblings that have one.  The caller measures before it gets here.
  */
 export function expandStems<T extends { kind: StemKind; channels: Float32Array[] }>(
   stems: readonly T[], parent: StemKind,
-  children: ReadonlyArray<{ kind: StemKind; channels: Float32Array[] }>,
-): Array<T | { kind: StemKind; channels: Float32Array[] }> {
+  children: readonly T[],
+): T[] {
   const at = stems.findIndex((s) => s.kind === parent);
   if (at < 0) {
     throw new Error(`${stemLabel(parent)} 스템이 없는데 그 자식을 넣으려 했습니다`);

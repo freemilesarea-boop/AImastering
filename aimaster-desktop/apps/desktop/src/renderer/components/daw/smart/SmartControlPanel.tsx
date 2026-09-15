@@ -14,6 +14,7 @@
 // reads, so the numbers on screen are literally the numbers being rendered.
 
 import React, { useMemo, useState } from 'react';
+import { LAYER } from '../../../theme/layers.js';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { findTrack, updateTrack } from '../../../daw/model/session-ops.js';
@@ -59,8 +60,8 @@ export default function SmartControlPanel() {
 
   return (
     <div
-      className="fixed inset-0 z-[8500] flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.66)', backdropFilter: 'blur(6px)' }}
+      className="fixed inset-0 flex items-center justify-center"
+      style={{ zIndex: LAYER.scrim + 500, background: 'rgba(0,0,0,0.66)', backdropFilter: 'blur(6px)' }}
       onClick={() => close(null)}
     >
       <div
@@ -90,7 +91,7 @@ export default function SmartControlPanel() {
               letterSpacing: '0.02em',
               color: premium.accent.light,
               lineHeight: 1.1,
-            }}>Smart Controls</p>
+            }}>스마트 컨트롤</p>
             <p style={{
               fontFamily: premium.type.sans, fontSize: 11, color: premium.text.muted,
             }} className="truncate">{track.name}</p>
@@ -140,7 +141,8 @@ export default function SmartControlPanel() {
             ))}
           </div>
 
-          <button onClick={() => close(null)} style={{ ...pillStyle, borderColor: 'transparent' }}>✕</button>
+          <button onClick={() => close(null)} title="닫기"
+                  style={{ ...pillStyle, borderColor: 'transparent' }}>×</button>
         </div>
 
         {/* ── Body ───────────────────────────────────────────────────── */}

@@ -234,22 +234,3 @@ export class PreviewPlayer {
     this.buf = null;
   }
 }
-
-// ── High-level helper ────────────────────────────────────────────────────────
-
-/**
- * Convenience: slice + process + play in one call.  Returns the
- * processed slice as well so callers can show metrics / waveforms.
- */
-export async function startPreview(
-  player: PreviewPlayer,
-  audioBuffer: AudioBufferLike,
-  startTime: number,
-  options: PreviewSegmentOptions = {},
-): Promise<AudioBufferLike> {
-  const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  const processed = previewSegment(audioBuffer, startTime, options);
-  const elapsed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
-  await player.loadAndPlay(processed, elapsed);
-  return processed;
-}

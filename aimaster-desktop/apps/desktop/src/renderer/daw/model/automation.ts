@@ -89,10 +89,6 @@ export function laneKey(trackId: string, target: AutomationTarget): string {
   return `${trackId}|${targetKey(target)}`;
 }
 
-export function sameTarget(a: AutomationTarget, b: AutomationTarget): boolean {
-  return targetKey(a) === targetKey(b);
-}
-
 /** The lane on this track for a target, if it has one yet. */
 export function findLane(
   lanes: readonly AutomationLane[], target: AutomationTarget,
@@ -199,13 +195,6 @@ export function insertPoint(
 ): AutomationLane {
   const kept = lane.points.filter((p) => Math.abs(p.timeSec - point.timeSec) > snapSec);
   return { ...lane, points: sortPoints([...kept, point]) };
-}
-
-export function removePointsInRange(
-  lane: AutomationLane, startSec: number, endSec: number,
-): AutomationLane {
-  const points = lane.points.filter((p) => p.timeSec < startSec - EPS || p.timeSec > endSec + EPS);
-  return points.length === lane.points.length ? lane : { ...lane, points };
 }
 
 /**

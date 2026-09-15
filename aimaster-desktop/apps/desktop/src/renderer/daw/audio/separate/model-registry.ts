@@ -181,3 +181,58 @@ export function unreachable(report: ModelReport): { stems: StemKind[]; why: stri
 /** Where a model can be installed, in the order they are tried. */
 export const MODEL_FOLDER = 'stem-models';
 export const DESCRIPTOR_NAME = 'model.json';
+
+/**
+ * Whether a separation RUN can use a model that is installed.
+ *
+ * It can, now.  The route was measured before it was built, and the
+ * measurement corrected an earlier claim in this file that turned out to be
+ * true in its premise and wrong in its conclusion:
+ *
+ *   CLAIMED.  The separator runs in a classic Blob worker, the runtime loader
+ *   hides its specifier so `onnxruntime-web` stays a runtime `import()` of a
+ *   bare name, and a classic worker cannot resolve one.  Therefore dispatch
+ *   needs a module worker or the runtime in the main process.
+ *
+ *   MEASURED.  Both premises hold.  The answer was neither: stop needing
+ *   module resolution.  `onnxruntime-web/wasm` bundles to a classic IIFE — the
+ *   whole model worker is 83 KB — and `env.wasm.wasmBinary` takes the 12.86 MB
+ *   runtime as BYTES, which ONNX documents as making `wasmPaths` irrelevant.
+ *   Nothing is fetched, so `file://` never comes into it.
+ *
+ *   Run end to end in a real `file://` document with no SharedArrayBuffer:
+ *   session created in 492 ms, inference in 9 ms.
+ *
+ * This stays a constant rather than a comment because the panel prints it and
+ * `model-install-selftest` holds it against whether anything actually calls
+ * `runModel` — so it cannot drift away from the truth in either direction.
+ */
+export const MODEL_DISPATCH_READY = true;
+
+/**
+ * The report as the RUN sees it, rather than as the folder does.
+ *
+ * `buildReport` answers "what is installed and valid", which is the right
+ * question for the install list and the wrong one for the stem picker.  Until
+ * dispatch exists, a validated model adds nothing a separation can produce,
+ * and a panel that quietly stopped saying "needs a model" the moment a file
+ * appeared on disk would be promising a stem it cannot deliver.
+ */
+export function runnableReport(report: ModelReport): ModelReport {
+  if (MODEL_DISPATCH_READY) return report;
+  return { ...report, available: [...DSP_STEMS] };
+}
+
+/** One line about the install, separate from what the run can do with it. */
+export function describeInstall(report: ModelReport, root: string): string {
+  if (report.model === null) {
+    return report.tried.length === 0
+      ? `설치된 분리 모델이 없습니다 — ${root} 아래에 폴더를 만들고 model.json 과 가중치를 넣으세요`
+      : `${root} 에서 ${report.tried.length}곳을 확인했지만 쓸 수 있는 모델이 없습니다`;
+  }
+  const licence = report.model.commercialUse ? '상업 사용 가능' : '비상업 라이선스';
+  const runs = MODEL_DISPATCH_READY
+    ? '분리에 사용됩니다'
+    : '검증은 통과했지만 분리 실행은 아직 이 모델을 쓰지 않습니다';
+  return `${report.model.name} · ${report.model.stems.length}개 스템 · ${licence} — ${runs}`;
+}

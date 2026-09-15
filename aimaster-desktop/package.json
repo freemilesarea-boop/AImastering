@@ -1,6 +1,6 @@
 {
   "name": "aimaster-desktop-monorepo",
-  "version": "3.6.1",
+  "version": "3.7.0",
   "private": true,
   "packageManager": "pnpm@9.0.0",
   "scripts": {
@@ -10,7 +10,9 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "clean": "turbo run clean",
-    "desktop": "pnpm --filter @aimaster/desktop dev"
+    "desktop": "pnpm --filter @aimaster/desktop dev",
+    "setup:python": "bash setup-python.sh",
+    "fix:electron": "bash scripts/fix-electron.sh"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^7.0.0",

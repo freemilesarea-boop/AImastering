@@ -25,22 +25,17 @@
 
 import {
   learnNoiseProfile, reduceNoise, reduceNoiseChannels, denoiseSpectrogram,
-  frameGains, profileFloorDb, profileBands, MIN_PROFILE_FRAMES,
-} from '../src/renderer/daw/audio/noise-reduction.js';
+  frameGains, profileFloorDb, profileBands, MIN_PROFILE_FRAMES,} from '../src/renderer/daw/audio/noise-reduction.js';
 import {
   detectClicks, repairClicks, declick, declickChannels, secondDifference,
-  lpcCoefficients, lpcFromSegments, interpolateGap,
-} from '../src/renderer/daw/audio/declick.js';
-import { stft, istft } from '../src/renderer/daw/audio/stft.js';
+  lpcCoefficients, interpolateGap,} from '../src/renderer/daw/audio/declick.js';
+import { stft, istft} from '../src/renderer/daw/audio/stft.js';
 import {
-  detectClipping, declip, declipChannels, clippingRatio, describeClipping,
-} from '../src/renderer/daw/audio/declip.js';
+  detectClipping, declip, declipChannels, clippingRatio, describeClipping,} from '../src/renderer/daw/audio/declip.js';
 import {
-  detectHum, removeHum, removeHumChannels, describeHum, NOMINAL_HUM,
-} from '../src/renderer/daw/audio/dehum.js';
+  detectHum, removeHum, removeHumChannels, describeHum, NOMINAL_HUM,} from '../src/renderer/daw/audio/dehum.js';
 import {
-  estimateReverbTime, dereverb, dereverbChannels, describeReverb,
-} from '../src/renderer/daw/audio/dereverb.js';
+  estimateReverbTime, dereverb, dereverbChannels, describeReverb,} from '../src/renderer/daw/audio/dereverb.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];

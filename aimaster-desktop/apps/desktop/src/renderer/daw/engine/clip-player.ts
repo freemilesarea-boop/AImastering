@@ -9,13 +9,13 @@
 // gainDb, fade curves ramped at the clip edges.  That is exactly the
 // pre-fader, pre-insert position clip gain occupies in Pro Tools.
 
-import { clipEnd, findTrack, trackClips } from '../model/session-ops.js';
+import { clipEnd, trackClips } from '../model/session-ops.js';
 import { scheduleShiftSec } from '../model/track-delay.js';
 import { laneKey, pluginParamKey, pointValueAt } from '../model/automation.js';
 import { isLiveAutomation } from './automation-live.js';
 import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
 import type {
-  AutomationTarget, Clip, DawSession, Fade, Track, TrackId,
+  AutomationTarget, Clip, DawSession, Fade, Track,
 } from '../model/types.js';
 import type { MidiNote } from '../model/midi.js';
 import { getCached, loadAudio, preloadAll } from './audio-cache.js';
@@ -24,8 +24,12 @@ import {
   createStreamVoice, ensureStreamRuntime, streamRuntimeReady, type StreamVoice,
 } from './stream-voice.js';
 import { ensureWarpedBufferForSession, prepareWarpsForSession } from './warp-render.js';
-import { clipWarp } from '../model/warp.js';
+
+import { needsRender } from './warp-render.js';
 import { clipNotes } from '../model/patterns.js';
+import { drumMapFor } from '../model/drum-map-session.js';
+import { playedNotes } from '../model/drum-map-play.js';
+import { insertedNotes, midiInsertsOf } from '../model/midi-insert-track.js';
 import { findCoverage } from '../model/macro-automation.js';
 import type { MacroId } from '../model/macros.js';
 import { noteSpan, partClock } from '../model/note-time.js';
@@ -239,7 +243,15 @@ export class ClipPlayer {
 
     // Pattern-backed clips carry no notes of their own — resolve the link so
     // every placement of a pattern plays the one copy of the phrase.
-    for (const note of clipNotes(session, clip)) {
+    //
+    // The part goes through the track's MIDI inserts, then its drum kit.
+    //
+    // Inserts first because they are ABOUT the notes as written — an arp is
+    // arpeggiating what the player wrote — while the kit is about which sound
+    // each pitch reaches.  Both leave the stored part alone, which is what
+    // lets the editor keep showing what was actually played.
+    const inserted = insertedNotes(midiInsertsOf(track), clipNotes(session, clip));
+    for (const note of playedNotes(drumMapFor(session, track), inserted.notes)) {
       if (note.muted) continue;
       const span = noteSpan(clock, note);
       // The clock reads the tempo map at the note's REAL position, and the
@@ -335,7 +347,7 @@ export class ClipPlayer {
     // A warped clip plays its rendered buffer, which already starts at the
     // clip's first sample — so the read offset is the skip alone.  Warping
     // produces the buffer up front, so those clips are never streamed.
-    const warped = clipWarp(clip) ? ensureWarpedBufferForSession(ctx, clip, session) : null;
+    const warped = needsRender(clip) ? ensureWarpedBufferForSession(ctx, clip, session) : null;
 
     // Prefer streaming: a track that plays off disk costs a two-second ring
     // instead of its whole length in memory, which is the difference between
@@ -427,6 +439,7 @@ export class ClipPlayer {
    */
   private paramNameOf(target: AutomationTarget): string {
     if (target.kind === 'sendLevel') return `send:${target.sendId}`;
+    if (target.kind === 'sendPan') return `sendPan:${target.sendId}`;
     if (target.kind === 'plugin') return pluginParamKey(target.insertId, target.paramId);
     if (target.kind === 'macro') return `macro:${target.macroId}`;
     return target.kind;
@@ -465,7 +478,16 @@ export class ClipPlayer {
           const node = channel.sends.get(lane.target.sendId);
           if (!node) continue;
           this.engine.markAutomated(track.id, `send:${lane.target.sendId}`);
-          this.rampParam(node.gain, lane.points, fromSec, toSec, (db) => dbToGain(db));
+          this.rampParam(node.gain.gain, lane.points, fromSec, toSec, (db) => dbToGain(db));
+        } else if (lane.target.kind === 'sendPan') {
+          // New here only because the send had nowhere to put a pan until it
+          // grew a panner.  Same ramp, same clock, same code as the channel
+          // pan, so a bounce reproduces the sweep that was monitored.
+          const node = channel.sends.get(lane.target.sendId);
+          if (!node) continue;
+          this.engine.markAutomated(track.id, `sendPan:${lane.target.sendId}`);
+          this.rampParam(node.panner.pan, lane.points, fromSec, toSec,
+            (v) => Math.max(-1, Math.min(1, v)));
         } else if (lane.target.kind === 'plugin') {
           // A plugin parameter is not a fader, but the ones offered as lanes
           // ARE single AudioParams — so they take the same ramp, on the same
@@ -580,11 +602,4 @@ export class ClipPlayer {
     }
     this.noteVoices = aliveNotes;
   }
-}
-
-/** Total playable length of a track's clips — used for bounce bounds. */
-export function trackEndSec(session: DawSession, trackId: TrackId): number {
-  const track: Track | undefined = findTrack(session, trackId);
-  if (!track) return 0;
-  return trackClips(track).reduce((max, c) => Math.max(max, clipEnd(c)), 0);
 }

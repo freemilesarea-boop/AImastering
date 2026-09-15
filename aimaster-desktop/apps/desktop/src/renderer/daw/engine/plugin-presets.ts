@@ -28,10 +28,18 @@ export interface PluginPreset {
 // Space indices are looked up by id so reordering the catalogue cannot
 // silently repoint every preset at the wrong room.
 import { spaceIndex } from './reverb-spaces.js';
+// The genre set lives in its own file — it is organised by RECORD rather than
+// by source, and it is ten times as long as this one.  Same shape, appended so
+// every device's menu shows both.
+import { GENRE_PRESETS } from './plugin-presets-genre.js';
+// The instrument set is the other axis: the genre set answers "what should the
+// RECORD sound like", this one answers "what is actually on this track".  Both
+// are on every device because neither answers the other.
+import { INSTRUMENT_PRESETS } from './plugin-presets-instrument.js';
 
 const S = spaceIndex;
 
-export const PLUGIN_PRESETS: readonly PluginPreset[] = [
+const SOURCE_PRESETS: readonly PluginPreset[] = [
   // ── Space Reverb · 보컬 ───────────────────────────────────────────────────
   {
     id: 'space-vox-lead', pluginId: 'spacereverb', name: '리드 보컬 홀', group: '보컬',
@@ -295,6 +303,10 @@ export const PLUGIN_PRESETS: readonly PluginPreset[] = [
   },
 ];
 
+export const PLUGIN_PRESETS: readonly PluginPreset[] = [
+  ...SOURCE_PRESETS, ...INSTRUMENT_PRESETS, ...GENRE_PRESETS,
+];
+
 /** Presets for one device, in the order they are listed. */
 export function presetsFor(pluginId: string): PluginPreset[] {
   return PLUGIN_PRESETS.filter((preset) => preset.pluginId === pluginId);
@@ -309,10 +321,6 @@ export function presetGroups(pluginId: string): Array<{ group: string; presets: 
     else out.push({ group: preset.group, presets: [preset] });
   }
   return out;
-}
-
-export function findPreset(id: string): PluginPreset | undefined {
-  return PLUGIN_PRESETS.find((preset) => preset.id === id);
 }
 
 /**

@@ -707,10 +707,14 @@
   }
 
   // src/renderer/daw/audio/separate/percussive.ts
+  var CYMBAL_REGISTER_AT = 0.01;
   var DEFAULT_DRUM_CREDIT = {
     doubt: 0.5,
     full: 0.08,
-    floorFrames: 24
+    floorFrames: 24,
+    cymbalFloorFrames: 24,
+    cymbalRegisterAt: CYMBAL_REGISTER_AT,
+    cymbalFloorStrength: 0.5
   };
   function subBinCount(kickTemplate, bins) {
     let last = 0;
@@ -731,6 +735,27 @@
       }
     }
   }
+  function cymbalBinStart(cymbalTemplate, bins, atLeast = CYMBAL_REGISTER_AT) {
+    for (let b = 0; b < bins; b++) if ((cymbalTemplate[b] ?? 0) >= atLeast) return b;
+    return bins;
+  }
+  function cymbalExcess(out, magnitude, frames, bins, fromBin, options = DEFAULT_DRUM_CREDIT) {
+    const width = Math.max(1, options.cymbalFloorFrames ?? DEFAULT_DRUM_CREDIT.cymbalFloorFrames ?? 48);
+    const highBins = Math.max(0, bins - fromBin);
+    if (highBins === 0) return;
+    const scratch = new Float32Array(width + 1);
+    const column = new Float32Array(frames);
+    const floor = new Float32Array(frames);
+    for (let b = fromBin; b < bins; b++) {
+      for (let f = 0; f < frames; f++) column[f] = magnitude[f * bins + b] ?? 0;
+      runningMedian(column, floor, 0, frames, 1, width, scratch);
+      const k = b - fromBin;
+      for (let f = 0; f < frames; f++) {
+        const m = column[f] ?? 0;
+        out[f * highBins + k] = m > 0 ? Math.max(0, 1 - (floor[f] ?? 0) / m) : 0;
+      }
+    }
+  }
   function evidenceAt(above, templates, parts, bin, full) {
     let raw = 0;
     for (const part of parts) raw += (above[part] ?? 0) * (templates[part][bin] ?? 0);
@@ -746,8 +771,9 @@
     }
     return out;
   }
-  function drumCredit(out, harmonic, presence, templates, frames, bins, options = DEFAULT_DRUM_CREDIT, excess = null, subBins = 0) {
+  function drumCredit(out, harmonic, presence, templates, frames, bins, options = DEFAULT_DRUM_CREDIT, excess = null, subBins = 0, cymbal = null, cymbalFrom = 0) {
     const { doubt, full } = options;
+    const strength = options.cymbalFloorStrength ?? DEFAULT_DRUM_CREDIT.cymbalFloorStrength ?? 1;
     const floor = options.presenceFloor ?? DEFAULT_DRUMS.presenceFloor;
     const coverage = templateCoverage(templates, bins);
     const above = { kick: 0, snare: 0, toms: 0, cymbals: 0 };
@@ -762,7 +788,11 @@
       for (let b = 0; b < bins; b++) {
         const i = base + b;
         const h = harmonic[i] ?? 0;
-        const e = any > 0 ? evidenceAt(above, templates, DRUM_PARTS, b, full) : 0;
+        let e = any > 0 ? evidenceAt(above, templates, DRUM_PARTS, b, full) : 0;
+        if (cymbal !== null && b >= cymbalFrom) {
+          const above0 = cymbal[f * (bins - cymbalFrom) + (b - cymbalFrom)] ?? 0;
+          e *= 1 - strength + strength * above0;
+        }
         let kick = any > 0 ? evidenceAt(above, templates, KICK_ONLY, b, full) : 0;
         if (excess !== null && b < subBins) {
           const measured = (excess[f * subBins + b] ?? 0) * (templates.kick[b] ?? 0);
@@ -1164,6 +1194,11 @@
     }
     const templates = drumTemplates((fftSize >> 1) + 1, fftSize, sampleRate);
     const subBins = subBinCount(templates.kick, (fftSize >> 1) + 1);
+    const cymbalFrom = cymbalBinStart(
+      templates.cymbals,
+      (fftSize >> 1) + 1,
+      creditOpts.cymbalRegisterAt
+    );
     let drumOnsets = 0;
     let voicesInformative = false;
     const chunks = Math.max(1, Math.ceil(total / opts.chunkFrames));
@@ -1202,6 +1237,9 @@
       const credit = new Float32Array(frames * bins);
       const percussiveMag = new Float32Array(frames * bins);
       const excess = new Float32Array(frames * Math.max(1, subBins));
+      const cymbalWidth = Math.max(0, bins - cymbalFrom);
+      const useCymbalFloor = (creditOpts.cymbalFloorFrames ?? 0) > 0 && cymbalWidth > 0;
+      const cymbalHigh = useCymbalFloor ? new Float32Array(frames * cymbalWidth) : null;
       const kitMask = wantsDrumParts ? {
         kick: new Float32Array(frames * bins),
         snare: new Float32Array(frames * bins),
@@ -1227,6 +1265,7 @@
         );
         if (c === 0) drumOnsets += kit.onsets;
         if (subBins > 0) kickExcess(excess, mag, frames, bins, subBins, creditOpts);
+        if (cymbalHigh) cymbalExcess(cymbalHigh, mag, frames, bins, cymbalFrom, creditOpts);
         drumCredit(
           credit,
           harmonic,
@@ -1236,7 +1275,9 @@
           bins,
           creditOpts,
           subBins > 0 ? excess : null,
-          subBins
+          subBins,
+          cymbalHigh,
+          cymbalFrom
         );
         for (let i = 0; i < frames * bins; i++) {
           sustainedMag[i] = (1 - (credit[i] ?? 0)) * (mag[i] ?? 0);

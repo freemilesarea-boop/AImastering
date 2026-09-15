@@ -15,6 +15,8 @@ import {
   activePlaylist, clipEnd, createClip, sortClips, trackClips, updateClips, findTrack,
 } from '../model/session-ops.js';
 import type { Clip, ClipId, DawSession, Fade, TrackId } from '../model/types.js';
+import { withFade, type FadeSide } from '../model/clip-fade.js';
+import { clipPitch, withClipPitch } from '../model/clip-pitch.js';
 import { nextId } from '../model/ids.js';
 
 /** An edit selection: a time range across one or more tracks. */
@@ -60,17 +62,28 @@ export function separateAt(session: DawSession, trackIds: TrackId[], timeSec: nu
   return out;
 }
 
-/** Split one clip at an absolute timeline position.  Fades follow the edges. */
+/**
+ * Split one clip at an absolute timeline position.  Fades follow the edges.
+ *
+ * A clip that had a chain rendered into it loses its `regionFx` here, and the
+ * audio is untouched by that: the halves still point at the rendered file.
+ * What goes is the offer to revert, and it has to go — `original` describes
+ * the WHOLE clip, so carrying it onto a half would make "되돌리기" replace a
+ * two-second piece with the full-length source.  In `keep` mode the clip is
+ * even longer than its original, so there is no honest way to narrow it
+ * either.
+ */
 export function splitClip(clip: Clip, timeSec: number): [Clip, Clip] {
   const headDuration = timeSec - clip.startSec;
+  const { regionFx: _dropped, ...plain } = clip;
   const head: Clip = {
-    ...clip,
+    ...plain,
     id: nextId('clip'),
     durationSec: headDuration,
     fadeOut: { durationSec: 0, shape: clip.fadeOut.shape },
   };
   const tail: Clip = {
-    ...clip,
+    ...plain,
     id: nextId('clip'),
     startSec: timeSec,
     offsetSec: clip.offsetSec + headDuration,
@@ -218,10 +231,6 @@ export function clearRange(session: DawSession, sel: TimeSelection, ripple = fal
   return out;
 }
 
-export function deleteClip(session: DawSession, trackId: TrackId, clipId: ClipId): DawSession {
-  return updateClips(session, trackId, (clips) => clips.filter((c) => c.id !== clipId));
-}
-
 // ── Move / nudge / slip ───────────────────────────────────────────────────────
 
 export function moveClip(session: DawSession, trackId: TrackId, clipId: ClipId, toSec: number): DawSession {
@@ -294,20 +303,62 @@ export function setClipGain(session: DawSession, sel: TimeSelection, db: number)
   return mapSelectedClips(session, sel, (c) => ({ ...c, gainDb: clampClipGain(db) }));
 }
 
+/**
+ * Set the gain of ONE clip.
+ *
+ * `setClipGain` works on a selection, which is the wrong shape for a mouse:
+ * the person is riding the line on one specific clip and has selected
+ * nothing — the same reason `setClipFade` exists beside `setFades`.
+ */
+export function setOneClipGain(
+  session: DawSession, trackId: TrackId, clipId: ClipId, db: number,
+): DawSession {
+  return updateClips(session, trackId, (clips) => {
+    let touched = false;
+    const next = clips.map((c) => {
+      if (c.id !== clipId) return c;
+      touched = true;
+      return { ...c, gainDb: clampClipGain(db) };
+    });
+    return touched ? next : clips;
+  });
+}
+
 /** Nudge clip gain (Pro Tools uses ±0.5 dB, ±1 dB with a modifier). */
 export function nudgeClipGain(session: DawSession, sel: TimeSelection, deltaDb: number): DawSession {
   return mapSelectedClips(session, sel, (c) => ({ ...c, gainDb: clampClipGain(c.gainDb + deltaDb) }));
 }
 
-export function setFades(
-  session: DawSession, sel: TimeSelection,
-  fadeIn: Fade | null, fadeOut: Fade | null,
+/**
+ * Nudge the transpose of every clip in the selection.
+ *
+ * The audio counterpart of `daw.transposeUp`, which has always been MIDI
+ * only.  Held to the range the render survives, in the model rather than
+ * here, so a session file with a wild number reads back the same way.
+ */
+export function nudgeClipPitch(session: DawSession, sel: TimeSelection, deltaSemitones: number): DawSession {
+  return mapSelectedClips(session, sel, (c) => (
+    c.kind === 'audio' ? withClipPitch(c, clipPitch(c) + deltaSemitones) : c
+  ));
+}
+
+/** Put every selected clip back to its original pitch. */
+export function resetClipPitch(session: DawSession, sel: TimeSelection): DawSession {
+  return mapSelectedClips(session, sel, (c) => (c.kind === 'audio' ? withClipPitch(c, 0) : c));
+}
+
+/**
+ * Set one fade on one clip.
+ *
+ * `setFades` works on a SELECTION, which is the wrong shape for a mouse: the
+ * person is pulling the corner of one specific clip and has selected nothing.
+ */
+export function setClipFade(
+  session: DawSession, trackId: TrackId, clipId: ClipId, side: FadeSide, fade: Fade,
 ): DawSession {
-  return mapSelectedClips(session, sel, (c) => ({
-    ...c,
-    ...(fadeIn  ? { fadeIn }  : {}),
-    ...(fadeOut ? { fadeOut } : {}),
-  }));
+  return updateClips(session, trackId, (clips) => mapClips(clips, (c) => (
+    c.id === clipId ? withFade(c, side, fade) : c
+  )));
 }
 
 /**
@@ -413,6 +464,25 @@ export function selectionToClipBounds(session: DawSession, sel: TimeSelection): 
   }
   if (!Number.isFinite(start) || !Number.isFinite(end)) return sel;
   return { ...sel, startSec: start, endSec: end };
+}
+
+/**
+ * The inclusive run of tracks between two rows, in screen order.
+ *
+ * What a marquee actually selects.  Dragging from the third track up to the
+ * first has to give the same three tracks as dragging back down, so the band
+ * is taken between the two positions rather than from the anchor forwards —
+ * and an id that is not on screen (a collapsed stack member) yields just the
+ * anchor rather than an empty selection that looks like the drag did nothing.
+ */
+export function trackBand(
+  order: readonly TrackId[], fromId: TrackId, toId: TrackId,
+): TrackId[] {
+  const from = order.indexOf(fromId);
+  const to = order.indexOf(toId);
+  if (from < 0) return [];
+  if (to < 0) return [fromId];
+  return order.slice(Math.min(from, to), Math.max(from, to) + 1);
 }
 
 /** All clip edges on the given tracks, sorted — used by boundary navigation. */

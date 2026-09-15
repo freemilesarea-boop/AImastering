@@ -78,6 +78,7 @@ export function LoudnessMeterPanel(props: Props) {
     integratedLufs: -Infinity,
     truePeakDbtp:   -Infinity,
     perChannelTpDb: [],
+    loudnessRange:  0,
     durationSec:    0,
     blocksAnalyzed: 0,
   });

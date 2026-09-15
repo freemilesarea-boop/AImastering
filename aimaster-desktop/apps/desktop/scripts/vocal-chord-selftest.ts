@@ -19,26 +19,23 @@
  * Run: pnpm --filter @aimaster/desktop test:vocal-chord
  */
 
+import { readFileSync } from 'node:fs';
 import {
   bakeSegment, bakeSegments, correctedLine, describeSegment, editedPitch,
-  findClipSegments, hasPendingEdits, isEdited, mapSegments, moveToPitch,
+  findClipSegments, isEdited, mapSegments, moveToPitch,
   nudgeCents, patchSegment, performanceLine, pitchName, pitchRange,
-  resetSegment, segmentAt, segmentsInSpan, tuningErrorCents,
-} from '../src/renderer/daw/edit/vocal-edit.js';
+  resetSegment, segmentAt, segmentsInSpan, tuningErrorCents,} from '../src/renderer/daw/edit/vocal-edit.js';
 import {
   MIN_CHORD_GAP_SEC, addChord, chordGrid, chordRanges, describeChords,
   moveChord, parseChordInput, removeChord, setChord, shiftChords, sortedChords,
-  transposeChords, withChords,
-} from '../src/renderer/daw/edit/chord-edit.js';
+  transposeChords, withChords,} from '../src/renderer/daw/edit/chord-edit.js';
 import {
-  NEUTRAL_EDIT, targetPitchAt, curveCentsAt, type VariSegment,
-} from '../src/renderer/daw/audio/pitch-analysis.js';
-import { formatChord, makeChord, parseChord } from '../src/renderer/daw/model/chords.js';
+  NEUTRAL_EDIT, targetPitchAt, curveCentsAt, type VariSegment,} from '../src/renderer/daw/audio/pitch-analysis.js';
+import { formatChord, makeChord, parseChord} from '../src/renderer/daw/model/chords.js';
 import {
-  addTrack, createClip, createSession, createTrack, updateClips,
-} from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import type { DawSession, TrackId, ClipId } from '../src/renderer/daw/model/types.js';
+  addTrack, createClip, createSession, createTrack, updateClips,} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import type { DawSession, TrackId, ClipId} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -439,6 +436,45 @@ check('an edited segment says it moved', () => {
 });
 
 // ── Report ────────────────────────────────────────────────────────────────────
+
+// ── The lane header has to FIT in the track column ──────────────────────────
+
+check('the chord lane header does not assume the width of the arrangement', () => {
+  // Measured in the running app: the header row wanted 270 px inside a 167 px
+  // track-header column.  It had a `flex-1` spacer in it — the idiom for
+  // pushing actions to a right edge — and there is no right edge here, so the
+  // spacer collapsed and `overflow: visible` painted 파트 / 오디오에서 / 8마디
+  // / + straight over the lane's own chip strip.  `elementFromPoint` at each
+  // of their centres returned the chips: four of the seven chord-track actions
+  // could not be clicked at all.
+  //
+  // Nothing in the suite could have caught it.  There is no DOM here, and a
+  // Playwright click dispatches to the ELEMENT, so even a browser test that
+  // pressed every button would have passed while a mouse could not.  It took
+  // hit-testing by coordinate.
+  //
+  // This is the narrow guard that source can carry: the spacer must not come
+  // back, the row must be allowed to wrap, and the lane must stay tall enough
+  // for the wrapped rows — measured at 56 px for the three lines the controls
+  // currently take.  Re-measure in the app when adding a control.
+  const lane = readFileSync('src/renderer/components/daw/edit/ChordLane.tsx', 'utf8');
+  const header = lane.slice(lane.indexOf('export function ChordLaneHeader'),
+    lane.indexOf('export default function ChordLane'));
+
+  assert(!/className="flex-1"/.test(header),
+    'the full-width spacer is back — it collapses in a 167 px column and the '
+    + 'actions after it land on top of the chip strip');
+  assert(/flex-wrap/.test(header),
+    'the header row must be allowed to wrap; without it the overflow is painted '
+    + 'outside the column instead of moving to the next line');
+  assert(/overflow-hidden/.test(header),
+    'the header must clip rather than paint over the lane if it ever overflows again');
+
+  const height = /CHORD_LANE_HEIGHT = (\d+)/.exec(lane);
+  assert(height !== null && Number(height[1]) >= 56,
+    `CHORD_LANE_HEIGHT is ${height?.[1] ?? '?'}; the wrapped header measured 56 px `
+    + 'and anything less clips the last row of controls');
+});
 
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;

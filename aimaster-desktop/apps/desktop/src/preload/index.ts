@@ -11,12 +11,24 @@ const INVOKE_CHANNELS = [
   // with an options override.  Product-layout flag gates the renderer
   // caller; the channel itself is always registered.
   'audio:re-render-preview',
+  // Reference-curve measurement for Match EQ (the target it compares to).
+  'audio:reference-curve',
+  // Source measurement that drives the per-song recommended settings.
+  'audio:song-profile',
   // Rust offline render (RUST-OFFLINE-RENDER-1) — same Rust MasteringChain
   // as the realtime preview, used by the "새 버전 만들기" path when the
   // rust-offline flag is ON (default).  Free parametric EQ bands flow
   // through here (Phase 3b).
   'audio:master-rust-experimental',
-  // License IPC channels (v3.6 — re-enabled for commercial release).
+  // License IPC channels.
+  //
+  // DORMANT, on purpose.  LICENSE_ENFORCED is false, so `canProcess` always
+  // answers paid and nothing counts a trial — see license-free-selftest, which
+  // holds both that the switch is off and that the machinery is still here to
+  // switch back on.  Only `license:status` and `license:activate` have a
+  // renderer caller today; the other five are the paid build's surface,
+  // registered so turning the switch back on is one word and not a hunt.
+  // Listed here rather than deleted for the same reason the service is.
   'license:status', 'license:can-process', 'license:get-remaining',
   'license:activate', 'license:deactivate', 'license:decrement-trial',
   'license:revalidate',
@@ -25,11 +37,18 @@ const INVOKE_CHANNELS = [
   // Device id for account device registration (Phase D2).
   'device:get-id',
   // Files
-  'file:open-dialog', 'file:open-dialog-multi', 'file:save-dialog', 'file:save-wav',
+  'file:open-dialog', 'file:open-dialog-multi', 'file:open-dialog-midi',
+  'file:save-wav',
   'file:batch-save-wav',
   // Save with transcode (M3-P-NEXT-5D-2-d) — separate from file:save-wav
   'file:save-audio',
-  'file:get-info', 'file:open-in-finder', 'file:get-recent',
+  // `file:get-info` has no caller yet: it is the validated stat() — absolute
+  // path, no null byte, regular file — that any future "how big is this"
+  // needs, and writing it a second time badly is the likelier outcome of
+  // deleting it.  `file:save-dialog` and `file:get-recent` used to sit here
+  // and were deleted instead: the first was a save dialog that could not
+  // honour the output directory, the second returned [].
+  'file:get-info', 'file:open-in-finder',
   // Settings
   'settings:get', 'settings:set', 'settings:choose-output-dir',
   // System
@@ -49,8 +68,13 @@ const INVOKE_CHANNELS = [
   // AAF interchange — binary, so these carry byte arrays rather than text
   'daw:aaf-open', 'daw:aaf-save',
   // DAW offline render output (Bounce / Freeze / Consolidate)
-  'daw:write-temp-audio', 'daw:bounce-audio', 'daw:stage-for-mastering',
+  'daw:write-temp-audio', 'daw:bounce-audio', 'daw:stage-for-mastering', 'daw:discard-staged',
   'daw:choose-stem-folder', 'daw:write-stem',
+  // Separation models the user installed — listing only; nothing is loaded here
+  'daw:stem-models', 'daw:model-runtime', 'daw:model-weights',
+  'daw:sfz-open', 'daw:sample-read',
+  // Writing a .mid back out — the other half of the MIDI importer
+  'daw:midi-save',
   // DAW source decoding — FFmpeg in main, never Chromium in the renderer
   'daw:pcm-source',
   // Installed third-party plugins (scan only — nothing is loaded)

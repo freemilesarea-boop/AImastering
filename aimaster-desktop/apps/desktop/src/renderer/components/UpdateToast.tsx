@@ -16,6 +16,7 @@
  * a future "Check for updates…" menu item (window.updater.checkForUpdates()).
  */
 import React, { useEffect, useState } from 'react';
+import { LAYER } from '../theme/layers.js';
 
 const AUTO_DISMISS_MS = 4_000;
 
@@ -181,7 +182,8 @@ export function UpdateToast(): React.ReactElement | null {
   }[tone];
 
   return (
-    <div className={`fixed bottom-5 right-5 z-50 w-72 p-3 rounded-xl border shadow-xl
+    <div style={{ zIndex: LAYER.notification }}
+         className={`fixed bottom-5 right-5 w-72 p-3 rounded-xl border shadow-xl
                      text-sm text-zinc-100 ${toneStyle}`}>
       {body}
     </div>

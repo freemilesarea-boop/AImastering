@@ -11,7 +11,6 @@ function check(name: string, fn: () => void): void {
   try { fn(); results.push({ name, pass: true, detail: '' }); }
   catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
 }
-function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
 function eq<T>(a: T, b: T, m: string): void { if (a !== b) throw new Error(`${m} — got ${JSON.stringify(a)}, want ${JSON.stringify(b)}`); }
 
 check('unavailable when no realtime data', () => {

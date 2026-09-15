@@ -9,12 +9,16 @@
 // "undo that" — not four hundred.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { pluginWindowLayer } from '../../../theme/layers.js';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { usePluginWindowStore, type PluginWindowState } from '../../../stores/pluginWindowStore.js';
 import { findTrack, setInsert } from '../../../daw/model/session-ops.js';
 import { descriptorFor } from '../../../daw/engine/external-device.js';
 import { defaultParams } from '../../../daw/engine/plugins.js';
 import { resolvePreset } from '../../../daw/engine/plugin-presets.js';
+import type { PluginPreset } from '../../../daw/engine/plugin-presets.js';
+import { partitionGenre } from '../../../daw/engine/plugin-presets-genre.js';
+import { partitionInstrument } from '../../../daw/engine/plugin-presets-instrument.js';
 import {
   allPresetGroups, canSaveUserPreset, deleteUserPreset, exportUserPresets,
   importUserPresets, isUserPresetId, overwriteUserPreset, saveUserPreset, describeImport,
@@ -25,12 +29,69 @@ import { automatableParamsOf } from '../../../daw/edit/automation-lanes.js';
 import { adviseFor, canAdvise, LOW_CONFIDENCE } from '../../../daw/ai/plugin-advice.js';
 import { describeWindow, profileForInsert } from '../../../daw/ai/advice-runner.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
+import { readingPeak } from '../../../daw/model/channel-meter.js';
 import { premium } from '../../../theme/premium.js';
 import Knob from './Knob.js';
 import PluginVisual from './PluginVisual.js';
+import EqCurveEditor from './EqCurveEditor.js';
+import { eqNodes, type NodeEdit, type ParamRange } from '../../../daw/model/eq-nodes.js';
+import { wantsSquareVisual } from '../../../daw/model/plugin-shapes.js';
+
+/**
+ * A row of preset chips for one closed set.
+ *
+ * Both the instrument row and the genre row are the same control with a
+ * different label, and they were the same twenty-five lines twice before this
+ * existed — which is how one of them ends up with the hover note and the
+ * other without it.
+ */
+function ChipRow({ label, presets, loadedPreset, onPick }: {
+  label: string;
+  presets: readonly PluginPreset[];
+  loadedPreset: string | null;
+  onPick: (id: string) => void;
+}): React.ReactElement | null {
+  if (presets.length === 0) return null;
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-[9px] tracking-wide shrink-0 pt-0.5"
+            style={{ color: premium.text.faint }}>{label}</span>
+      <div className="flex flex-wrap gap-1">
+        {presets.map((preset) => {
+          const on = preset.id === loadedPreset;
+          return (
+            <button
+              key={preset.id}
+              onClick={() => onPick(preset.id)}
+              title={preset.note}
+              className="h-[18px] px-1.5 rounded text-[9px] leading-none
+                         transition-colors shrink-0"
+              style={{
+                border: `1px solid ${on ? premium.accent.deep : 'rgba(255,255,255,0.12)'}`,
+                background: on ? 'rgba(198,167,104,0.14)' : 'transparent',
+                color: on ? premium.accent.base : premium.text.muted,
+              }}
+            >{preset.name}</button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 const VISUAL_WIDTH = 300;
 const VISUAL_HEIGHT = 132;
+/**
+ * An EQ gets a bigger picture, because for an EQ the picture IS the control.
+ * Everything else draws a diagram beside its knobs; an EQ is edited on it.
+ */
+const EQ_WIDTH = 420;
+const EQ_HEIGHT = 200;
+/**
+ * A transfer curve is read against the diagonal that means "unchanged", so it
+ * has to be square — and 132 px of a 300 px panel makes it a slot, not a plot.
+ */
+const SQUARE_HEIGHT = 200;
 
 /** The insert in this slot, for asking the engine what it is doing. */
 function insertIdOf(
@@ -59,6 +120,10 @@ function curveFor(unit: string, min: number): 'linear' | 'log' {
 export default function PluginWindow({ window: win }: { window: PluginWindowState }) {
   const session = useDawStore((s) => s.session);
   const applyTransient = useDawStore((s) => s.applyTransient);
+  /** Lanes the EQ drag currently in progress has grabbed, so it releases only those. */
+  const grabbed = useRef<Set<string>>(new Set());
+  /** Whether that drag wrote anything transient, so an undo step is only pushed if it did. */
+  const touchedDirect = useRef(false);
   const commitEdit = useDawStore((s) => s.commitEdit);
   const apply = useDawStore((s) => s.apply);
   const close = usePluginWindowStore((s) => s.close);
@@ -78,7 +143,16 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   useEffect(() => {
     if (!isPlaying) { setLevel(0); setReduction(null); setAnalysis(null); return; }
     const timer = setInterval(() => {
-      setLevel(dawRuntime.meterLevels().get(win.trackId) ?? 0);
+      // What arrives AT this device, not what leaves the channel.  The channel
+      // meter is post-fader and post-everything; reading it here put the dot
+      // on the input axis using an output number, so the picture and the GR
+      // meter next to it were describing two different signals.
+      const arriving = insertId ? dawRuntime.insertInputLevel(win.trackId, insertId) : null;
+      // The fallback is the channel's PEAK, matching what `insertInputLevel`
+      // returns.  It used to be that reading's RMS, so whether the dot landed
+      // on the curve depended on which of the two branches had run.
+      const channel = dawRuntime.meterReadings().get(win.trackId);
+      setLevel(arriving ?? (channel ? readingPeak(channel) : 0));
       setReduction(insertId ? dawRuntime.insertReduction(win.trackId, insertId) : null);
       setAnalysis(insertId ? dawRuntime.insertAnalysis(win.trackId, insertId) : null);
     }, 60);
@@ -195,10 +269,71 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
     }));
   };
 
+  // ── The EQ editor ─────────────────────────────────────────────────────────
+  // A drag on the curve moves TWO parameters at once (frequency and gain), so
+  // it cannot go through `setParam` twice: the second call would read the
+  // insert as it was before the first, and one of the two would be lost.  One
+  // write, both values.
+  const eqBands = eqNodes(insert.pluginId, params);
+  const isEq = eqBands.length > 0;
+  const visualHeight = wantsSquareVisual(insert.pluginId) ? SQUARE_HEIGHT : VISUAL_HEIGHT;
+
+  const paramRanges: Record<string, ParamRange> = {};
+  for (const def of descriptor.params) paramRanges[def.id] = { min: def.min, max: def.max };
+
+  const applyEdits = (edits: readonly NodeEdit[]): void => {
+    if (edits.length === 0) return;
+    setLoadedPreset('');
+    const automation = useAutomationStore.getState();
+    const direct: NodeEdit[] = [];
+    for (const edit of edits) {
+      const target = targetFor(edit.paramId);
+      if (!target) { direct.push(edit); continue; }
+      // Same contract as a knob: `grab` only bites while a writing transport
+      // is rolling, `move` applies the value either way.
+      automation.grab(win.trackId, target);
+      automation.move(win.trackId, target, edit.value);
+      grabbed.current.add(edit.paramId);
+    }
+    if (direct.length === 0) return;
+    touchedDirect.current = true;
+    const nextParams = { ...insert.params };
+    const merged = { ...params };
+    for (const edit of direct) {
+      nextParams[edit.paramId] = edit.value;
+      merged[edit.paramId] = edit.value;
+    }
+    applyTransient((s) => setInsert(s, win.trackId, {
+      ...insert,
+      params: nextParams,
+      latencySamples: descriptor.latencyFor(merged, session.sampleRate),
+    }));
+  };
+
+  /** End of a drag: release exactly the lanes this drag grabbed, then commit. */
+  const commitEdits = (): void => {
+    const automation = useAutomationStore.getState();
+    for (const paramId of grabbed.current) {
+      const target = targetFor(paramId);
+      if (target) automation.release(win.trackId, target);
+    }
+    grabbed.current.clear();
+    // A pass that only rode automation lanes wrote nothing transient, so there
+    // is no edit to close; committing anyway would push an empty undo step.
+    if (touchedDirect.current) { touchedDirect.current = false; commitEdit(); }
+  };
+
   // `presetTick` is read so the list rebuilds after a save, an overwrite, a
   // delete or an import — none of which go through React state.
   void presetTick;
   const groups = allPresetGroups(insert.pluginId);
+  // The ten genres get their own row of chips; everything else stays in the
+  // dropdown.  See `partitionGenre` for why they are not the same control.
+  // Two closed sets, two rows.  The instrument answers "what is on this
+  // track" and the genre answers "what should the record sound like";
+  // neither answers the other, so neither replaces the other.
+  const { genre: genrePresets, rest: afterGenre } = partitionGenre(groups);
+  const { instrument: instrumentPresets, rest: menuGroups } = partitionInstrument(afterGenre);
   const loadPreset = (presetId: string): void => {
     const preset = groups.flatMap((g) => g.presets).find((entry) => entry.id === presetId);
     if (!preset) return;
@@ -328,8 +463,8 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       onPointerDown={() => focus(win.id)}
       className="fixed rounded-xl overflow-hidden"
       style={{
-        left: win.x, top: win.y, zIndex: 200 + win.z,
-        width: VISUAL_WIDTH + 28,
+        left: win.x, top: win.y, zIndex: pluginWindowLayer(win.z),
+        width: (isEq ? EQ_WIDTH : VISUAL_WIDTH) + 28,
         background: premium.surface.frame,
         border: `1px solid ${insert.bypass ? 'rgba(120,120,140,0.35)' : premium.accent.deep}`,
         boxShadow: premium.shadow.panel,
@@ -403,7 +538,20 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         className="px-3.5 py-2 flex flex-col gap-1"
         style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
       >
-        {(groups.length > 0 || canSave) && (
+        {/* The ten genres, as a row you can read rather than a list you open.
+            Every device has the same ten in the same order, so the row becomes
+            a place on the window rather than a menu to search — after a few
+            sessions you reach for 힙합 without looking. */}
+        {/* Two rows of chips rather than two more dropdown entries.  Both are
+            closed sets you already know the names of before you open the
+            window — the instrument you have, and the record you are making —
+            so they become places on the window rather than menus to search.
+            Instrument first, because you know what is on the track before you
+            know what you want it to become. */}
+        <ChipRow label="악기" presets={instrumentPresets} loadedPreset={loadedPreset} onPick={loadPreset} />
+        <ChipRow label="장르" presets={genrePresets} loadedPreset={loadedPreset} onPick={loadPreset} />
+
+        {(menuGroups.length > 0 || canSave) && (
           <div className="flex items-center gap-2">
             <span className="text-[9px] tracking-wide shrink-0" style={{ color: premium.text.faint }}>
               프리셋
@@ -411,14 +559,12 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             <select
               value={loadedPreset}
               onChange={(e) => loadPreset(e.target.value)}
-              disabled={groups.length === 0}
+              disabled={menuGroups.length === 0}
               className="flex-1 h-6 px-1 text-[10px] rounded bg-transparent outline-none"
               style={{ color: premium.text.primary, border: '1px solid rgba(255,255,255,0.12)' }}
             >
-              <option value="">
-                {groups.length === 0 ? '— 저장된 프리셋 없음 —' : '— 직접 설정 —'}
-              </option>
-              {groups.map((group) => (
+              <option value="">— 직접 설정 —</option>
+              {menuGroups.map((group) => (
                 <optgroup key={group.group} label={group.group}>
                   {group.presets.map((preset) => (
                     <option key={preset.id} value={preset.id}>{preset.name}</option>
@@ -525,16 +671,30 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       )}
 
       <div className="p-3.5 flex flex-col gap-3">
-        <PluginVisual
-          pluginId={insert.pluginId}
-          params={params}
-          bypassed={insert.bypass}
-          level={level}
-          reduction={reduction}
-          analysis={analysis}
-          width={VISUAL_WIDTH}
-          height={VISUAL_HEIGHT}
-        />
+        {isEq ? (
+          <EqCurveEditor
+            pluginId={insert.pluginId}
+            params={params}
+            ranges={paramRanges}
+            defaults={defaultParams(insert.pluginId)}
+            bypassed={insert.bypass}
+            width={EQ_WIDTH}
+            height={EQ_HEIGHT}
+            onEdit={applyEdits}
+            onCommit={commitEdits}
+          />
+        ) : (
+          <PluginVisual
+            pluginId={insert.pluginId}
+            params={params}
+            bypassed={insert.bypass}
+            level={level}
+            reduction={reduction}
+            analysis={analysis}
+            width={VISUAL_WIDTH}
+            height={visualHeight}
+          />
+        )}
 
         {descriptor.params.filter(isChoice).map((def) => {
           const index = Math.round(params[def.id] ?? def.default);
@@ -589,7 +749,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         )}
         {descriptor.offline && (
           <p className="text-[10px] text-center" style={{ color: 'rgb(251,191,36)' }}>
-            OFFLINE — 이 장치는 바운스/렌더에서 적용됩니다
+            OFFLINE — 실시간 그래프에서 바이패스됩니다
           </p>
         )}
       </div>

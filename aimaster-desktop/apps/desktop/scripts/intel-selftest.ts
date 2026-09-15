@@ -23,46 +23,39 @@
 
 import {
   applyAction, applyActions, applySuggestions, describeAction, describeSuggestion,
-  type IntelAction, type Suggestion,
-} from '../src/renderer/daw/ai/actions.js';
-import { guessRole, refineRole, ROLE_PROFILES, roleLabel } from '../src/renderer/daw/ai/roles.js';
-import { shapeOf, type MixAnalysis, type TrackAnalysis } from '../src/renderer/daw/ai/analysis.js';
-import { diagnose, summarise, fixable, type Finding } from '../src/renderer/daw/ai/diagnose.js';
+  type IntelAction,} from '../src/renderer/daw/ai/actions.js';
+import { guessRole, refineRole, ROLE_PROFILES, roleLabel} from '../src/renderer/daw/ai/roles.js';
+import { shapeOf, type MixAnalysis, type TrackAnalysis} from '../src/renderer/daw/ai/analysis.js';
+import { diagnose, summarise, fixable, type Finding} from '../src/renderer/daw/ai/diagnose.js';
 import {
   autoMix, balanceSuggestions, findMasking, maskingSuggestions, panningSuggestions,
-  resetSuggestionIds,
-} from '../src/renderer/daw/ai/mix.js';
+  resetSuggestionIds,} from '../src/renderer/daw/ai/mix.js';
 import {
-  autoMaster, MASTER_PROFILES, findProfile, resolveTarget, resetMasterIds,
-} from '../src/renderer/daw/ai/master.js';
-import { matchActions, matchSummary, resetMatchIds } from '../src/renderer/daw/ai/reference-intel.js';
+  autoMaster, MASTER_PROFILES, findProfile, resolveTarget, resetMasterIds,} from '../src/renderer/daw/ai/master.js';
+import { matchActions, matchSummary, resetMatchIds} from '../src/renderer/daw/ai/reference-intel.js';
 import {
-  levelEnvelope, rideCurve, rideSuggestion, duckCurve, duckSuggestion,
-} from '../src/renderer/daw/ai/auto-automation.js';
-import { interpret, resolveTarget as resolveNlTarget, vocabulary } from '../src/renderer/daw/ai/language.js';
+  levelEnvelope, rideCurve, rideSuggestion, duckCurve, duckSuggestion,} from '../src/renderer/daw/ai/auto-automation.js';
+import { interpret, resolveTarget as resolveNlTarget, vocabulary} from '../src/renderer/daw/ai/language.js';
 import {
   CONTOURS, RIFF_STYLES, VARIATIONS, contourAt, generateRhythm, generateRiff,
   nextScalePitch, varyRiff, describeRiff, contourLabel, styleLabel,
-  type RiffOptions,
-} from '../src/renderer/daw/ai/compose.js';
+  type RiffOptions,} from '../src/renderer/daw/ai/compose.js';
 import {
-  chordsForClip, riffSuggestion, variationSuggestion, resetRiffIds, variationLabel,
-} from '../src/renderer/daw/ai/riff.js';
-import { createMidiPart, updateClips, trackClips, setChordTrack as setChords } from '../src/renderer/daw/model/session-ops.js';
-import { createNote, noteEndBeat } from '../src/renderer/daw/model/midi.js';
-import { isInScale, scalePitchClasses, type Scale } from '../src/renderer/daw/model/scales.js';
-import { chordAt, chordPitchClasses, type ChordSymbol } from '../src/renderer/daw/model/chords.js';
-import { partClock, secToBeatsAt } from '../src/renderer/daw/model/note-time.js';
-import { tempoMapOf } from '../src/renderer/daw/model/tempo-map.js';
-import { captureAsPattern, clipNotes } from '../src/renderer/daw/model/patterns.js';
-import { compareToReference, type ReferenceAnalysis, type SpectrumCurve } from '../src/renderer/daw/analysis/reference.js';
+  chordsForClip, riffSuggestion, variationSuggestion, resetRiffIds, variationLabel,} from '../src/renderer/daw/ai/riff.js';
+import { createMidiPart, updateClips, trackClips, setChordTrack as setChords} from '../src/renderer/daw/model/session-ops.js';
+import { createNote, noteEndBeat} from '../src/renderer/daw/model/midi.js';
+import { isInScale, type Scale} from '../src/renderer/daw/model/scales.js';
+import { chordPitchClasses, type ChordSymbol} from '../src/renderer/daw/model/chords.js';
+import { partClock, secToBeatsAt} from '../src/renderer/daw/model/note-time.js';
+import { tempoMapOf} from '../src/renderer/daw/model/tempo-map.js';
+import { captureAsPattern, clipNotes} from '../src/renderer/daw/model/patterns.js';
+import { compareToReference, type ReferenceAnalysis, type SpectrumCurve} from '../src/renderer/daw/analysis/reference.js';
 import {
-  addTrack, createSession, createTrack, findTrack,
-} from '../src/renderer/daw/model/session-ops.js';
-import { setChordTrack } from '../src/renderer/daw/model/session-ops.js';
-import { makeChord } from '../src/renderer/daw/model/chords.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import type { DawSession } from '../src/renderer/daw/model/types.js';
+  addTrack, createSession, createTrack, findTrack,} from '../src/renderer/daw/model/session-ops.js';
+import { setChordTrack} from '../src/renderer/daw/model/session-ops.js';
+import { makeChord} from '../src/renderer/daw/model/chords.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import type { DawSession} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -1144,7 +1137,7 @@ function riffSession(): { session: DawSession; trackId: string; clipId: string }
 }
 
 check('chords are carried into the part\'s own clock, including the one already sounding', () => {
-  const { session, trackId, clipId } = riffSession();
+  const { session, trackId } = riffSession();
   const track = findTrack(session, trackId)!;
   const clip = trackClips(track)[0]!;
   const chords = chordsForClip(session, clip);

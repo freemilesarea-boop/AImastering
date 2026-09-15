@@ -125,19 +125,3 @@ export function useAnalyzerStream(opts: UseAnalyzerStreamOptions): AnalyzerStrea
     isRunning,
   };
 }
-
-/**
- * Lighter-weight variant — subscribes only to tick snapshots and returns
- * just the latest snapshot.  Avoids re-renders from FFT / stereo if the
- * consumer doesn't need them.
- */
-export function useMeterTick(
-  factory: AnalyzerSessionFactory,
-  sessionOptions: AnalyzerSessionOptions,
-  rate: SubscriptionRate = '60Hz',
-): MeterTickSnapshot | null {
-  const { tick } = useAnalyzerStream({
-    factory, sessionOptions, tickRate: rate,
-  });
-  return tick;
-}

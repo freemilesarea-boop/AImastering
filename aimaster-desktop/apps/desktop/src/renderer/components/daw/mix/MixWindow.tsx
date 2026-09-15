@@ -6,19 +6,28 @@
 // mixer engine re-syncs on every change, so a fader move is audible on the
 // next block.
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import {
   createBus, createInsert, createSend, removeInsert, removeSend, setInsert, setOutput, setSend,
-  updateTrack, findTrack,
+  updateTrack,
 } from '../../../daw/model/session-ops.js';
 import {
-  effectiveFaderDb, toggleMute, toggleSolo, vcaChainDb,
+  busUsage, busUsageCount, nextBusName, removeBus, renameBus, setBusChannels,
+} from '../../../daw/model/buses.js';
+import {
+  effectiveFaderDb, toggleMute, toggleSolo, toggleSoloSafe, vcaChainDb,
 } from '../../../daw/model/mixer-math.js';
 import { describePath, computeDelayCompensation, wouldFeedback } from '../../../daw/model/routing.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
+import type { LiveLoudnessMetrics } from '../../../audio/loudnessStream.js';
+import {
+  METER_POLL_MS, emptyReading, meterDb, meterFraction,
+  type ChannelMeterReading,
+} from '../../../daw/model/channel-meter.js';
+
 import type {
   AutomationMode, AutomationTarget, DawSession, Track,
 } from '../../../daw/model/types.js';
@@ -28,11 +37,9 @@ import { ensureLane } from '../../../daw/edit/automation-lanes.js';
 import { stackDepth, isSummingStack } from '../../../daw/model/stacks.js';
 import { activeMacros } from '../../../daw/model/macros.js';
 import { premium } from '../../../theme/premium.js';
+import { slotLetter, slotsToShow } from '../../../daw/model/strip-slots.js';
 import { MAX_TRACK_DELAY_MS, delayMechanism, trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay, setTrackDelay } from '../../../daw/edit/track-delay-ops.js';
-
-const VISIBLE_INSERTS = 5;      // A–E, like the top half of a Pro Tools strip
-const VISIBLE_SENDS   = 5;
 
 const AUTOMATION_MODES: AutomationMode[] = ['off', 'read', 'touch', 'latch', 'write', 'trim'];
 
@@ -40,11 +47,14 @@ export default function MixWindow() {
   const session = useDawStore((s) => s.session);
   const apply   = useDawStore((s) => s.apply);
   const notify  = useAppStore((s) => s.notify);
-  const [levels, setLevels] = useState<Map<string, number>>(new Map());
+  const [levels, setLevels] = useState<Map<string, ChannelMeterReading>>(new Map());
+  const [busesOpen, setBusesOpen] = useState(false);
 
   // Meter poll — cheap enough at 20 Hz and only while the window is open.
+  // The interval comes from the same constant the analyser window is sized
+  // from: shorten one without the other and the meter starts reading a gap.
   useEffect(() => {
-    const timer = setInterval(() => setLevels(dawRuntime.meterLevels()), 50);
+    const timer = setInterval(() => setLevels(dawRuntime.pollMeters()), METER_POLL_MS);
     return () => clearInterval(timer);
   }, []);
 
@@ -62,15 +72,21 @@ export default function MixWindow() {
           className="px-2 py-0.5 rounded text-[10px] border border-zinc-700 bg-zinc-900 text-zinc-400"
         >지연 보정 {session.delayCompensation ? '끄기' : '켜기'}</button>
         <button
-          onClick={() => apply((s) => {
-            const bus = createBus(`Bus ${s.buses.length + 1}`);
-            return { ...s, buses: [...s.buses, bus] };
-          })}
+          onClick={() => apply((s) => ({ ...s, buses: [...s.buses, createBus(nextBusName(s))] }))}
           className="px-2 py-0.5 rounded text-[10px] border border-zinc-700 bg-zinc-900 text-zinc-400"
         >+ 버스</button>
+        <button
+          onClick={() => setBusesOpen((v) => !v)}
+          title="버스 이름 바꾸기 · 모노 · 삭제"
+          className={`px-2 py-0.5 rounded text-[10px] border ${busesOpen
+            ? 'border-zinc-600 bg-zinc-800 text-zinc-200'
+            : 'border-zinc-700 bg-zinc-900 text-zinc-400'}`}
+        >버스 {session.buses.length}</button>
         <div className="flex-1" />
         <span className="text-[10px] font-mono text-zinc-600">{session.tracks.length} ch</span>
       </div>
+
+      {busesOpen && <BusPanel session={session} onApply={apply} onNotify={notify} />}
 
       <div className="flex-1 flex overflow-x-auto">
         {session.tracks.map((track) => (
@@ -79,7 +95,7 @@ export default function MixWindow() {
             session={session}
             track={track}
             depth={stackDepth(session, track.id)}
-            level={levels.get(track.id) ?? 0}
+            level={levels.get(track.id) ?? emptyReading()}
             compensationSamples={compensation.perTrack.get(track.id) ?? 0}
             onApply={apply}
             onNotify={notify}
@@ -97,12 +113,14 @@ function ChannelStrip({
   session: DawSession;
   track: Track;
   depth: number;
-  level: number;
+  level: ChannelMeterReading;
   compensationSamples: number;
   onApply: (fn: (s: DawSession) => DawSession) => void;
   onNotify: (m: string, t?: 'info' | 'success' | 'warning' | 'error') => void;
   onSmart: () => void;
 }) {
+  const [insertsOpen, setInsertsOpen] = useState(false);
+  const [sendsOpen, setSendsOpen] = useState(false);
   const isMaster = track.kind === 'master';
   const isVca    = track.kind === 'vca';
   const isFolder = track.kind === 'folder';
@@ -182,6 +200,19 @@ function ChannelStrip({
         boxShadow: depth > 0 ? `inset ${depth * 3}px 0 0 rgba(198,167,104,0.25)` : undefined,
       }}
     >
+      {/*
+        Everything above the fader scrolls; the fader, the meter, solo/mute and
+        the nameplate do not.  `min-h-0` is the load-bearing half: a flex item
+        defaults to `min-height: auto`, which refuses to shrink below its
+        content, so the strip did not overflow into a scrollbar — it overflowed
+        past the bottom of the window.  Measured at a 720 px viewport, the
+        track's own NAME sat 123 px below the screen with nothing to scroll and
+        no way to reach it.
+
+        The fader keeps `flex-1`, so a tall window still gives a long fader;
+        this part simply gives back the space when there is none.
+      */}
+      <div className="min-h-0 overflow-y-auto overflow-x-hidden">
       {/* Smart Controls — the macro layer, always one click away */}
       <button
         onClick={onSmart}
@@ -220,11 +251,21 @@ function ChannelStrip({
         </div>
       )}
       {/* Inserts */}
-      <Section label="INSERTS A-E">
-        {Array.from({ length: VISIBLE_INSERTS }, (_, slot) => {
+      <Section
+        label="INSERTS"
+        expanded={insertsOpen}
+        onToggle={() => setInsertsOpen((v) => !v)}
+      >
+        {slotsToShow(track.inserts.map((i) => i.slot), insertsOpen).map((slot) => {
           const insert = track.inserts.find((i) => i.slot === slot);
           return (
             <div key={slot} className="flex items-center gap-0.5">
+              {/* The letter, because a collapsed list still has to say WHERE a
+                  device sits — "the compressor is in C" is how an engineer
+                  remembers a chain. */}
+              <span className={`w-2 text-[8px] font-mono leading-5 ${insert ? 'text-zinc-500' : 'text-zinc-700'}`}>
+                {slotLetter(slot)}
+              </span>
               <select
                 value={insert?.pluginId ?? ''}
                 onChange={(e) => {
@@ -261,12 +302,19 @@ function ChannelStrip({
       </Section>
 
       {/* Sends */}
-      <Section label="SENDS A-E">
-        {Array.from({ length: VISIBLE_SENDS }, (_, slot) => {
+      <Section
+        label="SENDS"
+        expanded={sendsOpen}
+        onToggle={() => setSendsOpen((v) => !v)}
+      >
+        {slotsToShow(track.sends.map((x) => x.slot), sendsOpen).map((slot) => {
           const send = track.sends.find((s) => s.slot === slot);
           return (
             <div key={slot} className="space-y-0.5">
               <div className="flex items-center gap-0.5">
+                <span className={`w-2 text-[8px] font-mono leading-5 ${send ? 'text-zinc-500' : 'text-zinc-700'}`}>
+                  {slotLetter(slot)}
+                </span>
                 <select
                   value={send?.target ?? ''}
                   onChange={(e) => {
@@ -282,27 +330,58 @@ function ChannelStrip({
                   {session.buses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
                 {send && (
-                  <button
-                    title={send.preFader ? '프리 페이더' : '포스트 페이더'}
-                    onClick={() => onApply((s) => setSend(s, track.id, { ...send, preFader: !send.preFader }))}
-                    className={`w-6 h-5 rounded text-[8px] border ${send.preFader
-                      ? 'bg-sky-600/30 border-sky-500/50 text-sky-300'
-                      : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
-                  >{send.preFader ? 'PRE' : 'PST'}</button>
+                  <>
+                    <button
+                      title={send.preFader ? '프리 페이더' : '포스트 페이더'}
+                      onClick={() => onApply((s) => setSend(s, track.id, { ...send, preFader: !send.preFader }))}
+                      className={`w-6 h-5 rounded text-[8px] border ${send.preFader
+                        ? 'bg-sky-600/30 border-sky-500/50 text-sky-300'
+                        : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+                    >{send.preFader ? 'PRE' : 'PST'}</button>
+                    {/* `Send.mute` was honoured by the engine and had no
+                        control anywhere — the only way to silence one send was
+                        to pull its level to the bottom and lose the setting. */}
+                    <button
+                      title={send.mute ? '센드 뮤트 해제' : '이 센드만 뮤트'}
+                      onClick={() => onApply((s) => setSend(s, track.id, { ...send, mute: !send.mute }))}
+                      className={`w-4 h-5 rounded text-[8px] border ${send.mute
+                        ? 'bg-red-600/30 border-red-500/50 text-red-300'
+                        : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+                    >M</button>
+                  </>
                 )}
               </div>
               {send && (
-                <input
-                  type="range" min={-60} max={12} step={0.5} value={send.levelDb}
-                  onPointerDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
-                  onPointerUp={() => release({ kind: 'sendLevel', sendId: send.id })}
-                  onLostPointerCapture={() => release({ kind: 'sendLevel', sendId: send.id })}
-                  onKeyDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
-                  onKeyUp={() => release({ kind: 'sendLevel', sendId: send.id })}
-                  onChange={(e) => move(
-                    { kind: 'sendLevel', sendId: send.id }, parseFloat(e.target.value))}
-                  className="w-full h-1 accent-emerald-500"
-                />
+                <div className="flex items-center gap-1">
+                  <input
+                    type="range" min={-60} max={12} step={0.5} value={send.levelDb}
+                    title={`레벨 ${send.levelDb.toFixed(1)} dB`}
+                    onPointerDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
+                    onPointerUp={() => release({ kind: 'sendLevel', sendId: send.id })}
+                    onLostPointerCapture={() => release({ kind: 'sendLevel', sendId: send.id })}
+                    onKeyDown={() => grab({ kind: 'sendLevel', sendId: send.id })}
+                    onKeyUp={() => release({ kind: 'sendLevel', sendId: send.id })}
+                    onChange={(e) => move(
+                      { kind: 'sendLevel', sendId: send.id }, parseFloat(e.target.value))}
+                    className={`flex-1 min-w-0 h-1 ${send.mute ? 'accent-zinc-600' : 'accent-emerald-500'}`}
+                  />
+                  {/* Send pan.  Narrower than the level and centre-detented by
+                      double-click, because it is the control you want at zero
+                      almost always and somewhere else occasionally. */}
+                  <input
+                    type="range" min={-1} max={1} step={0.02} value={send.pan}
+                    title={`센드 팬 ${send.pan === 0 ? 'C' : send.pan < 0 ? `L${Math.round(-send.pan * 100)}` : `R${Math.round(send.pan * 100)}`} (더블클릭 = 센터)`}
+                    onDoubleClick={() => onApply((s) => setSend(s, track.id, { ...send, pan: 0 }))}
+                    onPointerDown={() => grab({ kind: 'sendPan', sendId: send.id })}
+                    onPointerUp={() => release({ kind: 'sendPan', sendId: send.id })}
+                    onLostPointerCapture={() => release({ kind: 'sendPan', sendId: send.id })}
+                    onKeyDown={() => grab({ kind: 'sendPan', sendId: send.id })}
+                    onKeyUp={() => release({ kind: 'sendPan', sendId: send.id })}
+                    onChange={(e) => move(
+                      { kind: 'sendPan', sendId: send.id }, parseFloat(e.target.value))}
+                    className="w-[34px] shrink-0 h-1 accent-sky-400"
+                  />
+                </div>
               )}
             </div>
           );
@@ -328,6 +407,24 @@ function ChannelStrip({
             <option value="master">Master</option>
             {session.buses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
+        )}
+        {isMaster && (
+          /* The master has no output SELECTOR — it is the end of the chain —
+             but it still needs the ROW, or every band under I/O drops by its
+             height on this strip alone.  That is what left DLY 24 px out while
+             INSERTS was 48.
+
+             Text, not a disabled control: a dead dropdown invites a click that
+             can never do anything.  `inline-block` on a baseline rather than a
+             flex row, because the <select> it stands in for is inline-block
+             and a block-level replacement measured this section 2 px shorter
+             than the others — the same misalignment in miniature.  After:
+             every band boundary matches and the row's own top is 1 px off,
+             which is font metrics between a span and a select. */
+          <span className="w-full h-5 rounded text-[9px] px-1 inline-block leading-5
+                           bg-zinc-900/60 border border-zinc-800 text-zinc-500">
+            마스터 출력
+          </span>
         )}
         {track.kind === 'aux' && (
           <select
@@ -443,7 +540,7 @@ function ChannelStrip({
             onKeyDown={() => grab({ kind: 'pan' })}
             onKeyUp={() => release({ kind: 'pan' })}
             onChange={(e) => move({ kind: 'pan' }, parseFloat(e.target.value))}
-            className="w-full h-1 accent-zinc-400"
+            className="w-full h-4 accent-zinc-400 [&::-webkit-slider-runnable-track]:h-1"
           />
           <p className="text-[8px] font-mono text-zinc-600 text-center">
             {shownPan === 0 ? 'C' : shownPan < 0 ? `L${Math.round(-shownPan * 100)}` : `R${Math.round(shownPan * 100)}`}
@@ -451,8 +548,24 @@ function ChannelStrip({
         </div>
       )}
 
+      {/* The master's loudness readout.  It used to be the FIRST thing in
+          this column, and only on the master, so every shared band below it —
+          INSERTS, SENDS, I/O, DLY — sat 48 px lower than the same band on an
+          audio strip, and 48 px was not even constant: the block is shorter
+          while it says 재생하면 측정합니다 than when it is showing six numbers,
+          so the offset moved as soon as playback started.  A mix console is
+          read by scanning ACROSS strips, which that made impossible.
+
+          Last in the scroll column it displaces nothing — there is no
+          counterpart below it on any other strip to misalign with — and it
+          ends up directly above the master fader, which is where a desk puts
+          its master meter. */}
+      {isMaster && <MasterLoudness />}
+
       {/* Fader + meter */}
-      <div className="flex-1 flex gap-1 px-1.5 py-2 min-h-[150px]">
+      </div>
+
+      <div className="flex-1 shrink-0 flex gap-1 px-1.5 py-2 min-h-[150px]">
         <input
           type="range" min={-60} max={12} step={0.1} value={shownVolumeDb}
           onPointerDown={() => grab({ kind: 'volume' })}
@@ -468,13 +581,31 @@ function ChannelStrip({
           }}
           title={writingVolume ? '오토메이션 기록 중' : undefined}
         />
-        <Meter level={level} />
+        <Meter level={level} onClearHold={() => dawRuntime.clearMeterHold(track.id)} />
         <div className="flex flex-col justify-end gap-1">
+          {/* Alt-click is solo-safe, the way Pro Tools and Cubase both put it
+              on the solo button — it belongs next to the thing it modifies,
+              not in a menu three levels away. */}
           <button
-            onClick={() => onApply((s) => toggleSolo(s, track.id))}
-            className={`w-5 h-5 rounded text-[9px] border ${track.solo
-              ? 'bg-yellow-500/30 border-yellow-500/60 text-yellow-300'
-              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+            onClick={(e) => onApply((s) => (e.altKey
+              ? toggleSoloSafe(s, track.id)
+              : toggleSolo(s, track.id)))}
+            title={track.soloSafe
+              ? '솔로 세이프 — 다른 트랙 솔로에 뮤트되지 않습니다 (Alt+클릭으로 해제)'
+              : '솔로 (Alt+클릭 = 솔로 세이프)'}
+            className={`w-5 h-5 rounded text-[9px] ${track.solo
+              ? 'bg-yellow-500/30 text-yellow-300'
+              : track.soloSafe
+                ? 'bg-zinc-900 text-sky-300'
+                : 'bg-zinc-900 text-zinc-500'}`}
+            style={{
+              // A dashed ring rather than another colour: solo-safe is a
+              // STANDING property of the channel, and it has to stay readable
+              // while the button is also lit for an active solo.
+              border: track.soloSafe
+                ? '1px dashed rgb(56,189,248)'
+                : `1px solid ${track.solo ? 'rgba(234,179,8,0.6)' : 'rgb(63,63,70)'}`,
+            }}
           >S</button>
           <button
             onClick={() => onApply((s) => toggleMute(s, track.id))}
@@ -485,8 +616,8 @@ function ChannelStrip({
         </div>
       </div>
 
-      {/* Name plate */}
-      <div className="px-1.5 py-1 border-t border-zinc-800" style={{ background: `${track.color}22` }}>
+      {/* Name plate — pinned: it is how you tell which strip you are on. */}
+      <div className="shrink-0 px-1.5 py-1 border-t border-zinc-800" style={{ background: `${track.color}22` }}>
         <p
           className="text-[10px] truncate"
           style={{
@@ -507,37 +638,241 @@ function ChannelStrip({
   );
 }
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+/**
+ * BS.1770 on the master bus — momentary, short-term, integrated, true peak.
+ *
+ * The channel meters answer "will this survive being written to something".
+ * This answers "how loud is the record", which is a different question with a
+ * different unit, and until now the console could not answer it at all: the
+ * numbers existed, in the mastering half of the app, and the mixer had no way
+ * to see them while there was still something to do about them.
+ *
+ * Integrated and LRA are the slow ones and are shown to one decimal; M and S
+ * move at 100 ms and are shown the same way so the column does not jitter in
+ * width.
+ */
+function MasterLoudness() {
+  const [m, setM] = useState<LiveLoudnessMetrics | null>(null);
+  const [state, setState] = useState<'off' | 'starting' | 'on' | 'failed'>('off');
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setM(dawRuntime.masterLoudness());
+      setState(dawRuntime.masterLoudnessState());
+    }, 100);
+    return () => clearInterval(timer);
+  }, []);
+
+  const lu = (v: number | undefined): string =>
+    (v === undefined || !Number.isFinite(v) ? '−∞' : v.toFixed(1));
+
+  if (state === 'failed') {
+    return (
+      <div className="mx-1.5 mt-1.5 px-1.5 py-1 rounded border border-red-900/60 bg-red-950/20">
+        <p className="text-[8px] text-red-300/80">라우드니스 미터를 열지 못했습니다</p>
+      </div>
+    );
+  }
+
+  const overTp = m !== null && m.truePeakDbtp > -1;
+  return (
+    <div className="mx-1.5 mt-1.5 px-1.5 py-1 rounded border border-zinc-800 bg-black/30">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[8px] tracking-[0.12em] text-zinc-600">LUFS</span>
+        <button
+          onClick={() => { dawRuntime.resetMasterLoudness(); setM(null); }}
+          title="적분 라우드니스를 0에서 다시 시작합니다"
+          className="relative text-[8px] px-1 rounded border border-zinc-700 text-zinc-500
+            hover:text-zinc-300 before:absolute before:-inset-2 before:content-['']"
+        >R</button>
+      </div>
+      {state !== 'on' && m === null ? (
+        <p className="text-[9px] font-mono text-zinc-600 py-0.5">
+          {state === 'starting' ? '여는 중…' : '재생하면 측정합니다'}
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 gap-x-1 text-[9px] font-mono tabular-nums leading-[1.35]">
+          <span className="text-zinc-600">M</span><span className="text-zinc-300 text-right">{lu(m?.momentaryLufs)}</span>
+          <span className="text-zinc-600">S</span><span className="text-zinc-300 text-right">{lu(m?.shortTermLufs)}</span>
+          <span className="text-zinc-600">I</span><span className="text-amber-300 text-right">{lu(m?.integratedLufs)}</span>
+          <span className="text-zinc-600">LRA</span><span className="text-zinc-400 text-right">{lu(m?.loudnessRange)}</span>
+          <span className="text-zinc-600">TP</span>
+          <span className={`text-right ${overTp ? 'text-red-400' : 'text-zinc-300'}`}>{lu(m?.truePeakDbtp)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The bus list — the only place a bus can be anything but created.
+ *
+ * Before this, "+ 버스" was the entire bus interface: a session accumulated
+ * `Bus 1`, `Bus 2`, `Bus 3` with no way to say what one was for and no way to
+ * remove one.  Two of the three controls here are for fields that already
+ * existed and did nothing — the NAME could only ever be the one it was born
+ * with, and `channels` was stored, saved and imported while a mono bus
+ * rendered identically to a stereo one.
+ *
+ * Delete says what it is about to disconnect BEFORE it does it.  A bus is
+ * referenced from four directions, and the count is the only thing that makes
+ * the choice an informed one.
+ */
+function BusPanel({ session, onApply, onNotify }: {
+  session: DawSession;
+  onApply: (fn: (s: DawSession) => DawSession) => void;
+  onNotify: (m: string, t?: 'info' | 'success' | 'warning' | 'error') => void;
+}) {
+  const [confirming, setConfirming] = useState<string | null>(null);
+  if (session.buses.length === 0) {
+    return (
+      <div className="px-3 py-2 border-b border-zinc-800 bg-[#101018]">
+        <p className="text-[10px] text-zinc-600">
+          버스가 없습니다 — 센드와 서브믹스를 쓰려면 먼저 하나 만드세요.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="px-3 py-2 border-b border-zinc-800 bg-[#101018] flex flex-wrap gap-2">
+      {session.buses.map((bus) => {
+        const usage = busUsage(session, bus.id);
+        const count = busUsageCount(usage);
+        const armed = confirming === bus.id;
+        return (
+          <div key={bus.id}
+               className="flex items-center gap-1 rounded border border-zinc-800 bg-zinc-900/60 pl-1.5 pr-1 py-1">
+            <input
+              value={bus.name}
+              onChange={(e) => onApply((s) => renameBus(s, bus.id, e.target.value))}
+              className="w-[88px] h-5 rounded text-[10px] px-1 bg-zinc-950 border border-zinc-800 text-zinc-200"
+            />
+            <button
+              onClick={() => onApply((s) => setBusChannels(s, bus.id, bus.channels === 1 ? 2 : 1))}
+              title={bus.channels === 1
+                ? '모노 버스 — L+R을 합쳐서 양쪽으로 보냅니다'
+                : '스테레오 버스'}
+              className={`px-1 h-5 rounded text-[9px] font-mono border ${bus.channels === 1
+                ? 'bg-amber-600/25 border-amber-600/50 text-amber-300'
+                : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+            >{bus.channels === 1 ? 'MONO' : 'ST'}</button>
+            <span className="text-[9px] font-mono text-zinc-600 px-0.5" title="이 버스를 참조하는 곳">
+              {count}
+            </span>
+            <button
+              onClick={() => {
+                if (!armed) { setConfirming(bus.id); return; }
+                setConfirming(null);
+                onApply((s) => removeBus(s, bus.id));
+                onNotify(count > 0
+                  ? `${bus.name} 삭제 — 연결 ${count}곳을 정리했습니다`
+                  : `${bus.name} 삭제`, 'info');
+              }}
+              onBlur={() => setConfirming((c) => (c === bus.id ? null : c))}
+              title={count > 0
+                ? `출력 ${usage.outputs.length} · 입력 ${usage.inputs.length} · 센드 ${usage.sends.length} · 사이드체인 ${usage.sidechains.length}`
+                : '아무것도 이 버스를 쓰고 있지 않습니다'}
+              className={`px-1 h-5 rounded text-[9px] border ${armed
+                ? 'bg-red-600/40 border-red-500/70 text-red-200'
+                : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+            >{armed ? (count > 0 ? `${count}곳 끊고 삭제?` : '삭제?') : '×'}</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Section({ label, children, expanded, onToggle }: {
+  label: string;
+  children: React.ReactNode;
+  /** Present only on the slot sections, which can show all five or not. */
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
   return (
     <div className="px-1.5 py-1 border-b border-zinc-900 space-y-0.5">
-      <p className="text-[8px] tracking-[0.12em] text-zinc-600">{label}</p>
+      <div className="flex items-center justify-between">
+        <p className="text-[8px] tracking-[0.12em] text-zinc-600">{label}</p>
+        {onToggle && (
+          <button
+            onClick={onToggle}
+            title={expanded ? '쓰는 슬롯만 보기' : '슬롯 A–E 전부 보기'}
+            className={`relative text-[8px] leading-none px-1 rounded border
+              before:absolute before:-inset-2 before:content-[''] ${expanded
+              ? 'border-zinc-600 text-zinc-300'
+              : 'border-zinc-800 text-zinc-600'}`}
+          >A–E</button>
+        )}
+      </div>
       {children}
     </div>
   );
 }
 
-/** Post-fader RMS meter with a slow-falling peak hold. */
-function Meter({ level }: { level: number }) {
-  const holdRef = useRef(0);
-  const db = level > 1e-6 ? 20 * Math.log10(level) : -90;
-  const pct = Math.max(0, Math.min(1, (db + 60) / 66));
-  holdRef.current = Math.max(pct, holdRef.current - 0.01);
-  const color = db > -1 ? 'bg-red-500' : db > -8 ? 'bg-amber-400' : 'bg-emerald-500';
+/**
+ * Post-fader meter: peak and RMS, one bar per side, with an over latch.
+ *
+ * The bar is the PEAK and the darker fill inside it is the RMS, so the two
+ * are readable at once without either pretending to be the other.  The line
+ * across both bars is the peak hold; the block above them is the clip light,
+ * which stays lit until it is clicked.
+ *
+ * The numbers under the strip are the hold, in dBFS, because a meter you can
+ * only read by eye cannot answer "how much do I pull this down by".
+ */
+function Meter({ level, onClearHold }: { level: ChannelMeterReading; onClearHold: () => void }) {
+  const holdDb = meterDb(level.holdPeak);
   return (
-    <div className="relative w-2 rounded-sm bg-zinc-900 border border-zinc-800 overflow-hidden">
-      <div className={`absolute bottom-0 left-0 right-0 ${color}`} style={{ height: `${pct * 100}%` }} />
-      <div className="absolute left-0 right-0 h-px bg-zinc-300/70" style={{ bottom: `${holdRef.current * 100}%` }} />
+    <div className="flex flex-col items-stretch gap-0.5" style={{ width: 22 }}>
+      <button
+        onClick={onClearHold}
+        title={level.clipped ? '0 dBFS를 넘었습니다 — 클릭해서 리셋' : '피크 홀드 리셋'}
+        className={`relative h-1.5 rounded-sm border before:absolute before:-inset-y-2
+          before:inset-x-0 before:content-[''] ${level.clipped
+          ? 'bg-red-500 border-red-400'
+          : 'bg-zinc-900 border-zinc-800'}`}
+      />
+      <div className="flex-1 flex gap-px">
+        <MeterBar db={level.shownDbL} rms={level.rmsL} holdDb={level.shownHoldDb} />
+        <MeterBar db={level.shownDbR} rms={level.rmsR} holdDb={level.shownHoldDb} />
+      </div>
+      <p
+        className={`text-[8px] font-mono text-center tabular-nums ${level.clipped
+          ? 'text-red-400'
+          : 'text-zinc-500'}`}
+        title="이 채널이 기록한 최대 피크 (dBFS)"
+      >{level.holdPeak > 0 ? (holdDb > -60 ? holdDb.toFixed(1) : '−∞') : '−∞'}</p>
+    </div>
+  );
+}
+
+/**
+ * One side of one channel.
+ *
+ * `db` is the BALLISTIC peak — instant rise, timed fall, computed in the
+ * engine off a wall clock.  It used to be computed here, as a fixed decrement
+ * per render, which made the fall rate a function of how often React happened
+ * to redraw.  The RMS is the raw window value: measured at 0.44 dB of movement
+ * between frames, it is already as steady as a smoother would make it.
+ */
+function MeterBar({ db, rms, holdDb }: { db: number; rms: number; holdDb: number }) {
+  const peakPct = meterFraction(db);
+  const rmsPct = meterFraction(meterDb(rms));
+  const holdPct = meterFraction(holdDb);
+  // Thresholds are on a PEAK reading now, so they mean what they say: red is
+  // at or over full scale, amber is the last 6 dB of headroom.
+  const color = db >= 0 ? 'bg-red-500' : db > -6 ? 'bg-amber-400' : 'bg-emerald-500';
+  return (
+    <div className="relative flex-1 rounded-sm bg-zinc-900 border border-zinc-800 overflow-hidden">
+      <div className={`absolute bottom-0 left-0 right-0 ${color}`} style={{ height: `${peakPct * 100}%` }} />
+      <div className="absolute bottom-0 left-0 right-0 bg-black/35" style={{ height: `${rmsPct * 100}%` }} />
+      {holdPct > 0 && (
+        <div className="absolute left-0 right-0 h-px bg-zinc-100/80" style={{ bottom: `${holdPct * 100}%` }} />
+      )}
     </div>
   );
 }
 
 function pluginName(id: string): string {
   return PLUGINS.find((p) => p.id === id)?.name ?? id;
-}
-
-/** Exported for the strip tests. */
-export function stripSummary(session: DawSession, trackId: string): string {
-  const track = findTrack(session, trackId);
-  if (!track) return '';
-  return `${track.name} ${effectiveFaderDb(session, track).toFixed(1)}dB`;
 }

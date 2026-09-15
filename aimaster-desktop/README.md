@@ -15,7 +15,8 @@
 5. [환경 변수](#환경-변수)
 6. [프로젝트 구조](#프로젝트-구조)
 7. [구현 상태](#구현-상태)
-8. [에러 로그 위치](#에러-로그-위치)
+8. [자주 걸리는 것](#자주-걸리는-것)
+9. [에러 로그 위치](#에러-로그-위치)
 
 ---
 
@@ -204,6 +205,47 @@ aimaster-desktop/
 
 ## 구현 상태
 
+> 이 표는 v3.2 시점 기준으로 작성되어 한동안 갱신되지 않았습니다.
+> 아래 "모듈 스위트" 절이 현재 상태이며, 표에서 미구현으로 적힌 자동
+> 업데이트 / 배치 저장 / 앱 아이콘은 이후 구현되었습니다.
+
+### 🎛 모듈 스위트 (전체 목록 → `docs/redesign/loui-mastering-v2/module-suite/`)
+
+체인은 20개 모듈이며, **실시간 프리뷰와 오프라인 익스포트가 동일한 Rust
+엔진**(`dsp-core/crates/loui-dsp`)을 사용합니다. 설정은 하나의
+`ChainConfigWire` 객체로 양쪽에 전달되므로 미리듣기와 결과물이 갈라지지
+않습니다.
+
+| 단계 | 모듈 |
+|---|---|
+| 복원 | De-click · De-hum · De-noise · De-esser |
+| 보정 | Parametric EQ · Match EQ · Spectral Shaper · Stabilizer |
+| 톤 | Vintage EQ · EQ · Dynamic EQ |
+| 다이내믹스 | Multiband · Glue Comp · Vintage Comp · Impact · Low End Focus |
+| 캐릭터 | Exciter · Tape |
+| 출력 | Imager · Limiter / Maximizer |
+
+- 모든 모듈은 중립 설정에서 **비트 단위로 투명**합니다 — 크로스오버조차
+  타지 않으므로 CPU도 지연도 0입니다.
+- STFT 기반 모듈(De-noise, 스펙트럴 3종)만 지연을 만들며, 그 값은 랙 하단에
+  ms 단위로 표시됩니다.
+- 리미터 실링 클램프는 어떤 설정에서도 무조건 적용됩니다.
+
+**UI**: 홈 큐의 "스튜디오" 버튼 → 좌측 시그널 체인 랙, 우측 선택 모듈 패널.
+
+```bash
+# Rust DSP 테스트 (151개)
+cd dsp-core && cargo test -p loui-dsp --release
+
+# Rust를 수정했다면 WASM 3개 타깃을 반드시 다시 빌드 (아티팩트가 커밋되어 있음)
+#   사전 준비: rustup target add wasm32-unknown-unknown
+#             cargo install wasm-bindgen-cli --version 0.2.127
+pnpm --filter @loui/dsp-wasm run build:all
+
+# 데스크톱 셀프테스트 (122개 — 29개는 실제 WASM 엔진을 통과시켜 오디오를 측정)
+pnpm --filter @aimaster/desktop test
+```
+
 ### ✅ 완전히 동작하는 기능
 
 | 기능 | 확인 방법 |
@@ -244,10 +286,93 @@ aimaster-desktop/
 | 기능 | 비고 |
 |------|------|
 | 서버 라이선스 검증 | `LocalValidator` (포맷 체크만) → `RemoteValidator`로 교체 필요 |
-| 자동 업데이트 | `electron-updater` 설정 없음 |
 | 최근 파일 목록 | `file:get-recent` 핸들러가 `[]` 반환하는 스텁 |
-| 배치 처리 | 단일 파일만 지원 |
-| 앱 아이콘 | `public/icon.icns`, `public/icon.ico` 없음 → 빌드 시 기본 아이콘 |
+
+---
+
+## 자주 걸리는 것
+
+### `Electron failed to install correctly`
+
+`pnpm dev` 이 이 에러로 죽으면 `node_modules/electron/dist` 가 비어 있는 것입니다.
+Electron 의 postinstall 이 플랫폼 바이너리(~100 MB)를 받아오는데, pnpm 이
+스토어에서 패키지를 복원하면서 그 postinstall 을 건너뛰면 생깁니다
+(이 저장소는 `node-linker=hoisted` 라 더 잘 일어납니다).
+
+```bash
+pnpm fix:electron
+```
+
+없는 것만 받아 오고, `path.txt` 가 깨져 있으면 같이 고칩니다. 그래도 안 되면:
+
+```bash
+rm -rf node_modules/electron
+pnpm install
+```
+
+### `pnpm fix:electron` 이 "install.js 가 아무것도 만들지 않았습니다" 라고 함
+
+`ELECTRON_SKIP_BINARY_DOWNLOAD` 가 환경에 설정되어 있으면 electron 의
+`install.js` 는 첫 줄에서 그대로 0 으로 끝납니다 — 아무것도 받지 않고,
+아무 말도 없이. 고치려고 부를수록 조용히 실패합니다.
+
+```bash
+env | grep ELECTRON
+```
+
+셸 설정(`~/.zshrc` 등)에 있으면 지우고 새 터미널을 여세요. `pnpm fix:electron`
+은 자기 안에서는 이 변수를 무시하고 진행하며, 설정돼 있으면 그 사실을
+알려줍니다. install.js 로 안 되면 릴리스 zip 을 직접 받아
+`checksums.json` 의 sha256 으로 검증한 뒤 풉니다.
+
+### `dyld: Library not loaded: @rpath/Electron Framework.framework`
+
+`dist` 가 반쯤 만들어진 상태입니다 — 실행 파일은 있는데 프레임워크가 없습니다.
+압축 해제가 중간에 끊겼거나, 캐시에 깨진 zip 이 남아 있을 때 이렇게 됩니다.
+
+```bash
+pnpm fix:electron
+```
+
+`dist/version` 이 `package.json` 의 버전과 맞는지, 플랫폼마다 반드시 있어야 하는
+파일(맥은 `Electron Framework`, 리눅스는 `libffmpeg.so`)이 있는지까지 봅니다.
+한 번 다시 받아도 안 되면 다운로드 캐시를 건너뛰고 한 번 더 받고, 그래도
+안 되면 무엇이 없는지 말하고 실패합니다.
+
+### `spawn .../Electron\n ENOENT`
+
+경로 끝의 `\n` 이 전부입니다. `node_modules/electron/path.txt` 를 손으로 쓸 때
+`echo` 를 쓰면 줄바꿈이 붙는데, Electron 의 `index.js` 는 이 파일을 **trim 없이**
+읽어서 실행 경로에 이어 붙이므로 없는 파일을 spawn 하게 됩니다.
+
+```bash
+pnpm fix:electron
+```
+
+직접 쓸 일이 있으면 `printf '%s' ... > path.txt` 로 쓰세요. 확인도
+바이너리를 실제 경로로 `--version` 호출하면 안 됩니다 — 그 경로는 `path.txt` 를
+읽지 않아서 깨진 상태에서도 버전이 멀쩡히 찍힙니다. `node -p "require('electron')"`
+가 주는 경로를 보세요.
+
+### `setup-python.sh` 가 Python 을 거부함
+
+핀 고정된 `numpy==1.26.4` 는 **cp39–cp312 휠까지만** 있습니다
+(고정한 이유는 `services/python-audio/requirements.txt` 주석 참고).
+3.13 이상에서는 pip 가 소스 빌드로 넘어가고, Fortran 툴체인이 없는 맥에서는
+몇 분 뒤 실패합니다 — 그것도 "파이썬이 너무 최신입니다" 라고는 안 하면서.
+
+스크립트가 PATH 에서 쓸 수 있는 3.10–3.12 를 알아서 찾습니다. 없으면:
+
+```bash
+brew install python@3.12
+PYTHON=python3.12 ./setup-python.sh
+```
+
+### `zsh: command not found: #`
+
+zsh 는 대화형 셸에서 `#` 주석을 기본으로 받지 않습니다.
+주석이 붙은 명령 블록을 통째로 붙여넣으면 주석 줄마다 이 에러가 납니다.
+주석을 빼고 붙여넣거나, `setopt interactive_comments` 를 먼저 실행하세요.
 
 ---
 

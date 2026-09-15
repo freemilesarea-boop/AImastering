@@ -7,8 +7,16 @@
 //!     invert hard (prevents mono-fold-down cancellation)
 //!
 //! Reconstruct L = M+S, R = M-S.
+//!
+//! A per-band width is also available: when any entry of `band_width_pct`
+//! differs from 100 the signal is first split by a Linkwitz-Riley 4-band
+//! crossover and each band's Side is scaled independently, which is how you
+//! narrow a boomy low end while widening the air.  When every band is at
+//! 100 the splitter is skipped entirely, so the common case costs nothing
+//! and stays bit-transparent at width 100.
 
 use crate::biquad::{Biquad, BiquadCoeffs};
+use crate::crossover::{Crossover4, BANDS};
 use super::config::ImagerConfig;
 use super::StereoModule;
 
@@ -18,6 +26,9 @@ pub struct Imager {
     cfg: ImagerConfig,
     // High-pass applied to the Side signal for low-mono.
     side_hp: Biquad,
+    // Band splitters, only used when per-band widths are in play.
+    xo_l: Crossover4,
+    xo_r: Crossover4,
 }
 
 impl Imager {
@@ -27,6 +38,8 @@ impl Imager {
             sr: sample_rate,
             cfg,
             side_hp: Biquad::new(BiquadCoeffs::high_pass(sample_rate, Self::safe_low_mono(cfg.low_mono_hz, sample_rate), 0.707)),
+            xo_l: Crossover4::new(sample_rate, cfg.crossover_hz),
+            xo_r: Crossover4::new(sample_rate, cfg.crossover_hz),
         }
     }
 
@@ -34,6 +47,23 @@ impl Imager {
     pub fn set_config(&mut self, cfg: ImagerConfig) {
         self.cfg = cfg;
         self.side_hp.set_coeffs(BiquadCoeffs::high_pass(self.sr, Self::safe_low_mono(cfg.low_mono_hz, self.sr), 0.707));
+        self.xo_l.set_freqs(cfg.crossover_hz);
+        self.xo_r.set_freqs(cfg.crossover_hz);
+    }
+
+    /// True when at least one band asks for a width other than 100 %.
+    fn per_band_active(&self) -> bool {
+        self.cfg.band_width_pct.iter().any(|w| !w.is_finite() || (w - 100.0).abs() > 1e-9)
+    }
+
+    /// Per-band width factors, guarded to [0, 2].
+    fn band_factors(&self) -> [f64; BANDS] {
+        let mut out = [1.0; BANDS];
+        for (i, o) in out.iter_mut().enumerate() {
+            let w = self.cfg.band_width_pct[i] / 100.0;
+            *o = if w.is_finite() { w.clamp(0.0, 2.0) } else { 1.0 };
+        }
+        out
     }
 
     /// Clamp the low-mono crossover to a numerically safe range so a bad
@@ -64,12 +94,27 @@ impl StereoModule for Imager {
         }
         let width = self.width_factor();
         let do_low_mono = self.cfg.low_mono_hz > 20.0;
+        let per_band = self.per_band_active();
+        let band_w = self.band_factors();
         let n = left.len().min(right.len());
         for i in 0..n {
             let l = left[i] as f64;
             let r = right[i] as f64;
-            let mid = 0.5 * (l + r);
-            let mut side = 0.5 * (l - r);
+            let (mid, mut side) = if per_band {
+                // Split, scale each band's Side, and recombine.  Mid is the
+                // plain band sum, which is flat by the crossover's design.
+                let bl = self.xo_l.split(l);
+                let br = self.xo_r.split(r);
+                let mut m = 0.0;
+                let mut s = 0.0;
+                for k in 0..BANDS {
+                    m += 0.5 * (bl[k] + br[k]);
+                    s += 0.5 * (bl[k] - br[k]) * band_w[k];
+                }
+                (m, s)
+            } else {
+                (0.5 * (l + r), 0.5 * (l - r))
+            };
             // Low-mono: keep only the high-passed Side, so lows fold to mono.
             if do_low_mono {
                 side = self.side_hp.process(side);
@@ -97,7 +142,7 @@ mod tests {
     use super::*;
 
     fn cfg(width_pct: f64, low_mono_hz: f64) -> ImagerConfig {
-        ImagerConfig { width_pct, low_mono_hz, bypass: false }
+        ImagerConfig { width_pct, low_mono_hz, bypass: false, ..Default::default() }
     }
 
     #[test]

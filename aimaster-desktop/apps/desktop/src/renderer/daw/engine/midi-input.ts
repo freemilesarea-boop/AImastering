@@ -97,8 +97,6 @@ let accessPromise: Promise<WebMidiAccess> | null = null;
 /** Why the last attempt failed, for a message the user can act on. */
 let lastFailure: string | null = null;
 
-export function resetMidiAccess(): void { accessPromise = null; lastFailure = null; }
-
 /** The reason MIDI is unavailable, or null when it has not failed. */
 export function midiFailureReason(): string | null { return lastFailure; }
 
@@ -324,16 +322,4 @@ export async function openMidiInputs(deviceId: string | null): Promise<MidiInput
       : '선택한 MIDI 장치를 찾을 수 없습니다');
   }
   return new MidiInputHandle(chosen);
-}
-
-/** Fire when a keyboard is plugged in or pulled out, so the list can refresh. */
-export async function onMidiDevicesChanged(listener: () => void): Promise<() => void> {
-  const access = await midiAccess();
-  if (!access) return () => { /* nothing was hooked */ };
-  const previous = access.onstatechange;
-  access.onstatechange = (event) => {
-    try { (previous as ((e: unknown) => void) | null)?.(event); } catch { /* ignore */ }
-    listener();
-  };
-  return () => { access.onstatechange = previous; };
 }

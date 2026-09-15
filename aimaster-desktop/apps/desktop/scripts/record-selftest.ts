@@ -16,25 +16,21 @@ import {
   DEFAULT_RECORD_SETTINGS, beatSeconds, countInSeconds, planRecording, plannedDuration,
   describePlan, loopPasses, armedTracks, setRecordArm, clearRecordArm, canRecord,
   takeName, passClipName, wouldOverlap, MIN_PASS_SEC,
-  type RecordSettings,
-} from '../src/renderer/daw/model/recording.js';
-import { RecordBuffer } from '../src/renderer/daw/engine/record-buffer.js';
-import { commitRecording, type AudioWriter } from '../src/renderer/daw/edit/record-actions.js';
+  type RecordSettings,} from '../src/renderer/daw/model/recording.js';
+import { RecordBuffer} from '../src/renderer/daw/engine/record-buffer.js';
+import { commitRecording, type AudioWriter} from '../src/renderer/daw/edit/record-actions.js';
 import {
-  addTrack, createClip, createSession, createTrack, findTrack, trackClips, updateClips,
-} from '../src/renderer/daw/model/session-ops.js';
-import { activePlaylist } from '../src/renderer/daw/model/session-ops.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
+  addTrack, createClip, createSession, createTrack, findTrack, updateClips,} from '../src/renderer/daw/model/session-ops.js';
+import { activePlaylist} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
 import {
   DEFAULT_INPUT_REF, describeInput, hasInputAssignment, inputRefFor, refreshHint,
-  resolveTrackInput, trackInputRef,
-} from '../src/renderer/daw/model/track-input.js';
+  resolveTrackInput, trackInputRef,} from '../src/renderer/daw/model/track-input.js';
 import {
   assignInputDevice, clearTrackInput, describeAssignments, inputFor, planInputs,
-  rememberResolved, setTrackInputChannels,
-} from '../src/renderer/daw/edit/track-input-ops.js';
-import { serializeDawSession, deserializeDawSession } from '../src/renderer/daw/model/session-io.js';
-import type { DawSession, Track } from '../src/renderer/daw/model/types.js';
+  rememberResolved, setTrackInputChannels,} from '../src/renderer/daw/edit/track-input-ops.js';
+import { serializeDawSession, deserializeDawSession} from '../src/renderer/daw/model/session-io.js';
+import type { DawSession, Track} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -355,7 +351,10 @@ const DEVICES = [
 
 function withInput(name: string, ref: Parameters<typeof inputRefFor>[0], channels: 1 | 2 = 1) {
   const { session, track } = sessionWithTrack(name);
-  return { session: assignInputDevice(session, track.id, ref, channels), track };
+  return {
+    session: assignInputDevice(session, track.id, ref, { firstChannel: 0, channels }),
+    track,
+  };
 }
 
 check('an assignment is stored by NAME, with the id only as a hint', () => {
@@ -483,7 +482,7 @@ check('the read-out lists what each track is on', () => {
   const vox = createTrack('Vox', 'audio');
   s = addTrack(s, vox);
   eq(describeAssignments(s), '입력 지정 없음', 'nothing yet');
-  s = assignInputDevice(s, vox.id, DEVICES[0]!, 2);
+  s = assignInputDevice(s, vox.id, DEVICES[0]!, { firstChannel: 0, channels: 2 });
   assert(describeAssignments(s).includes('Vox ← Scarlett 18i20 · 스테레오'), describeAssignments(s));
 });
 
@@ -527,6 +526,59 @@ async function run(): Promise<void> {
 
     const clips = activePlaylist(findTrack(result.session, track.id)!)?.clips ?? [];
     close(clips[0]?.startSec ?? 0, 10, 'the clip sits at the record point, not the transport start', 1e-9);
+  });
+
+  await commitTest('the round trip is taken off the front of the take', async () => {
+    const { session, track } = sessionWithTrack();
+    // 20 ms of round trip.  The ramp's sample value IS its time in seconds, so
+    // where the take starts is readable straight off the first sample.
+    const late = settings({ preRollSec: 2, latencySec: 0.02, latencySource: 'measured' });
+    const plan = planRecording(setRecordArm(session, track.id, true), late, 10);
+    const { writer, calls } = fakeWriter();
+
+    const result = await commitRecording(
+      session, track.id, { channels: [ramp(5)], sampleRate: SR }, plan, late, writer);
+
+    close(calls[0]?.channels[0]?.[0] ?? -1, 2.02,
+      'the read point moved 20 ms LATER into the capture', 1e-6);
+    const clips = activePlaylist(findTrack(result.session, track.id)!)?.clips ?? [];
+    close(clips[0]?.startSec ?? 0, 10,
+      'and the clip still sits exactly on the record point', 1e-9);
+    close(result.latencyAppliedSec, 0.02, 'reported as applied', 1e-9);
+  });
+
+  await commitTest('switching the compensation off records exactly as before', async () => {
+    const { session, track } = sessionWithTrack();
+    const off = settings({
+      preRollSec: 2, latencySec: 0.02, latencySource: 'measured', latencyEnabled: false,
+    });
+    const plan = planRecording(setRecordArm(session, track.id, true), off, 10);
+    const { writer, calls } = fakeWriter();
+
+    const result = await commitRecording(
+      session, track.id, { channels: [ramp(5)], sampleRate: SR }, plan, off, writer);
+
+    close(calls[0]?.channels[0]?.[0] ?? -1, 2,
+      'the number is kept but not applied', 1e-6);
+    eq(result.latencyAppliedSec, 0, 'and nothing is claimed');
+  });
+
+  await commitTest('a take the capture ran out of is reported short', async () => {
+    const { session, track } = sessionWithTrack();
+    // Punch 4 → 8 with 1 s of pre-roll wants the capture to reach 5.02 s, and
+    // the tape stopped at 5.0.  The last 20 ms of the performance was never
+    // captured, which is exactly what the correction cost.
+    const punch = settings({
+      punchEnabled: true, punchStartSec: 4, punchEndSec: 8, preRollSec: 1,
+      latencySec: 0.02, latencySource: 'measured',
+    });
+    const plan = planRecording(session, punch, 0);
+    const { writer } = fakeWriter();
+
+    const result = await commitRecording(
+      session, track.id, { channels: [ramp(5)], sampleRate: SR }, plan, punch, writer);
+
+    close(result.latencyShortSec, 0.02, 'short by the round trip, and it says so', 1e-6);
   });
 
   await commitTest('punch-out trims the tail even if the tape ran long', async () => {

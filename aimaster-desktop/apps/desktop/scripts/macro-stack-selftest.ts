@@ -341,7 +341,7 @@ check('a folder stack organises without changing the routing', () => {
 
 check('the folder sits directly above its members', () => {
   const { session, ids } = vocalSession();
-  const { session: stacked, folderId } = createStack(session, 'VOCALS', ids, 'summing');
+  const { session: stacked } = createStack(session, 'VOCALS', ids, 'summing');
   const order = stacked.tracks.map((t) => t.name);
   const folderIndex = order.indexOf('VOCALS');
   assert(folderIndex !== -1, 'folder present');

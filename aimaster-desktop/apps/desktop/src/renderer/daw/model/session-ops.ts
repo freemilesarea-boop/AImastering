@@ -16,7 +16,7 @@ import {
 } from './types.js';
 import { nextId } from './ids.js';
 import { DEFAULT_MIDI_CONFIG } from './midi.js';
-import type { ChordEvent, ChordSymbol } from './chords.js';
+import type { ChordEvent } from './chords.js';
 import { EMPTY_RACK } from './macros.js';
 import { emptyGrid } from './session-view.js';
 import { scheduleShiftSec } from './track-delay.js';
@@ -84,7 +84,17 @@ export function createBus(name: string, channels: 1 | 2 = 2): BusDef {
   return { id: nextId('bus'), name, channels };
 }
 
-export function createSession(name = 'Untitled', sampleRate = 48_000): DawSession {
+/**
+ * What a session is called before anyone names it.
+ *
+ * One constant, because there were two: `createSession` defaulted to
+ * 'Untitled' while the store that makes the app's actual first session passed
+ * 'Untitled Session'.  Anything asking "has this been named yet" compared
+ * against one of them and was wrong about the other.
+ */
+export const DEFAULT_SESSION_NAME = 'Untitled Session';
+
+export function createSession(name = DEFAULT_SESSION_NAME, sampleRate = 48_000): DawSession {
   const master = createTrack('Master', 'master', { output: { kind: 'none' } });
   return {
     version: DAW_SESSION_VERSION,
@@ -175,6 +185,27 @@ export function clipAt(track: Track, timeSec: number): Clip | undefined {
 }
 
 /** Session length = the end of the last clip on any track. */
+/**
+ * Name the session.
+ *
+ * Nothing used to: `createSession` said 'Untitled' and no code path ever
+ * changed it, which is why every row in the mastering list read "Untitled
+ * Session.wav" and two different songs were indistinguishable in it.
+ *
+ * Blank and whitespace-only names are refused rather than stored, because a
+ * nameless session is the problem this exists to solve.
+ */
+export function renameSession(session: DawSession, name: string): DawSession {
+  const trimmed = name.trim();
+  return trimmed.length === 0 ? session : { ...session, name: trimmed };
+}
+
+/** Whether the session still has the name it was born with. */
+export function isUntitled(session: DawSession): boolean {
+  const name = session.name.trim();
+  return name.length === 0 || name === DEFAULT_SESSION_NAME || name === 'Untitled';
+}
+
 export function sessionEndSec(session: DawSession): number {
   let end = 0;
   for (const t of session.tracks) {
@@ -358,21 +389,6 @@ export function removeGroup(session: DawSession, groupId: string): DawSession {
 
 export function setChordTrack(session: DawSession, events: ChordEvent[]): DawSession {
   return { ...session, chordTrack: [...events].sort((a, b) => a.timeSec - b.timeSec) };
-}
-
-export function addChordEvent(session: DawSession, timeSec: number, chord: ChordSymbol): DawSession {
-  const events = session.chordTrack.filter((e) => Math.abs(e.timeSec - timeSec) > 1e-6);
-  return setChordTrack(session, [...events, { id: nextId('chord'), timeSec, chord }]);
-}
-
-export function removeChordEvent(session: DawSession, id: string): DawSession {
-  return { ...session, chordTrack: session.chordTrack.filter((e) => e.id !== id) };
-}
-
-// ── Automation lanes ──────────────────────────────────────────────────────────
-
-export function addLane(session: DawSession, trackId: TrackId, lane: AutomationLane): DawSession {
-  return updateTrack(session, trackId, (t) => ({ ...t, automation: [...t.automation, lane] }));
 }
 
 export function updateLane(

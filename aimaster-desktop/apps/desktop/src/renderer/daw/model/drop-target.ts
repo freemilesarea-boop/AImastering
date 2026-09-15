@@ -8,13 +8,21 @@
 //
 // Pure, so the routing rule is tested without a DataTransfer or a store.
 
-/** Extensions the mastering queue and the DAW both accept as audio. */
-export const AUDIO_EXTENSIONS: ReadonlySet<string> = new Set([
-  '.wav', '.flac', '.aiff', '.aif', '.mp3', '.m4a', '.ogg', '.opus', '.wma', '.alac',
-]);
+import { AUDIO_IMPORT_EXTENSIONS, MIDI_IMPORT_EXTENSIONS } from '@aimaster/shared-types';
+
+/**
+ * Extensions the mastering queue and the DAW both accept as audio.
+ *
+ * From the SHARED list, because the Open dialog in the main process builds
+ * its filter from the same one.  These two used to be written out separately
+ * and drifted: a file you could drop was greyed out in the dialog.
+ */
+export const AUDIO_EXTENSIONS: ReadonlySet<string> = new Set(
+  AUDIO_IMPORT_EXTENSIONS.map((e) => `.${e}`));
 
 /** Extensions the DAW imports as MIDI parts.  The queue has no use for them. */
-export const MIDI_EXTENSIONS: ReadonlySet<string> = new Set(['.mid', '.midi']);
+export const MIDI_EXTENSIONS: ReadonlySet<string> = new Set(
+  MIDI_IMPORT_EXTENSIONS.map((e) => `.${e}`));
 
 export type DropDestination = 'daw' | 'queue';
 

@@ -123,7 +123,24 @@ function allpass(ctx: BaseAudioContext, delaySec: number, g: number): Allpass {
   const output = ctx.createGain();
   const sum = ctx.createGain();
   const delay = ctx.createDelay(Math.max(0.2, delaySec * 2));
-  delay.delayTime.value = delaySec;
+  // A WHOLE number of samples, and this is not a rounding nicety.
+  //
+  // The structure below is an allpass only because the same delay appears in
+  // its numerator and its denominator, so the pole and the zero cancel and the
+  // magnitude is exactly one at every frequency.  A DelayNode asked for a
+  // fractional delay interpolates, the feedback path and the feed-forward path
+  // then see slightly different delays, the cancellation fails, and what is
+  // supposed to be unity gain becomes a resonance.
+  //
+  // Measured, one allpass, g = 0.9, impulse energy in = 1:
+  //     128 samples  -> 1.0000      3.1 ms (148.8 samples) -> 0.887
+  //     256 samples  -> 1.0000      20.01 ms (fractional)  -> 3.459
+  //
+  // Eight of those in series inside the spring's feedback loop took its output
+  // to 3.6e12 — a bounce that would destroy speakers and a monitor path that
+  // would destroy hearing.
+  const samples = Math.max(1, Math.round(delaySec * ctx.sampleRate));
+  delay.delayTime.value = samples / ctx.sampleRate;
   const feedback = ctx.createGain(); feedback.gain.value = g;
   const feedforward = ctx.createGain(); feedforward.gain.value = -g;
 
@@ -547,21 +564,37 @@ function buildSpring(
     const feedback = ctx.createGain();
     feedback.gain.value = 0.72;
 
+    // ── The dispersion sits AFTER the loop, not inside it ──────────────────
+    //
+    // Eight allpasses used to live in the feedback path.  In this engine that
+    // is not survivable: an allpass is unity-gain only while the delay in its
+    // own feedback matches the delay in its feed-forward, and a DelayNode
+    // interpolating a fractional delay breaks that.  Eight slightly-resonant
+    // stages multiply, and the loop ran away — measured at 3.6e12 on a single
+    // impulse, which is a bounce that wrecks speakers and a monitor path that
+    // wrecks hearing.  Rounding the delays to whole samples helped and was not
+    // enough; the topology was the problem.
+    //
+    // So the decay loop is now delay → damp → feedback and nothing else, whose
+    // stability is decided by one number the code already clamps below 1.  The
+    // springs' chirp comes from the dispersion, and it still passes through
+    // all eight — on the way OUT.  A pass no longer re-disperses what the last
+    // pass dispersed, so the tail smears a little less than it did.  That is a
+    // real change in sound, and it is the price of a device that cannot
+    // explode.
     band.connect(into);
-    let node: AudioNode = into;
+    into.connect(delay).connect(damp).connect(feedback);
+    feedback.connect(into);            // the loop, with the delay inside it
+
+    let node: AudioNode = feedback;
     const lengths = SPRING_ALLPASS_MS.map((ms) => (ms + side * 0.6) / 1000);
     const chain = lengths.map((seconds, i) => allpass(ctx, seconds, i % 2 === 0 ? 0.62 : -0.62));
     for (const ap of chain) { node.connect(ap.input); node = ap.output; }
-    node.connect(delay).connect(damp).connect(feedback);
-    feedback.connect(into);            // the loop, with the delay inside it
-    feedback.connect(merger, 0, side);
+    node.connect(merger, 0, side);
 
-    // How long one trip round actually takes.  An allpass is not free: its
-    // group delay averages its own delay length across the spectrum, so eight
-    // of them add 60-odd milliseconds to a 32 ms line.  Computing the feedback
-    // gain from the 32 alone makes every decay setting about three times too
-    // long, which is exactly what it did before this was measured.
-    const loopSec = (0.032 + side * 0.0047) + lengths.reduce((a, b) => a + b, 0);
+    // One trip round is now the delay line alone — the allpasses are outside
+    // it, so their group delay no longer stretches the decay.
+    const loopSec = 0.032 + side * 0.0047;
     return { delay, damp, feedback, chain, loopSec };
   });
 

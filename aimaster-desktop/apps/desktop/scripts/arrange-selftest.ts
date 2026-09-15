@@ -20,22 +20,18 @@ import {
   MIN_SECTION_SEC, addSection, createSection, describeArrangement, kindLabel,
   moveSectionStart, nextSectionStart, previousSectionStart, rangeOf, removeSectionMarker,
   renameSection, sectionAt, sectionLabel, sectionRanges, sectionsOf, setSectionKind,
-  shiftSections, withSections,
-} from '../src/renderer/daw/model/arrangement.js';
+  shiftSections, withSections,} from '../src/renderer/daw/model/arrangement.js';
 import {
   deleteSectionTime, duplicateSection, rippleDelete, rippleInsert,
-  selectionForSection, songEnd,
-} from '../src/renderer/daw/edit/arrange-ops.js';
+  selectionForSection, songEnd,} from '../src/renderer/daw/edit/arrange-ops.js';
 import {
   addFile, addTrack, createClip, createSession, createTrack, findTrack, updateClips,
-  updateTrack,
-} from '../src/renderer/daw/model/session-ops.js';
+  updateTrack,} from '../src/renderer/daw/model/session-ops.js';
 import {
-  addTempoEvent, beatToSec, defaultTempoMap, secToBeat, tempoMapOf, withTempoMap,
-} from '../src/renderer/daw/model/tempo-map.js';
-import { createLane } from '../src/renderer/daw/model/automation.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import type { DawSession, Section } from '../src/renderer/daw/model/types.js';
+  addTempoEvent, beatToSec, secToBeat, tempoMapOf, withTempoMap,} from '../src/renderer/daw/model/tempo-map.js';
+import { createLane} from '../src/renderer/daw/model/automation.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import type { DawSession, Section} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];

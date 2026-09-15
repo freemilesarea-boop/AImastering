@@ -43,7 +43,7 @@ import {
 import { uniqueTrackName } from './track-header.js';
 import { SEND_SLOTS } from './types.js';
 import type {
-  BusDef, DawSession, Send, Track, TrackId, TrackKind,
+  BusDef, DawSession, Send, TrackId, TrackKind,
 } from './types.js';
 
 const MAX_NAME_LEN = 60;

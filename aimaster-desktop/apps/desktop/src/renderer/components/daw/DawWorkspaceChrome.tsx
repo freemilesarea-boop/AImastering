@@ -9,14 +9,17 @@
 // (HomePage, ResultPage…) do not need to restructure their layout; pages that
 // have content near the bottom add padding via `useBottomZoneHeight`.
 
+import ProvenancePanel from './meta/ProvenancePanel.js';
 import React from 'react';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
 import DawTransportBar from './DawTransportBar.js';
 import DawMixConsole from './DawMixConsole.js';
 import DawInspector from './DawInspector.js';
+import ControlRoomPanel from './mix/ControlRoomPanel.js';
 import DawMediaBay from './DawMediaBay.js';
 import DawShortcutHelp from './DawShortcutHelp.js';
 import ControlSurfacePanel from './surface/ControlSurfacePanel.js';
+import DeviceSetupPanel from './devices/DeviceSetupPanel.js';
 
 /** Approximate height (px) the fixed bottom zone occupies right now. */
 export function useBottomZoneHeight(): number {
@@ -51,9 +54,17 @@ export default function DawWorkspaceChrome() {
         </div>
       )}
 
+      {/* The monitor section.  Floating rather than in the bottom zone: it is
+          reached while looking at something else, and a control room that
+          pushes the arrangement up every time you turn the speakers down is
+          one people stop opening. */}
+      {panels.controlRoom && <ControlRoomPanel />}
+      {panels.provenance && <ProvenancePanel />}
+
       {panels.mediaBay && <DawMediaBay />}
       {panels.help     && <DawShortcutHelp />}
       {panels.surface  && <ControlSurfacePanel />}
+      {panels.deviceSetup && <DeviceSetupPanel />}
     </>
   );
 }

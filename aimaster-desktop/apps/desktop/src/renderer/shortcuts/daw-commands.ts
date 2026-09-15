@@ -13,17 +13,46 @@
 
 import type { DawState } from '../stores/dawStore.js';
 import { snapToGrid, targetTrackIds } from '../stores/dawStore.js';
+import { MEM_DIGITS, ZOOM_DIGITS, type MemDigit, type ZoomDigit } from './definitions.js';
+import { clearFades, countSelectedClips } from '../daw/edit/batch-fade.js';
+import { setTrackNote, trackNote } from '../daw/model/track-header.js';
+import { describeSnapshot, diffSnapshot, takeSnapshot } from '../daw/model/mix-snapshot.js';
+import { buildPool, describePool, summarisePool } from '../daw/model/clip-pool.js';
+import { nextId } from '../daw/model/ids.js';
+import { describeZoom, recallZoom } from '../daw/model/workspace-view.js';
+import {
+  clearLocation, describeLocation, locationAt, memoryLocations, recallLocation,
+  slotForKey, storeLocation,
+} from '../daw/model/memory-locations.js';
+import { SNAP_LABELS, describeSnap } from '../daw/model/snap-modes.js';
+import { describeFill, repeatFill } from '../daw/edit/repeat-fill.js';
 import {
   clearRange, crossfadeAt, duplicateSelection, fadeToCursor, healSeparation,
-  nudgeClipGain, nudgeSelection, selectionLength, separateAt, trimToSelection, hasRange,
+  nudgeClipGain, nudgeSelection, overlapsSelection, selectionLength, separateAt,
+  trimToSelection, hasRange,
   type TimeSelection,
 } from '../daw/edit/clip-edit.js';
 import { compRange, cyclePlaylist } from '../daw/edit/comping.js';
+import { nudgeClipPitch, resetClipPitch } from '../daw/edit/clip-edit.js';
+import { clipPitch, describePitch } from '../daw/model/clip-pitch.js';
+import { fitRange } from '../daw/model/viewport.js';
+import { describeGroup, editGroupsOf } from '../daw/edit/edit-groups.js';
+import { hiddenCount, setTracksHidden, showAllTracks } from '../daw/model/stacks.js';
+import {
+  channelSettings, describeChannel, pasteChannelSettings,
+} from '../daw/edit/channel-ops.js';
+import { addGroup, createGroup, removeGroup } from '../daw/model/session-ops.js';
+import { duplicateTrack } from '../daw/edit/track-ops.js';
+import { formatLabel, TIME_FORMATS } from '../daw/model/spot-time.js';
+import { alignClipToGuide, describeAlign } from '../daw/edit/align-actions.js';
+import { consolidationSpans, describeOutcome, outcomeOf } from '../daw/edit/consolidate.js';
 import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
 import {
   addTrack, createTrack, findTrack, sessionEndSec,
 } from '../daw/model/session-ops.js';
-import { clearAllMute, clearAllSolo, toggleMute, toggleSolo } from '../daw/model/mixer-math.js';
+import {
+  clearAllMute, clearAllSolo, setSoloSafe, soloSafeCount, toggleMute, toggleSolo,
+} from '../daw/model/mixer-math.js';
 import { createSession } from '../daw/model/session-ops.js';
 import {
   deserializeDawSession, importSessionData, serializeDawSession,
@@ -31,14 +60,16 @@ import {
 import { isEmptyPlan, planDrop } from '../daw/model/drop-target.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import {
-  bounceSession, commitTrack, consolidateSelection, freezeTrack, renderSession, sessionRange,
+  bounceSelection, bounceSession, commitTrack, consolidateSelection, freezeTrack,
+  renderSession, sessionRange,
   stageForMastering, unfreezeTrack,
 } from '../daw/engine/offline-render.js';
 import {
-  handoffFileName, handoffMessage, handoffProblem,
+  handoffFileName, handoffProblem, stageMessage,
 } from '../daw/edit/master-handoff.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { useAppStore } from '../stores/appStore.js';
+import { useWorkspaceStore } from '../stores/workspaceStore.js';
 import { useReferenceStore } from '../stores/referenceStore.js';
 import {
   autoWarpClip, setWarpEnabled, unwarpClip, warpClipToTempo,
@@ -72,6 +103,7 @@ import {
 } from '../daw/edit/track-delay-ops.js';
 import { useMidiEditorStore, currentGridBeat } from '../stores/midiEditorStore.js';
 import { updateClip, trackClips, updateTrack } from '../daw/model/session-ops.js';
+import { visibleTracks } from '../daw/model/stacks.js';
 import { findLane } from '../daw/model/automation.js';
 import {
   addTempoEvent, barBeatAt, beatsPerBar, meterAtBeat, secToBeat, tempoAtBeat,
@@ -81,7 +113,7 @@ import {
 import {
   availableTargets, ensureLane, setLaneVisible, visibleLanes,
 } from '../daw/edit/automation-lanes.js';
-import type { AutomationMode, Clip, DawSession } from '../daw/model/types.js';
+import type { AutomationMode, Clip, DawSession, Track, TrackId } from '../daw/model/types.js';
 import {
   quantizeNotes, humanizeNotes, transposeNotes, nudgeVelocity, applyLegato,
 } from '../daw/edit/midi-edit.js';
@@ -99,7 +131,7 @@ import {
   type PasteMode,
 } from '../daw/edit/clipboard.js';
 import { snapDistanceMs, snapSecToZero } from '../daw/edit/zero-cross.js';
-import { describeStrip, findSoundRegions, stripClipSilence } from '../daw/edit/strip-silence.js';
+
 import { getCached, monoSum } from '../daw/engine/audio-cache.js';
 import {
   applyNormalize, cleanClipName, describeNormalize, measureClip, normalizePlan,
@@ -123,8 +155,15 @@ import type { CommandId } from './definitions.js';
 export type DawCommandId =
   | 'daw.open' | 'daw.toggleWindow'
   | 'daw.tabNext' | 'daw.tabPrev' | 'daw.toggleTabToTransient'
-  | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate' | 'daw.clearRange'
+  | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate'
+  | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
+  | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
+  | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
+  | 'daw.quantizeAudio' | 'daw.hideTracks' | 'daw.showAllTracks'
+  | 'daw.copyChannel' | 'daw.pasteChannel'
+  | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
+  | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
@@ -157,9 +196,21 @@ export type DawCommandId =
   | 'daw.addChord' | 'daw.openVocalEditor'
   | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
   | 'daw.copy' | 'daw.cut' | 'daw.cutRipple' | 'daw.paste' | 'daw.pasteInsert'
-  | 'daw.insertSilence' | 'daw.stripSilence' | 'daw.snapZeroCross'
+  | 'daw.insertSilence' | 'daw.stripSilence' | 'daw.alignToGuide' | 'daw.snapZeroCross'
   | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip'
-  | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown';
+  | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown'
+  | MemCommandId
+  | 'daw.clearMemory' | 'daw.cycleSnapMode' | 'daw.fillSelection'
+  | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe'
+  | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
+  | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
+  | ZoomCommandId;
+
+/** One store and one recall verb per zoom preset. */
+export type ZoomCommandId = `daw.zoomStore.${ZoomDigit}` | `daw.zoomRecall.${ZoomDigit}`;
+
+/** One store and one recall verb per memory slot. */
+export type MemCommandId = `daw.memStore.${MemDigit}` | `daw.memRecall.${MemDigit}`;
 
 export interface DawCommandDeps {
   notify: (message: string, type?: NotifyType) => void;
@@ -189,6 +240,75 @@ function selectionOrPlayhead(daw: DawState): TimeSelection {
 export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, CommandFn> {
   const { notify, daw, invoke, openWorkspace } = deps;
   const marks = deps.transients ?? transientsFor;
+
+  /**
+   * The ten zoom-preset verbs, generated the same way as the memory ones and
+   * for the same reason: a store key with no matching recall key is a bug you
+   * only find when you need the view back.
+   */
+  const zoomCommands = (): Record<ZoomCommandId, CommandFn> => {
+    const out = {} as Record<ZoomCommandId, CommandFn>;
+    for (const digit of ZOOM_DIGITS) {
+      const slot = Number(digit);
+      out[`daw.zoomStore.${digit}`] = () => {
+        const state = daw();
+        state.storeZoomSlot(slot);
+        notify(`줌 프리셋 ${slot} 저장 — ${describeZoom({
+          pxPerSec: state.pxPerSec, scrollSec: state.scrollSec,
+        })}`);
+      };
+      out[`daw.zoomRecall.${digit}`] = () => {
+        const state = daw();
+        const view = recallZoom(state.zoomSlots, slot);
+        if (!view) {
+          notify(`줌 프리셋 ${slot} 이 비어 있습니다 — Shift+F${slot + 5} 로 저장`, 'warning');
+          return;
+        }
+        state.recallZoomSlot(slot);
+        notify(`줌 프리셋 ${slot} — ${describeZoom(view)}`);
+      };
+    }
+    return out;
+  };
+
+  /**
+   * The twenty memory-location verbs, generated from the digit list.
+   *
+   * Generated rather than written out because a store key with no matching
+   * recall key is a bug you only find when you need the location back, and
+   * forty near-identical hand-written entries is exactly where that happens.
+   */
+  const memoryCommands = (): Record<MemCommandId, CommandFn> => {
+    // The cast is on an EMPTY object that the loop below then fills for every
+    // digit in MEM_DIGITS — the same list the id type is built from, so the
+    // record cannot come out with a key missing.
+    const out = {} as Record<MemCommandId, CommandFn>;
+    for (const digit of MEM_DIGITS) {
+      const slot = slotForKey(digit) as number;
+      out[`daw.memStore.${digit}`] = () => {
+        const state = daw();
+        const sel = currentSelection(state);
+        const req = hasRange(sel) && sel.trackIds.length > 0
+          ? { timeSec: sel.startSec, endSec: sel.endSec, trackIds: sel.trackIds }
+          : { timeSec: state.playheadSec };
+        state.apply((s) => storeLocation(s, slot, req));
+        const stored = locationAt(daw().session, slot);
+        notify(stored ? `저장 — ${describeLocation(stored)}` : `메모리 위치 ${slot} 저장`);
+      };
+      out[`daw.memRecall.${digit}`] = () => {
+        const state = daw();
+        const recall = recallLocation(state.session, slot);
+        if (!recall) {
+          notify(`메모리 위치 ${slot} 이 비어 있습니다 — Mod+Shift+${digit} 로 저장`, 'warning');
+          return;
+        }
+        state.seek(recall.playheadSec);
+        if (recall.selection) state.setSelection(recall.selection);
+        notify(describeLocation(locationAt(state.session, slot) as NonNullable<ReturnType<typeof locationAt>>));
+      };
+    }
+    return out;
+  };
 
   // ── Key Editor helpers ──────────────────────────────────────────────────
 
@@ -308,6 +428,31 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     notify(`${semitones > 0 ? '+' : ''}${semitones} 반음`);
   };
 
+  /**
+   * Transpose the clips under the cursor.
+   *
+   * Audio only, and it says so: pressing it on a MIDI part would otherwise
+   * look broken next to `daw.transposeUp`, which is the MIDI one.
+   */
+  const clipPitchBy = (semitones: number): void => {
+    const sel = selectionOrPlayhead(daw());
+    const range = hasRange(sel) ? sel : clipRangeAtPlayhead(daw());
+    if (!range) { notify('클립 위에 커서를 두세요', 'warning'); return; }
+    let landed = 0;
+    daw().apply((s) => {
+      const next = nudgeClipPitch(s, range, semitones);
+      for (const trackId of range.trackIds) {
+        const track = findTrack(next, trackId);
+        if (!track) continue;
+        for (const c of trackClips(track)) {
+          if (c.kind === 'audio' && overlapsSelection(c, range)) landed = clipPitch(c);
+        }
+      }
+      return next;
+    });
+    notify(`클립 피치 ${describePitch(landed)}`);
+  };
+
   const needSelection = (): TimeSelection | null => {
     const sel = currentSelection(daw());
     if (!hasRange(sel)) { notify('편집할 구간을 먼저 선택하세요', 'warning'); return null; }
@@ -395,6 +540,21 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       }
     },
 
+    'daw.bounceSelection': async () => {
+      const sel = needSelection();
+      if (!sel) return;
+      const spans = consolidationSpans(daw().session, sel);
+      if (spans.length === 0) { notify('선택 안에 오디오 클립이 없습니다', 'warning'); return; }
+      notify(`바운스 렌더링 중… (${describeOutcome(outcomeOf(spans))})`);
+      try {
+        const result = await bounceSelection(daw().session, sel);
+        daw().apply(() => result.session);
+        notify(`바운스 완료 — ${describeOutcome(result.outcome)}`, 'success');
+      } catch (err) {
+        notify(`바운스 실패: ${(err as Error).message}`, 'error');
+      }
+    },
+
     'daw.clipGainUp':   () => {
       const sel = selectionOrPlayhead(daw());
       const range = hasRange(sel) ? sel : clipRangeAtPlayhead(daw());
@@ -409,6 +569,225 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!range) { notify('클립 위에 커서를 두세요', 'warning'); return; }
       daw().apply((s) => nudgeClipGain(s, range, -CLIP_GAIN_STEP_DB));
       notify(`클립 게인 −${CLIP_GAIN_STEP_DB} dB`);
+    },
+
+    /**
+     * Frame the selection, or the whole session when there is none.
+     *
+     * Both DAWs have this on one key because it is the gesture you make
+     * between every other gesture — the zoom you set to do one edit is never
+     * the zoom for the next one.
+     */
+    /**
+     * Make an edit group from the selected tracks.
+     *
+     * Named by what is in it, not "Group 1": a session with three of those
+     * is a session where nobody remembers which is the drums.
+     */
+    /**
+     * Open audio quantize on the selection.
+     *
+     * A separate verb from Auto-Warp rather than a replacement for it.  They
+     * answer different questions: Auto-Warp asks "what tempo is this loop and
+     * put it on the grid", quantize asks "this take is at the session's tempo
+     * and some hits are late".  Collapsing them would mean estimating a tempo
+     * for material whose tempo is already known.
+     */
+    /** Hide the selected tracks from the arrange window — they still play. */
+    'daw.hideTracks': () => {
+      const state = daw();
+      const ids = currentSelection(state).trackIds.length > 0
+        ? currentSelection(state).trackIds : targetTrackIds();
+      const hideable = ids.filter((id) => findTrack(state.session, id)?.kind !== 'master');
+      if (hideable.length === 0) { notify('숨길 트랙을 고르세요', 'warning'); return; }
+      state.apply((s) => setTracksHidden(s, hideable, true));
+      notify(`${hideable.length}개 트랙 숨김 — 소리는 그대로 납니다 (Mod+Alt+Shift+Y 로 복구)`);
+    },
+
+    'daw.showAllTracks': () => {
+      const state = daw();
+      const count = hiddenCount(state.session);
+      if (count === 0) { notify('숨겨진 트랙이 없습니다'); return; }
+      state.apply((s) => showAllTracks(s));
+      notify(`${count}개 트랙 다시 표시`);
+    },
+
+    'daw.copyChannel': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      const settings = channelSettings(state.session, trackId);
+      if (!settings) return;
+      state.setChannelClipboard(settings);
+      notify(`채널 복사 — ${describeChannel(settings)}`);
+    },
+
+    /**
+     * Paste onto every selected track, not just one.
+     *
+     * The reason to copy a channel is almost always that several channels
+     * need it, and pasting one at a time is the work the command exists to
+     * remove.
+     */
+    'daw.pasteChannel': () => {
+      const state = daw();
+      const settings = state.channelClipboard;
+      if (!settings) { notify('복사한 채널이 없습니다 — 먼저 Mod+Alt+Shift+C', 'warning'); return; }
+      const ids = currentSelection(state).trackIds.length > 0
+        ? currentSelection(state).trackIds : targetTrackIds();
+      const targets = ids.filter((id) => findTrack(state.session, id)?.kind !== 'master');
+      if (targets.length === 0) { notify('붙여넣을 트랙을 고르세요', 'warning'); return; }
+      state.apply((s) => {
+        let out = s;
+        for (const id of targets) out = pasteChannelSettings(out, id, settings);
+        return out;
+      });
+      notify(`${targets.length}개 채널에 붙여넣기 — ${describeChannel(settings)}`, 'success');
+    },
+
+    'daw.quantizeAudio': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      if (hasRange(sel) && sel.trackIds.length > 0) { state.setQuantizeTarget(sel); return; }
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('클립을 선택하거나 오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      const clip = findClip(state.session, target.trackId, target.clipId);
+      if (!clip) return;
+      state.setQuantizeTarget({
+        startSec: clip.startSec,
+        endSec: clip.startSec + clip.durationSec,
+        trackIds: [target.trackId],
+      });
+    },
+
+    'daw.createEditGroup': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      const ids = sel.trackIds.length > 1 ? sel.trackIds : targetTrackIds();
+      const members = ids.filter((id) => {
+        const t = findTrack(state.session, id);
+        return t !== undefined && t.kind !== 'master';
+      });
+      if (members.length < 2) { notify('트랙을 두 개 이상 선택하세요', 'warning'); return; }
+      const first = findTrack(state.session, members[0]!);
+      const name = `${first?.name ?? '그룹'} 외 ${members.length - 1}`;
+      const symbol = String.fromCharCode(97 + (state.session.groups.length % 26));
+      let made = '';
+      state.apply((s) => {
+        const group = { ...createGroup(name, symbol, members), linkEdit: true };
+        made = describeGroup(group);
+        return addGroup(s, group);
+      });
+      notify(`편집 그룹 — ${made}`, 'success');
+    },
+
+    /**
+     * Drop the edit groups the selected tracks are in.
+     *
+     * The mixer half goes with it.  A group is one thing in the session file
+     * and pretending it is two — an edit group and a fader group at the same
+     * ids — is a distinction nobody asked for.
+     */
+    'daw.dissolveEditGroup': () => {
+      const state = daw();
+      const ids = currentSelection(state).trackIds.length > 0
+        ? currentSelection(state).trackIds
+        : targetTrackIds();
+      const groups = new Set<string>();
+      for (const id of ids) for (const g of editGroupsOf(state.session, id)) groups.add(g.id);
+      if (groups.size === 0) { notify('선택한 트랙에 편집 그룹이 없습니다', 'warning'); return; }
+      state.apply((s) => {
+        let out = s;
+        for (const id of groups) out = removeGroup(out, id);
+        return out;
+      });
+      notify(`편집 그룹 ${groups.size}개 해제`);
+    },
+
+    /**
+     * Suspend every group, or bring them all back.
+     *
+     * Pro Tools' escape hatch, and the reason groups are usable at all: the
+     * one edit you need to make on a single member should not cost you the
+     * group you spent the session building.
+     */
+    'daw.toggleGroupsEnabled': () => {
+      const state = daw();
+      const any = state.session.groups.some((g) => g.enabled);
+      state.apply((s) => ({
+        ...s,
+        groups: s.groups.map((g) => ({ ...g, enabled: !any })),
+      }));
+      notify(any ? '그룹 일시 정지 — 개별 편집' : '그룹 다시 켬');
+    },
+
+    'daw.zoomToSelection': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      const range = hasRange(sel)
+        ? { startSec: sel.startSec, endSec: sel.endSec }
+        : { startSec: 0, endSec: sessionEndSec(state.session) };
+      const view = fitRange(range.startSec, range.endSec, state.laneWidthPx);
+      if (!view) { notify('맞출 구간이 없습니다', 'warning'); return; }
+      state.setPxPerSec(view.pxPerSec);
+      state.setScrollSec(view.scrollSec);
+      notify(hasRange(sel) ? '선택 구간에 맞춤' : '세션 전체에 맞춤');
+    },
+
+    'daw.toggleFollowPlayhead': () => {
+      const state = daw();
+      const next = !state.followPlayhead;
+      state.setFollowPlayhead(next);
+      notify(next ? '재생헤드 따라가기 켬' : '재생헤드 따라가기 끔');
+    },
+
+    /**
+     * Play from where the selection starts.
+     *
+     * Space is left alone.  It plays from the play head in both DAWs and in
+     * every muscle memory built on them; quietly redefining it would be the
+     * kind of "improvement" that makes an app feel unpredictable.
+     */
+    'daw.playFromSelection': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      const from = hasRange(sel) ? sel.startSec : state.playheadSec;
+      state.seek(from);
+      if (!state.isPlaying) state.togglePlay();
+    },
+
+    'daw.duplicateTrack': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      const source = findTrack(state.session, trackId);
+      if (!source) return;
+      let name = source.name;
+      state.apply((s) => {
+        const next = duplicateTrack(s, trackId);
+        const made = next.tracks.find((t) => !s.tracks.some((o) => o.id === t.id));
+        if (made) name = made.name;
+        return next;
+      });
+      notify(`트랙 복제 — ${name}`, 'success');
+    },
+
+    'daw.cycleRulerFormat': () => {
+      const state = daw();
+      const at = TIME_FORMATS.indexOf(state.rulerFormat);
+      const next = TIME_FORMATS[(at + 1) % TIME_FORMATS.length] ?? 'barsBeats';
+      state.setRulerFormat(next);
+      notify(`눈금자 — ${formatLabel(next)}`);
+    },
+
+    'daw.clipPitchUp':   () => clipPitchBy(1),
+    'daw.clipPitchDown': () => clipPitchBy(-1),
+    'daw.clipPitchReset': () => {
+      const sel = selectionOrPlayhead(daw());
+      const range = hasRange(sel) ? sel : clipRangeAtPlayhead(daw());
+      if (!range) { notify('클립 위에 커서를 두세요', 'warning'); return; }
+      daw().apply((s) => resetClipPitch(s, range));
+      notify('클립 피치 원음');
     },
 
     'daw.nudgeForward': () => {
@@ -534,25 +913,33 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       // Asked before the render, not after: every reason this could fail is
       // knowable now, and spending ten seconds to report one of them reads as
       // a broken button rather than a careful one.
-      const problem = handoffProblem(state.session, { queued: audio.queue.length });
+      const problem = handoffProblem(state.session, {
+        queued: audio.queue.length,
+        replacesExisting: audio.hasReplaceableRow(state.session.id),
+      });
       if (problem) { notify(problem, 'warning'); return; }
 
       notify('믹스를 렌더링하는 중…');
       try {
         const path = await stageForMastering(state.session);
-        const before = useAudioStore.getState().queue.length;
-        useAudioStore.getState().addFilesToQueue([path]);
-        const after = useAudioStore.getState().queue.length;
-        if (after === before) {
-          // The queue silently drops what it cannot hold.  It was checked
-          // above, so getting here means something else filled it in the
-          // seconds the render took — rare, and worth saying out loud rather
-          // than leaving the person looking at a list their mix is not in.
+        // The same staging the toolbar button does.  This used to append, so
+        // the shortcut quietly grew the list one row per press while the
+        // button next to it replaced — two ways to do one thing, disagreeing.
+        const staged = useAudioStore.getState().stageSessionInQueue(state.session.id, path);
+        if (staged.outcome === 'full') {
+          // Checked above, so getting here means something else filled the
+          // queue in the seconds the render took.  Rare, and worth saying out
+          // loud rather than leaving the person looking at a list their mix is
+          // not in — and the render it produced has nowhere to go.
+          void invoke('daw:discard-staged', { path }).catch(() => undefined);
           notify('대기열에 넣지 못했습니다 — 홈에서 자리를 만든 뒤 다시 보내세요', 'error');
           return;
         }
+        if (staged.replacedPath) {
+          void invoke('daw:discard-staged', { path: staged.replacedPath }).catch(() => undefined);
+        }
         useAppStore.getState().setPage('home');
-        notify(handoffMessage(handoffFileName(state.session.name), after), 'success');
+        notify(stageMessage(handoffFileName(state.session.name), staged.outcome, staged.queued), 'success');
       } catch (err) {
         notify(`마스터링으로 보내지 못했습니다: ${(err as Error).message}`, 'error');
       }
@@ -728,42 +1115,294 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     /**
-     * Cut the silence out of the clip under the playhead.
+     * Open Detect Silence on the selection.
      *
-     * One clip, not the whole track: stripping is a decision about a take, and
-     * a threshold that suits the vocal will shred the drum overheads.
+     * It used to cut immediately, on four numbers nobody could reach.  Both
+     * halves were wrong for this job: a threshold that suits a close vocal
+     * shreds a room mic, and a strip is destructive enough that "show me how
+     * much that takes out" is the first thing anyone asks.  The dialog
+     * answers both before anything is cut.
+     *
+     * The selection, not the clip under the play head — the routine this
+     * belongs to is "clean the take, then bounce it", and one clip at a time
+     * is the hand editing the command replaces.  With no range selected it
+     * still falls back to the clip under the cursor, so the old gesture keeps
+     * working.
      */
-    'daw.stripSilence': () => {
+    /**
+     * Align every other selected track to the topmost one.
+     *
+     * The guide is the top row on purpose: a lead sits above its doubles in
+     * every session anyone has ever built, and a rule you can see beats a
+     * dialog asking which of two identical-looking takes is the reference.
+     *
+     * Clips are paired by overlap.  A double that runs under two phrases of
+     * the lead is aligned to the phrase it actually sits on, not to whichever
+     * one happens to be first in the list.
+     */
+    'daw.alignToGuide': () => {
       const state = daw();
-      const target = audioClipAtPlayhead(state);
-      if (!target) { notify('오디오 클립 위에 커서를 두세요', 'warning'); return; }
-      const clip = findClip(state.session, target.trackId, target.clipId);
-      if (!clip) return;
-      const cached = getCached(clip.fileId);
-      if (!cached) { notify('오디오가 아직 읽히지 않았습니다', 'warning'); return; }
-
-      const mono = monoSum(cached.buffer);
-      const rate = cached.buffer.sampleRate;
-      // The analysis runs over the clip's own span of the file, so trimming a
-      // take does not drag the neighbouring phrase into the decision.
-      const from = Math.max(0, Math.round(clip.offsetSec * rate));
-      const to = Math.min(mono.length, Math.round((clip.offsetSec + clip.durationSec) * rate));
-      const regions = findSoundRegions(mono.subarray(from, to), rate);
-      if (regions.length === 0) {
-        notify('자를 무음을 찾지 못했습니다 — 임계값을 올려 보세요', 'warning');
+      const sel = currentSelection(state);
+      const order = visibleTracks(state.session).map((t) => t.id);
+      const rows = order.filter((id) => sel.trackIds.includes(id));
+      if (rows.length < 2) {
+        notify('가이드 트랙과 맞출 트랙을 함께 선택하세요 — 맨 위가 가이드입니다', 'warning');
         return;
       }
+      const guideTrack = findTrack(state.session, rows[0]!);
+      if (!guideTrack) return;
+      const guideClips = trackClips(guideTrack).filter(
+        (c) => c.kind === 'audio' && overlapsSelection(c, sel));
+      if (guideClips.length === 0) { notify('가이드 트랙에 오디오가 없습니다', 'warning'); return; }
 
-      let summary = '';
-      state.apply((s: DawSession) => {
-        const result = stripClipSilence(s, target.trackId, target.clipId, regions);
-        summary = describeStrip(result);
-        return result.session;
+      let done = 0;
+      let failed = 0;
+      let last = '';
+      let firstError = '';
+      let next = state.session;
+      for (const trackId of rows.slice(1)) {
+        const track = findTrack(next, trackId);
+        if (!track) continue;
+        for (const clip of trackClips(track)) {
+          if (clip.kind !== 'audio' || !overlapsSelection(clip, sel)) continue;
+          const guide = guideClips.find(
+            (g) => g.startSec < clip.startSec + clip.durationSec && g.startSec + g.durationSec > clip.startSec);
+          if (!guide) continue;
+          try {
+            const result = alignClipToGuide(
+              next,
+              { trackId: guideTrack.id, clipId: guide.id },
+              { trackId, clipId: clip.id },
+            );
+            next = result.session;
+            last = describeAlign(result);
+            done += 1;
+          } catch (err) {
+            failed += 1;
+            if (!firstError) firstError = (err as Error).message;
+          }
+        }
+      }
+      if (done === 0) { notify(`정렬 실패: ${firstError || '맞출 클립을 찾지 못했습니다'}`, 'error'); return; }
+      state.apply(() => next);
+      notify(
+        `${done}개 클립 정렬 — ${last}${failed > 0 ? ` · ${failed}개 실패 (${firstError})` : ''}`,
+        'success',
+      );
+    },
+
+    'daw.stripSilence': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      if (hasRange(sel) && sel.trackIds.length > 0) { state.setStripTarget(sel); return; }
+
+      const target = audioClipAtPlayhead(state);
+      if (!target) { notify('클립을 선택하거나 오디오 클립 위에 커서를 두세요', 'warning'); return; }
+      const clip = findClip(state.session, target.trackId, target.clipId);
+      if (!clip) return;
+      state.setStripTarget({
+        startSec: clip.startSec,
+        endSec: clip.startSec + clip.durationSec,
+        trackIds: [target.trackId],
       });
-      notify(summary, 'success');
     },
 
     // ── Track header ──────────────────────────────────────────────────────
+
+    /**
+     * Store the play head — or the selection, when there is one — in a slot.
+     *
+     * A selection is stored WITH its tracks, so recalling it puts you back on
+     * the same three tracks in the same eight bars.  Storing a bare play head
+     * deliberately does NOT store an empty selection: recalling it would then
+     * wipe whatever range you had, which is not what "go to the chorus" means.
+     */
+    ...memoryCommands(),
+
+    'daw.clearMemory': () => {
+      const state = daw();
+      const count = memoryLocations(state.session).length;
+      if (count === 0) { notify('저장된 메모리 위치가 없습니다'); return; }
+      state.apply((s) => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].reduce((acc, n) => clearLocation(acc, n), s));
+      notify(`메모리 위치 ${count}개 삭제`);
+    },
+
+    'daw.cycleSnapMode': () => {
+      const state = daw();
+      state.cycleSnapMode();
+      const next = daw().snapMode;
+      notify(`${SNAP_LABELS[next]} — ${describeSnap(next, state.gridDivision)}`);
+    },
+
+    /**
+     * Repeat the clipboard until the selected range is full.
+     *
+     * The selection's own tracks are the targets; `currentSelection` fills in
+     * the focused track when the range was made without one, which is the case
+     * after a ruler drag.
+     */
+    'daw.fillSelection': () => {
+      const state = daw();
+      const board = state.clipboard;
+      if (!board) { notify('먼저 복사하세요 (Mod+C)', 'warning'); return; }
+      const sel = currentSelection(state);
+      if (!hasRange(sel) || sel.trackIds.length === 0) {
+        notify('채울 구간을 먼저 선택하세요', 'warning');
+        return;
+      }
+      const result = repeatFill(state.session, board, sel);
+      if (result.session === state.session) {
+        notify(result.problems[0] ?? '채울 것이 없습니다', 'warning');
+        return;
+      }
+      state.apply(() => result.session);
+      for (const problem of result.problems) notify(problem, 'warning');
+      notify(describeFill(result.plan));
+    },
+
+    /**
+     * Open the rename dialog on the selected tracks, or on the selected clips
+     * when the selection is a range.
+     *
+     * Clips first: a range selection on three tracks is far more likely to
+     * mean "rename these takes" than "rename these three tracks", and the
+     * tracks are one Escape and a header click away either way.
+     */
+    'daw.batchRename': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      if (hasRange(sel) && sel.trackIds.length > 0) {
+        const items = sel.trackIds.flatMap((trackId) => {
+          const track = findTrack(state.session, trackId);
+          return (track ? trackClips(track) : [])
+            .filter((c) => overlapsSelection(c, sel))
+            .map((c) => ({ id: c.id, name: c.name, trackId }));
+        });
+        if (items.length > 0) { state.setRenameTarget({ kind: 'clip', items }); return; }
+      }
+      const trackIds = targetTrackIds();
+      const tracks = trackIds
+        .map((id) => findTrack(state.session, id))
+        .filter((t): t is NonNullable<typeof t> => !!t)
+        .map((t) => ({ id: t.id, name: t.name }));
+      if (tracks.length === 0) { notify('이름을 바꿀 트랙이나 클립을 고르세요', 'warning'); return; }
+      state.setRenameTarget({ kind: 'track', items: tracks });
+    },
+
+    /**
+     * Mark the selected channels solo-safe, or clear them.
+     *
+     * Set rather than toggle across a selection: toggling four tracks where
+     * two are already safe leaves you with two safe and two not, which is
+     * never what selecting four and pressing one key meant.  The majority
+     * decides the direction.
+     */
+    'daw.toggleSoloSafe': () => {
+      const state = daw();
+      const ids = targetTrackIds();
+      if (ids.length === 0) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      const tracks = ids
+        .map((id: TrackId) => findTrack(state.session, id))
+        .filter((t): t is Track => !!t && t.kind !== 'master');
+      if (tracks.length === 0) { notify('마스터는 솔로 세이프가 필요 없습니다'); return; }
+      const safe = !(tracks.filter((t) => t.soloSafe).length > tracks.length / 2);
+      state.apply((s) => setSoloSafe(s, tracks.map((t) => t.id), safe));
+      const total = soloSafeCount(daw().session);
+      notify(safe
+        ? `솔로 세이프 ${tracks.length}개 — 다른 트랙 솔로에도 소리가 납니다 (전체 ${total}개)`
+        : `솔로 세이프 해제 ${tracks.length}개 (남은 ${total}개)`);
+    },
+
+    ...zoomCommands(),
+
+    'daw.openPool': () => {
+      const state = daw();
+      state.setPoolOpen(!state.poolOpen);
+      if (!state.poolOpen) {
+        notify(describePool(summarisePool(buildPool(state.session))));
+      }
+    },
+
+    /**
+     * Batch fade over the selection.
+     *
+     * Opens the dialog rather than applying straight away: the fade length and
+     * which edges are the whole decision, and a key that silently puts 5 ms on
+     * forty clips is one nobody will press twice.
+     */
+    'daw.batchFade': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      if (!hasRange(sel) || sel.trackIds.length === 0) {
+        notify('페이드를 넣을 구간을 선택하세요', 'warning');
+        return;
+      }
+      if (countSelectedClips(state.session, sel) === 0) {
+        notify('선택 구간에 클립이 없습니다', 'warning');
+        return;
+      }
+      state.setFadeTarget(sel);
+    },
+
+    'daw.clearFades': () => {
+      const state = daw();
+      const sel = currentSelection(state);
+      if (!hasRange(sel) || sel.trackIds.length === 0) {
+        notify('페이드를 지울 구간을 선택하세요', 'warning');
+        return;
+      }
+      const before = state.session;
+      state.apply((s) => clearFades(s, sel));
+      notify(daw().session === before ? '지울 페이드가 없습니다' : '페이드 제거');
+    },
+
+    'daw.trackNote': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      const track = findTrack(state.session, trackId);
+      if (!track) return;
+      const typed = globalThis.prompt?.(`${track.name} 메모`, trackNote(track));
+      if (typed === null || typed === undefined) return;
+      state.apply((s) => setTrackNote(s, trackId, typed));
+      notify(typed.trim() === '' ? '메모 삭제' : `메모 저장 — ${track.name}`);
+    },
+
+    'daw.toggleLinkSelection': () => {
+      const state = daw();
+      const next = !state.linkSelection;
+      state.setLinkSelection(next);
+      notify(next
+        ? '선택 ↔ 루프 연동 켬 — 편집 선택이 루프 구간을 따라갑니다'
+        : '선택 ↔ 루프 연동 끔');
+    },
+
+    'daw.mixSnapshot': () => {
+      const state = daw();
+      const name = globalThis.prompt?.('스냅샷 이름', `믹스 ${state.snapshots.length + 1}`);
+      if (name === null || name === undefined) return;
+      const snapshot = takeSnapshot(state.session, name, nextId('snap'));
+      state.addSnapshot(snapshot);
+      notify(`스냅샷 저장 — ${snapshot.name} (채널 ${snapshot.channels.length}개)`);
+    },
+
+    'daw.mixSnapshotPanel': () => {
+      const state = daw();
+      if (state.snapshots.length === 0) {
+        notify('저장된 스냅샷이 없습니다 — Mod+Alt+Shift+M 으로 찍으세요', 'warning');
+        return;
+      }
+      // Say what the newest one would change; the panel is the mixer's own.
+      const latest = state.snapshots[state.snapshots.length - 1] as NonNullable<
+        (typeof state.snapshots)[number]>;
+      notify(`${latest.name} — ${describeSnapshot(diffSnapshot(state.session, latest))}`);
+      state.setWindow('mix');
+    },
+
+    'daw.historyPanel': () => {
+      const state = daw();
+      state.setHistoryOpen(!state.historyOpen);
+    },
 
     'daw.renameTrack': () => {
       const state = daw();
@@ -1732,6 +2371,24 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
     'transport.gotoLoopStart': () => { daw().seek(daw().loopStartSec); },
     'transport.gotoLoopEnd':   () => { daw().seek(daw().loopEndSec); },
 
+    // F11 is Cubase's VST Instruments rack, and in the DAW that is what it
+    // has to be.  On the mastering page the same key still opens the advanced
+    // parameter panel — the two screens have different work, and the key
+    // belongs to whichever one you are looking at.
+    'window.vstEditor': () => {
+      const ws = useWorkspaceStore.getState();
+      ws.togglePanel('vstEditor');
+      notify(ws.panels.vstEditor ? '인스트루먼트 랙 (F11)' : '인스트루먼트 랙 닫힘');
+    },
+
+    // F4 — every input and output in one window, and the reason the keyboard
+    // is silent when it is.
+    'window.deviceSetup': () => {
+      const ws = useWorkspaceStore.getState();
+      ws.togglePanel('deviceSetup');
+      notify(ws.panels.deviceSetup ? '디바이스 셋업 (F4)' : '디바이스 셋업 닫힘');
+    },
+
     'view.zoomInH':  () => { daw().setPxPerSec(daw().pxPerSec * 1.5); },
     'view.zoomOutH': () => { daw().setPxPerSec(daw().pxPerSec / 1.5); },
 
@@ -1786,11 +2443,20 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
       notify('커서에서 분리');
     },
 
+    /**
+     * Snap on / off.
+     *
+     * It used to flip `editMode` between Grid and Slip, because snapping was
+     * a side effect of being in Grid mode.  Those are two different questions
+     * — Slip says a drag leaves its neighbours alone, Grid said it also snaps
+     * — and tying them together meant you could not have one without the
+     * other.  Now J answers only the snap question; Alt+J picks WHICH snap.
+     */
     'edit.toggleSnap': () => {
       const state = daw();
-      const next = state.editMode === 'grid' ? 'slip' : 'grid';
-      state.setEditMode(next);
-      notify(`${next === 'grid' ? 'GRID' : 'SLIP'} 모드`);
+      const next = state.snapMode === 'off' ? 'grid' : 'off';
+      state.setSnapMode(next);
+      notify(next === 'off' ? '스냅 끔' : describeSnap(next, state.gridDivision));
     },
 
     'track.solo': () => {
@@ -1835,7 +2501,7 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
     },
 
     'file.new': () => {
-      daw().loadSession(createSession('Untitled Session'));
+      daw().loadSession(createSession());
       notify('새 세션', 'success');
     },
     // Mod+O in the mastering app fills the queue and jumps to the home screen.

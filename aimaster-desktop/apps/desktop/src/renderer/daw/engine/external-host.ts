@@ -90,10 +90,6 @@ export function setHostCapabilities(next: HostCapabilities): void {
   capabilities = next;
 }
 
-export function hostCapabilities(): HostCapabilities {
-  return capabilities;
-}
-
 export function requirements(): readonly HostRequirement[] {
   return [
   {
@@ -178,11 +174,4 @@ export function hostability(format: PluginFormat): Hostability {
     hostable: false,
     reason: `${missing[0]!.what} 필요`,
   };
-}
-
-/** Every format's current status, for the manager's summary. */
-export function hostabilitySummary(): Array<{ format: PluginFormat; status: Hostability }> {
-  return (['vst3', 'au', 'clap', 'vst2'] as const).map((format) => ({
-    format, status: hostability(format),
-  }));
 }

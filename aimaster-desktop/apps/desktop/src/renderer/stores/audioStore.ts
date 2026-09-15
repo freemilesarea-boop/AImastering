@@ -6,6 +6,7 @@ import type {
   MasteringStyle,
   LimiterStrength,
 } from '@aimaster/shared-types';
+import type { DitherMode } from '../daw/audio/dither.js';
 import type { RevisionGroup, RevisionInput } from '../audio/revisions/revision-types.js';
 import {
   addRevision as addRevisionToGroup,
@@ -14,6 +15,7 @@ import {
   renameRevision as renameInGroup,
   toggleFavorite as toggleFavoriteInGroup,
 } from '../audio/revisions/revision-logic.js';
+import { savedSongPaths, loadSongSettings } from '../audio/session/song-settings.js';
 
 // ── Structured error ──────────────────────────────────────────────────────────
 
@@ -104,9 +106,47 @@ export interface QueueItem {
   progressStage: string;
   /** Per-file Loui preset override (undefined = use the global options). */
   presetId: string | undefined;
+  /**
+   * The DAW session this row was rendered from, when it came from the mixer.
+   *
+   * Sending the same session again replaces this row instead of adding
+   * another: a person who mixes, sends, adjusts and sends again wants the
+   * newer mix, not two rows called the same thing with no way to tell which
+   * is which.  Files opened from disk have no session and never replace
+   * anything.
+   */
+  sourceSessionId?: string;
+  /**
+   * Where this row's audio came from.  'mix' is a render of a DAW session;
+   * 'file' is something opened from disk.
+   *
+   * Two rows CAN legitimately coexist — the song as delivered and the song as
+   * remixed — and when they do they are called the same thing, because a
+   * session takes its name from the first file dropped into it.  Then nobody
+   * can tell which one to release.  The list has to say.
+   */
+  origin: 'file' | 'mix';
+  /**
+   * Epoch ms of the last Studio save for this file, or undefined.
+   *
+   * A marker only — the settings themselves live in `song-settings`, keyed
+   * by absolute path so they outlive both this queue item and the app
+   * session. This field exists so a queue row can show "저장됨" without
+   * every row parsing storage on every render.
+   */
+  studioSavedAt?: number;
 }
 
 export const MAX_QUEUE_SIZE = 20;
+
+/** What `stageSessionInQueue` did, so the caller can say it out loud. */
+export interface StageResult {
+  outcome: 'added' | 'replaced' | 'added-beside-running' | 'full';
+  /** Rows in the queue after the call. */
+  queued: number;
+  /** The file the replaced row used to point at, so it can be cleaned up. */
+  replacedPath?: string;
+}
 
 // ── Mastering options ─────────────────────────────────────────────────────────
 
@@ -136,6 +176,11 @@ export interface MasteringOptions {
   targetTp: number;
   sampleRate: number;
   bitDepth: 16 | 24;
+  /**
+   * How the word length is reduced.  Only matters at 16-bit, where the
+   * difference is audible on quiet tails — see daw/audio/dither.ts.
+   */
+  dither?: DitherMode | undefined;
   applyAiCorrections: boolean;
   // v3 신규
   limiterStrength: LimiterStrength;
@@ -187,6 +232,7 @@ const defaultOptions: MasteringOptions = {
   targetTp:           -1.0,
   sampleRate:         44100,
   bitDepth:           24,
+  dither:             'tpdf',
   applyAiCorrections: true,
   limiterStrength:    'medium',
   targetLufsExplicit: false,
@@ -201,10 +247,39 @@ interface AudioStore {
   queue: QueueItem[];
   isBatchRunning: boolean;
   addFilesToQueue: (paths: string[]) => void;
+  /**
+   * Put a freshly rendered DAW mix in the queue, replacing the previous
+   * render of that same session.
+   */
+  stageSessionInQueue: (sessionId: string, path: string) => StageResult;
+  /**
+   * Mark the rows a session was built from, so sending its mix REPLACES them
+   * instead of adding a twin.
+   *
+   * Opening the DAW adopts whatever is on the home screen, and those rows kept
+   * no memory of it.  So the mix came back as a second row with the same name
+   * as the file it was made from — same song, two entries, no way to tell
+   * which to release.
+   */
+  adoptQueueIntoSession: (sessionId: string, paths: readonly string[]) => void;
+  /** Whether a send of this session would replace a row rather than add one. */
+  hasReplaceableRow: (sessionId: string) => boolean;
   removeFromQueue: (id: string) => void;
   clearQueue: () => void;
   updateQueueItem: (id: string, updates: Partial<Omit<QueueItem, 'id'>>) => void;
   setIsBatchRunning: (v: boolean) => void;
+  /**
+   * The one preset the whole batch is finished with, or null.
+   *
+   * Deliberately global rather than per-item: an album is meant to come out
+   * at one loudness, and a per-song copy of this would be twenty chances to
+   * end up with one track 3 LU quieter than the rest. Per-song intent is
+   * carried by the saved Studio settings instead, which win over this.
+   */
+  albumPresetId: string | null;
+  setAlbumPreset: (id: string | null) => void;
+  /** Re-read which queued files have saved Studio settings. */
+  refreshStudioSaved: () => void;
 
   // ── Single-file (used by AnalysisPage / MasteringPage / ResultPage) ────
   selectedFile: string | null;
@@ -266,7 +341,7 @@ function baseName(p: string): string {
   return p.split('/').pop()?.split('\\').pop() ?? p;
 }
 
-export const useAudioStore = create<AudioStore>((set) => ({
+export const useAudioStore = create<AudioStore>((set, get) => ({
   // ── Queue ──────────────────────────────────────────────────────────────
   queue: [],
   isBatchRunning: false,
@@ -285,9 +360,86 @@ export const useAudioStore = create<AudioStore>((set) => ({
         progress:      0,
         progressStage: '',
         presetId:      undefined,
+        origin:        'file' as const,
       }));
     return { queue: [...s.queue, ...newItems] };
   }),
+
+  hasReplaceableRow: (sessionId) => get().queue.some((i) => (
+    i.sourceSessionId === sessionId
+    && (i.status === 'pending' || i.status === 'done' || i.status === 'error')
+  )),
+
+  stageSessionInQueue: (sessionId, path) => {
+    const before = get().queue;
+    const mine = before.filter((i) => i.sourceSessionId === sessionId);
+
+    // A row that is mid-analysis or mid-master is not ours to yank out from
+    // under the person watching it; the new mix goes in beside it.  But the
+    // NEXT send has to find that new row rather than the running one it was
+    // parked next to — taking the first match would append again, and again,
+    // for as long as the first master lasted.
+    const settled = (i: QueueItem): boolean =>
+      i.status === 'pending' || i.status === 'done' || i.status === 'error';
+    const previous = mine.find(settled);
+    const busy = previous === undefined && mine.length > 0;
+
+    if (previous) {
+      const replacedPath = previous.filePath;
+      set({
+        queue: before.map((item) => {
+          if (item.id !== previous.id) return item;
+          // The analysis, the result and the error describe the OLD mix, so
+          // they are DROPPED rather than set aside — under
+          // `exactOptionalPropertyTypes` an absent key and a key holding
+          // undefined are different things, and leaving them would put a
+          // report under a file nobody rendered.  The per-file preset is a
+          // choice about this song and survives: re-sending a tweaked mix is
+          // not a reason to forget it.
+          const { analysis, masteringResult, error, ...rest } = item;
+          void analysis; void masteringResult; void error;
+          return {
+            ...rest,
+            filePath: path,
+            fileName: baseName(path),
+            origin: 'mix' as const,
+            status: 'pending' as const,
+            progress: 0,
+            progressStage: '',
+          };
+        }),
+      });
+      return { outcome: 'replaced', queued: before.length, replacedPath };
+    }
+
+    if (before.length >= MAX_QUEUE_SIZE) return { outcome: 'full', queued: before.length };
+
+    set({
+      queue: [...before, {
+        id: crypto.randomUUID(),
+        filePath: path,
+        fileName: baseName(path),
+        status: 'pending' as const,
+        progress: 0,
+        progressStage: '',
+        presetId: undefined,
+        sourceSessionId: sessionId,
+        origin: 'mix' as const,
+      }],
+    });
+    return { outcome: busy ? 'added-beside-running' : 'added', queued: before.length + 1 };
+  },
+
+  adoptQueueIntoSession: (sessionId, paths) => {
+    const wanted = new Set(paths);
+    set((s) => ({
+      queue: s.queue.map((item) => (
+        wanted.has(item.filePath) && item.sourceSessionId === undefined
+          ? { ...item, sourceSessionId: sessionId }
+          : item
+      )),
+    }));
+  },
 
   removeFromQueue: (id) => set((s) => ({
     queue: s.queue.filter((i) => i.id !== id),
@@ -302,6 +454,26 @@ export const useAudioStore = create<AudioStore>((set) => ({
   })),
 
   setIsBatchRunning: (v) => set({ isBatchRunning: v }),
+
+  albumPresetId: null,
+  setAlbumPreset: (id) => set({ albumPresetId: id }),
+
+  refreshStudioSaved: () => set((s) => {
+    // One storage read for the whole queue rather than one per row.
+    const saved = new Set(savedSongPaths());
+    let changed = false;
+    const queue = s.queue.map((item) => {
+      const has = saved.has(item.filePath);
+      if (has === (item.studioSavedAt !== undefined)) return item;
+      changed = true;
+      const next = { ...item };
+      if (has) next.studioSavedAt = loadSongSettings(item.filePath)?.savedAt ?? Date.now();
+      else delete next.studioSavedAt;
+      return next;
+    });
+    // Returning the same array when nothing moved keeps subscribers still.
+    return changed ? { queue } : {};
+  }),
 
   // ── Single-file ────────────────────────────────────────────────────────
   selectedFile:    null,

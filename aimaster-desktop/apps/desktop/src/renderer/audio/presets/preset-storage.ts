@@ -39,10 +39,3 @@ export function getLastUsedPreset(): string | null {
     return null;
   }
 }
-
-/** Clear the stored preference (used by tests / "reset"). */
-export function clearLastUsedPreset(): void {
-  const s = store();
-  if (!s) return;
-  try { s.removeItem(STORAGE_KEY); } catch { /* ignore */ }
-}

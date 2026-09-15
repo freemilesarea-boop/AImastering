@@ -9,9 +9,3 @@ const MediaElementContext = React.createContext<HTMLAudioElement | null>(null);
 export function useMediaElement(): HTMLAudioElement | null {
   return React.useContext(MediaElementContext);
 }
-
-export function MediaElementProvider(
-  { value, children }: { value: HTMLAudioElement | null; children: React.ReactNode },
-) {
-  return <MediaElementContext.Provider value={value}>{children}</MediaElementContext.Provider>;
-}

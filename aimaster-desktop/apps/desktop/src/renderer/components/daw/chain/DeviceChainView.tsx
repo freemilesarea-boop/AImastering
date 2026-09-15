@@ -14,7 +14,7 @@ import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import { findTrack, updateTrack } from '../../../daw/model/session-ops.js';
 import {
-  addParallelBranch, addSend, createNode, deviceOrder, edgesFrom, emptyGraph,
+  addParallelBranch, addSend, createNode, edgesFrom, emptyGraph,
   findNode, insertOnEdge, layout, linearGraph, mainPath, removeNode, updateNode,
   validateGraph, type DeviceGraph, type DeviceNode,
 } from '../../../daw/model/device-graph.js';
@@ -418,9 +418,4 @@ function Action({ onClick, children }: { onClick: () => void; children: React.Re
       }}
     >{children}</button>
   );
-}
-
-/** Exported for the chain-view tests. */
-export function chainSummary(graph: DeviceGraph): string {
-  return deviceOrder(graph).map((n) => n.label).join(' → ');
 }

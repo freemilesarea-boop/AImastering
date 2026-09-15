@@ -5,10 +5,14 @@
 //   • This is the FIRST connection — only the parameters whose binding
 //     status is `wired` get translated into engine space.
 //   • There is NO live DSP write today.  The production runtime preview
-//     plays a pre-rendered file, and the TS `runPreset` path consumes
-//     bucketed mode configs (not live JSON parameter values — see
-//     `audio/preset/runPreset.ts` header).  So "applied" is not yet a
-//     reachable status for any real dispatcher.
+//     plays a pre-rendered file.  `runPreset` DOES now run the preset's own
+//     loudness target, true-peak ceiling and limiter strength rather than its
+//     bucket's — it used to render every preset in a bucket identically — but
+//     it is an offline render of a saved preset, not a live parameter write.
+//     The stages with no field in the schema (gain staging, transient
+//     protection, the vocal enhancer) still run the bucket's numbers; see
+//     `audio/preset/runPreset.ts`.  So "applied" is not yet a reachable
+//     status for any real dispatcher.
 //   • The safe, forward-compatible action is `staged`: translate a wired
 //     parameter into an EngineSchema patch fragment and accumulate it.
 //     A later milestone (M3-P-NEXT-5C / M2-full) consumes the staged

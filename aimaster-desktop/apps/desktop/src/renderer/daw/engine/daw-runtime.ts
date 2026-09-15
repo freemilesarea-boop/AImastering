@@ -10,8 +10,17 @@
 
 import type { Clip, DawSession, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
+import type { ChannelMeterReading } from '../model/channel-meter.js';
+import { LoudnessStream, type LiveLoudnessMetrics } from '../../audio/loudnessStream.js';
 import { trackClips } from '../model/session-ops.js';
 import { ClipPlayer } from './clip-player.js';
+import { ControlRoomNode } from './control-room-node.js';
+import { DEFAULT_CONTROL_ROOM, type ControlRoomState } from '../model/control-room.js';
+import {
+  arpStepsFor, liveNotes, stepSeconds, timedInsert,
+  type ArpeggiatorInsert,
+} from '../model/midi-insert.js';
+import { midiInsertsOf } from '../model/midi-insert-track.js';
 import { getCached, pinFiles, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
 import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
@@ -22,7 +31,8 @@ import {
   MidiInputHandle, anchorTimebase, midiFailureReason, openMidiInputs,
 } from './midi-input.js';
 import type { CaptureEvent } from '../model/midi-capture.js';
-import type { MidiNote } from '../model/midi.js';
+import { MidiHolds, type MidiHolder } from '../model/midi-hold.js';
+import { createNote, type MidiNote } from '../model/midi.js';
 import type { RecordPlan } from '../model/recording.js';
 
 export interface LoopState {
@@ -66,6 +76,20 @@ class DawRuntime {
   private ctx: AudioContext | null = null;
   private engine: MixerEngine | null = null;
   private player: ClipPlayer | null = null;
+  /**
+   * The monitor path, between the mix and the speakers.
+   *
+   * Built HERE and nowhere else.  `offline-render.ts` hands the mixer the
+   * render destination directly, so a bounce cannot carry the monitor level:
+   * not because a flag is checked, but because in that path this object is
+   * never constructed.
+   */
+  private controlRoom: ControlRoomNode | null = null;
+  /** BS.1770 metering on the master bus.  Null until the context exists. */
+  private loudness: LoudnessStream | null = null;
+  private loudnessMetrics: LiveLoudnessMetrics | null = null;
+  private loudnessState: 'off' | 'starting' | 'on' | 'failed' = 'off';
+  private controlRoomState: ControlRoomState = DEFAULT_CONTROL_ROOM;
   private timer: ReturnType<typeof setInterval> | null = null;
   /** The click.  Not in the mix — see engine/metronome.ts. */
   readonly metronome = new Metronome();
@@ -120,6 +144,21 @@ class DawRuntime {
   private midiTapeZeroSec = 0;
   /** One live voice per sounding key, so a note-off finds exactly its own. */
   private liveVoices = new Map<string, LiveVoice>();
+  /**
+   * One running arpeggiator per track, while keys are held.
+   *
+   * Its own clock rather than the transport's, because somebody trying out a
+   * patch is usually not rolling — a hardware arp behaves the same way.  The
+   * STEPS themselves come from `arpStepsFor`, which is the function the
+   * rendered part uses, so what is heard live and what plays back cannot
+   * disagree.
+   */
+  private liveArps = new Map<TrackId, {
+    timer: ReturnType<typeof setInterval>;
+    step: number;
+    held: Map<string, { pitch: number; velocity: number; channel: number }>;
+    insert: ArpeggiatorInsert;
+  }>();
 
   /** Every MIDI message that arrives, for the activity light and the pitch. */
   onMidiActivity: ((event: CaptureEvent) => void) | null = null;
@@ -131,8 +170,15 @@ class DawRuntime {
    * disarmed underneath it, and learn is a listener that removes itself.
    */
   private midiListeners = new Set<(event: CaptureEvent) => void>();
-  /** True while something other than a track wants the port kept open. */
-  private midiHeldOpen = false;
+  /**
+   * Who, other than a track, wants the port kept open.
+   *
+   * The rule lives in `MidiHolds` rather than here because this class cannot
+   * be imported into a test (it builds an AudioContext) and the rule is the
+   * part that was wrong: one shared flag meant turning audition off closed
+   * the port out from under a mapped control surface.
+   */
+  private midiHolds = new MidiHolds();
 
   get isReady(): boolean { return this.ctx !== null; }
   get isPlaying(): boolean { return this.player?.isPlaying ?? false; }
@@ -157,7 +203,11 @@ class DawRuntime {
    */
   async openInput(
     session: DawSession, trackId: TrackId,
-    options: { deviceId?: string | null; channels?: 1 | 2; monitor?: boolean } = {},
+    options: {
+      deviceId?: string | null; channels?: 1 | 2; monitor?: boolean;
+      /** Zero-based first device channel — which socket of the interface. */
+      firstChannel?: number;
+    } = {},
   ): Promise<InputCapture | null> {
     if (!this.ensure(session.sampleRate)) return null;
     const ctx = this.ctx;
@@ -168,13 +218,32 @@ class DawRuntime {
     this.closeInput(trackId);
     this.sync(session);
 
+    const channels = options.channels ?? 1;
     const capture = await openCapture(ctx, {
       deviceId: options.deviceId ?? null,
-      channels: options.channels ?? 1,
+      channels,
+      patch: { firstChannel: Math.max(0, options.firstChannel ?? 0), channels },
     });
     this.captures.set(trackId, capture);
     if (options.monitor) this.setMonitoring(trackId, true);
     return capture;
+  }
+
+  // ── Control room ────────────────────────────────────────────────────────
+
+  /** What the monitor path is set to.  Never part of a render. */
+  get controlRoomSettings(): ControlRoomState { return this.controlRoomState; }
+
+  /**
+   * Push monitor settings onto the graph.
+   *
+   * Kept even when the context does not exist yet, so a level set before the
+   * first transport gesture is applied the moment the engine comes up rather
+   * than being silently dropped.
+   */
+  setControlRoom(state: ControlRoomState): void {
+    this.controlRoomState = state;
+    this.controlRoom?.apply(state);
   }
 
   /** Route (or unroute) one track's live input through its own channel. */
@@ -211,11 +280,11 @@ class DawRuntime {
     options: { deviceId?: string | null; monitor?: boolean } = {},
   ): Promise<MidiInputHandle> {
     this.ensure(session.sampleRate);
-    // A re-open really does replace the port, hold or no hold.
-    const held = this.midiHeldOpen;
-    this.midiHeldOpen = false;
-    this.closeMidiInput();
-    this.midiHeldOpen = held;
+    // A re-open really does replace the port, hold or no hold — the holders
+    // keep their claim on the NEW port, which is what they actually wanted.
+    this.detachMidi();
+    this.midi?.close();
+    this.midi = null;
     this.sync(session);
 
     const handle = await openMidiInputs(options.deviceId ?? null);
@@ -233,13 +302,18 @@ class DawRuntime {
    * only the tracks are detached and the surface keeps hearing the desk.
    */
   closeMidiInput(): void {
+    this.detachMidi();
+    if (!this.midiHolds.shouldClose(this.midiTrackIds.length)) return;
+    this.midi?.close();
+    this.midi = null;
+  }
+
+  /** Let go of the tracks without deciding the port's fate. */
+  private detachMidi(): void {
     this.allNotesOff();
     this.midiTrackIds = [];
     this.midiRecording = false;
     this.midiEvents = [];
-    if (this.midiHeldOpen) return;
-    this.midi?.close();
-    this.midi = null;
   }
 
   setMidiMonitoring(on: boolean): void {
@@ -271,31 +345,40 @@ class DawRuntime {
    * Open the MIDI port for something that is not a track, and keep it open.
    *
    * Arming opens the port too, and disarming closes it — which would take the
-   * control surface down with it.  `midiHeldOpen` is what stops that: once
-   * something is holding the port, `closeMidiInput` only detaches the tracks.
+   * control surface down with it.  The holder set is what stops that: while
+   * anyone is holding the port, `closeMidiInput` only detaches the tracks.
    */
-  async holdMidiOpen(session: DawSession, deviceId: string | null): Promise<boolean> {
-    this.midiHeldOpen = true;
+  async holdMidiOpen(
+    session: DawSession, deviceId: string | null, holder: MidiHolder,
+  ): Promise<boolean> {
+    this.midiHolds.hold(holder);
     if (this.midi) return this.midi.deviceCount > 0;
     try {
       const handle = await this.openMidiInput(session, [], { deviceId, monitor: false });
-      this.midiHeldOpen = true;
       return handle.deviceCount > 0;
     } catch {
-      this.midiHeldOpen = false;
+      this.midiHolds.release(holder);
       throw new Error(midiFailureReason() ?? 'MIDI 입력을 열 수 없습니다');
     }
   }
+
+  /** Whether this holder currently has a claim — for reporting, not deciding. */
+  hasMidiHold(holder: MidiHolder): boolean { return this.midiHolds.has(holder); }
 
   /** Names of the inputs currently open — how feedback finds the matching output. */
   midiDeviceNames(): string[] {
     return this.midi?.deviceNames ?? [];
   }
 
-  /** Let go of the port.  It closes unless a track still wants it. */
-  releaseMidiHold(): void {
-    this.midiHeldOpen = false;
-    if (this.midiTrackIds.length === 0) this.closeMidiInput();
+  /**
+   * Let go of ONE holder's claim.
+   *
+   * The port closes only when nobody else is holding it and no track wants it,
+   * so switching audition off never takes a mapped control surface with it.
+   */
+  releaseMidiHold(holder: MidiHolder): void {
+    this.midiHolds.release(holder);
+    if (this.midiHolds.shouldClose(this.midiTrackIds.length)) this.closeMidiInput();
   }
 
   private receiveMidi(event: CaptureEvent): void {
@@ -327,32 +410,55 @@ class DawRuntime {
         const track = this.session?.tracks.find((t) => t.id === trackId);
         const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
         if (!instrument) continue;
-        const key = `${trackId}:${event.channel}:${event.pitch}`;
-        this.releaseLive(key, 0);
 
-        const gate = ctx.createGain();
-        gate.gain.value = 1;
-        gate.connect(channel.input);
+        const chain = midiInsertsOf(track);
+        const arp = timedInsert(chain);
+        if (arp?.kind === 'arpeggiator') {
+          // The key joins the held chord instead of sounding; the arp's own
+          // clock decides what is played and when.
+          this.holdForArp(trackId, arp, event);
+          continue;
+        }
+
+        // The stateless head of the chain — a transpose, a chorder, a split.
+        // One key can turn into several notes or into none, and none is a
+        // real answer: a split keyboard is silent above the split.
+        const shaped = liveNotes(event.pitch, event.velocity, event.channel, chain);
         const params = { ...(track?.instrumentParams ?? {}) };
-        const voice = instrument.playNote({
-          ctx,
-          destination: gate,
-          note: createLiveNote(event.pitch, event.velocity),
-          config: { bendRangeSemitones: 2, mpe: false },
-          when: ctx.currentTime,
-          durationSec: LIVE_HOLD_SEC,
-          params,
-        });
-        this.liveVoices.set(key, {
-          gate, voice, releaseSec: Math.max(0.03, params['release'] ?? LIVE_RELEASE_SEC),
-        });
+        for (const note of shaped) {
+          // Keyed by the PLAYED pitch as well as the pressed one, so a chorder
+          // that adds three notes has three voices to release.
+          const key = `${trackId}:${event.channel}:${event.pitch}:${note.pitch}`;
+          this.releaseLive(key, 0);
+          const gate = ctx.createGain();
+          gate.gain.value = 1;
+          gate.connect(channel.input);
+          const voice = instrument.playNote({
+            ctx,
+            destination: gate,
+            note: { ...createLiveNote(note.pitch, note.velocity), channel: note.channel },
+            config: { bendRangeSemitones: 2, mpe: false },
+            when: ctx.currentTime,
+            durationSec: LIVE_HOLD_SEC,
+            params,
+          });
+          this.liveVoices.set(key, {
+            gate, voice, releaseSec: Math.max(0.03, params['release'] ?? LIVE_RELEASE_SEC),
+          });
+        }
       }
       return;
     }
 
     if (event.kind === 'noteOff') {
       for (const trackId of this.midiTrackIds) {
-        this.releaseLive(`${trackId}:${event.channel}:${event.pitch}`, undefined);
+        this.releaseArp(trackId, event.channel, event.pitch);
+        // Release every voice this key started.  A chorder made several, and
+        // a chain that made none leaves nothing to find, which is fine.
+        const prefix = `${trackId}:${event.channel}:${event.pitch}:`;
+        for (const key of [...this.liveVoices.keys()]) {
+          if (key.startsWith(prefix)) this.releaseLive(key, undefined);
+        }
       }
       return;
     }
@@ -363,6 +469,94 @@ class DawRuntime {
     if (event.kind === 'cc' && (event.controller === 120 || event.controller === 123)) {
       this.allNotesOff();
     }
+  }
+
+  /**
+   * Add a key to a track's held chord, starting the arp if it was not running.
+   *
+   * The step counter is NOT reset when a key joins a chord already playing —
+   * that is what makes adding a note to a held chord change the run rather
+   * than restart it, which is what every hardware arp does and what anybody
+   * playing one expects.
+   */
+  private holdForArp(
+    trackId: TrackId, insert: ArpeggiatorInsert,
+    event: { pitch: number; velocity: number; channel: number },
+  ): void {
+    const key = `${event.channel}:${event.pitch}`;
+    const running = this.liveArps.get(trackId);
+    if (running) {
+      running.held.set(key, { pitch: event.pitch, velocity: event.velocity, channel: event.channel });
+      // A changed setting takes effect on the next step rather than on the
+      // next chord, so turning the rate knob is audible while holding.
+      running.insert = insert;
+      return;
+    }
+
+    const held = new Map([[key,
+      { pitch: event.pitch, velocity: event.velocity, channel: event.channel }]]);
+    const tempo = this.session?.tempoBpm ?? 120;
+    const stepMs = Math.max(20, stepSeconds(insert, tempo) * 1000);
+    const state = {
+      timer: globalThis.setInterval(() => this.arpTick(trackId), stepMs),
+      step: 0, held, insert,
+    };
+    this.liveArps.set(trackId, state);
+    // Sound the first step now rather than one step late — a key press that
+    // makes no sound until 125 ms later reads as the arp being broken.
+    this.arpTick(trackId);
+  }
+
+  /** Play whatever this track's arp owes for one step. */
+  private arpTick(trackId: TrackId): void {
+    const state = this.liveArps.get(trackId);
+    const ctx = this.ctx;
+    if (!state || !ctx) return;
+    const channel = this.engine?.channel(trackId);
+    const track = this.session?.tracks.find((t) => t.id === trackId);
+    const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
+    if (!channel || !instrument) return;
+
+    const held = [...state.held.values()].map((k, i) => createNote({
+      id: `arp-${i}`,
+      pitch: k.pitch, velocity: k.velocity, channel: k.channel,
+      startBeat: 0, durationBeat: 1,
+    }));
+    const steps = arpStepsFor(held, state.insert, state.step, state.step + 1);
+    state.step += 1;
+
+    const gateSec = stepSeconds(state.insert, this.session?.tempoBpm ?? 120)
+      * Math.max(0.05, Math.min(1, state.insert.gate));
+    const params = { ...(track?.instrumentParams ?? {}) };
+    for (const step of steps) {
+      // Finite one-shots — an arp step has a length, unlike a held key, so it
+      // needs no gate of its own and cannot be left hanging by a lost note-off.
+      instrument.playNote({
+        ctx,
+        destination: channel.input,
+        note: createLiveNote(step.pitch, step.velocity),
+        config: { bendRangeSemitones: 2, mpe: false },
+        when: ctx.currentTime,
+        durationSec: gateSec,
+        params,
+      });
+    }
+  }
+
+  /** Take a key out of a track's held chord; stop the arp when none are left. */
+  private releaseArp(trackId: TrackId, channel: number, pitch: number): void {
+    const state = this.liveArps.get(trackId);
+    if (!state) return;
+    state.held.delete(`${channel}:${pitch}`);
+    if (state.held.size > 0) return;
+    clearInterval(state.timer);
+    this.liveArps.delete(trackId);
+  }
+
+  /** Stop every running arp — a panic, a disarm, or the context going away. */
+  private stopAllArps(): void {
+    for (const state of this.liveArps.values()) clearInterval(state.timer);
+    this.liveArps.clear();
   }
 
   private releaseLive(key: string, overrideRelease?: number): void {
@@ -385,6 +579,9 @@ class DawRuntime {
 
   /** Silence everything the keyboard is holding — panic, and every teardown. */
   allNotesOff(): void {
+    // The arps go first: a running one would start new voices immediately
+    // after the panic released the old ones.
+    this.stopAllArps();
     for (const key of [...this.liveVoices.keys()]) this.releaseLive(key, 0.01);
   }
 
@@ -496,8 +693,15 @@ class DawRuntime {
     if (typeof AudioContext === 'undefined') return false;
     try {
       this.ctx = new AudioContext({ sampleRate, latencyHint: 'interactive' });
-      this.engine = new MixerEngine(this.ctx, this.ctx.destination, { meters: true });
+      this.controlRoom = new ControlRoomNode(this.ctx, this.ctx.destination);
+      this.controlRoom.apply(this.controlRoomState);
+      this.engine = new MixerEngine(this.ctx, this.controlRoom.input, { meters: true });
       this.player = new ClipPlayer(this.engine);
+      // The click is heard in the room, so it goes through the room.  Attached
+      // here rather than only in `setMetronome`, which never ran at all if the
+      // click was switched on before there was a context to attach to.
+      this.metronome.attach(this.ctx, this.controlRoom.input);
+      this.startLoudness(this.ctx, this.controlRoom.input);
       return true;
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -569,7 +773,7 @@ class DawRuntime {
   /** Move the play head; keeps playing if it was playing. */
   /** Turn the click on or off.  Persisted by the store, not here. */
   setMetronome(on: boolean): void {
-    if (this.ctx) this.metronome.attach(this.ctx);
+    if (this.ctx) this.metronome.attach(this.ctx, this.controlRoom?.input ?? null);
     this.metronome.setEnabled(on);
   }
 
@@ -604,8 +808,76 @@ class DawRuntime {
     return this.engine?.analyse(trackId, insertId) ?? null;
   }
 
-  meterLevels(): Map<TrackId, number> {
-    return this.engine?.meterLevels() ?? new Map();
+  /** Peak arriving at one insert, linear.  Null when metering is off. */
+  insertInputLevel(trackId: TrackId, insertId: string): number | null {
+    return this.engine?.insertInputLevel(trackId, insertId) ?? null;
+  }
+
+  /**
+   * Read the meters and advance every channel's over latch.
+   *
+   * Called from the transport tick as well as from the Mix window, so a take
+   * that went over is still flagged when the console is opened afterwards —
+   * a clip light that only exists while you are looking at it is not a clip
+   * light.
+   */
+  pollMeters(): Map<TrackId, ChannelMeterReading> {
+    return this.engine?.pollMeters() ?? new Map();
+  }
+
+  /** The last poll's readings, without re-reading the analysers. */
+  meterReadings(): Map<TrackId, ChannelMeterReading> {
+    return this.engine?.meterReadings() ?? new Map();
+  }
+
+  /** Clear the over latch and peak hold — one channel, or all of them. */
+  clearMeterHold(trackId?: TrackId): void {
+    this.engine?.clearMeterHold(trackId);
+  }
+
+  /**
+   * BS.1770 loudness on the master bus, or null until the first block lands.
+   *
+   * Tapped at the control room's INPUT, which is the mix — before the monitor
+   * level, the DIM and the mono fold.  Those are things you do to your ears,
+   * not to the record, and a loudness number that moved when you turned the
+   * speakers down would be worse than none.
+   */
+  masterLoudness(): LiveLoudnessMetrics | null { return this.loudnessMetrics; }
+
+  /** Whether the master meter is running, and if not, why not. */
+  masterLoudnessState(): 'off' | 'starting' | 'on' | 'failed' { return this.loudnessState; }
+
+  /**
+   * Start the integration again from zero.
+   *
+   * Manual only — there is deliberately no reset on transport start.  Silence
+   * is gated out of the integrated measurement by BS.1770's own -70 LUFS
+   * absolute gate, so leaving the meter running between passes costs nothing,
+   * while an automatic reset would throw away a measurement the moment
+   * somebody pressed play to hear one more bar.
+   */
+  resetMasterLoudness(): void {
+    this.loudness?.reset();
+    this.loudnessMetrics = null;
+  }
+
+  private startLoudness(ctx: AudioContext, source: AudioNode): void {
+    this.loudnessState = 'starting';
+    const stream = new LoudnessStream();
+    this.loudness = stream;
+    stream.onMetrics = (m) => { this.loudnessMetrics = m; };
+    // Fire and forget: `addModule` is a fetch, and a transport that waited for
+    // it would be waiting on the network to play a note.  A failure downgrades
+    // the panel to "unavailable" rather than taking the engine with it.
+    void stream.attachNode(source, ctx).then(
+      () => { this.loudnessState = 'on'; },
+      (err: unknown) => {
+        this.loudnessState = 'failed';
+        // eslint-disable-next-line no-console
+        console.error('[DawRuntime] 마스터 라우드니스 미터를 열지 못했습니다:', err);
+      },
+    );
   }
 
   private startTicking(): void {
@@ -632,6 +904,10 @@ class DawRuntime {
         this.onPosition?.(this.loop.startSec);
         return;
       }
+
+      // Meters ride the transport tick so the over latch is fed during
+      // playback whether or not the Mix window is open.
+      this.engine?.pollMeters();
 
       player.tick(session, LOOKAHEAD_SEC);
       // The click rides the same tick and the same origin as the clips, so a
@@ -750,9 +1026,13 @@ class DawRuntime {
     this.stop();
     this.closeInput();
     this.midiListeners.clear();
-    this.midiHeldOpen = false;
+    this.midiHolds.clear();
     this.closeMidiInput();
     this.engine?.dispose();
+    void this.loudness?.close();
+    this.loudness = null;
+    this.loudnessMetrics = null;
+    this.loudnessState = 'off';
     void this.ctx?.close();
     this.ctx = null;
     this.engine = null;
@@ -800,7 +1080,6 @@ function createLiveNote(pitch: number, velocity: number): MidiNote {
     channel: 0,
     muted: false,
     expression: [],
-    articulation: null,
     playProbability: 1,
   };
 }

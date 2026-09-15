@@ -25,8 +25,6 @@
 // (no +6 dB double-output, no phasing).
 
 import { createNativeDspChain, type NativeDspChain } from './native-dsp-chain.js';
-import { createParametricEqChain, type ParametricEqChain } from './parametric-eq-chain.js';
-import type { ParametricEqBand } from './modules/parametric-eq-model.js';
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
 
 export type AudioGraphEventKind =
@@ -49,44 +47,23 @@ export type AudioGraphEventKind =
   | 'fallback-activated'
   | 'error';
 
-export interface AudioGraphEvent {
-  /** Monotonic id for stable React keys. */
-  id: number;
-  /** epoch ms */
-  t: number;
-  kind: AudioGraphEventKind;
-  msg: string;
-}
-
-const LOG_CAP = 60;
-const log: AudioGraphEvent[] = [];
-const logListeners = new Set<() => void>();
-let nextEventId = 1;
-
-/** Append a diagnostic event (shown in the in-app debug panel + console in dev). */
+/**
+ * Trace a graph event to the dev console.
+ *
+ * This used to also append to a 60-event ring that `getAudioLog` and
+ * `subscribeAudioLog` fed to an in-app debug panel.  The panel is gone and
+ * both readers went with it, which left the ring write-only and the listener
+ * set permanently empty — a notify loop over nothing, run on every audio
+ * event.  The console trace is what was still doing work, so it is what is
+ * left.  A panel that wants the history again should take the ring back with
+ * its reader, in one piece.
+ */
 export function logAudioEvent(kind: AudioGraphEventKind, msg = ''): void {
-  const ev: AudioGraphEvent = { id: nextEventId++, t: Date.now(), kind, msg };
-  log.push(ev);
-  if (log.length > LOG_CAP) log.splice(0, log.length - LOG_CAP);
-  for (const cb of logListeners) {
-    try { cb(); } catch { /* ignore */ }
-  }
   try {
     const dev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
     // eslint-disable-next-line no-console
     if (dev) console.debug(`[AudioGraph] ${kind}${msg ? ': ' + msg : ''}`);
   } catch { /* ignore */ }
-}
-
-/** Snapshot of the event log (most-recent last). */
-export function getAudioLog(): readonly AudioGraphEvent[] {
-  return log;
-}
-
-/** Subscribe to log changes.  Returns an unsubscribe fn. */
-export function subscribeAudioLog(cb: () => void): () => void {
-  logListeners.add(cb);
-  return () => { logListeners.delete(cb); };
 }
 
 // ── Shared context ──────────────────────────────────────────────────────
@@ -100,16 +77,6 @@ export function getSharedAudioContext(sampleRate = 48_000): AudioContext {
   ctx = new AudioContext({ sampleRate });
   logAudioEvent('context-created', `${ctx.sampleRate} Hz, ${ctx.state}`);
   return ctx;
-}
-
-/** Current context state, or 'none' before creation. */
-export function sharedContextState(): AudioContextState | 'none' {
-  return ctx ? ctx.state : 'none';
-}
-
-/** Most recent graph-level error (null when healthy). */
-export function sharedGraphLastError(): string | null {
-  return lastError;
 }
 
 /** Resume the context (call from a user gesture — play button). */
@@ -148,8 +115,6 @@ interface ElementGraph {
   wasmInsert: AudioNode | null;
   /** Native (WebAudio) DSP fallback chain, when installed. */
   nativeDsp: NativeDspChain | null;
-  /** Free parametric EQ chain (Phase 2) — sits between source and the insert. */
-  freeEq: ParametricEqChain | null;
   analysers: NativeAnalysers;
   splitter: ChannelSplitterNode;
   /** External passive taps (e.g. WASM analyzer-tap worklet). */
@@ -160,42 +125,36 @@ interface ElementGraph {
 
 /**
  * (Re)wire the audio bus from the source, choosing the active insert:
- *   wasmInsert  → source → [freeEq?] → wasmInsert → masterGain   (best quality)
- *   nativeDsp   → source → [freeEq?] → nativeDsp  → masterGain   (WASM-free fallback)
- *   neither     → source → [freeEq?] → masterGain                (direct)
+ *   wasmInsert  → source → wasmInsert → masterGain   (best quality)
+ *   nativeDsp   → source → nativeDsp  → masterGain   (WASM-free fallback)
+ *   neither     → source → masterGain                (direct)
  * masterGain → destination + all taps/analysers are untouched.
- * The free EQ stage is spliced in only when it has at least one enabled band.
+ *
+ * A `freeEq` stage used to be spliced in ahead of the insert, from a
+ * WebAudio biquad chain this module owned.  Nothing ever called the setter
+ * that created it, so the branch could not run; the free EQ the product
+ * actually has reaches the Rust chain as `parametricBands` in the wire
+ * config, which serves the preview and the export from one description.
  */
 function rerouteBus(g: ElementGraph): void {
   try { g.source.disconnect(); } catch { /* ignore */ }
   if (g.nativeDsp) { try { g.nativeDsp.output.disconnect(g.masterGain); } catch { /* ignore */ } }
-  if (g.freeEq) {
-    try { g.freeEq.input.disconnect(); } catch { /* ignore */ }
-    try { g.freeEq.output.disconnect(); } catch { /* ignore */ }
-  }
-
-  // Pick the upstream-of-insert node: source itself, or freeEq's output when active.
-  const useFreeEq = !!g.freeEq && g.freeEq.isActive();
-  const sourceTail: AudioNode = useFreeEq
-    ? (g.source.connect(g.freeEq!.input), g.freeEq!.output)
-    : g.source;
 
   if (g.wasmInsert) {
-    sourceTail.connect(g.wasmInsert);
+    g.source.connect(g.wasmInsert);
     try { g.wasmInsert.connect(g.masterGain); } catch { /* ignore (already connected) */ }
-    logAudioEvent('dsp-chain-connected', useFreeEq ? 'source → freeEQ → WASM → master' : 'source → WASM → master');
+    logAudioEvent('dsp-chain-connected', 'source → WASM → master');
   } else if (g.nativeDsp) {
-    sourceTail.connect(g.nativeDsp.input);
+    g.source.connect(g.nativeDsp.input);
     g.nativeDsp.output.connect(g.masterGain);
-    logAudioEvent('fallback-activated', useFreeEq ? 'source → freeEQ → native DSP → master' : 'source → native DSP → master');
+    logAudioEvent('fallback-activated', 'source → native DSP → master');
   } else {
-    sourceTail.connect(g.masterGain);
-    logAudioEvent('dsp-chain-removed', useFreeEq ? 'source → freeEQ → master' : 'source → master (direct)');
+    g.source.connect(g.masterGain);
+    logAudioEvent('dsp-chain-removed', 'source → master (direct)');
   }
 }
 
 const graphs = new WeakMap<HTMLMediaElement, ElementGraph>();
-let activeGraph: ElementGraph | null = null;
 
 /**
  * Get-or-create the full graph for a media element.  Idempotent: a second
@@ -206,7 +165,7 @@ let activeGraph: ElementGraph | null = null;
  */
 export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000): ElementGraph {
   const existing = graphs.get(media);
-  if (existing) { activeGraph = existing; return existing; }
+  if (existing) return existing;
 
   const context = getSharedAudioContext(sampleRate);
   let source: MediaElementAudioSourceNode;
@@ -255,25 +214,17 @@ export function ensureElementGraph(media: HTMLMediaElement, sampleRate = 48_000)
 
   const graph: ElementGraph = {
     ctx: context, source, masterGain, silentSink,
-    wasmInsert: null, nativeDsp: null, freeEq: null,
+    wasmInsert: null, nativeDsp: null,
     analysers: { ctx: context, main, left, right }, splitter,
     passiveTaps: new Set(), sourceCreated: true,
   };
   graphs.set(media, graph);
-  activeGraph = graph;
   return graph;
 }
 
 /** Native analysers for an element (creates the graph if needed). */
 export function getNativeAnalysers(media: HTMLMediaElement, sampleRate = 48_000): NativeAnalysers {
   return ensureElementGraph(media, sampleRate).analysers;
-}
-
-/** Whether a MediaElementSource has been created for this element. */
-export function isSourceCreated(media: HTMLMediaElement | null): boolean {
-  if (!media) return false;
-  const g = graphs.get(media);
-  return !!g && g.sourceCreated;
 }
 
 /**
@@ -312,35 +263,6 @@ export function applyNativeDspConfig(media: HTMLMediaElement, cfg: RealtimeChain
   graphs.get(media)?.nativeDsp?.apply(cfg);
 }
 
-/**
- * Set the free-parametric EQ band list for an element.  Lazy-creates the
- * chain on first non-empty call and re-routes the bus to include it when
- * any band is enabled.  When the list is empty / no enabled bands, the
- * chain is bypassed (re-route removes it from the signal path) but the
- * node objects survive for cheap re-activation later.
- *
- * Fast path (defensive): if nothing is enabled AND no chain exists yet,
- * we skip rerouteBus entirely.  Without this short-circuit, every mount
- * of an audio element would call setFreeEqBands(el, []) once, which
- * would re-disconnect/reconnect `source` while other graph hooks
- * (useRealtimeMasteringGraph, native DSP install) are also racing to
- * touch the bus — that race manifested as a black screen in dev when
- * the routing ended up inconsistent and an audio node threw.
- */
-export function setFreeEqBands(media: HTMLMediaElement, bands: ParametricEqBand[]): void {
-  const g = graphs.get(media);
-  if (!g) return;
-  const hasEnabled = bands.some((b) => b.enabled);
-  // Fast path: free EQ stayed off and was never created — no routing change.
-  if (!hasEnabled && !g.freeEq) return;
-  if (hasEnabled && !g.freeEq) {
-    g.freeEq = createParametricEqChain(g.ctx);
-  }
-  g.freeEq?.applyBands(bands);
-  // Routing only needs to flip when the active-vs-bypassed state of free EQ
-  // might have changed.  isActive() already reflects the post-applyBands state.
-  rerouteBus(g);
-}
 
 /** Remove the native DSP chain and re-route (→ WASM insert or direct). */
 export function uninstallNativeDsp(media: HTMLMediaElement): void {
@@ -375,75 +297,4 @@ export function removePassiveTap(media: HTMLMediaElement, node: AudioNode): void
   g.passiveTaps.delete(node);
 }
 
-/** The shared source node for an element (graph must already exist). */
-export function getSharedSource(media: HTMLMediaElement): MediaElementAudioSourceNode | null {
-  return graphs.get(media)?.source ?? null;
-}
-
-/** The masterGain (post-DSP bus) for an element. */
-export function getMasterGain(media: HTMLMediaElement): GainNode | null {
-  return graphs.get(media)?.masterGain ?? null;
-}
-
-/** The most-recently-touched element graph (for status panels). */
-export function activeContextState(): AudioContextState | 'none' {
-  return activeGraph ? activeGraph.ctx.state : sharedContextState();
-}
-
-/**
- * Human-readable description of the CURRENT audio route for an element, for
- * the debug panel.  The analyser/tap is always post-insert (it reads
- * masterGain), so it is shown inline in every route.
- */
-export function currentRouteLabel(media: HTMLMediaElement | null): string {
-  if (!media) return 'no element';
-  const g = graphs.get(media);
-  if (!g) return 'no graph';
-  if (g.wasmInsert) return 'WASM: source → WASM DSP → analyser/tap → master';
-  if (g.nativeDsp) return 'FALLBACK: source → Native DSP → analyser/tap → master';
-  return 'DIRECT: source → analyser/tap → master';
-}
-
-/** Dump the actual graph edges + node states to the event log (req: graph dump). */
-export function dumpGraph(media: HTMLMediaElement | null): void {
-  if (!media) { logAudioEvent('error', 'dumpGraph: no element'); return; }
-  const g = graphs.get(media);
-  if (!g) { logAudioEvent('error', 'dumpGraph: no graph for element'); return; }
-  const insert = g.wasmInsert ? 'WASM-node' : g.nativeDsp ? 'native-DSP' : 'none(direct)';
-  logAudioEvent('dsp-chain-connected',
-    `GRAPH DUMP — ctx=${g.ctx.state}@${g.ctx.sampleRate}Hz | insert=${insert} | `
-    + `edges: source→${insert === 'none(direct)' ? 'masterGain' : insert}→masterGain→destination; `
-    + `masterGain→[mainAnalyser,splitter(L/R)]→silentSink(0)→destination; `
-    + `passiveTaps=${g.passiveTaps.size} | masterGain.gain=${g.masterGain.gain.value} silentSink.gain=${g.silentSink.gain.value}`);
-}
-
 export type RouteKind = 'wasm' | 'fallback' | 'direct' | 'none';
-
-/** Machine-readable current route for an element. */
-export function currentRouteKind(media: HTMLMediaElement | null): RouteKind {
-  if (!media) return 'none';
-  const g = graphs.get(media);
-  if (!g) return 'none';
-  if (g.wasmInsert) return 'wasm';
-  if (g.nativeDsp) return 'fallback';
-  return 'direct';
-}
-
-/**
- * A minimal MasteringGraphSession backed by the shared graph (not the WASM
- * analyzer session).  Lets the realtime DSP attach + splice its node even
- * when the WASM analyzer fails to start, so module edits stay audible.
- */
-export function makeSharedMasteringSession(media: HTMLMediaElement, sampleRate = 48_000): {
-  audioContext: () => AudioContext | null;
-  setInsertNode: (node: AudioNode | null) => void;
-} {
-  return {
-    audioContext: () => {
-      try { return ensureElementGraph(media, sampleRate).ctx; } catch { return null; }
-    },
-    setInsertNode: (node: AudioNode | null) => {
-      try { ensureElementGraph(media, sampleRate); setRealtimeInsert(media, node); } catch { /* ignore */ }
-    },
-  };
-}

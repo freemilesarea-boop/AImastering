@@ -48,11 +48,3 @@ export function diffPresets(
   }
   return diffs;
 }
-
-/** One-line human summary of a diff list (for logs / QA notes). */
-export function describePresetDiff(diffs: PresetParamDiff[]): string {
-  if (diffs.length === 0) return 'identical';
-  return diffs
-    .map((d) => `${d.moduleId}.${d.parameterId}: ${String(d.a)} → ${String(d.b)}`)
-    .join(' · ');
-}

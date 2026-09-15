@@ -14,6 +14,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
+import { SAMPLE_RATES, BIT_DEPTHS } from '../lib/audio-defaults.js';
 
 // ── Section wrapper ────────────────────────────────────────────────────────────
 
@@ -38,6 +39,18 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     </div>
   );
 }
+
+/**
+ * The rates the settings page offers, spelled for people.
+ *
+ * The LIST lives in lib/audio-defaults.ts next to the validator that reads it
+ * back, so a rate cannot be offered here and rejected there — which is what
+ * happened the other way round: the main-process whitelist allowed 88.2 kHz
+ * that this page never showed.
+ */
+const RATE_LABELS: Record<number, string> = {
+  44100: '44.1 kHz', 48000: '48 kHz', 96000: '96 kHz',
+};
 
 // ── Number select ──────────────────────────────────────────────────────────────
 
@@ -89,10 +102,16 @@ function OutputDirSection() {
 
   return (
     <Section title="출력 디렉토리">
+      {/* Says what it does now that it does something.  The folder is where
+          내보내기 / 바운스 / 일괄 저장 dialogs open; it is a starting point,
+          not a lock — every one of those still lets you go elsewhere. */}
+      <p className="text-[11px] text-zinc-600 leading-snug">
+        내보내기 · 바운스 · 일괄 저장 창이 이 폴더에서 열립니다. 창에서 다른 곳을 고를 수 있습니다.
+      </p>
       <Row label="저장 경로">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-xs font-mono text-zinc-500 truncate max-w-[180px]">
-            {dir || '기본값 (다운로드 폴더)'}
+            {dir || '기본값 (마지막에 저장한 위치)'}
           </span>
           <button
             onClick={() => void handleChoose()}
@@ -111,15 +130,32 @@ function OutputDirSection() {
 // ── Audio defaults section ─────────────────────────────────────────────────────
 
 function AudioDefaultsSection() {
-  const options   = useAudioStore((s) => s.options);
-  const setStyle  = useAudioStore((s) => s.setStyle);
-  const notify    = useAppStore((s) => s.notify);
+  const options       = useAudioStore((s) => s.options);
+  const setStyle      = useAudioStore((s) => s.setStyle);
+  const updateOptions = useAudioStore((s) => s.updateOptions);
+  const notify        = useAppStore((s) => s.notify);
 
-  // We persist via settings:set so choices survive relaunch
-  const save = useCallback(async (key: string, value: unknown) => {
-    await window.electronAPI.invoke('settings:set', key, value);
-    notify('설정이 저장되었습니다.', 'success');
-  }, [notify]);
+  /**
+   * Change the setting for this session AND for the next one.
+   *
+   * Both halves, always.  Writing only to disk left every one of these
+   * `<select>`s reading `options.*`, so the value the user picked was
+   * overwritten by the old one on the next render — the dropdown snapped back
+   * while a green "저장되었습니다" said it had not.  Writing only to the store
+   * would be the same bug a relaunch later.
+   *
+   * The toast is raised only if the write actually lands: a store that refuses
+   * to write has to say so rather than congratulate the user.
+   */
+  const save = useCallback(async (patch: Partial<typeof options>, key: string, value: unknown) => {
+    updateOptions(patch);
+    try {
+      await window.electronAPI.invoke('settings:set', key, value);
+      notify('설정이 저장되었습니다.', 'success');
+    } catch (err) {
+      notify(`설정을 저장하지 못했습니다 — ${(err as Error).message}`, 'error');
+    }
+  }, [notify, updateOptions]);
 
   return (
     <Section title="오디오 기본값">
@@ -129,7 +165,7 @@ function AudioDefaultsSection() {
           onChange={(e) => {
             const v = e.target.value as typeof options.style;
             setStyle(v);
-            void save('defaultStyle', v);
+            void save({}, 'defaultStyle', v);
           }}
           className="no-drag bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1
                      text-xs text-zinc-300 focus:outline-none focus:border-zinc-500"
@@ -143,23 +179,19 @@ function AudioDefaultsSection() {
       <Row label="샘플레이트">
         <NumSelect
           value={options.sampleRate}
-          options={[
-            { v: 44100, label: '44.1 kHz' },
-            { v: 48000, label: '48 kHz' },
-            { v: 96000, label: '96 kHz' },
-          ]}
-          onChange={(v) => void save('defaultSampleRate', v)}
+          options={SAMPLE_RATES.map((v) => ({ v, label: RATE_LABELS[v] ?? `${v} Hz` }))}
+          onChange={(v) => void save({ sampleRate: v }, 'defaultSampleRate', v)}
         />
       </Row>
 
       <Row label="비트 뎁스">
         <NumSelect
           value={options.bitDepth}
-          options={[
-            { v: 16, label: '16-bit' },
-            { v: 24, label: '24-bit' },
-          ]}
-          onChange={(v) => void save('defaultBitDepth', v)}
+          options={BIT_DEPTHS.map((v) => ({ v, label: `${v}-bit` }))}
+          onChange={(v) => {
+            if (v !== 16 && v !== 24) return;
+            void save({ bitDepth: v }, 'defaultBitDepth', v);
+          }}
         />
       </Row>
     </Section>

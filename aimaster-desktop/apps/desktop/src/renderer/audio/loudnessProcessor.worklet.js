@@ -243,6 +243,28 @@ class _Analyzer {
     return n2 ? _msToLufs(s2 / n2) : -Infinity;
   }
 
+  // EBU R128 3.6 Loudness Range.  Mirrors `getLoudnessRange` in
+  // loudnessCore.ts, gate for gate and percentile for percentile —
+  // master-loudness-selftest runs both over the same audio and fails if they
+  // part company, so the "change one, change both" note at the top of this
+  // file is enforced rather than hoped for.
+  loudnessRange() {
+    const ABS_MS = Math.pow(10, (-70 - _LUFS_OFFSET_DB) / 10);
+    const surv = [];
+    for (const ms of this.shortTermMs) if (ms > ABS_MS) surv.push(ms);
+    if (surv.length < 2) return 0;
+    let s = 0;
+    for (const ms of surv) s += ms;
+    const meanLufs = _msToLufs(s / surv.length);
+    const REL_MS = Math.pow(10, (meanLufs - 20 - _LUFS_OFFSET_DB) / 10);
+    const list = [];
+    for (const ms of surv) if (ms > REL_MS) list.push(_msToLufs(ms));
+    if (list.length < 2) return 0;
+    list.sort((a, b) => a - b);
+    const pick = (q) => list[Math.min(list.length - 1, Math.max(0, Math.floor(q * (list.length - 1))))];
+    return pick(0.95) - pick(0.10);
+  }
+
   truePeakDb() {
     let p = 0;
     for (const t of this.tps) if (t.peak > p) p = t.peak;
@@ -288,6 +310,7 @@ class LoudnessProcessor extends AudioWorkletProcessor {
       shortTermLufs:  this.an.lastS,
       integratedLufs: this.an.integrated(),
       truePeakDbtp:   this.an.truePeakDb(),
+      loudnessRange:  this.an.loudnessRange(),
       perChannelTpDb: this.an.perChannelTpDb(),
       durationSec:    this.an.totalSamples / this.an.fs,
       blocksAnalyzed: this.an.subBlocks.length,

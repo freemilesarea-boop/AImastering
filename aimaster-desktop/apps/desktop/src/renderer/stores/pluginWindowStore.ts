@@ -85,11 +85,25 @@ export const usePluginWindowStore = create<PluginWindowStore>((set, get) => ({
 
   closeAll: () => set({ windows: [] }),
 
+  /**
+   * Raise one window to the top by RE-RANKING, not by counting upward.
+   *
+   * `z: top + 1` was unbounded: a window focused often enough climbs forever,
+   * and `PluginWindow` renders `zIndex: LAYER.pluginWindow + win.z`.  Nothing
+   * bad happens for a long time and then a plugin window is above the dialogs,
+   * the scrims and — the one that actually matters — the toasts.  A stacking
+   * order only ever needs the ORDER, so the ranks are 0…n-1 and the highest
+   * any window can reach is the number of windows that are open.
+   */
   focus: (id) => set((s) => {
-    const top = Math.max(0, ...s.windows.map((w) => w.z));
     const target = s.windows.find((w) => w.id === id);
-    if (!target || target.z === top) return s;
-    return { windows: s.windows.map((w) => (w.id === id ? { ...w, z: top + 1 } : w)) };
+    if (!target) return s;
+    const others = s.windows.filter((w) => w.id !== id).sort((a, b) => a.z - b.z);
+    const rank = new Map(others.map((w, i) => [w.id, i]));
+    rank.set(id, others.length);
+    const changed = s.windows.some((w) => w.z !== rank.get(w.id));
+    if (!changed) return s;
+    return { windows: s.windows.map((w) => ({ ...w, z: rank.get(w.id) ?? w.z })) };
   }),
 
   move: (id, x, y) => set((s) => ({

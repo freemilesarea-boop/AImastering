@@ -8,6 +8,8 @@ import React, { useEffect, useRef } from 'react';
 import { getMeta } from '../../../daw/engine/audio-cache.js';
 import { clipEnd, trackClips } from '../../../daw/model/session-ops.js';
 import { fadeCurve } from '../../../daw/engine/clip-player.js';
+import { gainLineY } from '../../../daw/model/lane-grab.js';
+import { clipPitch, describePitch } from '../../../daw/model/clip-pitch.js';
 import type { Clip, Track } from '../../../daw/model/types.js';
 
 export interface LaneViewport {
@@ -119,15 +121,25 @@ export default function TrackLaneCanvas({
         ctx.fillRect(left, mid - 1, w, 2);
       }
 
-      // Fade shapes
+      // Fade shapes, and the corners you pull to make them.
       drawFade(ctx, clip, toX, height, 'in');
       drawFade(ctx, clip, toX, height, 'out');
+      if (w > 16) {
+        drawFadeHandle(ctx, clip, toX, height, 'in');
+        drawFadeHandle(ctx, clip, toX, height, 'out');
+      }
 
-      // Clip gain line — the horizontal line engineers ride with Ctrl+Shift+↑↓
-      if (Math.abs(clip.gainDb) > 0.01) {
-        const y = mid - (clip.gainDb / 24) * (height / 2 - 10);
-        ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-        ctx.setLineDash([3, 3]);
+      // Clip gain line — grab it and ride it, the way Pro Tools does.
+      //
+      // Drawn even at unity, faintly.  A line that only appears once the gain
+      // is already off unity is a handle you cannot find until you have
+      // already used the keyboard to move it, which is the wrong way round:
+      // the affordance has to be there before the first drag.
+      if (w > 8) {
+        const y = gainLineY(clip.gainDb, height);
+        const moved = Math.abs(clip.gainDb) > 0.01;
+        ctx.strokeStyle = moved ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.18)';
+        ctx.setLineDash(moved ? [3, 3] : [2, 5]);
         ctx.beginPath();
         ctx.moveTo(left, y);
         ctx.lineTo(right, y);
@@ -141,13 +153,31 @@ export default function TrackLaneCanvas({
         ctx.fillRect(left, 2, Math.min(w, 160), 12);
         ctx.fillStyle = 'rgba(255,255,255,0.8)';
         ctx.font = '9px ui-sans-serif, system-ui, sans-serif';
-        const label = Math.abs(clip.gainDb) > 0.01
-          ? `${clip.name}  ${clip.gainDb > 0 ? '+' : ''}${clip.gainDb.toFixed(1)} dB`
-          : clip.name;
+        const parts = [clip.name];
+        if (Math.abs(clip.gainDb) > 0.01) {
+          parts.push(`${clip.gainDb > 0 ? '+' : ''}${clip.gainDb.toFixed(1)} dB`);
+        }
+        // A transposed clip that says nothing about it is a clip whose pitch
+        // gets forgotten and then blamed on the source file.
+        if (clipPitch(clip) !== 0) parts.push(describePitch(clipPitch(clip)));
+        const label = parts.join('  ');
         ctx.fillText(label.slice(0, 28), left + 3, 11);
       }
     }
-  }, [track, viewport, selected, decodeTick]);
+  // Depends on the viewport's VALUES, not the object.
+  //
+  // The parent builds `viewport={{ scrollSec, pxPerSec, width, height }}`
+  // inline, so it is a new object on every render of the Edit window — and the
+  // Edit window re-renders on every play-head tick, every selection change and
+  // every hover.  Listing `viewport` here meant each lane repainted its whole
+  // waveform sixty times a second during playback for a view that had not
+  // moved.  Measured at 9.7 % of a profile's self time across 24 lanes.
+  //
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    track, selected, decodeTick,
+    viewport.scrollSec, viewport.pxPerSec, viewport.width, viewport.height,
+  ]);
 
   return <canvas ref={ref} className="block" />;
 }
@@ -174,6 +204,33 @@ function drawFade(
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
+}
+
+/**
+ * The grab marker at a clip corner.
+ *
+ * A handle nobody can see is a handle nobody finds, and this is a gesture that
+ * exists in every DAW precisely because it is discoverable: a small square at
+ * the top corner, sitting at the END of the fade once there is one, because
+ * that is the part you pull.
+ */
+function drawFadeHandle(
+  ctx: CanvasRenderingContext2D, clip: Clip,
+  toX: (sec: number) => number, height: number, side: 'in' | 'out',
+): void {
+  const duration = side === 'in' ? clip.fadeIn.durationSec : clip.fadeOut.durationSec;
+  const at = side === 'in' ? clip.startSec + duration : clipEnd(clip) - duration;
+  const x = toX(at);
+  const size = 5;
+  // Brighter once the fade exists — an untouched corner is an invitation, a
+  // set one is a control.
+  ctx.fillStyle = duration > 0 ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.45)';
+  ctx.fillRect(
+    side === 'in' ? x : x - size,
+    2,
+    size,
+    size,
+  );
 }
 
 function hexToRgba(hex: string, alpha: number): string {

@@ -66,36 +66,6 @@ export const useLicenseStore = create<LicenseStore>((set, _get) => ({
   },
 }));
 
-// ── License-error helpers ────────────────────────────────────────────────────
-
-/** True when an error/response came from the main-process export paywall. */
-export function isLicenseRequiredError(msg: unknown): boolean {
-  return typeof msg === 'string'
-    ? msg.includes('LICENSE_REQUIRED')
-    : msg instanceof Error && msg.message.includes('LICENSE_REQUIRED');
-}
-
-/**
- * If `err` is the paywall error, open the activation modal and return true.
- * Save handlers call this so a blocked export prompts activation instead of
- * surfacing a raw error.
- */
-export function handleLicenseRequired(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : err;
-  if (isLicenseRequiredError(msg)) {
-    useLicenseStore.getState().setShowModal(true);
-    return true;
-  }
-  return false;
-}
-
-// ── Selector helpers ─────────────────────────────────────────────────────────
-
-/** True when the user is on the free tier (or info not yet loaded). */
-export function selectIsFree(store: LicenseStore): boolean {
-  return store.licenseInfo?.tier !== 'pro';
-}
-
 /** Remaining free trial count, or 0 if paid (WAV save unlocked regardless). */
 export function selectRemainingTrials(store: LicenseStore): number {
   const info = store.licenseInfo;

@@ -8,23 +8,49 @@
 
 import { create } from 'zustand';
 import {
-  initHistory, record as recordHistory, undo as undoHistory, redo as redoHistory,
+  initHistory, record as recordHistory, sameByReference,
+  undo as undoHistory, redo as redoHistory,
   canUndo, canRedo, type History,
 } from '../audio/options-history.js';
 import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
 import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
+import { expandSelection } from '../daw/edit/edit-groups.js';
+import type { ChannelSettings } from '../daw/edit/channel-ops.js';
+import type { TimeFormat } from '../daw/model/spot-time.js';
+import type { DawWindow } from '../daw/model/view-window.js';
+import {
+  linkedTimeline, recallZoom, storeZoom,
+  type WindowLayout, type ZoomSlots, type ZoomView,
+} from '../daw/model/workspace-view.js';
+import { pushSnapshot, type MixSnapshot } from '../daw/model/mix-snapshot.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
 import type { Groove } from '../daw/model/groove.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import { autosaveDriver } from '../daw/engine/autosave-driver.js';
-import { snapSecToBeats, tempoMapOf } from '../daw/model/tempo-map.js';
+import { tempoMapOf } from '../daw/model/tempo-map.js';
+import {
+  cycleSnap, eventTimes, snapMove as snapMoveMode, snapTime as snapTimeMode,
+  type SnapContext, type SnapMode,
+} from '../daw/model/snap-modes.js';
+import { clipBoundaries } from '../daw/edit/clip-edit.js';
 
 export type EditMode = 'shuffle' | 'slip' | 'spot' | 'grid';
-export type DawWindow = 'edit' | 'mix' | 'midi' | 'chain' | 'session' | 'spectral' | 'reference' | 'warp' | 'restore' | 'steps' | 'vocal' | 'stems' | 'intel';
 
-/** Grid values, in seconds — musical values come from the session tempo. */
-export const GRID_PRESETS = [0.01, 0.1, 0.25, 0.5, 1, 2, 4] as const;
+/**
+ * What a batch rename is renaming.
+ *
+ * Tracks and clips go through the same dialog because the rules are the same;
+ * only where the new name is written differs, and the `kind` is what says so.
+ */
+export interface RenameTarget {
+  kind: 'track' | 'clip';
+  items: { id: string; name: string; trackId?: TrackId }[];
+}
+// The window names live in model/view-window.ts so pure modules can name one
+// without importing this store (and with it zustand and the audio runtime).
+export type { DawWindow } from '../daw/model/view-window.js';
+
 
 export interface DawState {
   session: DawSession;
@@ -97,6 +123,17 @@ export interface DawState {
    */
   gridDivision: number;
   setGridDivision: (beats: number) => void;
+  /**
+   * How a drag decides where to land.
+   *
+   * Independent of `editMode`: Shuffle/Slip/Spot/Grid say what a drag DOES to
+   * its neighbours, snap says where it stops.  They used to be one setting,
+   * which meant you could not have Slip's freedom with the grid's precision —
+   * the combination most editing actually wants.
+   */
+  snapMode: SnapMode;
+  setSnapMode: (m: SnapMode) => void;
+  cycleSnapMode: () => void;
   nudgeSec: number;
   setNudgeSec: (s: number) => void;
   tabToTransient: boolean;
@@ -107,6 +144,21 @@ export interface DawState {
   setPxPerSec: (v: number) => void;
   scrollSec: number;
   setScrollSec: (v: number) => void;
+  /**
+   * How wide the lane area is, in px.
+   *
+   * Measured by the Edit window and kept here because the KEYBOARD needs it:
+   * "zoom to selection" is arithmetic on the window's width, and the shortcut
+   * layer has no component to ask.
+   */
+  laneWidthPx: number;
+  setLaneWidthPx: (v: number) => void;
+  /** Scroll the view to keep the play head on screen while it plays. */
+  followPlayhead: boolean;
+  setFollowPlayhead: (v: boolean) => void;
+  /** What the ruler counts in. */
+  rulerFormat: TimeFormat;
+  setRulerFormat: (f: TimeFormat) => void;
 
   /** Track whose Smart Controls are open, if any. */
   smartTrackId: TrackId | null;
@@ -133,12 +185,99 @@ export interface DawState {
   spotTarget: { trackId: TrackId; clipId: string } | null;
   setSpotTarget: (target: { trackId: TrackId; clipId: string } | null) => void;
 
+  /**
+   * The selection the Detect Silence dialog is looking at, or null.
+   *
+   * Here for the same reason as `spotTarget`: the keyboard opens it and the
+   * Edit window draws it, and a local `useState` gives the shortcut nothing
+   * to talk to.  The selection is CAPTURED when it opens rather than read
+   * live, so the preview cannot change under the person reading it.
+   */
+  stripTarget: TimeSelection | null;
+  setStripTarget: (target: TimeSelection | null) => void;
+
+  /** The selection the audio-quantize dialog is looking at, or null. */
+  quantizeTarget: TimeSelection | null;
+  setQuantizeTarget: (target: TimeSelection | null) => void;
+
+  /**
+   * What the batch-rename dialog has open, or null.
+   *
+   * The ITEMS are captured when it opens, not read live: the dialog shows a
+   * numbered preview, and having the list reorder underneath while somebody
+   * reads line seven is how a rename goes wrong quietly.
+   */
+  renameTarget: RenameTarget | null;
+  setRenameTarget: (target: RenameTarget | null) => void;
+
+  /** Whether the undo-history list is on screen. */
+  historyOpen: boolean;
+  setHistoryOpen: (open: boolean) => void;
+
+  /** Whether the file pool is on screen. */
+  poolOpen: boolean;
+  setPoolOpen: (open: boolean) => void;
+
+  /** The selection the batch-fade dialog is looking at, or null. */
+  fadeTarget: TimeSelection | null;
+  setFadeTarget: (target: TimeSelection | null) => void;
+
+  /**
+   * Five saved views, by slot.
+   *
+   * Not in the session: where you were looking is a property of this machine
+   * and this sitting, not of the project.  Somebody opening the session on
+   * another screen should not inherit your zoom.
+   */
+  zoomSlots: ZoomSlots;
+  storeZoomSlot: (slot: number) => void;
+  recallZoomSlot: (slot: number) => boolean;
+
+  /** Saved window layouts, same reasoning as the zoom slots. */
+  layouts: WindowLayout[];
+  setLayouts: (layouts: WindowLayout[]) => void;
+
+  /**
+   * Mixer snapshots for A/B.
+   *
+   * Beside the session rather than inside it: a snapshot is a comparison you
+   * are making, not part of what the project IS, and putting them in the undo
+   * stack would make taking one an edit.
+   */
+  snapshots: MixSnapshot[];
+  addSnapshot: (snapshot: MixSnapshot) => void;
+  setSnapshots: (snapshots: MixSnapshot[]) => void;
+
+  /**
+   * Whether the timeline selection follows the edit selection.
+   *
+   * Pro Tools makes this a toggle because the two are genuinely different
+   * when spotting to picture: you keep looking at one place while editing
+   * another.
+   */
+  linkSelection: boolean;
+  setLinkSelection: (linked: boolean) => void;
+
+  /** A copied channel's processing, waiting to be pasted onto another. */
+  channelClipboard: ChannelSettings | null;
+  setChannelClipboard: (settings: ChannelSettings | null) => void;
+
+  /**
+   * Write a crossfade whenever a drag leaves two clips overlapping.
+   *
+   * A preference rather than session data — it describes how this person
+   * likes to edit, not what is in the song, so it belongs with the view
+   * settings and not in the file.
+   */
+  autoCrossfade: boolean;
+  setAutoCrossfade: (on: boolean) => void;
+
   /** Non-fatal engine notices (feedback loops, decode failures). */
   engineWarning: string | null;
   setEngineWarning: (w: string | null) => void;
 }
 
-const initialSession = createSession('Untitled Session');
+const initialSession = createSession();
 
 export const useDawStore = create<DawState>((set, get) => ({
   session: initialSession,
@@ -148,7 +287,7 @@ export const useDawStore = create<DawState>((set, get) => ({
     const current = get().session;
     const next = fn(current);
     if (next === current) return;
-    set({ session: next, history: recordHistory(get().history, next) });
+    set({ session: next, history: recordHistory(get().history, next, sameByReference) });
     dawRuntime.sync(next);
     // The ONE place a real edit goes through.  Watching store emissions
     // instead would count playback and scrolling as changes — see
@@ -167,7 +306,7 @@ export const useDawStore = create<DawState>((set, get) => ({
   commitEdit: () => {
     const { session, history } = get();
     if (history.present === session) return;
-    set({ history: recordHistory(history, session) });
+    set({ history: recordHistory(history, session, sameByReference) });
   },
 
   loadSession: (session) => {
@@ -210,12 +349,33 @@ export const useDawStore = create<DawState>((set, get) => ({
   }),
 
   selection: EMPTY_SELECTION,
-  setSelection: (sel) => set({
-    selection: {
+  /**
+   * Set the selection, widened to every member of any edit group it touches.
+   *
+   * Here rather than in each edit verb.  Thirty commands read the selection;
+   * teaching all of them about groups is thirty chances to forget one, and a
+   * group that works for Cut but not for Trim is worse than none.  Widening
+   * where it is STORED also means the highlight covers the whole group, so
+   * what will be edited is visible before anything is pressed.
+   */
+  setSelection: (sel) => set((state) => {
+    const selection = expandSelection(state.session, {
       startSec: Math.max(0, Math.min(sel.startSec, sel.endSec)),
       endSec: Math.max(sel.startSec, sel.endSec),
       trackIds: sel.trackIds,
-    },
+    });
+    // The loop range follows the edit selection when the link is on.  Through
+    // `linkedTimeline` rather than inline, so "nothing to do" returns null and
+    // this stays a single set() with no extra keys — a write on every mouse
+    // move of a drag is a re-render on every mouse move of a drag.
+    const loop = linkedTimeline(
+      state.linkSelection,
+      { startSec: state.loopStartSec, endSec: state.loopEndSec },
+      selection,
+    );
+    return loop
+      ? { selection, loopStartSec: loop.startSec, loopEndSec: loop.endSec }
+      : { selection };
   }),
   selectedTrackIds: [],
   setSelectedTracks: (ids) => set({ selectedTrackIds: ids }),
@@ -230,6 +390,64 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   spotTarget: null,
   setSpotTarget: (spotTarget) => set({ spotTarget }),
+
+  stripTarget: null,
+  setStripTarget: (stripTarget) => set({ stripTarget }),
+
+  quantizeTarget: null,
+  renameTarget: null,
+  setRenameTarget: (renameTarget) => set({ renameTarget }),
+  historyOpen: false,
+  setHistoryOpen: (historyOpen) => set({ historyOpen }),
+  poolOpen: false,
+  setPoolOpen: (poolOpen) => set({ poolOpen }),
+  fadeTarget: null,
+  setFadeTarget: (fadeTarget) => set({ fadeTarget }),
+
+  zoomSlots: {},
+  storeZoomSlot: (slot) => set((s) => ({
+    zoomSlots: storeZoom(s.zoomSlots, slot, {
+      pxPerSec: s.pxPerSec,
+      scrollSec: s.scrollSec,
+      trackHeights: Object.fromEntries(s.session.tracks.map((t) => [t.id, t.height])),
+    }),
+  })),
+  recallZoomSlot: (slot) => {
+    const state = get();
+    const view: ZoomView | null = recallZoom(state.zoomSlots, slot);
+    if (!view) return false;
+    set({ pxPerSec: view.pxPerSec, scrollSec: view.scrollSec });
+    // Track heights are restored through `apply`, because they live in the
+    // session and so belong in the undo stack; the zoom does not.
+    if (view.trackHeights) {
+      const heights = view.trackHeights;
+      state.apply((session) => ({
+        ...session,
+        tracks: session.tracks.map((t) => (
+          heights[t.id] !== undefined && heights[t.id] !== t.height
+            ? { ...t, height: heights[t.id] as number }
+            : t)),
+      }));
+    }
+    return true;
+  },
+
+  layouts: [],
+  setLayouts: (layouts) => set({ layouts }),
+
+  snapshots: [],
+  addSnapshot: (snapshot) => set((s) => ({ snapshots: pushSnapshot(s.snapshots, snapshot) })),
+  setSnapshots: (snapshots) => set({ snapshots }),
+
+  linkSelection: false,
+  setLinkSelection: (linkSelection) => set({ linkSelection }),
+  setQuantizeTarget: (quantizeTarget) => set({ quantizeTarget }),
+
+  channelClipboard: null,
+  setChannelClipboard: (channelClipboard) => set({ channelClipboard }),
+
+  autoCrossfade: true,
+  setAutoCrossfade: (autoCrossfade) => set({ autoCrossfade }),
 
   metronomeOn: false,
   toggleMetronome: () => {
@@ -289,6 +507,11 @@ export const useDawStore = create<DawState>((set, get) => ({
   setEditMode: (m) => set({ editMode: m }),
   gridDivision: 1,
   setGridDivision: (beats) => set({ gridDivision: Math.max(1 / 32, beats) }),
+  // Grid is the default because it is the one mode that needs no explaining;
+  // the other three are what you reach for once you know why.
+  snapMode: 'grid',
+  setSnapMode: (m) => set({ snapMode: m }),
+  cycleSnapMode: () => set((s) => ({ snapMode: cycleSnap(s.snapMode) })),
   nudgeSec: 0.1,
   setNudgeSec: (s) => set({ nudgeSec: Math.max(0.001, s) }),
   tabToTransient: true,
@@ -298,6 +521,12 @@ export const useDawStore = create<DawState>((set, get) => ({
   setPxPerSec: (v) => set({ pxPerSec: Math.max(4, Math.min(2000, v)) }),
   scrollSec: 0,
   setScrollSec: (v) => set({ scrollSec: Math.max(0, v) }),
+  laneWidthPx: 900,
+  setLaneWidthPx: (v) => set({ laneWidthPx: Math.max(120, v) }),
+  followPlayhead: true,
+  setFollowPlayhead: (followPlayhead) => set({ followPlayhead }),
+  rulerFormat: 'barsBeats',
+  setRulerFormat: (rulerFormat) => set({ rulerFormat }),
 
   smartTrackId: null,
   openSmartControls: (id) => set({ smartTrackId: id }),
@@ -315,16 +544,60 @@ dawRuntime.onStopped = () => {
 };
 
 /**
- * Snap a time to the grid when the session is in Grid mode.
+ * The store's current snap settings, plus the times an Events snap can land on.
  *
- * Rounds on the BEAT axis and converts back, so the grid follows the tempo
- * map: a bar line stays a bar line through a ritardando, which is the whole
- * reason the map exists.
+ * The event list is built from the SELECTED tracks' clip edges plus the markers
+ * and the play head — the things you can see.  Collecting every edge in a
+ * fifty-track session would let a drag jump to a boundary on a track that is
+ * not even on screen, which reads as the timeline having a mind of its own.
+ *
+ * It is only built in Events mode.  This runs on every mouse-move of a clip
+ * drag, and walking a big session's clips sixty times a second to produce a
+ * list the other four modes never read is a frame budget spent on nothing.
+ */
+export function snapContext(mode: SnapMode): SnapContext {
+  const { session, gridDivision, pxPerSec, selectedTrackIds, focusedTrackId, playheadSec } =
+    useDawStore.getState();
+  const base = { tempoMap: tempoMapOf(session), gridDivision, pxPerSec };
+  if (mode !== 'events') return base;
+
+  const tracks = selectedTrackIds.length > 0
+    ? selectedTrackIds
+    : focusedTrackId ? [focusedTrackId] : session.tracks.map((t) => t.id);
+  return {
+    ...base,
+    events: eventTimes(
+      clipBoundaries(session, tracks),
+      (session.markers ?? []).map((m) => m.timeSec),
+      [playheadSec],
+    ),
+  };
+}
+
+/**
+ * Snap a bare time — a ruler click, a play head drop, a new selection edge.
+ *
+ * Kept under its old name so the two dozen callers that already ask for it get
+ * the new modes without each having to learn about them.  Grid mode rounds on
+ * the BEAT axis and converts back, so a bar line stays a bar line through a
+ * ritardando, which is the whole reason the tempo map exists.
  */
 export function snapToGrid(sec: number): number {
-  const { editMode, gridDivision, session } = useDawStore.getState();
-  if (editMode !== 'grid' || gridDivision <= 0) return Math.max(0, sec);
-  return snapSecToBeats(tempoMapOf(session), sec, gridDivision);
+  const { snapMode } = useDawStore.getState();
+  return snapTimeMode(snapMode, snapContext(snapMode), sec);
+}
+
+/**
+ * Snap a MOVE: the thing was at `fromSec`, the mouse says `toSec`.
+ *
+ * This is the call Relative Grid needs and `snapToGrid` cannot express — a
+ * drag that keeps the clip's offset from the line has to know where the clip
+ * started.  A drag that calls `snapToGrid` instead still works; it just cannot
+ * do Relative, which is why every drag path should move to this one.
+ */
+export function snapMoveTo(fromSec: number, toSec: number): number {
+  const { snapMode } = useDawStore.getState();
+  return snapMoveMode(snapMode, snapContext(snapMode), fromSec, toSec);
 }
 
 /** The tracks an edit command applies to: the selection, else the focus. */

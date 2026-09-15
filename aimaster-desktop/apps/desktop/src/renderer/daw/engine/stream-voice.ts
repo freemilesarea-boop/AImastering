@@ -12,7 +12,7 @@
 // requirement for the audio to play.
 
 import {
-  canShareMemory, createRing, endFrame, setEndFrame, underruns, type Ring,
+  canShareMemory, createRing, setEndFrame, underruns, type Ring,
 } from './ring-buffer.js';
 import type { PcmSource } from './pcm-store.js';
 
@@ -173,16 +173,4 @@ export function createStreamVoice(
     underruns: () => underruns(ring),
     stop: close,
   };
-}
-
-/** Frames still to be read before the source runs out - for tests. */
-export function remainingFrames(voice: StreamVoice): number {
-  return endFrame(voice.ring);
-}
-
-/** Shut the reader thread down (session close, tests). */
-export function closeStreamRuntime(): void {
-  reader?.terminate();
-  reader = null;
-  modulePromise = null;
 }

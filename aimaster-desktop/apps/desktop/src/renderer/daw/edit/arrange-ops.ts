@@ -25,7 +25,7 @@
 
 import { splitClip } from './clip-edit.js';
 import { pointValueAt } from '../model/automation.js';
-import { clipEnd, findTrack } from '../model/session-ops.js';
+import { clipEnd } from '../model/session-ops.js';
 import {
   beatsPerBar, meterAtBeat, secToBeat, tempoAtSec, tempoMapOf, withTempoMap,
 } from '../model/tempo-map.js';
@@ -701,14 +701,4 @@ export function selectionForSection(
     endSec: range.endSec,
     trackIds: session.tracks.map((t) => t.id),
   };
-}
-
-/** True when a track has anything at all inside a section. */
-export function sectionHasContent(
-  session: DawSession, trackId: string, range: SectionRange,
-): boolean {
-  const track = findTrack(session, trackId);
-  if (!track) return false;
-  return track.playlists.some((p) => p.clips.some(
-    (c) => clipEnd(c) > range.startSec + EPS && c.startSec < range.endSec - EPS));
 }

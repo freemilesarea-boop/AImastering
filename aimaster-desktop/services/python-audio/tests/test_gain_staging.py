@@ -137,3 +137,95 @@ def test_build_filter_chain_excludes_softclip_from_pre_filter():
     # _build_filter_chain itself never appends soft_clipper anymore
     assert "compand" not in pre or "saturation" in str(applied).lower(), \
         "soft-clipper must not be inside pre_filter; it goes after entry_gain"
+
+
+# ── The loudness-policy reason is a string, and `stages` is decibels ──────────
+#
+# `pipeline.py` recorded the policy's reason — "explicit_target" — inside
+# `gain_stages`, which is a dict of dB that the report turns into floats one by
+# one.  `float("explicit_target")` raises, the caller catches every exception
+# and logs a warning, and the report came back None.  The gain-staging panel
+# was therefore empty on EVERY job, and nothing failed to say so.
+
+def test_report_survives_every_policy_reason():
+    """The reason must reach the report without taking it down."""
+    from app.qc.gain_staging import build_gain_staging_report
+    from app.mastering.loudness_policy import resolve_target_lufs
+
+    stages = {
+        "compressorMakeupDb": 0.5, "preGainDb": 2.0, "limiterInputGainDb": 1.0,
+        "correctionGainDb": 0.0, "ispCorrectionDb": 0.0,
+    }
+    # Every reason the policy can actually produce, taken from the policy
+    # rather than written out here, so a new one is covered the day it exists.
+    reasons = {
+        resolve_target_lufs(pre_lufs=-9.1, requested_target=-14.0,
+                            explicit_target=True).reason,
+        resolve_target_lufs(pre_lufs=None).reason,
+        resolve_target_lufs(pre_lufs=-9.1, style="loud").reason,
+        resolve_target_lufs(pre_lufs=-9.1, style="balanced").reason,
+        resolve_target_lufs(pre_lufs=-30.0, style="balanced").reason,
+    }
+    assert "explicit_target" in reasons, "the reason that broke it is still reachable"
+
+    for reason in reasons:
+        report = build_gain_staging_report(
+            input_metrics={}, output_metrics={},
+            input_path="/nonexistent-in.wav", output_path="/nonexistent-out.wav",
+            pipeline_stages=stages, loudness_policy_reason=reason,
+        )
+        assert report, f"report empty for reason={reason}"
+        assert report["loudnessPolicyReason"] == reason
+        assert report["stages"]["totalAppliedGainDb"] == 3.5
+
+
+def test_stages_holds_only_numbers():
+    """`stages` is a table of dB — a stray non-number is skipped, not fatal.
+
+    The guard, not the fix: the fix is that the reason has its own field.  This
+    is what stops the NEXT string somebody records from emptying the panel.
+    """
+    from app.qc.gain_staging import build_gain_staging_report
+
+    stages = {
+        "compressorMakeupDb": 0.5, "preGainDb": 2.0, "limiterInputGainDb": 1.0,
+        "correctionGainDb": 0.0, "ispCorrectionDb": 0.0,
+        "somebodysNote": "not a number",
+        "aNan": float("nan"),
+        "anInfinity": float("inf"),
+        "aFlag": True,
+    }
+    report = build_gain_staging_report(
+        input_metrics={}, output_metrics={},
+        input_path="/nonexistent-in.wav", output_path="/nonexistent-out.wav",
+        pipeline_stages=stages,
+    )
+    assert report, "a stray value must not empty the report"
+    for key, value in report["stages"].items():
+        assert isinstance(value, (int, float)) and not isinstance(value, bool), \
+            f"stages[{key}] = {value!r} is not a number"
+        assert value == value, f"stages[{key}] is NaN"
+    assert "somebodysNote" not in report["stages"]
+    assert "aFlag" not in report["stages"], "a bool is not a decibel"
+    assert report["stages"]["totalAppliedGainDb"] == 3.5
+
+
+def test_pipeline_does_not_put_the_reason_in_the_dB_table():
+    """The regression guard on the line that caused it.
+
+    `gain_stages` is annotated `dict[str, float]` and is handed straight to the
+    report.  If the reason goes back in there, this fails — which is the point,
+    because the failure mode is silent.
+    """
+    from pathlib import Path
+    import app.mastering.pipeline as pipeline_mod
+
+    source = Path(pipeline_mod.__file__).read_text(encoding="utf-8")
+    assert 'gain_stages["loudnessPolicyReason"]' not in source, (
+        "the policy reason is back inside the dB table — it raises ValueError "
+        "inside build_gain_staging_report, which is caught and logged, so the "
+        "gain-staging panel silently empties on every job"
+    )
+    assert "loudness_policy_reason = _target_decision.reason" in source, (
+        "the reason should still be captured — into its own variable"
+    )

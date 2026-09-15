@@ -38,10 +38,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  DETAILED_STEMS, STEM_KINDS, separate, stemLabel, type StemKind,
-} from '../src/renderer/daw/audio/separate/separate.js';
-import { classifyStemFile } from './stem-names.js';
-import { readWav } from './wav-read.js';
+  STEM_KINDS, separate, stemLabel, type StemKind,} from '../src/renderer/daw/audio/separate/separate.js';
+import { classifyStemFile} from './stem-names.js';
+import { readWav} from './wav-read.js';
 
 // ── Measurement ──────────────────────────────────────────────────────────────
 
@@ -280,8 +279,7 @@ for (const note of report.notes) console.log(`· ${note}`);
 
 // ── Where it goes wrong, by frequency ────────────────────────────────────────
 import {
-  BAND_NAMES, bandShare, energyByBand, leakByBand,
-} from './band-leak.js';
+  BAND_NAMES, bandShare, energyByBand, leakByBand,} from './band-leak.js';
 
 if (diagnose) {
   console.log('\n대역별 에너지 분포 (%) — 각 줄의 합이 100');

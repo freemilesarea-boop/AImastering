@@ -15,7 +15,7 @@
 // compressor.
 
 import {
-  deviceOrder, edgesTo, findNode, topoOrder,
+  deviceOrder, edgesTo, topoOrder,
   type DeviceGraph, type DeviceId, type DeviceNode,
 } from '../model/device-graph.js';
 import { resolveRack, type Rack } from '../model/racks.js';
@@ -224,10 +224,4 @@ export function chainLatency(
   }
   const output = graph.nodes.find((n) => n.kind === 'output');
   return output ? (best.get(output.id) ?? 0) : Math.max(0, ...best.values());
-}
-
-/** Convenience for the UI: does this node exist and is it a real plugin? */
-export function isProcessingNode(graph: DeviceGraph, id: DeviceId): boolean {
-  const node = findNode(graph, id);
-  return node?.kind === 'device' || node?.kind === 'rack';
 }

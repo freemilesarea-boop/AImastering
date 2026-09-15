@@ -71,16 +71,3 @@ export interface PresetHighlights {
   aiOptimized: boolean;
   monoSafe: boolean;
 }
-
-export function presetHighlights(p: LouiPreset): PresetHighlights {
-  const lim = p.tuning.limiter?.parameters ?? {};
-  const img = p.tuning.imager?.parameters ?? {};
-  return {
-    targetLufs: typeof lim['targetLufs'] === 'number' ? (lim['targetLufs'] as number) : -14,
-    ceilingDbtp: typeof lim['ceilingDbtp'] === 'number' ? (lim['ceilingDbtp'] as number) : -1,
-    widthPct: typeof img['widthPct'] === 'number' ? (img['widthPct'] as number) : 100,
-    tonalBalance: p.tonalBalance,
-    aiOptimized: p.aiOptimized,
-    monoSafe: p.monoSafe,
-  };
-}

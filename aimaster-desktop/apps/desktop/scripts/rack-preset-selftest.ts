@@ -25,20 +25,17 @@
 import {
   captureRack, createRackPreset, describeLoad, describeRack, isLoadable, loadRack,
   missingDevices, sanitiseName,
-  type RackDevice, type RackPreset,
-} from '../src/renderer/daw/model/rack-preset.js';
+  type RackDevice,} from '../src/renderer/daw/model/rack-preset.js';
 import {
   EXPORT_KIND, clearRacks, deleteRack, describeImport, exportRacks, findRack,
   importRacks, listRacks, overwriteRack, renameRack, resetRackIds, saveRack,
-  setRackStore, type RackStore,
-} from '../src/renderer/daw/engine/rack-store.js';
+  setRackStore, type RackStore,} from '../src/renderer/daw/engine/rack-store.js';
 import {
-  addTrack, createInsert, createSession, createTrack, findTrack, setInsert,
-} from '../src/renderer/daw/model/session-ops.js';
-import { defaultParams, findPlugin } from '../src/renderer/daw/engine/plugins.js';
-import { setUserPresetStore } from '../src/renderer/daw/engine/user-presets.js';
-import { resetIds } from '../src/renderer/daw/model/ids.js';
-import type { DawSession, Track } from '../src/renderer/daw/model/types.js';
+  addTrack, createInsert, createSession, createTrack, findTrack, setInsert,} from '../src/renderer/daw/model/session-ops.js';
+import { defaultParams, findPlugin} from '../src/renderer/daw/engine/plugins.js';
+import { setUserPresetStore} from '../src/renderer/daw/engine/user-presets.js';
+import { resetIds} from '../src/renderer/daw/model/ids.js';
+import type { DawSession, Track} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];

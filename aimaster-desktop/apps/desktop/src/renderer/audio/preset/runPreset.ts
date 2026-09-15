@@ -14,7 +14,7 @@ import type {
   AdapterRunReport,
 } from '@aimaster/shared-types/engine';
 
-import { processMasteringWithMode, type ModePipelineResult } from '../masteringModes.js';
+import { processMasteringWithConfig, type ModePipelineResult } from '../masteringModes.js';
 import type { AudioBufferLike } from '../loudnessCore.js';
 import { buildAdapterReport, presetToModeConfig } from './from-preset.js';
 
@@ -38,18 +38,24 @@ export interface RunPresetResult {
  * in `report.entries` with status='noop' — this is the M1 honest
  * behaviour; the caller can inspect the report to see what the Python
  * adapter applied that we did not.
+ *
+ * What IS applied is the preset's own numbers, not its bucket's: the loudness
+ * target, the true-peak ceiling and the limiter strength come from the JSON.
+ * The stages the TS chain has — gain staging, transient protection, the vocal
+ * enhancer — still run on the bucket's parameters, because the schema has no
+ * field for them; those are marked applied because they are, and the values
+ * they run are the bucket's.  That gap is real and belongs to M2.
  */
 export function runPreset(input: AudioBufferLike, preset: EnginePreset): RunPresetResult {
   const t0 = (typeof performance !== 'undefined' ? performance : Date).now();
 
   const { mode, entries } = presetToModeConfig(preset);
-  const internal = processMasteringWithMode(input, mode.mode);
-
-  // Note: the M1 TS chain ignores `mode` parameter customisation here —
-  // processMasteringWithMode looks up MODE_CONFIGS[mode.mode] directly.
-  // The `mode` we built carries the bucketed config; bucket is what the
-  // existing pipeline runs.  This is one of the gaps M2's Rust adapter
-  // must close (run the JSON values, not the bucket).
+  // The CONFIG, not the bucket name.  `presetToModeConfig` has already read
+  // the preset's loudness target, true-peak ceiling and limiter strength into
+  // `mode`; passing `mode.mode` instead would look the bucket up again and
+  // discard all three.  It used to, and the result was seven built-in presets
+  // rendering as three waveforms — see `processMasteringWithConfig`.
+  const internal = processMasteringWithConfig(input, mode);
 
   const durationMs = (typeof performance !== 'undefined' ? performance : Date).now() - t0;
   const report = buildAdapterReport(

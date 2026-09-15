@@ -45,6 +45,47 @@ export const DEFAULT_STRIP: StripOptions = {
   padSec: 0.02,
 };
 
+/**
+ * What each number may be set to.
+ *
+ * The command shipped with the defaults wired in and no way to reach them,
+ * which is the same as not having them: a threshold that suits a close vocal
+ * shreds a room mic, and the person holding the take is the only one who can
+ * say which.  The ranges are what the analysis can actually act on — a
+ * threshold above −6 dB calls the performance silence, and a pad longer than
+ * the minimum silence would re-join every region it just separated.
+ */
+export interface StripLimit {
+  min: number;
+  max: number;
+  step: number;
+  unit: string;
+  label: string;
+}
+
+export const STRIP_LIMITS: Record<keyof StripOptions, StripLimit> = {
+  thresholdDb:   { min: -80, max: -6,  step: 1,    unit: 'dB', label: '임계값' },
+  minSilenceSec: { min: 0.05, max: 5,  step: 0.05, unit: '초', label: '최소 무음 길이' },
+  minSoundSec:   { min: 0.01, max: 2,  step: 0.01, unit: '초', label: '최소 소리 길이' },
+  padSec:        { min: 0,    max: 0.5, step: 0.005, unit: '초', label: '앞뒤 여유' },
+};
+
+/** Hold every number inside what the analysis can act on. */
+export function clampStrip(options: StripOptions): StripOptions {
+  const hold = (key: keyof StripOptions): number => {
+    const limit = STRIP_LIMITS[key];
+    const raw = options[key];
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) return DEFAULT_STRIP[key];
+    return Math.max(limit.min, Math.min(limit.max, raw));
+  };
+  return {
+    thresholdDb: hold('thresholdDb'),
+    minSilenceSec: hold('minSilenceSec'),
+    minSoundSec: hold('minSoundSec'),
+    padSec: hold('padSec'),
+  };
+}
+
 export interface SoundRegion {
   startSec: number;
   endSec: number;
@@ -186,6 +227,84 @@ export function stripClipSilence(
     sortClips([...clips.filter((c) => c.id !== clipId), ...pieces]));
 
   return { session: out, pieces: pieces.length, removedSec: Math.max(0, clip.durationSec - kept) };
+}
+
+// ── Across a selection ────────────────────────────────────────────────────────
+//
+// One clip at the play head is the wrong unit for the job this is part of.
+// The routine it belongs to is "clean the take, then bounce it": strip the
+// breaths out of everything selected, then merge what is left.  Doing that a
+// clip at a time is the hand editing the command exists to replace.
+
+/** One clip's analysis, ready to apply or to summarise. */
+export interface ClipRegions {
+  trackId: TrackId;
+  clipId: string;
+  /** The clip's own length, so the summary can say what was removed. */
+  clipDurationSec: number;
+  regions: SoundRegion[];
+}
+
+export interface StripSummary {
+  /** Clips that had something to cut. */
+  clips: number;
+  /** Clips they would become. */
+  pieces: number;
+  removedSec: number;
+}
+
+/**
+ * What the strip would do, without doing it.
+ *
+ * Computed from the regions alone so the dialog can show it while the numbers
+ * are still being dragged — the whole point of separating regions from edits
+ * is that you get to look before anything is cut.
+ */
+export function summariseStrip(items: readonly ClipRegions[]): StripSummary {
+  let clips = 0;
+  let pieces = 0;
+  let removedSec = 0;
+  for (const item of items) {
+    if (item.regions.length === 0) continue;
+    const kept = item.regions.reduce((n, r) => n + Math.max(0, r.endSec - r.startSec), 0);
+    const removed = item.clipDurationSec - kept;
+    // A clip the analysis keeps whole is not work; counting it would report
+    // "8 clips" for a pass that changed nothing.
+    if (removed <= EPS) continue;
+    clips += 1;
+    pieces += item.regions.length;
+    removedSec += removed;
+  }
+  return { clips, pieces, removedSec };
+}
+
+/** Apply the plan to every clip in it. */
+export function stripClipsSilence(
+  session: DawSession, items: readonly ClipRegions[],
+): StripResult {
+  let out = session;
+  let pieces = 0;
+  let removedSec = 0;
+  for (const item of items) {
+    const one = stripClipSilence(out, item.trackId, item.clipId, item.regions);
+    if (one.pieces === 0) continue;
+    out = one.session;
+    pieces += one.pieces;
+    removedSec += one.removedSec;
+  }
+  return { session: out, pieces, removedSec };
+}
+
+/** `3클립 → 12조각 · 3분 24초 제거` — the preview line. */
+export function describeSummary(summary: StripSummary): string {
+  if (summary.clips === 0) return '자를 무음이 없습니다';
+  return `${summary.clips}클립 → ${summary.pieces}조각 · ${formatSec(summary.removedSec)} 제거`;
+}
+
+function formatSec(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds - m * 60;
+  return m > 0 ? `${m}분 ${s.toFixed(1)}초` : `${s.toFixed(2)}초`;
 }
 
 /** `12조각 · 3분 24초 제거` — the result, in one line. */

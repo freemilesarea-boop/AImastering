@@ -99,8 +99,6 @@ export function buildSession(snap: AudioSnapshot, createdAt: string): LouiSessio
     allModulesState:   defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS),
     presetId:          snap.options.quickPreset,
     baseOptions:       snap.options,
-    freeEqEnabled:     false,
-    freeEqBands:       [],
   };
 }
 
@@ -190,8 +188,14 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
       try {
         const dest = await invoke('file:save-wav', out) as string | null;
         if (dest) notify(`내보내기 완료 — ${fileNameOf(dest)}`, 'success');
-      } catch {
-        notify('내보내기 실패 (라이선스가 필요할 수 있습니다)', 'error');
+      } catch (err) {
+        // This used to blame the licence for every failure — a guess that
+        // was already wrong when it was written and is now impossible: the
+        // export gate was removed from all three main-process call sites.
+        // Meanwhile a full disk, a read-only folder and a path that is no
+        // longer there all arrived as the same sentence with the real reason
+        // thrown away.  Say what actually happened.
+        notify(`내보내기 실패 — ${(err as Error).message}`, 'error');
       }
     },
 
@@ -367,6 +371,8 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
     },
 
     // ── 5. 창 및 패널 ───────────────────────────────────────────────────
+    'window.controlRoom':    togglePanelCmd('controlRoom', '컨트롤 룸'),
+    'window.provenance':     togglePanelCmd('provenance', '메타데이터'),
     'window.mixConsole':     togglePanelCmd('mixConsole', '믹스콘솔'),
     'window.transportPanel': togglePanelCmd('transport',  '트랜스포트'),
     'window.keyEditor':      unavailable('window.keyEditor'),
@@ -385,6 +391,13 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
 
     'window.shortcutHelp': () => { workspace().togglePanel('help'); },
     'window.controlSurface': () => { workspace().togglePanel('surface'); },
+
+    // Device setup is drawn by the DAW workspace only, so on the mastering
+    // screen the key says where to find it rather than toggling a panel that
+    // nothing renders — a dead key reads as a broken one.
+    'window.deviceSetup': () => {
+      notify('디바이스 셋업은 DAW 워크스페이스(Mod+Alt+D)에서 F4 로 엽니다', 'warning');
+    },
   } as CommandMap;
 
   // DAW-only verbs — registered even without the workspace so the key says

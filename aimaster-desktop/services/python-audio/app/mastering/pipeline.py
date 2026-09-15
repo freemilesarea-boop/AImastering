@@ -33,6 +33,7 @@ from app.utils.ffmpeg_wrapper import (
     loudnorm_pass2,
     apply_limiter,
     apply_filter_chain,
+    intermediate_bit_depth,
     measure_output,
     export_preview_mp3,
     parse_audio_stream,
@@ -303,11 +304,49 @@ def _build_tonal_correction_chain(
     return ",".join(parts), applied
 
 
+def _reduce_to_delivery_depth(
+    output_path: str, *, sample_rate: int, work_depth: int, bit_depth: int,
+) -> bool:
+    """Reduce the finished render from the working depth to the delivery depth.
+
+    The chain runs at `work_depth` (24-bit or better) so that the two or three
+    ffmpeg passes in series do not each throw away the bottom bits — measured,
+    three undithered 16-bit passes leave 13 dB more harmonic distortion on a
+    quiet tone than one does.  This is the single pass that reduces, and the
+    only one that dithers.
+
+    A no-op when the chain was already running at the delivery depth.
+    Returns True when it actually converted.
+    """
+    if int(work_depth) <= int(bit_depth):
+        return False
+
+    out_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+    fd, tmp = tempfile.mkstemp(suffix="_deliver.wav", prefix="aimaster_", dir=out_dir)
+    os.close(fd)
+    try:
+        apply_filter_chain(output_path, tmp, "anull",
+                           sample_rate=sample_rate, bit_depth=bit_depth, dither=True)
+        os.replace(tmp, output_path)
+        log("INFO", f"[deliver] {work_depth}-bit → {bit_depth}-bit, dithered")
+        return True
+    except Exception as exc:
+        # The render at the working depth is still a valid, better-than-asked-for
+        # file.  Losing it to a failed format conversion would be the worse
+        # outcome, so keep it and say what happened.
+        log("ERROR", f"[deliver] word-length reduction failed, keeping {work_depth}-bit: {exc}")
+        try:
+            if os.path.exists(tmp): os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
 def _apply_final_tonal_guard(
     output_path: str,
     *,
     sample_rate: int,
-    bit_depth: int,
+    work_depth: int,
     target_tp: float,
     input_metrics: dict[str, Any],
     output_metrics: dict[str, Any],
@@ -317,8 +356,12 @@ def _apply_final_tonal_guard(
     applied_corrections: list[str],
     pipeline_warnings: list[dict[str, str]],
     pre_report: dict[str, Any],
+    loudness_policy_reason: str | None = None,
 ) -> dict[str, Any]:
     """Run the final tonal-balance correction pass if needed.
+
+    Writes at the WORKING depth, not the delivery depth: this is another
+    intermediate rewrite, and the single reduction happens after it.
 
     No-op when pre_report is already balanced.  Otherwise renders one
     additional ffmpeg pass through the corrective EQ chain and re-measures
@@ -342,7 +385,7 @@ def _apply_final_tonal_guard(
     os.close(fd)
     try:
         apply_filter_chain(output_path, tmp, chain,
-                           sample_rate=sample_rate, bit_depth=bit_depth)
+                           sample_rate=sample_rate, bit_depth=work_depth)
         os.replace(tmp, output_path)
     except Exception as exc:
         log("ERROR", f"[final-guard] correction render failed: {exc}")
@@ -381,6 +424,9 @@ def _apply_final_tonal_guard(
             input_path     = input_path,
             output_path    = output_path,
             pipeline_stages = pipeline_stages,
+            # Carried through, or the re-measured report would drop the field
+            # the first one had and the panel would change after a correction.
+            loudness_policy_reason = loudness_policy_reason,
         )
         log("INFO",
             f"[final-guard] post-correction lowEnergyRatio="
@@ -570,6 +616,14 @@ def run_pipeline(
     """
     t_start = time.time()
     pipeline_warnings: list[dict[str, str]] = []
+
+    # The chain is several ffmpeg passes in series, each writing a WAV the next
+    # one reads.  They all run at the WORKING depth (24-bit or better) and the
+    # word length is reduced exactly once, at the end, with dither — see
+    # `_reduce_to_delivery_depth`.  Writing every pass at a 16-bit delivery
+    # depth instead compounds: measured, three such passes leave 13 dB more
+    # harmonic distortion on a quiet tone than one does.
+    work_depth = intermediate_bit_depth(bit_depth)
 
     # ── v3.3.1 — Vocal protection (always-on engine guard).  Records every
     # clamp the engine had to apply so the UI can render "보컬 보호 모드 적용됨".
@@ -844,7 +898,12 @@ def run_pipeline(
         log("INFO", f"[pipeline] loudness policy: target {target_lufs:.1f} LUFS "
                     f"({_target_decision.reason})")
     target_lufs = _target_decision.target_lufs
-    gain_stages["loudnessPolicyReason"] = _target_decision.reason
+    # NOT into `gain_stages` — that is a dict of decibels and the report turns
+    # every entry into a float.  Putting this string there raised ValueError
+    # inside `build_gain_staging_report`, which the caller catches and logs as
+    # a warning, so the gain-staging panel came back empty on every job with
+    # nobody the wiser.  It has a parameter of its own now.
+    loudness_policy_reason = _target_decision.reason
     # target_lufs changed → the linear/dynamic loudnorm choice must follow it.
     use_linear_loudnorm = target_lufs <= _LOUDNORM_DYNAMIC_THRESHOLD
 
@@ -952,7 +1011,7 @@ def run_pipeline(
             apply_filter_chain(
                 input_path, prelim_wav,
                 pre_filter or "anull",
-                sample_rate=sample_rate, bit_depth=bit_depth,
+                sample_rate=sample_rate, bit_depth=work_depth,
             )
         except FFmpegError as exc:
             log("ERROR", f"static chain pass 1 (pre-filter) failed: {exc}\n"
@@ -1069,7 +1128,7 @@ def run_pipeline(
         try:
             apply_filter_chain(
                 prelim_wav, output_path, static_chain_filter,
-                sample_rate=sample_rate, bit_depth=bit_depth,
+                sample_rate=sample_rate, bit_depth=work_depth,
             )
         except FFmpegError as exc:
             log("ERROR", f"static chain pass 2 failed: {exc}\nstderr:\n{exc.stderr}")
@@ -1100,7 +1159,7 @@ def run_pipeline(
                 target_tp=loudnorm_tp_internal,
                 lra=lra,
                 sample_rate=sample_rate,
-                bit_depth=bit_depth,
+                bit_depth=work_depth,
                 pre_filter=pre_filter,
                 linear=use_linear_loudnorm,
             )
@@ -1145,7 +1204,7 @@ def run_pipeline(
                 attack_ms=lim_strength["attack_ms"],
                 release_ms=lim_strength["release_ms"],
                 sample_rate=sample_rate,
-                bit_depth=bit_depth,
+                bit_depth=work_depth,
                 level_in_db=lim_input_gain_db,
             )
         except FFmpegError as exc:
@@ -1236,7 +1295,7 @@ def run_pipeline(
                     corr_tmp,
                     af,
                     sample_rate=sample_rate,
-                    bit_depth=bit_depth,
+                    bit_depth=work_depth,
                 )
                 os.replace(corr_tmp, output_path)
                 correction_applied = True
@@ -1282,7 +1341,24 @@ def run_pipeline(
     try:
         isp_gain = None if skip_isp_safety else apply_isp_safety(
             output_path, ceiling_dbtp=target_tp, headroom_db=0.1)
-        if isp_gain is not None and abs(isp_gain) > 0.01:
+        if isp_gain is None and not skip_isp_safety:
+            # apply_isp_safety returns None — never raises — when numpy/soundfile
+            # are missing, or the output could not be read or written back.  The
+            # alimiter on its own leaves 0.3 dB for inter-sample peaks, and dense
+            # loud material walks straight through that, so what just came out
+            # may be over the ceiling.  Logging it and moving on hands the user a
+            # master that looks finished and is not; say it where they can see it.
+            pipeline_warnings.append({
+                "code": "ISP_SAFETY_UNAVAILABLE",
+                "level": "warning",
+                "userMessage": (
+                    "인터샘플 피크 안전장치를 실행하지 못했습니다 — 출력 트루 피크가 "
+                    f"한계({target_tp:.1f} dBTP)를 넘었을 수 있습니다. "
+                    "스트리밍 플랫폼에 올리기 전에 확인하세요."
+                ),
+            })
+            log("WARN", "[pipeline] ISP safety unavailable — true peak is not guaranteed")
+        elif isp_gain is not None and abs(isp_gain) > 0.01:
             isp_correction_db = isp_gain
             gain_stages["ispCorrectionDb"] = round(float(isp_gain), 3)
             applied_corrections.append(f"ISP safety ({isp_gain:+.2f} dB)")
@@ -1298,6 +1374,16 @@ def run_pipeline(
             except FFmpegError:
                 pass
     except Exception as exc:
+        # Same reasoning as the None branch above: a safety device that did not
+        # run is not a detail for the log file.
+        pipeline_warnings.append({
+            "code": "ISP_SAFETY_FAILED",
+            "level": "warning",
+            "userMessage": (
+                f"인터샘플 피크 안전장치가 실패했습니다 ({exc}) — 출력 트루 피크가 "
+                f"한계({target_tp:.1f} dBTP)를 넘었을 수 있습니다."
+            ),
+        })
         log("WARN", f"[pipeline] ISP safety skipped: {exc}")
 
     # ── Quality checks ────────────────────────────────────────────────────
@@ -1510,6 +1596,7 @@ def run_pipeline(
             input_path     = input_path,
             output_path    = output_path,
             pipeline_stages = gain_stages,
+            loudness_policy_reason = loudness_policy_reason,
         )
         # v3.4.6 — diagnostic spectral table (kpop_loud telephone-sound debug).
         # Logs per-band before/after RMS so we can correlate user complaints
@@ -1534,7 +1621,7 @@ def run_pipeline(
             try:
                 gain_staging_report = _apply_final_tonal_guard(
                     output_path,
-                    sample_rate=sample_rate, bit_depth=bit_depth,
+                    sample_rate=sample_rate, work_depth=work_depth,
                     target_tp=target_tp,
                     input_metrics=input_metrics,
                     output_metrics=output_metrics,
@@ -1544,6 +1631,7 @@ def run_pipeline(
                     applied_corrections=applied_corrections,
                     pipeline_warnings=pipeline_warnings,
                     pre_report=gain_staging_report,
+                    loudness_policy_reason=loudness_policy_reason,
                 )
             except Exception as exc:
                 log("WARN", f"[pipeline] final tonal guard failed: {exc}")
@@ -1633,6 +1721,15 @@ def run_pipeline(
     except Exception as exc:
         log("WARN", f"[pipeline] mode recommendation 실패: {exc}")
         mode_recs = []
+
+    # ── Delivery word length ───────────────────────────────────────────────
+    # Everything above wrote at `work_depth`.  This is the one pass that
+    # reduces to what was asked for, and the one that dithers.  It runs after
+    # the tonal guard and the correction pass, because both of those rewrite
+    # the output file and each would otherwise be a second quantisation.
+    _reduce_to_delivery_depth(
+        output_path, sample_rate=sample_rate, work_depth=work_depth, bit_depth=bit_depth,
+    )
 
     # Capture before/after metrics into recorder for the debug bundle
     recorder.set_metrics(input_metrics, output_metrics)

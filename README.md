@@ -28,10 +28,13 @@
 | 기능 | 설명 |
 |------|------|
 | **자동 마스터링** | YouTube Music 대응형 기본 프로필 (-14 LUFS / -1.0 dBTP) |
+| **모듈 스위트** | 20개 모듈 체인 — 복원(De-click/De-hum/De-noise/De-esser) · 보정(Match EQ/Spectral Shaper/Stabilizer) · 톤(Vintage EQ/Dynamic EQ) · 다이내믹스(Multiband/Vintage Comp/Impact/Low End Focus) · 캐릭터(Exciter/Tape) · 출력(Imager/Maximizer) |
 | **오디오 분석** | LUFS, True Peak, LRA, 스펙트럼 분석 |
 | **QC 검사** | 5개 주요 플랫폼 기준 동시 점검 |
 | **다중 프리셋** | YouTube, Spotify, Apple Music, Tidal, 방송용 |
 | **무료 체험** | 3회 무료 처리 후 라이센스 필요 |
+
+모듈 스위트 상세: `docs/redesign/loui-mastering-v2/module-suite/00-OVERVIEW.md`
 
 > ⚠️ 라우드니스 타깃 수치(-14 LUFS, -1.0 dBTP)는 본 프로그램의 기본 출력 스펙입니다. 각 플랫폼의 공식 처리 정책과 다를 수 있으며, 플랫폼 정책은 언제든 변경될 수 있습니다.
 

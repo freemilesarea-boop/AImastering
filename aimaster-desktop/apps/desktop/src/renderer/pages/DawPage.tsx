@@ -10,9 +10,11 @@ import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
 import { useAudioStore } from '../stores/audioStore.js';
 import { useDawStore } from '../stores/dawStore.js';
+import { useWorkspaceStore } from '../stores/workspaceStore.js';
 import EditWindow from '../components/daw/edit/EditWindow.js';
 import MixWindow from '../components/daw/mix/MixWindow.js';
 import KeyEditor from '../components/daw/midi/KeyEditor.js';
+import InstrumentRack from '../components/daw/InstrumentRack.js';
 import SmartControlPanel from '../components/daw/smart/SmartControlPanel.js';
 import DeviceChainView from '../components/daw/chain/DeviceChainView.js';
 import SessionViewGrid from '../components/daw/session/SessionViewGrid.js';
@@ -30,11 +32,12 @@ import RecordStrip from '../components/daw/record/RecordStrip.js';
 import StepSequencer from '../components/daw/steps/StepSequencer.js';
 import IntelPanel from '../components/daw/intel/IntelPanel.js';
 import PluginWindowLayer from '../components/daw/plugin/PluginWindowLayer.js';
+import RegionLab from '../components/daw/region/RegionLab.js';
 import { createStack } from '../daw/model/stacks.js';
 import { setSessionTempo } from '../daw/model/warp.js';
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
 import {
-  addTrack, createTrack, createBus, createMidiPart, findTrack, sessionEndSec, updateClips,
+  addTrack, createTrack, createBus, findTrack, renameSession, sessionEndSec,
 } from '../daw/model/session-ops.js';
 import { shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
@@ -43,7 +46,7 @@ import {
   bounceSession, commitTrack, freezeTrack, stageForMastering, unfreezeTrack,
 } from '../daw/engine/offline-render.js';
 import {
-  handoffFileName, handoffMessage, handoffProblem,
+  handoffFileName, handoffProblem, stageMessage,
 } from '../daw/edit/master-handoff.js';
 import { describePlan, exportStems, planStems } from '../daw/engine/stem-export.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
@@ -62,6 +65,10 @@ export default function DawPage() {
   const notify       = useAppStore((s) => s.notify);
   const session      = useDawStore((s) => s.session);
   const apply        = useDawStore((s) => s.apply);
+  const tool         = useWorkspaceStore((s) => s.tool);
+  const setTool      = useWorkspaceStore((s) => s.setTool);
+  const rackOpen     = useWorkspaceStore((s) => s.panels.vstEditor);
+  const setPanel     = useWorkspaceStore((s) => s.setPanel);
   const loadSession  = useDawStore((s) => s.loadSession);
   const windowMode   = useDawStore((s) => s.window);
   const setWindow    = useDawStore((s) => s.setWindow);
@@ -100,6 +107,12 @@ export default function DawPage() {
       // Decoding is sequential, so the count is real progress, not a spinner.
       const report = await importIntoSession(paths, [], 0,
         (done, total) => setBusy(`홈에서 불러온 곡을 가져오는 중… ${done}/${total}`));
+      // These rows are now this session's source material.  Without this the
+      // mix comes back as a SECOND row beside the file it was made from, with
+      // the same name — and nobody can tell which one to release.
+      const failed = new Set(report.failed);
+      useAudioStore.getState().adoptQueueIntoSession(
+        useDawStore.getState().session.id, paths.filter((p) => !failed.has(p)));
       notify(describeImport(report), report.failed.length ? 'warning' : 'success');
     } catch (err) {
       notify(`가져오기 실패: ${(err as Error).message}`, 'error');
@@ -132,22 +145,22 @@ export default function DawPage() {
     } finally { setBusy(null); }
   }, [invoke, notify, playheadSec]);
 
-  /** New instrument track with an empty four-bar part, opened for editing. */
+  /**
+   * Adding an instrument means CHOOSING one.
+   *
+   * This button used to make a `polysynth` called `Synth N` without asking,
+   * which is how four working instruments ended up unreachable from the only
+   * place anyone looks for them.  It opens the rack instead — the same window
+   * F11 opens, so there is one door rather than two that behave differently.
+   */
   const handleAddInstrument = useCallback(() => {
-    const current = useDawStore.getState().session;
-    const barSec = (60 / current.tempoBpm) * current.timeSignature[0];
-    const track = createTrack(`Synth ${current.tracks.filter((t) => t.kind === 'instrument').length + 1}`, 'instrument');
-    const part = createMidiPart(`${track.name} 1`, { startSec: 0, durationSec: barSec * 4 });
-    apply((s) => updateClips(addTrack(s, track), track.id, () => [part]));
-    useDawStore.getState().setFocusedTrack(track.id);
-    useMidiEditorStore.getState().openPart({ trackId: track.id, clipId: part.id });
-    setWindow('midi');
-    notify('인스트루먼트 트랙을 만들고 Key Editor 를 열었습니다', 'success');
-  }, [apply, notify, setWindow]);
+    setPanel('vstEditor', true);
+  }, [setPanel]);
 
   /** Import a .mid — one instrument track per source track, MPE preserved. */
   const handleImportMidi = useCallback(async () => {
-    const paths = await invoke('file:open-dialog-multi') as string[] | null;
+    // The MIDI picker, not the audio one — the audio filter hid every .mid.
+    const paths = await invoke('file:open-dialog-midi') as string[] | null;
     const first = paths?.[0];
     if (!first) return;
     setBusy('MIDI 읽는 중…');
@@ -184,8 +197,16 @@ export default function DawPage() {
   const handleSaveSession = useCallback(async () => {
     const json = serializeDawSession(useDawStore.getState().session);
     const dest = await invoke('session:save', json) as string | null;
-    if (dest) notify('세션 저장 완료', 'success');
-  }, [invoke, notify]);
+    if (!dest) return;
+    // The person has just typed a name for this song; asking them again in a
+    // second place would be silly, and NOT taking it is why every row in the
+    // mastering list said "Untitled Session.wav".
+    const stem = (dest.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '');
+    if (stem.length > 0 && stem !== useDawStore.getState().session.name) {
+      apply((sn) => renameSession(sn, stem));
+    }
+    notify('세션 저장 완료', 'success');
+  }, [apply, invoke, notify]);
 
   const handleOpenSession = useCallback(async () => {
     const loaded = await invoke('session:load') as { path: string; data: string } | null;
@@ -277,24 +298,37 @@ export default function DawPage() {
    */
   const handleSendToMastering = useCallback(async () => {
     const current = useDawStore.getState().session;
-    const problem = handoffProblem(current, { queued: useAudioStore.getState().queue.length });
+    const audio = useAudioStore.getState();
+    const problem = handoffProblem(current, {
+      queued: audio.queue.length,
+      replacesExisting: audio.hasReplaceableRow(current.id),
+    });
     if (problem) { notify(problem, 'warning'); return; }
     setBusy('믹스를 렌더링하는 중…');
     try {
       const path = await stageForMastering(current);
-      const before = useAudioStore.getState().queue.length;
-      useAudioStore.getState().addFilesToQueue([path]);
-      const after = useAudioStore.getState().queue.length;
-      if (after === before) {
+      const staged = useAudioStore.getState().stageSessionInQueue(current.id, path);
+      if (staged.outcome === 'full') {
+        // The render is already on disk and now has nowhere to go.  Leaving it
+        // there would be a file nothing points at, kept for the lifetime of
+        // the temp directory.
+        void invoke('daw:discard-staged', { path }).catch(() => undefined);
         notify('대기열에 넣지 못했습니다 — 홈에서 자리를 만든 뒤 다시 보내세요', 'error');
         return;
       }
+      // The mix this one supersedes is no longer reachable from anywhere, and
+      // eight renders of the same session is a gigabyte of temp nobody asked
+      // for.  A failure here costs nothing worth reporting — the file is in a
+      // temp directory the OS clears anyway.
+      if (staged.replacedPath) {
+        void invoke('daw:discard-staged', { path: staged.replacedPath }).catch(() => undefined);
+      }
       setPage('home');
-      notify(handoffMessage(handoffFileName(current.name), after), 'success');
+      notify(stageMessage(handoffFileName(current.name), staged.outcome, staged.queued), 'success');
     } catch (err) {
       notify(`마스터링으로 보내지 못했습니다: ${(err as Error).message}`, 'error');
     } finally { setBusy(null); }
-  }, [notify, setPage]);
+  }, [invoke, notify, setPage]);
 
   const [templatesOpen, setTemplatesOpen] = useState(false);
 
@@ -357,7 +391,7 @@ export default function DawPage() {
         subtitle={`DAW · ${windowMode.toUpperCase()}`}
         actions={
           <button onClick={() => setPage('home')}
-            className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">← 홈</button>
+            className="hit-target text-xs text-zinc-600 hover:text-zinc-400 transition-colors">← 홈</button>
         }
       />
 
@@ -429,6 +463,14 @@ export default function DawPage() {
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 
+        {/* Scissors.  A toggle rather than a one-shot, because cutting a piece
+            out takes two clicks and switching tools between them is the kind
+            of friction that makes a feature go unused. */}
+        <ToolbarButton
+          onClick={() => setTool(tool === 'split' ? 'select' : 'split')}
+          accent={tool === 'split'}
+        >✂ 가위</ToolbarButton>
+
         <ToolbarButton onClick={handleImportAudio}>오디오 추가</ToolbarButton>
         {queue.length > 0 && (
           <ToolbarButton onClick={() => void importQueue()}>
@@ -498,6 +540,7 @@ export default function DawPage() {
       {/* Floating plugin windows live above every view, so switching from Edit
           to Mix does not close the compressor you were setting. */}
       <PluginWindowLayer />
+      <RegionLab />
 
       <RecordStrip />
 
@@ -518,6 +561,11 @@ export default function DawPage() {
         : <ReferencePanel />}
 
       {templatesOpen && <TemplatePanel onClose={() => setTemplatesOpen(false)} />}
+
+      {/* F11 — the instrument rack.  It reuses the `vstEditor` panel flag that
+          already existed under that name, so the key, the label and the panel
+          finally mean the same thing. */}
+      {rackOpen && <InstrumentRack onClose={() => setPanel('vstEditor', false)} />}
 
       {/* Floats over every window — scoring means watching the picture WHILE
           arranging, not instead of it. */}

@@ -10,11 +10,13 @@
 //   • Time is seconds (double).  Sample conversion happens only at the
 //     engine boundary — mixing units is how DAW code rots.
 
+import type { Scale } from './scales.js';
 import type { ControllerLane, MidiNote, MidiPartConfig } from './midi.js';
 import type { Section } from './arrangement.js';
 import type { ChordEvent } from './chords.js';
 import type { VariSegment } from '../audio/pitch-analysis.js';
 import type { MacroRack } from './macros.js';
+import type { Provenance } from './provenance.js';
 import type { VideoRef } from './video.js';
 import type { DeviceGraph } from './device-graph.js';
 import type { Rack } from './racks.js';
@@ -22,10 +24,12 @@ import type { SessionGrid } from './session-view.js';
 import type { WarpConfig } from './warp.js';
 import type { Pattern } from './patterns.js';
 import type { StepPattern } from './step-sequencer.js';
+import type { DrumMap } from './drum-map.js';
+import type { MidiInsert } from './midi-insert.js';
 export type {
   ControllerLane, MidiNote, MidiPartConfig, ChordEvent, VariSegment, MacroRack,
   Section,
-  DeviceGraph, Rack, SessionGrid,
+  DeviceGraph, Rack, SessionGrid, DrumMap, MidiInsert,
 };
 
 export type TrackId    = string;
@@ -90,6 +94,14 @@ export interface Clip {
   durationSec: number;
   /** Clip gain — the pre-fader, per-clip trim (Pro Tools "clip gain"). */
   gainDb: number;
+  /**
+   * Transpose, in semitones, WITHOUT changing the clip's length.
+   *
+   * Optional because sessions saved before it existed have no field; read it
+   * through `clipPitch()` in model/clip-pitch.ts, which treats absent, NaN
+   * and out-of-range all as "no transpose".
+   */
+  pitchSemitones?: number;
   fadeIn: Fade;
   fadeOut: Fade;
   muted: boolean;
@@ -104,6 +116,53 @@ export interface Clip {
    * through `clipNotes()` in model/patterns.ts, never `clip.notes` directly.
    */
   patternId?: string;
+  /**
+   * A chain applied to THIS CLIP ALONE, and what it replaced.
+   *
+   * Set when the clip has been through the region lab.  The original file
+   * reference is kept so a re-render always starts from the untouched audio —
+   * without it, changing one knob and applying again would run the chain over
+   * material that had already been through the chain once.
+   *
+   * Absent on every clip that has never been processed, which is nearly all
+   * of them; read it through `clipRegionFx()` rather than reaching in.
+   */
+  regionFx?: RegionFx;
+}
+
+/** How far past the clip's end the chain is allowed to keep ringing. */
+export type TailMode =
+  /** Stop at the clip's end.  Correct for EQ and gain, wrong for a delay. */
+  | 'cut'
+  /** Render the ring too and let the clip run long over what follows. */
+  | 'keep'
+  /**
+   * Do not render at all: an aux carries the chain and an automated send
+   * opens for the clip.  Shutting a send stops FEEDING the aux rather than
+   * silencing it, so the ring continues on its own.
+   *
+   * Never stored in `RegionFx` — nothing was baked, so there is nothing for a
+   * clip to remember.  It exists as a `TailMode` because it is the third
+   * answer to the same question the window asks.
+   */
+  | 'live';
+
+export interface RegionFx {
+  inserts: Insert[];
+  /** `live` never appears: nothing was baked, so there is nothing to remember. */
+  tailMode: Exclude<TailMode, 'live'>;
+  /** Seconds of ring the chain reported when this was rendered. */
+  tailSec: number;
+  /** What the clip pointed at before any of this — the way back. */
+  /**
+   * Where the clip pointed before the chain was rendered into it.
+   *
+   * `gainDb` is here because applying a chain BAKES the clip gain into the
+   * render and then zeroes it, so that it is not applied a second time on
+   * playback — which means the number is gone unless it is written down, and
+   * a revert would hand back the audio at unity.
+   */
+  original: { fileId: FileId; offsetSec: number; durationSec: number; gainDb: number };
 }
 
 /** A take lane.  One playlist is active per track; the rest are alternates. */
@@ -245,6 +304,16 @@ export interface Track {
   vcaId: TrackId | null;
 
   automation: AutomationLane[];
+  /**
+   * Free text about this track, saved with the session.
+   *
+   * The mic, the take, what to fix next — the things people currently write
+   * into the track NAME until it reads `Vox 3 (U87 -4dB comp OFF fix 1:22)`.
+   *
+   * Optional because sessions written before it existed have none; read it
+   * through `trackNote()` in model/track-header.ts rather than touching it.
+   */
+  note?: string;
   /** UI lane height in px. */
   height: number;
   /**
@@ -258,7 +327,30 @@ export interface Track {
     deviceLabel: string | null;
     deviceId: string | null;
     channels: 1 | 2;
+    /**
+     * Zero-based index of the first device channel this track records.
+     *
+     * Optional so sessions saved before multi-channel input existed still
+     * load — absent means input 1, which is what they recorded.
+     */
+    firstChannel?: number;
   };
+  /**
+   * The drum kit this track's parts are read and played through.
+   *
+   * Absent on every track that is not a drum track, which is most of them —
+   * see `drumMapFor`, which returns null rather than a default, because
+   * applying a kit to a piano part would transpose it.
+   */
+  drumMapId?: string;
+  /**
+   * MIDI inserts — what happens to notes BEFORE the instrument hears them.
+   *
+   * Absent on every track that has none, which is most of them.  Read it
+   * through `midiInsertsOf(track)`: the difference between "no chain" and
+   * "an empty chain" is not one any caller should have to think about.
+   */
+  midiInserts?: MidiInsert[];
   /**
    * Track Delay in milliseconds — negative plays EARLIER.
    *
@@ -278,6 +370,14 @@ export interface Track {
   parentId: TrackId | null;
   /** Folder UI state — a collapsed stack shows one row instead of ten. */
   collapsed: boolean;
+  /**
+   * Hidden from the arrange window.
+   *
+   * A VIEW state, not a mute: the track still plays, still bounces, and
+   * still follows its edit group.  Optional so sessions saved before it
+   * existed load unchanged.
+   */
+  hidden?: boolean;
   /** Macro (Smart Control) rack driving this channel's processing. */
   macros: MacroRack;
   /**
@@ -304,6 +404,18 @@ export interface GroupDef {
   linkMute: boolean;
   linkSolo: boolean;
   linkPan: boolean;
+  /**
+   * Editing is linked too — Pro Tools' Edit Group.
+   *
+   * Selecting on one member selects the same span on all of them, and every
+   * edit that acts on a selection then acts on the whole group at once.
+   *
+   * Optional because sessions saved before it existed have no field; read it
+   * through `linksEdit()` in edit/edit-groups.ts, which treats a missing
+   * value as OFF.  A group made by a track template links faders and was
+   * never meant to move anyone's audio.
+   */
+  linkEdit?: boolean;
 }
 
 export interface BusDef {
@@ -352,9 +464,22 @@ export interface Marker {
   id: string;
   name: string;
   timeSec: number;
+  /**
+   * 1-10 when the marker sits in a numbered memory slot, absent otherwise.
+   *
+   * Optional because markers written before memory locations existed have no
+   * slot, and a named marker dropped on the ruler still should not take one;
+   * every reader goes through model/memory-locations.ts rather than testing
+   * this field directly.
+   */
+  slot?: number;
+  /** Set when the slot stored a RANGE — a bare position leaves it absent. */
+  endSec?: number;
+  /** The tracks the stored selection covered.  Filtered against the live session on recall. */
+  trackIds?: TrackId[];
 }
 
-export const DAW_SESSION_VERSION = 2 as const;
+export const DAW_SESSION_VERSION = 3 as const;
 
 export interface DawSession {
   version: typeof DAW_SESSION_VERSION;
@@ -376,7 +501,23 @@ export interface DawSession {
    * `tempoMapOf(session)` instead of touching this.
    */
   tempoMap?: TempoMap;
+  /**
+   * What made this recording — what a person did, what a machine did, and
+   * what it is built on.  Written into every export.
+   *
+   * Optional because sessions saved before it existed have none; read it
+   * through `provenanceOf(session)`, which seeds a record from the session
+   * rather than handing back undefined.
+   */
+  provenance?: Provenance;
   files: AudioFileRef[];
+  /**
+   * Drum kits, referenced by tracks rather than copied onto them.
+   *
+   * Optional because sessions written before drum maps existed do not have
+   * it; every reader goes through `drumMapsOf(session)`.
+   */
+  drumMaps?: DrumMap[];
   tracks: Track[];
   buses: BusDef[];
   groups: GroupDef[];
@@ -403,6 +544,27 @@ export interface DawSession {
    * reharmonising, suggesting scales, or generating a part that fits.
    */
   chordTrack: ChordEvent[];
+  /**
+   * The key, once something has estimated one.
+   *
+   * Optional so sessions saved before it existed still load, and absent
+   * rather than defaulted to C major — "we have not looked" and "it is in C"
+   * are different states and only one of them should put a C on the screen.
+   *
+   * A `Scale`, not a bespoke type, so everything that already takes a scale —
+   * the Key Editor, note snapping, the riff machine — can read it.
+   */
+  key?: Scale;
+  /**
+   * Capo position for reading the chord chart, 0 for none.
+   *
+   * DISPLAY state, not music.  A capo does not change what sounds — the chart
+   * still says B♭ and the record is still in B♭; it changes which SHAPE the
+   * player fingers.  Transposing is the other thing, and it is an edit.
+   * Keeping them apart is the whole design here: a capo that rewrote the
+   * chart would put the player in the wrong key against their own recording.
+   */
+  capoFret?: number;
   /** Delay compensation on/off — mirrors the Pro Tools engine switch. */
   delayCompensation: boolean;
   /** Clip grid for the Session View (empty until someone uses it). */

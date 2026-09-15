@@ -19,6 +19,7 @@
  * Run:  pnpm --filter @aimaster/desktop test:reverb
  */
 
+import { readFileSync } from 'node:fs';
 import { OfflineAudioContext } from 'node-web-audio-api';
 
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
@@ -681,6 +682,102 @@ async function main(): Promise<void> {
       else if (r.rms < 1e-7) bad.push(`${preset.id}: silent`);
     }
     assert(bad.length === 0, bad.join('; '));
+  });
+
+  // ── Nothing may run away ────────────────────────────────────────────────────
+  //
+  // Every device, every extreme of every knob: one impulse in, and the output
+  // must be DECAYING by the end rather than growing.
+  //
+  // ── What this check CANNOT see, which is the important part ────────────────
+  //
+  // These renders run on `node-web-audio-api`.  The app runs on Chromium, and
+  // the two do not agree about delays inside feedback loops.  The spring
+  // reverb took a single impulse to 3.6e12 in Chromium — a bounce that wrecks
+  // speakers, a monitor path that wrecks hearing — while the SAME code, the
+  // same impulse, decayed politely here:
+  //
+  //     Chromium   boing=0.62   0.7 -> 5.7e9 and still climbing
+  //     Node       boing=0.62   0.7 -> 2.6e-4, a clean tail
+  //
+  // So a green run of this file is not evidence that a device is stable where
+  // people will hear it.  It catches what the polyfill reproduces and nothing
+  // more.  The two source-level checks below are what actually hold the spring
+  // to a shape that cannot run away, and the app itself is where instability
+  // has to be measured — see docs/DAW.md.
+
+  await check('no device turns one impulse into a runaway', async () => {
+    const offenders: string[] = [];
+    for (const def of PLUGINS) {
+      // Extremes, because a device can be stable at its defaults and unstable
+      // where a person actually pushes it — the spring was.
+      const extremes: Record<string, number>[] = [{}];
+      for (const p of def.params) {
+        extremes.push({ [p.id]: p.max });
+        extremes.push({ [p.id]: p.min });
+      }
+      for (const over of extremes) {
+        let rendered;
+        try { rendered = await renderDevice(def.id, over, 3); }
+        catch { continue; }                       // a device that refuses is not a runaway
+        const ch = rendered.buffer.getChannelData(0);
+        const window = Math.round(SR * 0.25);
+        const peakIn = (from: number): number => {
+          let p = 0;
+          for (let i = from; i < Math.min(from + window, ch.length); i++) {
+            const a = Math.abs(ch[i]!);
+            if (a > p) p = a;
+          }
+          return p;
+        };
+        const early = peakIn(Math.round(SR * 0.25));
+        const late = peakIn(ch.length - window);
+        // Growing by more than a hair over two and a half seconds is a loop
+        // whose gain is above one, whatever it sounds like at first.
+        if (late > Math.max(early * 1.5, 2)) {
+          const knob = Object.keys(over)[0] ?? 'defaults';
+          offenders.push(`${def.id}[${knob}] ${early.toFixed(3)} -> ${late.toFixed(3)}`);
+          break;                                  // one report per device is enough
+        }
+        if (!Number.isFinite(late)) {
+          offenders.push(`${def.id} produced a non-finite sample`);
+          break;
+        }
+      }
+    }
+    assert(offenders.length === 0,
+      `these grow instead of decaying: ${offenders.join(' | ')}`);
+  });
+
+  await check('an allpass is an allpass — whole samples, or it is a resonator', () => {
+    // The structure is unity-gain only because the same delay sits in its
+    // numerator and its denominator.  Ask a DelayNode for a fractional delay
+    // and it interpolates, the two stop matching, and the "allpass" rings.
+    // Measured at g = 0.9, impulse energy in = 1:
+    //     128 samples -> 1.0000     148.8 samples -> 0.887
+    //     256 samples -> 1.0000     20.01 ms      -> 3.459
+    const src = readFileSync('src/renderer/daw/engine/plugins-reverb.ts', 'utf8');
+    const at = src.indexOf('function allpass(');
+    assert(at >= 0, 'the allpass helper is there');
+    const body = src.slice(at, at + 1600);
+    assert(/Math\.round\(delaySec \* ctx\.sampleRate\)/.test(body),
+      'the delay is rounded to whole samples');
+    assert(/delay\.delayTime\.value = samples \/ ctx\.sampleRate/.test(body),
+      'and that rounded value is what the node is given');
+  });
+
+  await check('the spring keeps its dispersion OUT of the decay loop', () => {
+    // Eight recursive allpasses inside a feedback loop is the arrangement that
+    // exploded.  Rounding the delays helped and was not enough — the topology
+    // was the problem, so the loop is now delay -> damp -> feedback and the
+    // dispersion happens on the way out.
+    const src = readFileSync('src/renderer/daw/engine/plugins-reverb.ts', 'utf8');
+    const at = src.indexOf('function buildSpring(');
+    const body = src.slice(at, src.indexOf('const applyDecay', at));
+    assert(/into\.connect\(delay\)\.connect\(damp\)\.connect\(feedback\)/.test(body),
+      'the loop is the delay line alone');
+    assert(/let node: AudioNode = feedback;/.test(body),
+      'and the allpass chain starts AFTER the loop');
   });
 }
 

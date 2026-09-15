@@ -93,8 +93,3 @@ export function applyBundledFfmpegEnv(packaged: boolean, resourcesPath?: string)
   if (vars.AIMASTER_FFMPEG)  process.env['AIMASTER_FFMPEG']  = vars.AIMASTER_FFMPEG;
   if (vars.AIMASTER_FFPROBE) process.env['AIMASTER_FFPROBE'] = vars.AIMASTER_FFPROBE;
 }
-
-/** Test-only — reset the once-guard so `applyBundledFfmpegEnv` runs again. */
-export function resetBundledFfmpegEnvForTests(): void {
-  applied = false;
-}

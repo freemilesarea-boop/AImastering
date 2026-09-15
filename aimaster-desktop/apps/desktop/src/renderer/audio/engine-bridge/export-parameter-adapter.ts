@@ -17,7 +17,8 @@
 //                  EQ tone → `style`/`saturation` would silently override
 //                  the user's choices and is lossy, so we keep those
 //                  preview-only (see EXPORT_APPROXIMATION_POLICY.md).
-//   planned      — no DSP yet (e.g. export format / dither).
+//   planned      — no DSP yet (export format today; dither used to be here
+//                  and now has an adapter, so it grades export-only).
 //
 // IMPORTANT: this NEVER promotes a param Python can't honour.  The honest
 // truth is that no EQ/Dynamics/Limiter-detail knob is export-exact beyond
@@ -54,9 +55,18 @@ export function classifyParamExport(def: ParameterDef): ExportSupport {
   if (def.binding.exportField) return 'export-only';
   // Renderable audio param the Python engine honours → exact.
   if (def.binding.status === 'wired' && engineKey(def) in RENDERABLE_MAP_LOOKUP) return 'exact';
+  // Dither is applied on the way to the file, whichever renderer writes it:
+  // the chain emits a dither stage whenever the target depth is below the
+  // master's native 24 (see `buildChainConfig`), and when it does the WAV
+  // writer stands down (`chainDithersOutput`); when it does not, the writer
+  // dithers itself.  Either way the choice reaches the file, so grading it
+  // 'planned' told the user their dither setting did nothing.  It grades
+  // like sampleRate and bitDepth because it is the same kind of thing: a
+  // decision about the file being written.
+  if (def.binding.moduleType === 'dither') return 'export-only';
   // Processed in the realtime preview chain (Rust) but Python ignores it.
   if (def.binding.moduleType && REALTIME_CHAIN_MODULE_TYPES.has(def.binding.moduleType)) return 'preview-only';
-  // No DSP anywhere (export format / dither today).
+  // No DSP anywhere (export format today).
   return 'planned';
 }
 

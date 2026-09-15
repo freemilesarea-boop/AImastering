@@ -11,14 +11,21 @@
 //   Commit      — same render, but the inserts are removed for good
 //   Consolidate — a time range of one track → one new clip
 
-import { clipEnd, findTrack, trackClips, addFile, updateTrack } from '../model/session-ops.js';
+import {
+  clipEnd, findTrack, trackClips, addFile, updateTrack, sessionEndSec,
+} from '../model/session-ops.js';
 import { applyConsolidation, type TimeSelection } from '../edit/clip-edit.js';
+import {
+  applyConsolidatedSpan, consolidationSpans, outcomeOf,
+  type ConsolidationOutcome, type ConsolidationSpan,
+} from '../edit/consolidate.js';
 import type { AudioFileRef, DawSession, FileId, Track, TrackId } from '../model/types.js';
 import { MixerEngine } from './mixer-engine.js';
 import { ClipPlayer } from './clip-player.js';
-import { analyzeBuffer, getCached, preloadAll } from './audio-cache.js';
+import { analyzeBuffer, preloadAll } from './audio-cache.js';
 import { applyExternalInserts, type ExternalRenderResult } from './external-render.js';
-import { encodeAudioBuffer, encodeWav, type WavBitDepth } from './wav.js';
+import { encodeAudioBuffer, encodeWav, type WavBitDepth, type WavMetadata } from './wav.js';
+import { provenanceOf } from '../model/provenance-session.js';
 import { nextId } from '../model/ids.js';
 import { DEFAULT_MIDI_CONFIG } from '../model/midi.js';
 
@@ -33,11 +40,18 @@ export interface RenderOptions {
   tailSec?: number;
 }
 
-/** Longest clip end across the session, i.e. the natural bounce length. */
+/**
+ * The natural bounce length: where the last sound stops.
+ *
+ * `sessionEndSec` rather than a second walk over the clips, because the two
+ * are the same question and only one of them was getting the Track Delay
+ * right.  A track pushed late sounds past the end of its own rectangle, and a
+ * bounce that measured the rectangles would end before it — masked today only
+ * because the render tail is four times the largest delay the control allows.
+ * One copy of the maths cannot drift out of agreement with itself.
+ */
 export function sessionRange(session: DawSession): RenderRange {
-  let end = 0;
-  for (const t of session.tracks) for (const c of trackClips(t)) end = Math.max(end, clipEnd(c));
-  return { startSec: 0, endSec: end };
+  return { startSec: 0, endSec: sessionEndSec(session) };
 }
 
 function makeOfflineContext(channels: number, frames: number, sampleRate: number): OfflineAudioContext {
@@ -223,9 +237,21 @@ export async function stageForMastering(
   session: DawSession, range = sessionRange(session), bitDepth: WavBitDepth = 32,
 ): Promise<string> {
   const rendered = await renderSession(session, range);
-  const bytes = encodeAudioBuffer(rendered, bitDepth);
+  const bytes = encodeAudioBuffer(rendered, bitDepth, undefined, sessionMetadata(session));
   return await invoker()('daw:stage-for-mastering',
     { name: session.name, data: bytes }) as string;
+}
+
+/**
+ * What to write into a delivered file besides the audio.
+ *
+ * Only the two DELIVERIES carry it — the mix on its way to mastering, and a
+ * bounce.  Freezes, region renders and consolidations are intermediates that
+ * get re-rendered on the next change, and stamping authorship on scratch
+ * files just makes a stale record easier to believe.
+ */
+function sessionMetadata(session: DawSession): WavMetadata {
+  return { provenance: provenanceOf(session), appVersion: __APP_VERSION__ };
 }
 
 /** Bounce to a user-chosen file.  Returns null when the dialog is cancelled. */
@@ -233,7 +259,7 @@ export async function bounceSession(
   session: DawSession, range = sessionRange(session), bitDepth: WavBitDepth = 24,
 ): Promise<string | null> {
   const rendered = await renderSession(session, range);
-  const bytes = encodeAudioBuffer(rendered, bitDepth);
+  const bytes = encodeAudioBuffer(rendered, bitDepth, undefined, sessionMetadata(session));
   return await invoker()('daw:bounce-audio', { name: session.name, data: bytes }) as string | null;
 }
 
@@ -365,7 +391,11 @@ export async function consolidateSelection(
   const dry: DawSession = {
     ...session,
     tracks: session.tracks.map((t): Track => {
-      if (t.id === trackId) return { ...t, inserts: [], mute: false, solo: false, volumeDb: 0, pan: 0, output: { kind: 'master' } };
+      // `delayMs: 0` for the same reason Freeze zeroes it: the render is
+      // the AUDIO, and the clip it becomes goes back on a track that still
+      // carries the delay.  Rendering it shifted and then letting the track
+      // shift it again moves it twice.
+      if (t.id === trackId) return { ...t, inserts: [], mute: false, solo: false, volumeDb: 0, pan: 0, output: { kind: 'master' }, delayMs: 0 };
       if (t.kind === 'master') return { ...t, inserts: [], volumeDb: 0, pan: 0, mute: false, solo: false };
       return { ...t, mute: true, solo: false };
     }),
@@ -380,7 +410,64 @@ export async function consolidateSelection(
   return applyConsolidation(withFile, trackId, sel, ref.id, ref.name);
 }
 
-/** True when a file's decoded audio is already in the cache. */
-export function isDecoded(fileId: FileId): boolean {
-  return getCached(fileId) !== undefined;
+/**
+ * Bounce Selection — merge the selected events on each track into one file.
+ *
+ * The gaps between events are the point.  Nothing schedules a source there,
+ * so those frames are whatever the offline context was initialised to, and
+ * WebAudio initialises a render buffer to zero: the silence is digital, not
+ * a quiet copy of something.  That is the property the whole verb rests on,
+ * so it is measured in the app rather than assumed here.
+ *
+ * The channel is bypassed on purpose — no inserts, unity fader, centre pan.
+ * This merges events; it does not print the mix.  What DOES get baked is
+ * what belongs to the clips themselves: their gain and their fades, because
+ * those are properties of the events being merged, not of the channel.
+ */
+export async function bounceSelection(
+  session: DawSession, sel: TimeSelection,
+): Promise<{ session: DawSession; outcome: ConsolidationOutcome }> {
+  const spans = consolidationSpans(session, sel);
+  const outcome = outcomeOf(spans);
+  let out = session;
+  for (const span of spans) out = await bounceOneSpan(out, span);
+  return { session: out, outcome };
+}
+
+async function bounceOneSpan(session: DawSession, span: ConsolidationSpan): Promise<DawSession> {
+  const track = findTrack(session, span.trackId);
+  if (!track) return session;
+  const keep = new Set(span.clipIds);
+
+  // Only the selected events play.  An unselected clip inside the span is a
+  // take that was deliberately left out; rendering the whole track would sum
+  // it back in, and the engineer would never see where it came from.
+  const dry: DawSession = {
+    ...session,
+    tracks: session.tracks.map((t): Track => {
+      if (t.id === span.trackId) {
+        return {
+          ...t,
+          inserts: [], mute: false, solo: false, volumeDb: 0, pan: 0,
+          output: { kind: 'master' },
+          // Zeroed for the same reason Freeze zeroes it — see renderTrack.
+          delayMs: 0,
+          playlists: t.playlists.map((p) => (
+            p.id === t.activePlaylistId ? { ...p, clips: p.clips.filter((c) => keep.has(c.id)) } : p
+          )),
+        };
+      }
+      if (t.kind === 'master') return { ...t, inserts: [], volumeDb: 0, pan: 0, mute: false, solo: false };
+      return { ...t, mute: true, solo: false };
+    }),
+  };
+
+  const rendered = await renderSession(
+    dry, { startSec: span.startSec, endSec: span.endSec }, { tailSec: 0 },
+  );
+  const path = await writeTempRender(rendered, `${track.name}-consolidated`);
+  const ref = fileRefFor(path, `${track.name} (consolidated)`, rendered);
+  analyzeBuffer(ref.id, rendered);
+
+  return applyConsolidatedSpan(addFile(session, ref), span, ref.id, ref.name);
 }

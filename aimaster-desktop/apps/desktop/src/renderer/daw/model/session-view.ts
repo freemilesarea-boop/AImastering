@@ -125,12 +125,6 @@ export function clearSlot(grid: SessionGrid, trackId: TrackId, sceneIndex: numbe
   return { ...grid, slots: grid.slots.filter((s) => !(s.trackId === trackId && s.sceneIndex === sceneIndex)) };
 }
 
-export function updateSlot(
-  grid: SessionGrid, slotId: string, fn: (s: SessionSlot) => SessionSlot,
-): SessionGrid {
-  return { ...grid, slots: grid.slots.map((s) => (s.id === slotId ? fn(s) : s)) };
-}
-
 // ── Launching ─────────────────────────────────────────────────────────────────
 
 export interface QueuedLaunch {

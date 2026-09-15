@@ -23,14 +23,12 @@ import {
   defaultTempoMap, describeTempoMap, formatBarBeat, gridLines, isConstantTempo,
   meterAtBar, meterAtBeat, normaliseTempoMap, removeMeterEvent, removeTempoEvent,
   secToBeat, snapSecToBar, snapSecToBeats, tempoAtBeat, tempoAtSec, tempoMapKey,
-  tempoMapOf, updateMeterEvent, updateTempoEvent, withTempoMap,
-} from '../src/renderer/daw/model/tempo-map.js';
+  tempoMapOf, updateTempoEvent, withTempoMap,} from '../src/renderer/daw/model/tempo-map.js';
 import {
-  DEFAULT_WARP, buildWarpMap, constantTempo, sessionWarpTempo, sourceToDest,
-} from '../src/renderer/daw/model/warp.js';
-import { createSession } from '../src/renderer/daw/model/session-ops.js';
-import { serializeDawSession, deserializeDawSession } from '../src/renderer/daw/model/session-io.js';
-import type { Clip, TempoMap } from '../src/renderer/daw/model/types.js';
+  DEFAULT_WARP, buildWarpMap, constantTempo, sessionWarpTempo, sourceToDest,} from '../src/renderer/daw/model/warp.js';
+import { createSession} from '../src/renderer/daw/model/session-ops.js';
+import { serializeDawSession, deserializeDawSession} from '../src/renderer/daw/model/session-io.js';
+import type { Clip, TempoMap} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -312,6 +310,11 @@ check('compiling twice is the same object', () => {
   // The ruler asks for hundreds of bar lines a frame; recompiling each time
   // would be the difference between a smooth zoom and a stuttering one.
   const map = rampMap();
+  // Two separate CALLS, and the identity IS the assertion: the second must
+  // hand back the cached object rather than an equal one, or the ruler
+  // recompiles hundreds of bar lines a frame.  `no-self-compare` matches the
+  // two sides syntactically and cannot see that.
+  // eslint-disable-next-line no-self-compare
   assert(compileTempoMap(map) === compileTempoMap(map), 'cached against the map');
   assert(compileTempoMap(map).map !== compileTempoMap(defaultTempoMap(120)).map,
     'and a different map is a different compile');

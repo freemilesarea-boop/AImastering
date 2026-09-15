@@ -24,6 +24,27 @@
 }
 
 @layer utilities {
+  /* A control smaller than a pointer target, made hittable without being
+     redrawn.  The ::before is centred on the control and never smaller than
+     24 px, so the paint stays whatever the layout wants while the area that
+     answers a click is a size a hand can land on.  Measured controls this was
+     added for: the 16x16 A / ✎ track-header chips.
+
+     Use it only where neighbours are far enough apart that the grown areas do
+     not overlap — two 24 px targets 15 px apart would hand the gap to
+     whichever is painted later, which is worse than a small target when one
+     of the two DELETES something. */
+  .hit-target { position: relative; }
+  .hit-target::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: max(100%, 24px);
+    height: max(100%, 24px);
+  }
+
   /* macOS window drag region */
   .drag-region    { -webkit-app-region: drag; }
   .no-drag        { -webkit-app-region: no-drag; }

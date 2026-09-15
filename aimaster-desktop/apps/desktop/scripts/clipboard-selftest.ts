@@ -33,7 +33,8 @@ import {
   DEFAULT_ZERO_CROSS, MAX_SEARCH_SEC, nearestZeroCrossing, snapDistanceMs, snapSecToZero,
 } from '../src/renderer/daw/edit/zero-cross.js';
 import {
-  DEFAULT_STRIP, describeStrip, findSoundRegions, silenceShare, stripClipSilence,
+  clampStrip, DEFAULT_STRIP, describeStrip, describeSummary, findSoundRegions,
+  silenceShare, stripClipSilence, stripClipsSilence, summariseStrip, STRIP_LIMITS,
 } from '../src/renderer/daw/edit/strip-silence.js';
 import {
   addFile, addTrack, clipEnd, createClip, createSession, createTrack, findTrack,
@@ -443,6 +444,84 @@ check('a strip result describes itself in minutes when it should', () => {
   const result = stripClipSilence(session, vox, clip.id, [{ startSec: 0, endSec: 1 }]);
   assert(describeStrip(result).includes('조각'), `${describeStrip(result)}`);
   eq(pastedClipCount(null), 0, 'and a null clipboard pastes nothing');
+});
+
+// ── The numbers, and the whole selection ──────────────────────────────────────
+//
+// The command shipped with DEFAULT_STRIP wired in and no way to reach it, and
+// cut the moment it was pressed.  These cover the two halves that fixes: the
+// numbers being held to what the analysis can act on, and the preview being
+// computable before anything is edited.
+
+check('every number is held inside what the analysis can act on', () => {
+  const wild = clampStrip({ thresholdDb: 40, minSilenceSec: -3, minSoundSec: 99, padSec: 12 });
+  eq(wild.thresholdDb, STRIP_LIMITS.thresholdDb.max, 'a positive threshold calls everything silence');
+  eq(wild.minSilenceSec, STRIP_LIMITS.minSilenceSec.min, 'a negative gap is not a gap');
+  eq(wild.minSoundSec, STRIP_LIMITS.minSoundSec.max, 'and 99 s of sound would keep nothing');
+  eq(wild.padSec, STRIP_LIMITS.padSec.max, 'a pad longer than the gaps re-joins what it just cut');
+});
+
+check('a number that is not a number falls back to the default', () => {
+  const held = clampStrip({ ...DEFAULT_STRIP, thresholdDb: Number.NaN });
+  eq(held.thresholdDb, DEFAULT_STRIP.thresholdDb, 'NaN would make every hop quiet');
+});
+
+check('a value already in range is left exactly alone', () => {
+  const same = { thresholdDb: -42, minSilenceSec: 0.4, minSoundSec: 0.1, padSec: 0.03 };
+  assert(JSON.stringify(clampStrip(same)) === JSON.stringify(same), 'untouched');
+});
+
+check('the preview counts clips, pieces and removed time without editing', () => {
+  const summary = summariseStrip([
+    { trackId: 't1', clipId: 'a', clipDurationSec: 20, regions: [{ startSec: 0, endSec: 4 }, { startSec: 12, endSec: 20 }] },
+    { trackId: 't2', clipId: 'b', clipDurationSec: 10, regions: [{ startSec: 0, endSec: 3 }] },
+  ]);
+  eq(summary.clips, 2, 'two clips have something to cut');
+  eq(summary.pieces, 3, 'becoming three pieces');
+  close(summary.removedSec, 8 + 7, 'and 15 s goes');
+});
+
+check('a clip the analysis keeps whole is not counted as work', () => {
+  // Otherwise a pass that changed nothing reports "8 clips".
+  const summary = summariseStrip([
+    { trackId: 't1', clipId: 'a', clipDurationSec: 5, regions: [{ startSec: 0, endSec: 5 }] },
+  ]);
+  eq(summary.clips, 0, 'nothing removed, nothing to report');
+  assert(describeSummary(summary).includes('자를 무음이 없습니다'), 'and it says so');
+});
+
+check('a clip with no sounding region at all is skipped, not deleted', () => {
+  const summary = summariseStrip([
+    { trackId: 't1', clipId: 'a', clipDurationSec: 5, regions: [] },
+  ]);
+  eq(summary.clips, 0, 'a threshold the user can still change');
+});
+
+check('the plan applies to every clip in it, on every track', () => {
+  const { session, vox } = song();
+  const clip = clipsOn(session, vox)[0]!;
+  const result = stripClipsSilence(session, [
+    { trackId: vox, clipId: clip.id, clipDurationSec: clip.durationSec,
+      regions: [{ startSec: 0, endSec: 4 }, { startSec: 12, endSec: 20 }] },
+  ]);
+  eq(result.pieces, 2, 'the clip became two');
+  close(result.removedSec, 8, 'and the totals add up');
+  eq(clipsOn(result.session, vox).length, 2, 'in the session too');
+});
+
+check('the preview and the edit agree on what will happen', () => {
+  // The number in the dialog has to be the number that lands, or the preview
+  // is decoration.
+  const { session, vox } = song();
+  const clip = clipsOn(session, vox)[0]!;
+  const plan = [{
+    trackId: vox, clipId: clip.id, clipDurationSec: clip.durationSec,
+    regions: [{ startSec: 1, endSec: 3 }, { startSec: 9, endSec: 15 }],
+  }];
+  const preview = summariseStrip(plan);
+  const done = stripClipsSilence(session, plan);
+  eq(preview.pieces, done.pieces, 'same piece count');
+  close(preview.removedSec, done.removedSec, 'same seconds removed');
 });
 
 // ── Report ────────────────────────────────────────────────────────────────────

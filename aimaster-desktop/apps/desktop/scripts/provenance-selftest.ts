@@ -1,0 +1,446 @@
+/**
+ * provenance-selftest — what made the recording, written into the recording.
+ *
+ * The chunks are PARSED back the way a reader parses them (walk the chunk
+ * list, honour every size field) rather than searched for as strings.  A file
+ * whose sizes are wrong still contains all the right text, so a substring
+ * search passes on a file no tool can open — which is the exact failure this
+ * has to catch.
+ *
+ * Run via:  pnpm --filter @aimaster/desktop test:provenance
+ */
+
+import { encodeWav, readWavProvenance, stampWav } from '../src/renderer/daw/engine/wav.js';
+import { PROVENANCE_FIELD, id3TagLength, stampMp3 } from '../src/renderer/daw/engine/id3.js';
+import { APP_NAME } from '@aimaster/shared-types';
+import {
+  BASIS_LABELS, describeProvenance, emptyProvenance, isDerivative, provenanceProblem,
+  usedAi, withAiStep, withHumanWork, withSource, type Provenance,
+} from '../src/renderer/daw/model/provenance.js';
+
+interface T { name: string; pass: boolean; detail: string }
+const results: T[] = [];
+function check(name: string, fn: () => void): void {
+  try { fn(); results.push({ name, pass: true, detail: '' }); }
+  catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+}
+function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
+
+// ── A reader, not a search ───────────────────────────────────────────────────
+
+interface Chunk { id: string; body: Uint8Array }
+
+/** Walk a RIFF file exactly as a reader does, refusing anything malformed. */
+function parseRiff(bytes: Uint8Array): { format: string; chunks: Chunk[] } {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const ascii = (at: number, n: number): string =>
+    String.fromCharCode(...bytes.subarray(at, at + n));
+  assert(ascii(0, 4) === 'RIFF', 'starts with RIFF');
+  const riffSize = view.getUint32(4, true);
+  assert(riffSize + 8 === bytes.length,
+    `RIFF size ${riffSize} does not match the file (${bytes.length - 8} bytes follow it)`);
+
+  const chunks: Chunk[] = [];
+  let at = 12;
+  while (at + 8 <= bytes.length) {
+    const id = ascii(at, 4);
+    const size = view.getUint32(at + 4, true);
+    assert(at + 8 + size <= bytes.length,
+      `chunk '${id}' says ${size} bytes but the file ends first`);
+    chunks.push({ id, body: bytes.subarray(at + 8, at + 8 + size) });
+    at += 8 + size + (size % 2);   // odd chunks carry a pad byte
+  }
+  assert(at === bytes.length, `chunk walk ended at ${at}, file is ${bytes.length}`);
+  return { format: ascii(8, 4), chunks };
+}
+
+function infoTagsOf(chunks: readonly Chunk[]): Map<string, string> {
+  const list = chunks.find((c) => c.id === 'LIST');
+  const out = new Map<string, string>();
+  if (!list) return out;
+  const body = list.body;
+  assert(String.fromCharCode(...body.subarray(0, 4)) === 'INFO', 'the LIST is an INFO list');
+  const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
+  let at = 4;
+  while (at + 8 <= body.length) {
+    const id = String.fromCharCode(...body.subarray(at, at + 4));
+    const size = view.getUint32(at + 4, true);
+    const text = new TextDecoder().decode(body.subarray(at + 8, at + 8 + size)).replace(/\0+$/, '');
+    out.set(id, text);
+    at += 8 + size + (size % 2);
+  }
+  return out;
+}
+
+const APP = '3.6.1';
+const AT = new Date('2026-09-05T12:00:00Z');
+const silence = [new Float32Array(64), new Float32Array(64)];
+
+function encoded(p: Provenance): Uint8Array {
+  return encodeWav(silence, 48000, 24, 'none', { provenance: p, appVersion: APP, at: AT });
+}
+
+/** A real case: a remix of a licensed track, AI-mastered. */
+function remix(): Provenance {
+  let p = emptyProvenance('You Make Me Wanna (Loui Remix)', 'theblank');
+  p = { ...p, year: 2026, copyright: '© 2026 theblank' };
+  p = withHumanWork(p, '편곡·믹스');
+  p = withHumanWork(p, '보컬 재녹음');
+  p = withAiStep(p, { kind: 'mastering', detail: 'Loui AI Pop · −10 LUFS' });
+  p = withAiStep(p, { kind: 'separation', detail: '보컬/반주 분리' });
+  p = withSource(p, {
+    title: 'You Make Me Wanna', artist: 'Original Artist',
+    isrc: 'KRA382600001', basis: 'licensed', note: 'sync licence #4412',
+  });
+  return p;
+}
+
+// ── The file is still a file ─────────────────────────────────────────────────
+
+check('a file with metadata is still a well-formed WAV', () => {
+  const { format, chunks } = parseRiff(encoded(remix()));
+  assert(format === 'WAVE', 'it is a WAVE');
+  const ids = chunks.map((c) => c.id);
+  assert(ids.includes('fmt '), 'fmt is there');
+  assert(ids.includes('data'), 'data is there');
+  assert(ids.indexOf('fmt ') < ids.indexOf('data'), 'and fmt comes first');
+});
+
+check('the audio survives being pushed off byte 44', () => {
+  // Metadata moves `data`.  Anything that assumed offset 44 now reads the
+  // metadata as samples — a burst of noise where the music starts.
+  const bare = parseRiff(encodeWav(silence, 48000, 24, 'none'));
+  const tagged = parseRiff(encoded(remix()));
+  const dataOf = (cs: Chunk[]): Uint8Array => cs.find((c) => c.id === 'data')!.body;
+  assert(dataOf(tagged.chunks).length === dataOf(bare.chunks).length,
+    'the same samples are there');
+  assert(dataOf(tagged.chunks).every((b, i) => b === dataOf(bare.chunks)[i]),
+    'and byte for byte identical');
+  const fmtA = bare.chunks.find((c) => c.id === 'fmt ')!.body;
+  const fmtB = tagged.chunks.find((c) => c.id === 'fmt ')!.body;
+  assert(fmtA.every((b, i) => b === fmtB[i]), 'the format block is untouched');
+});
+
+check('every chunk length is honest, including the odd ones', () => {
+  // An odd-length chunk needs a pad byte that its SIZE does not count.  Get
+  // this wrong and every later chunk is read at the wrong offset — parseRiff
+  // above refuses the file rather than limping.
+  const odd = withHumanWork(emptyProvenance('A', 'B'), 'x'.repeat(7));
+  const { chunks } = parseRiff(encoded(odd));   // throws if any size lies
+  assert(chunks.length >= 4, `fmt, LIST, bext, LOUI, data — got ${chunks.map((c) => c.id).join(',')}`);
+});
+
+// ── What it says ─────────────────────────────────────────────────────────────
+
+check('the tags every player reads carry the title, artist and comment', () => {
+  const tags = infoTagsOf(parseRiff(encoded(remix())).chunks);
+  assert(tags.get('INAM') === 'You Make Me Wanna (Loui Remix)', `INAM: ${tags.get('INAM')}`);
+  assert(tags.get('IART') === 'theblank', `IART: ${tags.get('IART')}`);
+  assert(tags.get('ICOP') === '© 2026 theblank', `ICOP: ${tags.get('ICOP')}`);
+  assert(tags.get('ICRD') === '2026', `ICRD: ${tags.get('ICRD')}`);
+  assert((tags.get('ISFT') ?? '').includes(APP_NAME), 'ISFT names the app');
+});
+
+check('Korean and the © sign survive the round trip', () => {
+  // ASCII-only encoding would turn 편곡 into mojibake, and the field a claim
+  // reviewer reads is the one that has to be legible.
+  const tags = infoTagsOf(parseRiff(encoded(remix())).chunks);
+  const comment = tags.get('ICMT') ?? '';
+  assert(comment.includes('편곡·믹스'), `the Korean is intact: ${comment.slice(0, 60)}`);
+  assert((tags.get('ICOP') ?? '').includes('©'), 'and the copyright sign');
+});
+
+check('the comment says what the AI did and what the person did', () => {
+  const comment = infoTagsOf(parseRiff(encoded(remix())).chunks).get('ICMT') ?? '';
+  assert(comment.includes('사람 작업'), 'the human work is named');
+  assert(comment.includes('AI 마스터링'), 'the AI mastering is named');
+  assert(comment.includes('AI 음원 분리'), 'and the separation');
+  assert(comment.includes('2차 창작'), 'and that it is a derivative');
+  assert(comment.includes('You Make Me Wanna'), 'naming the source');
+  assert(comment.includes(BASIS_LABELS.licensed), 'and the right it was used under');
+});
+
+check('an original work says so, rather than staying silent', () => {
+  // Silence reads as "nobody filled it in".  A track that IS original should
+  // say it, because that is the answer a reviewer is looking for.
+  let p = emptyProvenance('Mine', 'theblank');
+  p = withAiStep(p, { kind: 'mastering', detail: 'YouTube Safe · −14 LUFS' });
+  const comment = infoTagsOf(parseRiff(encoded(p)).chunks).get('ICMT') ?? '';
+  assert(comment.includes('원저작물'), `says it is original: ${comment}`);
+  assert(!isDerivative(p), 'and the model agrees');
+});
+
+check('no AI is stated, not left blank', () => {
+  const p = emptyProvenance('Handmade', 'theblank');
+  assert(!usedAi(p), 'nothing ran');
+  assert(describeProvenance(p).includes('AI 작업: 없음'), 'and the file says so out loud');
+});
+
+// ── The professional chunk ───────────────────────────────────────────────────
+
+check('bext is exactly the size the standard says, with room for history', () => {
+  const bext = parseRiff(encoded(remix())).chunks.find((c) => c.id === 'bext');
+  assert(bext !== undefined, 'the chunk is written');
+  assert(bext!.body.length > 602, `602 fixed bytes plus CodingHistory — got ${bext!.body.length}`);
+  const view = new DataView(bext!.body.buffer, bext!.body.byteOffset, bext!.body.byteLength);
+  assert(view.getUint16(346, true) === 2, 'declares bext version 2');
+  const history = new TextDecoder().decode(bext!.body.subarray(602));
+  assert(history.includes(APP_NAME), 'the history names the app');
+  assert(history.includes('원곡'), 'and the source work');
+  assert(history.split('\r\n').length > 2, 'as CRLF lines, which is the format');
+});
+
+check('bext does not claim a loudness measurement nobody made', () => {
+  // 0x7FFF is the spec's "not measured".  A zero here reads as 0.0 LUFS, and
+  // a mastering engineer believes the file.
+  const bext = parseRiff(encoded(remix())).chunks.find((c) => c.id === 'bext')!;
+  const view = new DataView(bext.body.buffer, bext.body.byteOffset, bext.body.byteLength);
+  for (let off = 412; off <= 420; off += 2) {
+    assert(view.getInt16(off, true) === 0x7fff,
+      `loudness field at ${off} must say "not measured", got ${view.getInt16(off, true)}`);
+  }
+});
+
+check('the exact record is readable back without guessing', () => {
+  const loui = parseRiff(encoded(remix())).chunks.find((c) => c.id === 'LOUI');
+  assert(loui !== undefined, 'the JSON record is written');
+  const record = JSON.parse(new TextDecoder().decode(loui!.body)) as {
+    schema: string; derivative: boolean;
+    aiWork: { kind: string }[]; derivedFrom: { basis: string; isrc?: string }[];
+  };
+  assert(record.schema === 'loui.provenance/1', `schema: ${record.schema}`);
+  assert(record.derivative === true, 'it knows it is a derivative');
+  assert(record.aiWork.map((s) => s.kind).sort().join(',') === 'mastering,separation',
+    'both AI steps are there');
+  assert(record.derivedFrom[0]!.basis === 'licensed', 'with the basis');
+  assert(record.derivedFrom[0]!.isrc === 'KRA382600001', 'and the ISRC');
+});
+
+// ── Refusing to lie ──────────────────────────────────────────────────────────
+
+check('the same AI step recorded twice is still one fact', () => {
+  let p = emptyProvenance('T', 'A');
+  p = withAiStep(p, { kind: 'mastering', detail: 'AI Pop' });
+  p = withAiStep(p, { kind: 'mastering', detail: 'AI Pop' });
+  assert(p.aiWork.length === 1, `mastering twice is one step, got ${p.aiWork.length}`);
+  // A DIFFERENT setting is a different fact and must survive.
+  p = withAiStep(p, { kind: 'mastering', detail: 'KPOP Loud' });
+  assert(p.aiWork.length === 2, 'a different chain is a different step');
+});
+
+check('an unestablished right is a problem, not a blank', () => {
+  let p = emptyProvenance('Remix', 'me');
+  p = withSource(p, { title: 'Some Song', artist: 'Someone', basis: 'unknown' });
+  const problem = provenanceProblem(p);
+  assert(problem !== null && problem.includes('미확인'),
+    `an unknown basis has to be raised — got ${problem}`);
+  // And it still writes, saying "미확인" rather than nothing.
+  const comment = infoTagsOf(parseRiff(encoded(p)).chunks).get('ICMT') ?? '';
+  assert(comment.includes(BASIS_LABELS.unknown), 'the file says the right is unestablished');
+});
+
+check('a nameless track is caught before it is sent anywhere', () => {
+  assert(provenanceProblem(emptyProvenance('', 'someone')) !== null, 'no title');
+  assert(provenanceProblem(emptyProvenance('song', '')) !== null, 'no artist');
+  assert(provenanceProblem(emptyProvenance('song', 'someone')) === null, 'both present is fine');
+});
+
+// ── Stamping a file somebody else wrote ─────────────────────────────────────
+//
+// The master comes out of the Python engine with no metadata.  The record is
+// carried in by the mix and copied across at save time, so these are the
+// operations that make that possible.
+
+check('a record written into a file can be read back out of it', () => {
+  const recovered = readWavProvenance(encoded(remix()));
+  assert(recovered !== null, 'the record is found');
+  assert(recovered!.title === 'You Make Me Wanna (Loui Remix)', 'title survives');
+  assert(recovered!.humanWork.join(',') === '편곡·믹스,보컬 재녹음', 'the Korean survives');
+  assert(recovered!.derivedFrom[0]!.isrc === 'KRA382600001', 'and the ISRC');
+  assert(recovered!.aiWork.length === 2, 'and both AI steps');
+});
+
+check('a plain WAV has no record, and says so rather than inventing one', () => {
+  assert(readWavProvenance(encodeWav(silence, 48000, 24, 'none')) === null,
+    'a file with no LOUI chunk returns null');
+  assert(readWavProvenance(new Uint8Array([1, 2, 3])) === null, 'and so does rubbish');
+});
+
+check('stamping a bare master gives it the record and keeps the audio', () => {
+  // This is the real operation: the Python engine wrote `bare`, and the mix
+  // that went in carried the record.
+  const bare = encodeWav(silence, 48000, 24, 'none');
+  const stamped = stampWav(bare, { provenance: remix(), appVersion: APP, at: AT });
+  const { chunks } = parseRiff(stamped);          // throws on any bad size
+  const dataOf = (cs: Chunk[]): Uint8Array => cs.find((c) => c.id === 'data')!.body;
+  assert(dataOf(chunks).every((b, i) => b === dataOf(parseRiff(bare).chunks)[i]),
+    'every sample is untouched');
+  assert(readWavProvenance(stamped)!.title === 'You Make Me Wanna (Loui Remix)',
+    'and the record is now in it');
+});
+
+check('stamping twice leaves ONE of each chunk, not a stack', () => {
+  // Saving the same master again would otherwise append a second LOUI, and a
+  // reader taking the first reports whichever it happened to reach.
+  const once = stampWav(encodeWav(silence, 48000, 24, 'none'),
+    { provenance: remix(), appVersion: APP, at: AT });
+  let p2 = remix();
+  p2 = { ...p2, title: 'Corrected Title' };
+  const twice = stampWav(once, { provenance: p2, appVersion: APP, at: AT });
+  const ids = parseRiff(twice).chunks.map((c) => c.id);
+  for (const id of ['LIST', 'bext', 'LOUI']) {
+    assert(ids.filter((x) => x === id).length === 1,
+      `one ${id}, got ${ids.filter((x) => x === id).length}`);
+  }
+  assert(readWavProvenance(twice)!.title === 'Corrected Title', 'and the newer one won');
+});
+
+check('a file it cannot safely rewrite is handed back untouched', () => {
+  // An MP3 preview goes through the same button.  Refusing to touch it beats
+  // writing a corrupt master.
+  const mp3ish = new Uint8Array([0x49, 0x44, 0x33, 3, 0, 0, 0, 0, 0, 0, 1, 2, 3]);
+  assert(stampWav(mp3ish, { provenance: remix(), appVersion: APP }) === mp3ish,
+    'not a RIFF file — returned as-is');
+  // And a WAV whose sizes lie: rewriting it would move the audio somewhere
+  // the header no longer points at.
+  const broken = encodeWav(silence, 48000, 24, 'none').slice();
+  new DataView(broken.buffer).setUint32(40, 0xfffffff0, true);   // data size lies
+  assert(stampWav(broken, { provenance: remix(), appVersion: APP }) === broken,
+    'a lying size is refused, not patched');
+});
+
+check('bext carries the loudness once something has measured it', () => {
+  const stamped = stampWav(encodeWav(silence, 48000, 24, 'none'), {
+    provenance: remix(), appVersion: APP, at: AT,
+    loudness: { integratedLufs: -9.7, lra: 4.2, truePeakDbtp: -1.1 },
+  });
+  const bext = parseRiff(stamped).chunks.find((c) => c.id === 'bext')!;
+  const view = new DataView(bext.body.buffer, bext.body.byteOffset, bext.body.byteLength);
+  // The spec stores these ×100.
+  assert(view.getInt16(412, true) === -970, `LUFS: ${view.getInt16(412, true)}`);
+  assert(view.getInt16(414, true) === 420, `LRA: ${view.getInt16(414, true)}`);
+  assert(view.getInt16(416, true) === -110, `true peak: ${view.getInt16(416, true)}`);
+  // Momentary and short-term were NOT measured, and must still say so.
+  assert(view.getInt16(418, true) === 0x7fff, 'max momentary stays unmeasured');
+  assert(view.getInt16(420, true) === 0x7fff, 'max short-term stays unmeasured');
+});
+
+// ── The preview MP3 ─────────────────────────────────────────────────────────
+//
+// The preview is the file that actually gets passed around, so it cannot be
+// the one export that says nothing.  MP3 carries none of the RIFF chunks, so
+// the same record goes in as ID3v2.4.
+//
+// Parsed here the way a player parses it — synchsafe sizes honoured, frames
+// walked — because a tag whose sizes are wrong still contains all the right
+// text, and the player decodes the difference as noise.
+
+interface Id3Frame { id: string; body: Uint8Array }
+
+function parseId3(bytes: Uint8Array): { frames: Id3Frame[]; audioAt: number } {
+  assert(String.fromCharCode(...bytes.subarray(0, 3)) === 'ID3', 'starts with an ID3 tag');
+  assert(bytes[3] === 4, `v2.4, got v2.${bytes[3]}`);
+  const sync = (at: number): number =>
+    ((bytes[at]! & 0x7f) << 21) | ((bytes[at + 1]! & 0x7f) << 14)
+    | ((bytes[at + 2]! & 0x7f) << 7) | bytes[at + 3]!;
+  for (let i = 6; i < 10; i++) {
+    assert((bytes[i]! & 0x80) === 0,
+      `size byte ${i} has its top bit set — that is not synchsafe`);
+  }
+  const size = sync(6);
+  const frames: Id3Frame[] = [];
+  let at = 10;
+  while (at + 10 <= 10 + size) {
+    const id = String.fromCharCode(...bytes.subarray(at, at + 4));
+    if (id.trim().length === 0) break;                     // padding
+    const fsize = sync(at + 4);
+    assert(at + 10 + fsize <= 10 + size, `frame ${id} runs past the tag`);
+    frames.push({ id, body: bytes.subarray(at + 10, at + 10 + fsize) });
+    at += 10 + fsize;
+  }
+  return { frames, audioAt: 10 + size };
+}
+
+/**
+ * Read a text frame — and check it DECLARES what it holds.
+ *
+ * The first byte names the encoding.  Decoding as UTF-8 regardless is what
+ * my own test did at first, so a tag claiming latin-1 while holding UTF-8
+ * bytes passed here and showed mojibake in every real player.
+ */
+const textOf = (f: Id3Frame): string => {
+  assert(f.body[0] === 3, `${f.id} must declare UTF-8 (3), declares ${f.body[0]}`);
+  return new TextDecoder().decode(f.body.subarray(1)).replace(/\0+$/, '');
+};
+
+/** Two frames of something that looks enough like an MP3 to be one. */
+function fakeMp3(): Uint8Array {
+  const out = new Uint8Array(64);
+  out[0] = 0xff; out[1] = 0xfb; out[2] = 0x90; out[3] = 0x00;
+  for (let i = 4; i < out.length; i++) out[i] = i & 0xff;
+  return out;
+}
+
+check('the preview carries the same record, as ID3', () => {
+  const tagged = stampMp3(fakeMp3(), remix(), APP, AT);
+  const { frames } = parseId3(tagged);
+  const by = (id: string): Id3Frame | undefined => frames.find((f) => f.id === id);
+  assert(textOf(by('TIT2')!) === 'You Make Me Wanna (Loui Remix)', 'title');
+  assert(textOf(by('TPE1')!) === 'theblank', 'artist');
+  assert(textOf(by('TCOP')!).includes('©'), 'copyright, © intact');
+  assert(textOf(by('TSSE')!).includes(APP_NAME), 'the app');
+  assert(by('COMM')!.body[0] === 3, 'the comment declares UTF-8 too');
+  const comment = new TextDecoder().decode(by('COMM')!.body.subarray(5));
+  assert(comment.includes('편곡·믹스'), 'the Korean survives');
+  assert(comment.includes('2차 창작'), 'and it says it is a derivative');
+});
+
+check('the exact record rides along in a TXXX field', () => {
+  const { frames } = parseId3(stampMp3(fakeMp3(), remix(), APP, AT));
+  const txxx = frames.find((f) => f.id === 'TXXX');
+  assert(txxx !== undefined, 'the user field is written');
+  assert(txxx!.body[0] === 3, 'the user field declares UTF-8');
+  const raw = new TextDecoder().decode(txxx!.body.subarray(1));
+  const [description, json] = raw.split('\0');
+  assert(description === PROVENANCE_FIELD, `named for finding: ${description}`);
+  const record = JSON.parse(json!) as { derivative: boolean; derivedFrom: { isrc?: string }[] };
+  assert(record.derivative === true, 'and holds the whole record');
+  assert(record.derivedFrom[0]!.isrc === 'KRA382600001', 'down to the ISRC');
+});
+
+check('the audio is untouched and starts exactly where the tag says', () => {
+  const mp3 = fakeMp3();
+  const tagged = stampMp3(mp3, remix(), APP, AT);
+  const { audioAt } = parseId3(tagged);
+  assert(audioAt === id3TagLength(tagged), 'the writer and the reader agree on the length');
+  const audio = tagged.subarray(audioAt);
+  assert(audio.length === mp3.length, `${audio.length} bytes of audio, was ${mp3.length}`);
+  assert(audio.every((b, i) => b === mp3[i]), 'byte for byte');
+});
+
+check('tagging twice replaces the tag rather than stacking two', () => {
+  // A reader takes the FIRST tag.  Two of them means saving again shows the
+  // older record, which is worse than none.
+  const once = stampMp3(fakeMp3(), remix(), APP, AT);
+  const twice = stampMp3(once, { ...remix(), title: 'Corrected Title' }, APP, AT);
+  const { frames, audioAt } = parseId3(twice);
+  assert(textOf(frames.find((f) => f.id === 'TIT2')!) === 'Corrected Title', 'the newer one won');
+  const rest = twice.subarray(audioAt);
+  assert(rest[0] === 0xff && (rest[1]! & 0xe0) === 0xe0,
+    'and the audio, not a second tag, follows it');
+  assert(rest.length === fakeMp3().length, `${rest.length} bytes — no tag left buried inside`);
+});
+
+check('something that is not an MP3 is handed back untouched', () => {
+  const wav = encodeWav(silence, 48000, 24, 'none');
+  assert(stampMp3(wav, remix(), APP, AT) === wav, 'a WAV is refused, not wrapped');
+  const rubbish = new Uint8Array([1, 2, 3, 4]);
+  assert(stampMp3(rubbish, remix(), APP, AT) === rubbish, 'and so is rubbish');
+});
+
+const passed = results.filter((r) => r.pass).length;
+const failed = results.length - passed;
+console.log('\n=== Provenance: what made the recording, written into it ===');
+for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
+console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
+if (failed > 0) process.exit(1);

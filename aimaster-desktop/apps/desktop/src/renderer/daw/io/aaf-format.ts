@@ -30,12 +30,9 @@
 import type { CfbFile } from './cfb.js';
 
 export const SF_DATA = 0x82;
-export const SF_DATA_STREAM = 0x42;
 export const SF_STRONG_REF = 0x22;
 export const SF_STRONG_REF_VECTOR = 0x32;
 export const SF_STRONG_REF_SET = 0x3A;
-export const SF_WEAK_REF = 0x02;
-export const SF_UNIQUE_ID = 0x86;
 
 export const PROPERTY_VERSION = 32;
 const BYTE_ORDER_LE = 0x4C;

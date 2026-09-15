@@ -501,15 +501,3 @@ export function readCfb(bytes: Uint8Array): CfbFile {
   return { root: build(root.child, ''), streams, clsids };
 }
 
-/** Walk a parsed tree to a node by path, or undefined. */
-export function findNode(file: CfbFile, path: string): CfbNode | undefined {
-  const parts = path.split('/').filter(Boolean);
-  let level: CfbNode[] | undefined = file.root;
-  let found: CfbNode | undefined;
-  for (const part of parts) {
-    found = level?.find((n) => n.name === part);
-    if (!found) return undefined;
-    level = found.children;
-  }
-  return found;
-}

@@ -1,0 +1,449 @@
+// ModuleParameterPanel — one panel renderer for every module in the suite.
+//
+// The suite has twenty modules and ~150 parameters.  Hand-writing a panel
+// per module would mean twenty places for the layout to drift, twenty
+// places to forget a hint, and twenty files to touch when a control gets
+// better.  Instead this renders directly from `module-parameter-definitions`
+// — so every module gets the same spacing, the same control choices and the
+// same keyboard behaviour, and adding a module is a definitions change.
+//
+// The one thing a generic renderer has to get right is GROUPING.  A flat
+// list of 39 controls is not a panel, it is a spreadsheet.  Two rules do
+// most of the work:
+//
+//   • Parameters named `bandN…` are collected into a "Band N" section, in
+//     band order.  That turns the multiband and dynamic-EQ modules into
+//     one section per band instead of one wall of sliders.
+//   • Everything else lands in a leading section, optionally split by an
+//     explicit `sections` prop when a module wants a specific story
+//     (e.g. Vintage EQ's low and high halves).
+//
+// Control choice follows the parameter kind: booleans become toggle pills,
+// enums become chip rows, numbers become slider rows.  Knobs are reserved
+// for the hand-built panels where a knob genuinely reads better.
+
+import React, { useMemo } from 'react';
+import type {
+  ModuleId,
+  ModuleParameterDefinitions,
+  ParameterDef,
+  ParameterValue,
+} from '../../../audio/parameters/index.js';
+import { glossaryFor } from '../../../audio/parameters/parameter-glossary.js';
+import { LouiSectionCard } from '../controls/LouiSectionCard.js';
+import { LouiSliderRow } from '../controls/LouiSliderRow.js';
+import { LouiTogglePill } from '../controls/LouiTogglePill.js';
+import { surface, text, typography, space, radius, meter } from '../../../theme/loui-theme.js';
+import { BASIS_LABEL, type RecommendedEntry } from '../../../audio/presets/recommended-defaults.js';
+
+// ── Chip row (enum control) ──────────────────────────────────────────────
+
+interface ChipRowProps {
+  label: string;
+  /** Korean name, shown beside the English one. */
+  ko?: string | undefined;
+  hint?: string;
+  values: readonly string[];
+  labels?: Readonly<Record<string, string>>;
+  hints?: Readonly<Record<string, string>>;
+  value: string;
+  disabled?: boolean;
+  onChange: (v: string) => void;
+}
+
+function ChipRow(props: ChipRowProps) {
+  const activeHint = props.hints?.[props.value];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space['2'], opacity: props.disabled ? 0.45 : 1 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.sm,
+          color: text.secondary,
+          fontWeight: typography.weight.medium,
+        }}>
+          {props.label}
+          {props.ko && (
+            <span style={{ color: text.tertiary, fontWeight: typography.weight.normal }}>
+              {`  ${props.ko}`}
+            </span>
+          )}
+        </span>
+        {props.hint && (
+          <span style={{ fontFamily: typography.family.sans, fontSize: typography.size.xs, color: text.muted }}>
+            {props.hint}
+          </span>
+        )}
+      </div>
+      <div role="radiogroup" aria-label={props.label} style={{ display: 'flex', flexWrap: 'wrap', gap: space['1'] }}>
+        {props.values.map((v) => {
+          const on = v === props.value;
+          return (
+            <button
+              key={v}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              disabled={props.disabled}
+              onClick={() => props.onChange(v)}
+              style={{
+                appearance: 'none',
+                cursor: props.disabled ? 'default' : 'pointer',
+                paddingInline: space['3'],
+                paddingBlock: space['1'],
+                borderRadius: radius.chip,
+                border: `1px solid ${on ? 'rgba(167,139,250,0.55)' : surface.border}`,
+                background: on ? 'rgba(167,139,250,0.16)' : surface.well,
+                color: on ? text.primary : text.tertiary,
+                fontFamily: typography.family.sans,
+                fontSize: typography.size.xs,
+                fontWeight: typography.weight.medium,
+                transition: 'background 120ms ease-out, border-color 120ms ease-out',
+              }}
+            >
+              {props.labels?.[v] ?? v}
+            </button>
+          );
+        })}
+      </div>
+      {/* Per-value hint — the character selectors carry a line each, and
+          showing only the active one keeps the panel from ballooning. */}
+      {activeHint && (
+        <span style={{
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          color: text.muted,
+          lineHeight: 1.4,
+        }}>
+          {activeHint}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ── Grouping ─────────────────────────────────────────────────────────────
+
+interface Section {
+  title: string;
+  params: ParameterDef[];
+}
+
+const BAND_PREFIX = /^band(\d+)([A-Z].*)?$/;
+
+/** Split a module's parameters into sections — see the file header. */
+export function groupParameters(
+  def: ModuleParameterDefinitions,
+  bandLabels?: readonly string[],
+): Section[] {
+  const general: ParameterDef[] = [];
+  const bands = new Map<number, ParameterDef[]>();
+
+  for (const p of def.parameters) {
+    const m = BAND_PREFIX.exec(p.id);
+    // A `bandN` id with no suffix (Impact's `band0Pct` has one; a bare
+    // `band0` would not) still belongs to that band's section.
+    if (m) {
+      const idx = Number(m[1]);
+      const list = bands.get(idx) ?? [];
+      list.push(p);
+      bands.set(idx, list);
+    } else {
+      general.push(p);
+    }
+  }
+
+  const sections: Section[] = [];
+  if (general.length > 0) {
+    sections.push({ title: bands.size > 0 ? 'Module  공통' : 'Parameters  설정', params: general });
+  }
+  for (const idx of [...bands.keys()].sort((a, b) => a - b)) {
+    sections.push({
+      title: bandLabels?.[idx] ?? `Band ${idx + 1}  ${idx + 1}번 밴드`,
+      params: bands.get(idx)!,
+    });
+  }
+  return sections;
+}
+
+/**
+ * Modules whose bands are frequency ranges rather than numbered slots.
+ * Naming them "Low / Low mid / High mid / High" is the difference between
+ * a panel you can read at a glance and one you have to decode.
+ */
+const FREQ_BAND_LABELS = [
+  'Low  저역', 'Low mid  중저역', 'High mid  중고역', 'High  고역',
+] as const;
+const FREQ_BAND_MODULES = new Set<ModuleId>(['multiband', 'impact', 'exciter']);
+
+// ── Panel ────────────────────────────────────────────────────────────────
+
+/** Collapsed-by-default wrapper for the numeric controls under a graph. */
+function NumericDisclosure(props: { count: number; children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space['3'] }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          appearance: 'none',
+          cursor: 'pointer',
+          alignSelf: 'flex-start',
+          paddingInline: space['3'],
+          paddingBlock: space['1'],
+          borderRadius: radius.chip,
+          border: `1px solid ${surface.border}`,
+          background: surface.well,
+          color: text.tertiary,
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+        }}
+      >
+        {open ? '숫자 조정 닫기' : `숫자로 조정 (${props.count})`}
+      </button>
+      {open && props.children}
+    </div>
+  );
+}
+
+export interface ModuleParameterPanelProps {
+  moduleId: ModuleId;
+  def: ModuleParameterDefinitions;
+  /** Current value for every parameter. */
+  values: Record<string, ParameterValue>;
+  /** Module bypass — dims the whole panel and disables its controls. */
+  bypass?: boolean;
+  onChange: (parameterId: string, value: ParameterValue) => void;
+  /**
+   * Optional note rendered above the sections — used for things the
+   * parameters cannot say themselves, e.g. "adds 43 ms of latency".
+   */
+  note?: React.ReactNode;
+  /**
+   * Optional editor rendered above the sections.  The EQ modules put their
+   * curve here: the graph is the primary control and the sliders below it
+   * become the numeric readout for the same values, rather than a second,
+   * competing way to set them.
+   */
+  editor?: React.ReactNode;
+  /**
+   * Apply this module's recommended starting point.
+   *
+   * Every module ships neutral, which is right — a module must be
+   * bit-transparent until asked — and useless to somebody who has never
+   * mastered anything: a panel of numbers that all do nothing, with no
+   * indication of which way is normal. This is the way out, per module,
+   * rather than only as an all-or-nothing preset.
+   */
+  onApplyRecommended?: (() => void) | undefined;
+  /** The recommendation itself, for the explanation line. */
+  recommended?: RecommendedEntry | undefined;
+  /**
+   * Why this module's recommendation differs for the loaded song.
+   *
+   * Shown beside the generic reason rather than replacing it: the user
+   * needs both "what this control is for" and "why yours says something
+   * different from the book value".
+   */
+  adaptiveNote?: { measured: string; action: string } | undefined;
+}
+
+export function ModuleParameterPanel(props: ModuleParameterPanelProps) {
+  const sections = useMemo(
+    () => groupParameters(
+      props.def,
+      FREQ_BAND_MODULES.has(props.moduleId) ? FREQ_BAND_LABELS : undefined,
+    ),
+    [props.def, props.moduleId],
+  );
+
+  const disabled = props.bypass === true;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space['3'] }}>
+      {props.recommended && (
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: space['3'], flexWrap: 'wrap',
+          background: surface.well,
+          border: `1px solid ${surface.border}`,
+          borderRadius: radius.chip,
+          padding: space['3'],
+        }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: space['2'], marginBottom: 4,
+            }}>
+              <span style={{
+                fontFamily: typography.family.sans, fontSize: 9,
+                letterSpacing: '0.14em', textTransform: 'uppercase', color: text.muted,
+              }}>
+                추천 설정
+              </span>
+              <span style={{
+                fontFamily: typography.family.sans, fontSize: 9,
+                paddingInline: 5, paddingBlock: 1, borderRadius: radius.chip,
+                border: `1px solid ${surface.border}`, color: text.muted,
+              }}>
+                {BASIS_LABEL[props.recommended.basis]}
+              </span>
+              {props.recommended.off && (
+                <span style={{
+                  fontFamily: typography.family.sans, fontSize: 9,
+                  paddingInline: 5, paddingBlock: 1, borderRadius: radius.chip,
+                  border: `1px solid ${surface.border}`, color: text.disabled,
+                }}>
+                  기본은 꺼둠
+                </span>
+              )}
+            </div>
+            <span style={{
+              fontFamily: typography.family.sans, fontSize: typography.size.xs,
+              color: text.tertiary, lineHeight: 1.6,
+            }}>
+              {props.recommended.why}
+            </span>
+            {props.adaptiveNote && (
+              <div style={{
+                marginTop: space['2'],
+                paddingInline: space['2'],
+                paddingBlock: space['1'],
+                borderRadius: radius.chip,
+                borderLeft: `2px solid ${meter.accent.foreground}`,
+                background: `${meter.accent.foreground}10`,
+                fontFamily: typography.family.sans,
+                fontSize: typography.size.xs,
+                color: text.tertiary,
+                lineHeight: 1.6,
+              }}>
+                <strong style={{ color: meter.accent.foreground }}>이 곡 기준</strong>
+                {' · '}
+                {props.adaptiveNote.measured}
+                {' → '}
+                {props.adaptiveNote.action}
+              </div>
+            )}
+          </div>
+          {props.onApplyRecommended && (
+            <button
+              type="button"
+              onClick={props.onApplyRecommended}
+              className="no-drag"
+              style={{
+                appearance: 'none', cursor: 'pointer', whiteSpace: 'nowrap',
+                paddingInline: space['3'], paddingBlock: 5,
+                borderRadius: radius.chip,
+                border: `1px solid ${meter.accent.foreground}77`,
+                background: `${meter.accent.foreground}18`,
+                color: meter.accent.foreground,
+                fontFamily: typography.family.sans, fontSize: typography.size.xs,
+              }}
+            >
+              이 값으로 설정
+            </button>
+          )}
+        </div>
+      )}
+
+      {props.note && (
+        <div style={{
+          background: surface.well,
+          border: `1px solid ${surface.border}`,
+          borderRadius: radius.chip,
+          padding: space['3'],
+          fontFamily: typography.family.sans,
+          fontSize: typography.size.xs,
+          color: text.tertiary,
+          lineHeight: 1.5,
+        }}>
+          {props.note}
+        </div>
+      )}
+
+      {props.editor}
+
+      {/* When a module has a graph, the graph IS the control surface and the
+          numbers are a second opinion — eleven sliders stacked under a curve
+          is the wall of controls the graph was built to replace.  They stay
+          one click away rather than gone, because typing an exact frequency
+          is a real thing engineers do. */}
+      {(() => {
+        const count = sections.reduce((n, s) => n + s.params.length, 0);
+        // A module whose whole state is its editor has nothing to disclose;
+        // offering "adjust numerically (0)" would be a button that opens
+        // nothing.
+        if (count === 0) return null;
+        if (!props.editor) return renderSections();
+        return <NumericDisclosure count={count}>{renderSections()}</NumericDisclosure>;
+      })()}
+    </div>
+  );
+
+  function renderSections() {
+    return (
+      <>
+        {sections.map((section) => (
+        <LouiSectionCard key={section.title} title={section.title} dimmed={disabled}>
+          {section.params.map((p) => {
+            const raw = props.values[p.id];
+            // English label, Korean name, and one plain sentence.  The
+            // sentence REPLACES the English hint rather than joining it:
+            // two explanations of the same control is not twice as clear.
+            const g = glossaryFor(props.moduleId, p.id);
+            const hint = g?.plain ?? p.hint;
+
+            if (p.kind === 'boolean') {
+              return (
+                <LouiTogglePill
+                  key={p.id}
+                  label={g ? `${p.label}  ${g.ko}` : p.label}
+                  {...(hint ? { hint } : {})}
+                  {...(p.offLabel ? { offLabel: p.offLabel } : {})}
+                  {...(p.onLabel ? { onLabel: p.onLabel } : {})}
+                  value={typeof raw === 'boolean' ? raw : p.default}
+                  disabled={disabled}
+                  onChange={(v) => props.onChange(p.id, v)}
+                />
+              );
+            }
+
+            if (p.kind === 'enum') {
+              return (
+                <ChipRow
+                  key={p.id}
+                  label={p.label}
+                  {...(g ? { ko: g.ko } : {})}
+                  {...(hint ? { hint } : {})}
+                  {...(p.labels ? { labels: p.labels } : {})}
+                  {...(p.hints ? { hints: p.hints } : {})}
+                  values={p.values}
+                  value={typeof raw === 'string' ? raw : p.default}
+                  disabled={disabled}
+                  onChange={(v) => props.onChange(p.id, v)}
+                />
+              );
+            }
+
+            return (
+              <LouiSliderRow
+                key={p.id}
+                label={g ? `${p.label}  ${g.ko}` : p.label}
+                {...(hint ? { hint } : {})}
+                {...(p.unit ? { unit: p.unit } : {})}
+                {...(p.format ? { format: p.format } : {})}
+                value={typeof raw === 'number' ? raw : p.default}
+                min={p.min}
+                max={p.max}
+                step={p.step}
+                disabled={disabled}
+                onChange={(v) => props.onChange(p.id, v)}
+              />
+            );
+          })}
+        </LouiSectionCard>
+        ))}
+      </>
+    );
+  }
+}

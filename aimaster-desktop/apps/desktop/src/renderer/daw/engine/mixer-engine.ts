@@ -32,6 +32,11 @@ import {
   dbToGain, effectiveFaderDb, isAudible,
 } from '../model/mixer-math.js';
 import type { BusId, DawSession, Track, TrackId } from '../model/types.js';
+import {
+  clearBallisticsHold, clearLatch, composeReading, emptyReading,
+  meterFftSize, newBallistics, newLatch,
+  type ChannelMeterReading, type MeterBallistics, type MeterLatch,
+} from '../model/channel-meter.js';
 import { findPlugin, type PluginInstance } from './plugins.js';
 import { parsePluginParamKey, pluginParamKey } from '../model/automation.js';
 import type { AutomatableParam } from './plugin-kit.js';
@@ -42,6 +47,66 @@ import {
 import { macroCoverage } from '../model/macro-automation.js';
 import { paramsDrivenBy } from './plugin-kit.js';
 import { applyChainParams, buildDeviceChain, type BuiltChain } from './device-chain.js';
+
+/**
+ * The post-fader meter: one analyser per side, so nothing is down-mixed.
+ *
+ * A single `AnalyserNode` on a stereo tap reads (L+R)/2, which silently
+ * subtracts exactly what the pan added — measured at 6.02 dB for a channel
+ * panned hard.  A splitter gives each analyser a one-channel stream, and a
+ * one-channel stream has nothing to down-mix.
+ */
+export interface ChannelMeterTap {
+  splitter: ChannelSplitterNode;
+  left: AnalyserNode;
+  right: AnalyserNode;
+  /** Reused between polls; allocating 8192 floats at 20 Hz is not free. */
+  scratch: Float32Array<ArrayBuffer>;
+  /** The latch, carried across polls. */
+  latch: MeterLatch;
+  /** What the bars draw — rise instant, fall by the clock. */
+  ballistics: MeterBallistics;
+  /** The newest window, so a reader that did not poll still gets a number. */
+  last: ChannelMeterReading;
+}
+
+/**
+ * One send: a level, then a pan, then the bus.
+ *
+ * The pan is new, and it is new because `Send.pan` did nothing.  It was in the
+ * model, written by `createSend`, saved into every session file and carried
+ * through import — and measured through a render, hard left, centre and hard
+ * right produced byte-identical output, because the send was a bare GainNode
+ * with no panner behind it.
+ *
+ * A POST-fader send taps the channel's own panner, so this is a second pan
+ * over a signal that is already stereo, which is what a console does: the
+ * send pan places the channel within the effect, and at centre a
+ * `StereoPannerNode` passes a stereo input through at unity.  A PRE-fader send
+ * taps ahead of the channel pan, so for a mono source this panner is the only
+ * one there is.
+ */
+interface SendNodes {
+  /** Level and mute; the automation lane for `sendLevel` rides this. */
+  gain: GainNode;
+  panner: StereoPannerNode;
+}
+
+/**
+ * A bus, as two ends rather than one node.
+ *
+ * They are the same object for a stereo bus.  For a MONO bus they are not:
+ * everything writing into the bus connects to `input`, everything reading it
+ * takes `output`, and the fold sits between them.  `BusDef.channels` has been
+ * in the model, in saved sessions and in the import path all along and — again
+ * measured rather than assumed — a mono bus rendered identically to a stereo
+ * one.
+ */
+interface BusNodes {
+  input: GainNode;
+  output: AudioNode;
+  extra: AudioNode[];
+}
 
 export interface Channel {
   trackId: TrackId;
@@ -66,8 +131,19 @@ export interface Channel {
   fader: GainNode;
   panner: StereoPannerNode;
   postFaderTap: GainNode;
-  sends: Map<string, GainNode>;
-  meter: AnalyserNode | null;
+  sends: Map<string, SendNodes>;
+  meter: ChannelMeterTap | null;
+  /**
+   * One analyser per insert, tapped at what ARRIVES at that insert.
+   *
+   * The channel meter is post-fader, which is the right place to meter a
+   * channel and the wrong place to ask "where is this compressor sitting on
+   * its own curve".  That signal has already been through this device and
+   * through the fader, so plotting it on the device's INPUT axis says the
+   * track is quiet while the device's own GR meter says it is squeezing —
+   * two readings of two different signals, disagreeing in public.
+   */
+  insertMeters: Map<string, AnalyserNode>;
 }
 
 /**
@@ -152,7 +228,7 @@ export class MixerEngine {
   private readonly withMeters: boolean;
 
   private channels = new Map<TrackId, Channel>();
-  private buses = new Map<BusId, GainNode>();
+  private buses = new Map<BusId, BusNodes>();
   private key = '';
   private lastSession: DawSession | null = null;
   /** Latest feedback report — the UI shows this instead of blowing up. */
@@ -210,12 +286,18 @@ export class MixerEngine {
       instance.dispose();
     }
     ch.inserts.clear();
+    for (const node of ch.insertMeters.values()) {
+      try { node.disconnect(); } catch { /* already gone */ }
+    }
+    ch.insertMeters.clear();
 
     let cursor: AudioNode = ch.insertChainIn;
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
       const instance = descriptor.create(this.ctx, { ...insert.params });
+      const tapped = this.tap(cursor);
+      if (tapped) ch.insertMeters.set(insert.id, tapped);
       cursor.connect(instance.input);
       cursor = instance.output;
       ch.inserts.set(insert.id, instance);
@@ -226,7 +308,7 @@ export class MixerEngine {
     for (const insert of track.inserts) {
       if (!insert.sidechainSource) continue;
       const instance = ch.inserts.get(insert.id);
-      const bus = this.buses.get(insert.sidechainSource);
+      const bus = this.buses.get(insert.sidechainSource)?.output;
       if (!instance?.sidechain || !bus) continue;
       bus.connect(instance.sidechain);
       instance.setSidechainActive(true);
@@ -322,8 +404,9 @@ export class MixerEngine {
     const plugin = parsePluginParamKey(param);
     const target: AudioParam | undefined = param === 'volume' ? ch.fader.gain
       : param === 'pan' ? ch.panner.pan
-        : param.startsWith('send:') ? ch.sends.get(param.slice(5))?.gain
-          : plugin
+        : param.startsWith('sendPan:') ? ch.sends.get(param.slice(8))?.panner.pan
+          : param.startsWith('send:') ? ch.sends.get(param.slice(5))?.gain.gain
+            : plugin
             ? ch.inserts.get(plugin.insertId)?.automatable?.(plugin.paramId)?.param ?? undefined
             : undefined;
     if (!target) return;
@@ -337,7 +420,11 @@ export class MixerEngine {
   }
 
   channel(trackId: TrackId): Channel | undefined { return this.channels.get(trackId); }
-  bus(busId: BusId): GainNode | undefined { return this.buses.get(busId); }
+  /** Where things WRITE into a bus. */
+  busInput(busId: BusId): GainNode | undefined { return this.buses.get(busId)?.input; }
+
+  /** Where things READ a bus — the far side of the mono fold, when there is one. */
+  busOutput(busId: BusId): AudioNode | undefined { return this.buses.get(busId)?.output; }
   get trackIds(): TrackId[] { return [...this.channels.keys()]; }
 
   // ── Build ───────────────────────────────────────────────────────────────
@@ -345,10 +432,7 @@ export class MixerEngine {
     this.teardown();
     this.feedbackPaths = detectFeedback(session);
 
-    for (const bus of session.buses) {
-      const node = this.ctx.createGain();
-      this.buses.set(bus.id, node);
-    }
+    for (const bus of session.buses) this.buses.set(bus.id, this.buildBus(bus.channels));
 
     for (const track of session.tracks) {
       if (!carriesAudio(track)) continue;
@@ -368,27 +452,28 @@ export class MixerEngine {
         if (masterCh) ch.postFaderTap.connect(masterCh.input);
         else ch.postFaderTap.connect(this.destination);
       } else if (track.output.kind === 'bus') {
-        const bus = this.buses.get(track.output.busId);
+        const bus = this.buses.get(track.output.busId)?.input;
         if (bus) ch.postFaderTap.connect(bus);
       }
 
       // Aux input: a bus feeds this channel.
-      if (track.input) this.buses.get(track.input)?.connect(ch.input);
+      if (track.input) this.buses.get(track.input)?.output.connect(ch.input);
 
       // Sends.
       for (const send of track.sends) {
         const node = ch.sends.get(send.id);
-        const bus = this.buses.get(send.target);
+        const bus = this.buses.get(send.target)?.input;
         if (!node || !bus) continue;
-        (send.preFader ? ch.preFaderTap : ch.panner).connect(node);
-        node.connect(bus);
+        (send.preFader ? ch.preFaderTap : ch.panner).connect(node.gain);
+        node.gain.connect(node.panner);
+        node.panner.connect(bus);
       }
 
       // Sidechain keys.
       for (const insert of track.inserts) {
         if (!insert.sidechainSource) continue;
         const instance = ch.inserts.get(insert.id);
-        const bus = this.buses.get(insert.sidechainSource);
+        const bus = this.buses.get(insert.sidechainSource)?.output;
         if (!instance?.sidechain || !bus) continue;
         bus.connect(instance.sidechain);
         instance.setSidechainActive(true);
@@ -400,6 +485,81 @@ export class MixerEngine {
       // eslint-disable-next-line no-console
       console.warn('[MixerEngine] feedback detected — cyclic routes:', this.feedbackPaths);
     }
+  }
+
+  /** An analyser on what reaches this point, or null when metering is off. */
+  private tap(source: AudioNode): AnalyserNode | null {
+    if (!this.withMeters) return null;
+    const ctx = this.ctx as AudioContext;
+    if (typeof ctx.createAnalyser !== 'function') return null;
+    const node = ctx.createAnalyser();
+    // Short window: this reading chases a compressor's detector, and a long
+    // smoothing constant would lag the GR number it sits next to.
+    node.fftSize = 1024;
+    node.smoothingTimeConstant = 0;
+    source.connect(node);
+    return node;
+  }
+
+  /**
+   * The post-fader meter for one channel, or null when metering is off.
+   *
+   * `smoothingTimeConstant` is deliberately absent.  The old meter set it to
+   * 0.2 and it did nothing: that property smooths the FFT magnitude data, and
+   * this reads `getFloatTimeDomainData`, which it does not touch.  Measured —
+   * 0.0 and 0.99 gave the same reading to within a quarter of a dB, and that
+   * quarter was which block the render happened to end on.  Ballistics belong
+   * to the reader, not to a setting that looks like it does them.
+   */
+  private buildMeter(source: AudioNode): ChannelMeterTap | null {
+    if (!this.withMeters) return null;
+    const ctx = this.ctx as AudioContext;
+    if (typeof ctx.createAnalyser !== 'function') return null;
+    if (typeof ctx.createChannelSplitter !== 'function') return null;
+    const size = meterFftSize(ctx.sampleRate);
+    const splitter = ctx.createChannelSplitter(2);
+    const left = ctx.createAnalyser();
+    const right = ctx.createAnalyser();
+    left.fftSize = size;
+    right.fftSize = size;
+    source.connect(splitter);
+    splitter.connect(left, 0);
+    splitter.connect(right, 1);
+    return {
+      splitter, left, right,
+      scratch: new Float32Array(size),
+      latch: newLatch(), ballistics: newBallistics(), last: emptyReading(),
+    };
+  }
+
+  /**
+   * A bus, folded to mono when it asks to be.
+   *
+   * The fold is an explicit splitter and merger rather than a `channelCount`
+   * trick, for the same reason the control room does it that way: a stereo
+   * pair collapsed by the browser's own down-mix rules is not the sum a
+   * console makes, and on a bus the whole point of asking for mono is to hear
+   * that exact sum.  The halving keeps a centred source at the level it
+   * arrived at; a hard-panned one correctly loses 6 dB, because that is what
+   * folding it does.
+   */
+  private buildBus(channels: 1 | 2): BusNodes {
+    const ctx = this.ctx;
+    const input = ctx.createGain();
+    if (channels === 2 || typeof ctx.createChannelSplitter !== 'function') {
+      return { input, output: input, extra: [] };
+    }
+    const splitter = ctx.createChannelSplitter(2);
+    const merger = ctx.createChannelMerger(2);
+    const trim = ctx.createGain();
+    trim.gain.value = 0.5;
+    input.connect(splitter);
+    for (const side of [0, 1]) {
+      splitter.connect(merger, 0, side);
+      splitter.connect(merger, 1, side);
+    }
+    merger.connect(trim);
+    return { input, output: trim, extra: [splitter, merger, trim] };
   }
 
   private buildChannel(track: Track, session: DawSession): Channel {
@@ -438,7 +598,7 @@ export class MixerEngine {
     let chain: BuiltChain | null = null;
     if (track.deviceGraph) {
       chain = buildDeviceChain(
-        { ctx, busFor: (id) => this.buses.get(id), racks: track.racks },
+        { ctx, busFor: (id) => this.buses.get(id)?.input, racks: track.racks },
         track.deviceGraph,
       );
       if (chain) {
@@ -451,10 +611,14 @@ export class MixerEngine {
     // devices can be swapped later without rebuilding the channel.
     const insertChainIn = cursor;
     const inserts = new Map<string, PluginInstance>();
+    const insertMeters = new Map<string, AnalyserNode>();
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
       const instance = descriptor.create(ctx, { ...insert.params });
+      // Tapped BEFORE the connection, so it reads the device's input.
+      const tapped = this.tap(cursor);
+      if (tapped) insertMeters.set(insert.id, tapped);
       cursor.connect(instance.input);
       cursor = instance.output;
       inserts.set(insert.id, instance);
@@ -466,20 +630,17 @@ export class MixerEngine {
     fader.connect(panner);
     panner.connect(postFaderTap);
 
-    let meter: AnalyserNode | null = null;
-    if (this.withMeters && typeof (ctx as AudioContext).createAnalyser === 'function') {
-      meter = ctx.createAnalyser();
-      meter.fftSize = 2048;
-      meter.smoothingTimeConstant = 0.2;
-      postFaderTap.connect(meter);
-    }
+    const meter = this.buildMeter(postFaderTap);
 
-    const sends = new Map<string, GainNode>();
-    for (const send of track.sends) sends.set(send.id, ctx.createGain());
+    const sends = new Map<string, SendNodes>();
+    for (const send of track.sends) {
+      sends.set(send.id, { gain: ctx.createGain(), panner: ctx.createStereoPanner() });
+    }
 
     void session;
     return {
-      trackId: track.id, input, adc, insertIn, insertOut, insertChainIn, inserts, rack, chain,
+      trackId: track.id, input, adc, insertIn, insertOut, insertChainIn, inserts, insertMeters,
+      rack, chain,
       preFaderTap, fader, panner, postFaderTap, sends, meter,
     };
   }
@@ -555,8 +716,11 @@ export class MixerEngine {
       for (const send of track.sends) {
         const node = ch.sends.get(send.id);
         if (!node) continue;
+        if (!this.isAutomated(track.id, `sendPan:${send.id}`)) {
+          node.panner.pan.value = Math.max(-1, Math.min(1, send.pan));
+        }
         if (this.isAutomated(track.id, `send:${send.id}`) && !send.mute) continue;
-        node.gain.value = send.mute ? 0 : dbToGain(send.levelDb);
+        node.gain.gain.value = send.mute ? 0 : dbToGain(send.levelDb);
       }
     }
   }
@@ -567,17 +731,72 @@ export class MixerEngine {
   }
 
   /** Post-fader RMS per channel, for the Mix window meters. */
-  meterLevels(): Map<TrackId, number> {
-    const levels = new Map<TrackId, number>();
+  /**
+   * Peak of what is arriving at one insert, as a linear amplitude.
+   *
+   * PEAK, not RMS, and that is the point: the compressor's detector follows
+   * the loudest thing hitting it, so a peak reading is the one that lands on
+   * the curve where the GR meter says it should.  An RMS reading of the same
+   * signal sits several dB lower and makes the picture argue with the number.
+   */
+  insertInputLevel(trackId: TrackId, insertId: string): number | null {
+    const node = this.channels.get(trackId)?.insertMeters.get(insertId);
+    if (!node) return null;
+    const data = new Float32Array(node.fftSize);
+    node.getFloatTimeDomainData(data);
+    let peak = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = Math.abs(data[i] ?? 0);
+      if (v > peak) peak = v;
+    }
+    return peak;
+  }
+
+  /**
+   * Read every channel meter and advance its latch.
+   *
+   * The latch is the reason this is a POLL and not a getter: an over that
+   * happened two windows ago is gone from the analyser, and the only place it
+   * can survive is a number somebody kept.  Whoever calls this drives the
+   * latch, which means an over is caught exactly as often as somebody is
+   * looking — the transport tick and the Mix window both call it, so during
+   * playback that is every 50 ms whether the console is open or not, and with
+   * the transport stopped and no console open, nothing is metered.  Stated
+   * plainly because it is a real limit and not a bug: with nothing running and
+   * nobody watching there is also no signal to be over.
+   */
+  pollMeters(nowSec = monotonicSeconds()): Map<TrackId, ChannelMeterReading> {
+    const levels = new Map<TrackId, ChannelMeterReading>();
     for (const [id, ch] of this.channels) {
       if (!ch.meter) continue;
-      const data = new Float32Array(ch.meter.fftSize);
-      ch.meter.getFloatTimeDomainData(data);
-      let sum = 0;
-      for (let i = 0; i < data.length; i++) { const v = data[i] ?? 0; sum += v * v; }
-      levels.set(id, Math.sqrt(sum / data.length));
+      levels.set(id, readMeter(ch.meter, nowSec));
     }
     return levels;
+  }
+
+  /** The last poll's readings, without touching the analysers again. */
+  meterReadings(): Map<TrackId, ChannelMeterReading> {
+    const levels = new Map<TrackId, ChannelMeterReading>();
+    for (const [id, ch] of this.channels) {
+      if (ch.meter) levels.set(id, ch.meter.last);
+    }
+    return levels;
+  }
+
+  /** Clear the over latch and peak hold — one channel, or all of them. */
+  clearMeterHold(trackId?: TrackId): void {
+    const targets = trackId !== undefined
+      ? [this.channels.get(trackId)].filter((c) => c !== undefined)
+      : [...this.channels.values()];
+    for (const ch of targets) {
+      if (!ch.meter) continue;
+      clearLatch(ch.meter.latch);
+      clearBallisticsHold(ch.meter.ballistics);
+      ch.meter.last = {
+        ...ch.meter.last,
+        holdPeak: 0, clipped: false, shownHoldDb: ch.meter.ballistics.holdDb,
+      };
+    }
   }
 
   teardown(): void {
@@ -590,9 +809,22 @@ export class MixerEngine {
         ch.preFaderTap, ch.fader, ch.panner, ch.postFaderTap]) {
         try { node.disconnect(); } catch { /* ignore */ }
       }
-      for (const s of ch.sends.values()) { try { s.disconnect(); } catch { /* ignore */ } }
+      for (const s of ch.sends.values()) {
+        for (const node of [s.gain, s.panner]) {
+          try { node.disconnect(); } catch { /* ignore */ }
+        }
+      }
+      if (ch.meter) {
+        for (const node of [ch.meter.splitter, ch.meter.left, ch.meter.right]) {
+          try { node.disconnect(); } catch { /* ignore */ }
+        }
+      }
     }
-    for (const bus of this.buses.values()) { try { bus.disconnect(); } catch { /* ignore */ } }
+    for (const bus of this.buses.values()) {
+      for (const node of [bus.input, ...bus.extra]) {
+        try { node.disconnect(); } catch { /* ignore */ }
+      }
+    }
     this.channels.clear();
     this.buses.clear();
   }
@@ -605,4 +837,44 @@ export class MixerEngine {
   }
 
   get session(): DawSession | null { return this.lastSession; }
+}
+
+/**
+ * One poll of one channel's meter: peak and RMS per side, plus the latch.
+ *
+ * Peak and RMS both, and reported separately rather than folded into one bar,
+ * because they answer different questions and neither substitutes for the
+ * other: peak says whether this channel will survive being written to
+ * anything, RMS says how loud it sounds against the channel next to it.  The
+ * meter this replaced reported only RMS and drew it against a scale whose top
+ * was 0 dBFS, which is how a channel could sit 15.7 dB into the red without
+ * the strip changing colour.
+ */
+function readMeter(m: ChannelMeterTap, nowSec: number): ChannelMeterReading {
+  const side = (analyser: AnalyserNode): { peak: number; rms: number } => {
+    analyser.getFloatTimeDomainData(m.scratch);
+    let peak = 0;
+    let sum = 0;
+    for (let i = 0; i < m.scratch.length; i++) {
+      const v = m.scratch[i] ?? 0;
+      sum += v * v;
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+    }
+    return { peak, rms: Math.sqrt(sum / m.scratch.length) };
+  };
+  m.last = composeReading(m.latch, m.ballistics, side(m.left), side(m.right), nowSec);
+  return m.last;
+}
+
+/**
+ * A monotonic clock in seconds, for the meter ballistics.
+ *
+ * `performance.now()` rather than `AudioContext.currentTime`: the latter is
+ * the right clock for SCHEDULING and the wrong one for a display, because it
+ * stops when the context is suspended and the bars would then freeze at
+ * whatever they last read instead of falling to silence.
+ */
+function monotonicSeconds(): number {
+  return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
 }

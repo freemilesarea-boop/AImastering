@@ -208,6 +208,25 @@ export function currentGridBeat(): number {
 }
 
 /** Snap a part-relative beat to the grid when snapping is on. */
+/**
+ * Where a NEWLY DRAWN note starts.
+ *
+ * Not `snapBeatToGrid`.  That rounds to the nearest line, which is right when
+ * you MOVE a note — you are nudging it to the closest gridline — and wrong
+ * when you make one: past the half-way point of a cell it rounds UP, so the
+ * note appears in the next cell, to the right of the pointer that asked for
+ * it.  Measured in the running editor before this existed: pointer at beat
+ * 2.94 on a 0.25 grid produced a note starting at 3.000, when the cell under
+ * the pointer starts at 2.75.
+ *
+ * Drawing floors into the cell you clicked.  With snap off it lands exactly
+ * where the pointer was.
+ */
+export function drawStartBeat(rawBeat: number, gridBeat: number, snapEnabled: boolean): number {
+  if (!snapEnabled || gridBeat <= 0) return Math.max(0, rawBeat);
+  return Math.max(0, Math.floor(rawBeat / gridBeat) * gridBeat);
+}
+
 export function snapBeatToGrid(beat: number): number {
   const { snapEnabled } = useMidiEditorStore.getState();
   if (!snapEnabled) return Math.max(0, beat);

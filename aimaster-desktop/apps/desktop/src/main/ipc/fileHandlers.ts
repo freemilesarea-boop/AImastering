@@ -2,18 +2,22 @@ import type { IpcMain, BrowserWindow } from 'electron';
 import { app, dialog, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
+import { log } from '../utils/logger.js';
 import { recordFailure } from '../utils/failureLog.js';
 import { stemFileName, stemFilePath } from '../utils/stemPath.js';
+import { samplePathIn } from '../utils/samplePath.js';
 import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
 import {
   buildSupportBundle,
   supportBundleToJson,
 } from '../utils/supportBundle.js';
 import { needsTranscode, transcodeToTemp } from '../utils/audioTranscode.js';
-import { licenseService } from './licenseHandlers.js';
-import { getEntitlementPaid } from '../services/entitlementBridge.js';
-import { log } from '../utils/logger.js';
+import { defaultSavePath, outputDir } from '../utils/settingsStore.js';
 import type { SaveAudioRequest, SaveAudioResponse, ExportFormat } from '@aimaster/shared-types';
+import { AUDIO_IMPORT_EXTENSIONS, MIDI_IMPORT_EXTENSIONS } from '@aimaster/shared-types';
+import {
+  MODEL_FOLDER, DESCRIPTOR_NAME,
+} from '../../renderer/daw/audio/separate/model-registry.js';
 
 const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] }> = {
   wav:  { name: 'WAV Audio',  extensions: ['wav'] },
@@ -23,43 +27,18 @@ const FORMAT_FILTERS: Record<ExportFormat, { name: string; extensions: string[] 
   ogg:  { name: 'OGG Audio',  extensions: ['ogg'] },
 };
 
-// ── Commercial paywall (v3.6) ────────────────────────────────────────────────
-// Master-quality exports (lossless: wav / flac / aiff) require a paid license.
-// The MP3 preview stays free so trial users still hear the result.  Enforced
-// here in the MAIN process so it can't be bypassed from the renderer/devtools.
-// Renderer detects the `LICENSE_REQUIRED:` prefix and opens the activation modal.
-const LICENSE_REQUIRED = 'LICENSE_REQUIRED: 마스터 음원(WAV/FLAC/AIFF) 저장은 라이선스가 필요합니다. 라이선스를 활성화해 주세요.';
-const FREE_EXPORT_EXTS = new Set(['mp3', 'ogg']);
-
-function licensePaid(): boolean {
-  try { return licenseService.canProcess().isPaid; } catch { return false; }
-}
-
-type GateSource = 'license' | 'entitlement' | 'license+entitlement' | 'none';
-
-/**
- * Phase C — ADDITIVE gate: `paid = licensePaid || entitlementPaid`.
- *
- * `entitlementPaid` (entitlementBridge) defaults to false and is only true
- * when the renderer pushed an active-pro snapshot under BOTH feature flags.
- * So with the flags off (default) this is exactly the prior license-only
- * behavior, and an entitlement outage (→ false) can never block a paying
- * license user.  No license logic changed; the free policy is unchanged.
- */
-function paidStatus(): { paid: boolean; source: GateSource } {
-  const lic = licensePaid();
-  const ent = getEntitlementPaid();
-  const paid = lic || ent;
-  const source: GateSource = !paid
-    ? 'none'
-    : (lic && ent ? 'license+entitlement' : (lic ? 'license' : 'entitlement'));
-  return { paid, source };
-}
-
-/** True when the given extension/format is a paid (lossless master) export. */
-function isMasterExport(extOrFormat: string): boolean {
-  return !FREE_EXPORT_EXTS.has(extOrFormat.toLowerCase().replace('.', ''));
-}
+// ── Export gating: removed ───────────────────────────────────────────────────
+// Lossless master exports (wav / flac / aiff) used to require an activated
+// licence, with the MP3 preview left free so a trial user could still hear
+// the result.  The product is sold as a paid download, so every copy that
+// runs is already paid for — the gate could only ever fire on a customer.
+// It did: saving a WAV opened the activation dialog and refused the export.
+//
+// Enforcement lived in the MAIN process at three call sites (`file:save-wav`,
+// `file:save-audio`, `file:batch-save-wav`) so it could not be bypassed from
+// devtools.  All three are gone, along with the helpers that fed them, and so
+// are the renderer helpers that recognised the `LICENSE_REQUIRED:` prefix and
+// opened the activation dialog -- nothing can resurrect this by accident.
 
 /**
  * Validate a renderer-supplied audio payload.  The renderer is trusted code,
@@ -83,12 +62,30 @@ function readAudioPayload(req: unknown): { name: string; bytes: Buffer } {
   return { name, bytes };
 }
 
+// The dialog filters, built from the SHARED list so the Open dialog and
+// drag-and-drop accept the same files.  They used to be written out by hand
+// here and the hand-written one was shorter.
+//
+// "모든 파일" is last on purpose: some exporters write no extension, and macOS
+// hides whatever the filters do not name.  A file that cannot be decoded fails
+// visibly on import, so a way through costs nothing and a dead button costs
+// the whole feature.
+const ALL_FILES = { name: '모든 파일', extensions: ['*'] };
+const AUDIO_FILTERS = [
+  { name: 'Audio', extensions: [...AUDIO_IMPORT_EXTENSIONS] },
+  ALL_FILES,
+];
+const MIDI_FILTERS = [
+  { name: 'MIDI', extensions: [...MIDI_IMPORT_EXTENSIONS] },
+  ALL_FILES,
+];
+
 export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): void {
   // ── Open file picker (single) ─────────────────────────────────────────
   ipc.handle('file:open-dialog', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
-      filters: [{ name: 'Audio', extensions: ['wav', 'flac', 'aiff', 'aif', 'mp3', 'm4a'] }],
+      filters: AUDIO_FILTERS,
       properties: ['openFile'],
     });
     return result.canceled ? null : result.filePaths[0];
@@ -98,21 +95,27 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   ipc.handle('file:open-dialog-multi', async () => {
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
-      filters: [{ name: 'Audio', extensions: ['wav', 'flac', 'aiff', 'aif', 'mp3', 'm4a'] }],
+      filters: AUDIO_FILTERS,
       properties: ['openFile', 'multiSelections'],
     });
     if (result.canceled) return null;
     return result.filePaths.slice(0, 20);
   });
 
-  // ── Generic save dialog (returns path only, no copy) ─────────────────
-  ipc.handle('file:save-dialog', async (_e, defaultName: string) => {
+  // ── Open a MIDI file ──────────────────────────────────────────────────
+  //
+  // Its OWN channel, not the audio picker.  "MIDI 가져오기" used
+  // `file:open-dialog-multi`, whose only filter is Audio — so every .mid in
+  // the folder was greyed out and the button could not be completed.  The
+  // reader was fine the whole time; the dialog would not let anyone reach it.
+  ipc.handle('file:open-dialog-midi', async () => {
     if (!win) return null;
-    const result = await dialog.showSaveDialog(win, {
-      defaultPath: defaultName,
-      filters: [{ name: 'WAV', extensions: ['wav'] }],
+    const result = await dialog.showOpenDialog(win, {
+      filters: MIDI_FILTERS,
+      properties: ['openFile', 'multiSelections'],
     });
-    return result.canceled ? null : result.filePath;
+    if (result.canceled) return null;
+    return result.filePaths.slice(0, 20);
   });
 
   // ── Save WAV or MP3 — shows dialog, then copies from src ─────────────
@@ -124,20 +127,13 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     const ext      = path.extname(safeSrc).toLowerCase().replace('.', '');
     const isWav    = ext === 'wav';
 
-    // Paywall: lossless master export requires paid (license OR entitlement).
-    if (isMasterExport(ext)) {
-      const gate = paidStatus();
-      log.info(`[export-gate] save-wav ext=${ext} paid=${gate.paid} source=${gate.source}`);
-      if (!gate.paid) throw new Error(LICENSE_REQUIRED);
-    }
-
     const filters  = isWav
       ? [{ name: 'WAV Audio', extensions: ['wav'] }]
       : [{ name: 'MP3 Audio', extensions: ['mp3'] }];
 
     try {
       const result = await dialog.showSaveDialog(win, {
-        defaultPath: path.basename(safeSrc),
+        defaultPath: defaultSavePath(path.basename(safeSrc)),
         filters,
       });
       if (result.canceled || !result.filePath) return null;
@@ -165,19 +161,13 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     const filter = FORMAT_FILTERS[req.format];
     if (!filter) return { savedPath: null, error: `unsupported format: ${req.format}` };
 
-    // Paywall: lossless master export requires paid (license OR entitlement).
-    if (isMasterExport(req.format)) {
-      const gate = paidStatus();
-      log.info(`[export-gate] save-audio fmt=${req.format} paid=${gate.paid} source=${gate.source}`);
-      if (!gate.paid) return { savedPath: null, error: LICENSE_REQUIRED };
-    }
-
     const sourceExt = path.extname(req.sourcePath).replace('.', '');
     const spec = {
       format: req.format,
       sampleRate: req.sampleRate,
       bitDepth: req.bitDepth,
       dither: req.dither,
+      sourceAlreadyDithered: req.sourceAlreadyDithered,
     };
 
     try {
@@ -185,7 +175,7 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
       const defaultBase = (req.suggestedName ?? path.basename(req.sourcePath, path.extname(req.sourcePath)))
         .replace(/\.[^.]+$/, '');
       const result = await dialog.showSaveDialog(win, {
-        defaultPath: `${defaultBase}.${filter.extensions[0]}`,
+        defaultPath: defaultSavePath(`${defaultBase}.${filter.extensions[0]}`),
         filters: [filter],
       });
       if (result.canceled || !result.filePath) {
@@ -338,16 +328,11 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
     if (!validSrcs.length) return null;
 
-    // Paywall: if the batch contains any lossless master file, require paid.
-    if (validSrcs.some((p) => isMasterExport(path.extname(p)))) {
-      const gate = paidStatus();
-      log.info(`[export-gate] batch-save-wav paid=${gate.paid} source=${gate.source}`);
-      if (!gate.paid) throw new Error(LICENSE_REQUIRED);
-    }
-
+    const chosenOutputDir = outputDir();
     const folderResult = await dialog.showOpenDialog(win, {
       title: '저장할 폴더 선택',
       buttonLabel: '이 폴더에 저장',
+      ...(chosenOutputDir === null ? {} : { defaultPath: chosenOutputDir }),
       properties: ['openDirectory', 'createDirectory'],
     });
     if (folderResult.canceled || !folderResult.filePaths[0]) return null;
@@ -415,6 +400,36 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
   });
 
+  /**
+   * Delete a staged mix that a newer render of the same session replaced.
+   *
+   * Refuses anything outside the staging directory.  The renderer hands over a
+   * path it was given by `daw:stage-for-mastering`, but a delete driven by a
+   * string from the other side of the bridge is worth pinning to one place
+   * regardless of who is asking today.
+   */
+  ipc.handle('daw:discard-staged', (_e, req: unknown) => {
+    const target = (req as { path?: unknown } | null)?.path;
+    if (typeof target !== 'string' || target.length === 0) return false;
+    const root = path.join(dawTempDir(), 'to-master');
+    const resolved = path.resolve(target);
+    if (!resolved.startsWith(path.resolve(root) + path.sep)) return false;
+    try {
+      fs.rmSync(resolved, { force: true });
+      // Each staged mix gets its own timestamped directory; once the file is
+      // gone the directory is litter.
+      const dir = path.dirname(resolved);
+      if (path.resolve(dir) !== path.resolve(root) && fs.readdirSync(dir).length === 0) {
+        fs.rmdirSync(dir);
+      }
+      return true;
+    } catch {
+      // A staged file that will not delete is a temp file the OS clears
+      // later, not a reason to fail the send that just succeeded.
+      return false;
+    }
+  });
+
   ipc.handle('daw:write-temp-audio', (_e, req: unknown) => {
     const { name, bytes } = readAudioPayload(req);
     const safe = name.replace(/[^\w.\-가-힣 ]+/g, '_').slice(0, 80) || 'render';
@@ -441,15 +456,187 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
 
   let stemDestDir: string | null = null;
 
+  // ── Sample libraries (.sfz) ─────────────────────────────────────────────
+  //
+  // Two channels rather than one: opening the library is a user-facing choice
+  // that needs a dialog, and reading its samples is a loop the renderer
+  // drives.  The read handler re-derives the path from the root every time
+  // instead of trusting one it was handed, because between the two calls
+  // anything could arrive on that channel — the same rule the stem writer
+  // follows.
+
+  // ── MIDI export ─────────────────────────────────────────────────────────
+  //
+  // `exportMidiFile` has been in the renderer, written and tested, since the
+  // MIDI importer landed — with nothing in the app calling it.  A DAW that
+  // reads .mid and cannot write one back is a one-way door, and the way out
+  // is this channel.
+  ipc.handle('daw:midi-save', async (_e, req: unknown) => {
+    if (!win) return null;
+    const { name, bytes } = readAudioPayload(req);
+    // The renderer names the file, so the name is untrusted here whatever
+    // sent it — the same rule the stem writer follows.  `.mid` is forced
+    // rather than appended: a track called "Piano.mid" must not save as
+    // "Piano.mid.mid".
+    const stem = path.basename(name).replace(/\.[^.]+$/, '').replace(/[^\w.\-가-힣 ]+/g, '_').slice(0, 80) || 'part';
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `${stem}.mid`,
+      filters: [{ name: 'MIDI', extensions: ['mid', 'midi'] }, ALL_FILES],
+    });
+    if (result.canceled || !result.filePath) return null;
+    try {
+      fs.writeFileSync(result.filePath, bytes);
+      log.info(`[daw] midi ${bytes.length} bytes -> ${result.filePath}`);
+      return result.filePath;
+    } catch (err) {
+      recordFailure('export', `daw:midi-save failed: ${(err as Error).message}`);
+      throw err;
+    }
+  });
+
+  ipc.handle('daw:sfz-open', async () => {
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      title: '샘플 라이브러리 (.sfz)',
+      properties: ['openFile'],
+      filters: [{ name: 'SFZ 라이브러리', extensions: ['sfz'] }, ALL_FILES],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const chosen = result.filePaths[0];
+    if (!chosen) return null;
+    const text = fs.readFileSync(chosen, 'utf8');
+    const root = path.dirname(chosen);
+    log.info(`[sampler] opened ${chosen} (${text.length} chars)`);
+    return { path: chosen, root, name: path.basename(chosen, '.sfz'), text };
+  });
+
+  ipc.handle('daw:sample-read', (_e, req: unknown) => {
+    const o = (req && typeof req === 'object' ? req : {}) as { root?: unknown; path?: unknown };
+    if (typeof o.root !== 'string' || typeof o.path !== 'string') {
+      throw new Error('daw:sample-read: root and path must be strings');
+    }
+    // Throws rather than returning null: a library pointing outside itself is
+    // a fact worth surfacing, not a missing file to skip past.
+    const resolved = samplePathIn(o.root, o.path);
+    const bytes = fs.readFileSync(resolved);
+    return { path: resolved, bytes: new Uint8Array(bytes) };
+  });
+
+  /**
+   * Look for separation models, and say what was in each place.
+   *
+   * The registry in the renderer has been able to validate a descriptor and
+   * report on it since it was written; what it never had was anything to
+   * validate, because nothing listed the folder.  Every call to `buildReport`
+   * in the app passed an empty array, so 570 lines of model code — the ONNX
+   * session, the hash check, the mask expansion, all of it tested — had no
+   * door.
+   *
+   * This returns ONE ENTRY PER FOLDER looked at, including the ones that
+   * failed, because "there is a model here and it is broken" is the answer a
+   * user needs when their 300 MB download is not showing up.  Judgement about
+   * what the entries mean stays in the renderer, where the rules live.
+   */
+  ipc.handle('daw:stem-models', () => {
+    const root = path.join(app.getPath('userData'), MODEL_FOLDER);
+    const entries: Array<{ where: string; descriptor?: unknown; error?: string }> = [];
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(root);
+    } catch {
+      // Not an error: nobody has installed one.  The folder is reported
+      // anyway, because the panel's job is to say WHERE to put a model.
+      return { root, entries };
+    }
+    for (const name of names.sort()) {
+      const dir = path.join(root, name);
+      let stat: fs.Stats;
+      try { stat = fs.statSync(dir); } catch { continue; }
+      if (!stat.isDirectory()) continue;
+      const descriptorPath = path.join(dir, DESCRIPTOR_NAME);
+      try {
+        const text = fs.readFileSync(descriptorPath, 'utf8');
+        entries.push({ where: dir, descriptor: JSON.parse(text) });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        entries.push({
+          where: dir,
+          error: /ENOENT/.test(message)
+            ? 'model.json 이 없습니다'
+            : `model.json 을 읽지 못했습니다 — ${message}`,
+        });
+      }
+    }
+    return { root, entries };
+  });
+
+  /**
+   * The ONNX runtime's own `.wasm`, as bytes.
+   *
+   * Read here rather than fetched there for the reason this app already reads
+   * the mastering WASM here: the packaged renderer is a `file://` document and
+   * the binary lives inside the asar, which Node fs understands and Chromium's
+   * fetch does not reliably.  ONNX takes it through `env.wasm.wasmBinary` and
+   * documents that `wasmPaths` is then ignored, so no path ever has to be
+   * right.
+   *
+   * Several candidate locations because dev and packaged differ, and the one
+   * that worked is RETURNED — a 13 MB file resolved from the wrong place is
+   * the kind of thing that works on one machine and not another, and the only
+   * cheap defence is being able to see which it was.
+   */
+  ipc.handle('daw:model-runtime', () => {
+    const name = 'ort-wasm-simd-threaded.wasm';
+    const relative = path.join('node_modules', 'onnxruntime-web', 'dist', name);
+    const candidates = [
+      // Packaged: electron-builder copies the narrowed onnxruntime files into
+      // the asar next to dist/ and dist-electron/.
+      path.join(app.getAppPath(), relative),
+      // Dev, app-local install.
+      path.join(__dirname, '../..', relative),
+      // Dev, pnpm workspace root — this is a monorepo and the package hoists.
+      path.join(__dirname, '../../../..', relative),
+    ];
+    const tried: string[] = [];
+    for (const full of candidates) {
+      try {
+        const bytes = fs.readFileSync(full);
+        log.info(`[model-runtime] ${full} ${bytes.byteLength} bytes`);
+        return { bytes: new Uint8Array(bytes), from: full, size: bytes.byteLength };
+      } catch {
+        tried.push(full);
+      }
+    }
+    throw new Error(`분리 모델 런타임(${name})을 찾지 못했습니다 — 확인한 곳: ${tried.join(' · ')}`);
+  });
+
+  /**
+   * One model's weights, from the folder its descriptor was found in.
+   *
+   * The path is rebuilt from the folder and the descriptor's `weights` field
+   * rather than taken whole from the renderer, and `path.resolve` has to land
+   * back inside that folder — a descriptor is a file the user downloaded from
+   * somewhere, so `"weights": "../../../etc/passwd"` is a thing it can say.
+   */
+  ipc.handle('daw:model-weights', (_e, req: unknown) => {
+    const o = (req && typeof req === 'object' ? req : {}) as { dir?: unknown; weights?: unknown };
+    if (typeof o.dir !== 'string' || typeof o.weights !== 'string') {
+      throw new Error('daw:model-weights: dir 과 weights 가 필요합니다');
+    }
+    const root = path.resolve(o.dir);
+    const full = path.resolve(root, o.weights);
+    if (full !== root && !full.startsWith(root + path.sep)) {
+      throw new Error(`model.json 의 weights 가 모델 폴더 밖을 가리킵니다 — ${o.weights}`);
+    }
+    const bytes = fs.readFileSync(full);
+    log.info(`[model-weights] ${full} ${bytes.byteLength} bytes`);
+    return { bytes: new Uint8Array(bytes), from: full, size: bytes.byteLength };
+  });
+
   ipc.handle('daw:choose-stem-folder', async (_e, req: unknown) => {
     if (!win) return null;
     const o = (req && typeof req === 'object' ? req : {}) as { name?: unknown };
     const name = typeof o.name === 'string' ? o.name : 'Stems';
-    // The same paywall as every other lossless export.
-    const gate = paidStatus();
-    log.info(`[export-gate] daw-stems paid=${gate.paid} source=${gate.source}`);
-    if (!gate.paid) throw new Error(LICENSE_REQUIRED);
-
     const result = await dialog.showOpenDialog(win, {
       title: '스템을 저장할 폴더',
       defaultPath: name,
@@ -491,13 +678,16 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   ipc.handle('daw:bounce-audio', async (_e, req: unknown) => {
     if (!win) return null;
     const { name, bytes } = readAudioPayload(req);
-    // Same paywall as every other lossless master export.
-    const gate = paidStatus();
-    log.info(`[export-gate] daw-bounce paid=${gate.paid} source=${gate.source}`);
-    if (!gate.paid) throw new Error(LICENSE_REQUIRED);
+    // The format decides the extension and the dialog filter.  It used to be
+    // hardcoded to wav, which named the file `song.mp3.wav`.
+    const format: ExportFormat =
+      (req as { format?: unknown })?.format === 'mp3' ? 'mp3' : 'wav';
+    // The caller's name may already carry an extension — the mastering list
+    // hands over `song.wav`.  Appending another gives `song.wav.wav`.
+    const stem = (name || 'bounce').replace(/\.[^.]+$/, '') || 'bounce';
     const result = await dialog.showSaveDialog(win, {
-      defaultPath: `${name || 'bounce'}.wav`,
-      filters: [FORMAT_FILTERS.wav],
+      defaultPath: defaultSavePath(`${stem}.${format}`),
+      filters: [FORMAT_FILTERS[format]],
     });
     if (result.canceled || !result.filePath) return null;
     try {
@@ -510,8 +700,6 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
     }
   });
 
-  // ── Recent files (v1 stub) ────────────────────────────────────────────
-  ipc.handle('file:get-recent', () => []);
 
   // ── Session save / load (.louisession) ────────────────────────────────
 

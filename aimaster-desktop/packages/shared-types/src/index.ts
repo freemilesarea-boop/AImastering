@@ -139,6 +139,14 @@ export interface MasteringOptions {
   targetTp: number;
   sampleRate: number;
   bitDepth: number;
+  /**
+   * How the word length is reduced on export.
+   *
+   * Written out rather than imported from the renderer's dither module: this
+   * package is the boundary between processes and must not depend on either
+   * side of it.  The renderer's `DitherMode` is the same four names.
+   */
+  dither?: 'none' | 'tpdf' | 'shaped' | 'shaped-strong';
   applyAiCorrections: boolean;
   /** v3 — limiter 강도 (low/medium/high). 누락 시 medium. */
   limiterStrength?: LimiterStrength;
@@ -503,6 +511,16 @@ export interface GainStagingReport {
   issues:             string[];
   recommendations:    string[];
   available:          boolean;
+  /**
+   * Why the loudness target ended up where it did — 'explicit_target',
+   * 'loud_style', 'no_input_measurement' and so on.
+   *
+   * A string, so it is here and not in `stages`, which is a table of
+   * decibels.  It was briefly written into `stages` instead, and since the
+   * report turns every entry there into a float, that raised and the whole
+   * report came back empty on every job.
+   */
+  loudnessPolicyReason?: string | null;
 }
 
 // ── Debug-quality system shared types ────────────────────────────────────────
@@ -892,6 +910,12 @@ export interface SaveAudioRequest {
   bitDepth?: number;
   /** Dither applied on integer bit-depth reduction.  Default 'none'. */
   dither?: ExportDither;
+  /**
+   * True when the render engine already dithered and quantised the source
+   * to `bitDepth`.  The file writer then skips its own dither — running two
+   * dither stages leaves two uncorrelated noise floors and helps neither.
+   */
+  sourceAlreadyDithered?: boolean;
   /** Suggested filename (without path) for the save dialog. */
   suggestedName?: string;
 }
@@ -910,3 +934,60 @@ export interface SaveAudioResponse {
   /** Fatal error message (when the save failed). */
   error?: string;
 }
+
+// ── Importable file types ─────────────────────────────────────────────────────
+//
+// One list, two consumers that used to disagree.  Drag-and-drop read its own
+// set in the renderer while the Open dialog carried a hand-written filter in
+// the main process, and the dialog's was shorter: dropping an .ogg worked,
+// but the same file was greyed out and unpickable in the file dialog.  A
+// format is either supported or it is not — how you reached for it is not
+// supposed to be part of the answer.
+//
+// Verified by decoding a real file of each in the running app (Chromium's
+// decodeAudioData is what actually reads them), except the two marked below.
+
+/** Audio containers the app accepts, WITHOUT the leading dot. */
+export const AUDIO_IMPORT_EXTENSIONS: readonly string[] = [
+  'wav', 'flac', 'aiff', 'aif', 'mp3', 'm4a',
+  'ogg', 'oga', 'opus', 'aac', 'mp4', 'caf', 'w64',
+  // Not decodable in every build — kept because they are decodable in some,
+  // and an undecodable file fails visibly ("N개 실패") rather than silently.
+  'wma', 'alac',
+];
+
+/** MIDI files the DAW imports as parts, WITHOUT the leading dot. */
+export const MIDI_IMPORT_EXTENSIONS: readonly string[] = ['mid', 'midi', 'smf'];
+
+
+// ── Licensing ─────────────────────────────────────────────────────────────────
+
+/**
+ * THE SWITCH.  False means this build is free: no trial counting, no export
+ * paywall, no activation dialog.
+ *
+ * It lives HERE, in a package with no imports at all, because both sides need
+ * it: the main process enforces with it and the renderer decides whether to
+ * render a dialog with it.  It was briefly in `license-core`, which pulls in
+ * node:crypto, child_process and electron-store — importing that from the
+ * renderer put Node builtins in the browser bundle and the window came up
+ * black.  A constant two processes share belongs in the package that costs
+ * nothing to import.
+ */
+export const LICENSE_ENFORCED = false;
+
+/**
+ * The product's name, in one place.
+ *
+ * It was in seven: the builder config, the package description, the window
+ * title, the wordmark, and three different metadata writers that stamp it
+ * into every exported file.  A rename that misses one of those ships a build
+ * whose window says one thing and whose files say another — and the file is
+ * the half that outlives the app and gets sent to a distributor.
+ *
+ * The two that cannot import this (electron-builder.yml and package.json are
+ * not TypeScript) are checked against it by `pnpm test:app-name`, so they
+ * cannot drift either.
+ */
+export const APP_NAME = 'LV DAW';
+

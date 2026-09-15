@@ -50,21 +50,6 @@ export function compileSoftClip(p: SoftClipParams = {}): CompiledSoftClip {
   return { threshold, effCeiling, preGain, postGain };
 }
 
-// Apply the clipper to a single sample.  Hot path — keep small.
-export function softClipSample(x: number, c: CompiledSoftClip): number {
-  const driven = x * c.preGain;
-  const a = Math.abs(driven);
-  let y: number;
-  if (a <= c.threshold) {
-    y = driven;                                    // transparent below knee
-  } else {
-    const s = (a - c.threshold) / (1 - c.threshold);
-    const sat = s >= 1 ? 1 : (1.5 * s - 0.5 * s * s * s);
-    y = (driven < 0 ? -1 : 1) * (c.threshold + sat * (c.effCeiling - c.threshold));
-  }
-  return y * c.postGain;
-}
-
 // In-place block process (one channel).
 export function softClipBlock(buf: Float32Array, c: CompiledSoftClip): void {
   const T = c.threshold;

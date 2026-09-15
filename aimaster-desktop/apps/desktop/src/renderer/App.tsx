@@ -15,14 +15,16 @@ import { isAccountAuthEnabled, isEntitlementGateEnabled } from './audio/account-
 import MasteringPage from './pages/MasteringPage.js';
 import ResultPage   from './pages/ResultPage.js';
 import TweakPage    from './pages/TweakPage.js';
+import StudioPage   from './pages/StudioPage.js';
 import QCPage       from './pages/QCPage.js';
 import DawPage      from './pages/DawPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
+import { LAYER } from './theme/layers.js';
 import { useDawShortcuts } from './shortcuts/useDawShortcuts.js';
-import DawWorkspaceChrome from './components/daw/DawWorkspaceChrome.js';
+import DawWorkspaceChrome, { useBottomZoneHeight } from './components/daw/DawWorkspaceChrome.js';
 import { isEmptyPlan, planDrop } from './daw/model/drop-target.js';
 import { describeImport, importIntoSession } from './daw/edit/session-import.js';
 import { useDawStore } from './stores/dawStore.js';
@@ -33,6 +35,27 @@ import { useMidiEditorStore } from './stores/midiEditorStore.js';
 const DevAnalyzerStreamPage = React.lazy(() =>
   import('./pages/DevAnalyzerStreamPage.js').then((m) => ({ default: m.DevAnalyzerStreamPage }))
 );
+
+// ── Creator watermark ─────────────────────────────────────────────────────────
+//
+// Branding for the mastering screens.  The DAW owns its bottom-left corner —
+// the mixer's nameplates and the arrangement's scrollbar live there — so this
+// steps aside for both the DAW page and the docked bottom zone, which is
+// fixed to the bottom of EVERY page once it is toggled on.
+
+function Watermark() {
+  const page = useAppStoreNotification((s) => s.currentPage);
+  const bottomZone = useBottomZoneHeight();
+  if (page === 'daw' || bottomZone > 0) return null;
+  return (
+    <div className="fixed bottom-3 left-4 pointer-events-none select-none"
+         style={{ zIndex: LAYER.watermark }}>
+      <span className="text-[10px] font-mono text-zinc-700 tracking-widest uppercase">
+        루베르
+      </span>
+    </div>
+  );
+}
 
 // ── Toast notification ────────────────────────────────────────────────────────
 
@@ -48,7 +71,8 @@ function Toast() {
   };
 
   return (
-    <div className={`fixed z-50 animate-in-fast border
+    <div style={{ zIndex: LAYER.notification }}
+         className={`fixed animate-in-fast border
                      bottom-4 left-4 right-4 px-4 py-3 rounded-xl shadow-lg
                      text-[15px] text-center whitespace-nowrap overflow-hidden text-ellipsis
                      sm:bottom-5 sm:left-1/2 sm:right-auto sm:-translate-x-1/2
@@ -233,9 +257,9 @@ function GlobalDropOverlay() {
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-3
+      className="fixed inset-0 flex flex-col items-center justify-center gap-3
                  bg-zinc-900/90 backdrop-blur-sm pointer-events-none"
-      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      style={{ zIndex: LAYER.drop, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
       <svg className="w-12 h-12 text-zinc-300" viewBox="0 0 24 24" fill="none"
            stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
@@ -267,24 +291,6 @@ function AccountButton() {
                  bg-zinc-900/70 border border-zinc-700 text-zinc-300 hover:text-zinc-100"
     >
       {status === 'signed-in' ? `● ${name}` : '로그인'}
-    </button>
-  );
-}
-
-/** Entry point into the multitrack workspace (also on Mod+Alt+D). */
-function DawButton() {
-  const page = useAppStore((s) => s.currentPage);
-  const setPage = useAppStore((s) => s.setPage);
-  if (page === 'daw') return null;
-  return (
-    <button
-      onClick={() => setPage('daw')}
-      title="멀티트랙 Edit / Mix 워크스페이스 (Mod+Alt+D)"
-      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-      className="fixed top-2.5 right-24 z-40 text-[12px] px-3 py-1.5 rounded-lg
-                 bg-zinc-900/70 border border-zinc-700 text-zinc-400 hover:text-zinc-100"
-    >
-      DAW
     </button>
   );
 }
@@ -388,9 +394,9 @@ function AppInner() {
       console.warn('[AppInner] page=tweak with no selectedFile — redirecting to home');
       setPage('home');
     }
-    // Mobile policy: never enter the Pro fine-tuning page.  Bounce tweak to
-    // the result (if a master exists) or home.
-    if (isMobile && page === 'tweak') {
+    // Mobile policy: never enter the Pro fine-tuning pages.  Bounce tweak
+    // and the Studio rack to the result (if a master exists) or home.
+    if (isMobile && (page === 'tweak' || page === 'studio')) {
       setPage(selectedFile && masteringResult?.outputPath ? 'result' : 'home');
     }
   }, [page, selectedFile, masteringResult, setPage, isMobile]);
@@ -420,11 +426,17 @@ function AppInner() {
   // On mobile the Pro fine-tuning page is never shown (guard above redirects).
   const tweakSlot = isMobile ? homeEl : (Boolean(selectedFile) ? <TweakPage /> : homeEl);
 
+  // studio: the full module rack.  Unlike tweak it does NOT require a file —
+  // the rack is a chain editor, and building a chain before picking a track
+  // is a normal way to work.  Mobile never reaches it (guard above).
+  const studioSlot = isMobile ? homeEl : <StudioPage />;
+
   const pages: Record<string, React.ReactNode> = {
     home:      homeEl,
     mastering: <MasteringPage />,
     result:    resultSlot,
     tweak:     tweakSlot,
+    studio:    studioSlot,
     qc:        <QCPage />,
     // Pro Tools-shaped multitrack workspace (Edit + Mix windows).
     daw:       isMobile ? homeEl : <DawPage />,
@@ -438,12 +450,13 @@ function AppInner() {
         : (pages[page] ?? <HomePage />)
       }
 
-      {/* Creator watermark — fixed bottom-left */}
-      <div className="fixed bottom-3 left-4 pointer-events-none select-none z-10">
-        <span className="text-[10px] font-mono text-zinc-700 tracking-widest uppercase">
-          루베르
-        </span>
-      </div>
+      {/* Creator watermark — bottom-left, but only where that corner is free.
+          It is `pointer-events-none`, so it never blocked a click and the
+          hit-test sweep never saw it; what it did was print itself ON TOP of
+          whatever the DAW had there.  Measured: over the mixer's first channel
+          name 'Audio 1' and its +0.0 gain readout, and over the arrangement's
+          bottom scroll row.  Text on text. */}
+      <Watermark />
 
       {/* License activation modal (v3.6 — commercial release). */}
       <LicenseModal />
@@ -457,7 +470,6 @@ function AppInner() {
       <Toast />
 
       {/* Multitrack workspace entry point (desktop only). */}
-      {!isMobile && <DawButton />}
 
       {/* DAW workspace chrome — transport / mix console / inspector /
           MediaBay / shortcut help.  Desktop only; all parts are keyboard

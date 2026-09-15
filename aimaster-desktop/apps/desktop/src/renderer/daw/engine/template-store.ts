@@ -145,10 +145,6 @@ export function deleteTrackTemplate(id: string): boolean {
   return write(TRACK_KEY, next);
 }
 
-export function findTrackTemplate(id: string): TrackTemplate | undefined {
-  return listTrackTemplates().find((t) => t.id === id);
-}
-
 // ── Session templates ─────────────────────────────────────────────────────────
 
 export function listSessionTemplates(): SessionTemplate[] {
@@ -182,10 +178,6 @@ export function deleteSessionTemplate(id: string): boolean {
   const next = items.filter((t) => t.id !== id);
   if (next.length === items.length) return false;
   return write(SESSION_KEY, next);
-}
-
-export function findSessionTemplate(id: string): SessionTemplate | undefined {
-  return listSessionTemplates().find((t) => t.id === id);
 }
 
 // ── Moving them between machines ──────────────────────────────────────────────

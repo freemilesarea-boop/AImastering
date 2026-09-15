@@ -10,7 +10,9 @@ import { importAudioFiles } from '../model/import-audio.js';
 import { importMidiFile } from '../io/midi-file.js';
 import { beatsToSecAt, partClock } from '../model/note-time.js';
 import { tempoMapOf } from '../model/tempo-map.js';
-import { addTrack, createMidiPart, createTrack, updateClips } from '../model/session-ops.js';
+import {
+  addTrack, createMidiPart, createTrack, isUntitled, renameSession, trackClips, updateClips,
+} from '../model/session-ops.js';
 import { toFileUrl } from '../../utils/fileUrl.js';
 import type { DecodeProgress } from '../engine/audio-cache.js';
 import type { ClipId, TrackId } from '../model/types.js';
@@ -39,6 +41,12 @@ const EMPTY: SessionImportReport = {
  * time signature with it — a MIDI file that disagrees with the session is
  * almost always the one that is right, because it was written to a grid.
  */
+/** A file path's name without its directory or its extension. */
+function fileStem(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? path;
+  return base.replace(/\.[^.]+$/, '');
+}
+
 export async function importIntoSession(
   audio: readonly string[], midi: readonly string[], atSec = 0,
   onProgress?: DecodeProgress,
@@ -48,10 +56,21 @@ export async function importIntoSession(
   const report: SessionImportReport = { ...EMPTY, failed: [] };
 
   if (audio.length > 0) {
+    const before = useDawStore.getState().session;
     const result = await importAudioFiles(
-      useDawStore.getState().session, audio, Math.max(0, atSec), onProgress,
+      before, audio, Math.max(0, atSec), onProgress,
     );
-    useDawStore.getState().apply(() => result.session);
+    // A session that is still called 'Untitled' and had nothing in it takes
+    // the name of the first thing dropped into it.  Nothing else in the app
+    // ever named a session, so the mastering list showed "Untitled
+    // Session.wav" for every song anyone ever sent it.  This is the moment a
+    // name is available for free — the person just chose the file.
+    const first = audio[0];
+    const named = isUntitled(before) && before.tracks.every((t) => trackClips(t).length === 0)
+      && first !== undefined
+      ? renameSession(result.session, fileStem(first))
+      : result.session;
+    useDawStore.getState().apply(() => named);
     report.audioTracks = result.trackIds.length;
     report.failed = result.failed;
   }

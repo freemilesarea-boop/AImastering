@@ -355,6 +355,41 @@ export function barBeatAt(map: TempoMap, beat: number): BarBeat {
   };
 }
 
+/**
+ * The inverse of `barBeatAt` — a musician's position back into beats.
+ *
+ * Needed the moment a position becomes TYPEABLE rather than merely readable.
+ * The round trip has to be exact: someone who reads `9|3|480` in a list, puts
+ * the cursor in it and presses enter without changing a character must not
+ * find the note has moved by a tick.  So this walks the meters the same way
+ * `barBeatAt` does rather than assuming a constant bar width, which is right
+ * until the song changes signature.
+ *
+ * Out-of-range input is held rather than refused: bar 0 is bar 1, beat 0 is
+ * beat 1, and a beat past the end of its bar spills into the next one — which
+ * is what a person typing `4|5|0` in 4/4 means.
+ */
+export function beatAtBarBeat(map: TempoMap, at: BarBeat): number {
+  const c = compileTempoMap(map);
+  const wantBar = Math.max(1, Math.floor(at.bar));
+
+  // Find the meter this bar falls in, and where that meter starts in beats.
+  let meter = c.map.meters[0] ?? { id: '', bar: 1, numerator: 4, denominator: 4 };
+  let meterStart = c.meterStartBeats[0] ?? 0;
+  for (let i = 0; i < c.map.meters.length; i++) {
+    const m = c.map.meters[i]!;
+    if (m.bar > wantBar) break;
+    meter = m;
+    meterStart = c.meterStartBeats[i] ?? 0;
+  }
+
+  const per = beatsPerBar(meter);
+  const unit = 4 / Math.max(1, meter.denominator);
+  const beatIn = Math.max(0, (Math.max(1, at.beat) - 1))
+    + Math.max(0, at.tick) / TICKS_PER_BEAT;
+  return meterStart + (wantBar - meter.bar) * per + beatIn * unit;
+}
+
 /** `12|3|240` — the transport readout. */
 export function formatBarBeat(map: TempoMap, sec: number, withTicks = true): string {
   const { bar, beat, tick } = barBeatAt(map, secToBeat(map, sec));

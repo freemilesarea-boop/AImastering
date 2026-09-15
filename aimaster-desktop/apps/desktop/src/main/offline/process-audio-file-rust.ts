@@ -1,15 +1,27 @@
 // Rust offline file render (RUST-OFFLINE-RENDER-1).
 //
-// Decode → run the Rust MasteringChain over the whole file → encode WAV,
-// using the bundled ffmpeg for I/O.  Additive + experimental: callers fall
-// back to the Python `audio:master` on any failure.
+// Decode → run the Rust MasteringChain over the whole file → encode WAV.
+// ffmpeg does the DECODE and the MP3 preview; the WAV is written by this
+// app's own encoder.  Additive + experimental: callers fall back to the
+// Python `audio:master` on any failure.
+//
+// The encoder is deliberately the SAME module the DAW's bounce uses
+// (renderer/daw/engine/wav.ts).  Handing float samples to ffmpeg and letting
+// it choose the 16-bit rounding meant the two ways out of this app could
+// quantise differently — the mastered file and a bounce of the same audio
+// would not match, and neither would be the one that had been listened to.
+// One encoder, one dither, one answer.
 //
 // NOTE: this runs in the Electron MAIN process and needs ffmpeg + the
 // node-target WASM build; it is exercised on-device (the parity harness
 // validates the DSP core headlessly).
 
 import { spawn } from 'node:child_process';
+import { writeFile } from 'node:fs/promises';
 import { resolveFFmpegPath } from '@aimaster/audio-engine';
+import { encodeWav as encodeWavBytes } from '../../renderer/daw/engine/wav.js';
+import type { DitherMode } from '../../renderer/daw/audio/dither.js';
+import { chainDithersOutput, type ChainConfigWire } from '../../renderer/audio/chain-config.js';
 import {
   renderStereoBuffer, renderStereoBufferNormalized, deinterleave, interleave,
   type RenderMetrics, type NormalizedRenderMetrics,
@@ -19,6 +31,8 @@ import { loadWasmModule, type OfflineChainConfig } from './load-mastering-chain-
 export interface RustRenderOptions {
   sampleRate: number;
   bitDepth: 16 | 24;
+  /** How the word length is reduced.  Defaults to TPDF. */
+  dither?: DitherMode;
   outputPath: string;
   /** When set, two-pass loudness-normalize toward this target (LUFS). */
   targetLufs?: number;
@@ -34,6 +48,15 @@ export interface RustRenderFileResult {
   metrics: RenderMetrics | NormalizedRenderMetrics;
   backend: 'rust';
   loudnessNormalized: boolean;
+  /**
+   * True when the chain's dither stage quantised this render to
+   * `options.bitDepth`.
+   *
+   * Callers MUST forward it to `file:save-audio` as `sourceAlreadyDithered`
+   * — otherwise the file writer dithers a second time and the master ends
+   * up with two uncorrelated noise floors.
+   */
+  dithered: boolean;
 }
 
 /** Whether the Rust offline backend is usable (node WASM present). */
@@ -62,7 +85,7 @@ function runFfmpeg(args: string[], stdin?: Buffer): Promise<Buffer> {
 }
 
 /** Decode any input → interleaved f32le stereo PCM at `sampleRate`. */
-async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promise<Float32Array> {
+export async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promise<Float32Array> {
   const buf = await runFfmpeg([
     '-hide_banner', '-loglevel', 'error',
     '-i', inputPath,
@@ -75,14 +98,20 @@ async function decodeToFloatStereo(inputPath: string, sampleRate: number): Promi
 }
 
 /** Encode interleaved f32le stereo → WAV at the target bit depth. */
-async function encodeWav(interleaved: Float32Array, sampleRate: number, bitDepth: 16 | 24, outputPath: string): Promise<void> {
-  const codec = bitDepth === 16 ? 'pcm_s16le' : 'pcm_s24le';
-  const stdin = Buffer.from(interleaved.buffer, interleaved.byteOffset, interleaved.byteLength);
-  await runFfmpeg([
-    '-hide_banner', '-loglevel', 'error', '-y',
-    '-f', 'f32le', '-ar', String(sampleRate), '-ac', '2', '-i', 'pipe:0',
-    '-c:a', codec, outputPath,
-  ], stdin);
+/**
+ * Write the render as a WAV, through the app's own dithered encoder.
+ *
+ * De-interleaved first because `encodeWavBytes` takes planar channels — and
+ * because dither has to be independent per channel, which a single
+ * interleaved stream cannot express.
+ */
+async function encodeWav(
+  interleaved: Float32Array, sampleRate: number, bitDepth: 16 | 24, outputPath: string,
+  dither?: DitherMode,
+): Promise<void> {
+  const { left, right } = deinterleave(interleaved, 2);
+  const bytes = encodeWavBytes([left, right], sampleRate, bitDepth, dither);
+  await writeFile(outputPath, bytes);
 }
 
 /** Encode a WAV → 320 kbps MP3 preview (reuses the bundled ffmpeg). */
@@ -122,6 +151,39 @@ export async function processAudioFileRust(
   }
 
   const interleavedOut = interleave(outL, outR);
-  await encodeWav(interleavedOut, options.sampleRate, options.bitDepth, options.outputPath);
-  return { outputPath: options.outputPath, metrics, backend: 'rust', loudnessNormalized: normalized };
+
+  // Whether the chain dithered depends on the suite config it was given —
+  // the flat config has no dither stage at all.  Asked of the chain-config
+  // module rather than re-derived here: two copies of this predicate is
+  // exactly how a file ends up dithered twice or not at all.
+  const suite = config.suiteConfig as ChainConfigWire | undefined;
+  const dithered = suite ? chainDithersOutput(suite) : false;
+
+  // Exactly one of the two reduces the word length.  `encodeWavBytes`
+  // defaults its dither ON, so leaving the argument off after the chain has
+  // already dithered would add a second, independent noise floor to a file
+  // that was already at its final bit depth — audibly worse than either
+  // alone, and invisible in a diff.  So the writer is told explicitly:
+  // stand down when the chain did the job, do it when there was no dither
+  // stage to do it.
+  await encodeWav(
+    interleavedOut, options.sampleRate, options.bitDepth, options.outputPath,
+    dithered ? 'none' : options.dither,
+  );
+
+  return {
+    outputPath: options.outputPath, metrics, backend: 'rust',
+    loudnessNormalized: normalized, dithered,
+  };
+}
+
+/** Split interleaved stereo into planar left/right.  Exported for the
+ *  reference-curve measurement, which needs the same decode path the render
+ *  uses so a reference is read exactly as a master would be. */
+export function deinterleaveStereo(data: Float32Array): { left: Float32Array; right: Float32Array } {
+  const n = Math.floor(data.length / 2);
+  const left = new Float32Array(n);
+  const right = new Float32Array(n);
+  for (let i = 0; i < n; i++) { left[i] = data[i * 2]!; right[i] = data[i * 2 + 1]!; }
+  return { left, right };
 }

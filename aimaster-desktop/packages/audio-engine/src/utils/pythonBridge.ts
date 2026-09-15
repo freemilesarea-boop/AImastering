@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { v4 as uuidv4 } from 'uuid';
 import type { RPCRequest, RPCResponse, RPCProgress } from '../types/index.js';
 
@@ -62,6 +62,22 @@ export class PythonBridge extends EventEmitter {
         PYTHONIOENCODING:  'utf-8',  // force stdin/stdout/stderr to UTF-8
       },
       stdio: ['pipe', 'pipe', 'pipe'],
+      // Its own process group, so shutdown can signal the GROUP.
+      //
+      // The engine is a PyInstaller --onefile binary, which is a bootloader:
+      // it unpacks itself to a temp directory and runs the real program as a
+      // CHILD.  `subprocess.kill()` reaches the direct child only, so killing
+      // the bootloader left the actual engine running — measured, not
+      // assumed: a bootloader-and-worker pair killed this way leaves the
+      // worker alive on POSIX, and on Windows the same shape leaves
+      // `engine.exe` holding its own binary open, which is enough to make the
+      // next installer fail to overwrite it.
+      //
+      // Detached makes the child a process-group leader so `kill(-pid)` can
+      // take the whole tree.  It is NOT unref'd — the handle is kept, exit is
+      // still awaited, and Windows has no process groups so it is left off
+      // there and handled with taskkill /T instead.
+      detached: process.platform !== 'win32',
     });
 
     this.proc.stdout!.setEncoding('utf8');
@@ -196,46 +212,119 @@ export class PythonBridge extends EventEmitter {
   }
 
   /**
-   * Send SIGTERM, then escalate to SIGKILL after 250 ms if the process
-   * hasn't exited.  Synchronous-but-deferred: returns immediately, the
-   * SIGKILL fires from a setTimeout.  Suitable for callers that don't
-   * await — for cleanup-on-quit prefer `killAndWait`.
+   * Signal the engine's whole process tree.
+   *
+   * POSIX: the child leads its own group (see `spawn`), so a negative pid
+   * signals the group and the PyInstaller worker goes with the bootloader.
+   * Falls back to signalling the pid alone if the group is already gone.
+   *
+   * Windows has no process groups and no real signals: `taskkill /T /F` is
+   * the only thing that takes a tree, so escalation there is a taskkill
+   * rather than a SIGKILL.
+   */
+  private _signalTree(signal: 'SIGTERM' | 'SIGKILL'): void {
+    const proc = this.proc;
+    if (!proc?.pid) return;
+    if (process.platform === 'win32') {
+      // Only the escalation step has anything to do here; a graceful stop on
+      // Windows is stdin EOF, which `_stopGently` has already sent.
+      if (signal !== 'SIGKILL') return;
+      try {
+        spawnSync('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { windowsHide: true });
+      } catch { /* the process was already gone */ }
+      return;
+    }
+    try {
+      process.kill(-proc.pid, signal);
+    } catch {
+      // No group (spawn raced, or it already died) — try the pid itself.
+      try { proc.kill(signal); } catch { /* already gone */ }
+    }
+  }
+
+  /**
+   * Sweep whatever is left of the engine's process group.
+   *
+   * Called AFTER the engine has exited, and it is not belt-and-braces: the
+   * dangerous case is precisely a clean exit.  The bootloader can close on
+   * stdin EOF while the worker it unpacked is still running, and at that
+   * point `killAndWait` has already resolved on the parent's 'exit' — so the
+   * escalation that would have taken the group never fires, and the worker
+   * survives a shutdown that looked orderly from every angle.
+   *
+   * On POSIX the group id outlives its leader as long as members remain, so
+   * signalling it here still reaches them.  Signalling an empty group throws
+   * ESRCH, which is the answer we wanted.
+   */
+  private _sweepGroup(pid: number): void {
+    if (process.platform === 'win32') {
+      try {
+        spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
+      } catch { /* nothing left */ }
+      return;
+    }
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* nothing left — good */ }
+  }
+
+  /**
+   * Ask the engine to stop the polite way.
+   *
+   * The protocol is newline-delimited JSON on stdin, so EOF is the engine's
+   * signal that no more requests are coming.  Ending it first matters on
+   * Windows in particular: a force-killed PyInstaller bootloader never
+   * removes its `_MEI…` temp directory, so every hard shutdown would leave
+   * a few hundred megabytes behind.
+   */
+  private _stopGently(): void {
+    try { this.proc?.stdin?.end(); } catch { /* already closed */ }
+  }
+
+  /**
+   * Stop the engine, escalating to a forced tree kill after 250 ms.
+   * Returns immediately; the escalation fires from a timer.  Callers that
+   * can await should prefer `killAndWait`.
    */
   kill(): void {
     const proc = this.proc;
     if (!proc) return;
     if (proc.exitCode !== null || proc.signalCode !== null) return;
-    try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+    const pid = proc.pid;
+    this._stopGently();
+    this._signalTree('SIGTERM');
     setTimeout(() => {
       if (proc.exitCode === null && proc.signalCode === null) {
-        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        this._signalTree('SIGKILL');
       }
+      if (pid) this._sweepGroup(pid);
     }, 250);
   }
 
   /**
-   * Send SIGTERM and resolve when the process actually exits, or after
-   * `timeoutMs` (default 500 ms) escalate to SIGKILL and resolve once that
-   * signal has been delivered.  Use this on app shutdown so the Python
-   * engine is definitely gone before Electron returns from before-quit.
+   * Stop the engine and resolve once it has actually exited, escalating to a
+   * forced tree kill after `timeoutMs`.  Use this on app shutdown so the
+   * engine is definitely gone before Electron returns from `before-quit` —
+   * an engine that outlives the app holds its own binary open, and the next
+   * installer cannot overwrite a file that is still running.
    */
   async killAndWait(timeoutMs = 500): Promise<void> {
     const proc = this.proc;
     if (!proc) return;
     if (proc.exitCode !== null || proc.signalCode !== null) return;
 
+    const pid = proc.pid;
     await new Promise<void>((resolve) => {
       const onExit = (): void => {
         clearTimeout(timer);
         resolve();
       };
       proc.once('exit', onExit);
-      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+      this._stopGently();
+      this._signalTree('SIGTERM');
       const timer = setTimeout(() => {
         if (proc.exitCode === null && proc.signalCode === null) {
-          try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+          this._signalTree('SIGKILL');
         }
-        // Either the SIGKILL exit will fire onExit shortly, or the process
+        // Either the forced kill's exit fires onExit shortly, or the process
         // was already gone.  Either way, give up on the listener after one
         // more tick to keep shutdown predictable.
         setTimeout(() => {
@@ -244,5 +333,7 @@ export class PythonBridge extends EventEmitter {
         }, 100);
       }, timeoutMs);
     });
+    // After the exit, whichever way it came.
+    if (pid) this._sweepGroup(pid);
   }
 }

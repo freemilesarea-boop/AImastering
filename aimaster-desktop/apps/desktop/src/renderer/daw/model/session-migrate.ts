@@ -4,11 +4,15 @@
 // still a real session somebody made, so it opens — the notes are converted
 // on the way in, using the tempo map that file itself carries.
 //
+// Version 3 calibrated the instruments' output levels, which changed what a
+// stored `level` means.  A v2 file's number is re-read in the new scale.
+//
 // The conversion is done here and nowhere else.  Once `migrateSession` has
 // run, the rest of the app may assume beats without checking a version.
 
 import { DAW_SESSION_VERSION } from './types.js';
 import { secToBeat, tempoMapOf, type TempoMap } from './tempo-map.js';
+import { CALIBRATED_LEVEL, LEGACY_LEVEL_DEFAULTS } from '../engine/instrument-level.js';
 
 /** What a v1 note looked like. */
 interface LegacyNote {
@@ -41,6 +45,14 @@ export function migrateSession(raw: Record<string, unknown>): MigrationResult {
     session = converted.session;
     if (converted.count > 0) {
       notes.push(`MIDI 노트 ${converted.count}개를 박자 기준으로 변환했습니다`);
+    }
+  }
+
+  if (version < 3) {
+    const converted = rescaleInstrumentLevels(session);
+    session = converted.session;
+    if (converted.count > 0) {
+      notes.push(`악기 트랙 ${converted.count}개의 Level을 새 기준으로 환산했습니다`);
     }
   }
 
@@ -150,6 +162,47 @@ function notesToBeats(raw: Record<string, unknown>): {
     },
     count,
   };
+}
+
+/**
+ * v2 → v3: a stored Level is re-read in the calibrated scale.
+ *
+ * The old default was a different number on every instrument, so the honest
+ * conversion is PROPORTIONAL: whatever fraction of its old default the user
+ * left the knob at, it keeps of the new one.  At rest it lands at rest; at
+ * half it lands at half.
+ *
+ * It does NOT preserve the old loudness, and cannot — the poly synth and the
+ * Rhodes were 12 and 16 dB hot, and reproducing that is reproducing the bug.
+ * What it preserves is the user's decision.
+ */
+function rescaleInstrumentLevels(raw: Record<string, unknown>): {
+  session: Record<string, unknown>; count: number;
+} {
+  const tracks = Array.isArray(raw['tracks']) ? (raw['tracks'] as Array<Record<string, unknown>>) : null;
+  if (!tracks) return { session: raw, count: 0 };
+  let count = 0;
+
+  const nextTracks = tracks.map((track) => {
+    const id = track['instrumentId'];
+    const params = track['instrumentParams'];
+    if (typeof id !== 'string' || !params || typeof params !== 'object' || Array.isArray(params)) {
+      return track;
+    }
+    const bag = params as Record<string, unknown>;
+    const stored = bag['level'];
+    const legacy = LEGACY_LEVEL_DEFAULTS[id];
+    // No stored level means the track was already at its default, whatever
+    // that default now is — there is nothing to convert.
+    if (typeof stored !== 'number' || !Number.isFinite(stored) || legacy === undefined || legacy <= 0) {
+      return track;
+    }
+    const scaled = Math.max(0, Math.min(1, (stored / legacy) * CALIBRATED_LEVEL));
+    count += 1;
+    return { ...track, instrumentParams: { ...bag, level: scaled } };
+  });
+
+  return { session: { ...raw, tracks: nextTracks }, count };
 }
 
 /** A part-level controller lane: points measured from the PART start. */

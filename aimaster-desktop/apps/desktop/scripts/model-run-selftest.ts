@@ -139,12 +139,37 @@ check('a mono model on a stereo stem is run once per channel', async () => {
   for (const stem of r.stems) assert(stem.channels.length === 2, `${stem.kind}: two channels out`);
 });
 
-check('a model trained at another rate is refused with both numbers', async () => {
-  let said = '';
-  try {
-    await runModel(sweep(0.5), RATE, descriptor({ sampleRate: 44100 }), await makeSession(), tensor);
-  } catch (e) { said = e instanceof Error ? e.message : String(e); }
-  assert(said.includes('44100') && said.includes('48000'), `names both rates: ${said}`);
+check('a model trained at another rate is RESAMPLED to, not refused', async () => {
+  // This used to assert the refusal — the error message even named both rates
+  // helpfully.  But the session default is 48 kHz and public separation models
+  // are mostly 44.1 kHz, so "refused helpfully" meant the ONNX path never ran
+  // at all.  The contract is now: convert in, convert back, and hand the
+  // caller stems at the rate it asked about.
+  const audio = sweep(1.5);
+  const r = await runModel(audio, RATE, descriptor({ sampleRate: 44100 }), await makeSession(), tensor);
+
+  assert(r.stems.length === STEMS.length, `all ${STEMS.length} stems came back, got ${r.stems.length}`);
+  for (const stem of r.stems) {
+    for (const ch of stem.channels) {
+      // Back at the CALLER's rate and the caller's length — a stem still at
+      // 44.1 kHz would drop into the session a semitone-and-a-bit flat and
+      // 9 % short, which is the failure this asserts against.
+      assert(Math.abs(ch.length - audio[0]!.length) <= 1,
+        `${stem.kind}: ${ch.length} samples vs the input's ${audio[0]!.length}`);
+    }
+  }
+});
+
+check('the round trip through the model rate keeps the energy', async () => {
+  // Resampling in and back out must not quietly cost level.  Compared against
+  // a run at the model's own rate, where no conversion happens at all.
+  const audio = sweep(1.5);
+  const same = await runModel(audio, RATE, descriptor(), await makeSession(), tensor);
+  const converted = await runModel(audio, RATE, descriptor({ sampleRate: 44100 }), await makeSession(), tensor);
+  const ratio = converted.stems.reduce((a, s) => a + energy(s.channels), 0)
+              / same.stems.reduce((a, s) => a + energy(s.channels), 0);
+  atLeast(ratio, 0.85, 'energy after the rate round trip');
+  atMost(ratio, 1.15, 'energy after the rate round trip');
 });
 
 check('a mask shape that does not match is refused, and named', async () => {

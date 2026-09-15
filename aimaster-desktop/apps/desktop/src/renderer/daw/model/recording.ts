@@ -23,6 +23,7 @@
 import { activePlaylist } from './session-ops.js';
 import { meterAtBeat, secToBeat, tempoAtSec, tempoMapOf } from './tempo-map.js';
 import type { DawSession, Track, TrackId } from './types.js';
+import { activeLatency, type LatencyConfig, type LatencySource } from './input-latency.js';
 
 export type MonitorMode = 'off' | 'on';
 
@@ -47,6 +48,19 @@ export interface RecordSettings {
   midiInputId: string | null;
   /** Read CC64 as note length.  Off for gear that sends it as a plain lane. */
   midiSustainPedal: boolean;
+  /**
+   * Recording round trip, in seconds, removed from every take.
+   *
+   * Lives with the settings rather than with the session because it is a
+   * property of THIS machine's interface and driver buffer — carrying it to
+   * another studio in the project file would apply one box's delay to
+   * another's.
+   */
+  latencySec: number;
+  /** Where that number came from, so an estimate is never shown as a fact. */
+  latencySource: LatencySource;
+  /** Off keeps the number but stops applying it, for an A/B. */
+  latencyEnabled: boolean;
 }
 
 export const DEFAULT_RECORD_SETTINGS: RecordSettings = {
@@ -61,6 +75,9 @@ export const DEFAULT_RECORD_SETTINGS: RecordSettings = {
   loopTakes: true,
   midiInputId: null,
   midiSustainPedal: true,
+  latencySec: 0,
+  latencySource: 'none',
+  latencyEnabled: true,
 };
 
 export interface RecordPlan {
@@ -266,14 +283,75 @@ export function armedSplit(session: DawSession): ArmedSplit {
   };
 }
 
+/**
+ * Which tracks the keyboard plays into — armed, or the one you are looking at.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ *
+ * Until now MIDI input opened ONLY when an instrument track was armed, which
+ * meant plugging a keyboard in and pressing a key did nothing at all.  That is
+ * Cubase's rule and it is defensible for RECORDING — you should not be able to
+ * print a take you did not ask for.  It is a bad rule for the first thirty
+ * seconds with a new keyboard, where the only question is "is this thing
+ * connected", and the app answered it with silence.
+ *
+ * So auditioning is a separate permission from arming:
+ *
+ *   ARMED tracks always win.  If something is armed, that is what the player
+ *   chose to record into, and an audition target quietly stealing the notes
+ *   would be the worst kind of surprise.
+ *
+ *   Otherwise, with audition on, the FOCUSED instrument track hears it — the
+ *   one whose name is highlighted, because that is the one the person is
+ *   looking at.  Falling back to the first instrument track means a fresh
+ *   session with one piano in it works without clicking anything first.
+ *
+ * Returned as ids rather than applied, so the rule can be checked without a
+ * runtime, an audio device or a keyboard.
+ */
+export function midiTargets(
+  session: DawSession,
+  options: { focusedTrackId?: TrackId | null; audition?: boolean } = {},
+): TrackId[] {
+  const armed = armedSplit(session).midi;
+  if (armed.length > 0) return armed.map((t) => t.id);
+  if (!options.audition) return [];
+
+  const instruments = session.tracks.filter((t) => trackRecordKind(t) === 'midi');
+  if (instruments.length === 0) return [];
+  const focused = options.focusedTrackId
+    ? instruments.find((t) => t.id === options.focusedTrackId)
+    : undefined;
+  const target = focused ?? instruments[0];
+  return target ? [target.id] : [];
+}
+
+/** The three latency fields as the one thing they are. */
+export function latencyConfig(settings: RecordSettings): LatencyConfig {
+  return {
+    seconds: settings.latencySec,
+    source: settings.latencySource,
+    enabled: settings.latencyEnabled,
+  };
+}
+
+/** Seconds actually removed from a take under these settings. */
+export function settingsLatency(settings: RecordSettings): number {
+  return activeLatency(latencyConfig(settings));
+}
+
 /** What ONE armed track listens to. */
 export interface TrackInput {
   /** MediaDevices id, or null for the system default. */
   deviceId: string | null;
   channels: 1 | 2;
+  /** Zero-based first device channel — which socket of a multi-input box. */
+  firstChannel: number;
 }
 
-export const DEFAULT_TRACK_INPUT: TrackInput = { deviceId: null, channels: 1 };
+export const DEFAULT_TRACK_INPUT: TrackInput = {
+  deviceId: null, channels: 1, firstChannel: 0,
+};
 
 /**
  * How many tracks can roll at once.

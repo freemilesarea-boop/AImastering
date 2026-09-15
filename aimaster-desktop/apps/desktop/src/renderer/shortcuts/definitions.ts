@@ -50,12 +50,20 @@ export type CommandId =
   | 'window.mixConsole' | 'window.transportPanel' | 'window.keyEditor'
   | 'window.bottomEditor' | 'window.vstEditor' | 'window.mediaBay'
   | 'window.inspector' | 'window.rightRack' | 'window.shortcutHelp'
-  | 'window.controlSurface'
+  | 'window.controlSurface' | 'window.controlRoom' | 'window.provenance'
+  | 'window.deviceSetup'
   // 6. DAW workspace — multitrack editing, routing and rendering
   | 'daw.open' | 'daw.toggleWindow'
   | 'daw.tabNext' | 'daw.tabPrev' | 'daw.toggleTabToTransient'
-  | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate' | 'daw.clearRange'
+  | 'daw.separate' | 'daw.heal' | 'daw.trimToSelection' | 'daw.consolidate'
+  | 'daw.bounceSelection' | 'daw.clearRange'
   | 'daw.clipGainUp' | 'daw.clipGainDown'
+  | 'daw.clipPitchUp' | 'daw.clipPitchDown' | 'daw.clipPitchReset'
+  | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
+  | 'daw.quantizeAudio' | 'daw.hideTracks' | 'daw.showAllTracks'
+  | 'daw.copyChannel' | 'daw.pasteChannel'
+  | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
+  | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
@@ -71,7 +79,7 @@ export type CommandId =
   | 'daw.analyzeVocal' | 'daw.tuneVocal' | 'daw.openVocalEditor'
   | 'daw.togglePicture' | 'daw.nudgeFrameBack' | 'daw.nudgeFrameForward'
   | 'daw.cutRipple' | 'daw.pasteInsert' | 'daw.insertSilence'
-  | 'daw.stripSilence' | 'daw.snapZeroCross'
+  | 'daw.stripSilence' | 'daw.alignToGuide' | 'daw.snapZeroCross'
   | 'daw.normalizeClip' | 'daw.reverseClip' | 'daw.renameClip'
   | 'daw.renameTrack' | 'daw.trackHeightUp' | 'daw.trackHeightDown'
   | 'daw.smartControls' | 'daw.createStack' | 'daw.unpackStack' | 'daw.toggleStack'
@@ -90,7 +98,24 @@ export type CommandId =
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
   | 'daw.sectionNext' | 'daw.sectionPrev' | 'daw.sectionSelect' | 'daw.sectionAdd'
   | 'daw.sectionMoveBack' | 'daw.sectionMoveForward'
-  | 'daw.tuneToGuide' | 'daw.riff';
+  | 'daw.tuneToGuide' | 'daw.riff'
+  // 6b. Memory locations — twenty ids, one store and one recall per slot.
+  //     Written as a template type rather than forty hand-typed lines so a
+  //     slot cannot exist in one half and not the other.
+  | `daw.memStore.${MemDigit}` | `daw.memRecall.${MemDigit}`
+  | 'daw.clearMemory' | 'daw.cycleSnapMode' | 'daw.fillSelection'
+  | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe'
+  | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
+  | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
+  | `daw.zoomStore.${ZoomDigit}` | `daw.zoomRecall.${ZoomDigit}`;
+
+/** The five zoom-preset slots, on the function keys. */
+export type ZoomDigit = '1' | '2' | '3' | '4' | '5';
+export const ZOOM_DIGITS: readonly ZoomDigit[] = ['1', '2', '3', '4', '5'];
+
+/** The number-row keys, in slot order: slot 10 is `0`. */
+export type MemDigit = '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '0';
+export const MEM_DIGITS: readonly MemDigit[] = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
 
 export interface ShortcutDef {
   id: CommandId;
@@ -120,7 +145,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'file.saveAs',       group: 'file', label: '다른 이름으로 저장', chords: ['Mod+Shift+S'],
     note: '세션 저장 (항상 저장 위치를 다시 묻습니다)', available: true },
   { id: 'file.export',       group: 'file', label: '내보내기 (Audio Export)', chords: ['Mod+Alt+E'],
-    note: '마스터 WAV 내보내기 (라이선스 필요)', available: true },
+    note: '마스터 WAV 내보내기 — 저장 위치를 고르면 바로 씁니다', available: true },
   { id: 'file.projectSetup', group: 'file', label: '프로젝트 설정',     chords: ['Shift+S'],
     note: '설정 페이지 열기', available: true },
 
@@ -128,7 +153,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'transport.playPause',    group: 'transport', label: '재생 / 정지', chords: ['Space'],
     note: '프리뷰 재생 / 일시정지', available: true },
   { id: 'transport.record',       group: 'transport', label: '녹음 시작',   chords: ['NumpadMultiply'],
-    note: '마스터링 앱에는 녹음 트랙이 없습니다 — DAW 워크스페이스에서는 이 키가 녹음을 시작합니다', available: false },
+    note: 'DAW: 준비된 트랙에 녹음을 시작합니다 · 마스터링 화면에는 녹음 트랙이 없습니다', available: true },
   { id: 'transport.returnToZero', group: 'transport', label: '재생 위치 0점으로', chords: ['NumpadDecimal', 'Home'],
     note: '재생 헤드를 0초로 (루프 ON 이면 루프 시작점으로)', available: true },
   { id: 'transport.metronome',    group: 'transport', label: '메트로놈 on/off', chords: ['KeyC'],
@@ -139,10 +164,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '루프 시작점으로 이동', available: true },
   { id: 'transport.gotoLoopEnd',   group: 'transport', label: '우측 루프 포인터로', chords: ['Numpad2'],
     note: '루프 끝점으로 이동', available: true },
+  { id: 'view.zoomInH',  group: 'transport', label: '화면 가로 확대', chords: ['KeyF'],
+    note: '파형 가로 확대 (재생 헤드 기준)', available: true },
   { id: 'view.zoomOutH', group: 'transport', label: '화면 가로 축소', chords: ['KeyG'],
     note: '파형 가로 축소 (재생 헤드 기준)', available: true },
-  { id: 'view.zoomInH',  group: 'transport', label: '화면 가로 확대', chords: ['KeyH'],
-    note: '파형 가로 확대 (재생 헤드 기준)', available: true },
   { id: 'view.zoomOutV', group: 'transport', label: '화면 세로 축소', chords: ['Shift+G'],
     note: '파형 진폭 축소', available: true },
   { id: 'view.zoomInV',  group: 'transport', label: '화면 세로 확대', chords: ['Shift+H'],
@@ -156,7 +181,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'tool.split',  group: 'tools', label: '3 · 자르기',       chords: ['Digit3'],
     note: '클릭 → 재생 위치에서 선택 구간 분할', available: true },
   { id: 'tool.glue',   group: 'tools', label: '4 · 붙이기',       chords: ['Digit4'],
-    note: '이벤트 트랙이 없어 동작하지 않습니다 (툴만 전환)', available: false },
+    note: '붙일 대상이 아직 없습니다 — 툴만 전환됩니다 (클립 합치기는 「커밋」)', available: false },
   { id: 'tool.erase',  group: 'tools', label: '5 · 삭제',         chords: ['Digit5'],
     note: '클릭 → 선택 구간 / 루프 구간 해제', available: true },
   { id: 'tool.zoom',   group: 'tools', label: '6 · 줌 툴',        chords: ['Digit6'],
@@ -164,7 +189,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'tool.mute',   group: 'tools', label: '7 · 뮤트',         chords: ['Digit7'],
     note: '클릭 → 프리뷰 뮤트 토글', available: true },
   { id: 'tool.draw',   group: 'tools', label: '8 · 연필 / 그리기', chords: ['Digit8'],
-    note: '오토메이션 레인이 없어 동작하지 않습니다 (툴만 전환)', available: false },
+    note: 'DAW: 키 에디터에서 빈 곳을 클릭하면 노트가 찍힙니다 · 상단 파형 레인에는 그릴 대상이 없습니다', available: true },
   { id: 'tool.scrub',  group: 'tools', label: '9 · 스크럽',       chords: ['Digit9'],
     note: '드래그 → 재생 헤드를 따라가며 듣기', available: true },
 
@@ -197,7 +222,11 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택 구간 → 루프 구간 (선택이 없으면 전체 구간)', available: true },
 
   // ── 5. 창 및 패널 ──────────────────────────────────────────────────────
-  { id: 'window.mixConsole',     group: 'window', label: '믹스콘솔 (MixConsole)', chords: ['F3'],
+  { id: 'window.controlRoom',    group: 'window', label: '컨트롤 룸 (Control Room)', chords: ['F3'],
+    note: '모니터 레벨 · DIM · MONO · 스피커 세트 · 큐 — 믹스에는 들어가지 않습니다', available: true },
+  { id: 'window.provenance',     group: 'window', label: '메타데이터 (AI · 2차 창작)', chords: ['Shift+F5'],
+    note: '파일에 새겨질 기록 — 누가 뭘 했고 무엇에서 나왔는지', available: true },
+  { id: 'window.mixConsole',     group: 'window', label: '믹스콘솔 (MixConsole)', chords: ['Shift+F3'],
     note: '하단 믹스콘솔 — 모듈별 바이패스 / 마스터 뮤트', available: true },
   { id: 'window.transportPanel', group: 'window', label: '트랜스포트 Panel', chords: ['F2'],
     note: '하단 트랜스포트 바 (파형 · 루프 · 툴) 열기/닫기', available: true },
@@ -205,8 +234,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택한 MIDI 파트를 Key Editor 로 열기 (DAW 워크스페이스)', available: true },
   { id: 'window.bottomEditor',   group: 'window', label: '하단 에디터 패널', chords: ['Mod+Alt+L'],
     note: '하단 존(트랜스포트+믹스콘솔) 열기/닫기 — Cubase 의 Ctrl+Alt+E 는 내보내기와, B 는 바운스와 충돌하여 L(Lower zone)', available: true },
-  { id: 'window.vstEditor',      group: 'window', label: 'VST 에디터 / 인스트루먼트 창', chords: ['F11'],
-    note: '고급 파라미터(모듈 상세) 패널 열기/닫기', available: true },
+  { id: 'window.vstEditor',      group: 'window', label: '인스트루먼트 랙 (VST 창)', chords: ['F11'],
+    note: 'DAW: 악기를 고르면 트랙 + 4마디 파트가 함께 생깁니다 · 마스터링 화면: 고급 파라미터 패널', available: true },
   { id: 'window.mediaBay',       group: 'window', label: 'MediaBay (프리셋 브라우저)', chords: ['F5'],
     note: '스타일 · 리미터 프리셋 브라우저 열기/닫기', available: true },
   { id: 'window.inspector',      group: 'window', label: '좌측 인스펙터', chords: ['Alt+I'],
@@ -215,6 +244,8 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '우측 세밀 조정 패널 열기/닫기', available: true },
   { id: 'window.shortcutHelp',   group: 'window', label: '단축키 도움말', chords: ['Shift+Slash', 'F1'],
     note: '이 목록 열기/닫기', available: true },
+  { id: 'window.deviceSetup',    group: 'window', label: '디바이스 셋업', chords: ['F4'],
+    note: '오디오 · MIDI 입출력 목록과 왜 소리가 안 나는지 진단 · 오디션 스위치 (DAW 워크스페이스)', available: true },
   { id: 'window.controlSurface', group: 'window', label: '컨트롤 서피스', chords: ['Alt+K'],
     note: 'MIDI 컨트롤러 매핑 패널 열기/닫기 — 학습 · 픽업 · 내보내기', available: true },
 
@@ -251,12 +282,20 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '선택 밖의 오디오를 잘라냄 (비파괴)', available: true },
   { id: 'daw.clearRange', group: 'daw', label: '선택 구간 삭제', chords: ['Delete', 'Backspace'],
     note: 'SHUFFLE 모드면 뒤 클립을 당겨 붙임', available: true },
-  { id: 'daw.consolidate', group: 'daw', label: '컨솔리데이트', chords: ['Mod+Alt+C'],
-    note: '선택 구간을 하나의 새 오디오 클립으로 렌더링', available: true },
+  { id: 'daw.consolidate', group: 'daw', label: '컨솔리데이트 (구간)', chords: ['Mod+Alt+C'],
+    note: '선택 구간을 그 길이 그대로 하나의 새 오디오 클립으로 렌더링', available: true },
+  { id: 'daw.bounceSelection', group: 'daw', label: '바운스 (Bounce Selection)', chords: ['KeyV'],
+    note: '선택한 클립들을 트랙별로 하나의 파일로 합침 — 사이의 빈 구간은 디지털 무음', available: true },
   { id: 'daw.clipGainUp', group: 'daw', label: '클립 게인 +0.5 dB', chords: ['Mod+Shift+ArrowUp'],
     note: '클립 자체 게인 (페이더 이전)', available: true },
   { id: 'daw.clipGainDown', group: 'daw', label: '클립 게인 −0.5 dB', chords: ['Mod+Shift+ArrowDown'],
     note: '클립 자체 게인 (페이더 이전)', available: true },
+  { id: 'daw.clipPitchUp', group: 'daw', label: '클립 피치 +1 반음', chords: ['Mod+Alt+ArrowUp'],
+    note: '오디오 클립을 길이 그대로 반음 올립니다 — 클립 게인이 Mod+Shift+화살표, 피치는 Mod+Alt+화살표', available: true },
+  { id: 'daw.clipPitchDown', group: 'daw', label: '클립 피치 −1 반음', chords: ['Mod+Alt+ArrowDown'],
+    note: '오디오 클립을 길이 그대로 반음 내립니다', available: true },
+  { id: 'daw.clipPitchReset', group: 'daw', label: '클립 피치 원음', chords: ['Alt+Digit0'],
+    note: '피치를 0 으로 — 파일 그대로 재생됩니다', available: true },
   { id: 'daw.nudgeForward', group: 'daw', label: '넛지 →', chords: ['NumpadAdd'],
     note: '선택 클립을 넛지 값만큼 뒤로', available: true },
   { id: 'daw.nudgeBack', group: 'daw', label: '넛지 ←', chords: ['NumpadSubtract'],
@@ -342,12 +381,40 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '덮어쓰지 않고 자리를 만들어 넣습니다 — 아무것도 사라지지 않습니다', available: true },
   { id: 'daw.insertSilence', group: 'daw', label: '무음 삽입', chords: ['Mod+Shift+E'],
     note: '선택한 길이만큼 재생헤드에 빈 자리를 만듭니다 (리플 삭제의 반대)', available: true },
-  { id: 'daw.stripSilence', group: 'daw', label: '무음 제거', chords: ['Shift+Alt+S'],
-    note: '재생 위치 클립에서 소리 나는 부분만 남깁니다 — 타이밍은 그대로', available: true },
+  { id: 'daw.stripSilence', group: 'daw', label: '무음 제거 (Detect Silence)', chords: ['Shift+Alt+S'],
+    note: '선택한 클립에서 소리 나는 부분만 남깁니다 — 자르기 전에 얼마나 없어지는지 보여줍니다. 이어서 V(바운스)', available: true },
+  { id: 'daw.alignToGuide', group: 'daw', label: '가이드에 정렬 (Audio Align)', chords: ['Shift+Alt+A'],
+    note: '선택한 트랙 중 맨 위를 가이드로, 나머지 더블링·코러스의 박자를 맞춥니다 (DTW)', available: true },
   { id: 'daw.snapZeroCross', group: 'daw', label: '영교차로 스냅', chords: ['Shift+Alt+Z'],
     note: '선택 구간의 양 끝을 파형이 0을 지나는 곳으로 — 자른 자리의 딱 소리를 없앱니다', available: true },
 
   // ── 트랙 헤더 ──────────────────────────────────────────────────────────
+  { id: 'daw.hideTracks', group: 'daw', label: '트랙 숨기기', chords: ['Mod+Alt+Shift+U'],
+    note: '편집 창에서만 감춥니다 — 소리는 그대로 나고 믹서에도 남습니다', available: true },
+  { id: 'daw.showAllTracks', group: 'daw', label: '숨긴 트랙 모두 표시', chords: ['Mod+Alt+Shift+Y'],
+    note: '너무 많이 숨겼을 때의 되돌아오는 길', available: true },
+  { id: 'daw.copyChannel', group: 'daw', label: '채널 설정 복사', chords: ['Mod+Alt+Shift+C'],
+    note: '인서트·센드·페이더·팬 — 클립과 오토메이션은 빼고', available: true },
+  { id: 'daw.pasteChannel', group: 'daw', label: '채널 설정 붙여넣기', chords: ['Mod+Alt+Shift+X'],
+    note: '선택한 트랙 전부에 — 인서트는 새 id 로 복사돼 서로 영향 없음', available: true },
+  { id: 'daw.quantizeAudio', group: 'daw', label: '오디오 퀀타이즈', chords: ['Mod+Shift+T'],
+    note: '트랜지언트를 그리드로 — 강도·스윙·허용 오차를 정하고, 적용 전에 몇 개가 움직이는지 봅니다', available: true },
+  { id: 'daw.createEditGroup', group: 'daw', label: '편집 그룹 만들기', chords: ['Mod+G'],
+    note: '선택한 트랙들이 한 덩어리처럼 선택·편집됩니다 (페이더·뮤트도 함께)', available: true },
+  { id: 'daw.dissolveEditGroup', group: 'daw', label: '편집 그룹 해제', chords: ['Mod+Shift+H'],
+    note: '선택한 트랙이 속한 그룹을 없앱니다', available: true },
+  { id: 'daw.toggleGroupsEnabled', group: 'daw', label: '그룹 일시 정지 / 재개', chords: ['Mod+Shift+B'],
+    note: '그룹을 지우지 않고 잠깐 꺼서 한 트랙만 편집 — 다시 누르면 복구', available: true },
+  { id: 'daw.zoomToSelection', group: 'daw', label: '선택 구간에 맞춰 확대', chords: ['Shift+F'],
+    note: '선택이 없으면 세션 전체 — 양쪽에 여유를 두고 맞춥니다', available: true },
+  { id: 'daw.toggleFollowPlayhead', group: 'daw', label: '재생헤드 따라가기 on/off', chords: ['KeyL'],
+    note: '재생 중 화면이 페이지 단위로 넘어갑니다 (큐베이스는 F 이지만 그 키는 가로 확대가 씁니다)', available: true },
+  { id: 'daw.playFromSelection', group: 'daw', label: '선택 지점부터 재생', chords: ['Shift+Space'],
+    note: 'Space 는 그대로 재생헤드에서 — 이건 선택 시작으로 가서 재생', available: true },
+  { id: 'daw.cycleRulerFormat', group: 'daw', label: '눈금자 단위 바꾸기', chords: ['Shift+R'],
+    note: '마디 → 분:초 → 샘플 → 타임코드 순으로 돕니다', available: true },
+  { id: 'daw.duplicateTrack', group: 'daw', label: '트랙 복제', chords: ['Mod+Alt+Shift+D'],
+    note: '클립·인서트·센드·오토메이션까지 복사해 바로 아래에 — 프리즈와 녹음 무장은 빼고', available: true },
   { id: 'daw.renameTrack', group: 'daw', label: '트랙 이름 바꾸기', chords: ['Shift+Alt+K'],
     note: '헤더의 이름을 더블클릭해도 됩니다 · 색은 왼쪽 색 조각을 클릭', available: true },
   { id: 'daw.trackHeightUp', group: 'daw', label: '트랙 높이 키우기', chords: ['Shift+Alt+Equal'],
@@ -467,6 +534,64 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: 'Session View 의 다음 씬을 다음 마디에 실행', available: true },
   { id: 'daw.stopAllClips', group: 'daw', label: '모든 클립 정지', chords: ['Mod+Alt+Period'],
     note: 'Session View 재생 중지', available: true },
+
+  // ── 스냅 · 채우기 · 이름 · 히스토리 ────────────────────────────────────
+  { id: 'daw.cycleSnapMode', group: 'daw', label: '스냅 모드 순환', chords: ['Alt+J'],
+    note: '끔 → 그리드 → 상대 그리드 → 자석 → 이벤트. J 는 스냅 on/off, Alt+J 는 어떤 스냅인지', available: true },
+  { id: 'daw.fillSelection', group: 'daw', label: '선택 구간 반복 채우기', chords: ['Mod+Alt+Shift+R'],
+    note: '클립보드를 선택 구간이 찰 때까지 반복 — 마지막 하나는 구간 끝에서 잘립니다', available: true },
+  { id: 'daw.batchRename', group: 'daw', label: '이름 일괄 변경', chords: ['Mod+Shift+Y'],
+    note: '선택한 트랙·클립 이름을 번호 패턴·찾아바꾸기·앞뒤 붙이기로 — 적용 전에 미리보기', available: true },
+  { id: 'daw.historyPanel', group: 'daw', label: '실행취소 히스토리', chords: ['Mod+Alt+Shift+Z'],
+    note: '되돌릴 수 있는 단계 목록 — 눌러서 그 시점으로 한 번에', available: true },
+  { id: 'daw.clearMemory', group: 'daw', label: '메모리 위치 비우기', chords: ['Mod+Alt+Shift+Backspace'],
+    note: '번호 마커 10개를 모두 지웁니다', available: true },
+  { id: 'daw.openPool', group: 'daw', label: '파일 풀 (Clip List)', chords: ['Mod+Alt+Shift+O'],
+    note: '세션이 가진 모든 파일 — 어디에 쓰이는지, 안 쓰는 게 뭔지, 없어진 게 뭔지', available: true },
+  { id: 'daw.batchFade', group: 'daw', label: '일괄 페이드', chords: ['Shift+Alt+F'],
+    note: '선택한 클립 전부에 같은 페이드 — 클립보다 길면 절반으로 잘라서 넣습니다', available: true },
+  { id: 'daw.clearFades', group: 'daw', label: '페이드 지우기', chords: ['Shift+Alt+Backspace'],
+    note: '선택한 클립의 페이드를 양쪽 다 제거', available: true },
+  { id: 'daw.trackNote', group: 'daw', label: '트랙 메모', chords: ['Mod+Alt+Shift+N'],
+    note: '마이크 · 테이크 · 고칠 것 — 트랙 이름에 적던 것들', available: true },
+  { id: 'daw.toggleLinkSelection', group: 'daw', label: '선택 ↔ 루프 연동', chords: ['Shift+Alt+L'],
+    note: '편집 선택이 움직이면 루프 구간도 따라갑니다 (프로툴스 Link Timeline)', available: true },
+  { id: 'daw.mixSnapshot', group: 'daw', label: '믹스 스냅샷 찍기', chords: ['Mod+Alt+Shift+M'],
+    note: '지금 믹서 상태를 저장 — 페이더 · 인서트 · 라우팅 (오토메이션은 제외)', available: true },
+  { id: 'daw.mixSnapshotPanel', group: 'daw', label: '믹스 스냅샷 목록', chords: ['Mod+Alt+Shift+K'],
+    note: '저장한 믹스들 — 뭐가 다른지 보고 되돌립니다', available: true },
+
+  // Zoom presets on the function keys — the number row is memory locations.
+  ...ZOOM_DIGITS.flatMap((digit, i): ShortcutDef[] => {
+    const slot = i + 1;
+    return [
+      { id: `daw.zoomRecall.${digit}`, group: 'daw', label: `줌 프리셋 ${slot} 불러오기`,
+        chords: [`F${slot + 5}`],
+        note: '저장해 둔 확대 배율과 위치로', available: true },
+      { id: `daw.zoomStore.${digit}`, group: 'daw', label: `줌 프리셋 ${slot} 저장`,
+        chords: [`Shift+F${slot + 5}`],
+        note: '지금 보고 있는 배율 · 위치 · 트랙 높이를 저장', available: true },
+    ];
+  }),
+
+  { id: 'daw.toggleSoloSafe', group: 'daw', label: '솔로 세이프', chords: ['Mod+Alt+Shift+E'],
+    note: '다른 트랙을 솔로해도 뮤트되지 않습니다 — 리버브 리턴·클릭용. 믹서 S 버튼 Alt+클릭도 같습니다', available: true },
+
+  // ── 메모리 위치 (번호 마커) ───────────────────────────────────────────
+  // Generated so the store key and the recall key for a slot cannot drift.
+  // Mod+숫자 recalls, Mod+Shift+숫자 stores — the bare number row is already
+  // the tool selector, which is used far more often than a locator.
+  ...MEM_DIGITS.flatMap((digit, i): ShortcutDef[] => {
+    const slot = i + 1;
+    return [
+      { id: `daw.memRecall.${digit}`, group: 'daw', label: `메모리 위치 ${slot} 이동`,
+        chords: [`Mod+Digit${digit}`],
+        note: '저장해 둔 위치로 — 구간을 저장했다면 선택까지 되살립니다', available: true },
+      { id: `daw.memStore.${digit}`, group: 'daw', label: `메모리 위치 ${slot} 저장`,
+        chords: [`Mod+Shift+Digit${digit}`],
+        note: '지금 재생 위치를, 선택 구간이 있으면 구간과 트랙까지 함께', available: true },
+    ];
+  }),
 ];
 
 /** Parsed bindings, in dispatch order (first match wins). */
@@ -479,10 +604,6 @@ export const BINDINGS: Binding[] = SHORTCUTS.flatMap((def) =>
 /** Help-overlay label for a definition, e.g. 'Ctrl + Shift + S  /  Ctrl + Y'. */
 export function displayChords(def: ShortcutDef, platform: Platform): string[] {
   return def.chords.map((spec) => formatChord(parseChord(spec), platform));
-}
-
-export function shortcutsByGroup(group: ShortcutGroupId): ShortcutDef[] {
-  return SHORTCUTS.filter((s) => s.group === group);
 }
 
 /** The definition owning a command id (undefined for an unknown id). */

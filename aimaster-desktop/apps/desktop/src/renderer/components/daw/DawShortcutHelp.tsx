@@ -5,6 +5,7 @@
 // listed on purpose so the DAW muscle memory has an answer instead of silence.
 
 import React, { useMemo } from 'react';
+import { LAYER } from '../../theme/layers.js';
 import {
   SHORTCUTS, GROUP_TITLES, displayChords, type ShortcutGroupId,
 } from '../../shortcuts/definitions.js';
@@ -31,7 +32,8 @@ export default function DawShortcutHelp() {
   return (
     <div
       onClick={close}
-      className="fixed inset-0 z-[9000] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      className="fixed inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      style={{ zIndex: LAYER.help }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -45,7 +47,8 @@ export default function DawShortcutHelp() {
               {platform === 'mac' ? 'macOS — ⌘ / Option' : 'Windows — Ctrl / Alt'} 기준 · 입력창에 포커스가 있을 때는 동작하지 않습니다
             </p>
           </div>
-          <button onClick={close} className="text-zinc-500 hover:text-zinc-300 text-lg leading-none">×</button>
+          <button onClick={close} title="닫기"
+                  className="hit-target text-zinc-500 hover:text-zinc-300 text-lg leading-none">×</button>
         </div>
 
         <div className="grid gap-5 sm:grid-cols-2">

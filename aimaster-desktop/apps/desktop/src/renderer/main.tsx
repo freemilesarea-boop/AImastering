@@ -33,6 +33,41 @@ void (window as Window & { electronAPI?: { invoke(c: string): Promise<unknown> }
   .then((caps) => { if (caps && typeof caps === 'object') setHostCapabilities(caps as never); })
   .catch(() => { /* older main, or not Electron: the defaults are already "no" */ });
 
+// The settings page's 오디오 기본값, read back.  Same shape as the line above:
+// asked once at startup, applied to the store, and a failure leaves the
+// built-in defaults standing.  Without this the section wrote three keys that
+// nothing ever read, so a preference set on Monday was gone on Tuesday.
+import { readAudioDefaults } from './lib/audio-defaults.js';
+import { useAudioStore as _audioStoreForDefaults } from './stores/audioStore.js';
+{
+  const api = (window as Window & { electronAPI?: { invoke(c: string, ...a: unknown[]): Promise<unknown> } }).electronAPI;
+  if (api) {
+    void readAudioDefaults((channel, ...args) => api.invoke(channel, ...args))
+      .then((patch) => {
+        if (Object.keys(patch).length > 0) _audioStoreForDefaults.getState().updateOptions(patch);
+      })
+      .catch(() => { /* nothing stored, or a store we cannot read */ });
+  }
+}
+
+// Whether this machine can encode anything but WAV.  The main process has
+// computed this since the beginning and nothing ever asked; the first a user
+// heard of a missing FFmpeg was an export dying on a raw error message.  A
+// short delay so the warning lands after the window has drawn rather than
+// into a page that is still mounting.
+import { readFfmpegWarning } from './lib/ffmpeg-notice.js';
+import { useAppStore as _appStoreForFfmpeg } from './stores/appStore.js';
+{
+  const api = (window as Window & { electronAPI?: { invoke(c: string, ...a: unknown[]): Promise<unknown> } }).electronAPI;
+  if (api) {
+    setTimeout(() => {
+      void readFfmpegWarning((channel, ...args) => api.invoke(channel, ...args))
+        .then((warning) => { if (warning !== null) _appStoreForFfmpeg.getState().notify(warning, 'warning'); })
+        .catch(() => { /* an older main, or not Electron */ });
+    }, 2500);
+  }
+}
+
 // ── 시작 진단 로그 ─────────────────────────────────────────────────────────────
 // DevTools(Ctrl+Shift+I) 콘솔에서 이 로그로 preload 상태를 확인하세요.
 // eslint-disable-next-line no-console

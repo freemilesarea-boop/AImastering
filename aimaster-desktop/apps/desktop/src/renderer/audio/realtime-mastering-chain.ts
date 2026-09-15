@@ -1,7 +1,14 @@
 // Realtime mastering preview — Rust MasteringChain (WASM) wrapper (M2-full).
 //
 // Wraps `LouiMasteringChain` from @loui/dsp-wasm and maps the product
-// UI's parameter state into the chain's flat `setConfig` arguments.
+// UI's parameter state into the chain's config.
+//
+// `stateToChainConfig` maps the UI's parameter state to the flat,
+// five-module positional config.  The JSON `setConfigJson` path that used to
+// live here as well (`stateToSuiteConfig` / `applySuiteConfig` /
+// `applyChainConfig`) had no callers left: the product reaches the module
+// suite through `chain-config.ts` directly, and `useRealtimePreview` builds
+// its own wire config from there.
 //
 // Scope: this module is the renderer-side bridge.  The AudioWorklet tap
 // that calls `process()` per block (main-thread WASM, mirroring the
@@ -70,35 +77,3 @@ export function stateToChainConfig(state: AllModulesParameterState): RealtimeCha
   };
 }
 
-/** Minimal structural type for the WASM chain (avoids a hard import here). */
-interface WasmChain {
-  setConfig(
-    inputGainDb: number,
-    eqLowCutHz: number, eqLowShelfDb: number, eqPresenceDb: number, eqAirDb: number,
-    eqAdaptive: boolean, eqBypass: boolean,
-    dynThresholdDb: number, dynRatio: number, dynAttackMs: number, dynReleaseMs: number,
-    dynMixPct: number, dynBypass: boolean,
-    imgWidthPct: number, imgLowMonoHz: number, imgBypass: boolean,
-    limCeilingDbtp: number, limLookaheadMs: number, limIsp: boolean, limBypass: boolean,
-    outputGainDb: number, masterBypass: boolean,
-  ): void;
-  processStereo(left: Float32Array, right: Float32Array): void;
-  limiterGrDb(): number;
-  safetyEvents?(): number;
-  reset(): void;
-  free?(): void;
-}
-
-/** Apply a config object to a WASM chain handle (spreads the flat args). */
-export function applyChainConfig(chain: WasmChain, c: RealtimeChainConfig): void {
-  chain.setConfig(
-    c.inputGainDb,
-    c.eqLowCutHz, c.eqLowShelfDb, c.eqPresenceDb, c.eqAirDb, c.eqAdaptive, c.eqBypass,
-    c.dynThresholdDb, c.dynRatio, c.dynAttackMs, c.dynReleaseMs, c.dynMixPct, c.dynBypass,
-    c.imgWidthPct, c.imgLowMonoHz, c.imgBypass,
-    c.limCeilingDbtp, c.limLookaheadMs, c.limIsp, c.limBypass,
-    c.outputGainDb, c.masterBypass,
-  );
-}
-
-export type { WasmChain };

@@ -7,7 +7,8 @@
  * - "모두 마스터링 시작" processes each file sequentially
  * - Per-item inline: progress bar, WAV download, MP3 download, preview player
  */
-import React, { useCallback, useRef, useState } from 'react';
+import { chainLabel, stampMaster, stampPreview } from '../daw/edit/master-stamp.js';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import TopBar from '../components/TopBar.js';
 import { useAppStore } from '../stores/appStore.js';
@@ -19,7 +20,6 @@ import {
 import type { QueueItem } from '../stores/audioStore.js';
 import type {
   AudioAnalysisResult,
-  MasteringResult,
   MasteringStyle,
   LimiterStrength,
   MasteringQuickPreset,
@@ -33,12 +33,15 @@ import {
 // main-side decoder receives the original path unmangled.
 // Covered by `pnpm test:phase-e-paths`.
 import { toFileUrl } from '../utils/fileUrl.js';
-import { handleLicenseRequired } from '../stores/licenseStore.js';
 import { LouiPresetSlideOver } from '../components/product/LouiPresetSlideOver.js';
 import { getPreset, DEFAULT_PRESET_ID } from '../audio/presets/loui-presets.js';
 import { louiPresetToMasteringOptions } from '../audio/presets/preset-to-options.js';
 import { getLastUsedPreset, setLastUsedPreset } from '../audio/presets/preset-storage.js';
 import { LouiHomeHero } from '../components/home/LouiHomeHero.js';
+import AlbumPanel from '../components/AlbumPanel.js';
+import { LouiAlbumPresetBar } from '../components/product/LouiAlbumPresetBar.js';
+import { loadSongSettings } from '../audio/session/song-settings.js';
+import { renderSong } from '../audio/session/render-song.js';
 import { loui, louiAlpha } from '../theme/loui-home.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -508,6 +511,7 @@ function QueueRow({
   onRemove,
   onViewResult,
   onTweak,
+  onStudio,
   onSetPreset,
   notify,
 }: {
@@ -517,6 +521,7 @@ function QueueRow({
   onRemove: (id: string) => void;
   onViewResult: (item: QueueItem) => void;
   onTweak: (item: QueueItem) => void;
+  onStudio: (item: QueueItem) => void;
   onSetPreset: (id: string, presetId: string | undefined) => void;
   notify: (msg: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }) {
@@ -526,21 +531,55 @@ function QueueRow({
 
   const handleSaveWav = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!item.masteringResult?.outputPath) return;
+    const result = item.masteringResult;
+    if (!result?.outputPath) return;
     try {
-      const dest = await window.electronAPI!.invoke('file:save-wav', item.masteringResult.outputPath) as string | null;
-      if (dest) notify('WAV 저장 완료', 'success');
+      // The master comes out of the Python engine with no metadata at all.
+      // Stamp it on the way out: the record the mix carried in, plus the
+      // chain that just ran and the loudness it actually measured.
+      const options = useAudioStore.getState().options;
+      const after = result.loudnessAfter;
+      const bytes = await stampMaster({
+        outputPath: result.outputPath,
+        sourcePath: item.filePath,
+        chain: chainLabel(options.style, options.targetLufs),
+        loudness: {
+          integratedLufs: after?.integratedLufs,
+          lra: after?.lra,
+          truePeakDbtp: after?.truePeakDbtp,
+        },
+        fallbackTitle: item.fileName.replace(/\.[^.]+$/, ''),
+        appVersion: __APP_VERSION__,
+      });
+      const dest = await window.electronAPI!.invoke('daw:bounce-audio', {
+        name: item.fileName, data: bytes,
+      }) as string | null;
+      if (dest) notify('WAV 저장 완료 — 메타데이터 포함', 'success');
     } catch (err) {
-      if (handleLicenseRequired(err)) notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
-      else notify('WAV 저장 실패', 'error');
+      notify(`WAV 저장 실패: ${(err as Error).message}`, 'error');
     }
   }, [item, notify]);
 
   const handleSaveMp3 = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!item.masteringResult?.previewPath) return;
-    const dest = await window.electronAPI!.invoke('file:save-wav', item.masteringResult.previewPath) as string | null;
-    if (dest) notify('MP3 저장 완료', 'success');
+    const result = item.masteringResult;
+    if (!result?.previewPath) return;
+    try {
+      const options = useAudioStore.getState().options;
+      const bytes = await stampPreview({
+        outputPath: result.previewPath,
+        sourcePath: item.filePath,
+        chain: chainLabel(options.style, options.targetLufs),
+        fallbackTitle: item.fileName.replace(/\.[^.]+$/, ''),
+        appVersion: __APP_VERSION__,
+      });
+      const dest = await window.electronAPI!.invoke('daw:bounce-audio', {
+        name: item.fileName, data: bytes, format: 'mp3',
+      }) as string | null;
+      if (dest) notify('MP3 저장 완료 — 메타데이터 포함', 'success');
+    } catch (err) {
+      notify(`MP3 저장 실패: ${(err as Error).message}`, 'error');
+    }
   }, [item, notify]);
 
   const statusDot = {
@@ -571,7 +610,22 @@ function QueueRow({
       {/* Row 1: file name + status + tweak + remove */}
       <div className="flex items-center gap-2.5">
         <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot}`} />
-        <span className="flex-1 text-xs text-zinc-300 truncate">{item.fileName}</span>
+        <span className="text-xs text-zinc-300 truncate">{item.fileName}</span>
+        {/* Which one is this?  Two rows can carry the same name — the song as
+            delivered and the song as remixed — and the difference is the whole
+            question when you are deciding what to release. */}
+        <span
+          className={`shrink-0 px-1.5 py-px rounded text-[9px] font-medium tracking-wide ${
+            item.origin === 'mix'
+              ? 'bg-violet-500/15 text-violet-300 border border-violet-500/30'
+              : 'bg-zinc-700/40 text-zinc-500 border border-zinc-600/40'}`}
+          title={item.origin === 'mix'
+            ? 'DAW 에서 믹스한 것을 마스터링으로 보낸 결과입니다'
+            : '홈 화면에서 불러온 원본 파일입니다'}
+        >
+          {item.origin === 'mix' ? 'DAW 믹스' : '원본'}
+        </span>
+        <span className="flex-1" />
         <span className="text-[10px] text-zinc-600 shrink-0">{statusLabel}</span>
         {/* Per-file preset selector (pending only) */}
         {item.status === 'pending' && (
@@ -608,6 +662,28 @@ function QueueRow({
             title="원본을 들으며 설정을 조절하고 버전을 만듭니다"
           >
             조절하며 듣기
+          </button>
+        )}
+        {item.status !== 'analyzing' && item.status !== 'mastering' && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onStudio(item); }}
+            className="no-drag shrink-0 text-[11px] font-medium rounded-md px-2 py-1 transition-colors"
+            style={item.studioSavedAt !== undefined ? {
+              color: loui.successMint,
+              border: `1px solid ${loui.successMint}55`,
+              background: `${loui.successMint}14`,
+            } : {
+              color: loui.softLavender,
+              border: `1px solid ${louiAlpha.lav(0.3)}`,
+              background: louiAlpha.lav(0.08),
+            }}
+            title={item.studioSavedAt !== undefined
+              // The whole point of saving is that the render will use it,
+              // so the row says so rather than only marking the file.
+              ? `저장된 스튜디오 설정이 있습니다 (${new Date(item.studioSavedAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}). 마스터링에 이 설정이 사용됩니다.`
+              : '전체 모듈 랙에서 체인을 직접 구성합니다 (De-noise · Dynamic EQ · Multiband · Exciter · Tape …)'}
+          >
+            {item.studioSavedAt !== undefined ? '스튜디오 ✓' : '스튜디오'}
           </button>
         )}
         {(item.status === 'pending' || item.status === 'error') && (
@@ -823,6 +899,9 @@ export default function HomePage() {
     clearQueue,
     updateQueueItem,
     setIsBatchRunning,
+    albumPresetId,
+    setAlbumPreset,
+    refreshStudioSaved,
     setStyle,
     updateOptions,
     // single-file compat (for ResultPage navigation)
@@ -832,6 +911,12 @@ export default function HomePage() {
   } = useAudioStore();
 
   const [activePlayerId, setActivePlayerId] = useState<string | null>(null);
+
+  // Which queued songs carry saved Studio work.  Re-read on mount because
+  // the Studio writes to storage, not to this store — coming back from it
+  // is exactly when this display is stale.
+  useEffect(() => { refreshStudioSaved(); }, [refreshStudioSaved, queue.length]);
+  const savedCount = queue.filter((i) => i.studioSavedAt !== undefined).length;
 
   // Official Loui preset browser (quick style selection before mastering).
   const [presetBrowserOpen, setPresetBrowserOpen] = useState(false);
@@ -879,8 +964,7 @@ export default function HomePage() {
       const res = await window.electronAPI!.invoke('file:batch-save-wav', wavPaths) as { destDir: string; saved: number } | null;
       if (res) notify(`WAV ${res.saved}곡 저장 완료`, 'success');
     } catch (err) {
-      if (handleLicenseRequired(err)) notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
-      else notify('WAV 저장 실패', 'error');
+      notify('WAV 저장 실패', 'error');
     }
   }, [queue, notify]);
 
@@ -925,6 +1009,18 @@ export default function HomePage() {
     setPage('tweak');
   }, [setFile, setAnalysis, setMasteringResult, setPage]);
 
+  // ── Studio — the full module rack.  Same file plumbing as tweak; the
+  // difference is the destination, which is a chain editor rather than a
+  // source-preview player.
+  const handleStudio = useCallback((item: QueueItem) => {
+    if (item.filePath) {
+      setFile(item.filePath);
+      setAnalysis(item.analysis ?? null);
+      setMasteringResult(item.masteringResult ?? null);
+    }
+    setPage('studio');
+  }, [setFile, setAnalysis, setMasteringResult, setPage]);
+
   // ── Batch processing ──────────────────────────────────────────────────
   const handleStartBatch = useCallback(async () => {
     const pending = queue.filter((i) => i.status === 'pending' || i.status === 'error');
@@ -932,7 +1028,11 @@ export default function HomePage() {
 
     setIsBatchRunning(true);
 
+    const albumPreset = albumPresetId ? getPreset(albumPresetId) ?? null : null;
+
     for (const item of pending) {
+      // Declared out here so the catch can release it — see below.
+      let cleanupProgress: (() => void) | undefined;
       try {
         // Step 1: Analyze
         updateQueueItem(item.id, { status: 'analyzing' });
@@ -940,43 +1040,44 @@ export default function HomePage() {
         updateQueueItem(item.id, { analysis, status: 'mastering', progress: 0 });
 
         // Step 2: Progress listener for this item
-        const cleanupProgress = window.electronAPI!.on('audio:progress', (msg: unknown) => {
+        cleanupProgress = window.electronAPI!.on('audio:progress', (msg: unknown) => {
           const m = msg as { percent: number; stage: string };
           updateQueueItem(item.id, { progress: m.percent, progressStage: m.stage });
         });
 
-        // Step 3: Master — use per-file preset override when set.
+        // Step 3: Master.
+        //
+        // Three inputs decide what this song becomes, in priority order:
+        // its own saved Studio work, then the album preset chosen for the
+        // whole queue, then the per-file preset override, then the global
+        // options. `renderSong` settles the first two; the rest is the
+        // baseline it starts from.
+        const settings = loadSongSettings(item.filePath);
         const presetOverride = item.presetId
           ? louiPresetToMasteringOptions(getPreset(item.presetId)!)
           : null;
         const itemOptions = presetOverride ? { ...options, ...presetOverride } : options;
-        const result = await window.electronAPI!.invoke(
-          'audio:master',
-          item.filePath,
-          '',
-          {
-            style:              itemOptions.style,
-            ...(itemOptions.targetLufsExplicit ? { targetLufs: itemOptions.targetLufs } : {}),
-            targetTp:           itemOptions.targetTp,
-            sampleRate:         itemOptions.sampleRate,
-            bitDepth:           itemOptions.bitDepth,
-            applyAiCorrections: itemOptions.applyAiCorrections,
-            limiterStrength:    itemOptions.limiterStrength,
-            saturationAmount:   itemOptions.saturationAmount,
-            stereoWidth:        itemOptions.stereoWidth,
-            outputGainDb:       itemOptions.outputGainDb,
-            engineMode:         itemOptions.engineMode,
-            aiDetections:       analysis.aiDetection ?? {},
-          },
-          {
-            preLoudness: analysis.loudness,
-          },
-        ) as MasteringResult;
+        const rendered = await renderSong({
+          filePath: item.filePath,
+          analysis,
+          options: itemOptions,
+          settings,
+          // A per-file override is a deliberate choice for that song, so it
+          // outranks the album pick rather than fighting it.
+          albumPreset: presetOverride ? null : albumPreset,
+        });
 
         cleanupProgress();
-        updateQueueItem(item.id, { masteringResult: result, status: 'done', progress: 100 });
+        updateQueueItem(item.id, {
+          masteringResult: rendered.result, status: 'done', progress: 100,
+        });
 
       } catch (err) {
+        // Cleanup on the failure path too. `audio:progress` is one global
+        // channel with no request id, so a leaked listener from a failed
+        // song keeps writing its progress into that song's row for the rest
+        // of the batch.
+        cleanupProgress?.();
         updateQueueItem(item.id, { error: toStructuredError(err), status: 'error', progress: 0 });
       }
     }
@@ -984,7 +1085,11 @@ export default function HomePage() {
     setIsBatchRunning(false);
     const doneCount = useAudioStore.getState().queue.filter((i) => i.status === 'done').length;
     if (doneCount > 0) notify(`${doneCount}곡 마스터링 완료`, 'success');
-  }, [queue, isBatchRunning, options, updateQueueItem, setIsBatchRunning, notify]);
+  }, [queue, isBatchRunning, options, albumPresetId, updateQueueItem, setIsBatchRunning, notify]);
+
+  // Whether the album panel is open.  Local rather than in the store: it is a
+  // view of the queue, and nothing outside this page needs to ask about it.
+  const [albumOpen, setAlbumOpen] = useState(false);
 
   // ── Derived state ─────────────────────────────────────────────────────
   const pendingCount  = queue.filter((i) => i.status === 'pending' || i.status === 'error').length;
@@ -1077,6 +1182,9 @@ export default function HomePage() {
                 <button
                   onClick={handleOpenMulti}
                   disabled={isBatchRunning || queue.length >= MAX_QUEUE_SIZE}
+                  title={queue.length >= MAX_QUEUE_SIZE
+                    ? `큐가 가득 찼습니다 — 한 번에 최대 ${MAX_QUEUE_SIZE}곡`
+                    : isBatchRunning ? '처리 중에는 추가할 수 없습니다' : '파일 열기'}
                   className="no-drag px-3 rounded-xl border border-zinc-800 text-xs text-zinc-600
                              hover:border-zinc-700 hover:text-zinc-400 transition-colors
                              disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1089,6 +1197,12 @@ export default function HomePage() {
               <div className="flex items-center justify-between text-[11px]">
                 <span className="text-zinc-600">
                   {queue.length}곡
+                  {/* The two controls above go dead at the limit.  Greyed-out
+                      with no reason is the thing that makes people click
+                      twice and then wonder; this is the reason. */}
+                  {queue.length >= MAX_QUEUE_SIZE && (
+                    <span className="text-amber-600 ml-1.5">· 큐가 찼습니다 (최대 {MAX_QUEUE_SIZE}곡)</span>
+                  )}
                   {doneCount > 0 && (
                     <span className="text-emerald-500 ml-1.5">· {doneCount}곡 완료</span>
                   )}
@@ -1114,6 +1228,7 @@ export default function HomePage() {
                     onRemove={removeFromQueue}
                     onViewResult={handleViewResult}
                     onTweak={handleTweakListen}
+                    onStudio={handleStudio}
                     onSetPreset={(id, presetId) => updateQueueItem(id, { presetId })}
                     notify={notify}
                   />
@@ -1187,6 +1302,19 @@ export default function HomePage() {
               {/* Advanced sliders — LUFS / TP / Limiter / 선택 옵션 */}
               <AdvancedSettingsPanel disabled={isBatchRunning} />
 
+              {/* The finishing pass for the whole queue.  Sits directly
+                  above the start button because it is the last thing
+                  decided before the render runs. */}
+              {queue.length > 0 && (
+                <LouiAlbumPresetBar
+                  selectedId={albumPresetId}
+                  onSelect={setAlbumPreset}
+                  savedCount={savedCount}
+                  totalCount={queue.length}
+                  disabled={isBatchRunning}
+                />
+              )}
+
               {/* Start button — primary lavender CTA */}
               {pendingCount > 0 && (
                 <button
@@ -1248,6 +1376,20 @@ export default function HomePage() {
                 </div>
               )}
 
+              {/* Two or more finished masters is an album's worth — offer it
+                  there rather than making anyone go looking for the feature. */}
+              {doneCount >= 2 && !isBatchRunning && (
+                <button
+                  onClick={() => setAlbumOpen(true)}
+                  className="no-drag w-full py-2.5 rounded-xl text-xs font-medium
+                             border border-indigo-500/40 text-indigo-300
+                             hover:border-indigo-400 hover:text-indigo-200 transition-colors"
+                  data-testid="open-album"
+                >
+                  앨범으로 묶기 ({doneCount}곡) · 순서 · 간격 · 레벨 · 큐시트
+                </button>
+              )}
+
               {/* All done CTA */}
               {doneCount > 0 && pendingCount === 0 && !isBatchRunning && (
                 <button
@@ -1264,6 +1406,8 @@ export default function HomePage() {
 
         </div>
       </div>
+
+      {albumOpen && <AlbumPanel onClose={() => setAlbumOpen(false)} />}
     </div>
   );
 }

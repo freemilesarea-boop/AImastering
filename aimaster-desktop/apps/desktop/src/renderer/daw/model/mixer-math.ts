@@ -8,7 +8,6 @@ import type { DawSession, GroupDef, Track, TrackId } from './types.js';
 import { findTrack, updateTrack } from './session-ops.js';
 import { stackAncestors } from './stacks.js';
 
-export const MIN_FADER_DB = -Infinity;
 
 export function dbToGain(db: number): number {
   return db <= -144 ? 0 : Math.pow(10, db / 20);
@@ -200,6 +199,51 @@ export function toggleSolo(session: DawSession, trackId: TrackId): DawSession {
     out = updateTrack(out, id, (t) => ({ ...t, solo: next }));
   }
   return out;
+}
+
+/**
+ * Toggle solo-safe on a track.
+ *
+ * Solo-safe means "never implicitly muted by somebody else's solo" — the
+ * reverb return that has to keep passing audio while you solo the vocal, the
+ * click track the drummer needs whatever else is soloed, the talkback path.
+ * Without it, soloing the vocal mutes the reverb the vocal is being judged
+ * through, and the solo tells you about a sound that does not exist in the mix.
+ *
+ * `isImplicitlyMuted` has honoured this flag since it was written; nothing
+ * ever set it, so a solo-safe channel could not actually be made.  This is the
+ * setter that was missing.
+ *
+ * Deliberately NOT linked through groups the way solo and mute are.  Solo-safe
+ * is a property of a channel's ROLE in the session — this return is a return —
+ * and not a gesture you want mirrored across eight drum tracks because they
+ * happen to share a fader.
+ */
+export function toggleSoloSafe(session: DawSession, trackId: TrackId): DawSession {
+  const track = findTrack(session, trackId);
+  if (!track) return session;
+  // The master is never implicitly muted anyway, so marking it safe would be
+  // a switch that reads as meaningful and does nothing.
+  if (track.kind === 'master') return session;
+  return updateTrack(session, trackId, (t) => ({ ...t, soloSafe: !t.soloSafe }));
+}
+
+/** Set solo-safe on several tracks at once, to a known value. */
+export function setSoloSafe(
+  session: DawSession, trackIds: readonly TrackId[], safe: boolean,
+): DawSession {
+  let out = session;
+  for (const id of trackIds) {
+    const track = findTrack(out, id);
+    if (!track || track.kind === 'master' || track.soloSafe === safe) continue;
+    out = updateTrack(out, id, (t) => ({ ...t, soloSafe: safe }));
+  }
+  return out;
+}
+
+/** How many channels are solo-safe — for the toast and the mixer header. */
+export function soloSafeCount(session: DawSession): number {
+  return session.tracks.filter((t) => t.soloSafe && t.kind !== 'master').length;
 }
 
 export function clearAllSolo(session: DawSession): DawSession {

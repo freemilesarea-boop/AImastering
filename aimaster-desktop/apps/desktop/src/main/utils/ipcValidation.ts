@@ -25,11 +25,3 @@ export function validateAbsoluteFilePath(input: unknown, channel: string): strin
   }
   return resolved;
 }
-
-/** Reject the input unless it is a non-null, non-array plain object. */
-export function validatePlainObject(input: unknown, channel: string): Record<string, unknown> {
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error(`${channel}: payload must be a JSON object`);
-  }
-  return input as Record<string, unknown>;
-}

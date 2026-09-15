@@ -26,6 +26,10 @@
 
 import { runSeparation, type ProgressListener } from '../audio/separate/run.js';
 import {
+  expandStems, modelApplies, runModelOnWorker,
+} from '../audio/separate/model-dispatch.js';
+import type { ModelDescriptor } from '../audio/separate/model-registry.js';
+import {
   STEM_KINDS, stemColor, stemLabel,
   type SeparationOptions, type SeparationReport, type StemKind,
 } from '../audio/separate/separate.js';
@@ -56,6 +60,14 @@ export interface SeparateOptions {
   onProgress?: ProgressListener;
   /** Set false to leave the source track playing.  It will then double the stems. */
   muteSource?: boolean;
+  /**
+   * An installed separation model, and the folder it was found in.
+   *
+   * Passed in rather than looked up here: scanning is an IPC round trip and
+   * the panel has already done it to draw its install list, so doing it again
+   * would be a second answer to a question that already has one.
+   */
+  model?: { descriptor: ModelDescriptor; dir: string };
 }
 
 /** What the panel needs to know before it offers the button. */
@@ -101,7 +113,77 @@ export async function separateClip(
     { ...options.separation, wanted },
     options.onProgress ?? (() => {}),
   );
-  const report = await run.result;
+  let report = await run.result;
+
+  // ── The model, when there is one and it was asked for ──────────────────
+  //
+  // After the DSP pass, not instead of it.  `expandStems` REPLACES a parent
+  // stem with its children, which is what keeps the sum exact; a model that
+  // produced its own top level would have to be trusted to cover the whole
+  // record, and nothing checks that.
+  //
+  // Every failure here is a NOTE on a report that still has its DSP stems,
+  // never a thrown separation.  The user asked for stems and got them; that
+  // the extra split did not happen is worth saying and is not worth throwing
+  // away two minutes of work over.
+  if (options.model) {
+    const { descriptor, dir } = options.model;
+    const applies = modelApplies(descriptor, wanted);
+    if (!applies.ok) {
+      report = { ...report, notes: [...report.notes, applies.reason] };
+    } else {
+      const parent = report.stems.find((s) => s.kind === applies.parent);
+      // The denominator for `energyShare`, taken from the DSP report so the
+      // model's children are a share of the SAME whole its siblings are.
+      const mixEnergy = report.stems.reduce((sum, st) => sum + energyOf(st.channels), 0);
+      if (!parent) {
+        report = {
+          ...report,
+          notes: [...report.notes,
+            `${stemLabel(applies.parent)} 스템이 없어 ${descriptor.name} 을(를) 쓰지 않았습니다`],
+        };
+      } else {
+        try {
+          // Copies, not the originals: the worker TRANSFERS what it is given,
+          // and this stem is about to be written into the session either way.
+          const copy = parent.channels.map((c) => Float32Array.from(c));
+          const split = await runModelOnWorker(
+            descriptor, dir, copy, report.sampleRate,
+            (fraction) => options.onProgress?.(fraction, `${descriptor.name} 분리`),
+          );
+          const chosen = split.stems.filter((st) => wanted.includes(st.kind));
+          const kept = (chosen.length > 0 ? chosen : split.stems).map((st) => ({
+            kind: st.kind,
+            channels: st.channels,
+            // Measured on the audio that came back, on the same definitions
+            // the DSP stems use — `energyShare` against the whole mix, `peak`
+            // as it will be written.  `confidence` comes from the model's own
+            // masks and means exactly what the DSP one means: the share of
+            // this stem's energy from a mask above 0.8.
+            energyShare: shareOf(st.channels, mixEnergy),
+            confidence: st.confidence,
+            peak: peakOf(st.channels),
+          }));
+          report = {
+            ...report,
+            stems: expandStems(report.stems, applies.parent, kept),
+            notes: [...report.notes,
+              `${stemLabel(applies.parent)} 을(를) ${descriptor.name} 으로 `
+              + `${split.stems.length}개로 나눴습니다`
+              + ` (합 오차 ${split.reconstructionDb.toFixed(0)} dB)`],
+            elapsedMs: report.elapsedMs + split.elapsedMs,
+          };
+        } catch (err) {
+          report = {
+            ...report,
+            notes: [...report.notes,
+              `${descriptor.name} 을(를) 쓰지 못했습니다 — `
+              + `${err instanceof Error ? err.message : String(err)}`],
+          };
+        }
+      }
+    }
+  }
 
   const source = session.files.find((f) => f.id === clip.fileId);
   const baseName = source?.name.replace(/\.[^.]+$/, '') ?? clip.name;
@@ -207,4 +289,26 @@ function seedCache(fileId: string, channels: readonly Float32Array[], sampleRate
     buffer.getChannelData(c).set(channels[c] ?? new Float32Array(0));
   }
   analyzeBuffer(fileId, buffer);
+}
+
+/** Total squared energy of a stem's channels. */
+function energyOf(channels: readonly Float32Array[]): number {
+  let sum = 0;
+  for (const ch of channels) for (let i = 0; i < ch.length; i++) sum += (ch[i] ?? 0) ** 2;
+  return sum;
+}
+
+function shareOf(channels: readonly Float32Array[], mixEnergy: number): number {
+  return mixEnergy > 0 ? energyOf(channels) / mixEnergy : 0;
+}
+
+function peakOf(channels: readonly Float32Array[]): number {
+  let peak = 0;
+  for (const ch of channels) {
+    for (let i = 0; i < ch.length; i++) {
+      const a = Math.abs(ch[i] ?? 0);
+      if (a > peak) peak = a;
+    }
+  }
+  return peak;
 }

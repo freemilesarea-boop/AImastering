@@ -14,19 +14,45 @@
 // what is sounding at 1:12 is the last change at or before it — so gaps and
 // overlaps are not representable and dragging a boundary is one edit.
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { snapToGrid, useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import {
   addChord, chordGrid, chordRanges, moveChord, parseChordInput, removeChord,
-  setChord, sortedChords, transposeChords, withChords,
+  setChord, setCapo, sortedChords, transposeChordTrack, transposeChords, withChords,
 } from '../../../daw/edit/chord-edit.js';
-import { formatChord, makeChord } from '../../../daw/model/chords.js';
+import { makeChord, transposeChord } from '../../../daw/model/chords.js';
+import {
+  describeChordBlock, isUnsure, nextUnsureAfter, unsureChords,
+} from '../../../daw/edit/chord-confidence.js';
 import { songEnd } from '../../../daw/edit/arrange-ops.js';
 import { barSeconds } from '../../../daw/edit/chord-detect.js';
+import { detectChordsForClip } from '../../../daw/edit/chord-actions.js';
+import {
+  BACKING_STYLES, backingStyleLabel, generateBackingPart, type BackingStyle,
+} from '../../../daw/edit/chord-parts.js';
+import { formatChordIn, keyNameIn } from '../../../daw/model/key.js';
+import { shapeFor, suggestCapo, MAX_CAPO_FRET } from '../../../daw/model/capo.js';
+import { trackClips } from '../../../daw/model/session-ops.js';
+import type { Clip, Track } from '../../../daw/model/types.js';
 import { premium } from '../../../theme/premium.js';
 
-export const CHORD_LANE_HEIGHT = 24;
+/**
+ * Tall enough for the header's three rows of controls you can actually press.
+ *
+ * It was 24, which laid the row out as if it had the width of the arrangement:
+ * a `flex-1` spacer pushing the actions to a right edge that does not exist in
+ * a 167 px track column.  The row asked for 270 px, `overflow: visible` painted
+ * the excess over the lane's own blocks, and four of the seven chord-track
+ * actions could not be pressed at all — findable only by a test that drives the
+ * mouse by coordinate rather than by element.  The row wraps now.  It
+ * became 56, which fitted three rows of 16 px chips with nothing to spare —
+ * measured, the last row's bottom sat at 357 px inside a box ending at 358.
+ * 16 px is under any pointer target worth the name and there was no room to
+ * grow into, so the rows are 20 px now and the lane is the height that holds
+ * them: 4 px of padding, three rows, 4 px of gap between each.
+ */
+export const CHORD_LANE_HEIGHT = 76;
 
 interface Viewport { scrollSec: number; pxPerSec: number; width: number }
 
@@ -34,7 +60,38 @@ export function ChordLaneHeader() {
   const session = useDawStore((s) => s.session);
   const apply = useDawStore((s) => s.apply);
   const playheadSec = useDawStore((s) => s.playheadSec);
+  const seekTo = useDawStore((s) => s.seek);
   const notify = useAppStore((s) => s.notify);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [style, setStyle] = useState<BackingStyle>('pad');
+
+  // The bars the detector was least sure of.  Counting them is not the point
+  // — REACHING them is: a number in a toast tells you there is work and not
+  // where, and a chart of ninety bars with six doubtful ones in it is only
+  // checkable if the six can be jumped to.
+  const unsure = unsureChords(sortedChords(session));
+  const chordCount = sortedChords(session).length;
+  // The fret worth putting a capo on, or nothing.  Suggested, never applied:
+  // a capo is a decision about the player's hands and the app does not have
+  // any.
+  const capoHint = useMemo(() => {
+    const events = sortedChords(session);
+    if (events.length === 0) return null;
+    return suggestCapo(events.map((e) => ({ chord: e.chord })))?.fret ?? null;
+  }, [session]);
+  const goToNextUnsure = (): void => {
+    const next = nextUnsureAfter(sortedChords(session), playheadSec);
+    if (next) seekTo(next.timeSec);
+  };
+
+  /** The chord track, played — a new track so nothing existing is written over. */
+  const makePart = (): void => {
+    const result = generateBackingPart(useDawStore.getState().session, { style });
+    if (!result.ok) { notify(result.reason, 'warning'); return; }
+    apply(() => result.session);
+    useDawStore.getState().setFocusedTrack(result.trackId);
+    notify(result.message, 'success');
+  };
 
   const addHere = (): void => {
     const at = snapToGrid(playheadSec);
@@ -54,19 +111,138 @@ export function ChordLaneHeader() {
     notify('8마디 뼈대를 만들었습니다 — 블록을 더블클릭해서 코드를 쓰세요');
   };
 
+  // The audio clip the analysis would read: the one under the playhead on the
+  // focused track, the same rule the separation and restoration panels use.
+  const target = useMemo((): { track: Track; clip: Clip } | null => {
+    for (const track of session.tracks) {
+      const audio = trackClips(track).filter((c) => c.kind === 'audio');
+      const under = audio.find(
+        (c) => playheadSec >= c.startSec && playheadSec < c.startSec + c.durationSec);
+      if (under) return { track, clip: under };
+    }
+    return null;
+  }, [session, playheadSec]);
+
+  const readChords = useCallback(async () => {
+    if (!target || busy) return;
+    setBusy('분석 시작');
+    try {
+      const result = await detectChordsForClip(session, target.track.id, target.clip.id, {
+        onProgress: (fraction, what) => setBusy(`${what} ${Math.round(fraction * 100)}%`),
+      });
+      apply(() => result.session);
+      notify(result.message, result.separationNote || result.workerNote ? 'warning' : 'success');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'warning');
+    } finally {
+      setBusy(null);
+    }
+  }, [target, busy, session, apply, notify]);
+
   return (
     <div
-      className="flex items-center gap-1 px-2 border-b border-zinc-800"
+      className="flex flex-wrap items-center content-center gap-1 px-2 border-b border-zinc-800 overflow-hidden"
       style={{ height: CHORD_LANE_HEIGHT, background: '#14141c' }}
     >
-      <span className="text-[9px] tracking-wide flex-1" style={{ color: premium.text.faint }}>
+      <span className="text-[9px] tracking-wide" style={{ color: premium.text.faint }}>
         코드
       </span>
-      <button onClick={seed} title="8마디 뼈대 만들기"
-              className="h-4 px-1 rounded text-[8px] leading-none border"
-              style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>8마디</button>
+      {session.key && (
+        <span
+          className="text-[9px] px-1 rounded"
+          title="오디오에서 추정한 조성 — Key Editor 의 스케일과 스냅이 같은 값을 씁니다"
+          style={{ color: premium.text.muted, background: 'rgba(255,255,255,0.05)' }}
+        >{keyNameIn(session.key)}</span>
+      )}
+      {chordCount > 0 && (
+        <>
+          <button
+            onClick={() => apply((s) => transposeChordTrack(s, -1))}
+            title="전체 코드를 반음 내립니다 — 조성도 같이 내려갑니다"
+            style={laneChip()}
+          >♭</button>
+          <button
+            onClick={() => apply((s) => transposeChordTrack(s, 1))}
+            title="전체 코드를 반음 올립니다 — 조성도 같이 올라갑니다"
+            style={laneChip()}
+          >♯</button>
+          <select
+            value={session.capoFret ?? 0}
+            onChange={(e) => apply((s) => setCapo(s, Number(e.target.value)))}
+            title={'카포 — 소리는 그대로 두고 잡을 코드 모양만 바꿔서 보여줍니다'
+              + (capoHint ? `. 추천: ${capoHint}프렛` : '')}
+            className="h-5 rounded text-[9px] leading-none border bg-transparent"
+            style={{
+              borderColor: capoHint && (session.capoFret ?? 0) === 0
+                ? premium.accent.glow : 'rgba(255,255,255,0.14)',
+              color: (session.capoFret ?? 0) > 0 ? premium.accent.light : premium.text.muted,
+            }}
+          >
+            <option value={0} style={{ background: '#14141c' }}>
+              {capoHint ? `카포 없음 (추천 ${capoHint})` : '카포 없음'}
+            </option>
+            {Array.from({ length: MAX_CAPO_FRET }, (_, i) => i + 1).map((fret) => (
+              <option key={fret} value={fret} style={{ background: '#14141c' }}>
+                {`카포 ${fret}${fret === capoHint ? ' ✓' : ''}`}
+              </option>
+            ))}
+          </select>
+        </>
+      )}
+      {unsure.length > 0 && (
+        <button
+          onClick={goToNextUnsure}
+          title={`검출기가 확신하지 못한 코드 ${unsure.length}개 — 눌러서 다음 위치로 이동합니다`}
+          className="h-5 px-1.5 rounded text-[9px] leading-none border flex items-center gap-1"
+          style={{
+            borderColor: premium.accent.glow,
+            color: premium.accent.light,
+            background: 'rgba(198,167,104,0.12)',
+          }}
+        >{`불확실 ${unsure.length} →`}</button>
+      )}
+      <select
+        value={style}
+        onChange={(e) => setStyle(e.target.value as BackingStyle)}
+        title="만들 반주의 종류"
+        className="h-5 rounded text-[9px] leading-none border bg-transparent"
+        style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
+      >
+        {BACKING_STYLES.map((s) => (
+          <option key={s} value={s} style={{ background: '#14141c' }}>{backingStyleLabel(s)}</option>
+        ))}
+      </select>
+      <button
+        onClick={makePart}
+        disabled={chordCount === 0}
+        title={chordCount === 0
+          ? '코드 트랙이 비어 있습니다'
+          : `코드 트랙을 ${backingStyleLabel(style)} 파트로 만들어 새 트랙에 놓습니다`}
+        className="h-5 px-1.5 rounded text-[9px] leading-none border"
+        style={{
+          borderColor: 'rgba(255,255,255,0.14)',
+          color: chordCount === 0 ? premium.text.faint : premium.text.muted,
+          opacity: chordCount === 0 ? 0.45 : 1,
+        }}
+      >파트</button>
+      <button
+        onClick={() => { void readChords(); }}
+        disabled={!target || busy !== null}
+        title={target
+          ? `"${target.clip.name}" 의 코드를 읽어서 코드 트랙에 씁니다 (드럼 분리 후 분석 — 느립니다)`
+          : '재생헤드 아래에 오디오 클립이 없습니다'}
+        className="h-5 px-1.5 rounded text-[9px] leading-none border"
+        style={{
+          borderColor: 'rgba(255,255,255,0.14)',
+          color: target && !busy ? premium.text.muted : premium.text.faint,
+          opacity: target ? 1 : 0.45,
+        }}
+      >{busy ?? '분석'}</button>
+      <button onClick={seed} title="8마디 코드 뼈대를 만듭니다 — 블록을 더블클릭해서 코드를 씁니다"
+              className="h-5 px-1.5 rounded text-[9px] leading-none border"
+              style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>뼈대</button>
       <button onClick={addHere} title="재생헤드에 코드를 추가합니다"
-              className="w-5 h-4 rounded text-[10px] leading-none border"
+              className="hit-target w-5 h-5 shrink-0 rounded text-[10px] leading-none border"
               style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>+</button>
     </div>
   );
@@ -86,6 +262,18 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
 
   const { scrollSec, pxPerSec, width } = viewport;
   const events = sortedChords(session);
+  const capo = session.capoFret ?? 0;
+
+  /**
+   * What the block prints.
+   *
+   * With a capo on, the SHAPE — because that is what the player's hands do,
+   * and a capo control that left the chart unchanged would be a setting with
+   * no effect.  The sounding chord is still in the tooltip, so the chart can
+   * always be read back against the record.
+   */
+  const label = (chord: typeof events[number]['chord']): string =>
+    formatChordIn(capo > 0 ? shapeFor(chord, capo) : chord, session.key);
   const ranges = chordRanges(events, Math.max(songEnd(session), scrollSec + width / pxPerSec));
 
   const secAt = useCallback((clientX: number): number => {
@@ -98,7 +286,12 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
     const parsed = parseChordInput(text);
     setEditing(null);
     if (!parsed.ok) { if (parsed.reason) notify(parsed.reason, 'warning'); return; }
-    apply((s) => withChords(s, setChord(sortedChords(s), id, parsed.chord)));
+    // With a capo on, the lane is entirely in SHAPE space — the block shows
+    // the shape, so the box has to accept one too, and what gets stored is
+    // the chord that shape makes sound.  Showing G and storing G while the
+    // record plays B♭ is the bug this avoids.
+    const chord = capo > 0 ? transposeChord(parsed.chord, capo) : parsed.chord;
+    apply((s) => withChords(s, setChord(sortedChords(s), id, chord)));
   };
 
   const onBoundaryDown = (e: React.PointerEvent, id: string): void => {
@@ -129,41 +322,53 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
         const left = (range.startSec - scrollSec) * pxPerSec;
         const w = (range.endSec - range.startSec) * pxPerSec;
         if (left + w < -40 || left > width + 40) return null;
+        const doubtful = isUnsure(range.event);
         return (
           <div
             key={range.event.id}
             className="absolute top-0 bottom-0 flex items-center gap-1 px-1.5 overflow-hidden group"
             style={{
               left, width: Math.max(2, w),
-              background: 'rgba(122,106,168,0.16)',
-              borderLeft: '2px solid rgba(150,130,200,0.7)',
+              // Amber, not red: the detector is not reporting an error, it is
+              // reporting that it nearly went the other way.  Red would say
+              // "this is wrong", which is a claim nobody here can make.
+              background: doubtful ? 'rgba(198,167,104,0.14)' : 'rgba(122,106,168,0.16)',
+              borderLeft: doubtful
+                ? `2px solid ${premium.accent.base}`
+                : '2px solid rgba(150,130,200,0.7)',
             }}
             onClick={() => seek(range.startSec)}
-            title={`${formatChord(range.event.chord)} — 더블클릭해서 고쳐 쓰세요`}
+            title={capo > 0
+              ? `잡을 모양 ${label(range.event.chord)} · 실제로 울리는 코드 `
+                + `${formatChordIn(range.event.chord, session.key)} (카포 ${capo}프렛)`
+              : describeChordBlock(range.event)}
           >
             {editing === range.event.id ? (
               <input
                 autoFocus
-                defaultValue={formatChord(range.event.chord)}
+                defaultValue={label(range.event.chord)}
                 onClick={(e) => e.stopPropagation()}
                 onBlur={(e) => commitText(range.event.id, e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') e.currentTarget.blur();
                   if (e.key === 'Escape') setEditing(null);
                 }}
-                className="h-4 px-1 text-[9.5px] rounded bg-transparent outline-none"
+                className="h-5 px-1 text-[10px] rounded bg-transparent outline-none"
                 style={{ color: premium.text.primary, border: '1px solid rgba(150,130,200,0.7)', width: 74 }}
               />
             ) : (
               <span
                 className="text-[10px] truncate"
-                style={{ color: premium.text.secondary, fontFamily: premium.type.mono }}
+                style={{
+                  color: doubtful ? premium.accent.light : premium.text.secondary,
+                  fontFamily: premium.type.mono,
+                }}
                 onDoubleClick={(e) => { e.stopPropagation(); setEditing(range.event.id); }}
-              >{formatChord(range.event.chord)}</span>
+              >{label(range.event.chord)}{doubtful ? '?' : ''}</span>
             )}
 
             {w > 96 && (
-              <span className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+              <span className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100">
                 <button onClick={(e) => {
                   e.stopPropagation();
                   apply((s) => withChords(s,
@@ -177,7 +382,7 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
                 <button onClick={(e) => {
                   e.stopPropagation();
                   apply((s) => withChords(s, removeChord(sortedChords(s), range.event.id)));
-                }} title="지우기" style={laneChip(premium.accent.danger)}>×</button>
+                }} title="지우기" className="ml-1" style={laneChip(premium.accent.danger)}>×</button>
               </span>
             )}
 
@@ -205,9 +410,21 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
   );
 }
 
+/**
+ * The lane's own small control.
+ *
+ * It was 13 px tall with 3 px of padding at 8 px type, which on a chord block
+ * made ♯ ♭ × into 12x13 and 15x13 boxes with 2 px between them, revealed only
+ * on hover.  One of the three DELETES the chord.  Growing an invisible hit
+ * area — the trick used elsewhere in this file's neighbours — is the wrong fix
+ * HERE: two 24 px targets 15 px apart hand the overlap to whichever paints
+ * last, which would make the delete easier to hit by accident, not harder.
+ * Bigger and further apart is the only thing that helps.
+ */
 function laneChip(color: string = premium.text.muted): React.CSSProperties {
   return {
-    height: 13, padding: '0 3px', borderRadius: 2, fontSize: 8,
+    height: 20, minWidth: 20, padding: '0 5px', borderRadius: 3, fontSize: 11,
+    lineHeight: '18px', textAlign: 'center',
     color, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
   };
 }

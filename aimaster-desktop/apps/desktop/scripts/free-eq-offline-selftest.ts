@@ -14,12 +14,17 @@
  */
 
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 process.env['LOUI_WASM_NODE_PATH'] = path.resolve(
   __dirname, '../../../packages/dsp-wasm/pkg-node/loui_dsp_wasm.cjs',
 );
 
 import { renderStereoBuffer } from '../src/main/offline/rust-offline-render-core.js';
 import { loadWasmModule, type OfflineChainConfig, type OfflineParametricBand } from '../src/main/offline/load-mastering-chain-node.js';
+import { buildChainConfig } from '../src/renderer/audio/chain-config.js';
+import { freeBandToWire } from '../src/renderer/audio/modules/eq-graph-model.js';
+import { defaultAllModulesState } from '../src/renderer/audio/parameters/parameter-state.js';
+import { ALL_MODULE_PARAMETER_DEFS } from '../src/renderer/audio/parameters/module-parameter-definitions.js';
 
 const SR = 48_000;
 const N = SR * 1; // 1 second is enough to settle the filters + measure RMS.
@@ -130,6 +135,46 @@ const surplusResult = renderStereoBuffer(boostLeft, boostRight, flatCfg(manyBand
 check('Surplus bands produce finite output',
   surplusResult.left.every((x) => Number.isFinite(x)) && surplusResult.right.every((x) => Number.isFinite(x)),
 );
+
+// ── The wire from the editor to the engine ──────────────────────────────────
+//
+// Everything above proves the ENGINE honours a band list.  None of it noticed
+// when the list stopped being handed over: replacing StudioPage's
+// `parametricBands: freeBands.map(freeBandToWire)` with `[]` left every EQ
+// suite green while the free EQ went silent for preview and export alike.
+//
+// The renderer once had a second free EQ — a WebAudio biquad chain in
+// `shared-audio-graph`, driven by `setFreeEqBands` — and nothing ever called
+// its setter either.  That one was removed rather than repaired, which leaves
+// this single wire carrying the whole feature.  So it gets a test.
+
+// 1) The pure step: a band list in, a band list on the wire.
+const bandedConfig = buildChainConfig({
+  state: defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS),
+  parametricBands: [
+    { id: 'w1', kind: 'bell' as const, frequencyHz: 1000, gainDb: 6, q: 1, enabled: true },
+  ].map(freeBandToWire),
+});
+const wiredBands = bandedConfig.parametricEq?.bands ?? [];
+check('A band the editor holds reaches the wire config',
+  wiredBands.length === 1, `bands=${wiredBands.length}`);
+
+const emptyConfig = buildChainConfig({
+  state: defaultAllModulesState(ALL_MODULE_PARAMETER_DEFS),
+  parametricBands: [],
+});
+check('…and an empty list leaves the section off entirely',
+  emptyConfig.parametricEq === undefined);
+
+// 2) The wire itself.  A source check, like `export-gate-selftest` uses for
+//    the gate that must stay absent — the same idea, pointed the other way.
+const studio = readFileSync(
+  path.resolve(__dirname, '../src/renderer/pages/StudioPage.tsx'), 'utf8');
+// `check` prints its detail on pass as well as fail, so this says what was
+// looked for rather than asserting a failure that has not happened.
+check('StudioPage still hands its own bands to the chain config',
+  /parametricBands:\s*freeBands\.map\(freeBandToWire\)/.test(studio),
+  'looked for `parametricBands: freeBands.map(freeBandToWire)`');
 
 console.log(`\n=== ${fail === 0 ? 'ALL FREE EQ OFFLINE TESTS PASS' : `${fail} FAILED`} ===\n`);
 if (fail) process.exit(1);

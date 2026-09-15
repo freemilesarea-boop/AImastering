@@ -15,11 +15,3 @@ export function isDevMode(): boolean {
   } catch { /* ignore */ }
   return false;
 }
-
-/** Toggle the persisted QA dev-mode flag (packaged builds). */
-export function setDevMode(on: boolean): void {
-  try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem('loui.devMode', on ? 'true' : 'false');
-  } catch { /* ignore */ }
-  try { (window as { __LOUI_DEV__?: boolean }).__LOUI_DEV__ = on; } catch { /* ignore */ }
-}

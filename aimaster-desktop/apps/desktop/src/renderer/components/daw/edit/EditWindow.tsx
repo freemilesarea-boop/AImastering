@@ -6,14 +6,31 @@
 // one model, never two.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useDawStore, snapToGrid, type EditMode } from '../../../stores/dawStore.js';
+import { LAYER } from '../../../theme/layers.js';
+import { useDawStore, snapToGrid, snapMoveTo, type EditMode } from '../../../stores/dawStore.js';
+import { followScrollSec, rulerTicks } from '../../../daw/model/viewport.js';
+import UniverseStrip from './UniverseStrip.js';
+import { formatLabel, DEFAULT_FPS, TIME_FORMATS } from '../../../daw/model/spot-time.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
 import { useAudioStore } from '../../../stores/audioStore.js';
 import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
 import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
-import { activePlaylist, clipAt, sessionEndSec } from '../../../daw/model/session-ops.js';
-import { moveClip } from '../../../daw/edit/clip-edit.js';
+import {
+  activePlaylist, clipAt, clipEnd, findTrack, sessionEndSec, trackClips,
+} from '../../../daw/model/session-ops.js';
+import { setClipFade, setOneClipGain, trackBand } from '../../../daw/edit/clip-edit.js';
+import { describeGroup, moveClipWithGroup } from '../../../daw/edit/edit-groups.js';
+import { autoCrossfadeTrack } from '../../../daw/edit/auto-fade.js';
+import {
+  fadeFromDrag, fadeOn, fadeRegionAt, FADE_SHAPES, FADE_SHAPE_LABEL,
+  type FadeSide,
+} from '../../../daw/model/clip-fade.js';
+import {
+  gainFromY, laneGrab, type LaneGrab,
+} from '../../../daw/model/lane-grab.js';
+import { fadeCurve } from '../../../daw/engine/clip-player.js';
+import type { FadeShape } from '../../../daw/model/types.js';
 import { useMidiEditorStore } from '../../../stores/midiEditorStore.js';
 import {
   collapsedOverviewClips, stackDepth, stackSummary, toggleCollapsed, unpackStack,
@@ -22,7 +39,7 @@ import {
 import { premium } from '../../../theme/premium.js';
 import { cyclePlaylist } from '../../../daw/edit/comping.js';
 import { toggleMute, toggleSolo } from '../../../daw/model/mixer-math.js';
-import type { Track } from '../../../daw/model/types.js';
+import type { GroupDef, Track } from '../../../daw/model/types.js';
 import TrackLaneCanvas from './TrackLaneCanvas.js';
 import AutomationLaneCanvas, {
   AUTOMATION_LANE_HEIGHT, AutomationLaneHeader,
@@ -32,13 +49,22 @@ import {
 } from '../../../daw/edit/automation-lanes.js';
 import type { AutomationLane } from '../../../daw/model/types.js';
 import {
-  describeTempoMap, formatBarBeat, gridLines, isConstantTempo, tempoMapOf,
+  describeTempoMap, formatBarBeat, isConstantTempo, tempoMapOf,
 } from '../../../daw/model/tempo-map.js';
 import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 import SectionLane, { SectionLaneHeader } from './SectionLane.js';
 import ChordLane, { ChordLaneHeader } from './ChordLane.js';
 import PictureLane, { PictureLaneHeader } from './PictureLane.js';
-import SpotDialog, { type SpotTarget } from './SpotDialog.js';
+import SpotDialog from './SpotDialog.js';
+import StripSilenceDialog from './StripSilenceDialog.js';
+import BatchRenameDialog from './BatchRenameDialog.js';
+import HistoryPanel from './HistoryPanel.js';
+import PoolPanel from './PoolPanel.js';
+import BatchFadeDialog from './BatchFadeDialog.js';
+import { SNAP_LABELS, SNAP_MODES, describeSnap } from '../../../daw/model/snap-modes.js';
+import QuantizeDialog from './QuantizeDialog.js';
+import { separateAt } from '../../../daw/edit/clip-edit.js';
+import { useRegionLabStore } from '../../../stores/regionLabStore.js';
 import { trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay } from '../../../daw/edit/track-delay-ops.js';
 import {
@@ -83,9 +109,32 @@ export default function EditWindow() {
   const pxPerSec     = useDawStore((s) => s.pxPerSec);
   const setPxPerSec  = useDawStore((s) => s.setPxPerSec);
   const scrollSec    = useDawStore((s) => s.scrollSec);
+  const followPlayhead = useDawStore((s) => s.followPlayhead);
+  const isPlaying = useDawStore((s) => s.isPlaying);
+  const setFollowPlayhead = useDawStore((s) => s.setFollowPlayhead);
+  const rulerFormat = useDawStore((s) => s.rulerFormat);
+  const setRulerFormat = useDawStore((s) => s.setRulerFormat);
   const setScrollSec = useDawStore((s) => s.setScrollSec);
   const editMode     = useDawStore((s) => s.editMode);
   const spotTarget = useDawStore((s) => s.spotTarget);
+  const stripTarget = useDawStore((s) => s.stripTarget);
+  const setStripTarget = useDawStore((s) => s.setStripTarget);
+  const quantizeTarget = useDawStore((s) => s.quantizeTarget);
+  const autoCrossfade = useDawStore((s) => s.autoCrossfade);
+  const snapMode = useDawStore((s) => s.snapMode);
+  const setSnapMode = useDawStore((s) => s.setSnapMode);
+  const renameTarget = useDawStore((s) => s.renameTarget);
+  const setRenameTarget = useDawStore((s) => s.setRenameTarget);
+  const historyOpen = useDawStore((s) => s.historyOpen);
+  const setHistoryOpen = useDawStore((s) => s.setHistoryOpen);
+  const poolOpen = useDawStore((s) => s.poolOpen);
+  const setPoolOpen = useDawStore((s) => s.setPoolOpen);
+  const fadeTarget = useDawStore((s) => s.fadeTarget);
+  const setFadeTarget = useDawStore((s) => s.setFadeTarget);
+  const linkSelection = useDawStore((s) => s.linkSelection);
+  const setLinkSelection = useDawStore((s) => s.setLinkSelection);
+  const setAutoCrossfade = useDawStore((s) => s.setAutoCrossfade);
+  const setQuantizeTarget = useDawStore((s) => s.setQuantizeTarget);
   const setSpotTarget = useDawStore((s) => s.setSpotTarget);
   const setEditMode  = useDawStore((s) => s.setEditMode);
   const gridDivision = useDawStore((s) => s.gridDivision);
@@ -103,13 +152,45 @@ export default function EditWindow() {
 
   const laneRef = useRef<HTMLDivElement>(null);
   const [laneWidth, setLaneWidth] = useState(900);
+  const [showUniverse, setShowUniverse] = useState(false);
   const [decodeTick, setDecodeTick] = useState(0);
-  const [drag, setDrag] = useState<null | { anchorSec: number; trackIds: string[] }>(null);
+  const [drag, setDrag] = useState<null | { anchorSec: number; anchorTrackId: string }>(null);
+  // The row the pointer is over, as a ref rather than state: the row handler
+  // and the lane handler both see the same mousemove, and the row's runs
+  // first.  A ref is already updated by the time the lane reads it; state
+  // would be one event behind, which is one row behind for the whole drag.
+  const bandTrackRef = useRef<string | null>(null);
   // Clip drag: one gesture = one undo step, so it writes through
   // applyTransient and commits on mouse up.
   const [clipDrag, setClipDrag] = useState<null | {
     trackId: string; clipId: string; grabOffsetSec: number;
+    /**
+     * Where the clip started, captured at mouse-down and never updated.
+     *
+     * Relative Grid counts whole grid steps FROM here, so it has to be the
+     * original position: reading the clip's current start each frame would
+     * count the step it already took and the clip would run away down the
+     * timeline a bar per mouse-move.
+     */
+    fromSec: number;
   }>(null);
+  // Pulling a clip corner.  Like a clip drag: transient while the mouse is
+  // down, one undo step when it comes up.
+  const [fadeDrag, setFadeDrag] = useState<null | {
+    trackId: string; clipId: string; side: FadeSide;
+  }>(null);
+  /** The fade whose shape menu is open, anchored where it was opened. */
+  const [fadeMenu, setFadeMenu] = useState<null | {
+    trackId: string; clipId: string; side: FadeSide; x: number; y: number;
+  }>(null);
+  /** Which handle the pointer is over, so the lane can show it is grabbable. */
+  const [laneHover, setLaneHover] = useState<LaneGrab['kind'] | null>(null);
+  // The row's geometry is captured at mousedown, not read live: dragging off
+  // a short track onto a tall one must not change what a pixel is worth
+  // halfway through the gesture.
+  const [gainDrag, setGainDrag] = useState<
+    null | { trackId: string; clipId: string; topPx: number; heightPx: number }
+  >(null);
   const applyTransient = useDawStore((s) => s.applyTransient);
   const commitEdit     = useDawStore((s) => s.commitEdit);
 
@@ -126,14 +207,29 @@ export default function EditWindow() {
   useEffect(() => {
     const el = laneRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
+    const publish = (w: number): void => {
+      const held = Math.max(120, w);
+      setLaneWidth(held);
+      // Also into the store: "zoom to selection" is arithmetic on this width
+      // and the keyboard has no component to ask.
+      useDawStore.getState().setLaneWidthPx(held);
+    };
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width;
-      if (w) setLaneWidth(Math.max(120, w));
+      if (w) publish(w);
     });
     ro.observe(el);
-    setLaneWidth(Math.max(120, el.clientWidth));
+    publish(el.clientWidth);
     return () => ro.disconnect();
   }, []);
+
+  // Follow the play head while it plays.  Paged, not centred — see
+  // followScrollSec: a view that re-centres every frame cannot be read.
+  useEffect(() => {
+    if (!followPlayhead || !isPlaying) return;
+    const next = followScrollSec({ scrollSec, pxPerSec, widthPx: laneWidth }, playheadSec);
+    if (next !== null) setScrollSec(next);
+  }, [followPlayhead, isPlaying, playheadSec, scrollSec, pxPerSec, laneWidth, setScrollSec]);
 
   const endSec = useMemo(() => sessionEndSec(session), [session]);
   const toX = useCallback((sec: number) => (sec - scrollSec) * pxPerSec, [scrollSec, pxPerSec]);
@@ -206,6 +302,12 @@ export default function EditWindow() {
   }, [apply]);
 
   // ── Lane gestures ───────────────────────────────────────────────────────
+  /** Where in a lane the pointer is, 0 at the top of the row. */
+  const yFracIn = (e: React.MouseEvent): number => {
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return rect.height > 0 ? (e.clientY - rect.top) / rect.height : 1;
+  };
+
   const onLaneDown = useCallback((e: React.MouseEvent, track: Track) => {
     const at = snapToGrid(secAt(e.clientX));
     setFocusedTrack(track.id);
@@ -213,47 +315,151 @@ export default function EditWindow() {
       setPxPerSec(e.altKey ? pxPerSec / 1.6 : pxPerSec * 1.6);
       return;
     }
+    // Scissors.  `separateAt` and `splitClip` have always been here; what was
+    // missing is a way to say WHERE, because Alt+X can only ever cut at the
+    // play head.  A cut needs a place, and the mouse is holding one.
+    if (tool === 'split') {
+      // Hit-test where the cut will LAND, not where the mouse is.  With snap
+      // on, `at` can be half a grid division away from the pointer, so testing
+      // the raw position said "yes, there is a clip here" about a place the
+      // cut was never going to happen — and the cut then did nothing, or
+      // landed on the neighbour.
+      const clip = clipAt(track, at);
+      // Clicking empty lane with the scissors is a miss, not a command — the
+      // alternative is silently cutting nothing and looking broken.
+      if (!clip) return;
+      apply((sn) => separateAt(sn, [track.id], at));
+      setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
+      return;
+    }
     if (tool === 'select' && !e.shiftKey) {
-      // Grabber behaviour: a click ON a clip drags it, empty lane seeks.
+      // What the press means depends on WHERE in the lane it landed: the
+      // corner is a fade, the upper half of a clip is a grab, and the lower
+      // half is a marquee whether a clip is there or not.  Before that last
+      // rule a selection box could only be started on empty lane, so a dense
+      // arrangement — the one case where selecting several pieces at once
+      // actually matters — had nowhere to start the drag.
       const raw = secAt(e.clientX);
-      const clip = clipAt(track, raw);
-      if (clip) {
+      const grab = laneGrab(trackClips(track), raw, yFracIn(e), pxPerSec, track.height);
+      if (grab.kind === 'gain') {
+        const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        setGainDrag({
+          trackId: track.id, clipId: grab.clip.id, topPx: box.top, heightPx: box.height,
+        });
+        setSelection({
+          startSec: grab.clip.startSec, endSec: clipEnd(grab.clip), trackIds: [track.id],
+        });
+        return;
+      }
+      if (grab.kind === 'fade') {
+        setFadeDrag({ trackId: track.id, clipId: grab.clip.id, side: grab.side });
+        setSelection({
+          startSec: grab.clip.startSec, endSec: clipEnd(grab.clip), trackIds: [track.id],
+        });
+        return;
+      }
+      if (grab.kind === 'move') {
+        const clip = grab.clip;
         setSelection({ startSec: clip.startSec, endSec: clip.startSec + clip.durationSec, trackIds: [track.id] });
         // Spot mode: the position is known to the frame and the mouse cannot
         // express it, so clicking asks for the number instead of dragging.
         if (editMode === 'spot') { setSpotTarget({ trackId: track.id, clipId: clip.id }); return; }
-        setClipDrag({ trackId: track.id, clipId: clip.id, grabOffsetSec: raw - clip.startSec });
+        setClipDrag({
+          trackId: track.id, clipId: clip.id,
+          grabOffsetSec: raw - clip.startSec, fromSec: clip.startSec,
+        });
         return;
       }
-      seek(at);
+      // Empty lane still moves the play head, the way clicking a blank part
+      // of the timeline always has.  Over a clip it must not: the marquee is
+      // a selection gesture, and jumping the cursor is not part of it.
+      if (!clipAt(track, raw)) seek(at);
       setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
-      setDrag({ anchorSec: at, trackIds: [track.id] });
+      setDrag({ anchorSec: at, anchorTrackId: track.id });
+      bandTrackRef.current = track.id;
       return;
     }
     // range tool or shift-drag → time selection
     setSelection({ startSec: at, endSec: at, trackIds: [track.id] });
-    setDrag({ anchorSec: at, trackIds: [track.id] });
-  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode]);
+    setDrag({ anchorSec: at, anchorTrackId: track.id });
+    bandTrackRef.current = track.id;
+  }, [secAt, setFocusedTrack, tool, setPxPerSec, pxPerSec, seek, setSelection, editMode, apply]);
 
   const onLaneMove = useCallback((e: React.MouseEvent) => {
+    if (gainDrag) {
+      const db = gainFromY(e.clientY - gainDrag.topPx, gainDrag.heightPx);
+      applyTransient((s) => setOneClipGain(s, gainDrag.trackId, gainDrag.clipId, db));
+      return;
+    }
+    if (fadeDrag) {
+      const track = findTrack(session, fadeDrag.trackId);
+      const clip = track && trackClips(track).find((c) => c.id === fadeDrag.clipId);
+      if (!clip) return;
+      // NOT snapped: a fade is an ear decision about a few milliseconds, and
+      // a grid that rounds it to the nearest sixteenth makes the short ones —
+      // the declicks, which is most of them — impossible to set.
+      const seconds = fadeFromDrag(clip, fadeDrag.side, secAt(e.clientX));
+      const shape = fadeOn(clip, fadeDrag.side).shape;
+      applyTransient((s) => setClipFade(
+        s, fadeDrag.trackId, fadeDrag.clipId, fadeDrag.side, { durationSec: seconds, shape },
+      ));
+      return;
+    }
     if (clipDrag) {
-      const target = snapToGrid(Math.max(0, secAt(e.clientX) - clipDrag.grabOffsetSec));
-      applyTransient((s) => moveClip(s, clipDrag.trackId, clipDrag.clipId, target));
+      // snapMoveTo, not snapToGrid: Relative Grid needs to know where the
+      // clip started, and the other four modes give the same answer either
+      // way.
+      const target = snapMoveTo(
+        clipDrag.fromSec,
+        Math.max(0, secAt(e.clientX) - clipDrag.grabOffsetSec),
+      );
+      // Grouped tracks move together.  A drag is the one edit that does not
+      // go through the selection, so it is the one place that has to ask.
+      applyTransient((s) => moveClipWithGroup(s, clipDrag.trackId, clipDrag.clipId, target));
       return;
     }
     if (!drag) return;
     const at = snapToGrid(secAt(e.clientX));
+    // A marquee gathers ROWS as well as time.  Dragging down through three
+    // tracks selects all three, which is what makes "drag a box round these
+    // pieces and bounce them" work at all — before this the band was fixed to
+    // whichever row the drag started on, so a vertical drag looked like it
+    // did nothing.
     setSelection({
       startSec: Math.min(drag.anchorSec, at),
       endSec: Math.max(drag.anchorSec, at),
-      trackIds: drag.trackIds,
+      trackIds: trackBand(rows.map((t) => t.id), drag.anchorTrackId, bandTrackRef.current ?? drag.anchorTrackId),
     });
-  }, [drag, clipDrag, secAt, setSelection, applyTransient]);
+  }, [drag, clipDrag, fadeDrag, gainDrag, session, secAt, setSelection, applyTransient, rows]);
+
+  /**
+   * Whether the pointer is over a fade handle, so the row can say so.
+   *
+   * A handle nobody can see is a handle nobody finds.  The cursor changing on
+   * approach is the whole of the affordance in every DAW that does this.
+   */
+  const onRowMove = useCallback((e: React.MouseEvent, track: Track) => {
+    // Recorded on every move, drag or not, so the lane handler that runs a
+    // moment later always knows which row the pointer is on.
+    bandTrackRef.current = track.id;
+    if (fadeDrag || clipDrag || gainDrag || drag || tool !== 'select') { setLaneHover(null); return; }
+    const grab = laneGrab(trackClips(track), secAt(e.clientX), yFracIn(e), pxPerSec, track.height);
+    setLaneHover(grab.kind);
+  }, [fadeDrag, clipDrag, gainDrag, drag, tool, secAt, pxPerSec]);
 
   const endDrag = useCallback(() => {
-    if (clipDrag) { commitEdit(); setClipDrag(null); }
+    if (gainDrag) { commitEdit(); setGainDrag(null); }
+    if (clipDrag) {
+      // The drag is over, so this is the moment the overlap is real.  Doing
+      // it during the drag would rewrite the fades on every mousemove and
+      // leave a trail of them behind wherever the pointer passed.
+      if (autoCrossfade) applyTransient((s) => autoCrossfadeTrack(s, clipDrag.trackId));
+      commitEdit();
+      setClipDrag(null);
+    }
+    if (fadeDrag) { commitEdit(); setFadeDrag(null); }
     setDrag(null);
-  }, [clipDrag, commitEdit]);
+  }, [clipDrag, fadeDrag, gainDrag, commitEdit, autoCrossfade, applyTransient]);
 
   const rulerDown = useCallback((e: React.MouseEvent) => {
     seek(snapToGrid(secAt(e.clientX)));
@@ -266,19 +472,36 @@ export default function EditWindow() {
   // second interval would sit next to the music instead of on it.  Beat lines
   // appear once a bar is wide enough to hold them.
   const tempoMap = useMemo(() => tempoMapOf(session), [session]);
-  const viewEndSec = scrollSec + laneWidth / Math.max(1, pxPerSec);
-  const barLines = useMemo(() => {
-    const barWidthPx = 4 * (60 / Math.max(1, session.tempoBpm)) * pxPerSec;
-    return gridLines(tempoMap, scrollSec, viewEndSec, {
-      beats: barWidthPx > 90,
-      maxLines: 400,
-    });
-  }, [tempoMap, scrollSec, viewEndSec, pxPerSec, session.tempoBpm]);
+  // The ruler can count in bars, timecode, minutes or samples.  All four
+  // already existed in spot-time.ts and only the Spot dialog could reach
+  // them; the ruler was bars whatever the material was, which is the wrong
+  // one as soon as the session is a piece of picture rather than a song.
+  const ticks = useMemo(() => rulerTicks(
+    rulerFormat,
+    { scrollSec, pxPerSec, widthPx: laneWidth },
+    {
+      sampleRate: session.sampleRate,
+      tempoMap,
+      fps: DEFAULT_FPS,
+      dropFrame: false,
+      timecodeOffsetSec: 0,
+    },
+    tempoMap,
+    session.tempoBpm,
+  ), [rulerFormat, scrollSec, pxPerSec, laneWidth, session.sampleRate, tempoMap, session.tempoBpm]);
 
   return (
     <div className="relative flex-1 flex flex-col overflow-hidden bg-[#101018] text-zinc-200">
       {/* ── Toolbar ─────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">
+        <button
+          onClick={() => setShowUniverse((v) => !v)}
+          title="유니버스 — 곡 전체를 한 띠에 놓고, 지금 보고 있는 창을 끌어서 이동합니다"
+          className={`px-2 py-1 rounded text-[10px] font-mono tracking-wide border ${showUniverse
+            ? 'bg-emerald-600/30 border-emerald-600/50 text-emerald-300'
+            : 'bg-zinc-900 border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}
+        >UNIV</button>
+
         <div className="flex rounded-md overflow-hidden border border-zinc-700">
           {EDIT_MODES.map((m) => (
             <button
@@ -328,6 +551,60 @@ export default function EditWindow() {
               : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
         >TAB→TRANSIENT</button>
 
+        <button
+          onClick={() => setRulerFormat(
+            TIME_FORMATS[(TIME_FORMATS.indexOf(rulerFormat) + 1) % TIME_FORMATS.length] ?? 'barsBeats',
+          )}
+          title="눈금자 단위 (Shift+R)"
+          className="px-2 py-1 rounded text-[10px] border bg-zinc-900 border-zinc-700 text-zinc-400"
+        >{formatLabel(rulerFormat)}</button>
+
+        {/* Snap mode.  A dropdown rather than a cycle button because five
+            states is one more than a button can teach you by pressing it —
+            Alt+J cycles for the hand that already knows. */}
+        <select
+          value={snapMode}
+          onChange={(e) => setSnapMode(e.target.value as typeof snapMode)}
+          title={describeSnap(snapMode, gridDivision)}
+          className={`px-1 py-1 rounded text-[10px] border transition-colors ${
+            snapMode === 'off'
+              ? 'bg-zinc-900 border-zinc-700 text-zinc-500'
+              : 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'}`}
+          data-testid="snap-mode"
+        >
+          {SNAP_MODES.map((mode) => (
+            <option key={mode} value={mode}>{SNAP_LABELS[mode]}</option>
+          ))}
+        </select>
+
+        <button
+          onClick={() => setLinkSelection(!linkSelection)}
+          title="편집 선택이 루프 구간을 따라갑니다 (Shift+Alt+L)"
+          className={`px-2 py-1 rounded text-[10px] border transition-colors ${
+            linkSelection
+              ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+          data-testid="link-selection"
+        >LINK</button>
+
+        <button
+          onClick={() => setAutoCrossfade(!autoCrossfade)}
+          title="겹친 클립에 자동 크로스페이드"
+          className={`px-2 py-1 rounded text-[10px] border transition-colors ${
+            autoCrossfade
+              ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+        >AUTO X</button>
+
+        <button
+          onClick={() => setFollowPlayhead(!followPlayhead)}
+          title="재생헤드 따라가기 (L)"
+          className={`px-2 py-1 rounded text-[10px] border transition-colors ${
+            followPlayhead
+              ? 'bg-indigo-600/25 border-indigo-500/50 text-indigo-300'
+              : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+        >FOLLOW</button>
+
         <div className="flex-1" />
 
         <button onClick={() => setPxPerSec(pxPerSec / 1.5)}
@@ -355,18 +632,18 @@ export default function EditWindow() {
           className="relative flex-1 cursor-pointer overflow-hidden"
           style={{ height: RULER_HEIGHT }}
         >
-          {barLines.map((line) => (
+          {ticks.map((tick, i) => (
             <div
-              key={`${line.bar}-${line.beat}`}
+              key={`${tick.sec}-${i}`}
               className="absolute top-0 bottom-0"
               style={{
-                left: toX(line.sec),
-                borderLeft: `1px solid ${line.isBar ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.06)'}`,
+                left: toX(tick.sec),
+                borderLeft: `1px solid ${tick.major ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.06)'}`,
               }}
             >
-              {line.isBar && (
-                <span className="absolute left-1 top-1 text-[9px] font-mono"
-                      style={{ color: premium.text.muted }}>{line.bar}</span>
+              {tick.label !== null && (
+                <span className="absolute left-1 top-1 text-[9px] font-mono whitespace-nowrap"
+                      style={{ color: premium.text.muted }}>{tick.label}</span>
               )}
             </div>
           ))}
@@ -377,6 +654,12 @@ export default function EditWindow() {
           <div className="absolute top-0 bottom-0 w-px bg-red-400" style={{ left: toX(playheadSec) }} />
         </div>
       </div>
+
+      {/* ── Universe ────────────────────────────────────────────────────── */}
+      {/* Above the tracks and below the ruler: the whole song, and the window
+          you are looking through.  Toggled off because on a short session it
+          is a band of nothing, and screen height is the scarce thing here. */}
+      {showUniverse && <UniverseStrip laneWidth={laneWidth} />}
 
       {/* ── Tracks ──────────────────────────────────────────────────────── */}
       <div className="flex-1 flex overflow-y-auto" onMouseUp={endDrag} onMouseLeave={endDrag}>
@@ -392,6 +675,8 @@ export default function EditWindow() {
             <TrackHeader
               key={row.key}
               track={row.track}
+              editGroup={session.groups.find(
+                (g) => g.linkEdit === true && g.memberIds.includes(row.track.id)) ?? null}
               depth={stackDepth(session, row.track.id)}
               onRename={(name) => apply((st) => renameTrack(st, row.track.id, name))}
               onColor={(hex) => apply((st) => setTrackColor(st, row.track.id, hex))}
@@ -452,18 +737,56 @@ export default function EditWindow() {
             <div
               key={row.key}
               onMouseDown={(e) => onLaneDown(e, row.track)}
+              onMouseMove={(e) => onRowMove(e, row.track)}
+              onMouseLeave={() => setLaneHover(null)}
               onDoubleClick={(e) => {
                 // Double-clicking a MIDI part opens it in the Key Editor,
-                // exactly like the reference DAW.
+                // exactly like the reference DAW.  An AUDIO clip opens the
+                // region lab instead — the two are the same gesture asking the
+                // same question ("let me work on this piece"), answered by
+                // whichever editor the piece needs.
                 const at = secAt(e.clientX);
                 const clip = clipAt(row.track, at);
-                if (clip?.kind === 'midi') {
+                if (!clip) return;
+                // Double-clicking the FADE asks about the fade, not the clip —
+                // it is the same gesture Cubase uses to open the curve editor,
+                // and it has to be checked before the clip's own double-click
+                // or the fade could never be reached.
+                const fadeSide = fadeRegionAt(clip, at, yFracIn(e));
+                if (fadeSide) {
+                  setFadeMenu({
+                    trackId: row.track.id, clipId: clip.id, side: fadeSide,
+                    x: e.clientX, y: e.clientY,
+                  });
+                  return;
+                }
+                if (clip.kind === 'midi') {
                   useMidiEditorStore.getState().openPart({ trackId: row.track.id, clipId: clip.id });
                   useDawStore.getState().setWindow('midi');
+                  return;
                 }
+                // Re-opening a piece that has already been processed loads its
+                // saved chain back, so changing one knob and applying again is
+                // an edit rather than a rebuild.
+                const fx = clip.regionFx;
+                useRegionLabStore.getState().openLab(
+                  { trackId: row.track.id, clipId: clip.id },
+                  fx ? fx.inserts.map((i) => ({ ...i })) : [],
+                  fx ? fx.tailMode : 'keep',
+                );
               }}
               className="relative border-b border-zinc-900"
-              style={{ height: row.height }}
+              // The cursor is the only thing telling you the scissors are
+              // armed, or that the corner under the pointer is a fade handle —
+              // which is exactly when you need to know either.
+              style={{
+                height: row.height,
+                cursor: tool === 'split' ? 'crosshair'
+                  : (laneHover === 'gain' || gainDrag) ? 'ns-resize'
+                  : (laneHover === 'fade' || fadeDrag) ? 'ew-resize'
+                  : laneHover === 'move' ? 'grab'
+                  : (tool === 'select' || tool === 'range') ? 'crosshair' : undefined,
+              }}
             >
               {row.track.kind === 'folder' && row.track.collapsed ? (
                 // A collapsed stack still shows where its material sits.
@@ -522,19 +845,137 @@ export default function EditWindow() {
         <span className="text-[10px] font-mono text-zinc-600">{fmt(endSec)}</span>
       </div>
 
+      {quantizeTarget && (
+        <QuantizeDialog selection={quantizeTarget} onClose={() => setQuantizeTarget(null)} />
+      )}
+      {stripTarget && (
+        <StripSilenceDialog selection={stripTarget} onClose={() => setStripTarget(null)} />
+      )}
+      {renameTarget && (
+        <BatchRenameDialog target={renameTarget} onClose={() => setRenameTarget(null)} />
+      )}
+      {historyOpen && <HistoryPanel onClose={() => setHistoryOpen(false)} />}
+      {poolOpen && <PoolPanel onClose={() => setPoolOpen(false)} />}
+      {fadeTarget && (
+        <BatchFadeDialog selection={fadeTarget} onClose={() => setFadeTarget(null)} />
+      )}
       {spotTarget && (
         <SpotDialog target={spotTarget} onClose={() => setSpotTarget(null)} />
+      )}
+
+      {fadeMenu && (
+        <FadeShapeMenu
+          at={fadeMenu}
+          current={(() => {
+            const track = findTrack(session, fadeMenu.trackId);
+            const clip = track && trackClips(track).find((c) => c.id === fadeMenu.clipId);
+            return clip ? fadeOn(clip, fadeMenu.side).shape : 'equalPower';
+          })()}
+          onPick={(shape) => {
+            const track = findTrack(session, fadeMenu.trackId);
+            const clip = track && trackClips(track).find((c) => c.id === fadeMenu.clipId);
+            if (clip) {
+              const seconds = fadeOn(clip, fadeMenu.side).durationSec;
+              apply((sn) => setClipFade(
+                sn, fadeMenu.trackId, fadeMenu.clipId, fadeMenu.side,
+                { durationSec: seconds, shape },
+              ));
+            }
+            setFadeMenu(null);
+          }}
+          onClose={() => setFadeMenu(null)}
+        />
       )}
     </div>
   );
 }
 
+/**
+ * The curve picker, at the fade you double-clicked.
+ *
+ * Three shapes, each drawn as the curve it is rather than named and left to
+ * the imagination — the difference between equal-power and linear is a
+ * picture, not a word.
+ */
+function FadeShapeMenu({ at, current, onPick, onClose }: {
+  at: { side: FadeSide; x: number; y: number };
+  current: FadeShape;
+  onPick: (shape: FadeShape) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const away = (): void => onClose();
+    const key = (e: KeyboardEvent): void => { if (e.key === 'Escape') onClose(); };
+    // Deferred: the double-click that opened this is still travelling.
+    const id = window.setTimeout(() => window.addEventListener('mousedown', away), 0);
+    window.addEventListener('keydown', key);
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener('mousedown', away);
+      window.removeEventListener('keydown', key);
+    };
+  }, [onClose]);
+
+  const W = 46;
+  const H = 26;
+  return (
+    <div
+      className="fixed rounded-md p-1.5 flex flex-col gap-1"
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{
+        left: Math.min(at.x, window.innerWidth - 150),
+        top: Math.min(at.y, window.innerHeight - 160),
+        zIndex: LAYER.popover,
+        background: premium.surface.frame,
+        border: `1px solid ${premium.accent.deep}`,
+        boxShadow: premium.shadow.panel,
+      }}
+    >
+      <span className="text-[9px] px-1" style={{ color: premium.text.faint }}>
+        {at.side === 'in' ? '페이드 인' : '페이드 아웃'} 곡선
+      </span>
+      {FADE_SHAPES.map((shape) => {
+        const curve = fadeCurve(shape, 20);
+        const points: string[] = [];
+        for (let i = 0; i < curve.length; i++) {
+          const v = at.side === 'in' ? (curve[i] ?? 0) : (curve[curve.length - 1 - i] ?? 0);
+          points.push(`${(i / (curve.length - 1)) * W},${H - 2 - v * (H - 4)}`);
+        }
+        const on = shape === current;
+        return (
+          <button
+            key={shape}
+            onClick={() => onPick(shape)}
+            className="flex items-center gap-2 px-1.5 py-1 rounded text-[10px]"
+            style={{
+              color: on ? premium.accent.base : premium.text.muted,
+              background: on ? 'rgba(255,255,255,0.06)' : 'transparent',
+              border: `1px solid ${on ? premium.accent.deep : 'transparent'}`,
+            }}
+          >
+            <svg width={W} height={H} style={{ display: 'block' }}>
+              <polyline
+                points={points.join(' ')}
+                fill="none"
+                stroke={on ? premium.accent.base : 'rgba(200,200,215,0.7)'}
+                strokeWidth={1.5}
+              />
+            </svg>
+            {FADE_SHAPE_LABEL[shape]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function TrackHeader({
-  track, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
+  track, editGroup, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
   onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
   onToggleAutomation, automationOpen, onRename, onColor, onResize,
 }: {
   track: Track;
+  editGroup: GroupDef | null;
   depth: number;
   summary: string | null;
   focused: boolean;
@@ -589,7 +1030,7 @@ function TrackHeader({
           <button
             onClick={(e) => { e.stopPropagation(); setPicking(!picking); }}
             title="트랙 색"
-            className="w-1.5 h-4 rounded-sm shrink-0"
+            className="hit-target w-1.5 h-4 rounded-sm shrink-0"
             style={{ background: track.color, border: 'none', padding: 0, cursor: 'pointer' }}
           />
         )}
@@ -619,6 +1060,19 @@ function TrackHeader({
             onDoubleClick={(e) => { e.stopPropagation(); setRenaming(true); }}
           >{isFolder ? track.name.toUpperCase() : track.name}</span>
         )}
+        {/* The group's letter.  A group you cannot see is a group that
+            surprises you the first time one cut moves eight tracks. */}
+        {editGroup && (
+          <span
+            className="px-1 rounded text-[9px] font-mono shrink-0"
+            style={{
+              background: 'rgba(129,140,248,0.22)',
+              color: premium.accent.light,
+              opacity: editGroup.enabled ? 1 : 0.35,
+            }}
+            title={`편집 그룹 ${describeGroup(editGroup)}${editGroup.enabled ? '' : ' — 일시 정지됨'}`}
+          >{editGroup.symbol}</span>
+        )}
         {macroCount > 0 && (
           <button
             onClick={(e) => { e.stopPropagation(); onSmart(); }}
@@ -634,7 +1088,7 @@ function TrackHeader({
           <button
             onClick={(e) => { e.stopPropagation(); onToggleAutomation(); }}
             title={automationOpen ? '오토메이션 레인 접기' : '오토메이션 레인 열기'}
-            className="text-[9px] leading-none w-4 h-4 rounded shrink-0 flex items-center
+            className="hit-target text-[9px] leading-none w-4 h-4 rounded shrink-0 flex items-center
                        justify-center transition-colors"
             style={{
               border: `1px solid ${automationOpen ? premium.accent.deep : 'rgba(255,255,255,0.14)'}`,
@@ -648,7 +1102,7 @@ function TrackHeader({
             title={insertCount > 0
               ? `인서트 ${insertCount}개 — 열기`
               : '플러그인 추가 · 편집'}
-            className="text-[10px] leading-none w-4 h-4 rounded shrink-0 flex items-center
+            className="hit-target text-[10px] leading-none w-4 h-4 rounded shrink-0 flex items-center
                        justify-center transition-colors"
             style={{
               border: `1px solid ${insertCount > 0 ? premium.accent.deep : 'rgba(255,255,255,0.14)'}`,

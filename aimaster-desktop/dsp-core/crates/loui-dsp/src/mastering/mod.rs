@@ -24,16 +24,64 @@
 
 mod config;
 mod gain;
+mod declick;
+mod dehum;
+mod denoise;
+mod deess;
+mod dither;
+mod dynamic_eq;
+mod exciter;
+mod impact;
+mod low_end_focus;
+mod monitor;
+mod multiband;
+mod spectral;
+mod vintage;
 mod eq;
 mod parametric_eq;
 mod dynamics;
 mod imager;
+mod delay;
+mod top_rebuild;
+mod reverb;
 mod limiter;
+mod loudness;
 mod chain;
 
 pub use config::{
     MasteringChainConfig, EqConfig, DynamicsConfig, ImagerConfig, LimiterConfig,
+    LoudnessConfig,
+    DenoiseConfig, DehumConfig, DeclickConfig, DeessConfig,
+    DynamicEqConfig, DynEqBandConfig, DynEqBandShape, DynEqMode,
+    MultibandConfig, MultibandBandConfig, MultibandMode,
+    ExciterConfig, ExciterMode,
+    ImpactConfig,
+    LowEndFocusConfig, LowEndFocusMode,
+    SpectralConfig, SPECTRAL_CURVE_BANDS,
+    VintageEqConfig, VintageCompressorConfig, VintageTapeConfig, TapeSpeed,
+    DitherConfig, DitherMode,
+    MonitorConfig, MonitorMode, MatchTarget,
 };
+pub use monitor::{Monitor, MAX_ALIGN_SAMPLES};
+pub use dither::Dither;
+pub use spectral::{Spectral, CURVE_BANDS, curve_band_hz};
+pub use vintage::{VintageEq, VintageCompressor, VintageTape};
+pub use dynamic_eq::{DynamicEq, DYN_EQ_BANDS};
+pub use exciter::Exciter;
+pub use impact::Impact;
+pub use low_end_focus::LowEndFocus;
+pub use multiband::Multiband;
+pub use declick::Declick;
+pub use dehum::Dehum;
+pub use denoise::{Denoise, DENOISE_FRAME};
+
+/// Number of FFT bins in a de-noise profile (`DENOISE_FRAME / 2 + 1`).
+pub const DENOISE_PROFILE_BINS: usize = DENOISE_FRAME / 2 + 1;
+pub use deess::Deess;
+pub use delay::{Delay, MAX_DELAY_S};
+pub use top_rebuild::TopRebuild;
+pub use loudness::LoudnessTarget;
+pub use reverb::{Reverb, MAX_PREDELAY_S};
 pub use parametric_eq::{ParametricBand, ParametricBandType, MAX_PARAMETRIC_BANDS};
 pub use chain::{MasteringChain, GainReduction};
 

@@ -19,6 +19,7 @@
 import { formatChord, makeChord, parseChord, transposeChord, type ChordEvent, type ChordSymbol } from '../model/chords.js';
 import { setChordTrack } from '../model/session-ops.js';
 import { nextId } from '../model/ids.js';
+import { MAX_CAPO_FRET } from '../model/capo.js';
 import type { DawSession } from '../model/types.js';
 
 /** Two changes closer than this are the same change. */
@@ -108,10 +109,23 @@ export function removeChord(events: readonly ChordEvent[], id: string): ChordEve
   return events.filter((e) => e.id !== id);
 }
 
+/**
+ * Retype a chord.
+ *
+ * Retyping CLEARS the detector's confidence, because it is no longer the
+ * detector's answer.  Leaving the old margin behind would leave the lane
+ * marking a bar as doubtful after the person who was doubting it has said
+ * what it is — and worse, would keep it in the "go and check these" list for
+ * ever.
+ */
 export function setChord(
   events: readonly ChordEvent[], id: string, chord: ChordSymbol,
 ): ChordEvent[] {
-  return events.map((e) => (e.id === id ? { ...e, chord } : e));
+  return events.map((e) => {
+    if (e.id !== id) return e;
+    const { margin: _wasDetected, ...rest } = e;
+    return { ...rest, chord };
+  });
 }
 
 /**
@@ -189,4 +203,41 @@ export function describeChords(
     .filter((e) => e.timeSec >= fromSec - 1e-9 && e.timeSec <= toSec + 1e-9);
   if (inside.length === 0) return '코드 없음';
   return inside.map((e) => formatChord(e.chord)).join(' · ');
+}
+
+// ── Transposing the whole chart ─────────────────────────────────────────────
+
+/**
+ * Move the entire chord track, and the key with it.
+ *
+ * The key HAS to follow.  A chart transposed up two semitones whose session
+ * still says C major is a session that will spell the new chart's accidentals
+ * wrong, hand the wrong scale to the Key Editor, and snap notes to a key the
+ * music left — all quietly, because nothing about it looks broken.
+ *
+ * The capo is deliberately NOT touched.  It is a statement about the player's
+ * hands, not about the music, and someone who transposes a chart up a tone
+ * has not moved their capo by doing it.
+ */
+export function transposeChordTrack(session: DawSession, semitones: number): DawSession {
+  if (semitones === 0) return session;
+  const moved = withChords(session, transposeChords(sortedChords(session), semitones));
+  if (!session.key) return moved;
+  return {
+    ...moved,
+    key: { ...session.key, root: ((session.key.root + semitones) % 12 + 12) % 12 },
+  };
+}
+
+/** Set the capo, clamped to a neck.  Zero means none. */
+export function setCapo(session: DawSession, fret: number): DawSession {
+  const clamped = Math.max(0, Math.min(MAX_CAPO_FRET, Math.round(fret)));
+  return clamped === 0
+    ? withoutCapo(session)
+    : { ...session, capoFret: clamped };
+}
+
+function withoutCapo(session: DawSession): DawSession {
+  const { capoFret: _none, ...rest } = session;
+  return rest as DawSession;
 }

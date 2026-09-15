@@ -15,6 +15,7 @@ import {
   deleteOverlapsPoly, glueNotes, setVelocity, velocityRamp, scaleVelocityRange,
 } from '../../../daw/edit/midi-edit.js';
 import { SCALES, PITCH_CLASS_NAMES, suggestScales, scaleName } from '../../../daw/model/scales.js';
+import { drumMapFor } from '../../../daw/model/drum-map-session.js';
 import { detectChord, formatChord, voiceChord, QUALITIES, makeChord } from '../../../daw/model/chords.js';
 import { createNote, from7bit, noteEndBeat, type MidiNote } from '../../../daw/model/midi.js';
 import { beatsToSecAt, partClock, secToBeatsAt } from '../../../daw/model/note-time.js';
@@ -97,12 +98,27 @@ export default function KeyEditorInspector() {
     return picked.length >= 2 ? detectChord(picked.map((n) => n.pitch)) : null;
   }, [notes, selectedIds]);
 
+  /**
+   * A drum track has no key.
+   *
+   * A hi-hat is not in or out of D minor, and "make a chord from the lowest
+   * selected note" on a kick and a snare produces a transposition of two
+   * unrelated instruments.  Both sections are hidden rather than left there
+   * to be tried once — a control that is meaningless is worse than absent,
+   * because it invites the experiment that ruins the part.
+   *
+   * Everything else — quantize, transpose, length, humanise — is as useful on
+   * drums as anywhere, and stays.
+   */
+  const isDrumTrack = drumMapFor(session, track) !== null;
+
   if (!open || !part) return null;
 
   return (
     <aside className="w-56 shrink-0 overflow-y-auto border-r border-zinc-800 bg-[#0e0e15] px-2 py-2 space-y-2">
-      {/* ── Scale Assistant ─────────────────────────────────────────────── */}
-      <Section title="Scale Assistant">
+      {/* ── 스케일 도우미 ─────────────────────────────────────────────── */}
+      {!isDrumTrack && (
+      <Section title="스케일 도우미">
         <div className="flex gap-1">
           <select
             value={scale.root}
@@ -120,12 +136,12 @@ export default function KeyEditorInspector() {
           </select>
         </div>
 
-        <Check label="Show Scale Note Guides" checked={showGuides} onChange={toggleGuides} />
-        <Check label="Snap Pitch Editing" checked={snapPitch} onChange={toggleSnapPitch} />
+        <Check label="스케일 음 표시" checked={showGuides} onChange={toggleGuides} />
+        <Check label="음정 편집 스냅" checked={snapPitch} onChange={toggleSnapPitch} />
 
         {suggestions.length > 0 && (
           <div className="space-y-0.5 pt-1">
-            <p className="text-[9px] text-zinc-600">Scale Suggestions</p>
+            <p className="text-[9px] text-zinc-600">스케일 추천</p>
             {suggestions.slice(0, 4).map((s) => (
               <button
                 key={`${s.scale.root}-${s.scale.scaleId}`}
@@ -141,12 +157,14 @@ export default function KeyEditorInspector() {
         )}
 
         <Action onClick={() => { write(quantizePitches(notes, targetIds, scale)); notify('스케일로 피치 퀀타이즈'); }}>
-          Quantize Pitches
+          음정을 스케일로
         </Action>
       </Section>
+      )}
 
-      {/* ── Chord Editing ───────────────────────────────────────────────── */}
-      <Section title="Chord Editing">
+      {/* ── 코드 편집 ───────────────────────────────────────────────── */}
+      {!isDrumTrack && (
+      <Section title="코드 편집">
         <div className="h-6 rounded bg-zinc-900 border border-zinc-700 flex items-center justify-center">
           <span className="text-[11px] text-zinc-200">
             {selectedChord ? formatChord(selectedChord.chord) : '—'}
@@ -186,40 +204,41 @@ export default function KeyEditorInspector() {
           })}
         </div>
       </Section>
+      )}
 
-      {/* ── Quantize ────────────────────────────────────────────────────── */}
-      <Section title="Quantize">
-        <Slider label="Strength" value={quantize.strengthPercent ?? 100} min={0} max={100} step={1}
+      {/* ── 퀀타이즈 ────────────────────────────────────────────────────── */}
+      <Section title="퀀타이즈">
+        <Slider label="세기" value={quantize.strengthPercent ?? 100} min={0} max={100} step={1}
           suffix="%" onChange={(v) => setQuantize({ strengthPercent: v })} />
-        <Slider label="Swing" value={quantize.swingPercent ?? 0} min={0} max={100} step={1}
+        <Slider label="스윙" value={quantize.swingPercent ?? 0} min={0} max={100} step={1}
           suffix="%" onChange={(v) => setQuantize({ swingPercent: v })} />
-        <Slider label="Randomize" value={Math.round((quantize.randomizeBeat ?? 0) * 1000) / 10}
+        <Slider label="흔들기" value={Math.round((quantize.randomizeBeat ?? 0) * 1000) / 10}
           min={0} max={25} step={0.5}
           suffix="%박" onChange={(v) => setQuantize({ randomizeBeat: v / 100 })} />
-        <Slider label="Catch" value={Math.round((quantize.catchRangeBeat ?? 0) * 100)}
+        <Slider label="적용 범위" value={Math.round((quantize.catchRangeBeat ?? 0) * 100)}
           min={0} max={100} step={5}
           suffix="%박" onChange={(v) => setQuantize({ catchRangeBeat: v / 100 })} />
         <Action onClick={() => {
           write(quantizeNotes(notes, targetIds, { ...quantize, gridBeat }));
           notify('퀀타이즈 적용');
-        }}>Apply Quantize</Action>
+        }}>퀀타이즈 적용</Action>
         <Action onClick={() => {
           write(quantizeNotes(notes, targetIds, { ...quantize, gridBeat, quantizeLengths: true }));
           notify('길이 퀀타이즈');
-        }}>Quantize Lengths</Action>
+        }}>길이 퀀타이즈</Action>
         <Action onClick={() => {
           write(quantizeNotes(notes, targetIds, { ...quantize, gridBeat, quantizeEnds: true }));
           notify('엔드 퀀타이즈');
-        }}>Quantize Ends</Action>
+        }}>끝 퀀타이즈</Action>
       </Section>
 
-      {/* ── Humanize ────────────────────────────────────────────────────── */}
-      <Section title="Humanize">
-        <Slider label="Timing" value={humanizeTimingMs} min={0} max={60} step={1} suffix="ms"
+      {/* ── 휴머나이즈 ────────────────────────────────────────────────────── */}
+      <Section title="휴머나이즈">
+        <Slider label="타이밍" value={humanizeTimingMs} min={0} max={60} step={1} suffix="ms"
           onChange={(v) => setHumanize({ timingMs: v })} />
-        <Slider label="Velocity" value={Math.round(humanizeVelocity * 127)} min={0} max={40} step={1}
+        <Slider label="세기" value={Math.round(humanizeVelocity * 127)} min={0} max={40} step={1}
           suffix="" onChange={(v) => setHumanize({ velocity: v / 127 })} />
-        <Slider label="Seed" value={humanizeSeed} min={1} max={99} step={1} suffix=""
+        <Slider label="시드" value={humanizeSeed} min={1} max={99} step={1} suffix=""
           onChange={(v) => setHumanize({ seed: v })} />
         <Action onClick={() => {
           write(humanizeNotes(notes, targetIds, {
@@ -229,35 +248,39 @@ export default function KeyEditorInspector() {
             seed: humanizeSeed,
           }));
           notify('휴머나이즈 적용 (시드 고정 — 바운스에서 그대로 재현)');
-        }}>Apply Humanize</Action>
+        }}>휴머나이즈 적용</Action>
       </Section>
 
-      {/* ── Transpose ───────────────────────────────────────────────────── */}
-      <Section title="Transpose">
-        <Slider label="Semitones" value={transposeSemitones} min={-24} max={24} step={1} suffix=""
+      {/* ── 이조 ───────────────────────────────────────────────────── */}
+      <Section title="이조">
+        <Slider label="반음" value={transposeSemitones} min={-24} max={24} step={1} suffix=""
           onChange={setTransposeSemitones} />
-        <Check label="Scale Correction" checked={scaleCorrection} onChange={toggleScaleCorrection} />
+        {/* Transposing a drum part moves hits between instruments, which is a
+            real thing to want; correcting the result to a scale is not. */}
+        {!isDrumTrack && (
+          <Check label="스케일 보정" checked={scaleCorrection} onChange={toggleScaleCorrection} />
+        )}
         <Action onClick={() => {
           write(transposeNotes(notes, targetIds, {
             semitones: transposeSemitones,
             scale: scaleCorrection ? scale : null,
           }));
           notify(`${transposeSemitones > 0 ? '+' : ''}${transposeSemitones} 반음 이조`);
-        }}>Apply Transpose</Action>
+        }}>이조 적용</Action>
       </Section>
 
       {/* ── Length ──────────────────────────────────────────────────────── */}
-      <Section title="Length">
-        <Slider label="Scale Legato" value={legatoPercent} min={0} max={100} step={1} suffix="%"
+      <Section title="길이">
+        <Slider label="레가토" value={legatoPercent} min={0} max={100} step={1} suffix="%"
           onChange={setLegatoPercent} />
-        <Slider label="Overlap" value={overlapMs} min={-200} max={200} step={5} suffix="ms"
+        <Slider label="겹침" value={overlapMs} min={-200} max={200} step={5} suffix="ms"
           onChange={setOverlapMs} />
         <Action onClick={() => {
           write(legatoPercent > 0
             ? scaleLegato(notes, targetIds, legatoPercent, msToBeats(overlapMs))
             : applyLegato(notes, targetIds, msToBeats(overlapMs)));
           notify('레가토 적용');
-        }}>Apply Legato</Action>
+        }}>레가토 적용</Action>
         <Action onClick={() => { write(fixedLengths(notes, targetIds, gridBeat)); notify('고정 길이'); }}>
           Fixed Lengths
         </Action>
@@ -275,8 +298,8 @@ export default function KeyEditorInspector() {
         </Action>
       </Section>
 
-      {/* ── Groove ──────────────────────────────────────────────────────── */}
-      <Section title="Groove">
+      {/* ── 그루브 ──────────────────────────────────────────────────────── */}
+      <Section title="그루브">
         <div className="text-[9px] leading-snug text-zinc-500 min-h-[1.6rem]">
           {groove
             ? <><span className="text-zinc-300">{groove.name}</span><br />{describeGroove(groove)}</>
@@ -288,10 +311,10 @@ export default function KeyEditorInspector() {
           if (!result.groove) { notify(result.reason ?? '그루브를 추출할 수 없습니다', 'warning'); return; }
           setGroove(result.groove);
           notify(`그루브 추출 — ${describeGroove(result.groove)}`, 'success');
-        }}>Extract from Part</Action>
-        <Slider label="Strength" value={grooveStrength} min={0} max={100} step={1}
+        }}>파트에서 추출</Action>
+        <Slider label="세기" value={grooveStrength} min={0} max={100} step={1}
           suffix="%" onChange={setGrooveStrength} />
-        <Slider label="Velocity" value={grooveVelocity} min={0} max={100} step={1}
+        <Slider label="세기 반영" value={grooveVelocity} min={0} max={100} step={1}
           suffix="%" onChange={setGrooveVelocity} />
         <Action onClick={() => {
           if (!groove || !open) { notify('먼저 그루브를 추출하세요', 'warning'); return; }
@@ -300,23 +323,23 @@ export default function KeyEditorInspector() {
             { strength: grooveStrength / 100, velocityStrength: grooveVelocity / 100 });
           apply(() => result.session);
           notify(result.message, result.movedCount > 0 ? 'success' : 'warning');
-        }}>Apply Groove</Action>
+        }}>그루브 적용</Action>
       </Section>
 
       {/* ── Velocity ────────────────────────────────────────────────────── */}
-      <Section title="Velocity">
+      <Section title="벨로시티">
         <div className="grid grid-cols-2 gap-1">
           <Action onClick={() => { write(setVelocity(notes, targetIds, from7bit(100))); notify('벨로시티 100'); }}>
-            Set 100
+            100으로
           </Action>
           <Action onClick={() => { write(scaleVelocityRange(notes, targetIds, 0.5)); notify('벨로시티 압축'); }}>
-            Compress
+            압축
           </Action>
           <Action onClick={() => { write(velocityRamp(notes, targetIds, 0.35, 1)); notify('크레셴도'); }}>
-            Cresc.
+            크레셴도
           </Action>
           <Action onClick={() => { write(velocityRamp(notes, targetIds, 1, 0.35)); notify('디크레셴도'); }}>
-            Dim.
+            디크레셴도
           </Action>
         </div>
       </Section>

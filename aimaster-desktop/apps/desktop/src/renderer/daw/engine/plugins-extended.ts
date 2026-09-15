@@ -109,7 +109,7 @@ function lfo(ctx: BaseAudioContext, rateHz: number, depth: number, type: Oscilla
 }
 
 /** Soft clip: tanh-ish above the ceiling, straight through below it. */
-function clipCurve(ceiling: number, hardness: number): Float32Array<ArrayBuffer> {
+export function clipCurve(ceiling: number, hardness: number): Float32Array<ArrayBuffer> {
   const n = 4096;
   const curve = new Float32Array(n);
   const k = 1 + hardness * 40;
@@ -122,8 +122,30 @@ function clipCurve(ceiling: number, hardness: number): Float32Array<ArrayBuffer>
   return curve;
 }
 
+/**
+ * Envelope -> gain for the noise gate: open above the threshold, closed below.
+ *
+ * Exported because the plugin window draws this curve.  A picture built from a
+ * second copy of the maths is a picture that can disagree with the sound.
+ */
+export function gateGainCurve(thresholdDb: number, rangeDb: number): Float32Array<ArrayBuffer> {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const thr = dbToGain(thresholdDb);
+  const floor = dbToGain(-Math.max(0, rangeDb));
+  for (let i = 0; i < n; i++) {
+    const level = Math.abs((i / (n - 1)) * 2 - 1);
+    // Open above the threshold, closed below, with a short ramp across it so a
+    // signal sitting on the threshold does not chatter.
+    const ratio = thr > 0 ? level / thr : 1;
+    const openness = Math.max(0, Math.min(1, (ratio - 0.5) / 0.5));
+    curve[i] = floor + (1 - floor) * openness;
+  }
+  return curve;
+}
+
 /** Quantise to `bits`, the way a converter would. */
-function bitCurve(bits: number): Float32Array<ArrayBuffer> {
+export function bitCurve(bits: number): Float32Array<ArrayBuffer> {
   const n = 8192;
   const curve = new Float32Array(n);
   const levels = Math.max(2, Math.pow(2, Math.max(1, bits)) / 2);
@@ -140,7 +162,27 @@ function bitCurve(bits: number): Float32Array<ArrayBuffer> {
  * A symmetric shaper only makes odd harmonics, which is why pure tanh sounds
  * like a fuzz pedal and not like a preamp.
  */
-function tubeCurve(drive: number, bias: number): Float32Array<ArrayBuffer> {
+/**
+ * How much `tubeCurve` multiplies a QUIET signal by.
+ *
+ * The curve is normalised so that ±1 maps to ±1, which is the right thing for
+ * a shaper sitting in the signal path — but it means the slope at zero is `k`,
+ * and `k` reaches 25.  A quiet signal comes out nearly seven times louder at
+ * the default drive.  In a straight line that is a level to compensate; inside
+ * a FEEDBACK LOOP it is a loop gain above one, and a loop gain above one is an
+ * oscillator.
+ *
+ * Derived rather than measured: d/dx of (tanh((x+b)k) − tanh(bk)) / tanh(k)
+ * at x = 0 is k·sech²(bk)/tanh(k).  The self-test checks it against the curve
+ * the function actually builds, so the two cannot drift apart.
+ */
+export function tubeSmallSignalGain(drive: number, bias: number): number {
+  const k = 1 + drive * 24;
+  const sech2 = 1 / Math.cosh(bias * k) ** 2;
+  return (k * sech2) / Math.max(1e-6, Math.tanh(k));
+}
+
+export function tubeCurve(drive: number, bias: number): Float32Array<ArrayBuffer> {
   const n = 4096;
   const curve = new Float32Array(n);
   const k = 1 + drive * 24;
@@ -372,23 +414,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const rect = absShaper(ctx);
       const env = smoother(ctx, p(params, 'attackMs', 5));
 
-      const buildCurve = (thresholdDb: number, rangeDb: number): Float32Array<ArrayBuffer> => {
-        const n = 2048;
-        const curve = new Float32Array(n);
-        const thr = dbToGain(thresholdDb);
-        const floor = dbToGain(-Math.max(0, rangeDb));
-        for (let i = 0; i < n; i++) {
-          const level = Math.abs((i / (n - 1)) * 2 - 1);
-          // Open above the threshold, closed below, with a short ramp across
-          // it so a signal sitting on the threshold does not chatter.
-          const ratio = thr > 0 ? level / thr : 1;
-          const openness = Math.max(0, Math.min(1, (ratio - 0.5) / 0.5));
-          curve[i] = floor + (1 - floor) * openness;
-        }
-        return curve;
-      };
-
-      let curve = makeShaper(ctx, buildCurve(
+      let curve = makeShaper(ctx, gateGainCurve(
         p(params, 'thresholdDb', -45), p(params, 'rangeDb', 40),
       ));
       input.connect(rect).connect(env.input);
@@ -401,7 +427,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           params[id] = v;
           if (id === 'attackMs' || id === 'releaseMs') env.setTimeMs(v);
           if (id === 'thresholdDb' || id === 'rangeDb') {
-            const next = makeShaper(ctx, buildCurve(
+            const next = makeShaper(ctx, gateGainCurve(
               p(params, 'thresholdDb', -45), p(params, 'rangeDb', 40),
             ));
             env.output.disconnect();
@@ -1051,6 +1077,17 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
       lowCut.frequency.value = 120;                 // tape has no deep bottom
       let sat = makeShaper(ctx, tubeCurve(p(params, 'drive', 0.25), 0.05));
+      // The saturator amplifies quiet signals — see `tubeSmallSignalGain`.
+      // Left uncompensated the loop gain at the factory settings is 3.07 and
+      // the delay screams instead of repeating; it was audible only once
+      // something rendered a long tail through it.  Normalising HERE, before
+      // the signal splits to the feedback path and to the wet output, also
+      // stops Drive from doubling as a volume knob.
+      const norm = ctx.createGain();
+      const setDriveNorm = (drive: number): void => {
+        norm.gain.value = 1 / Math.max(1, tubeSmallSignalGain(drive, 0.05));
+      };
+      setDriveNorm(p(params, 'drive', 0.25));
       const fb = ctx.createGain();
       fb.gain.value = Math.min(0.95, p(params, 'feedback', 0.45));
 
@@ -1062,8 +1099,9 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
 
       input.connect(delay);
       delay.connect(tone).connect(lowCut).connect(sat);
-      sat.connect(fb).connect(delay);
-      sat.connect(wet).connect(output);
+      sat.connect(norm);
+      norm.connect(fb).connect(delay);
+      norm.connect(wet).connect(output);
       input.connect(output);
 
       return {
@@ -1080,8 +1118,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             sat.disconnect();
             sat = next;
             lowCut.connect(sat);
-            sat.connect(fb);
-            sat.connect(wet);
+            sat.connect(norm);
+            setDriveNorm(v);
           }
         },
         // `drive` rebuilds the saturation curve inside the feedback loop.

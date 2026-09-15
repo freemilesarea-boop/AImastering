@@ -6,6 +6,7 @@
 // live preview chain.
 
 import React from 'react';
+import { LAYER } from '../../theme/layers.js';
 import { useAudioStore } from '../../stores/audioStore.js';
 import { useAppStore } from '../../stores/appStore.js';
 import { useWorkspaceStore } from '../../stores/workspaceStore.js';
@@ -41,7 +42,8 @@ export default function DawMediaBay() {
   return (
     <div
       onClick={close}
-      className="fixed inset-0 z-[8000] flex items-center justify-center bg-black/65 backdrop-blur-sm"
+      className="fixed inset-0 flex items-center justify-center bg-black/65 backdrop-blur-sm"
+      style={{ zIndex: LAYER.scrim }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -50,7 +52,8 @@ export default function DawMediaBay() {
       >
         <div className="flex items-baseline justify-between">
           <p className="text-sm font-semibold text-zinc-100">MediaBay — 프리셋</p>
-          <button onClick={close} className="text-zinc-500 hover:text-zinc-300 text-sm">×</button>
+          <button onClick={close} title="닫기"
+                  className="hit-target text-zinc-500 hover:text-zinc-300 text-sm">×</button>
         </div>
 
         <section className="space-y-2">

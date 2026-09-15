@@ -7,9 +7,10 @@
 
 import { findTrack, updateTrack } from '../model/session-ops.js';
 import {
-  DEFAULT_INPUT_REF, describeInput, hasInputAssignment, inputRefFor, refreshHint,
-  resolveTrackInput, trackInputRef,
+  DEFAULT_INPUT_REF, describeInput, hasInputAssignment, inputRefFor, refPatch,
+  refreshHint, resolveTrackInput, trackInputRef,
 } from '../model/track-input.js';
+import type { InputPatch } from '../model/input-channels.js';
 import type {
   InputDeviceLike, InputResolution, TrackInputRef,
 } from '../model/track-input.js';
@@ -26,23 +27,25 @@ export function setTrackInput(
     deviceLabel: ref.deviceLabel || null,
     deviceId: ref.deviceId || null,
     channels,
+    firstChannel: Math.max(0, Math.floor(ref.firstChannel || 0)),
   };
   const current = trackInputRef(track);
   if (current.deviceLabel === next.deviceLabel
     && current.deviceId === next.deviceId
-    && current.channels === next.channels) return session;
+    && current.channels === next.channels
+    && current.firstChannel === next.firstChannel) return session;
   return updateTrack(session, trackId, (t) => ({ ...t, recordInput: next }));
 }
 
-/** Pick a device for a track, keeping its channel count unless told otherwise. */
+/** Pick a device for a track, keeping its socket unless told otherwise. */
 export function assignInputDevice(
   session: DawSession, trackId: TrackId,
-  device: InputDeviceLike | null, channels?: 1 | 2,
+  device: InputDeviceLike | null, patch?: InputPatch,
 ): DawSession {
   const track = findTrack(session, trackId);
   if (!track) return session;
   const current = trackInputRef(track);
-  return setTrackInput(session, trackId, inputRefFor(device, channels ?? current.channels));
+  return setTrackInput(session, trackId, inputRefFor(device, patch ?? refPatch(current)));
 }
 
 export function setTrackInputChannels(
@@ -51,6 +54,19 @@ export function setTrackInputChannels(
   const track = findTrack(session, trackId);
   if (!track) return session;
   return setTrackInput(session, trackId, { ...trackInputRef(track), channels });
+}
+
+/** Point a track at one socket of its device — input 5, or inputs 3/4. */
+export function setTrackInputPatch(
+  session: DawSession, trackId: TrackId, patch: InputPatch,
+): DawSession {
+  const track = findTrack(session, trackId);
+  if (!track) return session;
+  return setTrackInput(session, trackId, {
+    ...trackInputRef(track),
+    channels: patch.channels,
+    firstChannel: patch.firstChannel,
+  });
 }
 
 /** Forget a track's assignment — back to the system default. */
