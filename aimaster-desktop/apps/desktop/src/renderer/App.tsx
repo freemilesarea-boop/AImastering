@@ -24,7 +24,7 @@ import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
 import { LAYER } from './theme/layers.js';
 import { useDawShortcuts } from './shortcuts/useDawShortcuts.js';
-import DawWorkspaceChrome from './components/daw/DawWorkspaceChrome.js';
+import DawWorkspaceChrome, { useBottomZoneHeight } from './components/daw/DawWorkspaceChrome.js';
 import { isEmptyPlan, planDrop } from './daw/model/drop-target.js';
 import { describeImport, importIntoSession } from './daw/edit/session-import.js';
 import { useDawStore } from './stores/dawStore.js';
@@ -35,6 +35,27 @@ import { useMidiEditorStore } from './stores/midiEditorStore.js';
 const DevAnalyzerStreamPage = React.lazy(() =>
   import('./pages/DevAnalyzerStreamPage.js').then((m) => ({ default: m.DevAnalyzerStreamPage }))
 );
+
+// ── Creator watermark ─────────────────────────────────────────────────────────
+//
+// Branding for the mastering screens.  The DAW owns its bottom-left corner —
+// the mixer's nameplates and the arrangement's scrollbar live there — so this
+// steps aside for both the DAW page and the docked bottom zone, which is
+// fixed to the bottom of EVERY page once it is toggled on.
+
+function Watermark() {
+  const page = useAppStoreNotification((s) => s.currentPage);
+  const bottomZone = useBottomZoneHeight();
+  if (page === 'daw' || bottomZone > 0) return null;
+  return (
+    <div className="fixed bottom-3 left-4 pointer-events-none select-none"
+         style={{ zIndex: LAYER.watermark }}>
+      <span className="text-[10px] font-mono text-zinc-700 tracking-widest uppercase">
+        루베르
+      </span>
+    </div>
+  );
+}
 
 // ── Toast notification ────────────────────────────────────────────────────────
 
@@ -429,13 +450,13 @@ function AppInner() {
         : (pages[page] ?? <HomePage />)
       }
 
-      {/* Creator watermark — fixed bottom-left */}
-      <div className="fixed bottom-3 left-4 pointer-events-none select-none"
-           style={{ zIndex: LAYER.watermark }}>
-        <span className="text-[10px] font-mono text-zinc-700 tracking-widest uppercase">
-          루베르
-        </span>
-      </div>
+      {/* Creator watermark — bottom-left, but only where that corner is free.
+          It is `pointer-events-none`, so it never blocked a click and the
+          hit-test sweep never saw it; what it did was print itself ON TOP of
+          whatever the DAW had there.  Measured: over the mixer's first channel
+          name 'Audio 1' and its +0.0 gain readout, and over the arrangement's
+          bottom scroll row.  Text on text. */}
+      <Watermark />
 
       {/* License activation modal (v3.6 — commercial release). */}
       <LicenseModal />
