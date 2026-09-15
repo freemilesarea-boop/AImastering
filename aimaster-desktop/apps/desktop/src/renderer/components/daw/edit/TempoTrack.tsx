@@ -88,7 +88,7 @@ export function TempoTrackHeader({ session }: { session: DawSession }) {
             addTempoEvent(tempoMapOf(s), secToBeat(tempoMapOf(s), useDawStore.getState().playheadSec),
               tempoAtBeat(tempoMapOf(s), secToBeat(tempoMapOf(s), useDawStore.getState().playheadSec)))))}
           title="재생 위치에 템포 변화 추가"
-          className="w-4 h-4 rounded text-[10px] leading-none border"
+          className="hit-target w-4 h-4 rounded text-[10px] leading-none border"
           style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
         >+</button>
         <button
@@ -100,7 +100,7 @@ export function TempoTrackHeader({ session }: { session: DawSession }) {
               addMeterEvent(tempoMapOf(s), bar, at.numerator, at.denominator)));
           }}
           title="재생 위치의 마디에 박자 변화 추가"
-          className="w-6 h-4 rounded text-[8px] leading-none border"
+          className="hit-target w-6 h-4 rounded text-[8px] leading-none border"
           style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
         >박자</button>
       </div>

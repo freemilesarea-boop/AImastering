@@ -1030,7 +1030,7 @@ function TrackHeader({
           <button
             onClick={(e) => { e.stopPropagation(); setPicking(!picking); }}
             title="트랙 색"
-            className="relative w-1.5 h-4 rounded-sm shrink-0 before:absolute before:-inset-x-1.5 before:inset-y-0 before:content-['']"
+            className="hit-target w-1.5 h-4 rounded-sm shrink-0"
             style={{ background: track.color, border: 'none', padding: 0, cursor: 'pointer' }}
           />
         )}
@@ -1088,7 +1088,7 @@ function TrackHeader({
           <button
             onClick={(e) => { e.stopPropagation(); onToggleAutomation(); }}
             title={automationOpen ? '오토메이션 레인 접기' : '오토메이션 레인 열기'}
-            className="text-[9px] leading-none w-4 h-4 rounded shrink-0 flex items-center
+            className="hit-target text-[9px] leading-none w-4 h-4 rounded shrink-0 flex items-center
                        justify-center transition-colors"
             style={{
               border: `1px solid ${automationOpen ? premium.accent.deep : 'rgba(255,255,255,0.14)'}`,
@@ -1102,7 +1102,7 @@ function TrackHeader({
             title={insertCount > 0
               ? `인서트 ${insertCount}개 — 열기`
               : '플러그인 추가 · 편집'}
-            className="text-[10px] leading-none w-4 h-4 rounded shrink-0 flex items-center
+            className="hit-target text-[10px] leading-none w-4 h-4 rounded shrink-0 flex items-center
                        justify-center transition-colors"
             style={{
               border: `1px solid ${insertCount > 0 ? premium.accent.deep : 'rgba(255,255,255,0.14)'}`,

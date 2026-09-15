@@ -38,28 +38,21 @@ import type { Clip, Track } from '../../../daw/model/types.js';
 import { premium } from '../../../theme/premium.js';
 
 /**
- * Tall enough for the header's controls to FIT in the track column.
+ * Tall enough for the header's three rows of controls you can actually press.
  *
- * At 24 the row was laid out as if it had the width of the arrangement — a
- * `flex-1` spacer pushing the actions to a right edge that does not exist
- * here.  Rendered inside the 168 px track header the spacer collapses, the row
- * asks for 270 px, and `overflow: visible` paints the overflow straight over
- * the chip strip: 파트, 오디오에서, 8마디 and + all sat at x 184–270, covered
- * by the lane's own blocks and unclickable.  Four of the seven chord-track
- * actions could not be pressed at all, and only a test that drives the mouse
- * by coordinate rather than by element would ever have said so.
- *
- * So the row wraps, and the lane is as tall as the wrapped row actually needs.
- * That is three lines, measured, not two: the controls want 270 px of width in
- * a 167 px column even after the two longest labels were cut to 분석 and 뼈대,
- * and 40 px clipped the last line by 6.  A lane that is permanently in the
- * arrangement paying 56 px is the cost of every one of its actions being
- * clickable, which at 24 px four of seven were not.
- *
- * The chips get the same height, which they wanted anyway — 8 px type in a
- * 24 px block was the tightest text in the window.
+ * It was 24, which laid the row out as if it had the width of the arrangement:
+ * a `flex-1` spacer pushing the actions to a right edge that does not exist in
+ * a 167 px track column.  The row asked for 270 px, `overflow: visible` painted
+ * the excess over the lane's own blocks, and four of the seven chord-track
+ * actions could not be pressed at all — findable only by a test that drives the
+ * mouse by coordinate rather than by element.  The row wraps now.  It
+ * became 56, which fitted three rows of 16 px chips with nothing to spare —
+ * measured, the last row's bottom sat at 357 px inside a box ending at 358.
+ * 16 px is under any pointer target worth the name and there was no room to
+ * grow into, so the rows are 20 px now and the lane is the height that holds
+ * them: 4 px of padding, three rows, 4 px of gap between each.
  */
-export const CHORD_LANE_HEIGHT = 56;
+export const CHORD_LANE_HEIGHT = 76;
 
 interface Viewport { scrollSec: number; pxPerSec: number; width: number }
 
@@ -178,7 +171,7 @@ export function ChordLaneHeader() {
             onChange={(e) => apply((s) => setCapo(s, Number(e.target.value)))}
             title={'카포 — 소리는 그대로 두고 잡을 코드 모양만 바꿔서 보여줍니다'
               + (capoHint ? `. 추천: ${capoHint}프렛` : '')}
-            className="h-4 rounded text-[8px] leading-none border bg-transparent"
+            className="h-5 rounded text-[9px] leading-none border bg-transparent"
             style={{
               borderColor: capoHint && (session.capoFret ?? 0) === 0
                 ? premium.accent.glow : 'rgba(255,255,255,0.14)',
@@ -200,7 +193,7 @@ export function ChordLaneHeader() {
         <button
           onClick={goToNextUnsure}
           title={`검출기가 확신하지 못한 코드 ${unsure.length}개 — 눌러서 다음 위치로 이동합니다`}
-          className="h-4 px-1 rounded text-[8px] leading-none border flex items-center gap-1"
+          className="h-5 px-1.5 rounded text-[9px] leading-none border flex items-center gap-1"
           style={{
             borderColor: premium.accent.glow,
             color: premium.accent.light,
@@ -212,7 +205,7 @@ export function ChordLaneHeader() {
         value={style}
         onChange={(e) => setStyle(e.target.value as BackingStyle)}
         title="만들 반주의 종류"
-        className="h-4 rounded text-[8px] leading-none border bg-transparent"
+        className="h-5 rounded text-[9px] leading-none border bg-transparent"
         style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}
       >
         {BACKING_STYLES.map((s) => (
@@ -225,7 +218,7 @@ export function ChordLaneHeader() {
         title={chordCount === 0
           ? '코드 트랙이 비어 있습니다'
           : `코드 트랙을 ${backingStyleLabel(style)} 파트로 만들어 새 트랙에 놓습니다`}
-        className="h-4 px-1 rounded text-[8px] leading-none border"
+        className="h-5 px-1.5 rounded text-[9px] leading-none border"
         style={{
           borderColor: 'rgba(255,255,255,0.14)',
           color: chordCount === 0 ? premium.text.faint : premium.text.muted,
@@ -238,7 +231,7 @@ export function ChordLaneHeader() {
         title={target
           ? `"${target.clip.name}" 의 코드를 읽어서 코드 트랙에 씁니다 (드럼 분리 후 분석 — 느립니다)`
           : '재생헤드 아래에 오디오 클립이 없습니다'}
-        className="h-4 px-1 rounded text-[8px] leading-none border"
+        className="h-5 px-1.5 rounded text-[9px] leading-none border"
         style={{
           borderColor: 'rgba(255,255,255,0.14)',
           color: target && !busy ? premium.text.muted : premium.text.faint,
@@ -246,10 +239,10 @@ export function ChordLaneHeader() {
         }}
       >{busy ?? '분석'}</button>
       <button onClick={seed} title="8마디 코드 뼈대를 만듭니다 — 블록을 더블클릭해서 코드를 씁니다"
-              className="h-4 px-1 rounded text-[8px] leading-none border"
+              className="h-5 px-1.5 rounded text-[9px] leading-none border"
               style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>뼈대</button>
       <button onClick={addHere} title="재생헤드에 코드를 추가합니다"
-              className="w-5 h-4 shrink-0 rounded text-[10px] leading-none border"
+              className="hit-target w-5 h-5 shrink-0 rounded text-[10px] leading-none border"
               style={{ borderColor: 'rgba(255,255,255,0.14)', color: premium.text.muted }}>+</button>
     </div>
   );
@@ -360,7 +353,7 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
                   if (e.key === 'Enter') e.currentTarget.blur();
                   if (e.key === 'Escape') setEditing(null);
                 }}
-                className="h-4 px-1 text-[9.5px] rounded bg-transparent outline-none"
+                className="h-5 px-1 text-[10px] rounded bg-transparent outline-none"
                 style={{ color: premium.text.primary, border: '1px solid rgba(150,130,200,0.7)', width: 74 }}
               />
             ) : (
@@ -375,7 +368,7 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
             )}
 
             {w > 96 && (
-              <span className="ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100">
+              <span className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100">
                 <button onClick={(e) => {
                   e.stopPropagation();
                   apply((s) => withChords(s,
@@ -389,7 +382,7 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
                 <button onClick={(e) => {
                   e.stopPropagation();
                   apply((s) => withChords(s, removeChord(sortedChords(s), range.event.id)));
-                }} title="지우기" style={laneChip(premium.accent.danger)}>×</button>
+                }} title="지우기" className="ml-1" style={laneChip(premium.accent.danger)}>×</button>
               </span>
             )}
 
@@ -417,9 +410,21 @@ export default function ChordLane({ viewport }: { viewport: Viewport }) {
   );
 }
 
+/**
+ * The lane's own small control.
+ *
+ * It was 13 px tall with 3 px of padding at 8 px type, which on a chord block
+ * made ♯ ♭ × into 12x13 and 15x13 boxes with 2 px between them, revealed only
+ * on hover.  One of the three DELETES the chord.  Growing an invisible hit
+ * area — the trick used elsewhere in this file's neighbours — is the wrong fix
+ * HERE: two 24 px targets 15 px apart hand the overlap to whichever paints
+ * last, which would make the delete easier to hit by accident, not harder.
+ * Bigger and further apart is the only thing that helps.
+ */
 function laneChip(color: string = premium.text.muted): React.CSSProperties {
   return {
-    height: 13, padding: '0 3px', borderRadius: 2, fontSize: 8,
+    height: 20, minWidth: 20, padding: '0 5px', borderRadius: 3, fontSize: 11,
+    lineHeight: '18px', textAlign: 'center',
     color, background: 'transparent', border: '1px solid rgba(255,255,255,0.14)',
   };
 }

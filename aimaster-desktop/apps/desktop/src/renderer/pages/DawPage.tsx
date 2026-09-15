@@ -391,7 +391,7 @@ export default function DawPage() {
         subtitle={`DAW · ${windowMode.toUpperCase()}`}
         actions={
           <button onClick={() => setPage('home')}
-            className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors">← 홈</button>
+            className="hit-target text-xs text-zinc-600 hover:text-zinc-400 transition-colors">← 홈</button>
         }
       />
 
