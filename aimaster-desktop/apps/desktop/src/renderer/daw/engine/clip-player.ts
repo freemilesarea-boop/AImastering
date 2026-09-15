@@ -17,12 +17,14 @@ import { dbToGain, effectiveFaderDb, isAudible } from '../model/mixer-math.js';
 import type {
   AutomationTarget, Clip, DawSession, Fade, Track,
 } from '../model/types.js';
-import type { MidiNote } from '../model/midi.js';
+import type { ExpressionPoint, MidiNote } from '../model/midi.js';
 import { getCached, loadAudio, preloadAll } from './audio-cache.js';
 import { getSource } from './pcm-store.js';
 import {
   createStreamVoice, ensureStreamRuntime, streamRuntimeReady, type StreamVoice,
 } from './stream-voice.js';
+import { SUSTAIN_CC, sustainedNotes } from '../edit/sustain.js';
+import { targetKey } from '../model/midi.js';
 import { ensureWarpedBufferForSession, prepareWarpsForSession } from './warp-render.js';
 
 import { needsRender } from './warp-render.js';
@@ -32,7 +34,7 @@ import { playedNotes } from '../model/drum-map-play.js';
 import { insertedNotes, midiInsertsOf } from '../model/midi-insert-track.js';
 import { findCoverage } from '../model/macro-automation.js';
 import type { MacroId } from '../model/macros.js';
-import { noteSpan, partClock } from '../model/note-time.js';
+import { noteSpan, partClock, secToBeatsAt } from '../model/note-time.js';
 import { tempoMapOf } from '../model/tempo-map.js';
 import { findInstrument } from './instruments.js';
 import { makeRng } from '../edit/midi-edit.js';
@@ -84,6 +86,19 @@ function stopSource(source: Voice['source'], at: number): void {
   } else {
     source.stop();
   }
+}
+
+/**
+ * The part's sustain lane, or nothing.
+ *
+ * `clip.controllers` is where an imported .mid puts its CC64, and matching on
+ * `targetKey` rather than on `target.controller` keeps this agreeing with the
+ * rest of the codebase about what counts as the same target.
+ */
+function pedalPoints(clip: Clip): ExpressionPoint[] {
+  const key = targetKey({ kind: 'cc', controller: SUSTAIN_CC });
+  const lane = clip.controllers.find((l) => targetKey(l.target) === key);
+  return lane?.points ?? [];
 }
 
 /** A sounding MIDI note — owned by the instrument that created it. */
@@ -250,7 +265,23 @@ export class ClipPlayer {
     // arpeggiating what the player wrote — while the kit is about which sound
     // each pitch reaches.  Both leave the stored part alone, which is what
     // lets the editor keep showing what was actually played.
-    const inserted = insertedNotes(midiInsertsOf(track), clipNotes(session, clip));
+    // The pedal, before anything else looks at the part.
+    //
+    // A sustain lane reached the session three ways and sounded from none of
+    // them: `midi-file.ts` reads CC64 out of an imported .mid into
+    // `clip.controllers`, session-migrate carries it, the List Editor shows
+    // it and MIDI export writes it back — and no engine code had ever read
+    // `clip.controllers` at all.  A pedalled piano part survived a full round
+    // trip through this app in silence.
+    //
+    // Applied first, and as LENGTH, for the reason `midi-capture.ts` gives
+    // for folding a recorded pedal the same way: the pedal is part of the
+    // note.  Once it is length, every instrument honours it — which an
+    // envelope-level pedal would not have done, since only two of the
+    // built-ins use the shared `adsr()` helper.
+    const written = sustainedNotes(
+      clipNotes(session, clip), pedalPoints(clip), secToBeatsAt(clock, clip.durationSec));
+    const inserted = insertedNotes(midiInsertsOf(track), written);
     for (const note of playedNotes(drumMapFor(session, track), inserted.notes)) {
       if (note.muted) continue;
       const span = noteSpan(clock, note);
