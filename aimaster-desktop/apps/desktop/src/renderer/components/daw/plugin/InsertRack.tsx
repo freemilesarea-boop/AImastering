@@ -8,6 +8,7 @@
 // three of them and start comparing.
 
 import React, { useState } from 'react';
+import { LAYER } from '../../../theme/layers.js';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
 import { createInsert, findTrack, removeInsert, setInsert } from '../../../daw/model/session-ops.js';
@@ -213,7 +214,7 @@ export default function InsertRack({ trackId, anchorY }: { trackId: TrackId; anc
     <div
       className="fixed rounded-xl overflow-hidden flex flex-col"
       style={{
-        left: 176, top: Math.max(56, anchorY), zIndex: 190, width: 236,
+        left: 176, top: Math.max(56, anchorY), zIndex: LAYER.pluginWindow - 10, width: 236,
         maxHeight: '70vh',
         background: premium.surface.frame,
         border: `1px solid ${premium.accent.deep}`,

@@ -22,6 +22,7 @@ import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
+import { LAYER } from './theme/layers.js';
 import { useDawShortcuts } from './shortcuts/useDawShortcuts.js';
 import DawWorkspaceChrome from './components/daw/DawWorkspaceChrome.js';
 import { isEmptyPlan, planDrop } from './daw/model/drop-target.js';
@@ -49,7 +50,8 @@ function Toast() {
   };
 
   return (
-    <div className={`fixed z-50 animate-in-fast border
+    <div style={{ zIndex: LAYER.notification }}
+         className={`fixed animate-in-fast border
                      bottom-4 left-4 right-4 px-4 py-3 rounded-xl shadow-lg
                      text-[15px] text-center whitespace-nowrap overflow-hidden text-ellipsis
                      sm:bottom-5 sm:left-1/2 sm:right-auto sm:-translate-x-1/2
@@ -234,9 +236,9 @@ function GlobalDropOverlay() {
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex flex-col items-center justify-center gap-3
+      className="fixed inset-0 flex flex-col items-center justify-center gap-3
                  bg-zinc-900/90 backdrop-blur-sm pointer-events-none"
-      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      style={{ zIndex: LAYER.drop, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
       <svg className="w-12 h-12 text-zinc-300" viewBox="0 0 24 24" fill="none"
            stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
@@ -428,7 +430,8 @@ function AppInner() {
       }
 
       {/* Creator watermark — fixed bottom-left */}
-      <div className="fixed bottom-3 left-4 pointer-events-none select-none z-10">
+      <div className="fixed bottom-3 left-4 pointer-events-none select-none"
+           style={{ zIndex: LAYER.watermark }}>
         <span className="text-[10px] font-mono text-zinc-700 tracking-widest uppercase">
           루베르
         </span>

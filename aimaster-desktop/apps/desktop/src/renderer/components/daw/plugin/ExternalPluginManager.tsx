@@ -7,6 +7,7 @@
 // and the panel says exactly what is missing and why.
 
 import React, { useEffect, useState } from 'react';
+import { LAYER } from '../../../theme/layers.js';
 import {
   byVendor, formatCounts, useExternalPluginStore,
   type PluginFormat, type ScannedPlugin,
@@ -51,7 +52,7 @@ export default function ExternalPluginManager({ onClose, onInsert }: {
       className="fixed rounded-xl overflow-hidden flex flex-col"
       style={{
         left: '50%', top: 80, transform: 'translateX(-50%)',
-        zIndex: 210, width: 560, maxHeight: '76vh',
+        zIndex: LAYER.pluginWindow + 10, width: 560, maxHeight: '76vh',
         background: premium.surface.frame,
         border: `1px solid ${premium.accent.deep}`,
         boxShadow: premium.shadow.panel,

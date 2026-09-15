@@ -10,6 +10,7 @@
 // acceptable if unfolding it is one click away.
 
 import React, { useState } from 'react';
+import { LAYER } from '../../../theme/layers.js';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { updateTrack } from '../../../daw/model/session-ops.js';
 import {
@@ -40,8 +41,8 @@ export default function RackPanel({
 
   return (
     <div
-      className="fixed inset-0 z-[8600] flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.66)', backdropFilter: 'blur(6px)' }}
+      className="fixed inset-0 flex items-center justify-center"
+      style={{ zIndex: LAYER.scrim + 600, background: 'rgba(0,0,0,0.66)', backdropFilter: 'blur(6px)' }}
       onClick={onClose}
     >
       <div

@@ -11,6 +11,7 @@
 // timeline showing one session while the engine plays another.
 
 import React, { useMemo } from 'react';
+import { LAYER } from '../../../theme/layers.js';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { premium } from '../../../theme/premium.js';
 import { focusSecOf, historyEntries, stepsTo } from '../../../daw/edit/history-log.js';
@@ -46,7 +47,7 @@ export default function HistoryPanel({ onClose }: { onClose: () => void }) {
     <div
       className="absolute right-3 rounded-lg border overflow-hidden"
       style={{
-        top: 56, width: 260, maxHeight: 400, zIndex: 40,
+        top: 56, width: 260, maxHeight: 400, zIndex: LAYER.panel,
         background: '#15151d', borderColor: '#3a3a48',
         fontFamily: premium.type.sans, color: premium.text.primary,
       }}

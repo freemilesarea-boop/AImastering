@@ -6,6 +6,7 @@
 // one model, never two.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { LAYER } from '../../../theme/layers.js';
 import { useDawStore, snapToGrid, snapMoveTo, type EditMode } from '../../../stores/dawStore.js';
 import { followScrollSec, rulerTicks } from '../../../daw/model/viewport.js';
 import UniverseStrip from './UniverseStrip.js';
@@ -924,7 +925,7 @@ function FadeShapeMenu({ at, current, onPick, onClose }: {
       style={{
         left: Math.min(at.x, window.innerWidth - 150),
         top: Math.min(at.y, window.innerHeight - 160),
-        zIndex: 400,
+        zIndex: LAYER.popover,
         background: premium.surface.frame,
         border: `1px solid ${premium.accent.deep}`,
         boxShadow: premium.shadow.panel,

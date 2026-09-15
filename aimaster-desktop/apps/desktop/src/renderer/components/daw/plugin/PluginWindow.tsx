@@ -9,6 +9,7 @@
 // "undo that" — not four hundred.
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { pluginWindowLayer } from '../../../theme/layers.js';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { usePluginWindowStore, type PluginWindowState } from '../../../stores/pluginWindowStore.js';
 import { findTrack, setInsert } from '../../../daw/model/session-ops.js';
@@ -462,7 +463,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       onPointerDown={() => focus(win.id)}
       className="fixed rounded-xl overflow-hidden"
       style={{
-        left: win.x, top: win.y, zIndex: 200 + win.z,
+        left: win.x, top: win.y, zIndex: pluginWindowLayer(win.z),
         width: (isEq ? EQ_WIDTH : VISUAL_WIDTH) + 28,
         background: premium.surface.frame,
         border: `1px solid ${insert.bypass ? 'rgba(120,120,140,0.35)' : premium.accent.deep}`,

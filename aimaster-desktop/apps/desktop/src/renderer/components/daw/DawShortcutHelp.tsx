@@ -5,6 +5,7 @@
 // listed on purpose so the DAW muscle memory has an answer instead of silence.
 
 import React, { useMemo } from 'react';
+import { LAYER } from '../../theme/layers.js';
 import {
   SHORTCUTS, GROUP_TITLES, displayChords, type ShortcutGroupId,
 } from '../../shortcuts/definitions.js';
@@ -31,7 +32,8 @@ export default function DawShortcutHelp() {
   return (
     <div
       onClick={close}
-      className="fixed inset-0 z-[9000] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      className="fixed inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      style={{ zIndex: LAYER.help }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
