@@ -213,8 +213,6 @@ function ChannelStrip({
         this part simply gives back the space when there is none.
       */}
       <div className="min-h-0 overflow-y-auto overflow-x-hidden">
-      {isMaster && <MasterLoudness />}
-
       {/* Smart Controls — the macro layer, always one click away */}
       <button
         onClick={onSmart}
@@ -410,6 +408,24 @@ function ChannelStrip({
             {session.buses.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
         )}
+        {isMaster && (
+          /* The master has no output SELECTOR — it is the end of the chain —
+             but it still needs the ROW, or every band under I/O drops by its
+             height on this strip alone.  That is what left DLY 24 px out while
+             INSERTS was 48.
+
+             Text, not a disabled control: a dead dropdown invites a click that
+             can never do anything.  `inline-block` on a baseline rather than a
+             flex row, because the <select> it stands in for is inline-block
+             and a block-level replacement measured this section 2 px shorter
+             than the others — the same misalignment in miniature.  After:
+             every band boundary matches and the row's own top is 1 px off,
+             which is font metrics between a span and a select. */
+          <span className="w-full h-5 rounded text-[9px] px-1 inline-block leading-5
+                           bg-zinc-900/60 border border-zinc-800 text-zinc-500">
+            마스터 출력
+          </span>
+        )}
         {track.kind === 'aux' && (
           <select
             value={track.input ?? ''}
@@ -531,6 +547,20 @@ function ChannelStrip({
           </p>
         </div>
       )}
+
+      {/* The master's loudness readout.  It used to be the FIRST thing in
+          this column, and only on the master, so every shared band below it —
+          INSERTS, SENDS, I/O, DLY — sat 48 px lower than the same band on an
+          audio strip, and 48 px was not even constant: the block is shorter
+          while it says 재생하면 측정합니다 than when it is showing six numbers,
+          so the offset moved as soon as playback started.  A mix console is
+          read by scanning ACROSS strips, which that made impossible.
+
+          Last in the scroll column it displaces nothing — there is no
+          counterpart below it on any other strip to misalign with — and it
+          ends up directly above the master fader, which is where a desk puts
+          its master meter. */}
+      {isMaster && <MasterLoudness />}
 
       {/* Fader + meter */}
       </div>
