@@ -99,6 +99,8 @@ class DawRuntime {
   private loudnessState: 'off' | 'starting' | 'on' | 'failed' = 'off';
   private controlRoomState: ControlRoomState = DEFAULT_CONTROL_ROOM;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Animation-frame handle for the cursor — see `startPositionFrames`. */
+  private raf: number | null = null;
   /** The click.  Not in the mix — see engine/metronome.ts. */
   readonly metronome = new Metronome();
   private session: DawSession | null = null;
@@ -939,6 +941,7 @@ class DawRuntime {
   }
 
   private startTicking(): void {
+    this.startPositionFrames();
     if (this.timer) return;
     this.timer = setInterval(() => {
       const session = this.session;
@@ -971,7 +974,7 @@ class DawRuntime {
       // The click rides the same tick and the same origin as the clips, so a
       // beat and a kick on that beat are scheduled to the same context time.
       this.metronome.tick(tempoMapOf(session), pos, LOOKAHEAD_SEC, player.originSec);
-      this.onPosition?.(pos);
+      // The cursor is NOT reported from here — see `startPositionFrames`.
 
       // Stop at the end of the last clip (plus a tail for effects).
       const end = sessionEnd(session);
@@ -982,8 +985,51 @@ class DawRuntime {
     }, TICK_MS);
   }
 
+  /**
+   * The cursor, on its own clock, at screen rate.
+   *
+   * Scheduling and drawing are different jobs and were sharing one 50 ms
+   * timer.  That is the right cadence for handing the audio thread its next
+   * window — a look-ahead does not need to be finer — and much too coarse for
+   * a cursor: the position was sampled once per tick and drawn unchanged
+   * until the next, so the cursor sat up to 50 ms behind the transport, 25 ms
+   * on average, in a visible stair.
+   *
+   * It matters here because the two errors point OPPOSITE ways.  The cursor
+   * was drawn from the WRITE clock, which runs `outputLatency` ahead of the
+   * sound, and then held back by up to a tick.  Correcting the latency alone
+   * removes the half that was pointing the right way and leaves the staleness
+   * uncancelled — a real fix that can measure worse than the bug it fixes.
+   * Both halves, or neither.
+   *
+   * The sizes are not symmetric and not fixed: `outputLatency` is whatever
+   * the driver reports (30 ms on the machine this was measured on, and a
+   * different number on any other), while the staleness is bounded by
+   * TICK_MS.  Which is to say this is an argument about signs, not a claim
+   * that the two used to cancel exactly.
+   *
+   * A frame is the finest a cursor can usefully be — nothing sees between two
+   * paints — and it costs one clock read.
+   */
+  private startPositionFrames(): void {
+    if (this.raf !== null || typeof requestAnimationFrame === 'undefined') return;
+    const frame = (): void => {
+      const player = this.player;
+      if (player?.isPlaying) this.onPosition?.(player.audiblePosition());
+      this.raf = requestAnimationFrame(frame);
+    };
+    this.raf = requestAnimationFrame(frame);
+  }
+
+  private stopPositionFrames(): void {
+    if (this.raf === null) return;
+    if (typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(this.raf);
+    this.raf = null;
+  }
+
   private stopTicking(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    this.stopPositionFrames();
   }
 
   // ── Session clip launching ──────────────────────────────────────────────

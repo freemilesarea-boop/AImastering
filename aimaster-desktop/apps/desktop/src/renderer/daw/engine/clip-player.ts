@@ -24,6 +24,7 @@ import {
   createStreamVoice, ensureStreamRuntime, streamRuntimeReady, type StreamVoice,
 } from './stream-voice.js';
 import { SUSTAIN_CC, sustainedNotes } from '../edit/sustain.js';
+import { playbackLatency } from '../model/input-latency.js';
 import { targetKey } from '../model/midi.js';
 import { ensureWarpedBufferForSession, prepareWarpsForSession } from './warp-render.js';
 
@@ -139,10 +140,36 @@ export class ClipPlayer {
 
   get isPlaying(): boolean { return this.playing; }
 
-  /** Timeline position right now. */
+  /**
+   * Timeline position on the WRITE clock — where the graph is filling to.
+   *
+   * This is the scheduler's clock and must stay that way.  The look-ahead
+   * window, the loop wrap and the punch-out all decide what to hand the audio
+   * thread NEXT, and they have to reason about the moment being written, not
+   * the moment being heard.  Moving this would schedule everything late by the
+   * output latency, which is the bug rather than the fix.
+   */
   position(): number {
     if (!this.playing) return this.startedAtSec;
     return this.engine.ctx.currentTime - this.origin;
+  }
+
+  /**
+   * Timeline position on the AUDIBLE clock — where the sound in the room is.
+   *
+   * What the cursor should be drawn at.  The two clocks differ by the output
+   * latency, and a cursor drawn on the write clock sits slightly ahead of the
+   * music: the waveform under it has already been heard.
+   */
+  audiblePosition(): number {
+    if (!this.playing) return this.startedAtSec;
+    // `BaseAudioContext` does not declare the latency fields — they belong to
+    // AudioContext, and this player also runs inside an OfflineAudioContext
+    // for a bounce.  That is the right answer there rather than a gap in the
+    // types: an offline render has no speakers to be late to, reads no
+    // `outputLatency`, and gets a correction of zero.
+    const ctx = this.engine.ctx as BaseAudioContext & { outputLatency?: number };
+    return Math.max(0, this.position() - playbackLatency(ctx));
   }
 
   /** Decode every file the session references (before playback or a bounce). */
