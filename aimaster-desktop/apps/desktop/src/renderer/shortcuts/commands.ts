@@ -188,8 +188,14 @@ export function buildCommands(deps: CommandDeps, daw?: DawBridge): CommandMap {
       try {
         const dest = await invoke('file:save-wav', out) as string | null;
         if (dest) notify(`내보내기 완료 — ${fileNameOf(dest)}`, 'success');
-      } catch {
-        notify('내보내기 실패 (라이선스가 필요할 수 있습니다)', 'error');
+      } catch (err) {
+        // This used to blame the licence for every failure — a guess that
+        // was already wrong when it was written and is now impossible: the
+        // export gate was removed from all three main-process call sites.
+        // Meanwhile a full disk, a read-only folder and a path that is no
+        // longer there all arrived as the same sentence with the real reason
+        // thrown away.  Say what actually happened.
+        notify(`내보내기 실패 — ${(err as Error).message}`, 'error');
       }
     },
 

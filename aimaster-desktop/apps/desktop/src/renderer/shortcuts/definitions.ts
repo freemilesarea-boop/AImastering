@@ -145,7 +145,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'file.saveAs',       group: 'file', label: '다른 이름으로 저장', chords: ['Mod+Shift+S'],
     note: '세션 저장 (항상 저장 위치를 다시 묻습니다)', available: true },
   { id: 'file.export',       group: 'file', label: '내보내기 (Audio Export)', chords: ['Mod+Alt+E'],
-    note: '마스터 WAV 내보내기 (라이선스 필요)', available: true },
+    note: '마스터 WAV 내보내기 — 저장 위치를 고르면 바로 씁니다', available: true },
   { id: 'file.projectSetup', group: 'file', label: '프로젝트 설정',     chords: ['Shift+S'],
     note: '설정 페이지 열기', available: true },
 

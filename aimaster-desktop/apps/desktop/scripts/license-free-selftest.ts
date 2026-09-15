@@ -119,6 +119,44 @@ check('what the app REPORTS matches what the gate actually does', () => {
   assert(/tier: 'free'/.test(body), "an unlicensed build is still tier 'free'");
 });
 
+check('nothing the user reads claims a licence they do not need', () => {
+  // The gate went; the copy stayed.  Three places still told people that
+  // exporting costs a licence on a build where it costs nothing:
+  //   • the shortcut help printed "(라이선스 필요)" beside 내보내기, to
+  //     everyone, unconditionally;
+  //   • the export command's catch reported EVERY failure — a full disk, a
+  //     read-only folder, a path that moved — as a possible licence problem,
+  //     throwing the real reason away;
+  //   • the result page branched on the word 'license' in an error string the
+  //     main process can no longer produce.
+  //
+  // Read as code, like the gate check above: these files may still DISCUSS
+  // the removed gate in a comment, and a plain text search would call the
+  // explanation a paywall.
+  const sources: [string, string][] = [
+    ['src/renderer/shortcuts/definitions.ts', 'the shortcut help'],
+    ['src/renderer/shortcuts/commands.ts', 'the export command'],
+    ['src/renderer/pages/ResultPage.tsx', 'the result page'],
+  ];
+  for (const [file, what] of sources) {
+    const code = stripComments(readFileSync(file, 'utf8'));
+    assert(!/라이선스|라이센스|license/i.test(code),
+      `${what} still mentions a licence to the user — ${file}`);
+  }
+});
+
+check('an export that fails says what actually failed', () => {
+  // The other half of the same defect: replacing the licence guess with
+  // silence would be no better.  The catch has to carry the error through.
+  const cmds = readFileSync('src/renderer/shortcuts/commands.ts', 'utf8');
+  const at = cmds.indexOf("'file.export':");
+  assert(at > 0, 'file.export is still a command');
+  const body = cmds.slice(at, cmds.indexOf("\n    '", at + 20));
+  assert(/catch \(err\)/.test(body), 'the export catch throws its error away again');
+  assert(/\$\{\(err as Error\)\.message\}/.test(body),
+    'the failure toast no longer carries the reason');
+});
+
 check('the key field can hold a whole key', () => {
   // This one was real and reported: maxLength was 22 for a 23-character key,
   // so the browser refused the last character, `isComplete` never went true,

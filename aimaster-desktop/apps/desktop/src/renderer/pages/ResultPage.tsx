@@ -468,11 +468,11 @@ function SaveButtons() {
       }) as { savedPath: string | null; error?: string; warning?: string };
 
       if (res?.error) {
-        if (res.error.includes('license') || res.error.includes('라이선스')) {
-          notify('마스터 음원 저장은 라이선스가 필요합니다', 'warning');
-        } else {
-          notify(`WAV 저장 실패: ${res.error}`, 'error');
-        }
+        // No licence branch: the export gate is gone from the main process, so
+        // `file:save-audio` cannot return one.  The branch that used to be here
+        // could only ever have fired on a message that happened to contain the
+        // word, and it swallowed the real reason to do it.
+        notify(`WAV 저장 실패: ${res.error}`, 'error');
         return;
       }
       if (!res?.savedPath) return;   // user cancelled the dialog
