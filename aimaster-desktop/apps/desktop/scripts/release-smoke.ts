@@ -1,5 +1,5 @@
 /**
- * release-smoke.ts — pre-flight smoke check for the v3.6.0-rc.1 build.
+ * release-smoke.ts — pre-flight smoke check for the build about to be tagged.
  *
  * Run via:
  *   pnpm --filter @aimaster/desktop test:release-smoke
@@ -76,7 +76,7 @@ function readText(rel: string, root: string = REPO_ROOT): string {
 
 // ── Constants pulled from the bump in this RC ──────────────────────────────
 
-const EXPECTED_VERSION = '3.6.1';
+const EXPECTED_VERSION = '3.7.0';
 const EXPECTED_SHARED_TYPES_VERSION = '0.2.0';
 
 // ── 1–3. Build artefacts ───────────────────────────────────────────────────
@@ -122,7 +122,13 @@ function checkWorklet(): void {
   const distAssetsRel = 'aimaster-desktop/apps/desktop/dist/renderer/assets';
   if (exists(distAssetsRel)) {
     const dir = path.join(REPO_ROOT, distAssetsRel);
-    const emitted = fs.readdirSync(dir).find((f) => /^loudnessProcessor\.worklet-.*\.js$/.test(f));
+    // Vite emits `new URL(…)` assets with a content hash only when it needs
+    // one; a name that does not collide comes through verbatim.  The old
+    // pattern demanded the hash, so it warned on every correct build — and a
+    // release gate that cries wolf on the good case is one people learn to
+    // scroll past.  Both spellings are the asset being present.
+    const emitted = fs.readdirSync(dir).find(
+      (f) => /^loudnessProcessor\.worklet(-[^/]*)?\.js$/.test(f));
     if (!emitted) {
       warn('worklet source present',
            `${src} exists but no worklet asset found in ${distAssetsRel} — re-run \`pnpm build\``);
@@ -226,9 +232,18 @@ function checkCiBodyPath(): void {
     fail('CI body_path consistency', `body_path points to ${bodyPath} which does not exist`);
     return;
   }
-  if (!bodyPath.includes('v3.6.0')) {
-    warn('CI body_path consistency',
-         `body_path=${bodyPath} — does not include "v3.6.0".  Update when bumping to v3.6.0 final.`);
+  // Tied to EXPECTED_VERSION rather than a literal, because the literal is
+  // what went stale: it still said v3.6.0 through the whole of v3.6.1, so the
+  // one mistake this check exists to catch — shipping a release whose notes
+  // are for the previous version — was exactly the state it sat in.
+  //
+  // And it FAILS.  The release title comes from the tag and the body comes
+  // from this file, so a mismatch publishes the old version's notes under the
+  // new version's name, to everyone, with nothing in the app to contradict it.
+  if (!bodyPath.includes(`v${EXPECTED_VERSION}`)) {
+    fail('CI body_path consistency',
+         `body_path=${bodyPath} — does not name v${EXPECTED_VERSION}; `
+         + `the release would publish the wrong version's notes`);
     return;
   }
   pass('CI body_path consistency', `body_path=${bodyPath}`);
@@ -265,7 +280,7 @@ const passed = results.filter((r) => r.level === 'pass').length;
 const warned = results.filter((r) => r.level === 'warn').length;
 const failed = results.filter((r) => r.level === 'fail').length;
 
-console.log('\n=== v3.6 release smoke ===');
+console.log(`\n=== v${EXPECTED_VERSION} release smoke ===`);
 for (const r of results) {
   const tag =
     r.level === 'pass' ? 'PASS' :

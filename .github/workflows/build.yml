@@ -711,7 +711,7 @@ jobs:
           name:                   LV DAW ${{ steps.resolve_tag.outputs.tag }}
           # body_path uses the current version's release notes.  When bumping
           # versions, copy/update RELEASE_DRAFT_v<NEW>.md and change this line.
-          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.6.1.md
+          body_path:              aimaster-desktop/docs/RELEASE_DRAFT_v3.7.0.md
           # PUBLISHED, not a draft.  A draft's assets cannot be downloaded
           # without signing in and cannot be linked to, which defeats the
           # point of building four platforms for people to test.
