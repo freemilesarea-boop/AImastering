@@ -341,8 +341,129 @@ const EGTR: InstrumentPatch[] = [
       sustain: 0.6, release: 0.05 } },
 ];
 
+// ── Wavetable Synth ──────────────────────────────────────────────────────────
+//
+// A bank for this instrument has a second job beyond sounding good.  With a
+// hundred and thirteen parameters and an eight-row matrix, "what can it do"
+// is not answerable by turning knobs at random — a patch is the shortest
+// honest answer, and a bank that never uses the matrix would be evidence that
+// the matrix is decoration.  So every patch below except the init one routes
+// at least one source somewhere, and `wave-synth-selftest` checks that.
+//
+// Matrix rows read as three numbers.  The indices are positions in
+// `MOD_SOURCES` and `MOD_DESTS` — 4 is LFO 1, 5 is CUTOFF, 2 is ENV 2 — and
+// the reason they are numbers rather than names is in `mod-matrix.ts`.
+
+const WAVESYNTH: InstrumentPatch[] = [
+  { id: 'init', name: 'Init Table', category: 'init',
+    note: '기본 파형 표 하나, 유니즌 3, 필터 열림 — 여기서 시작합니다',
+    params: {} },
+
+  { id: 'supersaw', name: 'Supersaw', category: 'lead',
+    note: '유니즌 7에 폭을 끝까지 — 트랜스 리드의 그 소리',
+    params: {
+      aPos: 3, aUnison: 7, aDetune: 26, aBlend: 0.85, aWidth: 1,
+      bTable: 0, bPos: 3, bUnison: 7, bDetune: 18, bWidth: 0.8, bLevel: 0.5, bOct: -1,
+      cutoff: 122, res: 0.1, e1a: 0.008, e1d: 1.2, e1s: 0.85, e1r: 0.5,
+      m1src: 8, m1dst: 5, m1amt: 0.25 } },
+
+  { id: 'reese', name: 'Reese Bass', category: 'bass',
+    note: '두 표를 크게 디튠해 서로 때리게 합니다 — LFO 가 필터를 훑습니다',
+    params: {
+      aPos: 3, aUnison: 2, aDetune: 34, aWidth: 0.3,
+      bTable: 7, bPos: 5, bUnison: 2, bDetune: 30, bLevel: 0.75, bWidth: 0.3, bFine: 9,
+      cutoff: 78, res: 0.35, subLevel: 0.35, e1d: 0.6, e1s: 0.9, e1r: 0.12,
+      l1beats: 2, m1src: 4, m1dst: 5, m1amt: 0.18 } },
+
+  { id: 'growl-bass', name: 'Growl Bass', category: 'bass',
+    note: '표 위치를 LFO 로 흔듭니다 — 이게 웨이브테이블 신스로만 되는 소리입니다',
+    params: {
+      aTable: 4, aDetune: 10, aWidth: 0.4,
+      cutoff: 90, res: 0.42, fltKey: 0.3, drive: 0.35, subLevel: 0.45,
+      e1a: 0.003, e1d: 0.35, e1s: 0.9, e1r: 0.1,
+      l1beats: 0.5, l1shape: 1, l1skew: 0.3,
+      m1src: 4, m1dst: 1, m1amt: 0.55,
+      m2src: 4, m2dst: 5, m2amt: 0.12,
+      m3src: 8, m3dst: 15, m3amt: 0.3 } },
+
+  { id: 'vowel-lead', name: 'Vowel Lead', category: 'lead',
+    note: '모음 표를 엔벨로프로 훑습니다 — A 에서 U 까지 한 음 안에서',
+    params: {
+      aTable: 3, aDetune: 8, aWidth: 0.5,
+      cutoff: 120, res: 0.2, e1a: 0.01, e1d: 0.4, e1s: 0.8, e1r: 0.3,
+      e2a: 0.25, e2d: 1.4, e2s: 0.2, e2r: 0.6,
+      m1src: 2, m1dst: 1, m1amt: 0.6,
+      m2src: 6, m2dst: 1, m2amt: 0.08,
+      l3beats: 0.25 } },
+
+  { id: 'glass-pad', name: 'Glass Pad', category: 'pad',
+    note: '느리게 열리고 두 오실레이터가 반대로 흐릅니다 — 가만히 있지 않는 패드',
+    params: {
+      aTable: 6, aPos: 1, aUnison: 5, aDetune: 16, aWidth: 1, aPan: -0.35,
+      bTable: 2, bPos: 4, bUnison: 5, bDetune: 12, bLevel: 0.6, bWidth: 1, bPan: 0.35, bOct: 1,
+      cutoff: 104, res: 0.12, e1a: 0.9, e1d: 2, e1s: 0.8, e1r: 2.4,
+      l1beats: 8, l2beats: 5, l2phase: 0.3,
+      m1src: 4, m1dst: 1, m1amt: 0.3,
+      m2src: 5, m2dst: 2, m2amt: -0.3,
+      m3src: 4, m3dst: 5, m3amt: 0.1 } },
+
+  { id: 'pluck', name: 'Digital Pluck', category: 'pluck',
+    note: '엔벨로프가 표와 필터를 동시에 닫습니다 — 짧고 단단하게',
+    params: {
+      aTable: 5, aPos: 6, aDetune: 9, aWidth: 0.7,
+      cutoff: 118, res: 0.28, e1a: 0.001, e1d: 0.24, e1s: 0, e1r: 0.14,
+      e2a: 0.001, e2d: 0.16, e2r: 0.1,
+      m1src: 2, m1dst: 5, m1amt: 0.45,
+      m2src: 2, m2dst: 1, m2amt: -0.4,
+      m3src: 8, m3dst: 5, m3amt: 0.2 } },
+
+  { id: 'bell', name: 'Bell', category: 'keys',
+    note: '금속 표에 서브를 섞고 길게 놔둡니다',
+    params: {
+      aTable: 6, aPos: 5, aUnison: 1, aWidth: 0,
+      bTable: 6, bPos: 2, bLevel: 0.5, bOct: 1, bFine: 4,
+      cutoff: 126, res: 0.05, subLevel: 0.25, e1a: 0.002, e1d: 2.6, e1s: 0, e1r: 1.8,
+      e2a: 0.002, e2d: 0.9, e2r: 0.6,
+      m1src: 2, m1dst: 2, m1amt: -0.35 } },
+
+  { id: 'wobble', name: 'Wobble', category: 'bass',
+    note: '박자에 묶인 LFO 가 필터를 흔듭니다 — 매크로 1이 흔드는 속도',
+    params: {
+      aTable: 4, aPos: 4, aWidth: 0.5,
+      cutoff: 76, res: 0.55, drive: 0.4, subLevel: 0.4,
+      e1s: 1, e1r: 0.12,
+      l1beats: 0.5, l1shape: 1, l1skew: 0.65,
+      macro1: 0.5,
+      m1src: 4, m1dst: 5, m1amt: 0.4,
+      m2src: 11, m2dst: 15, m2amt: 0.5,
+      m3src: 4, m3dst: 1, m3amt: 0.2 } },
+
+  { id: 'noise-sweep', name: 'Noise Riser', category: 'fx',
+    note: '노이즈가 엔벨로프로 올라갑니다 — 드랍 앞에 붙이는 그것',
+    params: {
+      aLevel: 0.2, aTable: 2, aPos: 7, aUnison: 5, aDetune: 40, aWidth: 1,
+      noiseLevel: 0.7, noiseColour: 0.25,
+      cutoff: 60, res: 0.5, e1a: 2, e1d: 0.2, e1s: 1, e1r: 0.4,
+      e2a: 3.5, e2d: 0.2, e2s: 1, e2r: 0.3,
+      m1src: 2, m1dst: 5, m1amt: 0.75,
+      m2src: 2, m2dst: 3, m2amt: 0.18,
+      m3src: 2, m3dst: 6, m3amt: 0.3 } },
+
+  { id: 'sh-stab', name: 'S&H Stab', category: 'fx',
+    note: '샘플 앤 홀드가 피치를 계단으로 던집니다 — 같은 노트는 언제나 같은 계단',
+    params: {
+      aTable: 5, aPos: 3, aDetune: 12, aWidth: 0.8,
+      cutoff: 112, res: 0.3, e1a: 0.002, e1d: 0.3, e1s: 0.3, e1r: 0.2,
+      l1beats: 0.25, l1shape: 5,
+      l2shape: 5,
+      m1src: 4, m1dst: 3, m1amt: 0.25,
+      m2src: 5, m2dst: 1, m2amt: 0.5,
+      m3src: 10, m3dst: 11, m3amt: 0.6 } },
+];
+
 export const INSTRUMENT_PATCHES: Readonly<Record<string, readonly InstrumentPatch[]>> = {
   polysynth: POLY,
+  wavesynth: WAVESYNTH,
   epiano: EPIANO,
   agtr: AGTR,
   egtr: EGTR,

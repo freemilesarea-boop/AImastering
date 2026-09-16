@@ -20,6 +20,9 @@ import {
   inharmonicity, renderModes, ringSeconds, stringsForPitch, struckString,
 } from './struck-string.js';
 import { BAR_KINDS, barModes, barProfile } from './bar-model.js';
+import { WAVETABLES } from './wavetable.js';
+import { LFO_SHAPES, MATRIX_ROWS, MOD_DESTS, MOD_SOURCES, noteRandom, rowParams } from './mod-matrix.js';
+import { SUB_SHAPES, renderVoice, tailSeconds } from './wave-synth.js';
 import {
   CLAP_OFFSETS, noiseSamples, type DrumSpec,
 } from './drum-model.js';
@@ -1220,6 +1223,204 @@ function organVoice(v: VoiceContext): { stop: (at: number) => void } {
   };
 }
 
+
+// ── The wavetable synth ─────────────────────────────────────────────────────
+
+/**
+ * The parameter list, built rather than written out.
+ *
+ * Ninety-odd parameters typed by hand is ninety-odd chances to give one the
+ * wrong range, and the two oscillators are the same fourteen controls twice
+ * — so they are generated from one description and cannot drift apart.  The
+ * matrix is the same argument again: eight identical rows.
+ */
+function waveSynthParams(): InstrumentParamDef[] {
+  const out: InstrumentParamDef[] = [];
+  const lastTable = WAVETABLES.length - 1;
+
+  for (const o of ['a', 'b'] as const) {
+    const up = o.toUpperCase();
+    out.push(
+      { id: `${o}Table`,  name: `${up} Table`,  min: 0, max: lastTable, default: o === 'a' ? 0 : 1, unit: '' },
+      { id: `${o}Pos`,    name: `${up} WT Pos`, min: 0, max: 7,   default: 0,  unit: 'fr' },
+      { id: `${o}Oct`,    name: `${up} Oct`,    min: -3, max: 3,  default: 0,  unit: '' },
+      { id: `${o}Semi`,   name: `${up} Semi`,   min: -12, max: 12, default: 0, unit: 'st' },
+      { id: `${o}Fine`,   name: `${up} Fine`,   min: -100, max: 100, default: 0, unit: 'ct' },
+      { id: `${o}Unison`, name: `${up} Unison`, min: 1, max: 7,   default: o === 'a' ? 3 : 1, unit: '' },
+      { id: `${o}Detune`, name: `${up} Detune`, min: 0, max: 50,  default: 14, unit: 'ct' },
+      { id: `${o}Blend`,  name: `${up} Blend`,  min: 0, max: 1,   default: 0.7, unit: '' },
+      { id: `${o}Phase`,  name: `${up} Phase`,  min: 0, max: 1,   default: 0,  unit: '' },
+      { id: `${o}Rand`,   name: `${up} Rand`,   min: 0, max: 1,   default: o === 'a' ? 0.35 : 0.35, unit: '' },
+      { id: `${o}Width`,  name: `${up} Width`,  min: 0, max: 1,   default: 0.6, unit: '' },
+      { id: `${o}Pan`,    name: `${up} Pan`,    min: -1, max: 1,  default: 0,  unit: '' },
+      { id: `${o}Level`,  name: `${up} Level`,  min: 0, max: 1,   default: o === 'a' ? 0.8 : 0, unit: '' },
+    );
+  }
+
+  out.push(
+    { id: 'subWave',    name: 'Sub Wave',  min: 0, max: SUB_SHAPES.length - 1, default: 0, unit: '' },
+    { id: 'subOct',     name: 'Sub Oct',   min: -2, max: 0, default: -1, unit: '' },
+    { id: 'subLevel',   name: 'Sub',       min: 0, max: 1, default: 0, unit: '' },
+    { id: 'noiseColour', name: 'Noise Col', min: 0, max: 1, default: 0.5, unit: '' },
+    { id: 'noiseLevel', name: 'Noise',     min: 0, max: 1, default: 0, unit: '' },
+
+    { id: 'fltType', name: 'Filter', min: 0, max: FILTER_MODES.length - 1, default: 0, unit: '' },
+    // Cutoff in SEMITONES from 8.1758 Hz (MIDI 0), not hertz.  A filter
+    // tracked to the keyboard, swept by an envelope or wobbled by an LFO is
+    // moving in musical intervals every time, and a knob in hertz makes the
+    // same modulation depth mean something different in every octave.
+    { id: 'cutoff',  name: 'Cutoff', min: 12,  max: 135, default: 110, unit: 'st' },
+    { id: 'res',     name: 'Res',    min: 0,   max: 0.98, default: 0.15, unit: '' },
+    { id: 'flt24',   name: '24 dB',  min: 0,   max: 1,  default: 1,  unit: '' },
+    { id: 'fltKey',  name: 'Key Trk', min: 0,  max: 1,  default: 0,  unit: '' },
+    { id: 'fltMix',  name: 'Flt Mix', min: 0,  max: 1,  default: 1,  unit: '' },
+    { id: 'drive',   name: 'Drive',  min: 0,   max: 1,  default: 0,  unit: '' },
+  );
+
+  for (let i = 1; i <= 3; i++) {
+    const amp = i === 1;
+    out.push(
+      { id: `e${i}a`, name: `E${i} Atk`, min: 0.0005, max: 4, default: amp ? 0.004 : 0.01, unit: 's' },
+      { id: `e${i}d`, name: `E${i} Dec`, min: 0.002,  max: 8, default: amp ? 0.5 : 0.3, unit: 's' },
+      { id: `e${i}s`, name: `E${i} Sus`, min: 0, max: 1, default: amp ? 0.75 : 0, unit: '' },
+      { id: `e${i}r`, name: `E${i} Rel`, min: 0.002, max: 8, default: amp ? 0.25 : 0.2, unit: 's' },
+    );
+  }
+
+  for (let i = 1; i <= 4; i++) {
+    out.push(
+      { id: `l${i}shape`, name: `L${i} Shape`, min: 0, max: LFO_SHAPES.length - 1, default: 0, unit: '' },
+      { id: `l${i}sync`,  name: `L${i} Sync`,  min: 0, max: 1, default: 1, unit: '' },
+      { id: `l${i}beats`, name: `L${i} Beats`, min: 0.0625, max: 16, default: 1, unit: 'b' },
+      { id: `l${i}rate`,  name: `L${i} Rate`,  min: 0.01, max: 40, default: 4, unit: 'Hz' },
+      { id: `l${i}skew`,  name: `L${i} Skew`,  min: 0.02, max: 0.98, default: 0.5, unit: '' },
+      { id: `l${i}phase`, name: `L${i} Phase`, min: 0, max: 1, default: 0, unit: '' },
+      { id: `l${i}delay`, name: `L${i} Delay`, min: 0, max: 4, default: 0, unit: 's' },
+      { id: `l${i}rise`,  name: `L${i} Rise`,  min: 0, max: 8, default: 0, unit: 's' },
+    );
+  }
+
+  for (let i = 1; i <= 4; i++) {
+    out.push({ id: `macro${i}`, name: `Macro ${i}`, min: 0, max: 1, default: 0, unit: '' });
+  }
+
+  for (let r = 0; r < MATRIX_ROWS; r++) {
+    const ids = rowParams(r);
+    out.push(
+      { id: ids.src, name: `M${r + 1} Src`, min: 0, max: MOD_SOURCES.length - 1, default: 0, unit: '' },
+      { id: ids.dst, name: `M${r + 1} Dst`, min: 0, max: MOD_DESTS.length - 1, default: 0, unit: '' },
+      { id: ids.amt, name: `M${r + 1} Amt`, min: -1, max: 1, default: 0, unit: '' },
+    );
+  }
+
+  out.push(
+    { id: 'wheel',    name: 'Mod Whl', min: 0, max: 1, default: 0, unit: '' },
+    { id: 'pressure', name: 'Pressure', min: 0, max: 1, default: 0, unit: '' },
+    { id: 'level',    name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+  );
+  return out;
+}
+
+const FILTER_MODES = ['LP', 'BP', 'HP', 'Notch'] as const;
+
+const WAVE_SYNTH_PARAMS: InstrumentParamDef[] = waveSynthParams();
+const WAVE_SYNTH_PARAM_IDS: readonly string[] = WAVE_SYNTH_PARAMS.map((d) => d.id);
+
+/**
+ * The rendered voice, cached.
+ *
+ * Keyed on everything that changes the samples, which for this instrument is
+ * nearly the whole parameter set — so the key is a hash rather than a joined
+ * string of ninety numbers.  A collision would play the wrong sound, so it is
+ * a 53-bit hash and the parameters are folded in with their names: two
+ * patches differing in one knob have to disagree here, and they do.
+ */
+const SYNTH_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const SYNTH_CACHE_MAX = 96;
+
+function synthKey(
+  spec: Parameters<typeof renderVoice>[0], ids: readonly string[],
+): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const v = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ v, 16777619) >>> 0;
+    h2 = Math.imul(h2 + v, 2246822519) >>> 0;
+  };
+  for (const id of ids) fold(spec.params[id] ?? 0);
+  fold(spec.freqHz); fold(spec.velocity); fold(spec.seconds);
+  fold(spec.gateSec); fold(spec.random); fold(spec.beatsPerSec); fold(spec.sampleRate);
+  return `${h1.toString(36)}.${h2.toString(36)}`;
+}
+
+function waveSynthVoice(v: VoiceContext): { stop: (at: number) => void } {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  // Velocity is quantised before it reaches the cache for the same reason the
+  // piano's is: it changes the SAMPLES here — through the matrix — and a
+  // performance from a keyboard never repeats a velocity exactly.
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+
+  const gate = Math.max(0.01, durationSec);
+  const seconds = Math.min(30, gate + tailSeconds(params));
+  const spec = {
+    sampleRate: ctx.sampleRate, seconds, gateSec: gate,
+    freqHz: freq, pitch, velocity,
+    random: noteRandom(pitch, note.startBeat, 5),
+    params,
+    // The tempo where this note is, derived rather than passed.
+    //
+    // A note carries its length in BEATS and the caller converts it to
+    // SECONDS through the session's tempo map before handing it over — so the
+    // ratio of the two is the tempo at this note, including inside a ramp,
+    // and it is already correct without `MidiPartConfig` learning about
+    // tempo at all.  A zero-length note has no ratio, so it falls back to
+    // 120 bpm, which only decides where a synced LFO starts on a note too
+    // short to complete a cycle of one.
+    beatsPerSec: durationSec > 1e-6 && note.durationBeat > 1e-6
+      ? note.durationBeat / durationSec
+      : 2,
+  };
+
+  const key = synthKey(spec, WAVE_SYNTH_PARAM_IDS);
+  let rendered = SYNTH_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderVoice(spec);
+    if (SYNTH_CACHE.size >= SYNTH_CACHE_MAX) {
+      const oldest = SYNTH_CACHE.keys().next().value;
+      if (oldest !== undefined) SYNTH_CACHE.delete(oldest);
+    }
+    SYNTH_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+
+  const amp = ctx.createGain();
+  amp.gain.value = (params['level'] ?? CALIBRATED_LEVEL) * INSTRUMENT_TRIM.wavesynth;
+
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
 // ── The poly synth's oscillator bank ────────────────────────────────────────
 
 /**
@@ -2066,6 +2267,17 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     // already has one, and a cabinet welded to the instrument is a cabinet
     // nobody can take off.
     playNote: (v) => organVoice(v),
+  },
+
+  {
+    id: 'wavesynth',
+    name: 'Wavetable Synth',
+    params: WAVE_SYNTH_PARAMS,
+    // Two tables, a sub, noise, a state-variable filter and eight matrix rows
+    // — the whole argument for why it is computed rather than wired lives in
+    // `wave-synth.ts`, and the short version is that a `PeriodicWave` cannot
+    // be moved while it sounds and a wavetable synth is nothing else.
+    playNote: (v) => waveSynthVoice(v),
   },
 
   {
