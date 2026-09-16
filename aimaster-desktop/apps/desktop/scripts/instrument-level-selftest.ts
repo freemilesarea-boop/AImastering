@@ -99,6 +99,9 @@ const NODE_REFERENCE_LUFS: Readonly<Record<string, number>> = {
   wavesynth: -26.00, analog: -26.00, fm: -26.00,
 };
 
+/** What the analogue drum machine's reference beat measures under node. */
+const NODE_REFERENCE_MACHINE_LUFS = -26.00;
+
 /**
  * A note on the four that read exactly −26.00, and the one that does not.
  *
@@ -177,6 +180,7 @@ const MELODIC = [
  */
 const NOT_METERED_HERE: Readonly<Record<string, string>> = {
   drumkit: 'metered across all eleven kits by its own check below',
+  drummachine: 'a drum instrument, metered on a beat by its own check below',
   sampler: 'its loudness is the file the user loaded, so its trim is 1',
 };
 
@@ -304,6 +308,18 @@ async function main(): Promise<void> {
       `the median kit is ${median.toFixed(2)} LUFS, was ${NODE_REFERENCE_KIT_MEDIAN_LUFS}`);
   });
 
+  const machineBeat = getLoudnessMetrics(
+    await render('drummachine', referenceBeat(), REFERENCE_BEAT_SECONDS));
+  const machineHard = getLoudnessMetrics(
+    await render('drummachine', referenceBeat(1.35), REFERENCE_BEAT_SECONDS));
+
+  await check('the drum machine still measures what it did when calibrated', () => {
+    assert(Math.abs(machineBeat.integratedLufs - NODE_REFERENCE_MACHINE_LUFS) <= TOLERANCE_LU,
+      `the machine is ${machineBeat.integratedLufs.toFixed(2)} LUFS, was ${NODE_REFERENCE_MACHINE_LUFS}`);
+    assert(machineHard.truePeakDbtp <= LEVEL_PEAK_CEILING_DBTP + 0.01,
+      `a bar hit as hard as it goes peaks at ${machineHard.truePeakDbtp.toFixed(2)} dBTP`);
+  });
+
   await check('the kits keep their relative character', () => {
     const values = [...kitLufs.values()];
     const spread = Math.max(...values) - Math.min(...values);
@@ -315,7 +331,7 @@ async function main(): Promise<void> {
   });
 
   await check('the Level knob rests in the same place on every instrument', () => {
-    for (const id of [...MELODIC, 'drumkit', 'sampler']) {
+    for (const id of [...MELODIC, 'drumkit', 'drummachine', 'sampler']) {
       const inst = findInstrument(id);
       assert(inst !== undefined, `no instrument ${id}`);
       const level = inst!.params.find((p) => p.id === 'level');

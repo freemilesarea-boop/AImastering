@@ -27,6 +27,7 @@ import { ANALOG_SHAPES } from './analog-model.js';
 import { analogTail, renderAnalogVoice, voiceSlot } from './analog-synth.js';
 import { FM_ALGORITHMS, FM_OPERATORS, FM_WAVES } from './fm-core.js';
 import { fmTail, renderFmVoice } from './fm-synth.js';
+import { drumTail, drumVoiceFor, renderDrumVoice } from './drum-machine.js';
 import {
   CLAP_OFFSETS, noiseSamples, type DrumSpec,
 } from './drum-model.js';
@@ -1578,6 +1579,138 @@ function fmParams(): InstrumentParamDef[] {
   return out;
 }
 
+/**
+ * The analogue drum machine's parameters.
+ *
+ * Eleven voices, each with the controls that voice actually has rather than a
+ * shared set applied to all of them.  That is the whole difference from the
+ * kit next door: a kick's BEND and a hat's TUNE are not the same control with
+ * two names, and giving every voice "tone" would be a kit with eleven tone
+ * knobs rather than a drum machine.
+ */
+function drumMachineParams(): InstrumentParamDef[] {
+  const out: InstrumentParamDef[] = [
+    { id: 'tune',   name: 'Master Tune', min: -12, max: 12, default: 0, unit: 'st' },
+    { id: 'accent', name: 'Accent',      min: 0, max: 1, default: 0.7, unit: '' },
+    { id: 'width',  name: 'Width',       min: 0, max: 1, default: 0.6, unit: '' },
+
+    { id: 'bdtune',  name: 'Kick Tune',  min: 28, max: 120, default: 52, unit: 'Hz' },
+    { id: 'bddec',   name: 'Kick Decay', min: 0.05, max: 2.5, default: 0.55, unit: 's' },
+    { id: 'bdbend',  name: 'Kick Bend',  min: 0, max: 48, default: 26, unit: 'st' },
+    { id: 'bdsnap',  name: 'Kick Snap',  min: 0, max: 1, default: 0.4, unit: '' },
+    { id: 'bddrive', name: 'Kick Drive', min: 1, max: 8, default: 1.4, unit: '×' },
+    { id: 'bdlvl',   name: 'Kick Level', min: 0, max: 1, default: 0.95, unit: '' },
+
+    { id: 'sdtune',    name: 'Snare Tune',   min: 100, max: 420, default: 185, unit: 'Hz' },
+    { id: 'sddec',     name: 'Snare Decay',  min: 0.05, max: 1.5, default: 0.28, unit: 's' },
+    { id: 'sdtone',    name: 'Snare Tone',   min: 0, max: 1, default: 0.5, unit: '' },
+    { id: 'sdsnappy',  name: 'Snappy',       min: 0, max: 1, default: 0.6, unit: '' },
+    { id: 'sdsnapdec', name: 'Snappy Decay', min: 0.02, max: 0.8, default: 0.16, unit: 's' },
+    { id: 'sdlvl',     name: 'Snare Level',  min: 0, max: 1, default: 0.8, unit: '' },
+
+    { id: 'cptune',   name: 'Clap Tone',   min: 500, max: 2200, default: 1050, unit: 'Hz' },
+    { id: 'cpdec',    name: 'Clap Decay',  min: 0.05, max: 1.2, default: 0.3, unit: 's' },
+    { id: 'cpspread', name: 'Clap Spread', min: 0.2, max: 3, default: 1, unit: '×' },
+    { id: 'cplvl',    name: 'Clap Level',  min: 0, max: 1, default: 0.7, unit: '' },
+  ];
+  const toms: Array<[string, string, number, number]> = [
+    ['lt', 'Low Tom', 95, 0.55],
+    ['mt', 'Mid Tom', 140, 0.45],
+    ['ht', 'Hi Tom', 205, 0.38],
+  ];
+  for (const [id, name, hz, dec] of toms) {
+    out.push(
+      { id: `${id}tune`, name: `${name} Tune`, min: 50, max: 400, default: hz, unit: 'Hz' },
+      { id: `${id}dec`,  name: `${name} Decay`, min: 0.05, max: 2, default: dec, unit: 's' },
+      { id: `${id}bend`, name: `${name} Bend`, min: 0, max: 24, default: 8, unit: 'st' },
+      { id: `${id}lvl`,  name: `${name} Level`, min: 0, max: 1, default: 0.75, unit: '' },
+    );
+  }
+  out.push(
+    { id: 'chtune', name: 'Hat Tune',   min: 200, max: 1200, default: 540, unit: 'Hz' },
+    { id: 'chdec',  name: 'Hat Decay',  min: 0.01, max: 0.4, default: 0.06, unit: 's' },
+    { id: 'chlvl',  name: 'Hat Level',  min: 0, max: 1, default: 0.6, unit: '' },
+    { id: 'ohdec',  name: 'Open Decay', min: 0.05, max: 2, default: 0.55, unit: 's' },
+    { id: 'ohlvl',  name: 'Open Level', min: 0, max: 1, default: 0.6, unit: '' },
+
+    { id: 'cytune', name: 'Cymbal Tune',  min: 120, max: 800, default: 320, unit: 'Hz' },
+    { id: 'cydec',  name: 'Cymbal Decay', min: 0.1, max: 6, default: 1.8, unit: 's' },
+    { id: 'cylvl',  name: 'Cymbal Level', min: 0, max: 1, default: 0.55, unit: '' },
+
+    { id: 'rstune', name: 'Rim Tune',  min: 600, max: 3000, default: 1650, unit: 'Hz' },
+    { id: 'rsdec',  name: 'Rim Decay', min: 0.01, max: 0.4, default: 0.07, unit: 's' },
+    { id: 'rslvl',  name: 'Rim Level', min: 0, max: 1, default: 0.6, unit: '' },
+
+    { id: 'cbtune', name: 'Cowbell Tune',  min: 300, max: 1200, default: 545, unit: 'Hz' },
+    { id: 'cbdec',  name: 'Cowbell Decay', min: 0.05, max: 1.2, default: 0.32, unit: 's' },
+    { id: 'cblvl',  name: 'Cowbell Level', min: 0, max: 1, default: 0.55, unit: '' },
+
+    { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+  );
+  return out;
+}
+
+const DRUM_MACHINE_PARAMS: InstrumentParamDef[] = drumMachineParams();
+const DRUM_MACHINE_PARAM_IDS: readonly string[] = DRUM_MACHINE_PARAMS.map((d) => d.id);
+
+const DRUM_MACHINE_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const DRUM_MACHINE_CACHE_MAX = 160;
+
+function drumMachineVoice(v: VoiceContext): { stop: (at: number) => void } {
+  const { ctx, destination, note, when, params } = v;
+  const pitch = soundingPitch(note);
+  const voice = drumVoiceFor(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const seconds = drumTail(voice, params);
+
+  // A drum's length is its own, not the note's: holding a kick does not make
+  // it longer on any machine this models, and a part written on a grid holds
+  // every note for a sixteenth.
+  const seed = Math.round(note.startBeat * 96) ^ (pitch * 2654435761);
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of DRUM_MACHINE_PARAM_IDS) fold(params[id] ?? 0);
+  fold(pitch); fold(velocity); fold(seed); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = DRUM_MACHINE_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderDrumVoice({
+      sampleRate: ctx.sampleRate, seconds, voice, velocity, seed, params,
+    });
+    if (DRUM_MACHINE_CACHE.size >= DRUM_MACHINE_CACHE_MAX) {
+      const oldest = DRUM_MACHINE_CACHE.keys().next().value;
+      if (oldest !== undefined) DRUM_MACHINE_CACHE.delete(oldest);
+    }
+    DRUM_MACHINE_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  const trim = INSTRUMENT_TRIM['drummachine'] ?? 1;
+  amp.gain.value = trim * Math.max(0, Math.min(1, params['level'] ?? CALIBRATED_LEVEL));
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
 const FM_PARAMS: InstrumentParamDef[] = fmParams();
 const FM_PARAM_IDS: readonly string[] = FM_PARAMS.map((d) => d.id);
 
@@ -2604,6 +2737,17 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     // operator has its own and why they are exponential.  The maths, and
     // what the name gets wrong, are in `fm-core.ts`.
     playNote: (v) => fmVoice(v),
+  },
+
+  {
+    id: 'drummachine',
+    name: 'Analog Drums',
+    params: DRUM_MACHINE_PARAMS,
+    // Eleven voices built the way the circuits were rather than the way the
+    // drums are — a kick that is a falling sine, hats that are six squares
+    // and no noise at all.  Every voice has its own controls, which is the
+    // whole difference from the kit below it.  See `drum-machine.ts`.
+    playNote: (v) => drumMachineVoice(v),
   },
 
   {
