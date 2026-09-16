@@ -44,6 +44,7 @@ import {
 } from '../../daw/engine/drum-patterns.js';
 import { exportMidiFile } from '../../daw/io/midi-file.js';
 import WaveSynthPanel from './instrument/WaveSynthPanel.js';
+import AnalogPanel from './instrument/AnalogPanel.js';
 import {
   CATEGORY_LABEL, categoriesFor, patchParams, patchesFor,
 } from '../../daw/engine/instrument-patches.js';
@@ -386,7 +387,20 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               />
             )}
 
-            {openSlot === slot.trackId && slot.instrumentId !== 'wavesynth' && (
+            {/* The analogue synth gets its own too, and a DIFFERENT one: it is
+                a signal path you follow with your finger rather than a table
+                and a matrix, so the panel is VCO → mixer → ladder → VCA with
+                the fixed sends a hardware front panel has always had. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'analog' && (
+              <AnalogPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
+            {openSlot === slot.trackId && slot.instrumentId !== 'wavesynth'
+              && slot.instrumentId !== 'analog' && (
               <ParamKnobs
                 instrumentId={slot.instrumentId}
                 params={slot.params}
