@@ -45,6 +45,7 @@ import {
 import { exportMidiFile } from '../../daw/io/midi-file.js';
 import WaveSynthPanel from './instrument/WaveSynthPanel.js';
 import AnalogPanel from './instrument/AnalogPanel.js';
+import FmPanel from './instrument/FmPanel.js';
 import {
   CATEGORY_LABEL, categoriesFor, patchParams, patchesFor,
 } from '../../daw/engine/instrument-patches.js';
@@ -399,8 +400,20 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               />
             )}
 
+            {/* And the FM synth, whose ninety-one parameters are the same
+                twelve repeated six times plus an algorithm.  One operator at
+                a time, chosen from the diagram, because six copies of the
+                same twelve knobs would be a wall that teaches nothing. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'fm' && (
+              <FmPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
             {openSlot === slot.trackId && slot.instrumentId !== 'wavesynth'
-              && slot.instrumentId !== 'analog' && (
+              && slot.instrumentId !== 'analog' && slot.instrumentId !== 'fm' && (
               <ParamKnobs
                 instrumentId={slot.instrumentId}
                 params={slot.params}
