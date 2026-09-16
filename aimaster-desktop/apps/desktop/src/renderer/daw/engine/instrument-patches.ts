@@ -576,10 +576,188 @@ const ANALOG: InstrumentPatch[] = [
       drift: 22, tolerance: 0.18, spread: 1 } },
 ];
 
+/**
+ * The FM synth's bank.
+ *
+ * Authored around what FM can do and the other two synths cannot: struck and
+ * plucked spectra whose brightness decays on its own, inharmonic partials
+ * that no filter can make, and the one electric piano sound the 1980s are
+ * made of.  There is no filter in this instrument, so none of these patches
+ * is "the same sound darker" — every difference is a ratio, an index or an
+ * envelope.
+ *
+ * Operators that a patch does not use are set to level 0 explicitly rather
+ * than left at their defaults, because the defaults are a tine piano and a
+ * bell built on top of them would be a tine piano with a bell in it.
+ */
+const FM: InstrumentPatch[] = [
+  { id: 'init', name: 'Init Tine', category: 'init',
+    note: '2단 × 3 알고리듬, 배율 14 의 모듈레이터 — 튠 소리가 나는 출발점입니다',
+    params: {} },
+
+  { id: 'mk1', name: 'Electric Piano Mk I', category: 'keys',
+    note: '튠은 살리고 인덱스를 내려 따뜻하게 — 세게 치면 밝아지고 약하게 치면 종소리가 없습니다',
+    params: {
+      level: 0.62,
+      o2level: 0.42, o2vel: 0.95, o2d: 0.55,
+      o4level: 0.22, o6level: 0.12,
+      o1d: 2.6, o3d: 3.2, o5d: 2.4, o1r: 0.5, o3r: 0.5, o5r: 0.5 } },
+
+  { id: 'tine-bright', name: 'Tine Bright', category: 'keys',
+    note: '같은 악기를 앰프 앞에 놓은 소리 — 인덱스와 벨로시티를 끝까지',
+    params: {
+      level: 0.52,
+      o2level: 0.78, o2vel: 1, o2d: 1.3,
+      o4level: 0.4, o4ratio: 3, o6level: 0.26,
+      o1d: 2.2, o3d: 2.6, o5d: 2 } },
+
+  { id: 'wurly', name: 'Wurly Reed', category: 'keys',
+    note: '튠이 아니라 리드입니다 — 배율 1 대 1 에 짧은 바크, 배음이 홀수로 섭니다',
+    params: {
+      level: 0.6,
+      o2ratio: 1, o2level: 0.55, o2d: 0.16, o2vel: 0.9,
+      o4ratio: 3, o4level: 0.2, o4d: 0.12,
+      o6level: 0, o5level: 0.34, o5ratio: 1,
+      o1d: 1.8, o3d: 1.6, o5d: 1.4 } },
+
+  { id: 'clav', name: 'FM Clav', category: 'keys',
+    note: '피드백으로 톱니를 만들고 곧바로 닫습니다 — 손가락을 떼면 끝납니다',
+    params: {
+      level: 0.6, algo: 0,
+      feedback: 0.62,
+      o2level: 0.34, o2ratio: 1, o3level: 0.2, o3ratio: 2,
+      o4level: 0, o5level: 0, o6level: 0.3, o6ratio: 1,
+      o1a: 0.001, o1d: 0.5, o1s: 0.12, o1r: 0.08,
+      o2a: 0.001, o2d: 0.09, o2r: 0.06,
+      o3a: 0.001, o3d: 0.06, o3r: 0.05 } },
+
+  { id: 'bell', name: 'Tubular Bell', category: 'pluck',
+    note: '네 모듈이 캐리어로 바로 — 비조화 배율이라 배음이 음계 위에 서지 않습니다',
+    params: {
+      level: 0.5, algo: 4,
+      o1d: 9, o1r: 6,
+      o2ratio: 3.51, o2level: 0.34, o2d: 2.2, o2vel: 0.7, o2key: -0.5,
+      o3ratio: 7.13, o3level: 0.2, o3d: 1.1, o3vel: 0.8, o3key: -0.6,
+      o4ratio: 1.41, o4level: 0.22, o4d: 4, o4key: -0.3,
+      o5ratio: 11.2, o5level: 0.1, o5d: 0.5, o5key: -0.8,
+      o6level: 0 } },
+
+  { id: 'glass', name: 'Glass Bell', category: 'pluck',
+    note: '같은 알고리듬을 더 높고 더 맑게 — 종보다 유리에 가깝습니다',
+    params: {
+      level: 0.55, algo: 4,
+      o1d: 5, o1r: 3,
+      o2ratio: 4.98, o2level: 0.24, o2d: 1.4, o2key: -0.7,
+      o3ratio: 9.02, o3level: 0.14, o3d: 0.7, o3key: -0.8,
+      o4ratio: 2.01, o4level: 0.16, o4d: 2.6, o4key: -0.4,
+      o5level: 0, o6level: 0 } },
+
+  { id: 'marimba', name: 'FM Marimba', category: 'pluck',
+    note: '배율 4 의 모듈레이터가 아주 빨리 사라집니다 — 나무 막대의 그 딱 소리',
+    params: {
+      level: 0.62,
+      o1d: 0.5, o1r: 0.2,
+      o2ratio: 4, o2level: 0.5, o2d: 0.035, o2vel: 0.9,
+      o3level: 0.34, o3d: 0.9, o3r: 0.3,
+      o4ratio: 10, o4level: 0.2, o4d: 0.02,
+      o5level: 0.2, o5ratio: 3.01, o5d: 0.3,
+      o6ratio: 1, o6level: 0.1, o6d: 0.05 } },
+
+  { id: 'bass', name: 'FM Bass', category: 'bass',
+    note: '스택 하나에 피치 엔벨로프 — 시작에서 반음 위로 훅 떨어지는 그 클릭',
+    params: {
+      level: 0.6, algo: 0, transpose: -12,
+      pAmt: 7, pAtk: 0.001, pDec: 0.03,
+      o1a: 0.001, o1d: 0.9, o1s: 0.25, o1r: 0.1,
+      o2ratio: 1, o2level: 0.42, o2d: 0.18, o2s: 0.02, o2r: 0.08, o2vel: 0.85,
+      o3ratio: 2, o3level: 0.26, o3d: 0.1, o3r: 0.06,
+      o4level: 0, o5level: 0, o6level: 0 } },
+
+  { id: 'slap', name: 'Slap Bass', category: 'bass',
+    note: '피드백이 얹힌 낮은 스택 — 손톱으로 튕기는 소리는 배음이 먼저 나왔다 사라집니다',
+    params: {
+      level: 0.56, algo: 0, transpose: -12,
+      feedback: 0.5, fbOp: 4,
+      pAmt: 12, pAtk: 0.0008, pDec: 0.018,
+      o1a: 0.001, o1d: 0.6, o1s: 0.18, o1r: 0.08,
+      o2ratio: 1, o2level: 0.5, o2d: 0.07, o2s: 0.02, o2vel: 1,
+      o3ratio: 3, o3level: 0.3, o3d: 0.05,
+      o4d: 0.04,
+      o5level: 0, o6level: 0 } },
+
+  { id: 'brass', name: 'FM Brass', category: 'brass',
+    note: '모듈레이터가 캐리어보다 늦게 올라옵니다 — 입술이 자리를 잡는 그 시간',
+    params: {
+      level: 0.52, algo: 7,
+      o1a: 0.03, o1d: 3, o1s: 0.85, o1r: 0.22,
+      o2ratio: 1, o2level: 0.46, o2a: 0.09, o2d: 1.4, o2s: 0.34, o2r: 0.2, o2vel: 0.75,
+      o3level: 0.3, o3a: 0.05, o3d: 1, o3s: 0.3,
+      o4ratio: 2, o4level: 0.2, o4a: 0.08, o4d: 0.9, o4s: 0.2,
+      o5ratio: 1, o5level: 0.16, o5a: 0.06, o5d: 0.8, o5s: 0.25,
+      o6ratio: 3, o6level: 0.1, o6a: 0.1, o6s: 0.1,
+      pAmt: -1.2, pAtk: 0.02, pDec: 0.09,
+      lfoRate: 4.6, lfoDelay: 0.7, lfoPitch: 9,
+      unison: 2, detune: 7, width: 0.5 } },
+
+  { id: 'pad', name: 'Glass Pad', category: 'pad',
+    note: '다섯 캐리어에 모듈 하나 — 거의 가산 합성이라 코드가 뭉치지 않습니다',
+    params: {
+      level: 0.5, algo: 26,
+      o1level: 0.9, o2level: 0.2, o3level: 0.5, o4level: 0.4, o6level: 0.24,
+      o2ratio: 2.01, o3ratio: 2, o4ratio: 3, o5ratio: 4.01, o6ratio: 6,
+      o1a: 0.5, o3a: 0.7, o4a: 0.9, o5a: 1.2, o6a: 1.5,
+      o1d: 9, o1s: 0.8, o3d: 9, o3s: 0.7, o4d: 9, o4s: 0.6, o5d: 9, o5s: 0.5, o6d: 9, o6s: 0.4,
+      o1r: 1.6, o3r: 1.6, o4r: 1.6, o5r: 1.8, o6r: 2,
+      o2a: 0.8, o2d: 6, o2s: 0.5, o2r: 1.4,
+      lfoRate: 0.7, lfoDelay: 1.2, lfoPitch: 5,
+      unison: 2, detune: 9, width: 0.7, spread: 0.6 } },
+
+  { id: 'organ', name: 'Drawbar 888', category: 'organ',
+    note: '변조 없는 가산 6 — 배율이 곧 드로우바입니다. FM 신스가 오르간이 되는 방식',
+    params: {
+      level: 0.52, algo: 31,
+      o1ratio: 0.5, o2ratio: 1.5, o4ratio: 2, o5ratio: 3, o6ratio: 4,
+      o1level: 0.7, o2level: 0.45, o3level: 1, o4level: 0.55, o6level: 0.28,
+      o1a: 0.004, o2a: 0.004, o3a: 0.004, o4a: 0.004, o5a: 0.004, o6a: 0.004,
+      o1d: 12, o2d: 12, o3d: 12, o4d: 12, o5d: 12, o6d: 12,
+      o1s: 1, o2s: 1, o3s: 1, o4s: 1, o5s: 1, o6s: 1,
+      o1r: 0.06, o2r: 0.06, o3r: 0.06, o4r: 0.06, o5r: 0.06, o6r: 0.06,
+      o1vel: 0.1, o2vel: 0.1, o3vel: 0.1, o4vel: 0.1, o5vel: 0.1, o6vel: 0.1,
+      o2key: 0, o4key: 0, o6key: 0,
+      spread: 0.4 } },
+
+  { id: 'lead', name: 'Bell Lead', category: 'lead',
+    note: '종의 배율을 유지한 채 서스테인을 열어둔 소리 — 90년대 트랜스의 그 리드',
+    params: {
+      level: 0.5, algo: 12,
+      o1a: 0.004, o1d: 3, o1s: 0.7, o1r: 0.25,
+      o2ratio: 3.5, o2level: 0.3, o2d: 1.2, o2s: 0.18, o2key: -0.5,
+      o3ratio: 7, o3level: 0.18, o3d: 0.6, o3s: 0.08, o3key: -0.7,
+      o4ratio: 2, o4level: 0.22, o4d: 1.6, o4s: 0.2, o4key: -0.4,
+      o5ratio: 1, o5level: 0.4, o5a: 0.01, o5d: 4, o5s: 0.6, o5r: 0.25,
+      o6level: 0,
+      lfoRate: 5.4, lfoDelay: 0.5, lfoPitch: 12,
+      unison: 2, detune: 8, width: 0.4 } },
+
+  { id: 'industrial', name: 'Industrial', category: 'fx',
+    note: '피드백을 끝까지 올리고 노이즈 파형을 모듈레이터로 — 음정이 있는 금속 소음',
+    params: {
+      level: 0.42, algo: 0,
+      feedback: 0.95, fbOp: 5,
+      o1s: 0.3, o1r: 0.3,
+      o2ratio: 1.37, o2level: 0.55, o2d: 1.2, o2s: 0.25, o2wave: 2,
+      o3ratio: 5.77, o3level: 0.3, o3d: 0.8, o3s: 0.15, o3wave: 1,
+      o4ratio: 2.4, o4level: 0.28, o4d: 0.6, o4s: 0.1,
+      o5ratio: 0.5, o5d: 2, o5s: 0.2, o5wave: 7,
+      o6level: 0,
+      spread: 0.5 } },
+];
+
 export const INSTRUMENT_PATCHES: Readonly<Record<string, readonly InstrumentPatch[]>> = {
   polysynth: POLY,
   wavesynth: WAVESYNTH,
   analog: ANALOG,
+  fm: FM,
   epiano: EPIANO,
   agtr: AGTR,
   egtr: EGTR,

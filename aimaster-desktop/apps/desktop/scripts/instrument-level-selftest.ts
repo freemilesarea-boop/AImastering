@@ -96,7 +96,7 @@ const TOLERANCE_LU = 0.4;
 const NODE_REFERENCE_LUFS: Readonly<Record<string, number>> = {
   polysynth: -26.01, epiano: -26.06, agtr: -26.07, egtr: -26.00,
   piano: -26.00, upright: -26.00, bass: -25.86, mallet: -26.00, organ: -25.99,
-  wavesynth: -26.00, analog: -26.00,
+  wavesynth: -26.00, analog: -26.00, fm: -26.00,
 };
 
 /**
@@ -159,7 +159,7 @@ async function render(
 
 const MELODIC = [
   'polysynth', 'epiano', 'agtr', 'egtr', 'piano', 'upright', 'bass', 'mallet', 'organ',
-  'wavesynth', 'analog',
+  'wavesynth', 'analog', 'fm',
 ] as const;
 
 /**

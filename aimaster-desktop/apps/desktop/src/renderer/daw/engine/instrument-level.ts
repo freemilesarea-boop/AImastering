@@ -94,6 +94,7 @@ export const INSTRUMENT_TRIM = {
   upright: 0.6473,
   wavesynth: 0.0943,
   analog: 0.2012,
+  fm: 0.0762,
   bass: 0.1761,
   mallet: 0.2005,
   organ: 0.0755,
@@ -148,7 +149,7 @@ const BEAT = 60 / REFERENCE_BPM;
 
 /** The root each instrument is measured at — guitars an octave up from keys. */
 export const REFERENCE_ROOT: Readonly<Record<string, number>> = {
-  polysynth: 48, epiano: 48, agtr: 52, egtr: 52, piano: 48, upright: 48, bass: 33, mallet: 60, organ: 48, wavesynth: 48, analog: 48,
+  polysynth: 48, epiano: 48, agtr: 52, egtr: 52, piano: 48, upright: 48, bass: 33, mallet: 60, organ: 48, wavesynth: 48, analog: 48, fm: 48,
 };
 
 /** A maj7 chord, an eighth-note line over it, then the chord up a fourth. */

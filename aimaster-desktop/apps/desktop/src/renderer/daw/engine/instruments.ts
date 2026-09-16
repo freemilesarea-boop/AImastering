@@ -25,6 +25,8 @@ import { LFO_SHAPES, MATRIX_ROWS, MOD_DESTS, MOD_SOURCES, noteRandom, rowParams 
 import { SUB_SHAPES, renderVoice, tailSeconds } from './wave-synth.js';
 import { ANALOG_SHAPES } from './analog-model.js';
 import { analogTail, renderAnalogVoice, voiceSlot } from './analog-synth.js';
+import { FM_ALGORITHMS, FM_OPERATORS, FM_WAVES } from './fm-core.js';
+import { fmTail, renderFmVoice } from './fm-synth.js';
 import {
   CLAP_OFFSETS, noiseSamples, type DrumSpec,
 } from './drum-model.js';
@@ -1512,6 +1514,148 @@ function analogParams(): InstrumentParamDef[] {
   return out;
 }
 
+/**
+ * The FM synth's parameters.
+ *
+ * Twelve per operator times six, plus the algorithm, the feedback, a pitch
+ * envelope, an LFO and the stack.  That is a lot of numbers and it is the
+ * right number: an operator IS twelve decisions, and an FM synth with fewer
+ * per operator is one that has picked some of them for you.
+ *
+ * The defaults are a two-operator electric piano on algorithm 15 — a tine,
+ * not a sine — because an instrument whose default patch is a bare sine wave
+ * teaches the user nothing about what it is for.
+ */
+function fmParams(): InstrumentParamDef[] {
+  const out: InstrumentParamDef[] = [];
+  // Carriers 1, 3 and 5 on algorithm 15; 2, 4 and 6 are their modulators.
+  const level = [1, 0.62, 0.55, 0.3, 0.3, 0.18];
+  const ratios = [1, 14, 1, 1, 2, 7];
+  const decay = [1.6, 0.9, 2.2, 1.1, 1.8, 0.7];
+  for (let i = 1; i <= FM_OPERATORS; i++) {
+    const up = `OP ${i}`;
+    const k = i - 1;
+    out.push(
+      { id: `o${i}ratio`, name: `${up} Ratio`, min: 0.0625, max: 32, default: ratios[k] ?? 1, unit: '×' },
+      { id: `o${i}fine`,  name: `${up} Fine`,  min: -100, max: 100, default: 0, unit: 'ct' },
+      { id: `o${i}fixed`, name: `${up} Fixed`, min: 0, max: 1, default: 0, unit: '' },
+      { id: `o${i}hz`,    name: `${up} Hz`,    min: 1, max: 8000, default: 440, unit: 'Hz' },
+      { id: `o${i}wave`,  name: `${up} Wave`,  min: 0, max: FM_WAVES.length - 1, default: 0, unit: '' },
+      { id: `o${i}level`, name: `${up} Level`, min: 0, max: 1, default: level[k] ?? 0.5, unit: '' },
+      { id: `o${i}a`,     name: `${up} Atk`,   min: 0.0005, max: 4, default: 0.002, unit: 's' },
+      { id: `o${i}d`,     name: `${up} Dec`,   min: 0.002, max: 12, default: decay[k] ?? 1, unit: 's' },
+      { id: `o${i}s`,     name: `${up} Sus`,   min: 0, max: 1, default: 0, unit: '' },
+      { id: `o${i}r`,     name: `${up} Rel`,   min: 0.002, max: 12, default: 0.4, unit: 's' },
+      { id: `o${i}vel`,   name: `${up} Vel`,   min: 0, max: 1, default: k % 2 === 0 ? 0.3 : 0.8, unit: '' },
+      { id: `o${i}key`,   name: `${up} Key`,   min: -1, max: 1, default: k % 2 === 0 ? 0 : -0.35, unit: '' },
+    );
+  }
+  out.push(
+    { id: 'algo',     name: 'Algorithm', min: 0, max: FM_ALGORITHMS.length - 1, default: 14, unit: '' },
+    { id: 'fbOp',     name: 'FB Op',     min: 1, max: FM_OPERATORS, default: 6, unit: '' },
+    { id: 'feedback', name: 'Feedback',  min: 0, max: 1, default: 0, unit: '' },
+
+    { id: 'pAmt',     name: 'Pitch Env', min: -24, max: 24, default: 0, unit: 'st' },
+    { id: 'pAtk',     name: 'P Atk',     min: 0.0005, max: 1, default: 0.002, unit: 's' },
+    { id: 'pDec',     name: 'P Dec',     min: 0.001, max: 2, default: 0.06, unit: 's' },
+
+    { id: 'lfoShape', name: 'LFO Wave',  min: 0, max: LFO_SHAPES.length - 1, default: 0, unit: '' },
+    { id: 'lfoSync',  name: 'LFO Sync',  min: 0, max: 1, default: 0, unit: '' },
+    { id: 'lfoBeats', name: 'LFO Beats', min: 0.0625, max: 16, default: 1, unit: 'b' },
+    { id: 'lfoRate',  name: 'LFO Rate',  min: 0.01, max: 30, default: 5, unit: 'Hz' },
+    { id: 'lfoDelay', name: 'LFO Delay', min: 0, max: 4, default: 0.4, unit: 's' },
+    { id: 'lfoPitch', name: 'LFO → Pitch', min: 0, max: 100, default: 0, unit: 'ct' },
+    { id: 'lfoAmp',   name: 'LFO → Amp',   min: 0, max: 1, default: 0, unit: '' },
+
+    { id: 'unison',    name: 'Unison',  min: 1, max: 3, default: 1, unit: '' },
+    { id: 'detune',    name: 'Detune',  min: 0, max: 40, default: 6, unit: 'ct' },
+    { id: 'width',     name: 'Width',   min: 0, max: 1, default: 0.3, unit: '' },
+    { id: 'spread',    name: 'Spread',  min: 0, max: 1, default: 0.35, unit: '' },
+    { id: 'transpose', name: 'Transpose', min: -24, max: 24, default: 0, unit: 'st' },
+
+    { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+  );
+  return out;
+}
+
+const FM_PARAMS: InstrumentParamDef[] = fmParams();
+const FM_PARAM_IDS: readonly string[] = FM_PARAMS.map((d) => d.id);
+
+const FM_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const FM_CACHE_MAX = 96;
+
+function fmVoice(v: VoiceContext): { stop: (at: number) => void } {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.01, durationSec);
+  const seconds = Math.min(30, gate + fmTail(params));
+
+  // `fine` is folded into the ratio here rather than inside the render loop:
+  // it never changes during a note, and doing it per sample would be six
+  // `Math.pow` calls per sample for a number that is constant.
+  const tuned: Record<string, number> = { ...params };
+  for (let i = 1; i <= FM_OPERATORS; i++) {
+    const cents = params[`o${i}fine`] ?? 0;
+    if (cents !== 0) {
+      tuned[`o${i}ratio`] = (params[`o${i}ratio`] ?? 1) * Math.pow(2, cents / 1200);
+    }
+  }
+
+  const spec = {
+    sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq, pitch, velocity,
+    params: tuned,
+    beatsPerSec: durationSec > 1e-6 && note.durationBeat > 1e-6
+      ? note.durationBeat / durationSec
+      : 2,
+  };
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of FM_PARAM_IDS) fold(tuned[id] ?? 0);
+  fold(freq); fold(velocity); fold(seconds); fold(gate);
+  fold(pitch); fold(spec.beatsPerSec); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = FM_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderFmVoice(spec);
+    if (FM_CACHE.size >= FM_CACHE_MAX) {
+      const oldest = FM_CACHE.keys().next().value;
+      if (oldest !== undefined) FM_CACHE.delete(oldest);
+    }
+    FM_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = 1;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
 const ANALOG_PARAMS: InstrumentParamDef[] = analogParams();
 const ANALOG_PARAM_IDS: readonly string[] = ANALOG_PARAMS.map((d) => d.id);
 
@@ -2449,6 +2593,17 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     // a per-voice component tolerance so a chord is six slightly different
     // instruments.  Every one of those is measured in `analog-model.ts`.
     playNote: (v) => analogVoice(v),
+  },
+
+  {
+    id: 'fm',
+    name: 'FM Synth',
+    params: FM_PARAMS,
+    // Six operators and thirty-two algorithms.  There is no filter: an FM
+    // patch's brightness is its modulator envelopes, which is why every
+    // operator has its own and why they are exponential.  The maths, and
+    // what the name gets wrong, are in `fm-core.ts`.
+    playNote: (v) => fmVoice(v),
   },
 
   {
