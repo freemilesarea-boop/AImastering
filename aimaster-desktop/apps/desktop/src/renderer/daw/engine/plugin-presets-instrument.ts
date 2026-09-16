@@ -518,6 +518,24 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { rateHz: 0.45, depthMs: 7, delayMs: 22, mix: 55 } },
   }),
 
+  ...inst('amp', {
+    drumloop: { note: '드럼을 앰프에 넣는 건 왜곡이지 앰프 소리가 아닙니다 — 캐비닛을 끄고 한 단만',
+                params: { gain: 40, stages: 1, master: 30, sag: 20, cab: 3, mic: 50, level: -4 } },
+    bass:     { note: '베이스 앰프는 기타 앰프가 아닙니다 — 캐비닛을 끄고 저역을 살립니다. '
+                      + '기타 캐비닛의 80 Hz 하이패스가 베이스의 근음을 잘라냅니다',
+                params: { gain: 30, stages: 1, master: 45, sag: 55, cab: 3, bass: 4, treble: -3 } },
+    egtr:     { note: '이 악기를 위해 만든 장치입니다. 두 단 크런치에 2×12',
+                params: { gain: 55, stages: 2, master: 45, sag: 35, cab: 1, mic: 45 } },
+    agtr:     { note: '통기타에는 거의 클린으로, 마이크는 오프 액시스. 픽업 소리를 부드럽게만',
+                params: { gain: 15, stages: 1, master: 25, sag: 15, cab: 0, mic: 80, treble: -3 } },
+    piano:    { note: '전자 피아노를 앰프에 — 로즈가 원래 그렇게 들어갔습니다',
+                params: { gain: 28, stages: 1, master: 38, sag: 50, cab: 0, mic: 55, mid: 2 } },
+    strings:  { note: '현에는 캐비닛의 고역 차단만 빌려 씁니다. 왜곡은 거의 없이',
+                params: { gain: 10, stages: 1, master: 18, sag: 10, cab: 1, mic: 70, presence: -2 } },
+    synth:    { note: '신스를 앰프로 — 세 단에 4×12, 기계 소리를 악기 소리로 바꾸는 쪽',
+                params: { gain: 78, stages: 3, master: 55, sag: 30, cab: 2, mic: 40, stack: 1 } },
+  }),
+
   ...inst('rotary', {
     drumloop: { note: '드럼을 회전시키면 그루브가 흔들립니다 — 절반만 섞고 도플러는 최소로',
                 params: { rateHz: 3.2, doppler: 30, throb: 45, xoverHz: 1200, drive: 10, mix: 35 } },

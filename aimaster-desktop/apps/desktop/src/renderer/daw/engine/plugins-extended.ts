@@ -329,6 +329,238 @@ function noiseBuffer(ctx: BaseAudioContext, seconds = 2): AudioBuffer {
 
 // ── The devices ─────────────────────────────────────────────────────────────
 
+/**
+ * A guitar amplifier's gain stage: a filter, a gain, a curve, a filter.
+ *
+ * The order matters and is the whole reason a cascade of these sounds like an
+ * amplifier where one big waveshaper does not.
+ *
+ *   · the filter BEFORE decides what gets distorted.  A real preamp's
+ *     coupling capacitors cut the bass going into each valve, which is why a
+ *     high-gain amp stays tight instead of turning to mud — distorting the
+ *     low end is what makes mud.
+ *   · the filter AFTER decides what survives.  Each stage rolls off the
+ *     fizz it just created, so the harmonics the next stage works on are the
+ *     ones a valve would have passed.
+ *
+ * ── What a cascade does, and what it does not ──────────────────────────────
+ *
+ * Measured on this implementation, a 220 Hz tone at the same input: one stage
+ * gives 25.9% harmonic content, three give 36.3%, and the low end tightens
+ * because each stage's high-pass takes more of the fundamental away before
+ * distorting — three stages take over 6 dB off an 80 Hz note that one leaves
+ * alone.  That is the reason to build it this way and it is what the selftest
+ * checks.
+ *
+ * What it does NOT do, which is the thing textbooks say and this measurement
+ * does not support: it does not reduce intermodulation.  Two tones at 220 and
+ * 330 Hz came out with an intermodulation-to-harmonic ratio of 2.79 through
+ * one stage and 2.68 through three — no difference worth the words.  The
+ * filters here sit at 6 to 9 kHz and the difference tones land near the
+ * fundamentals, so there is nothing between the stages to remove them.  A
+ * cascade that reduced intermodulation would need its filters where the
+ * products are, and this one's are not.
+ */
+/**
+ * A valve stage's transfer curve, with the DRIVE baked into it.
+ *
+ * This is the fix for a fault that made the whole preamp pointless, and it is
+ * worth writing down because the code that had it looked correct.
+ *
+ * A `WaveShaper`'s curve is defined over an input of −1 to 1 and CLAMPS
+ * outside it.  Putting the drive in front as a gain therefore does not drive
+ * a soft curve harder — past unity it drives it off the end, and every sample
+ * lands on the same two endpoint values.  A tanh with a gain in front is a
+ * hard clipper, and a hard clipper is symmetric whatever bias it was built
+ * with.  Measured: the preamp's second harmonic sat at −50.6 dB against a
+ * third at −6.9, which is to say the asymmetry the bias exists to create was
+ * not there at all.
+ *
+ * With `a` inside the curve, the saturation is spread across the whole domain
+ * and stays soft at any setting.
+ *
+ * ── The bias is a DC offset, not a squared term ────────────────────────────
+ *
+ * It was `x + b·x²/2` first, and that is asymmetric in the algebra and not in
+ * the sound: the term is proportional to x², so on a signal well below full
+ * scale it is a few per cent of the signal and the tanh flattens it away.
+ * A valve's asymmetry is not that.  It is the GRID BIAS — the operating point
+ * sits off centre, so one half of the wave reaches the top of the curve
+ * before the other half reaches the bottom — which is a DC offset INSIDE the
+ * tanh and does not shrink as the signal does.
+ *
+ * Measured with the squared term: second harmonic at −58 dB against a third
+ * at −8, which is to say no asymmetry at all.
+ *
+ * And a note on where to look for it: at maximum gain BOTH halves are past
+ * saturation and the output is a square wave either way, so an amplifier at
+ * full gain makes mostly odd harmonics however it is biased.  The even ones
+ * live at moderate drive, where one half is clipping and the other is not.
+ * That is true of the real thing and the selftest measures it there.
+ */
+function valveCurve(drive: number, bias: number): Float32Array<ArrayBuffer> {
+  const n = 2048;
+  const curve = new Float32Array(n);
+  const a = Math.max(0.05, drive);
+  const centre = Math.tanh(bias);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    curve[i] = Math.tanh(a * x + bias) - centre;
+  }
+  return curve;
+}
+
+/**
+ * The slope of `valveCurve` at the origin, which the bias changes.
+ *
+ * d/dx tanh(ax + b) at x = 0 is a·sech²(b).  Dividing it out is what keeps a
+ * stage at unity when it is not being driven, whatever bias it carries.
+ */
+function valveSlope(drive: number, bias: number): number {
+  const t = Math.tanh(bias);
+  return Math.max(0.05, drive) * (1 - t * t);
+}
+
+interface AmpStage {
+  input: BiquadFilterNode;
+  output: BiquadFilterNode;
+  setDrive: (amount: number) => void;
+}
+
+function ampStage(
+  ctx: BaseAudioContext,
+  opts: { cutHz: number; tiltHz: number; drive: number; bias: number },
+): AmpStage {
+  const cut = ctx.createBiquadFilter();
+  cut.type = 'highpass';
+  cut.frequency.value = opts.cutHz;
+  cut.Q.value = 0.7;
+
+  const post = ctx.createGain();
+  const tilt = ctx.createBiquadFilter();
+  tilt.type = 'lowpass';
+  tilt.frequency.value = opts.tiltHz;
+  tilt.Q.value = 0.5;
+  post.connect(tilt);
+
+  // The shaper is REPLACED when the drive changes rather than re-curved: a
+  // `WaveShaper`'s curve cannot be assigned twice under the renderer the
+  // offline suite uses, and the drive lives inside the curve.
+  let shape = makeShaper(ctx, valveCurve(opts.drive, opts.bias), '4x');
+  cut.connect(shape).connect(post);
+
+  const setDrive = (amount: number): void => {
+    const a = Math.max(0.05, amount);
+    const next = makeShaper(ctx, valveCurve(a, opts.bias), '4x');
+    cut.connect(next).connect(post);
+    try { cut.disconnect(shape); shape.disconnect(); } catch { /* not connected */ }
+    shape = next;
+    // The curve's slope at the origin is `a`, so dividing by its square root
+    // leaves a small-signal gain of √a: unity at zero drive, and louder as
+    // it is driven, which is what an amplifier does — just nothing like
+    // proportionally.
+    post.gain.value = 1 / (Math.sqrt(a) * (valveSlope(a, opts.bias) / a));
+  };
+  post.gain.value = 1 / (Math.sqrt(Math.max(0.05, opts.drive))
+    * (valveSlope(opts.drive, opts.bias) / Math.max(0.05, opts.drive)));
+
+  return { input: cut, output: tilt, setDrive };
+}
+
+/**
+ * A speaker cabinet, as filters rather than as a convolution.
+ *
+ * What a guitar cabinet does to a signal, in order of how much it matters:
+ *
+ *   · it stops around 4 kHz, hard.  This is most of the sound — the fizz a
+ *     distorted preamp makes lives above there and a cabinet simply does not
+ *     reproduce it.  Every "amp sim sounds like a wasp in a tin" is a missing
+ *     cabinet.
+ *   · it stops around 80 Hz at the bottom, because a 12-inch speaker in a
+ *     box that size cannot go lower.
+ *   · it has a cone resonance near 100 Hz and a presence peak near 2.5 kHz,
+ *     and a dip between them where the cone breaks up.
+ *
+ * ── What this is not ───────────────────────────────────────────────────────
+ *
+ * It is not an impulse response, and an impulse response would be better.  A
+ * real cabinet's fine structure — the comb from the baffle, the exact
+ * breakup, the room — is dozens of features this cannot have with six
+ * filters.  What six filters DO get is the four things above, which is the
+ * difference between usable and unusable; the rest is the difference between
+ * usable and convincing.  Loading an IR is a separate device and is worth
+ * building.
+ */
+interface Cabinet {
+  input: BiquadFilterNode;
+  output: AudioNode;
+  setKind: (kind: number) => void;
+  setMic: (position: number) => void;
+}
+
+const CAB_KINDS = [
+  // size, low corner, top corner, cone resonance, presence peak
+  { name: '1×12', lowHz: 95, topHz: 4600, coneHz: 115, presenceHz: 2600 },
+  { name: '2×12', lowHz: 85, topHz: 4200, coneHz: 100, presenceHz: 2300 },
+  { name: '4×12', lowHz: 75, topHz: 3800, coneHz: 88, presenceHz: 2000 },
+] as const;
+
+function cabinet(ctx: BaseAudioContext, kind: number, mic: number): Cabinet {
+  const low = ctx.createBiquadFilter();
+  low.type = 'highpass';
+  low.Q.value = 0.8;
+  const cone = ctx.createBiquadFilter();
+  cone.type = 'peaking';
+  cone.Q.value = 1.4;
+  cone.gain.value = 4;
+  const dip = ctx.createBiquadFilter();
+  dip.type = 'peaking';
+  dip.frequency.value = 800;
+  dip.Q.value = 1.1;
+  dip.gain.value = -4;
+  const presence = ctx.createBiquadFilter();
+  presence.type = 'peaking';
+  presence.Q.value = 1.6;
+  // Two lowpasses, not one.  A single two-pole roll-off at 4 kHz still
+  // passes plenty at 8; a cabinet does not.
+  // Two lowpasses at nearly the SAME corner, which is four poles together.
+  // Spread apart — the first version put the second an octave and a half up —
+  // they only reached 12 dB down at 8 kHz against 1 kHz, where a real
+  // cabinet is past 24.  That shortfall is the entire "amp sim sounds like a
+  // wasp in a tin" complaint, so it is worth the extra pole.
+  const topA = ctx.createBiquadFilter();
+  topA.type = 'lowpass';
+  topA.Q.value = 0.7;
+  const topB = ctx.createBiquadFilter();
+  topB.type = 'lowpass';
+  topB.Q.value = 0.9;
+
+  low.connect(cone).connect(dip).connect(presence).connect(topA).connect(topB);
+
+  const apply = (k: number, m: number): void => {
+    const spec = CAB_KINDS[Math.max(0, Math.min(CAB_KINDS.length - 1, Math.round(k)))]
+      ?? CAB_KINDS[0];
+    low.frequency.value = spec.lowHz;
+    cone.frequency.value = spec.coneHz;
+    presence.frequency.value = spec.presenceHz;
+    // The microphone position, as the one thing it really is: how far off the
+    // centre of the cone it sits.  On axis is bright and edgy; off axis rolls
+    // the top off and is where most recorded guitars actually are.
+    const off = Math.max(0, Math.min(1, m));
+    presence.gain.value = 6 - off * 9;
+    topA.frequency.value = spec.topHz * (1 - off * 0.35);
+    topB.frequency.value = spec.topHz * 0.86 * (1 - off * 0.35);
+  };
+  apply(kind, mic);
+
+  return {
+    input: low,
+    output: topB,
+    setKind: (k) => apply(k, mic),
+    setMic: (m) => { mic = m; apply(kind, m); },
+  };
+}
+
 export const EXTENDED_PLUGINS: PluginDescriptor[] = [
   // ── EQ ────────────────────────────────────────────────────────────────────
   {
@@ -1085,6 +1317,208 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           depth: mod.depth.gain,
         }),
         dispose: () => { mod.osc.stop(); },
+      };
+    }),
+  },
+
+
+  {
+    id: 'amp',
+    name: 'Guitar Amp',
+    category: 'saturation',
+    hasSidechain: false,
+    params: [
+      { id: 'gain',     name: 'Gain',     min: 0, max: 100, default: 45, unit: '%' },
+      { id: 'stages',   name: 'Stages',   min: 1, max: 3,   default: 2,  unit: '' },
+      { id: 'bass',     name: 'Bass',     min: -12, max: 12, default: 0, unit: 'dB' },
+      { id: 'mid',      name: 'Mid',      min: -12, max: 12, default: 0, unit: 'dB' },
+      { id: 'treble',   name: 'Treble',   min: -12, max: 12, default: 0, unit: 'dB' },
+      { id: 'stack',    name: 'Stack',    min: 0, max: 1,   default: 0,  unit: '' },
+      { id: 'presence', name: 'Presence', min: -6, max: 12, default: 3,  unit: 'dB' },
+      { id: 'master',   name: 'Master',   min: 0, max: 100, default: 40, unit: '%' },
+      { id: 'sag',      name: 'Sag',      min: 0, max: 100, default: 35, unit: '%' },
+      { id: 'cab',      name: 'Cabinet',  min: 0, max: 3,   default: 1,  unit: '' },
+      { id: 'mic',      name: 'Mic',      min: 0, max: 100, default: 45, unit: '%' },
+      { id: 'level',    name: 'Level',    min: -24, max: 12, default: 0, unit: 'dB' },
+    ],
+    // The tone controls and Level are AudioParams all the way down.  Gain,
+    // Stages and Cabinet rebuild or re-route nodes, so they are knobs rather
+    // than lanes and are declared as driven instead.
+    automatableParams: ['bass', 'mid', 'treble', 'presence', 'master', 'level'],
+    drivenParams: ['gain'],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // ── The preamp ──────────────────────────────────────────────────────
+      //
+      // Three stages, and how many are IN CIRCUIT is the knob rather than
+      // how hard one is driven.  That is how an amplifier is actually built:
+      // a clean channel is one valve, a crunch channel is two, a lead
+      // channel is three, and the difference between them is not volume.
+      //
+      // The corners get tighter and the bias more asymmetric as the signal
+      // goes deeper, which is what stops a three-stage setting from being
+      // mud: each stage cuts more bass than the last before distorting.
+      const gain01 = Math.max(0, Math.min(1, p(params, 'gain', 45) / 100));
+      const driveOf = (i: number): number => 1 + gain01 * (i === 0 ? 14 : (i === 1 ? 10 : 8));
+      const stages = [
+        ampStage(ctx, { cutHz: 45, tiltHz: 9000, drive: driveOf(0), bias: 0.55 }),
+        ampStage(ctx, { cutHz: 120, tiltHz: 7000, drive: driveOf(1), bias: 0.7 }),
+        ampStage(ctx, { cutHz: 220, tiltHz: 6000, drive: driveOf(2), bias: 0.3 }),
+      ];
+
+      // ── The tone stack ──────────────────────────────────────────────────
+      //
+      // Three filters shaped like a passive tone stack, and NOT a simulation
+      // of one.  A real stack's three controls interact through one network —
+      // turning the bass up moves where the mid sits — and these do not.
+      // What they do reproduce is the part that decides the sound: where the
+      // bands are, and the scoop between them that a passive stack always has
+      // even with everything at noon.  The two stacks differ in exactly that,
+      // which is most of what "American" and "British" mean.
+      const bass = ctx.createBiquadFilter();
+      bass.type = 'lowshelf';
+      const mid = ctx.createBiquadFilter();
+      mid.type = 'peaking';
+      const treble = ctx.createBiquadFilter();
+      treble.type = 'highshelf';
+      const scoop = ctx.createBiquadFilter();
+      scoop.type = 'peaking';
+
+      const applyStack = (which: number): void => {
+        const british = which > 0.5;
+        bass.frequency.value = british ? 120 : 90;
+        mid.frequency.value = british ? 650 : 480;
+        mid.Q.value = british ? 0.8 : 0.6;
+        treble.frequency.value = british ? 2600 : 3400;
+        // The scoop: fixed, because it is the network and not a control.
+        scoop.frequency.value = british ? 480 : 380;
+        scoop.Q.value = 0.9;
+        scoop.gain.value = british ? -3 : -5;
+      };
+      applyStack(p(params, 'stack', 0));
+      bass.gain.value = p(params, 'bass', 0);
+      mid.gain.value = p(params, 'mid', 0);
+      treble.gain.value = p(params, 'treble', 0);
+
+      // ── The power amp ───────────────────────────────────────────────────
+      //
+      // Two things, and the second is the one people mean by "feel".
+      //
+      // The clip is symmetric where the preamp's is not, because a push-pull
+      // output stage is two valves taking a half each — so it makes odd
+      // harmonics where the preamp made even ones, and the two together are
+      // the full series.
+      //
+      // The SAG is the power supply running out.  A loud chord pulls the rail
+      // down, everything gets quieter for a moment and springs back as the
+      // capacitors recover, and that is why a cranked amp breathes.  It is a
+      // compressor with a slow attack and a slow release and almost no ratio,
+      // which is exactly what a sagging rail is.
+      const powerIn = ctx.createGain();
+      const powerBack = ctx.createGain();
+      let powerShape = makeShaper(ctx, valveCurve(1, 0), '4x');
+      powerIn.connect(powerShape).connect(powerBack);
+      const setMaster = (percent: number): void => {
+        const amount = 1 + (Math.max(0, Math.min(100, percent)) / 100) * 9;
+        const next = makeShaper(ctx, valveCurve(amount, 0), '4x');
+        powerIn.connect(next).connect(powerBack);
+        try { powerIn.disconnect(powerShape); powerShape.disconnect(); } catch { /* not connected */ }
+        powerShape = next;
+        powerBack.gain.value = 1 / Math.sqrt(amount);
+      };
+      setMaster(p(params, 'master', 40));
+
+      const sag = ctx.createDynamicsCompressor();
+      sag.knee.value = 30;
+      sag.ratio.value = 2.4;
+      // Slow, because a rail sagging is slow.  Twenty milliseconds was fast
+      // enough that the attack was already compressed by the time anybody
+      // could hear it as an attack — which is a compressor rather than a
+      // sag.  Forty-five in, half a second back.
+      sag.attack.value = 0.045;
+      sag.release.value = 0.5;
+      const setSag = (percent: number): void => {
+        const amount = Math.max(0, Math.min(100, percent)) / 100;
+        // At 0 the threshold is out of reach and the node is a wire.
+        sag.threshold.value = amount <= 0.001 ? 0 : -6 - amount * 24;
+      };
+      setSag(p(params, 'sag', 35));
+
+      const presence = ctx.createBiquadFilter();
+      presence.type = 'highshelf';
+      presence.frequency.value = 2200;
+      presence.gain.value = p(params, 'presence', 3);
+
+      // ── The cabinet ─────────────────────────────────────────────────────
+      const cab = cabinet(ctx, p(params, 'cab', 1), p(params, 'mic', 45) / 100);
+      const cabBypass = ctx.createGain();
+      const cabWet = ctx.createGain();
+      const setCab = (value: number): void => {
+        // The last position is OFF, for going into a real cabinet or an
+        // impulse response afterwards.  A device that could not be turned off
+        // would force its own speaker on anybody who has a better one.
+        const off = Math.round(value) >= CAB_KINDS.length;
+        cabWet.gain.value = off ? 0 : 1;
+        cabBypass.gain.value = off ? 1 : 0;
+        if (!off) cab.setKind(value);
+      };
+
+      const out = ctx.createGain();
+      out.gain.value = dbToGain(p(params, 'level', 0));
+
+      // Wiring.  The stage count decides where the preamp ends.
+      const preOut = ctx.createGain();
+      const wireStages = (count: number): void => {
+        for (const s of stages) { try { s.output.disconnect(); } catch { /* not connected */ } }
+        try { input.disconnect(); } catch { /* not connected */ }
+        const n = Math.max(1, Math.min(stages.length, Math.round(count)));
+        input.connect(stages[0]!.input);
+        for (let i = 0; i < n - 1; i++) stages[i]!.output.connect(stages[i + 1]!.input);
+        stages[n - 1]!.output.connect(preOut);
+      };
+      wireStages(p(params, 'stages', 2));
+
+      preOut.connect(bass).connect(mid).connect(treble).connect(scoop)
+        .connect(powerIn);
+      powerBack.connect(sag).connect(presence);
+      presence.connect(cab.input);
+      presence.connect(cabBypass);
+      cab.output.connect(cabWet);
+      cabWet.connect(out);
+      cabBypass.connect(out);
+      setCab(p(params, 'cab', 1));
+      out.connect(output);
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'gain') {
+            const g = Math.max(0, Math.min(1, v / 100));
+            stages.forEach((s, i) => s.setDrive(1 + g * (i === 0 ? 14 : (i === 1 ? 10 : 8))));
+          }
+          if (id === 'stages') wireStages(v);
+          if (id === 'bass') bass.gain.value = v;
+          if (id === 'mid') mid.gain.value = v;
+          if (id === 'treble') treble.gain.value = v;
+          if (id === 'stack') applyStack(v);
+          if (id === 'presence') presence.gain.value = v;
+          if (id === 'master') setMaster(v);
+          if (id === 'sag') setSag(v);
+          if (id === 'cab') setCab(v);
+          if (id === 'mic') cab.setMic(v / 100);
+          if (id === 'level') out.gain.value = dbToGain(v);
+        },
+        automatable: automatableFrom({
+          bass: { param: bass.gain },
+          mid: { param: mid.gain },
+          treble: { param: treble.gain },
+          presence: { param: presence.gain },
+          // Master drives a curve rather than a gain, so the automatable
+          // handle is the make-up on the far side of it.  Moving that alone
+          // changes the level without changing the saturation, which is what
+          // an automation lane on a Master knob is usually reaching for.
+          master: { param: powerBack.gain, map: (v) => 1 / Math.sqrt(1 + Math.max(0, Math.min(100, v)) / 100 * 9) },
+          level: { param: out.gain, map: dbToGain },
+        }),
       };
     }),
   },

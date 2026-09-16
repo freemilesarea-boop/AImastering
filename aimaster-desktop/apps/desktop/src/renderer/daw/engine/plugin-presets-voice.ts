@@ -244,6 +244,14 @@ export const VOICE_PRESETS: readonly PluginPreset[] = [
     female: { note: '조금 빠르고 얕게 — 깊으면 음정이 흔들려 들립니다',
               params: { rateHz: 0.6, depthMs: 2.5, delayMs: 16, mix: 18 } },
   }),
+  ...voice('amp', {
+    male:   { note: '남성 보컬을 앰프에 넣을 때는 캐비닛의 고역 차단이 목적입니다 — '
+                    + '한 단만, 마이크는 오프 액시스로',
+              params: { gain: 30, stages: 1, master: 35, sag: 45, cab: 1, mic: 75, bass: -3, level: -3 } },
+    female: { note: '여성 보컬은 캐비닛의 4 kHz 차단이 더 많이 깎아냅니다 — '
+                    + '마이크를 축 쪽으로 돌려 명료도를 남깁니다',
+              params: { gain: 24, stages: 1, master: 30, sag: 40, cab: 0, mic: 40, bass: -5, treble: 2, level: -3 } },
+  }),
   ...voice('rotary', {
     male:   { note: '남성 음역은 크로스오버 아래가 많아 드럼 로터로 갑니다 — '
                     + '크로스오버를 낮춰 혼 쪽으로 넘기고, 느린 코랄로',

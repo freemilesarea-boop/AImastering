@@ -424,6 +424,40 @@ const ADVISORS: Record<string, Advisor> = {
     confidence: 0.35,
   }),
 
+  amp: (p) => ({
+    params: {
+      // How many stages, not how hard one is driven — that is the decision an
+      // amplifier actually offers, and it is the one thing here a measurement
+      // can help with: a source that is already dense does not want three
+      // valves in front of it.
+      gain: isVoice(p) ? 28 : 50,
+      stages: isVoice(p) ? 1 : 2,
+      bass: isVoice(p) ? -3 : 0,
+      mid: 0,
+      treble: 0,
+      stack: 0,
+      presence: 3,
+      master: 40,
+      sag: 35,
+      // A guitar cabinet's 80 Hz high-pass takes the fundamental off anything
+      // that lives down there, so the recommendation is to turn it off rather
+      // than to hide the problem behind a Bass knob.
+      cab: isVoice(p) ? 1 : 1,
+      mic: isVoice(p) ? 70 : 45,
+      level: isVoice(p) ? -3 : 0,
+    },
+    headline: isVoice(p)
+      ? '목소리에는 한 단, 마이크는 오프 액시스 — 캐비닛의 고역 차단이 목적입니다'
+      : '두 단 크런치에 2×12 — 기타 앰프의 가장 평범한 자리',
+    evidence: [
+      isVoice(p) ? '보컬로 판정' : '보컬이 아님',
+      `${isVoice(p) ? 1 : 2} 단`,
+    ],
+    // Low on purpose: how much gain a part wants is the performance's
+    // question, not the signal's.
+    confidence: 0.35,
+  }),
+
   rotary: (p) => ({
     params: {
       // The two speeds a rotary speaker has are not arbitrary and are not

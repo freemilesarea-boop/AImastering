@@ -307,7 +307,7 @@ export interface FilterPicture {
 const MID_COLOUR = 'rgba(230,210,160,0.95)';
 const SIDE_COLOUR = 'rgba(126,200,255,0.9)';
 
-export const FILTER_DEVICES: readonly string[] = ['mseq', 'hum', 'dcblock'];
+export const FILTER_DEVICES: readonly string[] = ['mseq', 'hum', 'dcblock', 'amp'];
 
 export function filterPictureFor(
   pluginId: string, params: Record<string, number>,
@@ -329,6 +329,74 @@ export function filterPictureFor(
       ],
       fromHz: 20, toHz: 20_000,
       caption: `가운데 ${midLow >= 0 ? '+' : ''}${midLow.toFixed(1)}/${midHigh >= 0 ? '+' : ''}${midHigh.toFixed(1)} · 양옆 ${sideLow >= 0 ? '+' : ''}${sideLow.toFixed(1)}/${sideHigh >= 0 ? '+' : ''}${sideHigh.toFixed(1)} dB`,
+    };
+  }
+
+  if (pluginId === 'amp') {
+    // Two curves, because an amplifier is two filters in series and people
+    // reach for them for different reasons: the TONE STACK is the three
+    // knobs, and the CABINET is the thing that decides whether the result
+    // sounds like a guitar amp or like a wasp in a tin.
+    //
+    // Drawn from the same numbers the engine builds its filters from — the
+    // stack's frequencies, the fixed scoop that a passive network always has,
+    // and the cabinet's corners for the size that is selected.
+    const british = num(params, 'stack', 0) > 0.5;
+
+    // The interstage filters are part of the response and are drawn.  They
+    // are easy to leave out — they are not knobs — but each preamp stage
+    // cuts bass on the way in and fizz on the way out, and a picture without
+    // them would be a picture of a different amplifier.  How many are in
+    // circuit is the Stages knob.
+    const count = Math.max(1, Math.min(3, Math.round(num(params, 'stages', 2))));
+    const STAGE_CUT = [45, 120, 220];
+    const STAGE_TILT = [9000, 7000, 6000];
+    const interstage: BiquadSpec[] = [];
+    for (let i = 0; i < count; i++) {
+      interstage.push({ type: 'highpass', freq: STAGE_CUT[i] ?? 45, gain: 0, q: 0.7 });
+      interstage.push({ type: 'lowpass', freq: STAGE_TILT[i] ?? 9000, gain: 0, q: 0.5 });
+    }
+
+    const stack: BiquadSpec[] = [
+      ...interstage,
+      { type: 'lowshelf', freq: british ? 120 : 90, gain: num(params, 'bass', 0), q: 0.707 },
+      {
+        type: 'peaking', freq: british ? 650 : 480,
+        gain: num(params, 'mid', 0), q: british ? 0.8 : 0.6,
+      },
+      { type: 'highshelf', freq: british ? 2600 : 3400, gain: num(params, 'treble', 0), q: 0.707 },
+      { type: 'peaking', freq: british ? 480 : 380, gain: british ? -3 : -5, q: 0.9 },
+      { type: 'highshelf', freq: 2200, gain: num(params, 'presence', 3), q: 0.707 },
+    ];
+
+    const kinds = [
+      { name: '1×12', lowHz: 95, topHz: 4600, coneHz: 115, presenceHz: 2600 },
+      { name: '2×12', lowHz: 85, topHz: 4200, coneHz: 100, presenceHz: 2300 },
+      { name: '4×12', lowHz: 75, topHz: 3800, coneHz: 88, presenceHz: 2000 },
+    ];
+    const index = Math.round(num(params, 'cab', 1));
+    const off = index >= kinds.length;
+    const spec = kinds[Math.max(0, Math.min(kinds.length - 1, index))]!;
+    const mic = Math.max(0, Math.min(1, num(params, 'mic', 45) / 100));
+    const cab: BiquadSpec[] = off ? [] : [
+      { type: 'highpass', freq: spec.lowHz, gain: 0, q: 0.8 },
+      { type: 'peaking', freq: spec.coneHz, gain: 4, q: 1.4 },
+      { type: 'peaking', freq: 800, gain: -4, q: 1.1 },
+      { type: 'peaking', freq: spec.presenceHz, gain: 6 - mic * 9, q: 1.6 },
+      { type: 'lowpass', freq: spec.topHz * (1 - mic * 0.35), gain: 0, q: 0.7 },
+      { type: 'lowpass', freq: spec.topHz * 0.86 * (1 - mic * 0.35), gain: 0, q: 0.9 },
+    ];
+
+    return {
+      curves: [
+        { label: 'AMP', specs: stack, colour: MID_COLOUR },
+        { label: off ? 'CAB OFF' : spec.name, specs: [...stack, ...cab], colour: SIDE_COLOUR },
+      ],
+      fromHz: 20, toHz: 20_000,
+      caption: off
+        ? `${count}단 · ${british ? '브리티시' : '아메리칸'} 스택 · 캐비닛 끔`
+        : `${count}단 · ${british ? '브리티시' : '아메리칸'} 스택 · ${spec.name} · 마이크 ${
+          mic < 0.3 ? '온 액시스' : (mic > 0.7 ? '오프 액시스' : '중간')}`,
     };
   }
 
