@@ -95,7 +95,7 @@ export const INSTRUMENT_TRIM = {
   wavesynth: 0.0943,
   analog: 0.2012,
   fm: 0.0762,
-  drummachine: 0.3141,
+  drummachine: 0.3183,
   bass: 0.1761,
   mallet: 0.2005,
   organ: 0.0755,

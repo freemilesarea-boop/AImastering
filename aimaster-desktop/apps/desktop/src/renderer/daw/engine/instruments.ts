@@ -27,7 +27,9 @@ import { ANALOG_SHAPES } from './analog-model.js';
 import { analogTail, renderAnalogVoice, voiceSlot } from './analog-synth.js';
 import { FM_ALGORITHMS, FM_OPERATORS, FM_WAVES } from './fm-core.js';
 import { fmTail, renderFmVoice } from './fm-synth.js';
-import { drumTail, drumVoiceFor, renderDrumVoice } from './drum-machine.js';
+import {
+  DRUM_MAX_DECAY, drumTail, drumVoiceFor, renderDrumVoice,
+} from './drum-machine.js';
 import {
   CLAP_OFFSETS, noiseSamples, type DrumSpec,
 } from './drum-model.js';
@@ -1595,21 +1597,21 @@ function drumMachineParams(): InstrumentParamDef[] {
     { id: 'width',  name: 'Width',       min: 0, max: 1, default: 0.6, unit: '' },
 
     { id: 'bdtune',  name: 'Kick Tune',  min: 28, max: 120, default: 52, unit: 'Hz' },
-    { id: 'bddec',   name: 'Kick Decay', min: 0.05, max: 2.5, default: 0.55, unit: 's' },
+    { id: 'bddec',   name: 'Kick Decay', min: 0.05, max: DRUM_MAX_DECAY.bd, default: 0.55, unit: 's' },
     { id: 'bdbend',  name: 'Kick Bend',  min: 0, max: 48, default: 26, unit: 'st' },
     { id: 'bdsnap',  name: 'Kick Snap',  min: 0, max: 1, default: 0.4, unit: '' },
     { id: 'bddrive', name: 'Kick Drive', min: 1, max: 8, default: 1.4, unit: '×' },
     { id: 'bdlvl',   name: 'Kick Level', min: 0, max: 1, default: 0.95, unit: '' },
 
     { id: 'sdtune',    name: 'Snare Tune',   min: 100, max: 420, default: 185, unit: 'Hz' },
-    { id: 'sddec',     name: 'Snare Decay',  min: 0.05, max: 1.5, default: 0.28, unit: 's' },
+    { id: 'sddec',     name: 'Snare Decay',  min: 0.05, max: DRUM_MAX_DECAY.sd, default: 0.28, unit: 's' },
     { id: 'sdtone',    name: 'Snare Tone',   min: 0, max: 1, default: 0.5, unit: '' },
     { id: 'sdsnappy',  name: 'Snappy',       min: 0, max: 1, default: 0.6, unit: '' },
     { id: 'sdsnapdec', name: 'Snappy Decay', min: 0.02, max: 0.8, default: 0.16, unit: 's' },
     { id: 'sdlvl',     name: 'Snare Level',  min: 0, max: 1, default: 0.8, unit: '' },
 
     { id: 'cptune',   name: 'Clap Tone',   min: 500, max: 2200, default: 1050, unit: 'Hz' },
-    { id: 'cpdec',    name: 'Clap Decay',  min: 0.05, max: 1.2, default: 0.3, unit: 's' },
+    { id: 'cpdec',    name: 'Clap Decay',  min: 0.05, max: DRUM_MAX_DECAY.cp, default: 0.3, unit: 's' },
     { id: 'cpspread', name: 'Clap Spread', min: 0.2, max: 3, default: 1, unit: '×' },
     { id: 'cplvl',    name: 'Clap Level',  min: 0, max: 1, default: 0.7, unit: '' },
   ];
@@ -1621,28 +1623,28 @@ function drumMachineParams(): InstrumentParamDef[] {
   for (const [id, name, hz, dec] of toms) {
     out.push(
       { id: `${id}tune`, name: `${name} Tune`, min: 50, max: 400, default: hz, unit: 'Hz' },
-      { id: `${id}dec`,  name: `${name} Decay`, min: 0.05, max: 2, default: dec, unit: 's' },
+      { id: `${id}dec`,  name: `${name} Decay`, min: 0.05, max: DRUM_MAX_DECAY[id as 'lt'], default: dec, unit: 's' },
       { id: `${id}bend`, name: `${name} Bend`, min: 0, max: 24, default: 8, unit: 'st' },
       { id: `${id}lvl`,  name: `${name} Level`, min: 0, max: 1, default: 0.75, unit: '' },
     );
   }
   out.push(
     { id: 'chtune', name: 'Hat Tune',   min: 200, max: 1200, default: 540, unit: 'Hz' },
-    { id: 'chdec',  name: 'Hat Decay',  min: 0.01, max: 0.4, default: 0.06, unit: 's' },
+    { id: 'chdec',  name: 'Hat Decay',  min: 0.01, max: DRUM_MAX_DECAY.ch, default: 0.06, unit: 's' },
     { id: 'chlvl',  name: 'Hat Level',  min: 0, max: 1, default: 0.6, unit: '' },
-    { id: 'ohdec',  name: 'Open Decay', min: 0.05, max: 2, default: 0.55, unit: 's' },
+    { id: 'ohdec',  name: 'Open Decay', min: 0.05, max: DRUM_MAX_DECAY.oh, default: 0.55, unit: 's' },
     { id: 'ohlvl',  name: 'Open Level', min: 0, max: 1, default: 0.6, unit: '' },
 
     { id: 'cytune', name: 'Cymbal Tune',  min: 120, max: 800, default: 320, unit: 'Hz' },
-    { id: 'cydec',  name: 'Cymbal Decay', min: 0.1, max: 6, default: 1.8, unit: 's' },
+    { id: 'cydec',  name: 'Cymbal Decay', min: 0.1, max: DRUM_MAX_DECAY.cy, default: 1.8, unit: 's' },
     { id: 'cylvl',  name: 'Cymbal Level', min: 0, max: 1, default: 0.55, unit: '' },
 
     { id: 'rstune', name: 'Rim Tune',  min: 600, max: 3000, default: 1650, unit: 'Hz' },
-    { id: 'rsdec',  name: 'Rim Decay', min: 0.01, max: 0.4, default: 0.07, unit: 's' },
+    { id: 'rsdec',  name: 'Rim Decay', min: 0.01, max: DRUM_MAX_DECAY.rs, default: 0.07, unit: 's' },
     { id: 'rslvl',  name: 'Rim Level', min: 0, max: 1, default: 0.6, unit: '' },
 
     { id: 'cbtune', name: 'Cowbell Tune',  min: 300, max: 1200, default: 545, unit: 'Hz' },
-    { id: 'cbdec',  name: 'Cowbell Decay', min: 0.05, max: 1.2, default: 0.32, unit: 's' },
+    { id: 'cbdec',  name: 'Cowbell Decay', min: 0.05, max: DRUM_MAX_DECAY.cb, default: 0.32, unit: 's' },
     { id: 'cblvl',  name: 'Cowbell Level', min: 0, max: 1, default: 0.55, unit: '' },
 
     { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },

@@ -46,6 +46,7 @@ import { exportMidiFile } from '../../daw/io/midi-file.js';
 import WaveSynthPanel from './instrument/WaveSynthPanel.js';
 import AnalogPanel from './instrument/AnalogPanel.js';
 import FmPanel from './instrument/FmPanel.js';
+import DrumPanel from './instrument/DrumPanel.js';
 import {
   CATEGORY_LABEL, categoriesFor, patchParams, patchesFor,
 } from '../../daw/engine/instrument-patches.js';
@@ -412,8 +413,20 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               />
             )}
 
+            {/* And the drum machine: a row of pads, the selected voice's
+                controls, and one mixer row — which is what the front panel of
+                every machine this models looked like. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'drummachine' && (
+              <DrumPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
             {openSlot === slot.trackId && slot.instrumentId !== 'wavesynth'
-              && slot.instrumentId !== 'analog' && slot.instrumentId !== 'fm' && (
+              && slot.instrumentId !== 'analog' && slot.instrumentId !== 'fm'
+              && slot.instrumentId !== 'drummachine' && (
               <ParamKnobs
                 instrumentId={slot.instrumentId}
                 params={slot.params}

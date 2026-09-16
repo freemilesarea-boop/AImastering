@@ -145,6 +145,31 @@ check('every voice makes a sound, ends quietly, and stays inside the rails', () 
   }
 });
 
+check('every voice is finite at every rate this engine renders at', () => {
+  // Found by the panel, not by this file: the panel's preview renders at
+  // 22 kHz to be cheap, and there the hats' band-pass coefficient came out at
+  // 1.92 — past where this filter topology is stable — and every sample was
+  // `Infinity`.  Sessions run at 44.1 and 48 kHz where the same call gives
+  // 1.11, so nothing in the app would ever have shown it, and a bounce at a
+  // low rate would have written infinities into a file.
+  for (const rate of [16000, 22050, 32000, 44100, 48000, 96000]) {
+    for (const v of DRUM_VOICES) {
+      const params = { ...BASE };
+      const r = renderDrumVoice({
+        sampleRate: rate, seconds: drumTail(v, params), voice: v, velocity: 0.9, seed: 3, params,
+      });
+      let peak = 0;
+      for (let i = 0; i < r.left.length; i++) {
+        const l = r.left[i] ?? 0;
+        assert(Number.isFinite(l), `${DRUM_VOICE_NAMES[v]} produced ${l} at ${rate} Hz, sample ${i}`);
+        peak = Math.max(peak, Math.abs(l));
+      }
+      assert(peak > 0.02 && peak < 2.5,
+        `${DRUM_VOICE_NAMES[v]} peaks at ${peak.toFixed(2)} at ${rate} Hz`);
+    }
+  }
+});
+
 check('the voices are balanced against each other, and the kick is the loudest', () => {
   const level = new Map<DrumVoice, number>();
   for (const v of DRUM_VOICES) {

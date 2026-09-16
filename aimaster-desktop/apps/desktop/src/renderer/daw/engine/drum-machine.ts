@@ -51,6 +51,31 @@ export const DRUM_VOICE_NAMES: Readonly<Record<DrumVoice, string>> = {
 };
 
 /**
+ * The longest each voice may be set to ring.
+ *
+ * Here rather than only in the parameter descriptor because two other things
+ * need it: the panel draws every hit on a FIXED time axis so that turning the
+ * decay down visibly shortens it, and that axis is this.  A picture scaled to
+ * the hit's own length cannot show a decay knob at all — an exponential tail
+ * stretched on both axes is the same picture, which is what the panel's first
+ * version drew.
+ */
+export const DRUM_MAX_DECAY: Readonly<Record<DrumVoice, number>> = {
+  bd: 2.5, sd: 1.5, cp: 1.2, lt: 2, mt: 2, ht: 2,
+  ch: 0.4, oh: 2, cy: 6, rs: 0.4, cb: 1.2,
+};
+
+/**
+ * The window a voice's picture is drawn over — fixed, per voice.
+ *
+ * Its longest possible tail, capped at two and a half seconds so the cymbal
+ * does not draw six seconds of mostly nothing.
+ */
+export function drumWindow(voice: DrumVoice): number {
+  return Math.min(2.5, (DRUM_MAX_DECAY[voice] ?? 1) * 1.25 + 0.14);
+}
+
+/**
  * Which voice a General MIDI drum note plays.
  *
  * The machine has eleven voices and General MIDI names forty-seven pieces, so
@@ -111,6 +136,25 @@ function square(phase: number): number {
 /** One-pole low-pass, as a coefficient from a cutoff. */
 function onePole(cutoffHz: number, sr: number): number {
   return 1 - Math.exp((-2 * Math.PI * Math.min(cutoffHz, sr * 0.48)) / sr);
+}
+
+/**
+ * The band-pass's frequency coefficient, clamped to where it is stable.
+ *
+ * This form of state-variable filter is only conditionally stable: its
+ * coefficient is 2·sin(π·fc/sr) and the loop blows up as that approaches 2,
+ * which means the cutoff has to stay below about a sixth of the sample rate.
+ *
+ * It was not clamped, and the failure is worth recording because nothing in
+ * the app would have found it.  The sessions run at 44.1 and 48 kHz, where a
+ * 9 kHz band-pass gives 1.11 and is fine.  The panel's preview renders at
+ * 22 kHz to be cheap — and there the same call gives 1.92, the hat's filter
+ * diverged, and every sample came out `Infinity`.  A bounce at a low rate
+ * would have done the same thing, silently, into a file.
+ */
+function svfF(cutoffHz: number, sr: number): number {
+  const fc = Math.min(Math.max(1, cutoffHz), sr / 6);
+  return Math.min(1, 2 * Math.sin((Math.PI * fc) / sr));
 }
 
 /** A two-pole state-variable band-pass, the cheapest one that is stable. */
@@ -231,7 +275,7 @@ export function renderDrumVoice(spec: DrumRenderSpec): DrumRender {
       const snappy = Math.max(0, Math.min(1, p(prm, 'sdsnappy', 0.6)));
       const noiseDec = Math.max(0.01, p(prm, 'sdsnapdec', 0.16));
       const bp = new BandPass();
-      const f = 2 * Math.sin((Math.PI * Math.min(sr * 0.45, 1900 * master)) / sr);
+      const f = svfF(1900 * master, sr);
       let a = 0;
       let b = 0;
       for (let i = 0; i < n; i++) {
@@ -251,7 +295,7 @@ export function renderDrumVoice(spec: DrumRenderSpec): DrumRender {
       const centre = p(prm, 'cptune', 1050) * master;
       const spread = Math.max(0.2, Math.min(3, p(prm, 'cpspread', 1)));
       const bp = new BandPass();
-      const f = 2 * Math.sin((Math.PI * Math.min(sr * 0.45, centre)) / sr);
+      const f = svfF(centre, sr);
       const bursts = [0, 0.011, 0.023, 0.036].map((o) => Math.round(o * spread * sr));
       for (let i = 0; i < n; i++) {
         let gate = 0;
@@ -270,7 +314,7 @@ export function renderDrumVoice(spec: DrumRenderSpec): DrumRender {
       const bendDec = Math.max(0.002, decayScale * 0.14);
       let phase = 0;
       const bp = new BandPass();
-      const f = 2 * Math.sin((Math.PI * Math.min(sr * 0.45, 2600)) / sr);
+      const f = svfF(2600, sr);
       for (let i = 0; i < n; i++) {
         const t = i / sr;
         phase += (f0 * Math.pow(2, (bend / 12) * Math.exp(-t / bendDec))) / sr;
@@ -290,7 +334,7 @@ export function renderDrumVoice(spec: DrumRenderSpec): DrumRender {
       const phases = new Float64Array(METAL_RATIOS.length);
       const hpA = onePole(v === 'cy' ? 3200 : 6800, sr);
       const bp = new BandPass();
-      const bf = 2 * Math.sin((Math.PI * Math.min(sr * 0.45, v === 'cy' ? 5200 : 9000)) / sr);
+      const bf = svfF(v === 'cy' ? 5200 : 9000, sr);
       let lp = 0;
       for (let i = 0; i < n; i++) {
         let sum = 0;
@@ -319,12 +363,18 @@ export function renderDrumVoice(spec: DrumRenderSpec): DrumRender {
       // together is both the fix and the more honest model.
       const f0 = p(prm, 'rstune', 1650) * master;
       const bp = new BandPass();
-      const f = 2 * Math.sin((Math.PI * Math.min(sr * 0.45, f0)) / sr);
+      const f = svfF(f0, sr);
       const q = Math.max(0.0015, Math.min(1.2, 2 / (decayScale * 2 * Math.PI * f0)));
+      // A pulse of fixed DURATION, not of fixed SAMPLES.  Two samples is a
+      // different amount of energy at every rate, and the resonator's output
+      // followed: the rim peaked at 0.9 at 48 kHz and 3.0 at 16.  A third of
+      // a millisecond is the same click whatever the rate, and the band-pass
+      // integrates the same energy from it.
+      const pulse = Math.max(2, Math.round(sr * 0.0003));
       for (let i = 0; i < n; i++) {
-        const x = i < 2 ? 1 : 0;
+        const x = i < pulse ? 1 : 0;
         mono[i] = bp.step(x + (i < sr * 0.001 ? (rnd() * 2 - 1) * 0.4 : 0), f, q)
-          * expEnv(i, decayScale) * 3.3;
+          * expEnv(i, decayScale) * 0.42;
       }
       break;
     }
@@ -334,7 +384,7 @@ export function renderDrumVoice(spec: DrumRenderSpec): DrumRender {
       let a = 0;
       let b = 0;
       const bp = new BandPass();
-      const f = 2 * Math.sin((Math.PI * Math.min(sr * 0.45, f0 * 2.1)) / sr);
+      const f = svfF(f0 * 2.1, sr);
       for (let i = 0; i < n; i++) {
         a += f0 / sr;
         b += (f0 * 1.4816) / sr;
