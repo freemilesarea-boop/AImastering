@@ -43,6 +43,7 @@ import {
   DRUM_PATTERNS, describePattern, findPattern, patternFill, patternNotes,
 } from '../../daw/engine/drum-patterns.js';
 import { exportMidiFile } from '../../daw/io/midi-file.js';
+import WaveSynthPanel from './instrument/WaveSynthPanel.js';
 import {
   CATEGORY_LABEL, categoriesFor, patchParams, patchesFor,
 } from '../../daw/engine/instrument-patches.js';
@@ -371,7 +372,21 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               </span>
             </div>
 
-            {openSlot === slot.trackId && (
+            {/* The wavetable synth gets its own panel rather than the knob
+                grid.  A hundred and thirteen knobs in one flat row is every
+                control and no way to find one, and half of them describe
+                things — a table's frames, a filter's curve — that a number
+                cannot show.  Same knobs, same parameter definitions, laid
+                out along the signal path with the pictures beside them. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'wavesynth' && (
+              <WaveSynthPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
+            {openSlot === slot.trackId && slot.instrumentId !== 'wavesynth' && (
               <ParamKnobs
                 instrumentId={slot.instrumentId}
                 params={slot.params}
