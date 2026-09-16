@@ -276,6 +276,30 @@ check('it saturates, and the drive is what reaches the saturation', () => {
   assert(compression(8) < 5, `at a drive of 8, six decibels in gives ${compression(8).toFixed(2)} dB out`);
 });
 
+check('the resonance works at every slope, not only the steepest', () => {
+  // Written because it did not.  The ladder's loop used to stop at the tapped
+  // stage, so at 12 dB and 18 dB stages three and four never ran and the
+  // feedback read a zero nothing wrote: the level at the cutoff was −30.1 dB
+  // at resonance 0, 0.5 AND 0.95, identical to the last digit, and neither
+  // slope could self-oscillate.  The check next to this one measured the
+  // roll-off — which was correct — and never asked whether the resonance
+  // still worked, which is how a switch can silently disconnect a knob.
+  for (const poles of [2, 3, 4]) {
+    const at = (res: number): number =>
+      20 * Math.log10(Math.max(1e-12, tone(ladderRun(res * 4, 0, 600, 600, 0.4, 1, poles), 600, 4000, 16384)));
+    const lift = at(0.95) - at(0);
+    assert(lift > 6, `at ${poles} poles the resonance only lifts the cutoff by ${lift.toFixed(1)} dB`);
+
+    const L = new Ladder();
+    const g = Math.tan((Math.PI * 440) / SR);
+    const buf = new Float32Array(48000);
+    for (let i = 0; i < buf.length; i++) buf[i] = L.step(i < 64 ? 0.4 : 0, g, 4.4, 0, poles, 1);
+    let peak = 0;
+    for (let i = 24000; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i] ?? 0));
+    assert(peak > 0.02, `at ${poles} poles the filter cannot self-oscillate (${peak.toExponential(2)})`);
+  }
+});
+
 check('the slope switch changes the slope', () => {
   const fall = (poles: number): number => {
     const a = ladderRun(0.4, 0, 500, 500, 0.5, 1, poles);

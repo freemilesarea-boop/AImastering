@@ -202,6 +202,22 @@ export function analogSample(
  *
  * Taps at stage 2, 3 and 4 give 12, 18 and 24 dB per octave, which is what
  * the switch on a ladder-filter synth is actually doing.
+ *
+ * ── The tap moves; the feedback does not ────────────────────────────────────
+ *
+ * All four stages run whatever the slope switch says, and only the OUTPUT is
+ * taken from an earlier one.  That is the hardware — the resonance is a wire
+ * from the top of the ladder back to the bottom, and a switch on the front
+ * panel does not unsolder it.
+ *
+ * It is also a bug I shipped.  The loop used to `break` at the tapped stage,
+ * so stages three and four never ran and the feedback tap read a zero that
+ * nothing ever wrote.  Measured: at 12 dB and at 18 dB the level at the
+ * cutoff was −30.1 dB at resonance 0, at 0.5 and at 0.95 — identical to the
+ * last digit, because the resonance was doing nothing at all, and neither
+ * slope could self-oscillate.  The check that was supposed to cover the
+ * switch measured the ROLL-OFF, which was right, and never asked whether the
+ * resonance still worked.
  */
 export class Ladder {
   private s = new Float64Array(4);
@@ -230,17 +246,18 @@ export class Ladder {
     // resonance.  With the input driven the compression is real, and a real
     // ladder is driven the same way: you turn the input up.
     let v = Math.tanh(drive * x - fb);
+    const tap = Math.max(2, Math.min(4, Math.round(poles)));
+    let out = v;
     for (let i = 0; i < 4; i++) {
       const si = this.s[i] ?? 0;
       const d = (v - si) * G;
       const y = si + d;
       this.s[i] = y + d;
       v = y;
-      if (i === 1 && poles <= 2) break;
-      if (i === 2 && poles === 3) break;
+      if (i + 1 === tap) out = y;
     }
-    this.z = this.s[3] ?? 0;
-    return v;
+    this.z = v;
+    return out;
   }
 }
 

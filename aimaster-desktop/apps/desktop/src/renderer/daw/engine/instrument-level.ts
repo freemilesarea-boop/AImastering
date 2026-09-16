@@ -93,7 +93,7 @@ export const INSTRUMENT_TRIM = {
   piano: 0.5813,
   upright: 0.6473,
   wavesynth: 0.0943,
-  analog: 0.2034,
+  analog: 0.2012,
   bass: 0.1761,
   mallet: 0.2005,
   organ: 0.0755,
