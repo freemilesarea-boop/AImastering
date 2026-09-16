@@ -687,6 +687,9 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             height={EQ_HEIGHT}
             onEdit={applyEdits}
             onCommit={commitEdits}
+            trackId={win.trackId}
+            insertId={insertId}
+            playing={isPlaying}
           />
         ) : (
           <PluginVisual

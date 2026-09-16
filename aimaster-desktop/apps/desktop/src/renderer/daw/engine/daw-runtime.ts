@@ -869,6 +869,22 @@ class DawRuntime {
   }
 
   /** Peak arriving at one insert, linear.  Null when metering is off. */
+  /**
+   * The spectrum arriving at one insert, written into `out`.
+   *
+   * `out` has to be at least `spectrumBins()` long, and it is the caller's to
+   * keep between frames — see the engine's note on why this does not return
+   * a fresh array sixty times a second.
+   */
+  insertSpectrum(trackId: TrackId, insertId: string, out: Float32Array): boolean {
+    return this.engine?.insertSpectrum(trackId, insertId, out) ?? false;
+  }
+
+  /** How long an array `insertSpectrum` will fill has to be. */
+  spectrumBins(): number {
+    return this.engine?.spectrumBins() ?? 0;
+  }
+
   insertInputLevel(trackId: TrackId, insertId: string): number | null {
     return this.engine?.insertInputLevel(trackId, insertId) ?? null;
   }

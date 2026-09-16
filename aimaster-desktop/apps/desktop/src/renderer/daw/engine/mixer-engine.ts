@@ -37,6 +37,16 @@ import {
   meterFftSize, newBallistics, newLatch,
   type ChannelMeterReading, type MeterBallistics, type MeterLatch,
 } from '../model/channel-meter.js';
+
+/**
+ * The window the EQ spectrum is measured over.
+ *
+ * 8192 samples — 171 ms at 48 kHz, a bin every 5.9 Hz.  The cost of the extra
+ * resolution is that the analyser looks further back, which for a PICTURE is
+ * the right trade and for a peak meter is the wrong one; that is why this is
+ * a second node rather than a wider setting on the first.
+ */
+const SPECTRUM_FFT_SIZE = 8192;
 import { findPlugin, type PluginInstance } from './plugins.js';
 import { parsePluginParamKey, pluginParamKey } from '../model/automation.js';
 import type { AutomatableParam } from './plugin-kit.js';
@@ -144,6 +154,27 @@ export interface Channel {
    * two readings of two different signals, disagreeing in public.
    */
   insertMeters: Map<string, AnalyserNode>;
+  /**
+   * A SECOND analyser per insert, for the spectrum drawn behind an EQ.
+   *
+   * It is separate from `insertMeters` rather than the same node read twice,
+   * and the reason is that the two want opposite windows.
+   *
+   *   · The meter above reads `getFloatTimeDomainData` and takes a PEAK, and
+   *     a peak taken over a longer window is a higher number: at 1024 samples
+   *     it looks back 21 ms, which is roughly what a compressor's detector
+   *     does.  Widening that window would move the dot on the device's curve
+   *     without anything about the audio having changed.
+   *   · The spectrum reads `getFloatFrequencyData`, where the window is
+   *     RESOLUTION.  1024 samples at 48 kHz is a bin every 47 Hz — which puts
+   *     the whole of the bottom two octaves into the first four bins, so a
+   *     boxiness at 250 Hz and a rumble at 60 are the same two pixels.  8192
+   *     gives a bin every 5.9 Hz, and that is the difference between an
+   *     analyser you can point at something with and a decoration.
+   *
+   * So: one node each, at the window each of them needs.
+   */
+  insertSpectra: Map<string, AnalyserNode>;
 }
 
 /**
@@ -290,6 +321,10 @@ export class MixerEngine {
       try { node.disconnect(); } catch { /* already gone */ }
     }
     ch.insertMeters.clear();
+    for (const node of ch.insertSpectra.values()) {
+      try { node.disconnect(); } catch { /* already gone */ }
+    }
+    ch.insertSpectra.clear();
 
     let cursor: AudioNode = ch.insertChainIn;
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
@@ -298,6 +333,8 @@ export class MixerEngine {
       const instance = descriptor.create(this.ctx, { ...insert.params });
       const tapped = this.tap(cursor);
       if (tapped) ch.insertMeters.set(insert.id, tapped);
+      const spectrum = this.spectrumTap(cursor);
+      if (spectrum) ch.insertSpectra.set(insert.id, spectrum);
       cursor.connect(instance.input);
       cursor = instance.output;
       ch.inserts.set(insert.id, instance);
@@ -502,6 +539,29 @@ export class MixerEngine {
   }
 
   /**
+   * The analyser the EQ's spectrum is drawn from, or null when metering is off.
+   *
+   * `smoothingTimeConstant` is 0.5 and here it DOES do something, unlike on
+   * the channel meter where the same property is documented as inert: that
+   * setting smooths the FFT magnitudes, which is exactly what this node is
+   * read for.  It takes the worst of the frame-to-frame flicker off before
+   * `advanceSpectrum` applies the ballistics that make it readable, and a
+   * value much above this starts hiding transients instead.
+   */
+  private spectrumTap(source: AudioNode): AnalyserNode | null {
+    if (!this.withMeters) return null;
+    const ctx = this.ctx as AudioContext;
+    if (typeof ctx.createAnalyser !== 'function') return null;
+    const node = ctx.createAnalyser();
+    node.fftSize = SPECTRUM_FFT_SIZE;
+    node.smoothingTimeConstant = 0.5;
+    node.minDecibels = -110;
+    node.maxDecibels = 0;
+    source.connect(node);
+    return node;
+  }
+
+  /**
    * The post-fader meter for one channel, or null when metering is off.
    *
    * `smoothingTimeConstant` is deliberately absent.  The old meter set it to
@@ -612,6 +672,7 @@ export class MixerEngine {
     const insertChainIn = cursor;
     const inserts = new Map<string, PluginInstance>();
     const insertMeters = new Map<string, AnalyserNode>();
+    const insertSpectra = new Map<string, AnalyserNode>();
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
@@ -619,6 +680,8 @@ export class MixerEngine {
       // Tapped BEFORE the connection, so it reads the device's input.
       const tapped = this.tap(cursor);
       if (tapped) insertMeters.set(insert.id, tapped);
+      const spectrum = this.spectrumTap(cursor);
+      if (spectrum) insertSpectra.set(insert.id, spectrum);
       cursor.connect(instance.input);
       cursor = instance.output;
       inserts.set(insert.id, instance);
@@ -640,6 +703,7 @@ export class MixerEngine {
     void session;
     return {
       trackId: track.id, input, adc, insertIn, insertOut, insertChainIn, inserts, insertMeters,
+      insertSpectra,
       rack, chain,
       preFaderTap, fader, panner, postFaderTap, sends, meter,
     };
@@ -739,6 +803,34 @@ export class MixerEngine {
    * the curve where the GR meter says it should.  An RMS reading of the same
    * signal sits several dB lower and makes the picture argue with the number.
    */
+  /**
+   * Fill `out` with the spectrum arriving at one insert, in dB.
+   *
+   * Takes the array rather than returning one: this is read every animation
+   * frame while an EQ window is open, and allocating a 4096-element
+   * Float32Array sixty times a second is garbage the collector has to come
+   * back for in the middle of the audio thread's neighbourhood.
+   *
+   * Returns false when there is nothing to read, so a caller can leave the
+   * last frame up rather than drawing a floor that looks like silence.
+   */
+  insertSpectrum(trackId: TrackId, insertId: string, out: Float32Array): boolean {
+    const node = this.channels.get(trackId)?.insertSpectra.get(insertId);
+    if (!node || out.length < node.frequencyBinCount) return false;
+    // The cast is the lib.dom types insisting the array be backed by a plain
+    // ArrayBuffer and not a SharedArrayBuffer.  `out` is an ordinary one —
+    // the caller allocates it with `new Float32Array(n)` — and there is no
+    // way to say so in the type of a parameter that has to accept any
+    // Float32Array a caller already has.
+    node.getFloatFrequencyData(out as Float32Array<ArrayBuffer>);
+    return true;
+  }
+
+  /** How many bins `insertSpectrum` writes — the size its array has to be. */
+  spectrumBins(): number {
+    return SPECTRUM_FFT_SIZE / 2;
+  }
+
   insertInputLevel(trackId: TrackId, insertId: string): number | null {
     const node = this.channels.get(trackId)?.insertMeters.get(insertId);
     if (!node) return null;
