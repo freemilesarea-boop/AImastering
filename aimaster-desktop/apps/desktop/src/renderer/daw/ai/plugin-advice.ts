@@ -424,6 +424,38 @@ const ADVISORS: Record<string, Advisor> = {
     confidence: 0.35,
   }),
 
+  rotary: (p) => ({
+    params: {
+      // The two speeds a rotary speaker has are not arbitrary and are not
+      // tempo: a Leslie's chorale sits under one turn a second and its
+      // tremolo around six or seven, and everything between is the ramp
+      // rather than a setting anybody stops at.  So this picks an END and
+      // says which, instead of dividing the bar into a rate the way the
+      // chorus and the flanger do.
+      rateHz: isVoice(p) ? 0.7 : 6.4,
+      accelSec: 1.6,
+      xoverHz: isVoice(p) ? 900 : 800,
+      doppler: 100,
+      // A voice through a rotary is an effect rather than an instrument, so
+      // it wants less of the throb and less of the wet.
+      throb: isVoice(p) ? 35 : 60,
+      micAngle: 90,
+      balance: 0,
+      drive: isVoice(p) ? 8 : 25,
+      mix: isVoice(p) ? 45 : 100,
+    },
+    headline: isVoice(p)
+      ? '보컬에는 느린 코랄로, 절반만 섞어서 — 목소리가 회전하면 가사가 지워집니다'
+      : '빠른 트레몰로 — 오르간과 기타가 이 스피커에 들어가던 속도입니다',
+    evidence: [
+      isVoice(p) ? '보컬로 판정' : '보컬이 아님',
+      `크로스오버 ${isVoice(p) ? 900 : 800} Hz`,
+    ],
+    // Low, and honestly so: which of the two speeds a part wants is a
+    // musical decision and nothing in a measurement decides it.
+    confidence: 0.3,
+  }),
+
   flanger: (p) => ({
     params: {
       rateHz: clamp(round(1000 / beatMs(p, 8), 0.01), 0.05, 5),

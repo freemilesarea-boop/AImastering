@@ -244,6 +244,14 @@ export const VOICE_PRESETS: readonly PluginPreset[] = [
     female: { note: '조금 빠르고 얕게 — 깊으면 음정이 흔들려 들립니다',
               params: { rateHz: 0.6, depthMs: 2.5, delayMs: 16, mix: 18 } },
   }),
+  ...voice('rotary', {
+    male:   { note: '남성 음역은 크로스오버 아래가 많아 드럼 로터로 갑니다 — '
+                    + '크로스오버를 낮춰 혼 쪽으로 넘기고, 느린 코랄로',
+              params: { rateHz: 0.7, xoverHz: 550, doppler: 70, throb: 35, drive: 6, mix: 40 } },
+    female: { note: '여성 음역은 이미 혼 쪽이라 크로스오버를 올려 저역만 드럼에 남깁니다. '
+                    + '도플러를 줄여야 음정이 흔들려 들리지 않습니다',
+              params: { rateHz: 0.9, xoverHz: 1000, doppler: 50, throb: 30, drive: 4, mix: 32 } },
+  }),
   ...voice('flanger', {
     male:   { note: '느리게. 짧은 딜레이가 저역과 간섭합니다',
               params: { rateHz: 0.22, depthMs: 1.6, delayMs: 4, feedback: 0.35, mix: 25 } },

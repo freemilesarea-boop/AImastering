@@ -12,8 +12,8 @@
 // with a free-running LFO — the device says so rather than pretending.
 
 import {
-  absShaper, automatableFrom, dbToGain, makeShaper, smoother, wetDry, withBypass,
-  type PluginDescriptor,
+  absShaper, automatableFrom, dbToGain, makeShaper, smoother, tanhCurve, wetDry,
+  withBypass, type PluginDescriptor,
 } from './plugin-kit.js';
 
 const p = (params: Record<string, number>, id: string, fallback: number): number => {
@@ -105,6 +105,120 @@ function lfo(ctx: BaseAudioContext, rateHz: number, depth: number, type: Oscilla
     depth: gain,
     setRate: (hz) => { osc.frequency.value = hz; },
     setDepth: (v) => { gain.gain.value = v; },
+  };
+}
+
+
+/**
+ * A rotor: one speaker going round, heard by two microphones.
+ *
+ * This is the whole of a rotary speaker and it is four things at once, which
+ * is why a chorus does not sound like one:
+ *
+ *   · DOPPLER — the source moves towards the mic and away from it, so the
+ *     pitch rises and falls.  A modulated delay is exactly that: the delay is
+ *     the time of flight, and a changing time of flight IS a Doppler shift.
+ *   · AMPLITUDE — a horn is directional, so it is loud when it points at you
+ *     and quiet when it points away.
+ *   · TWO MICROPHONES at an angle to each other.  Everything stereo about a
+ *     Leslie comes from here, and from nothing else: the cabinet is mono.
+ *     When the horn faces mic A it is facing away from mic B, so their
+ *     modulations are out of step by the angle between them.
+ *   · and they are the SAME modulation.  A device that put an LFO on a delay
+ *     and a different LFO on a gain would be two effects; here one rotation
+ *     drives both, which is why the loudest moment is also the moment the
+ *     pitch is not changing.
+ *
+ * The two microphones are two oscillators at one frequency with a fixed phase
+ * between them, built as `PeriodicWave`s: cos(θ) for the first and
+ * cos(θ + φ) = cos φ·cos θ − sin φ·sin θ for the second.  Both are started at
+ * time 0 and always given the same rate, so they can never drift apart.
+ */
+interface Rotor {
+  input: GainNode;
+  output: GainNode;
+  setRate: (hz: number, rampSec: number, when: number) => void;
+  setDoppler: (seconds: number) => void;
+  setThrob: (depth: number) => void;
+  setAngle: (radians: number) => void;
+  /** The fixed part of the delay, which is this rotor's latency. */
+  baseSec: number;
+}
+
+function rotor(
+  ctx: BaseAudioContext,
+  opts: { rateHz: number; dopplerSec: number; throb: number; angle: number },
+): Rotor {
+  // A Leslie cabinet is MONO — everything stereo about it is the two
+  // microphones — so the input is summed rather than carried through.
+  const input = ctx.createGain();
+  input.channelCount = 1;
+  input.channelCountMode = 'explicit';
+  input.channelInterpretation = 'speakers';
+
+  // Enough fixed delay that the modulation can never drive it negative.
+  const baseSec = 0.004;
+
+  const phase = (radians: number): PeriodicWave => ctx.createPeriodicWave(
+    Float32Array.from([0, Math.cos(radians)]),
+    Float32Array.from([0, -Math.sin(radians)]),
+    { disableNormalization: true },
+  );
+
+  const mics = [0, opts.angle].map((radians) => {
+    const osc = ctx.createOscillator();
+    osc.setPeriodicWave(phase(radians));
+    osc.frequency.value = opts.rateHz;
+    osc.start(0);
+
+    const dopplerDepth = ctx.createGain();
+    dopplerDepth.gain.value = opts.dopplerSec;
+    const throbDepth = ctx.createGain();
+    throbDepth.gain.value = opts.throb;
+    osc.connect(dopplerDepth);
+    osc.connect(throbDepth);
+
+    const delay = ctx.createDelay(0.05);
+    delay.delayTime.value = baseSec;
+    dopplerDepth.connect(delay.delayTime);
+
+    const amp = ctx.createGain();
+    amp.gain.value = 1;
+    throbDepth.connect(amp.gain);
+
+    input.connect(delay).connect(amp);
+    return { osc, delay, amp, dopplerDepth, throbDepth, radians };
+  });
+
+  const merger = ctx.createChannelMerger(2);
+  mics[0]?.amp.connect(merger, 0, 0);
+  mics[1]?.amp.connect(merger, 0, 1);
+  const output = ctx.createGain();
+  merger.connect(output);
+
+  return {
+    input,
+    output,
+    baseSec,
+    setRate: (hz, rampSec, when) => {
+      for (const m of mics) {
+        if (rampSec <= 0.001) { m.osc.frequency.setValueAtTime(hz, when); continue; }
+        // A real rotor has mass: the horn takes a couple of seconds to come
+        // up to speed and longer to coast down, and that RAMP is half of what
+        // people recognise about the effect.  One time constant is a third of
+        // the stated time, so the ramp is about 95% done when it says it is.
+        m.osc.frequency.cancelScheduledValues(when);
+        m.osc.frequency.setValueAtTime(m.osc.frequency.value, when);
+        m.osc.frequency.setTargetAtTime(hz, when, rampSec / 3);
+      }
+    },
+    setDoppler: (seconds) => { for (const m of mics) m.dopplerDepth.gain.value = seconds; },
+    setThrob: (depth) => { for (const m of mics) m.throbDepth.gain.value = depth; },
+    setAngle: (radians) => {
+      // Only the second microphone moves; the first defines zero.
+      const m = mics[1];
+      if (m) m.osc.setPeriodicWave(phase(radians));
+    },
   };
 }
 
@@ -971,6 +1085,169 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           depth: mod.depth.gain,
         }),
         dispose: () => { mod.osc.stop(); },
+      };
+    }),
+  },
+
+  {
+    id: 'rotary',
+    name: 'Rotary Speaker',
+    category: 'modulation',
+    hasSidechain: false,
+    freeRunning: true,
+    params: [
+      { id: 'rateHz',   name: 'Rate',      min: 0.1, max: 8,    default: 0.8, unit: 'Hz' },
+      { id: 'accelSec', name: 'Accel',     min: 0,   max: 4,    default: 1.2, unit: 's' },
+      { id: 'xoverHz',  name: 'Crossover', min: 300, max: 1600, default: 800, unit: 'Hz' },
+      { id: 'doppler',  name: 'Doppler',   min: 0,   max: 200,  default: 100, unit: '%' },
+      { id: 'throb',    name: 'Throb',     min: 0,   max: 100,  default: 55,  unit: '%' },
+      { id: 'micAngle', name: 'Mic Angle', min: 0,   max: 180,  default: 90,  unit: '°' },
+      { id: 'balance',  name: 'Horn/Drum', min: -100, max: 100, default: 0,   unit: '' },
+      { id: 'drive',    name: 'Drive',     min: 0,   max: 100,  default: 20,  unit: '%' },
+      { id: 'mix',      name: 'Mix',       min: 0,   max: 100,  default: 100, unit: '%' },
+    ],
+    // Mix only.  The RATE is deliberately not automatable: setting it goes
+    // through a spin-up ramp with a time constant, and an AudioParam
+    // automation would write the frequency directly and skip the very thing
+    // that makes a speed change sound like a rotor rather than a switch.
+    automatableParams: ['mix'],
+    // The rotors carry a fixed 4 ms of delay so their modulation can never go
+    // negative, and the chain has to know about it or a bypassed channel
+    // arrives 4 ms early.
+    latencyFor: (_params, sampleRate) => Math.round(0.004 * sampleRate),
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // A Leslie is two speakers in one box, pointed at two rotating things,
+      // and they are NOT the same thing rotating.  The treble horn is small
+      // and light and spins fast; the bass drum is a heavy drum with a slot
+      // in it and spins slower, and its lower frequencies barely Doppler at
+      // all.  Crossing over and treating them differently is the whole
+      // reason this is not just a chorus with a tremolo on it.
+      const rate = p(params, 'rateHz', 0.8);
+      const angle = (p(params, 'micAngle', 90) * Math.PI) / 180;
+      const doppler = p(params, 'doppler', 100) / 100;
+      const throb = p(params, 'throb', 55) / 100;
+
+      // A horn 18 cm from the axis sweeps 0.18 m of path, and sound covers
+      // that in 0.18/343 = 0.52 ms.  The drum's slot is nearer the axis and
+      // its band is an octave lower, so it swings less and is heard less.
+      const HORN_DOPPLER = 0.00052;
+      const DRUM_DOPPLER = 0.00021;
+
+      const horn = rotor(ctx, {
+        rateHz: rate,
+        dopplerSec: HORN_DOPPLER * doppler,
+        throb: throb * 0.75,
+        angle,
+      });
+      const drum = rotor(ctx, {
+        // Not locked to the horn and slower than it.  On the real cabinet
+        // they are separate motors and the beat between them wandering is
+        // part of the sound; here it is a fixed ratio, which keeps the bounce
+        // identical to the preview and is said rather than hidden.
+        rateHz: rate * 0.78,
+        dopplerSec: DRUM_DOPPLER * doppler,
+        throb: throb * 0.45,
+        angle,
+      });
+
+      // Drive as a PRE-GAIN into a fixed curve, rather than by rebuilding the
+      // curve.  Two reasons and both are practical: a `WaveShaper`'s curve
+      // cannot be assigned twice under `node-web-audio-api`, which is what the
+      // offline suite renders on, and a gain is an AudioParam while a curve is
+      // an allocation.  The post-gain puts full scale back where it was, so
+      // the knob changes the harmonics and not the level.
+      const drivePre = ctx.createGain();
+      const driveShape = makeShaper(ctx, tanhCurve(0), '2x');
+      const drivePost = ctx.createGain();
+      drivePre.connect(driveShape).connect(drivePost);
+      const setDrive = (percent: number): void => {
+        const amount = 1 + (Math.max(0, Math.min(100, percent)) / 100) * 7;
+        drivePre.gain.value = amount;
+        drivePost.gain.value = Math.tanh(1.6) / Math.tanh(1.6 * amount);
+      };
+      setDrive(p(params, 'drive', 20));
+
+      const low = ctx.createBiquadFilter();
+      low.type = 'lowpass';
+      low.frequency.value = p(params, 'xoverHz', 800);
+      const high = ctx.createBiquadFilter();
+      high.type = 'highpass';
+      high.frequency.value = p(params, 'xoverHz', 800);
+
+      const hornGain = ctx.createGain();
+      const drumGain = ctx.createGain();
+      const setBalance = (value: number): void => {
+        // −100 is all drum, +100 all horn, 0 is both at full.  A tilt rather
+        // than a crossfade, because at the middle you want the whole speaker
+        // and not half of each half.
+        const b = Math.max(-100, Math.min(100, value)) / 100;
+        hornGain.gain.value = b < 0 ? 1 + b : 1;
+        drumGain.gain.value = b > 0 ? 1 - b : 1;
+      };
+      setBalance(p(params, 'balance', 0));
+
+      const blend = wetDry(ctx, 1);
+      input.connect(drivePre);
+      drivePost.connect(high).connect(horn.input);
+      drivePost.connect(low).connect(drum.input);
+      horn.output.connect(hornGain).connect(blend.wet);
+      drum.output.connect(drumGain).connect(blend.wet);
+      blend.wet.connect(output);
+
+      // The dry path has to carry the rotors' fixed delay, or turning Mix
+      // down moves the signal 4 ms earlier and the blend comb-filters.
+      //
+      // TWO delay nodes, not one shared with the bypass.  `withBypass` makes
+      // its own `input → bypassDelay` connection, and connecting the same
+      // pair again here is a duplicate the spec says to ignore and the
+      // renderer this suite uses does NOT: measured, a bypassed rotary came
+      // out +6.02 dB, which is exactly twice.
+      const dryDelay = ctx.createDelay(0.05);
+      dryDelay.delayTime.value = horn.baseSec;
+      input.connect(dryDelay).connect(blend.dry).connect(output);
+
+      const bypassDelay = ctx.createDelay(0.05);
+      bypassDelay.delayTime.value = horn.baseSec;
+
+      const setMix = (percent: number): void => blend.setMix(percent / 100);
+      setMix(p(params, 'mix', 100));
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'rateHz') {
+            const when = ctx.currentTime;
+            const ramp = p(params, 'accelSec', 1.2);
+            horn.setRate(v, ramp, when);
+            // The drum is heavier, so it takes longer to come up to speed —
+            // which is why the two swirl apart for a few seconds after a
+            // speed change and then settle.  That transition is the sound
+            // everybody actually reaches for the switch to hear.
+            drum.setRate(v * 0.78, ramp * 1.8, when);
+          }
+          if (id === 'accelSec') params['accelSec'] = v;
+          if (id === 'xoverHz') { low.frequency.value = v; high.frequency.value = v; }
+          if (id === 'doppler') {
+            horn.setDoppler(HORN_DOPPLER * (v / 100));
+            drum.setDoppler(DRUM_DOPPLER * (v / 100));
+          }
+          if (id === 'throb') {
+            horn.setThrob((v / 100) * 0.75);
+            drum.setThrob((v / 100) * 0.45);
+          }
+          if (id === 'micAngle') {
+            const radians = (v * Math.PI) / 180;
+            horn.setAngle(radians);
+            drum.setAngle(radians);
+          }
+          if (id === 'balance') setBalance(v);
+          if (id === 'drive') setDrive(v);
+          if (id === 'mix') setMix(v);
+        },
+        automatable: automatableFrom({
+          mix: { param: blend.mix, map: (v) => Math.max(0, Math.min(1, v / 100)) },
+        }),
+        latencySamples: Math.round(horn.baseSec * ctx.sampleRate),
+        bypassDelay,
       };
     }),
   },

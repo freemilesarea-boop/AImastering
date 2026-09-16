@@ -518,6 +518,24 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { rateHz: 0.45, depthMs: 7, delayMs: 22, mix: 55 } },
   }),
 
+  ...inst('rotary', {
+    drumloop: { note: '드럼을 회전시키면 그루브가 흔들립니다 — 절반만 섞고 도플러는 최소로',
+                params: { rateHz: 3.2, doppler: 30, throb: 45, xoverHz: 1200, drive: 10, mix: 35 } },
+    bass:     { note: '베이스는 드럼 로터만 쓰게 크로스오버를 올리고, 도플러는 거의 끕니다 — '
+                      + '저역이 흔들리면 모노에서 사라집니다',
+                params: { rateHz: 0.9, doppler: 20, throb: 30, xoverHz: 1600, balance: -70, mix: 40 } },
+    egtr:     { note: '기타를 레슬리에 넣던 그 소리. 드라이브를 올려 캐비닛을 밀어붙입니다',
+                params: { rateHz: 6.2, doppler: 120, throb: 70, xoverHz: 700, drive: 55, mix: 100 } },
+    agtr:     { note: '통기타에는 느리게 · 얕게. 마이크를 넓혀 공간만 얻습니다',
+                params: { rateHz: 0.8, doppler: 70, throb: 35, micAngle: 140, drive: 0, mix: 55 } },
+    piano:    { note: '전자 피아노 — 오르간 다음으로 이 스피커에 자주 들어간 악기입니다',
+                params: { rateHz: 5.8, doppler: 100, throb: 60, xoverHz: 850, drive: 22, mix: 90 } },
+    strings:  { note: '아주 느린 코랄. 섹션이 숨 쉬는 것처럼만',
+                params: { rateHz: 0.35, doppler: 60, throb: 25, micAngle: 160, accelSec: 3.5, mix: 60 } },
+    synth:    { note: '빠른 트레몰로에 혼 쪽으로 기울여서. 신스 리드를 오르간처럼 만듭니다',
+                params: { rateHz: 7, doppler: 150, throb: 80, balance: 60, accelSec: 0.5, mix: 100 } },
+  }),
+
   ...inst('flanger', {
     drumloop: { note: '루프 전체 플랜징. 피드백을 낮게 잡아야 리듬이 남습니다',
                 params: { rateHz: 0.2, depthMs: 1.5, delayMs: 2, feedback: 0.3, mix: 30 } },

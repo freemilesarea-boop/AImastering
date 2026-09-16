@@ -457,7 +457,7 @@ export interface LfoPicture {
   caption: string;
 }
 
-export const LFO_DEVICES: readonly string[] = ['tremolo', 'autopan', 'chorus'];
+export const LFO_DEVICES: readonly string[] = ['tremolo', 'autopan', 'chorus', 'rotary'];
 
 const sine = (phase: number): number => Math.sin(2 * Math.PI * phase);
 /** Web Audio's square is a hard two-level wave, not a band-limited one. */
@@ -485,6 +485,29 @@ export function lfoPictureFor(
       spanSec: 2 / Math.max(0.05, rate),
       min: 0, max: 1, unit: '×',
       caption: `${rate.toFixed(2)} Hz · ${(depth * 100).toFixed(0)}% · ${wave === square ? '사각' : '사인'}`,
+    };
+  }
+
+  if (pluginId === 'rotary') {
+    // Three traces, because the device is three facts at once and no one of
+    // them alone explains it.  The two horn traces are the SAME rotation seen
+    // by two microphones at an angle to each other — everything stereo about
+    // a rotary speaker comes from that and from nothing else, since the
+    // cabinet is mono.  The drum trace runs slower and is not locked to the
+    // horn, which is the swirl that a chorus cannot imitate.
+    const rate = num(params, 'rateHz', 0.8);
+    const throb = num(params, 'throb', 55) / 100;
+    const angle = (num(params, 'micAngle', 90) * Math.PI) / 180;
+    const cos = (turns: number, phase = 0): number => Math.cos(2 * Math.PI * turns + phase);
+    return {
+      traces: [
+        { label: 'HORN L', colour: MID_COLOUR, at: (t) => 1 + throb * 0.75 * cos(rate * t) },
+        { label: 'HORN R', colour: SIDE_COLOUR, at: (t) => 1 + throb * 0.75 * cos(rate * t, angle) },
+        { label: 'DRUM', colour: 'rgba(255,255,255,0.45)', at: (t) => 1 + throb * 0.45 * cos(rate * 0.78 * t) },
+      ],
+      spanSec: 2 / Math.max(0.05, rate),
+      min: 0, max: 2, unit: '×',
+      caption: `혼 ${rate.toFixed(2)} Hz · 드럼 ${(rate * 0.78).toFixed(2)} Hz · 마이크 ${Math.round(num(params, 'micAngle', 90))}°`,
     };
   }
 
