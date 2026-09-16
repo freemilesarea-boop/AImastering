@@ -90,6 +90,11 @@ export const CALIBRATED_LEVEL = 0.7;
 export const INSTRUMENT_TRIM = {
   polysynth: 0.1326,
   epiano: 0.2276,
+  piano: 0.5813,
+  upright: 0.6473,
+  bass: 0.1761,
+  mallet: 0.2005,
+  organ: 0.0755,
   agtr: 0.4307,
   egtr: 0.2709,
   drumkit: 0.5640,
@@ -112,6 +117,25 @@ export const LEGACY_LEVEL_DEFAULTS: Readonly<Record<string, number>> = {
   sampler: 0.7,
 };
 
+/**
+ * The instruments that existed when the calibration happened.
+ *
+ * `LEGACY_LEVEL_DEFAULTS` is a migration table, and a migration table is a
+ * claim about what a v2 file on disk can contain.  These six are what such a
+ * file can contain; an instrument added afterwards cannot appear in one, so
+ * it has no old Level to re-read and must not have an entry here.  Giving it
+ * one would not break anything — no session would ever match — it would make
+ * the table say something untrue about the past, which is the only thing a
+ * table like this is for.
+ *
+ * So this list is what the level suite checks the migration table against,
+ * rather than checking it against "every instrument", which is what it used
+ * to do and which fails the moment an instrument is added.
+ */
+export const PRE_CALIBRATION_INSTRUMENTS: readonly string[] = [
+  'polysynth', 'epiano', 'agtr', 'egtr', 'drumkit', 'sampler',
+];
+
 // ── The reference material ───────────────────────────────────────────────────
 //
 // ONE phrase for every melodic instrument and ONE beat for every kit.  A
@@ -122,7 +146,7 @@ const BEAT = 60 / REFERENCE_BPM;
 
 /** The root each instrument is measured at — guitars an octave up from keys. */
 export const REFERENCE_ROOT: Readonly<Record<string, number>> = {
-  polysynth: 48, epiano: 48, agtr: 52, egtr: 52,
+  polysynth: 48, epiano: 48, agtr: 52, egtr: 52, piano: 48, upright: 48, bass: 33, mallet: 60, organ: 48,
 };
 
 /** A maj7 chord, an eighth-note line over it, then the chord up a fourth. */

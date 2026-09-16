@@ -49,7 +49,7 @@
 import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
-import { findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
+import { INSTRUMENTS, findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
 import { createNote, DEFAULT_MIDI_CONFIG } from '../src/renderer/daw/model/midi.js';
 import { getLoudnessMetrics, type AudioBufferLike } from '../src/renderer/audio/loudnessCore.js';
 import { GENRE_ORDER } from '../src/renderer/daw/engine/plugin-presets-genre.js';
@@ -57,7 +57,7 @@ import { kitParamOf } from '../src/renderer/daw/engine/drum-presets.js';
 import { migrateSession } from '../src/renderer/daw/model/session-migrate.js';
 import {
   CALIBRATED_LEVEL, INSTRUMENT_TRIM, LEGACY_LEVEL_DEFAULTS,
-  LEVEL_PEAK_CEILING_DBTP, LEVEL_TARGET_LUFS, REFERENCE_BEAT_SECONDS,
+  LEVEL_PEAK_CEILING_DBTP, LEVEL_TARGET_LUFS, PRE_CALIBRATION_INSTRUMENTS, REFERENCE_BEAT_SECONDS,
   REFERENCE_PHRASE_SECONDS, REFERENCE_ROOT, hardChord, referenceBeat,
   referencePhrase, type LevelEvent,
 } from '../src/renderer/daw/engine/instrument-level.js';
@@ -95,7 +95,28 @@ const TOLERANCE_LU = 0.4;
  */
 const NODE_REFERENCE_LUFS: Readonly<Record<string, number>> = {
   polysynth: -26.01, epiano: -26.06, agtr: -26.07, egtr: -26.00,
+  piano: -26.00, upright: -26.00, bass: -25.86, mallet: -26.00, organ: -25.99,
 };
+
+/**
+ * A note on the four that read exactly −26.00, and the one that does not.
+ *
+ * The trims were derived at 48 kHz and this suite renders at 44.1 (see `SR`),
+ * so every number here is a re-measurement at a DIFFERENT rate — and the
+ * pianos, the mallets and the organ come back at the target to the last
+ * digit, while the bass moves 0.13 LU.
+ *
+ * That split is not luck.  The modal instruments place every partial at an
+ * exact frequency and run an exact recursion, so changing the sample rate
+ * changes nothing but how finely the same waveform is sampled.  The bass is a
+ * Karplus-Strong delay line, and a delay line is an INTEGER number of
+ * samples: at a different rate the same pitch rounds to a different loop
+ * length, with a different fractional correction and a different excitation,
+ * so the note is genuinely a slightly different note.
+ *
+ * Which means 0.13 LU is the cost of the delay line being what it is, and
+ * not a calibration that needs tightening.
+ */
 const NODE_REFERENCE_KIT_MEDIAN_LUFS = -27.85;
 
 /**
@@ -135,7 +156,27 @@ async function render(
   };
 }
 
-const MELODIC = ['polysynth', 'epiano', 'agtr', 'egtr'] as const;
+const MELODIC = [
+  'polysynth', 'epiano', 'agtr', 'egtr', 'piano', 'upright', 'bass', 'mallet', 'organ',
+] as const;
+
+/**
+ * Instruments this suite deliberately does not meter, and why.
+ *
+ * The kit is metered separately, across all eleven of its genres, because one
+ * trim standing for eleven kits is the thing that needed checking about it.
+ * The sampler's loudness is the loudness of the file somebody dropped in, and
+ * no constant here can know that — its trim is 1 for that reason.
+ *
+ * Nothing else may be absent.  An instrument added later with a Level and no
+ * entry in either list would otherwise be calibrated by nobody and pass this
+ * suite by not being in it, which is how a suite that enumerates a list
+ * quietly stops covering the thing it is named after.
+ */
+const NOT_METERED_HERE: Readonly<Record<string, string>> = {
+  drumkit: 'metered across all eleven kits by its own check below',
+  sampler: 'its loudness is the file the user loaded, so its trim is 1',
+};
 
 async function main(): Promise<void> {
   // Measured once; every melodic check reads from here, so the suite renders
@@ -148,6 +189,21 @@ async function main(): Promise<void> {
     const hard = getLoudnessMetrics(await render(id, hardChord(root), 3));
     measured.set(id, { lufs: phrase.integratedLufs, hard: hard.truePeakDbtp });
   }
+
+  await check('every instrument with a Level is either metered here or excused', () => {
+    for (const inst of INSTRUMENTS) {
+      if (!inst.params.some((prm) => prm.id === 'level')) continue;
+      const metered = (MELODIC as readonly string[]).includes(inst.id);
+      const excused = NOT_METERED_HERE[inst.id];
+      assert(metered || excused !== undefined,
+        `${inst.id} has a Level but is neither in MELODIC nor excused in NOT_METERED_HERE`);
+      assert(!(metered && excused !== undefined),
+        `${inst.id} is both metered and excused — one of the two lists is wrong`);
+      if (excused !== undefined) {
+        assert(excused.length >= 20, `${inst.id} is excused without a reason worth reading`);
+      }
+    }
+  });
 
   await check('every melodic instrument still measures what it did when calibrated', () => {
     for (const id of MELODIC) {
@@ -292,10 +348,56 @@ async function main(): Promise<void> {
       'a track that never stored a Level had one invented for it');
   });
 
+  await check("the organ's drawbars change its level, in this renderer too", async () => {
+    // Written because they did not.  `createPeriodicWave` takes a
+    // `disableNormalization` flag; Chromium honours it and node-web-audio-api
+    // ignores it and normalises everything to a peak of one — so under node
+    // every registration came out at the same level, and the organ measured
+    // 1.59 LU louder here than in the app.  A suite that metered the organ
+    // without this check was metering a constant and could not have noticed.
+    //
+    // The engine normalises the coefficients itself now and hands the level
+    // back as a gain, which is arithmetic both renderers run the same way.
+    // Measured after that change: 11.24 LU here and 11.24 LU in Chromium.
+    const root = REFERENCE_ROOT['organ'] ?? 48;
+    const bars = (on: number): Record<string, number> => {
+      const ids = ['db16', 'db513', 'db8', 'db4', 'db223', 'db2', 'db135', 'db113', 'db1'];
+      const out: Record<string, number> = {};
+      ids.forEach((id, i) => { out[id] = i < on ? 8 : 0; });
+      return out;
+    };
+    const one = getLoudnessMetrics(await render(
+      'organ', referencePhrase(root), REFERENCE_PHRASE_SECONDS, bars(1)));
+    const nine = getLoudnessMetrics(await render(
+      'organ', referencePhrase(root), REFERENCE_PHRASE_SECONDS, bars(9)));
+    const spread = nine.integratedLufs - one.integratedLufs;
+    assert(spread > 8,
+      `all nine drawbars out is only ${spread.toFixed(2)} LU above one — the registration is not reaching the level`);
+  });
+
   await check('the trim table covers every instrument that has a Level', () => {
-    for (const id of [...MELODIC, 'drumkit', 'sampler']) {
-      assert(id in INSTRUMENT_TRIM, `${id} has a Level but no trim`);
-      assert(id in LEGACY_LEVEL_DEFAULTS, `${id} has no legacy default, so old sessions skip it`);
+    for (const inst of INSTRUMENTS) {
+      if (!inst.params.some((prm) => prm.id === 'level')) continue;
+      assert(inst.id in INSTRUMENT_TRIM, `${inst.id} has a Level but no trim`);
+    }
+  });
+
+  // Split off from the trim check above, which used to make both claims at
+  // once and asked for a legacy default from EVERY instrument with a Level.
+  // That is right for the six that shipped before the calibration and wrong
+  // for anything added after: a v2 file cannot contain an instrument that did
+  // not exist when v2 did, so there is no old Level to re-read.  Adding the
+  // grand piano failed it, and the honest repair is to say which instruments
+  // the migration table is a claim ABOUT rather than to add an entry that
+  // no session will ever match.
+  await check('the migration table says something true about v2 sessions', () => {
+    for (const id of PRE_CALIBRATION_INSTRUMENTS) {
+      assert(findInstrument(id) !== undefined, `${id} is in the pre-calibration list but not in the app`);
+      assert(id in LEGACY_LEVEL_DEFAULTS, `${id} shipped before v3 and has no legacy default, so old sessions skip it`);
+    }
+    for (const id of Object.keys(LEGACY_LEVEL_DEFAULTS)) {
+      assert(PRE_CALIBRATION_INSTRUMENTS.includes(id),
+        `${id} has a legacy default but did not exist before the calibration — no v2 session can contain it`);
     }
   });
 
