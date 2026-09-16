@@ -384,6 +384,17 @@ export interface BowedRenderSpec {
   velocity: number;
   startBeat: number;
   params: Readonly<Record<string, number>>;
+  /**
+   * Filled, if given, with the string's velocity AT THE BOW.
+   *
+   * This is the stick-slip cycle itself — the thing the panel draws and the
+   * thing the instrument is — and it is not recoverable from the output: what
+   * comes out of the bridge is one travelling wave through a body, and the
+   * velocity at the bow is the sum of two.  An out-parameter rather than a
+   * second function, because a second function would be a second copy of the
+   * loop and the two could then disagree about the sound.
+   */
+  bowVelocity?: Float32Array;
 }
 
 export interface BowedRender { left: Float32Array; right: Float32Array }
@@ -544,6 +555,7 @@ export function renderBowedVoice(spec: BowedRenderSpec): BowedRender {
   const trim = (INSTRUMENT_TRIM as Readonly<Record<string, number>>)['bowed'] ?? 1;
   const level = Math.max(0, Math.min(1, p(prm, 'level', CALIBRATED_LEVEL)));
   const gain = trim * level;
+  const trace = spec.bowVelocity;
   let slip = 0;
   let lossZ = 0;
   let hairZ = 0;
@@ -615,6 +627,7 @@ export function renderBowedVoice(spec: BowedRenderSpec): BowedRender {
 
     const sol = solveBow(vb - vh, aBow, slip);
     slip = sol.slip;
+    if (trace && i < trace.length) trace[i] = vh + sol.w;
 
     bridgeLine.write(fromNut + sol.w);
     nutLine.write(fromBridge + sol.w);

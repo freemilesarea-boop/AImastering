@@ -47,6 +47,7 @@ import WaveSynthPanel from './instrument/WaveSynthPanel.js';
 import AnalogPanel from './instrument/AnalogPanel.js';
 import FmPanel from './instrument/FmPanel.js';
 import DrumPanel from './instrument/DrumPanel.js';
+import BowedPanel from './instrument/BowedPanel.js';
 import {
   CATEGORY_LABEL, categoriesFor, patchParams, patchesFor,
 } from '../../daw/engine/instrument-patches.js';
@@ -438,9 +439,22 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
               />
             )}
 
+            {/* And the bowed strings, whose two most important knobs — how
+                hard the bow presses and where it sits — are numbers with a
+                narrow window of good values and no obvious meaning.  The
+                panel draws the stick-slip cycle those two produce, so the
+                window is something you can see rather than hunt for. */}
+            {openSlot === slot.trackId && slot.instrumentId === 'bowed' && (
+              <BowedPanel
+                params={slot.params}
+                onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
+                onCommit={() => useDawStore.getState().commitEdit()}
+              />
+            )}
+
             {openSlot === slot.trackId && slot.instrumentId !== 'wavesynth'
               && slot.instrumentId !== 'analog' && slot.instrumentId !== 'fm'
-              && slot.instrumentId !== 'drummachine' && (
+              && slot.instrumentId !== 'drummachine' && slot.instrumentId !== 'bowed' && (
               <ParamKnobs
                 instrumentId={slot.instrumentId}
                 params={slot.params}
