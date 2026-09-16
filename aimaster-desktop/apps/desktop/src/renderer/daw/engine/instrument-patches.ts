@@ -461,9 +461,125 @@ const WAVESYNTH: InstrumentPatch[] = [
       m3src: 10, m3dst: 11, m3amt: 0.6 } },
 ];
 
+// ── Analog Synth ─────────────────────────────────────────────────────────────
+//
+// A bank for a subtractive synth is a check on the engine as much as a set of
+// sounds: a machine that cannot make a convincing bass is a machine whose
+// filter does not track, and one that cannot make a pad is one whose
+// envelopes are too fast.  The names below are the archetypes because those
+// are the ones a missing feature shows up in.
+//
+// Three of them move `drift` and `tolerance` well past the defaults, which is
+// the point of having them as knobs: "vintage" is mostly those two numbers,
+// and a synth that ships them at one setting has decided how old it is.
+
+const ANALOG: InstrumentPatch[] = [
+  { id: 'init', name: 'Init Saw', category: 'init',
+    note: '톱니 두 대, 래더 절반 열림 — 여기서 시작합니다',
+    params: {} },
+
+  { id: 'mini-bass', name: 'Mini Bass', category: 'bass',
+    note: '래더가 엔벨로프로 닫힙니다. 베이스 보정 0 — 레조넌스를 올리면 저역이 빠지는 그 소리',
+    params: {
+      level: 0.467,
+      o2fine: -7, o2level: 0.7, subLevel: 0.5,
+      cutoff: 62, res: 0.35, drive: 3.2, fltKey: 0.45, envAmt: 34,
+      e1a: 0.002, e1d: 0.5, e1s: 0.55, e1r: 0.12,
+      e2a: 0.001, e2d: 0.28, e2s: 0.1, e2r: 0.2,
+      drift: 2.5, voices: 1 } },
+
+  { id: 'reso-lead', name: 'Reso Lead', category: 'lead',
+    note: '레조넌스를 자기발진 직전까지 — 래더가 스스로 울기 시작하는 지점',
+    params: {
+      level: 0.42,
+      o1shape: 1, o1width: 0.32, o2fine: 11, o2level: 0.6,
+      cutoff: 84, res: 0.92, drive: 2.4, fltKey: 0.6, envAmt: 20,
+      e1a: 0.006, e1d: 0.6, e1s: 0.8, e1r: 0.2,
+      l1rate: 5.2, l1delay: 0.35, l1pitch: 14,
+      drift: 4.5, voices: 1 } },
+
+  { id: 'poly-brass', name: 'Poly Brass', category: 'brass',
+    note: '엔벨로프가 필터를 밀어 올립니다. 보이스마다 부품이 달라서 코드가 저절로 넓어집니다',
+    params: {
+      level: 0.42,
+      o2fine: 8, o2level: 0.75,
+      cutoff: 60, res: 0.22, drive: 1.6, fltKey: 0.4, envAmt: 44, velFlt: 22,
+      e1a: 0.03, e1d: 0.9, e1s: 0.75, e1r: 0.35,
+      e2a: 0.05, e2d: 0.7, e2s: 0.35, e2r: 0.4,
+      tolerance: 0.06, drift: 5, spread: 0.85 } },
+
+  { id: 'warm-pad', name: 'Warm Pad', category: 'pad',
+    note: '느리게 열리고 유니즌이 서로 어긋납니다 — 드리프트가 코러스를 대신합니다',
+    params: {
+      level: 0.52,
+      o2shape: 2, o2oct: -1, o2level: 0.7,
+      unison: 3, detune: 13, spread: 1,
+      cutoff: 74, res: 0.18, drive: 1.2, envAmt: 22, fltKey: 0.25,
+      e1a: 0.9, e1d: 1.6, e1s: 0.85, e1r: 1.8,
+      e2a: 1.2, e2d: 2, e2s: 0.5, e2r: 1.6,
+      l2rate: 0.22, l2flt: 9,
+      drift: 7, tolerance: 0.07 } },
+
+  { id: 'pwm-strings', name: 'PWM Strings', category: 'pad',
+    note: 'LFO 가 펄스 폭을 흔듭니다 — 아날로그 스트링 머신의 그 움직임',
+    params: {
+      level: 0.427,
+      o1shape: 1, o2shape: 1, o2width: 0.44, o2fine: -9, o2level: 0.8,
+      cutoff: 80, res: 0.14, drive: 1.1, envAmt: 10,
+      e1a: 0.35, e1d: 1.2, e1s: 0.85, e1r: 0.9,
+      l1rate: 0.45, l1pw: 0.8,
+      drift: 6, tolerance: 0.05, spread: 0.9 } },
+
+  { id: 'sync-lead', name: 'Sync Lead', category: 'lead',
+    note: '하드 싱크 — 2번이 1번에 끌려 다닙니다. 엔벨로프로 2번 피치를 밀면 그 찢어지는 소리',
+    params: {
+      level: 0.328,
+      o2semi: 7, o2level: 0.9, sync: 1,
+      cutoff: 96, res: 0.25, drive: 2, envAmt: 12,
+      e1d: 0.5, e1s: 0.8, e1r: 0.15,
+      l1rate: 0.3, l2rate: 0.35,
+      drift: 3, voices: 1 } },
+
+  { id: 'ring-bell', name: 'Ring Bell', category: 'fx',
+    note: '링 모듈레이터 — 두 오실레이터의 합과 차가 남아서 음정이 사라집니다',
+    params: {
+      level: 0.666,
+      o1shape: 3, o2shape: 3, o2semi: 6, o2fine: 22, ring: 0.85,
+      o1level: 0.62, o2level: 0.62,
+      cutoff: 104, res: 0.1, envAmt: 0,
+      e1a: 0.002, e1d: 1.8, e1s: 0, e1r: 1.2,
+      drift: 8 } },
+
+  { id: 'acid', name: 'Acid', category: 'bass',
+    note: '한 대, 좁은 래더, 엔벨로프가 깊게 쓸어내립니다 — 303 쪽',
+    // One oscillator behind a nearly shut filter is genuinely quiet, and the
+    // level for it comes from the SOURCE rather than from the output gain:
+    // Level may only ever trim a patch down, because the headroom the
+    // instrument was calibrated for is what sits above 0.7.  So the square
+    // sub is doing the work here, which is also where a 303's bottom end
+    // comes from.
+    params: {
+      o1level: 1, o2level: 0, subLevel: 0.6,
+      cutoff: 52, res: 0.86, drive: 5, fltKey: 0.5, envAmt: 50,
+      e1a: 0.001, e1d: 0.24, e1s: 0.35, e1r: 0.08,
+      e2a: 0.001, e2d: 0.22, e2s: 0, e2r: 0.12,
+      drift: 2, voices: 1 } },
+
+  { id: 'broken', name: 'Needs Servicing', category: 'fx',
+    note: '드리프트와 부품 오차를 끝까지 — 20년 방치된 기계. 코드가 화음으로 안 들립니다',
+    params: {
+      level: 0.422,
+      o2fine: 19, o2level: 0.8,
+      unison: 3, detune: 22,
+      cutoff: 72, res: 0.3, drive: 2, envAmt: 18,
+      e1a: 0.02, e1d: 0.8, e1r: 0.5,
+      drift: 22, tolerance: 0.18, spread: 1 } },
+];
+
 export const INSTRUMENT_PATCHES: Readonly<Record<string, readonly InstrumentPatch[]>> = {
   polysynth: POLY,
   wavesynth: WAVESYNTH,
+  analog: ANALOG,
   epiano: EPIANO,
   agtr: AGTR,
   egtr: EGTR,

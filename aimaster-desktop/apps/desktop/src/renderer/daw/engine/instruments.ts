@@ -23,6 +23,8 @@ import { BAR_KINDS, barModes, barProfile } from './bar-model.js';
 import { WAVETABLES } from './wavetable.js';
 import { LFO_SHAPES, MATRIX_ROWS, MOD_DESTS, MOD_SOURCES, noteRandom, rowParams } from './mod-matrix.js';
 import { SUB_SHAPES, renderVoice, tailSeconds } from './wave-synth.js';
+import { ANALOG_SHAPES } from './analog-model.js';
+import { analogTail, renderAnalogVoice, voiceSlot } from './analog-synth.js';
 import {
   CLAP_OFFSETS, noiseSamples, type DrumSpec,
 } from './drum-model.js';
@@ -1421,6 +1423,164 @@ function waveSynthVoice(v: VoiceContext): { stop: (at: number) => void } {
   };
 }
 
+
+// ── The analogue synth ──────────────────────────────────────────────────────
+
+/**
+ * A short, opinionated panel, and that is the design rather than a shortcut.
+ *
+ * The wavetable synth has a hundred and thirteen parameters and a matrix
+ * because anything driving anything IS what a wavetable synth is for.  An
+ * analogue synth is the opposite argument: a Minimoog has no matrix, every
+ * useful routing is already wired, and it is still the one everybody can
+ * play.  So the modulation here is a list of named depths — LFO to pitch, LFO
+ * to pulse width, envelope to filter, velocity to filter — and the knobs that
+ * are left are the ones that decide the sound.
+ */
+function analogParams(): InstrumentParamDef[] {
+  const out: InstrumentParamDef[] = [];
+  for (const o of ['o1', 'o2'] as const) {
+    const up = o === 'o1' ? 'VCO 1' : 'VCO 2';
+    out.push(
+      { id: `${o}shape`, name: `${up} Wave`, min: 0, max: ANALOG_SHAPES.length - 1, default: 0, unit: '' },
+      { id: `${o}width`, name: `${up} PW`,   min: 0.05, max: 0.95, default: 0.5, unit: '' },
+      { id: `${o}oct`,   name: `${up} Oct`,  min: -3, max: 3, default: 0, unit: '' },
+      { id: `${o}semi`,  name: `${up} Semi`, min: -12, max: 12, default: 0, unit: 'st' },
+      { id: `${o}fine`,  name: `${up} Fine`, min: -50, max: 50, default: o === 'o1' ? 0 : 6, unit: 'ct' },
+      { id: `${o}level`, name: `${up} Level`, min: 0, max: 1, default: o === 'o1' ? 0.8 : 0.5, unit: '' },
+    );
+  }
+  out.push(
+    { id: 'sync',     name: 'Sync',    min: 0, max: 1, default: 0, unit: '' },
+    { id: 'ring',     name: 'Ring',    min: 0, max: 1, default: 0, unit: '' },
+    { id: 'subOct',   name: 'Sub Oct', min: -2, max: -1, default: -1, unit: '' },
+    { id: 'subLevel', name: 'Sub',     min: 0, max: 1, default: 0, unit: '' },
+    { id: 'noise',    name: 'Noise',   min: 0, max: 1, default: 0, unit: '' },
+    { id: 'unison',   name: 'Unison',  min: 1, max: 5, default: 1, unit: '' },
+    { id: 'detune',   name: 'Detune',  min: 0, max: 40, default: 8, unit: 'ct' },
+    { id: 'spread',   name: 'Spread',  min: 0, max: 1, default: 0.5, unit: '' },
+
+    // Cutoff in semitones from MIDI 0, like the wavetable synth's, so that
+    // every depth below is in the same unit and a filter envelope means the
+    // same thing in every octave.
+    { id: 'cutoff',  name: 'Cutoff',  min: 12, max: 135, default: 92, unit: 'st' },
+    { id: 'res',     name: 'Res',     min: 0,  max: 1,   default: 0.2, unit: '' },
+    { id: 'poles',   name: 'Slope',   min: 2,  max: 4,   default: 4, unit: 'p' },
+    { id: 'drive',   name: 'Drive',   min: 0.2, max: 12, default: 1, unit: '×' },
+    { id: 'fltKey',  name: 'Key Trk', min: 0,  max: 1,   default: 0.3, unit: '' },
+    { id: 'fltComp', name: 'Bass Comp', min: 0, max: 1,  default: 0, unit: '' },
+    { id: 'envAmt',  name: 'Env Amt', min: -60, max: 60, default: 24, unit: 'st' },
+    { id: 'velFlt',  name: 'Vel → Flt', min: -40, max: 40, default: 12, unit: 'st' },
+    { id: 'velAmp',  name: 'Vel → Amp', min: 0, max: 1,  default: 0.7, unit: '' },
+
+    { id: 'envCurve', name: 'Env Curve', min: 0, max: 1, default: 0.85, unit: '' },
+  );
+  for (const i of [1, 2]) {
+    const amp = i === 1;
+    out.push(
+      { id: `e${i}a`, name: `E${i} Atk`, min: 0.0005, max: 4, default: amp ? 0.004 : 0.01, unit: 's' },
+      { id: `e${i}d`, name: `E${i} Dec`, min: 0.002, max: 8, default: amp ? 0.4 : 0.5, unit: 's' },
+      { id: `e${i}s`, name: `E${i} Sus`, min: 0, max: 1, default: amp ? 0.7 : 0.2, unit: '' },
+      { id: `e${i}r`, name: `E${i} Rel`, min: 0.002, max: 8, default: amp ? 0.25 : 0.3, unit: 's' },
+    );
+  }
+  for (const i of [1, 2]) {
+    out.push(
+      { id: `l${i}shape`, name: `L${i} Wave`, min: 0, max: LFO_SHAPES.length - 1, default: 0, unit: '' },
+      { id: `l${i}sync`,  name: `L${i} Sync`, min: 0, max: 1, default: 0, unit: '' },
+      { id: `l${i}beats`, name: `L${i} Beats`, min: 0.0625, max: 16, default: 1, unit: 'b' },
+      { id: `l${i}rate`,  name: `L${i} Rate`, min: 0.01, max: 30, default: i === 1 ? 5 : 0.6, unit: 'Hz' },
+    );
+  }
+  out.push(
+    { id: 'l1delay', name: 'L1 Delay', min: 0, max: 4, default: 0, unit: 's' },
+    { id: 'l2delay', name: 'L2 Delay', min: 0, max: 4, default: 0, unit: 's' },
+    { id: 'l1pitch', name: 'L1 → Pitch', min: 0, max: 100, default: 0, unit: 'ct' },
+    { id: 'l1pw',    name: 'L1 → PW',    min: 0, max: 1,   default: 0, unit: '' },
+    { id: 'l1flt',   name: 'L1 → Flt',   min: -48, max: 48, default: 0, unit: 'st' },
+    { id: 'l1amp',   name: 'L1 → Amp',   min: 0, max: 1,   default: 0, unit: '' },
+    { id: 'l2pitch', name: 'L2 → Pitch', min: 0, max: 100, default: 0, unit: 'ct' },
+    { id: 'l2flt',   name: 'L2 → Flt',   min: -48, max: 48, default: 0, unit: 'st' },
+
+    // The three that make it analogue rather than a synth with a ladder.
+    { id: 'drift',     name: 'Drift',     min: 0, max: 25, default: 3.5, unit: 'ct' },
+    { id: 'tolerance', name: 'Tolerance', min: 0, max: 0.2, default: 0.03, unit: '' },
+    { id: 'voices',    name: 'Voices',    min: 1, max: 8, default: 6, unit: '' },
+
+    { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+  );
+  return out;
+}
+
+const ANALOG_PARAMS: InstrumentParamDef[] = analogParams();
+const ANALOG_PARAM_IDS: readonly string[] = ANALOG_PARAMS.map((d) => d.id);
+
+const ANALOG_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const ANALOG_CACHE_MAX = 96;
+
+function analogVoice(v: VoiceContext): { stop: (at: number) => void } {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.01, durationSec);
+  const seconds = Math.min(30, gate + analogTail(params));
+
+  const spec = {
+    sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq, pitch, velocity,
+    slot: voiceSlot(pitch, note.startBeat, params['voices'] ?? 6),
+    startBeat: note.startBeat,
+    params,
+    beatsPerSec: durationSec > 1e-6 && note.durationBeat > 1e-6
+      ? note.durationBeat / durationSec
+      : 2,
+  };
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of ANALOG_PARAM_IDS) fold(params[id] ?? 0);
+  fold(freq); fold(velocity); fold(seconds); fold(gate);
+  fold(spec.slot); fold(note.startBeat); fold(spec.beatsPerSec); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = ANALOG_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderAnalogVoice(spec);
+    if (ANALOG_CACHE.size >= ANALOG_CACHE_MAX) {
+      const oldest = ANALOG_CACHE.keys().next().value;
+      if (oldest !== undefined) ANALOG_CACHE.delete(oldest);
+    }
+    ANALOG_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = 1;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
 // ── The poly synth's oscillator bank ────────────────────────────────────────
 
 /**
@@ -2278,6 +2438,17 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     // `wave-synth.ts`, and the short version is that a `PeriodicWave` cannot
     // be moved while it sounds and a wavetable synth is nothing else.
     playNote: (v) => waveSynthVoice(v),
+  },
+
+  {
+    id: 'analog',
+    name: 'Analog Synth',
+    params: ANALOG_PARAMS,
+    // Two free-running VCOs that drift, a transistor ladder that saturates
+    // and loses its bass as the resonance comes up, capacitor envelopes, and
+    // a per-voice component tolerance so a chord is six slightly different
+    // instruments.  Every one of those is measured in `analog-model.ts`.
+    playNote: (v) => analogVoice(v),
   },
 
   {
