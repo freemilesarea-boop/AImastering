@@ -51,6 +51,20 @@ import {
   CATEGORY_LABEL, categoriesFor, patchParams, patchesFor,
 } from '../../daw/engine/instrument-patches.js';
 import { findInstrument } from '../../daw/engine/instruments.js';
+import { BOW_BODIES, BOW_BODY_NAMES } from '../../daw/engine/bowed-string.js';
+
+/** The lowest and highest notes one of the bowed bodies can actually play. */
+function bowedRangeNote(index: number): string {
+  const body = BOW_BODIES[Math.max(0, Math.min(BOW_BODIES.length - 1, index))];
+  if (!body) return '';
+  const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const spell = (pitch: number): string => `${names[pitch % 12]}${Math.floor(pitch / 12) - 1}`;
+  const low = body.strings[0] ?? 55;
+  // Two and a half octaves above the top string is about where a player stops
+  // being able to reach, and where this engine stops holding Helmholtz motion.
+  const high = (body.strings[body.strings.length - 1] ?? 76) + 24;
+  return `${spell(low)} – ${spell(high)}`;
+}
 
 export default function InstrumentRack({ onClose }: { onClose: () => void }) {
   const session = useDawStore((s) => s.session);
@@ -433,6 +447,32 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
                 onDrag={(id, v) => dragParam(slot.trackId, slot.instrumentId, id, v)}
                 onCommit={() => useDawStore.getState().commitEdit()}
               />
+            )}
+
+            {/* The bowed strings get a second line too, for the one knob that
+                is not a knob: which of the four instruments this is.  A
+                number from 0 to 3 on a slider says nothing, and the choice
+                changes the range as well as the body — asking a cello for a
+                violin's top string is a real mistake to be able to see. */}
+            {slot.instrumentId === 'bowed' && (
+              <div className="flex items-center gap-2 mt-1.5 pt-1.5"
+                   style={{ borderTop: `1px solid ${premium.surface.hairline}` }}>
+                <span style={{ fontSize: 9, color: premium.text.muted }}>악기</span>
+                <select
+                  value={Math.round(slot.params['body'] ?? 0)}
+                  onChange={(e) => {
+                    dragParam(slot.trackId, slot.instrumentId, 'body', Number(e.target.value));
+                    useDawStore.getState().commitEdit();
+                  }}
+                  title="몸통이 바뀌면 울림도 줄도 바뀝니다"
+                  className="h-6 px-1.5 rounded text-[10px] bg-zinc-900 border border-zinc-700 text-zinc-200"
+                >
+                  {BOW_BODY_NAMES.map((n, i) => <option key={n} value={i}>{n}</option>)}
+                </select>
+                <span className="flex-1 truncate" style={{ fontSize: 10, color: premium.text.muted }}>
+                  {bowedRangeNote(Math.round(slot.params['body'] ?? 0))}
+                </span>
+              </div>
             )}
 
             {/* Drums get a second line: what the kit SOUNDS like, and what it

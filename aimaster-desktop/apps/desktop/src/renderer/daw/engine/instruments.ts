@@ -28,6 +28,9 @@ import { analogTail, renderAnalogVoice, voiceSlot } from './analog-synth.js';
 import { FM_ALGORITHMS, FM_OPERATORS, FM_WAVES } from './fm-core.js';
 import { fmTail, renderFmVoice } from './fm-synth.js';
 import {
+  BOWED_PARAMS, BOWED_PARAM_IDS, bowedTail, renderBowedVoice,
+} from './bowed-string.js';
+import {
   DRUM_MAX_DECAY, drumTail, drumVoiceFor, renderDrumVoice,
 } from './drum-machine.js';
 import {
@@ -1791,6 +1794,74 @@ function fmVoice(v: VoiceContext): { stop: (at: number) => void } {
   };
 }
 
+const BOWED_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const BOWED_CACHE_MAX = 64;
+
+/**
+ * One bowed note.
+ *
+ * Rendered rather than wired, for the same reason the plucked string is: the
+ * friction has to be solved sample by sample against a delay line that IS the
+ * pitch, and there is no arrangement of native nodes that does that.  Cached
+ * on every input, because a held string section is the same note again and
+ * again and solving it twice is wasted.
+ */
+function bowedVoice(v: VoiceContext): { stop: (at: number) => void } {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.02, durationSec);
+  const seconds = Math.min(30, gate + bowedTail(params));
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of BOWED_PARAM_IDS) fold(params[id] ?? 0);
+  fold(freq); fold(pitch); fold(velocity); fold(seconds); fold(gate);
+  fold(note.startBeat); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = BOWED_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderBowedVoice({
+      sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq, pitch,
+      velocity, startBeat: note.startBeat, params,
+    });
+    if (BOWED_CACHE.size >= BOWED_CACHE_MAX) {
+      const oldest = BOWED_CACHE.keys().next().value;
+      if (oldest !== undefined) BOWED_CACHE.delete(oldest);
+    }
+    BOWED_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = 1;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
 const ANALOG_PARAMS: InstrumentParamDef[] = analogParams();
 const ANALOG_PARAM_IDS: readonly string[] = ANALOG_PARAMS.map((d) => d.id);
 
@@ -2739,6 +2810,21 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     // operator has its own and why they are exponential.  The maths, and
     // what the name gets wrong, are in `fm-core.ts`.
     playNote: (v) => fmVoice(v),
+  },
+
+  {
+    id: 'bowed',
+    name: 'Bowed Strings',
+    params: BOWED_PARAMS as InstrumentParamDef[],
+    // Violin, viola, cello and double bass, as one instrument because they
+    // are one instrument: the same friction, the same string, four boxes.
+    //
+    // The bow is a nonlinearity rather than an envelope, which is what makes
+    // a crescendo on one note possible here and impossible on a sampled
+    // library.  Bow Speed is loudness, Bow Force is which of the three
+    // regimes it plays in, and Bow Position is a comb.  All three are
+    // measured in `bowed-string.ts`.
+    playNote: (v) => bowedVoice(v),
   },
 
   {

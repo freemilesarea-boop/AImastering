@@ -102,6 +102,7 @@ export const INSTRUMENT_TRIM = {
   agtr: 0.4307,
   egtr: 0.2709,
   drumkit: 0.5640,
+  bowed: 0.0206,
   sampler: 1,
 } as const;
 
@@ -151,6 +152,9 @@ const BEAT = 60 / REFERENCE_BPM;
 /** The root each instrument is measured at — guitars an octave up from keys. */
 export const REFERENCE_ROOT: Readonly<Record<string, number>> = {
   polysynth: 48, epiano: 48, agtr: 52, egtr: 52, piano: 48, upright: 48, bass: 33, mallet: 60, organ: 48, wavesynth: 48, analog: 48, fm: 48,
+  // The violin's open G is 55; a reference phrase rooted lower would be asking
+  // the instrument for notes it does not have.
+  bowed: 55,
 };
 
 /** A maj7 chord, an eighth-note line over it, then the chord up a fourth. */
