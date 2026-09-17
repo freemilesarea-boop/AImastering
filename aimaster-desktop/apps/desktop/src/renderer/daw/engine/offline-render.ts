@@ -28,6 +28,7 @@ import { encodeAudioBuffer, encodeWav, type WavBitDepth, type WavMetadata } from
 import { provenanceOf } from '../model/provenance-session.js';
 import { nextId } from '../model/ids.js';
 import { DEFAULT_MIDI_CONFIG } from '../model/midi.js';
+import { probeRendererLatency } from './plugin-kit.js';
 
 export interface RenderRange {
   startSec: number;
@@ -77,6 +78,11 @@ export async function renderSession(
   const sampleRate = options.sampleRate ?? session.sampleRate;
   const tail = options.tailSec ?? 2;
   const lengthSec = Math.max(0.01, range.endSec - range.startSec + tail);
+  // Before anything is BUILT: a shaper's oversampling and a compressor's
+  // look-ahead are worth different numbers of samples in different renderers,
+  // and the dry paths inside the devices are delayed to match.  Measured once
+  // per rate and cached, so this is free after the first render.
+  await probeRendererLatency(sampleRate);
   const ctx = makeOfflineContext(2, Math.ceil(lengthSec * sampleRate), sampleRate);
 
   await preloadFiles(session, ctx);

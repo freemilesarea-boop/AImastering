@@ -12,7 +12,7 @@
 // with a free-running LFO — the device says so rather than pretending.
 
 import {
-  BUTTERWORTH_Q, OVERSAMPLE_LATENCY_SAMPLES, crossoverSide, dynamicsLatencySamples,
+  BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
   absShaper, automatableFrom, dbToGain, makeShaper, smoother, tanhCurve, wetDry,
   withBypass, type PluginDescriptor,
@@ -1026,7 +1026,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     ],
     automatableParams: ['driveDb'],
     // Oversampled, and an oversampled shaper is a render quantum late.
-    latencyFor: () => OVERSAMPLE_LATENCY_SAMPLES,
+    latencyFor: (_params, sampleRate) => oversampleLatencySamples(sampleRate),
     // Shaves the two dB of drum transient that would otherwise cost the whole
     // master three dB of limiting.  Instant, no detector, no pumping.
     create: (ctx, params) => withBypass(ctx, (input, output) => {
@@ -1088,7 +1088,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'outDb',   name: 'Output', min: -24, max: 12, default: 0,  unit: 'dB' },
     ],
     automatableParams: ['toneHz', 'mix', 'outDb'],
-    latencyFor: () => OVERSAMPLE_LATENCY_SAMPLES,
+    latencyFor: (_params, sampleRate) => oversampleLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Asymmetric on purpose: a symmetric curve makes only odd harmonics and
       // sounds like a fuzz pedal.  The bias is what makes it a preamp.
@@ -1479,7 +1479,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     // thing a static zero hides.
     latencyFor: (params, sampleRate) => {
       const stages = Math.max(1, Math.min(3, Math.round(p(params, 'stages', 2))));
-      return (stages + 1) * OVERSAMPLE_LATENCY_SAMPLES + dynamicsLatencySamples(sampleRate);
+      return (stages + 1) * oversampleLatencySamples(sampleRate)
+        + dynamicsLatencySamples(sampleRate);
     },
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // ── The preamp ──────────────────────────────────────────────────────
@@ -1686,7 +1687,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     // oversamples and so is a render quantum late on top.  The four was
     // declared and the quantum was not.
     latencyFor: (_params, sampleRate) =>
-      Math.round(0.004 * sampleRate) + OVERSAMPLE_LATENCY_SAMPLES,
+      Math.round(0.004 * sampleRate) + oversampleLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // A Leslie is two speakers in one box, pointed at two rotating things,
       // and they are NOT the same thing rotating.  The treble horn is small
@@ -2370,7 +2371,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     // behind the others and the delay compensation believes it — which is a
     // mix error rather than a tape effect.
     latencyFor: (_params, sampleRate) =>
-      Math.round(TAPE_BASE_SEC * sampleRate) + OVERSAMPLE_LATENCY_SAMPLES,
+      Math.round(TAPE_BASE_SEC * sampleRate) + oversampleLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // ── Why the saturation sits BETWEEN two EQs ────────────────────────
       //
@@ -2595,7 +2596,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       // machine does not offer the blend.
       const blend = wetDry(ctx, p(params, 'mix', 1));
       const dryAlign = ctx.createDelay(0.05);
-      dryAlign.delayTime.value = TAPE_BASE_SEC + OVERSAMPLE_LATENCY_SAMPLES / ctx.sampleRate;
+      dryAlign.delayTime.value = TAPE_BASE_SEC
+        + oversampleLatencySamples(ctx.sampleRate) / ctx.sampleRate;
       input.connect(dryAlign).connect(blend.dry).connect(output);
 
       input.connect(inGain).connect(delay).connect(record).connect(drivePre);
@@ -2638,7 +2640,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
         // switching it in and out moves the track.
         bypassDelay: (() => {
           const d = ctx.createDelay(0.05);
-          d.delayTime.value = TAPE_BASE_SEC + OVERSAMPLE_LATENCY_SAMPLES / ctx.sampleRate;
+          d.delayTime.value = TAPE_BASE_SEC
+            + oversampleLatencySamples(ctx.sampleRate) / ctx.sampleRate;
           return d;
         })(),
         dispose: () => {

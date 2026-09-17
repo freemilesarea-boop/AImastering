@@ -20,7 +20,7 @@ import {
   describeFlow, deviceOrder, findNode, edgesFrom, edgesTo, layout, splitPoints,
   mergePoints, reachableFrom, INPUT_ID, OUTPUT_ID, type DeviceGraph,
 } from '../src/renderer/daw/model/device-graph.js';
-import { OVERSAMPLE_LATENCY_SAMPLES } from '../src/renderer/daw/engine/plugin-kit.js';
+import { oversampleLatencySamples } from '../src/renderer/daw/engine/plugin-kit.js';
 import {
   buildRack, rackBlueprints, resolveRack, resolvedParams, setRackMacro,
   mapMacro, unmapMacro, macroFor, describeRack, validateRack, createRack,
@@ -339,7 +339,7 @@ check('chain latency follows the longest path, through racks', () => {
   // look-ahead.  It used to declare zero — measured, it never was — and this
   // check asserted 240 while the chain really took 368.
   const lookahead = Math.round(0.005 * 48_000);
-  eq(chainLatency(graph, [], 48_000), lookahead + OVERSAMPLE_LATENCY_SAMPLES,
+  eq(chainLatency(graph, [], 48_000), lookahead + oversampleLatencySamples(48_000),
     'the longest path: the saturator\'s branch plus the limiter');
 
   // Not the sum of the branches: a second latent device on the OTHER branch
@@ -349,7 +349,7 @@ check('chain latency follows the longest path, through racks', () => {
   const twoBranches = addParallelBranch(graph, bare.id, limiter.id, createNode({
     kind: 'device', pluginId: 'clipper', label: 'CLIP',
   }));
-  eq(chainLatency(twoBranches, [], 48_000), lookahead + OVERSAMPLE_LATENCY_SAMPLES,
+  eq(chainLatency(twoBranches, [], 48_000), lookahead + oversampleLatencySamples(48_000),
     'two latent branches are still one longest path');
 
   // Bypassing a device takes away ITS latency and leaves everything else's.
@@ -359,7 +359,7 @@ check('chain latency follows the longest path, through racks', () => {
     ...graph,
     nodes: graph.nodes.map((n) => (n.id === limiter.id ? { ...n, bypass: true } : n)),
   };
-  eq(chainLatency(bypassed, [], 48_000), OVERSAMPLE_LATENCY_SAMPLES,
+  eq(chainLatency(bypassed, [], 48_000), oversampleLatencySamples(48_000),
     'bypassing the limiter removes the limiter\'s share and no more');
   const allBypassed = {
     ...graph,

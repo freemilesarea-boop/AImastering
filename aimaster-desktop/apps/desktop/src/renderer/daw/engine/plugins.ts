@@ -15,7 +15,7 @@
 import { webAudioAutoMakeup } from '../model/plugin-curves.js';
 
 import {
-  BUTTERWORTH_Q, OVERSAMPLE_LATENCY_SAMPLES, crossoverSide, dynamicsLatencySamples,
+  BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
   absShaper, dbToGain, halfWaveGainCurve, makeDbReductionCurve, makeExpanderCurve,
   makeGainCurve, makeShaper, smoother, tanhCurve, wetDry, withBypass,
@@ -435,7 +435,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     // rebuilds the transfer curve; only the blend is one parameter.
     automatableParams: ['mix'],
     drivenParams: ['driveDb'],
-    latencyFor: () => OVERSAMPLE_LATENCY_SAMPLES,
+    latencyFor: (_params, sampleRate) => oversampleLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const drive = ctx.createGain();
       const compensate = ctx.createGain();
@@ -574,7 +574,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     ],
     automatableParams: ['freqHz', 'mix'],
     drivenParams: ['amount'],
-    latencyFor: () => OVERSAMPLE_LATENCY_SAMPLES,
+    latencyFor: (_params, sampleRate) => oversampleLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Generate harmonics from the top band only, then blend them back —
       // the classic exciter topology, and the reason it adds "air" instead

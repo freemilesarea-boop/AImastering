@@ -30,7 +30,8 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 
 import { PLUGINS, defaultParams } from '../src/renderer/daw/engine/plugins.js';
 import {
-  BUTTERWORTH_Q, DYNAMICS_LOOKAHEAD_SEC, OVERSAMPLE_LATENCY_SAMPLES,
+  BUTTERWORTH_Q, DYNAMICS_LOOKAHEAD_SEC, oversampleLatencySamples,
+  probeRendererLatency, probedLatency,
   dynamicsLatencySamples,
 } from '../src/renderer/daw/engine/plugin-kit.js';
 
@@ -138,6 +139,11 @@ const biquad = (
 };
 
 async function main(): Promise<void> {
+  // Before any device is built: the dry paths inside them are delayed by what
+  // this renderer's oversampled shaper costs, and the un-probed default is
+  // the other renderer's number.
+  await probeRendererLatency(SR);
+
   await check('Q on a lowpass is decibels, and BUTTERWORTH_Q is the flat one', async () => {
     // The whole finding, in one measurement: a Butterworth filter is −3.01 dB
     // at its own corner, and the value that produces that is not 0.707.
@@ -236,7 +242,17 @@ async function main(): Promise<void> {
     }
   });
 
-  await check('an oversampled shaper is a render quantum late, at every rate', async () => {
+  await check('what the devices align to is what this renderer really costs', async () => {
+    // Not a constant any more, and that is the finding.  The two renderers
+    // this code runs in disagree about both numbers — Chromium's 4x shaper is
+    // 192 samples late and node's is 128, and Chromium truncates the
+    // compressor's six milliseconds where node rounds them up to a whole
+    // render quantum.  Hardcoding either one mis-aligns the other's dry
+    // paths, so the host is measured and `probeRendererLatency` installs what
+    // it finds.
+    //
+    // Which makes this check the one that matters: whatever the host does,
+    // the number the devices delay their dry paths by has to BE that.
     const straight = (ctx: OfflineAudioContext, input: AudioNode): AudioNode => {
       const w = ctx.createWaveShaper();
       const curve = new Float32Array(2048);
@@ -246,12 +262,24 @@ async function main(): Promise<void> {
       return input.connect(w);
     };
     for (const sr of [44_100, 48_000, 96_000]) {
+      await probeRendererLatency(sr);
       const { lag, corr } = await lagOf(straight, sr);
       assert(corr > 0.8, `the shaper did not correlate with its input at ${sr} Hz`);
-      assert(lag === OVERSAMPLE_LATENCY_SAMPLES,
-        `at ${sr} Hz the 4x shaper is ${lag} samples late and the constant says `
-        + `${OVERSAMPLE_LATENCY_SAMPLES}`);
+      assert(lag === oversampleLatencySamples(sr),
+        `at ${sr} Hz the 4x shaper is ${lag} samples late and the devices align to `
+        + `${oversampleLatencySamples(sr)}`);
+      const probe = probedLatency(sr);
+      assert(probe !== null && probe.oversample4x === lag,
+        `the probe read ${probe?.oversample4x ?? 'nothing'} where the shaper is ${lag}`);
     }
+
+    // And the un-probed default is CHROMIUM's, which is not this renderer's —
+    // stated so that anyone who "simplifies" the two back into one number
+    // finds out here rather than in a mix.
+    assert(oversampleLatencySamples(22_050) === 192,
+      `the default is ${oversampleLatencySamples(22_050)}, and Chromium measured 192`);
+    assert(oversampleLatencySamples(48_000) !== 192,
+      'this renderer measured 192 as well — if that is now true, say so here');
   });
 
   await check('a compressor looks ahead even when it is not compressing', async () => {
@@ -262,16 +290,30 @@ async function main(): Promise<void> {
       c.knee.value = 0;
       return input.connect(c);
     };
-    // 44.1 and 48 land on the same count and 88.2 and 96 on the next one up,
-    // which is what says the rule is quanta rather than time or samples.
+    // Under node, 44.1 and 48 land on the same count and 88.2 and 96 on the
+    // next one up, which is what says the rule there is QUANTA rather than
+    // time or samples.  Chromium truncates the same six milliseconds to whole
+    // samples instead — 264, 288, 529, 576 — so the rule is the renderer's,
+    // not the spec's, and what is checked is that the declaration follows
+    // whichever host is running.
     for (const sr of [44_100, 48_000, 88_200, 96_000]) {
+      await probeRendererLatency(sr);
       const { lag, corr } = await lagOf(flat, sr);
       assert(corr > 0.99,
         `at ${sr} Hz a compressor doing nothing correlated only ${corr.toFixed(3)} with its `
         + 'input — it is supposed to be a pure delay there');
       assert(lag === dynamicsLatencySamples(sr),
-        `at ${sr} Hz it is ${lag} samples late and the rule says ${dynamicsLatencySamples(sr)} `
-        + `(${DYNAMICS_LOOKAHEAD_SEC * 1000} ms rounded up to whole render quanta)`);
+        `at ${sr} Hz it is ${lag} samples late and the device declares `
+        + `${dynamicsLatencySamples(sr)}`);
+      // What the two renderers DO agree on, stated so the shared fact is not
+      // lost among the differences: six milliseconds, rounded up by less than
+      // one render quantum.  Chromium truncates and lands on the floor of it;
+      // node rounds up to the next whole quantum and overshoots by up to 128.
+      const floorSamples = Math.floor(DYNAMICS_LOOKAHEAD_SEC * sr);
+      assert(lag >= floorSamples && lag < floorSamples + 128,
+        `at ${sr} Hz the look-ahead is ${lag} samples (${((lag / sr) * 1000).toFixed(2)} ms), `
+        + `outside [${floorSamples}, ${floorSamples + 128}) — six milliseconds rounded up by `
+        + 'less than a quantum is what both renderers were supposed to be doing');
     }
   });
 

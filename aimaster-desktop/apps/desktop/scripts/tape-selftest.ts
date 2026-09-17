@@ -32,7 +32,7 @@ import {
   TAPE_BASE_SEC, TAPE_SPEEDS, tapeCurve, tapeKink, tapeSpeedAt, tapeTopHz,
 } from '../src/renderer/daw/engine/plugins-extended.js';
 import {
-  OVERSAMPLE_LATENCY_SAMPLES, makeShaper,
+  oversampleLatencySamples, probeRendererLatency, makeShaper,
 } from '../src/renderer/daw/engine/plugin-kit.js';
 import { filterPictureFor } from '../src/renderer/daw/model/plugin-shapes.js';
 
@@ -139,6 +139,11 @@ function modulationCents(trace: { t: number; hz: number }[], rateHz: number, car
 }
 
 async function main(): Promise<void> {
+  // First, because every device built below delays its dry path by whatever
+  // this renderer's oversampled shaper costs, and the un-probed default is
+  // the OTHER renderer's number.  A test that skips this combs its own Mix.
+  await probeRendererLatency(SR);
+
   await check('the device exists and its knobs are the machine\'s', () => {
     assert(DEVICE, 'no tape device');
     for (const id of ['speed', 'drive', 'bias', 'bump', 'wow', 'flutter', 'hiss',
@@ -416,7 +421,8 @@ async function main(): Promise<void> {
     // The oversampled shaper is most of it, and its cost is a property of the
     // RENDERER rather than of the spec — so it is measured here instead of
     // trusted, by correlating broadband noise against itself.  An impulse
-    // gives a different and wrong answer; see `OVERSAMPLE_LATENCY_SAMPLES`.
+    // gives a different and wrong answer; see `probeRendererLatency`, which
+    // measures it because the two renderers here do not agree about it.
     const seeded = (ctx: OfflineAudioContext, n: number): AudioBuffer => {
       const buf = ctx.createBuffer(1, n, SR);
       const d = buf.getChannelData(0);
@@ -460,13 +466,13 @@ async function main(): Promise<void> {
     };
 
     const shaperLag = await lagOf((ctx, i) => i.connect(makeShaper(ctx, tapeCurve(0.45), '4x')));
-    assert(shaperLag === OVERSAMPLE_LATENCY_SAMPLES,
+    assert(shaperLag === oversampleLatencySamples(SR),
       `this renderer's 4x shaper is ${shaperLag} samples late and the constant says `
-      + `${OVERSAMPLE_LATENCY_SAMPLES} — every device that blends around one is now `
+      + `${oversampleLatencySamples(SR)} — every device that blends around one is now `
       + 'misaligned by the difference');
 
     const declared = DEVICE!.latencyFor(D, SR);
-    assert(declared === Math.round(TAPE_BASE_SEC * SR) + OVERSAMPLE_LATENCY_SAMPLES,
+    assert(declared === Math.round(TAPE_BASE_SEC * SR) + oversampleLatencySamples(SR),
       'the declaration is not the transport plus the shaper');
 
     // And the whole device, end to end, against what it declares.  Not exact,

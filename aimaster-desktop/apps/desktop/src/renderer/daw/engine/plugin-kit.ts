@@ -203,53 +203,162 @@ export interface PluginDescriptor {
  */
 export const BUTTERWORTH_Q = -3.0103;
 /**
- * What a `WaveShaper`'s oversampling costs in time.
+ * What a `WaveShaper`'s oversampling and a compressor's look-ahead cost in
+ * time — and the answer is a property of the RENDERER, not of the standard.
  *
- * MEASURED, not specified: the Web Audio spec says a shaper may oversample
- * and says nothing about latency, so this is a property of the renderer
- * rather than of the standard.  Under `node-web-audio-api` — the renderer the
- * offline suite uses — `2x` and `4x` both cost exactly one render quantum,
- * the same count at 44.1, 48 and 96 kHz.
+ * The Web Audio spec says a shaper may oversample and says nothing about
+ * latency, and says a compressor has look-ahead without saying how much.  So
+ * both were measured, in both renderers this code runs in, by
+ * cross-correlating broadband noise against the same noise through an
+ * IDENTITY curve.  They do not agree:
  *
- * The number was got by cross-correlating broadband noise through the shaper
- * against the same noise, and that method is the finding as much as the
- * answer is.  An IMPULSE through the same shaper peaks at sample 108, and 108
- * is not the delay: the up and down filters are minimum-phase, so the peak of
- * their response arrives ahead of the group delay.  Aligning a dry path to
- * 108 left twenty samples of error and made a fifty-per-cent blend read
- * 13 dB DOWN — worse than not aligning it at all.
+ *                        Chromium            node-web-audio-api
+ *                        (the app)           (the offline suite)
+ *   WaveShaper '4x'      192                 128
+ *   WaveShaper '2x'      128                 128
+ *   DynamicsCompressor   264 / 288 /         384 / 384 /
+ *     at 44.1/48/88.2/96   529 / 576           640 / 640
+ *
+ * Chromium truncates six milliseconds to whole samples; node rounds the same
+ * six milliseconds UP to whole render quanta.  Correlation at the compressor's
+ * answer is 1.000 under node and 0.994 under Chromium, so it is a pure delay
+ * in one and a delay plus a little filtering in the other — either way it is
+ * a delay, measured with the threshold at 0 and the ratio at 1, which is no
+ * compression at all.
+ *
+ * The method is the finding as much as the numbers are.  An IMPULSE through
+ * the same shaper peaks at sample 108 under node, and 108 is not the delay:
+ * the up and down filters are minimum-phase, so the peak of their response
+ * arrives ahead of the group delay.  Aligning a dry path to 108 left twenty
+ * samples of error and made a fifty-per-cent blend read 13 dB DOWN — worse
+ * than not aligning it at all.
  *
  * It matters in two places and is invisible everywhere else:
  *
  *   · a device that blends a DRY path around an oversampled shaper combs,
- *     because the two sides arrive nearly three milliseconds apart
+ *     because the two sides arrive milliseconds apart
  *   · a device that declares zero latency puts its whole track that far
  *     behind the others, and the DAW's delay compensation believes it
  *
- * `tape-selftest` measures the alignment rather than trusting this number, so
- * a renderer that disagrees is caught rather than silently mis-aligned.
+ * The defaults below are CHROMIUM's, because that is what the product runs:
+ * the preview and the bounce are both the renderer process, so they agree
+ * with each other whether or not anything ever probes.  `probeRendererLatency`
+ * measures the host and installs what it finds, and `renderSession` awaits it
+ * — which is how the offline suite, running on the other renderer, aligns to
+ * its own 128 instead of to Chromium's 192.
  */
-export const OVERSAMPLE_LATENCY_SAMPLES = 128;
+const CHROMIUM_OVERSAMPLE_4X = 192;
 
-
-/**
- * The look-ahead a `DynamicsCompressorNode` costs, in seconds.
- *
- * MEASURED, like the shaper's: with the threshold at 0 and the ratio at 1 —
- * no reduction at all — a compressor still comes back a fixed distance late,
- * and the signal correlates 1.000 with its input there, so it is a pure
- * delay and not a change of shape.
- *
- * It is not a whole number of samples and not a whole number of milliseconds:
- * 384 samples at both 44.1 and 48 kHz, 640 at both 88.2 and 96.  That is six
- * milliseconds rounded UP to whole render quanta, which is what
- * `dynamicsLatencySamples` computes and what the check measures.
- */
+/** The look-ahead a `DynamicsCompressorNode` costs, in seconds. */
 export const DYNAMICS_LOOKAHEAD_SEC = 0.006;
 
-/** How late a `DynamicsCompressorNode` is, at a sample rate. */
+/** What the host actually measured, per sample rate; empty until probed. */
+const measured = new Map<number, { oversample4x: number; dynamics: number }>();
+
+/** How late an oversampled (`4x`) shaper is, in this renderer. */
+export function oversampleLatencySamples(sampleRate: number): number {
+  return measured.get(sampleRate)?.oversample4x ?? CHROMIUM_OVERSAMPLE_4X;
+}
+
+/** How late a `DynamicsCompressorNode` is, in this renderer, at a rate. */
 export function dynamicsLatencySamples(sampleRate: number): number {
-  return Math.ceil(DYNAMICS_LOOKAHEAD_SEC * sampleRate / 128) * 128;
+  return measured.get(sampleRate)?.dynamics
+    ?? Math.floor(DYNAMICS_LOOKAHEAD_SEC * sampleRate);
+}
+
+/** What a probe found, for a check that wants to state it. */
+export function probedLatency(
+  sampleRate: number,
+): { oversample4x: number; dynamics: number } | null {
+  return measured.get(sampleRate) ?? null;
+}
+
+const inFlight = new Map<number, Promise<void>>();
+
+/**
+ * Measure this renderer's shaper and compressor latency, once per rate.
+ *
+ * Cheap enough to await before a render — three offline passes over an eighth
+ * of a second — and cached, so a session pays for it once.  A renderer with
+ * no `OfflineAudioContext` (a test that only touches the model) leaves the
+ * defaults in place rather than throwing.
+ */
+export function probeRendererLatency(sampleRate: number): Promise<void> {
+  const already = inFlight.get(sampleRate);
+  if (already) return already;
+  const run = (async (): Promise<void> => {
+    const Offline = (globalThis as { OfflineAudioContext?: typeof OfflineAudioContext })
+      .OfflineAudioContext;
+    if (!Offline) return;
+    const n = Math.round(sampleRate / 8);
+    const render = async (
+      build: (ctx: BaseAudioContext, src: AudioBufferSourceNode) => AudioNode,
+    ): Promise<Float32Array> => {
+      const ctx = new Offline(1, n, sampleRate);
+      const buffer = ctx.createBuffer(1, n, sampleRate);
+      const data = buffer.getChannelData(0);
+      // Deterministic, so a probe is the same measurement every time.
+      let seed = 12345;
+      for (let i = 0; i < n; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        data[i] = (seed / 0x7fffffff) * 2 - 1;
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      build(ctx, src).connect(ctx.destination);
+      src.start();
+      return (await ctx.startRendering()).getChannelData(0);
+    };
+    const lagOf = (dry: Float32Array, wet: Float32Array): number => {
+      let best = { lag: 0, r: -2 };
+      const from = Math.round(n * 0.1);
+      const to = n - 1600;
+      for (let lag = 0; lag <= 1024; lag++) {
+        let num = 0, da = 0, db = 0;
+        for (let i = from; i < to; i++) {
+          const x = dry[i] ?? 0;
+          const y = wet[i + lag] ?? 0;
+          num += x * y; da += x * x; db += y * y;
+        }
+        const r = num / Math.sqrt(Math.max(1e-30, da * db));
+        if (r > best.r) best = { lag, r };
+      }
+      return best.lag;
+    };
+    try {
+      const dry = await render((ctx, src) => {
+        const g = ctx.createGain();
+        src.connect(g);
+        return g;
+      });
+      const shaped = await render((ctx, src) => {
+        const w = ctx.createWaveShaper();
+        const size = 4096;
+        const curve = new Float32Array(size);
+        for (let i = 0; i < size; i++) curve[i] = (i / (size - 1)) * 2 - 1;
+        w.curve = curve;
+        w.oversample = '4x';
+        src.connect(w);
+        return w;
+      });
+      const squeezed = await render((ctx, src) => {
+        const c = ctx.createDynamicsCompressor();
+        c.threshold.value = 0;
+        c.ratio.value = 1;
+        c.knee.value = 0;
+        src.connect(c);
+        return c;
+      });
+      measured.set(sampleRate, {
+        oversample4x: lagOf(dry, shaped),
+        dynamics: lagOf(dry, squeezed),
+      });
+    } catch {
+      // A renderer that cannot do this keeps the documented defaults.
+    }
+  })();
+  inFlight.set(sampleRate, run);
+  return run;
 }
 
 /**
@@ -257,13 +366,13 @@ export function dynamicsLatencySamples(sampleRate: number): number {
  * oversampled shaper.
  *
  * Without it a blend is a comb filter with a percentage on it: the two sides
- * arrive nearly three milliseconds apart, and at fifty per cent they cancel
- * rather than sum.  Every parallel saturator in this rack had that, and none
- * of them looked wrong.
+ * arrive milliseconds apart, and at fifty per cent they cancel rather than
+ * sum.  Every parallel saturator in this rack had that, and none of them
+ * looked wrong.
  */
 export function oversampleAlign(ctx: BaseAudioContext): DelayNode {
   const d = ctx.createDelay(0.05);
-  d.delayTime.value = OVERSAMPLE_LATENCY_SAMPLES / ctx.sampleRate;
+  d.delayTime.value = oversampleLatencySamples(ctx.sampleRate) / ctx.sampleRate;
   return d;
 }
 
