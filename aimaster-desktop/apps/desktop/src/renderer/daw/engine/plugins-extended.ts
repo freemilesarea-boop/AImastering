@@ -12,6 +12,7 @@
 // with a free-running LFO — the device says so rather than pretending.
 
 import {
+  BUTTERWORTH_Q, OVERSAMPLE_LATENCY_SAMPLES,
   absShaper, automatableFrom, dbToGain, makeShaper, smoother, tanhCurve, wetDry,
   withBypass, type PluginDescriptor,
 } from './plugin-kit.js';
@@ -22,6 +23,118 @@ const p = (params: Record<string, number>, id: string, fallback: number): number
 };
 
 // ── Building blocks ─────────────────────────────────────────────────────────
+// ── Tape ────────────────────────────────────────────────────────────────────
+
+/**
+ * The three transport speeds, and everything that moves with them.
+ *
+ * Tape speed is not a tone control with three positions — it is the one
+ * number the rest of the machine is derived from, because every effect here
+ * is about WAVELENGTH on the tape and wavelength is speed over frequency.
+ * Double the speed and the same physical feature on the head happens at twice
+ * the frequency.
+ *
+ *   · HEAD BUMP.  The playback head does not see the tape as a point; the
+ *     wrap around it is a physical length, and the frequency whose wavelength
+ *     matches it comes back louder.  A fixed length means the bump frequency
+ *     is proportional to speed — which is why 15 ips is the one people call
+ *     fat and 30 ips is the one they call clean, and it is the same machine.
+ *   · HIGH-FREQUENCY LOSS.  Short wavelengths lose to the head gap, to the
+ *     spacing between tape and head, and to self-erasure through the depth of
+ *     the coating.  Faster tape makes a given frequency a longer wavelength,
+ *     so it survives.
+ *   · HISS.  The noise is per unit of tape, so running more tape past the
+ *     head per second buys signal without buying noise.  Six decibels a
+ *     doubling, near enough.
+ *   · PRE-EMPHASIS.  A recorder boosts the top going on and cuts it coming
+ *     off.  Slower tape needs more of it, which is why slow tape distorts the
+ *     top first — see `tapeStage`.
+ *
+ * The numbers are a family portrait rather than any one machine, and the
+ * pre-emphasis is a simplification of the NAB/IEC/AES curves rather than an
+ * implementation of one: those differ by speed AND by standard, and a knob
+ * that said "which standard" would be three curves nobody can hear the
+ * difference between without a test tape.
+ */
+export const TAPE_SPEEDS = [
+  { ips: 7.5,  bumpHz: 35,  topHz: 9000,  hissDb: -70, preHz: 2000, preDb: 12 },
+  { ips: 15,   bumpHz: 60,  topHz: 15000, hissDb: -76, preHz: 3200, preDb: 9 },
+  { ips: 30,   bumpHz: 100, topHz: 21000, hissDb: -82, preHz: 4500, preDb: 6 },
+] as const;
+
+export const TAPE_SPEED_NAMES: readonly string[] = TAPE_SPEEDS.map((s) => `${s.ips} ips`);
+
+/** What choosing each speed actually costs and buys, for the picker. */
+export const TAPE_SPEED_NOTES: readonly string[] = [
+  '느린 테이프 — 범프가 35 Hz 로 내려가 근음 아래에 무게만 얹고, 상단은 9 kHz 에서 끝납니다. 히스도 가장 큽니다',
+  '가장 흔한 속도 — 범프 60 Hz 는 킥의 몸통과 베이스의 낮은 E 위에 앉습니다. 이 속도를 두껍다고 부르는 이유',
+  '마스터링 속도 — 범프가 100 Hz 로 올라가 서브를 비켜 가고, 그 아래가 같이 빠지면서 바닥이 깨끗해집니다',
+];
+
+/**
+ * The tape's transfer curve, for a bias setting.
+ *
+ * The drive is BAKED IN rather than applied by a gain in front, and that is
+ * not a style choice — a `WaveShaper` maps its curve across an input of −1 to
+ * +1 and CLAMPS outside it, so a gain in front of a fixed curve turns a soft
+ * magnetic bend into a hard clipper for anything loud.  The guitar amp in
+ * this file learned that the expensive way; this one inherits the lesson.
+ *
+ * Normalised to unit slope at the origin, so the bias knob changes the
+ * CHARACTER and not the level of anything quiet.  It still changes the
+ * ceiling — that is what bias does, and the machine's own answer is to re-set
+ * the record level after moving it, which is what the Level knob is for.
+ */
+export function tapeCurve(kink: number): Float32Array<ArrayBuffer> {
+  const n = 4096;
+  const curve = new Float32Array(n);
+  const k = Math.max(0.05, kink);
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    curve[i] = Math.tanh(k * x) / k;
+  }
+  return curve;
+}
+
+/**
+ * The transport's own delay, which is there so the modulation has somewhere
+ * to go: wow and flutter move the read point either side of it, and a delay
+ * line cannot go negative.
+ */
+export const TAPE_BASE_SEC = 0.003;
+
+/** Which speed a knob position means. */
+export function tapeSpeedAt(value: number): typeof TAPE_SPEEDS[number] {
+  const i = Math.max(0, Math.min(TAPE_SPEEDS.length - 1, Math.round(value)));
+  return TAPE_SPEEDS[i] ?? TAPE_SPEEDS[1]!;
+}
+
+/**
+ * Where the high end ends, for a speed and a bias setting.
+ *
+ * Bias is the ultrasonic current mixed with the signal to drag the tape's
+ * transfer curve into its linear region.  Too little and the tape is working
+ * in the kink at the bottom of its own magnetisation curve, which distorts;
+ * too much and the bias itself starts erasing the shortest wavelengths as it
+ * lays them down.  So the knob is a straight trade — clean and dull one way,
+ * dirty and bright the other — and where you set it is taste.
+ *
+ * Stated plainly because the textbook picture is richer than this: under-bias
+ * loses the top as well, below a point, so the real curve has a peak rather
+ * than a slope.  This is monotone, which is the half of it that is a decision
+ * the user makes.
+ */
+export function tapeTopHz(speed: typeof TAPE_SPEEDS[number], bias: number): number {
+  const b = Math.max(0, Math.min(1, bias));
+  return speed.topHz * Math.pow(2, (0.5 - b) * 1.4);
+}
+
+/** How hard the tape's own transfer curve is driven, for a bias setting. */
+export function tapeKink(bias: number): number {
+  const b = Math.max(0, Math.min(1, bias));
+  return 0.35 + (1 - b) * 1.9;
+}
+
 
 /**
  * Split into mid and side, and put them back together.
@@ -2182,6 +2295,321 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             lufs: meanSquare > 0 ? -0.691 + 10 * Math.log10(meanSquare) : -70,
             peakDb: peak > 0 ? 20 * Math.log10(peak) : -70,
           };
+        },
+      };
+    }),
+  },
+
+  {
+    id: 'tape',
+    name: 'Tape Machine',
+    category: 'saturation',
+    hasSidechain: false,
+    // Wow and flutter are a transport turning, and a transport does not stop
+    // and restart when a clip does — so the modulation is free-running, like
+    // the other LFO devices here.
+    freeRunning: true,
+    params: [
+      // A picker rather than a knob: three positions on a 0-to-2 slider read
+      // as a number nobody can act on, and the whole point of the control is
+      // that each position is a different machine.
+      {
+        id: 'speed', name: 'Speed', min: 0, max: TAPE_SPEEDS.length - 1, default: 1, unit: '',
+        choices: TAPE_SPEED_NAMES, choiceNotes: TAPE_SPEED_NOTES,
+      },
+      { id: 'drive',     name: 'Level',    min: -12, max: 18, default: 3, unit: 'dB' },
+      { id: 'bias',      name: 'Bias',     min: 0, max: 1, default: 0.5, unit: '' },
+      { id: 'bump',      name: 'Head Bump', min: 0, max: 8, default: 3, unit: 'dB' },
+      { id: 'wow',       name: 'Wow',      min: 0, max: 1, default: 0.25, unit: '' },
+      { id: 'flutter',   name: 'Flutter',  min: 0, max: 1, default: 0.25, unit: '' },
+      { id: 'hiss',      name: 'Hiss',     min: 0, max: 1, default: 0, unit: '' },
+      { id: 'crosstalk', name: 'Crosstalk', min: 0, max: 1, default: 0.2, unit: '' },
+      { id: 'mix',       name: 'Mix',      min: 0, max: 1, default: 1, unit: '' },
+      { id: 'out',       name: 'Out',      min: -18, max: 12, default: 0, unit: 'dB' },
+    ],
+    // Level and Out are gains; Mix is the blend.  Speed and Bias rebuild
+    // filters and a curve, so they are knobs rather than lanes.
+    automatableParams: ['drive', 'mix', 'out'],
+    drivenParams: ['bias'],
+    // The transport's three milliseconds plus what the oversampled shaper
+    // costs.  Declared, because a device that says zero puts its whole track
+    // behind the others and the delay compensation believes it — which is a
+    // mix error rather than a tape effect.
+    latencyFor: (_params, sampleRate) =>
+      Math.round(TAPE_BASE_SEC * sampleRate) + OVERSAMPLE_LATENCY_SAMPLES,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // ── Why the saturation sits BETWEEN two EQs ────────────────────────
+      //
+      // This is the structural fact almost every "tape saturation" plugin
+      // leaves out, and it is the reason tape sounds like tape rather than
+      // like a soft clipper.
+      //
+      // A tape machine boosts the high end on the way ON to the tape and cuts
+      // it by the same amount on the way OFF.  End to end that is flat, so it
+      // is invisible in a frequency response and easy to dismiss as a wash.
+      // It is not a wash, because the TAPE IS IN THE MIDDLE: the top arrives
+      // at the magnetic nonlinearity ten decibels hotter than the bottom, so
+      // it runs out of tape first.  Tape compresses cymbals before it
+      // compresses a kick, at the same meter reading, and that is why.
+      //
+      // It also gives this device frequency-dependent distortion out of two
+      // shelves and one curve, where the usual trick is to split into bands
+      // and saturate each — which needs a crossover whose phase is then in
+      // the signal whether it distorts or not.
+      const speed = tapeSpeedAt(p(params, 'speed', 1));
+
+      const record = ctx.createBiquadFilter();
+      record.type = 'highshelf';
+      record.Q.value = 0.707;
+      const play = ctx.createBiquadFilter();
+      play.type = 'highshelf';
+      play.Q.value = 0.707;
+
+      // ── The transport ─────────────────────────────────────────────────
+      //
+      // Wow and flutter are two different mechanisms and get two oscillators.
+      // Wow is the reel and the capstan being slightly out of round: once per
+      // revolution, so a couple of hertz.  Flutter is bearings and the tape
+      // scraping over the heads and guides: tens of hertz.  One LFO at one
+      // rate is a chorus, and a chorus is not what a transport does.
+      //
+      // Their rates are deliberately not related by a whole number.  Two
+      // modulations that share a period sound like one deeper modulation;
+      // a real machine's do not, and neither do these.
+      const delay = ctx.createDelay(0.05);
+      delay.delayTime.value = TAPE_BASE_SEC;
+
+      const wowOsc = ctx.createOscillator();
+      wowOsc.type = 'sine';
+      wowOsc.frequency.value = 1.7;
+      const wowDepth = ctx.createGain();
+      wowOsc.connect(wowDepth).connect(delay.delayTime);
+      wowOsc.start(0);
+
+      const flutterOsc = ctx.createOscillator();
+      flutterOsc.type = 'sine';
+      flutterOsc.frequency.value = 23.3;
+      const flutterDepth = ctx.createGain();
+      flutterOsc.connect(flutterDepth).connect(delay.delayTime);
+      flutterOsc.start(0);
+
+      // The depths are set against what a real transport does, measured in
+      // cents rather than chosen by ear:
+      //
+      //   · a serviced studio machine is under 0.05 % wow and flutter, which
+      //     is about 0.9 cents peak to peak — below where anyone hears it as
+      //     pitch and just above where a piano stops sounding solid
+      //   · a tired one is 0.2 %, about 3.5 cents, which is the sound people
+      //     mean by "tape"
+      //   · past about ten cents it reads as a fault rather than a character,
+      //     which is a thing people want on purpose and so is where the knob
+      //     ends rather than somewhere it cannot reach
+      //
+      // The knob's middle is therefore the tired machine and its top is the
+      // broken one.  An earlier version put the broken one at a quarter turn,
+      // which made every default sound like a fault.
+      const setWow = (amount: number): void => {
+        // Deeper at slower speeds: the same eccentricity in the same reel is
+        // a larger fraction of a slower tape's travel.
+        wowDepth.gain.value = 0.00017 * Math.max(0, Math.min(1, amount)) * (15 / speed.ips);
+      };
+      const setFlutter = (amount: number): void => {
+        flutterDepth.gain.value = 0.0000135 * Math.max(0, Math.min(1, amount)) * (15 / speed.ips);
+      };
+      setWow(p(params, 'wow', 0.25));
+      setFlutter(p(params, 'flutter', 0.25));
+
+      // ── The magnetics ─────────────────────────────────────────────────
+      //
+      // A curve, and what a curve cannot be: real tape has HYSTERESIS, so the
+      // magnetisation depends on where the material has already been and not
+      // only on the signal in front of it.  That needs a sample of memory and
+      // this rack is native nodes by design — a `WaveShaper` has none — so
+      // what is here is the loop's midline and not the loop.
+      //
+      // Said rather than hidden, with what it costs: no minor-loop asymmetry,
+      // so a decaying note's distortion does not fall behind its level the
+      // way a real machine's does, and no remanence, so there is nothing to
+      // print through.  What survives is the shape of the curve and the fact
+      // that the top of the band reaches it first, which is most of what
+      // people reach for tape to get.
+      const drivePre = ctx.createGain();
+      let shape = makeShaper(ctx, tapeCurve(tapeKink(p(params, 'bias', 0.5))), '4x');
+      const drivePost = ctx.createGain();
+      drivePre.connect(shape).connect(drivePost);
+
+      const setMagnetics = (biasValue: number): void => {
+        // The shaper is REPLACED rather than re-curved: a `WaveShaper`'s curve
+        // cannot be assigned twice under the renderer the offline suite uses,
+        // and the bias lives inside the curve.
+        const next = makeShaper(ctx, tapeCurve(tapeKink(biasValue)), '4x');
+        drivePre.connect(next).connect(drivePost);
+        try { drivePre.disconnect(shape); shape.disconnect(); } catch { /* not connected */ }
+        shape = next;
+      };
+
+      // ── The head ──────────────────────────────────────────────────────
+      const bump = ctx.createBiquadFilter();
+      bump.type = 'peaking';
+      bump.Q.value = 1.1;
+      // Below the bump the response falls away, and it falls away from a
+      // higher place the faster the tape runs.  That, and not the bump alone,
+      // is why thirty inches a second has less weight than fifteen.
+      const subCut = ctx.createBiquadFilter();
+      subCut.type = 'highpass';
+      subCut.Q.value = BUTTERWORTH_Q;
+      const top = ctx.createBiquadFilter();
+      top.type = 'lowpass';
+      // Flat, and it has to be: this corner IS the claim the Speed knob makes,
+      // and a Q written as 0.707 would put a +1.5 dB peak an octave inside the
+      // stopband of a device whose whole point is where its top ends.  See
+      // `BUTTERWORTH_Q` — the number is in decibels.
+      top.Q.value = BUTTERWORTH_Q;
+
+      const applySpeed = (): void => {
+        record.frequency.value = speed.preHz;
+        record.gain.value = speed.preDb;
+        play.frequency.value = speed.preHz;
+        play.gain.value = -speed.preDb;
+        bump.frequency.value = speed.bumpHz;
+        subCut.frequency.value = speed.bumpHz * 0.45;
+        top.frequency.value = Math.min(ctx.sampleRate * 0.45,
+          tapeTopHz(speed, p(params, 'bias', 0.5)));
+      };
+      bump.gain.value = p(params, 'bump', 3);
+      applySpeed();
+
+      // ── Hiss ──────────────────────────────────────────────────────────
+      //
+      // A looping buffer of seeded noise rather than anything random: an
+      // offline bounce has to be the same file every time, and a machine that
+      // hisses differently on each render would break that for the sake of a
+      // noise floor.  The loop is long enough not to be heard as a loop.
+      const hissBuffer = ctx.createBuffer(2, Math.round(ctx.sampleRate * 2.5), ctx.sampleRate);
+      let seed = 0x9e3779b9;
+      for (let c = 0; c < 2; c++) {
+        const data = hissBuffer.getChannelData(c);
+        for (let i = 0; i < data.length; i++) {
+          seed = (Math.imul(seed ^ (seed >>> 15), 1 | seed) + 0x6d2b79f5) >>> 0;
+          data[i] = ((seed >>> 8) / 8388608) - 1;
+        }
+      }
+      const hissSource = ctx.createBufferSource();
+      hissSource.buffer = hissBuffer;
+      hissSource.loop = true;
+      // Tape hiss is not white — the playback EQ tilts it up, which is why it
+      // reads as hiss and not as rumble.
+      const hissTilt = ctx.createBiquadFilter();
+      hissTilt.type = 'highshelf';
+      hissTilt.frequency.value = 2000;
+      hissTilt.gain.value = 6;
+      const hissGain = ctx.createGain();
+      const setHiss = (amount: number): void => {
+        const a = Math.max(0, Math.min(1, amount));
+        hissGain.gain.value = a <= 0 ? 0 : dbToGain(speed.hissDb + 20 * Math.log10(a));
+      };
+      setHiss(p(params, 'hiss', 0));
+      hissSource.connect(hissTilt).connect(hissGain);
+      hissSource.start(0);
+
+      // ── Crosstalk ─────────────────────────────────────────────────────
+      //
+      // Two tracks on one piece of tape, a few thousandths of an inch apart,
+      // with no shield between them.  What leaks is the other channel, and
+      // what that does to a mix is pull the sides toward the middle — which
+      // is a narrowing, not a widening, and is part of why tape "glues".
+      const split = ctx.createChannelSplitter(2);
+      const merge = ctx.createChannelMerger(2);
+      const leakLtoR = ctx.createGain();
+      const leakRtoL = ctx.createGain();
+      const directL = ctx.createGain();
+      const directR = ctx.createGain();
+      directL.gain.value = 1;
+      directR.gain.value = 1;
+      const setCrosstalk = (amount: number): void => {
+        const a = Math.max(0, Math.min(1, amount));
+        // −55 dB at the knob's top for fifteen ips, quieter the faster the
+        // tape: the leak is a fixed distance on the tape and running it past
+        // the head faster does not change that, but the wanted signal is
+        // stronger, so the ratio improves.
+        const db = (speed.hissDb + 30) + 20 * Math.log10(Math.max(1e-4, a));
+        const g = a <= 0 ? 0 : dbToGain(db);
+        leakLtoR.gain.value = g;
+        leakRtoL.gain.value = g;
+      };
+      setCrosstalk(p(params, 'crosstalk', 0.2));
+
+      // ── Wiring ────────────────────────────────────────────────────────
+      const inGain = ctx.createGain();
+      inGain.gain.value = dbToGain(p(params, 'drive', 3));
+      const outGain = ctx.createGain();
+      outGain.gain.value = dbToGain(p(params, 'out', 0));
+
+      // ── The dry path, delayed to meet the wet one ─────────────────────
+      //
+      // A tape machine has no dry path — the whole signal goes through the
+      // transport — so Mix is a modern convenience, and the two sides have to
+      // arrive together or it is a comb filter with a percentage on it.
+      // Measured, the wet side is late by the transport's three milliseconds
+      // plus the oversampled shaper's own; unaligned, fifty per cent wet read
+      // 5.5 dB DOWN at 1 kHz.
+      //
+      // Exact only while the transport is still, and that is not a bug to
+      // apologise for: wow and flutter move the wet side's arrival, and a
+      // steady signal blended with a pitch-modulated copy of itself is a
+      // flanger whatever anybody intends.  Which is one more reason a real
+      // machine does not offer the blend.
+      const blend = wetDry(ctx, p(params, 'mix', 1));
+      const dryAlign = ctx.createDelay(0.05);
+      dryAlign.delayTime.value = TAPE_BASE_SEC + OVERSAMPLE_LATENCY_SAMPLES / ctx.sampleRate;
+      input.connect(dryAlign).connect(blend.dry).connect(output);
+
+      input.connect(inGain).connect(delay).connect(record).connect(drivePre);
+      drivePost.connect(play).connect(subCut).connect(bump).connect(top);
+      top.connect(split);
+      split.connect(directL, 0);
+      split.connect(directR, 1);
+      split.connect(leakRtoL, 1);
+      split.connect(leakLtoR, 0);
+      directL.connect(merge, 0, 0);
+      leakRtoL.connect(merge, 0, 0);
+      directR.connect(merge, 0, 1);
+      leakLtoR.connect(merge, 0, 1);
+      merge.connect(outGain);
+      hissGain.connect(outGain);
+      outGain.connect(blend.wet).connect(output);
+
+      return {
+        setParam: (id, v) => {
+          if (id === 'drive') inGain.gain.value = dbToGain(v);
+          if (id === 'out') outGain.gain.value = dbToGain(v);
+          if (id === 'mix') blend.setMix(v);
+          if (id === 'bump') bump.gain.value = v;
+          if (id === 'wow') setWow(v);
+          if (id === 'flutter') setFlutter(v);
+          if (id === 'hiss') setHiss(v);
+          if (id === 'crosstalk') setCrosstalk(v);
+          if (id === 'bias') { params['bias'] = v; setMagnetics(v); applySpeed(); }
+          if (id === 'speed') { params['speed'] = v; }
+        },
+        automatable: automatableFrom({
+          // Level and Out are in decibels at the knob and gains in the graph,
+          // so a lane riding them has to be told the mapping or it would
+          // automate a number that is not the one on the panel.
+          drive: { param: inGain.gain, map: dbToGain },
+          out: { param: outGain.gain, map: dbToGain },
+          mix: { param: blend.mix },
+        }),
+        // Bypass has to keep the same alignment the device reports, or
+        // switching it in and out moves the track.
+        bypassDelay: (() => {
+          const d = ctx.createDelay(0.05);
+          d.delayTime.value = TAPE_BASE_SEC + OVERSAMPLE_LATENCY_SAMPLES / ctx.sampleRate;
+          return d;
+        })(),
+        dispose: () => {
+          try { wowOsc.stop(); flutterOsc.stop(); hissSource.stop(); } catch { /* stopped */ }
+          blend.dispose();
         },
       };
     }),

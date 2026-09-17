@@ -518,6 +518,28 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { rateHz: 0.45, depthMs: 7, delayMs: 22, mix: 55 } },
   }),
 
+  ...inst('tape', {
+    drumloop: { note: '드럼에 15 ips — 테이프가 드럼을 눌러주는 건 상단부터라, '
+                      + '심벌이 먼저 잡히고 킥은 범프로 부풀어 오릅니다',
+                params: { speed: 1, drive: 7, bias: 0.45, bump: 5, wow: 0.12, flutter: 0.18, crosstalk: 0.3 } },
+    bass:     { note: '베이스는 범프가 근음과 겹치면 뭉갭니다 — 30 ips 로 범프를 100 Hz 로 '
+                      + '올려 비켜 세우고 레벨만',
+                params: { speed: 2, drive: 6, bias: 0.5, bump: 1.5, wow: 0.05, flutter: 0.08, crosstalk: 0.1 } },
+    egtr:     { note: '일렉 기타에 7.5 ips — 느린 테이프의 좁은 상단이 앰프 뒤에서 '
+                      + '제일 자연스럽게 들립니다',
+                params: { speed: 0, drive: 8, bias: 0.35, bump: 4, wow: 0.3, flutter: 0.3, hiss: 0.25, crosstalk: 0.45 } },
+    agtr:     { note: '통기타는 상단이 소리의 전부라 30 ips — 바이어스를 올려 '
+                      + '깨끗하게, 범프는 낮게',
+                params: { speed: 2, drive: 2, bias: 0.62, bump: 1.5, wow: 0.1, flutter: 0.1, mix: 0.7 } },
+    piano:    { note: '피아노는 워우를 절대 못 숨깁니다 — 길게 뻗는 음이 흔들리면 '
+                      + '바로 고장난 소리가 됩니다. 15 ips 에 워우를 끕니다',
+                params: { speed: 1, drive: 3, bias: 0.55, bump: 2.5, wow: 0.03, flutter: 0.06, crosstalk: 0.15 } },
+    strings:  { note: '현에는 15 ips 에 워우를 아주 얕게 — 섹션이 한 덩어리로 들리게',
+                params: { speed: 1, drive: 2, bias: 0.55, bump: 3, wow: 0.18, flutter: 0.1, crosstalk: 0.3 } },
+    synth:    { note: '신스에 7.5 ips 를 세게 — 디지털로 만든 것을 아날로그 매체에 '
+                      + '한 번 통과시키는 것이 목적입니다',
+                params: { speed: 0, drive: 11, bias: 0.25, bump: 6, wow: 0.5, flutter: 0.45, hiss: 0.35, crosstalk: 0.55 } },
+  }),
   ...inst('amp', {
     drumloop: { note: '드럼을 앰프에 넣는 건 왜곡이지 앰프 소리가 아닙니다 — 캐비닛을 끄고 한 단만',
                 params: { gain: 40, stages: 1, master: 30, sag: 20, cab: 3, mic: 50, level: -4 } },

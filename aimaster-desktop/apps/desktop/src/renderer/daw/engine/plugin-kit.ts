@@ -182,6 +182,56 @@ export interface PluginDescriptor {
   create: (ctx: BaseAudioContext, params: Record<string, number>) => PluginInstance;
 }
 
+/**
+ * Butterworth, and why it is not 0.707.
+ *
+ * Web Audio reads `Q` on a LOWPASS or HIGHPASS in DECIBELS, not as a Q
+ * factor: alpha = sin(w0) / (2 · 10^(Q/20)).  So the 0.707 that everybody
+ * types, meaning maximally flat, is 10^(0.707/20) = 1.085 — a small
+ * resonant peak just under the corner.  Measured, a lowpass at 15 kHz
+ * written that way reads +0.71 dB AT its own corner where Butterworth is
+ * −3.01, and is still +1.5 dB an octave into its own stopband.
+ *
+ * Harmless in most places and not in two: inside a feedback loop it
+ * multiplies the loop gain at one frequency (the plate reverb found this
+ * first — a 0.99 loop with a 1 dB peak has a loop gain of 1.11 there, which
+ * is an oscillator), and in any device whose whole claim is where its
+ * response ends.
+ *
+ * Peaking, notch, bandpass and allpass take a real Q factor; only lowpass
+ * and highpass are in decibels.  Shelves ignore Q entirely.
+ */
+export const BUTTERWORTH_Q = -3.0103;
+/**
+ * What a `WaveShaper`'s oversampling costs in time.
+ *
+ * MEASURED, not specified: the Web Audio spec says a shaper may oversample
+ * and says nothing about latency, so this is a property of the renderer
+ * rather than of the standard.  Under `node-web-audio-api` — the renderer the
+ * offline suite uses — `2x` and `4x` both cost exactly one render quantum,
+ * the same count at 44.1, 48 and 96 kHz.
+ *
+ * The number was got by cross-correlating broadband noise through the shaper
+ * against the same noise, and that method is the finding as much as the
+ * answer is.  An IMPULSE through the same shaper peaks at sample 108, and 108
+ * is not the delay: the up and down filters are minimum-phase, so the peak of
+ * their response arrives ahead of the group delay.  Aligning a dry path to
+ * 108 left twenty samples of error and made a fifty-per-cent blend read
+ * 13 dB DOWN — worse than not aligning it at all.
+ *
+ * It matters in two places and is invisible everywhere else:
+ *
+ *   · a device that blends a DRY path around an oversampled shaper combs,
+ *     because the two sides arrive nearly three milliseconds apart
+ *   · a device that declares zero latency puts its whole track that far
+ *     behind the others, and the DAW's delay compensation believes it
+ *
+ * `tape-selftest` measures the alignment rather than trusting this number, so
+ * a renderer that disagrees is caught rather than silently mis-aligned.
+ */
+export const OVERSAMPLE_LATENCY_SAMPLES = 128;
+
+
 export const dbToGain = (db: number): number => (db <= -144 ? 0 : Math.pow(10, db / 20));
 
 /** Wrap a processing chain with a bypass path that keeps latency identical. */

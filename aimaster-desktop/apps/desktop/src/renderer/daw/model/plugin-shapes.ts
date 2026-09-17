@@ -289,6 +289,9 @@ export function detectorGainDb(spec: DetectorSpec, inputDb: number): number {
  * misrepresent — "the sides are 4 dB brighter than the centre" is the whole
  * information, and adding them together destroys exactly that.
  */
+import { TAPE_SPEEDS, tapeTopHz } from '../engine/plugins-extended.js';
+import { BUTTERWORTH_Q } from '../engine/plugin-kit.js';
+
 export interface NamedCurve {
   label: string;
   specs: BiquadSpec[];
@@ -307,7 +310,7 @@ export interface FilterPicture {
 const MID_COLOUR = 'rgba(230,210,160,0.95)';
 const SIDE_COLOUR = 'rgba(126,200,255,0.9)';
 
-export const FILTER_DEVICES: readonly string[] = ['mseq', 'hum', 'dcblock', 'amp'];
+export const FILTER_DEVICES: readonly string[] = ['mseq', 'hum', 'dcblock', 'amp', 'tape'];
 
 export function filterPictureFor(
   pluginId: string, params: Record<string, number>,
@@ -329,6 +332,50 @@ export function filterPictureFor(
       ],
       fromHz: 20, toHz: 20_000,
       caption: `가운데 ${midLow >= 0 ? '+' : ''}${midLow.toFixed(1)}/${midHigh >= 0 ? '+' : ''}${midHigh.toFixed(1)} · 양옆 ${sideLow >= 0 ? '+' : ''}${sideLow.toFixed(1)}/${sideHigh >= 0 ? '+' : ''}${sideHigh.toFixed(1)} dB`,
+    };
+  }
+
+  if (pluginId === 'tape') {
+    // Two curves, and the second one is the point of the picture.
+    //
+    // TAPE is what comes out: the head bump, the fall below it, and where the
+    // top ends.  Speed moves all three together, because all three are about
+    // wavelength, and seeing them move together is the only way the Speed
+    // knob explains itself.
+    //
+    // ON TAPE is what the magnetics actually see — the record pre-emphasis,
+    // which the playback EQ takes straight back out again.  It is therefore
+    // INVISIBLE in the response and is most of why tape sounds like tape: the
+    // top of the band arrives at the nonlinearity ten decibels hotter than
+    // the bottom and runs out of tape first.  A picture with only the first
+    // curve would be a picture of a mild EQ.
+    const speed = TAPE_SPEEDS[Math.max(0, Math.min(TAPE_SPEEDS.length - 1,
+      Math.round(num(params, 'speed', 1))))] ?? TAPE_SPEEDS[1]!;
+    const bias = Math.max(0, Math.min(1, num(params, 'bias', 0.5)));
+    const bumpDb = num(params, 'bump', 3);
+    const topHz = tapeTopHz(speed, bias);
+
+    // The same Q the engine uses, and on the lowpass and highpass that number
+    // is in DECIBELS — see `BUTTERWORTH_Q`.  A picture drawn with 0.707 would
+    // show a peak the device does not have, at the one place the device is
+    // making a claim.
+    const machine: BiquadSpec[] = [
+      { type: 'highpass', freq: speed.bumpHz * 0.45, gain: 0, q: BUTTERWORTH_Q },
+      { type: 'peaking', freq: speed.bumpHz, gain: bumpDb, q: 1.1 },
+      { type: 'lowpass', freq: Math.min(20_000, topHz), gain: 0, q: BUTTERWORTH_Q },
+    ];
+    const onTape: BiquadSpec[] = [
+      { type: 'highshelf', freq: speed.preHz, gain: speed.preDb, q: 0.707 },
+    ];
+    return {
+      curves: [
+        { label: `${speed.ips} ips`, specs: machine, colour: MID_COLOUR },
+        { label: '테이프가 받는 것', specs: onTape, colour: SIDE_COLOUR },
+      ],
+      fromHz: 20, toHz: 20_000,
+      caption: `${speed.ips} ips · 헤드 범프 ${speed.bumpHz} Hz ${bumpDb >= 0 ? '+' : ''}`
+        + `${bumpDb.toFixed(1)} dB · 상단 ${(topHz / 1000).toFixed(1)} kHz · 바이어스 `
+        + `${bias < 0.42 ? '낮음' : (bias > 0.58 ? '높음' : '표준')}`,
     };
   }
 

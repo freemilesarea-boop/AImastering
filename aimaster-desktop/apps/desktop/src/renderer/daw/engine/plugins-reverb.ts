@@ -27,6 +27,7 @@
 import {
   automatableFrom, dbToGain, wetDry, withBypass,
   type AutomatableParam, type PluginDescriptor,
+  BUTTERWORTH_Q,
 } from './plugin-kit.js';
 import {
   SPACES, irBuffer, spaceAt, spaceChoices, spaceIndex, spaceNotes, type Space,
@@ -39,18 +40,8 @@ const p = (params: Record<string, number>, id: string, fallback: number): number
 
 const clamp = (v: number, lo: number, hi: number): number => (v < lo ? lo : v > hi ? hi : v);
 
-/**
- * Butterworth, and why it is not zero.
- *
- * Web Audio reads `Q` on a lowpass or highpass in DECIBELS, not as a Q factor:
- * alpha = sin(w0) / (2 · 10^(Q/20)).  The default of 1 is therefore 1 dB of
- * resonance — a small peak just under the cutoff, and harmless anywhere except
- * inside a feedback loop, where it multiplies the loop gain at exactly one
- * frequency.  A plate with a per-pass gain of 0.99 and a 1 dB peak has a loop
- * gain of 1.11 there, which is not a reverb: it is an oscillator.  This is the
- * value that gives a maximally flat response and no peak at all.
- */
-const BUTTERWORTH_Q = -3.0103;
+// `BUTTERWORTH_Q` lives in the kit now — this file found it first, inside a
+// feedback loop, and every device since has needed it.
 
 /** Round to a step, so a knob drag does not synthesise a hundred rooms. */
 const quantise = (v: number, step: number): number => Math.round(v / step) * step;

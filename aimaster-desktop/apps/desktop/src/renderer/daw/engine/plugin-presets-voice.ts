@@ -252,6 +252,14 @@ export const VOICE_PRESETS: readonly PluginPreset[] = [
                     + '마이크를 축 쪽으로 돌려 명료도를 남깁니다',
               params: { gain: 24, stages: 1, master: 30, sag: 40, cab: 0, mic: 40, bass: -5, treble: 2, level: -3 } },
   }),
+  ...voice('tape', {
+    male:   { note: '남성 보컬에 15 ips — 범프가 60 Hz 라 가슴소리 바로 아래에 얹힙니다. '
+                    + '워우는 거의 끄고: 목소리는 피치 흔들림을 가장 빨리 들킵니다',
+              params: { speed: 1, drive: 4, bias: 0.5, bump: 3.5, wow: 0.08, flutter: 0.1, crosstalk: 0.1, mix: 0.85 } },
+    female: { note: '여성 보컬에 30 ips — 범프를 100 Hz 로 올려 근음을 비우고, '
+                    + '상단이 먼저 눌리는 성질로 치찰음을 부드럽게',
+              params: { speed: 2, drive: 5, bias: 0.45, bump: 2, wow: 0.05, flutter: 0.08, crosstalk: 0.1, mix: 0.85 } },
+  }),
   ...voice('rotary', {
     male:   { note: '남성 음역은 크로스오버 아래가 많아 드럼 로터로 갑니다 — '
                     + '크로스오버를 낮춰 혼 쪽으로 넘기고, 느린 코랄로',

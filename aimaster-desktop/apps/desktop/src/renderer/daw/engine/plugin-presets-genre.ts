@@ -909,6 +909,32 @@ export const GENRE_PRESETS: readonly PluginPreset[] = [
                params: { gain: 50, stages: 2, master: 42, sag: 28, cab: 1, mic: 35, stack: 1, treble: 4 } },
   }),
 
+  ...genrePresets('tape', {
+    jazz:    { note: '30 ips, 바이어스 표준. 재즈에서 테이프는 색이 아니라 매체입니다 — '
+                     + '워우와 플러터를 거의 끄고 범프만',
+               params: { speed: 2, drive: 0, bias: 0.55, bump: 2, wow: 0.1, flutter: 0.1, crosstalk: 0.15 } },
+    lofi:    { note: '7.5 ips, 바이어스를 내리고 히스를 켭니다 — 카세트가 아니라 '
+                     + '느리게 돌린 릴의 소리',
+               params: { speed: 0, drive: 9, bias: 0.2, bump: 6, wow: 0.8, flutter: 0.7, hiss: 0.6, crosstalk: 0.6 } },
+    ambient: { note: '15 ips 에 워우만 살려 — 느린 피치 흔들림이 패드를 살아있게 합니다',
+               params: { speed: 1, drive: 1, bias: 0.6, bump: 3, wow: 0.65, flutter: 0.15, hiss: 0.15 } },
+    classic: { note: '30 ips, 거의 투명하게. 클래식 녹음에서 테이프가 남긴 건 '
+                     + '헤드 범프 한 자락뿐이었습니다',
+               params: { speed: 2, drive: -3, bias: 0.6, bump: 1.5, wow: 0.05, flutter: 0.05, crosstalk: 0.1, mix: 0.8 } },
+    kpop:    { note: '15 ips 에 레벨만 올려 — 상단을 먼저 누르는 성질만 빌려 씁니다',
+               params: { speed: 1, drive: 7, bias: 0.55, bump: 3, wow: 0.1, flutter: 0.12, crosstalk: 0.25 } },
+    pop:     { note: '15 ips, 표준 바이어스. 믹스버스에 가장 흔하게 걸리는 설정',
+               params: { speed: 1, drive: 4, bias: 0.5, bump: 3, wow: 0.2, flutter: 0.2, crosstalk: 0.25 } },
+    edm:     { note: '30 ips 로 저역을 건드리지 않고 상단만 — 킥과 서브는 그대로 두어야 합니다',
+               params: { speed: 2, drive: 5, bias: 0.5, bump: 1, wow: 0.05, flutter: 0.1, crosstalk: 0.1, mix: 0.6 } },
+    hiphop:  { note: '15 ips 를 세게. 범프를 올려 킥 아래를 부풀립니다',
+               params: { speed: 1, drive: 10, bias: 0.35, bump: 6.5, wow: 0.25, flutter: 0.2, hiss: 0.2, crosstalk: 0.4 } },
+    rnb:     { note: '15 ips, 바이어스 살짝 낮게 — 상단이 부드러워지는 만큼만',
+               params: { speed: 1, drive: 5, bias: 0.42, bump: 4, wow: 0.3, flutter: 0.2, crosstalk: 0.35 } },
+    jpop:    { note: '30 ips 에 얕게 — 밝기를 지키면서 글루만',
+               params: { speed: 2, drive: 3, bias: 0.55, bump: 2.5, wow: 0.15, flutter: 0.15, mix: 0.75 } },
+  }),
+
   ...genrePresets('rotary', {
     jazz:    { note: '느린 코랄 고정. 재즈 오르간은 대개 돌리지 않고 천천히만 둡니다',
                params: { rateHz: 0.7, throb: 45, doppler: 80, drive: 12, micAngle: 80, mix: 100 } },

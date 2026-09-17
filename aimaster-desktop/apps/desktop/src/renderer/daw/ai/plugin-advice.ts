@@ -458,6 +458,71 @@ const ADVISORS: Record<string, Advisor> = {
     confidence: 0.35,
   }),
 
+  tape: (p) => {
+    // Tape speed is the one setting here a measurement can genuinely decide,
+    // and it decides it for a reason that is not about tone in general: the
+    // head bump is a PEAK at a known frequency, and whether that is glue or
+    // mud depends entirely on whether the source already lives there.
+    //
+    //   · 7.5 ips puts it at 35 Hz — under almost everything, so it adds
+    //     weight without touching a fundamental
+    //   · 15 ips puts it at 60 Hz — on top of a bass guitar's low E and a
+    //     kick's body, which is why that speed is called fat and why it is
+    //     the wrong one for a bass
+    //   · 30 ips puts it at 100 Hz — above the sub, which keeps the bottom
+    //     clean and is why it is the mastering speed
+    //
+    // So the rule is to keep the bump off the source's own low end, and the
+    // measurement is where that low end starts.
+    const lowHz = p.lowRolloffHz;
+    const speed = lowHz > 140 ? 1 : (lowHz > 70 ? 2 : 0);
+    const bumpHz = [35, 60, 100][speed] ?? 60;
+
+    // How hard to hit it follows the crest.  A percussive source only reaches
+    // the curve on transients, so it can be driven harder before anything
+    // sustained is affected; a source already squashed sits in the bend all
+    // the time and 10 dB in would just be distortion.
+    const drive = Math.round(clamp(2 + percussive(p) * 9, 0, 11));
+
+    // Bias is a straight trade — brighter and dirtier one way, cleaner and
+    // duller the other — so it follows what the source can spare.  Something
+    // already dark has no top to give away.
+    const bright = clamp((p.centroidHz - 700) / 2600, 0, 1);
+    const bias = Math.round((0.38 + bright * 0.24) * 100) / 100;
+
+    // Wow and flutter are pitch modulation, and a sustained pitched source
+    // reports it immediately while a percussive one hides it.  Low on
+    // anything that holds a note.
+    const steady = 1 - percussive(p);
+    const wow = Math.round(clamp(0.35 - steady * 0.3, 0.03, 0.35) * 100) / 100;
+
+    return {
+      params: {
+        speed, drive, bias,
+        bump: isLowEnd(p) ? 1.5 : 3,
+        wow,
+        flutter: Math.round(clamp(wow * 0.9, 0.05, 0.35) * 100) / 100,
+        // Zero, always.  Hiss is a decision to add noise to a recording that
+        // does not have any, and no measurement of the source can make that
+        // decision for someone — it is a period reference, not a repair.
+        hiss: 0,
+        crosstalk: 0.2,
+        mix: 1,
+        out: 0,
+      },
+      headline: `${[7.5, 15, 30][speed] ?? 15} ips — 헤드 범프 ${bumpHz} Hz 를 `
+        + `이 소스의 저역(${Math.round(lowHz)} Hz)에서 비켜 세웁니다`,
+      evidence: [
+        `저역 시작 ${Math.round(lowHz)} Hz`,
+        `크레스트 ${p.crestDb.toFixed(1)} dB`,
+        `중심 ${Math.round(p.centroidHz)} Hz`,
+      ],
+      // Where the bump goes is a measurement; how much tape somebody wants is
+      // not, and that is most of this device.
+      confidence: 0.4,
+    };
+  },
+
   rotary: (p) => ({
     params: {
       // The two speeds a rotary speaker has are not arbitrary and are not
