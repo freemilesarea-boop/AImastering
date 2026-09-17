@@ -72,14 +72,28 @@ export const CALIBRATED_LEVEL = 0.7;
  *                 LEVEL_PEAK_CEILING_DBTP − measured hard-hit peak)
  *
  * — loudness decides unless that would push the hard hit over the ceiling,
- * and then the ceiling decides.  Two of the five are decided by the ceiling
- * rather than by loudness, which is why they are not all at −26 exactly:
+ * and then the ceiling decides.  The kit is the one the ceiling decides: it
+ * is eleven kits, its loudness is taken from the median and its ceiling from
+ * the loudest, so the family lands near −27 rather than −26.
  *
- *   · the acoustic guitar has the widest crest here (23 dB), so bringing it
- *     all the way up would have put its hard chord at −2.9
- *   · the kit is eleven kits, and the EDM one hits hardest; its loudness is
- *     taken from the median kit and its ceiling from the loudest, so the
- *     family lands near −27 rather than −26
+ * The acoustic guitar used to be the other one — 23 dB of crest, and
+ * bringing it to −26 would have put its hard chord at −2.9.  It is not any
+ * more.  Its tone filter's `Q` was written as a cookbook 0.707 where Web
+ * Audio reads decibels (see `BUTTERWORTH_Q`), and the 0.7 dB of resonance
+ * that made was worth 2.4 dB of PEAK on a plucked transient and almost
+ * nothing in loudness: with the filter corrected the same chord peaks at
+ * −4.97, so the ceiling no longer binds the guitar at all.
+ *
+ * That correction is also why four of these numbers are not what the in-app
+ * measurement produced.  A plain rolloff where there had been a resonant
+ * bump made the plucked instruments and the kit quieter — agtr 0.42 dB, egtr
+ * 1.37, bass 1.09, the median kit 0.72 — and each trim was multiplied back
+ * by exactly that, restoring every instrument to the loudness the reference
+ * table already records.  The shift is a filter's magnitude, which does not
+ * depend on the sample rate, so applying it to a 48 kHz table from a 44.1
+ * kHz measurement is sound where re-deriving the table from 44.1 would not
+ * have been — the bass is a delay line and reads 0.13 LU apart at the two
+ * rates.
  *
  * Run `measure-levels-in-app.mjs` to re-derive them; a correct table makes it
  * print a shift of 0 for every instrument.
@@ -96,12 +110,12 @@ export const INSTRUMENT_TRIM = {
   analog: 0.2012,
   fm: 0.0762,
   drummachine: 0.3183,
-  bass: 0.1761,
+  bass: 0.1996,
   mallet: 0.2005,
   organ: 0.0755,
-  agtr: 0.4307,
-  egtr: 0.2709,
-  drumkit: 0.5640,
+  agtr: 0.4520,
+  egtr: 0.3172,
+  drumkit: 0.6127,
   bowed: 0.0206,
   sampler: 1,
 } as const;

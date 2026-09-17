@@ -376,14 +376,24 @@ async function main(): Promise<void> {
     //
     // Measured on this file's own band helper, before and after:
     //
-    //     kick  0.115 → 0.620      tom    0.075 → 0.430
-    //     snare 0.057 → 0.155      crash  0.021 → 0.096
-    //     hat   0.034 → 0.238      ride   0.045 → 0.264
+    //     kick  0.115 → 1.003      tom    0.075 → 0.576
+    //     snare 0.057 → 0.150      crash  0.021 → 0.076
+    //     hat   0.034 → 0.199      ride   0.045 → 0.339
     //
-    // 0.08 sits under the weakest of the six now (the crash — pure noise has
+    // 0.07 sits under the weakest of the six now (the crash — pure noise has
     // the least to answer with) and over five of the six before.  Stated
     // plainly: the kick alone was already at 0.115 and would have passed
     // this floor unfixed; it is the other five that make it bite.
+    //
+    // The crash read 0.096 until the brightness ceiling stopped carrying a
+    // 0.7 dB resonant bump.  That bump was a `Q` written as though Web Audio
+    // read it as a cookbook Q on a lowpass, where it reads decibels; the
+    // ceiling is a Butterworth now, and the crash is the piece that misses
+    // the bump, because it has the least else to answer the stick with.
+    //
+    // And the floor bites where it has to: unhook the ceiling from velocity
+    // and the two noise pieces fall to 0.050 (hat) and 0.039 (crash), while
+    // the kick and tom do not move at all — they answer through their sweep.
     const shape = (x: Float32Array): number[] => {
       const out: number[] = [];
       for (let i = 0; i < 22; i++) {
@@ -399,7 +409,7 @@ async function main(): Promise<void> {
       const hard = shape(await renderHit(pitch, 1));
       let d = 0;
       for (let i = 0; i < soft.length; i++) d += Math.abs(soft[i]! - hard[i]!);
-      assert(d > 0.08,
+      assert(d > 0.07,
         `pitch ${pitch}: soft and hard differ by ${d.toFixed(3)} once levelled — velocity is a volume knob`);
     }
   });

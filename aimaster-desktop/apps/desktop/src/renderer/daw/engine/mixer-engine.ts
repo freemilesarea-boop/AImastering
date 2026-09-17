@@ -54,7 +54,7 @@ import { descriptorFor } from './external-device.js';
 import {
   MACROS, materializeRack, moduleParams, overrideKey, type RackModuleId,
 } from '../model/macros.js';
-import { macroCoverage } from '../model/macro-automation.js';
+import { macroCoverage, rackModulesNeeded } from '../model/macro-automation.js';
 import { paramsDrivenBy } from './plugin-kit.js';
 import { applyChainParams, buildDeviceChain, type BuiltChain } from './device-chain.js';
 
@@ -198,31 +198,6 @@ export function carriesAudio(track: Track): boolean {
  */
 function insertsKey(track: Track): string {
   return JSON.stringify(track.inserts.map((i) => [i.id, i.slot, i.pluginId, i.sidechainSource]));
-}
-
-/**
- * Rack modules a channel must actually BUILD.
- *
- * Not just the ones a macro is turning on right now: a macro sitting at zero
- * makes no module active, and if the graph were built from that, a lane
- * ramping the macro up would have nothing to ramp — the compressor it means
- * to open would not exist.  So a module a macro LANE can reach is built too,
- * bypassed-by-neutrality until the lane moves it.
- */
-function rackModulesNeeded(track: Track): Set<RackModuleId> {
-  const needed = new Set<RackModuleId>();
-  if (!track.macros.enabled) return needed;
-  for (const resolved of materializeRack(track.macros)) {
-    if (resolved.active) needed.add(resolved.module.id);
-  }
-  for (const lane of track.automation) {
-    const target = lane.target;
-    if (target.kind !== 'macro' || lane.mode === 'off') continue;
-    const macro = MACROS.find((m) => m.id === target.macroId);
-    if (!macro) continue;
-    for (const moving of macroCoverage(macro, track.macros).moving) needed.add(moving.module);
-  }
-  return needed;
 }
 
 /** Structural fingerprint — changing it forces a graph rebuild. */

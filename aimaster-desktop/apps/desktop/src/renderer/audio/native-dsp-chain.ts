@@ -12,6 +12,7 @@
 // the preview matches the offline render's intent.
 
 import type { RealtimeChainConfig } from './realtime-mastering-chain.js';
+import { BUTTERWORTH_Q } from '../daw/engine/plugin-kit.js';
 
 function db2lin(db: number): number {
   return Math.pow(10, (Number.isFinite(db) ? db : 0) / 20);
@@ -35,7 +36,7 @@ export interface NativeDspChain {
 export function createNativeDspChain(ctx: BaseAudioContext): NativeDspChain {
   const inputGain = ctx.createGain();
 
-  const hp = ctx.createBiquadFilter();   hp.type = 'highpass';  hp.frequency.value = 20; hp.Q.value = 0.707;
+  const hp = ctx.createBiquadFilter();   hp.type = 'highpass';  hp.frequency.value = 20; hp.Q.value = BUTTERWORTH_Q;
   const ls = ctx.createBiquadFilter();   ls.type = 'lowshelf';  ls.frequency.value = 120;
   const pk = ctx.createBiquadFilter();   pk.type = 'peaking';   pk.frequency.value = 3000; pk.Q.value = 1;
   const hs = ctx.createBiquadFilter();   hs.type = 'highshelf'; hs.frequency.value = 12000;

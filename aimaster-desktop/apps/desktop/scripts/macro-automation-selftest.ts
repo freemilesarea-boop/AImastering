@@ -44,7 +44,8 @@ import {
   availableTargets, describeTarget, isPlayable, laneRange, staticValue, setStaticValue,
 } from '../src/renderer/daw/edit/automation-lanes.js';
 import { findPlugin } from '../src/renderer/daw/engine/plugins.js';
-import type { AutomationPoint, DawSession } from '../src/renderer/daw/model/types.js';
+import { insertLatency } from '../src/renderer/daw/model/routing.js';
+import type { AutomationPoint, DawSession, Track } from '../src/renderer/daw/model/types.js';
 
 const SR = 44100;
 const results: { name: string; pass: boolean }[] = [];
@@ -113,6 +114,10 @@ function parkedAt(macroId: MacroId, value: number): DawSession {
   return updateTrack(session, track.id, (t) => ({
     ...t, macros: setMacro(t.macros, macroId, value),
   }));
+}
+
+function trackOf(session: DawSession): Track {
+  return session.tracks.find((t) => t.kind === 'audio')!;
 }
 
 async function render(session: DawSession): Promise<AudioBuffer> {
@@ -341,6 +346,46 @@ async function run(): Promise<void> {
     const ratio = rmsOf(laned) / Math.max(1e-9, rmsOf(parked));
     assert(ratio > 0.7 && ratio < 1.4,
       `no level offset from a half-moved compressor — ratio ${ratio.toFixed(3)}`);
+  });
+
+  await check('a lane parked at zero costs the latency its modules really add', () => {
+    // The rule behind the parked-vs-laned comparison above, stated where it
+    // can fail on its own.  A macro lane gets its modules BUILT even at zero,
+    // or the lane would have nothing to ramp — and a compressor at ratio 1
+    // still delays by its look-ahead.  Count only the modules the knobs make
+    // active and a laned channel plays 512 samples late against a hand-set
+    // rack that sounds identical.
+    const bare = trackOf(sessionWith(null, [], {}));
+    eq(insertLatency(bare, SR), 0, 'a rack no macro has touched costs nothing');
+
+    for (const coverage of automatableMacros(NEUTRAL)) {
+      if (!coverage.complete) continue;
+      const id = coverage.macro.id;
+      const value = coverage.macro.bipolar ? -0.7 : 0.7;
+      const laned = trackOf(sessionWith(id, [{ timeSec: 0, value: 0 }]));
+      const knob = trackOf(parkedAt(id, value));
+      eq(insertLatency(laned, SR), insertLatency(knob, SR),
+        `${id}: the lane costs what the knob costs`);
+    }
+
+    // And it is not vacuously zero: WARMTH's saturation and compressor are
+    // 128 + 384 samples at 44.1 kHz, and the lane pays them at zero.
+    eq(insertLatency(trackOf(sessionWith('warmth', [{ timeSec: 0, value: 0 }])), SR), 512,
+      'WARMTH reports the oversampler plus the look-ahead');
+
+    // A partial macro costs LESS, and the gap is the module it already says
+    // it cannot move: LOUDNESS's maximiser is a rebuilt transfer curve, so a
+    // LOUDNESS lane never gets one — 384 against the knob's 472.  Reporting
+    // the knob's number for the lane would delay the channel by a limiter
+    // that is not in its graph.
+    const loudLane = trackOf(sessionWith('loudness', [{ timeSec: 0, value: 0 }]));
+    eq(insertLatency(loudLane, SR), 384, 'the LOUDNESS lane pays the compressor alone');
+    eq(insertLatency(trackOf(parkedAt('loudness', 0.7)), SR), 472,
+      'and the knob pays the limiter as well');
+    const loud = findCoverage(NEUTRAL, 'loudness')!;
+    assert(loud.fixed.some((f) => f.module === 'loudness'),
+      'which is exactly the module the coverage excludes');
+    assert(!loud.moving.some((t) => t.module === 'loudness'), 'and does not claim to move');
   });
 
   const passed = results.filter((r) => r.pass).length;

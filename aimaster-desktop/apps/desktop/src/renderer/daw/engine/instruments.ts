@@ -24,6 +24,7 @@ import { WAVETABLES } from './wavetable.js';
 import { LFO_SHAPES, MATRIX_ROWS, MOD_DESTS, MOD_SOURCES, noteRandom, rowParams } from './mod-matrix.js';
 import { SUB_SHAPES, renderVoice, tailSeconds } from './wave-synth.js';
 import { ANALOG_SHAPES } from './analog-model.js';
+import { BUTTERWORTH_Q } from './plugin-kit.js';
 import { analogTail, renderAnalogVoice, voiceSlot } from './analog-synth.js';
 import { FM_ALGORITHMS, FM_OPERATORS, FM_WAVES } from './fm-core.js';
 import { fmTail, renderFmVoice } from './fm-synth.js';
@@ -278,7 +279,17 @@ function drumTone(
   return end;
 }
 
-/** Filtered noise, which is the other half of every kit. */
+/**
+ * Filtered noise, which is the other half of every kit.
+ *
+ * `q` means two different things depending on `filterType`, because Web Audio
+ * does: on the bandpasses here (the rim at 6, the clap at 1.4) it is a
+ * cookbook Q, and on the highpasses (0.5 to 0.8) it is a resonance in
+ * DECIBELS.  Each caller's number was chosen against the sound the node
+ * actually made, so they are left as they are rather than converted — see
+ * `BUTTERWORTH_Q` for the unit, and the ceiling below for a number that WAS
+ * meant to be Butterworth and now is.
+ */
 function drumNoise(
   ctx: BaseAudioContext, out: AudioNode, seed: number,
   when: number, peak: number, decay: number,
@@ -298,7 +309,7 @@ function drumNoise(
   const air = ctx.createBiquadFilter();
   air.type = 'lowpass';
   air.frequency.value = Math.max(200, Math.min(nyquist, airHz));
-  air.Q.value = 0.7;
+  air.Q.value = BUTTERWORTH_Q;
   const gain = ctx.createGain();
   const end = hit(gain, when, peak, decay);
   src.connect(filter).connect(air).connect(gain).connect(out);
@@ -603,7 +614,7 @@ function pluckVoice(
   const tone = ctx.createBiquadFilter();
   tone.type = 'lowpass';
   tone.frequency.value = Math.max(400, params['tone'] ?? tuning.toneHz);
-  tone.Q.value = 0.7;
+  tone.Q.value = BUTTERWORTH_Q;
 
   const amp = ctx.createGain();
 
@@ -810,7 +821,7 @@ function pianoVoice(
   tone.type = 'lowpass';
   tone.frequency.value = Math.min(
     ctx.sampleRate * 0.45, Math.max(600, params['tone'] ?? tuning.toneHz));
-  tone.Q.value = 0.7;
+  tone.Q.value = BUTTERWORTH_Q;
 
   // Where the note sits across the stereo picture.
   //
@@ -2181,6 +2192,12 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       const amp = ctx.createGain();
       const filter = ctx.createBiquadFilter();
       filter.type = 'lowpass';
+      // NOT converted, deliberately.  Web Audio reads this in decibels (see
+      // `BUTTERWORTH_Q`), so the knob's 0.1-to-12 is really a Q of 1.01 to
+      // 4.0 — tamer at the top than the number suggests.  Every patch in the
+      // library was voiced by ear against that, so changing the units here
+      // would re-voice all of them to fix a label nobody reads.  The number
+      // is documented rather than corrected.
       filter.Q.value = params['resonance'] ?? 1.2;
 
       // ── The stack ───────────────────────────────────────────────────────
@@ -2931,7 +2948,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
         const ceiling = Math.min(FILTER_CEILING_HZ, ctx.sampleRate * 0.45);
         tone = ctx.createBiquadFilter();
         tone.type = 'lowpass';
-        tone.Q.value = 0.7;
+        tone.Q.value = BUTTERWORTH_Q;
         tone.frequency.value = ceiling * Math.pow(0.25 + 0.75 * note.velocity, 2.2 * velTone);
       }
 

@@ -400,8 +400,8 @@ export function filterPictureFor(
     const STAGE_TILT = [9000, 7000, 6000];
     const interstage: BiquadSpec[] = [];
     for (let i = 0; i < count; i++) {
-      interstage.push({ type: 'highpass', freq: STAGE_CUT[i] ?? 45, gain: 0, q: 0.7 });
-      interstage.push({ type: 'lowpass', freq: STAGE_TILT[i] ?? 9000, gain: 0, q: 0.5 });
+      interstage.push({ type: 'highpass', freq: STAGE_CUT[i] ?? 45, gain: 0, q: BUTTERWORTH_Q });
+      interstage.push({ type: 'lowpass', freq: STAGE_TILT[i] ?? 9000, gain: 0, q: BUTTERWORTH_Q });
     }
 
     const stack: BiquadSpec[] = [
@@ -426,12 +426,12 @@ export function filterPictureFor(
     const spec = kinds[Math.max(0, Math.min(kinds.length - 1, index))]!;
     const mic = Math.max(0, Math.min(1, num(params, 'mic', 45) / 100));
     const cab: BiquadSpec[] = off ? [] : [
-      { type: 'highpass', freq: spec.lowHz, gain: 0, q: 0.8 },
+      { type: 'highpass', freq: spec.lowHz, gain: 0, q: BUTTERWORTH_Q },
       { type: 'peaking', freq: spec.coneHz, gain: 4, q: 1.4 },
       { type: 'peaking', freq: 800, gain: -4, q: 1.1 },
       { type: 'peaking', freq: spec.presenceHz, gain: 6 - mic * 9, q: 1.6 },
-      { type: 'lowpass', freq: spec.topHz * (1 - mic * 0.35), gain: 0, q: 0.7 },
-      { type: 'lowpass', freq: spec.topHz * 0.86 * (1 - mic * 0.35), gain: 0, q: 0.9 },
+      { type: 'lowpass', freq: spec.topHz * (1 - mic * 0.35), gain: 0, q: BUTTERWORTH_Q },
+      { type: 'lowpass', freq: spec.topHz * 0.86 * (1 - mic * 0.35), gain: 0, q: BUTTERWORTH_Q },
     ];
 
     return {
@@ -477,7 +477,7 @@ export function filterPictureFor(
     return {
       curves: [{
         label: '',
-        specs: [{ type: 'highpass', freq: 5, gain: 0, q: 0.707 }],
+        specs: [{ type: 'highpass', freq: 5, gain: 0, q: BUTTERWORTH_Q }],
         colour: MID_COLOUR,
       }],
       // Drawn from 1 Hz, because a 5 Hz corner seen from 20 Hz upwards is a
@@ -518,9 +518,9 @@ export function widthPictureFor(
   if (pluginId === 'widener') {
     const width = num(params, 'width', 1);
     const corner = num(params, 'lowMonoHz', 20);
-    // One highpass on the side path, at Web Audio's default Q of 1 (which on
-    // a highpass is a resonance in dB, not a cookbook Q).
-    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: 1 };
+    // One Butterworth highpass on the side path.  `q` here is what the node
+    // takes: a resonance in DECIBELS, so Butterworth is -3.01, not 0.707.
+    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: BUTTERWORTH_Q };
     return {
       widthAt: (hz) => width * Math.pow(10, biquadMagnitudeDb(hp, hz) / 20),
       cornerHz: corner,
@@ -534,7 +534,7 @@ export function widthPictureFor(
     const corner = num(params, 'freqHz', 120);
     // TWO highpasses in series on the side path — 12 dB/oct, a steeper skirt
     // than the widener's, and the reason this one sounds tighter.
-    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: 0.707 };
+    const hp: BiquadSpec = { type: 'highpass', freq: corner, gain: 0, q: BUTTERWORTH_Q };
     return {
       widthAt: (hz) => width * Math.pow(10, (2 * biquadMagnitudeDb(hp, hz)) / 20),
       cornerHz: corner,

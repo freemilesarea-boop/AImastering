@@ -12,7 +12,8 @@
 // with a free-running LFO — the device says so rather than pretending.
 
 import {
-  BUTTERWORTH_Q, OVERSAMPLE_LATENCY_SAMPLES,
+  BUTTERWORTH_Q, OVERSAMPLE_LATENCY_SAMPLES, crossoverSide, dynamicsLatencySamples,
+  oversampleAlign,
   absShaper, automatableFrom, dbToGain, makeShaper, smoother, tanhCurve, wetDry,
   withBypass, type PluginDescriptor,
 } from './plugin-kit.js';
@@ -547,13 +548,13 @@ function ampStage(
   const cut = ctx.createBiquadFilter();
   cut.type = 'highpass';
   cut.frequency.value = opts.cutHz;
-  cut.Q.value = 0.7;
+  cut.Q.value = BUTTERWORTH_Q;
 
   const post = ctx.createGain();
   const tilt = ctx.createBiquadFilter();
   tilt.type = 'lowpass';
   tilt.frequency.value = opts.tiltHz;
-  tilt.Q.value = 0.5;
+  tilt.Q.value = BUTTERWORTH_Q;
   post.connect(tilt);
 
   // The shaper is REPLACED when the drive changes rather than re-curved: a
@@ -621,7 +622,7 @@ const CAB_KINDS = [
 function cabinet(ctx: BaseAudioContext, kind: number, mic: number): Cabinet {
   const low = ctx.createBiquadFilter();
   low.type = 'highpass';
-  low.Q.value = 0.8;
+  low.Q.value = BUTTERWORTH_Q;
   const cone = ctx.createBiquadFilter();
   cone.type = 'peaking';
   cone.Q.value = 1.4;
@@ -643,10 +644,10 @@ function cabinet(ctx: BaseAudioContext, kind: number, mic: number): Cabinet {
   // wasp in a tin" complaint, so it is worth the extra pole.
   const topA = ctx.createBiquadFilter();
   topA.type = 'lowpass';
-  topA.Q.value = 0.7;
+  topA.Q.value = BUTTERWORTH_Q;
   const topB = ctx.createBiquadFilter();
   topB.type = 'lowpass';
-  topB.Q.value = 0.9;
+  topB.Q.value = BUTTERWORTH_Q;
 
   low.connect(cone).connect(dip).connect(presence).connect(topA).connect(topB);
 
@@ -708,6 +709,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const hpf = ctx.createBiquadFilter(); hpf.type = 'highpass';
       hpf.frequency.value = p(params, 'hpfHz', 20);
+      hpf.Q.value = BUTTERWORTH_Q;
       const low = ctx.createBiquadFilter(); low.type = 'lowshelf';
       low.frequency.value = p(params, 'lowHz', 120); low.gain.value = p(params, 'lowDb', 0);
 
@@ -724,6 +726,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       high.frequency.value = p(params, 'highHz', 8000); high.gain.value = p(params, 'highDb', 0);
       const lpf = ctx.createBiquadFilter(); lpf.type = 'lowpass';
       lpf.frequency.value = p(params, 'lpfHz', 20000);
+      lpf.Q.value = BUTTERWORTH_Q;
 
       let cursor: AudioNode = input;
       for (const node of [hpf, low, ...bells, high, lpf]) {
@@ -918,7 +921,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'makeupDb', name: 'Makeup',  min: -12, max: 12,   default: 0,   unit: 'dB' },
     ],
     automatableParams: ['lowThrDb', 'lowRatio', 'midThrDb', 'midRatio', 'hiThrDb', 'hiRatio', 'makeupDb'],
-    latencyFor: () => 0,
+    // Four bands in parallel, each through its own compressor, so the
+    // latency is ONE compressor's look-ahead and not four.  Declared for the
+    // same reason the single-band one is.
+    latencyFor: (_params, sampleRate) => dynamicsLatencySamples(sampleRate),
     // Control the bass without dulling the cymbals.  A single band across a
     // whole mix cannot do that, which is why every master chain has one.
     create: (ctx, params) => withBypass(ctx, (input, output) => {
@@ -940,11 +946,16 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
         return { entry: filters[0]!, comp };
       };
 
+      // Flat sections, because these are crossover edges and the bands are
+      // summed back: a resonant pole at the corner puts a bump into the sum
+      // that no amount of compression asked for.  The Q is in decibels.
       const lp = (hz: number): BiquadFilterNode => {
-        const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = hz; return f;
+        const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = hz;
+        f.Q.value = BUTTERWORTH_Q; return f;
       };
       const hp = (hz: number): BiquadFilterNode => {
-        const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hz; return f;
+        const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hz;
+        f.Q.value = BUTTERWORTH_Q; return f;
       };
 
       // Two poles per crossover edge so the bands do not bleed into each
@@ -1014,7 +1025,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'hardness',  name: 'Hardness', min: 0,   max: 1,  default: 0.5, unit: '' },
     ],
     automatableParams: ['driveDb'],
-    latencyFor: () => 0,
+    // Oversampled, and an oversampled shaper is a render quantum late.
+    latencyFor: () => OVERSAMPLE_LATENCY_SAMPLES,
     // Shaves the two dB of drum transient that would otherwise cost the whole
     // master three dB of limiting.  Instant, no detector, no pumping.
     create: (ctx, params) => withBypass(ctx, (input, output) => {
@@ -1076,7 +1088,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'outDb',   name: 'Output', min: -24, max: 12, default: 0,  unit: 'dB' },
     ],
     automatableParams: ['toneHz', 'mix', 'outDb'],
-    latencyFor: () => 0,
+    latencyFor: () => OVERSAMPLE_LATENCY_SAMPLES,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Asymmetric on purpose: a symmetric curve makes only odd harmonics and
       // sounds like a fuzz pedal.  The bias is what makes it a preamp.
@@ -1084,6 +1096,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       shaper.oversample = '4x';
       const tone = ctx.createBiquadFilter(); tone.type = 'lowpass';
       tone.frequency.value = p(params, 'toneHz', 8000);
+      tone.Q.value = BUTTERWORTH_Q;
       const blend = wetDry(ctx, 0);
       const wet = blend.wet;
       const dry = blend.dry;
@@ -1095,7 +1108,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
 
       input.connect(shaper);
       shaper.connect(tone).connect(wet).connect(out);
-      input.connect(dry).connect(out);
+      // The dry side takes the shaper's own delay, or the Mix knob is a comb.
+      input.connect(oversampleAlign(ctx)).connect(dry).connect(out);
       out.connect(output);
 
       return {
@@ -1459,7 +1473,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     // than lanes and are declared as driven instead.
     automatableParams: ['bass', 'mid', 'treble', 'presence', 'master', 'level'],
     drivenParams: ['gain'],
-    latencyFor: () => 0,
+    // Every stage in circuit is an oversampled shaper, the power amp is one
+    // more, and the sag is a `DynamicsCompressorNode` that looks ahead.  So
+    // the number moves with the Stages knob — which is exactly the sort of
+    // thing a static zero hides.
+    latencyFor: (params, sampleRate) => {
+      const stages = Math.max(1, Math.min(3, Math.round(p(params, 'stages', 2))));
+      return (stages + 1) * OVERSAMPLE_LATENCY_SAMPLES + dynamicsLatencySamples(sampleRate);
+    },
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // ── The preamp ──────────────────────────────────────────────────────
       //
@@ -1661,7 +1682,11 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     // The rotors carry a fixed 4 ms of delay so their modulation can never go
     // negative, and the chain has to know about it or a bypassed channel
     // arrives 4 ms early.
-    latencyFor: (_params, sampleRate) => Math.round(0.004 * sampleRate),
+    // The rotors' own four milliseconds, plus the drive shaper, which
+    // oversamples and so is a render quantum late on top.  The four was
+    // declared and the quantum was not.
+    latencyFor: (_params, sampleRate) =>
+      Math.round(0.004 * sampleRate) + OVERSAMPLE_LATENCY_SAMPLES,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // A Leslie is two speakers in one box, pointed at two rotating things,
       // and they are NOT the same thing rotating.  The treble horn is small
@@ -1714,12 +1739,13 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       };
       setDrive(p(params, 'drive', 20));
 
-      const low = ctx.createBiquadFilter();
-      low.type = 'lowpass';
-      low.frequency.value = p(params, 'xoverHz', 800);
-      const high = ctx.createBiquadFilter();
-      high.type = 'highpass';
-      high.frequency.value = p(params, 'xoverHz', 800);
+      // The horn and the drum are summed back after their own rotors, so this
+      // crossover has to add up to one — and a single lowpass and highpass at
+      // one corner do not, at any Q: they cancel there.  A Leslie's real
+      // crossover is a passive network that does sum, and a hole at 800 Hz is
+      // the middle of everything a Hammond plays.  See `crossoverSide`.
+      const lowSide = crossoverSide(ctx, 'lowpass', p(params, 'xoverHz', 800));
+      const highSide = crossoverSide(ctx, 'highpass', p(params, 'xoverHz', 800));
 
       const hornGain = ctx.createGain();
       const drumGain = ctx.createGain();
@@ -1735,8 +1761,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
 
       const blend = wetDry(ctx, 1);
       input.connect(drivePre);
-      drivePost.connect(high).connect(horn.input);
-      drivePost.connect(low).connect(drum.input);
+      drivePost.connect(highSide.input);
+      highSide.output.connect(horn.input);
+      drivePost.connect(lowSide.input);
+      lowSide.output.connect(drum.input);
       horn.output.connect(hornGain).connect(blend.wet);
       drum.output.connect(drumGain).connect(blend.wet);
       blend.wet.connect(output);
@@ -1772,7 +1800,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             drum.setRate(v * 0.78, ramp * 1.8, when);
           }
           if (id === 'accelSec') params['accelSec'] = v;
-          if (id === 'xoverHz') { low.frequency.value = v; high.frequency.value = v; }
+          if (id === 'xoverHz') { lowSide.setHz(v); highSide.setHz(v); }
           if (id === 'doppler') {
             horn.setDoppler(HORN_DOPPLER * (v / 100));
             drum.setDoppler(DRUM_DOPPLER * (v / 100));
@@ -1833,6 +1861,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const toneR = ctx.createBiquadFilter(); toneR.type = 'lowpass';
       toneL.frequency.value = p(params, 'toneHz', 6000);
       toneR.frequency.value = p(params, 'toneHz', 6000);
+      // In a feedback loop, where a resonant pole multiplies the loop gain at
+      // one frequency.  Flat — the Q is in decibels.
+      toneL.Q.value = BUTTERWORTH_Q;
+      toneR.Q.value = BUTTERWORTH_Q;
 
       const panL = ctx.createStereoPanner(); panL.pan.value = -1;
       const panR = ctx.createStereoPanner(); panR.pan.value = 1;
@@ -1898,8 +1930,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
 
       const tone = ctx.createBiquadFilter(); tone.type = 'lowpass';
       tone.frequency.value = p(params, 'toneHz', 3500);
+      tone.Q.value = BUTTERWORTH_Q;
       const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
       lowCut.frequency.value = 120;                 // tape has no deep bottom
+      lowCut.Q.value = BUTTERWORTH_Q;
       let sat = makeShaper(ctx, tubeCurve(p(params, 'drive', 0.25), 0.05));
       // The saturator amplifies quiet signals — see `tubeSmallSignalGain`.
       // Left uncompensated the loop gain at the factory settings is 3.07 and
@@ -1988,7 +2022,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
         const f = ctx.createBiquadFilter();
         f.type = 'highpass';
         f.frequency.value = p(params, 'freqHz', 120);
-        f.Q.value = 0.707;
+        f.Q.value = BUTTERWORTH_Q;
         return f;
       });
       const width = ctx.createGain();
@@ -2135,7 +2169,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const hp = ctx.createBiquadFilter();
       hp.type = 'highpass';
       hp.frequency.value = 5;
-      hp.Q.value = 0.707;
+      hp.Q.value = BUTTERWORTH_Q;
       input.connect(hp).connect(output);
       return { setParam: () => { /* nothing to set — it is one job */ } };
     }),

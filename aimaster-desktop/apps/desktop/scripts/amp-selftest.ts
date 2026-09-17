@@ -88,17 +88,33 @@ async function main(): Promise<void> {
     // `ampStage`: it is more distortion and a tighter low end, and it is NOT
     // less intermodulation — that was measured too, and it is not there.
     const f = 220;
-    const harmonics = async (stages: number): Promise<number> => {
-      const buf = await render(f, 0.25, { stages, gain: 70, master: 10, sag: 0, cab: 3 });
+    const harmonics = async (stages: number, amplitude: number): Promise<number> => {
+      const buf = await render(f, amplitude, { stages, gain: 70, master: 10, sag: 0, cab: 3 });
       const fund = tone(buf, f);
       let sum = 0;
       for (let k = 2; k <= 9; k++) sum += tone(buf, f * k) ** 2;
       return Math.sqrt(sum) / Math.max(1e-9, fund);
     };
-    const one = await harmonics(1);
-    const three = await harmonics(3);
-    assert(three > one * 1.25,
+
+    // Measured where the cascade has room to matter.  At 0.03 in, one stage
+    // is at 5.9 % and three at 17.9 % — three times, and the same shape at
+    // 440 Hz (11.5 % → 41.7 %).
+    const one = await harmonics(1, 0.03);
+    const three = await harmonics(3, 0.03);
+    assert(three > one * 2,
       `one stage gives ${(one * 100).toFixed(1)}% harmonics and three give ${(three * 100).toFixed(1)}%`);
+
+    // And where it does NOT, which this check used to measure by accident.
+    // Drive the same note at 0.25 and a SINGLE stage is already at 25 %: a
+    // cascade cannot be three times a square wave, so the gap closes to
+    // 1.15×.  Still more, and that is all this frequency can show — the
+    // claim belongs at the input level where the stages are still stages.
+    const hotOne = await harmonics(1, 0.25);
+    const hotThree = await harmonics(3, 0.25);
+    assert(hotOne > 0.2,
+      `one stage is already saturated at 0.25 in — ${(hotOne * 100).toFixed(1)}%`);
+    assert(hotThree > hotOne && hotThree < hotOne * 1.5,
+      `and the cascade has little left to add — ${(hotThree / hotOne).toFixed(2)}×`);
 
     // And the level does not run away: the stages give back most of what they
     // add, so the Gain knob changes how hard they are hit.

@@ -20,6 +20,7 @@ import {
   describeFlow, deviceOrder, findNode, edgesFrom, edgesTo, layout, splitPoints,
   mergePoints, reachableFrom, INPUT_ID, OUTPUT_ID, type DeviceGraph,
 } from '../src/renderer/daw/model/device-graph.js';
+import { OVERSAMPLE_LATENCY_SAMPLES } from '../src/renderer/daw/engine/plugin-kit.js';
 import {
   buildRack, rackBlueprints, resolveRack, resolvedParams, setRackMacro,
   mapMacro, unmapMacro, macroFor, describeRack, validateRack, createRack,
@@ -319,8 +320,10 @@ check('every blueprint builds and validates', () => {
 
 check('chain latency follows the longest path, through racks', () => {
   resetIds();
-  // A look-ahead limiter on the main path and a clean parallel branch: the
-  // chain's latency is the limiter's, not the sum of both branches.
+  // A look-ahead limiter on the main path and a parallel branch beside it.
+  // The chain's latency is the LONGEST PATH through the graph, not the sum of
+  // its branches — a parallel split is two ways to the same place, and adding
+  // them would compensate for a delay nothing actually takes.
   let graph = linearGraph([
     { pluginId: 'eq3', label: 'EQ' },
     { pluginId: 'limiter', label: 'LIMIT', params: { lookaheadMs: 5, ceilingDb: -1, releaseMs: 80 } },
@@ -331,14 +334,38 @@ check('chain latency follows the longest path, through racks', () => {
     kind: 'device', pluginId: 'saturation', label: 'SAT',
   }));
 
-  eq(chainLatency(graph, [], 48_000), Math.round(0.005 * 48_000), '5 ms look-ahead');
+  // The saturator oversamples, so its branch is a render quantum longer than
+  // the bare one beside it and the chain takes both that and the limiter's
+  // look-ahead.  It used to declare zero — measured, it never was — and this
+  // check asserted 240 while the chain really took 368.
+  const lookahead = Math.round(0.005 * 48_000);
+  eq(chainLatency(graph, [], 48_000), lookahead + OVERSAMPLE_LATENCY_SAMPLES,
+    'the longest path: the saturator\'s branch plus the limiter');
 
-  // Bypassing it takes the latency away.
+  // Not the sum of the branches: a second latent device on the OTHER branch
+  // does not add to the first.  Without this the check above would pass for a
+  // function that simply added everything up.
+  const bare = deviceOrder(graph).find((n) => n.label === 'EQ')!;
+  const twoBranches = addParallelBranch(graph, bare.id, limiter.id, createNode({
+    kind: 'device', pluginId: 'clipper', label: 'CLIP',
+  }));
+  eq(chainLatency(twoBranches, [], 48_000), lookahead + OVERSAMPLE_LATENCY_SAMPLES,
+    'two latent branches are still one longest path');
+
+  // Bypassing a device takes away ITS latency and leaves everything else's.
+  // Asserting zero here would only be right in a chain where nothing else
+  // delays, which stopped being true the moment the saturator told the truth.
   const bypassed = {
     ...graph,
     nodes: graph.nodes.map((n) => (n.id === limiter.id ? { ...n, bypass: true } : n)),
   };
-  eq(chainLatency(bypassed, [], 48_000), 0, 'bypass removes it');
+  eq(chainLatency(bypassed, [], 48_000), OVERSAMPLE_LATENCY_SAMPLES,
+    'bypassing the limiter removes the limiter\'s share and no more');
+  const allBypassed = {
+    ...graph,
+    nodes: graph.nodes.map((n) => (n.kind === 'device' ? { ...n, bypass: true } : n)),
+  };
+  eq(chainLatency(allBypassed, [], 48_000), 0, 'bypass everything and nothing is left');
 
   // An offline device reports nothing, because it does not run live.
   const offlineOnly = linearGraph([{ pluginId: 'pitchcorrect', label: 'PITCH' }]);

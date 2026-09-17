@@ -232,6 +232,78 @@ export const BUTTERWORTH_Q = -3.0103;
 export const OVERSAMPLE_LATENCY_SAMPLES = 128;
 
 
+/**
+ * The look-ahead a `DynamicsCompressorNode` costs, in seconds.
+ *
+ * MEASURED, like the shaper's: with the threshold at 0 and the ratio at 1 —
+ * no reduction at all — a compressor still comes back a fixed distance late,
+ * and the signal correlates 1.000 with its input there, so it is a pure
+ * delay and not a change of shape.
+ *
+ * It is not a whole number of samples and not a whole number of milliseconds:
+ * 384 samples at both 44.1 and 48 kHz, 640 at both 88.2 and 96.  That is six
+ * milliseconds rounded UP to whole render quanta, which is what
+ * `dynamicsLatencySamples` computes and what the check measures.
+ */
+export const DYNAMICS_LOOKAHEAD_SEC = 0.006;
+
+/** How late a `DynamicsCompressorNode` is, at a sample rate. */
+export function dynamicsLatencySamples(sampleRate: number): number {
+  return Math.ceil(DYNAMICS_LOOKAHEAD_SEC * sampleRate / 128) * 128;
+}
+
+/**
+ * A delay that puts a dry path level with a wet one that has been through an
+ * oversampled shaper.
+ *
+ * Without it a blend is a comb filter with a percentage on it: the two sides
+ * arrive nearly three milliseconds apart, and at fifty per cent they cancel
+ * rather than sum.  Every parallel saturator in this rack had that, and none
+ * of them looked wrong.
+ */
+export function oversampleAlign(ctx: BaseAudioContext): DelayNode {
+  const d = ctx.createDelay(0.05);
+  d.delayTime.value = OVERSAMPLE_LATENCY_SAMPLES / ctx.sampleRate;
+  return d;
+}
+
+/**
+ * One side of a crossover that will be SUMMED BACK, as Linkwitz-Riley.
+ *
+ * Two cascaded Butterworth sections, which is the only arrangement that adds
+ * up to one — and the reason is worth keeping, because the obvious choice is
+ * wrong in a way that does not look wrong.
+ *
+ * A single Butterworth lowpass and highpass at the same corner do NOT sum
+ * flat.  Their sum is (s² + ω0²)/(s² + ω0 s/Q + ω0²), whose numerator is zero
+ * at the corner FOR ANY Q: the two halves arrive ninety degrees either side
+ * of the input and cancel completely.  Measured across a pair at 2 kHz, the
+ * sum reads −157 dB at the corner and is still 10 dB down half an octave
+ * away — and it is the same hole at every Q, so no amount of tuning closes
+ * it.  Cascaded, the same measurement reads 0.0 dB everywhere.
+ *
+ * `order` is how many sections a side gets: 2 is Linkwitz-Riley and sums
+ * flat, 1 is the single pair and does not.
+ */
+export function crossoverSide(
+  ctx: BaseAudioContext, kind: 'lowpass' | 'highpass', hz: number, order = 2,
+): { input: BiquadFilterNode; output: BiquadFilterNode; setHz: (v: number) => void } {
+  const sections: BiquadFilterNode[] = [];
+  for (let i = 0; i < Math.max(1, order); i++) {
+    const f = ctx.createBiquadFilter();
+    f.type = kind;
+    f.frequency.value = hz;
+    f.Q.value = BUTTERWORTH_Q;
+    if (sections.length > 0) sections[sections.length - 1]!.connect(f);
+    sections.push(f);
+  }
+  return {
+    input: sections[0]!,
+    output: sections[sections.length - 1]!,
+    setHz: (v) => { for (const f of sections) f.frequency.value = v; },
+  };
+}
+
 export const dbToGain = (db: number): number => (db <= -144 ? 0 : Math.pow(10, db / 20));
 
 /** Wrap a processing chain with a bypass path that keeps latency identical. */
@@ -539,7 +611,10 @@ export function smoother(ctx: BaseAudioContext, timeMs: number): Smoother {
   const make = (): BiquadFilterNode => {
     const f = ctx.createBiquadFilter();
     f.type = 'lowpass';
-    f.Q.value = 0.7071;
+    // Flat, and in a detector it matters: a resonant pole at the corner is a
+    // bump at exactly the frequency the rectified ripple sits at.  The number
+    // is in decibels — see `BUTTERWORTH_Q`.
+    f.Q.value = BUTTERWORTH_Q;
     return f;
   };
   const first = make();

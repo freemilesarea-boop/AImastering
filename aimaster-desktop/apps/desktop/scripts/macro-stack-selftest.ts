@@ -19,6 +19,7 @@ import {
   explainMacro, activeMacros, findMacro, overrideKey,
   type MacroRack,
 } from '../src/renderer/daw/model/macros.js';
+import { dynamicsLatencySamples } from '../src/renderer/daw/engine/plugin-kit.js';
 import {
   createStack, unpackStack, stackChildren, stackDescendants, stackAncestors,
   stackDepth, wouldNest, setParent, toggleCollapsed, isHidden, visibleTracks,
@@ -283,8 +284,18 @@ check('the rack adds its look-ahead latency to delay compensation', () => {
       : t)),
   };
   const withRack = insertLatency(findTrack(session, track.id)!, 48_000);
-  // The rack's limiter runs a 2 ms look-ahead by default.
-  eq(withRack, Math.round(0.002 * 48_000), 'limiter look-ahead counted');
+  // LOUDNESS turns on a compressor AND a limiter, and both of them delay.
+  //
+  // The limiter's 2 ms look-ahead is its own and always was declared.  The
+  // compressor's is a `DynamicsCompressorNode`, which looks ahead whether or
+  // not it is reducing anything — measured, a pure delay of six milliseconds
+  // rounded up to whole render quanta.  That was declared as zero until it
+  // was measured, so this check asserted 96 and the rack really delayed 480:
+  // every channel with LOUDNESS up sat eight milliseconds behind the mix and
+  // the compensation believed the zero.
+  const limiterLookahead = Math.round(0.002 * 48_000);
+  eq(withRack, limiterLookahead + dynamicsLatencySamples(48_000),
+    'limiter look-ahead AND the compressor\'s counted');
   const adc = computeDelayCompensation(session);
   assert((adc.maxSamples ?? 0) >= withRack, 'ADC sees it');
   void defaultParams;

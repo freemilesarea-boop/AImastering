@@ -239,9 +239,15 @@ async function main(): Promise<void> {
   await check('hard playing stays under the ceiling', () => {
     for (const id of MELODIC) {
       const m = measured.get(id)!;
-      // Rounded before comparing: the acoustic guitar is deliberately ON the
-      // ceiling — it has the widest crest of the five, so it is the
-      // instrument the ceiling was solved for, and it lands at −3.000.
+      // The guitar is the closest of the melodic instruments at −4.97, and
+      // it used to be the one this ceiling was solved for: it landed at
+      // −3.000 exactly, because its trim was decided by the ceiling rather
+      // than by loudness.  It is not any more.  Its tone filter carried
+      // 0.7 dB of resonance from a `Q` in the wrong units, which was worth
+      // 2.4 dB of peak on a plucked transient and almost nothing in
+      // loudness; correcting it handed the guitar its headroom back.  The
+      // ceiling is now decided by the kit — see `no kit clips` below, where
+      // the J-pop kit sits at −3.60.
       assert(m.hard <= LEVEL_PEAK_CEILING_DBTP + 0.01,
         `${id} peaks at ${m.hard.toFixed(2)} dBTP on a four-note chord`);
     }

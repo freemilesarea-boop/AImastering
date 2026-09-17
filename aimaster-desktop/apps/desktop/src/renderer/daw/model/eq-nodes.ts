@@ -13,6 +13,7 @@
 // Pure, so the mapping is tested without a canvas or an AudioContext.
 
 import type { BiquadSpec } from './plugin-curves.js';
+import { BUTTERWORTH_Q } from '../engine/plugin-kit.js';
 
 export interface EqNode {
   /** Stable across renders, so a drag survives a re-render. */
@@ -55,7 +56,7 @@ export function eqNodes(pluginId: string, params: Record<string, number>): EqNod
     return [
       {
         id: 'hpf', label: 'HP', type: 'highpass',
-        freq: num(params, 'hpfHz', 20), gainDb: 0, q: 1,
+        freq: num(params, 'hpfHz', 20), gainDb: 0, q: BUTTERWORTH_Q,
         freqParam: 'hpfHz', gainParam: null, qParam: null,
       },
       {
@@ -71,7 +72,7 @@ export function eqNodes(pluginId: string, params: Record<string, number>): EqNod
       },
       {
         id: 'lpf', label: 'LP', type: 'lowpass',
-        freq: num(params, 'lpfHz', 20_000), gainDb: 0, q: 1,
+        freq: num(params, 'lpfHz', 20_000), gainDb: 0, q: BUTTERWORTH_Q,
         freqParam: 'lpfHz', gainParam: null, qParam: null,
       },
     ];
@@ -84,7 +85,7 @@ export function eqNodes(pluginId: string, params: Record<string, number>): EqNod
     return [
       {
         id: 'hpf', label: 'HP', type: 'highpass',
-        freq: num(params, 'hpfHz', 20), gainDb: 0, q: 1,
+        freq: num(params, 'hpfHz', 20), gainDb: 0, q: BUTTERWORTH_Q,
         freqParam: 'hpfHz', gainParam: null, qParam: null,
       },
       {

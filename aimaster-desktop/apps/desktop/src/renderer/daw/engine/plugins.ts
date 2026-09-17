@@ -15,6 +15,8 @@
 import { webAudioAutoMakeup } from '../model/plugin-curves.js';
 
 import {
+  BUTTERWORTH_Q, OVERSAMPLE_LATENCY_SAMPLES, crossoverSide, dynamicsLatencySamples,
+  oversampleAlign,
   absShaper, dbToGain, halfWaveGainCurve, makeDbReductionCurve, makeExpanderCurve,
   makeGainCurve, makeShaper, smoother, tanhCurve, wetDry, withBypass,
   automatableFrom,
@@ -65,6 +67,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const hpf = ctx.createBiquadFilter();  hpf.type = 'highpass';
       hpf.frequency.value = params['hpfHz'] ?? 20;
+      hpf.Q.value = BUTTERWORTH_Q;
       const low = ctx.createBiquadFilter();  low.type = 'lowshelf';
       low.frequency.value = 120; low.gain.value = params['lowDb'] ?? 0;
       const mid = ctx.createBiquadFilter();  mid.type = 'peaking';
@@ -105,7 +108,12 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     ],
     automatableParams: ['attackMs', 'releaseMs'],
     drivenParams: ['thresholdDb', 'ratio', 'makeupDb'],
-    latencyFor: () => 0,
+    // A `DynamicsCompressorNode` looks ahead, and it does so whether or not
+    // it is reducing anything: at threshold 0 and ratio 1 the signal still
+    // comes back late and correlates 1.000 with its input, so it is a pure
+    // delay.  Undeclared, this put every compressed track eight milliseconds
+    // behind the rest of the mix and the delay compensation believed it.
+    latencyFor: (_params, sampleRate) => dynamicsLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // A real compressor needs SEPARATE attack and release times, and a
       // detector that follows the envelope without following the waveform.
@@ -427,7 +435,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     // rebuilds the transfer curve; only the blend is one parameter.
     automatableParams: ['mix'],
     drivenParams: ['driveDb'],
-    latencyFor: () => 0,
+    latencyFor: () => OVERSAMPLE_LATENCY_SAMPLES,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const drive = ctx.createGain();
       const compensate = ctx.createGain();
@@ -447,7 +455,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       drive.connect(shaper).connect(compensate);
       input.connect(drive);
       compensate.connect(blend.wet).connect(output);
-      input.connect(blend.dry).connect(output);
+      // The dry side goes through a matching delay: the wet side has been
+      // through an oversampled shaper and is a render quantum late, and
+      // without this a fifty-per-cent Mix cancels instead of blending.
+      input.connect(oversampleAlign(ctx)).connect(blend.dry).connect(output);
 
       return {
         setParam: (id, v) => {
@@ -563,7 +574,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     ],
     automatableParams: ['freqHz', 'mix'],
     drivenParams: ['amount'],
-    latencyFor: () => 0,
+    latencyFor: () => OVERSAMPLE_LATENCY_SAMPLES,
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Generate harmonics from the top band only, then blend them back —
       // the classic exciter topology, and the reason it adds "air" instead
@@ -571,7 +582,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const band = ctx.createBiquadFilter();
       band.type = 'highpass';
       band.frequency.value = params['freqHz'] ?? 4000;
-      band.Q.value = 0.7;
+      band.Q.value = BUTTERWORTH_Q;
 
       const drive = ctx.createGain();
       const shaper = makeShaper(ctx, tanhCurve(0.15), '4x');
@@ -582,7 +593,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       wet.gain.value = params['mix'] ?? 0;
 
       input.connect(band).connect(drive).connect(shaper).connect(wet).connect(output);
-      input.connect(output);                      // dry stays full
+      // Through the same delay the harmonics take.  An exciter ADDS its
+      // harmonics to the dry signal, so a render quantum between them is not
+      // a subtle blend error — it smears the thing the device exists to add.
+      input.connect(oversampleAlign(ctx)).connect(output);   // dry stays full
 
       return {
         setParam: (id, v) => {
@@ -642,6 +656,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const sideHigh = ctx.createBiquadFilter();
       sideHigh.type = 'highpass';
       sideHigh.frequency.value = params['lowMonoHz'] ?? 20;
+      sideHigh.Q.value = BUTTERWORTH_Q;
       const sideGain = ctx.createGain();
       sideGain.gain.value = params['width'] ?? 1;
       const sideInverted = ctx.createGain();
@@ -740,12 +755,16 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Split the sibilant band off, compress only that, sum back.  A
       // full-band compressor would duck the whole voice on every "s".
-      const low = ctx.createBiquadFilter();
-      low.type = 'lowpass';
-      low.frequency.value = params['freqHz'] ?? 6500;
-      const high = ctx.createBiquadFilter();
-      high.type = 'highpass';
-      high.frequency.value = params['freqHz'] ?? 6500;
+      // A crossover that is SUMMED BACK, so the two halves have to add up to
+      // one — which a single lowpass and highpass at the same corner do not,
+      // at any Q: they cancel there.  Linkwitz-Riley, and the measurement
+      // behind it, is in `crossoverSide`.  Before this the split alone put a
+      // hole in the voice at the de-esser's own frequency, whether or not it
+      // was reducing anything.
+      const lowSide = crossoverSide(ctx, 'lowpass', params['freqHz'] ?? 6500);
+      const highSide = crossoverSide(ctx, 'highpass', params['freqHz'] ?? 6500);
+      const low = lowSide.input;
+      const high = highSide.output;
 
       const vca = ctx.createGain();
       vca.gain.value = 0;
@@ -754,8 +773,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const ratioOf = (amount: number): number => 1 + amount * 11;
       let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, ratioOf(params['amount'] ?? 0));
 
-      input.connect(low).connect(output);
-      input.connect(high);
+      input.connect(low);
+      lowSide.output.connect(output);
+      input.connect(highSide.input);
       high.connect(rect).connect(env.input);
       env.output.connect(curve);
       curve.connect(vca.gain);
@@ -771,7 +791,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
 
       return {
         setParam: (id, v) => {
-          if (id === 'freqHz') { low.frequency.value = v; high.frequency.value = v; return; }
+          if (id === 'freqHz') { lowSide.setHz(v); highSide.setHz(v); return; }
           if ((id === 'thresholdDb' || id === 'amount') && v !== params[id]) {
             params[id] = v;
             rebuild();

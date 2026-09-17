@@ -300,7 +300,9 @@ function buildSpaceReverb(
   const erGain = ctx.createGain();
   const tailGain = ctx.createGain();
   const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
+  lowCut.Q.value = BUTTERWORTH_Q;
   const highCut = ctx.createBiquadFilter(); highCut.type = 'lowpass';
+  highCut.Q.value = BUTTERWORTH_Q;
   const width = widthStage(ctx);
   const blend = wetDry(ctx, 0);
   const wet = blend.wet;
@@ -410,7 +412,9 @@ function buildPlate(
   const wet = blend.wet;
   const dry = blend.dry;
   const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
+  lowCut.Q.value = BUTTERWORTH_Q;
   const highCut = ctx.createBiquadFilter(); highCut.type = 'lowpass';
+  highCut.Q.value = BUTTERWORTH_Q;
 
   input.connect(pre).connect(drive);
 
@@ -661,7 +665,9 @@ function buildShimmer(
   const dry = blend.dry;
   const width = widthStage(ctx);
   const lowCut = ctx.createBiquadFilter(); lowCut.type = 'highpass';
+  lowCut.Q.value = BUTTERWORTH_Q;
   const highCut = ctx.createBiquadFilter(); highCut.type = 'lowpass';
+  highCut.Q.value = BUTTERWORTH_Q;
 
   const shifter = octaveUp(ctx);
   const shiftGain = ctx.createGain();

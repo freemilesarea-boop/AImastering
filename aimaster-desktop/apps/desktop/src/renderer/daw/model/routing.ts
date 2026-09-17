@@ -12,6 +12,7 @@ import type { BusId, DawSession, Insert, Track, TrackId } from './types.js';
 import { findTrack } from './session-ops.js';
 import { findPlugin } from '../engine/plugins.js';
 import { materializeRack, moduleParams } from './macros.js';
+import { rackModulesNeeded } from './macro-automation.js';
 import { chainLatency } from '../engine/device-chain.js';
 
 // ── Graph ─────────────────────────────────────────────────────────────────────
@@ -139,6 +140,12 @@ export function insertLatencySamples(insert: Insert, sampleRate: number): number
  * Latency of a channel's whole processing chain: the macro rack plus the
  * manual inserts.  The rack contains a look-ahead limiter, so leaving it out
  * would misalign every channel that has LOUDNESS turned up.
+ *
+ * The rack is counted over the modules the ENGINE BUILDS, not the ones the
+ * knobs currently make active.  A macro lane parked at zero still gets its
+ * modules built so the lane has something to ramp, and a compressor sitting
+ * at ratio 1 still delays by its look-ahead.  Counting only the active ones
+ * put a laned channel 512 samples behind the same rack set by hand.
  */
 export function insertLatency(track: Track, sampleRate: number): number {
   const manual = track.inserts.reduce((sum, i) => sum + insertLatencySamples(i, sampleRate), 0);
@@ -146,8 +153,9 @@ export function insertLatency(track: Track, sampleRate: number): number {
     ? chainLatency(track.deviceGraph, track.racks, sampleRate)
     : 0;
   if (!track.macros.enabled) return manual + graph;
+  const built = rackModulesNeeded(track);
   const rack = materializeRack(track.macros)
-    .filter((m) => m.active)
+    .filter((m) => built.has(m.module.id))
     .reduce((sum, m) => {
       const descriptor = findPlugin(m.module.pluginId);
       return sum + (descriptor ? descriptor.latencyFor(moduleParams(m), sampleRate) : 0);
