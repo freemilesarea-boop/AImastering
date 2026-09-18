@@ -31,7 +31,7 @@
 import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
-import { findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
+import { INSTRUMENTS, findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
 import {
   CATEGORY_LABEL, INSTRUMENT_PATCHES, PATCH_CATEGORIES, activePatch,
   categoriesFor, findPatch, patchParams, patchesFor,
@@ -40,8 +40,12 @@ import { createNote, DEFAULT_MIDI_CONFIG } from '../src/renderer/daw/model/midi.
 import { getLoudnessMetrics, type AudioBufferLike } from '../src/renderer/audio/loudnessCore.js';
 import {
   CALIBRATED_LEVEL, LEVEL_PEAK_CEILING_DBTP, REFERENCE_PHRASE_SECONDS,
-  REFERENCE_ROOT, hardChord, referencePhrase, type LevelEvent,
+  REFERENCE_BEAT_SECONDS, REFERENCE_ROOT, hardChord, referenceBeat, referencePhrase,
+  type LevelEvent,
 } from '../src/renderer/daw/engine/instrument-level.js';
+
+/** Instruments whose notes are drums, so a chord is the wrong stimulus. */
+const DRUM_INSTRUMENTS = new Set(['drumkit', 'drummachine']);
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -56,6 +60,19 @@ function assert(cond: boolean, detail: string): void {
 
 const SR = 44_100;
 const INSTRUMENT_IDS = Object.keys(INSTRUMENT_PATCHES);
+
+/**
+ * Instruments that legitimately ship without a patch bank, and why.
+ *
+ * Everything else in this file iterates the instruments that HAVE patches,
+ * which is the shape of check that stops covering the thing it is named
+ * after: seven instruments with parameters and no patches drifted out of it
+ * without anything failing.  This is the list that makes that impossible.
+ */
+const NO_PATCHES: Readonly<Record<string, string>> = {
+  drumkit: 'eleven genre kits of its own — a patch per DRUM rather than per instrument',
+  sampler: 'its sound is the file the user dropped in, and no patch can know that',
+};
 
 async function render(
   instrumentId: string, params: Record<string, number>,
@@ -110,28 +127,136 @@ function hitLevelDb(buffer: AudioBufferLike): number {
 }
 
 /**
- * Energy in 1/3-octave bands over one window, normalised.
+ * Energy in 24 third-octave bands over one window, normalised.
+ *
+ * Filtered, not probed, and that distinction is the whole of this function's
+ * history.  It used to run a Goertzel resonator at each band's centre and
+ * take the magnitude, which measures the signal at ONE frequency rather than
+ * across a band — and a note's partials essentially never sit on 60·2^(i/3).
+ * Measured, with a pure tone and a 2.6 s window:
+ *
+ *     tone at 480 Hz (a centre)   the 480 probe read 2.9e+4, the rest ~1e-5
+ *     tone at 500 Hz (20 Hz off)  EVERY probe read between 1e-4 and 1e-7
+ *
+ * Nine orders of magnitude, and then the result was divided by its own sum —
+ * so twenty Hz off a centre the "spectrum" was float rounding noise scaled up
+ * to look like a spectrum.  Every instrument here renders at a root that
+ * misses all 24 centres, so the timbre half of the fingerprint was noise for
+ * all of them, and the thresholds below were calibrated against it.
+ *
+ * What it does now is what the name always claimed: a fourth-order bandpass
+ * (an RBJ constant-peak-gain biquad run twice) at each centre with a 1/3
+ * octave bandwidth, and the RMS of what comes through.  A 480 Hz tone now
+ * reads 0.62 in its own band and falls away symmetrically either side; a
+ * 500 Hz tone reads 0.58 at 480 and 0.18 at 605, which is where it belongs.
  *
  * Normalised because this asks whether two patches SOUND different, and a
  * patch that is merely 3 dB louder does not.  Level is the other checks' job.
+ * The Hann window is applied before filtering rather than after, so the slice
+ * does not hand the filters a step edge to ring on.
  */
 function bands(x: Float32Array, fromSec: number, toSec: number): number[] {
+  const a = Math.round(SR * fromSec), b = Math.min(x.length, Math.round(SR * toSec));
+  const len = b - a;
+  // Clamped to the buffer, and loud about it when the clamp leaves nothing.
+  // Reading past the end gave `undefined`, which multiplied out to NaN, which
+  // ran the whole way through the filters and the distance into `d > width` —
+  // where NaN compares false and a width check quietly reported 0.000 for
+  // every instrument and passed.  A measure that cannot measure has to say so.
+  if (len < SR * 0.05) {
+    throw new Error(`asked for ${fromSec}..${toSec}s of a buffer that is `
+      + `${(x.length / SR).toFixed(2)}s long`);
+  }
+  const win = new Float64Array(len);
+  for (let k = 0; k < len; k++) {
+    win[k] = x[a + k]! * 0.5 * (1 - Math.cos((2 * Math.PI * k) / (len - 1)));
+  }
   const out: number[] = [];
-  const a = Math.round(SR * fromSec), b = Math.round(SR * toSec);
   for (let i = 0; i < 24; i++) {
     const f = 60 * Math.pow(2, i / 3);
-    if (f >= SR / 2) { out.push(0); continue; }
-    const w = (2 * Math.PI * f) / SR, c = 2 * Math.cos(w);
-    let s1 = 0, s2 = 0;
-    for (let k = a; k < b; k++) {
-      const win = 0.5 * (1 - Math.cos((2 * Math.PI * (k - a)) / (b - a - 1)));
-      const s = x[k]! * win + c * s1 - s2;
-      s2 = s1; s1 = s;
+    if (f >= SR * 0.45) { out.push(0); continue; }
+    const w0 = (2 * Math.PI * f) / SR;
+    const alpha = Math.sin(w0) * Math.sinh(((Math.LN2 / 2) * (1 / 3) * w0) / Math.sin(w0));
+    const a0 = 1 + alpha;
+    const b0 = alpha / a0, b2 = -alpha / a0;
+    const a1 = (-2 * Math.cos(w0)) / a0, a2 = (1 - alpha) / a0;
+    let sum = 0;
+    let z1 = 0, z2 = 0, y1 = 0, y2 = 0, q1 = 0, q2 = 0, p1 = 0, p2 = 0;
+    for (let k = 0; k < len; k++) {
+      const s = win[k]!;
+      const y = b0 * s + b2 * z2 - a1 * y1 - a2 * y2;
+      z2 = z1; z1 = s; y2 = y1; y1 = y;
+      const p = b0 * y + b2 * q2 - a1 * p1 - a2 * p2;
+      q2 = q1; q1 = y; p2 = p1; p1 = p;
+      sum += p * p;
     }
-    out.push(Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - c * s1 * s2)));
+    out.push(Math.sqrt(sum / len));
   }
   const total = out.reduce((p, q) => p + q, 0) || 1;
   return out.map((v) => v / total);
+}
+
+/**
+ * How much the sound MOVES, as a depth per modulation rate.
+ *
+ * The third-octave bands above and the coarse envelope beside them share a
+ * blind spot, and it is not a small one: neither can see tremolo.  The bands
+ * average a whole window, so an amplitude that swings between 0.5 and 1 at
+ * 5 Hz reads exactly like one that sits still; the envelope has 100 ms slots,
+ * which is two samples per cycle at 5 Hz and gone by 8.  Measured, before
+ * this: the Rhodes' `init` and `suitcase` — the same patch with a 5.2 Hz
+ * tremolo at half depth across it — came out 0.196 apart, which the suite
+ * reported as the same sound under two names.  Anyone who has heard a
+ * suitcase Rhodes knows that is not the finding, it is the measure.
+ *
+ * So: the signal's own amplitude envelope, taken at 441 Hz, its mean removed,
+ * and the DFT of THAT summed into eight bands between 0.5 and 18 Hz — the
+ * rates a tremolo, a vibraphone motor or a slow pad sweep actually run at.
+ * Each band comes back as a depth relative to the mean envelope, so a sound
+ * that does not move reads zero rather than reading noise.
+ *
+ * The DFT is taken bin by bin and summed, not sampled at a centre frequency.
+ * That is deliberate and it is the same mistake the band analyser above was
+ * making: a single probe at 5 Hz says nothing about a tremolo at 5.2.
+ */
+const MOD_EDGES = [0.5, 0.9, 1.5, 2.3, 3.5, 5.3, 8, 12, 18];
+function modulation(x: Float32Array, fromSec: number, toSec: number): number[] {
+  const a = Math.round(SR * fromSec), b = Math.min(x.length, Math.round(SR * toSec));
+  const hop = 100;
+  const n = Math.floor((b - a) / hop);
+  const zero = MOD_EDGES.slice(1).map(() => 0);
+  if (n < 32) return zero;
+  const env = new Float64Array(n);
+  for (let j = 0; j < n; j++) {
+    let sum = 0;
+    for (let k = 0; k < hop; k++) { const v = x[a + j * hop + k]!; sum += v * v; }
+    env[j] = Math.sqrt(sum / hop);
+  }
+  let mean = 0;
+  for (let j = 0; j < n; j++) mean += env[j]!;
+  mean /= n;
+  if (mean <= 1e-7) return zero;
+  const span = (n * hop) / SR;
+  const out: number[] = [];
+  for (let e = 0; e < MOD_EDGES.length - 1; e++) {
+    let power = 0;
+    const from = Math.max(1, Math.ceil(MOD_EDGES[e]! * span));
+    const to = Math.min(Math.floor(n / 2), Math.floor(MOD_EDGES[e + 1]! * span));
+    for (let bin = from; bin <= to; bin++) {
+      let re = 0, im = 0;
+      for (let j = 0; j < n; j++) {
+        const w = 0.5 * (1 - Math.cos((2 * Math.PI * j) / (n - 1)));
+        const th = (2 * Math.PI * bin * j) / n;
+        re += (env[j]! - mean) * w * Math.cos(th);
+        im += (env[j]! - mean) * w * Math.sin(th);
+      }
+      power += (re * re + im * im) / (n * n);
+    }
+    // ×2 for the negative frequency, ×2 again for the Hann window's loss, and
+    // over the mean so the answer is a depth rather than a level.
+    out.push(Math.min(1, (4 * Math.sqrt(power)) / mean));
+  }
+  return out;
 }
 
 /**
@@ -146,9 +271,9 @@ function bands(x: Float32Array, fromSec: number, toSec: number): number[] {
  * Plus the ENVELOPE, normalised to its own peak, because a stab and a pad can
  * hold the same spectrum and still be two patches.
  */
-function fingerprint(x: Float32Array): { spectrum: number[]; envelope: number[] } {
+function fingerprint(x: Float32Array): { spectrum: number[]; envelope: number[]; moves: number[] } {
   const spectrum = [...bands(x, 0, 0.35), ...bands(x, 0.35, 3)];
-  const span = Math.round(SR * 1.6), n = 16, step = Math.floor(span / n);
+  const span = Math.min(x.length, Math.round(SR * 1.6)), n = 16, step = Math.floor(span / n);
   const envelope: number[] = [];
   for (let i = 0; i < n; i++) {
     let sum = 0;
@@ -156,7 +281,7 @@ function fingerprint(x: Float32Array): { spectrum: number[]; envelope: number[] 
     envelope.push(Math.sqrt(sum / step));
   }
   const peak = Math.max(...envelope) || 1;
-  return { spectrum, envelope: envelope.map((v) => v / peak) };
+  return { spectrum, envelope: envelope.map((v) => v / peak), moves: modulation(x, 0.35, 3) };
 }
 
 function distance(a: ReturnType<typeof fingerprint>, b: ReturnType<typeof fingerprint>): number {
@@ -165,29 +290,172 @@ function distance(a: ReturnType<typeof fingerprint>, b: ReturnType<typeof finger
   for (let i = 0; i < a.envelope.length; i++) {
     d += Math.abs(a.envelope[i]! - b.envelope[i]!) / a.envelope.length;
   }
+  // Unweighted, because the depths are already fractions of the sound's own
+  // level: a half-depth tremolo against none contributes about 0.4, which is
+  // the same order as the envelope term and well under what the spectrum can
+  // contribute.  Loud enough to be heard by the checks, not loud enough to
+  // let a patch differ by nothing else.
+  for (let i = 0; i < a.moves.length; i++) d += Math.abs(a.moves[i]! - b.moves[i]!);
   return d;
 }
 
 /**
  * How far apart two patches have to sound.
  *
- * Measured, not chosen.  Across the four banks the closest genuine pair sits
- * at 0.40, and the one pair that WAS a near-copy — a clav and a marimba
- * separated by little more than their tine level — came in at 0.223 before it
- * was fixed.  0.30 sits between the two with room on both sides.
+ * Measured, and measured again from scratch twice over: once after the band
+ * analyser above was fixed, and once more after the modulation term was added
+ * to the fingerprint, because both changed what a distance IS.  The 0.30 that
+ * stood here before was calibrated against the noise the old analyser
+ * returned and is not evidence for anything.
+ *
+ * The scale is ONE KNOB, moved a quarter of its travel from each instrument's
+ * init patch — 437 of them, every parameter of all fourteen instruments.
+ * That distribution is what a near-copy looks like: two patches closer than a
+ * single knob's quarter turn are not two patches.
+ *
+ *     median 0.065    p75 0.369    p90 0.866    p95 1.226
+ *
+ * 0.40 is just above the 75th percentile: a quarter turn of one knob beats it
+ * one time in four.  Across all 1002 pairs in the bank the closest is
+ * 0.426 (the bowed init against its solo violin), so the floor sits just
+ * under the tightest pair that is genuinely two patches — which is where a
+ * floor earns its place rather than waving everything through.
  */
-const MIN_DISTINCTNESS = 0.30;
+const MIN_DISTINCTNESS = 0.40;
 
 /**
- * How wide a bank has to be, end to end.
+ * A short stimulus, used only to ask how wide an ENGINE is.
  *
- * 2.0 sits above the acoustic guitar's 1.79 before this work and below every
- * bank's width after it — so it fails on the condition that was actually
- * found, which is what a threshold has to do to be worth writing down.
+ * The width check below renders every parameter of every instrument at both
+ * of its extremes — 900-odd renders — and the reference phrase at 281 ms a
+ * render would put four minutes on the suite for one check.  Two notes at
+ * 32 ms do the job, because that check compares the engine's corners with the
+ * bank's patches and both sides are measured on this same stimulus.  Nothing
+ * else in this file uses it: the distinctness check and the level checks stay
+ * on the reference phrase, where the numbers mean what they mean elsewhere.
  */
-const MIN_BANK_WIDTH = 2.0;
+const REACH_SECONDS = 2.2;
+function reachPhrase(root: number): LevelEvent[] {
+  return [
+    { pitch: root, at: 0, dur: 0.85, vel: 0.68 },
+    { pitch: root + 7, at: 0.92, dur: 0.35, vel: 0.74 },
+  ];
+}
+
+/**
+ * The same, for a drum machine: one hit of each voice, close together.
+ *
+ * The GM numbers are the ones `referenceBeat` uses.  All six are here on
+ * purpose — a drum patch edits its voices one at a time, and a stimulus that
+ * left the cymbal out would report an engine with no cymbal in it.
+ */
+function reachBeat(): LevelEvent[] {
+  return [
+    { pitch: 36, at: 0, dur: 0.3, vel: 0.95 },
+    { pitch: 38, at: 0.22, dur: 0.3, vel: 0.85 },
+    { pitch: 42, at: 0.44, dur: 0.3, vel: 0.55 },
+    { pitch: 46, at: 0.62, dur: 0.3, vel: 0.6 },
+    { pitch: 49, at: 0.84, dur: 0.3, vel: 0.8 },
+    { pitch: 51, at: 1.06, dur: 0.3, vel: 0.5 },
+  ];
+}
 
 async function main(): Promise<void> {
+  await check('the thing that measures timbre can find a tone', () => {
+    // A test for the test, and it exists because its absence cost this suite
+    // its point.  The old band measure answered with noise for any tone that
+    // was not sitting on a band centre, which is nearly every tone, and no
+    // check noticed because every check only compared one noisy answer with
+    // another.  So before any patch is measured, the measure is:
+    //
+    //   · a tone lands in its OWN band and nowhere else
+    //   · one 20 Hz off a centre lands in the same place, not somewhere random
+    //   · two different tones do not read alike
+    const tone = (hz: number): Float32Array => {
+      const n = Math.round(SR * 2.6);
+      const x = new Float32Array(n);
+      for (let i = 0; i < n; i++) x[i] = Math.sin((2 * Math.PI * hz * i) / SR);
+      return x;
+    };
+    const centre = (i: number): number => 60 * Math.pow(2, i / 3);
+    const nearest = (hz: number): number => Math.round((3 * Math.log2(hz / 60)));
+    for (const hz of [120, 480, 500, 1000, 3000]) {
+      const b = bands(tone(hz), 0, 2.6);
+      let top = 0;
+      for (let i = 1; i < b.length; i++) if (b[i]! > b[top]!) top = i;
+      assert(top === nearest(hz),
+        `a ${hz} Hz tone reads loudest in the ${centre(top).toFixed(0)} Hz band, `
+        + `but it belongs in ${centre(nearest(hz)).toFixed(0)} Hz`);
+      assert(b[top]! > 0.4,
+        `a ${hz} Hz tone puts only ${(b[top]! * 100).toFixed(0)}% of its energy in its own `
+        + 'band — the bands are not bands');
+    }
+    // And it says so when it cannot measure, rather than answering NaN.  This
+    // is not hypothetical: the width check below ran on a 1.6 s stimulus and
+    // asked for the 0.35–3 s window, got NaN all the way through, and passed
+    // reporting every bank as 0.000 wide.
+    let threw = false;
+    try { bands(tone(500).subarray(0, 1000), 0, 3); } catch { threw = true; }
+    assert(threw, 'a window past the end of the buffer answered instead of failing');
+
+    const low = bands(tone(120), 0, 2.6), high = bands(tone(3000), 0, 2.6);
+    let apart = 0;
+    for (let i = 0; i < low.length; i++) apart += Math.abs(low[i]! - high[i]!);
+    assert(apart > 1.5,
+      `120 Hz and 3 kHz measure only ${apart.toFixed(2)} apart — the measure cannot tell `
+      + 'two ends of the spectrum apart, so it cannot tell two patches apart');
+  });
+
+  await check('and it can hear a sound moving', () => {
+    // The other half of the measure, checked the same way and for the same
+    // reason: nothing was watching it, and it was blind.
+    const trem = (hz: number, depth: number): Float32Array => {
+      const n = Math.round(SR * 3);
+      const x = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const t = i / SR;
+        const m = hz > 0 ? 1 - depth * 0.5 * (1 - Math.cos(2 * Math.PI * hz * t)) : 1;
+        x[i] = Math.sin(2 * Math.PI * 440 * t) * m;
+      }
+      return x;
+    };
+    const still = modulation(trem(0, 0), 0.35, 3);
+    assert(Math.max(...still) < 0.02,
+      `a tone that does not move reads ${Math.max(...still).toFixed(3)} of modulation`);
+    for (const [hz, depth] of [[2.2, 0.95], [5.2, 0.5], [6.5, 0.6]] as const) {
+      const m = modulation(trem(hz, depth), 0.35, 3);
+      let top = 0;
+      for (let i = 1; i < m.length; i++) if (m[i]! > m[top]!) top = i;
+      assert(hz >= MOD_EDGES[top]! && hz < MOD_EDGES[top + 1]!,
+        `a ${hz} Hz tremolo reads loudest in the ${MOD_EDGES[top]}–${MOD_EDGES[top + 1]} Hz band`);
+      assert(m[top]! > depth * 0.6,
+        `a ${hz} Hz tremolo at depth ${depth} reads only ${m[top]!.toFixed(2)} deep`);
+    }
+    // And the pair that started this: a tremolo has to move the fingerprint.
+    const a = fingerprint(trem(0, 0)), b = fingerprint(trem(5.2, 0.5));
+    assert(distance(a, b) > MIN_DISTINCTNESS,
+      `a tone and the same tone under a half-depth tremolo measure `
+      + `${distance(a, b).toFixed(3)} apart — the measure still cannot hear it`);
+  });
+
+  await check('every instrument has a bank, or says why it does not', () => {
+    for (const inst of INSTRUMENTS) {
+      const has = patchesFor(inst.id).length > 0;
+      const excused = NO_PATCHES[inst.id];
+      assert(has || excused !== undefined,
+        `${inst.id} has ${inst.params.length} parameters and no patches — add a bank or say `
+        + 'why it does not have one');
+      assert(!(has && excused !== undefined),
+        `${inst.id} is both banked and excused — one of the two is wrong`);
+      if (excused !== undefined) {
+        assert(excused.length >= 20, `${inst.id} is excused without a reason worth reading`);
+      }
+    }
+    for (const id of Object.keys(NO_PATCHES)) {
+      assert(findInstrument(id) !== undefined, `${id} is excused but is not an instrument`);
+    }
+  });
+
   await check('every patch names parameters its instrument actually has', () => {
     for (const id of INSTRUMENT_IDS) {
       const inst = findInstrument(id);
@@ -367,8 +635,21 @@ async function main(): Promise<void> {
     const root = REFERENCE_ROOT[id] ?? 48;
     for (const patch of patchesFor(id)) {
       const params = patchParams(id, patch.id);
-      const phrase = await render(id, params, referencePhrase(root), REFERENCE_PHRASE_SECONDS);
-      const hard = getLoudnessMetrics(await render(id, params, hardChord(root), 3));
+      // A drum machine is not a chordal instrument, and a maj7 rooted at C3
+      // is not a stimulus it has an answer to: the pitches in the reference
+      // phrase reach whichever pads happen to be mapped there, and none of
+      // the pads a drum patch actually EDITS.  Measured, before this: the
+      // machine's `init` and `trap` patches fingerprinted 0.000 apart — the
+      // same rendered audio, because neither patch had been asked to make a
+      // sound it differs in.  The level suite settled the same question the
+      // same way, and this is the stimulus it settled on: a BEAT.
+      const drums = DRUM_INSTRUMENTS.has(id);
+      const phrase = drums
+        ? await render(id, params, referenceBeat(), REFERENCE_BEAT_SECONDS)
+        : await render(id, params, referencePhrase(root), REFERENCE_PHRASE_SECONDS);
+      const hard = getLoudnessMetrics(drums
+        ? await render(id, params, referenceBeat(1.35), REFERENCE_BEAT_SECONDS)
+        : await render(id, params, hardChord(root), 3));
       loud.push({ id, patch: patch.id, lufs: hitLevelDb(phrase), hard: hard.truePeakDbtp });
 
       const l = phrase.getChannelData(0), r = phrase.getChannelData(1);
@@ -464,59 +745,121 @@ async function main(): Promise<void> {
     // This one is for the near-copy — two patches nudged apart by a value or
     // two, which measured 0.223 when it was real (a clav and a marimba
     // separated by little more than their tine level).
+    // Every offender, not the first one: a bank is authored instrument by
+    // instrument, and a check that names one pair per run turns a morning's
+    // work into a week of rediscovering the same thing.
+    const same: string[] = [];
     for (const id of INSTRUMENT_IDS) {
       const list = patchesFor(id);
       for (let a = 0; a < list.length; a++) {
         for (let b = a + 1; b < list.length; b++) {
-          const pa = prints.get(`${id}/${list[a]!.id}`)!;
-          const pb = prints.get(`${id}/${list[b]!.id}`)!;
-          const d = distance(pa, pb);
-          assert(d >= MIN_DISTINCTNESS,
-            `${id}: ${list[a]!.id} and ${list[b]!.id} are ${d.toFixed(3)} apart — `
-            + 'they are the same sound under two names');
+          const d = distance(prints.get(`${id}/${list[a]!.id}`)!, prints.get(`${id}/${list[b]!.id}`)!);
+          if (d < MIN_DISTINCTNESS) {
+            same.push(`${id}: ${list[a]!.id} and ${list[b]!.id} are ${d.toFixed(3)} apart`);
+          }
         }
       }
     }
+    assert(same.length === 0,
+      `${same.length} pair(s) are the same sound under two names — ${same.join('; ')}`);
   });
+
+  // ── How wide the engine is, so the bank can be asked to use it ───────────
+  //
+  // Both sides of the width question, measured on the short stimulus: every
+  // parameter of every instrument at both of its extremes (the engine's
+  // corners), and every patch in the bank.
+  const reachWidth = new Map<string, { width: number; pair: string }>();
+  const bankWidth = new Map<string, { width: number; pair: string }>();
+  for (const id of INSTRUMENT_IDS) {
+    const inst = findInstrument(id)!;
+    const drums = DRUM_INSTRUMENTS.has(id);
+    const root = REFERENCE_ROOT[id] ?? 48;
+    const events = drums ? reachBeat() : reachPhrase(root);
+    const shot = async (params: Record<string, number>) => {
+      const buf = await render(id, params, events, REACH_SECONDS);
+      const l = buf.getChannelData(0), r = buf.getChannelData(1);
+      const mono = new Float32Array(buf.length ?? 0);
+      for (let i = 0; i < mono.length; i++) mono[i] = (l[i]! + r[i]!) / 2;
+      // A corner that makes no sound is not a corner of the engine, it is the
+      // off switch — and its fingerprint is a normalised nothing, which sits
+      // further from every real sound than any two real sounds sit from each
+      // other.  `cutoff=min` on the wavetable synth is exactly that.  The
+      // floor is the same one the patches are held to.
+      return { print: fingerprint(mono), audible: hitLevelDb(buf) > -50 };
+    };
+    const base = patchParams(id, 'init');
+    const init = await shot(base);
+    const corners: Array<[string, ReturnType<typeof fingerprint>]> = [['init', init.print]];
+    for (const def of inst.params) {
+      // `level` is excluded on purpose: it is the one parameter a patch may
+      // not use to differ, and the fingerprint is level-normalised anyway, so
+      // sweeping it would add two renders and no information.
+      if (def.id === 'level') continue;
+      for (const [tag, at] of [['min', def.min], ['max', def.max]] as const) {
+        const one = await shot({ ...base, [def.id]: at });
+        if (one.audible) corners.push([`${def.id}=${tag}`, one.print]);
+      }
+    }
+    const bank: Array<[string, ReturnType<typeof fingerprint>]> = [];
+    for (const patch of patchesFor(id)) {
+      bank.push([patch.id, (await shot(patchParams(id, patch.id))).print]);
+    }
+    const widest = (rows: typeof corners): { width: number; pair: string } => {
+      let width = 0, pair = '';
+      for (let a = 0; a < rows.length; a++) {
+        for (let b = a + 1; b < rows.length; b++) {
+          const d = distance(rows[a]![1], rows[b]![1]);
+          if (d > width) { width = d; pair = `${rows[a]![0]} ↔ ${rows[b]![0]}`; }
+        }
+      }
+      return { width, pair };
+    };
+    reachWidth.set(id, widest(corners));
+    bankWidth.set(id, widest(bank));
+  }
 
   await check('the bank uses the width the engine has', () => {
     // The other half of the question, and the half a floor on the closest
     // pair cannot answer: a bank can have no two patches alike and still be
-    // one sound with the knobs nudged, if the engine has no axes to differ
-    // ON.  That is a property of the FURTHEST pair.
+    // one sound with the knobs nudged.  That is a property of the FURTHEST
+    // pair.
     //
-    // Which is the condition that was actually found here, and not by any
-    // threshold — by comparing the banks' ranges.  The acoustic guitar's five
-    // patches spanned 1.79 where the poly synth's twenty spanned 3.70,
-    // because damping and brightness, the two things that make a string a
-    // different string, were fixed per instrument and no patch could reach
-    // them: every "nylon" was a steel string behind a darker EQ.
+    // It used to be one number for all fourteen instruments, and that was
+    // never defensible — a six-operator FM synth and an upright piano do not
+    // have the same amount of timbre in them, and measured they are not
+    // close: the FM bank spans 9.18 and the upright's 2.94, with more patches
+    // in the FM.  A single floor either lets the FM off or asks the upright
+    // for a sound it cannot make.
     //
-    // Measured on the same fingerprint, with the contributions separated:
+    // So the floor is the instrument's OWN reach: move one knob to one end,
+    // and how far does that get?  If a single knob beats every pair of
+    // patches in the bank, the bank is not using the engine — which is
+    // exactly the condition this check was written for, and now it is asked
+    // per instrument and never needs a number chosen for it again.
     //
-    //     1.790   five patches, before
-    //     2.236   the nine patches now, with the new axes switched off
-    //     2.714   the nine patches now
-    //
-    // — so for the acoustic roughly half the gain is bolder authoring and
-    // half is the new axes.  For the electric (2.734 → 2.803 → 3.458) it is
-    // almost entirely the axes.
+    // 0.8 rather than 1.0 because a corner is allowed to be a sound nobody
+    // would ship — a filter shut to its stop is a click and then nothing —
+    // and it is fair for a bank of musical patches to stop short of the most
+    // extreme thing the engine can be made to do.  It is not a way of
+    // passing: the fourteen banks land between 0.87× and 1.94×, five of them
+    // under 1.0, so the margin is being used and is not slack.  The analog
+    // synth sat at 0.78× when this was written — its pad released in 1.8 s on
+    // an envelope that goes to eight — and it is at 1.00× now because the pad
+    // was lengthened, not because the number was.
+    const narrow: string[] = [];
     for (const id of INSTRUMENT_IDS) {
-      const list = patchesFor(id);
-      let widest = 0, pair = '';
-      for (let a = 0; a < list.length; a++) {
-        for (let b = a + 1; b < list.length; b++) {
-          const d = distance(prints.get(`${id}/${list[a]!.id}`)!, prints.get(`${id}/${list[b]!.id}`)!);
-          if (d > widest) { widest = d; pair = `${list[a]!.id} ↔ ${list[b]!.id}`; }
-        }
+      const bank = bankWidth.get(id)!, reach = reachWidth.get(id)!;
+      if (bank.width < reach.width * 0.8) {
+        narrow.push(`${id}: bank ${bank.width.toFixed(2)} (${bank.pair}) vs one knob `
+          + `${reach.width.toFixed(2)} (${reach.pair})`);
       }
-      assert(widest >= MIN_BANK_WIDTH,
-        `${id}: its widest pair is only ${widest.toFixed(3)} apart (${pair}) — `
-        + 'the engine has run out of ways for a patch to differ');
     }
+    assert(narrow.length === 0,
+      `${narrow.length} bank(s) are not using their engine — ${narrow.join('; ')}`);
   });
 
-  await check('no patch clips on a chord played as hard as MIDI goes', () => {
+  await check('no patch clips played as hard as MIDI goes', () => {
     for (const row of loud) {
       assert(row.hard <= LEVEL_PEAK_CEILING_DBTP + 0.01,
         `${row.id}/${row.patch} peaks at ${row.hard.toFixed(2)} dBTP`);
@@ -530,6 +873,8 @@ async function main(): Promise<void> {
     console.log(`  ${id.padEnd(10)} ${String(rows.length).padStart(2)} patches  `
       + `${Math.min(...values).toFixed(1)} … ${Math.max(...values).toFixed(1)} LUFS  `
       + `worst peak ${Math.max(...rows.map((r) => r.hard)).toFixed(1)} dBTP  `
+      + `width ${bankWidth.get(id)!.width.toFixed(2)}/${reachWidth.get(id)!.width.toFixed(2)} `
+      + `(${(bankWidth.get(id)!.width / reachWidth.get(id)!.width).toFixed(2)}×)  `
       + `[${categoriesFor(id).map((c) => CATEGORY_LABEL[c]).join(' ')}]`);
   }
   console.log(`  ${'합계'.padEnd(10)} ${loud.length} patches across ${INSTRUMENT_IDS.length} instruments`);
