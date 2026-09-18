@@ -124,6 +124,16 @@ const ADVISORS: Record<string, Advisor> = {
 
   dcblock: () => ({ refuse: '설정할 파라미터가 없습니다 — 켜면 그게 전부입니다' }),
 
+  // The only device here that refuses because there is nothing to advise
+  // rather than nothing to set.  Tilt, Average, Hold and Scope are all
+  // properties of the DISPLAY, and no measurement of the audio decides how
+  // somebody wants to look at it.  An advisor that picked a tilt from the
+  // spectrum would be choosing what the spectrum should look like, which is
+  // a way of deciding the answer before the measurement.
+  analyzer: () => ({
+    refuse: '분석기는 소리를 바꾸지 않습니다 — 기울기와 평균은 보는 방식이지 측정이 정하는 값이 아닙니다',
+  }),
+
   // ── EQ ──────────────────────────────────────────────────────────────────
 
   eq3: (p) => {

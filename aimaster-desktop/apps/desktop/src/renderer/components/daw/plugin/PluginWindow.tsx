@@ -35,6 +35,7 @@ import { premium } from '../../../theme/premium.js';
 import Knob from './Knob.js';
 import PluginVisual from './PluginVisual.js';
 import EqCurveEditor from './EqCurveEditor.js';
+import AnalyzerView from './AnalyzerView.js';
 import { eqNodes, type NodeEdit, type ParamRange } from '../../../daw/model/eq-nodes.js';
 import { lfoPictureFor } from '../../../daw/model/plugin-shapes.js';
 import { wantsSquareVisual } from '../../../daw/model/plugin-shapes.js';
@@ -475,7 +476,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       className="fixed rounded-xl overflow-hidden"
       style={{
         left: win.x, top: win.y, zIndex: pluginWindowLayer(win.z),
-        width: (isEq ? EQ_WIDTH : VISUAL_WIDTH) + 28,
+        width: (isEq || insert.pluginId === 'analyzer' ? EQ_WIDTH : VISUAL_WIDTH) + 28,
         background: premium.surface.frame,
         border: `1px solid ${insert.bypass ? 'rgba(120,120,140,0.35)' : premium.accent.deep}`,
         boxShadow: premium.shadow.panel,
@@ -683,7 +684,20 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
       )}
 
       <div className="p-3.5 flex flex-col gap-3">
-        {isEq ? (
+        {insert.pluginId === 'analyzer' ? (
+          // The one device whose panel IS the measurement.  It has no curve to
+          // edit and no shape to preview — what a still picture could show is
+          // the tilt, and that is in the visual below the live one.
+          <AnalyzerView
+            trackId={win.trackId}
+            insertId={insertId}
+            params={params}
+            bypassed={insert.bypass}
+            playing={isPlaying}
+            width={EQ_WIDTH}
+            height={Math.round(EQ_HEIGHT * 0.82)}
+          />
+        ) : isEq ? (
           <EqCurveEditor
             pluginId={insert.pluginId}
             params={params}

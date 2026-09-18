@@ -19,6 +19,7 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { PLUGINS, defaultParams, findPlugin } from '../src/renderer/daw/engine/plugins.js';
+import { withBypass } from '../src/renderer/daw/engine/plugin-kit.js';
 
 const SR = 48_000;
 
@@ -415,6 +416,47 @@ async function main(): Promise<void> {
     instance.dispose();
   }
   assert(problems.length === 0, `no muted wet paths — ${problems.join(' | ')}`);
+});
+
+await check('everything a device hands to withBypass comes out the other side', () => {
+  // `withBypass` copies the builder's optional members across by name, one
+  // spread each, and an omission is SILENT in both directions: TypeScript
+  // does not see it, because a builder returning an extra key through a
+  // conditional spread is not an object literal and escapes the
+  // excess-property check; and the app does not show it, because a meter that
+  // reads null forever looks like a device that is not working hard, and a
+  // scope that stays empty looks like silence.
+  //
+  // It has already happened once: the analyser's `scope` was written, typed,
+  // built in the graph, and dropped here, and only driving the app found it.
+  // So this asks for all of them at once.
+  const ctx = new OfflineAudioContext(1, 128, SR);
+  const built = withBypass(ctx as unknown as BaseAudioContext, (input, output) => {
+    input.connect(output);
+    return {
+      setParam: () => { /* nothing */ },
+      automatable: () => null,
+      drives: () => null,
+      reduction: () => -3,
+      analyse: () => ({ lufs: -14, peakDb: -1 }),
+      scope: () => true,
+      setSidechainActive: () => { /* nothing */ },
+      sidechain: input,
+      latencySamples: 64,
+      dispose: () => { /* nothing */ },
+    };
+  });
+  const missing: string[] = [];
+  for (const key of ['automatable', 'drives', 'reduction', 'analyse', 'scope'] as const) {
+    if (typeof built[key] !== 'function') missing.push(key);
+  }
+  assert(missing.length === 0,
+    `withBypass dropped ${missing.join(', ')} — a builder returned them and the instance does `
+    + 'not have them');
+  assert(built.latencySamples === 64, `latency came through as ${built.latencySamples}, not 64`);
+  assert(built.sidechain !== null, 'the key input was dropped');
+  assert(built.reduction!() === -3, 'reduction was forwarded but does not answer');
+  assert(built.scope!(new Float32Array(4), new Float32Array(4)), 'scope was forwarded but says no');
 });
 
 const passed = results.filter((r) => r.pass).length;

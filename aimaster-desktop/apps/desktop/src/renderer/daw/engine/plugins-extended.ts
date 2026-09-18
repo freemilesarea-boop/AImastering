@@ -18,6 +18,25 @@ import {
 import {
   MATCH_BANDS, MATCH_HZ, matchBandId, matchImpulse, matchLatency,
 } from './match-eq.js';
+import { SPECTRUM_SLOPES } from '../model/spectrum-view.js';
+import { AVERAGE_LABELS, AVERAGE_NOTES, AVERAGE_SECONDS } from '../model/analyzer-view.js';
+
+/**
+ * How many samples the goniometer reads at a time.
+ *
+ * 2048 at 48 kHz is 43 ms, which is about two and a half animation frames —
+ * enough that consecutive frames overlap rather than leaving gaps in what the
+ * scope has seen, and short enough that the picture still follows the music.
+ */
+const SCOPE_FFT_SIZE = 2048;
+
+/** One line per tilt, saying what it is for. */
+const SPECTRUM_SLOPE_NOTES: readonly string[] = [
+  '기울기 없음 — FFT 가 내는 그대로. 음악은 거의 항상 우하향으로 보입니다',
+  '3 dB/oct — 핑크 노이즈가 평평해집니다',
+  '4.5 dB/oct — 잘 균형 잡힌 믹스가 평평해집니다. 기본값',
+  '6 dB/oct — 브라운 노이즈가 평평해집니다. 저역을 보려면',
+];
 import {
   BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
@@ -767,6 +786,91 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           b2Db: bells[1]!.gain, b2Hz: bells[1]!.frequency, b2Q: bells[1]!.Q,
           b3Db: bells[2]!.gain, b3Hz: bells[2]!.frequency, b3Q: bells[2]!.Q,
         }),
+      };
+    }),
+  },
+
+  {
+    id: 'analyzer',
+    name: 'Analyzer',
+    category: 'utility',
+    hasSidechain: false,
+    params: [
+      {
+        id: 'slope', name: 'Tilt', min: 0, max: SPECTRUM_SLOPES.length - 1,
+        default: 2, unit: '',
+        choices: SPECTRUM_SLOPES.map((s) => `${s} dB/oct`),
+        choiceNotes: SPECTRUM_SLOPE_NOTES,
+      },
+      {
+        id: 'average', name: 'Average', min: 0, max: AVERAGE_SECONDS.length - 1,
+        default: 1, unit: '',
+        choices: AVERAGE_LABELS,
+        choiceNotes: AVERAGE_NOTES,
+      },
+      { id: 'hold', name: 'Peak Hold', min: 0, max: 1, default: 1, unit: '' },
+      { id: 'scope', name: 'Scope', min: 0, max: 1, default: 1, unit: '' },
+    ],
+    // Nothing here touches the audio, so nothing here is a lane: every one of
+    // these four is a property of the PICTURE.  A device with no automatable
+    // parameters is normally a device that rebuilds something; this one is a
+    // device that does not process.
+    automatableParams: [],
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      // Straight through, and that is the whole signal path.  An analyser
+      // that coloured what it measured would be measuring itself.
+      input.connect(output);
+
+      const current: Record<string, number> = { ...params };
+
+      // The stereo tap.  Built only if the renderer has analysers at all —
+      // the offline one does not, and a device that threw there would take
+      // every bounce with it.
+      let scope: ((left: Float32Array, right: Float32Array) => boolean) | undefined;
+      if (typeof ctx.createAnalyser === 'function'
+        && typeof ctx.createChannelSplitter === 'function') {
+        // A splitter interprets its input as DISCRETE, and the spec does not
+        // allow that to be changed — setting it throws, which in the app
+        // takes the whole channel with it.  So the up-mix happens in front of
+        // it: a gain forced to two channels with speaker interpretation turns
+        // a mono source into two equal channels and leaves a stereo one
+        // alone.
+        //
+        // Without it, a mono source puts its signal in channel 0 and silence
+        // in channel 1, and the goniometer draws a DIAGONAL — the picture for
+        // "all of this is in the left channel".  Mono is not one-sided.
+        // Measured in the app before the fix: 0.707 wide and 0.707 tall, at
+        // 45 degrees, while the correlation read 1 and the width read 0 % —
+        // the numbers right and the picture wrong, which is the worst way for
+        // a meter to be broken.
+        const stereo = ctx.createGain();
+        stereo.channelCount = 2;
+        stereo.channelCountMode = 'explicit';
+        stereo.channelInterpretation = 'speakers';
+        const splitter = ctx.createChannelSplitter(2);
+        const left = ctx.createAnalyser();
+        const right = ctx.createAnalyser();
+        left.fftSize = SCOPE_FFT_SIZE;
+        right.fftSize = SCOPE_FFT_SIZE;
+        // Zero, and it matters here: this reads the time domain, and a scope
+        // that smoothed its samples would be drawing a low-passed signal.
+        left.smoothingTimeConstant = 0;
+        right.smoothingTimeConstant = 0;
+        input.connect(stereo).connect(splitter);
+        splitter.connect(left, 0);
+        splitter.connect(right, 1);
+        scope = (outL, outR): boolean => {
+          if (outL.length < left.fftSize || outR.length < right.fftSize) return false;
+          left.getFloatTimeDomainData(outL as Float32Array<ArrayBuffer>);
+          right.getFloatTimeDomainData(outR as Float32Array<ArrayBuffer>);
+          return true;
+        };
+      }
+
+      return {
+        setParam: (id, v) => { current[id] = v; },
+        ...(scope ? { scope } : {}),
       };
     }),
   },

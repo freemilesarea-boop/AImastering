@@ -295,6 +295,8 @@ import { linphaseImpulse } from '../engine/linear-phase.js';
 import {
   matchApplied, matchMagnitudeAt, matchShapeDb, matchShapeOf, matchStored,
 } from '../engine/match-eq.js';
+import { SLOPE_PIVOT_HZ, SPECTRUM_SLOPES, slopeDbAt } from './spectrum-view.js';
+import { averageSeconds } from './analyzer-view.js';
 
 /**
  * The rate the pictures are drawn at.
@@ -334,7 +336,8 @@ export interface FilterPicture {
 const MID_COLOUR = 'rgba(230,210,160,0.95)';
 const SIDE_COLOUR = 'rgba(126,200,255,0.9)';
 
-export const FILTER_DEVICES: readonly string[] = ['mseq', 'hum', 'dcblock', 'amp', 'tape', 'matcheq'];
+export const FILTER_DEVICES: readonly string[] =
+  ['mseq', 'hum', 'dcblock', 'amp', 'tape', 'matcheq', 'analyzer'];
 
 export function filterPictureFor(
   pluginId: string, params: Record<string, number>,
@@ -400,6 +403,31 @@ export function filterPictureFor(
       caption: `${speed.ips} ips · 헤드 범프 ${speed.bumpHz} Hz ${bumpDb >= 0 ? '+' : ''}`
         + `${bumpDb.toFixed(1)} dB · 상단 ${(topHz / 1000).toFixed(1)} kHz · 바이어스 `
         + `${bias < 0.42 ? '낮음' : (bias > 0.58 ? '높음' : '표준')}`,
+    };
+  }
+
+  if (pluginId === 'analyzer') {
+    // The device does nothing to the audio, so the only thing a still picture
+    // can honestly show is what the DISPLAY does — and that is worth showing,
+    // because the tilt is the setting that decides whether "flat" means
+    // balanced or means nothing.
+    //
+    // Untilted, an FFT of music slopes down at roughly 4.5 dB per octave and
+    // always has; a flat reading on that scale would be a mix with far too
+    // much top.  The tilt is the line being added, drawn here with the pivot
+    // visible, so the number in the picker is a shape rather than a claim.
+    const index = Math.round(num(params, 'slope', 2));
+    const slope = SPECTRUM_SLOPES[Math.max(0, Math.min(SPECTRUM_SLOPES.length - 1, index))] ?? 4.5;
+    const seconds = averageSeconds(num(params, 'average', 1));
+    return {
+      curves: [{
+        label: `${slope} dB/oct`, specs: [], colour: MID_COLOUR,
+        dbAt: (hz) => slopeDbAt(hz, slope),
+      }],
+      fromHz: 20, toHz: 20_000,
+      caption: slope === 0
+        ? `기울기 없음 · 평균 ${seconds}초 — 음악은 우하향으로 보입니다`
+        : `${SLOPE_PIVOT_HZ} Hz 축으로 ${slope} dB/oct 기울임 · 평균 ${seconds}초`,
     };
   }
 

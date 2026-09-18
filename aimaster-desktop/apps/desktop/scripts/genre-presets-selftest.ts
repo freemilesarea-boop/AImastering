@@ -55,6 +55,7 @@ const NO_GENRE: Record<string, string> = {
   // else.  So: no genre presets, and the reason is the device, not an
   // oversight.
   matcheq: 'its setting is a measurement of one reference; a preset curve is one nobody took',
+  analyzer: 'it does not touch the audio — its settings are the picture, not the sound',
 };
 
 const covered = PLUGINS.filter((p) => !(p.id in NO_GENRE));

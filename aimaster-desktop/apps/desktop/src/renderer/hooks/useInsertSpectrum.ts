@@ -21,6 +21,7 @@ import {
   DEFAULT_SCALE, advanceHold, advanceSpectrum, spectrumColumns,
   type SpectrumScale,
 } from '../daw/model/spectrum-view.js';
+import { advanceAverage } from '../daw/model/analyzer-view.js';
 import type { TrackId } from '../daw/model/types.js';
 
 export interface SpectrumFrame {
@@ -28,6 +29,15 @@ export interface SpectrumFrame {
   display: Float32Array;
   /** The slower line that remembers a peak. */
   hold: Float32Array;
+  /**
+   * The converging line — the tonal balance rather than the moment.
+   *
+   * Only advanced when `averageTauSec` is set, because the EQ backdrop does
+   * not want it: behind a curve the question is "what is that whistle", and
+   * an average is the wrong answer to it.  A standalone analyser is asked
+   * "is this balanced", and then it is the only right one.
+   */
+  average: Float32Array;
   /** False until a frame has actually been read, so nothing draws a fake floor. */
   live: boolean;
 }
@@ -41,6 +51,8 @@ export interface UseInsertSpectrumOptions {
   enabled: boolean;
   slopeDbPerOct?: number;
   scale?: SpectrumScale;
+  /** Time constant for the converging line.  Absent means no average at all. */
+  averageTauSec?: number;
 }
 
 /**
@@ -55,12 +67,13 @@ export function useInsertSpectrum(
 ): { frame: MutableRefObject<SpectrumFrame>; onFrame: (fn: (() => void) | null) => void } {
   const {
     trackId, insertId, columns, enabled,
-    slopeDbPerOct = 4.5, scale = DEFAULT_SCALE,
+    slopeDbPerOct = 4.5, scale = DEFAULT_SCALE, averageTauSec,
   } = options;
 
   const frame = useRef<SpectrumFrame>({
     display: new Float32Array(Math.max(1, columns)).fill(scale.bottomDb),
     hold: new Float32Array(Math.max(1, columns)).fill(scale.bottomDb),
+    average: new Float32Array(Math.max(1, columns)).fill(scale.bottomDb),
     live: false,
   });
   const listener = useRef<(() => void) | null>(null);
@@ -72,6 +85,7 @@ export function useInsertSpectrum(
       frame.current = {
         display: new Float32Array(width).fill(scale.bottomDb),
         hold: new Float32Array(width).fill(scale.bottomDb),
+        average: new Float32Array(width).fill(scale.bottomDb),
         live: false,
       };
     }
@@ -98,12 +112,15 @@ export function useInsertSpectrum(
       spectrumColumns(bins, dawRuntime.sampleRate, target, scale, slopeDbPerOct);
       advanceSpectrum(frame.current.display, target, dt, scale.bottomDb);
       advanceHold(frame.current.hold, ages, target, dt, scale.bottomDb);
+      if (averageTauSec !== undefined) {
+        advanceAverage(frame.current.average, target, dt, averageTauSec, scale.bottomDb);
+      }
       frame.current.live = true;
       listener.current?.();
     };
     raf = requestAnimationFrame(step);
     return () => { cancelAnimationFrame(raf); frame.current.live = false; };
-  }, [trackId, insertId, columns, enabled, slopeDbPerOct, scale]);
+  }, [trackId, insertId, columns, enabled, slopeDbPerOct, scale, averageTauSec]);
 
   return { frame, onFrame };
 }

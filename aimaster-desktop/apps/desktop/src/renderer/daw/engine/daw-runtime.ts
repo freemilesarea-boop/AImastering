@@ -868,6 +868,13 @@ class DawRuntime {
     return this.engine?.analyse(trackId, insertId) ?? null;
   }
 
+  /** The stereo picture at one insert, for a device that draws a scope. */
+  insertScope(
+    trackId: TrackId, insertId: string, left: Float32Array, right: Float32Array,
+  ): boolean {
+    return this.engine?.insertScope(trackId, insertId, left, right) ?? false;
+  }
+
   /** Peak arriving at one insert, linear.  Null when metering is off. */
   /**
    * The spectrum arriving at one insert, written into `out`.

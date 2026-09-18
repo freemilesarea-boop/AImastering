@@ -380,6 +380,21 @@ export class MixerEngine {
     return instance?.reduction?.() ?? null;
   }
 
+  /**
+   * The stereo picture at one insert, written into the caller's arrays.
+   *
+   * Written in place for the same reason `insertSpectrum` is: this runs every
+   * animation frame, and a fresh pair of Float32Arrays sixty times a second
+   * is garbage the collector comes back for in the audio thread's
+   * neighbourhood.
+   */
+  insertScope(
+    trackId: TrackId, insertId: string, left: Float32Array, right: Float32Array,
+  ): boolean {
+    const instance = this.channels.get(trackId)?.inserts.get(insertId);
+    return instance?.scope?.(left, right) ?? false;
+  }
+
   /** What a metering insert is reading, for devices whose job is to measure. */
   analyse(trackId: TrackId, insertId: string): { lufs: number; peakDb: number } | null {
     const instance = this.channels.get(trackId)?.inserts.get(insertId);

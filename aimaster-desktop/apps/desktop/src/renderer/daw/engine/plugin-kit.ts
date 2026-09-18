@@ -140,6 +140,17 @@ export interface PluginInstance {
    * devices whose whole job is to measure.  Present only where it is real.
    */
   analyse?: () => { lufs: number; peakDb: number };
+  /**
+   * The two channels as they are RIGHT NOW, for a device that draws the
+   * stereo picture.
+   *
+   * Separate from `analyse` because it is not a number, it is a block: a
+   * goniometer is a plot of left against right sample by sample, and there is
+   * no summary of it that is still a goniometer.  Fills the caller's arrays
+   * and returns false when there is nothing to read, so a panel can hold the
+   * last frame rather than flashing an empty scope between blocks.
+   */
+  scope?: (left: Float32Array, right: Float32Array) => boolean;
   dispose: () => void;
 }
 
@@ -445,6 +456,7 @@ export function withBypass(
     setSidechainActive?: (a: boolean) => void;
     reduction?: () => number;
     analyse?: () => { lufs: number; peakDb: number };
+    scope?: (left: Float32Array, right: Float32Array) => boolean;
     latencySamples?: number;
     /** Node the dry signal must pass through so bypass keeps the same delay. */
     bypassDelay?: AudioNode;
@@ -483,10 +495,16 @@ export function withBypass(
       dry.gain.value = bypassed ? 1 : 0;
     },
     setSidechainActive: built.setSidechainActive ?? (() => { /* no key input */ }),
-    // Forwarded explicitly.  Dropping these here is invisible — the meter just
-    // reads null forever and looks like a device that is not working hard.
+    // Forwarded explicitly, and every one of these has to be listed here or
+    // it is silently dropped: the meter reads null forever and looks like a
+    // device that is not working hard, or a scope stays empty and looks like
+    // silence.  TypeScript does not catch the omission, because a builder
+    // returning an extra key through a conditional spread is not an object
+    // literal and so escapes the excess-property check.  `plugin-rack` has a
+    // check that every optional member a builder returns survives this.
     ...(built.reduction ? { reduction: built.reduction } : {}),
     ...(built.analyse ? { analyse: built.analyse } : {}),
+    ...(built.scope ? { scope: built.scope } : {}),
     dispose: () => { built.dispose?.(); },
   };
 }
