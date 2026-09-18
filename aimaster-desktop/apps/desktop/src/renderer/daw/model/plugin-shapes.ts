@@ -296,6 +296,10 @@ import {
   matchApplied, matchMagnitudeAt, matchShapeDb, matchShapeOf, matchStored,
 } from '../engine/match-eq.js';
 import { SLOPE_PIVOT_HZ, SPECTRUM_SLOPES, slopeDbAt } from './spectrum-view.js';
+import {
+  HARMONY_WINDOW_MAX_MS, HARMONY_WINDOW_MIN_MS, harmonyBaseSec, harmonyRatio,
+  harmonySpanSec,
+} from '../engine/pitch-shift.js';
 import { averageSeconds } from './analyzer-view.js';
 
 /**
@@ -664,7 +668,7 @@ export interface LfoPicture {
  * against a clock, not a statement that everything here has an LFO.
  */
 export const TIME_TRACE_DEVICES: readonly string[] =
-  ['tremolo', 'autopan', 'chorus', 'rotary', 'linphase'];
+  ['tremolo', 'autopan', 'chorus', 'rotary', 'linphase', 'harmonizer'];
 
 const sine = (phase: number): number => Math.sin(2 * Math.PI * phase);
 /** Web Audio's square is a hard two-level wave, not a band-limited one. */
@@ -678,6 +682,45 @@ function triangle(phase: number): number {
 export function lfoPictureFor(
   pluginId: string, params: Record<string, number>,
 ): LfoPicture | null {
+  if (pluginId === 'harmonizer') {
+    // The mechanism, drawn.  A harmoniser made of delay lines is two sawtooth
+    // sweeps half a window apart, and the picture is those two sweeps: where
+    // one drops back is where the other is mid-ramp, and that is the whole
+    // trick.  The steeper the ramps, the wider the interval.
+    const windowMs = Math.max(
+      HARMONY_WINDOW_MIN_MS, Math.min(HARMONY_WINDOW_MAX_MS, num(params, 'windowMs', 30)),
+    );
+    const windowSec = windowMs / 1000;
+    const semitones = num(params, 'v1St', 4);
+    const ratio = harmonyRatio(semitones, num(params, 'v1Cents', 0));
+    const span = harmonySpanSec(ratio, windowSec);
+    const base = harmonyBaseSec(ratio, windowSec);
+    const sign = ratio > 1 ? -1 : 1;
+    // Web Audio's sawtooth starts at 0, reaches +1 half a period in, and
+    // jumps to −1 there — so the delay is drawn from the same shape the node
+    // produces rather than from an idealised ramp.
+    const saw = (t: number): number => {
+      const phase = ((t / windowSec) % 1 + 1) % 1;
+      return phase < 0.5 ? phase * 2 : phase * 2 - 2;
+    };
+    const delayMs = (t: number, offset: number): number =>
+      (base + sign * (span / 2) * saw(t - offset)) * 1000;
+    return {
+      traces: [
+        { label: 'A', colour: MID_COLOUR, at: (t) => delayMs(t, 0) },
+        { label: 'B', colour: SIDE_COLOUR, at: (t) => delayMs(t, windowSec / 2) },
+      ],
+      spanSec: windowSec * 2.4,
+      min: 0,
+      max: Math.max(1, span * 1000 * 1.1),
+      unit: 'ms',
+      caption: span === 0
+        ? `${windowMs.toFixed(0)} ms 창 · 유니슨이라 스윕이 없습니다 — 그대로 통과합니다`
+        : `${semitones >= 0 ? '+' : ''}${semitones.toFixed(0)}반음 · ${windowMs.toFixed(0)} ms 창에 `
+          + `${(span * 1000).toFixed(1)} ms 스윕 · 한쪽이 되돌아갈 때 다른 쪽이 중간입니다`,
+    };
+  }
+
   if (pluginId === 'linphase') {
     // The impulse response, and the reason this device is not simply a better
     // EQ.  It is SYMMETRIC — that is what zero phase means — so whatever it

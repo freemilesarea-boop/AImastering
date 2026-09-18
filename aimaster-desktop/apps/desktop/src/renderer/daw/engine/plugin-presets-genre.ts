@@ -909,6 +909,29 @@ export const GENRE_PRESETS: readonly PluginPreset[] = [
                params: { gain: 50, stages: 2, master: 42, sag: 28, cab: 1, mic: 35, stack: 1, treble: 4 } },
   }),
 
+  ...genrePresets('harmonizer', {
+    jazz:    { note: '옥타브 아래 하나만, 아주 얕게 — 관악 라인 밑을 두껍게 합니다. '
+                     + '3도나 5도는 재즈 화성에서 평행으로 따라가면 거의 항상 틀립니다',
+               params: { v1St: -12, v1Db: -12, v2Db: -60, spread: 0.3, windowMs: 140, mix: 0.2 } },
+    lofi:    { note: '5도 위 + 옥타브 아래, 창을 길게 — 스플라이스의 결이 들리는 것이 목적입니다',
+               params: { v1St: 7, v1Db: -6, v2St: -12, v2Db: -8, spread: 0.7, windowMs: 90, mix: 0.45 } },
+    ambient: { note: '5도와 옥타브를 넓게 펼쳐 패드로. 지속음에서 워블이 가장 잘 숨습니다',
+               params: { v1St: 7, v1Db: -8, v2St: 12, v2Db: -10, spread: 1, windowMs: 120, mix: 0.4 } },
+    classic: { note: '옥타브 아래만 아주 조금 — 현 섹션의 바닥을 넓히는 용도 이상은 아닙니다',
+               params: { v1St: -12, v1Db: -16, v2Db: -60, spread: 0.2, windowMs: 160, mix: 0.15 } },
+    kpop:    { note: '옥타브 위를 얇게 얹어 보컬 라인을 밝힙니다 — 창을 짧게 해서 자음을 끌지 않게',
+               params: { v1St: 12, v1Db: -14, v2Db: -60, spread: 0.5, windowMs: 70, mix: 0.22 } },
+    pop:     { note: '3도 위 하나. 팝에서 하모나이저는 화음이지 효과가 아닙니다',
+               params: { v1St: 4, v1Db: -8, v2Db: -60, spread: 0.55, windowMs: 90, mix: 0.3 } },
+    edm:     { note: '5도와 옥타브를 세게 — 신스 리드를 한 덩어리로 두껍게 만듭니다',
+               params: { v1St: 7, v1Db: -3, v2St: 12, v2Db: -6, spread: 0.85, windowMs: 80, mix: 0.5 } },
+    hiphop:  { note: '옥타브 아래를 크게 — 보컬 더블에서 가장 오래된 수법입니다',
+               params: { v1St: -12, v1Db: -5, v2Db: -60, spread: 0.35, windowMs: 150, mix: 0.35 } },
+    rnb:     { note: '3도와 5도를 함께, 얕게 — 애드리브 뒤에 깔리는 화음',
+               params: { v1St: 3, v1Db: -10, v2St: 7, v2Db: -12, spread: 0.7, windowMs: 100, mix: 0.25 } },
+    jpop:    { note: '옥타브 위아래를 같이 — 라인을 얇지도 두껍지도 않게 넓힙니다',
+               params: { v1St: 12, v1Db: -13, v2St: -12, v2Db: -11, spread: 0.75, windowMs: 100, mix: 0.28 } },
+  }),
   ...genrePresets('linphase', {
     jazz:    { note: '정밀 길이로 아주 얕게. 재즈 마스터에서 위상을 돌리지 않는다는 '
                      + '것이 이 기기를 쓰는 유일한 이유입니다',

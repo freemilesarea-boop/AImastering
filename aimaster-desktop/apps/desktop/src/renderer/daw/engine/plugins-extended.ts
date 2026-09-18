@@ -19,6 +19,11 @@ import {
   MATCH_BANDS, MATCH_HZ, matchBandId, matchImpulse, matchLatency,
 } from './match-eq.js';
 import { SPECTRUM_SLOPES } from '../model/spectrum-view.js';
+import {
+  HARMONY_WINDOW_MAX_MS, HARMONY_WINDOW_MIN_MS, harmonyBaseSec, harmonyFadeSamples,
+  harmonyMaxDelaySec, harmonyRampSamples, harmonyRatio, harmonySweepGain,
+  harmonyWindowSamples,
+} from './pitch-shift.js';
 import { AVERAGE_LABELS, AVERAGE_NOTES, AVERAGE_SECONDS } from '../model/analyzer-view.js';
 
 /**
@@ -41,7 +46,7 @@ import {
   BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
   absShaper, automatableFrom, dbToGain, makeShaper, smoother, tanhCurve, wetDry,
-  withBypass, type PluginDescriptor,
+  withBypass, type AutomatableParam, type PluginDescriptor,
 } from './plugin-kit.js';
 
 const p = (params: Record<string, number>, id: string, fallback: number): number => {
@@ -786,6 +791,238 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           b2Db: bells[1]!.gain, b2Hz: bells[1]!.frequency, b2Q: bells[1]!.Q,
           b3Db: bells[2]!.gain, b3Hz: bells[2]!.frequency, b3Q: bells[2]!.Q,
         }),
+      };
+    }),
+  },
+
+  {
+    id: 'harmonizer',
+    name: 'Harmonizer',
+    category: 'pitch',
+    hasSidechain: false,
+    params: [
+      { id: 'v1St',    name: 'Voice 1',   min: -12, max: 12,  default: 4,   unit: 'st' },
+      { id: 'v1Cents', name: 'V1 Fine',   min: -50, max: 50,  default: 0,   unit: '¢' },
+      { id: 'v1Db',    name: 'V1 Level',  min: -60, max: 6,   default: -4,  unit: 'dB' },
+      { id: 'v2St',    name: 'Voice 2',   min: -12, max: 12,  default: 7,   unit: 'st' },
+      { id: 'v2Cents', name: 'V2 Fine',   min: -50, max: 50,  default: 0,   unit: '¢' },
+      { id: 'v2Db',    name: 'V2 Level',  min: -60, max: 6,   default: -60, unit: 'dB' },
+      { id: 'spread',  name: 'Spread',    min: 0,   max: 1,   default: 0.6, unit: '' },
+      { id: 'windowMs', name: 'Window',   min: HARMONY_WINDOW_MIN_MS, max: HARMONY_WINDOW_MAX_MS,
+        default: 90, unit: 'ms' },
+      { id: 'mix',     name: 'Mix',       min: 0,   max: 1,   default: 0.4, unit: '' },
+      { id: 'outDb',   name: 'Out',       min: -12, max: 12,  default: 0,   unit: 'dB' },
+    ],
+    // The levels, the spread and the blend are gains, so they ride a lane.
+    // The INTERVALS do too, and that is worth saying: a semitone value moves
+    // two AudioParams — the sweep's amplitude and the delay it sweeps around —
+    // and a lane on one alone would be a shifter whose sweep no longer fits
+    // its own delay.  They are declared as driven rather than automatable for
+    // exactly that reason; a macro can move them because one number decides
+    // both, and an insert lane cannot.
+    automatableParams: ['v1Db', 'v2Db', 'mix', 'outDb'],
+    drivenParams: ['v1St', 'v2St'],
+    // The wet voices arrive half a sweep late by construction — that is the
+    // effect, not latency to compensate, exactly as for a delay or a chorus.
+    // The dry path is not delayed at all.
+    latencyFor: () => 0,
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const current: Record<string, number> = { ...params };
+      const wet = ctx.createGain();
+      const dry = ctx.createGain();
+      const out = ctx.createGain();
+      const maxDelay = harmonyMaxDelaySec();
+
+      // Spread is TWO GAINS into a merger rather than a StereoPanner, and the
+      // reason is what a pan law does at the centre: equal power puts 0.707
+      // in each channel, so a voice marked 0 dB arrives 3 dB down and a
+      // unison is not transparent.  Measured before this was changed — fully
+      // wet against fully dry differed by 0.147 on a 0.5 signal, which is
+      // exactly that 3 dB.  Here a centred voice is 1.0 in both channels and
+      // full spread takes the far channel to zero, so spread costs MONO level
+      // rather than costing level everywhere — a true thing about width.
+      const merger = typeof ctx.createChannelMerger === 'function'
+        ? ctx.createChannelMerger(2) : null;
+      if (merger) merger.connect(wet);
+
+      interface Line {
+        sweep: GainNode;
+        delay: DelayNode;
+        window: GainNode;
+        fade: GainNode;
+        /** Where in the shared window this line reads — 0 or half of it. */
+        phase: number;
+        ramp: AudioBufferSourceNode | null;
+        lfo: AudioBufferSourceNode | null;
+      }
+      interface Voice {
+        lines: Line[]; level: GainNode; left: GainNode; right: GainNode; side: number;
+      }
+
+      const windowSecOf = (): number => Math.max(HARMONY_WINDOW_MIN_MS, Math.min(
+        HARMONY_WINDOW_MAX_MS, p(current, 'windowMs', 90),
+      )) / 1000;
+
+      const voice = (index: 0 | 1, side: number): Voice => {
+        const level = ctx.createGain();
+        const left = ctx.createGain();
+        const right = ctx.createGain();
+        const lines: Line[] = [];
+        for (const first of [true, false]) {
+          const delay = ctx.createDelay(maxDelay);
+          const sweep = ctx.createGain();
+          sweep.connect(delay.delayTime);
+
+          const window = ctx.createGain();
+          window.gain.value = 0.5;
+          const fade = ctx.createGain();
+          fade.gain.value = 0.5;
+          fade.connect(window.gain);
+
+          input.connect(delay).connect(window).connect(level);
+          lines.push({
+            sweep, delay, window, fade, phase: first ? 0 : 0.5, ramp: null, lfo: null,
+          });
+        }
+        if (merger) {
+          level.connect(left).connect(merger, 0, 0);
+          level.connect(right).connect(merger, 0, 1);
+        } else {
+          level.connect(wet);
+        }
+        return { lines, level, left, right, side };
+      };
+
+      const voices = [voice(0, -1), voice(1, +1)];
+
+      /**
+       * Start the modulators, or replace them when the window length changes.
+       *
+       * A looping buffer cannot be re-looped at a new length, so a new window
+       * is a new pair of sources — the same thing the amp does with a shaper
+       * whose curve cannot be assigned twice.
+       */
+      const startModulators = (): void => {
+        const windowSec = windowSecOf();
+        const frames = harmonyWindowSamples(windowSec, ctx.sampleRate);
+        const ramp = ctx.createBuffer(1, frames, ctx.sampleRate);
+        ramp.getChannelData(0).set(harmonyRampSamples(frames));
+        const fade = ctx.createBuffer(1, frames, ctx.sampleRate);
+        fade.getChannelData(0).set(harmonyFadeSamples(frames));
+        const when = ctx.currentTime;
+        const period = frames / ctx.sampleRate;
+        for (const v of voices) {
+          for (const line of v.lines) {
+            for (const old of [line.ramp, line.lfo]) {
+              if (!old) continue;
+              try { old.stop(); } catch { /* never started */ }
+              try { old.disconnect(); } catch { /* already gone */ }
+            }
+            const rampSrc = ctx.createBufferSource();
+            rampSrc.buffer = ramp;
+            rampSrc.loop = true;
+            rampSrc.connect(line.sweep);
+            const lfoSrc = ctx.createBufferSource();
+            lfoSrc.buffer = fade;
+            lfoSrc.loop = true;
+            lfoSrc.connect(line.fade);
+            // The half-window offset is where the second line STARTS READING
+            // the same buffer — exact, and the same in every renderer.  It
+            // inverts the crossfade at the same time as it offsets the sweep,
+            // which is why the two windows sum to one.
+            const offset = line.phase * period;
+            rampSrc.start(when, offset);
+            lfoSrc.start(when, offset);
+            line.ramp = rampSrc;
+            line.lfo = lfoSrc;
+          }
+        }
+      };
+
+      const retune = (): void => {
+        const windowSec = windowSecOf();
+        voices.forEach((v, i) => {
+          const ratio = harmonyRatio(
+            p(current, `v${i + 1}St`, i === 0 ? 4 : 7), p(current, `v${i + 1}Cents`, 0),
+          );
+          const base = harmonyBaseSec(ratio, windowSec);
+          const gain = harmonySweepGain(ratio, windowSec);
+          for (const line of v.lines) {
+            line.delay.delayTime.value = base;
+            line.sweep.gain.value = gain;
+          }
+        });
+      };
+
+      const relevel = (): void => {
+        const spread = Math.max(0, Math.min(1, p(current, 'spread', 0.6)));
+        voices.forEach((v, i) => {
+          v.level.gain.value = Math.pow(10, p(current, `v${i + 1}Db`, i === 0 ? -4 : -60) / 20);
+          v.left.gain.value = v.side < 0 ? 1 : 1 - spread;
+          v.right.gain.value = v.side < 0 ? 1 - spread : 1;
+        });
+        const m = Math.max(0, Math.min(1, p(current, 'mix', 0.4)));
+        wet.gain.value = m;
+        dry.gain.value = 1 - m;
+        out.gain.value = Math.pow(10, p(current, 'outDb', 0) / 20);
+      };
+
+      input.connect(dry).connect(out);
+      wet.connect(out);
+      out.connect(output);
+      retune();
+      relevel();
+      startModulators();
+
+      const sweeps = (index: 0 | 1): AutomatableParam[] => {
+        const v = voices[index]!;
+        const cents = (): number => p(current, `v${index + 1}Cents`, 0);
+        const driven: AutomatableParam[] = [];
+        for (const line of v.lines) {
+          driven.push({
+            param: line.sweep.gain,
+            map: (st: number) => harmonySweepGain(harmonyRatio(st, cents()), windowSecOf()),
+          });
+          driven.push({
+            param: line.delay.delayTime,
+            map: (st: number) => harmonyBaseSec(harmonyRatio(st, cents()), windowSecOf()),
+          });
+        }
+        return driven;
+      };
+
+      return {
+        setParam: (id, v) => {
+          current[id] = v;
+          if (id === 'mix' || id === 'outDb' || id === 'spread'
+            || id === 'v1Db' || id === 'v2Db') { relevel(); return; }
+          retune();
+          // A new window length is a new pair of buffers, because a loop
+          // cannot be re-pointed at a different length.
+          if (id === 'windowMs') startModulators();
+        },
+        automatable: automatableFrom({
+          v1Db: { param: voices[0]!.level.gain, map: (db) => Math.pow(10, db / 20) },
+          v2Db: { param: voices[1]!.level.gain, map: (db) => Math.pow(10, db / 20) },
+          mix: wet.gain,
+          outDb: { param: out.gain, map: (db) => Math.pow(10, db / 20) },
+          // Spread moves four gains, so it is not one AudioParam and is not
+          // offered as a lane — `setParam` still moves it, as a knob.
+        }),
+        drives: (id) => {
+          if (id === 'v1St') return sweeps(0);
+          if (id === 'v2St') return sweeps(1);
+          return null;
+        },
+        dispose: () => {
+          for (const v of voices) {
+            for (const line of v.lines) {
+              for (const src of [line.ramp, line.lfo]) {
+                try { src?.stop(); } catch { /* never started */ }
+              }
+            }
+          }
+        },
       };
     }),
   },

@@ -520,6 +520,24 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { rateHz: 0.45, depthMs: 7, delayMs: 22, mix: 55 } },
   }),
 
+  ...inst('harmonizer', {
+    drumloop: { note: '드럼에는 옥타브 아래를 아주 조금 — 하모나이저는 트랜지언트에서 '
+                      + '스플라이스가 가장 잘 들리므로, 킥의 몸통만 두껍게 하고 빠집니다',
+                params: { v1St: -12, v1Db: -16, v2Db: -60, spread: 0.2, windowMs: 130, mix: 0.12 } },
+    bass:     { note: '베이스에 옥타브 위 — 아래로 내리면 이미 있는 곳에 겹쳐 뭉갭니다. '
+                      + '창은 길게: 낮은 음일수록 한 주기가 길어서 짧은 창은 매번 주기 중간을 자릅니다',
+                params: { v1St: 12, v1Db: -14, v2Db: -60, spread: 0.25, windowMs: 200, mix: 0.2 } },
+    egtr:     { note: '일렉 기타에 5도 위 — 이 기기가 만들어진 이유 그 자체입니다',
+                params: { v1St: 7, v1Db: -4, v2Db: -60, spread: 0.6, windowMs: 90, mix: 0.4 } },
+    agtr:     { note: '통기타에 옥타브 위를 얇게 — 12현 흉내이지 화음이 아닙니다',
+                params: { v1St: 12, v1Db: -12, v2Db: -60, spread: 0.7, windowMs: 90, mix: 0.25 } },
+    piano:    { note: '피아노는 이미 화음이라 평행 3도가 거의 항상 틀립니다 — 옥타브만, 아주 얕게',
+                params: { v1St: 12, v1Db: -18, v2Db: -60, spread: 0.4, windowMs: 45, mix: 0.12 } },
+    strings:  { note: '현 섹션에 옥타브 위아래 — 인원을 늘리는 쪽이지 화성을 바꾸는 쪽이 아닙니다',
+                params: { v1St: 12, v1Db: -14, v2St: -12, v2Db: -14, spread: 0.9, windowMs: 130, mix: 0.25 } },
+    synth:    { note: '신스 리드에 5도와 옥타브를 세게 — 워블이 신스에서는 결점이 아니라 성격입니다',
+                params: { v1St: 7, v1Db: -3, v2St: 12, v2Db: -5, spread: 0.8, windowMs: 85, mix: 0.5 } },
+  }),
   ...inst('linphase', {
     drumloop: { note: '드럼에는 빠름 길이로. 프리링잉은 트랜지언트 앞에 붙는 것이라 '
                       + '드럼에서 가장 잘 들리고, 짧을수록 그 물결이 짧습니다',

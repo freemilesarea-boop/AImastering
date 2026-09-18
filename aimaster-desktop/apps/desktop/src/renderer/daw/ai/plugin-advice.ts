@@ -24,6 +24,7 @@
 
 import type { SourceProfile } from './source-profile.js';
 import { findPlugin } from '../engine/plugins.js';
+import { harmonyErrorCents, harmonyWindowForMs } from '../engine/pitch-shift.js';
 
 export interface PluginAdvice {
   pluginId: string;
@@ -199,6 +200,58 @@ const ADVISORS: Record<string, Advisor> = {
       // The three knobs follow the source; the curve is a measurement this
       // advisor never sees, so it is not claiming to have matched anything.
       confidence: 0.4,
+    };
+  },
+
+  harmonizer: (p) => {
+    // The INTERVAL is not advised, and the reason is not modesty.  A
+    // harmoniser shifts everything it is given by the same amount, so a third
+    // is only a third against one chord; over a progression it is a third
+    // above a scale that does not exist.  No measurement of a sound decides
+    // which interval belongs over it — that is the arrangement.
+    //
+    // The WINDOW it can decide, and there is a law for it rather than a
+    // preference.  The splice makes the output periodic at the window, so the
+    // spectrum is a comb at the window rate, and a shifted tone that misses a
+    // comb line is carried by its neighbours — worst case, half a spacing.
+    // Half a spacing is a fixed number of HERTZ and what that is worth in
+    // cents depends on where it lands, so a low source needs a long window
+    // and a bright one does not.  `harmonyWindowForMs` is that arithmetic.
+    //
+    // Aimed at the source's own low end rather than at an octave below it:
+    // aiming at the worst interval the controls allow would ask for the
+    // longest window on every source with any bass in it, which is a rule
+    // that stops telling anyone anything.  What is left over is reported.
+    const lowHz = clamp(p.lowRolloffHz, 40, 2000);
+    const windowMs = clamp(round(harmonyWindowForMs(lowHz, 25), 5), 20, 200);
+    const leftover = harmonyErrorCents(lowHz, windowMs / 1000);
+
+    // The MIX follows the crest factor.  A splice lands hardest on a
+    // transient — a long window drags more of the previous moment across it —
+    // so percussive material takes less of the wet path, and a sustained
+    // source can take a lot, because a splice inside a held note is where
+    // this technique hides best.
+    const perc = percussive(p);
+    const mix = clamp(round(0.45 - perc * 0.3, 0.05), 0.1, 0.45);
+    return {
+      params: {
+        windowMs, mix,
+        // Left where the device rests: one voice audible, one silent.
+        v1Db: -4, v2Db: -60,
+        spread: 0.6, outDb: 0,
+      },
+      headline: `창 ${windowMs.toFixed(0)} ms — ${hz(lowHz)} 에서 `
+        + `${leftover.toFixed(0)}센트 오차가 남습니다`
+        + ` · 블렌드 ${Math.round(mix * 100)}%`
+        + (perc > 0.6 ? ' (트랜지언트가 많아 낮춰 잡았습니다)' : ''),
+      evidence: [
+        `저역 시작 ${hz(p.lowRolloffHz)}`,
+        `크레스트 ${p.crestDb.toFixed(1)} dB`,
+        `창 반주기 ${(1000 / (2 * (windowMs / 1000) * 1000)).toFixed(1)} Hz`,
+      ],
+      // Two settings out of ten, and the two left alone are the ones that
+      // decide what it plays.
+      confidence: 0.35,
     };
   },
 

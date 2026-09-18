@@ -254,6 +254,14 @@ export const VOICE_PRESETS: readonly PluginPreset[] = [
                     + '마이크를 축 쪽으로 돌려 명료도를 남깁니다',
               params: { gain: 24, stages: 1, master: 30, sag: 40, cab: 0, mic: 40, bass: -5, treble: 2, level: -3 } },
   }),
+  ...voice('harmonizer', {
+    male:   { note: '남성 보컬에 옥타브 아래를 얕게 — 가장 오래된 보컬 더블 수법입니다. '
+                    + '창 35 ms: 남성 음역의 한 주기보다 충분히 길어 주기 중간을 자르지 않습니다',
+              params: { v1St: -12, v1Db: -13, v2Db: -60, spread: 0.35, windowMs: 160, mix: 0.2 } },
+    female: { note: '여성 보컬에 3도 위 — 옥타브 위는 이미 밝은 대역에 얹혀 치찰음을 끌어올립니다. '
+                    + '창은 짧게: 높은 음역은 한 주기가 짧아 짧은 창으로도 여러 주기가 들어갑니다',
+              params: { v1St: 4, v1Db: -14, v2Db: -60, spread: 0.45, windowMs: 110, mix: 0.18 } },
+  }),
   ...voice('linphase', {
     male:   { note: '남성 보컬에 표준 길이 — 가슴소리를 좁게 덜고 프레즌스를 올립니다. '
                     + '위상이 돌지 않으니 더블링한 트랙과 합쳤을 때 얇아지지 않습니다',
