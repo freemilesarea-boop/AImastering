@@ -291,6 +291,18 @@ export function detectorGainDb(spec: DetectorSpec, inputDb: number): number {
  */
 import { TAPE_SPEEDS, tapeTopHz } from '../engine/plugins-extended.js';
 import { BUTTERWORTH_Q } from '../engine/plugin-kit.js';
+import { linphaseImpulse } from '../engine/linear-phase.js';
+
+/**
+ * The rate the pictures are drawn at.
+ *
+ * A picture is a shape, not a render, so it does not have to match the
+ * session — but the impulse response's LENGTH in milliseconds depends on the
+ * rate, and a caption that said 10.6 ms while the session ran at 44.1 would
+ * be wrong by a tenth of a millisecond.  Stated here rather than guessed at
+ * each call site.
+ */
+const PICTURE_RATE = 48_000;
 
 export interface NamedCurve {
   label: string;
@@ -572,7 +584,16 @@ export interface LfoPicture {
   caption: string;
 }
 
-export const LFO_DEVICES: readonly string[] = ['tremolo', 'autopan', 'chorus', 'rotary'];
+/**
+ * The devices that draw A VALUE OVER TIME.
+ *
+ * Four of them are modulators and the fifth is not: a linear-phase EQ's
+ * impulse response is the one thing a magnitude curve cannot show, and it is
+ * a trace over time like any other.  Hence the name — the picture is a shape
+ * against a clock, not a statement that everything here has an LFO.
+ */
+export const TIME_TRACE_DEVICES: readonly string[] =
+  ['tremolo', 'autopan', 'chorus', 'rotary', 'linphase'];
 
 const sine = (phase: number): number => Math.sin(2 * Math.PI * phase);
 /** Web Audio's square is a hard two-level wave, not a band-limited one. */
@@ -586,6 +607,33 @@ function triangle(phase: number): number {
 export function lfoPictureFor(
   pluginId: string, params: Record<string, number>,
 ): LfoPicture | null {
+  if (pluginId === 'linphase') {
+    // The impulse response, and the reason this device is not simply a better
+    // EQ.  It is SYMMETRIC — that is what zero phase means — so whatever it
+    // does after the transient it does an equal amount of BEFORE it.  On a
+    // kick with a steep cut under it that reads as a tick ahead of the hit,
+    // and no amount of length removes it; length only spreads it wider.
+    const h = linphaseImpulse(params, PICTURE_RATE);
+    const half = (h.length - 1) / 2;
+    const spanSec = h.length / PICTURE_RATE;
+    let peak = 0;
+    for (let i = 0; i < h.length; i++) peak = Math.max(peak, Math.abs(h[i] ?? 0));
+    const scale = peak > 0 ? 1 / peak : 1;
+    const lateMs = (half / PICTURE_RATE) * 1000;
+    return {
+      traces: [{
+        label: 'IR', colour: MID_COLOUR,
+        // t runs from 0, and the centre sits at the middle of the span.
+        at: (t) => (h[Math.round(t * PICTURE_RATE)] ?? 0) * scale,
+      }],
+      spanSec,
+      min: -0.35, max: 1,
+      unit: '',
+      caption: `${h.length}탭 · 가운데가 ${lateMs.toFixed(1)} ms 늦게 도착 · `
+        + '앞쪽 물결이 프리링잉',
+    };
+  }
+
   if (pluginId === 'tremolo') {
     const rate = num(params, 'rateHz', 5);
     const depth = num(params, 'depth', 0.5);

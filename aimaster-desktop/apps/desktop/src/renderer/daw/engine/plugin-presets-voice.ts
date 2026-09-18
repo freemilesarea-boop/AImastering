@@ -252,6 +252,16 @@ export const VOICE_PRESETS: readonly PluginPreset[] = [
                     + '마이크를 축 쪽으로 돌려 명료도를 남깁니다',
               params: { gain: 24, stages: 1, master: 30, sag: 40, cab: 0, mic: 40, bass: -5, treble: 2, level: -3 } },
   }),
+  ...voice('linphase', {
+    male:   { note: '남성 보컬에 표준 길이 — 가슴소리를 좁게 덜고 프레즌스를 올립니다. '
+                    + '위상이 돌지 않으니 더블링한 트랙과 합쳤을 때 얇아지지 않습니다',
+              params: { length: 1, hpfHz: 75, lowDb: -1, lowHz: 120, b1Db: -3, b1Hz: 300, b1Q: 1.8,
+                        b2Db: 2.5, b2Hz: 3000, b2Q: 1, highDb: 2 } },
+    female: { note: '여성 보컬에 표준 길이 — 치찰음 자리를 건드리지 않고 에어만 올립니다. '
+                    + '디에서 앞에 두면 두 기기가 같은 대역을 두 번 누르지 않습니다',
+              params: { length: 1, hpfHz: 95, lowDb: -1.5, lowHz: 150, b1Db: -2.5, b1Hz: 400, b1Q: 1.6,
+                        b2Db: 1.5, b2Hz: 2500, b2Q: 0.9, highDb: 3, highHz: 11000 } },
+  }),
   ...voice('tape', {
     male:   { note: '남성 보컬에 15 ips — 범프가 60 Hz 라 가슴소리 바로 아래에 얹힙니다. '
                     + '워우는 거의 끄고: 목소리는 피치 흔들림을 가장 빨리 들킵니다',

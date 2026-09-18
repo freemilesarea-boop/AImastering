@@ -12,6 +12,10 @@
 // with a free-running LFO — the device says so rather than pretending.
 
 import {
+  LINPHASE_LENGTHS, LINPHASE_LENGTH_NAMES, LINPHASE_LENGTH_NOTES,
+  linphaseImpulse, linphaseLatency,
+} from './linear-phase.js';
+import {
   BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
   absShaper, automatableFrom, dbToGain, makeShaper, smoother, tanhCurve, wetDry,
@@ -760,6 +764,92 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           b2Db: bells[1]!.gain, b2Hz: bells[1]!.frequency, b2Q: bells[1]!.Q,
           b3Db: bells[2]!.gain, b3Hz: bells[2]!.frequency, b3Q: bells[2]!.Q,
         }),
+      };
+    }),
+  },
+
+  {
+    id: 'linphase',
+    name: 'Linear Phase EQ',
+    category: 'eq',
+    hasSidechain: false,
+    params: [
+      { id: 'hpfHz',  name: 'HPF',       min: 20,   max: 500,   default: 20,   unit: 'Hz' },
+      { id: 'lowDb',  name: 'Low',       min: -18,  max: 18,    default: 0,    unit: 'dB' },
+      { id: 'lowHz',  name: 'Low Freq',  min: 40,   max: 400,   default: 120,  unit: 'Hz' },
+      { id: 'b1Db',   name: 'Band 1',    min: -18,  max: 18,    default: 0,    unit: 'dB' },
+      { id: 'b1Hz',   name: 'B1 Freq',   min: 100,  max: 2000,  default: 400,  unit: 'Hz' },
+      { id: 'b1Q',    name: 'B1 Q',      min: 0.2,  max: 8,     default: 1,    unit: '' },
+      { id: 'b2Db',   name: 'Band 2',    min: -18,  max: 18,    default: 0,    unit: 'dB' },
+      { id: 'b2Hz',   name: 'B2 Freq',   min: 500,  max: 12000, default: 3000, unit: 'Hz' },
+      { id: 'b2Q',    name: 'B2 Q',      min: 0.2,  max: 8,     default: 1,    unit: '' },
+      { id: 'highDb', name: 'High',      min: -18,  max: 18,    default: 0,    unit: 'dB' },
+      { id: 'highHz', name: 'High Freq', min: 2000, max: 16000, default: 8000, unit: 'Hz' },
+      {
+        id: 'length', name: 'Resolution', min: 0, max: LINPHASE_LENGTHS.length - 1,
+        default: 1, unit: '',
+        choices: LINPHASE_LENGTH_NAMES,
+        choiceNotes: LINPHASE_LENGTH_NOTES,
+      },
+      { id: 'mix',    name: 'Mix',       min: 0,    max: 1,     default: 1,    unit: '' },
+      { id: 'outDb',  name: 'Out',       min: -12,  max: 12,    default: 0,    unit: 'dB' },
+    ],
+    // The bands are a REBUILD, not a ramp: a band that moved would have to
+    // re-design and re-load an impulse response, and there is no AudioParam
+    // anywhere in the signal path to ramp instead.  Mix and Out are gains, so
+    // those two do follow a lane — and saying which is which is the point of
+    // this list.
+    automatableParams: ['mix', 'outDb'],
+    latencyFor: (params) => linphaseLatency(params),
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const wet = ctx.createGain();
+      const dry = ctx.createGain();
+      const out = ctx.createGain();
+      // The dry side is delayed by exactly what the response is late by, so
+      // Mix is a blend rather than a comb.  A linear-phase EQ whose own Mix
+      // combed would be the joke version of itself.
+      const align = ctx.createDelay(1);
+
+      let conv = ctx.createConvolver();
+      let current: Record<string, number> = { ...params };
+
+      const load = (): void => {
+        const next = ctx.createConvolver();
+        // OFF, or the response is scaled by its own energy and the curve the
+        // picture draws is not the curve you hear.
+        next.normalize = false;
+        const h = linphaseImpulse(current, ctx.sampleRate);
+        const buffer = ctx.createBuffer(1, h.length, ctx.sampleRate);
+        buffer.getChannelData(0).set(h);
+        next.buffer = buffer;
+        input.connect(next);
+        next.connect(wet);
+        try { input.disconnect(conv); conv.disconnect(); } catch { /* not connected */ }
+        conv = next;
+        const late = linphaseLatency(current) / ctx.sampleRate;
+        align.delayTime.value = late;
+      };
+
+      const blend = (): void => {
+        const m = Math.max(0, Math.min(1, p(current, 'mix', 1)));
+        wet.gain.value = m;
+        dry.gain.value = 1 - m;
+        out.gain.value = Math.pow(10, p(current, 'outDb', 0) / 20);
+      };
+
+      input.connect(align).connect(dry).connect(out);
+      wet.connect(out);
+      out.connect(output);
+      load();
+      blend();
+
+      return {
+        setParam: (id, v) => {
+          current = { ...current, [id]: v };
+          if (id === 'mix' || id === 'outDb') { blend(); return; }
+          load();
+        },
+        automatable: automatableFrom({ mix: wet.gain, outDb: out.gain }),
       };
     }),
   },

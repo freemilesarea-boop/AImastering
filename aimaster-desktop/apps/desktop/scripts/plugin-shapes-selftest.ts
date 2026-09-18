@@ -21,7 +21,7 @@
 import {
   shaperFor, detectorFor, shaperOutput, readCurve, detectorGainDb, expanderGainCurve,
   filterPictureFor, widthPictureFor, FILTER_DEVICES, WIDTH_DEVICES,
-  lfoPictureFor, combPictureFor, LFO_DEVICES, COMB_DEVICES,
+  lfoPictureFor, combPictureFor, TIME_TRACE_DEVICES, COMB_DEVICES,
   delayPictureFor, bandPictureFor, DELAY_DEVICES, BAND_DEVICES,
   channelPictureFor, floorPictureFor, noticeFor,
   CHANNEL_DEVICES, FLOOR_DEVICES, NOTICE_DEVICES,
@@ -35,6 +35,7 @@ import {
 } from '../src/renderer/daw/engine/plugins-extended.js';
 import { tanhCurve, makeExpanderCurve } from '../src/renderer/daw/engine/plugin-kit.js';
 import { defaultParams, PLUGINS } from '../src/renderer/daw/engine/plugins.js';
+import { eqNodes } from '../src/renderer/daw/model/eq-nodes.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -595,21 +596,41 @@ check('an allpass is flat on its own — the notches are the dry sum, not filter
   }
 });
 
-check('only the modulation devices claim these pictures', () => {
+check('a device that owes TWO pictures is one the window was told about', () => {
+  // The window shows a band EDITOR or a picture, never both — which is the
+  // right answer for every device but one.  A linear-phase EQ's cost is its
+  // impulse response, and a magnitude curve cannot show a millisecond of
+  // pre-ringing; with the either/or left alone the trace was computed, was
+  // correct, and was never drawn.
+  //
+  // So this is a tripwire rather than a property: any device with BOTH a band
+  // description and a time trace has to be handled in `PluginWindow`, and if
+  // a second one appears it fails here by name instead of quietly losing half
+  // its panel.
+  const both = PLUGINS
+    .filter((p) => eqNodes(p.id, defaultParams(p.id)).length > 0
+      && lfoPictureFor(p.id, defaultParams(p.id)) !== null)
+    .map((p) => p.id);
+  assert(both.join(',') === 'linphase',
+    `devices with both an editor and a trace: [${both.join(', ')}] — the window draws one or `
+    + 'the other, so each of these needs saying in PluginWindow');
+});
+
+check('only the devices that draw over time claim these pictures', () => {
   for (const p of PLUGINS) {
-    if (!LFO_DEVICES.includes(p.id)) {
-      assert(!lfoPictureFor(p.id, defaultParams(p.id)), `${p.id} claims an LFO picture`);
+    if (!TIME_TRACE_DEVICES.includes(p.id)) {
+      assert(!lfoPictureFor(p.id, defaultParams(p.id)), `${p.id} claims a time trace`);
     }
     if (!COMB_DEVICES.includes(p.id)) {
       assert(!combPictureFor(p.id, defaultParams(p.id)), `${p.id} claims a comb picture`);
     }
   }
-  for (const id of LFO_DEVICES) assert(lfoPictureFor(id, defaultParams(id)), `${id} has no LFO picture`);
+  for (const id of TIME_TRACE_DEVICES) assert(lfoPictureFor(id, defaultParams(id)), `${id} has no time trace`);
   for (const id of COMB_DEVICES) assert(combPictureFor(id, defaultParams(id)), `${id} has no comb picture`);
 });
 
 check('every modulation caption says something real', () => {
-  for (const id of LFO_DEVICES) {
+  for (const id of TIME_TRACE_DEVICES) {
     const c = lfoPictureFor(id, defaultParams(id))!.caption;
     assert(c.trim().length > 0 && !c.includes('NaN'), `${id}: ${c}`);
   }
@@ -931,7 +952,7 @@ const failed = results.length - passed;
 console.log('\n=== Plugin shapes ===');
 console.log(`${SHAPERS.length} transfer curves, ${DETECTORS.length} detector curves, `
   + `${FILTER_DEVICES.length} filter responses, ${WIDTH_DEVICES.length} width curves, `
-  + `${LFO_DEVICES.length} modulators, ${COMB_DEVICES.length} combs, `
+  + `${TIME_TRACE_DEVICES.length} time traces, ${COMB_DEVICES.length} combs, `
   + `${DELAY_DEVICES.length} delays, ${BAND_DEVICES.length} band compressors, `
   + `${CHANNEL_DEVICES.length} routings, ${FLOOR_DEVICES.length} floor, ${NOTICE_DEVICES.length} notice\n`);
 for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);

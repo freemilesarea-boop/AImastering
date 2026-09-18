@@ -36,6 +36,7 @@ import Knob from './Knob.js';
 import PluginVisual from './PluginVisual.js';
 import EqCurveEditor from './EqCurveEditor.js';
 import { eqNodes, type NodeEdit, type ParamRange } from '../../../daw/model/eq-nodes.js';
+import { lfoPictureFor } from '../../../daw/model/plugin-shapes.js';
 import { wantsSquareVisual } from '../../../daw/model/plugin-shapes.js';
 
 /**
@@ -277,6 +278,11 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
   // write, both values.
   const eqBands = eqNodes(insert.pluginId, params);
   const isEq = eqBands.length > 0;
+  // A band editor and a picture are an either/or below, and for one device
+  // that is the wrong answer: the linear-phase EQ's whole cost is the impulse
+  // response, which a magnitude curve cannot show at all.  So a device that
+  // has BOTH gets both, the editor above and the trace underneath.
+  const alsoDraws = isEq && lfoPictureFor(insert.pluginId, params) !== null;
   const visualHeight = wantsSquareVisual(insert.pluginId) ? SQUARE_HEIGHT : VISUAL_HEIGHT;
 
   const paramRanges: Record<string, ParamRange> = {};
@@ -701,6 +707,19 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
             analysis={analysis}
             width={VISUAL_WIDTH}
             height={visualHeight}
+          />
+        )}
+
+        {alsoDraws && (
+          <PluginVisual
+            pluginId={insert.pluginId}
+            params={params}
+            bypassed={insert.bypass}
+            level={level}
+            reduction={reduction}
+            analysis={analysis}
+            width={VISUAL_WIDTH}
+            height={Math.round(visualHeight * 0.6)}
           />
         )}
 

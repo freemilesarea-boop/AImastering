@@ -143,6 +143,67 @@ const ADVISORS: Record<string, Advisor> = {
     };
   },
 
+  linphase: (p) => {
+    // The same corrective moves eq8 would make, decided the same way — but
+    // the LENGTH is the decision this device adds, and a measurement can
+    // genuinely make it.  Two things pull against each other:
+    //
+    //   · detail.  The response can only resolve what it is long enough to
+    //     resolve: 255 taps reach about 190 Hz at 48 kHz, 1023 about 47.  A
+    //     narrow cut low down needs the long one or it simply does not happen.
+    //   · PRE-RINGING.  A symmetric response rings ahead of the transient as
+    //     well as behind it, and longer means the ringing starts earlier.  On
+    //     a close-miked snare that is a tick before the hit.
+    //
+    // So: percussive material gets the short one and pays in accuracy;
+    // sustained material gets the long one, because there is no transient for
+    // the pre-ringing to sit in front of.
+    const perc = percussive(p);
+    const needsLowDetail = p.lowRolloffHz < 120 || (p.resonance?.hz ?? 1000) < 300;
+    const length = perc > 0.6 ? 0 : (needsLowDetail ? 2 : 1);
+
+    const hpf = clamp(round(highPassHz(p), 5), 20, 500);
+    const mud = clamp(round(-p.mudDb * 0.7, 0.5), -18, 18);
+    const air = clamp(round(p.airDb < -6 ? Math.min(4, -p.airDb * 0.35) : 0, 0.5), -18, 18);
+    const b1Hz = clamp(p.resonance?.hz ?? 400, 100, 2000);
+    const b1Q = p.resonance ? clamp(2 + p.resonance.excessDb / 3, 1, 8) : 1.2;
+    const b1Db = p.resonance
+      ? clamp(round(-p.resonance.excessDb * 0.5, 0.5), -18, 0) : mud;
+    const harsh = clamp(round(-Math.max(0, p.harshDb) * 0.5, 0.5), -18, 0);
+
+    const taps = [255, 1023, 4095][length] ?? 1023;
+    const evidence = [
+      `크레스트 ${p.crestDb.toFixed(1)} dB`,
+      `저역 시작 ${hz(p.lowRolloffHz)}`,
+      `머드 ${db(p.mudDb)}`,
+      `에어 ${db(p.airDb)}`,
+    ];
+    if (p.resonance) evidence.push(`공진 ${hz(p.resonance.hz)} ${db(p.resonance.excessDb)}`);
+    return {
+      params: {
+        hpfHz: hpf,
+        lowDb: mud, lowHz: 120,
+        b1Db, b1Hz, b1Q,
+        b2Db: harsh, b2Hz: clamp(p.sibilanceHz > 0 ? Math.min(p.sibilanceHz, 5000) : 3000, 500, 12000),
+        b2Q: 1.2,
+        highDb: air, highHz: 9000,
+        length,
+        mix: 1,
+        outDb: 0,
+      },
+      headline: `${taps}탭 (${((taps - 1) / 2 / 48_000 * 1000).toFixed(1)} ms 지연) — `
+        + (perc > 0.6
+          ? `크레스트 ${p.crestDb.toFixed(1)} dB, 트랜지언트 앞의 프리링잉을 짧게`
+          : (needsLowDetail
+            ? `저역 ${hz(p.lowRolloffHz)} 을 분해하려면 이만큼 길어야 합니다`
+            : '분해능과 지연이 균형을 이루는 길이')),
+      evidence,
+      // The curve is as confident as eq8's; the LENGTH is a judgement about
+      // how much pre-ringing somebody will accept, and that is not measurable.
+      confidence: 0.55,
+    };
+  },
+
   eq8: (p) => {
     const hpf = clamp(round(highPassHz(p), 5), 20, 1000);
     const mud = clamp(round(-p.mudDb * 0.7, 0.5), -18, 18);

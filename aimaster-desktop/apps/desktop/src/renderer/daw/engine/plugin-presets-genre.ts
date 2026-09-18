@@ -909,6 +909,41 @@ export const GENRE_PRESETS: readonly PluginPreset[] = [
                params: { gain: 50, stages: 2, master: 42, sag: 28, cab: 1, mic: 35, stack: 1, treble: 4 } },
   }),
 
+  ...genrePresets('linphase', {
+    jazz:    { note: '정밀 길이로 아주 얕게. 재즈 마스터에서 위상을 돌리지 않는다는 '
+                     + '것이 이 기기를 쓰는 유일한 이유입니다',
+               params: { length: 2, lowDb: 0.8, lowHz: 100, b1Db: -1.2, b1Hz: 300, b1Q: 1.2,
+                         b2Db: 1, b2Hz: 6000, b2Q: 0.8, highDb: 1.2 } },
+    lofi:    { note: '빠름 길이, 상단을 덜어냅니다 — 짧은 응답의 오차가 여기서는 흠이 아닙니다',
+               params: { length: 0, lowDb: 2, lowHz: 150, b1Db: 2.5, b1Hz: 700, b1Q: 0.9,
+                         b2Db: -4, b2Hz: 5000, b2Q: 0.7, highDb: -6 } },
+    ambient: { note: '정밀 길이. 패드는 트랜지언트가 없어서 프리링잉이 들릴 자리가 없습니다',
+               params: { length: 2, lowDb: -1.5, lowHz: 90, b1Db: -1, b1Hz: 350, b1Q: 1,
+                         b2Db: 1.5, b2Hz: 4000, b2Q: 0.6, highDb: 3, highHz: 10000 } },
+    classic: { note: '정밀 길이, 거의 손대지 않고. 홀의 균형을 위상으로 흐트러뜨리지 않는 것이 전부',
+               params: { length: 2, lowDb: 0.5, lowHz: 80, b1Db: -1, b1Hz: 250, b1Q: 1.4,
+                         b2Db: 0.8, b2Hz: 3000, b2Q: 0.8, highDb: 1 } },
+    kpop:    { note: '표준 길이, 프레즌스와 에어. 보컬 버스에서 위상 회전 없이 올립니다',
+               params: { length: 1, lowDb: -1, lowHz: 120, b1Db: -2, b1Hz: 400, b1Q: 1.5,
+                         b2Db: 3, b2Hz: 4000, b2Q: 1, highDb: 3.5, highHz: 10000 } },
+    pop:     { note: '표준 길이 · 마스터에 가장 흔한 모양 — 로우 셸프와 에어를 조금씩',
+               params: { length: 1, lowDb: 1.5, lowHz: 110, b1Db: -1.5, b1Hz: 450, b1Q: 1.2,
+                         b2Db: 1.5, b2Hz: 5000, b2Q: 0.8, highDb: 2 } },
+    edm:     { note: '표준 길이에 HPF 를 켜고 저역을 올립니다 — 킥과 베이스가 모노로 '
+                     + '합쳐질 때 위상이 돌면 저역이 사라집니다',
+               params: { length: 1, hpfHz: 28, lowDb: 3, lowHz: 70, b1Db: -3, b1Hz: 350, b1Q: 1.6,
+                         b2Db: 2, b2Hz: 6000, b2Q: 0.9, highDb: 3, highHz: 12000 } },
+    hiphop:  { note: '정밀 길이로 서브를 올립니다. 808 의 위상이 돌면 킥과 겹치는 곳에서 '
+                     + '레벨이 바뀝니다',
+               params: { length: 2, lowDb: 3.5, lowHz: 60, b1Db: -2.5, b1Hz: 300, b1Q: 1.4,
+                         b2Db: 1.5, b2Hz: 3500, b2Q: 1, highDb: 1.5 } },
+    rnb:     { note: '표준 길이, 로우미드를 덜고 에어를 더합니다',
+               params: { length: 1, lowDb: 1, lowHz: 100, b1Db: -2.5, b1Hz: 380, b1Q: 1.3,
+                         b2Db: 1.2, b2Hz: 4500, b2Q: 0.8, highDb: 2.5, highHz: 9000 } },
+    jpop:    { note: '표준 길이에 프레즌스. 빽빽한 믹스에서 위상 회전은 넓이를 좁힙니다',
+               params: { length: 1, lowDb: 0.5, lowHz: 120, b1Db: -1.5, b1Hz: 500, b1Q: 1.2,
+                         b2Db: 2.5, b2Hz: 3500, b2Q: 1.1, highDb: 2 } },
+  }),
   ...genrePresets('tape', {
     jazz:    { note: '30 ips, 바이어스 표준. 재즈에서 테이프는 색이 아니라 매체입니다 — '
                      + '워우와 플러터를 거의 끄고 범프만',

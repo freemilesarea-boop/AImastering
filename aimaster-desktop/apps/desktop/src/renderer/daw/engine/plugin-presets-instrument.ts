@@ -518,6 +518,33 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { rateHz: 0.45, depthMs: 7, delayMs: 22, mix: 55 } },
   }),
 
+  ...inst('linphase', {
+    drumloop: { note: '드럼에는 빠름 길이로. 프리링잉은 트랜지언트 앞에 붙는 것이라 '
+                      + '드럼에서 가장 잘 들리고, 짧을수록 그 물결이 짧습니다',
+                params: { length: 0, lowDb: 2, lowHz: 70, b1Db: -3, b1Hz: 400, b1Q: 1.6,
+                          b2Db: 2.5, b2Hz: 6000, b2Q: 0.9, highDb: 1.5 } },
+    bass:     { note: '베이스는 정밀 길이 — 저역을 분해하려면 응답이 길어야 하고, '
+                      + '베이스에는 앞에서 울릴 트랜지언트가 거의 없습니다',
+                params: { length: 2, lowDb: 2.5, lowHz: 70, b1Db: -3, b1Hz: 300, b1Q: 1.5,
+                          b2Db: 1, b2Hz: 1500, b2Q: 1, highDb: -2 } },
+    egtr:     { note: '일렉 기타에 표준 길이 · 로우미드를 덜고 프레즌스를 세웁니다',
+                params: { length: 1, hpfHz: 80, lowDb: -1, lowHz: 150, b1Db: -3.5, b1Hz: 450, b1Q: 1.4,
+                          b2Db: 3, b2Hz: 2500, b2Q: 1.1, highDb: -1.5 } },
+    agtr:     { note: '통기타에 정밀 길이 — 통울림을 좁게 덜어내려면 그만큼의 분해능이 필요합니다',
+                params: { length: 2, hpfHz: 70, lowDb: -1.5, lowHz: 110, b1Db: -4, b1Hz: 200, b1Q: 2.5,
+                          b2Db: 2, b2Hz: 5000, b2Q: 0.8, highDb: 2.5, highHz: 10000 } },
+    piano:    { note: '피아노에 정밀 길이, 아주 얕게. 위상이 돌면 페달을 밟은 화음의 '
+                      + '배음들이 서로 어긋납니다',
+                params: { length: 2, lowDb: 1, lowHz: 100, b1Db: -1.5, b1Hz: 350, b1Q: 1.3,
+                          b2Db: 1.5, b2Hz: 4000, b2Q: 0.8, highDb: 1.5 } },
+    strings:  { note: '현 섹션에 정밀 길이 — 여러 연주자가 겹친 소리라 위상 회전이 넓이로 드러납니다',
+                params: { length: 2, hpfHz: 60, lowDb: -1, lowHz: 120, b1Db: -2, b1Hz: 400, b1Q: 1.2,
+                          b2Db: 1.5, b2Hz: 3000, b2Q: 0.9, highDb: 2, highHz: 9000 } },
+    synth:    { note: '신스에 표준 길이 — 만들어진 소리라 무엇을 해도 되고, 길이는 지연이 '
+                      + '덜한 쪽으로',
+                params: { length: 1, lowDb: 1.5, lowHz: 90, b1Db: -2, b1Hz: 500, b1Q: 1,
+                          b2Db: 2, b2Hz: 5000, b2Q: 0.8, highDb: 2.5, highHz: 11000 } },
+  }),
   ...inst('tape', {
     drumloop: { note: '드럼에 15 ips — 테이프가 드럼을 눌러주는 건 상단부터라, '
                       + '심벌이 먼저 잡히고 킥은 범프로 부풀어 오릅니다',
