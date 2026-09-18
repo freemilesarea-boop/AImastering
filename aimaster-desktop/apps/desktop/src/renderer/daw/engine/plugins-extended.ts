@@ -16,6 +16,9 @@ import {
   linphaseImpulse, linphaseLatency,
 } from './linear-phase.js';
 import {
+  MATCH_BANDS, MATCH_HZ, matchBandId, matchImpulse, matchLatency,
+} from './match-eq.js';
+import {
   BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
   absShaper, automatableFrom, dbToGain, makeShaper, smoother, tanhCurve, wetDry,
@@ -764,6 +767,83 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           b2Db: bells[1]!.gain, b2Hz: bells[1]!.frequency, b2Q: bells[1]!.Q,
           b3Db: bells[2]!.gain, b3Hz: bells[2]!.frequency, b3Q: bells[2]!.Q,
         }),
+      };
+    }),
+  },
+
+  {
+    id: 'matcheq',
+    name: 'Match EQ',
+    category: 'eq',
+    hasSidechain: false,
+    params: [
+      { id: 'amount',    name: 'Amount',   min: 0,  max: 1,  default: 0.7, unit: '' },
+      { id: 'smoothOct', name: 'Smooth',   min: 0,  max: 2,  default: 0.5, unit: 'oct' },
+      { id: 'limitDb',   name: 'Limit',    min: 0,  max: 18, default: 6,   unit: 'dB' },
+      {
+        id: 'length', name: 'Resolution', min: 0, max: LINPHASE_LENGTHS.length - 1,
+        default: 1, unit: '',
+        choices: LINPHASE_LENGTH_NAMES,
+        choiceNotes: LINPHASE_LENGTH_NOTES,
+      },
+      { id: 'mix',       name: 'Mix',      min: 0,  max: 1,  default: 1,   unit: '' },
+      { id: 'outDb',     name: 'Out',      min: -12, max: 12, default: 0,  unit: 'dB' },
+      // The measured curve.  Stored, not dialled — see `PluginParamDef.curve`.
+      ...Array.from({ length: MATCH_BANDS }, (_unused, b) => ({
+        id: matchBandId(b),
+        name: `${MATCH_HZ[b]! < 1000 ? Math.round(MATCH_HZ[b]!) : (MATCH_HZ[b]! / 1000).toFixed(1) + 'k'} Hz`,
+        min: -24, max: 24, default: 0, unit: 'dB', curve: true,
+      })),
+    ],
+    // Mix and Out are gains.  Everything else RESHAPES the curve and rebuilds
+    // an impulse response — including Amount, which is the knob people would
+    // most like to ride and the one this topology cannot give them.  Said here
+    // rather than discovered as a lane that does nothing.
+    automatableParams: ['mix', 'outDb'],
+    latencyFor: (params) => matchLatency(params),
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const wet = ctx.createGain();
+      const dry = ctx.createGain();
+      const out = ctx.createGain();
+      const align = ctx.createDelay(1);
+
+      let conv = ctx.createConvolver();
+      let current: Record<string, number> = { ...params };
+
+      const load = (): void => {
+        const next = ctx.createConvolver();
+        next.normalize = false;
+        const h = matchImpulse(current, ctx.sampleRate);
+        const buffer = ctx.createBuffer(1, h.length, ctx.sampleRate);
+        buffer.getChannelData(0).set(h);
+        next.buffer = buffer;
+        input.connect(next);
+        next.connect(wet);
+        try { input.disconnect(conv); conv.disconnect(); } catch { /* not connected */ }
+        conv = next;
+        align.delayTime.value = matchLatency(current) / ctx.sampleRate;
+      };
+
+      const blend = (): void => {
+        const m = Math.max(0, Math.min(1, p(current, 'mix', 1)));
+        wet.gain.value = m;
+        dry.gain.value = 1 - m;
+        out.gain.value = Math.pow(10, p(current, 'outDb', 0) / 20);
+      };
+
+      input.connect(align).connect(dry).connect(out);
+      wet.connect(out);
+      out.connect(output);
+      load();
+      blend();
+
+      return {
+        setParam: (id, v) => {
+          current = { ...current, [id]: v };
+          if (id === 'mix' || id === 'outDb') { blend(); return; }
+          load();
+        },
+        automatable: automatableFrom({ mix: wet.gain, outDb: out.gain }),
       };
     }),
   },

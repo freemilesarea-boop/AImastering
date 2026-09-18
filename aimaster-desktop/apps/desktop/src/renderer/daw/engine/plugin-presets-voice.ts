@@ -84,6 +84,7 @@ export const NO_VOICE_PRESETS: Readonly<Record<string, string>> = {
   trim:     '게인 하나입니다. 프리셋은 이름 붙인 숫자일 뿐입니다',
   dither:   '쓰는 파일에 대한 것이지 누가 불렀는지와 무관합니다',
   loudness: 'LUFS 목표는 곡의 사실입니다. 목소리에 목표 라우드니스는 없습니다',
+  matcheq:  '매치 EQ 의 설정은 특정 레퍼런스를 잰 결과 그 자체입니다. 프리셋 커브는 아무도 재지 않은 커브입니다',
 };
 
 /**

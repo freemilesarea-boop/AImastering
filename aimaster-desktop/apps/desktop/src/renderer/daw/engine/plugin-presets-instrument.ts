@@ -123,6 +123,7 @@ export const NO_INSTRUMENT_PRESETS: Readonly<Record<string, string>> = {
   trim:     '게인 하나입니다. 프리셋은 이름 붙인 숫자일 뿐입니다',
   dither:   '쓰는 파일에 대한 것이지 트랙에 뭐가 있는지와 무관합니다',
   loudness: 'LUFS 목표는 곡의 사실입니다. 베이스 트랙에는 목표 라우드니스가 없습니다',
+  matcheq:  '매치 EQ 의 설정은 특정 레퍼런스를 잰 결과 그 자체입니다. 프리셋 커브는 아무도 재지 않은 커브입니다',
 };
 
 /**

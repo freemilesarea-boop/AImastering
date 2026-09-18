@@ -143,6 +143,55 @@ const ADVISORS: Record<string, Advisor> = {
     };
   },
 
+  matcheq: (p) => {
+    // The curve is NOT advised, and cannot be: it is the difference between a
+    // reference's spectrum and this one, and an advisor is handed only this
+    // one.  What it CAN decide is what to do with a curve once it exists, and
+    // those three controls are where a match is won or lost.
+    //
+    //   · SMOOTH separates tonality from arrangement.  Two pieces of music
+    //     never agree band to band, and the finer the resolution the more of
+    //     the disagreement is which note was played.  A dense, busy source
+    //     needs more smoothing than a sparse one — and density reads as a low
+    //     crest factor, because everything is sounding at once.
+    //   · LIMIT is how far a reference may be believed.  A source whose low
+    //     end starts high is missing a sub the reference may well have, and
+    //     the difference there will be enormous and meaningless.
+    //   · AMOUNT belongs under 100 always.  Matching a reference exactly
+    //     makes a worse copy of it, and the number engineers settle on is
+    //     around two thirds.
+    const dense = 1 - percussive(p);
+    const smoothOct = clamp(round(0.3 + dense * 0.5, 0.05), 0.2, 1);
+    // A source with no bottom cannot be given one by an EQ, so the limit is
+    // tightened rather than letting the curve ask for twenty decibels of it.
+    const thin = p.lowRolloffHz > 90;
+    const limitDb = clamp(round(thin ? 4 : 7, 0.5), 0, 18);
+    const amount = 0.65;
+    return {
+      params: {
+        amount, smoothOct, limitDb,
+        // The middle length, measured rather than assumed.  A match curve is
+        // NOT broad enough for the shortest response — a band is 164 Hz wide
+        // at 785 Hz and 255 taps only build down to 1478 Hz — and on a 5.5 dB
+        // gap the middle length closed 1.24 dB of it against the short one's
+        // 1.75, for eight milliseconds more delay.  The long one reached 1.16
+        // for four times that, which is not a trade worth advising.
+        length: 1,
+        mix: 1, outDb: 0,
+      },
+      headline: `${Math.round(amount * 100)}% · ${smoothOct.toFixed(2)} 옥타브 평활 · `
+        + `한계 ${limitDb.toFixed(0)} dB — 커브는 레퍼런스를 재야 생깁니다`,
+      evidence: [
+        `크레스트 ${p.crestDb.toFixed(1)} dB`,
+        `저역 시작 ${hz(p.lowRolloffHz)}`,
+        `중심 ${hz(p.centroidHz)}`,
+      ],
+      // The three knobs follow the source; the curve is a measurement this
+      // advisor never sees, so it is not claiming to have matched anything.
+      confidence: 0.4,
+    };
+  },
+
   linphase: (p) => {
     // The same corrective moves eq8 would make, decided the same way — but
     // the LENGTH is the decision this device adds, and a measurement can
@@ -903,7 +952,10 @@ export const LOW_CONFIDENCE = 0.45;
  * top — so applying it is one assignment and never leaves half the device on
  * the last thing somebody did.
  */
-export function adviseFor(pluginId: string, profile: SourceProfile): AdviceResult {
+export function adviseFor(
+  pluginId: string, profile: SourceProfile,
+  current: Record<string, number> = {},
+): AdviceResult {
   const descriptor = findPlugin(pluginId);
   if (!descriptor) return { ok: false, reason: '알 수 없는 장치입니다' };
 
@@ -920,11 +972,22 @@ export function adviseFor(pluginId: string, profile: SourceProfile): AdviceResul
 
   // Defaults underneath, advice on top, everything clamped to the device's own
   // declared range.  An advisor cannot put a device somewhere it cannot go.
+  //
+  // With one exception, and it is the same rule from the other side: a value
+  // the device MEASURED is not a value an advisor may invent, so a `curve`
+  // parameter keeps whatever is already there.  Falling back to the default
+  // would zero the match EQ's reference curve every time somebody asked for
+  // advice about its Amount — advice that silently deletes a measurement.
   const params: Record<string, number> = {};
   for (const def of descriptor.params) {
     const suggested = draft.params[def.id];
-    params[def.id] = typeof suggested === 'number' && Number.isFinite(suggested)
-      ? clamp(suggested, def.min, def.max)
+    if (typeof suggested === 'number' && Number.isFinite(suggested)) {
+      params[def.id] = clamp(suggested, def.min, def.max);
+      continue;
+    }
+    const held = def.curve ? current[def.id] : undefined;
+    params[def.id] = typeof held === 'number' && Number.isFinite(held)
+      ? clamp(held, def.min, def.max)
       : def.default;
   }
 

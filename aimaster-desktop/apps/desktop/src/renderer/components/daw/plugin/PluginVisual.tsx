@@ -72,7 +72,9 @@ function eqSpecs(pluginId: string, params: Record<string, number>): BiquadSpec[]
 
 function drawEq(
   ctx: CanvasRenderingContext2D, w: number, h: number,
-  curves: ReadonlyArray<{ label: string; specs: BiquadSpec[]; colour: string }>,
+  curves: ReadonlyArray<{
+    label: string; specs: BiquadSpec[]; colour: string; dbAt?: (hz: number) => number;
+  }>,
   dim: boolean, fromHz = 20, toHz = 20_000, rangeDb = 24,
 ): void {
   const yFor = (db: number): number => h / 2 - (db / rangeDb) * (h / 2 - 6);
@@ -106,7 +108,8 @@ function drawEq(
     ctx.beginPath();
     points.forEach((hz, i) => {
       let db = 0;
-      for (const spec of curve.specs) db += biquadMagnitudeDb(spec, hz);
+      if (curve.dbAt) db = curve.dbAt(hz);
+      else for (const spec of curve.specs) db += biquadMagnitudeDb(spec, hz);
       const y = yFor(Math.max(-rangeDb, Math.min(rangeDb, db)));
       if (i === 0) ctx.moveTo(0, y); else ctx.lineTo(i, y);
     });

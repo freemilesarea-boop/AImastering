@@ -45,6 +45,16 @@ const NO_GENRE: Record<string, string> = {
   phase:   'invert / swap / mono is a wiring decision, not a sound',
   trim:    'one gain in dB — a "genre gain" would be invented',
   dither:  'bit depth and TPDF amount are decided by the delivery format',
+  // The one that is worth arguing about.  Amount, Smooth and Limit ARE genre
+  // judgements — a dense master wants more smoothing and a tighter limit than
+  // a jazz trio does — but the curve they shape is a measurement of one
+  // particular reference, and with the curve at zero the device is unity, so
+  // a preset that set only the three would be ten presets that do nothing.
+  // A preset carrying a curve would be a target balance nobody measured,
+  // which is the "preset with a story" this repository refuses everywhere
+  // else.  So: no genre presets, and the reason is the device, not an
+  // oversight.
+  matcheq: 'its setting is a measurement of one reference; a preset curve is one nobody took',
 };
 
 const covered = PLUGINS.filter((p) => !(p.id in NO_GENRE));

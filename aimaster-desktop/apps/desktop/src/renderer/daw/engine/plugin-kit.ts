@@ -26,6 +26,24 @@ export interface PluginParamDef {
   choices?: readonly string[];
   /** One line per choice, shown under the picker.  Same length as `choices`. */
   choiceNotes?: readonly string[];
+  /**
+   * A number the device STORES rather than a knob anyone turns.
+   *
+   * The match EQ keeps its measured curve as thirty-two band gains, because a
+   * session stores parameters as numbers and a curve has to survive being
+   * saved.  Thirty-two knobs in the panel would be unusable and would also be
+   * a lie about how the value is set — it is measured, not dialled — so the
+   * panel draws the curve and skips these.  Everything else still applies:
+   * they are read by `create`, written by `setParam`, and saved.
+   */
+  curve?: boolean;
+}
+
+/** The parameters a panel should show as controls. */
+export function knobParams(
+  params: readonly PluginParamDef[],
+): readonly PluginParamDef[] {
+  return params.filter((p) => !p.curve);
 }
 
 /**

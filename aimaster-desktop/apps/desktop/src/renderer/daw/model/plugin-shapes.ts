@@ -292,6 +292,9 @@ export function detectorGainDb(spec: DetectorSpec, inputDb: number): number {
 import { TAPE_SPEEDS, tapeTopHz } from '../engine/plugins-extended.js';
 import { BUTTERWORTH_Q } from '../engine/plugin-kit.js';
 import { linphaseImpulse } from '../engine/linear-phase.js';
+import {
+  matchApplied, matchMagnitudeAt, matchShapeDb, matchShapeOf, matchStored,
+} from '../engine/match-eq.js';
 
 /**
  * The rate the pictures are drawn at.
@@ -309,6 +312,15 @@ export interface NamedCurve {
   specs: BiquadSpec[];
   /** Drawn in this colour, so two curves in one picture stay apart. */
   colour: string;
+  /**
+   * The curve's level at a frequency, when it is NOT a cascade of biquads.
+   *
+   * The match EQ's shape is thirty-two measured numbers and an interpolation,
+   * which no set of biquads reproduces exactly — and a picture that drew an
+   * approximation of the filter would be a picture of a different filter.
+   * When this is present it replaces `specs` entirely.
+   */
+  dbAt?: (hz: number) => number;
 }
 
 export interface FilterPicture {
@@ -322,7 +334,7 @@ export interface FilterPicture {
 const MID_COLOUR = 'rgba(230,210,160,0.95)';
 const SIDE_COLOUR = 'rgba(126,200,255,0.9)';
 
-export const FILTER_DEVICES: readonly string[] = ['mseq', 'hum', 'dcblock', 'amp', 'tape'];
+export const FILTER_DEVICES: readonly string[] = ['mseq', 'hum', 'dcblock', 'amp', 'tape', 'matcheq'];
 
 export function filterPictureFor(
   pluginId: string, params: Record<string, number>,
@@ -388,6 +400,37 @@ export function filterPictureFor(
       caption: `${speed.ips} ips · 헤드 범프 ${speed.bumpHz} Hz ${bumpDb >= 0 ? '+' : ''}`
         + `${bumpDb.toFixed(1)} dB · 상단 ${(topHz / 1000).toFixed(1)} kHz · 바이어스 `
         + `${bias < 0.42 ? '낮음' : (bias > 0.58 ? '높음' : '표준')}`,
+    };
+  }
+
+  if (pluginId === 'matcheq') {
+    // Two curves, because the difference between them IS the three controls.
+    // The measurement is what the reference asked for; the applied curve is
+    // what Amount, Smooth and Limit left of it, and a panel that drew only
+    // one of them would make those three knobs invisible.
+    const stored = matchStored(params);
+    const shape = matchShapeOf(params);
+    const applied = matchApplied(params);
+    const raw = matchShapeDb(stored, { amount: 1, smoothOct: 0, limitDb: 24 });
+    const measured = stored.some((v) => Math.abs(v) > 0.01);
+    const curves: NamedCurve[] = [
+      { label: '적용', specs: [], colour: MID_COLOUR, dbAt: (hz) => matchMagnitudeAt(applied, hz) },
+    ];
+    if (measured) {
+      curves.push({
+        label: '측정', specs: [], colour: SIDE_COLOUR,
+        dbAt: (hz) => matchMagnitudeAt(raw, hz),
+      });
+    }
+    let worst = 0;
+    for (const v of applied) worst = Math.max(worst, Math.abs(v));
+    return {
+      curves,
+      fromHz: 20, toHz: 20_000,
+      caption: measured
+        ? `${Math.round(shape.amount * 100)}% · ${shape.smoothOct.toFixed(2)} 옥타브 평활 · `
+          + `한계 ${shape.limitDb.toFixed(0)} dB · 최대 이동 ${worst.toFixed(1)} dB`
+        : '레퍼런스를 아직 재지 않았습니다 — 커브가 비어 있어 통과만 시킵니다',
     };
   }
 

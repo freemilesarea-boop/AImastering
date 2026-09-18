@@ -38,6 +38,7 @@ import EqCurveEditor from './EqCurveEditor.js';
 import { eqNodes, type NodeEdit, type ParamRange } from '../../../daw/model/eq-nodes.js';
 import { lfoPictureFor } from '../../../daw/model/plugin-shapes.js';
 import { wantsSquareVisual } from '../../../daw/model/plugin-shapes.js';
+import { knobParams } from '../../../daw/engine/plugin-kit.js';
 
 /**
  * A row of preset chips for one closed set.
@@ -432,7 +433,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         slot: insert.slot,
         selection: useDawStore.getState().selection,
       });
-      const result = adviseFor(insert.pluginId, profile);
+      const result = adviseFor(insert.pluginId, profile, params);
       if (!result.ok) {
         setAdvice(null);
         setAdviceError(result.reason);
@@ -723,7 +724,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
           />
         )}
 
-        {descriptor.params.filter(isChoice).map((def) => {
+        {knobParams(descriptor.params).filter(isChoice).map((def) => {
           const index = Math.round(params[def.id] ?? def.default);
           return (
             <div key={def.id} className="flex flex-col gap-1">
@@ -752,7 +753,7 @@ export default function PluginWindow({ window: win }: { window: PluginWindowStat
         })}
 
         <div className="flex flex-wrap gap-x-1 gap-y-2 justify-center">
-          {descriptor.params.filter((def) => !isChoice(def)).map((def) => (
+          {knobParams(descriptor.params).filter((def) => !isChoice(def)).map((def) => (
             <Knob
               key={def.id}
               label={def.name}
