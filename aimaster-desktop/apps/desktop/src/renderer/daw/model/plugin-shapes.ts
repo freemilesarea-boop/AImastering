@@ -621,7 +621,7 @@ export interface WidthPicture {
   caption: string;
 }
 
-export const WIDTH_DEVICES: readonly string[] = ['widener', 'monomaker'];
+export const WIDTH_DEVICES: readonly string[] = ['widener', 'monomaker', 'mbwidth'];
 
 export function widthPictureFor(
   pluginId: string, params: Record<string, number>,
@@ -637,6 +637,44 @@ export function widthPictureFor(
       cornerHz: corner,
       maxWidth: Math.max(2, width),
       caption: `폭 ${width.toFixed(2)}× · ${corner.toFixed(0)} Hz 아래는 모노`,
+    };
+  }
+
+  if (pluginId === 'mbwidth') {
+    const lowX = num(params, 'lowXHz', 150);
+    const highX = num(params, 'highXHz', 4000);
+    const widths = [
+      Math.max(0, num(params, 'lowWidth', 1)),
+      Math.max(0, num(params, 'midWidth', 1)),
+      Math.max(0, num(params, 'hiWidth', 1)),
+    ];
+    // Each band is two Butterworth sections — Linkwitz-Riley — so its
+    // magnitude is the square of one, and the three add up.  Summing
+    // MAGNITUDES rather than complex responses is exact where it matters:
+    // LR4 halves each side at the corner and the two arrive in phase, so
+    // 0.5 + 0.5 is 1 there, and an octave away one of them is 24 dB down.
+    // Measured against the rendered device at 300 Hz with the low band shut:
+    // this says −0.53 dB and the device does −0.53 dB.
+    const mag = (spec: BiquadSpec, hz: number): number =>
+      Math.pow(10, (2 * biquadMagnitudeDb(spec, hz)) / 20);
+    const lowPass: BiquadSpec = { type: 'lowpass', freq: lowX, gain: 0, q: BUTTERWORTH_Q };
+    const lowCut: BiquadSpec = { type: 'highpass', freq: lowX, gain: 0, q: BUTTERWORTH_Q };
+    const highPass: BiquadSpec = { type: 'lowpass', freq: highX, gain: 0, q: BUTTERWORTH_Q };
+    const highCut: BiquadSpec = { type: 'highpass', freq: highX, gain: 0, q: BUTTERWORTH_Q };
+    const widthAt = (hz: number): number =>
+      widths[0]! * mag(lowPass, hz)
+      + widths[1]! * mag(lowCut, hz) * mag(highPass, hz)
+      + widths[2]! * mag(highCut, hz);
+    const pct = (w: number): string => `${Math.round(w * 100)}%`;
+    return {
+      widthAt,
+      // Where the low band hands over, which is the edge people set first.
+      cornerHz: lowX,
+      maxWidth: Math.max(2, ...widths),
+      caption: widths.every((w) => Math.abs(w - 1) < 0.005)
+        ? `${lowX.toFixed(0)} Hz · ${(highX / 1000).toFixed(1)} kHz — 세 대역 모두 그대로`
+        : `${pct(widths[0]!)} / ${pct(widths[1]!)} / ${pct(widths[2]!)} `
+          + `· ${lowX.toFixed(0)} Hz · ${(highX / 1000).toFixed(1)} kHz`,
     };
   }
 

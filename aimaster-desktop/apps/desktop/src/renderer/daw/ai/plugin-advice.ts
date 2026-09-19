@@ -437,6 +437,45 @@ const ADVISORS: Record<string, Advisor> = {
     };
   },
 
+  mbwidth: (p) => {
+    if (p.channels < 2) {
+      return { refuse: '모노 소스입니다 — 넓힐 사이드가 없습니다' };
+    }
+    // The one thing this device is always right about: a bass that does not
+    // survive mono.  The profile measures the correlation below 120 Hz
+    // separately for exactly this.
+    const bassIsFighting = p.bassCorrelation < 0.7;
+    const lowWidth = bassIsFighting
+      ? 0
+      : clamp(round(0.4 + p.bassCorrelation * 0.6, 0.05), 0, 1);
+    // Above it, widen what is narrow and leave alone what is already wide.
+    // `widthPercent` is the whole mix; 100 is ordinary stereo.
+    const room = Math.max(0, 110 - p.widthPercent) / 110;
+    const hiWidth = clamp(round(1 + room * 0.6, 0.05), 1, 1.8);
+    const midWidth = clamp(round(1 + room * 0.25, 0.05), 1, 1.4);
+    if (p.correlation < 0.2 && !bassIsFighting) {
+      return {
+        refuse: `상관도 ${p.correlation.toFixed(2)} — 이미 넓습니다. 더 벌리면 모노에서 무너집니다`,
+      };
+    }
+    // The crossover goes where the bass actually stops, not at a round number.
+    const lowX = clamp(round(Math.max(90, Math.min(300, p.lowRolloffHz * 2.2)), 10), 60, 500);
+    return {
+      params: {
+        lowXHz: lowX, highXHz: 4000,
+        lowWidth, midWidth, hiWidth, outDb: 0,
+      },
+      headline: bassIsFighting
+        ? `${lowX} Hz 아래를 모노로 — 저역 상관도 ${p.bassCorrelation.toFixed(2)} 는 모노에서 사라집니다`
+        : `위를 ${Math.round(hiWidth * 100)}% 로 — 폭 ${Math.round(p.widthPercent)}% 에서 벌릴 여유가 있습니다`,
+      evidence: [`상관도 ${p.correlation.toFixed(2)}`,
+        `저역 상관도 ${p.bassCorrelation.toFixed(2)}`,
+        `폭 ${Math.round(p.widthPercent)}%`,
+        `저역 끝 ${p.lowRolloffHz.toFixed(0)} Hz`],
+      confidence: bassIsFighting ? 0.8 : 0.6,
+    };
+  },
+
   upward: (p) => {
     // The one thing an upward compressor can do that nothing else can is
     // raise what is quiet — and the one thing it must never do is raise what

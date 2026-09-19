@@ -46,7 +46,7 @@ import {
   BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
   absShaper, automatableFrom, dbToGain, envelopeFollower, makeShaper, smoother,
-  tanhCurve, wetDry,
+  stereoSplit, tanhCurve, wetDry,
   withBypass, type AutomatableParam, type PluginDescriptor,
 } from './plugin-kit.js';
 import { upwardCurve } from './upward.js';
@@ -188,9 +188,7 @@ interface MidSide {
 }
 
 function midSide(ctx: BaseAudioContext): MidSide {
-  const input = ctx.createGain();
-  const splitter = ctx.createChannelSplitter(2);
-  input.connect(splitter);
+  const { input, splitter } = stereoSplit(ctx);
 
   const mid = ctx.createGain();
   const side = ctx.createGain();
@@ -1083,11 +1081,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
         // 45 degrees, while the correlation read 1 and the width read 0 % —
         // the numbers right and the picture wrong, which is the worst way for
         // a meter to be broken.
-        const stereo = ctx.createGain();
-        stereo.channelCount = 2;
-        stereo.channelCountMode = 'explicit';
-        stereo.channelInterpretation = 'speakers';
-        const splitter = ctx.createChannelSplitter(2);
+        const { input: stereo, splitter } = stereoSplit(ctx);
         const left = ctx.createAnalyser();
         const right = ctx.createAnalyser();
         left.fftSize = SCOPE_FFT_SIZE;
@@ -2581,7 +2575,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     // compatibility is the price, which is why Amount exists and why this is
     // not something to put on a bass.
     create: (ctx, params) => withBypass(ctx, (input, output) => {
-      const splitter = ctx.createChannelSplitter(2);
+      const { input: stereo, splitter } = stereoSplit(ctx);
       const merger = ctx.createChannelMerger(2);
       const delay = ctx.createDelay(0.1);
       delay.delayTime.value = p(params, 'delayMs', 12) / 1000;
@@ -2592,7 +2586,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const dryR = blend.dry;
       const setAmount = (a: number): void => blend.setMix(a);
 
-      input.connect(splitter);
+      input.connect(stereo);
       splitter.connect(merger, 0, 0);                 // left straight through
       splitter.connect(delay, 1);
       delay.connect(wet).connect(merger, 0, 1);
@@ -2633,7 +2627,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     // The first thing to reach for when a snare has two mics and the pair
     // sounds thin, and the check every mix needs before it leaves.
     create: (ctx, params) => withBypass(ctx, (input, output) => {
-      const splitter = ctx.createChannelSplitter(2);
+      const { input: stereo, splitter } = stereoSplit(ctx);
       const merger = ctx.createChannelMerger(2);
       const lGain = ctx.createGain();
       const rGain = ctx.createGain();
@@ -2660,7 +2654,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       };
       wire();
 
-      input.connect(splitter);
+      input.connect(stereo);
       splitter.connect(lGain, 0);
       splitter.connect(rGain, 1);
       lGain.connect(lToL); lGain.connect(lToR);
@@ -3073,7 +3067,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       // with no shield between them.  What leaks is the other channel, and
       // what that does to a mix is pull the sides toward the middle — which
       // is a narrowing, not a widening, and is part of why tape "glues".
-      const split = ctx.createChannelSplitter(2);
+      const { input: stereo, splitter: split } = stereoSplit(ctx);
       const merge = ctx.createChannelMerger(2);
       const leakLtoR = ctx.createGain();
       const leakRtoL = ctx.createGain();
@@ -3122,7 +3116,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
 
       input.connect(inGain).connect(delay).connect(record).connect(drivePre);
       drivePost.connect(play).connect(subCut).connect(bump).connect(top);
-      top.connect(split);
+      top.connect(stereo);
       split.connect(directL, 0);
       split.connect(directR, 1);
       split.connect(leakRtoL, 1);
@@ -3256,6 +3250,148 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           blend.dispose();
           env.dispose();
           try { curve.disconnect(); } catch { /* ignore */ }
+        },
+      };
+    }),
+  },
+  {
+    id: 'mbwidth',
+    name: 'Multiband Imager',
+    category: 'imaging',
+    hasSidechain: false,
+    params: [
+      { id: 'lowXHz',    name: 'Low X',  min: 60,   max: 500,   default: 150,  unit: 'Hz' },
+      { id: 'highXHz',   name: 'High X', min: 1500, max: 10000, default: 4000, unit: 'Hz' },
+      { id: 'lowWidth',  name: 'Low',    min: 0,    max: 2,     default: 1,    unit: '×' },
+      { id: 'midWidth',  name: 'Mid',    min: 0,    max: 2,     default: 1,    unit: '×' },
+      { id: 'hiWidth',   name: 'High',   min: 0,    max: 2,     default: 1,    unit: '×' },
+      { id: 'outDb',     name: 'Out',    min: -12,  max: 12,    default: 0,    unit: 'dB' },
+    ],
+    // The three widths and the trim are each one gain.  The crossovers are
+    // eight biquads apiece — four on the side and four on the mid, which have
+    // to move together — so they are offered to a macro through `drives`
+    // rather than as insert lanes.
+    automatableParams: ['lowWidth', 'midWidth', 'hiWidth', 'outDb'],
+    latencyFor: () => 0,
+    // The imaging shelf was broadband only: `widener`, `monomaker` and `haas`
+    // all act on the whole spectrum at once, and `mseq` is a two-band mid/side
+    // shelf pair rather than width per band.  Keeping the bass mono while the
+    // top opens up is the one move every mastering chain makes, and nothing
+    // here could make it.
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const lowX = p(params, 'lowXHz', 150);
+      const highX = p(params, 'highXHz', 4000);
+
+      // `stereoSplit` rather than a bare splitter: a mono source reaching one
+      // fills channel 0 and leaves channel 1 silent, and this device would
+      // answer with a left-only signal.
+      const { input: stereo, splitter } = stereoSplit(ctx);
+      const merger = ctx.createChannelMerger(2);
+      input.connect(stereo);
+
+      // M = (L+R)/2, S = (L−R)/2.
+      const mid = ctx.createGain();
+      const side = ctx.createGain();
+      const half = (from: number, to: GainNode, value: number): void => {
+        const g = ctx.createGain();
+        g.gain.value = value;
+        splitter.connect(g, from);
+        g.connect(to);
+      };
+      half(0, mid, 0.5);
+      half(1, mid, 0.5);
+      half(0, side, 0.5);
+      half(1, side, -0.5);
+
+      // Flat sections, because these are crossover edges and the bands are
+      // summed back — the Q is in decibels, see `BUTTERWORTH_Q`.
+      const lowEdge: BiquadFilterNode[] = [];
+      const highEdge: BiquadFilterNode[] = [];
+      const edge = (kind: 'lowpass' | 'highpass', hz: number,
+        into: BiquadFilterNode[]): BiquadFilterNode => {
+        const f = ctx.createBiquadFilter();
+        f.type = kind;
+        f.frequency.value = hz;
+        f.Q.value = BUTTERWORTH_Q;
+        into.push(f);
+        return f;
+      };
+
+      /**
+       * Three Linkwitz-Riley bands out of one signal, summed back.
+       *
+       * Built TWICE — once for the side with the width gains on it, once for
+       * the mid with nothing.  The mid does not need splitting to be widened,
+       * it needs splitting so that it comes out with the SAME phase the side
+       * does: an LR crossover sums to an allpass, and a side that has been
+       * through one against a mid that has not is an image that rotates with
+       * frequency.  Measured at unity widths, the two together are flat to
+       * 0.02 dB from 40 Hz to 12 kHz.
+       */
+      const threeBands = (source: AudioNode, widths: GainNode[] | null): GainNode => {
+        const sum = ctx.createGain();
+        const run = (nodes: BiquadFilterNode[], gain: GainNode | null): void => {
+          let cursor: AudioNode = source;
+          for (const f of nodes) { cursor.connect(f); cursor = f; }
+          if (gain) cursor.connect(gain).connect(sum);
+          else cursor.connect(sum);
+        };
+        run([edge('lowpass', lowX, lowEdge), edge('lowpass', lowX, lowEdge)],
+          widths ? widths[0]! : null);
+        run([edge('highpass', lowX, lowEdge), edge('highpass', lowX, lowEdge),
+          edge('lowpass', highX, highEdge), edge('lowpass', highX, highEdge)],
+          widths ? widths[1]! : null);
+        run([edge('highpass', highX, highEdge), edge('highpass', highX, highEdge)],
+          widths ? widths[2]! : null);
+        return sum;
+      };
+
+      const widthGain = (id: string): GainNode => {
+        const g = ctx.createGain();
+        g.gain.value = Math.max(0, p(params, id, 1));
+        return g;
+      };
+      const widths = [widthGain('lowWidth'), widthGain('midWidth'), widthGain('hiWidth')];
+
+      const midSum = threeBands(mid, null);
+      const sideSum = threeBands(side, widths);
+
+      // L = M + S, R = M − S.
+      const sideInverted = ctx.createGain();
+      sideInverted.gain.value = -1;
+      sideSum.connect(sideInverted);
+      const trim = ctx.createGain();
+      trim.gain.value = dbToGain(p(params, 'outDb', 0));
+      midSum.connect(merger, 0, 0);
+      midSum.connect(merger, 0, 1);
+      sideSum.connect(merger, 0, 0);
+      sideInverted.connect(merger, 0, 1);
+      merger.connect(trim).connect(output);
+
+      return {
+        setParam: (id, v) => {
+          params[id] = v;
+          if (id === 'lowWidth') widths[0]!.gain.value = Math.max(0, v);
+          if (id === 'midWidth') widths[1]!.gain.value = Math.max(0, v);
+          if (id === 'hiWidth') widths[2]!.gain.value = Math.max(0, v);
+          if (id === 'outDb') trim.gain.value = dbToGain(v);
+          if (id === 'lowXHz') for (const f of lowEdge) f.frequency.value = v;
+          if (id === 'highXHz') for (const f of highEdge) f.frequency.value = v;
+        },
+        automatable: automatableFrom({
+          lowWidth: widths[0]!.gain,
+          midWidth: widths[1]!.gain,
+          hiWidth: widths[2]!.gain,
+          outDb: { param: trim.gain, map: dbToGain },
+        }),
+        drives: (id: string): AutomatableParam[] | null => {
+          if (id === 'lowXHz') return lowEdge.map((f) => ({ param: f.frequency }));
+          if (id === 'highXHz') return highEdge.map((f) => ({ param: f.frequency }));
+          if (id === 'lowWidth') return [{ param: widths[0]!.gain }];
+          if (id === 'midWidth') return [{ param: widths[1]!.gain }];
+          if (id === 'hiWidth') return [{ param: widths[2]!.gain }];
+          if (id === 'outDb') return [{ param: trim.gain, map: dbToGain }];
+          return null;
         },
       };
     }),

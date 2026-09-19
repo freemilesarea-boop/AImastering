@@ -442,6 +442,34 @@ export function crossoverSide(
   };
 }
 
+/**
+ * A `ChannelSplitter` that does not throw half a mono signal away.
+ *
+ * A splitter's `channelInterpretation` is fixed at `discrete` and cannot be
+ * set — assigning to it throws — so a MONO source reaching one fills channel
+ * 0 and leaves channel 1 silent.  Every mid/side device here is built on a
+ * splitter, and on a mono track each of them answered with a left-only
+ * signal: the side comes out as half the input instead of zero, and
+ * L = M + S is the whole thing while R = M − S is nothing.
+ *
+ * Measured in Chromium, a mono tone through a bare splitter with channel 1
+ * taken out: left −0.00 dB, right −230.97 dB.  Through this one: both −0.00.
+ *
+ * The offline renderer these tests run in up-mixes on its own and shows none
+ * of it, which is why the check that guards this is structural.
+ */
+export function stereoSplit(
+  ctx: BaseAudioContext,
+): { input: GainNode; splitter: ChannelSplitterNode } {
+  const input = ctx.createGain();
+  input.channelCount = 2;
+  input.channelCountMode = 'explicit';
+  input.channelInterpretation = 'speakers';
+  const splitter = ctx.createChannelSplitter(2);
+  input.connect(splitter);
+  return { input, splitter };
+}
+
 export const dbToGain = (db: number): number => (db <= -144 ? 0 : Math.pow(10, db / 20));
 
 /** Wrap a processing chain with a bypass path that keeps latency identical. */

@@ -414,6 +414,23 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
                 params: { driveDb: 7.5, ceilingDb: -1, hardness: 0.7 } },
   }),
 
+  ...inst('mbwidth', {
+    drumloop: { note: '킥은 가운데, 오버헤드는 넓게 — 한 스테레오 루프에서 둘을 나눕니다',
+                params: { lowXHz: 200, highXHz: 3000, lowWidth: 0, midWidth: 1, hiWidth: 1.5 } },
+    bass:     { note: '베이스는 전부 가운데입니다. 이 장치로 할 일은 그것을 확인하는 것뿐',
+                params: { lowXHz: 300, highXHz: 2000, lowWidth: 0, midWidth: 0.5, hiWidth: 0.8 } },
+    egtr:     { note: '더블 트랙을 더 벌립니다. 몸통은 가운데 남겨두고',
+                params: { lowXHz: 160, highXHz: 2500, lowWidth: 0.4, midWidth: 1.15, hiWidth: 1.5 } },
+    agtr:     { note: '통울림은 가운데, 줄 소리만 넓게',
+                params: { lowXHz: 140, highXHz: 3500, lowWidth: 0.3, midWidth: 1.1, hiWidth: 1.4 } },
+    piano:    { note: '피아노는 넓게 녹음됩니다 — 낮은 현만 모아줍니다',
+                params: { lowXHz: 180, highXHz: 4000, lowWidth: 0.2, midWidth: 1, hiWidth: 1.15 } },
+    strings:  { note: '섹션은 넓을수록 섹션처럼 들립니다. 콘트라베이스 자리만 붙잡고',
+                params: { lowXHz: 120, highXHz: 2200, lowWidth: 0.25, midWidth: 1.25, hiWidth: 1.6 } },
+    synth:    { note: '유니즌 신스는 이미 넓습니다 — 저역을 모아 자리를 되찾습니다',
+                params: { lowXHz: 220, highXHz: 3000, lowWidth: 0, midWidth: 1, hiWidth: 1.2 } },
+  }),
+
   ...inst('upward', {
     drumloop: { note: '고스트 노트를 들어올립니다. 어택을 늦춰 메인 히트는 건드리지 않게',
                 params: { thresholdDb: -30, ratio: 2.4, depthDb: 6, floorDb: -58,

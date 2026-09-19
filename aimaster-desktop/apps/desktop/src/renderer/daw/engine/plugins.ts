@@ -19,7 +19,7 @@ import {
   oversampleAlign,
   absShaper, dbToGain, envelopeFollower, halfWaveGainCurve, makeDbReductionCurve,
   makeExpanderCurve,
-  makeGainCurve, makeShaper, smoother, tanhCurve, wetDry, withBypass,
+  makeGainCurve, makeShaper, smoother, stereoSplit, tanhCurve, wetDry, withBypass,
   automatableFrom,
   type PluginDescriptor, type PluginInstance, type PluginParamDef,
 } from './plugin-kit.js';
@@ -655,7 +655,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       // Mid/side built from plain gains: M = (L+R)/2, S = (L−R)/2, scale S,
       // then L = M+S, R = M−S.  Everything below `lowMonoHz` is kept out of
       // S so the bass stays centred however wide the top gets.
-      const splitter = ctx.createChannelSplitter(2);
+      const { input: stereo, splitter } = stereoSplit(ctx);
       const merger = ctx.createChannelMerger(2);
 
       const mid = ctx.createGain();
@@ -665,7 +665,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const lToSide = ctx.createGain(); lToSide.gain.value = 0.5;
       const rToSide = ctx.createGain(); rToSide.gain.value = -0.5;
 
-      input.connect(splitter);
+      input.connect(stereo);
       splitter.connect(lToMid, 0);
       splitter.connect(rToMid, 1);
       splitter.connect(lToSide, 0);

@@ -206,6 +206,12 @@ export const VOICE_PRESETS: readonly PluginPreset[] = [
     female: { note: '적게, 그리고 부드럽게 — 딱딱하면 치찰음이 각집니다',
               params: { driveDb: 2, ceilingDb: -1, hardness: 0.35 } },
   }),
+  ...voice('mbwidth', {
+    male:   { note: '리드 보컬은 가운데 있어야 합니다 — 위의 공기만 조금 벌립니다',
+              params: { lowXHz: 150, highXHz: 6000, lowWidth: 0, midWidth: 0.9, hiWidth: 1.2 } },
+    female: { note: '남성보다 좁게. 여성 보컬은 위가 밝아서 조금만 벌려도 흩어집니다',
+              params: { lowXHz: 180, highXHz: 7000, lowWidth: 0, midWidth: 0.9, hiWidth: 1.1 } },
+  }),
   ...voice('upward', {
     male:   { note: '문장 끝에서 힘이 빠지는 자리를 올립니다. 플로어는 숨소리 위에',
               params: { thresholdDb: -26, ratio: 2.2, depthDb: 5, floorDb: -46,

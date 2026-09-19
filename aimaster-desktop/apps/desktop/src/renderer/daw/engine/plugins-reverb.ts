@@ -25,7 +25,7 @@
 // device would not be the device that was designed.
 
 import {
-  automatableFrom, dbToGain, wetDry, withBypass,
+  automatableFrom, dbToGain, stereoSplit, wetDry, withBypass,
   type AutomatableParam, type PluginDescriptor,
   BUTTERWORTH_Q,
 } from './plugin-kit.js';
@@ -59,11 +59,9 @@ const quantise = (v: number, step: number): number => Math.round(v / step) * ste
 interface WidthStage { input: GainNode; output: GainNode; set: (width: number) => void }
 
 function widthStage(ctx: BaseAudioContext): WidthStage {
-  const input = ctx.createGain();
+  const { input, splitter } = stereoSplit(ctx);
   const output = ctx.createGain();
-  const splitter = ctx.createChannelSplitter(2);
   const merger = ctx.createChannelMerger(2);
-  input.connect(splitter);
 
   const mid = ctx.createGain();
   const side = ctx.createGain();
