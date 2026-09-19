@@ -19,7 +19,8 @@ import {
   oversampleAlign,
   absShaper, dbToGain, envelopeFollower, halfWaveGainCurve, makeDbReductionCurve,
   makeExpanderCurve,
-  makeGainCurve, makeShaper, smoother, stereoSplit, tanhCurve, wetDry, withBypass,
+  makeGainCurve, makeShaper, smoother, stereoSplit, tanhCurve, wetDry, wholeSamplesSec,
+  withBypass,
   automatableFrom,
   type PluginDescriptor, type PluginInstance, type PluginParamDef,
 } from './plugin-kit.js';
@@ -312,7 +313,13 @@ const CORE_PLUGINS: PluginDescriptor[] = [
     latencyFor: (params, sampleRate) =>
       Math.round(((params['lookaheadMs'] ?? 2) / 1000) * sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
-      const lookaheadSec = (params['lookaheadMs'] ?? 2) / 1000;
+      // WHOLE SAMPLES, because `latencyFor` above rounds and the compensation
+      // believes it.  A look-ahead of 3.7 ms is 177.6 samples: the delay line
+      // interpolates and delays by 177.6 while the declaration says 178, and
+      // the four tenths come back as a comb on anything blended against this
+      // channel.  Rounding here makes the device delay by exactly the number
+      // it reports.
+      const lookaheadSec = wholeSamplesSec(ctx, params['lookaheadMs'] ?? 2);
       const delay = ctx.createDelay(0.05);
       delay.delayTime.value = lookaheadSec;
 
@@ -338,8 +345,8 @@ const CORE_PLUGINS: PluginDescriptor[] = [
         setParam: (id, v) => {
           if (id === 'releaseMs') env.setTimeMs(v);
           if (id === 'lookaheadMs') {
-            delay.delayTime.value = v / 1000;
-            bypassDelay.delayTime.value = v / 1000;
+            delay.delayTime.value = wholeSamplesSec(ctx, v);
+            bypassDelay.delayTime.value = wholeSamplesSec(ctx, v);
           }
         },
       };

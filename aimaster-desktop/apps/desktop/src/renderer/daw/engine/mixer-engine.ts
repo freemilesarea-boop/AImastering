@@ -100,6 +100,11 @@ interface SendNodes {
   /** Level and mute; the automation lane for `sendLevel` rides this. */
   gain: GainNode;
   panner: StereoPannerNode;
+  /**
+   * What this send owes the channel's other routes, so the return comes back
+   * level with the dry rather than ahead of it (see `align` below).
+   */
+  align: DelayNode;
 }
 
 /**
@@ -141,6 +146,18 @@ export interface Channel {
   fader: GainNode;
   panner: StereoPannerNode;
   postFaderTap: GainNode;
+  /**
+   * The main output's share of the ROUTE alignment.
+   *
+   * `adc` above lines this channel up with the other channels; this one lines
+   * the channel up with ITSELF.  A channel sending to a reverb bus that
+   * carries a latent device has two paths to the master, and the dry one is
+   * the short one — measured at 511 samples, 10.6 ms, on a send into a
+   * linear-phase EQ, and `adc` could not close it because the send tap sits
+   * after `adc` and moved with it.  Whichever route is longest gets nothing
+   * here and every shorter one gets the difference.
+   */
+  outputAlign: DelayNode;
   sends: Map<string, SendNodes>;
   meter: ChannelMeterTap | null;
   /**
@@ -471,16 +488,19 @@ export class MixerEngine {
       const ch = this.channels.get(track.id);
       if (!ch) continue;
 
+      // Everything leaves through `outputAlign`, which is already fed from
+      // `postFaderTap`, so the main output carries its share of the route
+      // alignment whether or not this channel has any sends.
       if (track.kind === 'master') {
-        ch.postFaderTap.connect(this.destination);
+        ch.outputAlign.connect(this.destination);
       } else if (track.output.kind === 'master') {
         const master = session.tracks.find((t) => t.kind === 'master');
         const masterCh = master ? this.channels.get(master.id) : undefined;
-        if (masterCh) ch.postFaderTap.connect(masterCh.input);
-        else ch.postFaderTap.connect(this.destination);
+        if (masterCh) ch.outputAlign.connect(masterCh.input);
+        else ch.outputAlign.connect(this.destination);
       } else if (track.output.kind === 'bus') {
         const bus = this.buses.get(track.output.busId)?.input;
-        if (bus) ch.postFaderTap.connect(bus);
+        if (bus) ch.outputAlign.connect(bus);
       }
 
       // Aux input: a bus feeds this channel.
@@ -493,7 +513,8 @@ export class MixerEngine {
         if (!node || !bus) continue;
         (send.preFader ? ch.preFaderTap : ch.panner).connect(node.gain);
         node.gain.connect(node.panner);
-        node.panner.connect(bus);
+        node.panner.connect(node.align);
+        node.align.connect(bus);
       }
 
       // Sidechain keys.
@@ -685,9 +706,16 @@ export class MixerEngine {
 
     const meter = this.buildMeter(postFaderTap);
 
+    const outputAlign = ctx.createDelay(MAX_DELAY_LINE_SEC);
+    postFaderTap.connect(outputAlign);
+
     const sends = new Map<string, SendNodes>();
     for (const send of track.sends) {
-      sends.set(send.id, { gain: ctx.createGain(), panner: ctx.createStereoPanner() });
+      sends.set(send.id, {
+        gain: ctx.createGain(),
+        panner: ctx.createStereoPanner(),
+        align: ctx.createDelay(MAX_DELAY_LINE_SEC),
+      });
     }
 
     void session;
@@ -695,7 +723,7 @@ export class MixerEngine {
       trackId: track.id, input, adc, insertIn, insertOut, insertChainIn, inserts, insertMeters,
       insertSpectra,
       rack, chain,
-      preFaderTap, fader, panner, postFaderTap, sends, meter,
+      preFaderTap, fader, panner, postFaderTap, outputAlign, sends, meter,
     };
   }
 
@@ -716,6 +744,14 @@ export class MixerEngine {
       const delaySamples = compensation.perTrack.get(track.id) ?? 0;
       ch.adc.delayTime.value = Math.min(
         MAX_DELAY_LINE_SEC, delaySamples / this.ctx.sampleRate + signalDelaySec(track));
+
+      const sec = (samples: number): number =>
+        Math.min(MAX_DELAY_LINE_SEC, Math.max(0, samples) / this.ctx.sampleRate);
+      ch.outputAlign.delayTime.value = sec(compensation.perOutput.get(track.id) ?? 0);
+      for (const send of track.sends) {
+        const node = ch.sends.get(send.id);
+        if (node) node.align.delayTime.value = sec(compensation.perSend.get(send.id) ?? 0);
+      }
 
       const audible = isAudible(session, track);
       if (!this.isAutomated(track.id, 'volume')) {
@@ -888,11 +924,11 @@ export class MixerEngine {
       }
       try { ch.chain?.dispose(); } catch { /* ignore */ }
       for (const node of [ch.input, ch.adc, ch.insertIn, ch.insertOut,
-        ch.preFaderTap, ch.fader, ch.panner, ch.postFaderTap]) {
+        ch.preFaderTap, ch.fader, ch.panner, ch.postFaderTap, ch.outputAlign]) {
         try { node.disconnect(); } catch { /* ignore */ }
       }
       for (const s of ch.sends.values()) {
-        for (const node of [s.gain, s.panner]) {
+        for (const node of [s.gain, s.panner, s.align]) {
           try { node.disconnect(); } catch { /* ignore */ }
         }
       }

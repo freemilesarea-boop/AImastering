@@ -602,7 +602,13 @@ check('delay compensation lines every path up to the longest one', () => {
   const adc = computeDelayCompensation(s);
   eq(adc.maxSamples, 288, 'longest path');
   eq(adc.perTrack.get(kick.id), 0, 'longest path needs no delay');
-  eq(adc.perTrack.get(aux.id), 288 - 192, 'aux delayed to match');
+  // The aux gets NOTHING, and this line used to read `288 - 192`.  A delay on
+  // a channel a bus feeds lands in series with everything flowing through it,
+  // so it does not move the aux relative to the mix — it moves the kick, and
+  // the kick came out 96 samples behind a track going straight to the master.
+  // Only channels that ORIGINATE audio are delayed; see send-pdc-selftest,
+  // which renders it.
+  eq(adc.perTrack.get(aux.id), 0, 'a bus feeds the aux, so a delay there is in series');
 
   const off = computeDelayCompensation({ ...s, delayCompensation: false });
   eq(off.maxSamples, 0, 'switch off reports nothing');

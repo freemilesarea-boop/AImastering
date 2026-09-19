@@ -8,7 +8,7 @@
 //
 // Pure graph maths over the session model — no audio nodes involved.
 
-import type { BusId, DawSession, Insert, Track, TrackId } from './types.js';
+import type { BusId, DawSession, Insert, SendId, Track, TrackId } from './types.js';
 import { findTrack } from './session-ops.js';
 import { findPlugin } from '../engine/plugins.js';
 import { materializeRack, moduleParams } from './macros.js';
@@ -164,10 +164,58 @@ export function insertLatency(track: Track, sampleRate: number): number {
 }
 
 /**
- * Total latency from a channel to the master output, following its main
- * output through every aux that reads the destination bus.  Cycles are cut
- * (feedback is reported separately) and the longest branch wins, because
- * that is what the mix bus actually waits for.
+ * How much processing a channel's audio still has ahead of it once it leaves
+ * a bus — the longest branch, because that is what the mix bus waits for.
+ */
+function busDownstream(
+  session: DawSession, busId: BusId, seen: Set<TrackId>,
+): number {
+  let longest = 0;
+  for (const t of session.tracks) {
+    if (t.input !== busId || seen.has(t.id)) continue;
+    longest = Math.max(longest, pathLatency(session, t.id, new Set(seen)));
+  }
+  return longest;
+}
+
+/** What one channel's audio still has to pass through, per route out of it. */
+function routeDownstreams(
+  session: DawSession, track: Track, seen: Set<TrackId>,
+): { main: number; sends: Map<SendId, number> } {
+  const sends = new Map<SendId, number>();
+  // A send taps AFTER the inserts, pre- or post-fader, so it carries the
+  // channel's own latency exactly as the main output does and only the
+  // downstream half can differ.
+  for (const send of track.sends) {
+    if (send.mute) continue;
+    sends.set(send.id, busDownstream(session, send.target, seen));
+  }
+
+  if (track.kind === 'master' || track.output.kind === 'none') {
+    return { main: 0, sends };
+  }
+  if (track.output.kind === 'master') {
+    const master = session.tracks.find((t) => t.kind === 'master');
+    return { main: master ? insertLatency(master, session.sampleRate) : 0, sends };
+  }
+  return { main: busDownstream(session, track.output.busId, seen), sends };
+}
+
+/**
+ * Total latency from a channel to the master output, by whichever of its
+ * routes is longest — its main output, or any of its sends.
+ *
+ * THE SENDS ARE THE POINT.  This used to follow `track.output` alone, and a
+ * send into a bus carrying a latent device was invisible to the whole
+ * compensation.  Measured on a channel sent to a bus with a linear-phase EQ
+ * on it, the wet return arrived 511 samples — 10.6 ms — behind the channel's
+ * own dry signal, and turning the compensation ON did not close the gap: it
+ * delayed the entire channel by 511, and since the send tap sits after that
+ * delay, the wet moved with it and stayed exactly as far behind.  Parallel
+ * compression and every reverb send combed, and the more you blended the
+ * worse it got.
+ *
+ * Cycles are cut (feedback is reported separately).
  */
 export function pathLatency(
   session: DawSession, trackId: TrackId, seen: Set<TrackId> = new Set(),
@@ -177,51 +225,90 @@ export function pathLatency(
   seen.add(trackId);
 
   const own = insertLatency(track, session.sampleRate);
-  if (track.kind === 'master' || track.output.kind === 'none') return own;
-  if (track.output.kind === 'master') {
-    const master = session.tracks.find((t) => t.kind === 'master');
-    return own + (master ? insertLatency(master, session.sampleRate) : 0);
-  }
+  const routes = routeDownstreams(session, track, seen);
+  let longest = routes.main;
+  for (const d of routes.sends.values()) longest = Math.max(longest, d);
+  return own + longest;
+}
 
-  // Output feeds a bus — every aux reading that bus continues the path.
-  const busId = track.output.busId;
-  let downstream = 0;
-  for (const t of session.tracks) {
-    if (t.input !== busId) continue;
-    downstream = Math.max(downstream, pathLatency(session, t.id, new Set(seen)));
-  }
-  return own + downstream;
+/**
+ * A channel that ORIGINATES audio, rather than one a bus feeds.
+ *
+ * The distinction is what the compensation turns on.  An aux reads a bus, so
+ * a delay on its input lands in series with everything flowing through it —
+ * delaying an aux does not move it relative to the mix, it moves everything
+ * that goes through the aux.  The master is the sink, and a delay there is
+ * added to the whole mix and lines nothing up with anything.
+ */
+function originatesAudio(track: Track): boolean {
+  return track.kind !== 'master' && track.kind !== 'vca' && track.input === null;
 }
 
 export interface DelayCompensation {
   /** Samples of delay to insert on each channel so all paths line up. */
   perTrack: Map<TrackId, number>;
+  /**
+   * Extra delay on a channel's MAIN output, holding its dry signal level with
+   * whichever of its sends comes back latest.
+   */
+  perOutput: Map<TrackId, number>;
+  /** Extra delay on one send, keyed by send id, for the same reason. */
+  perSend: Map<SendId, number>;
   /** The longest path in the session — the engine's total added latency. */
   maxSamples: number;
 }
 
 /**
- * Automatic delay compensation.  Every channel is delayed by
- * (longest path − its own path) so a 2048-sample look-ahead limiter on the
- * drum bus does not shove the drums 43 ms late against the vocal.
+ * Automatic delay compensation.
+ *
+ * Two jobs, and the second one used not to exist:
+ *
+ *   · every SOURCE is delayed by (longest path − its own path), so a 2048
+ *     sample look-ahead limiter on the drum bus does not shove the drums
+ *     43 ms late against the vocal
+ *   · every channel's own routes are delayed against EACH OTHER, so its dry
+ *     main output arrives with its own send returns rather than ahead of them
+ *
+ * Only sources are delayed.  Delaying an aux put its delay in series with
+ * everything flowing through it: a kick with 96 samples of look-ahead through
+ * an aux with 192 came out 384 samples late against a snare compensated to
+ * 288, so the compensation was CREATING a 2 ms error rather than removing
+ * one, and the master's own 288 samples were six milliseconds added to the
+ * whole mix for nothing.
  */
 export function computeDelayCompensation(session: DawSession): DelayCompensation {
   const perTrack = new Map<TrackId, number>();
+  const perOutput = new Map<TrackId, number>();
+  const perSend = new Map<SendId, number>();
   if (!session.delayCompensation) {
-    for (const t of session.tracks) perTrack.set(t.id, 0);
-    return { perTrack, maxSamples: 0 };
+    for (const t of session.tracks) { perTrack.set(t.id, 0); perOutput.set(t.id, 0); }
+    for (const t of session.tracks) for (const s of t.sends) perSend.set(s.id, 0);
+    return { perTrack, perOutput, perSend, maxSamples: 0 };
+  }
+
+  // Route alignment is per channel and does not depend on any other channel,
+  // so every channel gets it — an aux sending to a reverb needs it as much as
+  // a source does.
+  for (const t of session.tracks) {
+    if (t.kind === 'vca') continue;
+    const routes = routeDownstreams(session, t, new Set([t.id]));
+    let longest = routes.main;
+    for (const d of routes.sends.values()) longest = Math.max(longest, d);
+    perOutput.set(t.id, longest - routes.main);
+    for (const [id, d] of routes.sends) perSend.set(id, longest - d);
   }
 
   const latencies = new Map<TrackId, number>();
   let max = 0;
   for (const t of session.tracks) {
-    if (t.kind === 'vca') continue;
+    if (!originatesAudio(t)) continue;
     const l = pathLatency(session, t.id);
     latencies.set(t.id, l);
     if (l > max) max = l;
   }
+  for (const t of session.tracks) perTrack.set(t.id, 0);
   for (const [id, l] of latencies) perTrack.set(id, Math.max(0, max - l));
-  return { perTrack, maxSamples: max };
+  return { perTrack, perOutput, perSend, maxSamples: max };
 }
 
 /** Human-readable signal path, for the routing readout in the Mix window. */

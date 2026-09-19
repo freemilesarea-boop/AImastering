@@ -284,6 +284,18 @@ export const DYNAMICS_LOOKAHEAD_SEC = 0.006;
 /** What the host actually measured, per sample rate; empty until probed. */
 const measured = new Map<number, { oversample4x: number; dynamics: number }>();
 
+/**
+ * A delay in seconds that is a WHOLE number of samples at this rate.
+ *
+ * A device whose latency is a parameter has to delay by exactly what
+ * `latencyFor` rounds to, or the difference comes back as a comb: the
+ * compensation lines the other paths up against the declared integer while
+ * the delay line interpolates to the fraction it was given.
+ */
+export function wholeSamplesSec(ctx: BaseAudioContext, ms: number): number {
+  return Math.round((ms / 1000) * ctx.sampleRate) / ctx.sampleRate;
+}
+
 /** How late an oversampled (`4x`) shaper is, in this renderer. */
 export function oversampleLatencySamples(sampleRate: number): number {
   return measured.get(sampleRate)?.oversample4x ?? CHROMIUM_OVERSAMPLE_4X;
