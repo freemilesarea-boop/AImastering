@@ -18,7 +18,7 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
-import { PLUGINS, defaultParams, findPlugin } from '../src/renderer/daw/engine/plugins.js';
+import { PLUGINS, createInstance, defaultParams, findPlugin } from '../src/renderer/daw/engine/plugins.js';
 import { probeRendererLatency, withBypass } from '../src/renderer/daw/engine/plugin-kit.js';
 import { readFileSync } from 'node:fs';
 
@@ -182,14 +182,17 @@ function latencyStimulus(n: number): Float32Array {
 
 /** How late a device's output is against its input, and how sure of it. */
 async function measureLatency(
-  pluginId: string,
+  pluginId: string, bypass = false,
 ): Promise<{ lag: number; r: number }> {
   const descriptor = findPlugin(pluginId);
   if (!descriptor) throw new Error(`no such plugin: ${pluginId}`);
   const n = SR;
   const ctx = new OfflineAudioContext(2, n, SR);
-  const instance = descriptor.create(ctx as unknown as BaseAudioContext,
-    { ...defaultParams(pluginId), ...(STILLED[pluginId] ?? {}) });
+  const params = { ...defaultParams(pluginId), ...(STILLED[pluginId] ?? {}) };
+  // Through `createInstance`, because that is where the host tells a device
+  // what it costs — build it any other way and its bypass delays nothing.
+  const instance = createInstance(descriptor, ctx as unknown as BaseAudioContext, params);
+  instance.setBypass(bypass);
 
   const dry = latencyStimulus(n);
   const buffer = ctx.createBuffer(2, n, SR);
@@ -326,6 +329,32 @@ async function main(): Promise<void> {
       }
     }
     assert(bad.length === 0, `declared is measured — ${bad.join(' · ')}`);
+  });
+
+  await check('a bypassed device delays by the same number', async () => {
+    // Bypass compares PROCESSING.  A device that drops its latency when
+    // switched out jumps the track forward by that much mid-listen, and one
+    // that keeps a delay the compensation is not told about drops it back.
+    // Both were happening: the look-ahead limiter was the ONLY device with a
+    // bypass delay, and the host reported zero for it, so bypassing it left
+    // the channel 192 samples behind the mix — while bypassing a compressor,
+    // a linear-phase EQ or a saturator moved the track the other way.
+    //
+    // The number is the same number either way, so this asks for exactly the
+    // declaration, with no allowance: bypass is a delay line and nothing else.
+    await probeRendererLatency(SR);
+    const bad: string[] = [];
+    for (const plugin of PLUGINS) {
+      if (plugin.offline) continue;
+      const declared = plugin.latencyFor(defaultParams(plugin.id), SR);
+      const { lag, r } = await measureLatency(plugin.id, true);
+      if (r < 0.9) {
+        bad.push(`${plugin.id}: bypassed output is not the input (r ${r.toFixed(2)})`);
+        continue;
+      }
+      if (lag !== declared) bad.push(`${plugin.id}: declares ${declared}, bypasses at ${lag}`);
+    }
+    assert(bad.length === 0, `bypass keeps the alignment — ${bad.join(' · ')}`);
   });
 
   await check('a device declares the oversampling factor it actually uses', () => {

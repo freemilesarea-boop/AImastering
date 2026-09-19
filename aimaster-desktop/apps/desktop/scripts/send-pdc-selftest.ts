@@ -34,7 +34,7 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 
 import {
   addFile, addTrack, createBus, createClip, createSend, createSession, createTrack,
-  createInsert, findTrack, setInsert, setSend, updateClips,
+  createInsert, findTrack, setInsert, setSend, updateClips, updateTrack,
 } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
 import { analyzeBuffer, clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
@@ -338,7 +338,7 @@ async function main(): Promise<void> {
     eq(adc.perSend.get(sendB.id), 0, 'the longest route waits for nobody');
   });
 
-  await check('a bypassed device on the return stops costing', () => {
+  await check('a device REMOVED from the return stops costing; a bypassed one does not', () => {
     resetIds();
     let s = createSession('Bypass', SR);
     const bus = createBus('FX');
@@ -349,8 +349,13 @@ async function main(): Promise<void> {
     s = setSend(s, dry.id, createSend(0, bus.id, { levelDb: 0 }));
     s = setInsert(s, fx.id, limiter(0, 4));
     eq(pathLatency(s, dry.id), 192, 'active');
+    // Bypassing is not removing.  The device keeps delaying its dry path by
+    // what it declares, so that switching it out compares processing rather
+    // than timing — this line expected 0 and the graph disagreed with it.
     const off = setInsert(s, fx.id, { ...findTrack(s, fx.id)!.inserts[0]!, bypass: true });
-    eq(pathLatency(off, dry.id), 0, 'bypassed');
+    eq(pathLatency(off, dry.id), 192, 'bypassed — still in circuit');
+    const gone = updateTrack(s, fx.id, (t) => ({ ...t, inserts: [] }));
+    eq(pathLatency(gone, dry.id), 0, 'removed');
   });
 
   await check('switching the compensation off zeroes the route delays too', () => {

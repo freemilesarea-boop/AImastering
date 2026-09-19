@@ -47,7 +47,7 @@ import {
  * a second node rather than a wider setting on the first.
  */
 const SPECTRUM_FFT_SIZE = 8192;
-import { findPlugin, type PluginInstance } from './plugins.js';
+import { createInstance, findPlugin, type PluginInstance } from './plugins.js';
 import { parsePluginParamKey, pluginParamKey } from '../model/automation.js';
 import type { AutomatableParam } from './plugin-kit.js';
 import { descriptorFor } from './external-device.js';
@@ -322,7 +322,7 @@ export class MixerEngine {
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
-      const instance = descriptor.create(this.ctx, { ...insert.params });
+      const instance = createInstance(descriptor, this.ctx, { ...insert.params });
       const tapped = this.tap(cursor);
       if (tapped) ch.insertMeters.set(insert.id, tapped);
       const spectrum = this.spectrumTap(cursor);
@@ -657,7 +657,7 @@ export class MixerEngine {
         if (!needed.has(resolved.module.id)) continue;
         const descriptor = findPlugin(resolved.module.pluginId);
         if (!descriptor) continue;
-        const instance = descriptor.create(ctx, moduleParams(resolved));
+        const instance = createInstance(descriptor, ctx, moduleParams(resolved));
         cursor.connect(instance.input);
         cursor = instance.output;
         rack.set(resolved.module.id, instance);
@@ -687,7 +687,7 @@ export class MixerEngine {
     for (const insert of [...track.inserts].sort((a, b) => a.slot - b.slot)) {
       const descriptor = descriptorFor(insert);
       if (!descriptor) continue;
-      const instance = descriptor.create(ctx, { ...insert.params });
+      const instance = createInstance(descriptor, ctx, { ...insert.params });
       // Tapped BEFORE the connection, so it reads the device's input.
       const tapped = this.tap(cursor);
       if (tapped) insertMeters.set(insert.id, tapped);

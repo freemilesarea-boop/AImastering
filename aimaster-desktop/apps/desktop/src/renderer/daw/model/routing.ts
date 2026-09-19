@@ -10,7 +10,7 @@
 
 import type { BusId, DawSession, Insert, SendId, Track, TrackId } from './types.js';
 import { findTrack } from './session-ops.js';
-import { findPlugin } from '../engine/plugins.js';
+import { descriptorLatency, findPlugin } from '../engine/plugins.js';
 import { materializeRack, moduleParams } from './macros.js';
 import { rackModulesNeeded } from './macro-automation.js';
 import { chainLatency } from '../engine/device-chain.js';
@@ -123,7 +123,14 @@ export function wouldFeedback(
 // ── Delay compensation ────────────────────────────────────────────────────────
 
 /**
- * Latency one insert reports.
+ * Latency one insert reports, BYPASSED OR NOT.
+ *
+ * A bypassed device keeps its latency, because in the graph it keeps its
+ * delay: `withBypass` runs the dry signal through a delay line the host sets
+ * from this same declaration.  Reporting zero for a bypassed device left the
+ * look-ahead limiter — the one device that did delay its bypass path — 192
+ * samples behind the rest of the mix, and left every other latent device
+ * jumping the track forward the moment it was switched out.
  *
  * The PLUGIN is the source of truth — a look-ahead limiter's latency follows
  * its look-ahead parameter, so moving that slider has to move the
@@ -131,9 +138,10 @@ export function wouldFeedback(
  * display and for sessions whose plugin this build does not have.
  */
 export function insertLatencySamples(insert: Insert, sampleRate: number): number {
-  if (insert.bypass) return 0;
   const descriptor = findPlugin(insert.pluginId);
-  return descriptor ? descriptor.latencyFor(insert.params, sampleRate) : insert.latencySamples;
+  return descriptor
+    ? descriptorLatency(descriptor, insert.params, sampleRate)
+    : insert.latencySamples;
 }
 
 /**

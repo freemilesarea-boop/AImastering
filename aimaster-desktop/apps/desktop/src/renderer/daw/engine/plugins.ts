@@ -335,19 +335,11 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       curve.connect(vca.gain);
       input.connect(delay).connect(vca).connect(output);
 
-      // Bypass path is delayed by the same look-ahead so A/B stays aligned.
-      const bypassDelay = ctx.createDelay(0.05);
-      bypassDelay.delayTime.value = lookaheadSec;
-
       return {
-        bypassDelay,
         latencySamples: Math.round(lookaheadSec * ctx.sampleRate),
         setParam: (id, v) => {
           if (id === 'releaseMs') env.setTimeMs(v);
-          if (id === 'lookaheadMs') {
-            delay.delayTime.value = wholeSamplesSec(ctx, v);
-            bypassDelay.delayTime.value = wholeSamplesSec(ctx, v);
-          }
+          if (id === 'lookaheadMs') delay.delayTime.value = wholeSamplesSec(ctx, v);
         },
       };
     }),
@@ -949,5 +941,45 @@ export function defaultParams(id: string): Record<string, number> {
 export function pluginLatencySamples(
   pluginId: string, params: Record<string, number>, sampleRate: number,
 ): number {
-  return findPlugin(pluginId)?.latencyFor(params, sampleRate) ?? 0;
+  const descriptor = findPlugin(pluginId);
+  return descriptor ? descriptorLatency(descriptor, params, sampleRate) : 0;
+}
+
+/**
+ * What a device costs, whether or not it is switched in.
+ *
+ * ONE function, because the number has to be the same in three places that
+ * used to decide for themselves: the compensation, the device chain, and the
+ * delay a bypassed device puts on its own dry path.  An OFFLINE device is
+ * zero — it is force-bypassed in the realtime graph and its work is done by
+ * the render path instead.
+ *
+ * Bypass does NOT make it zero.  It used to, and the graph disagreed: a
+ * bypassed look-ahead limiter still delayed four milliseconds while the
+ * compensation was told it cost nothing, so the channel came out 192 samples
+ * behind everything else.  The other latent devices had the opposite
+ * problem — no bypass delay at all, so switching one out jumped the track
+ * forward by its latency mid-listen, which is the comparison `withBypass`
+ * exists to prevent.  Both halves now say the same thing: a bypassed device
+ * keeps its latency, and removing it is what gives the latency back.
+ */
+export function descriptorLatency(
+  descriptor: PluginDescriptor, params: Record<string, number>, sampleRate: number,
+): number {
+  return descriptor.offline ? 0 : descriptor.latencyFor(params, sampleRate);
+}
+
+/**
+ * Build a device and tell it what it costs, so a bypassed one stays aligned.
+ *
+ * Every caller that builds a plugin goes through here.  A call site that
+ * builds the instance itself is a device whose bypass silently shifts the
+ * track, and there is no way to see that by reading it.
+ */
+export function createInstance(
+  descriptor: PluginDescriptor, ctx: BaseAudioContext, params: Record<string, number>,
+): PluginInstance {
+  const instance = descriptor.create(ctx, params);
+  instance.setBypassLatency?.(descriptorLatency(descriptor, params, ctx.sampleRate));
+  return instance;
 }

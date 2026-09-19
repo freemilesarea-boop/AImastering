@@ -29,6 +29,7 @@ import { provenanceOf } from '../model/provenance-session.js';
 import { nextId } from '../model/ids.js';
 import { DEFAULT_MIDI_CONFIG } from '../model/midi.js';
 import { probeRendererLatency } from './plugin-kit.js';
+import { insertLatency } from '../model/routing.js';
 
 export interface RenderRange {
   startSec: number;
@@ -128,7 +129,36 @@ export async function renderTrack(
   };
 
   const end = trackClips(track).reduce((max, c) => Math.max(max, clipEnd(c)), 0);
-  return renderSession(isolated, { startSec: 0, endSec: end }, options);
+  const sampleRate = options.sampleRate ?? session.sampleRate;
+  const rendered = await renderSession(isolated, { startSec: 0, endSec: end }, options);
+  // A latent channel renders its own latency into the FILE, and nothing
+  // downstream knows to take it off again: the clip goes back at the same
+  // start, the inserts that caused it are bypassed or gone, and the track
+  // plays late by exactly that much.  Measured before this line existed, a
+  // track frozen with a linear-phase EQ came out 511 samples — 10.6 ms —
+  // behind a track next to it that had been level with it a moment earlier;
+  // a compressor cost 384 and a saturator 128.  Freeze is meant to change
+  // the CPU and nothing else.
+  return trimLeading(rendered, insertLatency(track, sampleRate));
+}
+
+/**
+ * Drop `samples` from the front of a buffer, keeping its length in time.
+ *
+ * The tail is not extended: a render already carries `tailSec` of it, so
+ * taking the head off shortens the file by the latency and loses nothing but
+ * silence.
+ */
+function trimLeading(buffer: AudioBuffer, samples: number): AudioBuffer {
+  const drop = Math.max(0, Math.min(Math.round(samples), buffer.length - 1));
+  if (drop === 0) return buffer;
+  const ctx = makeOfflineContext(buffer.numberOfChannels, 1, buffer.sampleRate);
+  const out = ctx.createBuffer(
+    buffer.numberOfChannels, buffer.length - drop, buffer.sampleRate);
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    out.getChannelData(c).set(buffer.getChannelData(c).subarray(drop));
+  }
+  return out as unknown as AudioBuffer;
 }
 
 export interface TrackWindowOptions extends RenderOptions {

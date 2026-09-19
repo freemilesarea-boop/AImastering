@@ -19,7 +19,7 @@ import {
   type DeviceGraph, type DeviceId, type DeviceNode,
 } from '../model/device-graph.js';
 import { resolveRack, type Rack } from '../model/racks.js';
-import { findPlugin, type PluginInstance } from './plugins.js';
+import { createInstance, descriptorLatency, findPlugin, type PluginInstance } from './plugins.js';
 
 const dbToGain = (db: number): number => (db <= -144 ? 0 : Math.pow(10, db / 20));
 
@@ -111,7 +111,7 @@ function buildInto(
       default: {
         const descriptor = node.pluginId ? findPlugin(node.pluginId) : undefined;
         if (!descriptor) { outputs.set(node.id, nodeInput); break; }
-        const instance = descriptor.create(ctx, { ...paramsFor(node) });
+        const instance = createInstance(descriptor, ctx, { ...paramsFor(node) });
         // Offline devices are visible in the chain but pass audio through
         // untouched; the render path applies them.
         instance.setBypass(node.bypass || descriptor.offline === true);
@@ -255,17 +255,18 @@ function nodeLatency(
   prefix: string, delays: Map<string, number> | null,
 ): number {
   if (node.kind === 'device') {
-    if (node.bypass || !node.pluginId) return 0;
+    // Bypass does NOT zero it: the device keeps delaying its dry path by what
+    // it declares, so that switching it out compares processing rather than
+    // timing.  See `descriptorLatency`.
+    if (!node.pluginId) return 0;
     const descriptor = findPlugin(node.pluginId);
-    return descriptor && !descriptor.offline
-      ? descriptor.latencyFor(node.params, sampleRate)
-      : 0;
+    return descriptor ? descriptorLatency(descriptor, node.params, sampleRate) : 0;
   }
   if (node.kind === 'rack') {
     const rack = racks.find((r) => r.id === node.rackId);
     if (!rack) return 0;
     const inner = walkLatency(rack.graph, racks, sampleRate, `${prefix}${rack.id}/`, delays);
-    return node.bypass ? 0 : inner;
+    return inner;
   }
   return 0;
 }

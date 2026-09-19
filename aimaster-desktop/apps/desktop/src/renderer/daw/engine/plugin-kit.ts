@@ -100,6 +100,16 @@ export interface PluginInstance {
   latencySamples: number;
   setParam: (id: string, value: number) => void;
   /**
+   * How far the DRY path is delayed while this device is bypassed.
+   *
+   * Set by the host from the descriptor, so the number the compensation
+   * believes and the number the graph delivers are the same number.  A
+   * bypassed device keeps its latency here, the way a console keeps a card in
+   * circuit: switching a look-ahead limiter in and out compares processing,
+   * not timing.  Freeing the latency is what removing the device is for.
+   */
+  setBypassLatency?: (samples: number) => void;
+  /**
    * The AudioParam behind one parameter, when there is exactly one.
    *
    * Absent, or returning null, means the parameter cannot be automated — the
@@ -506,6 +516,9 @@ export function stereoSplit(
 export const dbToGain = (db: number): number => (db <= -144 ? 0 : Math.pow(10, db / 20));
 
 /** Wrap a processing chain with a bypass path that keeps latency identical. */
+/** Longest bypass alignment this kit will hold — well past the rack's worst. */
+const BYPASS_DELAY_MAX_SEC = 0.05;
+
 export function withBypass(
   ctx: BaseAudioContext,
   build: (input: GainNode, output: GainNode) => {
@@ -519,8 +532,6 @@ export function withBypass(
     analyse?: () => { lufs: number; peakDb: number };
     scope?: (left: Float32Array, right: Float32Array) => boolean;
     latencySamples?: number;
-    /** Node the dry signal must pass through so bypass keeps the same delay. */
-    bypassDelay?: AudioNode;
   },
 ): PluginInstance {
   const input  = ctx.createGain();
@@ -532,15 +543,20 @@ export function withBypass(
   const built = build(input, wet);
   wet.connect(output);
 
-  // Bypass must not change alignment: route the dry signal through the same
-  // delay the plugin reports, so bypassing a look-ahead limiter does not
-  // shift the channel forward by its latency.
-  if (built.bypassDelay) {
-    input.connect(built.bypassDelay);
-    built.bypassDelay.connect(dry);
-  } else {
-    input.connect(dry);
-  }
+  // Bypass must not change alignment: the dry signal goes through a delay
+  // line the HOST sets to whatever this device declares, so bypassing a
+  // look-ahead limiter does not shift the channel forward by four
+  // milliseconds.
+  //
+  // The host sets it because the host is where the declaration lives.  Three
+  // devices used to build this delay themselves out of their own arithmetic,
+  // which is a second copy of a number that is already in `latencyFor` — and
+  // the copies had already drifted: `rotary` delayed its rotors' four
+  // milliseconds on bypass and forgot the shaper's quantum, so bypassing it
+  // moved the track by the part it forgot.  Nine other latent devices had no
+  // bypass delay at all.
+  const bypassLine = ctx.createDelay(BYPASS_DELAY_MAX_SEC);
+  input.connect(bypassLine).connect(dry);
   dry.connect(output);
 
   return {
@@ -554,6 +570,10 @@ export function withBypass(
     setBypass: (bypassed) => {
       wet.gain.value = bypassed ? 0 : 1;
       dry.gain.value = bypassed ? 1 : 0;
+    },
+    setBypassLatency: (samples) => {
+      bypassLine.delayTime.value =
+        Math.min(BYPASS_DELAY_MAX_SEC, Math.max(0, samples) / ctx.sampleRate);
     },
     setSidechainActive: built.setSidechainActive ?? (() => { /* no key input */ }),
     // Forwarded explicitly, and every one of these has to be listed here or

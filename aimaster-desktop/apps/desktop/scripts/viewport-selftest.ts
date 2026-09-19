@@ -271,10 +271,17 @@ check('the freeze and the record arm do not come across', () => {
   assert(copy.recordArm === false, 'two armed tracks on one input is a double-record');
 });
 
+function eqName(got: string, want: string, why: string): void {
+  if (got !== want) throw new Error(`${why} — got ${got}, want ${want}`);
+}
+
 check('names count up rather than saying "copy of copy of"', () => {
   assert(nextTrackName(['Vox'], 'Vox') === 'Vox 2', nextTrackName(['Vox'], 'Vox'));
   assert(nextTrackName(['Vox', 'Vox 2'], 'Vox 2') === 'Vox 3', nextTrackName(['Vox', 'Vox 2'], 'Vox 2'));
-  assert(nextTrackName(['Vox', 'Vox 2', 'Vox 3'], 'Vox') === 'Vox 2'.replace('2', '2') || true, 'free name');
+  // This line read `=== 'Vox 2'.replace('2', '2') || true` — always true, so
+  // it asserted nothing, and the `|| true` was hiding a wrong expectation:
+  // with 'Vox 2' and 'Vox 3' already taken the next free name is 'Vox 4'.
+  eqName(nextTrackName(['Vox', 'Vox 2', 'Vox 3'], 'Vox'), 'Vox 4', 'skips the taken ones');
 });
 
 check('the new name is one nothing else is using', () => {

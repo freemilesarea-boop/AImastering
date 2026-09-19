@@ -19,7 +19,7 @@ import {
 import {
   effectiveFaderDb, toggleMute, toggleSolo, toggleSoloSafe, vcaChainDb,
 } from '../../../daw/model/mixer-math.js';
-import { describePath, computeDelayCompensation, wouldFeedback } from '../../../daw/model/routing.js';
+import { describePath, computeDelayCompensation, insertLatencySamples, wouldFeedback } from '../../../daw/model/routing.js';
 import { PLUGINS, defaultParams, pluginLatencySamples } from '../../../daw/engine/plugins.js';
 import { dawRuntime } from '../../../daw/engine/daw-runtime.js';
 import type { LiveLoudnessMetrics } from '../../../audio/loudnessStream.js';
@@ -127,8 +127,10 @@ function ChannelStrip({
   const macros   = activeMacros(track.macros);
   const faderDb  = effectiveFaderDb(session, track);
   const vcaDb    = vcaChainDb(session, track);
+  // Bypassed inserts count, because in the graph they still delay — this read
+  // `i.bypass ? 0 : …` and showed a number the mix was not using.
   const latency  = track.inserts.reduce(
-    (sum, i) => sum + (i.bypass ? 0 : pluginLatencySamples(i.pluginId, i.params, session.sampleRate)), 0);
+    (sum, i) => sum + insertLatencySamples(i, session.sampleRate), 0);
 
   // ── Automation gestures ───────────────────────────────────────────────
   //

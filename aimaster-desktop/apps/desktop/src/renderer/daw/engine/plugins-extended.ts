@@ -2291,19 +2291,16 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       blend.wet.connect(output);
 
       // The dry path has to carry the rotors' fixed delay, or turning Mix
-      // down moves the signal 4 ms earlier and the blend comb-filters.
-      //
-      // TWO delay nodes, not one shared with the bypass.  `withBypass` makes
-      // its own `input → bypassDelay` connection, and connecting the same
-      // pair again here is a duplicate the spec says to ignore and the
-      // renderer this suite uses does NOT: measured, a bypassed rotary came
-      // out +6.02 dB, which is exactly twice.
+      // down moves the signal 4 ms earlier and the blend comb-filters.  This
+      // is the MIX dry, which is a different thing from the bypass dry:
+      // `withBypass` holds that one and the host sets it from `latencyFor`.
+      // There used to be a second delay here for the bypass, built out of the
+      // rotors' four milliseconds alone — it left out the shaper's quantum
+      // that `latencyFor` counts, so bypassing the device moved the track by
+      // the part it forgot.
       const dryDelay = ctx.createDelay(0.05);
       dryDelay.delayTime.value = horn.baseSec;
       input.connect(dryDelay).connect(blend.dry).connect(output);
-
-      const bypassDelay = ctx.createDelay(0.05);
-      bypassDelay.delayTime.value = horn.baseSec;
 
       const setMix = (percent: number): void => blend.setMix(percent / 100);
       setMix(p(params, 'mix', 100));
@@ -2343,7 +2340,6 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           mix: { param: blend.mix, map: (v) => Math.max(0, Math.min(1, v / 100)) },
         }),
         latencySamples: Math.round(horn.baseSec * ctx.sampleRate),
-        bypassDelay,
       };
     }),
   },
@@ -3156,14 +3152,6 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
           out: { param: outGain.gain, map: dbToGain },
           mix: { param: blend.mix },
         }),
-        // Bypass has to keep the same alignment the device reports, or
-        // switching it in and out moves the track.
-        bypassDelay: (() => {
-          const d = ctx.createDelay(0.05);
-          d.delayTime.value = TAPE_BASE_SEC
-            + oversampleLatencySamples(ctx.sampleRate) / ctx.sampleRate;
-          return d;
-        })(),
         dispose: () => {
           try { wowOsc.stop(); flutterOsc.stop(); hissSource.stop(); } catch { /* stopped */ }
           blend.dispose();

@@ -590,9 +590,13 @@ check('path latency accumulates through the bus chain', () => {
   eq(pathLatency(s, kick.id), 288, 'kick + aux downstream');
   eq(pathLatency(s, aux.id), 192, 'aux alone');
 
-  // A bypassed plugin reports nothing.
+  // A bypassed plugin still reports what it costs, and this line used to
+  // expect 192 — the aux alone, with the kick's limiter written off.  In the
+  // graph a bypassed device keeps delaying its dry path by its declaration,
+  // so reporting zero moved the channel by exactly that much.  Removing the
+  // device is what gives the latency back; see bypass-freeze-selftest.
   const bypassed = setInsert(s, kick.id, { ...findTrack(s, kick.id)!.inserts[0]!, bypass: true });
-  eq(pathLatency(bypassed, kick.id), 192, 'bypass removes the latency');
+  eq(pathLatency(bypassed, kick.id), 288, 'bypass keeps the latency');
 });
 
 check('delay compensation lines every path up to the longest one', () => {

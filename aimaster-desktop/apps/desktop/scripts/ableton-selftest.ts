@@ -365,20 +365,28 @@ check('chain latency follows the longest path, through racks', () => {
   eq(chainLatency(twoBranches, [], 48_000), lookahead + oversampleLatencySamples(48_000),
     'two latent branches are still one longest path');
 
-  // Bypassing a device takes away ITS latency and leaves everything else's.
-  // Asserting zero here would only be right in a chain where nothing else
-  // delays, which stopped being true the moment the saturator told the truth.
+  // Bypassing takes NOTHING away.  These two lines expected the limiter's
+  // share back, and then the whole chain's — but a bypassed device keeps
+  // delaying its own dry path by exactly what it declares, so that switching
+  // it out compares processing rather than timing.  Removing it is what gives
+  // the latency back, and that is the line below.
   const bypassed = {
     ...graph,
     nodes: graph.nodes.map((n) => (n.id === limiter.id ? { ...n, bypass: true } : n)),
   };
-  eq(chainLatency(bypassed, [], 48_000), oversampleLatencySamples(48_000),
-    'bypassing the limiter removes the limiter\'s share and no more');
+  eq(chainLatency(bypassed, [], 48_000), lookahead + oversampleLatencySamples(48_000),
+    'bypassing the limiter leaves the chain exactly as long');
   const allBypassed = {
     ...graph,
     nodes: graph.nodes.map((n) => (n.kind === 'device' ? { ...n, bypass: true } : n)),
   };
-  eq(chainLatency(allBypassed, [], 48_000), 0, 'bypass everything and nothing is left');
+  eq(chainLatency(allBypassed, [], 48_000), lookahead + oversampleLatencySamples(48_000),
+    'and so does bypassing every one of them');
+  const emptied = {
+    ...graph,
+    nodes: graph.nodes.map((n) => (n.kind === 'device' ? { ...n, pluginId: null } : n)),
+  };
+  eq(chainLatency(emptied, [], 48_000), 0, 'take the devices out and nothing is left');
 
   // An offline device reports nothing, because it does not run live.
   const offlineOnly = linearGraph([{ pluginId: 'pitchcorrect', label: 'PITCH' }]);
@@ -444,15 +452,25 @@ check('alignment is never negative and always squares with the longest path', ()
   }
 });
 
-check('bypassing the latent device takes its alignment away too', () => {
+check('bypassing the latent device keeps its branch aligned', () => {
+  // This expected the alignment to go away, and it does not: a bypassed
+  // saturator still delays its own branch by the quantum it declares, so the
+  // bare branch beside it still has to wait.  Taking the device OUT is what
+  // levels them.
   const { graph, bare } = splitGraph();
   const sat = deviceOrder(graph).find((n) => n.label === 'SAT')!;
   const off = {
     ...graph,
     nodes: graph.nodes.map((n) => (n.id === sat.id ? { ...n, bypass: true } : n)),
   };
-  eq(alignmentDelays(off, [], 48_000).get(bare), 0,
-    'with the saturator off the branches are already level');
+  eq(alignmentDelays(off, [], 48_000).get(bare), oversampleLatencySamples(48_000),
+    'with the saturator bypassed the branches are still uneven');
+  const gone = {
+    ...graph,
+    nodes: graph.nodes.map((n) => (n.id === sat.id ? { ...n, pluginId: null } : n)),
+  };
+  eq(alignmentDelays(gone, [], 48_000).get(bare), 0,
+    'with it taken out they are level');
 });
 
 check('a rack aligns its own insides, under its own key', () => {
