@@ -1374,7 +1374,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     params: [
       { id: 'thresholdDb', name: 'Threshold', min: -80, max: 0,    default: -45, unit: 'dB' },
       { id: 'rangeDb',     name: 'Range',     min: 0,   max: 60,   default: 40,  unit: 'dB' },
-      { id: 'attackMs',    name: 'Attack',    min: 1,   max: 100,  default: 5,   unit: 'ms' },
+      // 9 ms, not 1: the detector's ripple ceiling.  A gate asked for 1 ms
+      // never got it — it clamped to the same 9 — so this narrows the panel
+      // to what the device can do rather than narrowing the device.
+      { id: 'attackMs',    name: 'Attack',    min: 9,   max: 100,  default: 9,   unit: 'ms' },
       { id: 'releaseMs',   name: 'Release',   min: 20,  max: 2000, default: 200, unit: 'ms' },
     ],
     // Threshold and range rebuild the gate's transfer curve; attack and release
@@ -3174,7 +3177,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       { id: 'ratio',       name: 'Ratio',     min: 1,   max: 8,    default: 2,   unit: ':1' },
       { id: 'depthDb',     name: 'Depth',     min: 0,   max: 24,   default: 0,   unit: 'dB' },
       { id: 'floorDb',     name: 'Floor',     min: -80, max: -24,  default: -55, unit: 'dB' },
-      { id: 'attackMs',    name: 'Attack',    min: 5,   max: 300,  default: 40,  unit: 'ms' },
+      { id: 'attackMs',    name: 'Attack',    min: 10,  max: 300,  default: 40,  unit: 'ms' },
       { id: 'releaseMs',   name: 'Release',   min: 20,  max: 1500, default: 400, unit: 'ms' },
       { id: 'outDb',       name: 'Out',       min: -12, max: 12,   default: 0,   unit: 'dB' },
       { id: 'mix',         name: 'Mix',       min: 0,   max: 1,    default: 1,   unit: '' },

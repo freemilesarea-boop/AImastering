@@ -27,7 +27,7 @@ import { REVERB_PLUGINS } from './plugins-reverb.js';
 import { SPACES, irBuffer, spaceIndex } from './reverb-spaces.js';
 
 export type { PluginDescriptor, PluginInstance, PluginParamDef };
-export { timeConstantToHz, makeImpulse } from './plugin-kit.js';
+export { makeImpulse } from './plugin-kit.js';
 
 /** The devices this file defines.  Extended devices are appended below. */
 const CORE_PLUGINS: PluginDescriptor[] = [
@@ -219,7 +219,11 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       // Never fast enough to chase the waveform: a ducker rides a part out of
       // the way of a vocal, and the shortest musical version of that is a few
       // milliseconds, not a tenth of one.
-      { id: 'attackMs',    name: 'Attack',    min: 5,   max: 200,  default: 20,  unit: 'ms' },
+      // 9 ms, not 5: below that the detector reads the ripple of the
+      // rectified waveform rather than its level.  It never did 5 ms — it
+      // clamped — and a range that stops where the device stops is the
+      // difference between a limit and a lie.
+      { id: 'attackMs',    name: 'Attack',    min: 9,   max: 200,  default: 20,  unit: 'ms' },
       { id: 'releaseMs',   name: 'Release',   min: 20,  max: 1000, default: 200, unit: 'ms' },
       { id: 'makeupDb',    name: 'Makeup',    min: 0,   max: 24,   default: 0,   unit: 'dB' },
     ],
@@ -506,8 +510,13 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       // transient.  Positive during an attack, negative while a note decays,
       // so one signal drives both halves of the control.
       const rect = absShaper(ctx);
-      const fast = smoother(ctx, 2);
-      const slow = smoother(ctx, 90);
+      // 9 and 304, not 2 and 90, and that is not a retune.  The detector
+      // used to take 3.379× the number it was given, and the 2 ms was
+      // additionally sitting on a 60 Hz ceiling it could not cross — so what
+      // this device has always done is 9 ms against 304 ms.  Now the numbers
+      // say so.
+      const fast = smoother(ctx, 9);
+      const slow = smoother(ctx, 304);
       const invert = ctx.createGain();
       invert.gain.value = -1;
       const difference = ctx.createGain();
@@ -769,7 +778,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const vca = ctx.createGain();
       vca.gain.value = 0;
       const rect = absShaper(ctx);
-      const env = smoother(ctx, 4);
+      // 9 rather than 4 for the reason the transient designer's numbers
+      // moved: 4 ms was under the detector's ripple ceiling and came out as
+      // 9 ms regardless.  The sound is unchanged; the number is now true.
+      const env = smoother(ctx, 9);
       const ratioOf = (amount: number): number => 1 + amount * 11;
       let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, ratioOf(params['amount'] ?? 0));
 
@@ -832,7 +844,9 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       detector.Q.value = params['q'] ?? 1.4;
 
       const rect = absShaper(ctx);
-      const env = smoother(ctx, 12);
+      // 40 rather than 12: unclamped, the old mapping made 12 ms take
+      // 40.5 ms, and 40 ms is what this device was voiced against.
+      const env = smoother(ctx, 40);
       const scale = ctx.createGain();
       const range = () => Math.abs(params['rangeDb'] ?? 0);
       scale.gain.value = range();

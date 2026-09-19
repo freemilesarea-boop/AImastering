@@ -188,9 +188,9 @@ export const VOICE_PRESETS: readonly PluginPreset[] = [
   }),
   ...voice('gate', {
     male:   { note: '호흡이 낮고 큽니다. 문턱을 높게 두면 첫 음절이 잘립니다',
-              params: { thresholdDb: -42, rangeDb: 18, attackMs: 3, releaseMs: 180 } },
+              params: { thresholdDb: -42, rangeDb: 18, attackMs: 9, releaseMs: 180 } },
     female: { note: '문턱을 더 낮춰도 됩니다 — 호흡이 그만큼 조용합니다',
-              params: { thresholdDb: -46, rangeDb: 16, attackMs: 2, releaseMs: 150 } },
+              params: { thresholdDb: -46, rangeDb: 16, attackMs: 9, releaseMs: 150 } },
   }),
   ...voice('mbcomp', {
     male:   { note: '크로스오버가 낮습니다. 가슴 대역을 따로 잡아야 해서',

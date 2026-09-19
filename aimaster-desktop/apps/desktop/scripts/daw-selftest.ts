@@ -49,7 +49,8 @@ import {
 import {
   serializeDawSession, deserializeDawSession, importSessionData, uniqueName,} from '../src/renderer/daw/model/session-io.js';
 import { encodeWav, interleave} from '../src/renderer/daw/engine/wav.js';
-import { PLUGINS, defaultParams, findPlugin, pluginLatencySamples, timeConstantToHz} from '../src/renderer/daw/engine/plugins.js';
+import { PLUGINS, defaultParams, findPlugin, pluginLatencySamples } from '../src/renderer/daw/engine/plugins.js';
+import { DETECTOR_MIN_MS, DETECTOR_SETTLE, detectorHz } from '../src/renderer/daw/engine/plugin-kit.js';
 import type { Clip, DawSession, Track} from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
@@ -790,8 +791,14 @@ check('the limiter reports its look-ahead as real latency', () => {
 });
 
 check('detector time constants map to sane corner frequencies', () => {
-  assert(timeConstantToHz(10) > timeConstantToHz(100), 'faster attack → higher corner');
-  close(timeConstantToHz(1000 / (2 * Math.PI)), 1, '1 s/2π → 1 Hz', 1e-3);
+  // The mapping used to be 1/(2πτ), which is ONE pole's time constant on a
+  // detector that runs four — so every knob here took 3.379× as long as it
+  // said.  `detectorHz` divides that out, and `upward-selftest` holds the
+  // rendered step response to the number on the panel.
+  assert(detectorHz(10) > detectorHz(100), 'faster attack → higher corner');
+  close(detectorHz(1000 * DETECTOR_SETTLE / (2 * Math.PI)), 1, 'the settling time → 1 Hz', 1e-3);
+  close(detectorHz(0.001), detectorHz(DETECTOR_MIN_MS), 'under the ceiling is the ceiling', 1e-9);
+  close(detectorHz(DETECTOR_MIN_MS), 60, 'and the ceiling is 60 Hz', 1e-9);
   // Sidechain moved to its own device: Web Audio's compressor cannot take an
   // external key, and a plugin that changes its DSP depending on how it is
   // wired is a plugin you cannot trust.

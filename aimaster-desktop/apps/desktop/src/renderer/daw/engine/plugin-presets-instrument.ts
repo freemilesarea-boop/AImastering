@@ -326,7 +326,7 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
     drumloop: { note: '루프 자체를 덕킹할 일은 드뭅니다. 보컬에 살짝 자리를 내주는 정도',
                 params: { thresholdDb: -26, ratio: 3, attackMs: 15, releaseMs: 180, makeupDb: 0 } },
     bass:     { note: '킥에 눌리게 하는 고전적 용법. 릴리스를 템포에 맞추세요',
-                params: { thresholdDb: -30, ratio: 8, attackMs: 5, releaseMs: 140, makeupDb: 2 } },
+                params: { thresholdDb: -30, ratio: 8, attackMs: 9, releaseMs: 140, makeupDb: 2 } },
     egtr:     { note: '보컬 들어올 때만 물러납니다. 기타 레이어가 두꺼울 때',
                 params: { thresholdDb: -28, ratio: 4, attackMs: 20, releaseMs: 260, makeupDb: 0 } },
     agtr:     { note: '아주 약하게 — 티 나면 실패입니다',
@@ -336,7 +336,7 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
     strings:  { note: '느리게 들어가고 느리게 나옵니다. 패드성 소스는 급하게 움직이면 들킵니다',
                 params: { thresholdDb: -30, ratio: 3.5, attackMs: 60, releaseMs: 500, makeupDb: 0 } },
     synth:    { note: 'EDM 펌핑. 킥마다 크게 눌리고 빠르게 돌아옵니다',
-                params: { thresholdDb: -34, ratio: 10, attackMs: 5, releaseMs: 110, makeupDb: 2 } },
+                params: { thresholdDb: -34, ratio: 10, attackMs: 9, releaseMs: 110, makeupDb: 2 } },
   }),
 
   ...inst('limiter', {
@@ -358,19 +358,19 @@ export const INSTRUMENT_PRESETS: readonly PluginPreset[] = [
 
   ...inst('gate', {
     drumloop: { note: '루프는 붙어 있는 소리라 얕게만. 레인지를 깊게 주면 리듬이 끊깁니다',
-                params: { thresholdDb: -40, rangeDb: 12, attackMs: 1, releaseMs: 120 } },
+                params: { thresholdDb: -40, rangeDb: 12, attackMs: 9, releaseMs: 120 } },
     bass:     { note: '연주 사이 앰프 험만 잡습니다. 릴리스를 길게 해야 음이 안 잘립니다',
-                params: { thresholdDb: -52, rangeDb: 18, attackMs: 3, releaseMs: 400 } },
+                params: { thresholdDb: -52, rangeDb: 18, attackMs: 9, releaseMs: 400 } },
     egtr:     { note: '하이게인 기타의 노이즈 게이트. 이 악기에서 가장 자주 쓰입니다',
-                params: { thresholdDb: -46, rangeDb: 35, attackMs: 1, releaseMs: 180 } },
+                params: { thresholdDb: -46, rangeDb: 35, attackMs: 9, releaseMs: 180 } },
     agtr:     { note: '거의 쓰지 않습니다 — 통기타의 여운을 자르면 바로 티가 납니다',
-                params: { thresholdDb: -60, rangeDb: 8, attackMs: 5, releaseMs: 700 } },
+                params: { thresholdDb: -60, rangeDb: 8, attackMs: 9, releaseMs: 700 } },
     piano:    { note: '페달 여운이 있으니 아주 낮게, 아주 얕게',
                 params: { thresholdDb: -64, rangeDb: 6, attackMs: 10, releaseMs: 900 } },
     strings:  { note: '스트링에 게이트는 대체로 오답입니다. 무대 노이즈만 겨우 잡는 값',
                 params: { thresholdDb: -68, rangeDb: 5, attackMs: 20, releaseMs: 1200 } },
     synth:    { note: '리듬 게이트로 씁니다. 깊고 빠르게 — 신스는 잘라도 자연스러움을 잃지 않습니다',
-                params: { thresholdDb: -34, rangeDb: 45, attackMs: 1, releaseMs: 60 } },
+                params: { thresholdDb: -34, rangeDb: 45, attackMs: 9, releaseMs: 60 } },
   }),
 
   ...inst('mbcomp', {

@@ -766,87 +766,133 @@ export function wetDry(
 }
 
 export interface Smoother {
-  input: BiquadFilterNode;
-  output: BiquadFilterNode;
+  input: AudioNode;
+  output: AudioNode;
   setTimeMs: (timeMs: number) => void;
 }
 
+/**
+ * The envelope follower behind a level detector.
+ *
+ * Four poles, not one, and never faster than `DETECTOR_MIN_MS`.
+ *
+ * A single pole at the requested time constant is what a detector "should" be,
+ * and it is why the compressor screamed: ask for a 0.1 ms attack and the
+ * filter sits at 1591 Hz, so the ripple of the rectified waveform itself walks
+ * straight into the gain stage.  That is not compression, it is ring
+ * modulation, and on a vocal it is unlistenable.
+ *
+ * A rectified 100 Hz tone ripples at 200 Hz.  Four poles at the 60 Hz ceiling
+ * put that 45 dB down, measured, while still settling in 8.96 ms — and 8.96 ms
+ * is therefore the fastest any knob here can honestly offer.  Every device's
+ * own minimum is at or above it, so nothing is clamped behind the user's back.
+ *
+ * The lag is rebuilt rather than retuned because its coefficients are fixed
+ * when it is made; the input and output gains stay put so callers never have
+ * to re-wire.
+ */
 export function smoother(ctx: BaseAudioContext, timeMs: number): Smoother {
-  const make = (): BiquadFilterNode => {
-    const f = ctx.createBiquadFilter();
-    f.type = 'lowpass';
-    // Flat, and in a detector it matters: a resonant pole at the corner is a
-    // bump at exactly the frequency the rectified ripple sits at.  The number
-    // is in decibels — see `BUTTERWORTH_Q`.
-    f.Q.value = BUTTERWORTH_Q;
-    return f;
-  };
-  const first = make();
-  const second = make();
-  first.connect(second);
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  let lag = detectorLag(ctx, timeMs);
+  input.connect(lag.input);
+  lag.output.connect(output);
 
-  const setTimeMs = (ms: number): void => {
-    const hz = Math.min(DETECTOR_MAX_HZ, timeConstantToHz(ms));
-    first.frequency.value = hz;
-    second.frequency.value = hz;
+  return {
+    input,
+    output,
+    setTimeMs: (ms) => {
+      try { input.disconnect(lag.input); lag.output.disconnect(); } catch { /* gone */ }
+      lag = detectorLag(ctx, ms);
+      input.connect(lag.input);
+      lag.output.connect(output);
+    },
   };
-  setTimeMs(timeMs);
-  return { input: first, output: second, setTimeMs };
 }
 
 /**
- * How much longer two cascaded poles take than one.
+ * How much longer this detector takes than the corner it sits at suggests.
  *
- * A single pole reaches 63.2% of a step at exactly its time constant.  Two of
- * them in series reach it at 2.1456 τ — the root of (1+u)·e^(−u) = 0.368 —
- * so a detector built from two has to be given a τ that much shorter for its
- * knob to mean milliseconds.  Measured, and it is exact to the hundredth:
+ * It is four poles — two Butterworth biquads in series — and four poles reach
+ * 63.2% of a step at 3.379 × 1/(2πf₀) rather than at 1/(2πf₀).  The mapping
+ * that used to be here placed the corner at ONE pole's time constant, so
+ * every detector in this app took 3.379× as long as the number on its panel.
+ * Measured, at 192 kHz so the sampling is not what is being measured:
  *
- *      asked    5 ms → 63% at    4.98 ms
- *      asked  100 ms → 63% at   99.98 ms
- *      asked 1500 ms → 63% at 1500.06 ms
+ *     knob   corner it picked   step reached 63.2% at
+ *        1 ms     159.15 Hz          3.38 ms
+ *       30 ms       5.31 Hz        101.37 ms
+ *      300 ms       0.53 Hz       1013.72 ms
  *
- * in both the browser this ships in and the renderer these tests run under.
+ * Dividing by it puts the corner where the knob's number comes true.
  */
-export const TWO_POLE_63_PERCENT = 2.1456;
+export const DETECTOR_SETTLE = 3.379;
 
 /**
- * Two poles, as a cascade of one-pole `IIRFilterNode`s.
+ * The corner a detector needs to settle in `timeMs`, never above the ripple
+ * ceiling.
+ */
+export function detectorHz(timeMs: number): number {
+  const tau = Math.max(1e-5, timeMs / 1000);
+  return Math.min(DETECTOR_MAX_HZ, DETECTOR_SETTLE / (2 * Math.PI * tau));
+}
+
+/** The fastest this detector can be asked to be, which is its ripple ceiling. */
+export const DETECTOR_MIN_MS = (DETECTOR_SETTLE / (2 * Math.PI * DETECTOR_MAX_HZ)) * 1000;
+
+/**
+ * A Butterworth lowpass, as coefficients rather than as a corner frequency.
  *
- * Not `BiquadFilterNode`, and this is the whole reason the follower below
- * exists rather than another `smoother`.  A biquad derives its coefficients
- * from cos(ω₀), and as ω₀ goes to zero that cosine goes to one — so a
- * detector's corner, which is a fraction of a hertz, lands where the
- * arithmetic has nothing left.  Measured in Chromium, the DC gain of ONE
- * lowpass biquad against its corner:
+ * `BiquadFilterNode` derives its own coefficients from cos(ω₀), and as ω₀
+ * goes to zero that cosine goes to one — so a detector's corner, which is a
+ * fraction of a hertz, lands where the arithmetic has nothing left.  Measured
+ * in Chromium, the DC gain of ONE lowpass `BiquadFilterNode` against its
+ * corner:
  *
  *     0.5 Hz  ×5.49      2 Hz  ×1.87       13.4 Hz  ×0.99
  *       1 Hz  ×12.66     3 Hz  ×1.39         20 Hz  ×1.00
  *    1.34 Hz  ×18.49     5 Hz  ×1.14         40 Hz  ×1.00
  *
  * A detector is supposed to pass DC untouched; at 1.34 Hz — which is what a
- * 400 ms release asks for — it multiplies it by eighteen.  The offline
+ * 400 ms release asks for — it multiplied it by eighteen.  The offline
  * renderer these tests run in computes the same coefficients in wider
- * arithmetic and shows none of it, which is why this was invisible until the
- * device was driven in the app.  Every `smoother` slower than about 13 Hz is
- * in that region today.
+ * arithmetic and shows none of it, so this was invisible until a device was
+ * driven in the app.
  *
- * An IIR filter is handed its coefficients directly, so there is no cosine to
- * lose: `y[n] = a·x[n] + (1−a)·y[n−1]` behaves the same at 1500 ms as at
- * 5 ms, and identically in both renderers.  The price is that the
- * coefficients are fixed when the node is made, so changing the time means
- * building a new pair.
+ * Computed here and handed to an `IIRFilterNode`, the same response comes out
+ * with a DC gain of 1.00000 at 0.5 Hz in BOTH renderers, agreeing to every
+ * digit.  `1 − cos ω₀` is taken as `2 sin²(ω₀/2)`, which is where the
+ * cancellation would otherwise be.
  */
-export interface OnePolePair {
+export function butterworthLowpass(
+  hz: number, sampleRate: number,
+): { feedforward: number[]; feedback: number[] } {
+  const w0 = (2 * Math.PI * Math.max(1e-6, hz)) / sampleRate;
+  const oneMinusCos = 2 * Math.sin(w0 / 2) ** 2;
+  const cosW0 = 1 - oneMinusCos;
+  const alpha = Math.sin(w0) / Math.SQRT2;
+  const a0 = 1 + alpha;
+  return {
+    feedforward: [(oneMinusCos / 2) / a0, oneMinusCos / a0, (oneMinusCos / 2) / a0],
+    feedback: [1, (-2 * cosW0) / a0, (1 - alpha) / a0],
+  };
+}
+
+/**
+ * The four-pole lag every level detector in this app is built from.
+ *
+ * Its coefficients are fixed when it is made, so changing the time means
+ * building a new one — which is what `smoother` does.
+ */
+export interface DetectorLag {
   input: AudioNode;
   output: AudioNode;
 }
 
-export function twoPoleLag(ctx: BaseAudioContext, timeMs: number): OnePolePair {
-  const tau = Math.max(1e-4, timeMs / 1000) / TWO_POLE_63_PERCENT;
-  const a = 1 - Math.exp(-1 / (tau * ctx.sampleRate));
-  const one = (): IIRFilterNode => ctx.createIIRFilter([a, 0], [1, -(1 - a)]);
-  const first = one(), second = one();
+export function detectorLag(ctx: BaseAudioContext, timeMs: number): DetectorLag {
+  const c = butterworthLowpass(detectorHz(timeMs), ctx.sampleRate);
+  const first = ctx.createIIRFilter(c.feedforward, c.feedback);
+  const second = ctx.createIIRFilter(c.feedforward, c.feedback);
   first.connect(second);
   return { input: first, output: second };
 }
@@ -906,9 +952,9 @@ export function envelopeFollower(
   half.gain.value = Math.PI / 4;
   sum.connect(half);
 
-  let fast = twoPoleLag(ctx, attackMs);
-  let slow = twoPoleLag(ctx, releaseMs);
-  const wire = (pair: OnePolePair, invert: boolean): void => {
+  let fast = detectorLag(ctx, attackMs);
+  let slow = detectorLag(ctx, releaseMs);
+  const wire = (pair: DetectorLag, invert: boolean): void => {
     input.connect(pair.input);
     pair.output.connect(sum);
     if (invert) pair.output.connect(negate);
@@ -923,7 +969,7 @@ export function envelopeFollower(
   const replace = (which: 'fast' | 'slow', ms: number): void => {
     const old = which === 'fast' ? fast : slow;
     try { input.disconnect(old.input); old.output.disconnect(); } catch { /* already gone */ }
-    const next = twoPoleLag(ctx, ms);
+    const next = detectorLag(ctx, ms);
     if (which === 'fast') fast = next; else slow = next;
     wire(next, which === 'slow');
   };
@@ -938,11 +984,6 @@ export function envelopeFollower(
       try { magnitude.disconnect(); negate.disconnect(); } catch { /* ignore */ }
     },
   };
-}
-
-export function timeConstantToHz(timeMs: number): number {
-  const tau = Math.max(0.0005, timeMs / 1000);
-  return Math.max(0.5, Math.min(20_000, 1 / (2 * Math.PI * tau)));
 }
 
 // ── Registry ──────────────────────────────────────────────────────────────────

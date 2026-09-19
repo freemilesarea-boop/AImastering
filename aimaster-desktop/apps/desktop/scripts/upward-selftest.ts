@@ -26,9 +26,11 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import {
-  TWO_POLE_63_PERCENT, absShaper, envelopeFollower, smoother, twoPoleLag,
+  DETECTOR_MIN_MS, DETECTOR_SETTLE, absShaper, butterworthLowpass, detectorLag,
+  envelopeFollower, smoother,
 } from '../src/renderer/daw/engine/plugin-kit.js';
 import { findPlugin } from '../src/renderer/daw/engine/plugins.js';
+import { PLUGIN_PRESETS } from '../src/renderer/daw/engine/plugin-presets.js';
 import {
   UPWARD_CURVE_POINTS, UPWARD_KNEE_DB, upwardCurve, upwardGainDb, upwardOutputDb,
   upwardPeakGainDb,
@@ -197,7 +199,7 @@ async function main(): Promise<void> {
       buffer.getChannelData(0).fill(1);
       const src = ctx.createBufferSource();
       src.buffer = buffer;
-      const lag = twoPoleLag(ctx as unknown as BaseAudioContext, ms);
+      const lag = detectorLag(ctx as unknown as BaseAudioContext, ms);
       src.connect(lag.input);
       lag.output.connect(ctx.destination);
       src.start(0);
@@ -205,10 +207,13 @@ async function main(): Promise<void> {
       for (let i = 0; i < n; i++) if (out[i]! >= 0.632) return (i / SR) * 1000;
       return Number.NaN;
     };
-    for (const ms of [5, 40, 400, 1500]) {
+    for (const ms of [10, 40, 400, 1500]) {
       close(await settle(ms), ms, Math.max(0.05, ms * 0.005), `a ${ms} ms lag`);
     }
-    assert(Math.abs(TWO_POLE_63_PERCENT - 2.1456) < 1e-9, 'the cascade factor moved');
+    // And it says no rather than pretending, below the ripple ceiling.
+    close(await settle(1), DETECTOR_MIN_MS, 0.1,
+      'a time under the ceiling comes back as the ceiling');
+    assert(Math.abs(DETECTOR_SETTLE - 3.379) < 1e-9, 'the settling factor moved');
   });
 
   await check('the lag passes DC untouched at every speed it offers', async () => {
@@ -217,19 +222,130 @@ async function main(): Promise<void> {
     // 1.34 Hz, ×12.66 at 1 Hz, ×5.49 at 0.5 Hz — and a 400 ms release asks
     // for 1.34 Hz.  A detector that multiplies DC by eighteen is not a
     // detector.
-    for (const ms of [5, 40, 400, 1500]) {
+    for (const ms of [10, 40, 400, 1500]) {
       const n = Math.round(SR * Math.max(4, (ms / 1000) * 10));
       const ctx = new OfflineAudioContext(1, n, SR);
       const buffer = ctx.createBuffer(1, n, SR);
       buffer.getChannelData(0).fill(0.25);
       const src = ctx.createBufferSource();
       src.buffer = buffer;
-      const lag = twoPoleLag(ctx as unknown as BaseAudioContext, ms);
+      const lag = detectorLag(ctx as unknown as BaseAudioContext, ms);
       src.connect(lag.input);
       lag.output.connect(ctx.destination);
       src.start(0);
       const out = (await ctx.startRendering()).getChannelData(0);
       close(out[n - 1]! / 0.25, 1, 0.002, `a ${ms} ms lag's DC gain`);
+    }
+  });
+
+  await check('the detector is built the way that survives the browser', () => {
+    // This one is a structural check and it is deliberate, because the
+    // behavioural check cannot be written here.  Putting a `BiquadFilterNode`
+    // back in `detectorLag` and running this whole suite passes: the offline
+    // renderer computes biquad coefficients in wide enough arithmetic that
+    // the failure never appears.  In the browser the same filter at 1.34 Hz
+    // has a DC gain of ×18.49, and a 400 ms release asks for 1.34 Hz.
+    //
+    // So what is held here is the CONSTRUCTION that avoids it — coefficients
+    // computed in this file and handed over, rather than a corner frequency
+    // handed to somebody else's cosine.
+    const ctx = new OfflineAudioContext(1, 128, SR);
+    const lag = detectorLag(ctx as unknown as BaseAudioContext, 400);
+    const kind = lag.input.constructor.name;
+    assert(/IIRFilter/.test(kind),
+      `the detector is a ${kind} — a filter that derives its own coefficients `
+      + 'from a corner cannot hold a detector\'s corner in the browser');
+
+    // And the coefficients themselves: a Butterworth lowpass has unity DC
+    // gain, which is (Σ feedforward) / (Σ feedback) = 1.
+    //
+    // 1e-6 rather than 1e-9, and the reason is the same cancellation this
+    // whole check is about: the feedback sum is 1 + a₁ + a₂ with a₁ ≈ −2 and
+    // a₂ ≈ 1, so at 0.36 Hz it comes to 2e-9 out of terms of order one and
+    // keeps about eight digits.  Eight is plenty — the filter it builds
+    // measures a DC gain of 1.00000 in both renderers — and pretending to
+    // sixteen would be asserting something float64 does not have.
+    for (const hz of [0.36, 1.34, 60]) {
+      const c = butterworthLowpass(hz, SR);
+      const ff = c.feedforward.reduce((a, b) => a + b, 0);
+      const fb = c.feedback.reduce((a, b) => a + b, 0);
+      close(ff / fb, 1, 1e-6, `a ${hz} Hz lowpass passes DC`);
+    }
+  });
+
+  await check('the shared detector settles in the time its knob says', async () => {
+    // `detectorLag` is checked above; this is `smoother`, which is what the
+    // other seven dynamics devices actually hold, and which used to take
+    // 3.379× the number it was given.
+    const settle = async (ms: number): Promise<number> => {
+      const n = Math.round(SR * Math.max(4, (ms / 1000) * 8));
+      const ctx = new OfflineAudioContext(1, n, SR);
+      const buffer = ctx.createBuffer(1, n, SR);
+      buffer.getChannelData(0).fill(1);
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      const env = smoother(ctx as unknown as BaseAudioContext, ms);
+      src.connect(env.input);
+      env.output.connect(ctx.destination);
+      src.start(0);
+      const out = (await ctx.startRendering()).getChannelData(0);
+      for (let i = 0; i < n; i++) if (out[i]! >= 0.632) return (i / SR) * 1000;
+      return Number.NaN;
+    };
+    for (const ms of [10, 40, 304, 1000]) {
+      close(await settle(ms), ms, Math.max(0.05, ms * 0.005), `smoother at ${ms} ms`);
+    }
+    // And `setTimeMs` rebuilds rather than leaving the old lag in the path —
+    // the coefficients are fixed when the node is made.
+    const ctx = new OfflineAudioContext(1, SR * 3, SR);
+    const buffer = ctx.createBuffer(1, SR * 3, SR);
+    buffer.getChannelData(0).fill(1);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const env = smoother(ctx as unknown as BaseAudioContext, 1000);
+    env.setTimeMs(20);
+    src.connect(env.input);
+    env.output.connect(ctx.destination);
+    src.start(0);
+    const out = (await ctx.startRendering()).getChannelData(0);
+    let at = Number.NaN;
+    for (let i = 0; i < out.length; i++) if (out[i]! >= 0.632) { at = (i / SR) * 1000; break; }
+    close(at, 20, 0.5, 'after setTimeMs the detector is the new time, once');
+  });
+
+  await check('no device offers a detector time it cannot deliver', () => {
+    // The guard that stops the lie coming back.  Named explicitly rather than
+    // matched on `Ms$`, because `lookaheadMs` is a delay line and not a
+    // detector time — it is exact at any value and has no floor.
+    const DETECTOR_TIMES: Readonly<Record<string, readonly string[]>> = {
+      ducker: ['attackMs', 'releaseMs'],
+      limiter: ['releaseMs'],
+      denoise: ['releaseMs'],
+      gate: ['attackMs', 'releaseMs'],
+      upward: ['attackMs', 'releaseMs'],
+    };
+    for (const [id, ids] of Object.entries(DETECTOR_TIMES)) {
+      const plugin = findPlugin(id);
+      assert(plugin !== undefined, `${id} is not a device`);
+      for (const paramId of ids) {
+        const def = plugin!.params.find((d) => d.id === paramId);
+        assert(def !== undefined, `${id} has no ${paramId}`);
+        assert(def!.min >= DETECTOR_MIN_MS - 1e-9,
+          `${id}.${paramId} offers ${def!.min} ms, under the ${DETECTOR_MIN_MS.toFixed(2)} ms `
+          + 'the detector can actually reach');
+      }
+    }
+    // And no preset asks for one either — a range nobody can leave is only
+    // half the promise if the factory settings walk straight past it.
+    for (const preset of PLUGIN_PRESETS) {
+      const ids = DETECTOR_TIMES[preset.pluginId];
+      if (!ids) continue;
+      for (const paramId of ids) {
+        const value = preset.params[paramId];
+        if (value === undefined) continue;
+        assert(value >= DETECTOR_MIN_MS - 1e-9,
+          `${preset.id} sets ${paramId} to ${value} ms, under the detector's floor`);
+      }
     }
   });
 
