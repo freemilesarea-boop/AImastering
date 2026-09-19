@@ -77,8 +77,8 @@ export async function ensureStreamRuntime(ctx: BaseAudioContext): Promise<boolea
       };
       return true;
     } catch (err) {
-      // eslint-disable-next-line no-console
       const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      // eslint-disable-next-line no-console
       console.warn('[stream] 스트리밍을 사용할 수 없어 버퍼 재생으로 돌아갑니다 —', reason);
       return false;
     }
