@@ -938,8 +938,24 @@ export interface EnvelopeFollower {
   dispose: () => void;
 }
 
+/**
+ * Whether the follower reports a sine's AMPLITUDE or its rectified average.
+ *
+ * Calibrated is right, and it is the default.  The reason it can be turned
+ * off is that `smoother` — which the other five dynamics devices hold — does
+ * not calibrate, so their thresholds all sit 3.92 dB off: a ducker set to
+ * −24 dB starts ducking at −20.1, measured.  Fixing that belongs in
+ * `smoother`, where it moves all of them at once; turning it on for two
+ * devices here would leave the app disagreeing with itself about what a
+ * threshold in decibels means.
+ */
+export interface EnvelopeFollowerOptions {
+  calibrate?: boolean;
+}
+
 export function envelopeFollower(
   ctx: BaseAudioContext, attackMs: number, releaseMs: number,
+  options: EnvelopeFollowerOptions = {},
 ): EnvelopeFollower {
   const input = ctx.createGain();
   const sum = ctx.createGain();
@@ -949,7 +965,7 @@ export function envelopeFollower(
   const magnitude = absShaper(ctx, 32_769);
   difference.connect(magnitude).connect(sum);
   const half = ctx.createGain();
-  half.gain.value = Math.PI / 4;
+  half.gain.value = (options.calibrate ?? true) ? Math.PI / 4 : 0.5;
   sum.connect(half);
 
   let fast = detectorLag(ctx, attackMs);

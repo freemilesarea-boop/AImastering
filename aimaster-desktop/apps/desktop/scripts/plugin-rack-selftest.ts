@@ -207,6 +207,148 @@ async function main(): Promise<void> {
       `a loud one passes — ${open.rms.toFixed(3)} vs ${reference.rms.toFixed(3)}`);
   });
 
+  await check('a device showing two time knobs has two of them', async () => {
+    // It did not.  `ducker` and `gate` each held ONE `smoother`, which has one
+    // time constant, and handed both knobs to its `setTimeMs` — so whichever
+    // the user touched last was the only one that did anything and the other
+    // moved for nothing.  The check is written over the REGISTRY rather than
+    // over those two, so the next device to grow an Attack and a Release
+    // cannot ship the same way.
+    const SR = 48_000;
+    const pairs = PLUGINS.filter((p) =>
+      p.params.some((d) => d.id === 'attackMs') && p.params.some((d) => d.id === 'releaseMs'));
+    assert(pairs.length >= 3, `only ${pairs.length} devices show both knobs — has one been renamed?`);
+
+    // What it takes to make each one ACT on the burst below.  A device that
+    // does nothing has no attack to measure, and the upward compressor's
+    // whole point is that it does nothing until asked: its Depth starts at
+    // zero.  Empty means the defaults already work.
+    const WORKING: Readonly<Record<string, Record<string, number>>> = {
+      comp: {},
+      ducker: {},
+      gate: {},
+      upward: { depthDb: 12, thresholdDb: -24, floorDb: -70 },
+    };
+    for (const plugin of pairs) {
+      assert(WORKING[plugin.id] !== undefined,
+        `${plugin.id} shows both knobs and this check does not know how to make it act`);
+    }
+
+    /** How long a device takes to act, and how long to let go, in milliseconds. */
+    const times = async (
+      id: string, attackMs: number, releaseMs: number,
+    ): Promise<{ act: number; release: number }> => {
+      const plugin = findPlugin(id)!;
+      const n = SR * 4;
+      const ctx = new OfflineAudioContext(1, n, SR);
+      const instance = plugin.create(ctx as unknown as BaseAudioContext, {
+        ...defaultParams(id), ...WORKING[id], attackMs, releaseMs,
+      });
+      // A kilohertz, so one period is a millisecond and the envelope below
+      // can read a whole one while stepping a quarter of one.
+      const TONE_HZ = 1000;
+      const buffer = ctx.createBuffer(1, n, SR);
+      const source = buffer.getChannelData(0);
+      for (let i = 0; i < n; i++) {
+        const t = i / SR;
+        source[i] = (t >= 1 && t < 2.5 ? 0.5 : 0.002) * Math.sin(2 * Math.PI * TONE_HZ * t);
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(instance.input);
+      instance.output.connect(ctx.destination);
+      src.start(0);
+      const out = (await ctx.startRendering()).getChannelData(0);
+      // The device's GAIN, not its output: the input is itself a step, so an
+      // output envelope falls when the burst ends whatever the device does.
+      // A whole period, stepped a quarter of one.  The compressor's attack
+      // goes down to 0.1 ms, so the STEP has to be short — but a peak taken
+      // over a window shorter than a period is not an envelope, it is
+      // wherever the phase happened to be, and it reads as a gain jumping
+      // between −49 and −1 dB on a signal that is perfectly steady.
+      const hop = Math.round(SR * 0.00025);
+      const span = Math.round(SR / TONE_HZ);
+      // The output is read past the device's own latency.  A look-ahead
+      // compressor delays what it is given by 6 ms, so for 6 ms after the
+      // step the output is still the quiet part while the input has already
+      // jumped — a gain of nothing, which crosses any downward target at
+      // once and reads as an attack of nothing.  The device declares that
+      // delay; this is what it is for.
+      const latency = plugin.latencyFor(defaultParams(id), SR);
+      const windows = Math.floor((n - span - latency) / hop);
+      const gain = new Float64Array(windows);
+      for (let j = 0; j < windows; j++) {
+        let o = 0, i2 = 0;
+        for (let k = 0; k < span; k++) {
+          o = Math.max(o, Math.abs(out[j * hop + k + latency]!));
+          i2 = Math.max(i2, Math.abs(source[j * hop + k]!));
+        }
+        gain[j] = i2 > 1e-9 ? o / i2 : 0;
+      }
+      const at = (t: number): number => gain[Math.round((t * SR) / hop)]!;
+      const before = at(0.99), during = at(2.45), after = at(3.9);
+      // A crossing has to STAY crossed for two milliseconds, and the search
+      // begins one window past the step.  One window is not a measurement:
+      // the windows straddling the step hold an input that has jumped and an
+      // output that has not, and the compressor's own output dips to −51 dB
+      // for a single window after one — either of which crosses a downward
+      // target on the spot and reads as an attack of nothing at all.
+      const HOLD = Math.round((0.002 * SR) / hop);
+      const find = (fromSec: number, target: number, up: boolean): number => {
+        const from = Math.round(((fromSec + span / SR) * SR) / hop);
+        for (let j = from; j + HOLD < windows; j++) {
+          let held = true;
+          for (let k = 0; k <= HOLD && held; k++) {
+            held = up ? gain[j + k]! >= target : gain[j + k]! <= target;
+          }
+          if (held) return ((j * hop) / SR - fromSec) * 1000;
+        }
+        return Number.NaN;
+      };
+      return {
+        act: find(1, before + 0.632 * (during - before), during > before),
+        release: find(2.5, during + 0.632 * (after - during), after > during),
+      };
+    };
+
+    for (const plugin of pairs) {
+      const a = plugin.params.find((d) => d.id === 'attackMs')!;
+      const r = plugin.params.find((d) => d.id === 'releaseMs')!;
+      // Values chosen to be resolvable rather than extreme: the point is
+      // whether each knob moves its OWN time, which needs two settings far
+      // enough apart to measure and both inside the device's own range.
+      const clamp = (v: number, d: { min: number; max: number }): number =>
+        Math.max(d.min, Math.min(d.max, v));
+      const fastAttack = clamp(6, a), slowAttack = clamp(60, a);
+      const fastRelease = clamp(60, r), slowRelease = clamp(500, r);
+
+      const base = await times(plugin.id, fastAttack, fastRelease);
+      const withAttack = await times(plugin.id, slowAttack, fastRelease);
+      const withRelease = await times(plugin.id, fastAttack, slowRelease);
+
+      for (const [what, got] of [['base', base], ['slow attack', withAttack],
+        ['slow release', withRelease]] as const) {
+        assert(Number.isFinite(got.act) && Number.isFinite(got.release),
+          `${plugin.id} never reached its 63% point on ${what}`);
+      }
+      // The knob that was moved moves its own time...
+      assert(withAttack.act > base.act + 4,
+        `${plugin.id}: attack ${fastAttack} → ${slowAttack} ms left it acting in `
+        + `${withAttack.act.toFixed(1)} ms against ${base.act.toFixed(1)} — the knob is not connected`);
+      assert(withRelease.release > base.release + 20,
+        `${plugin.id}: release ${fastRelease} → ${slowRelease} ms left it releasing in `
+        + `${withRelease.release.toFixed(1)} ms against ${base.release.toFixed(1)}`);
+      // ...and leaves the other one where it was, which is the half that was
+      // broken: one time constant means each knob moved both.
+      assert(Math.abs(withAttack.release - base.release) < base.release * 0.3 + 5,
+        `${plugin.id}: moving the ATTACK moved the release from ${base.release.toFixed(0)} to `
+        + `${withAttack.release.toFixed(0)} ms — they are still one control`);
+      assert(Math.abs(withRelease.act - base.act) < base.act * 0.3 + 5,
+        `${plugin.id}: moving the RELEASE moved the attack from ${base.act.toFixed(0)} to `
+        + `${withRelease.act.toFixed(0)} ms — they are still one control`);
+    }
+  });
+
   await check('the clipper holds its ceiling', async () => {
     const out = await renderPlugin('clipper', 'loud', { ceilingDb: -6, driveDb: 12, hardness: 1 });
     const m = measure(out, STEADY_FROM, STEADY_TO);

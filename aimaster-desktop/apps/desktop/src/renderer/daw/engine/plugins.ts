@@ -17,7 +17,8 @@ import { webAudioAutoMakeup } from '../model/plugin-curves.js';
 import {
   BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
-  absShaper, dbToGain, halfWaveGainCurve, makeDbReductionCurve, makeExpanderCurve,
+  absShaper, dbToGain, envelopeFollower, halfWaveGainCurve, makeDbReductionCurve,
+  makeExpanderCurve,
   makeGainCurve, makeShaper, smoother, tanhCurve, wetDry, withBypass,
   automatableFrom,
   type PluginDescriptor, type PluginInstance, type PluginParamDef,
@@ -246,7 +247,15 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const externalKey = ctx.createGain();
       externalKey.gain.value = 0;
       const rect = absShaper(ctx);
-      const env = smoother(ctx, params['attackMs'] ?? 20);
+      // A real attack and a real release.  Both knobs used to be handed to
+      // one `smoother`, which has ONE time constant — so whichever the user
+      // touched last was the only one doing anything, and the other was a
+      // control that moved and did nothing.  `calibrate: false` keeps the
+      // detector reporting what it always has; its 3.92 dB offset is
+      // `smoother`'s to fix, for all five devices at once.
+      const env = envelopeFollower(
+        ctx, params['attackMs'] ?? 20, params['releaseMs'] ?? 200, { calibrate: false },
+      );
       let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, params['ratio'] ?? 6);
 
       input.connect(internalKey);
@@ -266,7 +275,8 @@ const CORE_PLUGINS: PluginDescriptor[] = [
         },
         setParam: (id, v) => {
           if (id === 'makeupDb') makeup.gain.value = dbToGain(v);
-          if (id === 'attackMs' || id === 'releaseMs') env.setTimeMs(v);
+          if (id === 'attackMs') env.setAttackMs(v);
+          if (id === 'releaseMs') env.setReleaseMs(v);
           if (id === 'thresholdDb' || id === 'ratio') {
             if (id === 'thresholdDb') params['thresholdDb'] = v; else params['ratio'] = v;
             const next = makeGainCurve(
@@ -280,8 +290,8 @@ const CORE_PLUGINS: PluginDescriptor[] = [
           }
         },
         // Only the makeup gain: threshold and ratio rebuild the transfer
-        // curve, and the detector's time constants are two biquads, not one
-        // parameter.
+        // curve, and the detector's times are the coefficients of IIR filters,
+        // which are fixed when the filter is made.
         automatable: automatableFrom({ makeupDb: { param: makeup.gain, map: dbToGain } }),
         dispose: () => { curve.disconnect(); },
       };

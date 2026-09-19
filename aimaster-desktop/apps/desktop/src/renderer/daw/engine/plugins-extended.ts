@@ -1390,7 +1390,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const vca = ctx.createGain();
       vca.gain.value = 0;
       const rect = absShaper(ctx);
-      const env = smoother(ctx, p(params, 'attackMs', 5));
+      // Two knobs, two controls.  They used to share one `smoother`, which
+      // has a single time constant, so a gate's Release did nothing unless it
+      // happened to be the last thing touched.  `calibrate: false` leaves the
+      // detector reading what it always has — the 3.92 dB offset it carries is
+      // shared with four other devices and belongs to `smoother`.
+      const env = envelopeFollower(
+        ctx, p(params, 'attackMs', 9), p(params, 'releaseMs', 200), { calibrate: false },
+      );
 
       let curve = makeShaper(ctx, gateGainCurve(
         p(params, 'thresholdDb', -45), p(params, 'rangeDb', 40),
@@ -1403,7 +1410,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       return {
         setParam: (id, v) => {
           params[id] = v;
-          if (id === 'attackMs' || id === 'releaseMs') env.setTimeMs(v);
+          if (id === 'attackMs') env.setAttackMs(v);
+          if (id === 'releaseMs') env.setReleaseMs(v);
           if (id === 'thresholdDb' || id === 'rangeDb') {
             const next = makeShaper(ctx, gateGainCurve(
               p(params, 'thresholdDb', -45), p(params, 'rangeDb', 40),
@@ -1415,7 +1423,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             curve.connect(vca.gain);
           }
         },
-        dispose: () => { curve.disconnect(); },
+        dispose: () => { curve.disconnect(); env.dispose(); },
       };
     }),
   },
