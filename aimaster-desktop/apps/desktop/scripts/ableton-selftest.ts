@@ -14,6 +14,9 @@
  * Run: pnpm --filter @aimaster/desktop test:ableton
  */
 
+import { OfflineAudioContext } from 'node-web-audio-api';
+(globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
+
 import {
   emptyGraph, linearGraph, createNode, connect, disconnect, insertOnEdge,
   removeNode, addParallelBranch, addSend, hasCycle, topoOrder, validateGraph,
@@ -25,7 +28,9 @@ import {
   buildRack, rackBlueprints, resolveRack, resolvedParams, setRackMacro,
   mapMacro, unmapMacro, macroFor, describeRack, validateRack, createRack,
 } from '../src/renderer/daw/model/racks.js';
-import { chainLatency } from '../src/renderer/daw/engine/device-chain.js';
+import {
+  alignmentCapacity, alignmentDelays, applyChainParams, buildDeviceChain, chainLatency,
+} from '../src/renderer/daw/engine/device-chain.js';
 import {
   emptyGrid, addScene, removeScene, renameScene, setSlotClip, clearSlot, slotAt,
   sceneSlots, trackSlots, nextBoundary, queueSlot, queueScene, queueStop, stopAll,
@@ -36,7 +41,7 @@ import {
   addTrack, createClip, createSession, createTrack, findTrack, trackClips,
 } from '../src/renderer/daw/model/session-ops.js';
 import { resetIds } from '../src/renderer/daw/model/ids.js';
-import { findPlugin } from '../src/renderer/daw/engine/plugins.js';
+import { findPlugin, PLUGINS } from '../src/renderer/daw/engine/plugins.js';
 import type { DawSession } from '../src/renderer/daw/model/types.js';
 
 interface T { name: string; pass: boolean; detail: string }
@@ -44,6 +49,14 @@ const results: T[] = [];
 function check(name: string, fn: () => void): void {
   try { fn(); results.push({ name, pass: true, detail: '' }); }
   catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+}
+/** Checks that have to render audio, run after the synchronous ones. */
+const pending: Array<() => Promise<void>> = [];
+function acheck(name: string, fn: () => Promise<void>): void {
+  pending.push(async () => {
+    try { await fn(); results.push({ name, pass: true, detail: '' }); }
+    catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+  });
 }
 function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
 function eq<T>(a: T, b: T, m: string): void {
@@ -372,6 +385,308 @@ check('chain latency follows the longest path, through racks', () => {
   eq(chainLatency(offlineOnly, [], 48_000), 0, 'offline devices add no latency');
 });
 
+/** The graph the alignment checks use: a bare branch beside an oversampled one. */
+function splitGraph(): { graph: DeviceGraph; bare: string; sat: string } {
+  resetIds();
+  let graph = linearGraph([
+    { pluginId: 'eq3', label: 'EQ' },
+    { pluginId: 'limiter', label: 'LIMIT', params: { lookaheadMs: 5, ceilingDb: -1, releaseMs: 80 } },
+  ]);
+  const eq3 = deviceOrder(graph).find((n) => n.label === 'EQ')!;
+  const limiter = deviceOrder(graph).find((n) => n.label === 'LIMIT')!;
+  graph = addParallelBranch(graph, eq3.id, limiter.id, createNode({
+    kind: 'device', pluginId: 'saturation', label: 'SAT',
+  }));
+  const into = edgesTo(graph, limiter.id);
+  const satNode = deviceOrder(graph).find((n) => n.label === 'SAT')!;
+  return {
+    graph,
+    bare: into.find((e) => e.from === eq3.id)!.id,
+    sat: into.find((e) => e.from === satNode.id)!.id,
+  };
+}
+
+check('a branch that is shorter than the one beside it is delayed to match', () => {
+  const { graph, bare, sat } = splitGraph();
+  const delays = alignmentDelays(graph, [], 48_000);
+
+  // The saturator oversamples; the branch beside it does not.  Summing them
+  // as built puts the bare copy 192 samples in front of the processed one —
+  // a comb filter with its first null at 125 Hz, which is the thing people
+  // blame on the saturator.
+  eq(delays.get(bare), oversampleLatencySamples(48_000),
+    'the bare branch waits exactly as long as the saturator takes');
+  eq(delays.get(sat), 0, 'the long branch waits for nobody');
+
+  // Every other edge feeds a node with one input, which has nothing to be
+  // level with.  Asserting this is what stops the fix from being "delay
+  // everything by the longest path", which would be latency for free.
+  for (const [key, samples] of delays) {
+    if (key === bare) continue;
+    eq(samples, 0, `${key} is on a single-input node and needs no delay`);
+  }
+
+  // And the chain still reports the longest path, unchanged: that number is
+  // what the mix bus is told, and aligning the insides must not move it.
+  eq(chainLatency(graph, [], 48_000), 240 + oversampleLatencySamples(48_000),
+    'the chain still declares the longest path');
+});
+
+check('alignment is never negative and always squares with the longest path', () => {
+  const { graph } = splitGraph();
+  for (const rate of [44_100, 48_000, 96_000]) {
+    const delays = alignmentDelays(graph, [], rate);
+    for (const [key, samples] of delays) {
+      assert(samples >= 0, `${key} asks for a negative delay of ${samples}`);
+      assert(samples <= chainLatency(graph, [], rate),
+        `${key} asks for ${samples}, more than the whole chain takes`);
+    }
+  }
+});
+
+check('bypassing the latent device takes its alignment away too', () => {
+  const { graph, bare } = splitGraph();
+  const sat = deviceOrder(graph).find((n) => n.label === 'SAT')!;
+  const off = {
+    ...graph,
+    nodes: graph.nodes.map((n) => (n.id === sat.id ? { ...n, bypass: true } : n)),
+  };
+  eq(alignmentDelays(off, [], 48_000).get(bare), 0,
+    'with the saturator off the branches are already level');
+});
+
+check('a rack aligns its own insides, under its own key', () => {
+  resetIds();
+  let inner = linearGraph([{ pluginId: 'eq3', label: 'IN-EQ' }]);
+  const innerEq = deviceOrder(inner).find((n) => n.label === 'IN-EQ')!;
+  const innerOut = inner.nodes.find((n) => n.kind === 'output')!;
+  inner = addParallelBranch(inner, innerEq.id, innerOut.id, createNode({
+    kind: 'device', pluginId: 'saturation', label: 'IN-SAT',
+  }));
+  const rack = createRack('Parallel', inner, []);
+  const bare0 = emptyGraph();
+  const graph = insertOnEdge(bare0, bare0.edges[0]!.id, createNode({
+    kind: 'rack', rackId: rack.id, label: 'RACK',
+  }));
+
+  const delays = alignmentDelays(graph, [rack], 48_000);
+  const bare = edgesTo(inner, innerOut.id)
+    .find((e) => e.from === innerEq.id)!;
+  eq(delays.get(`${rack.id}/${bare.id}`), oversampleLatencySamples(48_000),
+    'the rack\'s own split is aligned, keyed the way the builder keys it');
+  eq(chainLatency(graph, [rack], 48_000), oversampleLatencySamples(48_000),
+    'and the rack still reports what it takes');
+});
+
+check('the delay line is sized for what the plugins COULD ask, not what they ask now', () => {
+  resetIds();
+  // A linear-phase EQ on its shortest setting beside a bare branch.  The
+  // chain is only rebuilt when its SHAPE changes, so switching the length
+  // menu afterwards has to fit in the line that is already there.
+  let graph = linearGraph([
+    { pluginId: 'eq3', label: 'EQ' },
+    { pluginId: 'gain', label: 'SUM' },
+  ]);
+  const eq3 = deviceOrder(graph).find((n) => n.label === 'EQ')!;
+  const sum = deviceOrder(graph).find((n) => n.label === 'SUM')!;
+  graph = addParallelBranch(graph, eq3.id, sum.id, createNode({
+    kind: 'device', pluginId: 'linphase', label: 'LP', params: { length: 0 },
+  }));
+  const capacity = alignmentCapacity(graph, [], 48_000);
+  const now = Math.max(...alignmentDelays(graph, [], 48_000).values());
+  assert(capacity > now,
+    `capacity ${capacity} leaves no room over the ${now} the chain wants today`);
+
+  const longest = {
+    ...graph,
+    nodes: graph.nodes.map((n) => (n.label === 'LP' ? { ...n, params: { length: 2 } } : n)),
+  };
+  const later = Math.max(...alignmentDelays(longest, [], 48_000).values());
+  assert(later > now, 'the longer setting really does ask for more');
+  assert(capacity >= later,
+    `the line holds ${capacity} but the longest setting needs ${later} — it would clamp`);
+});
+
+check('the capacity bounds every plugin over its whole range', () => {
+  // The bound is a probe rather than a proof: each parameter at both ends,
+  // then all of them at once.  A plugin whose latency needs some interior
+  // combination would slip past it, so this sweeps the range properly.
+  for (const plugin of PLUGINS) {
+    if (plugin.offline) continue;
+    resetIds();
+    const graph = linearGraph([{ pluginId: plugin.id, label: 'P' }]);
+    const bound = alignmentCapacity(graph, [], 48_000);
+    const base: Record<string, number> = {};
+    for (const def of plugin.params) base[def.id] = def.default;
+    for (const def of plugin.params) {
+      for (let step = 0; step <= 8; step++) {
+        const at = def.min + ((def.max - def.min) * step) / 8;
+        const got = plugin.latencyFor({ ...base, [def.id]: at }, 48_000);
+        assert(got <= bound,
+          `${plugin.id} reports ${got} with ${def.id}=${at}, over its bound of ${bound}`);
+      }
+    }
+  }
+});
+
+acheck('the two branches land on the same sample, and did not before', async () => {
+  const { graph } = splitGraph();
+  const SR = 48_000;
+
+  const render = async (align: boolean): Promise<Float32Array> => {
+    const n = 2048;
+    const ctx = new OfflineAudioContext(2, n, SR);
+    const built = buildDeviceChain(
+      { ctx: ctx as unknown as BaseAudioContext, busFor: () => undefined, racks: [] }, graph,
+    );
+    assert(built !== null, 'the chain builds');
+    // Turning the lines off is what the chain did before this existed, so
+    // the check measures the fix rather than merely describing the fixed one.
+    if (!align) for (const d of built!.edgeDelays.values()) d.delayTime.value = 0;
+    const buf = ctx.createBuffer(1, n, SR);
+    buf.getChannelData(0)[8] = 1;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(built!.input);
+    built!.output.connect(ctx.destination);
+    src.start(0);
+    const out = await ctx.startRendering();
+    return Float32Array.from(out.getChannelData(0));
+  };
+
+  const arrivals = (x: Float32Array): number[] => {
+    let peak = 0;
+    for (const v of x) peak = Math.max(peak, Math.abs(v));
+    const hits: number[] = [];
+    for (let i = 1; i < x.length - 1; i++) {
+      const v = Math.abs(x[i]!);
+      if (v > peak * 0.2 && v >= Math.abs(x[i - 1]!) && v > Math.abs(x[i + 1]!)) hits.push(i);
+    }
+    return hits;
+  };
+
+  const before = arrivals(await render(false));
+  eq(before.length, 2, `unaligned, one impulse comes out twice — at ${before.join(', ')}`);
+  eq(before[1]! - before[0]!, oversampleLatencySamples(SR),
+    'and the gap between them is exactly the saturator\'s latency');
+
+  const after = arrivals(await render(true));
+  eq(after.length, 1, `aligned, one impulse comes out once — got ${after.join(', ')}`);
+  eq(after[0], before[1], 'at the later of the two, which is where the chain says it is');
+});
+
+acheck('the delay line the alignment rests on is a sample shift, to a known error', async () => {
+  // The alignment is only ever as exact as the node it is made of, so the
+  // node is measured rather than assumed.  A `DelayNode`'s `delayTime` is a
+  // float32 AudioParam, and k/48000 is not a float32 — so the read pointer
+  // sits a ten-thousandth of a sample off an integer and the interpolator
+  // smears by that much.  Measured in both renderers this suite and the app
+  // use, against the same noise shifted by hand:
+  //
+  //        1 sample   3.0e-8      192 samples  1.8e-5
+  //       64 samples  1.4e-6      512 samples  1.1e-5
+  //      128 samples  2.7e-6     2047 samples  9.9e-5   (the longest a plugin asks for)
+  //
+  // −80 dBFS at the worst of it, against the full-depth comb filter that a
+  // 192-sample misalignment actually is.  It is the same delay line the
+  // channel's own compensation has always used.  This check is here so that
+  // if someone lands the delay on a half-sample instead, it is a failure
+  // rather than a quiet 3 dB off the top of every parallel branch.
+  const SR = 48_000, n = 4096;
+  const noise = (): Float32Array => {
+    const x = new Float32Array(n);
+    let seed = 987654321 >>> 0;
+    for (let i = 0; i < n; i++) {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      x[i] = (seed / 4294967296) * 2 - 1;
+    }
+    return x;
+  };
+  const source = noise();
+  const run = async (samples: number): Promise<Float32Array> => {
+    const ctx = new OfflineAudioContext(1, n, SR);
+    const buf = ctx.createBuffer(1, n, SR);
+    buf.getChannelData(0).set(source);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const delay = ctx.createDelay(1);
+    delay.delayTime.value = samples / SR;
+    src.connect(delay).connect(ctx.destination);
+    src.start(0);
+    return Float32Array.from((await ctx.startRendering()).getChannelData(0));
+  };
+
+  // Zero has to be exact: every edge into a fan-in gets a line, and the one
+  // on the LONG branch is always asked for nothing.  If that were lossy the
+  // fix would be charging the branch it is supposed to leave alone.
+  const zero = await run(0);
+  let flat = 0;
+  for (let i = 0; i < n; i++) flat = Math.max(flat, Math.abs(source[i]! - zero[i]!));
+  eq(flat, 0, 'a line asked for no delay passes the signal through untouched');
+
+  for (const k of [oversampleLatencySamples(SR), 512, 2047]) {
+    const y = await run(k);
+    let err = 0;
+    for (let i = k; i < n; i++) err = Math.max(err, Math.abs(source[i - k]! - y[i]!));
+    assert(err < 3e-4, `a ${k}-sample line is off by ${err.toExponential(2)}, over 3e-4`);
+    // And it moved: without this, a `run` that quietly handed the input back
+    // would pass the line above with room to spare.
+    let unmoved = 0;
+    for (let i = k; i < n; i++) unmoved = Math.max(unmoved, Math.abs(source[i]! - y[i]!));
+    assert(unmoved > 0.5, `a ${k}-sample line did not shift anything`);
+  }
+});
+
+acheck('a chain that never branches builds no delay lines at all', async () => {
+  resetIds();
+  const graph = linearGraph([
+    { pluginId: 'eq3', label: 'EQ' },
+    { pluginId: 'saturation', label: 'SAT' },
+    { pluginId: 'limiter', label: 'LIMIT' },
+  ]);
+  const ctx = new OfflineAudioContext(2, 128, 48_000);
+  const built = buildDeviceChain(
+    { ctx: ctx as unknown as BaseAudioContext, busFor: () => undefined, racks: [] }, graph,
+  );
+  eq(built?.edgeDelays.size, 0, 'nothing to be level with, so nothing is built');
+  eq(built!.edgeGains.size, graph.edges.length, 'every edge still has its gain');
+});
+
+acheck('the alignment follows a parameter that moves the latency', async () => {
+  resetIds();
+  let graph = linearGraph([
+    { pluginId: 'eq3', label: 'EQ' },
+    { pluginId: 'gain', label: 'SUM' },
+  ]);
+  const eq3 = deviceOrder(graph).find((n) => n.label === 'EQ')!;
+  const sum = deviceOrder(graph).find((n) => n.label === 'SUM')!;
+  graph = addParallelBranch(graph, eq3.id, sum.id, createNode({
+    kind: 'device', pluginId: 'linphase', label: 'LP', params: { length: 0 },
+  }));
+  const bare = edgesTo(graph, sum.id).find((e) => e.from === eq3.id)!;
+
+  const ctx = new OfflineAudioContext(2, 128, 48_000);
+  const built = buildDeviceChain(
+    { ctx: ctx as unknown as BaseAudioContext, busFor: () => undefined, racks: [] }, graph,
+  )!;
+  const at = (): number => Math.round(built.edgeDelays.get(bare.id)!.delayTime.value * 48_000);
+  const short = at();
+  eq(short, alignmentDelays(graph, [], 48_000).get(bare.id), 'built where the graph says');
+
+  // The length menu is not structural, so the chain is NOT rebuilt when it
+  // moves — `applyChainParams` is all that runs, and it has to carry the
+  // alignment with it or the branches drift apart while the session plays.
+  const longer = {
+    ...graph,
+    nodes: graph.nodes.map((n) => (n.label === 'LP' ? { ...n, params: { length: 2 } } : n)),
+  };
+  applyChainParams(built, longer, []);
+  const wide = at();
+  assert(wide > short, `the delay stayed at ${short} while the EQ grew to ${wide}`);
+  eq(wide, alignmentDelays(longer, [], 48_000).get(bare.id),
+    'and it followed exactly, not approximately');
+});
+
 // ── Session View ──────────────────────────────────────────────────────────────
 
 function gridSession(): { session: DawSession; grid: SessionGrid; ids: string[] } {
@@ -553,9 +868,13 @@ check('the default plan sizes each scene to its longest clip', () => {
   eq(describePlan(grid, plan), 'Scene A ×4 → Scene B ×2 → Scene C ×4', 'readable plan');
 });
 
-const passed = results.filter((r) => r.pass).length;
-const failed = results.length - passed;
-console.log('\n=== Device Chain · Racks · Session View ===');
-for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
-console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
-if (failed > 0) process.exit(1);
+async function main(): Promise<void> {
+  for (const run of pending) await run();
+  const passed = results.filter((r) => r.pass).length;
+  const failed = results.length - passed;
+  console.log('\n=== Device Chain · Racks · Session View ===');
+  for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
+  console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
+  if (failed > 0) process.exit(1);
+}
+void main();
