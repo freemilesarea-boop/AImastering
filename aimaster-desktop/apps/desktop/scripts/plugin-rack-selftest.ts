@@ -19,7 +19,8 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { PLUGINS, defaultParams, findPlugin } from '../src/renderer/daw/engine/plugins.js';
-import { withBypass } from '../src/renderer/daw/engine/plugin-kit.js';
+import { probeRendererLatency, withBypass } from '../src/renderer/daw/engine/plugin-kit.js';
+import { readFileSync } from 'node:fs';
 
 const SR = 48_000;
 
@@ -118,6 +119,116 @@ function monoRms(buffer: AudioBuffer, from: number, to: number): number {
   return Math.sqrt(sum / Math.max(1, to - from));
 }
 
+
+/**
+ * Within how many samples a device has to delay by what it says.
+ *
+ * Two, not zero, because a cross-correlation over a broadband signal lands at
+ * the energy centroid rather than at a pure delay, and a device made of
+ * filters has group delay that is not latency: it is frequency-dependent, no
+ * delay line can undo it, and declaring it would misalign the channel at
+ * every frequency but one.  Measured across the rack, every device sits
+ * within one sample of its declaration once the modulation is stilled, so two
+ * is headroom rather than tolerance for a defect.
+ */
+const LATENCY_TOLERANCE = 2;
+
+/**
+ * Settings that do NOT change what a device declares, but make the delay it
+ * actually has measurable.  Each one is here because the measurement, not the
+ * device, is what fails without it:
+ *
+ *   · every REVERB is blended dry.  `reverb` is fully wet at its defaults, so
+ *     there is no dry path to correlate against at all — the correlation
+ *     peaked at 0.06, on a random spot in the tail, and read 68 samples one
+ *     run and 1150 the next.  The others have a tail loud enough to pull the
+ *     measurement about, and by different amounts in each renderer: `spring`
+ *     correlates at 0.97 under node and 0.15 under Chromium.  Their dry path
+ *     is what the compensation has to line up, so their dry path is what is
+ *     measured, and all five are stilled the same way rather than only the
+ *     ones that happen to fail today.
+ *   · `rotary` modulates its delay line: the read position sweeps either side
+ *     of the base and the correlation smears, reading 295 against a declared
+ *     320.  With the Doppler stilled it reads 320 exactly.  The device was
+ *     right and the measurement was wrong, which is the whole reason this
+ *     list exists rather than a list of exceptions.
+ *   · `tape` has wow and flutter doing the same thing, more gently.
+ *   · `amp` is measured with the cabinet OUT of circuit.  A cabinet is a
+ *     convolution, and its impulse response has its own onset: with the cab
+ *     in, the amp reads 7 samples late; with it out, 2.  That is the cab, not
+ *     an undeclared delay line, and no delay compensation should remove it.
+ */
+const STILLED: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+  reverb: { mix: 0 },
+  spacereverb: { mixPct: 0 },
+  plate: { mixPct: 0 },
+  spring: { mixPct: 0 },
+  shimmer: { mixPct: 0 },
+  rotary: { doppler: 0, throb: 0 },
+  tape: { wow: 0, flutter: 0 },
+  amp: { cab: 3 },
+};
+
+/** Deterministic broadband noise, quiet enough that a saturator stays linear. */
+function latencyStimulus(n: number): Float32Array {
+  const a = new Float32Array(n);
+  let seed = 12345;
+  for (let i = 0; i < n; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    a[i] = ((seed / 0x7fffffff) * 2 - 1) * 0.02;
+  }
+  return a;
+}
+
+/** How late a device's output is against its input, and how sure of it. */
+async function measureLatency(
+  pluginId: string,
+): Promise<{ lag: number; r: number }> {
+  const descriptor = findPlugin(pluginId);
+  if (!descriptor) throw new Error(`no such plugin: ${pluginId}`);
+  const n = SR;
+  const ctx = new OfflineAudioContext(2, n, SR);
+  const instance = descriptor.create(ctx as unknown as BaseAudioContext,
+    { ...defaultParams(pluginId), ...(STILLED[pluginId] ?? {}) });
+
+  const dry = latencyStimulus(n);
+  const buffer = ctx.createBuffer(2, n, SR);
+  buffer.getChannelData(0).set(dry);
+  buffer.getChannelData(1).set(dry);
+  const node = ctx.createBufferSource();
+  node.buffer = buffer;
+  node.connect(instance.input);
+  instance.output.connect(ctx.destination as unknown as AudioNode);
+  node.start(0);
+  const wet = (await ctx.startRendering()).getChannelData(0);
+
+  // Past every declaration in the rack with room to spare, so a device that
+  // delays far more than it says still has somewhere to be found.
+  const maxLag = 1200;
+  const from = Math.round(SR * 0.2);
+  const to = n - maxLag - 1;
+  let best = -1;
+  const r = new Float64Array(maxLag + 1);
+  for (let lag = 0; lag <= maxLag; lag++) {
+    let num = 0, da = 0, db = 0;
+    for (let i = from; i < to; i += 2) {
+      const x = dry[i]!;
+      const y = wet[i + lag]!;
+      num += x * y; da += x * x; db += y * y;
+    }
+    const denom = Math.sqrt(da * db);
+    r[lag] = denom > 0 ? Math.abs(num / denom) : 0;
+    if (r[lag]! > best) best = r[lag]!;
+  }
+  // The EARLIEST lag that comes close to the best, not the best itself: a
+  // device with a repeating structure (a delay, a comb) correlates again at
+  // every repeat, and the first arrival is the one the compensation needs.
+  for (let lag = 0; lag <= maxLag; lag++) {
+    if (r[lag]! >= best * 0.7) return { lag, r: best };
+  }
+  return { lag: 0, r: best };
+}
+
 const STEADY_FROM = Math.floor(SR * 0.4);
 const STEADY_TO = Math.floor(SR * 0.9);
 
@@ -180,6 +291,78 @@ async function main(): Promise<void> {
         `${plugin.id} reports ${latency} samples`);
       assert(latency < SR, `${plugin.id} claims over a second of latency`);
     }
+  });
+
+  await check('every device delays by the number it declares', async () => {
+    // The check above is arithmetic: it asks whether the number is finite,
+    // positive and under a second, and a device that delays five hundred
+    // samples while declaring zero passes it without complaint.  This one
+    // RENDERS every device and measures.
+    //
+    // The renderer is probed first, because a declaration is not a constant:
+    // an oversampled shaper is 192 samples late in Chromium and 128 here, and
+    // `renderSession` probes before it builds for exactly this reason.  Skip
+    // the probe and every oversampling device reads 64 samples early — which
+    // is what this file measured the first time and is not a defect in any of
+    // them.
+    await probeRendererLatency(SR);
+
+    const bad: string[] = [];
+    for (const plugin of PLUGINS) {
+      if (plugin.offline) continue;              // applied by the render path
+      const declared = plugin.latencyFor(defaultParams(plugin.id), SR);
+      const { lag, r } = await measureLatency(plugin.id);
+
+      // A weak correlation means the measurement did not find the signal, and
+      // a lag read off noise is a number rather than a fact.  The floor is
+      // well under the weakest device here (amp, 0.57) and far above what a
+      // failed measurement returns.
+      if (r < 0.4) {
+        bad.push(`${plugin.id}: could not be measured (r ${r.toFixed(2)})`);
+        continue;
+      }
+      if (Math.abs(lag - declared) > LATENCY_TOLERANCE) {
+        bad.push(`${plugin.id}: declares ${declared}, delays ${lag}`);
+      }
+    }
+    assert(bad.length === 0, `declared is measured — ${bad.join(' · ')}`);
+  });
+
+  await check('a device declares the oversampling factor it actually uses', () => {
+    // STRUCTURAL, because the check above cannot see this one.  A `2x` shaper
+    // and a `4x` shaper are both 128 samples late under the offline renderer,
+    // so a device that builds a `2x` shaper and declares the `4x` figure
+    // measures perfect here and is 64 samples — 1.33 ms — wrong in Chromium,
+    // where `4x` is 192.  `rotary` was exactly that, and the coincidence is
+    // what hid it: measured in the app it declared 384 and delayed 320.
+    //
+    // So the source is read instead.  Within one device's descriptor, asking
+    // for `oversampleLatencySamples` while building a `2x` shaper is the
+    // mistake, and so is the other way round.
+    const sources = ['plugins.ts', 'plugins-extended.ts', 'plugins-reverb.ts'];
+    const wrong: string[] = [];
+    for (const file of sources) {
+      const text = readFileSync(
+        new URL(`../src/renderer/daw/engine/${file}`, import.meta.url), 'utf8');
+      // Descriptors start at a line that is exactly an id assignment.
+      const blocks = text.split(/\n  \{\n/).slice(1);
+      for (const block of blocks) {
+        const id = /^\s*id: '([a-z0-9]+)',/.exec(block)?.[1];
+        if (!id) continue;
+        const body = block.split(/\n  \},/)[0] ?? block;
+        const twice = /'2x'/.test(body);
+        const fourTimes = /'4x'/.test(body);
+        const declares4x = /oversampleLatencySamples/.test(body);
+        const declares2x = /oversample2xLatencySamples/.test(body);
+        if (twice && !fourTimes && declares4x) {
+          wrong.push(`${id} builds a 2x shaper and declares the 4x latency`);
+        }
+        if (fourTimes && !twice && declares2x) {
+          wrong.push(`${id} builds a 4x shaper and declares the 2x latency`);
+        }
+      }
+    }
+    assert(wrong.length === 0, `the factor and the declaration agree — ${wrong.join(' · ')}`);
   });
 
   await check('no two devices share an id, and every one has a name', () => {

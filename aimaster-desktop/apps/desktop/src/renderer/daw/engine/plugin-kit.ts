@@ -277,12 +277,14 @@ export const BUTTERWORTH_Q = -3.0103;
  * its own 128 instead of to Chromium's 192.
  */
 const CHROMIUM_OVERSAMPLE_4X = 192;
+const CHROMIUM_OVERSAMPLE_2X = 128;
 
 /** The look-ahead a `DynamicsCompressorNode` costs, in seconds. */
 export const DYNAMICS_LOOKAHEAD_SEC = 0.006;
 
 /** What the host actually measured, per sample rate; empty until probed. */
-const measured = new Map<number, { oversample4x: number; dynamics: number }>();
+const measured = new Map<number,
+  { oversample4x: number; oversample2x: number; dynamics: number }>();
 
 /**
  * A delay in seconds that is a WHOLE number of samples at this rate.
@@ -301,6 +303,20 @@ export function oversampleLatencySamples(sampleRate: number): number {
   return measured.get(sampleRate)?.oversample4x ?? CHROMIUM_OVERSAMPLE_4X;
 }
 
+/**
+ * How late a `2x` shaper is — which is NOT the `4x` number.
+ *
+ * The table above has said 128 against 192 all along, and there was no way to
+ * ask for it: a device with a `2x` shaper declared the `4x` figure because
+ * that was the only function there was.  Under the offline renderer the two
+ * are both 128 and the mistake is invisible; in Chromium, which is what the
+ * product runs, it is 64 samples of latency a device claims and does not
+ * have, and the compensation believes it and plays that track early.
+ */
+export function oversample2xLatencySamples(sampleRate: number): number {
+  return measured.get(sampleRate)?.oversample2x ?? CHROMIUM_OVERSAMPLE_2X;
+}
+
 /** How late a `DynamicsCompressorNode` is, in this renderer, at a rate. */
 export function dynamicsLatencySamples(sampleRate: number): number {
   return measured.get(sampleRate)?.dynamics
@@ -310,7 +326,7 @@ export function dynamicsLatencySamples(sampleRate: number): number {
 /** What a probe found, for a check that wants to state it. */
 export function probedLatency(
   sampleRate: number,
-): { oversample4x: number; dynamics: number } | null {
+): { oversample4x: number; oversample2x: number; dynamics: number } | null {
   return measured.get(sampleRate) ?? null;
 }
 
@@ -319,7 +335,7 @@ const inFlight = new Map<number, Promise<void>>();
 /**
  * Measure this renderer's shaper and compressor latency, once per rate.
  *
- * Cheap enough to await before a render — three offline passes over an eighth
+ * Cheap enough to await before a render — four offline passes over an eighth
  * of a second — and cached, so a session pays for it once.  A renderer with
  * no `OfflineAudioContext` (a test that only touches the model) leaves the
  * defaults in place rather than throwing.
@@ -372,16 +388,20 @@ export function probeRendererLatency(sampleRate: number): Promise<void> {
         src.connect(g);
         return g;
       });
-      const shaped = await render((ctx, src) => {
+      const identityShaper = (
+        ctx: BaseAudioContext, src: AudioBufferSourceNode, oversample: OverSampleType,
+      ): AudioNode => {
         const w = ctx.createWaveShaper();
         const size = 4096;
         const curve = new Float32Array(size);
         for (let i = 0; i < size; i++) curve[i] = (i / (size - 1)) * 2 - 1;
         w.curve = curve;
-        w.oversample = '4x';
+        w.oversample = oversample;
         src.connect(w);
         return w;
-      });
+      };
+      const shaped = await render((ctx, src) => identityShaper(ctx, src, '4x'));
+      const shapedTwice = await render((ctx, src) => identityShaper(ctx, src, '2x'));
       const squeezed = await render((ctx, src) => {
         const c = ctx.createDynamicsCompressor();
         c.threshold.value = 0;
@@ -392,6 +412,7 @@ export function probeRendererLatency(sampleRate: number): Promise<void> {
       });
       measured.set(sampleRate, {
         oversample4x: lagOf(dry, shaped),
+        oversample2x: lagOf(dry, shapedTwice),
         dynamics: lagOf(dry, squeezed),
       });
     } catch {

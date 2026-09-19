@@ -43,9 +43,9 @@ const SPECTRUM_SLOPE_NOTES: readonly string[] = [
   '6 dB/oct — 브라운 노이즈가 평평해집니다. 저역을 보려면',
 ];
 import {
-  BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
+  BUTTERWORTH_Q, oversample2xLatencySamples, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
-  absShaper, automatableFrom, dbToGain, envelopeFollower, makeShaper, smoother,
+  absShaper, automatableFrom, dbToGain, envelopeFollower, makeShaper,
   stereoSplit, tanhCurve, wetDry,
   withBypass, type AutomatableParam, type PluginDescriptor,
 } from './plugin-kit.js';
@@ -2200,8 +2200,14 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     // The rotors' own four milliseconds, plus the drive shaper, which
     // oversamples and so is a render quantum late on top.  The four was
     // declared and the quantum was not.
+    //
+    // The shaper is `2x`, and that is not the `4x` number: this asked for the
+    // `4x` figure and got away with it under the offline renderer, where both
+    // are 128.  In Chromium `4x` is 192, so the device declared 384 and
+    // delayed 320 — 64 samples, 1.33 ms, of latency it does not have, and the
+    // compensation duly played the channel that early.
     latencyFor: (_params, sampleRate) =>
-      Math.round(0.004 * sampleRate) + oversampleLatencySamples(sampleRate),
+      Math.round(0.004 * sampleRate) + oversample2xLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // A Leslie is two speakers in one box, pointed at two rotating things,
       // and they are NOT the same thing rotating.  The treble horn is small
