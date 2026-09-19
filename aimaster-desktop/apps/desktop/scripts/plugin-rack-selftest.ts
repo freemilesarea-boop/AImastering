@@ -33,6 +33,9 @@ function check(name: string, fn: () => Promise<void> | void): Promise<void> {
     });
 }
 function assert(c: unknown, m: string): void { if (!c) throw new Error(m); }
+function close(a: number, b: number, tol: number, m: string): void {
+  if (!(Math.abs(a - b) <= tol)) throw new Error(`${m} — got ${a.toFixed(3)}, want ${b.toFixed(3)} ±${tol}`);
+}
 
 interface Rendered { peak: number; rms: number; dc: number; finite: boolean }
 
@@ -205,6 +208,84 @@ async function main(): Promise<void> {
     assert(shut.rms < 0.002, `a quiet signal is held down — ${shut.rms.toExponential(2)}`);
     assert(open.rms > reference.rms * 0.8,
       `a loud one passes — ${open.rms.toFixed(3)} vs ${reference.rms.toFixed(3)}`);
+  });
+
+  await check('a threshold in decibels means decibels', async () => {
+    // The detector reported the AVERAGE of a rectified sine, which is 2A/π —
+    // 3.92 dB under its amplitude — so every device comparing it against a
+    // threshold marked in decibels acted 3.92 dB late.  Measured before the
+    // calibration: a ducker set to −24 dB started ducking at −20.1.
+    const SR = 48_000;
+    /** A steady tone through a device, as decibels out. */
+    const through = async (
+      id: string, levelDb: number, over: Record<string, number>, toneHz = 1000,
+    ): Promise<number> => {
+      const plugin = findPlugin(id)!;
+      const ctx = new OfflineAudioContext(1, SR * 4, SR);
+      const instance = plugin.create(ctx as unknown as BaseAudioContext,
+        { ...defaultParams(id), ...over });
+      const osc = ctx.createOscillator();
+      osc.frequency.value = toneHz;
+      const amp = ctx.createGain();
+      amp.gain.value = Math.pow(10, levelDb / 20);
+      osc.connect(amp).connect(instance.input);
+      instance.output.connect(ctx.destination);
+      osc.start(0);
+      const out = (await ctx.startRendering()).getChannelData(0);
+      let sum = 0;
+      const a = Math.round(SR * 3.4), b = Math.round(SR * 3.9);
+      for (let i = a; i < b; i++) sum += out[i]! * out[i]!;
+      return 20 * Math.log10(Math.sqrt(sum / (b - a)) * Math.SQRT2);
+    };
+
+    // Nothing at the threshold, and the textbook amount just over it: a 6:1
+    // ratio gives back a sixth of what you push in.
+    const ducker = { thresholdDb: -24, ratio: 6, makeupDb: 0, attackMs: 9, releaseMs: 60 };
+    close(await through('ducker', -24, ducker) + 24, 0, 0.05, 'a ducker at its threshold');
+    close(await through('ducker', -26, ducker) + 26, 0, 0.05, 'a ducker under its threshold');
+    close(await through('ducker', -20, ducker) + 20, -4 * (1 - 1 / 6), 0.15,
+      'a ducker 4 dB over its threshold');
+  });
+
+  await check('a limiter holds the ceiling it promises', async () => {
+    // The consequence that makes the offset a defect rather than a quirk: a
+    // ceiling is a promise.  With the detector reading 3.92 dB low the
+    // limiter did nothing at all until the input passed ceiling + 3.92, so it
+    // was letting min(3.92, input − ceiling) out over its own number.
+    // Measured before: a ceiling of −6 dB passed a 0 dBFS sine at −2.07.
+    const SR = 48_000;
+    const peakOut = async (inDb: number, ceilingDb: number): Promise<number> => {
+      const plugin = findPlugin('limiter')!;
+      const n = SR * 3;
+      const ctx = new OfflineAudioContext(1, n, SR);
+      const instance = plugin.create(ctx as unknown as BaseAudioContext, {
+        ...defaultParams('limiter'), ceilingDb, lookaheadMs: 2, releaseMs: 80,
+      });
+      const osc = ctx.createOscillator();
+      osc.frequency.value = 1000;
+      const amp = ctx.createGain();
+      amp.gain.value = Math.pow(10, inDb / 20);
+      osc.connect(amp).connect(instance.input);
+      instance.output.connect(ctx.destination);
+      osc.start(0);
+      const out = (await ctx.startRendering()).getChannelData(0);
+      let peak = 0;
+      for (let i = Math.round(SR * 2); i < n; i++) peak = Math.max(peak, Math.abs(out[i]!));
+      return 20 * Math.log10(peak);
+    };
+    for (const ceilingDb of [-1, -3, -6]) {
+      for (const inDb of [-3, 0]) {
+        const got = await peakOut(inDb, ceilingDb);
+        assert(got <= ceilingDb + 0.1,
+          `a ceiling of ${ceilingDb} dB let a ${inDb} dBFS tone out at ${got.toFixed(2)} dB`);
+        // And it does not clamp down harder than it said either, which is
+        // what a detector reading 3.92 dB HIGH would look like.
+        if (inDb > ceilingDb) {
+          assert(got >= ceilingDb - 0.2,
+            `a ceiling of ${ceilingDb} dB pulled a ${inDb} dBFS tone down to ${got.toFixed(2)}`);
+        }
+      }
+    }
   });
 
   await check('a device showing two time knobs has two of them', async () => {

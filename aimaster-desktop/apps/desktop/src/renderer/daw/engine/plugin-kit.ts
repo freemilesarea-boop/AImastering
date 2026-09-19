@@ -660,24 +660,6 @@ export function makeShaper(
   return shaper;
 }
 
-/** One-pole smoother, expressed as a lowpass corner from a time constant. */
-/**
- * The envelope follower behind a level detector.
- *
- * Two poles, not one, and never above `DETECTOR_MAX_HZ`.
- *
- * A single pole at the requested time constant is what a detector "should" be,
- * and it is why the compressor screamed: ask for a 0.1 ms attack and the
- * filter sits at 1591 Hz, so the ripple of the rectified waveform itself walks
- * straight into the gain stage.  That is not compression, it is ring
- * modulation, and on a vocal it is unlistenable.
- *
- * A rectified 440 Hz tone ripples at 880 Hz.  Two poles at 60 Hz put that
- * 46 dB down, which is inaudible, while still settling in about 3 ms — fast
- * enough for a limiter with 2 ms of look-ahead.
- */
-const DETECTOR_MAX_HZ = 60;
-
 // ── Wet / dry ─────────────────────────────────────────────────────────────────
 
 /**
@@ -790,10 +772,29 @@ export interface Smoother {
  * The lag is rebuilt rather than retuned because its coefficients are fixed
  * when it is made; the input and output gains stay put so callers never have
  * to re-wire.
+ *
+ * The output carries π/2, and that is the calibration.  A rectified sine
+ * averages to 2A/π, so a detector that stops there reports every sine
+ * 3.92 dB under its own amplitude — and every device that compares this
+ * against a threshold marked in decibels is wrong by that much.  Measured,
+ * before this:
+ *
+ *     ducker set to −24 dB      started ducking at −20.1 dB
+ *     limiter set to −6 dB      let a 0 dBFS sine out at −2.07 dB
+ *
+ * The limiter is the one that makes it a defect rather than an offset: a
+ * ceiling is a promise, and it was passing min(3.92, input − ceiling) over
+ * the number on the panel.  π/2 puts a sine back where the meter says it is.
+ *
+ * Anything with a different crest factor lands somewhere else — a square
+ * reads 1.96 dB high — and that is what an average-responding detector IS.
+ * It is the right kind here: these devices act on how loud a passage is, and
+ * the limiter has a `lookaheadMs` and a true-peak stage for what peaks do.
  */
 export function smoother(ctx: BaseAudioContext, timeMs: number): Smoother {
   const input = ctx.createGain();
   const output = ctx.createGain();
+  output.gain.value = Math.PI / 2;
   let lag = detectorLag(ctx, timeMs);
   input.connect(lag.input);
   lag.output.connect(output);
@@ -811,78 +812,101 @@ export function smoother(ctx: BaseAudioContext, timeMs: number): Smoother {
 }
 
 /**
- * How much longer this detector takes than the corner it sits at suggests.
+ * Poles in the detector, all of them real.
  *
- * It is four poles — two Butterworth biquads in series — and four poles reach
- * 63.2% of a step at 3.379 × 1/(2πf₀) rather than at 1/(2πf₀).  The mapping
- * that used to be here placed the corner at ONE pole's time constant, so
- * every detector in this app took 3.379× as long as the number on its panel.
- * Measured, at 192 kHz so the sampling is not what is being measured:
+ * Not a Butterworth cascade, and the difference is the whole of this block.
+ * A Butterworth's poles are complex, so its step response OVERSHOOTS — about
+ * 11% for four poles, which is unremarkable in a filter and ruinous in an
+ * envelope.  Measured, a step from 1 down to 0.01 through the four-pole
+ * Butterworth this used to be:
  *
- *     knob   corner it picked   step reached 63.2% at
- *        1 ms     159.15 Hz          3.38 ms
- *       30 ms       5.31 Hz        101.37 ms
- *      300 ms       0.53 Hz       1013.72 ms
+ *     the envelope went NEGATIVE and climbed back to 0.01 from underneath
  *
- * Dividing by it puts the corner where the knob's number comes true.
+ * An envelope that goes negative is not a level, and everything downstream
+ * reads it as one.  On the way back up it crosses a gate's ramp from below,
+ * and the gate re-opens on a signal that has already stopped: measured on a
+ * burst ending into a quiet tone, the gate shut, then opened again 180 ms
+ * later to −8 dB for 50 ms.  A compressor does the same thing with its gain.
+ *
+ * Identical real poles cannot overshoot a monotone input, ever, at any count.
+ * What they cost is skirt: for the same settling time their corner sits
+ * higher, so there is less rejection of the ripple the rectifier leaves.
+ * Measured, a 100 Hz tone rectified (so ripple at 200 Hz) at the fastest
+ * setting this allows:
+ *
+ *     2 real poles  −32.3 dB      6 real poles  −39.8 dB
+ *     4 real poles  −39.0 dB      8 real poles  −38.2 dB
+ *     the four-pole Butterworth that rang:  −45.4 dB
+ *
+ * Six is the best of them — more poles push the corner up faster than the
+ * extra slope buys back — and it gives away 5.6 dB against a filter that
+ * cannot be used as an envelope.  At any setting slower than about 50 ms the
+ * ripple is below −85 dB either way.
  */
-export const DETECTOR_SETTLE = 3.379;
+export const DETECTOR_POLES = 6;
 
 /**
- * The corner a detector needs to settle in `timeMs`, never above the ripple
- * ceiling.
+ * How long a cascade of `poles` identical one-poles takes to reach 63.2%, in
+ * units of one pole's time constant.
+ *
+ * Solved rather than looked up: the step response of N identical poles is
+ * 1 − e^(−u)·Σ u^k/k!, and this is the u where that reaches 0.632.  One pole
+ * gives 1, two give 2.1456, six give 6.507 — roughly N + ½, which is not a
+ * rule worth relying on, which is why it is solved.
  */
-export function detectorHz(timeMs: number): number {
-  const tau = Math.max(1e-5, timeMs / 1000);
-  return Math.min(DETECTOR_MAX_HZ, DETECTOR_SETTLE / (2 * Math.PI * tau));
+function settleFactor(poles: number): number {
+  const missing = (u: number): number => {
+    let sum = 0, term = 1;
+    for (let k = 0; k < poles; k++) { sum += term; term *= u / (k + 1); }
+    return 1 - Math.exp(-u) * sum - 0.632;
+  };
+  let low = 0, high = 60;
+  for (let i = 0; i < 200; i++) {
+    const mid = (low + high) / 2;
+    if (missing(mid) < 0) low = mid; else high = mid;
+  }
+  return (low + high) / 2;
 }
 
-/** The fastest this detector can be asked to be, which is its ripple ceiling. */
-export const DETECTOR_MIN_MS = (DETECTOR_SETTLE / (2 * Math.PI * DETECTOR_MAX_HZ)) * 1000;
+export const DETECTOR_SETTLE = settleFactor(DETECTOR_POLES);
 
 /**
- * A Butterworth lowpass, as coefficients rather than as a corner frequency.
+ * The fastest a detector here can honestly be asked to be.
  *
- * `BiquadFilterNode` derives its own coefficients from cos(ω₀), and as ω₀
- * goes to zero that cosine goes to one — so a detector's corner, which is a
- * fraction of a hertz, lands where the arithmetic has nothing left.  Measured
- * in Chromium, the DC gain of ONE lowpass `BiquadFilterNode` against its
- * corner:
+ * The ripple ceiling, and the number is inherited rather than rederived: it
+ * is what the previous detector's 60 Hz corner amounted to, every device's
+ * parameter minimum was moved to it, and the measurement above is taken at
+ * it.  Below it the detector starts reading the rectified waveform instead of
+ * its level.
+ */
+export const DETECTOR_MIN_MS = 8.96;
+
+/** One pole's time constant, for a detector asked to settle in `timeMs`. */
+export function detectorTau(timeMs: number): number {
+  return Math.max(DETECTOR_MIN_MS, timeMs) / 1000 / DETECTOR_SETTLE;
+}
+
+/**
+ * The lag every level detector in this app is built from.
+ *
+ * `IIRFilterNode` rather than `BiquadFilterNode`, and that is the second half
+ * of this block's history.  A biquad derives its coefficients from cos(ω₀),
+ * and as ω₀ goes to zero that cosine goes to one — so a detector's corner,
+ * which is a fraction of a hertz, lands where the arithmetic has nothing
+ * left.  Measured in Chromium, the DC gain of ONE lowpass `BiquadFilterNode`:
  *
  *     0.5 Hz  ×5.49      2 Hz  ×1.87       13.4 Hz  ×0.99
  *       1 Hz  ×12.66     3 Hz  ×1.39         20 Hz  ×1.00
  *    1.34 Hz  ×18.49     5 Hz  ×1.14         40 Hz  ×1.00
  *
- * A detector is supposed to pass DC untouched; at 1.34 Hz — which is what a
- * 400 ms release asks for — it multiplied it by eighteen.  The offline
- * renderer these tests run in computes the same coefficients in wider
- * arithmetic and shows none of it, so this was invisible until a device was
- * driven in the app.
+ * A detector passes DC untouched or it is not a detector; at 1.34 Hz, which
+ * is what a 400 ms release asks for, it multiplied it by eighteen.  The
+ * offline renderer these tests run in computes the same coefficients in wider
+ * arithmetic and shows none of it.  A one-pole handed its coefficient
+ * directly has no cosine to lose, and both renderers agree to every digit.
  *
- * Computed here and handed to an `IIRFilterNode`, the same response comes out
- * with a DC gain of 1.00000 at 0.5 Hz in BOTH renderers, agreeing to every
- * digit.  `1 − cos ω₀` is taken as `2 sin²(ω₀/2)`, which is where the
- * cancellation would otherwise be.
- */
-export function butterworthLowpass(
-  hz: number, sampleRate: number,
-): { feedforward: number[]; feedback: number[] } {
-  const w0 = (2 * Math.PI * Math.max(1e-6, hz)) / sampleRate;
-  const oneMinusCos = 2 * Math.sin(w0 / 2) ** 2;
-  const cosW0 = 1 - oneMinusCos;
-  const alpha = Math.sin(w0) / Math.SQRT2;
-  const a0 = 1 + alpha;
-  return {
-    feedforward: [(oneMinusCos / 2) / a0, oneMinusCos / a0, (oneMinusCos / 2) / a0],
-    feedback: [1, (-2 * cosW0) / a0, (1 - alpha) / a0],
-  };
-}
-
-/**
- * The four-pole lag every level detector in this app is built from.
- *
- * Its coefficients are fixed when it is made, so changing the time means
- * building a new one — which is what `smoother` does.
+ * The coefficients are fixed when the node is made, so changing the time
+ * means building a new lag — which is what `smoother` does.
  */
 export interface DetectorLag {
   input: AudioNode;
@@ -890,11 +914,15 @@ export interface DetectorLag {
 }
 
 export function detectorLag(ctx: BaseAudioContext, timeMs: number): DetectorLag {
-  const c = butterworthLowpass(detectorHz(timeMs), ctx.sampleRate);
-  const first = ctx.createIIRFilter(c.feedforward, c.feedback);
-  const second = ctx.createIIRFilter(c.feedforward, c.feedback);
-  first.connect(second);
-  return { input: first, output: second };
+  const a = 1 - Math.exp(-1 / (detectorTau(timeMs) * ctx.sampleRate));
+  const first = ctx.createIIRFilter([a, 0], [1, -(1 - a)]);
+  let last: AudioNode = first;
+  for (let i = 1; i < DETECTOR_POLES; i++) {
+    const next = ctx.createIIRFilter([a, 0], [1, -(1 - a)]);
+    last.connect(next);
+    last = next;
+  }
+  return { input: first, output: last };
 }
 
 /**
@@ -938,24 +966,8 @@ export interface EnvelopeFollower {
   dispose: () => void;
 }
 
-/**
- * Whether the follower reports a sine's AMPLITUDE or its rectified average.
- *
- * Calibrated is right, and it is the default.  The reason it can be turned
- * off is that `smoother` — which the other five dynamics devices hold — does
- * not calibrate, so their thresholds all sit 3.92 dB off: a ducker set to
- * −24 dB starts ducking at −20.1, measured.  Fixing that belongs in
- * `smoother`, where it moves all of them at once; turning it on for two
- * devices here would leave the app disagreeing with itself about what a
- * threshold in decibels means.
- */
-export interface EnvelopeFollowerOptions {
-  calibrate?: boolean;
-}
-
 export function envelopeFollower(
   ctx: BaseAudioContext, attackMs: number, releaseMs: number,
-  options: EnvelopeFollowerOptions = {},
 ): EnvelopeFollower {
   const input = ctx.createGain();
   const sum = ctx.createGain();
@@ -965,7 +977,10 @@ export function envelopeFollower(
   const magnitude = absShaper(ctx, 32_769);
   difference.connect(magnitude).connect(sum);
   const half = ctx.createGain();
-  half.gain.value = (options.calibrate ?? true) ? Math.PI / 4 : 0.5;
+  // Half for the average in max(a,b), and π/2 for the calibration `smoother`
+  // carries — see it for why a detector that reports 2A/π is wrong about
+  // every threshold built on it.
+  half.gain.value = Math.PI / 4;
   sum.connect(half);
 
   let fast = detectorLag(ctx, attackMs);

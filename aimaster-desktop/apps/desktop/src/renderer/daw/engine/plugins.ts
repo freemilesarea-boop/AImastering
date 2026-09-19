@@ -250,12 +250,8 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       // A real attack and a real release.  Both knobs used to be handed to
       // one `smoother`, which has ONE time constant — so whichever the user
       // touched last was the only one doing anything, and the other was a
-      // control that moved and did nothing.  `calibrate: false` keeps the
-      // detector reporting what it always has; its 3.92 dB offset is
-      // `smoother`'s to fix, for all five devices at once.
-      const env = envelopeFollower(
-        ctx, params['attackMs'] ?? 20, params['releaseMs'] ?? 200, { calibrate: false },
-      );
+      // control that moved and did nothing.
+      const env = envelopeFollower(ctx, params['attackMs'] ?? 20, params['releaseMs'] ?? 200);
       let curve = makeGainCurve(ctx, params['thresholdDb'] ?? -24, params['ratio'] ?? 6);
 
       input.connect(internalKey);
@@ -530,6 +526,13 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       const invert = ctx.createGain();
       invert.gain.value = -1;
       const difference = ctx.createGain();
+      // 2/π undoes the calibration `smoother` carries, and only here.  That
+      // calibration exists so a THRESHOLD in decibels means decibels; this
+      // device has no threshold — it shapes the difference between two
+      // envelopes, and scaling that difference is just a different amount of
+      // shaping at the same knob.  Leaving it in would have made everybody's
+      // Attack and Sustain 57% stronger overnight.
+      difference.gain.value = 2 / Math.PI;
 
       input.connect(rect);
       rect.connect(fast.input);

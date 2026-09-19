@@ -1392,12 +1392,8 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const rect = absShaper(ctx);
       // Two knobs, two controls.  They used to share one `smoother`, which
       // has a single time constant, so a gate's Release did nothing unless it
-      // happened to be the last thing touched.  `calibrate: false` leaves the
-      // detector reading what it always has — the 3.92 dB offset it carries is
-      // shared with four other devices and belongs to `smoother`.
-      const env = envelopeFollower(
-        ctx, p(params, 'attackMs', 9), p(params, 'releaseMs', 200), { calibrate: false },
-      );
+      // happened to be the last thing touched.
+      const env = envelopeFollower(ctx, p(params, 'attackMs', 9), p(params, 'releaseMs', 200));
 
       let curve = makeShaper(ctx, gateGainCurve(
         p(params, 'thresholdDb', -45), p(params, 'rangeDb', 40),

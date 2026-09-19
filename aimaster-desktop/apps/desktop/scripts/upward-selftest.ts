@@ -26,7 +26,7 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import {
-  DETECTOR_MIN_MS, DETECTOR_SETTLE, absShaper, butterworthLowpass, detectorLag,
+  DETECTOR_MIN_MS, DETECTOR_POLES, DETECTOR_SETTLE, absShaper, detectorLag,
   envelopeFollower, smoother,
 } from '../src/renderer/daw/engine/plugin-kit.js';
 import { findPlugin } from '../src/renderer/daw/engine/plugins.js';
@@ -109,12 +109,12 @@ async function main(): Promise<void> {
       from.connect(rect).connect(env.input);
       return env.output;
     });
-    // A rectified sine averages to 2A/π, which is 3.92 dB under its
-    // amplitude — that offset is expected and is what the follower calibrates
-    // out.  What is being checked here is that the SLOPE is still one.
-    const offset = 20 * Math.log10(2 / Math.PI);
+    // A rectified sine averages to 2A/π, and `smoother` multiplies that back
+    // by π/2 — so a sine comes out reading its own amplitude, which is what a
+    // threshold marked in decibels needs.  What is checked here is that it
+    // does so at EVERY level: the defect was a floor, not an offset.
     for (const db of [-40, -60, -70, -80]) {
-      close(await read(db), db + offset, 0.1, `a ${db} dBFS tone rectifies`);
+      close(await read(db), db, 0.1, `a ${db} dBFS tone reads its own level`);
     }
     const quiet = await read(-80), less = await read(-70);
     close(less - quiet, 10, 0.1, 'ten decibels apart stay ten decibels apart');
@@ -207,13 +207,18 @@ async function main(): Promise<void> {
       for (let i = 0; i < n; i++) if (out[i]! >= 0.632) return (i / SR) * 1000;
       return Number.NaN;
     };
+    // 1%, which is what a cascade of discrete one-poles lands within: the
+    // 63.2% point of the continuous-time cascade is not exactly the 63.2%
+    // point of its sampled version.
     for (const ms of [10, 40, 400, 1500]) {
-      close(await settle(ms), ms, Math.max(0.05, ms * 0.005), `a ${ms} ms lag`);
+      close(await settle(ms), ms, Math.max(0.05, ms * 0.01), `a ${ms} ms lag`);
     }
     // And it says no rather than pretending, below the ripple ceiling.
     close(await settle(1), DETECTOR_MIN_MS, 0.1,
       'a time under the ceiling comes back as the ceiling');
-    assert(Math.abs(DETECTOR_SETTLE - 3.379) < 1e-9, 'the settling factor moved');
+    // Not a written-down number any more: it is solved from the pole count,
+    // so the two cannot drift apart.  Six poles come to 6.507.
+    close(DETECTOR_SETTLE, 6.507, 0.005, `${DETECTOR_POLES} poles settle at`);
   });
 
   await check('the lag passes DC untouched at every speed it offers', async () => {
@@ -256,20 +261,43 @@ async function main(): Promise<void> {
       `the detector is a ${kind} — a filter that derives its own coefficients `
       + 'from a corner cannot hold a detector\'s corner in the browser');
 
-    // And the coefficients themselves: a Butterworth lowpass has unity DC
-    // gain, which is (Σ feedforward) / (Σ feedback) = 1.
-    //
-    // 1e-6 rather than 1e-9, and the reason is the same cancellation this
-    // whole check is about: the feedback sum is 1 + a₁ + a₂ with a₁ ≈ −2 and
-    // a₂ ≈ 1, so at 0.36 Hz it comes to 2e-9 out of terms of order one and
-    // keeps about eight digits.  Eight is plenty — the filter it builds
-    // measures a DC gain of 1.00000 in both renderers — and pretending to
-    // sixteen would be asserting something float64 does not have.
-    for (const hz of [0.36, 1.34, 60]) {
-      const c = butterworthLowpass(hz, SR);
-      const ff = c.feedforward.reduce((a, b) => a + b, 0);
-      const fb = c.feedback.reduce((a, b) => a + b, 0);
-      close(ff / fb, 1, 1e-6, `a ${hz} Hz lowpass passes DC`);
+    // And it cannot overshoot, which is the other half of why it is built
+    // this way.  A Butterworth cascade's poles are complex and its step
+    // response overshoots by about 11% — fine in a filter, ruinous in an
+    // envelope, because 11% of a fall from 1 to 0.01 takes it NEGATIVE.  It
+    // then climbs back through a gate's ramp from underneath and re-opens the
+    // gate on a signal that has already stopped.  Identical real poles cannot
+    // do that at any count.
+    assert(DETECTOR_POLES >= 4, `${DETECTOR_POLES} poles is not enough to reject the ripple`);
+  });
+
+  await check('the envelope never goes the wrong way', async () => {
+    // The check the old detector could not pass.  A step DOWN has to arrive
+    // from above and stay there: an envelope that undershoots is a level
+    // reading that never happened, and every device downstream acts on it.
+    const step = async (ms: number): Promise<{ lowest: number; settled: number }> => {
+      const n = SR * 3;
+      const ctx = new OfflineAudioContext(1, n, SR);
+      const buffer = ctx.createBuffer(1, n, SR);
+      const d = buffer.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = i / SR < 1 ? 1 : 0.01;
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      const lag = detectorLag(ctx as unknown as BaseAudioContext, ms);
+      src.connect(lag.input);
+      lag.output.connect(ctx.destination);
+      src.start(0);
+      const out = (await ctx.startRendering()).getChannelData(0);
+      let lowest = Infinity;
+      for (let i = Math.round(SR * 1); i < n; i++) lowest = Math.min(lowest, out[i]!);
+      return { lowest, settled: out[n - 1]! };
+    };
+    for (const ms of [9, 40, 200, 600]) {
+      const got = await step(ms);
+      close(got.settled, 0.01, 1e-4, `a ${ms} ms lag settles where the signal went`);
+      assert(got.lowest >= 0.01 - 1e-4,
+        `a ${ms} ms lag dipped to ${got.lowest.toExponential(2)} on the way to 0.01 — `
+        + 'an envelope that undershoots is a level that never happened');
     }
   });
 
@@ -289,11 +317,15 @@ async function main(): Promise<void> {
       env.output.connect(ctx.destination);
       src.start(0);
       const out = (await ctx.startRendering()).getChannelData(0);
-      for (let i = 0; i < n; i++) if (out[i]! >= 0.632) return (i / SR) * 1000;
+      // Against its OWN settled value, because `smoother` carries the π/2
+      // calibration — a step to 1 comes out at 1.571, and looking for 0.632
+      // of an absolute one would find it at 40% of the way.
+      const settled = out[n - 1]!;
+      for (let i = 0; i < n; i++) if (out[i]! >= 0.632 * settled) return (i / SR) * 1000;
       return Number.NaN;
     };
     for (const ms of [10, 40, 304, 1000]) {
-      close(await settle(ms), ms, Math.max(0.05, ms * 0.005), `smoother at ${ms} ms`);
+      close(await settle(ms), ms, Math.max(0.05, ms * 0.01), `smoother at ${ms} ms`);
     }
     // And `setTimeMs` rebuilds rather than leaving the old lag in the path —
     // the coefficients are fixed when the node is made.
@@ -308,8 +340,11 @@ async function main(): Promise<void> {
     env.output.connect(ctx.destination);
     src.start(0);
     const out = (await ctx.startRendering()).getChannelData(0);
+    const settled = out[out.length - 1]!;
     let at = Number.NaN;
-    for (let i = 0; i < out.length; i++) if (out[i]! >= 0.632) { at = (i / SR) * 1000; break; }
+    for (let i = 0; i < out.length; i++) {
+      if (out[i]! >= 0.632 * settled) { at = (i / SR) * 1000; break; }
+    }
     close(at, 20, 0.5, 'after setTimeMs the detector is the new time, once');
   });
 
