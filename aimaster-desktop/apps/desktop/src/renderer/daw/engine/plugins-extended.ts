@@ -45,9 +45,11 @@ const SPECTRUM_SLOPE_NOTES: readonly string[] = [
 import {
   BUTTERWORTH_Q, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
-  absShaper, automatableFrom, dbToGain, makeShaper, smoother, tanhCurve, wetDry,
+  absShaper, automatableFrom, dbToGain, envelopeFollower, makeShaper, smoother,
+  tanhCurve, wetDry,
   withBypass, type AutomatableParam, type PluginDescriptor,
 } from './plugin-kit.js';
+import { upwardCurve } from './upward.js';
 
 const p = (params: Record<string, number>, id: string, fallback: number): number => {
   const v = params[id];
@@ -3158,6 +3160,95 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
         dispose: () => {
           try { wowOsc.stop(); flutterOsc.stop(); hissSource.stop(); } catch { /* stopped */ }
           blend.dispose();
+        },
+      };
+    }),
+  },
+  {
+    id: 'upward',
+    name: 'Upward Compressor',
+    category: 'dynamics',
+    hasSidechain: false,
+    params: [
+      { id: 'thresholdDb', name: 'Threshold', min: -60, max: 0,    default: -24, unit: 'dB' },
+      { id: 'ratio',       name: 'Ratio',     min: 1,   max: 8,    default: 2,   unit: ':1' },
+      { id: 'depthDb',     name: 'Depth',     min: 0,   max: 24,   default: 0,   unit: 'dB' },
+      { id: 'floorDb',     name: 'Floor',     min: -80, max: -24,  default: -55, unit: 'dB' },
+      { id: 'attackMs',    name: 'Attack',    min: 5,   max: 300,  default: 40,  unit: 'ms' },
+      { id: 'releaseMs',   name: 'Release',   min: 20,  max: 1500, default: 400, unit: 'ms' },
+      { id: 'outDb',       name: 'Out',       min: -12, max: 12,   default: 0,   unit: 'dB' },
+      { id: 'mix',         name: 'Mix',       min: 0,   max: 1,    default: 1,   unit: '' },
+    ],
+    // Threshold, ratio, depth and floor rebuild the transfer curve, which is a
+    // 32768-point `WaveShaper` — not something a lane can ride a frame at a
+    // time.  Attack and release are AudioParams, but each is TWO of them (a
+    // detector pole apiece), and `automatable` is the contract for knobs that
+    // are exactly one; they are offered to a macro through `drives` instead.
+    automatableParams: ['outDb', 'mix'],
+    latencyFor: () => 0,
+    // Depth starts at zero, so dropping this on a track does nothing until
+    // somebody asks it to — the same promise the exciter and the transient
+    // designer make, and the one that lets a device be inserted while the
+    // music is playing.
+    create: (ctx, params) => withBypass(ctx, (input, output) => {
+      const p = (id: string, fallback: number): number => params[id] ?? fallback;
+
+      const vca = ctx.createGain();
+      vca.gain.value = 0;                 // the curve's DC output is the gain
+      const rect = absShaper(ctx);
+      const env = envelopeFollower(ctx, p('attackMs', 40), p('releaseMs', 400));
+
+      const build = (): WaveShaperNode => makeShaper(ctx, upwardCurve(
+        p('thresholdDb', -24), p('ratio', 2), p('depthDb', 0), p('floorDb', -55),
+      ));
+      let curve = build();
+
+      input.connect(rect).connect(env.input);
+      env.output.connect(curve);
+      curve.connect(vca.gain);
+
+      const outGain = ctx.createGain();
+      outGain.gain.value = dbToGain(p('outDb', 0));
+      const blend = wetDry(ctx, p('mix', 1));
+      input.connect(vca).connect(outGain).connect(blend.wet).connect(output);
+      input.connect(blend.dry).connect(output);
+
+      return {
+        setParam: (id, v) => {
+          params[id] = v;
+          if (id === 'outDb') outGain.gain.value = dbToGain(v);
+          if (id === 'mix') blend.setMix(v);
+          if (id === 'attackMs') env.setAttackMs(v);
+          if (id === 'releaseMs') env.setReleaseMs(v);
+          if (id === 'thresholdDb' || id === 'ratio' || id === 'depthDb' || id === 'floorDb') {
+            const next = build();
+            env.output.disconnect();
+            curve.disconnect();
+            curve = next;
+            env.output.connect(curve);
+            curve.connect(vca.gain);
+          }
+        },
+        automatable: automatableFrom({
+          out: { param: outGain.gain, map: dbToGain },
+          outDb: { param: outGain.gain, map: dbToGain },
+          mix: { param: blend.mix },
+        }),
+        // Attack and release are absent on purpose.  They are the
+        // coefficients of an `IIRFilterNode`, which are fixed when the node
+        // is made — moving one builds a new filter rather than writing a
+        // number, and that is not something a lane or a macro can do a frame
+        // at a time.  Said here rather than discovered as a lane that
+        // crackles.
+        drives: (id: string): AutomatableParam[] | null => {
+          if (id === 'outDb') return [{ param: outGain.gain, map: dbToGain }];
+          if (id === 'mix') return [{ param: blend.mix }];
+          return null;
+        },
+        dispose: () => {
+          blend.dispose();
+          env.dispose();
+          try { curve.disconnect(); } catch { /* ignore */ }
         },
       };
     }),

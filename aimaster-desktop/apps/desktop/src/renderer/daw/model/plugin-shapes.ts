@@ -20,6 +20,7 @@ import {
   type BiquadSpec, type Complex,
 } from './plugin-curves.js';
 import { tanhCurve } from '../engine/plugin-kit.js';
+import { upwardCurve } from '../engine/upward.js';
 import {
   bitCurve, clipCurve, gateGainCurve, tubeCurve,
 } from '../engine/plugins-extended.js';
@@ -111,7 +112,7 @@ export const TRANSFER_CURVE_DEVICES: readonly string[] = [
 ];
 
 /** The devices drawn on the detector axes. */
-export const DETECTOR_DEVICES: readonly string[] = ['gate', 'denoise'];
+export const DETECTOR_DEVICES: readonly string[] = ['gate', 'denoise', 'upward'];
 
 /** Whether this device wants a square picture — a transfer curve needs one. */
 export function wantsSquareVisual(pluginId: string): boolean {
@@ -215,7 +216,13 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
  * the compressor's axes, with the curve running the other way.
  */
 export interface DetectorSpec {
-  /** Envelope (0..1 linear) → gain (0..1 linear). */
+  /**
+   * Envelope (0..1 linear) → gain.
+   *
+   * Not bounded to 1 any more: an upward compressor's gain is above unity
+   * everywhere it does anything, and a drawing that clamped it would show a
+   * flat line across the only part of the curve worth looking at.
+   */
   curve: Float32Array;
   thresholdDb: number;
   caption: string;
@@ -230,6 +237,23 @@ export function detectorFor(pluginId: string, params: Record<string, number>): D
       curve: gateGainCurve(thresholdDb, rangeDb),
       thresholdDb,
       caption: `문턱 ${thresholdDb.toFixed(0)} dB · 닫히면 ${rangeDb.toFixed(0)} dB 내려감`,
+    };
+  }
+
+  if (pluginId === 'upward') {
+    const thresholdDb = num(params, 'thresholdDb', -24);
+    const depthDb = num(params, 'depthDb', 0);
+    const floorDb = num(params, 'floorDb', -55);
+    const ratio = num(params, 'ratio', 2);
+    return {
+      // The engine's own curve, not a second copy of it: the plugin hands
+      // this exact array to its WaveShaper.
+      curve: upwardCurve(thresholdDb, ratio, depthDb, floorDb),
+      thresholdDb,
+      caption: depthDb <= 0
+        ? `문턱 ${thresholdDb.toFixed(0)} dB · 깊이 0 dB — 아무것도 하지 않습니다`
+        : `문턱 ${thresholdDb.toFixed(0)} dB · ${ratio.toFixed(1)}:1 로 최대 `
+          + `${depthDb.toFixed(1)} dB 올림 · 플로어 ${floorDb.toFixed(0)} dB`,
     };
   }
 

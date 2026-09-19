@@ -437,6 +437,46 @@ const ADVISORS: Record<string, Advisor> = {
     };
   },
 
+  upward: (p) => {
+    // The one thing an upward compressor can do that nothing else can is
+    // raise what is quiet — and the one thing it must never do is raise what
+    // is quiet AND noise.  The profile measures the noise floor, so the
+    // question has an answer rather than a guess: how much room is there
+    // between where the quiet parts sit and where the noise sits?
+    const headroom = p.rmsDb - p.noiseFloorDb;
+    if (headroom < 18) {
+      return {
+        refuse: `조용한 부분과 노이즈 플로어 사이가 ${headroom.toFixed(0)} dB 뿐입니다 — `
+          + '올리면 노이즈가 같이 올라옵니다',
+      };
+    }
+    if (p.dynamicRangeDb < 4) {
+      return { refuse: `다이내믹 레인지 ${p.dynamicRangeDb.toFixed(1)} dB — 올릴 골이 없습니다` };
+    }
+    // Threshold under the average, so it works on the dips rather than on the
+    // whole signal; ratio from how deep those dips go.
+    const threshold = clamp(round(p.rmsDb - 4, 0.5), -60, 0);
+    const ratio = clamp(round(1.4 + p.dynamicRangeDb / 14, 0.1), 1, 8);
+    // Never more than half the range, and never more than the headroom over
+    // the noise leaves: whichever of the two is meaner wins.
+    const depth = clamp(round(Math.min(p.dynamicRangeDb / 2, (headroom - 12) / 2), 0.5), 0, 24);
+    // The floor sits above the noise, not on it.
+    const floor = clamp(round(p.noiseFloorDb + 8, 1), -80, -24);
+    const attack = clamp(round(Math.max(20, p.attackMs * 2), 5), 5, 300);
+    const release = clamp(round(Math.max(150, p.decayMs * 1.5), 10), 20, 1500);
+    return {
+      params: {
+        thresholdDb: threshold, ratio, depthDb: depth, floorDb: floor,
+        attackMs: attack, releaseMs: release, outDb: 0, mix: 1,
+      },
+      headline: `${depth.toFixed(0)} dB 들어올립니다 · 플로어 ${floor} dB — `
+        + `노이즈까지 ${headroom.toFixed(0)} dB 여유`,
+      evidence: [`RMS ${p.rmsDb.toFixed(1)} dB`, `노이즈 플로어 ${p.noiseFloorDb.toFixed(1)} dB`,
+        `다이내믹 레인지 ${p.dynamicRangeDb.toFixed(1)} dB`, `감쇠 ${ms(p.decayMs)}`],
+      confidence: 0.7,
+    };
+  },
+
   ducker: (p) => ({
     params: {
       thresholdDb: clamp(round(p.rmsDb - 6, 1), -60, 0),

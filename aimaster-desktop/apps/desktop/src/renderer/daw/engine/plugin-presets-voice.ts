@@ -206,6 +206,14 @@ export const VOICE_PRESETS: readonly PluginPreset[] = [
     female: { note: '적게, 그리고 부드럽게 — 딱딱하면 치찰음이 각집니다',
               params: { driveDb: 2, ceilingDb: -1, hardness: 0.35 } },
   }),
+  ...voice('upward', {
+    male:   { note: '문장 끝에서 힘이 빠지는 자리를 올립니다. 플로어는 숨소리 위에',
+              params: { thresholdDb: -26, ratio: 2.2, depthDb: 5, floorDb: -46,
+                        attackMs: 60, releaseMs: 400, mix: 1 } },
+    female: { note: '남성보다 얕게, 그리고 느리게 — 깊게 걸면 브레스가 먼저 올라옵니다',
+              params: { thresholdDb: -24, ratio: 2, depthDb: 3.5, floorDb: -44,
+                        attackMs: 80, releaseMs: 500, mix: 1 } },
+  }),
   ...voice('transient', {
     male:   { note: '자음을 조금 세우고 꼬리를 줄입니다',
               params: { attack: 0.15, sustain: -0.1, mix: 0.8 } },

@@ -510,8 +510,27 @@ export function withBypass(
 }
 
 /** |x| shaper — the first stage of every detector here. */
-export function absShaper(ctx: BaseAudioContext): WaveShaperNode {
-  const n = 1024;
+export function absShaper(ctx: BaseAudioContext, points = 1025): WaveShaperNode {
+  // ODD, and that is the whole of it.  A WaveShaper interpolates linearly
+  // between curve points, and |x| is piecewise linear — so a curve with a
+  // point exactly AT zero reproduces it exactly, at every level, forever.
+  // A curve with an even number of points has no such point: the two either
+  // side of zero hold the same value, interpolation between them is flat, and
+  // the rectifier reports that value for everything quieter than it.
+  //
+  // At the 1024 points this used to have, that floor was 2/1023 → 9.77e-4,
+  // and measured it is exactly what every detector in this app was doing:
+  //
+  //     tone at  -40 dBFS   detector read -43.9 dBFS   (2A/π, correct)
+  //     tone at  -60 dBFS   detector read -60.2 dBFS
+  //     tone at  -70 dBFS   detector read -60.2 dBFS
+  //     tone at  -80 dBFS   detector read -60.2 dBFS
+  //
+  // Every dynamics device here shares this rectifier, so below −60 dBFS all
+  // of them were looking at a constant — a gate with its threshold at −70 dB
+  // could never close, and an upward compressor, whose entire job is down
+  // there, could not work at all.
+  const n = Math.max(3, points % 2 === 0 ? points + 1 : points);
   const curve = new Float32Array(n);
   for (let i = 0; i < n; i++) curve[i] = Math.abs((i / (n - 1)) * 2 - 1);
   const shaper = ctx.createWaveShaper();
@@ -773,6 +792,152 @@ export function smoother(ctx: BaseAudioContext, timeMs: number): Smoother {
   };
   setTimeMs(timeMs);
   return { input: first, output: second, setTimeMs };
+}
+
+/**
+ * How much longer two cascaded poles take than one.
+ *
+ * A single pole reaches 63.2% of a step at exactly its time constant.  Two of
+ * them in series reach it at 2.1456 τ — the root of (1+u)·e^(−u) = 0.368 —
+ * so a detector built from two has to be given a τ that much shorter for its
+ * knob to mean milliseconds.  Measured, and it is exact to the hundredth:
+ *
+ *      asked    5 ms → 63% at    4.98 ms
+ *      asked  100 ms → 63% at   99.98 ms
+ *      asked 1500 ms → 63% at 1500.06 ms
+ *
+ * in both the browser this ships in and the renderer these tests run under.
+ */
+export const TWO_POLE_63_PERCENT = 2.1456;
+
+/**
+ * Two poles, as a cascade of one-pole `IIRFilterNode`s.
+ *
+ * Not `BiquadFilterNode`, and this is the whole reason the follower below
+ * exists rather than another `smoother`.  A biquad derives its coefficients
+ * from cos(ω₀), and as ω₀ goes to zero that cosine goes to one — so a
+ * detector's corner, which is a fraction of a hertz, lands where the
+ * arithmetic has nothing left.  Measured in Chromium, the DC gain of ONE
+ * lowpass biquad against its corner:
+ *
+ *     0.5 Hz  ×5.49      2 Hz  ×1.87       13.4 Hz  ×0.99
+ *       1 Hz  ×12.66     3 Hz  ×1.39         20 Hz  ×1.00
+ *    1.34 Hz  ×18.49     5 Hz  ×1.14         40 Hz  ×1.00
+ *
+ * A detector is supposed to pass DC untouched; at 1.34 Hz — which is what a
+ * 400 ms release asks for — it multiplies it by eighteen.  The offline
+ * renderer these tests run in computes the same coefficients in wider
+ * arithmetic and shows none of it, which is why this was invisible until the
+ * device was driven in the app.  Every `smoother` slower than about 13 Hz is
+ * in that region today.
+ *
+ * An IIR filter is handed its coefficients directly, so there is no cosine to
+ * lose: `y[n] = a·x[n] + (1−a)·y[n−1]` behaves the same at 1500 ms as at
+ * 5 ms, and identically in both renderers.  The price is that the
+ * coefficients are fixed when the node is made, so changing the time means
+ * building a new pair.
+ */
+export interface OnePolePair {
+  input: AudioNode;
+  output: AudioNode;
+}
+
+export function twoPoleLag(ctx: BaseAudioContext, timeMs: number): OnePolePair {
+  const tau = Math.max(1e-4, timeMs / 1000) / TWO_POLE_63_PERCENT;
+  const a = 1 - Math.exp(-1 / (tau * ctx.sampleRate));
+  const one = (): IIRFilterNode => ctx.createIIRFilter([a, 0], [1, -(1 - a)]);
+  const first = one(), second = one();
+  first.connect(second);
+  return { input: first, output: second };
+}
+
+/**
+ * A detector with a real attack and a real release.
+ *
+ * `smoother` has one time constant.  A device that wants two — fast to
+ * follow the signal up, slow to let it back down — cannot get them from one
+ * filter, and the two devices in this app that advertise both knobs
+ * (`ducker`, `gate`) hand them to the same `setTimeMs`, so whichever the user
+ * touched last is the only one that does anything.
+ *
+ * Two lags and a maximum gives both, and the maximum is native:
+ *
+ *     max(a, b) = (a + b + |a − b|) / 2
+ *
+ * — a sum, a difference and a `WaveShaper` holding |x|.  When the signal
+ * rises the fast one is above, so the envelope rises at the attack; when it
+ * falls the fast one drops below, so the envelope falls at the release.
+ *
+ * The absolute-value shaper is given far more points than `absShaper`'s
+ * default for a reason particular to this use: the difference between two
+ * envelopes of a quiet signal is itself tiny, and coarse steps there turn the
+ * maximum back into an average exactly where an upward compressor works.
+ *
+ * Half, for the average in that maximum — and π/2 on top of it, which is the
+ * calibration.  A rectified sine averages to 2A/π, so a detector that stops
+ * there reports every sine 3.92 dB below its own amplitude and a threshold
+ * knob marked in decibels is wrong by that much.  π/2 puts a sine back where
+ * the meter says it is.  Anything with a different crest factor lands
+ * somewhere else, which is what an average-responding detector IS — a square
+ * reads 1.96 dB high — and it is the right kind for a device that acts on how
+ * loud a passage is rather than on what its peaks do.
+ */
+export interface EnvelopeFollower {
+  /** Rectified level in. */
+  input: AudioNode;
+  /** The envelope out. */
+  output: AudioNode;
+  setAttackMs: (ms: number) => void;
+  setReleaseMs: (ms: number) => void;
+  dispose: () => void;
+}
+
+export function envelopeFollower(
+  ctx: BaseAudioContext, attackMs: number, releaseMs: number,
+): EnvelopeFollower {
+  const input = ctx.createGain();
+  const sum = ctx.createGain();
+  const difference = ctx.createGain();
+  const negate = ctx.createGain();
+  negate.gain.value = -1;
+  const magnitude = absShaper(ctx, 32_769);
+  difference.connect(magnitude).connect(sum);
+  const half = ctx.createGain();
+  half.gain.value = Math.PI / 4;
+  sum.connect(half);
+
+  let fast = twoPoleLag(ctx, attackMs);
+  let slow = twoPoleLag(ctx, releaseMs);
+  const wire = (pair: OnePolePair, invert: boolean): void => {
+    input.connect(pair.input);
+    pair.output.connect(sum);
+    if (invert) pair.output.connect(negate);
+    else pair.output.connect(difference);
+  };
+  negate.connect(difference);
+  wire(fast, false);
+  wire(slow, true);
+
+  // The coefficients are fixed when the node is made, so a new time means a
+  // new pair — the same swap the transfer curves do, for the same reason.
+  const replace = (which: 'fast' | 'slow', ms: number): void => {
+    const old = which === 'fast' ? fast : slow;
+    try { input.disconnect(old.input); old.output.disconnect(); } catch { /* already gone */ }
+    const next = twoPoleLag(ctx, ms);
+    if (which === 'fast') fast = next; else slow = next;
+    wire(next, which === 'slow');
+  };
+
+  return {
+    input,
+    output: half,
+    setAttackMs: (ms) => replace('fast', ms),
+    setReleaseMs: (ms) => replace('slow', ms),
+    dispose: () => {
+      try { fast.output.disconnect(); slow.output.disconnect(); } catch { /* ignore */ }
+      try { magnitude.disconnect(); negate.disconnect(); } catch { /* ignore */ }
+    },
+  };
 }
 
 export function timeConstantToHz(timeMs: number): number {
