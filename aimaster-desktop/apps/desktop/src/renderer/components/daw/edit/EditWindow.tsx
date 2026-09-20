@@ -37,6 +37,7 @@ import {
   visibleTracks,
 } from '../../../daw/model/stacks.js';
 import { premium } from '../../../theme/premium.js';
+import { laneWindow } from '../../../daw/model/lane-window.js';
 import {
   addPlaylist, alternateLanes, cyclePlaylist, duplicatePlaylist, flattenComp,
   removePlaylist, setActivePlaylist,
@@ -274,6 +275,34 @@ export default function EditWindow() {
     }
     return out;
   }, [rows]);
+  // Only the rows inside the scroller are built — see `lane-window.ts` for
+  // what that is worth.  Both columns take the same window, because they are
+  // two renderings of one list.
+  const rowScroller = useRef<HTMLDivElement>(null);
+  const rowsTop = useRef<HTMLDivElement>(null);
+  const [rowPort, setRowPort] = useState({ top: 0, height: 900 });
+  useEffect(() => {
+    const el = rowScroller.current;
+    if (!el) return undefined;
+    const read = (): void => {
+      // The fixed lanes above the tracks are always built, so the window is
+      // measured from where the track rows actually start.
+      const offset = rowsTop.current?.offsetTop ?? 0;
+      setRowPort({ top: el.scrollTop - offset, height: el.clientHeight });
+    };
+    read();
+    el.addEventListener('scroll', read, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(read);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', read);
+      observer?.disconnect();
+    };
+  }, []);
+  const rowHeights = useMemo(() => displayRows.map((r) => r.height), [displayRows]);
+  const rowView = laneWindow(rowHeights, rowPort.top, rowPort.height);
+  const builtRows = displayRows.slice(rowView.first, rowView.last);
+
   const recordStatus = useRecordingStore((s) => s.status);
   // A session with only a master track is not "empty timeline", it is "you
   // have nothing to work on yet" — and a blank grid says neither.
@@ -665,14 +694,16 @@ export default function EditWindow() {
       {showUniverse && <UniverseStrip laneWidth={laneWidth} />}
 
       {/* ── Tracks ──────────────────────────────────────────────────────── */}
-      <div className="flex-1 flex overflow-y-auto" onMouseUp={endDrag} onMouseLeave={endDrag}>
+      <div ref={rowScroller} className="flex-1 flex overflow-y-auto"
+           onMouseUp={endDrag} onMouseLeave={endDrag}>
         {/* Headers */}
         <div style={{ width: HEADER_WIDTH }} className="shrink-0 border-r border-zinc-800 bg-[#12121a]">
           <SectionLaneHeader />
           <ChordLaneHeader />
           <PictureLaneHeader />
           <TempoTrackHeader session={session} />
-          {displayRows.map((row) => (row.kind === 'lane' ? (
+          <div ref={rowsTop} style={{ height: rowView.padTop }} aria-hidden />
+          {builtRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneHeader key={row.key} track={row.track} lane={row.lane} />
           ) : (
             <TrackHeader
@@ -705,6 +736,7 @@ export default function EditWindow() {
               automationOpen={visibleLanes(row.track).length > 0}
             />
           )))}
+          <div style={{ height: rowView.padBottom }} aria-hidden />
         </div>
 
         {/* Lanes */}
@@ -734,7 +766,8 @@ export default function EditWindow() {
             session={session}
             viewport={{ scrollSec, pxPerSec, width: laneWidth }}
           />
-          {displayRows.map((row) => (row.kind === 'lane' ? (
+          <div style={{ height: rowView.padTop }} aria-hidden />
+          {builtRows.map((row) => (row.kind === 'lane' ? (
             <AutomationLaneCanvas
               key={row.key}
               track={row.track}
@@ -831,6 +864,7 @@ export default function EditWindow() {
               )}
             </div>
           )))}
+          <div style={{ height: rowView.padBottom }} aria-hidden />
 
           {/* Play head across every lane */}
           <div className="absolute top-0 bottom-0 w-px bg-red-400 pointer-events-none"

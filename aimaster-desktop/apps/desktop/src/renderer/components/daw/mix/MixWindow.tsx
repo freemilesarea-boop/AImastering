@@ -6,7 +6,7 @@
 // mixer engine re-syncs on every change, so a fader move is audible on the
 // next block.
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useDawStore } from '../../../stores/dawStore.js';
 import { useAppStore } from '../../../stores/appStore.js';
 import {
@@ -36,6 +36,7 @@ import { findLane, isWritingMode, pointValueAt } from '../../../daw/model/automa
 import { ensureLane } from '../../../daw/edit/automation-lanes.js';
 import { stackDepth, isSummingStack } from '../../../daw/model/stacks.js';
 import { activeMacros } from '../../../daw/model/macros.js';
+import { stripWindow } from '../../../daw/model/strip-window.js';
 import { premium } from '../../../theme/premium.js';
 import { slotLetter, slotsToShow } from '../../../daw/model/strip-slots.js';
 import { MAX_TRACK_DELAY_MS, delayMechanism, trackDelayMs } from '../../../daw/model/track-delay.js';
@@ -49,6 +50,7 @@ export default function MixWindow() {
   const notify  = useAppStore((s) => s.notify);
   const [levels, setLevels] = useState<Map<string, ChannelMeterReading>>(new Map());
   const [busesOpen, setBusesOpen] = useState(false);
+  const scroller = useRef<HTMLDivElement>(null);
 
   // Meter poll — cheap enough at 20 Hz and only while the window is open.
   // The interval comes from the same constant the analyser window is sized
@@ -59,6 +61,27 @@ export default function MixWindow() {
   }, []);
 
   const compensation = computeDelayCompensation(session);
+
+  // Where the strip row is scrolled to, read from the element rather than
+  // held in the store: it is view state, it changes on every scroll frame,
+  // and nothing outside this window has any use for it.  The starting
+  // viewport is a guess, because the first paint is the expensive one and an
+  // unmeasured scroller would otherwise build either nothing or everything.
+  const [port, setPort] = useState({ left: 0, width: 1280 });
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return undefined;
+    const read = (): void => setPort({ left: el.scrollLeft, width: el.clientWidth });
+    read();
+    el.addEventListener('scroll', read, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(read);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', read);
+      observer?.disconnect();
+    };
+  }, []);
+  const view = stripWindow(session.tracks.length, port.left, port.width);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-[#0e0e15] text-zinc-200">
@@ -88,8 +111,13 @@ export default function MixWindow() {
 
       {busesOpen && <BusPanel session={session} onApply={apply} onNotify={notify} />}
 
-      <div className="flex-1 flex overflow-x-auto">
-        {session.tracks.map((track) => (
+      {/* Only the strips in the scroller are built — see `strip-window.ts`
+          for what that is worth and why the spacers are there. */}
+      <div ref={scroller} className="flex-1 flex overflow-x-auto">
+        {view.padLeft > 0 && (
+          <div style={{ width: view.padLeft }} className="shrink-0" aria-hidden />
+        )}
+        {session.tracks.slice(view.first, view.last).map((track) => (
           <ChannelStrip
             key={track.id}
             session={session}
@@ -102,6 +130,9 @@ export default function MixWindow() {
             onSmart={() => useDawStore.getState().openSmartControls(track.id)}
           />
         ))}
+        {view.padRight > 0 && (
+          <div style={{ width: view.padRight }} className="shrink-0" aria-hidden />
+        )}
       </div>
     </div>
   );
@@ -125,6 +156,7 @@ function ChannelStrip({
   const isVca    = track.kind === 'vca';
   const isFolder = track.kind === 'folder';
   const macros   = activeMacros(track.macros);
+  const signalPath = describePath(session, track.id);
   const faderDb  = effectiveFaderDb(session, track);
   const vcaDb    = vcaChainDb(session, track);
   // Bypassed inserts count, because in the graph they still delay — this read
@@ -440,8 +472,10 @@ function ChannelStrip({
             {session.buses.map((b) => <option key={b.id} value={b.id}>← {b.name}</option>)}
           </select>
         )}
-        <p className="text-[8px] font-mono text-zinc-700 truncate" title={describePath(session, track.id)}>
-          {describePath(session, track.id)}
+        {/* Once, not twice: this walks the routing graph, and it was being
+            walked a second time to fill the tooltip with the same string. */}
+        <p className="text-[8px] font-mono text-zinc-700 truncate" title={signalPath}>
+          {signalPath}
         </p>
         {compensationSamples > 0 && (
           <p className="text-[8px] font-mono text-sky-500/80">ADC +{compensationSamples}</p>
