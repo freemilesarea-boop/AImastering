@@ -304,6 +304,56 @@ check('no export is left with nothing referencing it', () => {
     + '\n  Delete them, use them, or add one to ALLOWED with a reason.');
 });
 
+/**
+ * The exports a test is the only thing reaching, as a list that may shrink.
+ *
+ * Read from a file rather than written out here, because a failure has to
+ * NAME what changed: a bare count can say the number went up and cannot say
+ * which export did it, and a ratchet nobody can act on is a ratchet nobody
+ * keeps.
+ */
+function testOnlyBaseline(): Set<string> {
+  const text = readFileSync('scripts/fixtures/test-only-exports.txt', 'utf8');
+  return new Set(text.split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#')));
+}
+
+check('no export has a test for its only caller', () => {
+  // The check above asks who references an export and counts the SELFTESTS as
+  // references, because they are in `find src scripts`.  So a test importing
+  // the thing it tests keeps that thing alive, and an export the app never
+  // reaches reads as live for as long as its suite exists.  That is a test
+  // vouching for its own subject.
+  //
+  // This one asks the same question with the suites taken out of the graph —
+  // the `.mjs`/`.cjs` build scripts stay, because a build script is the app
+  // calling something — and holds the answer against a committed list.
+  //
+  // Measured when it was written: 244, among them `saveLayout`, `removeLayout`,
+  // `findLayout` and `describeLayout` — a saved-workspace-layout feature that
+  // was built, tested, and never wired to a component, while the zoom slots
+  // beside it in the same module are called by `dawStore`.
+  const appFiles = sourceFiles().filter((f) => f.startsWith('src/'));
+  const found = findDead(readAll(appFiles), scriptFiles(),
+    declaringFiles().filter((f) => f.startsWith('src/')));
+  const current = new Set(found.map((d) => `${d.file}::${d.name}`));
+  const baseline = testOnlyBaseline();
+
+  const appeared = [...current].filter((k) => !baseline.has(k)).sort();
+  const gone = [...baseline].filter((k) => !current.has(k)).sort();
+  const show = (list: string[]): string =>
+    list.slice(0, 12).join('\n    ') + (list.length > 12 ? `\n    … and ${list.length - 12} more` : '');
+
+  assert(appeared.length === 0,
+    `${appeared.length} export(s) only a test reaches:\n    ${show(appeared)}\n`
+    + '  Call it from the app, delete it, or — if a test really is who it is '
+    + 'for — add the line to scripts/fixtures/test-only-exports.txt.');
+  assert(gone.length === 0,
+    `${gone.length} line(s) in scripts/fixtures/test-only-exports.txt are no longer `
+    + `test-only:\n    ${show(gone)}\n  Take them out — the list only goes down.`);
+});
+
 check('and no import was left standing with nothing in it', () => {
   // `import { } from './x.js'` is what an orphan-clearing pass leaves when it
   // takes the last specifier off a line and stops there.  It is legal, and it
