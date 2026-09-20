@@ -87,7 +87,7 @@ import {
 import {
   describeOrder, nudgeSection, selectionForSection, songEnd,
 } from '../daw/edit/arrange-ops.js';
-import { applySlides, arpeggiate, strum } from '../daw/edit/note-tools.js';
+import { applySlides, arpeggiate, clearSlides, flam, strum } from '../daw/edit/note-tools.js';
 import { captureAsPattern } from '../daw/model/patterns.js';
 import { useIntelStore } from '../stores/intelStore.js';
 import { summarise as summariseFindings } from '../daw/ai/diagnose.js';
@@ -194,6 +194,7 @@ export type DawCommandId =
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
+  | 'daw.clearSlide' | 'daw.flam'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
   | 'daw.tuneToGuide' | 'daw.riff'
   | 'daw.addChord' | 'daw.openVocalEditor'
@@ -2075,6 +2076,38 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       notify(changed > 0
         ? `슬라이드 ${changed}개 — 피치벤드로 기록`
         : '붙일 만한 간격이 없습니다 (7반음 초과는 건너뜁니다)', changed > 0 ? 'success' : 'warning');
+    },
+
+    // The way back out of `daw.slide`.  Portamento could be applied and not
+    // taken off: `clearSlides` was written and tested and had no route.
+    'daw.clearSlide': () => {
+      const context = midiContext();
+      if (!context) return;
+      const selected = context.notes.filter((n) => context.ids.has(n.id));
+      if (selected.length === 0) { notify('노트를 먼저 선택하세요', 'warning'); return; }
+      const had = selected.filter((n) =>
+        n.expression.some((e) => e.target.kind === 'pitchBend')).length;
+      if (had === 0) { notify('걷어낼 슬라이드가 없습니다', 'warning'); return; }
+      writeNotes(context.trackId, context.clipId, [
+        ...context.notes.filter((n) => !context.ids.has(n.id)),
+        ...clearSlides(selected),
+      ]);
+      notify(`슬라이드 ${had}개를 걷어냈습니다`, 'success');
+    },
+
+    'daw.flam': () => {
+      const context = midiContext();
+      if (!context) return;
+      const selected = context.notes.filter((n) => context.ids.has(n.id));
+      if (selected.length === 0) { notify('노트를 먼저 선택하세요', 'warning'); return; }
+      const flammed = flam(selected);
+      const added = flammed.length - selected.length;
+      if (added === 0) { notify('파트 앞이라 꾸밈음을 넣을 자리가 없습니다', 'warning'); return; }
+      writeNotes(context.trackId, context.clipId, [
+        ...context.notes.filter((n) => !context.ids.has(n.id)),
+        ...flammed,
+      ]);
+      notify(`꾸밈음 ${added}개를 붙였습니다`, 'success');
     },
 
     'daw.capturePattern': () => {

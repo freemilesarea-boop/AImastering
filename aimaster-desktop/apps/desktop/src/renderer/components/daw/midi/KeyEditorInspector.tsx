@@ -16,8 +16,9 @@ import {
 } from '../../../daw/edit/midi-edit.js';
 import { SCALES, PITCH_CLASS_NAMES, suggestScales, scaleName } from '../../../daw/model/scales.js';
 import { drumMapFor } from '../../../daw/model/drum-map-session.js';
-import { detectChord, formatChord, voiceChord, QUALITIES, makeChord } from '../../../daw/model/chords.js';
-import { createNote, from7bit, noteEndBeat, type MidiNote } from '../../../daw/model/midi.js';
+import { detectChord, formatChord, QUALITIES, makeChord } from '../../../daw/model/chords.js';
+import { stampChord } from '../../../daw/edit/note-tools.js';
+import { from7bit, noteEndBeat, type MidiNote } from '../../../daw/model/midi.js';
 import { beatsToSecAt, partClock, secToBeatsAt } from '../../../daw/model/note-time.js';
 import { describeGroove, onsetsFromNotes, extractGroove } from '../../../daw/model/groove.js';
 import { applyGrooveToPart } from '../../../daw/edit/tempo-groove-actions.js';
@@ -54,6 +55,9 @@ export default function KeyEditorInspector() {
   const setTransposeSemitones = useMidiEditorStore((s) => s.setTransposeSemitones);
   const groove        = useDawStore((s) => s.groove);
   const setGroove     = useDawStore((s) => s.setGroove);
+  // A fifth-and-up spread, the way a pianist opens a close voicing: the model
+  // has always been able to do it and the palette had no way to ask.
+  const [openVoicing, setOpenVoicing] = React.useState(false);
   const [grooveStrength, setGrooveStrength] = React.useState(100);
   const [grooveVelocity, setGrooveVelocity] = React.useState(0);
   const scaleCorrection = useMidiEditorStore((s) => s.scaleCorrection);
@@ -173,6 +177,7 @@ export default function KeyEditorInspector() {
         <p className="text-[9px] text-zinc-600 leading-snug">
           코드 버튼: 선택 노트의 최저음을 근음으로 코드를 만듭니다.
         </p>
+        <Check label="열린 보이싱" checked={openVoicing} onChange={() => setOpenVoicing((v) => !v)} />
         <div className="grid grid-cols-2 gap-1">
           {COMMON_QUALITIES.map((qid) => {
             const quality = QUALITIES.find((q) => q.id === qid);
@@ -185,14 +190,19 @@ export default function KeyEditorInspector() {
                     ? picked.reduce((low, n) => (n.pitch < low.pitch ? n : low))
                     : null;
                   if (!rootNote) { notify('노트를 먼저 선택하세요', 'warning'); return; }
-                  const voiced = voiceChord(makeChord(rootNote.pitch % 12, qid), rootNote.pitch);
+                  // Through the model rather than around it.  This used to
+                  // call `voiceChord` and build the notes here, which is what
+                  // `stampChord` does — so the tested one never ran, the one
+                  // that ran was untested, and the open voicing the model
+                  // supports had no way to be asked for.
                   const others = notes.filter((n) => !selectedIds.includes(n.id));
-                  const built = voiced.map((pitch) => createNote({
-                    pitch,
+                  const built = stampChord(makeChord(rootNote.pitch % 12, qid), {
                     startBeat: rootNote.startBeat,
                     durationBeat: rootNote.durationBeat,
+                    bottomPitch: rootNote.pitch,
                     velocity: rootNote.velocity,
-                  }));
+                    open: openVoicing,
+                  });
                   write([...others, ...built]);
                   setSelection(built.map((n) => n.id));
                   notify(`${formatChord(makeChord(rootNote.pitch % 12, qid))} 생성`);

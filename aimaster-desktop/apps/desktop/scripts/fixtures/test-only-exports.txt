@@ -87,10 +87,7 @@ src/renderer/daw/edit/midi-edit.ts::pedalsToNoteLength
 src/renderer/daw/edit/midi-edit.ts::splitNotesAt
 src/renderer/daw/edit/midi-record-actions.ts::hasPerformance
 src/renderer/daw/edit/navigation.ts::extendToNextPoint
-src/renderer/daw/edit/note-tools.ts::clearSlides
-src/renderer/daw/edit/note-tools.ts::flam
 src/renderer/daw/edit/note-tools.ts::snapToScale
-src/renderer/daw/edit/note-tools.ts::stampChord
 src/renderer/daw/edit/strip-silence.ts::describeStrip
 src/renderer/daw/edit/strip-silence.ts::silenceShare
 src/renderer/daw/edit/track-delay-ops.ts::delayProblems

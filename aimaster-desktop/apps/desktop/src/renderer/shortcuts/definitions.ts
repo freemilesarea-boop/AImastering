@@ -96,6 +96,7 @@ export type CommandId =
   | 'daw.showRestore' | 'daw.declick'
   | 'daw.toggleArm' | 'daw.record' | 'daw.punchFromSelection'
   | 'daw.showSteps' | 'daw.arpeggiate' | 'daw.strum' | 'daw.slide' | 'daw.capturePattern'
+  | 'daw.clearSlide' | 'daw.flam'
   | 'daw.showIntel' | 'daw.analyzeMixAi' | 'daw.aiCommand'
   | 'daw.sectionNext' | 'daw.sectionPrev' | 'daw.sectionSelect' | 'daw.sectionAdd'
   | 'daw.sectionMoveBack' | 'daw.sectionMoveForward'
@@ -526,6 +527,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '블록 코드를 손으로 친 것처럼 — 끝은 함께 끝납니다', available: true },
   { id: 'daw.slide', group: 'daw', label: '슬라이드 (포르타멘토)', chords: ['Mod+Alt+Z'],
     note: '앞 노트에서 벤드해 들어옵니다 — 실제 피치벤드 데이터', available: true },
+  { id: 'daw.clearSlide', group: 'daw', label: '슬라이드 해제', chords: ['Alt+Shift+X'],
+    note: '선택 노트의 피치벤드 곡선을 걷어냄', available: true },
+  { id: 'daw.flam', group: 'daw', label: '플램', chords: ['Alt+Shift+D'],
+    note: '선택 노트 앞에 약한 꾸밈음을 붙임 — 드럼 롤', available: true },
   { id: 'daw.capturePattern', group: 'daw', label: '클립을 패턴으로', chords: ['Mod+Alt+O'],
     note: '노트를 라이브러리로 옮기고 클립을 링크로 만듭니다', available: true },
   { id: 'daw.showRestore', group: 'daw', label: 'Restoration (노이즈 · 클릭)', chords: ['Mod+Alt+N'],
