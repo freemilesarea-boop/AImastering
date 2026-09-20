@@ -21,6 +21,7 @@ import { buildPool, describePool, summarisePool } from '../daw/model/clip-pool.j
 import { nextId } from '../daw/model/ids.js';
 // Electron's window.prompt throws; see ui/text-prompt.ts.
 import { askText } from '../ui/text-prompt.js';
+import { deleteTracks } from '../ui/delete-tracks.js';
 import { describeZoom, recallZoom } from '../daw/model/workspace-view.js';
 import { describeLayoutDiff, nextLayout } from '../daw/edit/layout-ops.js';
 import {
@@ -212,6 +213,7 @@ export type DawCommandId =
   | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
   | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
   | 'daw.layoutMenu' | 'daw.layoutSave' | 'daw.layoutCycle'
+  | 'daw.deleteTracks'
   | ZoomCommandId;
 
 /** One store and one recall verb per zoom preset. */
@@ -1516,6 +1518,13 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     'daw.historyPanel': () => {
       const state = daw();
       state.setHistoryOpen(!state.historyOpen);
+    },
+
+    'daw.deleteTracks': () => {
+      // Every selected track, not just the focused one: selecting eight lanes
+      // and pressing delete meaning one of them is not a mistake anybody
+      // makes, and the dialog names what it is about to take either way.
+      void deleteTracks(targetTrackIds());
     },
 
     'daw.renameTrack': () => {

@@ -110,6 +110,7 @@ export type CommandId =
   | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
   | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
   | 'daw.layoutMenu' | 'daw.layoutSave' | 'daw.layoutCycle'
+  | 'daw.deleteTracks'
   | `daw.zoomStore.${ZoomDigit}` | `daw.zoomRecall.${ZoomDigit}`;
 
 /** The five zoom-preset slots, on the function keys. */
@@ -425,6 +426,9 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '마디 → 분:초 → 샘플 → 타임코드 순으로 돕니다', available: true },
   { id: 'daw.duplicateTrack', group: 'daw', label: '트랙 복제', chords: ['Mod+Alt+Shift+D'],
     note: '클립·인서트·센드·오토메이션까지 복사해 바로 아래에 — 프리즈와 녹음 무장은 빼고', available: true },
+  { id: 'daw.deleteTracks', group: 'daw', label: '트랙 삭제', chords: ['Mod+Backspace', 'Mod+Delete'],
+    note: '선택한 트랙을 지웁니다 — 무엇이 사라지는지 먼저 묻습니다 (스택은 안의 트랙을 남깁니다)',
+    available: true },
   { id: 'daw.renameTrack', group: 'daw', label: '트랙 이름 바꾸기', chords: ['Shift+Alt+K'],
     note: '헤더의 이름을 더블클릭해도 됩니다 · 색은 왼쪽 색 조각을 클릭', available: true },
   { id: 'daw.trackHeightUp', group: 'daw', label: '트랙 높이 키우기', chords: ['Shift+Alt+Equal'],

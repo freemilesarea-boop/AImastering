@@ -75,6 +75,7 @@ import {
   TRACK_COLORS, clampTrackHeight, renameTrack, setTrackColor,
   setTrackHeight,
 } from '../../../daw/model/track-header.js';
+import { deleteTracks } from '../../../ui/delete-tracks.js';
 
 const HEADER_WIDTH = 168;
 const RULER_HEIGHT = 26;
@@ -718,6 +719,7 @@ export default function EditWindow() {
               summary={row.track.kind === 'folder' ? stackSummary(session, row.track.id) : null}
               focused={focusedTrackId === row.track.id}
               onFocus={() => setFocusedTrack(row.track.id)}
+              onDelete={row.track.kind === 'master' ? null : () => void deleteTracks([row.track.id])}
               onSolo={() => apply((s) => toggleSolo(s, row.track.id))}
               onMute={() => apply((s) => toggleMute(s, row.track.id))}
               onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, row.track.id, dir))}
@@ -1012,7 +1014,7 @@ function FadeShapeMenu({ at, current, onPick, onClose }: {
 }
 
 function TrackHeader({
-  track, editGroup, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
+  track, editGroup, depth, summary, focused, onFocus, onDelete, onSolo, onMute, onCyclePlaylist,
   onPickTake, onAddTake, onDuplicateTake, onRemoveTake, onFlattenTakes,
   onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
   onToggleAutomation, automationOpen, onRename, onColor, onResize,
@@ -1023,6 +1025,8 @@ function TrackHeader({
   summary: string | null;
   focused: boolean;
   onFocus: () => void;
+  /** Null on the master, which is the output and not a channel. */
+  onDelete: (() => void) | null;
   onSolo: () => void;
   onMute: () => void;
   onCyclePlaylist: (dir: 1 | -1) => void;
@@ -1162,6 +1166,20 @@ function TrackHeader({
           >✎</button>
         )}
         <span className="text-[9px] font-mono text-zinc-600 uppercase">{track.kind.slice(0, 3)}</span>
+        {/* The only way out.  `removeTrack` had been written and tested since
+            the model was, with five ways in and no caller. */}
+        {onDelete && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            title={isFolder
+              ? '이 스택을 지웁니다 — 안의 트랙은 남습니다 (Mod+Backspace)'
+              : '이 트랙을 지웁니다 (Mod+Backspace)'}
+            className="hit-target text-[11px] leading-none w-4 h-4 rounded shrink-0 flex items-center
+                       justify-center text-zinc-600 hover:text-red-300 transition-colors"
+            style={{ border: '1px solid rgba(255,255,255,0.14)' }}
+            data-testid={`track-delete-${track.id}`}
+          >×</button>
+        )}
       </div>
       {isFolder && summary && !focused && (
         <span className="text-[8px] text-zinc-600 truncate">{summary}</span>

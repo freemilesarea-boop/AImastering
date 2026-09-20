@@ -226,7 +226,6 @@ src/renderer/daw/model/recording.ts::wouldOverlap
 src/renderer/daw/model/scales.ts::detectScale
 src/renderer/daw/model/scales.ts::scaleDegree
 src/renderer/daw/model/session-ops.ts::moveTrack
-src/renderer/daw/model/session-ops.ts::removeTrack
 src/renderer/daw/model/session-view.ts::renameScene
 src/renderer/daw/model/session-view.ts::trackSlots
 src/renderer/daw/model/snap-modes.ts::snapDelta

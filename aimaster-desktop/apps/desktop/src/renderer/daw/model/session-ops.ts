@@ -16,6 +16,7 @@ import {
 } from './types.js';
 import { nextId } from './ids.js';
 import { DEFAULT_MIDI_CONFIG } from './midi.js';
+import { removeBus } from './buses.js';
 import type { ChordEvent } from './chords.js';
 import { EMPTY_RACK } from './macros.js';
 import { emptyGrid } from './session-view.js';
@@ -273,18 +274,64 @@ export function addTrack(session: DawSession, track: Track, atIndex?: number): D
   return { ...session, tracks };
 }
 
+/**
+ * Take a track out of the session, and every reference to it with it.
+ *
+ * The master is refused: it is the output, not a channel.
+ *
+ * DELETING A FOLDER DOES NOT DELETE WHAT IS IN IT.  Its children are promoted
+ * to wherever the folder itself was, exactly as `unpackStack` promotes them,
+ * because "delete this folder" and "delete these eight takes of a vocal" are
+ * different requests and only one of them was made.  Anyone who means the
+ * second selects the children too.
+ *
+ * The folder's summing bus goes through `removeBus`, which already knows the
+ * four ways a bus is referred to.  Measured, on a stack with an Aux reading
+ * its bus, a send into it and a sidechain off it: an earlier version of this
+ * dropped the bus and cleaned only the outputs, leaving the Aux reading a bus
+ * that was not there, one dangling send and one dangling sidechain.  Before
+ * that it did not drop the bus at all, and left both children routed into it
+ * — audio passing through a bus with no fader anywhere on screen.
+ */
 export function removeTrack(session: DawSession, id: TrackId): DawSession {
   const target = findTrack(session, id);
   if (!target || target.kind === 'master') return session;
+
+  // The bus first, with everything that pointed at it; then the track.
+  const folderBus = target.kind === 'folder' ? target.input : null;
+  const base = folderBus !== null ? removeBus(session, folderBus) : session;
+
   return {
-    ...session,
-    tracks: session.tracks
+    ...base,
+    tracks: base.tracks
       .filter((t) => t.id !== id)
-      // Drop dangling VCA assignments and group memberships.
-      .map((t) => (t.vcaId === id ? { ...t, vcaId: null } : t)),
-    groups: session.groups.map((g) =>
+      .map((t) => {
+        let next = t;
+        // Drop dangling VCA assignments.
+        if (next.vcaId === id) next = { ...next, vcaId: null };
+        // Children inherit the folder's place rather than being orphaned.
+        if (next.parentId === id) next = { ...next, parentId: target.parentId };
+        return next;
+      }),
+    groups: base.groups.map((g) =>
       g.memberIds.includes(id) ? { ...g, memberIds: g.memberIds.filter((m) => m !== id) } : g),
   };
+}
+
+/**
+ * Remove several tracks at once.
+ *
+ * Plainly one at a time, in the order given.  An earlier version sorted
+ * folders first and said in a comment that it had to, so a folder would find
+ * its children still there to promote — which is not true, and the test
+ * written to prove it could not fail.  `removeTrack` promotes whoever is left
+ * at the time, so the result is the same whichever order a selection was
+ * clicked in; the check below holds that, rather than the sort.
+ */
+export function removeTracks(session: DawSession, ids: readonly TrackId[]): DawSession {
+  let next = session;
+  for (const id of ids) next = removeTrack(next, id);
+  return next;
 }
 
 export function moveTrack(session: DawSession, id: TrackId, toIndex: number): DawSession {

@@ -42,6 +42,7 @@ import { slotLetter, slotsToShow } from '../../../daw/model/strip-slots.js';
 import { MAX_TRACK_DELAY_MS, delayMechanism, trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay, setTrackDelay } from '../../../daw/edit/track-delay-ops.js';
 import SnapshotPanel from './SnapshotPanel.js';
+import { deleteTracks } from '../../../ui/delete-tracks.js';
 
 const AUTOMATION_MODES: AutomationMode[] = ['off', 'read', 'touch', 'latch', 'write', 'trim'];
 
@@ -713,15 +714,30 @@ function ChannelStrip({
 
       {/* Name plate — pinned: it is how you tell which strip you are on. */}
       <div className="shrink-0 px-1.5 py-1 border-t border-zinc-800" style={{ background: `${track.color}22` }}>
-        <p
-          className="text-[10px] truncate"
-          style={{
-            color: isFolder ? premium.accent.light : 'rgb(228,228,231)',
-            letterSpacing: isFolder ? '0.08em' : undefined,
-            fontWeight: isFolder ? 600 : 400,
-          }}
-          title={isSummingStack(track) ? `${track.name} (합산 스택)` : track.name}
-        >{isFolder ? track.name.toUpperCase() : track.name}</p>
+        <div className="flex items-center gap-1 min-w-0">
+          <p
+            className="text-[10px] truncate flex-1"
+            style={{
+              color: isFolder ? premium.accent.light : 'rgb(228,228,231)',
+              letterSpacing: isFolder ? '0.08em' : undefined,
+              fontWeight: isFolder ? 600 : 400,
+            }}
+            title={isSummingStack(track) ? `${track.name} (합산 스택)` : track.name}
+          >{isFolder ? track.name.toUpperCase() : track.name}</p>
+          {/* The console needs the way out too: a channel you decided against
+              while mixing is decided against here, not back in the arrangement. */}
+          {track.kind !== 'master' && (
+            <button
+              onClick={() => void deleteTracks([track.id])}
+              title={isFolder
+                ? '이 스택을 지웁니다 — 안의 트랙은 남습니다'
+                : '이 채널을 지웁니다'}
+              className="shrink-0 w-3.5 h-3.5 rounded text-[10px] leading-none text-zinc-600
+                         hover:text-red-300 transition-colors"
+              data-testid={`strip-delete-${track.id}`}
+            >×</button>
+          )}
+        </div>
         <p className="text-[9px] font-mono text-zinc-500">
           {shownVolumeDb >= 0 ? '+' : ''}{shownVolumeDb.toFixed(1)}
           {Math.abs(vcaDb) > 0.01 && (
