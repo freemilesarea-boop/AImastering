@@ -22,6 +22,7 @@ import SettingsPage from './pages/SettingsPage.js';
 import { useAppStore as useAppStoreNotification } from './stores/appStore.js';
 import { useAudioStore, MAX_QUEUE_SIZE } from './stores/audioStore.js';
 import { UpdateToast } from './components/UpdateToast.js';
+import TextPromptDialog from './components/TextPromptDialog.js';
 import { LAYER } from './theme/layers.js';
 import { useDawShortcuts } from './shortcuts/useDawShortcuts.js';
 import DawWorkspaceChrome, { useBottomZoneHeight } from './components/daw/DawWorkspaceChrome.js';
@@ -468,6 +469,8 @@ function AppInner() {
 
       {/* Toast notifications */}
       <Toast />
+      {/* Electron has no window.prompt — see ui/text-prompt.ts. */}
+      <TextPromptDialog />
 
       {/* Multitrack workspace entry point (desktop only). */}
 

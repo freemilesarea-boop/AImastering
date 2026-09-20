@@ -186,3 +186,42 @@ export function describeSnapshot(diff: SnapshotDiff): string {
   if (diff.routing.length) parts.push(`라우팅 ${diff.routing.length}개`);
   return `${parts.join(' · ')} 다름 — 오토메이션은 그대로 둡니다`;
 }
+
+/**
+ * "12분 전" — how long ago a snapshot was taken.
+ *
+ * A wall-clock time is the wrong answer for A/B.  The question in the room is
+ * "is the one from before lunch better", and 14:07 only answers that if you
+ * remember when lunch was.  Past a day the clock is the better answer again,
+ * because "1500분 전" is not a duration anyone can feel, so it switches to a
+ * date at that point.
+ *
+ * `now` is a parameter rather than read from the clock so the caller decides
+ * when "now" is — which is what lets this be checked at all.
+ */
+export function snapshotAge(takenAt: number, now: number): string {
+  const sec = Math.floor((now - takenAt) / 1000);
+  // A snapshot taken "in the future" is a clock that moved, not a bug worth a
+  // special message: clamp rather than print a negative age.
+  if (sec < 60) return '방금';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}분 전`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour}시간 전`;
+  return new Date(takenAt).toLocaleDateString('ko-KR');
+}
+
+/**
+ * What a restore actually did.
+ *
+ * `restored` alone is not enough to trust the result: a snapshot that matched
+ * two of nine channels restored something, and saying only "복구" would let
+ * that pass for success.  The channels it could not find and the ones it
+ * chose not to touch are the part worth reading.
+ */
+export function describeRestore(result: RestoreResult): string {
+  const parts = [`채널 ${result.restored}개 복구`];
+  if (result.gone.length) parts.push(`없어진 채널 ${result.gone.length}개 건너뜀`);
+  if (result.added.length) parts.push(`새 채널 ${result.added.length}개는 그대로`);
+  return parts.join(' · ');
+}

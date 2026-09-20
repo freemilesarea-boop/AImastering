@@ -23,7 +23,7 @@ import {
   linkedTimeline, recallZoom, storeZoom,
   type WindowLayout, type ZoomSlots, type ZoomView,
 } from '../daw/model/workspace-view.js';
-import { pushSnapshot, type MixSnapshot } from '../daw/model/mix-snapshot.js';
+import { pushSnapshot, removeSnapshot, type MixSnapshot } from '../daw/model/mix-snapshot.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
 import type { Groove } from '../daw/model/groove.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
@@ -247,6 +247,12 @@ export interface DawState {
   snapshots: MixSnapshot[];
   addSnapshot: (snapshot: MixSnapshot) => void;
   setSnapshots: (snapshots: MixSnapshot[]) => void;
+  /** Throw one away.  The cap drops the oldest; this is the deliberate one. */
+  dropSnapshot: (id: string) => void;
+
+  /** Whether the snapshot list is on screen (the mixer's own panel). */
+  snapshotsOpen: boolean;
+  setSnapshotsOpen: (open: boolean) => void;
 
   /**
    * Whether the timeline selection follows the edit selection.
@@ -438,6 +444,10 @@ export const useDawStore = create<DawState>((set, get) => ({
   snapshots: [],
   addSnapshot: (snapshot) => set((s) => ({ snapshots: pushSnapshot(s.snapshots, snapshot) })),
   setSnapshots: (snapshots) => set({ snapshots }),
+  dropSnapshot: (id) => set((s) => ({ snapshots: removeSnapshot(s.snapshots, id) })),
+
+  snapshotsOpen: false,
+  setSnapshotsOpen: (snapshotsOpen) => set({ snapshotsOpen }),
 
   linkSelection: false,
   setLinkSelection: (linkSelection) => set({ linkSelection }),

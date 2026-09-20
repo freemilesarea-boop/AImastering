@@ -19,6 +19,8 @@ import { setTrackNote, trackNote } from '../daw/model/track-header.js';
 import { describeSnapshot, diffSnapshot, takeSnapshot } from '../daw/model/mix-snapshot.js';
 import { buildPool, describePool, summarisePool } from '../daw/model/clip-pool.js';
 import { nextId } from '../daw/model/ids.js';
+// Electron's window.prompt throws; see ui/text-prompt.ts.
+import { askText } from '../ui/text-prompt.js';
 import { describeZoom, recallZoom } from '../daw/model/workspace-view.js';
 import {
   clearLocation, describeLocation, locationAt, memoryLocations, recallLocation,
@@ -1426,10 +1428,13 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
       const track = findTrack(state.session, trackId);
       if (!track) return;
-      const typed = globalThis.prompt?.(`${track.name} 메모`, trackNote(track));
-      if (typed === null || typed === undefined) return;
-      state.apply((s) => setTrackNote(s, trackId, typed));
-      notify(typed.trim() === '' ? '메모 삭제' : `메모 저장 — ${track.name}`);
+      void askText(`${track.name} 메모`, trackNote(track)).then((typed) => {
+        if (typed === null) return;
+        // Re-read the store: the dialog was on screen while the user could
+        // still undo, so the state captured before it opened may be stale.
+        daw().apply((s) => setTrackNote(s, trackId, typed));
+        notify(typed.trim() === '' ? '메모 삭제' : `메모 저장 — ${track.name}`);
+      });
     },
 
     'daw.toggleLinkSelection': () => {
@@ -1443,24 +1448,30 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
 
     'daw.mixSnapshot': () => {
       const state = daw();
-      const name = globalThis.prompt?.('스냅샷 이름', `믹스 ${state.snapshots.length + 1}`);
-      if (name === null || name === undefined) return;
-      const snapshot = takeSnapshot(state.session, name, nextId('snap'));
-      state.addSnapshot(snapshot);
-      notify(`스냅샷 저장 — ${snapshot.name} (채널 ${snapshot.channels.length}개)`);
+      void askText('스냅샷 이름', `믹스 ${state.snapshots.length + 1}`).then((name) => {
+        if (name === null) return;
+        const live = daw();
+        const snapshot = takeSnapshot(live.session, name, nextId('snap'));
+        live.addSnapshot(snapshot);
+        notify(`스냅샷 저장 — ${snapshot.name} (채널 ${snapshot.channels.length}개)`);
+      });
     },
 
     'daw.mixSnapshotPanel': () => {
       const state = daw();
+      // Closing needs no mixer and no snapshots; only opening does.
+      if (state.snapshotsOpen) { state.setSnapshotsOpen(false); return; }
+      state.setSnapshotsOpen(true);
+      state.setWindow('mix');
       if (state.snapshots.length === 0) {
         notify('저장된 스냅샷이 없습니다 — Mod+Alt+Shift+M 으로 찍으세요', 'warning');
         return;
       }
-      // Say what the newest one would change; the panel is the mixer's own.
+      // The list is on screen now, so this only has to say where to look.
       const latest = state.snapshots[state.snapshots.length - 1] as NonNullable<
         (typeof state.snapshots)[number]>;
-      notify(`${latest.name} — ${describeSnapshot(diffSnapshot(state.session, latest))}`);
-      state.setWindow('mix');
+      notify(`스냅샷 ${state.snapshots.length}개 — 최근 ${latest.name}: `
+        + describeSnapshot(diffSnapshot(state.session, latest)));
     },
 
     'daw.historyPanel': () => {
@@ -1473,11 +1484,12 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       const trackId = targetTrackIds()[0];
       if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
       const track = findTrack(state.session, trackId);
-      const typed = globalThis.prompt?.('트랙 이름', track?.name ?? '');
-      if (typed === null || typed === undefined) return;
-      if (cleanTrackName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
-      state.apply((s: DawSession) => renameTrack(s, trackId, typed));
-      notify(`${cleanTrackName(typed)}`);
+      void askText('트랙 이름', track?.name ?? '').then((typed) => {
+        if (typed === null) return;
+        if (cleanTrackName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
+        daw().apply((s: DawSession) => renameTrack(s, trackId, typed));
+        notify(`${cleanTrackName(typed)}`);
+      });
     },
 
     /**
@@ -1547,17 +1559,20 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       const current = target
         ? findClip(state.session, target.trackId, target.clipId)?.name ?? ''
         : '';
-      const typed = globalThis.prompt?.(many ? '선택한 클립들의 이름 (뒤에 번호가 붙습니다)' : '클립 이름', current);
-      if (typed === null || typed === undefined) return;
-      if (cleanClipName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
+      const question = many ? '선택한 클립들의 이름 (뒤에 번호가 붙습니다)' : '클립 이름';
+      void askText(question, current).then((typed) => {
+        if (typed === null) return;
+        if (cleanClipName(typed).length === 0) { notify('이름은 비울 수 없습니다', 'warning'); return; }
 
-      if (many) {
-        state.apply((s: DawSession) => renameSelection(s, sel, typed));
-        notify(`${selectedAudioClips(state.session, sel).length}개 클립의 이름을 바꿨습니다`);
-      } else {
-        state.apply((s: DawSession) => renameClip(s, target!.trackId, target!.clipId, typed));
-        notify(`이름을 ${cleanClipName(typed)} 로 바꿨습니다`);
-      }
+        const live = daw();
+        if (many) {
+          live.apply((s: DawSession) => renameSelection(s, sel, typed));
+          notify(`${selectedAudioClips(live.session, sel).length}개 클립의 이름을 바꿨습니다`);
+        } else {
+          live.apply((s: DawSession) => renameClip(s, target!.trackId, target!.clipId, typed));
+          notify(`이름을 ${cleanClipName(typed)} 로 바꿨습니다`);
+        }
+      });
     },
 
     // ── Chord Track ───────────────────────────────────────────────────────

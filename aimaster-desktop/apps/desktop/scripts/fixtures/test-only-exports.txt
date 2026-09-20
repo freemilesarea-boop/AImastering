@@ -194,8 +194,6 @@ src/renderer/daw/model/midi.ts::removeExpression
 src/renderer/daw/model/midi.ts::resetNoteIds
 src/renderer/daw/model/midi.ts::to14bit
 src/renderer/daw/model/midi.ts::to32bit
-src/renderer/daw/model/mix-snapshot.ts::removeSnapshot
-src/renderer/daw/model/mix-snapshot.ts::restoreSnapshot
 src/renderer/daw/model/mixer-math.ts::gainToDb
 src/renderer/daw/model/mixer-math.ts::panGains
 src/renderer/daw/model/note-time.ts::beatIntoNote

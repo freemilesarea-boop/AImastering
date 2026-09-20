@@ -41,6 +41,7 @@ import { premium } from '../../../theme/premium.js';
 import { slotLetter, slotsToShow } from '../../../daw/model/strip-slots.js';
 import { MAX_TRACK_DELAY_MS, delayMechanism, trackDelayMs } from '../../../daw/model/track-delay.js';
 import { describeDelay, setTrackDelay } from '../../../daw/edit/track-delay-ops.js';
+import SnapshotPanel from './SnapshotPanel.js';
 
 const AUTOMATION_MODES: AutomationMode[] = ['off', 'read', 'touch', 'latch', 'write', 'trim'];
 
@@ -50,6 +51,11 @@ export default function MixWindow() {
   const notify  = useAppStore((s) => s.notify);
   const [levels, setLevels] = useState<Map<string, ChannelMeterReading>>(new Map());
   const [busesOpen, setBusesOpen] = useState(false);
+  // In the store rather than local state, because Mod+Alt+Shift+K opens this
+  // panel from a keyboard layer that cannot reach a component's useState.
+  const snapshots = useDawStore((s) => s.snapshots);
+  const snapshotsOpen = useDawStore((s) => s.snapshotsOpen);
+  const setSnapshotsOpen = useDawStore((s) => s.setSnapshotsOpen);
   const scroller = useRef<HTMLDivElement>(null);
 
   // Meter poll — cheap enough at 20 Hz and only while the window is open.
@@ -105,11 +111,19 @@ export default function MixWindow() {
             ? 'border-zinc-600 bg-zinc-800 text-zinc-200'
             : 'border-zinc-700 bg-zinc-900 text-zinc-400'}`}
         >버스 {session.buses.length}</button>
+        <button
+          onClick={() => setSnapshotsOpen(!snapshotsOpen)}
+          title="저장해 둔 믹스로 되돌리기 (Mod+Alt+Shift+K)"
+          className={`px-2 py-0.5 rounded text-[10px] border ${snapshotsOpen
+            ? 'border-zinc-600 bg-zinc-800 text-zinc-200'
+            : 'border-zinc-700 bg-zinc-900 text-zinc-400'}`}
+        >스냅샷 {snapshots.length}</button>
         <div className="flex-1" />
         <span className="text-[10px] font-mono text-zinc-600">{session.tracks.length} ch</span>
       </div>
 
       {busesOpen && <BusPanel session={session} onApply={apply} onNotify={notify} />}
+      {snapshotsOpen && <SnapshotPanel session={session} onApply={apply} onNotify={notify} />}
 
       {/* Only the strips in the scroller are built — see `strip-window.ts`
           for what that is worth and why the spacers are there. */}
