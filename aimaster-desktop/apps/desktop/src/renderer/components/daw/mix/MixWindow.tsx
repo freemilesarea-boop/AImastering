@@ -138,6 +138,50 @@ export default function MixWindow() {
   );
 }
 
+
+/**
+ * A `<select>` whose options are built when somebody reaches for it.
+ *
+ * The insert slot picker lists every device in the rack — fifty-one options —
+ * and the console draws one per strip.  Counted in the running app, a channel
+ * strip is 113 DOM nodes and SIXTY of them are `<option>`: more than half the
+ * strip is a list nobody is looking at until they open it.  Thirteen strips
+ * on screen is 650 nodes of closed dropdown.
+ *
+ * Closed, it holds exactly one option — the current value, so the select
+ * still shows what it is set to; a `<select>` whose value matches none of its
+ * options renders blank, which is the way this goes wrong.  The full list
+ * arrives on the first mousedown, focus or key, which is before the popup has
+ * anything to show.
+ */
+function LazySelect({
+  value, label, onChange, className, title, children,
+}: {
+  value: string;
+  /** What to show while the list is not built. */
+  label: string;
+  onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+  className?: string;
+  title?: string;
+  children: React.ReactNode;
+}): React.ReactElement {
+  const [ready, setReady] = useState(false);
+  const fill = (): void => setReady(true);
+  return (
+    <select
+      value={value}
+      onChange={onChange}
+      onMouseDown={fill}
+      onFocus={fill}
+      onKeyDown={fill}
+      className={className}
+      {...(title === undefined ? {} : { title })}
+    >
+      {ready ? children : <option value={value}>{label}</option>}
+    </select>
+  );
+}
+
 function ChannelStrip({
   session, track, depth, level, compensationSamples, onApply, onNotify, onSmart,
 }: {
@@ -300,8 +344,9 @@ function ChannelStrip({
               <span className={`w-2 text-[8px] font-mono leading-5 ${insert ? 'text-zinc-500' : 'text-zinc-700'}`}>
                 {slotLetter(slot)}
               </span>
-              <select
+              <LazySelect
                 value={insert?.pluginId ?? ''}
+                label={insert ? pluginName(insert.pluginId) : '—'}
                 onChange={(e) => {
                   const id = e.target.value;
                   onApply((s) => (id
@@ -317,7 +362,7 @@ function ChannelStrip({
               >
                 <option value="">—</option>
                 {PLUGINS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              </LazySelect>
               {insert && (
                 <button
                   title="바이패스"

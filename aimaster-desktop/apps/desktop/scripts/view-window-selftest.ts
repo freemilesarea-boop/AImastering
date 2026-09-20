@@ -175,6 +175,32 @@ check('the strip width the maths uses is the width the strip is', () => {
 });
 
 
+check('the rack is not listed in every strip that is not being used', () => {
+  // STRUCTURAL, because the count is a DOM fact and this suite has no DOM.
+  //
+  // Counted in the running app, a channel strip was 113 nodes and SIXTY of
+  // them were `<option>`: the insert picker lists every device in the rack,
+  // fifty-one of them, drawn once per strip whether or not anybody is looking
+  // at it.  Thirteen strips on screen came to 650 nodes of closed dropdown,
+  // 41% of the window.
+  //
+  // With the list built on the first mousedown instead: a strip is 63 nodes
+  // closed and 113 while it is open, the window is 930 instead of 1580, and
+  // the mount went from 75–94 ms to 58–63 ms at 48 tracks.
+  const source = readFileSync(
+    new URL('../src/renderer/components/daw/mix/MixWindow.tsx', import.meta.url), 'utf8');
+  assert(/function LazySelect\(/.test(source), 'MixWindow has no LazySelect');
+  assert(/\{ready \? children : <option value=\{value\}>\{label\}<\/option>\}/.test(source),
+    'LazySelect no longer holds one option while it is closed — a select whose '
+    + 'value matches none of its options renders blank');
+  const lazy = /<LazySelect[\s\S]*?<\/LazySelect>/.exec(source)?.[0] ?? '';
+  assert(/PLUGINS\.map\(/.test(lazy),
+    'the rack\'s plugin list is not inside a LazySelect, so every strip draws all of it');
+  const outside = source.replace(/<LazySelect[\s\S]*?<\/LazySelect>/g, '');
+  assert(!/PLUGINS\.map\(/.test(outside),
+    'a second copy of the plugin list is drawn outside a LazySelect');
+});
+
 // ── The Edit window: rows of their own heights ──────────────────────────────
 
 const VIEW_H = 415;           // the scroller's height in the window measured above
