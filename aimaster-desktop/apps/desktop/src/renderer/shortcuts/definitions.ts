@@ -67,6 +67,7 @@ export type CommandId =
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
+  | 'daw.takeAdd' | 'daw.takeDuplicate' | 'daw.takeFlatten'
   | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.sendToMastering' | 'daw.exportStems'
   | 'daw.importAudio' | 'daw.importSession'
   | 'daw.zoomIn' | 'daw.zoomOut'
@@ -315,6 +316,12 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '플레이리스트(테이크) 레인 전환', available: true },
   { id: 'daw.compSelection', group: 'daw', label: '선택 구간 컴핑', chords: ['Mod+Alt+V'],
     note: '다른 테이크의 선택 구간을 메인 플레이리스트로', available: true },
+  { id: 'daw.takeAdd', group: 'daw', label: '새 테이크', chords: ['Alt+Shift+I'],
+    note: '빈 테이크 레인을 만들고 그 레인으로', available: true },
+  { id: 'daw.takeDuplicate', group: 'daw', label: '테이크 복제', chords: ['Alt+Shift+U'],
+    note: '지금 테이크를 복사해 놓고 거기서 컴핑', available: true },
+  { id: 'daw.takeFlatten', group: 'daw', label: '컴프 확정', chords: ['Alt+Shift+C'],
+    note: '지금 테이크만 남기고 나머지 레인을 버림', available: true },
   { id: 'daw.freeze', group: 'daw', label: '프리즈 / 해제', chords: ['Mod+Alt+F'],
     note: '인서트를 렌더링해 CPU 반환 (되돌릴 수 있음)', available: true },
   { id: 'daw.commit', group: 'daw', label: '커밋', chords: ['Mod+Alt+Shift+F'],

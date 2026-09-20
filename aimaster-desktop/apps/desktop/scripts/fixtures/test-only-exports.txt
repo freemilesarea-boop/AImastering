@@ -79,12 +79,6 @@ src/renderer/daw/edit/clip-edit.ts::selectionToClipBounds
 src/renderer/daw/edit/clip-edit.ts::setClipGain
 src/renderer/daw/edit/clip-edit.ts::slipSelection
 src/renderer/daw/edit/clipboard.ts::pastedClipCount
-src/renderer/daw/edit/comping.ts::addPlaylist
-src/renderer/daw/edit/comping.ts::alternateLanes
-src/renderer/daw/edit/comping.ts::duplicatePlaylist
-src/renderer/daw/edit/comping.ts::flattenComp
-src/renderer/daw/edit/comping.ts::removePlaylist
-src/renderer/daw/edit/comping.ts::setActivePlaylist
 src/renderer/daw/edit/consolidate.ts::isSilentAt
 src/renderer/daw/edit/midi-edit.ts::addNote
 src/renderer/daw/edit/midi-edit.ts::moveNotes

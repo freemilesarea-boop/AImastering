@@ -37,9 +37,12 @@ import {
   visibleTracks,
 } from '../../../daw/model/stacks.js';
 import { premium } from '../../../theme/premium.js';
-import { cyclePlaylist } from '../../../daw/edit/comping.js';
+import {
+  addPlaylist, alternateLanes, cyclePlaylist, duplicatePlaylist, flattenComp,
+  removePlaylist, setActivePlaylist,
+} from '../../../daw/edit/comping.js';
 import { toggleMute, toggleSolo } from '../../../daw/model/mixer-math.js';
-import type { GroupDef, Track } from '../../../daw/model/types.js';
+import type { GroupDef, PlaylistId, Track } from '../../../daw/model/types.js';
 import TrackLaneCanvas from './TrackLaneCanvas.js';
 import AutomationLaneCanvas, {
   AUTOMATION_LANE_HEIGHT, AutomationLaneHeader,
@@ -687,6 +690,11 @@ export default function EditWindow() {
               onSolo={() => apply((s) => toggleSolo(s, row.track.id))}
               onMute={() => apply((s) => toggleMute(s, row.track.id))}
               onCyclePlaylist={(dir) => apply((s) => cyclePlaylist(s, row.track.id, dir))}
+              onPickTake={(id) => apply((s) => setActivePlaylist(s, row.track.id, id))}
+              onAddTake={() => apply((s) => addPlaylist(s, row.track.id))}
+              onDuplicateTake={() => apply((s) => duplicatePlaylist(s, row.track.id))}
+              onRemoveTake={(id) => apply((s) => removePlaylist(s, row.track.id, id))}
+              onFlattenTakes={() => apply((s) => flattenComp(s, row.track.id))}
               onArm={() => void useRecordingStore.getState().toggleArm(row.track.id)}
               recording={recordStatus === 'recording' || recordStatus === 'countIn'}
               onToggleCollapse={() => apply((s) => toggleCollapsed(s, row.track.id))}
@@ -971,6 +979,7 @@ function FadeShapeMenu({ at, current, onPick, onClose }: {
 
 function TrackHeader({
   track, editGroup, depth, summary, focused, onFocus, onSolo, onMute, onCyclePlaylist,
+  onPickTake, onAddTake, onDuplicateTake, onRemoveTake, onFlattenTakes,
   onToggleCollapse, onUnpack, onSmart, onInserts, onArm, recording,
   onToggleAutomation, automationOpen, onRename, onColor, onResize,
 }: {
@@ -983,6 +992,11 @@ function TrackHeader({
   onSolo: () => void;
   onMute: () => void;
   onCyclePlaylist: (dir: 1 | -1) => void;
+  onPickTake: (playlistId: PlaylistId) => void;
+  onAddTake: () => void;
+  onDuplicateTake: () => void;
+  onRemoveTake: (playlistId: PlaylistId) => void;
+  onFlattenTakes: () => void;
   onArm: () => void;
   recording: boolean;
   onToggleCollapse: () => void;
@@ -997,8 +1011,11 @@ function TrackHeader({
 }) {
   const [renaming, setRenaming] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [takeMenu, setTakeMenu] = useState(false);
   const playlist = activePlaylist(track);
   const takes = track.playlists.length;
+  // Folders and VCAs carry no clips, so they have no takes to comp.
+  const hasTakes = track.kind !== 'folder' && track.kind !== 'vca' && track.kind !== 'master';
   const isFolder = track.kind === 'folder';
   const macroCount = Object.values(track.macros.values).filter((v) => (v ?? 0) !== 0).length;
   // Folders and VCAs carry no signal, so there is nothing to insert into them.
@@ -1160,17 +1177,80 @@ function TrackHeader({
             className="w-5 h-5 rounded text-[9px] bg-zinc-900 border border-zinc-700 text-zinc-500"
           >⤫</button>
         )}
-        {takes > 1 && (
+        {hasTakes && (
+          // Shown with ONE take as well as with several, because a track with
+          // one take is exactly where you go to make a second: hiding the
+          // control until a second lane existed left no way to create one.
           <div className="flex items-center gap-0.5 ml-auto">
-            <button onClick={() => onCyclePlaylist(-1)}
-              className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▲</button>
-            <span className="text-[8px] font-mono text-zinc-500 truncate max-w-[46px]"
-                  title={playlist?.name}>{playlist?.name.split('.').pop()}</span>
-            <button onClick={() => onCyclePlaylist(1)}
-              className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▼</button>
+            {takes > 1 && (
+              <button onClick={(e) => { e.stopPropagation(); onCyclePlaylist(-1); }}
+                title="이전 테이크"
+                className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▲</button>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); setTakeMenu((v) => !v); }}
+              title={takes > 1 ? `테이크 ${takes}개 — ${playlist?.name ?? ''}` : '테이크'}
+              className="px-1 h-4 rounded text-[8px] font-mono bg-zinc-900 border border-zinc-700 text-zinc-500 truncate max-w-[52px]"
+            >{takes > 1 ? `${playlist?.name.split('.').pop() ?? ''} ⌄` : '테이크 ⌄'}</button>
+            {takes > 1 && (
+              <button onClick={(e) => { e.stopPropagation(); onCyclePlaylist(1); }}
+                title="다음 테이크"
+                className="w-4 h-4 rounded text-[8px] bg-zinc-900 border border-zinc-700 text-zinc-500">▼</button>
+            )}
           </div>
         )}
       </div>
+
+      {/* Takes.  Cycling was the only one of these the app could reach: the
+          lanes loop recording makes could be stepped through and comped from,
+          and never added to, thrown away or committed. */}
+      {takeMenu && (
+        <div
+          className="absolute z-20 flex flex-col gap-0.5 p-1 rounded"
+          style={{
+            right: 6, top: 22, width: 156,
+            background: premium.surface.frame,
+            border: `1px solid ${premium.surface.hairlineStrong}`,
+            boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {/* The one you are hearing first, then the alternates — the order a
+              comp is worked in, and the order Pro Tools puts the main
+              playlist in. */}
+          {[...(playlist ? [playlist] : []), ...alternateLanes(track)].map((p) => (
+            <div key={p.id} className="flex items-center gap-0.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); onPickTake(p.id); setTakeMenu(false); }}
+                className={`flex-1 text-left px-1 py-0.5 rounded text-[9px] font-mono truncate ${
+                  p.id === track.activePlaylistId ? 'text-zinc-100 bg-zinc-800' : 'text-zinc-500'}`}
+                title={p.name}
+              >{p.id === track.activePlaylistId ? '● ' : '　'}{p.name}</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onRemoveTake(p.id); }}
+                disabled={takes <= 1}
+                title={takes <= 1 ? '마지막 테이크는 지울 수 없습니다' : '이 테이크 삭제'}
+                className="w-4 h-4 rounded text-[9px] text-zinc-600 disabled:opacity-30"
+              >×</button>
+            </div>
+          ))}
+          <div className="h-px my-0.5" style={{ background: premium.surface.hairlineStrong }} />
+          <button
+            onClick={(e) => { e.stopPropagation(); onAddTake(); setTakeMenu(false); }}
+            className="text-left px-1 py-0.5 rounded text-[9px] text-zinc-400"
+          >새 테이크</button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDuplicateTake(); setTakeMenu(false); }}
+            className="text-left px-1 py-0.5 rounded text-[9px] text-zinc-400"
+          >지금 테이크 복제</button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onFlattenTakes(); setTakeMenu(false); }}
+            disabled={takes <= 1}
+            className="text-left px-1 py-0.5 rounded text-[9px] text-zinc-400 disabled:opacity-30"
+            title={takes <= 1 ? '버릴 다른 테이크가 없습니다' : `${takes - 1}개 테이크를 버립니다`}
+          >컴프 확정 — 나머지 버리기</button>
+        </div>
+      )}
 
       {/* The palette, right under the swatch that opened it. */}
       {picking && (

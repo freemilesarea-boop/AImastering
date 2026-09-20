@@ -32,7 +32,9 @@ import {
   trimToSelection, hasRange,
   type TimeSelection,
 } from '../daw/edit/clip-edit.js';
-import { compRange, cyclePlaylist } from '../daw/edit/comping.js';
+import {
+  addPlaylist, compRange, cyclePlaylist, duplicatePlaylist, flattenComp,
+} from '../daw/edit/comping.js';
 import { nudgeClipPitch, resetClipPitch } from '../daw/edit/clip-edit.js';
 import { clipPitch, describePitch } from '../daw/model/clip-pitch.js';
 import { fitRange } from '../daw/model/viewport.js';
@@ -167,6 +169,7 @@ export type DawCommandId =
   | 'daw.nudgeForward' | 'daw.nudgeBack'
   | 'daw.fadeIn' | 'daw.fadeOut' | 'daw.crossfade'
   | 'daw.newTrack' | 'daw.playlistNext' | 'daw.playlistPrev' | 'daw.compSelection'
+  | 'daw.takeAdd' | 'daw.takeDuplicate' | 'daw.takeFlatten'
   | 'daw.freeze' | 'daw.commit' | 'daw.bounce' | 'daw.sendToMastering' | 'daw.exportStems'
   | 'daw.importAudio' | 'daw.importSession'
   | 'daw.zoomIn' | 'daw.zoomOut'
@@ -880,6 +883,40 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       }
       state.apply((s) => compRange(s, track.id, source.id, sel));
       notify(`${source.name} 구간을 메인에 반영했습니다`, 'success');
+    },
+
+    // Takes.  Cycling and comping were the only two of these the app could
+    // reach; adding a lane, duplicating one and committing the comp were
+    // written and tested and had no caller at all, so a comp could be built
+    // and never finished.
+    'daw.takeAdd': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      state.apply((s) => addPlaylist(s, trackId));
+      const track = findTrack(daw().session, trackId);
+      notify(`새 테이크: ${activeTakeName(track)}`, 'success');
+    },
+
+    'daw.takeDuplicate': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      state.apply((s) => duplicatePlaylist(s, trackId));
+      const track = findTrack(daw().session, trackId);
+      notify(`복제한 테이크: ${activeTakeName(track)}`, 'success');
+    },
+
+    'daw.takeFlatten': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0];
+      if (!trackId) { notify('트랙을 먼저 선택하세요', 'warning'); return; }
+      const track = findTrack(state.session, trackId);
+      if (!track) return;
+      const dropped = track.playlists.length - 1;
+      if (dropped <= 0) { notify('버릴 다른 테이크가 없습니다', 'warning'); return; }
+      state.apply((s) => flattenComp(s, trackId));
+      notify(`${activeTakeName(track)}만 남기고 ${dropped}개 테이크를 버렸습니다`, 'success');
     },
 
     'daw.freeze': async () => {
@@ -2291,6 +2328,11 @@ function audioClipAtPlayhead(state: DawState): { trackId: string; clipId: string
 function findClip(session: DawState['session'], trackId: string, clipId: string) {
   const track = findTrack(session, trackId);
   return track ? trackClips(track).find((c) => c.id === clipId) : undefined;
+}
+
+/** The name of the lane you are hearing, for a notification. */
+function activeTakeName(track: Track | undefined): string {
+  return track?.playlists.find((p) => p.id === track.activePlaylistId)?.name ?? '—';
 }
 
 function cyclePlaylistOn(state: DawState, direction: 1 | -1, notify: DawCommandDeps['notify']): void {
