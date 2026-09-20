@@ -20,10 +20,18 @@ import type { ChannelSettings } from '../daw/edit/channel-ops.js';
 import type { TimeFormat } from '../daw/model/spot-time.js';
 import type { DawWindow } from '../daw/model/view-window.js';
 import {
-  linkedTimeline, recallZoom, storeZoom,
+  findLayout, linkedTimeline, recallZoom, removeLayout, saveLayout, storeZoom,
   type WindowLayout, type ZoomSlots, type ZoomView,
 } from '../daw/model/workspace-view.js';
 import { pushSnapshot, removeSnapshot, type MixSnapshot } from '../daw/model/mix-snapshot.js';
+import {
+  captureLayout, layoutDiff, type LayoutDiff, type WorkspaceShot,
+} from '../daw/edit/layout-ops.js';
+// Reading the workspace and the floating panels here is what lets a layout be
+// the whole room rather than the DAW's half of it.  Neither store imports
+// this one, so there is no cycle.
+import { useWorkspaceStore, type PanelId } from './workspaceStore.js';
+import { usePanelWindowStore } from './panelWindowStore.js';
 import type { EditClipboard } from '../daw/edit/clipboard.js';
 import type { Groove } from '../daw/model/groove.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
@@ -236,6 +244,26 @@ export interface DawState {
   /** Saved window layouts, same reasoning as the zoom slots. */
   layouts: WindowLayout[];
   setLayouts: (layouts: WindowLayout[]) => void;
+  /** Freeze the room under a name, replacing one already called that. */
+  saveWindowLayout: (name: string) => void;
+  /**
+   * Walk into a saved room.  Returns what it changed, or null if there is no
+   * layout by that name — a caller needs to tell "nothing to do" from
+   * "nothing there", and those read the same if both return nothing.
+   */
+  recallWindowLayout: (name: string) => LayoutDiff | null;
+  dropWindowLayout: (name: string) => void;
+  /**
+   * The layout last saved or recalled, for the cycle key and the menu tick.
+   * Cleared when the screen is no longer that layout would be a lie the store
+   * cannot tell honestly — every panel toggle would have to report here — so
+   * the menu shows the live difference beside the name instead.
+   */
+  currentLayout: string | null;
+
+  /** Whether the layout menu is on screen. */
+  layoutsOpen: boolean;
+  setLayoutsOpen: (open: boolean) => void;
 
   /**
    * Mixer snapshots for A/B.
@@ -281,6 +309,29 @@ export interface DawState {
   /** Non-fatal engine notices (feedback loops, decode failures). */
   engineWarning: string | null;
   setEngineWarning: (w: string | null) => void;
+}
+
+/**
+ * The room as it is right now, read off the three stores that hold it.
+ *
+ * A function rather than inline, because save and the menu's live difference
+ * must read the SAME thing: two readers that drift are how a preview comes to
+ * describe a change that does not happen.
+ */
+function workspaceShot(state: DawState): WorkspaceShot {
+  return {
+    window: state.window,
+    panels: useWorkspaceStore.getState().panels,
+    view: {
+      pxPerSec: state.pxPerSec,
+      scrollSec: state.scrollSec,
+      trackHeights: Object.fromEntries(state.session.tracks.map((t) => [t.id, t.height])),
+    },
+    // z is left out on purpose: stacking order is whatever the last click
+    // made it, not something anybody chose to save.
+    floating: usePanelWindowStore.getState().windows.map(
+      ({ id, x, y, width, height }) => ({ id, x, y, width, height })),
+  };
 }
 
 const initialSession = createSession();
@@ -440,6 +491,58 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   layouts: [],
   setLayouts: (layouts) => set({ layouts }),
+  currentLayout: null,
+  layoutsOpen: false,
+  setLayoutsOpen: (layoutsOpen) => set({ layoutsOpen }),
+
+  saveWindowLayout: (name) => {
+    const layout = captureLayout(name, workspaceShot(get()));
+    if (layout.name === '') return;
+    set((s) => ({ layouts: saveLayout(s.layouts, layout), currentLayout: layout.name }));
+  },
+
+  recallWindowLayout: (name) => {
+    const state = get();
+    const layout = findLayout(state.layouts, name);
+    if (!layout) return null;
+    const diff = layoutDiff(workspaceShot(state), layout);
+
+    useWorkspaceStore.getState().setPanels(layout.panels as Record<PanelId, boolean>);
+    set({ window: layout.window, currentLayout: layout.name });
+
+    // Floating panels are torn down and rebuilt rather than reconciled: the
+    // set that should be open is known exactly, and a diff-and-patch here
+    // would be three code paths where one does.
+    const floats = usePanelWindowStore.getState();
+    floats.closeAll();
+    for (const place of layout.floating ?? []) {
+      floats.float(place.id);
+      floats.move(place.id, place.x, place.y);
+      floats.resize(place.id, place.width, place.height);
+    }
+
+    // The zoom goes last, because restoring track heights runs through
+    // `apply` and a re-render mid-way would otherwise measure the old window.
+    if (layout.view) {
+      set({ pxPerSec: layout.view.pxPerSec, scrollSec: layout.view.scrollSec });
+      const heights = layout.view.trackHeights;
+      if (heights) {
+        get().apply((session) => ({
+          ...session,
+          tracks: session.tracks.map((t) => (
+            heights[t.id] !== undefined && heights[t.id] !== t.height
+              ? { ...t, height: heights[t.id] as number }
+              : t)),
+        }));
+      }
+    }
+    return diff;
+  },
+
+  dropWindowLayout: (name) => set((s) => ({
+    layouts: removeLayout(s.layouts, name),
+    currentLayout: s.currentLayout === name ? null : s.currentLayout,
+  })),
 
   snapshots: [],
   addSnapshot: (snapshot) => set((s) => ({ snapshots: pushSnapshot(s.snapshots, snapshot) })),

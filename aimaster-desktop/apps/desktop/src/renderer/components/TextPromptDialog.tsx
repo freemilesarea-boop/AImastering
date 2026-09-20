@@ -28,7 +28,7 @@ export default function TextPromptDialog() {
   return (
     <div
       className="fixed inset-0 flex items-center justify-center bg-black/50"
-      style={{ zIndex: LAYER.dialog }}
+      style={{ zIndex: LAYER.textPrompt }}
       data-testid="text-prompt"
       onMouseDown={(e) => { if (e.target === e.currentTarget) answer(null); }}
     >

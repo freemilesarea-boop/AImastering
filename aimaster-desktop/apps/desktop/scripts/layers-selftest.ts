@@ -144,6 +144,32 @@ check('both things that notify actually sit on that layer', () => {
   }
 });
 
+check('the question is above everything that can raise it', () => {
+  // Measured in the packaged app: with MIX torn off the tab strip, a click on
+  // the text dialog's 확인 button was intercepted by the floating panel's
+  // scroller.  The dialog was on `LAYER.dialog` (50) and a torn-off panel
+  // sits in the plugin-window band (200–399), so renaming anything while a
+  // panel floated gave you a question you could see and not answer — and the
+  // keyboard could not reach it either, because its input never took focus.
+  //
+  // Everything that can ask a question must be under it: a plugin window's
+  // preset save, a torn-off panel's rename, a scrim'd overlay's import.
+  const below = [
+    LAYER.dialog, LAYER.popover, pluginWindowLayer(PLUGIN_WINDOW_BAND),
+    LAYER.scrim, LAYER.help, LAYER.drop,
+  ];
+  for (const v of below) {
+    assert(LAYER.textPrompt > v,
+      `LAYER.textPrompt (${LAYER.textPrompt}) is not above ${v}`);
+  }
+  // And still under the toasts, because its own errors arrive as one.
+  assert(LAYER.textPrompt < LAYER.notification,
+    'the text dialog would cover the message telling you what went wrong');
+  assert(/zIndex: LAYER\.textPrompt/.test(
+    readFileSync('src/renderer/components/TextPromptDialog.tsx', 'utf8')),
+  'TextPromptDialog does not use the layer reserved for it');
+});
+
 check('the scrims that hid it are on the scale, not on magic numbers', () => {
   const scrims = [
     'src/renderer/components/daw/DawMediaBay.tsx',

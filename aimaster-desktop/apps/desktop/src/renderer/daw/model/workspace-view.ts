@@ -67,6 +67,23 @@ export function describeZoom(view: ZoomView): string {
 
 // ── Window layouts ──────────────────────────────────────────────────────────
 
+/**
+ * One torn-off panel's place on screen.
+ *
+ * Declared here rather than imported from `stores/panelWindowStore.ts`, for
+ * the reason `view-window.ts` exists at all: a pure model must not drag
+ * zustand into a selftest that only wanted a rectangle.  Structurally a
+ * `PanelWindowState` minus its stacking order, which is not part of a layout
+ * — z is whatever the last click made it, not something anyone saved.
+ */
+export interface FloatingPlace {
+  id: DawWindow;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface WindowLayout {
   name: string;
   /** Which DAW window is on screen. */
@@ -75,6 +92,15 @@ export interface WindowLayout {
   panels: Record<string, boolean>;
   /** The zoom that goes with the layout, when one was captured. */
   view?: ZoomView;
+  /**
+   * Panels torn off the tab strip, with their geometry.
+   *
+   * Without these a layout could not keep the promise this module opens with
+   * — "which panels are open and how big".  A tracking layout is usually the
+   * arrangement docked with the mixer floating beside it, and a layout that
+   * restored the dock and lost the float would rebuild half the room.
+   */
+  floating?: FloatingPlace[];
 }
 
 export const MAX_LAYOUTS = 8;

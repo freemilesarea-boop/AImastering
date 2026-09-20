@@ -408,6 +408,32 @@ check('and every selftest on disk is reachable from `pnpm test`', () => {
     + '\n  Register each one and add it to the `test` chain.');
 });
 
+check('and no two scripts share a name', () => {
+  // JSON allows a duplicate key and keeps the LAST one, silently.  Adding
+  // `test:layout` a second time — for a different file, by accident — meant
+  // the original `layout-selftest` (hit targets, overlap, reachability)
+  // stopped running the moment the new one was registered, and every check
+  // above went on passing: the name is still in the chain, and both files are
+  // still referenced by *some* script.  `JSON.parse` cannot see this, because
+  // by the time it returns the collision is gone.
+  //
+  // It surfaced only because esbuild warns while bundling the model worker,
+  // and that check refuses to ship on a warning.  That is a long way from the
+  // mistake, so it is caught here too, where the name is.
+  const raw = readFileSync('package.json', 'utf8');
+  const block = /"scripts"\s*:\s*\{([\s\S]*?)\n  \}/.exec(raw);
+  assert(block !== null, 'could not find the scripts block in package.json');
+  const names = [...(block as RegExpExecArray)[1]!.matchAll(/^\s*"([^"]+)"\s*:/gm)]
+    .map((m) => m[1]!);
+  const seen = new Map<string, number>();
+  for (const n of names) seen.set(n, (seen.get(n) ?? 0) + 1);
+  const dupes = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
+  assert(dupes.length === 0,
+    `${dupes.length} script name(s) declared twice — the earlier one is dead: ${dupes.join(', ')}`);
+  // And the block was actually read, rather than a regex that matched nothing.
+  assert(names.length > 100, `only ${names.length} scripts found in package.json`);
+});
+
 check('and the sweep is actually looking at the app', () => {
   // Guards the checks above from passing because they found nothing to check.
   // A broken `find`, a renamed directory, a parser that stops matching — all

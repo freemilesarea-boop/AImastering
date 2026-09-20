@@ -109,6 +109,7 @@ export type CommandId =
   | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe'
   | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
   | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
+  | 'daw.layoutMenu' | 'daw.layoutSave' | 'daw.layoutCycle'
   | `daw.zoomStore.${ZoomDigit}` | `daw.zoomRecall.${ZoomDigit}`;
 
 /** The five zoom-preset slots, on the function keys. */
@@ -573,6 +574,13 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '지금 믹서 상태를 저장 — 페이더 · 인서트 · 라우팅 (오토메이션은 제외)', available: true },
   { id: 'daw.mixSnapshotPanel', group: 'daw', label: '믹스 스냅샷 목록', chords: ['Mod+Alt+Shift+K'],
     note: '저장한 믹스들 — 뭐가 다른지 보고 되돌립니다', available: true },
+
+  { id: 'daw.layoutMenu', group: 'daw', label: '작업 화면 목록', chords: ['Mod+Alt+Shift+L'],
+    note: '저장한 작업 화면들 — 뭐가 달라지는지 보고 옮겨갑니다', available: true },
+  { id: 'daw.layoutSave', group: 'daw', label: '작업 화면 저장', chords: ['Mod+Alt+Shift+J'],
+    note: '지금 창 · 패널 · 띄운 창 · 줌을 이름 붙여 저장', available: true },
+  { id: 'daw.layoutCycle', group: 'daw', label: '다음 작업 화면', chords: ['Mod+Alt+Shift+W'],
+    note: '저장한 화면들을 차례로 — 트래킹용과 믹싱용을 오갈 때', available: true },
 
   // Zoom presets on the function keys — the number row is memory locations.
   ...ZOOM_DIGITS.flatMap((digit, i): ShortcutDef[] => {

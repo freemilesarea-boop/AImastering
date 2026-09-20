@@ -22,6 +22,7 @@ import { nextId } from '../daw/model/ids.js';
 // Electron's window.prompt throws; see ui/text-prompt.ts.
 import { askText } from '../ui/text-prompt.js';
 import { describeZoom, recallZoom } from '../daw/model/workspace-view.js';
+import { describeLayoutDiff, nextLayout } from '../daw/edit/layout-ops.js';
 import {
   clearLocation, describeLocation, locationAt, memoryLocations, recallLocation,
   slotForKey, storeLocation,
@@ -210,6 +211,7 @@ export type DawCommandId =
   | 'daw.batchRename' | 'daw.historyPanel' | 'daw.toggleSoloSafe'
   | 'daw.openPool' | 'daw.batchFade' | 'daw.clearFades' | 'daw.trackNote'
   | 'daw.toggleLinkSelection' | 'daw.mixSnapshot' | 'daw.mixSnapshotPanel'
+  | 'daw.layoutMenu' | 'daw.layoutSave' | 'daw.layoutCycle'
   | ZoomCommandId;
 
 /** One store and one recall verb per zoom preset. */
@@ -1472,6 +1474,43 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         (typeof state.snapshots)[number]>;
       notify(`스냅샷 ${state.snapshots.length}개 — 최근 ${latest.name}: `
         + describeSnapshot(diffSnapshot(state.session, latest)));
+    },
+
+    'daw.layoutMenu': () => {
+      const state = daw();
+      state.setLayoutsOpen(!state.layoutsOpen);
+      if (state.layoutsOpen) return;
+      if (state.layouts.length === 0) {
+        notify('저장된 작업 화면이 없습니다 — Mod+Alt+Shift+J 로 지금 화면을 저장하세요', 'warning');
+      }
+    },
+
+    'daw.layoutSave': () => {
+      const state = daw();
+      void askText('레이아웃 이름', state.currentLayout ?? `작업 ${state.layouts.length + 1}`)
+        .then((name) => {
+          if (name === null) return;
+          if (name.trim() === '') { notify('이름은 비울 수 없습니다', 'warning'); return; }
+          const live = daw();
+          const replacing = live.layouts.some((l) => l.name === name.trim());
+          live.saveWindowLayout(name);
+          notify(replacing ? `${name.trim()} 덮어씀` : `${name.trim()} 저장`);
+        });
+    },
+
+    'daw.layoutCycle': () => {
+      const state = daw();
+      const target = nextLayout(state.layouts, state.currentLayout);
+      if (!target) {
+        notify(state.layouts.length === 0
+          ? '저장된 작업 화면이 없습니다 — Mod+Alt+Shift+J 로 저장하세요'
+          : '저장된 화면이 하나뿐입니다 — 이미 그 화면입니다', 'warning');
+        return;
+      }
+      const diff = state.recallWindowLayout(target.name);
+      notify(diff && !diff.same
+        ? `${target.name} — ${describeLayoutDiff(diff)}`
+        : `${target.name} — 화면은 이미 그대로입니다`);
     },
 
     'daw.historyPanel': () => {

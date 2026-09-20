@@ -32,6 +32,18 @@ export const LAYER = {
   help: 9000,
   /** The external-file drop target: over everything it could be dropped on. */
   drop: 9500,
+  /**
+   * The one-line text dialog (`ui/text-prompt.ts`).
+   *
+   * Up here because it is raised FROM the other surfaces, not beside them: a
+   * floating panel is torn off at 200–399, a plugin window sits in the same
+   * band, and renaming from either put the question underneath the thing that
+   * asked it.  Measured, not reasoned: with MIX torn off the tab strip, a
+   * click on the dialog's 확인 button was intercepted by the floating panel's
+   * scroller, so the dialog was visible and unanswerable — and the keyboard
+   * could not reach it either, because its input never took focus.
+   */
+  textPrompt: 9800,
   /** Toasts and the update card.  Nothing may be above this. */
   notification: 10000,
 } as const;

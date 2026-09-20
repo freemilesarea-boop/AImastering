@@ -55,6 +55,7 @@ import { describeFailure, exportAaf, importAaf } from '../daw/io/aaf-actions.js'
 import PanelWindowLayer from '../components/daw/PanelWindowLayer.js';
 import { usePanelWindowStore } from '../stores/panelWindowStore.js';
 import { DAW_PANELS, type DawWindow } from '../daw/model/view-window.js';
+import LayoutMenu from '../components/daw/LayoutMenu.js';
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00.000';
@@ -452,6 +453,10 @@ export default function DawPage() {
             </button>
           ))}
         </div>
+
+        {/* Saved rooms.  Beside the tab strip because that is what it changes
+            wholesale — the docked window, the panels and the floats at once. */}
+        <LayoutMenu />
 
         <button onClick={() => { dawRuntime.ensure(session.sampleRate); seek(0); }}
           title="처음으로 (Home)"

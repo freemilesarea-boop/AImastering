@@ -246,9 +246,5 @@ src/renderer/daw/model/warp.ts::clearMarkers
 src/renderer/daw/model/warp.ts::clipSourceSpan
 src/renderer/daw/model/warp.ts::rateAt
 src/renderer/daw/model/workspace-view.ts::clearZoom
-src/renderer/daw/model/workspace-view.ts::describeLayout
 src/renderer/daw/model/workspace-view.ts::filledZoomSlots
-src/renderer/daw/model/workspace-view.ts::findLayout
-src/renderer/daw/model/workspace-view.ts::removeLayout
-src/renderer/daw/model/workspace-view.ts::saveLayout
 src/renderer/shortcuts/definitions.ts::findShortcut
