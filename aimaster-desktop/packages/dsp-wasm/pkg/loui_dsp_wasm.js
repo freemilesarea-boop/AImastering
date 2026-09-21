@@ -375,6 +375,29 @@ export class LouiMasteringChain {
         return ret >>> 0;
     }
     /**
+     * Process one block of planar stereo audio in place.  The mutations
+     * are reflected back into the JS-side Float32Arrays.
+     * Configure the whole chain from a JSON object.
+     *
+     * Keys are camelCase and every one is optional — an absent module (or
+     * an absent field within one) keeps its neutral default.  That is what
+     * lets the UI send only the modules the user has touched instead of
+     * serialising 150 parameters on every knob move.
+     *
+     * Returns an error (leaving the chain untouched) when the JSON does not
+     * parse or a value has the wrong type, so a bad config can never put
+     * the audio thread into a half-applied state.
+     * @param {string} json
+     */
+    setConfigJson(json) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.louimasteringchain_setConfigJson(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Update the full configuration from the UI parameters.  Flat
      * argument list keeps the JS binding simple + zero-alloc.  Units are
      * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
@@ -410,29 +433,6 @@ export class LouiMasteringChain {
      */
     setConfig(input_gain_db, eq_low_cut_hz, eq_low_shelf_db, eq_presence_db, eq_air_db, eq_adaptive, eq_bypass, dyn_threshold_db, dyn_ratio, dyn_attack_ms, dyn_release_ms, dyn_mix_pct, dyn_bypass, img_width_pct, img_low_mono_hz, img_bypass, lim_ceiling_dbtp, lim_lookahead_ms, lim_isp, lim_bypass, output_gain_db, master_bypass) {
         wasm.louimasteringchain_setConfig(this.__wbg_ptr, input_gain_db, eq_low_cut_hz, eq_low_shelf_db, eq_presence_db, eq_air_db, eq_adaptive, eq_bypass, dyn_threshold_db, dyn_ratio, dyn_attack_ms, dyn_release_ms, dyn_mix_pct, dyn_bypass, img_width_pct, img_low_mono_hz, img_bypass, lim_ceiling_dbtp, lim_lookahead_ms, lim_isp, lim_bypass, output_gain_db, master_bypass);
-    }
-    /**
-     * Process one block of planar stereo audio in place.  The mutations
-     * are reflected back into the JS-side Float32Arrays.
-     * Configure the whole chain from a JSON object.
-     *
-     * Keys are camelCase and every one is optional — an absent module (or
-     * an absent field within one) keeps its neutral default.  That is what
-     * lets the UI send only the modules the user has touched instead of
-     * serialising 150 parameters on every knob move.
-     *
-     * Returns an error (leaving the chain untouched) when the JSON does not
-     * parse or a value has the wrong type, so a bad config can never put
-     * the audio thread into a half-applied state.
-     * @param {string} json
-     */
-    setConfigJson(json) {
-        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.louimasteringchain_setConfigJson(this.__wbg_ptr, ptr0, len0);
-        if (ret[1]) {
-            throw takeFromExternrefTable0(ret[0]);
-        }
     }
     /**
      * Replace the free parametric EQ band list.  Bands are passed as five
@@ -912,14 +912,14 @@ export function start() {
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
-        __wbg_Error_408e67f47ca7b58b: function(arg0, arg1) {
+        __wbg_Error_67e7344beaa85059: function(arg0, arg1) {
             const ret = Error(getStringFromWasm0(arg0, arg1));
             return ret;
         },
-        __wbg___wbindgen_copy_to_typed_array_c7f28e53671b41e8: function(arg0, arg1, arg2) {
+        __wbg___wbindgen_copy_to_typed_array_cccd104be8cf0b8d: function(arg0, arg1, arg2) {
             new Uint8Array(arg2.buffer, arg2.byteOffset, arg2.byteLength).set(getArrayU8FromWasm0(arg0, arg1));
         },
-        __wbg___wbindgen_throw_bb96b2010945f0bc: function(arg0, arg1) {
+        __wbg___wbindgen_throw_5d9e815e6fdf150f: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
         __wbg_error_757e9472f8410341: function(arg0, arg1) {

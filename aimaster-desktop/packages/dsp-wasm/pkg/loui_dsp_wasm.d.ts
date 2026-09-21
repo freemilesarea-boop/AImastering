@@ -183,19 +183,6 @@ export class LouiMasteringChain {
      */
     safetyEvents(): number;
     /**
-     * Update the full configuration from the UI parameters.  Flat
-     * argument list keeps the JS binding simple + zero-alloc.  Units are
-     * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
-     * Legacy positional configuration — the original five-module chain.
-     *
-     * Kept for hosts built before the full module suite existed.  Modules
-     * it does not mention are reset to their neutral defaults, so calling
-     * it gives exactly the old behaviour.  New hosts should call
-     * [`LouiMasteringChain::set_config_json`], which can address every
-     * module and only needs to send the ones it uses.
-     */
-    setConfig(input_gain_db: number, eq_low_cut_hz: number, eq_low_shelf_db: number, eq_presence_db: number, eq_air_db: number, eq_adaptive: boolean, eq_bypass: boolean, dyn_threshold_db: number, dyn_ratio: number, dyn_attack_ms: number, dyn_release_ms: number, dyn_mix_pct: number, dyn_bypass: boolean, img_width_pct: number, img_low_mono_hz: number, img_bypass: boolean, lim_ceiling_dbtp: number, lim_lookahead_ms: number, lim_isp: boolean, lim_bypass: boolean, output_gain_db: number, master_bypass: boolean): void;
-    /**
      * Process one block of planar stereo audio in place.  The mutations
      * are reflected back into the JS-side Float32Arrays.
      * Configure the whole chain from a JSON object.
@@ -210,6 +197,19 @@ export class LouiMasteringChain {
      * the audio thread into a half-applied state.
      */
     setConfigJson(json: string): void;
+    /**
+     * Update the full configuration from the UI parameters.  Flat
+     * argument list keeps the JS binding simple + zero-alloc.  Units are
+     * UI space (e.g. `width_pct` 0..200, `mix_pct` 0..100).
+     * Legacy positional configuration — the original five-module chain.
+     *
+     * Kept for hosts built before the full module suite existed.  Modules
+     * it does not mention are reset to their neutral defaults, so calling
+     * it gives exactly the old behaviour.  New hosts should call
+     * [`LouiMasteringChain::set_config_json`], which can address every
+     * module and only needs to send the ones it uses.
+     */
+    setConfig(input_gain_db: number, eq_low_cut_hz: number, eq_low_shelf_db: number, eq_presence_db: number, eq_air_db: number, eq_adaptive: boolean, eq_bypass: boolean, dyn_threshold_db: number, dyn_ratio: number, dyn_attack_ms: number, dyn_release_ms: number, dyn_mix_pct: number, dyn_bypass: boolean, img_width_pct: number, img_low_mono_hz: number, img_bypass: boolean, lim_ceiling_dbtp: number, lim_lookahead_ms: number, lim_isp: boolean, lim_bypass: boolean, output_gain_db: number, master_bypass: boolean): void;
     /**
      * Replace the free parametric EQ band list.  Bands are passed as five
      * parallel typed arrays so JS can populate them without per-band JS
@@ -483,10 +483,12 @@ export interface InitOutput {
     readonly louispectrumanalyzer_sampleRate: (a: number) => number;
     readonly louispectrumanalyzer_samplesProcessed: (a: number) => number;
     readonly louispectrumanalyzer_tryFrame: (a: number) => number;
+    readonly start: () => void;
     readonly wasmmetersnapshot_correlation: (a: number) => number;
     readonly wasmmetersnapshot_gatedBlocks: (a: number) => number;
     readonly wasmmetersnapshot_integratedLufs: (a: number) => number;
     readonly wasmmetersnapshot_loudnessRange: (a: number) => number;
+    readonly wasmmetersnapshot_momentaryLufs: (a: number) => number;
     readonly wasmmetersnapshot_msRatioDb: (a: number) => number;
     readonly wasmmetersnapshot_rmsDb: (a: number) => number;
     readonly wasmmetersnapshot_samplePeakDb: (a: number) => number;
@@ -501,8 +503,6 @@ export interface InitOutput {
     readonly wasmspectrumoptions_useLinear: (a: number, b: number, c: number, d: number) => number;
     readonly wasmspectrumoptions_useLog: (a: number, b: number, c: number, d: number) => number;
     readonly wasmspectrumoptions_useThirdOctave: (a: number) => number;
-    readonly start: () => void;
-    readonly wasmmetersnapshot_momentaryLufs: (a: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

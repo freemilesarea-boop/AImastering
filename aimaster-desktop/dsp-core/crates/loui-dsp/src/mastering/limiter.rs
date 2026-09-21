@@ -4,22 +4,55 @@
 //!   * a lookahead delay line (so gain can drop *before* a peak arrives)
 //!   * a sliding peak detector over the lookahead window
 //!   * instant attack (gain drops within the lookahead), smoothed release
-//!   * ceiling in dBTP; `isp` adds a small extra headroom to approximate
-//!     inter-sample (true-peak) safety without 4× oversampling in preview
+//!   * ceiling in dBTP, and MEANT in dBTP: with `isp` on, the detector runs
+//!     the signal through the same 4× oversampler the true-peak meter uses
+//!     and limits on the inter-sample peak, not the sample peak
 //!
 //! It doubles as the **maximizer**: `drive_db` pushes level into the
 //! limiter, and `character` picks the release behaviour and how much soft
 //! clip runs ahead of it.  Clean is the transparent safety setting;
 //! Aggressive trades transparency for loudness the way an engineer expects.
 //!
-//! Whatever the settings, the output can never exceed the ceiling — the
-//! final clamp is unconditional.
+//! WHAT THIS GUARANTEES, measured rather than asserted.
+//!
+//! The output's SAMPLE peak never exceeds the ceiling — the final clamp is
+//! unconditional.  With `isp` on the INTER-SAMPLE peak is held to within
+//! about half a decibel of it; it is not a hard bound, and this comment says
+//! so rather than repeating the old claim that nothing could exceed the
+//! ceiling, which was true of the sample peak and false of the thing the
+//! field is named after.
+//!
+//! What it was.  The detector looked at `max(|l|, |r|)` — the sample peak —
+//! and `isp` meant "leave 0.3 dB of extra headroom and hope".  Measured with
+//! a validated interpolator on dense material at a -1 dBTP ceiling: the
+//! sample peak landed on -1.00 exactly and the true peak came out at +0.63
+//! dBTP, above full scale, with the `isp` flag worth 0.05 dB.  A fixed 0.3
+//! cannot cover an overshoot of 1.6.
+//!
+//! What it is now, in the numbers `preview-ceiling-selftest` prints, so this
+//! comment can be checked rather than believed: the same ceiling delivers
+//! -0.42 dBTP, and turning the flag on is worth 0.97 dB instead of 0.05.
+//!
+//! Where the remaining half a decibel comes from — measured, not guessed.
+//! It is not the detector missing peaks between its grid points: taking it
+//! from 4x to 16x moved the result by 0.10 dB for five times the arithmetic.
+//! With auto-gain off and a quiet input, where the limiter barely works,
+//! there is no overshoot at all; it appears only as the gain starts moving.
+//! It is the gain STEP itself — instant attack on a band-limited signal
+//! overshoots on reconstruction.  Closing it means ramping the gain inside
+//! the lookahead window, which is a change to how the limiter sounds and
+//! belongs to its own piece of work, not to this one.
+//!
+//! The EXPORT does not depend on any of this.  Offline rendering goes
+//! through the TypeScript limiter chain, whose final guard measures with a
+//! refined estimator and lands on the ceiling exactly.
 
 use super::config::{db_to_lin, LimiterCharacter, LimiterConfig};
 use super::StereoModule;
+use crate::oversample::Oversampler4x;
 
-/// Extra headroom (dB) applied when ISP (true-peak) guard is on.
-const ISP_HEADROOM_DB: f64 = 0.3;
+/// Oversampling factor of the inter-sample detector.
+const ISP_PHASES: usize = 4;
 /// Maximum lookahead the delay lines are sized for (ms).
 const MAX_LOOKAHEAD_MS: f64 = 20.0;
 
@@ -41,6 +74,20 @@ pub struct Limiter {
     gain: f64,
     // Last-block gain reduction (dB, ≥ 0) for metering.
     last_gr_db: f64,
+    // Inter-sample detector — one 4x stage per channel.
+    //
+    // A second stage was tried and removed.  It took the detector to a 16x
+    // grid for five times the arithmetic and moved the delivered true peak
+    // by 0.10 dB, because the residual is not the detector missing peaks
+    // between its grid points: with auto-gain off and a quiet input, where
+    // the limiter barely works, there is no overshoot at all, and it only
+    // appears as the gain starts moving.  It is the gain STEP — instant
+    // attack applied to a band-limited signal overshoots on reconstruction.
+    //
+    // Held even when `isp` is off so toggling does not reallocate on the
+    // audio thread; `reset` clears them either way.
+    isp_l: Oversampler4x,
+    isp_r: Oversampler4x,
 }
 
 fn release_coeff(ms: f64, sr: f64) -> f64 {
@@ -95,6 +142,8 @@ impl Limiter {
             peak_write: 0,
             gain: 1.0,
             last_gr_db: 0.0,
+            isp_l: Oversampler4x::new(),
+            isp_r: Oversampler4x::new(),
         }
     }
 
@@ -102,9 +151,31 @@ impl Limiter {
         ((ms * 0.001 * sr).round() as usize).clamp(1, max)
     }
 
+    /// The ceiling, in linear terms.
+    ///
+    /// No longer shaded by a guess when `isp` is on: the detector measures
+    /// the inter-sample peak itself, so the ceiling is the ceiling.  Backing
+    /// off by a fixed amount as well would just make every preview quieter
+    /// than the export by that amount.
     fn ceiling_lin(cfg: &LimiterConfig) -> f64 {
-        let extra = if cfg.isp { ISP_HEADROOM_DB } else { 0.0 };
-        db_to_lin(cfg.ceiling_dbtp - extra)
+        db_to_lin(cfg.ceiling_dbtp)
+    }
+
+    /// The largest inter-sample magnitude this sample contributes.
+    ///
+    /// The oversampler is stateful, so it must be fed EVERY sample whether
+    /// or not the result is used — otherwise turning `isp` on mid-stream
+    /// would read a filter primed with silence.
+    #[inline]
+    fn isp_peak(os: &mut Oversampler4x, x: f32) -> f64 {
+        let mut out = [0.0_f64; ISP_PHASES];
+        os.process(x as f64, &mut out);
+        let mut m = 0.0_f64;
+        for v in out.iter() {
+            let a = v.abs();
+            if a > m { m = a; }
+        }
+        m
     }
 
     /// Update parameters (keeps delay-line contents).
@@ -150,8 +221,14 @@ impl StereoModule for Limiter {
             // clip did not already round off.
             let in_l = soft_clip(left[i] as f64 * drive, ceiling, clip_amount) as f32;
             let in_r = soft_clip(right[i] as f64 * drive, ceiling, clip_amount) as f32;
-            // Push the incoming sample's peak into the ring.
-            let peak_in = (in_l.abs().max(in_r.abs())) as f64;
+            // Push the incoming sample's peak into the ring.  With `isp` on
+            // that is the INTER-SAMPLE peak, which is what makes the ceiling
+            // a dBTP ceiling rather than a dBFS one.  Both oversamplers are
+            // fed regardless, to keep their state continuous.
+            let isp_l = Self::isp_peak(&mut self.isp_l, in_l);
+            let isp_r = Self::isp_peak(&mut self.isp_r, in_r);
+            let sample_peak = (in_l.abs().max(in_r.abs())) as f64;
+            let peak_in = if self.cfg.isp { sample_peak.max(isp_l.max(isp_r)) } else { sample_peak };
             self.peak_ring[self.peak_write] = peak_in;
             self.peak_write = (self.peak_write + 1) % cap;
 
@@ -195,6 +272,8 @@ impl StereoModule for Limiter {
         self.peak_write = 0;
         self.gain = 1.0;
         self.last_gr_db = 0.0;
+        self.isp_l.reset();
+        self.isp_r.reset();
     }
 }
 
