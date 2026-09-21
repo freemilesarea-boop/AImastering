@@ -13,7 +13,7 @@
 //     their linear regions and produce no audible distortion.
 
 import { AudioBufferLike } from './loudnessCore.js';
-import { TruePeakChannel } from './truePeak.js';
+import { refinedTruePeakDb } from './truePeak.js';
 import { processLoudnessMaximizer, MaximizerParams } from './loudnessMaximizer.js';
 import type { SoftClipParams } from './softClip.js';
 import type { PeakLimiterParams } from './peakLimiter.js';
@@ -73,13 +73,22 @@ function applyTruePeakGuard(
   channels: Float32Array[],
   ceilingDbtp: number,
 ): { tpDb: number; guarded: boolean } {
-  const ch: TruePeakChannel[] = channels.map(() => new TruePeakChannel());
-  for (let c = 0; c < channels.length; c++) {
-    ch[c]?.processBlock(channels[c] as Float32Array);
+  // Measured with the REFINED estimator, not the 4x live meter.
+  //
+  // The guard is what certifies the file: it scales the mix until this number
+  // meets the ceiling, and the number it settles on is what the report and
+  // the provenance record tell whoever receives the master.  The 4x bank is
+  // not accurate enough for that job — validated against sines, whose true
+  // peak is exactly their amplitude, it wanders several tenths of a dB either
+  // way, and on brickwall-limited material it under-read by 0.58 dB.  This
+  // ran once per pass on an offline render; it can afford to be right.
+  let peakDb = -Infinity;
+  for (const data of channels) {
+    const d = refinedTruePeakDb(data);
+    if (d > peakDb) peakDb = d;
   }
-  let peakLin = 0;
-  for (const t of ch) if (t.peakLinear() > peakLin) peakLin = t.peakLinear();
-  const tpDb = peakLin <= 0 ? -Infinity : 20 * Math.log10(peakLin);
+  const peakLin = peakDb === -Infinity ? 0 : Math.pow(10, peakDb / 20);
+  const tpDb = peakDb;
   const ceilingLin = Math.pow(10, ceilingDbtp / 20);
   if (peakLin <= ceilingLin) return { tpDb, guarded: false };
 

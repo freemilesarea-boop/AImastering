@@ -69,6 +69,48 @@ const PHASE3: Float32Array = new Float32Array([
 
 const N_TAPS = 12;
 
+/**
+ * Every branch must pass DC at unity, and one of them did not.
+ *
+ * Measured against signals whose true peak is known exactly — a sine of
+ * amplitude A has a true peak of A, whatever the sample phase:
+ *
+ *     full-scale fs/4 at π/4 (samples ±0.7071, true peak 1.0 = 0 dBFS)
+ *       as shipped      -1.520 dBTP
+ *       normalised      -0.142 dBTP
+ *
+ *     worst under-read over a 200 Hz → 23.6 kHz × 8-phase sweep
+ *       as shipped      -1.520 dB (at 12 kHz, which is fs/4)
+ *       normalised      -0.351 dB (at 6 kHz)
+ *
+ * PHASE2 — the half-sample branch, the one that catches the worst
+ * inter-sample peaks — summed to 0.752319 while PHASE1 and PHASE3 summed to
+ * 1.001465.  An interpolator whose sub-sample positions have different gains
+ * is not interpolating; it is dipping by 2.5 dB halfway between every pair of
+ * samples.  That is indefensible whatever table the coefficients came from,
+ * and it made the meter UNDER-report, which is the dangerous direction: the
+ * app told people they were under their ceiling when they were over it.
+ *
+ * Normalised here rather than by editing the numbers, so the invariant is
+ * stated in code and a future table cannot reintroduce the same fault
+ * silently.  `true-peak-selftest` holds the invariant from both ends: it
+ * reads the raw tables and shows one of them violates it, and it measures
+ * the meter against peaks whose value is known exactly.
+ */
+function normalise(phase: Float32Array): Float32Array {
+  let sum = 0;
+  for (const v of phase) sum += v;
+  if (!(Math.abs(sum) > 1e-9)) return phase;
+  const out = new Float32Array(phase.length);
+  for (let i = 0; i < phase.length; i++) out[i] = (phase[i] as number) / sum;
+  return out;
+}
+
+const P1 = normalise(PHASE1);
+const P2 = normalise(PHASE2);
+const P3 = normalise(PHASE3);
+
+
 // Per-channel streaming TP detector.  Maintains a 12-sample input ring
 // buffer and emits the running peak (linear, not dB).  Call `peakDb()`
 // at any time for the running maximum in dBFS.
@@ -101,9 +143,9 @@ export class TruePeakChannel {
     let idx = this.head;
     for (let k = 0; k < N_TAPS; k++) {
       const v = this.ring[idx] as number;
-      acc1 += v * (PHASE1[k] as number);
-      acc2 += v * (PHASE2[k] as number);
-      acc3 += v * (PHASE3[k] as number);
+      acc1 += v * (P1[k] as number);
+      acc2 += v * (P2[k] as number);
+      acc3 += v * (P3[k] as number);
       idx = (idx + 1) % N_TAPS;
     }
     p = Math.abs(acc1); if (p > this.peak) this.peak = p;
@@ -139,4 +181,105 @@ export class TruePeakBank {
   perChannelPeakDb(): number[] {
     return this.channels.map((c) => c.peakDb());
   }
+}
+
+// ── Refined measurement, for the export guard ───────────────────────────────
+
+const REFINE_HALF = 32;
+const REFINE_SUB = 16;
+/** How far below the 4x estimate a position can still hide the true peak. */
+const CANDIDATE_WINDOW_DB = 1.5;
+
+/**
+ * True peak of a whole buffer, accurate enough to certify a master.
+ *
+ * The 4x bank above is what a live meter can afford, and it is not accurate
+ * enough to be the final word on a dBTP ceiling: validated against sines,
+ * whose true peak is exactly their amplitude, its error on real material runs
+ * to several tenths of a dB in BOTH directions, and on the output of a
+ * brickwall limiter it under-read by 0.58 dB.  `limiterChain` iterates until
+ * this number meets the ceiling, so its error lands directly in the file that
+ * goes to the client.
+ *
+ * Scan cheaply, refine expensively, and only where it matters:
+ *
+ *   1. one 4x pass over everything, which is within about 0.6 dB, and
+ *   2. a 64-tap Blackman-windowed sinc at 16 sub-sample positions around
+ *      only those samples whose 4x value is within 1.5 dB of that maximum.
+ *
+ * The window is the 4x estimate's own worst-case error with margin, so the
+ * true peak cannot be outside it.  A first version gated on the raw SAMPLE
+ * peak instead, 3 dB down — on brickwall material nearly every sample
+ * qualifies, and a five-second preview that has to render in under a second
+ * took eleven.  The performance check in `loudness-selftest` caught it.
+ *
+ * Offline only: even gated, this is far too much work per block in a worklet.
+ */
+export function refinedTruePeakDb(data: Float32Array): number {
+  if (data.length < 2 * REFINE_HALF + 2) return -Infinity;
+
+  // ── 1. Coarse 4x pass, keeping the per-sample estimate ───────────────────
+  const coarse = new Float32Array(data.length);
+  let coarseMax = 0;
+  // The branch outputs are computed here rather than through
+  // `TruePeakChannel`, which only keeps a running maximum: the gate below
+  // needs to know WHERE the estimate was high, not just how high it got.
+  {
+    const ring = new Float32Array(N_TAPS);
+    let head = 0;
+    for (let i = 0; i < data.length; i++) {
+      ring[head] = data[i] as number;
+      head = (head + 1) % N_TAPS;
+      let best = Math.abs(data[i] as number);
+      let a1 = 0, a2 = 0, a3 = 0;
+      let idx = head;
+      for (let k = 0; k < N_TAPS; k++) {
+        const v = ring[idx] as number;
+        a1 += v * (P1[k] as number);
+        a2 += v * (P2[k] as number);
+        a3 += v * (P3[k] as number);
+        idx = (idx + 1) % N_TAPS;
+      }
+      const m = Math.max(Math.abs(a1), Math.abs(a2), Math.abs(a3));
+      if (m > best) best = m;
+      // WHERE this estimate belongs.  The branches read the window ending at
+      // i, which holds samples i-11 … i, and each is a causal fractional
+      // delay whose group delay is 5 + d samples from the start of that
+      // window — so the interpolated point sits at i - 6 (plus a fraction).
+      //
+      // Getting this wrong is not academic: a first version wrote the
+      // estimate at i - 11 and the gate below then looked five samples away
+      // from the peak, missed it, and let 0.42 dB through while running fast
+      // enough to look correct.  Its neighbours are marked too, so a
+      // one-sample slip cannot lose it.
+      if (best > coarseMax) coarseMax = best;
+      for (let at = i - 7; at <= i - 5; at++) {
+        if (at < 0) continue;
+        if (best > (coarse[at] as number)) coarse[at] = best;
+      }
+    }
+  }
+  if (coarseMax <= 0) return -Infinity;
+
+  // ── 2. Refine only the neighbourhoods that could hold the peak ───────────
+  const gate = coarseMax * Math.pow(10, -CANDIDATE_WINDOW_DB / 20);
+  let peak = coarseMax;
+  for (let i = REFINE_HALF; i < data.length - REFINE_HALF; i++) {
+    if ((coarse[i] as number) < gate) continue;
+    for (let sub = 1; sub < REFINE_SUB; sub++) {
+      const d = sub / REFINE_SUB;
+      let acc = 0;
+      for (let k = -REFINE_HALF; k < REFINE_HALF; k++) {
+        const x = k - d;
+        const sinc = Math.sin(Math.PI * x) / (Math.PI * x);
+        const w = 0.42
+          + 0.5 * Math.cos((Math.PI * x) / REFINE_HALF)
+          + 0.08 * Math.cos((2 * Math.PI * x) / REFINE_HALF);
+        acc += (data[i + k] as number) * sinc * w;
+      }
+      const a = Math.abs(acc);
+      if (a > peak) peak = a;
+    }
+  }
+  return 20 * Math.log10(peak);
 }
