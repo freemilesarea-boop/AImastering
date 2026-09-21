@@ -101,6 +101,26 @@ impl BiquadCoeffs {
         let a2 =             (a + 1.0) + (a - 1.0) * cos_w - 2.0 * sqrt_a * alpha;
         Self { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }
     }
+
+    /// Magnitude of the response at one frequency, as a linear factor.
+    ///
+    /// The exact digital response, evaluated on the unit circle — not the
+    /// analogue prototype's, which drifts from it as the frequency
+    /// approaches Nyquist.  A detector that needs to read levels in dBFS
+    /// divides by this at the frequency it is listening to, so the filter
+    /// in front of it stops counting as part of the signal.
+    pub fn magnitude_at(&self, sample_rate: f64, freq_hz: f64) -> f64 {
+        let w = 2.0 * std::f64::consts::PI * freq_hz / sample_rate;
+        let (c1, s1) = ((-w).cos(), (-w).sin());
+        let (c2, s2) = ((-2.0 * w).cos(), (-2.0 * w).sin());
+        let num_re = self.b0 + self.b1 * c1 + self.b2 * c2;
+        let num_im = self.b1 * s1 + self.b2 * s2;
+        let den_re = 1.0 + self.a1 * c1 + self.a2 * c2;
+        let den_im = self.a1 * s1 + self.a2 * s2;
+        let den = (den_re * den_re + den_im * den_im).sqrt();
+        if den < 1e-30 { return 0.0; }
+        (num_re * num_re + num_im * num_im).sqrt() / den
+    }
 }
 
 /// Single-channel biquad with persistent state.
@@ -186,5 +206,57 @@ mod tests {
         // After convergence, DC should be ~0.
         let tail: f64 = out[1024..].iter().sum::<f64>() / 1024.0;
         assert!(tail.abs() < 1e-3, "DC tail too large: {tail}");
+    }
+
+    /// `magnitude_at` is used to cancel a detector's own filter, so it has
+    /// to agree with what the filter does to a signal, not with a formula.
+    /// Every case here is measured: a settled sine through the real biquad,
+    /// its amplitude ratio compared with the predicted magnitude.
+    #[test]
+    fn magnitude_at_matches_a_measured_sine() {
+        let sr = 48_000.0;
+        let cases: [(&str, BiquadCoeffs); 6] = [
+            ("high-pass 500 Hz", BiquadCoeffs::high_pass(sr, 500.0, 0.707)),
+            ("low-pass 2 kHz", BiquadCoeffs::low_pass(sr, 2_000.0, 0.707)),
+            ("high-shelf +6 dB @ 6.5k", BiquadCoeffs::high_shelf(sr, 6_500.0, 0.707, 6.0)),
+            ("low-shelf -6 dB @ 6.5k", BiquadCoeffs::low_shelf(sr, 6_500.0, 0.707, -6.0)),
+            ("peaking +9 dB Q4 @ 1k", BiquadCoeffs::peaking(sr, 1_000.0, 4.0, 9.0)),
+            ("high-pass 12 kHz Q2", BiquadCoeffs::high_pass(sr, 12_000.0, 2.0)),
+        ];
+        let mut worst = 0.0f64;
+        for (name, c) in cases {
+            for &f in &[100.0f64, 500.0, 1_000.0, 2_000.0, 6_500.0, 12_000.0, 18_000.0] {
+                let mut b = Biquad::new(c);
+                let n = 96_000;
+                let from = n / 2; // the transient is long gone by here
+                let (mut num, mut den) = (0.0f64, 0.0f64);
+                for i in 0..n {
+                    let x = (2.0 * std::f64::consts::PI * f * i as f64 / sr).sin();
+                    let y = b.process(x);
+                    if i >= from { num += y * y; den += x * x; }
+                }
+                // RMS over the same window for both, so the partial cycle at
+                // the end biases numerator and denominator identically and
+                // cancels.  Peak-picking would instead measure how near a
+                // sample lands to the crest — 2e-3 at 1 kHz.
+                let measured = (num / den).sqrt();
+                let want = c.magnitude_at(sr, f);
+                let err = (measured - want).abs();
+                worst = worst.max(err);
+                assert!(err < 1e-6, "{name} at {f} Hz: measured {measured:.8}, predicted {want:.8}");
+            }
+        }
+        assert!(worst > 0.0, "nothing was measured");
+    }
+
+    /// DC is the one point where the answer is arithmetic rather than a
+    /// measurement, so it pins the sign conventions.
+    #[test]
+    fn magnitude_at_dc_is_the_coefficient_sum() {
+        let c = BiquadCoeffs::low_pass(48_000.0, 1_000.0, 0.707);
+        let want = (c.b0 + c.b1 + c.b2) / (1.0 + c.a1 + c.a2);
+        assert!((c.magnitude_at(48_000.0, 0.0) - want.abs()).abs() < 1e-12);
+        let hp = BiquadCoeffs::high_pass(48_000.0, 1_000.0, 0.707);
+        assert!(hp.magnitude_at(48_000.0, 0.0) < 1e-12, "a high-pass must be zero at DC");
     }
 }

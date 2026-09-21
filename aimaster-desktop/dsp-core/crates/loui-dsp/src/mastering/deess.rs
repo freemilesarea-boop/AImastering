@@ -5,6 +5,13 @@
 //! high path (compressed), then recombined.  Only the sibilant band moves,
 //! so the body of the mix keeps its level and tone.
 //!
+//! `threshold_db` is in dBFS and means it: the detector's emphasis shelf is
+//! normalised so that the sibilant band — above `frequency_hz` — passes it
+//! at unity, and only the band *below* the corner is pushed down.  Written
+//! the other way round, as a +6 dB lift on the band it listens to, the
+//! threshold would read 3 to 6 dB high and the amount would depend on where
+//! the sibilance sat relative to the corner.
+//!
 //! The reduction is applied as a **dynamic high-shelf**, not by subtracting a
 //! filtered copy of the band.  Subtracting a minimum-phase band split combs
 //! badly — around the corner the filtered copy is far enough out of phase
@@ -31,6 +38,11 @@ use super::StereoModule;
 /// Detector knee, in dB.
 const KNEE_DB: f64 = 4.0;
 
+/// How far the detector favours the sibilant band over what sits below the
+/// corner, in dB.  Applied as a *cut* below the corner rather than a lift
+/// above it, so the band the threshold is about passes at unity.
+const DET_TILT_DB: f64 = 6.0;
+
 /// How often the shelf coefficients are recomputed, in samples.  The
 /// envelope is already attack/release-smoothed, so stepping the shelf at
 /// audio-block granularity is inaudible and keeps the cost off the hot path.
@@ -47,7 +59,8 @@ pub struct Deess {
     shelf_r: Biquad,
     /// Detector emphasis — tilts the high band the detector sees so that
     /// 9 kHz sibilance trips before 5 kHz presence does.  Applied to the
-    /// (linear, un-rectified) mid of the high band.
+    /// (linear, un-rectified) mid of the high band.  Unity in the sibilant
+    /// band, `-DET_TILT_DB` below the corner: same tilt, no offset.
     det_tilt: Biquad,
     env_db: f64,
     atk_coeff: f64,
@@ -71,7 +84,7 @@ impl Deess {
             det_hp: Biquad::new(BiquadCoeffs::high_pass(sample_rate, f, 0.707)),
             shelf_l: Biquad::new(flat),
             shelf_r: Biquad::new(flat),
-            det_tilt: Biquad::new(BiquadCoeffs::high_shelf(sample_rate, f, 0.707, 6.0)),
+            det_tilt: Biquad::new(BiquadCoeffs::low_shelf(sample_rate, f, 0.707, -DET_TILT_DB)),
             env_db: -120.0,
             atk_coeff: time_coeff(cfg.attack_ms, sample_rate),
             rel_coeff: time_coeff(cfg.release_ms, sample_rate),
@@ -84,7 +97,7 @@ impl Deess {
         self.cfg = cfg;
         let f = Self::safe_freq(cfg.frequency_hz, self.sr);
         self.det_hp.set_coeffs(BiquadCoeffs::high_pass(self.sr, f, 0.707));
-        self.det_tilt.set_coeffs(BiquadCoeffs::high_shelf(self.sr, f, 0.707, 6.0));
+        self.det_tilt.set_coeffs(BiquadCoeffs::low_shelf(self.sr, f, 0.707, -DET_TILT_DB));
         self.atk_coeff = time_coeff(cfg.attack_ms, self.sr);
         self.rel_coeff = time_coeff(cfg.release_ms, self.sr);
     }
@@ -120,6 +133,8 @@ impl StereoModule for Deess {
             // Detector: isolate the sibilant band, tilt it so 9 kHz trips
             // before 5 kHz presence does, and rectify the *linear* result.
             // (Filtering an already-rectified signal folds in its DC term.)
+            // The tilt is unity in the band, so `in_db` is the band's own
+            // level in dBFS and comparing it with `threshold` is honest.
             let band = self.det_hp.process(0.5 * (l + r));
             let peak = self.det_tilt.process(band).abs().max(1e-9);
             let in_db = 20.0 * peak.log10();
@@ -268,5 +283,132 @@ mod tests {
         d.process_stereo(&mut l, &mut r);
         let after = rms(&l[n / 2..]);
         assert!((20.0 * (after / before).log10()).abs() < 0.5);
+    }
+
+    /// What the detector settled on, in dBFS, recovered by inverting the
+    /// gain computer.  A high ratio makes the inversion well conditioned
+    /// and a long release keeps the follower near the crest; what droop is
+    /// left is measured separately by `follower_droop_db` below, so it is
+    /// never counted as a calibration error.
+    fn detector_reads(sr: f64, corner_hz: f64, tone_hz: f64, level_db: f64) -> f64 {
+        let (n, thr, ratio) = ((sr * 2.0) as usize, -30.0, 20.0);
+        let mut d = Deess::new(sr, DeessConfig {
+            frequency_hz: corner_hz, threshold_db: thr, ratio, range_db: 24.0,
+            attack_ms: 1.0, release_ms: 2_000.0, wideband: false, bypass: false,
+        });
+        let mut l = tone(n, tone_hz, sr, 10f64.powf(level_db / 20.0) as f32);
+        let mut r = l.clone();
+        d.process_stereo(&mut l, &mut r);
+        thr + d.gain_reduction_db() / (1.0 - 1.0 / ratio)
+    }
+
+    /// The same peak follower on the raw tone, with nothing in front of it.
+    fn follower_droop_db(sr: f64, tone_hz: f64, level_db: f64) -> f64 {
+        let n = (sr * 2.0) as usize;
+        let amp = 10f64.powf(level_db / 20.0);
+        let (atk, rel) = ((-1.0f64 / (0.001 * sr)).exp(), (-1.0f64 / (2.0 * sr)).exp());
+        let mut env = -120.0f64;
+        for i in 0..n {
+            let x = (2.0 * std::f64::consts::PI * tone_hz * i as f64 / sr).sin().abs() * amp;
+            let in_db = 20.0 * x.max(1e-9).log10();
+            let c = if in_db > env { atk } else { rel };
+            env = in_db + c * (env - in_db);
+        }
+        env - level_db
+    }
+
+    /// `threshold_db` is in dBFS, and in the band the module is about it
+    /// means dBFS.  The emphasis shelf used to be written as a +6 dB lift on
+    /// the sibilant band rather than a cut below the corner, so the detector
+    /// read up to 5.94 dB high and the amount moved with where the sibilance
+    /// sat -- a threshold that changed meaning as the corner was turned.
+    ///
+    /// Every case keeps at least 12 samples per cycle and sits at least 4x
+    /// above the corner.  Below 12 the measurement stops being about the
+    /// detector: a peak follower can only see the samples it is given, and
+    /// the filters shift the phase, so the grid lands somewhere else on the
+    /// crest than it does for the bare tone the droop control measures --
+    /// at 6 samples per cycle that alone is worth 1.2 dB.  Below 4x the
+    /// corner the high-pass's own skirt is still falling, which is the band
+    /// split working, not a calibration error.
+    #[test]
+    fn a_threshold_in_dbfs_means_dbfs_in_the_band() {
+        let level = -12.0;
+        for &(sr, corner, tone_hz) in &[
+            (48_000.0, 1_000.0, 4_000.0), (96_000.0, 1_000.0, 4_000.0),
+            (96_000.0, 1_500.0, 6_000.0), (192_000.0, 1_500.0, 6_000.0),
+            (192_000.0, 1_500.0, 7_500.0), (192_000.0, 1_000.0, 5_000.0),
+            (192_000.0, 3_000.0, 12_000.0),
+        ] {
+            assert!(sr / tone_hz >= 12.0 && tone_hz >= 4.0 * corner, "case is unmeasurable");
+            let off = detector_reads(sr, corner, tone_hz, level) - level
+                - follower_droop_db(sr, tone_hz, level);
+            assert!(
+                off.abs() < 0.05,
+                "{sr:.0} Hz, corner {corner} Hz, {tone_hz} Hz tone at {level} dBFS: \
+                 detector is {off:+.3} dB out",
+            );
+        }
+    }
+
+    /// And nowhere -- at any corner, at any frequency the sweep reaches --
+    /// may it read HIGH.  That is the direction that matters: reading high
+    /// makes the module clamp down on material quieter than the number the
+    /// user set.  Below the corner it reads low on purpose; that is the band
+    /// split doing its job, so only the ceiling is asserted.
+    #[test]
+    fn the_detector_never_reads_above_the_true_level() {
+        let (sr, level) = (192_000.0, -12.0);
+        let mut worst: (f64, f64, f64) = (f64::NEG_INFINITY, 0.0, 0.0);
+        let mut counted = 0;
+        for &corner in &[1_000.0f64, 1_500.0, 2_000.0, 3_000.0] {
+            for k in 0..14 {
+                let tone_hz = corner * (1.0 + 0.15 * k as f64 * (1.0 + k as f64 * 0.25));
+                // Same 16-samples-per-cycle floor as above, for the same
+                // reason; it is what bounds the sweep rather than Nyquist.
+                if sr / tone_hz < 16.0 { continue; }
+                counted += 1;
+                let off = detector_reads(sr, corner, tone_hz, level) - level
+                    - follower_droop_db(sr, tone_hz, level);
+                if off > worst.0 { worst = (off, corner, tone_hz); }
+            }
+        }
+        assert!(counted >= 20, "the sweep only measured {counted} points");
+        assert!(
+            worst.0 < 0.05,
+            "detector reads {:+.3} dB high at corner {:.0} Hz, tone {:.0} Hz",
+            worst.0, worst.1, worst.2,
+        );
+        // It also has to have reached the band's flat part, or the ceiling
+        // passes on content the detector barely hears.
+        assert!(worst.0 > -0.05, "the sweep never found the flat part ({:+.3} dB)", worst.0);
+    }
+
+    /// The chain builds a de-esser once and then calls `set_config` on every
+    /// parameter change, so the two have to agree.  They are separate copies
+    /// of the same three filter expressions; a fix applied to one of them and
+    /// not the other looks right in a unit test and ships wrong.
+    #[test]
+    fn set_config_builds_the_same_detector_as_new() {
+        let (sr, level) = (192_000.0, -12.0);
+        for &(corner, tone_hz) in &[(1_500.0, 6_000.0), (3_000.0, 12_000.0)] {
+            let cfg = DeessConfig {
+                frequency_hz: corner, threshold_db: -30.0, ratio: 20.0, range_db: 24.0,
+                attack_ms: 1.0, release_ms: 2_000.0, wideband: false, bypass: false,
+            };
+            // One built for this config; one built for another and moved here.
+            let mut fresh = Deess::new(sr, cfg);
+            let mut moved = Deess::new(sr, DeessConfig { frequency_hz: 11_000.0, ..cfg });
+            moved.set_config(cfg);
+            let mut out = [Vec::new(), Vec::new()];
+            for (slot, d) in out.iter_mut().zip([&mut fresh, &mut moved]) {
+                let mut l = tone((sr * 2.0) as usize, tone_hz, sr, 10f64.powf(level / 20.0) as f32);
+                let mut r = l.clone();
+                d.process_stereo(&mut l, &mut r);
+                *slot = l;
+            }
+            assert_eq!(out[0], out[1], "corner {corner} Hz: set_config disagrees with new");
+            assert!(out[0].iter().any(|v| *v != 0.0), "nothing was rendered");
+        }
     }
 }

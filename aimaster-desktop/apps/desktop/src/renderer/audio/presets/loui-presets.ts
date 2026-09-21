@@ -362,7 +362,7 @@ const AI_SPECIAL: LouiPreset[] = [
       deess: {
         bypass: false,
         parameters: {
-          frequencyHz: 6500, rangeDb: 5, thresholdDb: -30, ratio: 4,
+          frequencyHz: 6500, rangeDb: 5, thresholdDb: -36, ratio: 4,
           attackMs: 1, releaseMs: 60, wideband: false,
         },
       },

@@ -442,6 +442,102 @@ if (!Chain) {
   }
 
   {
+    // A threshold in dB has to mean dB, through the shipped WASM and the
+    // config path the app actually uses.  Both these detectors have a
+    // filter in front of them, and both used to count that filter as part
+    // of the signal: the de-esser's emphasis shelf read 3 to 6 dB high, the
+    // dynamic EQ's side-chain band-pass up to 4 dB low and further the
+    // narrower the Q.
+    //
+    // The detector's own reading is recovered by inverting the gain
+    // computer well above the knee, where it is just `over * (1 - 1/ratio)`
+    // — measuring where the module first moves instead would be measuring
+    // the knee shape and the follower's droop, not the calibration.  A high
+    // ratio makes the inversion well conditioned; a wide range keeps the
+    // clamp out of it.
+    //
+    // 0.5 dB, where the Rust tests hold the same modules to 0.05.  Those
+    // run at 96 and 192 kHz to get 16+ samples per cycle; this one runs at
+    // the rate the app ships, where a 4 kHz tone four octaves clear of the
+    // corner has 12, and where on the crest the grid lands is worth about
+    // 0.3 dB on its own.  What this test is for is different: that the
+    // calibration survives the config path and the shipped WASM, against a
+    // defect that was 3 to 6 dB.
+    const THR = -30;
+    const RATIO = 20;
+    const SLOPE = 1 - 1 / RATIO;
+    const LEVEL = -12;
+
+    /** The same peak follower on the bare tone, so its droop between peaks
+     *  is never counted as a calibration error.  Read the same way the
+     *  modules report it: the deepest point over the last 512-sample block,
+     *  not the final sample — the envelope ripples at the tone's own rate,
+     *  and taking one of those two for the other is worth 0.15 dB here. */
+    const followerDroopDb = (freq: number, attackMs: number, releaseMs: number): number => {
+      const amp = Math.pow(10, LEVEL / 20);
+      const atk = Math.exp(-1 / ((attackMs / 1000) * SR));
+      const rel = Math.exp(-1 / ((releaseMs / 1000) * SR));
+      const n = SR * 2;
+      let env = -120;
+      let blockMax = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const x = Math.abs(Math.sin((2 * Math.PI * freq * i) / SR)) * amp;
+        const inDb = 20 * Math.log10(Math.max(x, 1e-9));
+        env = inDb + (inDb > env ? atk : rel) * (env - inDb);
+        if (i >= n - 512) blockMax = Math.max(blockMax, env);
+      }
+      return blockMax - LEVEL;
+    };
+
+    {
+      let state = withParam(neutralState(), 'deess', 'rangeDb', 24);
+      state = withParam(state, 'deess', 'thresholdDb', THR);
+      state = withParam(state, 'deess', 'ratio', RATIO);
+      state = withParam(state, 'deess', 'frequencyHz', 1_000);
+      state = withParam(state, 'deess', 'attackMs', 1);
+      state = withParam(state, 'deess', 'releaseMs', 400);
+      const tone = sine(SR * 2, 4_000, Math.pow(10, LEVEL / 20));
+      const reads = THR + render(state, tone).chain.deessGrDb() / SLOPE;
+      const off = reads - LEVEL - followerDroopDb(4_000, 1, 400);
+      check(
+        "the de-esser's threshold is in dBFS",
+        Math.abs(off) < 0.5,
+        `a ${LEVEL} dBFS tone reads as ${reads.toFixed(2)} dBFS (${off >= 0 ? '+' : ''}${off.toFixed(2)} dB out)`,
+      );
+    }
+
+    {
+      let state = withParam(neutralState(), 'dynamic-eq', 'band0Enabled', true);
+      state = withParam(state, 'dynamic-eq', 'band0FrequencyHz', 1_000);
+      state = withParam(state, 'dynamic-eq', 'band0ThresholdDb', THR);
+      state = withParam(state, 'dynamic-eq', 'band0Ratio', RATIO);
+      state = withParam(state, 'dynamic-eq', 'band0RangeDb', 24);
+      state = withParam(state, 'dynamic-eq', 'band0AttackMs', 1);
+      state = withParam(state, 'dynamic-eq', 'band0ReleaseMs', 400);
+      const droop = followerDroopDb(1_000, 1, 400);
+      const readings: number[] = [];
+      for (const q of [0.5, 2, 8]) {
+        const st = withParam(state, 'dynamic-eq', 'band0Q', q);
+        const tone = sine(SR * 2, 1_000, Math.pow(10, LEVEL / 20));
+        const gains = Array.from(render(st, tone).chain.dynamicEqGainsDb());
+        const reads = THR + -(gains[0] ?? 0) / SLOPE;
+        readings.push(reads);
+        check(
+          `the dynamic EQ's threshold is in dBFS at Q ${q}`,
+          Math.abs(reads - LEVEL - droop) < 0.5,
+          `a ${LEVEL} dBFS tone reads as ${reads.toFixed(2)} dBFS`,
+        );
+      }
+      const spread = Math.max(...readings) - Math.min(...readings);
+      check(
+        'turning Q does not move where the dynamic EQ starts working',
+        spread < 0.3,
+        `${readings.map((r) => r.toFixed(2)).join(' / ')} dBFS across Q 0.5/2/8`,
+      );
+    }
+  }
+
+  {
     // Dynamic EQ band 0, down mode on 250 Hz.
     let state = withParam(neutralState(), 'dynamic-eq', 'band0Enabled', true);
     state = withParam(state, 'dynamic-eq', 'band0FrequencyHz', 250);

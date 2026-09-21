@@ -433,7 +433,7 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
   if (engaged(deess, deessRange > 0)) {
     cfg.deess = {
       frequencyHz: num(deess, 'frequencyHz', 6500),
-      thresholdDb: num(deess, 'thresholdDb', -30),
+      thresholdDb: num(deess, 'thresholdDb', -36),
       ratio: num(deess, 'ratio', 4),
       rangeDb: deessRange,
       attackMs: num(deess, 'attackMs', 1),

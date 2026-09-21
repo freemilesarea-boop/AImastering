@@ -135,7 +135,7 @@ pub struct DeessConfig {
 impl Default for DeessConfig {
     fn default() -> Self {
         Self {
-            frequency_hz: 6_500.0, threshold_db: -30.0, ratio: 4.0, range_db: 0.0,
+            frequency_hz: 6_500.0, threshold_db: -36.0, ratio: 4.0, range_db: 0.0,
             attack_ms: 1.0, release_ms: 60.0, wideband: false, bypass: false,
         }
     }

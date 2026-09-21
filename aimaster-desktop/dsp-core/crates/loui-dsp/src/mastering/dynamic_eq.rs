@@ -22,6 +22,13 @@
 //!
 //! The applied gain is clamped to `range_db` so a runaway detector can never
 //! produce more than the band's declared maximum move.
+//!
+//! `threshold_db` is in dBFS and means it.  The side-chain band-pass is two
+//! Butterworth sections whose corners straddle the band, so at the band's
+//! own centre both are already off their flat part — 0.2 dB of loss at
+//! Q 0.5 and 4 dB at Q 8.  The detector divides that loss back out, or the
+//! threshold would drift by nearly 4 dB as the user turned Q, which is the
+//! knob they turn to aim at a resonance.
 
 use crate::biquad::{Biquad, BiquadCoeffs};
 use super::config::{DynEqBandConfig, DynEqBandShape, DynEqMode, DynamicEqConfig};
@@ -50,6 +57,10 @@ struct Band {
     /// Side-chain band-pass that isolates what the detector listens to.
     sc_a: Biquad,
     sc_b: Biquad,
+    /// Reciprocal of the side-chain's gain at the band centre, so what the
+    /// detector reads is the band's level in dBFS and not the band-pass's
+    /// opinion of it.  1.0 when the band-pass is already flat there.
+    sc_cal: f64,
     env_db: f64,
     atk: f64,
     rel: f64,
@@ -65,6 +76,7 @@ impl Band {
             filt_r: Biquad::new(flat),
             sc_a: Biquad::new(BiquadCoeffs::high_pass(sr, 500.0, 0.707)),
             sc_b: Biquad::new(BiquadCoeffs::low_pass(sr, 2_000.0, 0.707)),
+            sc_cal: 1.0,
             env_db: -120.0,
             atk: time_coeff(10.0, sr),
             rel: time_coeff(120.0, sr),
@@ -135,8 +147,18 @@ impl DynamicEq {
             let width = (1.0 / q).clamp(0.15, 2.0);
             let lo = (f / (1.0 + width)).clamp(20.0, sr * 0.44);
             let hi = (f * (1.0 + width)).clamp(lo * 1.05, sr * 0.45);
-            band.sc_a.set_coeffs(BiquadCoeffs::high_pass(sr, lo, 0.707));
-            band.sc_b.set_coeffs(BiquadCoeffs::low_pass(sr, hi, 0.707));
+            let sc_hp = BiquadCoeffs::high_pass(sr, lo, 0.707);
+            let sc_lp = BiquadCoeffs::low_pass(sr, hi, 0.707);
+            // What the pair does to the band's own centre, divided back out
+            // so `threshold_db` is a level and not a level minus a filter.
+            // Clamped because a band pushed against Nyquist has its low-pass
+            // corner clamped with it, and there the pair is no longer a
+            // band-pass to calibrate; 16x is 24 dB, far past the 4 dB the
+            // widest legal Q costs.
+            let centre_gain = sc_hp.magnitude_at(sr, f) * sc_lp.magnitude_at(sr, f);
+            band.sc_cal = if centre_gain > 1e-6 { (1.0 / centre_gain).clamp(1.0, 16.0) } else { 1.0 };
+            band.sc_a.set_coeffs(sc_hp);
+            band.sc_b.set_coeffs(sc_lp);
             band.atk = time_coeff(c.attack_ms, sr);
             band.rel = time_coeff(c.release_ms, sr);
         }
@@ -169,7 +191,7 @@ impl StereoModule for DynamicEq {
                 // Side chain listens to the mono sum — a band problem that
                 // only exists on one side is still a band problem.
                 let mono = 0.5 * (left[i] as f64 + right[i] as f64);
-                let sc = band.sc_b.process(band.sc_a.process(mono));
+                let sc = band.sc_b.process(band.sc_a.process(mono)) * band.sc_cal;
                 let lvl = sc.abs().max(1e-9);
                 let in_db = 20.0 * lvl.log10();
                 let coeff = if in_db > band.env_db { band.atk } else { band.rel };
@@ -336,5 +358,86 @@ mod tests {
         let mut r = l.clone();
         d.process_stereo(&mut l, &mut r);
         assert!(l.iter().all(|s| s.is_finite()));
+    }
+
+    /// What the band's detector settled on, in dBFS, recovered by inverting
+    /// the gain computer.  A high ratio makes the inversion well
+    /// conditioned, a long release keeps the follower near the crest, and a
+    /// range wider than the move keeps the clamp out of it.
+    fn detector_reads(sr: f64, freq_hz: f64, q: f64, level_db: f64) -> f64 {
+        let (n, thr, ratio) = ((sr * 2.0) as usize, -30.0, 20.0);
+        let mut e = DynamicEq::new(sr, one_band(DynEqBandConfig {
+            enabled: true, shape: DynEqBandShape::Bell, mode: DynEqMode::Down,
+            frequency_hz: freq_hz, q, threshold_db: thr, ratio,
+            range_db: 24.0, attack_ms: 1.0, release_ms: 2_000.0,
+        }));
+        let mut l = tone(n, freq_hz, sr, 10f64.powf(level_db / 20.0) as f32);
+        let mut r = l.clone();
+        e.process_stereo(&mut l, &mut r);
+        thr + (-e.applied_gains_db()[0]) / (1.0 - 1.0 / ratio)
+    }
+
+    /// The same peak follower on the raw tone, so the droop it has between
+    /// peaks is never counted as a calibration error.
+    fn follower_droop_db(sr: f64, freq_hz: f64, level_db: f64) -> f64 {
+        let n = (sr * 2.0) as usize;
+        let amp = 10f64.powf(level_db / 20.0);
+        let (atk, rel) = ((-1.0f64 / (0.001 * sr)).exp(), (-1.0f64 / (2.0 * sr)).exp());
+        let mut env = -120.0f64;
+        for i in 0..n {
+            let x = (2.0 * std::f64::consts::PI * freq_hz * i as f64 / sr).sin().abs() * amp;
+            let in_db = 20.0 * x.max(1e-9).log10();
+            let c = if in_db > env { atk } else { rel };
+            env = in_db + c * (env - in_db);
+        }
+        env - level_db
+    }
+
+    /// `threshold_db` is in dBFS and has to mean dBFS at every Q.
+    ///
+    /// The side-chain is two Butterworth sections whose corners straddle the
+    /// band, so at the band's own centre neither is on its flat part.  The
+    /// loss grows as Q narrows the pair: 0.2 dB at Q 0.5, 4.0 dB at Q 8.
+    /// Uncancelled, the threshold slid by nearly 4 dB as the user turned the
+    /// one knob they turn to aim at a resonance.
+    #[test]
+    fn a_threshold_in_dbfs_means_dbfs_at_every_q() {
+        let (sr, level) = (48_000.0, -12.0);
+        for &q in &[0.2f64, 0.5, 1.0, 1.4, 2.0, 4.0, 8.0, 12.0] {
+            for &f in &[120.0f64, 1_000.0, 3_200.0] {
+                assert!(sr / f >= 12.0, "case is unmeasurable");
+                let off = detector_reads(sr, f, q, level) - level
+                    - follower_droop_db(sr, f, level);
+                // 0.08 dB, not 0.01: a peak follower only sees the samples
+                // it is given, and at 3.2 kHz there are 15 per cycle, so
+                // where the grid lands on the crest is worth about 0.05.
+                // The error being cancelled here was 0.6 to 4.0 dB.
+                assert!(
+                    off.abs() < 0.08,
+                    "Q {q} at {f} Hz, tone at {level} dBFS: detector is {off:+.3} dB out",
+                );
+            }
+        }
+    }
+
+    /// Turning Q must not move the threshold.  The absolute test above
+    /// would catch that too, but this is the symptom the user would report:
+    /// the same band, the same material, a different amount of work done
+    /// because a width control was touched.
+    #[test]
+    fn turning_q_does_not_move_the_threshold() {
+        let (sr, level) = (48_000.0, -12.0);
+        let readings: Vec<f64> = [0.2f64, 1.0, 4.0, 12.0]
+            .iter()
+            .map(|&q| detector_reads(sr, 1_000.0, q, level))
+            .collect();
+        let hi = readings.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let lo = readings.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!(
+            hi - lo < 0.05,
+            "the threshold moved {:.3} dB across Q 0.2..12: {readings:?}",
+            hi - lo,
+        );
+        assert!(lo > -60.0, "nothing was detected at all: {readings:?}");
     }
 }
