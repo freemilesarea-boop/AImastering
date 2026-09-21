@@ -62,9 +62,43 @@ function makeOfflineContext(channels: number, frames: number, sampleRate: number
   return new Ctor(channels, Math.max(1, frames), sampleRate);
 }
 
-/** Decode everything the render needs before the offline pass starts. */
+/**
+ * Decode everything the render needs, and REFUSE if any of it is unreadable.
+ *
+ * Measured before this existed: a session whose source had moved rendered
+ * 96 000 frames at a peak of 0.0 and returned them without an error — a
+ * silent master, written to disk, indistinguishable from a quiet mix until
+ * somebody played it back somewhere else.  Playback can carry on with what it
+ * has, because a missing stem is obvious the moment you press play; a file on
+ * disk is not, and it is the one that gets sent to a client.
+ *
+ * Only the files the render will actually PLAY are decoded and judged.  A
+ * session often carries sources no clip uses any more, and refusing over one
+ * of those would block a bounce that was never going to touch it.
+ */
 async function preloadFiles(session: DawSession, ctx: BaseAudioContext): Promise<void> {
-  await preloadAll(ctx, session.files);
+  const needed = neededFiles(session);
+  const failures = await preloadAll(ctx, needed);
+  if (failures.length === 0) return;
+  const named = failures
+    .map((f) => session.files.find((x) => x.id === f.id)?.name ?? f.path)
+    .slice(0, 4);
+  throw new Error(
+    `오디오 파일 ${failures.length}개를 읽을 수 없어 렌더를 멈췄습니다 — `
+    + `${named.join(', ')}${failures.length > named.length ? ' 외' : ''}. `
+    + '파일을 제자리에 두거나 해당 클립을 지운 뒤 다시 시도하세요.');
+}
+
+/** The sources some non-muted audio clip in this session refers to. */
+function neededFiles(session: DawSession): Array<{ id: string; path: string }> {
+  const wanted = new Set<string>();
+  for (const track of session.tracks) {
+    if (track.mute) continue;
+    for (const clip of trackClips(track)) {
+      if (clip.kind === 'audio' && !clip.muted) wanted.add(clip.fileId);
+    }
+  }
+  return session.files.filter((f) => wanted.has(f.id));
 }
 
 /**

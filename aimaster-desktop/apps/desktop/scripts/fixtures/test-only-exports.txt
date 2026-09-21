@@ -103,7 +103,6 @@ src/renderer/daw/edit/video-move.ts::spotVideoToPlayhead
 src/renderer/daw/edit/video-move.ts::videoOffsetFrames
 src/renderer/daw/edit/vocal-edit.ts::segmentAt
 src/renderer/daw/engine/audio-cache.ts::cacheSize
-src/renderer/daw/engine/audio-cache.ts::clearAudioCache
 src/renderer/daw/engine/automation-live.ts::anyLiveAutomation
 src/renderer/daw/engine/automation-live.ts::clearLiveAutomation
 src/renderer/daw/engine/control-surface-store.ts::setSurfaceStore

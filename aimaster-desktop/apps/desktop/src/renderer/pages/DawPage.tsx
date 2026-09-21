@@ -91,6 +91,41 @@ function renderPanel(id: DawWindow): React.ReactElement {
   }
 }
 
+/**
+ * Non-fatal engine notices, on screen.
+ *
+ * `engineWarning` has been in the store, with "feedback loops, decode
+ * failures" in its own comment, since it was written — and nothing set it and
+ * nothing drew it.  A missing source was the case it was for: the track went
+ * quiet, the waveform stayed blank, and the app said nothing at all.
+ *
+ * A bar rather than a toast, because this one has to survive being ignored:
+ * a toast that faded while somebody was looking at the timeline would leave
+ * them with the silence and no explanation for it.
+ */
+function EngineWarningBar() {
+  const warning = useDawStore((s) => s.engineWarning);
+  const setEngineWarning = useDawStore((s) => s.setEngineWarning);
+  if (!warning) return null;
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-1 border-b text-[11px]"
+      style={{
+        background: 'rgba(224,112,112,0.12)', borderColor: 'rgba(224,112,112,0.35)',
+        color: '#f0b0b0',
+      }}
+      data-testid="engine-warning"
+    >
+      <span className="shrink-0">⚠</span>
+      <span className="flex-1 truncate" title={warning}>{warning}</span>
+      <button
+        onClick={() => setEngineWarning(null)}
+        className="shrink-0 px-1.5 h-5 rounded border border-zinc-700 bg-zinc-900 text-zinc-400"
+      >닫기</button>
+    </div>
+  );
+}
+
 export default function DawPage() {
   const setPage      = useAppStore((s) => s.setPage);
   const notify       = useAppStore((s) => s.notify);
@@ -429,6 +464,8 @@ export default function DawPage() {
             className="hit-target text-xs text-zinc-600 hover:text-zinc-400 transition-colors">← 홈</button>
         }
       />
+
+      <EngineWarningBar />
 
       {/* Transport / session chrome */}
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-zinc-800 bg-[#15151d] flex-wrap">

@@ -18,7 +18,7 @@ import type {
   AutomationTarget, Clip, DawSession, Fade, Track,
 } from '../model/types.js';
 import type { ExpressionPoint, MidiNote } from '../model/midi.js';
-import { getCached, loadAudio, preloadAll } from './audio-cache.js';
+import { getCached, loadAudio, preloadAll, noteLoadFailure } from './audio-cache.js';
 import { getSource } from './pcm-store.js';
 import {
   createStreamVoice, ensureStreamRuntime, streamRuntimeReady, type StreamVoice,
@@ -365,6 +365,16 @@ export class ClipPlayer {
     if (!file) return;
     this.requested.add(fileId);
     void loadAudio(this.engine.ctx, file.id, file.path).catch((err: unknown) => {
+      // The SECOND place a missing file used to disappear.  The scheduler
+      // reaches a clip the preload had not got to yet and asks for it here,
+      // and a console.warn is not a report: measured in the packaged app,
+      // this line was the only trace a session whose source had moved left
+      // behind, while the screen showed a clip playing silence.
+      //
+      // Recorded in the cache, so the pool and the warning bar see it through
+      // the same door as a preload failure, and reported once per file per
+      // pass — `requested` already guarantees that.
+      noteLoadFailure(file.id, file.path, err);
       // eslint-disable-next-line no-console
       console.warn('[ClipPlayer] 재생 중 디코딩 실패:', file.path, err);
     });

@@ -794,7 +794,8 @@ class DawRuntime {
    */
   async preload(session: DawSession): Promise<void> {
     if (!this.ctx) return;
-    await preloadAll(this.ctx, playableFiles(session));
+    const failures = await preloadAll(this.ctx, playableFiles(session));
+    void failures;
   }
 
   /**
@@ -820,7 +821,9 @@ class DawRuntime {
     this.startTicking();
 
     // Fill in anything still missing behind the play head.
-    void this.preload(session).catch(() => { /* reported per file already */ });
+    // Failures are announced by the cache (`onMissingFile`); this catch is for the
+    // context itself going away mid-preload.
+    void this.preload(session).catch(() => { /* context gone */ });
   }
 
   stop(): void {

@@ -18,6 +18,7 @@ import {
   POOL_FILTER_LABELS, buildPool, describePool, queryPool, removeUnusedFiles,
   summarisePool, type PoolFilter, type PoolSort,
 } from '../../../daw/model/clip-pool.js';
+import { missingFileIds } from '../../../daw/engine/audio-cache.js';
 
 const SORTS: { id: PoolSort; label: string }[] = [
   { id: 'name', label: '이름' },
@@ -40,13 +41,21 @@ export default function PoolPanel({ onClose }: { onClose: () => void }) {
   const seek = useDawStore((s) => s.seek);
   const setSelection = useDawStore((s) => s.setSelection);
   const notify = useAppStore((s) => s.notify);
+  const engineWarning = useDawStore((s) => s.engineWarning);
 
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<PoolFilter>('all');
   const [sort, setSort] = useState<PoolSort>('name');
   const [open, setOpen] = useState<string | null>(null);
 
-  const pool = useMemo(() => buildPool(session), [session]);
+  // The engine's own failures, so the 없어짐 badge can light up.  It could
+  // not before: `existingPaths` was the only way in and only a selftest ever
+  // passed it.
+  const pool = useMemo(
+    () => buildPool(session, { missingIds: missingFileIds() }),
+    // `engineWarning` is what changes when a preload fails, so it is what
+    // makes this recompute; the cache itself is not reactive.
+    [session, engineWarning]);
   const shown = useMemo(() => queryPool(pool, { search, filter, sort }), [pool, search, filter, sort]);
   const summary = useMemo(() => summarisePool(pool), [pool]);
 

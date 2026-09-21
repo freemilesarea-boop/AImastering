@@ -36,6 +36,9 @@ import type { EditClipboard } from '../daw/edit/clipboard.js';
 import type { Groove } from '../daw/model/groove.js';
 import { dawRuntime } from '../daw/engine/daw-runtime.js';
 import { autosaveDriver } from '../daw/engine/autosave-driver.js';
+import {
+  clearAudioCache, forgetMissing, missingFileIds, missingFiles, onMissingFile,
+} from '../daw/engine/audio-cache.js';
 import { tempoMapOf } from '../daw/model/tempo-map.js';
 import {
   cycleSnap, eventTimes, snapMove as snapMoveMode, snapTime as snapTimeMode,
@@ -334,6 +337,36 @@ function workspaceShot(state: DawState): WorkspaceShot {
   };
 }
 
+/**
+ * Drop the record of a missing file once nothing plays it any more.
+ *
+ * The warning tells people to put the file back OR delete the clip, and
+ * without this the second half of that sentence was a lie: the banner stayed
+ * up after the clip went, naming audio the session no longer asked for.
+ *
+ * The test is the same one the offline render refuses on — referenced by a
+ * non-muted clip — so the banner and the bounce cannot disagree about whether
+ * a file still matters.
+ */
+function forgetUnreferencedFailures(session: DawSession): void {
+  const missing = missingFileIds();
+  if (missing.size === 0) return;
+  const played = new Set<string>();
+  for (const track of session.tracks) {
+    if (track.mute) continue;
+    for (const playlist of track.playlists) {
+      for (const clip of playlist.clips) {
+        if (clip.kind === 'audio' && !clip.muted) played.add(clip.fileId);
+      }
+    }
+  }
+  let dropped = false;
+  for (const id of missing) {
+    if (!played.has(id)) { forgetMissing(id); dropped = true; }
+  }
+  if (dropped && missingFileIds().size === 0) useDawStore.setState({ engineWarning: null });
+}
+
 const initialSession = createSession();
 
 export const useDawStore = create<DawState>((set, get) => ({
@@ -345,6 +378,7 @@ export const useDawStore = create<DawState>((set, get) => ({
     const next = fn(current);
     if (next === current) return;
     set({ session: next, history: recordHistory(get().history, next, sameByReference) });
+    forgetUnreferencedFailures(next);
     dawRuntime.sync(next);
     // The ONE place a real edit goes through.  Watching store emissions
     // instead would count playback and scrolling as changes — see
@@ -373,7 +407,11 @@ export const useDawStore = create<DawState>((set, get) => ({
       selection: EMPTY_SELECTION,
       selectedTrackIds: [],
       playheadSec: 0,
+      // Another session's missing files are not this one's.  Left standing,
+      // the banner would name a file the project on screen never referred to.
+      engineWarning: null,
     });
+    clearAudioCache();
     dawRuntime.sync(session);
   },
 
@@ -655,6 +693,31 @@ dawRuntime.onPosition = (sec) => {
 dawRuntime.onStopped = () => {
   useDawStore.setState({ isPlaying: false });
 };
+
+/**
+ * Runtime → store: audio the session refers to and cannot be read.
+ *
+ * `engineWarning` has carried the words "decode failures" in its own comment
+ * since it was written and nothing ever set it; this is the case it was for.
+ * Named rather than counted when there are few of them: "kick.wav" is
+ * something you can go and look for, "1개" is not.
+ */
+onMissingFile(() => {
+  // Rebuilt from the whole set rather than from the one that just arrived:
+  // failures trickle in one file at a time from four different places, and a
+  // message that named only the newest would keep replacing itself.
+  const { session } = useDawStore.getState();
+  const all = missingFiles();
+  if (all.length === 0) return;
+  const named = all
+    .map((f) => session.files.find((x) => x.id === f.id)?.name ?? f.path)
+    .slice(0, 3);
+  useDawStore.setState({
+    engineWarning: `오디오 파일 ${all.length}개를 읽을 수 없습니다 — `
+      + `${named.join(', ')}${all.length > named.length ? ' 외' : ''}`
+      + ' · 해당 트랙은 무음으로 재생되고 내보내기는 멈춥니다',
+  });
+});
 
 /**
  * The store's current snap settings, plus the times an Events snap can land on.

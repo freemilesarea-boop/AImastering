@@ -60,6 +60,17 @@ export interface PoolOptions {
    * file is gone the moment a caller forgot to pass it.
    */
   existingPaths?: ReadonlySet<string>;
+  /**
+   * Files the engine has already tried to read and could not.
+   *
+   * The reason this exists beside `existingPaths`: that one needs somebody to
+   * go and stat the disk, and for the life of this panel nobody ever did —
+   * only a selftest passed it, so the 없어짐 badge below could not light up,
+   * ever, while the app played those clips as silence.  A decode that failed
+   * is evidence the app already has, costs nothing to collect, and answers a
+   * slightly better question: not "is the path there" but "can this be read".
+   */
+  missingIds?: ReadonlySet<FileId>;
 }
 
 /**
@@ -106,7 +117,8 @@ export function buildPool(session: DawSession, options: PoolOptions = {}): PoolE
       activeUses,
       usedSec: usedSecondsOf(session, file.id),
       unused: list.length === 0,
-      missing: options.existingPaths ? !options.existingPaths.has(file.path) : false,
+      missing: options.missingIds?.has(file.id)
+        ?? (options.existingPaths ? !options.existingPaths.has(file.path) : false),
     };
   });
 }

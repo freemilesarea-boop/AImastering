@@ -62,6 +62,17 @@ const meta = new Map<FileId, FileMeta>();
 /** Onset marks, found the first time something asks — see `transientsFor`. */
 const onsets = new Map<FileId, TransientMark[]>();
 const pending = new Map<FileId, Promise<CachedAudio>>();
+/**
+ * Files this process tried to read and could not.
+ *
+ * A source that has moved, been renamed, or sits on a volume that is not
+ * mounted.  Kept because the failure is the ONLY evidence there is: nothing
+ * else in the app knows the difference between a track that is silent and a
+ * track whose audio is gone, and the previous behaviour — `catch { /* missing
+ * file -> silence *\/ }` — threw that evidence away at the one moment it
+ * existed.
+ */
+const failed = new Map<FileId, LoadFailure>();
 let pinnedIds: ReadonlySet<FileId> = new Set();
 
 /**
@@ -121,7 +132,65 @@ export function cacheSize(): number { return cache.size; }
 
 export function clearAudioCache(): void {
   cache.clear(); meta.clear(); onsets.clear(); pending.clear();
+  failed.clear();
   pinnedIds = new Set();
+}
+
+/** What went wrong reading one file. */
+export interface LoadFailure {
+  id: FileId;
+  path: string;
+  reason: string;
+}
+
+type MissingListener = (failure: LoadFailure) => void;
+const missingListeners = new Set<MissingListener>();
+
+/**
+ * Be told when a file turns out to be unreadable.
+ *
+ * ONE door, because there were four and every one of them was quiet:
+ * `preloadAll` swallowed its catch, `ClipPlayer.requestDecode` wrote a
+ * console.warn, `decodeForDisplay` returned a `failed` list that the Edit
+ * window dropped on the floor, and the offline render used the first of
+ * those.  A listener here means a new caller cannot add a fifth by forgetting
+ * to report — it reports by calling `noteLoadFailure`, which is also how it
+ * gets recorded at all.
+ */
+export function onMissingFile(listener: MissingListener): () => void {
+  missingListeners.add(listener);
+  return () => missingListeners.delete(listener);
+}
+
+/** Record that a file could not be read, and tell anyone listening. */
+export function noteLoadFailure(id: FileId, path: string, err: unknown): LoadFailure {
+  const failure: LoadFailure = {
+    id, path,
+    reason: err instanceof Error ? err.message : String(err),
+  };
+  failed.set(id, failure);
+  for (const listener of missingListeners) listener(failure);
+  return failure;
+}
+
+/** Files known to be unreadable, by id.  Empty until something has tried. */
+export function missingFileIds(): ReadonlySet<FileId> {
+  return new Set(failed.keys());
+}
+
+/** The same, with the paths and reasons, for a message that names them. */
+export function missingFiles(): LoadFailure[] {
+  return [...failed.values()];
+}
+
+/**
+ * Forget one file's failure — after a relink, or when it is removed.
+ *
+ * Separate from `clearAudioCache` because forgetting every failure to retry
+ * one of them would report the others as fine until they were tried again.
+ */
+export function forgetMissing(id: FileId): void {
+  failed.delete(id);
 }
 
 /** Mono-summed peak envelope, normalised so the loudest bucket reads 1. */
@@ -409,8 +478,13 @@ export async function decodeForDisplay(
   // for display costs a 32 KB sidecar instead of 92 MB of resident PCM —
   // which is the whole reason a sixteen-track session can be opened at all.
   if (canUseStore()) {
-    const { ready, failed } = await ensureSources(files, DECODE_SAMPLE_RATE, onProgress);
-    return { decoded: ready, failed };
+    const { ready, failed: failedPaths } = await ensureSources(files, DECODE_SAMPLE_RATE, onProgress);
+    // `ensureSources` answers in paths; the door upstairs is keyed by id.
+    for (const p of failedPaths) {
+      const file = files.find((f) => f.path === p);
+      if (file) noteLoadFailure(file.id, file.path, new Error('소스를 준비하지 못했습니다'));
+    }
+    return { decoded: ready, failed: failedPaths };
   }
 
   const ctx = decodeContext();
@@ -424,7 +498,7 @@ export async function decodeForDisplay(
       decoded += 1;
     } else {
       try { await loadAudio(ctx, f.id, f.path); decoded += 1; }
-      catch { failed.push(f.path); }
+      catch (e) { noteLoadFailure(f.id, f.path, e); failed.push(f.path); }
     }
     seen += 1;
     onProgress?.(seen, files.length);
@@ -437,13 +511,34 @@ export async function decodeForDisplay(
  * Decode every file a playback or offline pass needs, one at a time.  A file
  * that will not decode is silence in the render, not a thrown render.
  */
+/**
+ * Decode a list of files, and say which ones could not be read.
+ *
+ * Still does not throw: playback starts with whatever is there, which is the
+ * right call for a session where one stem of twelve has moved.  What changed
+ * is that the failures are RETURNED instead of swallowed.  The old body was
+ * `catch { /* missing file -> silence *\/ }` and the caller's own comment
+ * said `/* reported per file already *\/` — nothing reported anything, so a
+ * session whose audio had moved opened silent, with blank waveforms and not
+ * one word on screen, and a bounce of it wrote a silent master.
+ */
 export async function preloadAll(
   ctx: BaseAudioContext, files: ReadonlyArray<{ id: FileId; path: string }>,
-): Promise<void> {
+): Promise<LoadFailure[]> {
+  const failures: LoadFailure[] = [];
   await mapLimit(files, DECODE_CONCURRENCY, async (f) => {
-    if (getCached(f.id)) return;
-    try { await loadAudio(ctx, f.id, f.path); } catch { /* missing file → silence */ }
+    try {
+      if (!getCached(f.id)) await loadAudio(ctx, f.id, f.path);
+      // ONE delete for both ways in — already cached, or just decoded.  A
+      // file that reads now is not missing, whatever it did last time, and
+      // two copies of this line meant a test could cover one and miss the
+      // other going away.
+      failed.delete(f.id);
+    } catch (e) {
+      failures.push(noteLoadFailure(f.id, f.path, e));
+    }
   });
+  return failures;
 }
 
 /**
