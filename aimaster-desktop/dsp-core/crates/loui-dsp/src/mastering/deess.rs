@@ -224,18 +224,38 @@ mod tests {
         assert!(delta.abs() < 1.0, "low band moved {delta:.2} dB");
     }
 
-    /// Wideband mode ducks the low band too.
+    /// Wideband mode ducks the low band too — that is the whole difference
+    /// between the two modes, so the low band is what the test has to look
+    /// at.  Split band is run on the same signal for the contrast: its low
+    /// content has to come through untouched while wideband's does not.
     #[test]
     fn wideband_ducks_everything() {
-        let mut d = Deess::new(48_000.0, DeessConfig { wideband: true, ..cfg() });
         let n = 24_000;
         let low = tone(n, 200.0, 48_000.0, 0.4);
         let sib = tone(n, 9_000.0, 48_000.0, 0.6);
-        let mut l: Vec<f32> = low.iter().zip(sib.iter()).map(|(a, b)| a + b).collect();
-        let mut r = l.clone();
-        d.process_stereo(&mut l, &mut r);
-        assert!(d.gain_reduction_db() > 3.0);
-        assert!(l.iter().all(|s| s.is_finite()));
+        let mixed: Vec<f32> = low.iter().zip(sib.iter()).map(|(a, b)| a + b).collect();
+
+        // Isolate the low content in the output with a low-pass, so the
+        // sibilant band's own ducking cannot be mistaken for it.
+        let low_of = |x: &[f32]| -> f64 {
+            let mut f = Biquad::new(BiquadCoeffs::low_pass(48_000.0, 500.0, 0.707));
+            let y: Vec<f32> = x.iter().map(|v| f.process(*v as f64) as f32).collect();
+            rms(&y[n / 2..])
+        };
+        let before = low_of(&mixed);
+
+        let mut moved = [0.0f64; 2];
+        for (slot, wideband) in moved.iter_mut().zip([true, false]) {
+            let mut d = Deess::new(48_000.0, DeessConfig { wideband, ..cfg() });
+            let mut l = mixed.clone();
+            let mut r = l.clone();
+            d.process_stereo(&mut l, &mut r);
+            assert!(l.iter().all(|s| s.is_finite()));
+            assert!(d.gain_reduction_db() > 3.0, "wideband={wideband}: detector never tripped");
+            *slot = 20.0 * (low_of(&l) / before).log10();
+        }
+        assert!(moved[0] < -3.0, "wideband left the low band at {:.2} dB", moved[0]);
+        assert!(moved[1].abs() < 1.0, "split band moved the low band {:.2} dB", moved[1]);
     }
 
     #[test]

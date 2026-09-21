@@ -41,6 +41,14 @@ impl Dynamics {
 
     /// Peak gain reduction (dB, ≥ 0) applied over the last processed block.
     /// 0 when bypassed / below threshold.  Drives the Dynamics GR meter.
+    ///
+    /// This is the reduction the OUTPUT shows, parallel mix included, not
+    /// the wet path's.  The two are the same only at 100% wet: below that
+    /// the dry half is summed back in as a *signal*, and the wet and dry
+    /// copies are the same signal scaled, so they add in the linear domain.
+    /// Reporting the wet figure scaled by the mix reads several dB high.
+    /// Makeup gain is not in it — a GR meter shows what the gain computer
+    /// took away, not what was handed back afterwards.
     pub fn gain_reduction_db(&self) -> f64 {
         self.last_gr_db
     }
@@ -81,7 +89,10 @@ impl StereoModule for Dynamics {
         let mix = (self.cfg.mix_pct / 100.0).clamp(0.0, 1.0);
         let dry = 1.0 - mix;
         let n = left.len().min(right.len());
-        let mut block_gr = 0.0f64;
+        // The block's deepest OUTPUT factor, converted to dB once at the
+        // end: cheaper than a log per sample, and it is the quantity the
+        // meter is supposed to show.
+        let mut min_factor = 1.0f64;
         for i in 0..n {
             let l = left[i] as f64;
             let r = right[i] as f64;
@@ -92,16 +103,14 @@ impl StereoModule for Dynamics {
             let coeff = if in_db > self.env_db { self.atk_coeff } else { self.rel_coeff };
             self.env_db = in_db + coeff * (self.env_db - in_db);
             let gain_db = self.computed_gain_db(self.env_db);
-            // computed_gain_db ≤ 0 when compressing; report the wet-path
-            // reduction the parallel mix actually applies (peak over block).
-            let gr = (-gain_db) * mix;
-            if gr > block_gr { block_gr = gr; }
             let g = 10f64.powf(gain_db / 20.0);
             // Parallel mix: dry + wet*g.
-            left[i] = ((dry + mix * g) * l) as f32;
-            right[i] = ((dry + mix * g) * r) as f32;
+            let factor = dry + mix * g;
+            if factor < min_factor { min_factor = factor; }
+            left[i] = (factor * l) as f32;
+            right[i] = (factor * r) as f32;
         }
-        self.last_gr_db = block_gr.max(0.0);
+        self.last_gr_db = (-20.0 * min_factor.max(1e-12).log10()).max(0.0);
     }
 
     fn reset(&mut self) {
@@ -156,5 +165,69 @@ mod tests {
         let mut r = [0.01f32; 2048];
         d.process_stereo(&mut l, &mut r);
         assert!((l[2047] - 0.01).abs() < 1e-3, "quiet signal changed: {}", l[2047]);
+    }
+
+    /// -1 dBFS of steady level, held long enough for the envelope to settle.
+    /// A constant input makes the block's deepest factor the settled one, so
+    /// the last sample and the meter describe the same instant.
+    fn settled(cfg: DynamicsConfig) -> (f64, f64) {
+        let mut d = Dynamics::new(48_000.0, cfg);
+        let n = 48_000;
+        let amp = 0.891_25f32;
+        let mut l = vec![amp; n];
+        let mut r = vec![amp; n];
+        d.process_stereo(&mut l, &mut r);
+        let applied = -20.0 * (l[n - 1] as f64 / amp as f64).log10();
+        (d.gain_reduction_db(), applied)
+    }
+
+    /// The ratio is the compressor's whole promise, and "the output moved"
+    /// is not a test of it: that passes at 1.0001:1.  Above the knee the
+    /// output must land at `threshold + over / ratio`, to the decimal.
+    #[test]
+    fn ratio_places_the_output_where_the_curve_says() {
+        let in_db = 20.0 * 0.891_25f64.log10();
+        for &ratio in &[2.0f64, 4.0, 8.0] {
+            let thr = -20.0;
+            let cfg = DynamicsConfig { threshold_db: thr, ratio, ..comp_cfg() };
+            let (_, applied) = settled(cfg);
+            let want = in_db - (thr + (in_db - thr) / ratio);
+            assert!(
+                (applied - want).abs() < 0.05,
+                "{ratio}:1 should reduce by {want:.2} dB, moved {applied:.2}",
+            );
+        }
+    }
+
+    /// The GR meter must report the reduction the OUTPUT shows, parallel mix
+    /// included.  At 100% wet that is the gain computer's figure; below it
+    /// the dry copy is summed back as a *signal* and the reduction shrinks
+    /// fast.  Scaling the wet figure by the mix — blending dB where the
+    /// audio blends amplitudes — reads over 6 dB high at 40%.
+    #[test]
+    fn gr_meter_reports_the_reduction_the_output_shows() {
+        let mut deepest = f64::INFINITY;
+        for &mix_pct in &[100.0f64, 88.0, 50.0, 40.0] {
+            let cfg = DynamicsConfig {
+                threshold_db: -30.0, ratio: 10.0, mix_pct, ..comp_cfg()
+            };
+            let (meter, applied) = settled(cfg);
+            assert!(
+                (meter - applied).abs() < 0.02,
+                "mix {mix_pct}%: meter says {meter:.2} dB, output moved {applied:.2}",
+            );
+            assert!(applied > 1.0, "mix {mix_pct}%: nothing to measure ({applied:.2} dB)");
+            assert!(
+                applied < deepest,
+                "mix {mix_pct}%: less wet must mean less reduction, got {applied:.2}",
+            );
+            deepest = applied;
+        }
+        // Pin the size of the error the old wet-scaled formula made, so a
+        // return to it cannot pass as a rounding difference.
+        let (meter, _) = settled(DynamicsConfig {
+            threshold_db: -30.0, ratio: 10.0, mix_pct: 40.0, ..comp_cfg()
+        });
+        assert!(meter < 6.0, "40% wet cannot be 6 dB of reduction, meter says {meter:.2}");
     }
 }
