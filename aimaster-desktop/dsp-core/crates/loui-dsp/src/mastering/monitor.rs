@@ -45,8 +45,9 @@ use super::config::{MatchTarget, MonitorConfig, MonitorMode};
 /// Longest chain latency the dry delay line can align to.
 ///
 /// The chain's worst case today is de-click (32) + de-noise (2048) +
-/// spectral (2048) = 4128.  Sized well past that so a future STFT module
-/// does not silently break alignment.
+/// spectral (2048) + the limiter's 20 ms lookahead (960 at 48 kHz, more at
+/// higher rates) = 5088.  Sized well past that so a future STFT module does
+/// not silently break alignment.
 pub const MAX_ALIGN_SAMPLES: usize = 16_384;
 
 /// Loudness follower time constant, in seconds.  Matches the 3 s window of

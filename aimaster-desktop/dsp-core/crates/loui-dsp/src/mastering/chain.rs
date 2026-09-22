@@ -268,6 +268,7 @@ impl MasteringChain {
         self.declick.latency_samples()
             + self.denoise.latency_samples()
             + self.spectral.latency_samples()
+            + self.limiter.latency_samples()
     }
 
     /// Measured long-term tonal curve, in dB per curve band (Tonal Balance).
@@ -711,28 +712,98 @@ mod tests {
         assert_eq!(chain.latency_samples(), 0, "neutral chain must add no latency");
     }
 
-    /// Latency is reported only by the modules that are actually engaged.
+    /// A short broadband burst in a long buffer.  Cross-correlating it
+    /// against the output finds the delay whatever the module did to the
+    /// spectrum, which an impulse cannot do once an STFT stage is in the
+    /// way.
+    fn latency_burst(n: usize, at: usize) -> Vec<f32> {
+        let mut x = vec![0.0f32; n];
+        let mut seed: u64 = 99_991;
+        for i in at..(at + 4096).min(n) {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            let u = ((seed >> 33) as f64 / (1u64 << 31) as f64) - 1.0;
+            let w = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * (i - at) as f64 / 4096.0).cos();
+            x[i] = (u * 0.5 * w) as f32;
+        }
+        x
+    }
+
+    /// The lag that best lines the output up with the input.
+    fn measured_delay(input: &[f32], out: &[f32], at: usize, max_lag: usize) -> usize {
+        let (from, to) = (at.saturating_sub(256), (at + 4096 + max_lag + 256).min(out.len()));
+        let (mut best_lag, mut best) = (0usize, f64::NEG_INFINITY);
+        for lag in 0..=max_lag {
+            let (mut num, mut a2, mut b2) = (0.0f64, 0.0f64, 0.0f64);
+            for i in from..to {
+                let a = input[i] as f64;
+                let b = *out.get(i + lag).unwrap_or(&0.0) as f64;
+                num += a * b; a2 += a * a; b2 += b * b;
+            }
+            let c = num / (a2 * b2).max(1e-30).sqrt();
+            if c > best { best = c; best_lag = lag; }
+        }
+        best_lag
+    }
+
+    /// The declared latency has to be the delay the audio actually takes.
+    ///
+    /// The old check here asked only that the figure was above zero and
+    /// went up when another module joined, which both held while the
+    /// limiter's lookahead — up to 960 samples at 48 kHz — was missing from
+    /// the total entirely.
     #[test]
-    fn latency_tracks_engaged_modules() {
-        let mut chain = MasteringChain::new(48_000.0, MasteringChainConfig::default());
-        assert_eq!(chain.latency_samples(), 0);
-
-        chain.set_config(MasteringChainConfig {
-            denoise: DenoiseConfig { reduction_db: 12.0, ..DenoiseConfig::default() },
-            ..MasteringChainConfig::default()
-        });
-        let with_denoise = chain.latency_samples();
-        assert!(with_denoise > 0, "engaged de-noise should report latency");
-
-        chain.set_config(MasteringChainConfig {
-            denoise: DenoiseConfig { reduction_db: 12.0, ..DenoiseConfig::default() },
-            spectral: SpectralConfig {
-                shaper_enabled: true, shaper_amount_pct: 50.0, ..SpectralConfig::default()
-            },
-            ..MasteringChainConfig::default()
-        });
-        assert!(chain.latency_samples() > with_denoise,
-                "adding the spectral stage should add its frame too");
+    fn declared_latency_is_the_delay_the_audio_takes() {
+        let clean = LimiterConfig {
+            character: LimiterCharacter::Clean, ceiling_dbtp: 0.0, drive_db: 0.0,
+            bypass: false, ..LimiterConfig::default()
+        };
+        let off = LimiterConfig { bypass: true, ..LimiterConfig::default() };
+        let cases: [(&str, MasteringChainConfig); 7] = [
+            // The default config engages the limiter at 2.5 ms, so "nothing
+            // engaged" has to say so out loud.
+            ("nothing engaged, limiter bypassed", MasteringChainConfig {
+                limiter: off, ..Default::default() }),
+            ("the default chain", MasteringChainConfig::default()),
+            ("limiter, 2.5 ms", MasteringChainConfig {
+                limiter: LimiterConfig { lookahead_ms: 2.5, ..clean }, ..Default::default() }),
+            ("limiter, 10 ms", MasteringChainConfig {
+                limiter: LimiterConfig { lookahead_ms: 10.0, ..clean }, ..Default::default() }),
+            ("de-noise, limiter bypassed", MasteringChainConfig {
+                denoise: DenoiseConfig { reduction_db: 0.5, ..DenoiseConfig::default() },
+                limiter: off, ..Default::default() }),
+            ("spectral shaper, limiter bypassed", MasteringChainConfig {
+                spectral: SpectralConfig {
+                    shaper_enabled: true, shaper_amount_pct: 2.0, ..SpectralConfig::default() },
+                limiter: off, ..Default::default() }),
+            ("de-noise + spectral + limiter", MasteringChainConfig {
+                denoise: DenoiseConfig { reduction_db: 0.5, ..DenoiseConfig::default() },
+                spectral: SpectralConfig {
+                    shaper_enabled: true, shaper_amount_pct: 2.0, ..SpectralConfig::default() },
+                limiter: LimiterConfig { lookahead_ms: 2.5, ..clean },
+                ..Default::default() }),
+        ];
+        let n = 48_000 * 2;
+        let at = 8_192;
+        let input = latency_burst(n, at);
+        let (mut moved, mut zeroes) = (0, 0);
+        for (name, cfg) in cases {
+            let mut chain = MasteringChain::new(48_000.0, cfg);
+            let mut l = input.clone();
+            let mut r = input.clone();
+            for off in (0..n).step_by(512) {
+                let end = (off + 512).min(n);
+                chain.process_stereo_block(&mut l[off..end], &mut r[off..end]);
+            }
+            let declared = chain.latency_samples();
+            if declared > 0 { moved += 1; } else { zeroes += 1; }
+            let measured = measured_delay(&input, &l, at, declared + 600);
+            assert_eq!(
+                measured, declared,
+                "{name}: the audio came out {measured} samples late, latency_samples() says {declared}",
+            );
+        }
+        assert!(moved >= 5, "only {moved} of the cases had any latency to check");
+        assert!(zeroes >= 1, "no case checked that a wire declares nothing");
     }
 
     /// Every new module engaged at once must still produce finite, bounded
@@ -949,6 +1020,48 @@ mod tests {
         chain.process_stereo_block(&mut l, &mut r);
         let residual = l[latency..].iter().fold(0.0f32, |a, b| a.max(b.abs()));
         assert!(residual < 1e-6, "delta of a silent pass should be silent, got {residual}");
+    }
+
+    /// The same, with the limiter as the only latent stage and real signal
+    /// going in.  The case above runs silence through, so it would pass with
+    /// the alignment off by any amount; this one cannot.  A `Clean`
+    /// character has no soft clip and a ceiling above the programme never
+    /// engages the gain, so the stage is a pure delay and the delta of a
+    /// pure delay is silence.
+    #[test]
+    fn monitor_delta_is_silence_when_only_the_limiter_delays() {
+        let cfg = MasteringChainConfig {
+            limiter: LimiterConfig {
+                character: LimiterCharacter::Clean, ceiling_dbtp: 0.0, drive_db: 0.0,
+                lookahead_ms: 2.5, bypass: false, ..LimiterConfig::default()
+            },
+            monitor: MonitorConfig { mode: MonitorMode::Delta, ..MonitorConfig::default() },
+            ..MasteringChainConfig::default()
+        };
+        let mut chain = MasteringChain::new(48_000.0, cfg);
+        let latency = chain.latency_samples();
+        assert_eq!(latency, 120, "2.5 ms at 48 kHz is 120 samples");
+
+        let n = 48_000;
+        let input: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f64 / 48_000.0;
+                (0.20 * (2.0 * std::f64::consts::PI * 220.0 * t).sin()
+                    + 0.12 * (2.0 * std::f64::consts::PI * 1_700.0 * t).sin()) as f32
+            })
+            .collect();
+        let mut l = input.clone();
+        let mut r = input.clone();
+        for off in (0..n).step_by(512) {
+            let end = (off + 512).min(n);
+            chain.process_stereo_block(&mut l[off..end], &mut r[off..end]);
+        }
+        let residual = l[latency + 4_096..].iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        let inp = input.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(
+            residual < 1e-4,
+            "delta of a chain that only delays should be silence, got {residual} against {inp}",
+        );
     }
 
     /// Delta must surface what a module actually did.

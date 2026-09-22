@@ -192,6 +192,22 @@ impl Limiter {
         self.last_gr_db
     }
 
+    /// Samples of delay the lookahead line adds.
+    ///
+    /// The lookahead is a real delay, not just a detector trick: the gain is
+    /// computed from the peak window ahead and applied to a sample read
+    /// `lookahead` slots back, so the output comes out that much later than
+    /// the input went in.  Anything aligning against this chain needs it in
+    /// the total — the monitor's dry tap above all, because an A/B or a
+    /// delta against an unaligned dry is a comb filter rather than a
+    /// comparison.
+    ///
+    /// Zero while bypassed: `process_stereo` returns before touching the
+    /// delay line, so the stage really is a wire.
+    pub fn latency_samples(&self) -> usize {
+        if self.cfg.bypass { 0 } else { self.lookahead }
+    }
+
     #[inline]
     fn window_peak(&self) -> f64 {
         // Max over the active lookahead window of the peak ring.
@@ -337,5 +353,54 @@ mod tests {
         lim.process_stereo(&mut l, &mut r);
         assert!(l.iter().all(|x| x.is_finite()));
         assert!(lim.gain_reduction_db().is_finite());
+    }
+
+    /// The declared latency has to be the delay the audio actually takes.
+    /// It was 0 while the lookahead line delayed everything by its full
+    /// length, which made the monitor align its dry tap against a number
+    /// that was short by up to 20 ms.
+    #[test]
+    fn declared_latency_is_the_delay_the_output_takes() {
+        for &sr in &[44_100.0f64, 48_000.0, 96_000.0] {
+            for &ms in &[0.5f64, 1.0, 2.5, 5.0, 10.0, 20.0] {
+                let mut lim = Limiter::new(sr, LimiterConfig {
+                    lookahead_ms: ms, ..cfg(0.0)
+                });
+                let n = 8_192;
+                // A lone impulse, far under the ceiling so nothing limits:
+                // whatever comes out is the delay and nothing else.
+                let mut l = vec![0.0f32; n];
+                let mut r = vec![0.0f32; n];
+                l[0] = 0.1;
+                r[0] = 0.1;
+                lim.process_stereo(&mut l, &mut r);
+                let at = l.iter().enumerate()
+                    .max_by(|a, b| a.1.abs().partial_cmp(&b.1.abs()).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap();
+                assert!(
+                    (l[at] - 0.1).abs() < 1e-6,
+                    "{sr} Hz, {ms} ms: the impulse came out at {} instead of 0.1", l[at],
+                );
+                assert_eq!(
+                    at, lim.latency_samples(),
+                    "{sr} Hz, {ms} ms lookahead: impulse arrived at {at}, latency says {}",
+                    lim.latency_samples(),
+                );
+            }
+        }
+    }
+
+    /// Bypassed, the stage is a wire, so it declares nothing.
+    #[test]
+    fn a_bypassed_limiter_declares_no_latency() {
+        let lim = Limiter::new(48_000.0, LimiterConfig {
+            bypass: true, lookahead_ms: 10.0, ..cfg(-1.0)
+        });
+        assert_eq!(lim.latency_samples(), 0);
+        let engaged = Limiter::new(48_000.0, LimiterConfig {
+            bypass: false, lookahead_ms: 10.0, ..cfg(-1.0)
+        });
+        assert_eq!(engaged.latency_samples(), 480, "10 ms at 48 kHz is 480 samples");
     }
 }

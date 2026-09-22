@@ -572,18 +572,80 @@ if (!Chain) {
   }
 
   {
-    // Latency must be reported when the STFT modules engage — a monitoring
-    // engineer needs the real figure, not a guess.
-    const quiet = withParam(neutralState(), 'denoise', 'reductionDb', 12);
-    const withDenoise = render(quiet, tone1k).latency;
-    check('engaging de-noise reports latency', withDenoise > 0, `${withDenoise} samples`);
+    // The reported latency must be the delay the audio actually takes.
+    // Asking only that the figure is above zero and goes up when another
+    // module joins — which is what this used to do — held true the whole
+    // time the limiter's lookahead was missing from the total.
+    //
+    // A short broadband burst in a long buffer, cross-correlated against the
+    // output: that finds the delay whatever the module did to the spectrum,
+    // where an impulse cannot once an STFT stage is in the way.
+    const AT = 8_192;
+    const burst = (() => {
+      const x = new Float32Array(SR * 2);
+      let seed = 99_991;
+      for (let i = AT; i < AT + 4096; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * (i - AT)) / 4096);
+        x[i] = (seed / 0x3fffffff - 1) * 0.5 * w;
+      }
+      return x;
+    })();
 
-    const both = withParam(engage(quiet, 'spectral-shaper'), 'spectral-shaper', 'amountPct', 60);
-    const withBoth = render(both, tone1k).latency;
+    const measuredDelay = (out: Float32Array, maxLag: number): number => {
+      const from = AT - 256;
+      const to = Math.min(AT + 4096 + maxLag + 256, out.length);
+      let bestLag = 0;
+      let best = -Infinity;
+      for (let lag = 0; lag <= maxLag; lag++) {
+        let num = 0; let a2 = 0; let b2 = 0;
+        for (let i = from; i < to; i++) {
+          const a = burst[i]!; const b = out[i + lag] ?? 0;
+          num += a * b; a2 += a * a; b2 += b * b;
+        }
+        const c = num / Math.sqrt(Math.max(a2 * b2, 1e-30));
+        if (c > best) { best = c; bestLag = lag; }
+      }
+      return bestLag;
+    };
+
+    // `engage` clears the bypass; `withParam` on its own does not, and
+    // neutralState() ships the limiter bypassed.
+    const limiterAt = (ms: number) =>
+      withParam(
+        withParam(engage(neutralState(), 'limiter'), 'limiter', 'lookaheadMs', ms),
+        'limiter', 'ceilingDbtp', 0,
+      );
+    const quiet = withParam(neutralState(), 'denoise', 'reductionDb', 12);
+
+    const CASES: Array<[string, AllModulesParameterState]> = [
+      ['a wire', neutralState()],
+      ['the limiter at 2.5 ms', limiterAt(2.5)],
+      ['the limiter at 10 ms', limiterAt(10)],
+      ['de-noise', quiet],
+      ['de-noise + the spectral stage',
+        withParam(engage(quiet, 'spectral-shaper'), 'spectral-shaper', 'amountPct', 60)],
+      ['de-noise + the spectral stage + the limiter',
+        withParam(withParam(
+          engage(withParam(engage(quiet, 'spectral-shaper'), 'spectral-shaper', 'amountPct', 60), 'limiter'),
+          'limiter', 'lookaheadMs', 2.5), 'limiter', 'ceilingDbtp', 0)],
+    ];
+
+    let latent = 0;
+    for (const [name, st] of CASES) {
+      const run = render(st, burst);
+      const measured = measuredDelay(run.left, run.latency + 600);
+      if (run.latency > 0) latent++;
+      check(
+        `the reported latency is the delay the audio takes — ${name}`,
+        measured === run.latency,
+        `reported ${run.latency}, measured ${measured} samples`,
+      );
+    }
     check(
-      'the spectral stage adds its own frame',
-      withBoth > withDenoise,
-      `${withDenoise} → ${withBoth} samples`,
+      'the sweep covered cases that actually have latency',
+      latent >= 4,
+      `${latent} of ${CASES.length} cases reported latency`,
     );
   }
 
