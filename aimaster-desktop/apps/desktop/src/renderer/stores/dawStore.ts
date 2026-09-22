@@ -380,9 +380,10 @@ export const useDawStore = create<DawState>((set, get) => ({
     set({ session: next, history: recordHistory(get().history, next, sameByReference) });
     forgetUnreferencedFailures(next);
     dawRuntime.sync(next);
-    // The ONE place a real edit goes through.  Watching store emissions
-    // instead would count playback and scrolling as changes — see
-    // engine/autosave-driver.ts.
+    // Told, rather than diffed on a timer: watching store emissions instead
+    // would count playback and scrolling as changes — see
+    // engine/autosave-driver.ts.  Every path below that replaces the session
+    // has to say so too, or the work it did is not in the recovery file.
     autosaveDriver.noteEdit(next);
   },
 
@@ -392,6 +393,11 @@ export const useDawStore = create<DawState>((set, get) => ({
     if (next === current) return;
     set({ session: next });
     dawRuntime.sync(next);
+    // A drag is still editing.  Each move bumps the revision and pushes the
+    // idle gate out, so nothing is written mid-gesture and the save lands
+    // when the hand stops — which is the behaviour model/autosave.ts was
+    // written for and never saw, because this path used to say nothing.
+    autosaveDriver.noteEdit(next);
   },
 
   commitEdit: () => {
@@ -401,6 +407,9 @@ export const useDawStore = create<DawState>((set, get) => ({
   },
 
   loadSession: (session) => {
+    // Before the state swap: the driver's baseline has to move with the
+    // project, or a pending edit to the old one writes the new one's file.
+    autosaveDriver.noteLoaded(session);
     set({
       session,
       history: initHistory(session),
@@ -421,6 +430,10 @@ export const useDawStore = create<DawState>((set, get) => ({
     const next = undoHistory(h);
     set({ history: next, session: next.present });
     dawRuntime.sync(next.present);
+    // Taking an edit back is itself a change to what the project is.  Left
+    // unsaid, the recovery file kept the thing that had just been undone
+    // and nothing ever corrected it.
+    autosaveDriver.noteEdit(next.present);
   },
 
   redo: () => {
@@ -429,6 +442,7 @@ export const useDawStore = create<DawState>((set, get) => ({
     const next = redoHistory(h);
     set({ history: next, session: next.present });
     dawRuntime.sync(next.present);
+    autosaveDriver.noteEdit(next.present);
   },
 
   canUndo: () => canUndo(get().history),
