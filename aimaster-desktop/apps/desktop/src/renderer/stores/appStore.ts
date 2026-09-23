@@ -40,7 +40,10 @@ if (typeof window !== 'undefined') {
  * choose.  Unknown values fall back to home rather than rendering nothing.
  */
 function initialPage(): Page {
-  if (!import.meta.env.DEV || typeof window === 'undefined') return 'home';
+  // `env` is optional on purpose: this module is reachable from a headless
+  // harness, where `import.meta` exists and its `env` does not, and a
+  // build-time flag is not worth a throw at module scope.
+  if (!import.meta.env?.DEV || typeof window === 'undefined') return 'home';
   const wanted = new URLSearchParams(window.location.search).get('page');
   const pages: Page[] = ['home', 'mastering', 'result', 'tweak', 'qc', 'settings', 'daw'];
   // 'result' needs data that a fresh boot does not have — it would white-screen.

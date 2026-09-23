@@ -100,6 +100,13 @@ export interface RecoveryInfo {
   sessionName: string;
   /** Bytes, so a zero-length file can be refused before it is parsed. */
   bytes: number;
+  /**
+   * The session this belongs to, so the caller can ask whether THAT project
+   * has been saved by hand since.  Absent on a file written by a build that
+   * did not record it; the staleness rule then has nothing to compare and
+   * the offer stands, which is the safe direction.
+   */
+  sessionId?: string;
 }
 
 /**

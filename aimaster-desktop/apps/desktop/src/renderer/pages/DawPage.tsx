@@ -720,7 +720,10 @@ function RecoveryPrompt() {
         {offer.label}
       </div>
       <p style={{ fontSize: 11, color: premium.text.muted, margin: '0 0 10px' }}>
-        앱이 예기치 않게 종료됐을 때 저장된 것입니다. 복구하면 지금 열려 있는
+        {/* Not "the app crashed": nothing here knows that.  What is known
+            is that this project was edited and not saved by hand afterwards
+            — a clean save deletes the file this is offering. */}
+        저장하지 않은 작업이 남아 있습니다. 복구하면 지금 열려 있는
         세션을 대체합니다.
       </p>
       <div className="flex gap-1.5">

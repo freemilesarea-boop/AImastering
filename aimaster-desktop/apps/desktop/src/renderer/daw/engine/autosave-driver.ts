@@ -30,6 +30,7 @@
 import {
   INITIAL_AUTOSAVE, isDirty, noteChange, noteSaved, shouldSave, type AutosaveState,
 } from '../model/autosave.js';
+import { lastManualSaveMs, noteManualSave } from '../model/manual-save.js';
 import { serializeDawSession } from '../model/session-io.js';
 import type { DawSession } from '../model/types.js';
 
@@ -90,6 +91,20 @@ export class AutosaveDriver {
   noteLoaded(session: DawSession): void {
     this.lastSeen = session;
     this.state = INITIAL_AUTOSAVE;
+  }
+
+  /**
+   * A manual save landed.
+   *
+   * Two things, in one call so a caller cannot do half of it: the time goes
+   * on the record, and the recovery file goes away.  The file being gone is
+   * what normally stops the next launch offering an older copy of a project
+   * the user has already saved; the recorded time is what catches it when
+   * the delete does not happen.
+   */
+  async savedByHand(sessionId: string): Promise<void> {
+    noteManualSave(sessionId, this.deps?.now?.() ?? Date.now());
+    await this.clear(sessionId);
   }
 
   /** A clean manual save makes the recovery file unnecessary. */
@@ -153,9 +168,11 @@ export async function findRecoveries(
     const out: RecoveryOffer[] = [];
     for (const entry of raw as RecoveryInfo[]) {
       if (!entry || typeof entry.path !== 'string') continue;
-      // No manual-save time is known here, so the caller passes null: the
-      // session that was open is the one that knows when it was last saved.
-      if (!isRecoverable(entry, null).offer) continue;
+      // A project saved by hand after this file was written makes it stale,
+      // and offering a stale one is how somebody loses the save they made on
+      // purpose.  A clean save deletes the file outright; this is what
+      // catches the case where that delete did not happen.
+      if (!isRecoverable(entry, lastManualSaveMs(entry.sessionId ?? '')).offer) continue;
       out.push({ info: entry, label: describeRecovery(entry, nowMs) });
     }
     return out;

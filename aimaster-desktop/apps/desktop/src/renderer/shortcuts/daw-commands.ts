@@ -63,6 +63,7 @@ import { createSession } from '../daw/model/session-ops.js';
 import {
   deserializeDawSession, importSessionData, serializeDawSession,
 } from '../daw/model/session-io.js';
+import { autosaveDriver } from '../daw/engine/autosave-driver.js';
 import { isEmptyPlan, planDrop } from '../daw/model/drop-target.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import {
@@ -2680,15 +2681,25 @@ export function buildDawOverrides(deps: DawCommandDeps): Partial<Record<CommandI
       daw().loadSession(parsed.session);
       notify('세션을 열었습니다', 'success');
     },
+    // A save that lands makes the recovery file unnecessary, and saying so is
+    // the difference between opening the project tomorrow and being offered
+    // an older copy of it, under a banner claiming a crash that never
+    // happened.  The time is recorded as well as the file deleted: if the
+    // delete does not happen, the staleness rule still has something to
+    // compare the leftover against.
     'file.save': async () => {
-      const json = serializeDawSession(daw().session);
-      const dest = await invoke('session:save', json) as string | null;
-      if (dest) notify('세션 저장 완료', 'success');
+      const session = daw().session;
+      const dest = await invoke('session:save', serializeDawSession(session)) as string | null;
+      if (!dest) return;
+      await autosaveDriver.savedByHand(session.id);
+      notify('세션 저장 완료', 'success');
     },
     'file.saveAs': async () => {
-      const json = serializeDawSession(daw().session);
-      const dest = await invoke('session:save', json) as string | null;
-      if (dest) notify('세션 저장 완료', 'success');
+      const session = daw().session;
+      const dest = await invoke('session:save', serializeDawSession(session)) as string | null;
+      if (!dest) return;
+      await autosaveDriver.savedByHand(session.id);
+      notify('세션 저장 완료', 'success');
     },
     'file.export': async () => {
       const state = daw();
