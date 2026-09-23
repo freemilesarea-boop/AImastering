@@ -343,12 +343,54 @@ export function probedLatency(
 const inFlight = new Map<number, Promise<void>>();
 
 /**
+ * How well a wet path has to line up with its dry before the lag is believed.
+ *
+ * A 4x shaper reads 0.94 and a compressor 1.00, so this is not close to
+ * anything real.  What it rejects is a correlation that peaked on noise: the
+ * search takes the best lag over a thousand of them and, with nothing to
+ * beat, "best" is wherever the rubbish happened to line up.
+ */
+const MIN_PROBE_CORRELATION = 0.75;
+
+/**
+ * Whether a set of probe readings is worth installing.
+ *
+ * Its own function so the rule can be asked directly: the condition it
+ * replaces was an inline `some(...)` that no check could reach, because with
+ * the measurement fixed every real reading sails past it.  What it guards
+ * against is the reading that does not — a best-of-a-thousand-lags search
+ * with nothing to find, which is what an eighth of a second of noise gives
+ * you when the reference has moved.
+ */
+export function probeIsTrustworthy(readings: readonly { r: number }[]): boolean {
+  return readings.length > 0 && readings.every((m) => m.r >= MIN_PROBE_CORRELATION);
+}
+
+/**
  * Measure this renderer's shaper and compressor latency, once per rate.
  *
- * Cheap enough to await before a render — four offline passes over an eighth
+ * Cheap enough to await before a render — three offline passes over an eighth
  * of a second — and cached, so a session pays for it once.  A renderer with
  * no `OfflineAudioContext` (a test that only touches the model) leaves the
  * defaults in place rather than throwing.
+ *
+ * ── Why the dry is a CHANNEL and not its own render ───────────────────
+ *
+ * It used to render the dry signal in a context of its own and correlate the
+ * three wet renders against it.  About one run in forty-five, under the
+ * offline renderer, that dry render came back three render quanta late — the
+ * source started 384 samples in — and every lag was then measured against a
+ * reference that had moved.  Caught and measured:
+ *
+ *     dry render late by            384
+ *     lags against that dry         586, 586, 0
+ *     lags against the signal fed in 128, 128, 384
+ *
+ * The right answers were in the room the whole time; the reference was the
+ * thing that slipped.  So dry and wet now come out of ONE render, as two
+ * channels: whatever the source does at the start it does to both, and a
+ * shift they share cancels in the correlation instead of becoming the
+ * answer.
  */
 export function probeRendererLatency(sampleRate: number): Promise<void> {
   const already = inFlight.get(sampleRate);
@@ -358,10 +400,12 @@ export function probeRendererLatency(sampleRate: number): Promise<void> {
       .OfflineAudioContext;
     if (!Offline) return;
     const n = Math.round(sampleRate / 8);
-    const render = async (
+    /** One render, two channels: the signal untouched, and the signal through
+     *  whatever is being measured. */
+    const renderPair = async (
       build: (ctx: BaseAudioContext, src: AudioBufferSourceNode) => AudioNode,
-    ): Promise<Float32Array> => {
-      const ctx = new Offline(1, n, sampleRate);
+    ): Promise<{ dry: Float32Array; wet: Float32Array }> => {
+      const ctx = new Offline(2, n, sampleRate);
       const buffer = ctx.createBuffer(1, n, sampleRate);
       const data = buffer.getChannelData(0);
       // Deterministic, so a probe is the same measurement every time.
@@ -372,11 +416,17 @@ export function probeRendererLatency(sampleRate: number): Promise<void> {
       }
       const src = ctx.createBufferSource();
       src.buffer = buffer;
-      build(ctx, src).connect(ctx.destination);
+      const merge = ctx.createChannelMerger(2);
+      const bypass = ctx.createGain();
+      src.connect(bypass);
+      bypass.connect(merge, 0, 0);
+      build(ctx, src).connect(merge, 0, 1);
+      merge.connect(ctx.destination);
       src.start();
-      return (await ctx.startRendering()).getChannelData(0);
+      const out = await ctx.startRendering();
+      return { dry: out.getChannelData(0), wet: out.getChannelData(1) };
     };
-    const lagOf = (dry: Float32Array, wet: Float32Array): number => {
+    const lagOf = (dry: Float32Array, wet: Float32Array): { lag: number; r: number } => {
       let best = { lag: 0, r: -2 };
       const from = Math.round(n * 0.1);
       const to = n - 1600;
@@ -390,14 +440,9 @@ export function probeRendererLatency(sampleRate: number): Promise<void> {
         const r = num / Math.sqrt(Math.max(1e-30, da * db));
         if (r > best.r) best = { lag, r };
       }
-      return best.lag;
+      return best;
     };
     try {
-      const dry = await render((ctx, src) => {
-        const g = ctx.createGain();
-        src.connect(g);
-        return g;
-      });
       const identityShaper = (
         ctx: BaseAudioContext, src: AudioBufferSourceNode, oversample: OverSampleType,
       ): AudioNode => {
@@ -410,9 +455,15 @@ export function probeRendererLatency(sampleRate: number): Promise<void> {
         src.connect(w);
         return w;
       };
-      const shaped = await render((ctx, src) => identityShaper(ctx, src, '4x'));
-      const shapedTwice = await render((ctx, src) => identityShaper(ctx, src, '2x'));
-      const squeezed = await render((ctx, src) => {
+      const measure = async (
+        build: (ctx: BaseAudioContext, src: AudioBufferSourceNode) => AudioNode,
+      ): Promise<{ lag: number; r: number }> => {
+        const { dry, wet } = await renderPair(build);
+        return lagOf(dry, wet);
+      };
+      const shaped = await measure((ctx, src) => identityShaper(ctx, src, '4x'));
+      const shapedTwice = await measure((ctx, src) => identityShaper(ctx, src, '2x'));
+      const squeezed = await measure((ctx, src) => {
         const c = ctx.createDynamicsCompressor();
         c.threshold.value = 0;
         c.ratio.value = 1;
@@ -420,13 +471,25 @@ export function probeRendererLatency(sampleRate: number): Promise<void> {
         src.connect(c);
         return c;
       });
+
+      // A lag is only worth installing if the two paths are recognisably the
+      // same signal.  Anything else is the search's best guess at noise, and
+      // installing one of those is how a wrong number gets believed by every
+      // dry path in the rack.  Left uninstalled, the documented defaults
+      // stand and the next caller measures again.
+      if (!probeIsTrustworthy([shaped, shapedTwice, squeezed])) {
+        inFlight.delete(sampleRate);
+        return;
+      }
       measured.set(sampleRate, {
-        oversample4x: lagOf(dry, shaped),
-        oversample2x: lagOf(dry, shapedTwice),
-        dynamics: lagOf(dry, squeezed),
+        oversample4x: shaped.lag,
+        oversample2x: shapedTwice.lag,
+        dynamics: squeezed.lag,
       });
     } catch {
-      // A renderer that cannot do this keeps the documented defaults.
+      // A renderer that cannot do this keeps the documented defaults, and is
+      // allowed to be asked again rather than remembered as a failure.
+      inFlight.delete(sampleRate);
     }
   })();
   inFlight.set(sampleRate, run);
