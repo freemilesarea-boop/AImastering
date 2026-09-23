@@ -433,21 +433,26 @@ async function main(): Promise<void> {
       }
       return buf;
     };
-    const through = async (
-      build: (ctx: OfflineAudioContext, input: AudioNode) => AudioNode,
-    ): Promise<Float32Array> => {
-      const ctx = new OfflineAudioContext(1, SR, SR);
-      const src = ctx.createBufferSource();
-      src.buffer = seeded(ctx, SR);
-      build(ctx, src).connect(ctx.destination);
-      src.start(0);
-      return (await ctx.startRendering()).getChannelData(0);
-    };
+    // The reference and the output are two channels of ONE render, not two
+    // renders compared.  A render's source has been seen to start a few
+    // quanta late, and a slip in the REFERENCE reads exactly like the machine
+    // being early — the search locks onto the shifted noise, correlates with
+    // it perfectly, and reports the slip as the latency.  One source and one
+    // start means a slip moves both channels together and cancels.
     const lagOf = async (
       build: (ctx: OfflineAudioContext, input: AudioNode) => AudioNode,
     ): Promise<number> => {
-      const ref = await through((_c, i) => i);
-      const out = await through(build);
+      const ctx = new OfflineAudioContext(2, SR, SR);
+      const src = ctx.createBufferSource();
+      src.buffer = seeded(ctx, SR);
+      const merge = ctx.createChannelMerger(2);
+      src.connect(merge, 0, 0);
+      build(ctx, src).connect(merge, 0, 1);
+      merge.connect(ctx.destination);
+      src.start(0);
+      const rendered = await ctx.startRendering();
+      const ref = rendered.getChannelData(0);
+      const out = rendered.getChannelData(1);
       let best = 0;
       let bestCorr = -Infinity;
       for (let lag = -8; lag <= 600; lag++) {

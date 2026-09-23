@@ -94,23 +94,40 @@ function seeded(ctx: OfflineAudioContext, n: number, channels: number): AudioBuf
  * Not by impulse: an oversampler's up and down filters are minimum-phase, so
  * the peak of their response arrives ahead of the group delay and an impulse
  * reports a number twenty samples short.
+ *
+ * And not against a SECOND render: the reference and the output are two
+ * channels of one.  A render's source has been seen to start a few quanta
+ * late, and when it is the reference that slips, the slip is
+ * indistinguishable from the graph being early — the search finds the shifted
+ * peak, correlates perfectly with it, and reports the difference as the
+ * device's latency.  One render has one source and one start, so anything
+ * that moves it moves both channels together and cancels out of the lag.
  */
 async function lagOf(
   build: ((ctx: OfflineAudioContext, input: AudioNode) => AudioNode) | null,
   sr = SR, channels = 1,
 ): Promise<{ lag: number; corr: number }> {
-  const render = async (
-    b: ((ctx: OfflineAudioContext, input: AudioNode) => AudioNode) | null,
-  ): Promise<Float32Array> => {
-    const ctx = new OfflineAudioContext(channels, sr, sr);
-    const src = ctx.createBufferSource();
-    src.buffer = seeded(ctx, sr, channels);
-    (b ? b(ctx, src) : src).connect(ctx.destination);
-    src.start(0);
-    return (await ctx.startRendering()).getChannelData(0);
+  const ctx = new OfflineAudioContext(2, sr, sr);
+  const src = ctx.createBufferSource();
+  src.buffer = seeded(ctx, sr, channels);
+  const merge = ctx.createChannelMerger(2);
+  // A merger's inputs are mono, so a stereo device would arrive down-mixed
+  // and a device that works on the difference between the channels would
+  // cancel itself.  The first channel is taken instead, which is the one the
+  // old form compared.
+  const into = (node: AudioNode, slot: number): void => {
+    if (channels === 1) { node.connect(merge, 0, slot); return; }
+    const split = ctx.createChannelSplitter(channels);
+    node.connect(split);
+    split.connect(merge, 0, slot);
   };
-  const ref = await render(null);
-  const out = await render(build);
+  into(src, 0);
+  into(build ? build(ctx, src) : src, 1);
+  merge.connect(ctx.destination);
+  src.start(0);
+  const rendered = await ctx.startRendering();
+  const ref = rendered.getChannelData(0);
+  const out = rendered.getChannelData(1);
   let best = 0;
   let bestCorr = -Infinity;
   for (let lag = -8; lag <= 1400; lag++) {
