@@ -73,7 +73,9 @@ function Toast() {
   };
 
   return (
-    <div style={{ zIndex: LAYER.notification }}
+    // Keyed by the message's own id so a replacement re-plays the entrance
+    // rather than silently swapping the text under the reader.
+    <div key={notif.id} style={{ zIndex: LAYER.notification }}
          className={`fixed animate-in-fast border
                      bottom-4 left-4 right-4 px-4 py-3 rounded-xl shadow-lg
                      text-[15px] text-center whitespace-nowrap overflow-hidden text-ellipsis

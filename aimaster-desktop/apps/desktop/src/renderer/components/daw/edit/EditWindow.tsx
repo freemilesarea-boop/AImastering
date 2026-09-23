@@ -13,6 +13,7 @@ import UniverseStrip from './UniverseStrip.js';
 import { formatLabel, DEFAULT_FPS, TIME_FORMATS } from '../../../daw/model/spot-time.js';
 import { useWorkspaceStore } from '../../../stores/workspaceStore.js';
 import { useRecordingStore } from '../../../stores/recordingStore.js';
+import { useAppStore } from '../../../stores/appStore.js';
 import { useAudioStore } from '../../../stores/audioStore.js';
 import { usePluginWindowStore } from '../../../stores/pluginWindowStore.js';
 import { decodeForDisplay } from '../../../daw/engine/audio-cache.js';
@@ -305,6 +306,7 @@ export default function EditWindow() {
   const builtRows = displayRows.slice(rowView.first, rowView.last);
 
   const recordStatus = useRecordingStore((s) => s.status);
+  const notify = useAppStore((s) => s.notify);
   // A session with only a master track is not "empty timeline", it is "you
   // have nothing to work on yet" — and a blank grid says neither.
   const hasMaterial = session.tracks.some((t) => t.kind === 'audio' || t.kind === 'instrument');
@@ -728,7 +730,12 @@ export default function EditWindow() {
               onDuplicateTake={() => apply((s) => duplicatePlaylist(s, row.track.id))}
               onRemoveTake={(id) => apply((s) => removePlaylist(s, row.track.id, id))}
               onFlattenTakes={() => apply((s) => flattenComp(s, row.track.id))}
-              onArm={() => void useRecordingStore.getState().toggleArm(row.track.id)}
+              onArm={() => {
+                // The button has no toast of its own, so a refused arm would
+                // show as the light going out again and nothing else.
+                void useRecordingStore.getState().toggleArm(row.track.id)
+                  .then((outcome) => { if (outcome.error) notify(outcome.error, 'warning'); });
+              }}
               recording={recordStatus === 'recording' || recordStatus === 'countIn'}
               onToggleCollapse={() => apply((s) => toggleCollapsed(s, row.track.id))}
               onUnpack={() => apply((s) => unpackStack(s, row.track.id))}

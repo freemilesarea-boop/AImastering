@@ -2188,15 +2188,29 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     // ── Recording ─────────────────────────────────────────────────────────
-    'daw.toggleArm': () => {
+    /**
+     * Arm, and then say what arming did.
+     *
+     * It used to say what arming was ABOUT to do, from the flag's value
+     * before the call, and drop the promise on the floor.  Opening the input
+     * can fail — no interface, permission refused, a saved device that is
+     * not plugged in — and the failure puts the flag back.  So the toast
+     * read "녹음 무장" over a track that was not armed, and the only
+     * thing correcting it was an effect watching the error string, which
+     * stays the same when the same interface is unplugged twice.  Measured
+     * in the app: first press reported "Requested device not found", every
+     * press after it reported success for 3.5 seconds.
+     */
+    'daw.toggleArm': async () => {
       const state = daw();
       const trackId = state.focusedTrackId
         ?? state.session.tracks.find((t) => t.kind === 'audio')?.id ?? null;
       if (!trackId) { notify('오디오 트랙이 없습니다', 'warning'); return; }
       const track = findTrack(state.session, trackId);
       if (!track) return;
-      void useRecordingStore.getState().toggleArm(trackId);
-      notify(track.recordArm ? `${track.name} 무장 해제` : `${track.name} 녹음 무장`);
+      const outcome = await useRecordingStore.getState().toggleArm(trackId);
+      if (outcome.error) { notify(outcome.error, 'warning'); return; }
+      notify(outcome.armed ? `${track.name} 녹음 무장` : `${track.name} 무장 해제`);
     },
 
     'daw.record': () => {

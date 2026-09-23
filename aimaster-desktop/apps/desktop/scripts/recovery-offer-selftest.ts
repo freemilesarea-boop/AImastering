@@ -13,6 +13,12 @@
 //
 // Run: pnpm --filter @aimaster/desktop test:recovery-offer
 
+// Every import here is dynamic, so without this the file is a SCRIPT rather
+// than a module and its top-level names land in the same global scope as
+// every other selftest's — which `typecheck:scripts`, compiling them as one
+// program, rightly refuses.
+export {};
+
 const store = new Map<string, string>();
 (globalThis as { localStorage?: Storage }).localStorage = {
   getItem: (k) => (store.has(k) ? store.get(k)! : null),

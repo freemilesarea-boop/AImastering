@@ -88,7 +88,7 @@ interface RecordingState {
   calibrateLatency: () => Promise<void>;
   refreshDevices: () => Promise<void>;
   refreshMidiDevices: () => Promise<void>;
-  toggleArm: (trackId: TrackId) => Promise<void>;
+  toggleArm: (trackId: TrackId) => Promise<ArmOutcome>;
   /** Match the one MIDI handle to whichever instrument tracks are armed. */
   syncMidiArm: () => Promise<void>;
   /** Hear the keyboard without arming anything.  Off leaves MIDI closed. */
@@ -108,6 +108,25 @@ interface RecordingState {
  * input from a click at sample zero.
  */
 const CALIBRATION_LEAD_SEC = 0.25;
+
+/**
+ * What arming a track actually did.
+ *
+ * Returned rather than left for a watcher to infer, because arming is
+ * optimistic: the flag goes on so the meter can open, and comes back off if
+ * the input will not.  A caller that announced the arm without waiting said
+ * it had worked every time after the first — the only thing correcting it
+ * was an effect watching the error STRING, which does not change when the
+ * same interface is unplugged twice.
+ */
+export interface ArmOutcome {
+  /** Whether the track is armed now. */
+  armed: boolean;
+  /** Whether this call changed anything. */
+  changed: boolean;
+  /** Why not, when it did not. */
+  error: string | null;
+}
 
 /** One unsubscribe per open input, so closing one track leaves the rest alone. */
 const levelUnsubscribers = new Map<TrackId, () => void>();
@@ -385,7 +404,7 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
   toggleArm: async (trackId) => {
     const daw = useDawStore.getState();
     const track = daw.session.tracks.find((t) => t.id === trackId);
-    if (!track) return;
+    if (!track) return { armed: false, changed: false, error: '트랙을 찾지 못했습니다' };
     const arming = !track.recordArm;
 
     // Arming NO LONGER disarms everything else: several tracks rolling at once
@@ -394,7 +413,7 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
 
     if (!arming) {
       get().disarmTrack(trackId);
-      return;
+      return { armed: false, changed: true, error: null };
     }
 
     const { settings } = get();
@@ -403,7 +422,7 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
         await get().syncMidiArm();
         set({ status: 'armed', error: null });
         void get().refreshMidiDevices();
-        return;
+        return { armed: true, changed: true, error: null };
       }
 
       // What this track records from is a property of the track, resolved
@@ -459,12 +478,18 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
       levelUnsubscribers.set(trackId,
         capture.onLevel((peak) => set({ levels: { ...get().levels, [trackId]: peak } })));
       set({ status: 'armed', error: null });
+      return { armed: true, changed: true, error: null };
     } catch (err) {
+      // The arm was put on optimistically at the top so the meter could
+      // open; it comes back off here, and the caller is told, because the
+      // track going dark again on its own is not an explanation.
       useDawStore.getState().apply((s) => setRecordArm(s, trackId, false));
+      const message = `${track.name}: ${(err as Error).message}`;
       set({
         status: armedTracks(useDawStore.getState().session).length > 0 ? 'armed' : 'idle',
-        error: `${track.name}: ${(err as Error).message}`,
+        error: message,
       });
+      return { armed: false, changed: false, error: message };
     }
   },
 

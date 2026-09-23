@@ -2,9 +2,24 @@ import { create } from 'zustand';
 
 export type Page = 'home' | 'mastering' | 'result' | 'tweak' | 'studio' | 'qc' | 'settings' | 'daw';
 
+/** How long a message stays on screen, when nothing replaces it. */
+export const NOTIFY_MS = 3500;
+
 interface Notification {
   message: string;
   type: 'info' | 'success' | 'error' | 'warning';
+  /**
+   * Which call put this here.
+   *
+   * There is one slot, so a new message replaces whatever is showing — that
+   * part is fine.  What was not is that every call also scheduled a bare
+   * `setTimeout(clear)`, and those timers outlive the message they were for:
+   * a message arriving 3.3 s after another was wiped 0.2 s later by the
+   * older one's countdown.  Measured in the app at 0.2 s against the 3.5 s
+   * it was supposed to get.  A timer now only clears the message it was
+   * scheduled for.
+   */
+  id: number;
 }
 
 interface AppStore {
@@ -51,7 +66,9 @@ function initialPage(): Page {
     ? wanted as Page : 'home';
 }
 
-export const useAppStore = create<AppStore>((set) => ({
+let notifySeq = 0;
+
+export const useAppStore = create<AppStore>((set, get) => ({
   currentPage:  initialPage(),
   notification: null,
 
@@ -69,7 +86,11 @@ export const useAppStore = create<AppStore>((set) => ({
   },
 
   notify: (message, type = 'info') => {
-    set({ notification: { message, type } });
-    setTimeout(() => set({ notification: null }), 3500);
+    const id = ++notifySeq;
+    set({ notification: { message, type, id } });
+    setTimeout(() => {
+      // Only if this is still the message this timer was started for.
+      if (get().notification?.id === id) set({ notification: null });
+    }, NOTIFY_MS);
   },
 }));
