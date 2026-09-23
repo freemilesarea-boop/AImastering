@@ -112,7 +112,6 @@ src/renderer/daw/engine/external-render.ts::describeExternalPass
 src/renderer/daw/engine/external-render.ts::hasExternalInserts
 src/renderer/daw/engine/instrument-level.ts::PRE_CALIBRATION_INSTRUMENTS
 src/renderer/daw/engine/linear-phase.ts::firMagnitudeDb
-src/renderer/daw/engine/match-eq.ts::matchCurve
 src/renderer/daw/engine/match-eq.ts::matchFeatureHz
 src/renderer/daw/engine/metronome.ts::describeMetronome
 src/renderer/daw/engine/mod-matrix.ts::describeRow
