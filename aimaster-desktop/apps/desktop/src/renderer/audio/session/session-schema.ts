@@ -7,16 +7,22 @@
 // What IS saved:
 //   • Source file path (absolute — not the audio data)
 //   • Reference file path (if loaded)
-//   • All module parameter state (EQ, Dynamics, Imager, Limiter, Export)
 //   • Active preset id
-//   • Base mastering options (target LUFS, TP, SR, bitDepth, style)
+//   • Base mastering options — the tuning itself, including the live DSP
+//     overrides in `rt` that drive the EQ, dynamics, imager and limiter
 //
 // What is NOT saved:
 //   • Rendered revision files (these are temp paths that become stale)
 //   • The revision group (can't restore audio data from a path reference)
 //   • Undo history (re-loads as a clean slate)
+//
+// What USED to be here: `allModulesState`, the module parameter store's state
+// for all 25 modules.  It was written at its defaults on every save, never
+// read back on open, and made up 95 % of the bytes in a session file — the
+// same shape of dead weight as `freeEqBands` below it.  The tuning it looked
+// like it carried lives in `baseOptions.rt`, which is what the DSP has always
+// been driven from.
 
-import type { AllModulesParameterState } from '../parameters/parameter-state.js';
 import type { MasteringOptions } from '../../stores/audioStore.js';
 
 export const SESSION_VERSION = 1 as const;
@@ -29,8 +35,6 @@ export interface LouiSession {
   sourceFilePath: string | null;
   /** Absolute path to the reference audio file (may not exist on another machine). */
   referenceFilePath: string | null;
-  /** Full parameter state for all modules. */
-  allModulesState: AllModulesParameterState;
   /** Active Loui preset id (if any). */
   presetId: string | undefined;
   /** Base mastering options (target LUFS / TP / SR / bitDepth / style). */
@@ -73,22 +77,17 @@ export function deserializeSession(raw: string): SessionLoadResult | SessionLoad
     return { ok: false, error: `지원하지 않는 세션 버전 (${String(obj['version'])}). 현재 버전: ${SESSION_VERSION}` };
   }
   const warnings: string[] = [];
-  // allModulesState must be an object.
-  if (!obj['allModulesState'] || typeof obj['allModulesState'] !== 'object') {
-    return { ok: false, error: '세션 파일에 파라미터 상태가 없습니다.' };
-  }
-  // baseOptions must be an object.
+  // baseOptions must be an object.  It is the only thing that carries tuning,
+  // so it is the only thing worth refusing a file over.
   if (!obj['baseOptions'] || typeof obj['baseOptions'] !== 'object') {
     return { ok: false, error: '세션 파일에 마스터링 옵션이 없습니다.' };
   }
-  // Free EQ — optional for backward compat with v1 sessions saved before Phase 3a.
 
   const session: LouiSession = {
     version: SESSION_VERSION,
     createdAt:         typeof obj['createdAt']         === 'string' ? obj['createdAt']         : new Date().toISOString(),
     sourceFilePath:    typeof obj['sourceFilePath']    === 'string' ? obj['sourceFilePath']    : null,
     referenceFilePath: typeof obj['referenceFilePath'] === 'string' ? obj['referenceFilePath'] : null,
-    allModulesState:   obj['allModulesState'] as AllModulesParameterState,
     presetId:          typeof obj['presetId']          === 'string' ? obj['presetId']          : undefined,
     baseOptions:       obj['baseOptions'] as MasteringOptions,
   };
