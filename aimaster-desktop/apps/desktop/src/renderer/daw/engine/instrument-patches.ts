@@ -153,6 +153,24 @@ const POLY: InstrumentPatch[] = [
     note: '비브라토를 끝까지 올렸습니다 — 음정이 아니라 효과음입니다',
     params: { voices: 1, cutoffHz: 4000, lfoRate: 0.7, lfoPitch: 100,
       sustain: 1, release: 0.3, drive: 0.4 } },
+
+  { id: 'down-sweep', name: 'Down Sweep', category: 'fx',
+    note: '필터 엔벨로프를 음수로 걸었습니다 — 밝게 시작해 스스로 닫힙니다',
+    params: { voices: 3, detune: 10, cutoffHz: 9000, resonance: 5, fegAmount: -3.5,
+      fegAttack: 0.004, fegDecay: 1.2, attack: 0.002, decay: 0.6, sustain: 0.5, release: 0.3 } },
+  { id: 'filter-wobble', name: 'Filter Wobble', category: 'bass',
+    note: 'LFO 가 필터를 6.5 Hz 로 흔듭니다 — 한 음을 길게 눌러도 리듬이 됩니다',
+    params: { voices: 1, sub: 0.5, cutoffHz: 500, resonance: 7, keyTrack: 0.3,
+      attack: 0.004, decay: 0.4, sustain: 1, release: 0.1,
+      lfoRate: 6.5, lfoFilter: 2.6, drive: 0.4 } },
+  { id: 'tremolo-keys', name: 'Tremolo Keys', category: 'keys',
+    note: '빠른 필터 떨림 위의 사각파 — 손을 대지 않아도 소리가 떱니다',
+    params: { wave: 1, detune: 5, cutoffHz: 7000, resonance: 3,
+      attack: 0.004, decay: 0.5, sustain: 0.45, release: 0.3, lfoRate: 9, lfoFilter: 3 } },
+  { id: 'soft-sine', name: 'Soft Sine', category: 'keys',
+    note: '배음이 거의 없는 사인 — 겹쳐도 뭉치지 않아 화음 밑에 깔립니다',
+    params: { wave: 4, detune: 3, cutoffHz: 2000, attack: 0.03,
+      decay: 0.7, sustain: 0.5, release: 0.5, width: 0.2 } },
 ];
 
 // ── Rhodes (FM) ──────────────────────────────────────────────────────────────
@@ -460,6 +478,56 @@ const WAVESYNTH: InstrumentPatch[] = [
       m1src: 4, m1dst: 3, m1amt: 0.25,
       m2src: 5, m2dst: 1, m2amt: 0.5,
       m3src: 10, m3dst: 11, m3amt: 0.6 } },
+
+  { id: 'band-lead', name: 'Band Lead', category: 'lead',
+    note: '밴드패스 12 dB — 위아래를 다 깎아서 믹스 가운데만 남깁니다',
+    params: {
+      aTable: 4, aPos: 2, aUnison: 2, aDetune: 6, aWidth: 0.35,
+      fltType: 1, flt24: 0, cutoff: 74, res: 0.5, drive: 0.25,
+      e1a: 0.006, e1d: 0.4, e1s: 0.8, e1r: 0.2,
+      l1beats: 0.5,
+      m1src: 8, m1dst: 5, m1amt: 0.3,
+      m2src: 4, m2dst: 3, m2amt: 0.05 } },
+
+  { id: 'sub-boom', name: 'Sub Boom', category: 'bass',
+    note: '사각 서브를 두 옥타브 아래로 — 표는 배음만 얹습니다',
+    params: {
+      aLevel: 0.35, aPos: 1, aUnison: 1, aDetune: 0,
+      subWave: 2, subOct: -2, subLevel: 1,
+      cutoff: 62, res: 0.1, drive: 0.3,
+      e1a: 0.002, e1d: 0.42, e1s: 0.4, e1r: 0.15, e2d: 0.2,
+      m1src: 2, m1dst: 5, m1amt: 0.2 } },
+
+  { id: 'air-pad', name: 'Air Pad', category: 'pad',
+    note: '노이즈를 섞고 LFO 가 표와 노이즈를 같이 움직입니다 — 배경에 까는 소리',
+    params: {
+      aTable: 2, aPos: 6, aUnison: 5, aDetune: 20, aWidth: 1, aLevel: 0.5,
+      noiseLevel: 0.45, noiseColour: 0.75,
+      cutoff: 100, res: 0.08,
+      e1a: 1.4, e1d: 2.4, e1s: 0.8, e1r: 2.6,
+      l1beats: 12,
+      m1src: 4, m1dst: 1, m1amt: 0.25,
+      m2src: 4, m2dst: 10, m2amt: 0.15 } },
+
+  { id: 'rotary-organ', name: 'Rotary Organ', category: 'organ',
+    note: '박자에 묶인 LFO 가 음량을 직접 흔듭니다 — 로터리 스피커 쪽입니다',
+    params: {
+      aUnison: 1, aDetune: 0, aWidth: 0.3,
+      bTable: 0, bPos: 2, bOct: 1, bLevel: 0.55,
+      cutoff: 124, res: 0.05,
+      e1a: 0.003, e1d: 0.04, e1s: 1, e1r: 0.05,
+      l1beats: 0.25,
+      m1src: 4, m1dst: 18, m1amt: 0.3 } },
+
+  { id: 'notch-pluck', name: 'Notch Pluck', category: 'pluck',
+    note: '노치를 엔벨로프로 쓸어 올립니다 — 깎이는 자리가 움직이는 플럭',
+    params: {
+      aTable: 7, aPos: 5, aUnison: 2, aDetune: 24, aWidth: 0.45,
+      fltType: 3, cutoff: 88, res: 0.55, drive: 0.3,
+      e1a: 0.001, e1d: 0.3, e1s: 0.1, e1r: 0.18,
+      e2a: 0.001, e2d: 0.2,
+      m1src: 2, m1dst: 5, m1amt: 0.5,
+      m2src: 8, m2dst: 15, m2amt: 0.25 } },
 ];
 
 // ── Analog Synth ─────────────────────────────────────────────────────────────
@@ -575,6 +643,60 @@ const ANALOG: InstrumentPatch[] = [
       cutoff: 72, res: 0.3, drive: 2, envAmt: 18,
       e1a: 0.02, e1d: 0.8, e1r: 0.5,
       drift: 22, tolerance: 0.18, spread: 1 } },
+
+  { id: 'sub-thump', name: 'Sub Thump', category: 'bass',
+    note: '두 옥타브 아래 서브가 음을 만듭니다 — 래더는 거의 닫혀 있습니다',
+    params: {
+      o1level: 0.55, o2level: 0, subOct: -2, subLevel: 1,
+      cutoff: 46, res: 0.12, drive: 4.5, fltKey: 0.25, envAmt: 18,
+      e1a: 0.001, e1d: 0.32, e1s: 0.25, e1r: 0.07,
+      voices: 1, drift: 1.5 } },
+
+  { id: 'wind', name: 'Wind', category: 'fx',
+    note: '오실레이터를 둘 다 끄고 노이즈만 남깁니다 — 필터가 2 초에 걸쳐 열립니다',
+    params: {
+      o1level: 0, o2level: 0, noise: 1,
+      cutoff: 54, res: 0.62, poles: 2, envAmt: 46,
+      e1a: 1.6, e1d: 2.2, e1s: 1, e1r: 1.4,
+      e2a: 1.2, e2d: 2, e2s: 1, e2r: 1,
+      l2rate: 0.28, l2flt: 24, drift: 0, voices: 3 } },
+
+  { id: 'octave-organ', name: 'Octave Organ', category: 'organ',
+    note: '삼각파 두 대를 한 옥타브 벌리고 엔벨로프를 없앴습니다 — 누르면 나고 떼면 멎습니다',
+    params: {
+      o1shape: 2, o2shape: 2, o2oct: 1, o2fine: 0, o2level: 0.65, subLevel: 0.4,
+      cutoff: 105, res: 0.08, envAmt: 0, velAmp: 0.25,
+      e1a: 0.003, e1d: 0.05, e1s: 1, e1r: 0.05,
+      drift: 1, tolerance: 0.01, spread: 0.7 } },
+
+  { id: 'stab', name: 'Poly Stab', category: 'pluck',
+    note: '펄스 두 대를 좁게 벌리고 곧바로 닫습니다 — 코드를 찍는 소리',
+    params: {
+      o1shape: 1, o1width: 0.3, o2shape: 1, o2width: 0.6, o2fine: -11, o2level: 0.7,
+      cutoff: 70, res: 0.5, drive: 1.8, envAmt: 38, velFlt: 25,
+      e1a: 0.002, e1d: 0.14, e1s: 0, e1r: 0.09,
+      e2a: 0.001, e2d: 0.1, e2s: 0, e2r: 0.08,
+      drift: 4 } },
+
+  { id: 'tremolo-pad', name: 'Tremolo Pad', category: 'pad',
+    note: 'LFO 1 이 음량을 직접 흔듭니다 — 필터가 아니라 진폭이라 코드 전체가 같이 떱니다',
+    params: {
+      o1shape: 2, o2shape: 3, o2oct: -1, o2level: 0.6,
+      unison: 2, detune: 11,
+      cutoff: 84, res: 0.1, envAmt: 12,
+      e1a: 0.6, e1d: 1.8, e1s: 0.85, e1r: 2.2,
+      l1rate: 5.6, l1amp: 0.7, l1delay: 0.4, drift: 5 } },
+
+  { id: 'two-pole', name: 'Two-Pole Lead', category: 'lead',
+    note: '래더를 2 극으로 — 옥타브당 12 dB 라 레조넌스를 올려도 위가 남습니다',
+    params: {
+      level: 0.55,
+      poles: 2, fltComp: 1,
+      o1shape: 1, o1width: 0.42, o2semi: -12, o2level: 0.65,
+      cutoff: 108, res: 0.75, drive: 2.6, fltKey: 0.7, envAmt: 8,
+      e1a: 0.008, e1d: 0.7, e1s: 0.85, e1r: 0.18,
+      l1rate: 6.2, l1pitch: 8, l1delay: 0.5,
+      voices: 1, drift: 3 } },
 ];
 
 /**
@@ -752,6 +874,66 @@ const FM: InstrumentPatch[] = [
       o5ratio: 0.5, o5d: 2, o5s: 0.2, o5wave: 7,
       o6level: 0,
       spread: 0.5 } },
+
+  { id: 'vibes', name: 'FM Vibraphone', category: 'pluck',
+    note: 'LFO 가 음량을 떨게 합니다 — 비브라폰의 그 팬이 도는 소리',
+    params: {
+      level: 0.6, algo: 4,
+      o1d: 3.2, o1r: 2.2,
+      o2ratio: 4, o2level: 0.26, o2d: 0.5, o2key: -0.6,
+      o3ratio: 8.02, o3level: 0.12, o3d: 0.3,
+      o4level: 0, o5level: 0, o6level: 0,
+      lfoRate: 6.4, lfoAmp: 0.75, lfoDelay: 0 } },
+
+  { id: 'woodblock', name: 'Wood Block', category: 'pluck',
+    note: '비조화 배율 두 개가 20 ms 안에 사라집니다 — 음정보다 딱 소리가 먼저입니다',
+    params: {
+      level: 0.66, algo: 0, transpose: 12,
+      pAmt: 4, pDec: 0.012,
+      o1a: 0.001, o1d: 0.16, o1r: 0.06,
+      o2ratio: 9.38, o2level: 0.6, o2d: 0.02, o2r: 0.02,
+      o3ratio: 3.77, o3level: 0.3, o3d: 0.015,
+      o4level: 0, o5level: 0, o6level: 0 } },
+
+  { id: 'harp', name: 'FM Harp', category: 'pluck',
+    note: '배율이 정수라 배음이 음계 위에 섭니다 — 종이 아니라 줄에 가깝습니다',
+    params: {
+      level: 0.62, algo: 7,
+      o1d: 2.4, o1r: 1.2,
+      o2ratio: 2, o2level: 0.3, o2d: 0.35, o2vel: 0.9,
+      o3ratio: 3, o3level: 0.22, o3d: 0.8,
+      o4ratio: 4, o4level: 0.14, o4d: 0.3,
+      o5level: 0, o6level: 0, width: 0.5 } },
+
+  { id: 'flute', name: 'FM Flute', category: 'lead',
+    note: '인덱스를 아주 낮게 두고 노이즈 파형을 모듈레이터로 — 숨소리가 섞인 사인',
+    params: {
+      level: 0.64, algo: 7,
+      o1a: 0.06, o1d: 4, o1s: 0.9, o1r: 0.3,
+      o2ratio: 1, o2level: 0.14, o2a: 0.08, o2d: 2, o2s: 0.6, o2wave: 2,
+      o3level: 0, o4level: 0, o5level: 0, o6level: 0,
+      lfoRate: 5.2, lfoPitch: 7, lfoDelay: 0.9 } },
+
+  { id: 'toy', name: 'Toy Piano', category: 'keys',
+    note: '한 옥타브 올리고 피치 엔벨로프로 때립니다 — 짧고 금속적인 건반',
+    params: {
+      level: 0.66, algo: 0, transpose: 12,
+      pAmt: 2, pDec: 0.02,
+      o1a: 0.001, o1d: 0.7, o1r: 0.2,
+      o2ratio: 6.02, o2level: 0.38, o2d: 0.12, o2vel: 0.95,
+      o3ratio: 11.01, o3level: 0.18, o3d: 0.06,
+      o4level: 0, o5level: 0, o6level: 0 } },
+
+  { id: 'steel', name: 'Steel Drum', category: 'pluck',
+    note: '비조화 배율을 낮게 쌓고 둘을 벌려 놓았습니다 — 두드린 금속판의 울림',
+    params: {
+      level: 0.58, algo: 12,
+      o1d: 1.8, o1r: 0.9,
+      o2ratio: 2.4, o2level: 0.36, o2d: 0.6, o2key: -0.45,
+      o3ratio: 4.8, o3level: 0.2, o3d: 0.4,
+      o4ratio: 1.5, o4level: 0.24, o4d: 1.2,
+      o5level: 0, o6level: 0,
+      unison: 2, detune: 11, width: 0.55, spread: 0.6 } },
 ];
 
 // ── Grand Piano ──────────────────────────────────────────────────────────────
@@ -808,6 +990,30 @@ const PIANO: InstrumentPatch[] = [
     params: { hammer: 9000, strike: 0.045, decay: 0.28, bloom: 2, after: 0.02,
       toneDecay: 0.002, bodyHz: 340, bodyQ: 4.2, body: -4, tone: 18000,
       spread: 0.15, release: 0.16 } },
+  { id: 'lounge', name: 'Lounge', category: 'keys',
+    note: '가까이서 부드럽게, 몸을 살짝 — 칵테일 피아노',
+    params: { hammer: 2600, strike: 0.19, tone: 6400, body: 5, bodyHz: 118,
+      spread: 0.2, decay: 1.15 } },
+  { id: 'prepared', name: 'Prepared', category: 'fx',
+    note: '현에 물건을 얹은 소리 — 배음이 비뚤고 몸이 덜 웁니다',
+    params: { stretch: 3.6, toneDecay: 0.045, hammer: 7200, bloom: 3, body: -3,
+      decay: 0.5 } },
+  { id: 'una-corda', name: 'Una Corda', category: 'keys',
+    note: '음마다 현 하나 — 얇고 사적인 소리, 조율의 비껴남이 없습니다',
+    params: { unison: 0, bloom: 3.5, hammer: 3400, tone: 7800, body: 1,
+      spread: 0.15, decay: 1.25 } },
+  { id: 'rock', name: 'Rock Piano', category: 'keys',
+    note: '해머를 단단하게, 몸을 짧게 — 밴드 안에서 뚫고 나옵니다',
+    params: { hammer: 7600, strike: 0.075, decay: 0.62, tone: 14500, body: 1.5,
+      spread: 0.25 } },
+  { id: 'music-box', name: 'Music Box', category: 'pluck',
+    note: '아주 짧은 타점에 몸이 거의 없습니다 — 오르골 쪽',
+    params: { hammer: 8600, strike: 0.05, decay: 0.34, toneDecay: 0.006,
+      body: -5, bodyHz: 420, tone: 16000, bloom: 2 } },
+  { id: 'wet-hall', name: 'Hall Piano', category: 'pad',
+    note: '넓게 벌리고 길게 — 페달과 방을 같이 밟습니다',
+    params: { spread: 1, release: 2.8, after: 0.85, decay: 1.6, bloom: 14,
+      tone: 8800 } },
 ];
 
 // ── Upright Piano ────────────────────────────────────────────────────────────
@@ -858,6 +1064,25 @@ const UPRIGHT: InstrumentPatch[] = [
     params: { hammer: 9000, strike: 0.05, unison: 0.4, stretch: 4, decay: 0.3,
       bloom: 2, after: 0.03, bodyHz: 420, bodyQ: 4.5, body: -3, tone: 18000,
       spread: 0.15, release: 0.25, level: 0.58 } },
+  { id: 'saloon', name: 'Saloon', category: 'keys',
+    note: '조율이 더 어긋난 업라이트 — 서부극의 그 피아노',
+    params: { unison: 8.2, stretch: 3.4, hammer: 5600, decay: 0.44, body: 7 } },
+  { id: 'felt-close', name: 'Felt Close', category: 'pad',
+    note: '해머에 천을 끼우고 마이크를 붙였습니다 — 아주 부드럽게',
+    params: { level: 0.59, hammer: 1400, strike: 0.22, tone: 3600, body: 1,
+      spread: 0.12, decay: 0.9, bloom: 3 } },
+  { id: 'jangle', name: 'Jangle Box', category: 'keys',
+    note: '몸이 울리고 고음이 쟁쟁합니다 — 로파이 힙합 쪽',
+    params: { bodyQ: 4.4, body: 9, hammer: 6800, tone: 11500, decay: 0.5,
+      toneDecay: 0.032 } },
+  { id: 'deep-upright', name: 'Deep Upright', category: 'keys',
+    note: '아래쪽을 살리고 페달을 오래 — 발라드 왼손',
+    params: { bodyHz: 95, body: 8, tone: 5400, after: 0.68, release: 2.2,
+      decay: 1.4 } },
+  { id: 'dry-tack', name: 'Dry Tack', category: 'pluck',
+    note: '해머에 압정을 박은 소리에 몸을 죽였습니다 — 리듬 악기처럼',
+    params: { hammer: 8800, strike: 0.045, body: -5, decay: 0.3,
+      toneDecay: 0.005, release: 0.35, bloom: 2 } },
 ];
 
 // ── Bass Guitar ──────────────────────────────────────────────────────────────
@@ -1129,6 +1354,30 @@ const DRUMMACHINE: InstrumentPatch[] = [
     params: { bdlvl: 0.2, sdlvl: 0.25, cplvl: 0.3, rstune: 2100, rsdec: 0.12,
       rslvl: 0.9, cbtune: 760, cbdec: 0.55, cblvl: 0.9, chlvl: 0.4,
       cytune: 500, cydec: 2.8, cylvl: 0.7, width: 0.8 } },
+  { id: 'linn', name: 'Linn Drum', category: 'init',
+    note: '짧은 킥에 스냅이 센 스네어 — 80년대 초의 그 기계',
+    params: { bddec: 0.32, bdbend: 12, bdsnap: 0.72, sddec: 0.2, sdsnappy: 0.85,
+      sdtone: 0.35, chdec: 0.04, cydec: 1.1 } },
+  { id: 'house', name: 'House Kit', category: 'init',
+    note: '킥이 길고 하이햇이 열려 있습니다 — 네 박자에 실립니다',
+    params: { bddec: 0.95, bdtune: 46, bdbend: 8, ohdec: 0.9, ohlvl: 0.78,
+      chdec: 0.05, cplvl: 0.82 } },
+  { id: 'garage', name: 'Garage Kit', category: 'init',
+    note: '전부 높게 조율하고 짧게 끊습니다 — 2스텝의 촘촘한 쪽',
+    params: { tune: 4, bdtune: 62, bddec: 0.24, sdtune: 260, sddec: 0.14,
+      sdsnappy: 0.8, chdec: 0.025, rstune: 2400, cplvl: 0.85 } },
+  { id: 'dub', name: 'Dub Kit', category: 'init',
+    note: '톰을 길게 늘이고 심벌을 오래 — 공간을 악기로 씁니다',
+    params: { ltdec: 1.6, mtdec: 1.4, htdec: 1.2, ltbend: 16, cydec: 5.2,
+      cylvl: 0.68, bddec: 0.85, ohdec: 1.4 } },
+  { id: 'electro', name: 'Electro Kit', category: 'init',
+    note: '킥의 벤드를 극단까지 — 일렉트로의 그 떨어지는 음',
+    params: { bdbend: 44, bddec: 0.85, bdsnap: 0.9, ltbend: 20, mtbend: 20,
+      htbend: 20, cbtune: 880, cblvl: 0.75 } },
+  { id: 'brush', name: 'Brush Kit', category: 'init',
+    note: '스네어를 쓸고 심벌을 살립니다 — 조용한 연주용',
+    params: { sdsnappy: 0.95, sdsnapdec: 0.52, sddec: 0.5, sdlvl: 0.7,
+      bdlvl: 0.62, bddec: 0.4, cydec: 2.6, ohdec: 1.1, accent: 0.45 } },
 ];
 
 /**
