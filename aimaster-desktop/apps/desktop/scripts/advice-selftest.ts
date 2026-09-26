@@ -22,13 +22,22 @@
  * Run:  pnpm --filter @aimaster/desktop test:advice
  */
 
+import { OfflineAudioContext } from 'node-web-audio-api';
+(globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
+
 import { profileBuffer, type SourceProfile } from '../src/renderer/daw/ai/source-profile.js';
 import {
   LOW_CONFIDENCE, adviseFor, canAdvise,
 } from '../src/renderer/daw/ai/plugin-advice.js';
 import { PLUGINS, findPlugin } from '../src/renderer/daw/engine/plugins.js';
-import { analysisWindow } from '../src/renderer/daw/ai/advice-runner.js';
-import { createSession, createTrack } from '../src/renderer/daw/model/session-ops.js';
+import { analysisWindow, profileForInsert } from '../src/renderer/daw/ai/advice-runner.js';
+import {
+  addFile, addTrack, createClip, createInsert, createSession, createTrack, setInsert, updateClips,
+} from '../src/renderer/daw/model/session-ops.js';
+import { resetIds } from '../src/renderer/daw/model/ids.js';
+import { analyzeBuffer, clearAudioCache } from '../src/renderer/daw/engine/audio-cache.js';
+import { renderTrackWindow } from '../src/renderer/daw/engine/offline-render.js';
+import { defaultParams } from '../src/renderer/daw/engine/plugins.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -503,9 +512,149 @@ check('the analysis window starts where the material starts', () => {
   assert(empty === null, 'and a track with nothing on it has no window');
 });
 
-const passed = results.filter((r) => r.pass).length;
-const failed = results.length - passed;
-console.log('\n=== AI 추천 — 측정과 그 근거 ===');
-for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
-console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
-if (failed > 0) process.exit(1);
+// ── The half of the path that renders ─────────────────────────────────────
+//
+// Everything above feeds `profileBuffer` a synthetic buffer, which is the
+// right way to check that advice MOVES with the audio.  It leaves the other
+// half untested: `profileForInsert` renders the channel first, and a bug in
+// that render reaches every advisor at once without any of them looking wrong.
+//
+// One did.  `renderTrackWindow` muted the other tracks but kept their
+// inserts, and delay compensation counts a muted track's latency, so a
+// linear-phase EQ on a track nobody was looking at shifted this window by
+// exactly its own 511 samples — correlation 1.0000, so a shift and not a
+// change of tone.  Off the same audio that moved 63 of a profile's 129 fields
+// and took the compressor's recommended attack from 56 ms to 28 ms.
+//
+// An advisor that changes its mind because of a plugin on another track is
+// not reading the source, which is the one thing this suite exists to check.
+async function checkAsync(name: string, fn: () => Promise<void>): Promise<void> {
+  try { await fn(); results.push({ name, pass: true, detail: '' }); }
+  catch (e) { results.push({ name, pass: false, detail: e instanceof Error ? e.message : String(e) }); }
+}
+
+/** Bursts, so where the window starts changes the attack statistics. */
+function burstFile(id: string): void {
+  const ctx = new OfflineAudioContext(2, SR * 3, SR);
+  const buf = ctx.createBuffer(2, SR * 3, SR);
+  for (let c = 0; c < 2; c++) {
+    const d = buf.getChannelData(c);
+    let seed = 4242 + c * 31;
+    for (let i = 0; i < d.length; i++) {
+      seed = (Math.imul(seed ^ (seed >>> 15), 1 | seed) + 0x6d2b79f5) >>> 0;
+      const env = (i % 12_000) < 3_000 ? 1 : 0.05;
+      d[i] = ((seed >>> 8) / 8_388_608 - 1) * 0.25 * env;
+    }
+  }
+  analyzeBuffer(id, buf as unknown as AudioBuffer);
+}
+
+async function neighbourCannotChangeTheAdvice(): Promise<void> {
+  clearAudioCache();
+  resetIds();
+  burstFile('src');
+  let s = createSession('advice', SR);
+  const subject = createTrack('Subject', 'audio', { output: { kind: 'master' } });
+  const other = createTrack('Other', 'audio', { output: { kind: 'master' } });
+  s = addTrack(s, subject);
+  s = addTrack(s, other);
+  s = addFile(s, {
+    id: 'src', path: '/virtual/src.wav', name: 'src',
+    durationSec: 3, sampleRate: SR, channels: 2,
+  });
+  for (const t of [subject, other]) {
+    s = updateClips(s, t.id,
+      () => [createClip('src', 'src', { startSec: 0, offsetSec: 0, durationSec: 3 })]);
+  }
+  // Advice is being taken for the device at slot 1, so slot 0 is what it hears.
+  s = setInsert(s, subject.id, createInsert(0, 'eq', 'EQ', { params: defaultParams('eq') }));
+  s = setInsert(s, subject.id,
+    createInsert(1, 'comp', 'Compressor', { params: defaultParams('comp') }));
+
+  const LATENCY = 511;
+  const withNeighbour = setInsert(s, other.id,
+    createInsert(0, 'linphase', 'Linear Phase EQ', {
+      params: defaultParams('linphase'), latencySamples: LATENCY,
+    }));
+
+  // Rendered directly rather than through `profileForInsert`, whose cache key
+  // covers the measured track only — it would have served the first answer
+  // back and passed this without measuring anything.
+  const at = async (sess: typeof s): Promise<Buf> => await renderTrackWindow(sess, subject.id, {
+    beforeSlot: 1, startSec: 0, endSec: 3,
+  }) as unknown as Buf;
+  const plain = await at(s);
+  const beside = await at(withNeighbour);
+
+  let worst = 0;
+  const n = Math.min(plain.length, beside.length);
+  for (let c = 0; c < plain.numberOfChannels; c++) {
+    const x = plain.getChannelData(c);
+    const y = beside.getChannelData(c);
+    for (let i = 0; i < n; i++) worst = Math.max(worst, Math.abs((x[i] ?? 0) - (y[i] ?? 0)));
+  }
+  assert(worst < 1e-9,
+    `a ${LATENCY}-sample device on another track changed this one's audio by `
+    + `${worst.toExponential(2)} — the window moved`);
+
+  const pa = profileBuffer(plain as never, { name: 'Subject', kind: 'audio', tempoBpm: 120 });
+  const pb = profileBuffer(beside as never, { name: 'Subject', kind: 'audio', tempoBpm: 120 });
+  // Named one by one: "the profiles match" would not say which reading drifted.
+  for (const id of ['comp', 'gate', 'deesser', 'eq', 'limiter'] as const) {
+    const before = JSON.stringify(adviseFor(id, pa));
+    const after = JSON.stringify(adviseFor(id, pb));
+    assert(before === after,
+      `the ${id} advice changed because of a plugin on another track\n    ${before}\n    ${after}`);
+  }
+}
+
+async function theCacheIsSoundOnceTheRenderIs(): Promise<void> {
+  clearAudioCache();
+  resetIds();
+  burstFile('src');
+  let s = createSession('cache', SR);
+  const subject = createTrack('Subject', 'audio', { output: { kind: 'master' } });
+  const other = createTrack('Other', 'audio', { output: { kind: 'master' } });
+  s = addTrack(s, subject);
+  s = addTrack(s, other);
+  s = addFile(s, {
+    id: 'src', path: '/virtual/src.wav', name: 'src',
+    durationSec: 3, sampleRate: SR, channels: 2,
+  });
+  for (const t of [subject, other]) {
+    s = updateClips(s, t.id,
+      () => [createClip('src', 'src', { startSec: 0, offsetSec: 0, durationSec: 3 })]);
+  }
+  s = setInsert(s, subject.id, createInsert(0, 'eq', 'EQ', { params: defaultParams('eq') }));
+
+  const first = await profileForInsert({ session: s, trackId: subject.id, slot: 0 });
+  const withNeighbour = setInsert(s, other.id,
+    createInsert(0, 'linphase', 'Linear Phase EQ', {
+      params: defaultParams('linphase'), latencySamples: 511,
+    }));
+  const again = await profileForInsert({
+    session: withNeighbour, trackId: subject.id, slot: 0,
+  });
+  // The key does not mention the other tracks, so this is a hit — which is
+  // only CORRECT because the render no longer depends on them.  Stated here
+  // so that if the render ever does again, the reason this cache is allowed
+  // to ignore them is on the record.
+  assert(again.cached, 'the key covers the measured track, so this should be a hit');
+  assert(JSON.stringify(first.profile) === JSON.stringify(again.profile),
+    'a cache hit returned a different profile');
+}
+
+async function main(): Promise<void> {
+  await checkAsync('a plugin on another track cannot change the advice',
+    neighbourCannotChangeTheAdvice);
+  await checkAsync('and the advice cache may ignore the other tracks, because the render does',
+    theCacheIsSoundOnceTheRenderIs);
+
+  const passed = results.filter((r) => r.pass).length;
+  const failed = results.length - passed;
+  console.log('\n=== AI 추천 — 측정과 그 근거 ===');
+  for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
+  console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
+  if (failed > 0) process.exit(1);
+}
+void main();

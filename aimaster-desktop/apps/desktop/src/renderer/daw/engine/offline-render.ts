@@ -215,6 +215,27 @@ export interface TrackWindowOptions extends RenderOptions {
  * seconds of rendering for numbers that a well-chosen thirty seconds gives
  * just as well, and a button that takes ten seconds is a button nobody
  * presses twice.
+ *
+ * ── Isolated means their PROCESSING goes too, not only their sound ─────────
+ *
+ * Muting the other tracks stops them being heard.  It does not stop them
+ * being compensated for: delay compensation shifts the whole render by the
+ * deepest latency anywhere in the session, and a muted track is still in the
+ * session.  So a linear-phase EQ sitting on a track nobody is looking at
+ * moved this window by exactly its own 511 samples — cross-correlation 1.0000
+ * against the unshifted render, which is what says it is a shift and not a
+ * change of tone.
+ *
+ * 10.6 ms of window is not audible and it is not harmless.  It moved 63 of a
+ * source profile's 129 fields, and it halved the attack the compressor advice
+ * recommends — 56 ms against 28 ms, off the same audio, because the burst the
+ * window starts on is a different part of the burst.  The advice cache could
+ * not see it either: its key covers the measured track's clips and inserts,
+ * so the same key held two different measurements and the user got whichever
+ * was taken first.
+ *
+ * Both callers of this ask for one channel, on its own.  Neither wants
+ * another channel's latency in the answer.
  */
 export async function renderTrackWindow(
   session: DawSession,
@@ -246,7 +267,10 @@ export async function renderTrackWindow(
         };
       }
       if (t.kind === 'master') return { ...t, inserts: [], volumeDb: 0, pan: 0, mute: false, solo: false };
-      return { ...t, mute: true, solo: false };
+      // `inserts: []` is the line that keeps the answer about this track.
+      // Their delay is what leaks, and a muted track has no sound for them to
+      // be doing anything to.
+      return { ...t, inserts: [], mute: true, solo: false };
     }),
   };
 

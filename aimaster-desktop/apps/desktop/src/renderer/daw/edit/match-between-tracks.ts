@@ -66,38 +66,15 @@ export function spectrumIsSilent(curve: SpectrumCurve): boolean {
 }
 
 /**
- * The session with every track's processing removed except the one being
- * measured.
- *
- * `renderTrackWindow` mutes the other tracks, which stops them being HEARD
- * but not being compensated for: delay compensation shifts the whole render
- * by the deepest latency anywhere in it, so a linear-phase EQ sitting on a
- * muted track two rows down moves the window the measurement is taken over.
- *
- * Measured, because it is small enough to dismiss and large enough to matter:
- * one 511-sample device on an unrelated muted track moved a band reading by
- * 0.0495 dB, a zero-latency device on the same track moved it by 0.0000, and
- * the same device on the master — whose inserts `renderTrackWindow` already
- * strips — moved it by 0.0000.  So the mechanism is latency, not leakage.
- *
- * 0.05 dB is not audible.  What it breaks is the promise above it: that the
- * same two tracks give the same answer.  A user who adds a plugin to a track
- * they are not matching, and finds the curve has changed, has been told
- * something false about what the button does.
- */
-function onlyThisTrackProcesses(session: DawSession, trackId: TrackId): DawSession {
-  return {
-    ...session,
-    tracks: session.tracks.map((t) =>
-      (t.id === trackId || t.inserts.length === 0 ? t : { ...t, inserts: [] })),
-  };
-}
-
-/**
  * Measure one track's tonal balance.
  *
  * `beforeSlot` truncates the channel at an insert — used for the target, to
  * measure the material rather than the material already corrected.
+ *
+ * That the answer does not move when an unrelated track gains a plugin is
+ * `renderTrackWindow`'s job, and it is stated there: it used to, by exactly
+ * the neighbour's declared latency, because muting a track does not stop it
+ * being delay-compensated.
  */
 export async function measureTrackForMatch(
   session: DawSession,
@@ -105,7 +82,7 @@ export async function measureTrackForMatch(
   beforeSlot?: number,
 ): Promise<SpectrumCurve> {
   const endSec = windowEndSec(session, trackId);
-  const rendered = await renderTrackWindow(onlyThisTrackProcesses(session, trackId), trackId, {
+  const rendered = await renderTrackWindow(session, trackId, {
     ...(beforeSlot === undefined ? {} : { beforeSlot }),
     ...(endSec === undefined ? {} : { endSec }),
   });
