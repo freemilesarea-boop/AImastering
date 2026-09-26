@@ -32,6 +32,9 @@ import {
   BOWED_PARAMS, BOWED_PARAM_IDS, bowedTail, renderBowedVoice,
 } from './bowed-string.js';
 import {
+  REED_PARAMS, REED_PARAM_IDS, reedTail, renderReedVoice,
+} from './reed-pipe.js';
+import {
   DRUM_MAX_DECAY, drumTail, drumVoiceFor, renderDrumVoice,
 } from './drum-machine.js';
 import {
@@ -1873,6 +1876,65 @@ function bowedVoice(v: VoiceContext): { stop: (at: number) => void } {
   };
 }
 
+const REED_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const REED_CACHE_MAX = 96;
+
+function reedVoice(v: VoiceContext): { stop: (at: number) => void } {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.02, durationSec);
+  const seconds = Math.min(30, gate + reedTail(params));
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of REED_PARAM_IDS) fold(params[id] ?? 0);
+  fold(freq); fold(pitch); fold(velocity); fold(seconds); fold(gate);
+  fold(note.startBeat); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = REED_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderReedVoice({
+      sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq, pitch,
+      velocity, startBeat: note.startBeat, params,
+    });
+    if (REED_CACHE.size >= REED_CACHE_MAX) {
+      const oldest = REED_CACHE.keys().next().value;
+      if (oldest !== undefined) REED_CACHE.delete(oldest);
+    }
+    REED_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = 1;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
 const ANALOG_PARAMS: InstrumentParamDef[] = analogParams();
 const ANALOG_PARAM_IDS: readonly string[] = ANALOG_PARAMS.map((d) => d.id);
 
@@ -2842,6 +2904,24 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     // regimes it plays in, and Bow Position is a comb.  All three are
     // measured in `bowed-string.ts`.
     playNote: (v) => bowedVoice(v),
+  },
+
+  {
+    id: 'reed',
+    name: 'Reed Winds',
+    params: REED_PARAMS as InstrumentParamDef[],
+    // Clarinet, bass clarinet, alto and tenor sax, oboe — one instrument,
+    // because a reed driving a pipe is one instrument and the differences are
+    // the pipe's: whether its round trip inverts, how long it is, what it
+    // loses at the top.  The first of those is the whole distance between a
+    // clarinet and a saxophone; see `reed-pipe.ts`.
+    //
+    // Breath is pressure, not gain: below a threshold nothing sounds at all,
+    // and above it the spectrum opens out rather than merely getting louder.
+    // Register jumps a twelfth on the cylinders and an octave on the cones,
+    // because that is what the pipes do.  All of it is measured in
+    // `reed-selftest.ts`.
+    playNote: (v) => reedVoice(v),
   },
 
   {

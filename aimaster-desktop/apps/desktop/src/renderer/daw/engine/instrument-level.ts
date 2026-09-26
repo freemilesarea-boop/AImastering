@@ -117,6 +117,7 @@ export const INSTRUMENT_TRIM = {
   egtr: 0.3172,
   drumkit: 0.6127,
   bowed: 0.0206,
+  reed: 0.1030,
   sampler: 1,
 } as const;
 
@@ -169,6 +170,9 @@ export const REFERENCE_ROOT: Readonly<Record<string, number>> = {
   // The violin's open G is 55; a reference phrase rooted lower would be asking
   // the instrument for notes it does not have.
   bowed: 55,
+  // A clarinet's written low E is a concert D3; the reference phrase has to
+  // live where the instrument does.
+  reed: 50,
 };
 
 /** A maj7 chord, an eighth-note line over it, then the chord up a fourth. */

@@ -1131,6 +1131,76 @@ const DRUMMACHINE: InstrumentPatch[] = [
       cytune: 500, cydec: 2.8, cylvl: 0.7, width: 0.8 } },
 ];
 
+/**
+ * The clarinet family's patches, built on the axes that measurably move it.
+ *
+ * Chosen from measurement rather than from what the knobs are called.  Rendered
+ * one at a time against the default, the fingerprint distance each control can
+ * reach on its own is:
+ *
+ *     Lip 0.2      2.748      Bore       0.120
+ *     Register     2.095      Breath Nz  0.236
+ *     Stiffness    1.031      Growl      0.196
+ *     Attack       0.884      Spread     0.020
+ *     Vibrato      0.816      Leak       0.020
+ *     Breath       0.532      Tone       0.347
+ *     Instrument   0.501      Release    0.496
+ *
+ * So the bank is built out of Lip, Register, Stiffness, Attack, Vibrato and the
+ * second bore, and NOT out of Bore, Leak or Spread — those are honest controls
+ * that barely colour this model, and a bank that leaned on them would be
+ * thirteen names for one sound.  The first attempt did exactly that and the
+ * differentiation check caught it: fifteen pairs measured as the same patch,
+ * and the whole bank's spread was narrower than one knob's.
+ *
+ * Combining axes is also how patches end up alike, which is less obvious: a
+ * harder lip and a stiffer reed pull the spectrum opposite ways, and a patch
+ * with both measured 0.164 from the default while either alone measured over 1.
+ * So each patch leans on ONE dominant move and uses the rest for taste.
+ */
+const REED: InstrumentPatch[] = [
+  { id: 'init', name: 'Init Clarinet', category: 'init',
+    note: '기본 클라리넷 — 원통관이라 홀수 배음, 레지스터 키는 옥타브가 아니라 12도',
+    params: {} },
+  { id: 'soft-lip', name: 'Soft Lip', category: 'keys',
+    note: '입술을 아주 무르게 — 리드가 오래 움직여 굵고 무른 소리가 됩니다',
+    params: { damp: 0.22, attack: 0.05 } },
+  { id: 'tight-lip', name: 'Tight Lip', category: 'lead',
+    note: '입술을 조이고 세게 불어 붙잡습니다 — 얇고 곧게 뚫고 나오는 리드 톤',
+    params: { damp: 4, breath: 1.3, tone: 2, noise: 0.02, vibDepth: 0.1,
+      vibRate: 6.4, attack: 0.014 } },
+  { id: 'soft-reed', name: 'Soft Reed', category: 'keys',
+    note: '무른 리드 — 리드 자신의 공명이 내려와 갈대 소리가 앞에 섭니다',
+    params: { stiff: 0.4, damp: 0.6, noise: 0.34, attack: 0.1, breath: 1.15 } },
+  { id: 'clarion', name: 'Clarion', category: 'lead',
+    note: '레지스터 키를 눌러 12도 위 — 1901센트, 옥타브가 아닙니다',
+    params: { register: 1, breath: 1.1 } },
+  { id: 'clarion-soft', name: 'Clarion Soft', category: 'pad',
+    note: '윗 레지스터를 무른 입술로 — 높고 부드러운 층',
+    params: { register: 1, damp: 0.3, release: 0.5 } },
+  { id: 'air', name: 'Air', category: 'pad',
+    note: '아주 천천히 들어오고 길게 빠집니다 — 받치는 층으로',
+    params: { attack: 0.4, release: 0.8, noise: 0.45 } },
+  { id: 'staccato', name: 'Staccato', category: 'pluck',
+    note: '짧게 끊어 붙는 텅잉 — 리듬을 치는 데',
+    params: { attack: 0.004, release: 0.01, breath: 1.15 } },
+  { id: 'vibrato', name: 'Vibrato Lead', category: 'lead',
+    note: '비브라토로 노래하듯 — 재즈 쪽 클라리넷',
+    params: { vibDepth: 0.25, vibRate: 4.6 } },
+  { id: 'klezmer', name: 'Klezmer', category: 'lead',
+    note: '넓고 빠른 비브라토에 그르렁거림 — 클레즈머 쪽',
+    params: { vibDepth: 0.2, vibRate: 7.2, growl: 0.3, breath: 1.25 } },
+  { id: 'bass-init', name: 'Bass Clarinet', category: 'bass',
+    note: '같은 원통관을 한 옥타브 아래로 — 더 굵고 더 많이 잃는 보어',
+    params: { body: 1, tone: 1.2, attack: 0.045 } },
+  { id: 'bass-tight', name: 'Bass Clarinet Tight', category: 'bass',
+    note: '아래쪽을 조여서 — 베이스 라인이 또렷하게 나옵니다',
+    params: { body: 1, damp: 3.8, breath: 1.25, tone: 0.5, attack: 0.02 } },
+  { id: 'bass-solo', name: 'Bass Clarinet Solo', category: 'lead',
+    note: '무른 리드에 비브라토를 얹은 베이스 클라리넷 독주',
+    params: { body: 1, stiff: 0.4, vibDepth: 0.22, vibRate: 4.2 } },
+];
+
 export const INSTRUMENT_PATCHES: Readonly<Record<string, readonly InstrumentPatch[]>> = {
   polysynth: POLY,
   wavesynth: WAVESYNTH,
@@ -1145,6 +1215,7 @@ export const INSTRUMENT_PATCHES: Readonly<Record<string, readonly InstrumentPatc
   mallet: MALLET,
   organ: ORGAN,
   bowed: BOWED,
+  reed: REED,
   drummachine: DRUMMACHINE,
   // The kit has its own preset system — eleven genre kits, which are a patch
   // per DRUM rather than per instrument.  The sampler has none because its
