@@ -51,6 +51,19 @@ export interface InstrumentParamDef {
   max: number;
   default: number;
   unit: string;
+  /**
+   * The names of the things this parameter selects, when it selects a thing
+   * rather than setting an amount.
+   *
+   * Three instruments now have one — the bowed family's four boxes, the reed
+   * family's pipes, and the plucked family's five bodies — and without this the
+   * rack drew them as a slider with a number beside it, so choosing a bass
+   * clarinet read as "1.000".  The bowed one was invisible only because it has
+   * a panel of its own that knows the list; the other two did not.
+   */
+  choices?: readonly string[];
+  /** One line about each choice, shown under the picker. */
+  choiceNotes?: readonly string[];
 }
 
 export interface VoiceContext {
@@ -511,6 +524,111 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
     },
   };
 }
+
+/**
+ * The plucked instruments that are not guitars.
+ *
+ * ── Why this is a table and not five engines ───────────────────────────────
+ *
+ * A harp, a mandolin and a banjo are one instrument three times over: a string
+ * is displaced, released, and listened to while it dies.  `string-model.ts`
+ * already is that, and the two guitars already share `pluckVoice`.  What makes
+ * them different instruments is what the string is made of, how hard and where
+ * it is caught, how long it is allowed to ring, and what box it rings into —
+ * which is a row of numbers, the same way `BOW_BODIES` is a row of numbers for
+ * four members of the violin family.
+ *
+ * Writing five engines would have been five copies of Karplus-Strong with
+ * different constants, and the constants are the interesting part.
+ *
+ * ── Why bodyHz, bodyQ, body, plate and tone are NOT parameters here ────────
+ *
+ * `pluckVoice` resolves every one of them as `params[id] ?? tuning.id`, so a
+ * parameter with a DEFAULT wins over the table — and a default always has a
+ * value.  Exposing them would have left the instrument switch changing nothing
+ * but its name.  The guitars expose them because each guitar is one body; this
+ * is six bodies, so they belong to the table and the patches reach them through
+ * `kind`.
+ *
+ * For the same reason the selector is `kind` and not `body`: `pluckVoice` reads
+ * `params['body']` as the body resonance's GAIN IN DECIBELS.  A selector called
+ * `body` would have been read as 0 to 5 dB of body gain, which makes a sound,
+ * changes no instrument, and would have been very hard to see.
+ */
+export interface PluckKind {
+  id: string;
+  name: string;
+  /** Loop gain per round trip: how long the string rings. */
+  damping: number;
+  /** The excitation's corner — what the string is made of. */
+  brightness: number;
+  /** Where along the string it is caught, as a fraction. */
+  pick: number;
+  /** The box, or the head: centre, Q, and how much of it. */
+  bodyHz: number;
+  bodyQ: number;
+  bodyDb: number;
+  /** The second resonance, an octave or so up.  0 leaves it out. */
+  plateDb: number;
+  /** Where the instrument stops radiating. */
+  toneHz: number;
+  /** Paired courses, as `pluckVoice`'s doubling. */
+  double: number;
+  /** How long a note is allowed to ring, in seconds. */
+  ring: number;
+  /** The lowest note it has, for the patch bank and the reference phrase. */
+  lowest: number;
+}
+
+export const PLUCK_KINDS: readonly PluckKind[] = [
+  {
+    // A concert harp's string is long, light and under less tension than a
+    // guitar's, so it loses very little per round trip and rings for seconds.
+    // There are no frets and nothing to damp it but the player's hand.
+    id: 'harp', name: 'Harp',
+    damping: 0.9994, brightness: 0.62, pick: 0.28,
+    bodyHz: 130, bodyQ: 0.9, bodyDb: 5, plateDb: 3, toneHz: 8200,
+    double: 0, ring: 6, lowest: 24,
+  },
+  {
+    // Paired courses, tuned a few cents apart, are most of what a mandolin
+    // sounds like — and they are a thing no EQ imitates, because two strings
+    // beat against each other and one does not.  Short, hard, and plucked
+    // near the bridge with a stiff plectrum.
+    id: 'mandolin', name: 'Mandolin',
+    damping: 0.9948, brightness: 0.93, pick: 0.11,
+    bodyHz: 390, bodyQ: 2.2, bodyDb: 6, plateDb: 4, toneHz: 9500,
+    double: 0.55, ring: 1.8, lowest: 55,
+  },
+  {
+    // Nylon on a small box: fewer highs to start with and it loses them fast,
+    // which is why a ukulele cannot be made out of a bright guitar with an EQ.
+    id: 'ukulele', name: 'Ukulele',
+    damping: 0.9925, brightness: 0.55, pick: 0.2,
+    bodyHz: 380, bodyQ: 1.5, bodyDb: 5, plateDb: 0, toneHz: 6200,
+    double: 0, ring: 1.4, lowest: 60,
+  },
+  {
+    // A banjo's soundboard is a drum head, not a plate — one strong, fairly
+    // sharp resonance instead of a box's pair, and it throws the energy out
+    // so quickly that the note is over before a guitar's has begun.
+    id: 'banjo', name: 'Banjo',
+    damping: 0.9905, brightness: 0.97, pick: 0.07,
+    bodyHz: 330, bodyQ: 3.4, bodyDb: 9, plateDb: 0, toneHz: 11000,
+    double: 0, ring: 1.1, lowest: 50,
+  },
+  {
+    // Silk over a long paulownia box.  Plucked with a plectrum well away from
+    // the bridge, which is a comb that takes out the odd partials the pick
+    // sits on and leaves the hollow tone the instrument is known for.
+    id: 'koto', name: 'Koto',
+    damping: 0.9979, brightness: 0.68, pick: 0.35,
+    bodyHz: 180, bodyQ: 1.2, bodyDb: 7, plateDb: 2, toneHz: 7400,
+    double: 0, ring: 3.4, lowest: 43,
+  },
+];
+
+export const PLUCK_KIND_NAMES: readonly string[] = PLUCK_KINDS.map((k) => k.name);
 
 /** One plucked-string voice, shared by the two guitars. */
 function pluckVoice(
@@ -2687,6 +2805,69 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       pick: v.params['pick'] ?? 0.14,
       bodyHz: 110, bodyQ: 1.1, toneHz: 7000, trim: INSTRUMENT_TRIM.agtr,
     }),
+  },
+
+  {
+    id: 'plucked',
+    name: 'Plucked Strings',
+    // Harp, mandolin, ukulele, banjo and koto — one instrument, because a
+    // plucked string is one instrument and the differences are the table's.
+    // See `PLUCK_KINDS`, which also says why the body's own controls are not
+    // parameters here and why the selector is called `kind`.
+    params: [
+      {
+        id: 'kind', name: 'Instrument', min: 0, max: PLUCK_KINDS.length - 1,
+        default: 0, unit: '',
+        choices: PLUCK_KIND_NAMES,
+        choiceNotes: [
+          '긴 현·낮은 장력 — 몇 초를 웁니다',
+          '복현 — 두 현이 서로 비껴 울립니다',
+          '나일론·작은 박스 — 고음이 적게 나고 빨리 사라집니다',
+          '드럼 헤드 — 하나의 날카로운 공명, 매우 빠른 감쇠',
+          '실크·긴 오동나무 상자 — 브리지에서 먼 곳을 뜯습니다',
+        ],
+      },
+      // The player's hand.  Every one of these rests at 0, meaning "whatever
+      // the instrument does", so a patch that names none of them is the
+      // instrument itself rather than an edit of it.
+      { id: 'dampTrim',  name: 'Ring',   min: -1, max: 1, default: 0, unit: '' },
+      { id: 'brightTrim', name: 'Attack Tone', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'pickTrim',  name: 'Pick Pos', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'doubleTrim', name: 'Course', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'ringTrim',  name: 'Sustain', min: -1, max: 1, default: 0, unit: '' },
+      { id: 'width',     name: 'Width',  min: 0,  max: 1, default: 0.5, unit: '' },
+      { id: 'release',   name: 'Release', min: 0.03, max: 1.2, default: 0.2, unit: 's' },
+      { id: 'level',     name: 'Level',  min: 0,  max: 1, default: CALIBRATED_LEVEL, unit: '' },
+    ],
+    playNote: (v) => {
+      const kind = PLUCK_KINDS[Math.round(v.params['kind'] ?? 0)] ?? PLUCK_KINDS[0]!;
+      // The trims are relative, and they are relative on purpose.  An absolute
+      // Damping knob would mean one number across five instruments whose loop
+      // gains run from 0.9905 to 0.9994 — and 0.99 is a banjo's whole note and
+      // a harp's first tenth of one.  A trim moves each instrument within its
+      // OWN range, so the same patch reads the same way on all of them.
+      const trim = (id: string): number => Math.max(-1, Math.min(1, v.params[id] ?? 0));
+      const lerp = (base: number, lo: number, hi: number, t: number): number =>
+        (t >= 0 ? base + (hi - base) * t : base + (base - lo) * t);
+      const params: Record<string, number> = {
+        ...v.params,
+        damp: lerp(kind.damping, 0.985, 0.99975, trim('dampTrim')),
+        bright: Math.max(0, Math.min(1, lerp(kind.brightness, 0.2, 1, trim('brightTrim')))),
+        pick: Math.max(0.02, Math.min(0.5, lerp(kind.pick, 0.03, 0.48, trim('pickTrim')))),
+        double: Math.max(0, Math.min(1, lerp(kind.double, 0, 1, trim('doubleTrim')))),
+        sustain: Math.max(0.4, Math.min(8, lerp(kind.ring, 0.5, 8, trim('ringTrim')))),
+        bodyHz: kind.bodyHz,
+        bodyQ: kind.bodyQ,
+        body: kind.bodyDb,
+        plate: kind.plateDb,
+        tone: kind.toneHz,
+      };
+      return pluckVoice({ ...v, params }, {
+        damping: kind.damping, brightness: kind.brightness, pick: kind.pick,
+        bodyHz: kind.bodyHz, bodyQ: kind.bodyQ, toneHz: kind.toneHz,
+        trim: INSTRUMENT_TRIM['plucked'] ?? 1,
+      });
+    },
   },
 
   {

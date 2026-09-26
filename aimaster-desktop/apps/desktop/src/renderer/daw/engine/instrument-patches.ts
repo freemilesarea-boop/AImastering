@@ -1201,6 +1201,68 @@ const REED: InstrumentPatch[] = [
     params: { body: 1, stiff: 0.4, vibDepth: 0.22, vibRate: 4.2 } },
 ];
 
+/**
+ * The plucked family's patches.
+ *
+ * Built to the two rules this suite enforces, from the start rather than after
+ * being told: every pair has to move at least two knobs and differ by more than
+ * a quarter of the parameter space, AND sound more than 0.40 apart when
+ * rendered.  The reed bank learned both the hard way — one patch per dominant
+ * axis satisfied the ear and failed the parameter rule, and combinations of
+ * opposing axes satisfied the parameter rule and cancelled in the ear.
+ *
+ * The five bodies are already 0.584 to 4.029 apart from each other, measured,
+ * so most of the work is done by `kind`; the trims are what makes two patches
+ * on the SAME body two patches.
+ *
+ * Which is also why no patch here is a bare `{ kind: n }`.  `kind` spans five
+ * values, so stepping it one place is exactly 0.25 of the parameter space and
+ * exactly one knob — both of which land on the wrong side of the rule, and
+ * rightly: a preset whose whole content is "pick the other instrument" is the
+ * picker, not a preset.  Each body's plain patch says how wide it sits and how
+ * long it takes to let go, which are the two things a player chooses before
+ * touching anything else.
+ */
+const PLUCKED: InstrumentPatch[] = [
+  { id: 'init', name: 'Init Harp', category: 'init',
+    note: '콘서트 하프 — 긴 현이 몇 초를 웁니다, 감쇠시킬 것이 손밖에 없습니다',
+    params: {} },
+  { id: 'harp-close', name: 'Harp Close', category: 'pluck',
+    note: '브리지 가까이 뜯어 또렷하게, 링은 조금 짧게 — 아르페지오가 뭉치지 않습니다',
+    params: { pickTrim: -0.7, ringTrim: -0.45, brightTrim: 0.35, width: 0.3 } },
+  { id: 'harp-soft', name: 'Harp Soft', category: 'pad',
+    note: '살로 무르게 뜯어 길게 — 받치는 층으로',
+    params: { brightTrim: -0.65, ringTrim: 0.5, pickTrim: 0.5, release: 0.8,
+      width: 0.85 } },
+  { id: 'mandolin', name: 'Mandolin', category: 'guitar',
+    note: '복현 — 두 현이 서로 비껴 울립니다. EQ로는 흉내낼 수 없는 것',
+    params: { kind: 1, width: 0.72, release: 0.11 } },
+  { id: 'mandolin-tremolo', name: 'Mandolin Bright', category: 'lead',
+    note: '복현을 더 벌리고 단단한 플렉트럼으로 — 트레몰로가 앞에 섭니다',
+    params: { kind: 1, doubleTrim: 0.6, brightTrim: 0.4, pickTrim: -0.5 } },
+  { id: 'ukulele', name: 'Ukulele', category: 'guitar',
+    note: '나일론에 작은 박스 — 고음이 적게 나고 빨리 사라집니다',
+    params: { kind: 2, width: 0.34, release: 0.12 } },
+  { id: 'ukulele-warm', name: 'Ukulele Warm', category: 'keys',
+    note: '엄지로 살에 가깝게 — 둥글고 짧게',
+    params: { kind: 2, brightTrim: -0.55, pickTrim: 0.55, ringTrim: 0.3 } },
+  { id: 'banjo', name: 'Banjo', category: 'guitar',
+    note: '드럼 헤드 — 기타의 음이 시작되기 전에 끝납니다',
+    params: { kind: 3, width: 0.22, release: 0.07 } },
+  { id: 'banjo-ring', name: 'Banjo Ring', category: 'pluck',
+    note: '헤드를 덜 조여 조금 더 울리게, 뜯는 자리는 더 안쪽으로',
+    params: { kind: 3, dampTrim: 0.55, ringTrim: 0.5, pickTrim: 0.45 } },
+  { id: 'koto', name: 'Koto', category: 'keys',
+    note: '실크에 긴 오동나무 상자 — 브리지에서 먼 곳을 뜯어 속이 빈 음색',
+    params: { kind: 4, width: 0.62, release: 0.34 } },
+  { id: 'koto-bright', name: 'Koto Bright', category: 'lead',
+    note: '플렉트럼을 브리지 쪽으로 옮기고 단단하게 — 선율에 씁니다',
+    params: { kind: 4, pickTrim: -0.65, brightTrim: 0.45, ringTrim: -0.3 } },
+  { id: 'harp-wide', name: 'Harp Wide', category: 'pad',
+    note: '복현처럼 겹치고 넓게 벌려 — 하프 두 대처럼 들립니다',
+    params: { doubleTrim: 0.75, width: 1, ringTrim: 0.35, brightTrim: -0.3 } },
+];
+
 export const INSTRUMENT_PATCHES: Readonly<Record<string, readonly InstrumentPatch[]>> = {
   polysynth: POLY,
   wavesynth: WAVESYNTH,
@@ -1216,6 +1278,7 @@ export const INSTRUMENT_PATCHES: Readonly<Record<string, readonly InstrumentPatc
   organ: ORGAN,
   bowed: BOWED,
   reed: REED,
+  plucked: PLUCKED,
   drummachine: DRUMMACHINE,
   // The kit has its own preset system — eleven genre kits, which are a patch
   // per DRUM rather than per instrument.  The sampler has none because its

@@ -564,6 +564,40 @@ function ParamKnobs({ instrumentId, params, onDrag, onCommit }: {
          }}>
       {instrument.params.map((p) => {
         const value = params[p.id] ?? p.default;
+        // A parameter that SELECTS something gets a picker, not a slider.
+        //
+        // Every instrument parameter used to be a range with a number beside
+        // it, which is right for an amount and wrong for a list: the reed
+        // family's five pipes read as 0.000 to 4.000, so choosing a bass
+        // clarinet meant knowing that a bass clarinet is 1.  The bowed family
+        // was spared only because it has a panel of its own that holds the
+        // list; nothing here knew about any of them.
+        if (p.choices !== undefined && p.choices.length > 0) {
+          const index = Math.round(Math.max(p.min, Math.min(p.max, value)));
+          const note = p.choiceNotes?.[index - Math.round(p.min)];
+          return (
+            <label key={p.id} className="flex flex-col gap-0.5" title={note ?? p.name}>
+              <span className="flex items-center gap-1.5">
+                <span className="w-[52px] shrink-0 truncate"
+                      style={{ fontSize: 9, color: premium.text.muted }}>{p.name}</span>
+                <select
+                  value={index}
+                  onChange={(e) => { onDrag(p.id, Number(e.target.value)); onCommit(); }}
+                  className="flex-1 min-w-0 h-5 rounded bg-zinc-900 border border-zinc-700 px-1"
+                  style={{ fontSize: 9, color: premium.text.primary }}
+                >
+                  {p.choices.map((label, i) => (
+                    <option key={label} value={Math.round(p.min) + i}>{label}</option>
+                  ))}
+                </select>
+              </span>
+              {note !== undefined && (
+                <span className="pl-[58px] truncate"
+                      style={{ fontSize: 8, color: premium.text.muted }}>{note}</span>
+              )}
+            </label>
+          );
+        }
         return (
           <label key={p.id} className="flex items-center gap-1.5" title={`${p.min} … ${p.max} ${p.unit}`}>
             <span className="w-[52px] shrink-0 truncate"

@@ -118,6 +118,7 @@ export const INSTRUMENT_TRIM = {
   drumkit: 0.6127,
   bowed: 0.0206,
   reed: 0.1030,
+  plucked: 0.2373,
   sampler: 1,
 } as const;
 
@@ -173,6 +174,9 @@ export const REFERENCE_ROOT: Readonly<Record<string, number>> = {
   // A clarinet's written low E is a concert D3; the reference phrase has to
   // live where the instrument does.
   reed: 50,
+  // A harp's bottom is far lower than a guitar's; the phrase has to sit where
+  // the family actually plays, and 48 is the middle of the five bodies.
+  plucked: 48,
 };
 
 /** A maj7 chord, an eighth-note line over it, then the chord up a fourth. */
