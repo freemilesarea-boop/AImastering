@@ -91,11 +91,30 @@ export function matchEqFromReference(
   mix: SpectrumCurve,
   sampleRate = session.sampleRate,
 ): MatchOutcome {
-  const descriptor = findPlugin(MATCH_PLUGIN_ID);
-  if (!descriptor) return { ok: false, reason: '매치 EQ 장치를 찾을 수 없습니다' };
   if (reference.hz.length === 0 || mix.hz.length === 0) {
     return { ok: false, reason: '분석 결과가 비어 있습니다' };
   }
+  return writeMatchCurve(session, trackId, matchCurve(reference, mix), sampleRate);
+}
+
+/**
+ * Store 32 measured decibels into a Match EQ on `trackId`, adding the device
+ * if the track has not got one.
+ *
+ * Shared by both routes that take a match — the whole-mix one above and the
+ * track-to-track one in `match-between-tracks.ts` — because the part that is
+ * easy to get subtly wrong is this one, not the measuring: which slot, whose
+ * settings survive, and what latency the insert then declares.  Two copies of
+ * it would drift.
+ */
+export function writeMatchCurve(
+  session: DawSession,
+  trackId: TrackId,
+  curve: readonly number[],
+  sampleRate = session.sampleRate,
+): MatchOutcome {
+  const descriptor = findPlugin(MATCH_PLUGIN_ID);
+  if (!descriptor) return { ok: false, reason: '매치 EQ 장치를 찾을 수 없습니다' };
   const place = matchPlacement(session, trackId);
   if (!place) {
     return { ok: false, reason: findTrack(session, trackId)
@@ -103,7 +122,6 @@ export function matchEqFromReference(
       : '대상 트랙을 찾을 수 없습니다' };
   }
 
-  const curve = matchCurve(reference, mix);
   // Defaults underneath, so a device stored by an older build that never knew
   // about a control still comes back with every parameter the engine reads.
   const params: Record<string, number> = {

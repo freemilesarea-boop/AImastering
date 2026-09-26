@@ -300,6 +300,18 @@ export interface DawState {
   setChannelClipboard: (settings: ChannelSettings | null) => void;
 
   /**
+   * The track a Match EQ should copy the tone OF, waiting for a target.
+   *
+   * An id rather than a measured curve: the model track goes on being edited
+   * after it is picked, and a match taken ten minutes later should measure
+   * what the track sounds like THEN, not what it sounded like at the moment
+   * somebody clicked.  A stale curve is the kind of wrong that looks like the
+   * match simply not working.
+   */
+  matchModelTrackId: TrackId | null;
+  setMatchModelTrackId: (trackId: TrackId | null) => void;
+
+  /**
    * Write a crossfade whenever a drag leaves two clips overlapping.
    *
    * A preference rather than session data — it describes how this person
@@ -610,6 +622,9 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   channelClipboard: null,
   setChannelClipboard: (channelClipboard) => set({ channelClipboard }),
+
+  matchModelTrackId: null,
+  setMatchModelTrackId: (matchModelTrackId) => set({ matchModelTrackId }),
 
   autoCrossfade: true,
   setAutoCrossfade: (autoCrossfade) => set({ autoCrossfade }),

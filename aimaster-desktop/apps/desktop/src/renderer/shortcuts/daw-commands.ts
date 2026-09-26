@@ -56,6 +56,8 @@ import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
 import {
   addTrack, createTrack, findTrack, sessionEndSec,
 } from '../daw/model/session-ops.js';
+import { matchTrackToTrack } from '../daw/edit/match-between-tracks.js';
+import { slotLetter } from '../daw/edit/match-from-reference.js';
 import {
   clearAllMute, clearAllSolo, setSoloSafe, soloSafeCount, toggleMute, toggleSolo,
 } from '../daw/model/mixer-math.js';
@@ -169,6 +171,7 @@ export type DawCommandId =
   | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
   | 'daw.quantizeAudio' | 'daw.hideTracks' | 'daw.showAllTracks'
   | 'daw.copyChannel' | 'daw.pasteChannel'
+  | 'daw.matchPickModel' | 'daw.matchToModel'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
@@ -680,6 +683,55 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
         return out;
       });
       notify(`${targets.length}개 채널에 붙여넣기 — ${describeChannel(settings)}`, 'success');
+    },
+
+    /**
+     * Remember which track a match should copy the tone of.
+     *
+     * Two commands rather than one because a match needs two tracks and a
+     * single selection only names one — the same shape as copy/paste channel
+     * above, so the gesture is already learned.
+     */
+    'daw.matchPickModel': () => {
+      const state = daw();
+      const trackId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!trackId) { notify('트랙을 먼저 고르세요', 'warning'); return; }
+      const track = findTrack(state.session, trackId);
+      if (!track) return;
+      if (trackClips(track).length === 0) {
+        notify(`${track.name} 에는 잴 오디오가 없습니다`, 'warning');
+        return;
+      }
+      state.setMatchModelTrackId(trackId);
+      notify(`매치 기준 — ${track.name}`);
+    },
+
+    'daw.matchToModel': async () => {
+      const state = daw();
+      const modelId = state.matchModelTrackId;
+      if (!modelId) {
+        notify('기준 트랙이 없습니다 — 먼저 Mod+Alt+Shift+Q', 'warning');
+        return;
+      }
+      const model = findTrack(state.session, modelId);
+      if (!model) {
+        state.setMatchModelTrackId(null);
+        notify('기준 트랙이 사라졌습니다 — 다시 지정하세요', 'warning');
+        return;
+      }
+      const targetId = targetTrackIds()[0] ?? state.focusedTrackId;
+      if (!targetId) { notify('맞출 트랙을 고르세요', 'warning'); return; }
+      const target = findTrack(state.session, targetId);
+      if (!target) return;
+      notify(`${model.name} 과 ${target.name} 를 재는 중…`);
+      const outcome = await matchTrackToTrack(state.session, modelId, targetId);
+      if (!outcome.ok) { notify(outcome.reason, 'error'); return; }
+      state.apply(() => outcome.session);
+      notify(
+        `${target.name} → ${model.name} 음색에 맞춤 — ${slotLetter(outcome.slot)} 슬롯`
+        + `${outcome.replaced ? ' 재측정' : ''}, 최대 ${outcome.peakDb.toFixed(1)} dB`,
+        'success',
+      );
     },
 
     'daw.quantizeAudio': () => {

@@ -62,6 +62,7 @@ export type CommandId =
   | 'daw.createEditGroup' | 'daw.dissolveEditGroup' | 'daw.toggleGroupsEnabled'
   | 'daw.quantizeAudio' | 'daw.hideTracks' | 'daw.showAllTracks'
   | 'daw.copyChannel' | 'daw.pasteChannel'
+  | 'daw.matchPickModel' | 'daw.matchToModel'
   | 'daw.zoomToSelection' | 'daw.toggleFollowPlayhead' | 'daw.playFromSelection'
   | 'daw.duplicateTrack' | 'daw.cycleRulerFormat'
   | 'daw.nudgeForward' | 'daw.nudgeBack'
@@ -408,6 +409,10 @@ export const SHORTCUTS: ShortcutDef[] = [
     note: '인서트·센드·페이더·팬 — 클립과 오토메이션은 빼고', available: true },
   { id: 'daw.pasteChannel', group: 'daw', label: '채널 설정 붙여넣기', chords: ['Mod+Alt+Shift+X'],
     note: '선택한 트랙 전부에 — 인서트는 새 id 로 복사돼 서로 영향 없음', available: true },
+  { id: 'daw.matchPickModel', group: 'daw', label: '매치 기준 트랙 지정', chords: ['Mod+Alt+Shift+Q'],
+    note: '이 트랙의 음색을 본뜨겠다는 표시 — 커브가 아니라 트랙을 기억하므로 나중에 재면 그때의 소리를 잽니다', available: true },
+  { id: 'daw.matchToModel', group: 'daw', label: '기준 트랙 음색에 맞추기', chords: ['Mod+Alt+Shift+I'],
+    note: '선택한 트랙에 매치 EQ 를 걸어 기준 트랙과의 차이를 채웁니다 — 두 번 눌러도 같은 답이 나옵니다', available: true },
   { id: 'daw.quantizeAudio', group: 'daw', label: '오디오 퀀타이즈', chords: ['Mod+Shift+T'],
     note: '트랜지언트를 그리드로 — 강도·스윙·허용 오차를 정하고, 적용 전에 몇 개가 움직이는지 봅니다', available: true },
   { id: 'daw.createEditGroup', group: 'daw', label: '편집 그룹 만들기', chords: ['Mod+G'],
