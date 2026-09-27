@@ -90,16 +90,49 @@ export interface PluckOptions {
 }
 
 /**
- * The integer and fractional parts of the delay line for one pitch.
+ * The delay line for one pitch: whole samples, and an allpass for the rest.
  *
- * Exported because it is the whole tuning argument, and a test that cannot
- * see it can only check the pitch it hears, which is a slower way to find out
- * that the sign of `frac` is wrong.
+ * Exported because it is the whole tuning argument, and a test that cannot see
+ * it can only check the pitch it hears, which is a slower way to find out that
+ * a sign is wrong.
+ *
+ * ── Why an allpass and not the interpolation that was here ─────────────────
+ *
+ * A delay line is a whole number of samples and a pitch is not, so something
+ * has to supply the fraction.  This read the next sample and interpolated
+ * towards it, which is a lowpass whose loss depends on WHERE THE ROUNDING
+ * LANDED — maximal at half a sample, none at zero or one.  That loss is inside
+ * the feedback loop, so it does not tint the tone once, it sets how fast the
+ * top of the string dies.  Measured over one chromatic octave at 44.1 kHz, the
+ * high band's T60 swung between 0.84 s and 1.77 s and it tracked the fraction:
+ * the three notes nearest half a sample were the three shortest.  A string
+ * whose brightness is decided by a rounding remainder.
+ *
+ * It is a sample-rate bug for the same reason.  The fraction for a given pitch
+ * is a different number at a different rate — at 110 Hz it is 0.59 at 44.1 kHz
+ * and 0.14 at 48 — so the same note rang 53 per cent longer up top at 48.
+ * Working it through at 6 kHz: the interpolator passes 0.913 per round trip at
+ * 44.1 and 0.964 at 48, the loop's averager 0.910 and 0.924, which predicts a
+ * T60 ratio of 1.59 against 1.53 measured — and puts about four fifths of it on
+ * the interpolator.
+ *
+ * A first-order allpass has unity magnitude at every frequency.  It delays by
+ * the fraction and takes nothing, so the loop's losses are the loop's business
+ * again.  What it does instead is disperse — its delay is slightly shorter for
+ * high partials — which stretches them a little, the way a real string's
+ * stiffness does.
+ *
+ * The fraction is kept in [0.5, 1.5) by borrowing a sample from the integer
+ * part, because an allpass asked for a delay near zero needs a coefficient near
+ * 1, and that is a pole laid against the unit circle.
  */
-export function stringDelay(freqHz: number, sampleRate: number): { length: number; frac: number } {
+export function stringDelay(freqHz: number, sampleRate: number): {
+  length: number; frac: number; allpass: number;
+} {
   const total = sampleRate / Math.max(1, freqHz) - 0.5;   // minus the loop filter
-  const length = Math.max(2, Math.ceil(total));
-  return { length, frac: length - total };                // in [0, 1)
+  const length = Math.max(2, Math.floor(total - 0.5));
+  const frac = total - length;                            // in [0.5, 1.5)
+  return { length, frac, allpass: (1 - frac) / (1 + frac) };
 }
 
 /** One plucked note, as samples. */
@@ -107,7 +140,7 @@ export function pluckedString(o: PluckOptions): Float32Array {
   const sr = o.sampleRate;
   const n = Math.max(1, Math.round(sr * Math.max(0.01, o.seconds)));
   const out = new Float32Array(n);
-  const { length: L, frac } = stringDelay(o.freqHz, sr);
+  const { length: L, allpass: ap } = stringDelay(o.freqHz, sr);
 
   // Excitation: noise, low-passed by `brightness`, then comb-filtered at the
   // pick position.  Filling the delay line IS the pluck — there is no separate
@@ -134,14 +167,18 @@ export function pluckedString(o: PluckOptions): Float32Array {
   const damp = Math.min(0.99995, Math.max(0.5, o.damping));
   let idx = 0;
   let prev = 0;
+  // The allpass's one state, as `y[n] = a·x[n] + x[n−1] − a·y[n−1]` folded into
+  // a single carry.  Round the loop: L whole samples, then the fraction, then
+  // the averager's half — which is the period `stringDelay` was asked for.
+  let apz = 0;
   for (let i = 0; i < n; i++) {
-    const s0 = line[idx]!;
-    const s1 = line[(idx + 1) % L]!;
-    const cur = s0 + frac * (s1 - s0);
-    const filtered = (cur + prev) * 0.5 * damp;
-    prev = cur;
+    const x = line[idx]!;
+    const y = ap * x + apz;
+    apz = x - ap * y;
+    const filtered = (y + prev) * 0.5 * damp;
+    prev = y;
     line[idx] = filtered;
-    out[i] = cur;
+    out[i] = y;
     idx = (idx + 1) % L;
   }
   return out;

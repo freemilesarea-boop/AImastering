@@ -94,8 +94,8 @@ const TOLERANCE_LU = 0.4;
  * renderers agree about; the kit sits 1.85 LU low because it does not.
  */
 const NODE_REFERENCE_LUFS: Readonly<Record<string, number>> = {
-  polysynth: -26.01, epiano: -26.06, agtr: -26.07, egtr: -26.00,
-  piano: -26.00, upright: -26.00, bass: -25.86, mallet: -26.00, organ: -25.99,
+  polysynth: -26.01, epiano: -26.06, agtr: -26.00, egtr: -26.00,
+  piano: -26.00, upright: -26.00, bass: -26.00, mallet: -26.00, organ: -25.99,
   wavesynth: -26.00, analog: -26.00, fm: -26.00, bowed: -26.00, reed: -26.00, plucked: -26.00,
   clavinet: -26.00,
 };
@@ -184,6 +184,54 @@ const RENDERER_GAP_LU = 2.0;
  */
 const CEILING_LIMITED_GAP_LU = 2.5;
 
+/**
+ * What changing the sample rate does to each string instrument's loudness.
+ *
+ * ── Why this table exists ──────────────────────────────────────────────────
+ *
+ * A trim is one number and the app runs at whatever rate the audio device runs
+ * at, so an instrument whose loudness depends on the rate cannot be calibrated
+ * — one of the two rates will be wrong, and no entry in `INSTRUMENT_TRIM` can
+ * fix it.  Only the Karplus-Strong instruments have this problem: everything
+ * modal, additive or rendered into a buffer by our own code reads within 0.01
+ * LU at both rates.
+ *
+ * Most of it is gone.  The loop's fractional delay used to be an interpolation
+ * towards the next sample, which is a lowpass whose loss depends on where the
+ * rounding landed — and the fraction for a given pitch is a different number at
+ * a different rate.  Measured with one ruler across six pitches, the high band's
+ * T60 ratio between 44.1 and 48 kHz was a lottery: 1.27, 1.72, 1.66, 1.02, 1.02,
+ * 0.97 — the same instrument ringing 72 per cent longer up top at one note and 3
+ * per cent shorter at another.  With a first-order allpass, which has unity
+ * magnitude at every frequency, it is 1.10 to 1.33 and always in the same
+ * direction, which is the loop's two-point averager and nothing else: its
+ * response is `cos(πf/sr)`, and that predicts 1.19 against 1.18 measured.
+ *
+ * ── What is left, and why each number is what it is ────────────────────────
+ *
+ * `plucked` is the clean case: 0.027 LU, down from 0.412.  That is the whole of
+ * what this change was for.
+ *
+ * The rest is the EXCITATION, which is `L` samples of a seeded noise sequence
+ * where `L` is the delay line's length — so at a different rate the same note is
+ * a different draw, combed at a rounded pick position and divided by a different
+ * peak.  It shows as a difference already present in the attack that does not
+ * grow: measured on the bass, the low band differs by 0.86 dB at 20 ms and 0.85
+ * dB at 1.5 s, and the sign changes from note to note.  The bass is worst
+ * because its reference root is the lowest and its pick sits nearest the bridge,
+ * so both the draw and the comb differ most.
+ *
+ * Each number is pinned rather than bounded, because a change in either
+ * direction is news: smaller means somebody improved it and this table should
+ * say so, larger means a regression.
+ */
+const RATE_GAP_LU: Readonly<Record<string, number>> = {
+  plucked: -0.027, bass: -0.534, agtr: 0.145, egtr: -0.318,
+};
+
+/** How far a rate gap may drift from the table above before it is news. */
+const RATE_GAP_TOLERANCE_LU = 0.12;
+
 async function render(
   id: string, events: readonly LevelEvent[], seconds: number,
   overrides: Record<string, number> = {},
@@ -244,6 +292,38 @@ async function main(): Promise<void> {
     const hard = getLoudnessMetrics(await render(id, hardChord(root), 3));
     measured.set(id, { lufs: phrase.integratedLufs, hard: hard.truePeakDbtp });
   }
+
+  await check('a string instrument sounds as loud at 48 kHz as at 44.1', async () => {
+    // Rendered here rather than reusing `measured`, because `render` uses the
+    // suite's own SR and the whole point is to change it.
+    const at = async (id: string, sr: number): Promise<number> => {
+      const inst = findInstrument(id);
+      assert(inst !== undefined, `no instrument ${id}`);
+      const root = REFERENCE_ROOT[id] ?? 48;
+      const ctx = new OfflineAudioContext(
+        2, Math.round(sr * REFERENCE_PHRASE_SECONDS), sr);
+      for (const e of referencePhrase(root)) {
+        inst!.playNote({
+          ctx: ctx as unknown as BaseAudioContext,
+          destination: ctx.destination as unknown as AudioNode,
+          note: createNote({ pitch: e.pitch, velocity: e.vel, startBeat: 0, durationBeat: 1 }),
+          config: DEFAULT_MIDI_CONFIG, when: e.at, durationSec: e.dur,
+          params: defaultInstrumentParams(id),
+        });
+      }
+      const buf = await ctx.startRendering();
+      const l = buf.getChannelData(0); const r = buf.getChannelData(1);
+      return getLoudnessMetrics({
+        sampleRate: sr, length: l.length, numberOfChannels: 2,
+        getChannelData: (c: number) => (c === 0 ? l : r),
+      } as unknown as AudioBufferLike).integratedLufs;
+    };
+    for (const [id, want] of Object.entries(RATE_GAP_LU)) {
+      const got = (await at(id, 48_000)) - (await at(id, 44_100));
+      assert(Math.abs(got - want) <= RATE_GAP_TOLERANCE_LU,
+        `${id} moves ${got.toFixed(3)} LU between 44.1 and 48 kHz, was ${want}`);
+    }
+  });
 
   await check('every instrument with a Level is either metered here or excused', () => {
     for (const inst of INSTRUMENTS) {
