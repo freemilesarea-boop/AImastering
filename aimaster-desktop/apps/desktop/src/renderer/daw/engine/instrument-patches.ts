@@ -1421,9 +1421,17 @@ const REED: InstrumentPatch[] = [
   { id: 'soft-reed', name: 'Soft Reed', category: 'keys',
     note: '무른 리드 — 리드 자신의 공명이 내려와 갈대 소리가 앞에 섭니다',
     params: { stiff: 0.4, damp: 0.6, noise: 0.34, attack: 0.1, breath: 1.15 } },
+  // Why this patch is more than a register key: with the pipe three times as
+  // long and its third mode carrying the note, the harmonics the bore supports
+  // are f, 3f and 5f — the SAME odd set the chalumeau supports, because 15·f/3
+  // is odd too.  So the key alone barely changes the timbre (measured, 0.338 of
+  // fingerprint distance from the init patch, inside the 0.40 the bank
+  // requires), and what makes the clarion register sound like itself is how it
+  // is played: tight, bright, and with air behind it.
   { id: 'clarion', name: 'Clarion', category: 'lead',
-    note: '레지스터 키를 눌러 3번 모드로 — 12도 위 모드가 음을 나릅니다. 조여서 붑니다',
-    params: { register: 1, breath: 1.18, damp: 2.4, tone: 1.35, attack: 0.012 } },
+    note: '레지스터 키를 눌러 3번 모드로 — 12도 위 모드가 음을 나릅니다. 조이고 세게 붑니다',
+    params: { register: 1, breath: 1.3, damp: 4, tone: 1.8, noise: 0.03,
+      attack: 0.008, release: 0.1 } },
   { id: 'clarion-soft', name: 'Clarion Soft', category: 'pad',
     note: '윗 레지스터를 무른 입술로 — 높고 부드러운 층',
     params: { register: 1, damp: 0.3, release: 0.5 } },

@@ -108,16 +108,34 @@
 // Measured at the top of a held note, with the loop's length in samples beside
 // each reading, because the length is the thing that limits it:
 //
-//     Clarinet        163sp −2c   122sp −2c   82sp −4c   55sp −5c   41sp −13c
-//     Bass Clarinet   327sp −2c   245sp −2c  163sp −2c  109sp −3c   61sp −11c
+//     Clarinet        161sp −4c   120sp −5c    80sp −7c   53sp −9c   39sp −17c
+//     Bass Clarinet   326sp −3c   243sp −4c   161sp −5c  107sp −8c   80sp  −9c
+//     Alto Sax        254sp +2c   179sp +8c   109sp −4c   68sp −2c   48sp  −2c
+//     Tenor Sax       335sp +3c   236sp +8c   144sp −4c   90sp −3c   64sp  −4c
+//     Oboe            152sp +2c   106sp +2c    65sp −3c   40sp −2c   28sp  −3c
 //
-// Two cents wherever there is room, and worse as the pipe gets short.  That is
+// A few cents wherever there is room, and worse as the pipe gets short.  That is
 // the delay line's resolution rather than anything about reeds: the read
 // interpolates linearly between two samples, and at 41 samples one whole sample
 // of loop is 42 cents, so there is nowhere left to put the fraction.  The same
 // limit is written up in `string-model.ts`, which measures 7.7 cents at the top
 // of a guitar.  A higher-order interpolator would buy some of it back and is
 // not here.
+//
+// ── What the bore costs ───────────────────────────────────────────────────
+//
+// Two mechanisms, two laws, and for a long time this engine had only half of
+// one.  The bell returns less of what arrives the higher the frequency, because
+// the higher the frequency the better it radiates — that is `lossHz`, a
+// one-pole.  The WALLS take their own cut, a viscous and a thermal boundary
+// layer whose thickness goes as 1/√f, so the loss they cause goes as √f and
+// never stops rising.  It is not a small term and it was missing: measured, the
+// loop lost 0.024 to 0.040 dB per round trip at the note being played where the
+// walls alone cost 0.43 to 1.33.  A pipe that lossless sustains nearly anything
+// put into it, which is why the cones could be talked into their tenth mode.
+//
+// `wallLoss` builds it from each body's bore RADIUS — a number about the
+// instrument rather than a filter corner — and carries the measurements.
 //
 // ── Determinism ───────────────────────────────────────────────────────────
 //
@@ -166,13 +184,29 @@ export interface PipeBody {
    */
   floorHz: number;
   /**
-   * How much of the top the bore loses per round trip, as the corner of a
-   * one-pole lowpass in the loop.
+   * Where the BELL stops reflecting, as the corner of a one-pole in the loop.
    *
-   * A narrow bore loses more, which is why an oboe is quieter and reedier
-   * than a saxophone at the same length.
+   * This is radiation, not wall loss: an open end returns less of what arrives
+   * the higher the frequency, because the higher the frequency the better it
+   * radiates.  Wall loss is the other mechanism and has its own law — see
+   * `wallLoss`.
    */
   lossHz: number;
+  /**
+   * The bore's radius in metres, which is what decides its wall loss.
+   *
+   * A real number about the instrument rather than a filter corner, because the
+   * loss it produces is not a corner: it rises as the square root of frequency
+   * all the way up (see `wallLoss`).
+   *
+   * For the cones this is the radius of the CYLINDER that would lose the same
+   * amount, which is not the mean radius.  Wall loss goes as 1/a, so what
+   * matters is ∫dx/a(x) along the bore, and for a linear taper from a₁ to a₂
+   * over L that is L·ln(a₂/a₁)/(a₂ − a₁) — dominated by the narrow end.  An
+   * alto running 7 mm to 30 mm over a metre comes out at 15.8 mm rather than
+   * the 18.5 mm its radii average to.
+   */
+  boreRadiusM: number;
   /** The reed's own resonance, in Hz — stiff and short is high. */
   reedHz: number;
 }
@@ -191,31 +225,31 @@ export const PIPE_BODIES: readonly PipeBody[] = [
     id: 'clarinet', name: 'Clarinet',
     apexM: null, lowest: 50,                          // concert D3
     modes: [[1500, 1.2, 4], [3000, 1.4, 3]],
-    floorHz: 140, lossHz: 4200, reedHz: 2300,
+    floorHz: 140, lossHz: 4200, reedHz: 2300, boreRadiusM: 0.0074,
   },
   {
     id: 'bassclarinet', name: 'Bass Clarinet',
     apexM: null, lowest: 38,
     modes: [[900, 1.2, 4], [2000, 1.4, 2.5]],
-    floorHz: 80, lossHz: 3200, reedHz: 1500,
+    floorHz: 80, lossHz: 3200, reedHz: 1500, boreRadiusM: 0.0120,
   },
   {
     id: 'altosax', name: 'Alto Sax',
     apexM: 0.42, lowest: 49,                          // concert D♭3
     modes: [[900, 1.0, 4], [2200, 1.2, 2]],
-    floorHz: 180, lossHz: 5200, reedHz: 2000,
+    floorHz: 180, lossHz: 5200, reedHz: 2000, boreRadiusM: 0.0158,
   },
   {
     id: 'tenorsax', name: 'Tenor Sax',
     apexM: 0.60, lowest: 44,                          // concert A♭2
     modes: [[700, 1.0, 4], [1700, 1.2, 2]],
-    floorHz: 130, lossHz: 4600, reedHz: 1700,
+    floorHz: 130, lossHz: 4600, reedHz: 1700, boreRadiusM: 0.0199,
   },
   {
     id: 'oboe', name: 'Oboe',
     apexM: 0.22, lowest: 58,                          // B♭3
     modes: [[1400, 2.2, 6], [3000, 1.6, 3]],
-    floorHz: 260, lossHz: 3600, reedHz: 3400,
+    floorHz: 260, lossHz: 3600, reedHz: 3400, boreRadiusM: 0.00433,
   },
 ];
 
@@ -405,6 +439,100 @@ export function phaseDelaySamples(sections: readonly Biquad[], hz: number, sr: n
     phase += Math.atan2(ni, nr) - Math.atan2(di, dr);
   }
   return -phase / w;
+}
+
+/**
+ * A first-order high shelf: 1 at DC, `g` above the corner.
+ *
+ * Bilinear from `H(s) = (1 + sg/ω₀)/(1 + s/ω₀)`, so it is exactly 1 at DC and
+ * exactly `g` at Nyquist and costs one multiply more than a one-pole.  Three of
+ * them are how the bore's wall loss is built.
+ */
+function shelf(hz: number, g: number, sr: number): Biquad {
+  const c = Math.tan((Math.PI * Math.min(hz, sr * 0.49)) / sr);
+  const n = 1 + 1 / c;
+  return { b0: (1 + g / c) / n, b1: (1 - g / c) / n, b2: 0, a1: (1 - 1 / c) / n, a2: 0 };
+}
+
+/**
+ * The wall-loss coefficient, in nepers per metre per √Hz per metre of radius.
+ *
+ * Air against a wall loses energy two ways — a viscous boundary layer and a
+ * thermal one — and both scale with the square root of frequency, because that
+ * is how thick the layers are.  Collecting the constants for air at room
+ * temperature gives an attenuation of `2.96e-5·√f/a` nepers per metre, with the
+ * radius `a` in metres; a narrower bore loses more because the same layer is a
+ * bigger share of it.
+ */
+export const WALL_LOSS_NP = 2.96e-5;
+
+/**
+ * The bore's wall loss for one round trip, as a flat gain and three shelves.
+ *
+ * WHY THIS EXISTS.  The loop's only loss used to be one one-pole at 3.2 to 5.2
+ * kHz, which is nearly transparent to a note three octaves below it: measured,
+ * the round trip lost 0.024 to 0.040 dB at the note being played where the
+ * walls alone cost 0.43 to 1.33 dB — eighteen to thirty-three times too little
+ * — and its f² shape was wrong in the other direction, damping the thirtieth
+ * harmonic as hard as the walls damp the fifth.  A pipe that lossless sustains
+ * almost anything, which is why the cones could be talked into their tenth mode
+ * at the top of their range and why sweeping that one-pole from 4200 to 8000 Hz
+ * changed nothing at all on the grid.
+ *
+ * WHY THREE SHELVES.  No rational filter has a √f magnitude; the shape is a
+ * curve whose slope grows with frequency, from about 0.1 dB per octave at the
+ * bottom to 1 dB at the top.  So the loss at the note itself is a flat gain —
+ * exact, by construction, which is the term the oscillation actually lives or
+ * dies by — and three shelves supply how much MORE each band loses.  Corners at
+ * 2, 8 and 32 times the note, depths solved so the cascade meets the target at
+ * 3, 12 and 48 times: closed form, no fit, nothing to converge.
+ *
+ * Measured against `exp(−k√f)` over five bodies and three octaves each, the
+ * worst error is 0.37 dB and it is at the tenth harmonic of the oboe's lowest
+ * note; over the first ten harmonics of everything else it is 0.06 to 0.32.
+ * Least squares over a wider band was tried first and was worse and erratic —
+ * up to 3.2 dB — because the depths have to stay positive and the clamp wrecks
+ * the solve.
+ */
+export function wallLoss(
+  radiusM: number, roundTripM: number, f1: number, sr: number,
+): { flat: number; sections: Biquad[] } {
+  const k = (WALL_LOSS_NP * Math.max(0.001, roundTripM)) / Math.max(0.0005, radiusM);
+  const dbAt = (f: number): number => -8.686 * k * Math.sqrt(f);
+  const flat = Math.pow(10, dbAt(Math.max(20, f1)) / 20);
+  const sections: Biquad[] = [];
+  const CORNERS = [2, 8, 32];
+  const CHECKS = [3, 12, 48];
+  for (let i = 0; i < CORNERS.length; i++) {
+    const check = Math.min(sr * 0.45, f1 * CHECKS[i]!);
+    const corner = Math.min(sr * 0.45, f1 * CORNERS[i]!);
+    // What this shelf still has to supply at its check point, after the flat
+    // term and the shelves already built.
+    let already = 0;
+    for (const sec of sections) already += sectionDb(sec, check, sr);
+    const want = dbAt(check) - dbAt(Math.max(20, f1)) - already;
+    // Depth by bisection on the shelf's own response, so the section is exact
+    // at its check point whatever the corner ratio works out to be.
+    let lo = 0;
+    let hi = 60;
+    for (let it = 0; it < 40; it++) {
+      const mid = (lo + hi) / 2;
+      const got = sectionDb(shelf(corner, Math.pow(10, -mid / 20), sr), check, sr);
+      if (got > want) lo = mid; else hi = mid;
+    }
+    sections.push(shelf(corner, Math.pow(10, -((lo + hi) / 2) / 20), sr));
+  }
+  return { flat, sections };
+}
+
+/** One section's magnitude in dB at one frequency. */
+function sectionDb(s: Biquad, f: number, sr: number): number {
+  const w = (2 * Math.PI * f) / sr;
+  const nr = s.b0 + s.b1 * Math.cos(w) + s.b2 * Math.cos(2 * w);
+  const ni = -(s.b1 * Math.sin(w) + s.b2 * Math.sin(2 * w));
+  const dr = 1 + s.a1 * Math.cos(w) + s.a2 * Math.cos(2 * w);
+  const di = -(s.a1 * Math.sin(w) + s.a2 * Math.sin(2 * w));
+  return 20 * Math.log10(Math.hypot(nr, ni) / Math.hypot(dr, di));
 }
 
 /** Room temperature, and the only place a length in metres becomes a time. */
@@ -609,6 +737,9 @@ export interface ReedTuning {
   delay: number;
   /** The loss one-pole's coefficient, so the render and this cannot disagree. */
   lossA: number;
+  /** The bore's wall loss: a flat gain and three shelves, from the same call. */
+  wallFlat: number;
+  wallSections: readonly Biquad[];
   /** The reed's own two-pole response. */
   reed: Biquad;
   /** What the loop's linear filters account for, in samples. */
@@ -666,7 +797,15 @@ export function reedLoopDelay(
   // bottom of an alto it is 90 samples of a 346-sample loop.  Leaving it out
   // would hand all of it to the tuning pass, which is bounded per step and
   // would spend its passes climbing out of a hole this can just not dig.
-  const linear: Biquad[] = [lossSection, bleedSectionFor(sr)];
+  // The walls, from the pipe's own length: `raw` IS the round trip in samples,
+  // for a cylinder and a cone alike, so the metres come straight out of it.
+  // Bore scales the RADIUS, which is the same direction the knob already had:
+  // above 1 it is a wider pipe, so its walls take less and its bell keeps more.
+  const wall = wallLoss(
+    Math.max(0.0005, body.boreRadiusM * Math.max(0.5, p(params, 'bore', 1))),
+    (raw * SOUND_SPEED_MPS) / sr, sounding, sr,
+  );
+  const linear: Biquad[] = [lossSection, bleedSectionFor(sr), ...wall.sections];
   if (body.apexM !== null) linear.push(apexSection(body.apexM, sr));
   const filterDelay = phaseDelaySamples(linear, sounding, sr);
 
@@ -693,7 +832,10 @@ export function reedLoopDelay(
   // clarinet came out 920 cents sharp.
   const want = raw - filterDelay;
   const delay = Math.max(raw * 0.5, Math.min(raw * 1.5, want));
-  return { raw, delay, lossA, reed, filterDelay };
+  return {
+    raw, delay, lossA, reed, filterDelay,
+    wallFlat: wall.flat, wallSections: wall.sections,
+  };
 }
 
 export interface ReedRenderSpec {
@@ -913,6 +1055,7 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
     const line = new Line(Math.ceil(tune.raw) + 8);
     const reedZ: [number, number] = [0, 0];
     const apexZ: [number, number] = [0, 0];
+    const wallZ: Array<[number, number]> = tune.wallSections.map(() => [0, 0]);
     // ── The bore, in one piece or in two ────────────────────────────────
     //
     // With the key up there is no hole, so the bore is one delay line and the
@@ -972,7 +1115,10 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
 
       let back: number;
       if (!vented) {
-        back = line.read(loopDelay) * reflect;
+        back = line.read(loopDelay) * reflect * tune.wallFlat;
+        for (let k = 0; k < wallZ.length; k++) {
+          back = runBiquad(tune.wallSections[k]!, back, wallZ[k]!);
+        }
         lossZ = back * (1 - lossA) + lossZ * lossA;
         back = lossZ;
         bleedMean = bleedMean * bleedBeta + back * (1 - bleedBeta);
@@ -997,7 +1143,10 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
         fromHole!.write(pj - atHoleFromMouth);
         // The bell, where the bore's loss and its DC bleed belong: once per
         // round trip, as before, just at the end where they happen.
-        let atBell = arrivedAtBell * reflect;
+        let atBell = arrivedAtBell * reflect * tune.wallFlat;
+        for (let k = 0; k < wallZ.length; k++) {
+          atBell = runBiquad(tune.wallSections[k]!, atBell, wallZ[k]!);
+        }
         lossZ = atBell * (1 - lossA) + lossZ * lossA;
         atBell = lossZ;
         bleedMean = bleedMean * bleedBeta + atBell * (1 - bleedBeta);
@@ -1143,6 +1292,8 @@ export const REED_PARAMS: readonly {
   // family's business — a twelfth up on a cylinder, an octave on a cone — and
   // it is the thing about a wind instrument that a sampled one cannot have.
   { id: 'register', name: 'Register', min: 0,    max: 1,    default: 0,    unit: '' },
+  // Bore scales the RADIUS, and both loss mechanisms read it: a wider pipe's
+  // walls take less of every harmonic and its bell keeps more of the top.
   { id: 'bore',     name: 'Bore',     min: 0.5,  max: 2,    default: 1,    unit: '×' },
   { id: 'leak',     name: 'Leak',     min: 0,    max: 4,    default: 1,    unit: '' },
   { id: 'tone',     name: 'Tone',     min: 0,    max: 2,    default: 1,    unit: '×' },

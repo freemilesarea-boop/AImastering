@@ -25,7 +25,7 @@
 import {
   PIPE_BODIES, REED_PARAMS, reedLoopDelay, renderReedVoice, solveReed, reedFlow,
   phaseDelaySamples, spectrumPeriodNear, apexSection, ventMode, SOUND_SPEED_MPS,
-  registerOpen, HOLE_ADMITTANCE,
+  registerOpen, HOLE_ADMITTANCE, wallLoss, WALL_LOSS_NP,
 } from '../src/renderer/daw/engine/reed-pipe.js';
 
 const SR = 48_000;
@@ -231,11 +231,17 @@ check('the apex reflectance is an allpass, and it says the right thing at both e
 });
 
 check('a cone gives the even harmonics a cylinder cannot', () => {
-  // Measured, both families, same grid: the second harmonic sits 9 dB higher on
-  // a cone.  The bound is 5 dB rather than 9 so that a small change in a bore's
-  // formants does not fail it, and the measured spread is printed so nobody has
-  // to guess how much room that is.
-  const h2of: string[] = [];
+  // Compared as h2 AGAINST h3 rather than either against h1, and the reason is
+  // worth a line: they are a fifth apart, so anything broadband — the bell's
+  // rolloff, the bore's wall loss, a radiation formant — moves them together,
+  // and what is left is the one thing that differs, which is whether the pipe
+  // supports an even mode at all.  Measured against h1 instead, the oboe reads
+  // 3 dB from a clarinet, because its narrow bore is simply darker; measured
+  // this way it reads 7.
+  //
+  //     Clarinet  −11.7      Alto Sax  −2.9
+  //     Bass Cl.  −15.0      Tenor     −2.3      Oboe  −4.6
+  const shape: string[] = [];
   const cyl: number[] = [];
   const cone: number[] = [];
   for (let b = 0; b < PIPE_BODIES.length; b++) {
@@ -245,18 +251,130 @@ check('a cone gives the even harmonics a cylinder cannot', () => {
       const pitch = body.lowest + step;
       const out = blow({ body: b }, pitch);
       const f0 = hz(pitch);
-      got.push(db(magAt(out.left, f0 * 2)) - db(magAt(out.left, f0)));
+      got.push(db(magAt(out.left, f0 * 2)) - db(magAt(out.left, f0 * 3)));
     }
     const med = [...got].sort((x, y) => x - y)[1]!;
     (body.apexM === null ? cyl : cone).push(med);
-    h2of.push(`${body.name} ${med.toFixed(1)}`);
+    shape.push(`${body.name} ${med.toFixed(1)}`);
   }
-  const worstCone = Math.min(...cone);
-  const loudestCyl = Math.max(...cyl);
-  assert(worstCone - loudestCyl > 5,
-    `the quietest cone's second harmonic is ${(worstCone - loudestCyl).toFixed(1)} dB above the `
-    + `loudest cylinder's, and a cone supporting all its harmonics should be well clear — `
-    + `h2/h1 per body: ${h2of.join(', ')}`);
+  const gap = Math.min(...cone) - Math.max(...cyl);
+  assert(gap > 5,
+    `the quietest cone's second harmonic stands ${gap.toFixed(1)} dB higher against its third `
+    + `than the loudest cylinder's does, and a pipe that supports every mode should be well `
+    + `clear — h2−h3 per body: ${shape.join(', ')}`);
+});
+
+check('and the bore loses what its walls cost, which is not a corner frequency', () => {
+  // The loop's only loss used to be a one-pole at 3.2 to 5.2 kHz, which a note
+  // three octaves below it barely notices: 0.024 to 0.040 dB per round trip
+  // where the walls alone cost 0.43 to 1.33.  Two claims here, both measured
+  // against the law rather than against a remembered number.
+  const sectionsDb = (secs: readonly { b0: number; b1: number; b2: number;
+    a1: number; a2: number }[], f: number): number => {
+    let total = 0;
+    for (const sc of secs) {
+      const w = (2 * Math.PI * f) / SR;
+      const nr = sc.b0 + sc.b1 * Math.cos(w) + sc.b2 * Math.cos(2 * w);
+      const ni = -(sc.b1 * Math.sin(w) + sc.b2 * Math.sin(2 * w));
+      const dr = 1 + sc.a1 * Math.cos(w) + sc.a2 * Math.cos(2 * w);
+      const di = -(sc.a1 * Math.sin(w) + sc.a2 * Math.sin(2 * w));
+      total += 20 * Math.log10(Math.hypot(nr, ni) / Math.hypot(dr, di));
+    }
+    return total;
+  };
+  // ONE: the filter really follows √f, over every body and three octaves each.
+  let worst = 0;
+  let worstAt = '';
+  for (const body of PIPE_BODIES) {
+    for (const step of [0, 12, 24]) {
+      const f1 = hz(body.lowest + step);
+      const b = PIPE_BODIES.indexOf(body);
+      const roundTripM = (reedLoopDelay({ ...DEFAULTS, body: b }, f1, SR).raw
+        * SOUND_SPEED_MPS) / SR;
+      const w = wallLoss(body.boreRadiusM, roundTripM, f1, SR);
+      const k = (WALL_LOSS_NP * roundTripM) / body.boreRadiusM;
+      for (let i = 0; i < 24; i++) {
+        const f = f1 * Math.pow(Math.min(SR * 0.42, f1 * 40) / f1, i / 23);
+        const got = 20 * Math.log10(w.flat) + sectionsDb(w.sections, f);
+        const want = -8.686 * k * Math.sqrt(f);
+        if (Math.abs(got - want) > worst) {
+          worst = Math.abs(got - want);
+          worstAt = `${body.name} p${body.lowest + step} at ${(f / f1).toFixed(0)}×`;
+        }
+      }
+    }
+  }
+  assert(worst < 0.5,
+    `the wall-loss filter is ${worst.toFixed(2)} dB off the √f law at ${worstAt} — three shelves `
+    + 'fitted at 3, 12 and 48 times the note should hold it under half a dB');
+  // TWO: the note itself is not nearly lossless any more.  This is the number
+  // the oscillation lives or dies by, and it is exact by construction.
+  for (const body of PIPE_BODIES) {
+    const f1 = hz(body.lowest);
+    const b = PIPE_BODIES.indexOf(body);
+    const roundTripM = (reedLoopDelay({ ...DEFAULTS, body: b }, f1, SR).raw
+      * SOUND_SPEED_MPS) / SR;
+    const atNote = -20 * Math.log10(wallLoss(body.boreRadiusM, roundTripM, f1, SR).flat);
+    assert(atNote > 0.3 && atNote < 3,
+      `${body.name} loses ${atNote.toFixed(2)} dB per round trip at its lowest note, and a real `
+      + 'bore of that radius and length is between a third of a dB and three');
+  }
+  // THREE: a narrower bore loses more, which is the whole content of the 1/a.
+  const narrow = PIPE_BODIES.reduce((a, b) => (a.boreRadiusM < b.boreRadiusM ? a : b));
+  const wide = PIPE_BODIES.reduce((a, b) => (a.boreRadiusM > b.boreRadiusM ? a : b));
+  const lossOf = (bd: typeof narrow): number =>
+    -20 * Math.log10(wallLoss(bd.boreRadiusM, 1.5, 300, SR).flat);
+  assert(lossOf(narrow) > lossOf(wide) * 2,
+    `${narrow.name} at ${(narrow.boreRadiusM * 1000).toFixed(1)} mm should lose far more per `
+    + `metre than ${wide.name} at ${(wide.boreRadiusM * 1000).toFixed(1)} mm, and it loses `
+    + `${lossOf(narrow).toFixed(2)} against ${lossOf(wide).toFixed(2)} dB`);
+});
+
+check('and the walls reach the SOUND, which the design of the filter does not prove', () => {
+  // Written after the obvious test turned out to be vacuous: the wall loss can
+  // be designed, counted in the tuning's phase and never applied to a single
+  // sample, and the suite passed 21 of 21 anyway.  So this is the check that
+  // the loop uses it, and it is measured at the FUNDAMENTAL on purpose.
+  //
+  // At the note itself the bell's one-pole is transparent — 0.07 dB at the
+  // oboe's bottom with the corner as low as the Bore knob can put it — so
+  // anything the knob does DOWN THERE is the walls and can be nothing else.
+  // Measured, the fundamental's level between a half-radius bore and a
+  // double-radius one:
+  //
+  //     with the walls    Alto −2.10   Tenor −2.15   Oboe −3.03 dB
+  //                       Clarinet −0.20   Bass Clarinet −0.07
+  //     without them      every body 0.00 to 0.04
+  //
+  // The cylinders move least because their reeds have more gain in reserve and
+  // simply push back; the bound below is asked of the cones, where the size of
+  // it is not arguable, and every body is asked for the SIGN.
+  const level = (b: number, bore: number): number => {
+    const vals: number[] = [];
+    for (const step of [2, 9]) {
+      const pitch = PIPE_BODIES[b]!.lowest + step;
+      const out = blow({ body: b, bore }, pitch);
+      vals.push(db(magAt(out.left, hz(pitch))));
+    }
+    return (vals[0]! + vals[1]!) / 2;
+  };
+  const seen: string[] = [];
+  for (let b = 0; b < PIPE_BODIES.length; b++) {
+    const body = PIPE_BODIES[b]!;
+    const narrow = level(b, 0.5);
+    const wide = level(b, 2);
+    seen.push(`${body.name} ${(narrow - wide).toFixed(2)}`);
+    assert(narrow - wide < 0.1,
+      `${body.name}: halving the bore's radius made its fundamental LOUDER by `
+      + `${(wide - narrow).toFixed(2)} dB, and narrower walls can only take more`);
+    if (body.apexM !== null) {
+      assert(narrow - wide < -1,
+        `${body.name}: the Bore knob moved its fundamental by only `
+        + `${(narrow - wide).toFixed(2)} dB across its whole range, and with the walls in the `
+        + `loop it is 2 to 3 — without them it is 0.01, so this is what a wall-loss filter that `
+        + `nothing applies looks like (${seen.join(', ')})`);
+    }
+  }
 });
 
 check('the register key is an interval the PIPE chooses, and the two differ', () => {
