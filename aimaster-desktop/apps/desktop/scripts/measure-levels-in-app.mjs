@@ -80,15 +80,42 @@ const rows = await page.evaluate(async () => {
   const T = L.LEVEL_TARGET_LUFS, C = L.LEVEL_PEAK_CEILING_DBTP;
   const out = [];
 
-  for (const id of ['polysynth', 'epiano', 'agtr', 'egtr', 'clavinet']) {
+  // ── The list is DERIVED, because a written one went stale ────────────────
+  //
+  // This read `['polysynth', 'epiano', 'agtr', 'egtr']` for a long time while
+  // the roster grew to sixteen metered instruments, so eleven of them had
+  // trims that were never derived where this file says trims come from — and
+  // among them were the oscillator-built ones the note at the top warns can
+  // disagree with node by over a decibel.  A list written here cannot help
+  // going stale, so there is no list: anything with a Level and a trim is
+  // measured, and a new instrument joins by existing.
+  //
+  // Two exceptions, both because they are not played from a phrase: the kit is
+  // eleven kits and gets its own section below, and the sampler's loudness is
+  // whatever file somebody dropped in, which is why its trim is 1.
+  const SEPARATE = new Set(['drumkit', 'sampler']);
+  // Drum instruments are metered on a beat, not on a maj7 chord.
+  const ON_A_BEAT = new Set(['drummachine']);
+  const melodic = I.INSTRUMENTS
+    .filter((x) => x.params.some((q) => q.id === 'level'))
+    .map((x) => x.id)
+    .filter((id) => !SEPARATE.has(id));
+
+  for (const id of melodic) {
+    const beat = ON_A_BEAT.has(id);
     const root = L.REFERENCE_ROOT[id] ?? 48;
-    const m = await render(id, L.referencePhrase(root), L.REFERENCE_PHRASE_SECONDS);
-    const h = await render(id, L.hardChord(root), 3);
+    const m = beat
+      ? await render(id, L.referenceBeat(), L.REFERENCE_BEAT_SECONDS)
+      : await render(id, L.referencePhrase(root), L.REFERENCE_PHRASE_SECONDS);
+    const h = beat
+      ? await render(id, L.referenceBeat(1.35), L.REFERENCE_BEAT_SECONDS)
+      : await render(id, L.hardChord(root), 3);
     // Loudness decides, unless that would push the hard hit over the ceiling.
     const shift = Math.min(T - m.integratedLufs, C - h.truePeakDbtp);
     out.push({
       id, lufs: m.integratedLufs, hard: h.truePeakDbtp, shift,
-      trim: L.INSTRUMENT_TRIM[id] * Math.pow(10, shift / 20), note: '',
+      trim: (L.INSTRUMENT_TRIM[id] ?? 1) * Math.pow(10, shift / 20),
+      note: beat ? 'on a beat' : '',
     });
   }
 

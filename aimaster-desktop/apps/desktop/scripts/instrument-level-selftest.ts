@@ -104,12 +104,12 @@ const NODE_REFERENCE_LUFS: Readonly<Record<string, number>> = {
 const NODE_REFERENCE_MACHINE_LUFS = -26.00;
 
 /**
- * A note on the four that read exactly −26.00, and the one that does not.
+ * A note on the ones that read exactly −26.00 and the ones that do not.
  *
- * The trims were derived at 48 kHz and this suite renders at 44.1 (see `SR`),
- * so every number here is a re-measurement at a DIFFERENT rate — and the
- * pianos, the mallets and the organ come back at the target to the last
- * digit, while the bass moves 0.13 LU.
+ * The older trims were derived at 48 kHz while this suite renders at 44.1 (see
+ * `SR`), so for those, every number here is a re-measurement at a DIFFERENT
+ * rate — and the pianos, the mallets and the organ come back at the target to
+ * the last digit, while the bass moves 0.13 LU.
  *
  * That split is not luck.  The modal instruments place every partial at an
  * exact frequency and run an exact recursion, so changing the sample rate
@@ -117,12 +117,41 @@ const NODE_REFERENCE_MACHINE_LUFS = -26.00;
  * Karplus-Strong delay line, and a delay line is an INTEGER number of
  * samples: at a different rate the same pitch rounds to a different loop
  * length, with a different fractional correction and a different excitation,
- * so the note is genuinely a slightly different note.
+ * so the note is genuinely a slightly different note.  Measured in the app
+ * since: the bass moves 0.345 LU between the two rates and the plucked family
+ * 0.412, against 0.012 for the bowed strings and 0.004 for the organ.
  *
  * Which means 0.13 LU is the cost of the delay line being what it is, and
  * not a calibration that needs tightening.
+ *
+ * ── But the table is MIXED, and that is worth knowing ──────────────────────
+ *
+ * `measure-levels-in-app.mjs` renders at 44.1 now, so anything derived after
+ * that change is a 44.1 entry rather than a 48 one — `plucked` reads exactly
+ * −26.000 here, which is what a delay line calibrated AT the rate it is
+ * measured at looks like, and it could not read that if it had come from a 48
+ * kHz derivation.  So which rate an entry is calibrated at depends on when it
+ * was added.  It is invisible for everything rate-insensitive and worth 0.13 to
+ * 0.41 dB for the two delay-line families, and closing it means re-deriving the
+ * whole table at one rate rather than patching entries.
+ *
+ * ── And one thing TOLERANCE_LU was quietly absorbing ───────────────────────
+ *
+ * `bowed` and `reed` are not part of any of that.  Both are rate-insensitive
+ * (0.012 and 0.013 LU between 44.1 and 48 kHz) and neither was touched by the
+ * filter correction, and both were simply miscalibrated: the app read them 0.40
+ * dB loud and 0.31 dB quiet, and so did node.  Their references here said
+ * −26.00 and the check passed anyway, because `TOLERANCE_LU` is 0.4 and 0.40 is
+ * not more than 0.4 — the bowed strings sat exactly on the boundary.
+ *
+ * The tolerance is there to absorb the two renderers DISAGREEING, and for these
+ * two there was no disagreement to absorb; it was covering an error instead.
+ * The trims are corrected, both renderers now read the target, and the reason
+ * this went unnoticed for so long is the stale list in
+ * `measure-levels-in-app.mjs`: the tool that derives trims had stopped covering
+ * either instrument, so nothing was re-deriving them at all.
  */
-const NODE_REFERENCE_KIT_MEDIAN_LUFS = -27.85;
+const NODE_REFERENCE_KIT_MEDIAN_LUFS = -28.29;
 
 /**
  * How far the two renderers are allowed to disagree.
@@ -135,6 +164,25 @@ const NODE_REFERENCE_KIT_MEDIAN_LUFS = -27.85;
  * rather than to tighten it: an instrument can move back into the gap.
  */
 const RENDERER_GAP_LU = 2.0;
+
+/**
+ * The same bound for the kit, which is far from the target for a DIFFERENT
+ * reason — and that is why it is not the same number.
+ *
+ * Everything in the melodic table above sits near −26 because loudness decided
+ * its trim, so a gap there really is the two renderers disagreeing and 2.0 is
+ * the right thing to bound it with.  The kit's trim is not set by loudness at
+ * all: the ceiling binds first, so one trim standing for eleven kits has to be
+ * quiet enough that the LOUDEST of them survives a bar hit as hard as MIDI goes.
+ * Honouring that in the app costs another 0.44 LU, which the old shared bound
+ * would have refused.
+ *
+ * Raising `RENDERER_GAP_LU` to fit it would have bought that room for every
+ * melodic instrument too, which is exactly the licence that constant exists to
+ * withhold.  So the kit gets its own allowance, with its own reason written
+ * next to it, and the melodic bound stays where it was.
+ */
+const CEILING_LIMITED_GAP_LU = 2.5;
 
 async function render(
   id: string, events: readonly LevelEvent[], seconds: number,
@@ -233,7 +281,7 @@ async function main(): Promise<void> {
         `${id}'s reference is ${want.toFixed(2)} LUFS, ${Math.abs(want - LEVEL_TARGET_LUFS).toFixed(2)} LU `
         + `from the ${LEVEL_TARGET_LUFS} target — further than the two renderers disagree`);
     }
-    assert(Math.abs(NODE_REFERENCE_KIT_MEDIAN_LUFS - LEVEL_TARGET_LUFS) <= RENDERER_GAP_LU,
+    assert(Math.abs(NODE_REFERENCE_KIT_MEDIAN_LUFS - LEVEL_TARGET_LUFS) <= CEILING_LIMITED_GAP_LU,
       `the kit's reference is ${NODE_REFERENCE_KIT_MEDIAN_LUFS} LUFS`);
   });
 

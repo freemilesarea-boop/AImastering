@@ -115,9 +115,21 @@ export const INSTRUMENT_TRIM = {
   organ: 0.0755,
   agtr: 0.4520,
   egtr: 0.3172,
-  drumkit: 0.6127,
-  bowed: 0.0206,
-  reed: 0.1030,
+  // Was 0.6127, which let the loudest kit's hard bar reach −2.52 dBTP in the
+  // app — over the ceiling this file promises.  The peak is not one drum being
+  // hot: it is the crash and the kick landing on the same downbeat, and removing
+  // either drops the bar 4.4 and 2.9 dB, so there was nothing local to fix.  The
+  // cost of honouring the ceiling is that the kit sits 1.6 LU under the other
+  // instruments instead of 1.2; the Level knob is where a player disagrees.
+  drumkit: 0.5795,
+  // These two were 0.0206 and 0.1030, and both were out: measured in the app
+  // they sat 0.40 dB loud and 0.31 dB quiet.  Neither is rate-sensitive — 0.012
+  // and 0.013 LU between 44.1 and 48 kHz — and neither was touched by the filter
+  // correction below, so there was nothing to explain them.  They were simply
+  // never re-derived after the tool stopped covering them; see the note in
+  // `measure-levels-in-app.mjs` about the list that went stale.
+  bowed: 0.0197,
+  reed: 0.1068,
   plucked: 0.2373,
   // Measured in the app, like all of these.  Near 1 because `FD_BRIDGE_GAIN`
   // already scales the string's slope down by fifty on the way out of the
