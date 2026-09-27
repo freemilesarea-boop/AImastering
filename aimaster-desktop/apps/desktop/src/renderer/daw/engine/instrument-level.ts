@@ -119,6 +119,10 @@ export const INSTRUMENT_TRIM = {
   bowed: 0.0206,
   reed: 0.1030,
   plucked: 0.2373,
+  // Measured in the app, like all of these.  Near 1 because `FD_BRIDGE_GAIN`
+  // already scales the string's slope down by fifty on the way out of the
+  // engine; between them the voice lands where the others do.
+  clavinet: 0.9678,
   sampler: 1,
 } as const;
 
@@ -177,6 +181,9 @@ export const REFERENCE_ROOT: Readonly<Record<string, number>> = {
   // A harp's bottom is far lower than a guitar's; the phrase has to sit where
   // the family actually plays, and 48 is the middle of the five bodies.
   plucked: 48,
+  // A Clavinet's lowest is F2 and its character lives in the middle; 48 is where
+  // the three bodies overlap.
+  clavinet: 48,
 };
 
 /** A maj7 chord, an eighth-note line over it, then the chord up a fourth. */

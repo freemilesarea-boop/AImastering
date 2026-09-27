@@ -35,6 +35,9 @@ import {
   REED_PARAMS, REED_PARAM_IDS, reedTail, renderReedVoice,
 } from './reed-pipe.js';
 import {
+  CLAV_PARAMS, CLAV_PARAM_IDS, clavTail, renderClavVoice,
+} from './fd-string.js';
+import {
   DRUM_MAX_DECAY, drumTail, drumVoiceFor, renderDrumVoice,
 } from './drum-machine.js';
 import {
@@ -1997,6 +2000,72 @@ function bowedVoice(v: VoiceContext): { stop: (at: number) => void } {
 const REED_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
 const REED_CACHE_MAX = 96;
 
+// Same shape as the reed's, and for the same reason: a finite-difference string
+// costs 60 to 220 ms of arithmetic for a two-second note, which is far too much
+// to do again for the same note.  Keyed on everything that can change the
+// samples, so a cache hit is the same audio and not merely a similar one.
+const CLAV_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
+const CLAV_CACHE_MAX = 96;
+
+function clavVoice(v: VoiceContext): { stop: (at: number) => void } {
+  const { ctx, destination, note, config, when, durationSec, params } = v;
+  const pitch = soundingPitch(note);
+  const freq = pitchToFrequency(pitch);
+  // Quantised so that two keys a hair apart in velocity share a render.  It is
+  // coarser than it looks: the pitch bend goes as the SQUARE of this, so a
+  // twenty-fourth of the range is under a cent of bend at the bottom.
+  const velocity = Math.round(Math.min(1, Math.max(0, note.velocity)) * 24) / 24;
+  const gate = Math.max(0.02, durationSec);
+  const seconds = Math.min(20, gate + clavTail(params));
+
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const fold = (x: number): void => {
+    const q = Math.round(x * 1e6) | 0;
+    h1 = Math.imul(h1 ^ q, 16777619) >>> 0;
+    h2 = Math.imul(h2 + q, 2246822519) >>> 0;
+  };
+  for (const id of CLAV_PARAM_IDS) fold(params[id] ?? 0);
+  fold(params['level'] ?? 0);
+  fold(freq); fold(velocity); fold(seconds); fold(gate); fold(ctx.sampleRate);
+  const key = `${h1.toString(36)}.${h2.toString(36)}`;
+
+  let rendered = CLAV_CACHE.get(key);
+  if (!rendered) {
+    rendered = renderClavVoice({
+      sampleRate: ctx.sampleRate, seconds, gateSec: gate, freqHz: freq,
+      velocity, params,
+    });
+    if (CLAV_CACHE.size >= CLAV_CACHE_MAX) {
+      const oldest = CLAV_CACHE.keys().next().value;
+      if (oldest !== undefined) CLAV_CACHE.delete(oldest);
+    }
+    CLAV_CACHE.set(key, rendered);
+  }
+
+  const buf = ctx.createBuffer(2, rendered.left.length, ctx.sampleRate);
+  buf.getChannelData(0).set(rendered.left);
+  buf.getChannelData(1).set(rendered.right);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const amp = ctx.createGain();
+  amp.gain.value = INSTRUMENT_TRIM.clavinet;
+  scheduleCurve(
+    src.detune, note, { kind: 'pitchBend' }, when, durationSec,
+    (val) => val * config.bendRangeSemitones * 100, 0,
+  );
+  src.connect(amp).connect(destination);
+  const start = Math.max(0, when);
+  src.start(start);
+  src.stop(start + seconds + 0.02);
+  return {
+    stop: (at: number) => {
+      try { src.stop(at); } catch { /* already stopped */ }
+      try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
+    },
+  };
+}
+
 function reedVoice(v: VoiceContext): { stop: (at: number) => void } {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
@@ -3103,6 +3172,28 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     // because that is what the pipes do.  All of it is measured in
     // `reed-selftest.ts`.
     playNote: (v) => reedVoice(v),
+  },
+
+  {
+    id: 'clavinet',
+    name: 'Clavinet',
+    params: [
+      ...CLAV_PARAMS as InstrumentParamDef[],
+      { id: 'level', name: 'Level', min: 0, max: 1, default: CALIBRATED_LEVEL, unit: '' },
+    ],
+    // A steel wire plucked by a rubber pad, on the one engine here that has a
+    // LENGTH.  What that buys is a pitch that moves during the note: pulling the
+    // wire aside stretches it, a stretched wire is a tighter one, so a hard key
+    // starts sharp and settles as it decays — and the bend goes as the square of
+    // how far it was pulled, so velocity gives loudness, brightness and bend from
+    // one gesture.  Neither a delay line nor a sum of partials can do it, because
+    // both decide their frequencies before the note starts.
+    //
+    // Clavinet, Pianet and a long wire bass are three wires and one voice.  All
+    // of it is measured in `fd-string-selftest.ts`; the engine's own numbers, and
+    // the barrier that was tried here first and did not work, are in
+    // `fd-string.ts`.
+    playNote: (v) => clavVoice(v),
   },
 
   {

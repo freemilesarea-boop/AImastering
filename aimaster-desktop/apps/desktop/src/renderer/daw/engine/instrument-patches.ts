@@ -1562,6 +1562,60 @@ const PLUCKED: InstrumentPatch[] = [
     params: { doubleTrim: 0.75, width: 1, ringTrim: 0.35, brightTrim: -0.3 } },
 ];
 
+// A steel wire plucked by a rubber pad.  What separates these is mostly the
+// BITE — how far the pitch bends on a hard key — which is a thing no other bank
+// here has a knob for, because no other engine has a string with a length.
+//
+// Four of these carry a Level, and it is not decoration.  The pickup is the
+// string's SLOPE at the bridge, so moving the pad towards the bridge does not
+// merely brighten the note, it makes it much louder — measured, the four patches
+// that pluck close in came out between −0.15 and +4.64 dBTP played as hard as
+// MIDI goes, against a ceiling of −3.  A real bridge pickup needs padding for
+// the same reason.
+const CLAVINET: InstrumentPatch[] = [
+  { id: 'init', name: 'Init Clavinet', category: 'init',
+    note: '짧고 단단한 강선을 고무 패드로 — 세게 치면 피치가 샤프하게 시작해 내려옵니다',
+    params: {} },
+  { id: 'clav-funk', name: 'Clav Funk', category: 'keys',
+    note: '브리지 가까이, 댐퍼를 짧게 — 손을 떼면 바로 멎습니다',
+    params: { pick: 0.45, damp: 0.04, tone: 1.4, bite: 1.5, spread: 0.12,
+      level: 0.4 } },
+  { id: 'clav-bite', name: 'Clav Bite', category: 'lead',
+    note: '벤드를 끝까지 — 세게 치는 키가 반음 가까이 샤프하게 출발합니다',
+    params: { bite: 2.5, stiff: 1.8, pick: 0.55, tone: 1.6, ring: 0.7,
+      level: 0.47 } },
+  { id: 'clav-soft', name: 'Clav Soft', category: 'pad',
+    note: '패드를 넓게, 톤을 닫아 — 벤드를 거의 지우고 받치는 쪽으로',
+    params: { bite: 0.15, pad: 2.6, tone: 0.45, ring: 1.9, damp: 0.3,
+      spread: 0.7 } },
+  { id: 'clav-glass', name: 'Clav Glass', category: 'pluck',
+    note: '가장 단단한 강선 — 배음이 늘어나 종에 가깝습니다',
+    params: { stiff: 2.5, tone: 2.2, ring: 2.2, pick: 0.3, pad: 0.35,
+      bite: 0.5, damp: 0.26, level: 0.27 } },
+  { id: 'pianet', name: 'Pianet', category: 'keys',
+    note: '끈적한 패드가 천천히 놓아주는 현 — 물기 적고 길게',
+    params: { kind: 1, spread: 0.4 } },
+  { id: 'pianet-warm', name: 'Pianet Warm', category: 'pad',
+    note: '톤을 닫고 더 울리게 — 벤드는 거의 없이',
+    params: { kind: 1, tone: 0.4, ring: 2.1, bite: 0.2, pad: 2, damp: 0.32,
+      spread: 0.85 } },
+  { id: 'pianet-reed', name: 'Pianet Reed', category: 'lead',
+    note: '패드를 좁히고 브리지 쪽으로 — 리드처럼 앞에 섭니다',
+    params: { kind: 1, pad: 0.3, pick: 0.35, tone: 1.8, bite: 1.4, ring: 0.5,
+      level: 0.44 } },
+  { id: 'wire-bass', name: 'Wire Bass', category: 'bass',
+    note: '길고 굵은 강선 — 장력 변조가 가장 크게 들리는 쪽입니다',
+    params: { kind: 2, spread: 0.1 } },
+  { id: 'wire-growl', name: 'Wire Growl', category: 'bass',
+    note: '세게 당겨 브리지 가까이 — 피치가 눈에 띄게 떨어져 내려옵니다',
+    params: { kind: 2, bite: 2.2, pick: 0.4, tone: 1.7, pad: 0.4, ring: 0.6,
+      damp: 0.05 } },
+  { id: 'wire-round', name: 'Wire Round', category: 'pad',
+    note: '패드로 무르게, 톤을 닫아 — 벤드를 거두고 둥글게',
+    params: { kind: 2, bite: 0.1, pad: 2.8, tone: 0.3, ring: 2.3, damp: 0.34,
+      spread: 0.6 } },
+];
+
 export const INSTRUMENT_PATCHES: Readonly<Record<string, readonly InstrumentPatch[]>> = {
   polysynth: POLY,
   wavesynth: WAVESYNTH,
@@ -1578,6 +1632,7 @@ export const INSTRUMENT_PATCHES: Readonly<Record<string, readonly InstrumentPatc
   bowed: BOWED,
   reed: REED,
   plucked: PLUCKED,
+  clavinet: CLAVINET,
   drummachine: DRUMMACHINE,
   // The kit has its own preset system — eleven genre kits, which are a patch
   // per DRUM rather than per instrument.  The sampler has none because its

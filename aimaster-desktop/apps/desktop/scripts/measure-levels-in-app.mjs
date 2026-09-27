@@ -80,7 +80,7 @@ const rows = await page.evaluate(async () => {
   const T = L.LEVEL_TARGET_LUFS, C = L.LEVEL_PEAK_CEILING_DBTP;
   const out = [];
 
-  for (const id of ['polysynth', 'epiano', 'agtr', 'egtr']) {
+  for (const id of ['polysynth', 'epiano', 'agtr', 'egtr', 'clavinet']) {
     const root = L.REFERENCE_ROOT[id] ?? 48;
     const m = await render(id, L.referencePhrase(root), L.REFERENCE_PHRASE_SECONDS);
     const h = await render(id, L.hardChord(root), 3);
