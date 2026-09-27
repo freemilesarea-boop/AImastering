@@ -96,6 +96,11 @@
 // Here it is a notch in the loop at the fundamental: the mode whose gain drops
 // below one stops oscillating and the next one takes over.
 //
+// On a CONE the same key would be an octave rather than a twelfth, and this
+// model does not do it — the mode to be removed is only an octave below the one
+// that has to carry, and no notch tried could hold one down without starving
+// the other.  `registerOpen` carries the measurements and what was tried.
+//
 // ── How well it plays in tune, and where that runs out ────────────────────
 //
 // Measured at the top of a held note, with the loop's length in samples beside
@@ -137,13 +142,15 @@ export interface PipeBody {
   id: string;
   name: string;
   /**
-   * Whether the round trip inverts.
+   * How far the mouthpiece sits from the cone's apex, in metres — `null` for a
+   * cylinder.
    *
-   * `true` for a cylinder — odd harmonics, quarter-wave — and `false` for a
-   * cone.  This one flag is the clarinet/saxophone distinction; see the
-   * header.
+   * This one number is the clarinet/saxophone distinction, and it is a
+   * DISTANCE rather than a flag because the shape decides more than a sign;
+   * see the header.  `null` is the cylinder, which is the same thing as an
+   * apex infinitely far away.
    */
-  inverting: boolean;
+  apexM: number | null;
   /** The lowest note the instrument has, as MIDI pitch, for the bore scaling. */
   lowest: number;
   /** Bore and bell resonances, lowest first. */
@@ -180,36 +187,68 @@ export interface PipeBody {
 export const PIPE_BODIES: readonly PipeBody[] = [
   {
     id: 'clarinet', name: 'Clarinet',
-    inverting: true, lowest: 50,                      // concert D3
+    apexM: null, lowest: 50,                          // concert D3
     modes: [[1500, 1.2, 4], [3000, 1.4, 3]],
     floorHz: 140, lossHz: 4200, reedHz: 2300,
   },
   {
     id: 'bassclarinet', name: 'Bass Clarinet',
-    inverting: true, lowest: 38,
+    apexM: null, lowest: 38,
     modes: [[900, 1.2, 4], [2000, 1.4, 2.5]],
     floorHz: 80, lossHz: 3200, reedHz: 1500,
   },
+  {
+    id: 'altosax', name: 'Alto Sax',
+    apexM: 0.42, lowest: 49,                          // concert D♭3
+    modes: [[900, 1.0, 4], [2200, 1.2, 2]],
+    floorHz: 180, lossHz: 5200, reedHz: 2000,
+  },
+  {
+    id: 'tenorsax', name: 'Tenor Sax',
+    apexM: 0.60, lowest: 44,                          // concert A♭2
+    modes: [[700, 1.0, 4], [1700, 1.2, 2]],
+    floorHz: 130, lossHz: 4600, reedHz: 1700,
+  },
+  {
+    id: 'oboe', name: 'Oboe',
+    apexM: 0.22, lowest: 58,                          // B♭3
+    modes: [[1400, 2.2, 6], [3000, 1.6, 3]],
+    floorHz: 260, lossHz: 3600, reedHz: 3400,
+  },
 ];
 
-// ── Why there is no saxophone here ────────────────────────────────────────
+// ── The apex distance these five actually use ─────────────────────────────
 //
-// A cone was tried and it does not work, and the reason is the simplification
-// the header is careful to admit: modelling a conical bore as a round trip that
-// does not invert gets the harmonic structure and nothing else.  With it, the
-// pipe would not hold its fundamental.  Measured across three octaves at four
-// blowing pressures, with the cylinders passing the same grid at 6 to 27 cents:
+// The clarinets have none: a cylinder is a cone whose apex is infinitely far
+// away, and `null` says so.
 //
-//                  breath 0.7   0.85    1.0    1.2
-//     Alto Sax p62     silent silent silent  1215c
-//     Tenor    p74     silent silent  1237c  1237c
-//     Oboe     p62     silent silent silent silent
+// The three cones do NOT use their own instrument's truncation, and that is the
+// model's biggest simplification.  An alto's bore extrapolates back to an apex
+// about 0.30 m behind its mouthpiece, and a real saxophone cancels that
+// truncation with the volume of the mouthpiece chamber — Benade's result, and
+// the reason a mouthpiece that is the wrong size for the horn plays out of tune
+// with itself rather than merely sounding different.  There is no chamber here,
+// and without one a short truncation leaves the reed barely coupled to the
+// pipe: what the reed sees is `2jωτ/(1 + jωτ)` of the returning wave against a
+// cylinder's 2, which at the bottom of an alto is 1.2 and falls with τ.
 //
-// Either no periodic tone at all, or a jump of an octave and a bit.  A real
-// cone is a waveguide whose cross-section grows along it, so a wave travelling
-// out meets a continuous partial reflection rather than one at the end; that is
-// a section per step, not a sign, and it is its own piece of work.  The bodies
-// above are the two the model actually plays.
+// So the number is measured rather than taken from the instrument.  Blown over
+// five pitches and three breath pressures, fifteen cells:
+//
+//     apex 0.30 m   11/15 speak    0.42 m   14/15    0.60 m   14/15
+//
+// and the timbre barely moves across that whole range — the second harmonic
+// sits between −12.5 and −14.1 dB at every one of them, against the clarinet's
+// −21.6.  The apex is buying the note starting, not the tone.  The cell that
+// does not speak at 0.42 is the top note blown softly; it speaks at every
+// breath setting from the default upward, a real alto plays it quietly, and
+// that is where this model stops.
+//
+// Bore loss turned out not to matter here at all — 4200 Hz against 8000 Hz
+// changes nothing on the grid, because a one-pole that high is nearly
+// transparent to a fundamental three octaves below it.  The reed's own
+// resonance matters a great deal: at 1200 Hz five of the fifteen cells fail, so
+// that is where each cone's number came from.
 
 export const PIPE_BODY_NAMES: readonly string[] = PIPE_BODIES.map((b) => b.name);
 
@@ -366,6 +405,100 @@ export function phaseDelaySamples(sections: readonly Biquad[], hz: number, sr: n
   return -phase / w;
 }
 
+/** Room temperature, and the only place a length in metres becomes a time. */
+export const SOUND_SPEED_MPS = 343;
+
+/**
+ * What a cone's mouthpiece end reflects, as one first-order section.
+ *
+ * Derived rather than chosen, because the shape of this filter IS the
+ * difference between the two families and a guessed one would be a guess about
+ * the harmonic series.  In a cone the pressure travels as spherical waves,
+ * `p(r,t) = (1/r)[f(t − r/c) + g(t + r/c)]`, and the volume flow through the
+ * sphere at radius r carries a term the cylinder does not have:
+ *
+ *     ρU = Ω∫(f+g)dt + (Ωr/c)(f − g)
+ *
+ * Setting `U = 0` at the truncation `r₀` — the mouthpiece plane, closed but for
+ * the reed — and solving for the outgoing wave gives
+ *
+ *     R(s) = −(1 − sτ)/(1 + sτ),      τ = r₀/c
+ *
+ * an allpass with a sign.  Read what it says at the two ends:
+ *
+ *   · at DC it is −1, so the apex behaves like an OPEN end.  With the bell
+ *     also inverting, the round trip does not, which is a half-wave pipe and a
+ *     complete harmonic series — a saxophone.
+ *   · at Nyquist it is +1, the rigid cap, so high up the pipe behaves like a
+ *     cylinder and the modes migrate toward the odd series.
+ *
+ * That transition is not a detail bolted on: it is why a cone's modes are
+ * STRETCHED rather than harmonic, why the stretch is worst where the pipe is
+ * shortest, and why the top of a saxophone is where the harmonicity gives out.
+ * A sign could not have any of it.
+ *
+ * Bilinear, with `a = 2τ·sr`, gives `R(z) = −(k + z⁻¹)/(1 + k z⁻¹)` and
+ * `k = (1 − a)/(1 + a)`.  Returned WITHOUT the minus, which lives with the
+ * round trip's sign where the rest of the sign bookkeeping is; at `r₀ → ∞`,
+ * `k → −1` and this becomes the constant 1 the cylinder already uses.
+ */
+export function apexSection(apexM: number, sr: number): Biquad {
+  const a = 2 * (Math.max(1e-4, apexM) / SOUND_SPEED_MPS) * sr;
+  const k = (1 - a) / (1 + a);
+  return { b0: k, b1: 1, b2: 0, a1: k, a2: 0 };
+}
+
+/**
+ * Which mode the register key hands the note to.
+ *
+ * A cylinder's next supported mode is its THIRD harmonic, so the key is a
+ * twelfth.  A cone supports all of them, so it is the second — an octave, and
+ * that is why a saxophone's key is called an octave key and a clarinet's is
+ * not.
+ */
+export function ventMode(body: PipeBody): number {
+  return body.apexM === null ? 3 : 2;
+}
+
+/**
+ * How far the register key is open, which on a cone is: not at all.
+ *
+ * The key is modelled as a notch at the mode being taken out, and on a cylinder
+ * that mode is a twelfth below the note — far enough down that a notch can sit
+ * on it without touching the mode that has to carry.  On a cone it is an OCTAVE
+ * below, and measured across three cones and five pitches each the notch does
+ * not hold it: the pipe sounded a twelfth up, a fifth up, 39 cents flat and
+ * nothing at all, depending on the note.
+ *
+ * Widening the notch, stacking two and three of them, and replacing it with a
+ * steep shunt were all tried and all made it worse somewhere else — the loop's
+ * gain at the escaped frequency is 0.125 and the pipe oscillates there anyway,
+ * because at that operating point the REED has more than 18 dB of gain to
+ * spare.  A notch deep enough to beat that starves the mode that is supposed to
+ * speak, and a widened one starves it directly: at Q 0.4 every body jumped an
+ * octave or more.
+ *
+ * What a real octave key does that this cannot is leak at a PLACE — a hole a
+ * half or a third of the way along, which is a node for the mode that survives
+ * and an antinode for the one that goes.  That needs the bore split into two
+ * delay lines with a scattering junction between them, and a tapped
+ * approximation of it in one line was tried too: it adds poles rather than
+ * removing energy, and it made the clarinet play an octave up.
+ *
+ * So the cones do not pretend.  This engine's own history is the argument: the
+ * first register key here landed on 647, 647, 1901, −555, −556 and 1965 cents
+ * over six velocities, and the lesson written down then was that a control
+ * which lands somewhere different every time is not a control.  Nothing is lost
+ * musically — the pipe is tuned so the written note sounds either way, and the
+ * key only chooses WHICH mode carries it.
+ */
+export function registerOpen(
+  body: PipeBody, params: Readonly<Record<string, number>>,
+): number {
+  if (body.apexM !== null) return 0;
+  return Math.max(0, Math.min(1, p(params, 'register', 0)));
+}
+
 /** A notch, for the register vent: kills one frequency and leaves the rest. */
 function notch(hz: number, q: number, sr: number): Biquad {
   const w = 2 * Math.PI * Math.min(hz, sr * 0.49) / sr;
@@ -464,17 +597,24 @@ export function reedLoopDelay(
   // twelfth at velocity 0.8, which is the one value where it happened to be
   // right.  A check that passes because of the number it was given is worse
   // than no check.
-  const onThird = p(params, 'register', 0) >= 0.5;
-  const f = onThird ? sounding / 3 : sounding;
+  const vented = registerOpen(body, params) >= 0.5;
+  const f = vented ? sounding / ventMode(body) : sounding;
   const period = sr / f;
-  const raw = body.inverting ? period * 0.5 : period;
+  const raw = body.apexM === null ? period * 0.5 : period;
 
   const lossHz = Math.max(800, body.lossHz * p(params, 'bore', 1));
   const lossA = Math.exp(-2 * Math.PI * lossHz / sr);
   const lossSection: Biquad = { b0: 1 - lossA, b1: 0, b2: 0, a1: -lossA, a2: 0 };
   // At the frequency the pipe will actually oscillate at, which is the sounding
   // note whichever mode is carrying it.
-  const filterDelay = phaseDelaySamples([lossSection, bleedSectionFor(sr)], sounding, sr);
+  //
+  // The apex is in this list for cones, and it is not a small term: at the
+  // bottom of an alto it is 90 samples of a 346-sample loop.  Leaving it out
+  // would hand all of it to the tuning pass, which is bounded per step and
+  // would spend its passes climbing out of a hole this can just not dig.
+  const linear: Biquad[] = [lossSection, bleedSectionFor(sr)];
+  if (body.apexM !== null) linear.push(apexSection(body.apexM, sr));
+  const filterDelay = phaseDelaySamples(linear, sounding, sr);
 
   const reedHz = Math.max(300, Math.min(sr * 0.45, body.reedHz * p(params, 'stiff', 1)));
   const reedDamp = Math.max(0.2, Math.min(4, p(params, 'damp', 1.4)));
@@ -654,16 +794,23 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
   const body = PIPE_BODIES[Math.round(p(params, 'body', 0))] ?? PIPE_BODIES[0]!;
   const tune = reedLoopDelay(params, freqHz, sr);
 
-  const register = Math.max(0, Math.min(1, p(params, 'register', 0)));
+  const register = registerOpen(body, params);
   const zeta = Math.max(0.05, p(params, 'reed', 0.9));
   const lossA = tune.lossA;
   const bleedBeta = boreBleedBeta(sr);
-  // The sign IS the instrument — see the header.  Writing this as a constant
-  // negative was the first version, and it gave the saxophone an inverting
-  // round trip on top of its full-period loop, so it sounded an octave down:
-  // measured at 72.0 Hz where 146.8 was asked for, ratio 0.490.
-  const reflect = (body.inverting ? -1 : 1)
-    * Math.max(0.5, Math.min(0.999, 1 - 0.0025 * p(params, 'leak', 1)));
+  // The BELL always inverts, on every one of these instruments: it is an open
+  // end, and an open end is a pressure release whatever shape led up to it.
+  //
+  // Putting the family's sign here instead was the first attempt at a cone and
+  // it is worth writing down why it cannot work.  A non-inverting bell leaves
+  // the reed with POSITIVE feedback at DC — the returning wave pushes the reed
+  // further shut, which is a stable operating point and not an oscillation — so
+  // the pipe either sat silent or found some higher mode whose phase happened
+  // to work: measured silent at three of four blowing pressures and an octave
+  // and a bit sharp at the fourth.  The cone's inversion belongs at the APEX,
+  // where the physics puts it, and it is frequency-dependent there.
+  const reflect = -Math.max(0.5, Math.min(0.999, 1 - 0.0025 * p(params, 'leak', 1)));
+  const apex = body.apexM === null ? null : apexSection(body.apexM, sr);
 
   const gate = Math.max(0.01, gateSec);
   const attack = Math.max(0.004, p(params, 'attack', 0.03));
@@ -712,9 +859,11 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
     const line = new Line(Math.ceil(tune.raw) + 8);
     const reedZ: [number, number] = [0, 0];
     const ventZ: [number, number] = [0, 0];
+    const apexZ: [number, number] = [0, 0];
     // The notch goes at the PIPE's own fundamental — a third of the sounding
     // note when the register is open — because that is the mode being taken out.
-    const vent = notch(Math.max(20, register > 0 ? freqHz / 3 : freqHz), 1.6, sr);
+    const vent = notch(
+      Math.max(20, register > 0 ? freqHz / ventMode(body) : freqHz), 1.6, sr);
     const radiation = pipeSections(body, sr, p(params, 'tone', 1));
     const radZ: Array<[number, number]> = radiation.map(() => [0, 0]);
     const rnd = mulberry32(
@@ -761,7 +910,13 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
       // choke at the top is modelled and the slap of the closure is not.
       const y = yLin <= 0 ? 0 : (yLin > 1.6 ? 1.6 : yLin);
 
-      const d = pm - 2 * back;
+      // What the mouthpiece end sends back.  A rigid cap returns the wave
+      // unchanged, which leaves `2 * back` of pressure standing at the reed; a
+      // cone's apex returns `−A(z)` of it instead, and the reed sees the sum.
+      // The cylinder's `A = −1` put into these two lines gives back exactly the
+      // arithmetic that was here, so a clarinet renders bit for bit as before.
+      const capped = apex === null ? back : -runBiquad(apex, back, apexZ);
+      const d = pm - (back + capped);
       const dp = solveReed(d, zeta * y);
       dpPrev = dp;
       const flow = reedFlow(dp, zeta * y);
@@ -769,7 +924,7 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
       const breathNoise = (rnd() * 2 - 1) * noiseAmt * Math.sqrt(Math.max(0, pm)) * 0.35;
       noiseZ = breathNoise * 0.25 + noiseZ * 0.75;
 
-      const outgoing = back + flow + noiseZ;
+      const outgoing = capped + flow + noiseZ;
       line.write(outgoing);
 
       if (!stereo) { (out as { bore: Float32Array }).bore[i] = outgoing; continue; }
@@ -809,7 +964,8 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
     const wantPeriod = sr / Math.max(20, freqHz);
     // A third of the loop's own period when the pipe's third mode is carrying
     // the note, because that is what the correction is moving.
-    const share = (body.inverting ? 0.5 : 1) * (register > 0 ? 3 : 1);
+    const share = (body.apexM === null ? 0.5 : 1)
+      * (register > 0 ? ventMode(body) : 1);
     for (const window of TUNE_WINDOWS) {
       const count = Math.min(n, Math.round(window * sr));
       const bore = new Float32Array(count);
@@ -844,6 +1000,9 @@ export const REED_PARAMS: readonly {
     choiceNotes: [
       '원통관 — 홀수 배음, 레지스터 키는 옥타브가 아니라 12도',
       '원통관, 한 옥타브 아래 — 더 굵고 더 많이 잃는 보어',
+      '원뿔관 — 배음이 다 서고, 레지스터 키는 12도가 아니라 옥타브',
+      '원뿔관, 더 크고 더 낮게 — 같은 구조의 굵은 쪽',
+      '좁은 원뿔관 — 1.4 kHz 포먼트가 오보에 소리의 대부분입니다',
     ],
   },
   // Breath rests at 1.0 and stops at 0.7, and both numbers are measured.

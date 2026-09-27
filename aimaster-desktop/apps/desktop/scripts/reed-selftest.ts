@@ -24,7 +24,8 @@
 
 import {
   PIPE_BODIES, REED_PARAMS, reedLoopDelay, renderReedVoice, solveReed, reedFlow,
-  phaseDelaySamples, spectrumPeriodNear,
+  phaseDelaySamples, spectrumPeriodNear, apexSection, ventMode, SOUND_SPEED_MPS,
+  registerOpen,
 } from '../src/renderer/daw/engine/reed-pipe.js';
 
 const SR = 48_000;
@@ -167,11 +168,180 @@ check('a cylinder gives odd harmonics and leaves the even ones out', () => {
 });
 
 check('and it is the pipe that decides that, not the waveform', () => {
-  // Both bodies here are cylinders, so both must do it.  The flag that makes
-  // them cylinders is one boolean, and this is what it is for.
-  for (const body of PIPE_BODIES) assert(body.inverting,
-    `${body.name} is in the table with a non-inverting round trip, and a cone does not `
-    + 'sustain in this model — see the note beside PIPE_BODIES');
+  // The same six harmonics on every CYLINDER in the table, because the claim is
+  // about the shape and not about one instrument's numbers.
+  const bad: string[] = [];
+  for (let b = 0; b < PIPE_BODIES.length; b++) {
+    const body = PIPE_BODIES[b]!;
+    if (body.apexM !== null) continue;
+    const out = blow({ body: b }, body.lowest);
+    const f0 = hz(body.lowest);
+    const h = [1, 2, 3, 4, 5, 6].map((k) => db(magAt(out.left, f0 * k)));
+    const gap = Math.min(h[0]!, h[2]!, h[4]!) - Math.max(h[1]!, h[3]!, h[5]!);
+    if (gap <= 8) bad.push(`${body.name} ${gap.toFixed(1)} dB`);
+  }
+  assert(bad.length === 0, `a cylinder let its even harmonics through — ${bad.join('; ')}`);
+});
+
+// ── A cone supports all of them ──────────────────────────────────────────
+//
+// The other half of the same claim, and the reason the cones exist at all.
+// They were left out of the first version of this engine because a cone
+// modelled as "the round trip does not invert" would not hold its fundamental:
+// silent at three of four blowing pressures and an octave and a bit sharp at
+// the fourth.  What the model has now is the apex reflectance the physics
+// gives, and these are the checks that say it is doing the work.
+
+check('the apex reflectance is an allpass, and it says the right thing at both ends', () => {
+  // A unit test rather than a rendered one, because this filter's SHAPE is the
+  // difference between a clarinet and a saxophone; if it is wrong the renders
+  // downstream can only be wrong in ways that are harder to read.
+  const resp = (bq: ReturnType<typeof apexSection>, f: number): { mag: number; ph: number } => {
+    const w = 2 * Math.PI * f / SR;
+    const nr = bq.b0 + bq.b1 * Math.cos(w);
+    const ni = -bq.b1 * Math.sin(w);
+    const dr = 1 + bq.a1 * Math.cos(w);
+    const di = -bq.a1 * Math.sin(w);
+    const mag = Math.hypot(nr, ni) / Math.hypot(dr, di);
+    return { mag, ph: Math.atan2(ni, nr) - Math.atan2(di, dr) };
+  };
+  const a = apexSection(0.42, SR);
+  // Returned without the minus sign the round trip carries, so +1 here IS the
+  // open end and −1 IS the rigid cap.
+  assert(Math.abs(resp(a, 0.001).mag - 1) < 1e-6 && resp(a, 0.001).ph > -1e-3,
+    `at DC the apex reads ${resp(a, 0.001).mag.toFixed(4)}∠${resp(a, 0.001).ph.toFixed(3)} — `
+    + 'it has to be +1, which with the round trip\u2019s sign is an OPEN end and is what makes '
+    + 'a cone half-wave');
+  const ny = resp(a, SR / 2 - 1);
+  assert(Math.abs(ny.mag - 1) < 1e-4 && Math.abs(Math.abs(ny.ph) - Math.PI) < 1e-3,
+    `at Nyquist the apex reads ${ny.mag.toFixed(4)}∠${ny.ph.toFixed(3)} — it has to be −1, the `
+    + 'rigid cap, which is why a cone\u2019s modes migrate toward the odd series up high');
+  for (const f of [50, 200, 900, 4000, 12000]) {
+    const m = resp(a, f).mag;
+    assert(Math.abs(m - 1) < 1e-4,
+      `an allpass may not change level, and at ${f} Hz this one is ${m.toFixed(5)}`);
+  }
+  // And the limit that has to hold for the two families to be one model: an
+  // apex infinitely far away IS a cylinder.
+  const far = apexSection(1e6, SR);
+  assert(Math.abs(resp(far, 200).mag - 1) < 1e-6 && Math.abs(resp(far, 200).ph) > Math.PI - 1e-3,
+    'a very distant apex should collapse to the constant −1 the cylinder path uses');
+  // The one place a length in metres becomes a time, so it is worth one line.
+  assert(Math.abs(SOUND_SPEED_MPS - 343) < 1, 'the speed of sound moved');
+});
+
+check('a cone gives the even harmonics a cylinder cannot', () => {
+  // Measured, both families, same grid: the second harmonic sits 9 dB higher on
+  // a cone.  The bound is 5 dB rather than 9 so that a small change in a bore's
+  // formants does not fail it, and the measured spread is printed so nobody has
+  // to guess how much room that is.
+  const h2of: string[] = [];
+  const cyl: number[] = [];
+  const cone: number[] = [];
+  for (let b = 0; b < PIPE_BODIES.length; b++) {
+    const body = PIPE_BODIES[b]!;
+    const got: number[] = [];
+    for (const step of [0, 7, 14]) {
+      const pitch = body.lowest + step;
+      const out = blow({ body: b }, pitch);
+      const f0 = hz(pitch);
+      got.push(db(magAt(out.left, f0 * 2)) - db(magAt(out.left, f0)));
+    }
+    const med = [...got].sort((x, y) => x - y)[1]!;
+    (body.apexM === null ? cyl : cone).push(med);
+    h2of.push(`${body.name} ${med.toFixed(1)}`);
+  }
+  const worstCone = Math.min(...cone);
+  const loudestCyl = Math.max(...cyl);
+  assert(worstCone - loudestCyl > 5,
+    `the quietest cone's second harmonic is ${(worstCone - loudestCyl).toFixed(1)} dB above the `
+    + `loudest cylinder's, and a cone supporting all its harmonics should be well clear — `
+    + `h2/h1 per body: ${h2of.join(', ')}`);
+});
+
+check('a cone knows its key would be an octave, and refuses to fake one', () => {
+  // The fact first: a cylinder's next mode is its third harmonic and a cone's
+  // is its second, so the same key is a twelfth on one and an octave on the
+  // other.  That is what `ventMode` is for and it is used to place the notch.
+  for (const body of PIPE_BODIES) {
+    const want = body.apexM === null ? 3 : 2;
+    assert(ventMode(body) === want,
+      `${body.name} hands the note to mode ${ventMode(body)}, not ${want}`);
+  }
+  // And then the refusal.  A notch an octave below the carrying mode cannot
+  // hold it down — measured, the cones landed on a twelfth up, a fifth up, 39
+  // cents flat and silence depending on the note — so on a cone the key does
+  // NOTHING, and this is what says so.  Bit for bit, because "nothing" is the
+  // claim: anything else would be a control that lands somewhere different
+  // every time, which is what this engine already refused once.
+  for (let b = 0; b < PIPE_BODIES.length; b++) {
+    const body = PIPE_BODIES[b]!;
+    const cone = body.apexM !== null;
+    assert(registerOpen(body, { register: 1 }) === (cone ? 0 : 1),
+      `${body.name} reports the key ${registerOpen(body, { register: 1 })} open`);
+    const shut = blow({ body: b }, body.lowest + 2);
+    const open = blow({ body: b, register: 1 }, body.lowest + 2);
+    let same = true;
+    for (let i = 0; i < shut.left.length; i += 97) {
+      if (shut.left[i] !== open.left[i]) { same = false; break; }
+    }
+    assert(same === cone, cone
+      ? `${body.name} is a cone and its register key changed the render`
+      : `${body.name} is a cylinder and its register key did nothing`);
+  }
+});
+
+check('and on the cylinders the key holds over the range it claims', () => {
+  // The existing check sweeps velocities at one pitch.  Swept by PITCH instead,
+  // this is where it stops: measured on the clarinet at the vent open, −14, 3,
+  // −1 and −1 cents at p50, p52, p57 and p62, and 2852 cents at p69.  A twelfth
+  // above p69 is past the top of the pipe's useful length — 41 samples of loop,
+  // where one sample is 42 cents — and what it locks onto there is a higher
+  // mode, not the clarion.  So the claim is the bottom two octaves of each
+  // cylinder, and the check is written to fail if that shrinks.
+  const bad: string[] = [];
+  for (let b = 0; b < PIPE_BODIES.length; b++) {
+    const body = PIPE_BODIES[b]!;
+    if (body.apexM !== null) continue;
+    for (const step of [0, 2, 7, 12]) {
+      const pitch = body.lowest + step;
+      const f = hz(pitch);
+      const out = blow({ body: b, register: 1 }, pitch);
+      const got = soundingHz(out.left, f, 0.7, true);
+      if (got === null) { bad.push(`${body.name} p${pitch}: no tone`); continue; }
+      const off = centsOff(got, f);
+      if (Math.abs(off) > 20) bad.push(`${body.name} p${pitch}: ${off.toFixed(0)}c`);
+    }
+  }
+  assert(bad.length === 0, `the register key moved the note — ${bad.join('; ')}`);
+});
+
+check('and the apex is paid for in the tuning, not left to the tuning pass', () => {
+  // The apex's phase delay is 8 per cent of an alto's loop at the bottom of its
+  // range.  If `reedLoopDelay` did not count it, the tuning pass would have to
+  // walk it back a bounded step at a time, and the pass exists for the reed's
+  // phase — which has no closed form — rather than for a filter whose phase
+  // does.
+  const cone = PIPE_BODIES.findIndex((b) => b.apexM !== null);
+  assert(cone >= 0, 'the table has no cone in it any more');
+  const body = PIPE_BODIES[cone]!;
+  const t = reedLoopDelay({ ...DEFAULTS, body: cone }, hz(body.lowest), SR);
+  const own = phaseDelaySamples([apexSection(body.apexM!, SR)], hz(body.lowest), SR);
+  assert(own > 5, `the apex should be worth real samples and reads ${own.toFixed(2)}`);
+  // Bounded on the DIFFERENCE, not on "bigger than", and the first version of
+  // this check got that wrong: the DC bleed's phase LEADS, so the total comes
+  // out a little UNDER the apex's own delay — measured −0.41 samples on the
+  // alto, −1.34 on the tenor, +1.15 on the oboe.  What the accounting claims is
+  // that the apex is in there, and 90.12 against 89.72 says it is; a version
+  // that had left it out would read a fraction of a sample.
+  assert(Math.abs(t.filterDelay - own) < 3,
+    `the tuning accounts for ${t.filterDelay.toFixed(2)} samples of filter phase and the apex `
+    + `alone is ${own.toFixed(2)} — that is not the apex plus a lossy sample or two`);
+  // A cylinder must not have paid for one.
+  const cylIndex = PIPE_BODIES.findIndex((b) => b.apexM === null);
+  const c = reedLoopDelay({ ...DEFAULTS, body: cylIndex }, hz(body.lowest), SR);
+  assert(Math.abs(c.filterDelay) < 4,
+    `a cylinder has no apex and is accounting for ${c.filterDelay.toFixed(2)} samples anyway`);
 });
 
 // ── In tune ───────────────────────────────────────────────────────────────

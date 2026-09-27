@@ -1448,6 +1448,38 @@ const REED: InstrumentPatch[] = [
   { id: 'bass-solo', name: 'Bass Clarinet Solo', category: 'lead',
     note: '무른 리드에 비브라토를 얹은 베이스 클라리넷 독주',
     params: { body: 1, stiff: 0.4, vibDepth: 0.22, vibRate: 4.2 } },
+
+  // The cones.  None of them touches Register: on a cone that key does nothing
+  // in this model, and a preset that set it would be saying otherwise.
+  { id: 'alto', name: 'Alto Sax', category: 'lead',
+    note: '원뿔관 — 짝수 배음이 다 서서 클라리넷보다 두껍습니다',
+    params: { body: 2, tone: 1.2, noise: 0.16, attack: 0.022 } },
+  { id: 'alto-sub', name: 'Alto Subtone', category: 'pad',
+    note: '입술을 풀고 숨을 줄여 낮게 — 발라드의 그 바람 섞인 소리',
+    params: { body: 2, damp: 0.4, breath: 0.9, tone: 0.6, noise: 0.35,
+      attack: 0.12, release: 0.4 } },
+  { id: 'alto-honk', name: 'Alto Honk', category: 'brass',
+    note: '조이고 세게 불고 그르렁거림까지 — 섹션 위로 올라오는 소리',
+    params: { body: 2, damp: 3.2, breath: 1.3, tone: 1.8, growl: 0.18,
+      noise: 0.05, attack: 0.01 } },
+  { id: 'tenor', name: 'Tenor Sax', category: 'lead',
+    note: '같은 원뿔관을 더 크고 더 낮게 — 굵은 쪽',
+    params: { body: 3, tone: 1.1, attack: 0.035, vibDepth: 0.08, vibRate: 4.4 } },
+  { id: 'tenor-ballad', name: 'Tenor Ballad', category: 'pad',
+    note: '무른 입술에 느린 비브라토 — 길게 끄는 발라드 테너',
+    params: { body: 3, damp: 0.35, vibDepth: 0.18, vibRate: 4.2,
+      attack: 0.09, release: 0.45, noise: 0.2 } },
+  { id: 'tenor-growl', name: 'Tenor Growl', category: 'bass',
+    note: '그르렁거림을 끝까지 — 로큰롤 색소폰의 아래쪽',
+    params: { body: 3, damp: 1.5, breath: 1.28, tone: 0.9, growl: 0.3,
+      noise: 0.3, attack: 0.05, stiff: 0.6 } },
+  { id: 'oboe', name: 'Oboe', category: 'lead',
+    note: '좁은 원뿔관 — 1.4 kHz 포먼트가 오보에 소리의 대부분입니다',
+    params: { body: 4, damp: 2, noise: 0.06, attack: 0.02, tone: 1.1 } },
+  { id: 'oboe-soft', name: 'Oboe Soft', category: 'pad',
+    note: '리드를 풀고 숨을 줄여 — 오케스트라 안에 앉는 오보에',
+    params: { body: 4, damp: 0.9, breath: 0.95, tone: 0.7,
+      attack: 0.15, release: 0.4 } },
 ];
 
 /**
