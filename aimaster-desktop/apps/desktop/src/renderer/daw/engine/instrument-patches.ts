@@ -1422,8 +1422,8 @@ const REED: InstrumentPatch[] = [
     note: '무른 리드 — 리드 자신의 공명이 내려와 갈대 소리가 앞에 섭니다',
     params: { stiff: 0.4, damp: 0.6, noise: 0.34, attack: 0.1, breath: 1.15 } },
   { id: 'clarion', name: 'Clarion', category: 'lead',
-    note: '레지스터 키를 눌러 12도 위 — 1901센트, 옥타브가 아닙니다',
-    params: { register: 1, breath: 1.1 } },
+    note: '레지스터 키를 눌러 3번 모드로 — 12도 위 모드가 음을 나릅니다. 조여서 붑니다',
+    params: { register: 1, breath: 1.18, damp: 2.4, tone: 1.35, attack: 0.012 } },
   { id: 'clarion-soft', name: 'Clarion Soft', category: 'pad',
     note: '윗 레지스터를 무른 입술로 — 높고 부드러운 층',
     params: { register: 1, damp: 0.3, release: 0.5 } },
@@ -1480,6 +1480,16 @@ const REED: InstrumentPatch[] = [
     note: '리드를 풀고 숨을 줄여 — 오케스트라 안에 앉는 오보에',
     params: { body: 4, damp: 0.9, breath: 0.95, tone: 0.7,
       attack: 0.15, release: 0.4 } },
+
+  // The octave key, which on these three IS an octave — the same control that
+  // is a twelfth on the clarinets above.
+  { id: 'alto-upper', name: 'Alto Upper', category: 'lead',
+    note: '옥타브 키 — 원뿔관이라 12도가 아니라 한 옥타브 위 모드가 음을 나릅니다',
+    params: { body: 2, register: 1, breath: 1.05, damp: 0.8, tone: 0.85,
+      noise: 0.22, attack: 0.05 } },
+  { id: 'oboe-upper', name: 'Oboe Upper', category: 'lead',
+    note: '오보에의 윗 레지스터 — 좁은 보어라 같은 키가 더 얇게 섭니다',
+    params: { body: 4, register: 1, damp: 1.6, tone: 0.9, noise: 0.04 } },
 ];
 
 /**

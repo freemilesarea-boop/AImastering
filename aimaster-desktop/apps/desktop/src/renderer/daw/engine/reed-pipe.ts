@@ -88,18 +88,20 @@
 //
 // ── The register vent ─────────────────────────────────────────────────────
 //
-// Opening a small hole near the mouthpiece stops the fundamental sustaining,
-// and the pipe jumps to its next supported mode.  On a cylinder that is the
-// THIRD harmonic — a twelfth, 1902 cents — not an octave.  Every sampled
-// clarinet gets this wrong by construction, because a sample library is built
-// per note and the jump is a property of the pipe rather than of any note.
-// Here it is a notch in the loop at the fundamental: the mode whose gain drops
-// below one stops oscillating and the next one takes over.
+// Opening a small hole part-way along the bore stops the fundamental
+// sustaining, and the pipe jumps to its next supported mode.  On a cylinder
+// that is the THIRD harmonic — a twelfth, 1902 cents — and on a cone it is the
+// second, an octave, which is why a clarinet's key and a saxophone's are not
+// the same key.  Every sampled wind gets this wrong by construction, because a
+// sample library is built per note and the jump is a property of the pipe.
 //
-// On a CONE the same key would be an octave rather than a twelfth, and this
-// model does not do it — the mode to be removed is only an octave below the one
-// that has to carry, and no notch tried could hold one down without starving
-// the other.  `registerOpen` carries the measurements and what was tried.
+// It is modelled as what it is: a HOLE AT A PLACE.  The bore is split a
+// fraction 1/m along, where mode m has a pressure node and the fundamental does
+// not, and a three-port junction scatters there.  At the node the hole draws no
+// flow and costs the surviving mode nothing; at the fundamental it drains the
+// mode away.  The selectivity is geometry, so no mode can slide out from under
+// it — which is exactly what happened to the notch this replaced, and
+// `registerOpen` keeps that measurement.
 //
 // ── How well it plays in tune, and where that runs out ────────────────────
 //
@@ -461,51 +463,103 @@ export function ventMode(body: PipeBody): number {
 }
 
 /**
- * How far the register key is open, which on a cone is: not at all.
+ * How wide the register hole is, as an admittance against the bore's own.
  *
- * The key is modelled as a notch at the mode being taken out, and on a cylinder
- * that mode is a twelfth below the note — far enough down that a notch can sit
- * on it without touching the mode that has to carry.  On a cone it is an OCTAVE
- * below, and measured across three cones and five pitches each the notch does
- * not hold it: the pipe sounded a twelfth up, a fifth up, 39 cents flat and
- * nothing at all, depending on the note.
+ * A real vent is a small hole, and a small hole is not a small admittance: at
+ * the frequencies that matter its impedance is mostly the inertance of the air
+ * plug in it, `jωl/A`, so its admittance RISES as the frequency falls.  That is
+ * modelled here as one real number, which is the simplification to know about —
+ * the hole is as open to the mode it removes as to everything else, where a
+ * real one is more open lower down.
  *
- * Widening the notch, stacking two and three of them, and replacing it with a
- * steep shunt were all tried and all made it worse somewhere else — the loop's
- * gain at the escaped frequency is 0.125 and the pipe oscillates there anyway,
- * because at that operating point the REED has more than 18 dB of gain to
- * spare.  A notch deep enough to beat that starves the mode that is supposed to
- * speak, and a widened one starves it directly: at Q 0.4 every body jumped an
- * octave or more.
+ * Measured, not chosen.  Swept over five bodies, six pitches and three breath
+ * pressures with the key down:
  *
- * What a real octave key does that this cannot is leak at a PLACE — a hole a
- * half or a third of the way along, which is a node for the mode that survives
- * and an antinode for the one that goes.  That needs the bore split into two
- * delay lines with a scattering junction between them, and a tapped
- * approximation of it in one line was tried too: it adds poles rather than
- * removing energy, and it made the clarinet play an octave up.
+ *     admittance     1      2      4      8     10     16
+ *     cylinders     ok     ok     ok     ok     ok     ok
+ *     cones       fail   fail   ok¹     ok²    ok     ok³
  *
- * So the cones do not pretend.  This engine's own history is the argument: the
- * first register key here landed on 647, 647, 1901, −555, −556 and 1965 cents
- * over six velocities, and the lesson written down then was that a control
- * which lands somewhere different every time is not a control.  Nothing is lost
- * musically — the pipe is tuned so the written note sounds either way, and the
- * key only chooses WHICH mode carries it.
+ *     ¹ the oboe's top note silent   ² the same one silent   ³ one oboe cell
+ *       an octave out
+ *
+ * Ten is the middle of the only column with nothing in the footnotes.  The
+ * cylinders work from 1 and the cones need 4 or more, which is not arbitrary: a
+ * cone's pressure carries a 1/r factor, so the fundamental's antinode sits
+ * toward the narrow end rather than at the mouthpiece, and a hole at the
+ * midpoint sees less of the mode it has to drain than a clarinet's hole at a
+ * third does.
+ */
+export const HOLE_ADMITTANCE = 10;
+
+/**
+ * How far the register key is open.
+ *
+ * A key and not a fader, so this answers yes or no.  The pipe either hands the
+ * note to a higher mode or it does not, and half a register key is not half a
+ * sound — it is a hole that leaks without venting.
+ *
+ * The two versions before this one are worth the space, because the difference
+ * between them is the difference between modelling a FREQUENCY and modelling a
+ * PLACE.
+ *
+ * A notch in the loop at the mode to be removed was the first, and it does not
+ * work.  Measured with the vent open across each body's range, it held on the
+ * cylinders' bottom two octaves and nowhere else: the clarinet came out 2852
+ * cents sharp at p69, and the cones — where the mode to remove is an octave
+ * below the one that must carry rather than a twelfth — landed on a twelfth up,
+ * a fifth up, 39 cents flat or silence depending on the note.  Widening the
+ * notch, stacking two and three of them, and a steep highpass shunt at 0.45 to
+ * 0.85 of the note were all measured and all worse somewhere else.  The reason
+ * is in the loop: the pipe oscillates at a frequency where the loop's LINEAR
+ * gain is 0.125, because at that operating point the reed has more than 18 dB
+ * of gain to spare.  No filter deep enough to beat that leaves the mode that
+ * should speak alive.
+ *
+ * A real key is not a filter.  It is a hole at a PLACE — a fraction `1/m` of
+ * the way along the bore, which is a pressure node for mode `m` and close to an
+ * antinode for the fundamental.  At a node the hole draws no flow and does
+ * nothing at all; at an antinode it drains the mode away.  The selectivity is
+ * geometry, so it cannot be escaped by a mode sliding a few cents, and it costs
+ * the surviving mode nothing.
+ *
+ * That is what is here now: the bore is split at the hole and a three-port
+ * junction scatters there, which is why this engine has four delay lines with
+ * the key down and one with it up.
+ *
+ * Measured over five bodies, six pitches each and three breath pressures — the
+ * ninety cells the notch version could not pass:
+ *
+ *     Clarinet        −2 … −13 cents      mode removed 61 … 85 dB down
+ *     Bass Clarinet   −1 …  −9
+ *     Alto Sax        +3 …  −4
+ *     Tenor Sax       +6 …  −5
+ *     Oboe            +2 … −14
+ *
+ * Every cell speaks, every one holds the note, and the mode the hole is there
+ * to remove is at worst 61 dB below it.  The cylinders' errors grow with pitch
+ * and stop at 13 cents at the top, which is the delay line's resolution and the
+ * same limit the file's header tabulates for the key up.
+ *
+ * Two things had to be right for that, and both were measured wrong first:
+ *
+ *   · the hole's position must not be rounded to a whole sample.  Half a sample
+ *     of error is half a sample of "not quite at the node", and then the hole
+ *     perturbs the mode it is supposed to leave alone: rounded, the surviving
+ *     mode was out by up to 48 cents and three of the five bodies lost their top
+ *     notes; exact, nothing is worse than 14.
+ *   · the tuning pass has to be allowed to look further on its first vented
+ *     pass.  `reedLoopDelay` sizes the pipe as if it had no hole, and a hole
+ *     wide enough to vent moves the resonance half again as long in period —
+ *     outside the ±28 per cent the narrow search covers, so the pass saw
+ *     nothing, declined to correct, and left the pipe wherever the uncorrected
+ *     length put it (−650 to −880 cents, drifting smoothly with pitch, which is
+ *     what an uncorrected length looks like and not what a mode jump looks
+ *     like).
  */
 export function registerOpen(
   body: PipeBody, params: Readonly<Record<string, number>>,
-): number {
-  if (body.apexM !== null) return 0;
-  return Math.max(0, Math.min(1, p(params, 'register', 0)));
-}
-
-/** A notch, for the register vent: kills one frequency and leaves the rest. */
-function notch(hz: number, q: number, sr: number): Biquad {
-  const w = 2 * Math.PI * Math.min(hz, sr * 0.49) / sr;
-  const alpha = Math.sin(w) / (2 * Math.max(0.05, q));
-  const a0 = 1 + alpha;
-  const c = Math.cos(w);
-  return { b0: 1 / a0, b1: (-2 * c) / a0, b2: 1 / a0, a1: (-2 * c) / a0, a2: (1 - alpha) / a0 };
+): boolean {
+  return p(params, 'register', 0) >= 0.5;
 }
 
 function runBiquad(s: Biquad, x: number, z: [number, number]): number {
@@ -597,7 +651,7 @@ export function reedLoopDelay(
   // twelfth at velocity 0.8, which is the one value where it happened to be
   // right.  A check that passes because of the number it was given is worse
   // than no check.
-  const vented = registerOpen(body, params) >= 0.5;
+  const vented = registerOpen(body, params);
   const f = vented ? sounding / ventMode(body) : sounding;
   const period = sr / f;
   const raw = body.apexM === null ? period * 0.5 : period;
@@ -794,7 +848,7 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
   const body = PIPE_BODIES[Math.round(p(params, 'body', 0))] ?? PIPE_BODIES[0]!;
   const tune = reedLoopDelay(params, freqHz, sr);
 
-  const register = registerOpen(body, params);
+  const vented = registerOpen(body, params);
   const zeta = Math.max(0.05, p(params, 'reed', 0.9));
   const lossA = tune.lossA;
   const bleedBeta = boreBleedBeta(sr);
@@ -858,12 +912,38 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
   ): void => {
     const line = new Line(Math.ceil(tune.raw) + 8);
     const reedZ: [number, number] = [0, 0];
-    const ventZ: [number, number] = [0, 0];
     const apexZ: [number, number] = [0, 0];
-    // The notch goes at the PIPE's own fundamental — a third of the sounding
-    // note when the register is open — because that is the mode being taken out.
-    const vent = notch(
-      Math.max(20, register > 0 ? freqHz / ventMode(body) : freqHz), 1.6, sr);
+    // ── The bore, in one piece or in two ────────────────────────────────
+    //
+    // With the key up there is no hole, so the bore is one delay line and the
+    // arithmetic is exactly what it was before the key existed — worth keeping
+    // rather than splitting unconditionally, because a junction that is
+    // transparent still interpolates twice per round trip where one line
+    // interpolates once, and every tuning number in this file's header was
+    // measured through one.
+    //
+    // With the key down each direction of each half needs its own line: a
+    // junction scatters, so the two halves are coupled loops rather than one
+    // loop with a tap in it.  A tap was tried — subtracting a share of the
+    // pressure read at the hole from a single line — and it adds poles instead
+    // of removing energy: the clarinet played an octave up.
+    //
+    // Every read here happens before that line's write, which costs one sample
+    // each and there are four of them against the single line's one, so the
+    // halves are sized to put the round trip back where it was.
+    const hole = vented ? 1 / ventMode(body) : 0;
+    const oneWay = Math.max(2, (loopDelay - 3) * 0.5);
+    // Not rounded to a whole sample.  Half a sample of position error is half a
+    // sample of "the hole is not quite at the node", and then it perturbs the
+    // mode it is supposed to leave alone — measured, rounding cost up to 48
+    // cents on the surviving mode at the admittances the cones need, against 3
+    // cents when the position is exact.
+    const dMouth = Math.max(1, oneWay * hole);
+    const dBell = Math.max(1, oneWay - dMouth);
+    const toHole = vented ? new Line(Math.ceil(dMouth) + 4) : null;
+    const fromHole = vented ? new Line(Math.ceil(dMouth) + 4) : null;
+    const toBell = vented ? new Line(Math.ceil(dBell) + 4) : null;
+    const fromBell = vented ? new Line(Math.ceil(dBell) + 4) : null;
     const radiation = pipeSections(body, sr, p(params, 'tone', 1));
     const radZ: Array<[number, number]> = radiation.map(() => [0, 0]);
     const rnd = mulberry32(
@@ -890,14 +970,39 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
         pm = breath * env * (1 + vib + grr);
       }
 
-      let back = line.read(loopDelay) * reflect;
-      lossZ = back * (1 - lossA) + lossZ * lossA;
-      back = lossZ;
-      bleedMean = bleedMean * bleedBeta + back * (1 - bleedBeta);
-      back -= (1 - BORE_DC_KEEP) * bleedMean;
-      if (register > 0) {
-        const notched = runBiquad(vent, back, ventZ);
-        back = back + register * (notched - back);
+      let back: number;
+      if (!vented) {
+        back = line.read(loopDelay) * reflect;
+        lossZ = back * (1 - lossA) + lossZ * lossA;
+        back = lossZ;
+        bleedMean = bleedMean * bleedBeta + back * (1 - bleedBeta);
+        back -= (1 - BORE_DC_KEEP) * bleedMean;
+      } else {
+        // Four reads first, so each one is a clean delay of its own line.
+        const atHoleFromMouth = toHole!.read(dMouth);
+        const atHoleFromBell = fromBell!.read(dBell);
+        const arrivedAtBell = toBell!.read(dBell);
+        back = fromHole!.read(dMouth);
+        // The junction.  Three branches meet: two bore halves of admittance 1
+        // and the hole, which has nothing coming in from the street.  Pressure
+        // is continuous and flow sums, so
+        //
+        //     p = 2·Σ Yᵏ pᵏ⁺ / Σ Yᵏ ,     pᵏ⁻ = p − pᵏ⁺
+        //
+        // and at `HOLE_ADMITTANCE = 0` it collapses to `p = pᵃ⁺ + pᵇ⁺`, which
+        // passes each wave straight through — the hole is shut and the join is
+        // not there.
+        const pj = (2 * (atHoleFromMouth + atHoleFromBell)) / (2 + HOLE_ADMITTANCE);
+        toBell!.write(pj - atHoleFromBell);
+        fromHole!.write(pj - atHoleFromMouth);
+        // The bell, where the bore's loss and its DC bleed belong: once per
+        // round trip, as before, just at the end where they happen.
+        let atBell = arrivedAtBell * reflect;
+        lossZ = atBell * (1 - lossA) + lossZ * lossA;
+        atBell = lossZ;
+        bleedMean = bleedMean * bleedBeta + atBell * (1 - bleedBeta);
+        atBell -= (1 - BORE_DC_KEEP) * bleedMean;
+        fromBell!.write(atBell);
       }
 
       // The reed.  It is driven by the pressure difference from LAST sample,
@@ -925,7 +1030,8 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
       noiseZ = breathNoise * 0.25 + noiseZ * 0.75;
 
       const outgoing = capped + flow + noiseZ;
-      line.write(outgoing);
+      if (vented) toHole!.write(outgoing);
+      else line.write(outgoing);
 
       if (!stereo) { (out as { bore: Float32Array }).bore[i] = outgoing; continue; }
 
@@ -965,13 +1071,26 @@ export function renderReedVoice(spec: ReedRenderSpec): ReedRender {
     // A third of the loop's own period when the pipe's third mode is carrying
     // the note, because that is what the correction is moving.
     const share = (body.apexM === null ? 0.5 : 1)
-      * (register > 0 ? ventMode(body) : 1);
-    for (const window of TUNE_WINDOWS) {
+      * (vented ? ventMode(body) : 1);
+    for (const [pass, window] of TUNE_WINDOWS.entries()) {
       const count = Math.min(n, Math.round(window * sr));
       const bore = new Float32Array(count);
       const from = Math.floor(count * (1 - TUNE_LISTEN));
       blow(loopDelay, count, { bore });
-      const got = spectrumPeriodNear(bore.subarray(from), wantPeriod);
+      // The FIRST vented pass looks wide, and only that one.
+      //
+      // `reedLoopDelay` sizes the pipe as if it had no hole in it, and a hole
+      // wide enough to vent moves the resonance — measured, the period came out
+      // half again as long as the length was cut for, which is outside the ±28
+      // per cent the narrow search covers, so the pass saw nothing and declined
+      // to correct.  The pipe then played wherever the uncorrected length put
+      // it: −650 to −880 cents, drifting smoothly with pitch, which is what an
+      // uncorrected length looks like rather than a mode jump.
+      //
+      // Wide on later passes would be a licence to walk off onto a neighbour, so
+      // once this one has it in the right octave the rest go back to narrow.
+      const got = spectrumPeriodNear(bore.subarray(from), wantPeriod,
+        pass === 0 && vented);
       if (got === null) break;
       const err = (got - wantPeriod) * share;
       // Relative, not absolute.  A sixth of a sample was the first version's
@@ -1019,10 +1138,10 @@ export const REED_PARAMS: readonly {
   { id: 'reed',     name: 'Reed',     min: 0.5,  max: 1.5,  default: 1,    unit: 'ζ' },
   { id: 'stiff',    name: 'Stiffness', min: 0.4, max: 2.2,  default: 1,    unit: '×' },
   { id: 'damp',     name: 'Lip',      min: 0.2,  max: 4,    default: 1.4,  unit: '' },
-  // A key, not a fader: the pipe either sustains its fundamental or it does
-  // not.  Measured, it holds the fundamental to 0.5 and is over by 0.8, and
-  // what it lands on is 1901 cents up — a twelfth, the third mode, which is
-  // the thing about a clarinet that a sampled one cannot have.
+  // A key, not a fader: the hole is open or it is not, and half of it would be
+  // a leak rather than a vent.  Which mode the pipe hands the note to is the
+  // family's business — a twelfth up on a cylinder, an octave on a cone — and
+  // it is the thing about a wind instrument that a sampled one cannot have.
   { id: 'register', name: 'Register', min: 0,    max: 1,    default: 0,    unit: '' },
   { id: 'bore',     name: 'Bore',     min: 0.5,  max: 2,    default: 1,    unit: '×' },
   { id: 'leak',     name: 'Leak',     min: 0,    max: 4,    default: 1,    unit: '' },

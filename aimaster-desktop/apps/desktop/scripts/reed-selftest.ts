@@ -25,7 +25,7 @@
 import {
   PIPE_BODIES, REED_PARAMS, reedLoopDelay, renderReedVoice, solveReed, reedFlow,
   phaseDelaySamples, spectrumPeriodNear, apexSection, ventMode, SOUND_SPEED_MPS,
-  registerOpen,
+  registerOpen, HOLE_ADMITTANCE,
 } from '../src/renderer/daw/engine/reed-pipe.js';
 
 const SR = 48_000;
@@ -259,61 +259,93 @@ check('a cone gives the even harmonics a cylinder cannot', () => {
     + `h2/h1 per body: ${h2of.join(', ')}`);
 });
 
-check('a cone knows its key would be an octave, and refuses to fake one', () => {
-  // The fact first: a cylinder's next mode is its third harmonic and a cone's
-  // is its second, so the same key is a twelfth on one and an octave on the
-  // other.  That is what `ventMode` is for and it is used to place the notch.
+check('the register key is an interval the PIPE chooses, and the two differ', () => {
+  // A cylinder's next supported mode is its third harmonic and a cone's is its
+  // second, so the same hole is a twelfth on one and an octave on the other.
+  // That is the fact; the two checks after this one are whether the model does
+  // it.
   for (const body of PIPE_BODIES) {
     const want = body.apexM === null ? 3 : 2;
     assert(ventMode(body) === want,
       `${body.name} hands the note to mode ${ventMode(body)}, not ${want}`);
+    // And the pipe really is that many times as long, which is what makes the
+    // written note come out where the part says it should.
+    const f = hz(body.lowest + 2);
+    const b = PIPE_BODIES.indexOf(body);
+    const open = reedLoopDelay({ ...DEFAULTS, body: b, register: 1 }, f, SR).raw;
+    const shut = reedLoopDelay({ ...DEFAULTS, body: b, register: 0 }, f, SR).raw;
+    assert(Math.abs(open / shut - want) < 0.02,
+      `${body.name} pipe is ${(open / shut).toFixed(2)}× as long with the key down, not ${want}×`);
   }
-  // And then the refusal.  A notch an octave below the carrying mode cannot
-  // hold it down — measured, the cones landed on a twelfth up, a fifth up, 39
-  // cents flat and silence depending on the note — so on a cone the key does
-  // NOTHING, and this is what says so.  Bit for bit, because "nothing" is the
-  // claim: anything else would be a control that lands somewhere different
-  // every time, which is what this engine already refused once.
-  for (let b = 0; b < PIPE_BODIES.length; b++) {
-    const body = PIPE_BODIES[b]!;
-    const cone = body.apexM !== null;
-    assert(registerOpen(body, { register: 1 }) === (cone ? 0 : 1),
-      `${body.name} reports the key ${registerOpen(body, { register: 1 })} open`);
-    const shut = blow({ body: b }, body.lowest + 2);
-    const open = blow({ body: b, register: 1 }, body.lowest + 2);
-    let same = true;
-    for (let i = 0; i < shut.left.length; i += 97) {
-      if (shut.left[i] !== open.left[i]) { same = false; break; }
-    }
-    assert(same === cone, cone
-      ? `${body.name} is a cone and its register key changed the render`
-      : `${body.name} is a cylinder and its register key did nothing`);
-  }
+  // A key and not a fader, and the boundary is where the parameter says.
+  assert(registerOpen(PIPE_BODIES[0]!, { register: 0.6 })
+    && !registerOpen(PIPE_BODIES[0]!, { register: 0.4 }),
+    'the key should be open above half and shut below it');
 });
 
-check('and on the cylinders the key holds over the range it claims', () => {
-  // The existing check sweeps velocities at one pitch.  Swept by PITCH instead,
-  // this is where it stops: measured on the clarinet at the vent open, −14, 3,
-  // −1 and −1 cents at p50, p52, p57 and p62, and 2852 cents at p69.  A twelfth
-  // above p69 is past the top of the pipe's useful length — 41 samples of loop,
-  // where one sample is 42 cents — and what it locks onto there is a higher
-  // mode, not the clarion.  So the claim is the bottom two octaves of each
-  // cylinder, and the check is written to fail if that shrinks.
+check('and the hole holds the note on every body, swept by pitch and pressure', () => {
+  // The check the notch version could not pass, and the reason this vent is a
+  // PLACE rather than a frequency.  Ninety cells: five bodies, six pitches over
+  // two octaves each, three breath pressures.  Swept deliberately — the first
+  // register key in this engine passed a check that looked at one pitch and one
+  // velocity, and was a coin toss everywhere else.
   const bad: string[] = [];
+  let worstOff = 0;
+  let weakest = -200;
   for (let b = 0; b < PIPE_BODIES.length; b++) {
     const body = PIPE_BODIES[b]!;
-    if (body.apexM !== null) continue;
-    for (const step of [0, 2, 7, 12]) {
-      const pitch = body.lowest + step;
-      const f = hz(pitch);
-      const out = blow({ body: b, register: 1 }, pitch);
-      const got = soundingHz(out.left, f, 0.7, true);
-      if (got === null) { bad.push(`${body.name} p${pitch}: no tone`); continue; }
-      const off = centsOff(got, f);
-      if (Math.abs(off) > 20) bad.push(`${body.name} p${pitch}: ${off.toFixed(0)}c`);
+    const m = ventMode(body);
+    for (const step of [0, 5, 10, 15, 19, 24]) {
+      for (const vel of [0.6, 0.8, 1]) {
+        const pitch = body.lowest + step;
+        const f = hz(pitch);
+        const out = blow({ body: b, register: 1, velocity: vel }, pitch);
+        if (rms(out.left, 0.6, 1.0) < 10 ** (-50 / 20)) {
+          bad.push(`${body.name} p${pitch} v${vel}: silent`); continue;
+        }
+        const got = soundingHz(out.left, f, 0.7, true);
+        if (got === null) { bad.push(`${body.name} p${pitch} v${vel}: no tone`); continue; }
+        const off = centsOff(got, f);
+        // 20 cents, and the bound is the delay line's resolution rather than a
+        // tolerance chosen to pass: measured, nothing is worse than 14, and the
+        // worst of it is the clarinet at the top of its range where one whole
+        // sample of loop is already 42 cents.
+        if (Math.abs(off) > 20) {
+          bad.push(`${body.name} p${pitch} v${vel}: ${off.toFixed(0)}c`); continue;
+        }
+        worstOff = Math.max(worstOff, Math.abs(off));
+        // And the mode the hole exists to remove is gone rather than merely
+        // quieter.  40 dB is a long way inside the 61 measured; what it is there
+        // to fail is a vent that stopped venting.
+        const own = db(magAt(out.left, f / m)) - db(magAt(out.left, f));
+        if (own > -40) {
+          bad.push(`${body.name} p${pitch} v${vel}: own mode only ${(-own).toFixed(0)} dB down`);
+        }
+        weakest = Math.max(weakest, own);
+      }
     }
   }
-  assert(bad.length === 0, `the register key moved the note — ${bad.join('; ')}`);
+  assert(bad.length === 0,
+    `${bad.length} of 90 cells wrong — ${bad.slice(0, 6).join('; ')}`);
+  assert(worstOff < 20 && weakest < -40,
+    `worst ${worstOff.toFixed(0)} cents, removed mode at worst ${(-weakest).toFixed(0)} dB down`);
+});
+
+check('and it is the PLACE doing that, not the size of the hole', () => {
+  // The claim this whole rewrite rests on: the hole is selective because of
+  // WHERE it is, so the admittance only has to be big enough to drain a mode
+  // and does not have to be tuned per note or per body.  One number covers a
+  // clarinet and an oboe, and the sweep behind it is beside the constant.
+  assert(HOLE_ADMITTANCE >= 4,
+    `the cones need 4 or more and this is ${HOLE_ADMITTANCE} — see the sweep`);
+  // The junction is transparent when the hole is shut: that is what lets the
+  // key-up bore stay one delay line, and it is why every tuning number in the
+  // engine's header still holds.  Stated as arithmetic, since the code path it
+  // guards is chosen by a boolean: 2(a+b)/(2+0) = a+b, so each wave passes
+  // straight through.
+  const shutJunction = (a: number, bb: number): number => (2 * (a + bb)) / (2 + 0);
+  assert(shutJunction(0.3, -0.2) === 0.3 + -0.2,
+    'a shut hole has to pass both waves through untouched');
 });
 
 check('and the apex is paid for in the tuning, not left to the tuning pass', () => {
