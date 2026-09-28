@@ -207,26 +207,33 @@ const CEILING_LIMITED_GAP_LU = 2.5;
  * direction, which is the loop's two-point averager and nothing else: its
  * response is `cos(πf/sr)`, and that predicts 1.19 against 1.18 measured.
  *
- * ── What is left, and why each number is what it is ────────────────────────
+ * The excitation was the other half.  It was `L` samples of a seeded noise
+ * sequence, low-passed by a fixed coefficient and combed at a rounded number of
+ * samples — and `L` is proportional to the rate, so the same note was a
+ * different draw, filtered at a different corner in hertz, notched at a
+ * different harmonic.  Built harmonic by harmonic instead, every harmonic that
+ * exists at two rates is identical at both, and the pick position stops being
+ * quantised.
  *
- * `plucked` is the clean case: 0.027 LU, down from 0.412.  That is the whole of
- * what this change was for.
+ * ── Why three of these four got BIGGER, and why that is the fix working ────
  *
- * The rest is the EXCITATION, which is `L` samples of a seeded noise sequence
- * where `L` is the delay line's length — so at a different rate the same note is
- * a different draw, combed at a rounded pick position and divided by a different
- * peak.  It shows as a difference already present in the attack that does not
- * grow: measured on the bass, the low band differs by 0.86 dB at 20 ms and 0.85
- * dB at 1.5 s, and the sign changes from note to note.  The bass is worst
- * because its reference root is the lowest and its pick sits nearest the bridge,
- * so both the draw and the comb differ most.
+ * Before the excitation was rebuilt the four read −0.027, −0.534, +0.145 and
+ * −0.318 LU: scattered, and in both directions.  They now read +0.17 to +0.44,
+ * all the same sign, ordered by how much high-frequency energy each instrument
+ * carries — the bass lowest, the electric guitar highest.  That is one cause
+ * showing through instead of two, and the one left is the loop's averager.
+ *
+ * So `plucked`'s old 0.027 was not invariance.  It was the excitation's random
+ * error happening to cancel the loop's systematic one, which is a worse thing
+ * to have than the honest 0.305 that replaced it: a number small by
+ * cancellation moves the moment anything else changes.
  *
  * Each number is pinned rather than bounded, because a change in either
  * direction is news: smaller means somebody improved it and this table should
  * say so, larger means a regression.
  */
 const RATE_GAP_LU: Readonly<Record<string, number>> = {
-  plucked: -0.027, bass: -0.534, agtr: 0.145, egtr: -0.318,
+  plucked: 0.305, bass: 0.169, agtr: 0.399, egtr: 0.435,
 };
 
 /** How far a rate gap may drift from the table above before it is news. */

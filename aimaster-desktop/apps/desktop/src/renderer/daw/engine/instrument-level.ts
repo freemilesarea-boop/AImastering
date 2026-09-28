@@ -110,11 +110,11 @@ export const INSTRUMENT_TRIM = {
   analog: 0.2012,
   fm: 0.0762,
   drummachine: 0.3183,
-  bass: 0.1840,
+  bass: 0.1671,
   mallet: 0.2005,
   organ: 0.0755,
-  agtr: 0.3988,
-  egtr: 0.2726,
+  agtr: 0.3995,
+  egtr: 0.2765,
   // Was 0.6127, which let the loudest kit's hard bar reach −2.52 dBTP in the
   // app — over the ceiling this file promises.  The peak is not one drum being
   // hot: it is the crash and the kick landing on the same downbeat, and removing
@@ -122,12 +122,15 @@ export const INSTRUMENT_TRIM = {
   // cost of honouring the ceiling is that the kit sits 1.6 LU under the other
   // instruments instead of 1.2; the Level knob is where a player disagrees.
   drumkit: 0.5795,
-  // Four of these moved when the string loop's fractional delay became an
-  // allpass instead of an interpolation: the interpolation was a loss INSIDE the
-  // feedback loop, so removing it made every Karplus-Strong instrument ring
-  // longer and louder — agtr by 1.09 dB, egtr 1.32, bass 0.71 and the plucked
-  // family 0.56.  Nothing else on this list moved by more than 0.02, which is
-  // how the change was confirmed to be confined to that loop.
+  // The same four have moved twice, and both times nothing else on this list
+  // moved by more than 0.02 dB — which is how each change was confirmed to be
+  // confined to the Karplus-Strong loop rather than merely believed to be.
+  //
+  // First when the loop's fractional delay became an allpass instead of an
+  // interpolation, since the interpolation was a loss INSIDE the feedback loop:
+  // agtr rose 1.09 dB, egtr 1.32, bass 0.71, plucked 0.56.  Then when the
+  // excitation moved into the harmonic domain, which changed its level by
+  // whatever `EXCITE_RMS` happens to be set to and its spectrum by rather less.
   //
   // These two were 0.0206 and 0.1030, and both were out: measured in the app
   // they sat 0.40 dB loud and 0.31 dB quiet.  Neither is rate-sensitive — 0.012
@@ -137,7 +140,7 @@ export const INSTRUMENT_TRIM = {
   // `measure-levels-in-app.mjs` about the list that went stale.
   bowed: 0.0197,
   reed: 0.1068,
-  plucked: 0.2226,
+  plucked: 0.2343,
   // Measured in the app, like all of these.  Near 1 because `FD_BRIDGE_GAIN`
   // already scales the string's slope down by fifty on the way out of the
   // engine; between them the voice lands where the others do.

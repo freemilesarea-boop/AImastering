@@ -338,10 +338,20 @@ const EGTR: InstrumentPatch[] = [
     note: '공명이 낮고 넓습니다 — 두껍고, 드라이브 앞단으로 보내세요',
     params: { damp: 0.9992, bright: 0.55, pick: 0.14, bodyHz: 1900, bodyQ: 1.1,
       body: 10, tone: 2600, sustain: 6.5, release: 0.15 } },
+  // "Between a single coil and a humbucker" turned out to be where Init already
+  // sits — every one of this patch's numbers was a nudge from the default, and
+  // the rendered fingerprint only cleared the bank's 0.40 rule because the old
+  // excitation's note-to-note noise added variance to both sides.  With the
+  // excitation deterministic it read 0.319 and the pair failed, correctly.
+  //
+  // So it is a P-90 now rather than a compromise: the resonance lower and much
+  // broader than a Strat's, a second peak for the growl the pickup is known for,
+  // hotter output, and the pick further from the bridge for a thicker
+  // fundamental — with the string itself left bright so the top stays alive.
   { id: 'p90', name: 'P-90', category: 'guitar',
-    note: '싱글과 험버커 사이 — 중음이 있고 고음이 살아 있습니다',
-    params: { damp: 0.999, bright: 0.62, pick: 0.1, bodyHz: 2600, bodyQ: 1.8,
-      body: 8, tone: 3800, sustain: 5.5, release: 0.13 } },
+    note: '싱글과 험버커 사이 — 굵은 중음에 고음이 살아 있고, 출력이 셉니다',
+    params: { damp: 0.9992, bright: 0.72, pick: 0.16, bodyHz: 2300, bodyQ: 1.35,
+      body: 10, plate: 5, tone: 4200, sustain: 6, release: 0.16 } },
   { id: 'chorus-clean', name: 'Chorus Clean', category: 'guitar',
     note: '줄을 겹쳐 흔들리게 — 코러스 페달 없이 나는 그 소리',
     params: { double: 0.85, damp: 0.9989, bright: 0.8, bodyHz: 3200, bodyQ: 2,
@@ -1557,9 +1567,15 @@ const PLUCKED: InstrumentPatch[] = [
   { id: 'koto-bright', name: 'Koto Bright', category: 'lead',
     note: '플렉트럼을 브리지 쪽으로 옮기고 단단하게 — 선율에 씁니다',
     params: { kind: 4, pickTrim: -0.65, brightTrim: 0.45, ringTrim: -0.3 } },
+  // Pushed to the ends of its own knobs for the same reason `egtr/p90` was: it
+  // read 0.372 from Init against the bank's 0.40 rule once the excitation stopped
+  // supplying note-to-note variance of its own.  Doubling all the way, plucked
+  // well away from the bridge and darker with it, which is what "two harps" has
+  // to mean if it is to mean anything.
   { id: 'harp-wide', name: 'Harp Wide', category: 'pad',
-    note: '복현처럼 겹치고 넓게 벌려 — 하프 두 대처럼 들립니다',
-    params: { doubleTrim: 0.75, width: 1, ringTrim: 0.35, brightTrim: -0.3 } },
+    note: '복현처럼 완전히 겹치고 넓게 — 살로 멀리서 뜯은 하프 두 대',
+    params: { doubleTrim: 1, width: 1, ringTrim: 0.5, brightTrim: -0.6,
+      pickTrim: 0.7 } },
 ];
 
 // A steel wire plucked by a rubber pad.  What separates these is mostly the

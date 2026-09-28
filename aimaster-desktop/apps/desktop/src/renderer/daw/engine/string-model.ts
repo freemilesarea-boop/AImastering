@@ -65,6 +65,38 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+/**
+ * The RMS the excitation is normalised to.
+ *
+ * Nothing rides on the value — the loop is linear and `INSTRUMENT_TRIM` absorbs
+ * it exactly — so it is chosen to keep the four Karplus-Strong instruments near
+ * the level they were at, and no further.  Unit RMS would have put them eleven
+ * decibels up; 0.27, guessed from the peak-to-RMS ratio of filtered noise, left
+ * them 1.6 to 2.9 dB down; 0.356 is what measuring the four and centring them
+ * gave, which is as close as one constant gets when their pick positions and
+ * brightnesses differ.
+ */
+export const EXCITE_RMS = 0.356;
+
+/**
+ * The rate the excitation's brightness corner is anchored to.
+ *
+ * Not a preference: it is the rate `INSTRUMENT_TRIM` was derived at, so anchoring
+ * here is what makes the change inaudible on that rate and makes every other
+ * rate match it rather than the other way round.
+ */
+export const EXCITE_REF_SR = 44_100;
+
+/**
+ * The highest harmonic the excitation bothers to put energy in.
+ *
+ * Bounded by hearing rather than by Nyquist on purpose: with a fixed ceiling the
+ * harmonic set is identical at every rate a device is likely to offer, whereas
+ * `sr/2` would add harmonics at 48 kHz that 44.1 does not have and reintroduce
+ * exactly the dependence this excitation exists to remove.
+ */
+export const EXCITE_TOP_HZ = 20_000;
+
 export interface PluckOptions {
   freqHz: number;
   sampleRate: number;
@@ -142,27 +174,89 @@ export function pluckedString(o: PluckOptions): Float32Array {
   const out = new Float32Array(n);
   const { length: L, allpass: ap } = stringDelay(o.freqHz, sr);
 
-  // Excitation: noise, low-passed by `brightness`, then comb-filtered at the
-  // pick position.  Filling the delay line IS the pluck — there is no separate
-  // exciter, which is the whole idea of the algorithm.
+  // ── The excitation, built one HARMONIC at a time ─────────────────────────
+  //
+  // Filling the delay line IS the pluck — there is no separate exciter, which is
+  // the whole idea of the algorithm.  What goes in it is the string's initial
+  // shape, and the line is one period long, so a sinusoid with `k` cycles across
+  // it is harmonic `k` of the note.  Building it there rather than in the time
+  // domain is what makes the note the same note on every device.
+  //
+  // It was `L` samples of a seeded noise stream, low-passed and then comb-
+  // filtered by subtracting a copy shifted by a rounded number of samples.  All
+  // three of those depend on `L`, and `L` is proportional to the sample rate:
+  //
+  //   · the noise was a different DRAW at a different rate, because the stream
+  //     was read a different number of times
+  //   · the low-pass coefficient was fixed, so its corner sat at a fixed
+  //     fraction of the rate — 351 Hz on one device and 382 on another
+  //   · the comb's shift was `round(L·pickPosition)`, so which harmonics it
+  //     notched moved with the rounding
+  //
+  // Measured at seven pitches, worst gap between 44.1 and 48 kHz / how much that
+  // gap swung from note to note / how far a chromatic octave spanned at one rate:
+  //
+  //     as it was                 1.59 dB   2.68 dB   2.87 dB
+  //     normalising by RMS        0.73      1.17      2.05
+  //     + the corner in hertz     0.92      1.18      2.05
+  //     + the harmonic domain     0.44      0.29      1.50
+  //
+  // Anchoring the corner made the worst gap slightly WORSE on its own, because
+  // the filter's error had been partly cancelling the draw's — one error hiding
+  // another is not a reason to keep both, and in the harmonic domain neither is
+  // there to cancel anything.
+  //
+  // What is left is not scatter.  Both remaining figures are MONOTONE in pitch —
+  // the gap runs 0.16, 0.18, 0.20, 0.24, 0.26, 0.29, 0.44 dB from the bottom of
+  // the range to the top, and the octave's 1.50 dB is a smooth slope rather than
+  // a jumble — which is the shape the loop's two-point averager has to make,
+  // since a high note takes more round trips per second through it.  That filter
+  // is the one rate-dependent thing left in this engine and it is left on
+  // purpose; see `RATE_GAP_LU` in the level suite.
+  //
+  // In the harmonic domain all three go away at once.  Harmonic `k` gets its
+  // amplitude from the rolloff at `k·f₀` in hertz, its notch from the exact comb
+  // `|sin(πk·p)|` instead of a rounded sample shift, and its phase from the
+  // `k`-th draw of the stream — so every harmonic that exists at two rates is
+  // identical at both, and the pick position stops being quantised.
   const rnd = mulberry32(o.seed);
   const line = new Float32Array(L);
-  const tone = 0.05 + 0.95 * Math.min(1, Math.max(0, o.brightness));
-  let lp = 0;
-  for (let i = 0; i < L; i++) {
-    lp += tone * ((rnd() * 2 - 1) - lp);
-    line[i] = lp;
+  const shape = Math.min(0.999, 0.05 + 0.95 * Math.min(1, Math.max(0, o.brightness)));
+  // The corner the old fixed coefficient produced at the reference rate, so
+  // nothing moves on the rate the trims were derived at.
+  const cornerHz = (-Math.log(1 - shape) * EXCITE_REF_SR) / (2 * Math.PI);
+  const pickFrac = Math.min(0.5, Math.max(0.02, o.pickPosition));
+  // Bounded by hearing rather than by Nyquist, so the harmonic set is the same
+  // on every rate a device offers instead of being one harmonic longer at 48.
+  const top = Math.min(Math.floor(L / 2), Math.floor(EXCITE_TOP_HZ / Math.max(1, o.freqHz)));
+  for (let k = 1; k <= top; k++) {
+    const fk = k * o.freqHz;
+    const amp = Math.abs(Math.sin(Math.PI * k * pickFrac))
+      / Math.sqrt(1 + (fk / cornerHz) * (fk / cornerHz));
+    const phase = rnd() * 2 * Math.PI;
+    if (amp < 1e-7) continue;
+    // A rotating phasor rather than a sine per sample: `L` can be a couple of
+    // thousand and `top` a thousand, and two multiplies beat a transcendental.
+    const step = (2 * Math.PI * k) / L;
+    const cs = Math.cos(step);
+    const sn = Math.sin(step);
+    let zr = Math.cos(phase);
+    let zi = Math.sin(phase);
+    for (let i = 0; i < L; i++) {
+      line[i]! += amp * zi;
+      const nr = zr * cs - zi * sn;
+      zi = zr * sn + zi * cs;
+      zr = nr;
+    }
   }
-  const pick = Math.round(L * Math.min(0.5, Math.max(0.02, o.pickPosition)));
-  if (pick > 0 && pick < L) {
-    const copy = Float32Array.from(line);
-    for (let i = 0; i < L; i++) line[i] = copy[i]! - copy[(i + pick) % L]!;
-  }
-  // Normalise: the comb and the low-pass both change the level, and a string
-  // that arrives at wildly different amplitudes per pitch is unplayable.
-  let peak = 0;
-  for (let i = 0; i < L; i++) peak = Math.max(peak, Math.abs(line[i]!));
-  if (peak > 0) for (let i = 0; i < L; i++) line[i]! /= peak;
+  // Normalise: the comb and the rolloff both change the level, and a string that
+  // arrives at wildly different amplitudes per pitch is unplayable.  By RMS,
+  // which for a sum of random-phase sinusoids is a settled number rather than
+  // the coin toss the peak was.
+  let sum = 0;
+  for (let i = 0; i < L; i++) sum += line[i]! * line[i]!;
+  const level = Math.sqrt(sum / L);
+  if (level > 0) for (let i = 0; i < L; i++) line[i]! *= EXCITE_RMS / level;
 
   const damp = Math.min(0.99995, Math.max(0.5, o.damping));
   let idx = 0;
