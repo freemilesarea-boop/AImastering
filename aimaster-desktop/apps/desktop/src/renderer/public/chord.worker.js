@@ -222,7 +222,7 @@
   var DEFAULT_CHROMA = {
     hopSec: 0.1,
     gamma: 3,
-    harmonicSuppression: 0.5,
+    harmonicSuppression: 0.95,
     silenceFloor: 0.02
   };
   var SILENCE_RMS = 1e-4;
@@ -278,39 +278,83 @@
     return out;
   }
   var PARTIALS = [
-    { harmonic: 2, semitones: 12, weight: 1 },
+    { harmonic: 2, semitones: 12 },
     // octave
-    { harmonic: 3, semitones: 19.0196, weight: 0.667 },
+    { harmonic: 3, semitones: 19.0196 },
     // fifth
-    { harmonic: 4, semitones: 24, weight: 0.5 },
+    { harmonic: 4, semitones: 24 },
     // two octaves
     // Partial 5 is a MAJOR THIRD: it is why an unsuppressed single note reads
     // as a major chord.
-    { harmonic: 5, semitones: 27.8631, weight: 0.4 },
-    { harmonic: 6, semitones: 31.0196, weight: 0.333 },
+    { harmonic: 5, semitones: 27.8631 },
+    { harmonic: 6, semitones: 31.0196 },
     // fifth again
     // Partial 7 is a MINOR SEVENTH — the one that turns triads into 7 chords.
-    { harmonic: 7, semitones: 33.6883, weight: 0.286 },
-    { harmonic: 8, semitones: 36, weight: 0.25 }
+    { harmonic: 7, semitones: 33.6883 },
+    { harmonic: 8, semitones: 36 }
     // three octaves
   ];
+  var HARMONIC_PRESENCE_FLOOR = 0.07;
   function suppressHarmonics(frame, layout, strength, out = new Float32Array(frame.length)) {
     if (strength <= 0) {
       out.set(frame);
       return out;
     }
     const perSemitone = layout.binsPerOctave / 12;
+    let peak = 0;
+    for (let k = 0; k < frame.length; k++) peak = Math.max(peak, frame[k] ?? 0);
+    if (peak <= 0) {
+      out.set(frame);
+      return out;
+    }
+    const need = peak * HARMONIC_PRESENCE_FLOOR;
+    const sure = new Float32Array(frame.length);
+    let sum = 0;
+    let testable = 0;
     for (let k = 0; k < frame.length; k++) {
-      let predicted = 0;
+      let best = -1;
       for (const partial of PARTIALS) {
         const at = k - partial.semitones * perSemitone;
         const lo = Math.floor(at);
         if (lo < 0 || lo + 1 >= frame.length) continue;
         const t = at - lo;
         const value = (frame[lo] ?? 0) * (1 - t) + (frame[lo + 1] ?? 0) * t;
-        predicted += value * partial.weight;
+        best = Math.max(best, Math.min(1, value / need));
       }
-      out[k] = Math.max(0, (frame[k] ?? 0) - strength * predicted);
+      sure[k] = best;
+      if (best >= 0) {
+        sum += best;
+        testable += 1;
+      }
+    }
+    const mean = testable > 0 ? sum / testable : 0;
+    for (let k = 0; k < frame.length; k++) {
+      const s = sure[k] < 0 ? mean : sure[k];
+      out[k] = Math.max(0, (frame[k] ?? 0) * (1 - strength * s));
+    }
+    return out;
+  }
+  var CHROMA_BASS_FLOOR = 0.12;
+  var CHROMA_REGISTER_OCTAVES = 2;
+  var CHROMA_REGISTER_HALF_LIFE = 3;
+  function lowestStrongBin(frame, floorRatio = CHROMA_BASS_FLOOR) {
+    let peak = 0;
+    for (let k = 0; k < frame.length; k++) peak = Math.max(peak, frame[k] ?? 0);
+    if (peak <= 0) return 0;
+    const floor = peak * floorRatio;
+    for (let k = 0; k < frame.length; k++) if ((frame[k] ?? 0) >= floor) return k;
+    return 0;
+  }
+  function weightByRegister(frame, layout, fromBin, out = new Float32Array(frame.length)) {
+    const perSemitone = layout.binsPerOctave / 12;
+    const top = fromBin + CHROMA_REGISTER_OCTAVES * layout.binsPerOctave;
+    for (let k = 0; k < frame.length; k++) {
+      if (k < top) {
+        out[k] = frame[k] ?? 0;
+        continue;
+      }
+      const semitonesOver = (k - top) / perSemitone;
+      out[k] = (frame[k] ?? 0) * Math.pow(0.5, semitonesOver / CHROMA_REGISTER_HALF_LIFE);
     }
     return out;
   }
@@ -404,6 +448,7 @@
     };
     const shifted = new Float32Array(layout.bins);
     const suppressed = new Float32Array(layout.bins);
+    const weighted = new Float32Array(layout.bins);
     const frames = [];
     const lowPitches = [];
     let silentFrames = 0;
@@ -418,7 +463,8 @@
       }
       shiftForTuning(frame, layout, tuningCents, shifted);
       suppressHarmonics(shifted, layout, opt.harmonicSuppression, suppressed);
-      const chroma = foldToChroma(suppressed, layout);
+      weightByRegister(suppressed, layout, lowestStrongBin(shifted), weighted);
+      const chroma = foldToChroma(weighted, layout);
       lowPitches.push(lowestPitchClass(suppressed, layout));
       peakNormalize(chroma);
       normalize(compress(chroma, opt.gamma));
@@ -1054,9 +1100,7 @@
       onProgress?.(0.75, "\uBCA0\uC774\uC2A4 \uBD84\uC11D");
       const bassGram = chromagram(bass, sampleRate, {
         ...options.chroma,
-        // The bass line is one note at a time, so suppressing its harmonics is
-        // the whole job — an unsuppressed bass reads as a chord of its own.
-        harmonicSuppression: 0.6
+        harmonicSuppression: 0
       });
       bassPitches = bassPitchesFor(bassGram.frames, bassGram.hopSec, grid.times);
       bassIsStem = true;

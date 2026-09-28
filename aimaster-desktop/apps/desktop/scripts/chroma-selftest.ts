@@ -14,6 +14,11 @@
  *   · a SAWTOOTH at C reads as C, not as C7 — its own partials spell a
  *     dominant seventh, and suppressing them is the difference between a
  *     chord detector and a harmonic-series detector
+ *   · a partial LOUDER than its own fundamental is still removed, which is
+ *     what a plucked string produces and what the old subtractive suppression
+ *     could not do at any strength
+ *   · a six-string guitar chord reads as the chord, and so does one played
+ *     over its own bass note
  *   · a triad reads as three notes of roughly equal weight
  *   · silence is zero, not normalised noise
  *
@@ -26,8 +31,12 @@ import {
 } from '../src/renderer/daw/audio/chroma/cqt.js';
 import {
   binPitchClass, chromagram, estimateTuningCents, foldToChroma, normalize,
-  refinePeak, shiftForTuning, suppressHarmonics,
+  refinePeak, shiftForTuning, suppressHarmonics, weightByRegister,
+  lowestStrongBin, CHROMA_REGISTER_OCTAVES, CHROMA_REGISTER_HALF_LIFE,
+  HARMONIC_PRESENCE_FLOOR,
 } from '../src/renderer/daw/audio/chroma/chroma.js';
+import { matchChord } from '../src/renderer/daw/audio/chroma/chord-match.js';
+import { pluckedString } from '../src/renderer/daw/engine/string-model.js';
 
 interface T { name: string; pass: boolean; detail: string }
 const results: T[] = [];
@@ -210,12 +219,30 @@ check('correcting the tuning makes the chroma as clean as being in tune', () => 
   // downstream there is no way to tell.
   const inTune = meanChroma(mix(saw(hz(48), 1.6, 0.4), saw(hz(55), 1.6, 0.4)));
   const sharp = meanChroma(mix(saw(hz(48, 30), 1.6, 0.4), saw(hz(55, 30), 1.6, 0.4)));
-  assert(ranked(sharp)[0]!.name === 'C', `a sharp C reads as ${show(sharp)}`);
 
   const uncorrected = meanChroma(
     mix(saw(hz(48, 30), 1.6, 0.4), saw(hz(55, 30), 1.6, 0.4)),
     { assumeConcertPitch: true },
   );
+
+  // The NEIGHBOURS are the measurement, not the ranking.  C and G are both
+  // played here and land within a few percent of each other, so which of them
+  // comes out on top is a coin flip that says nothing about tuning; what says
+  // everything is how much of each note ended up a semitone above it.
+  const played = Math.max(sharp[0] ?? 0, sharp[7] ?? 0);
+  const leak = (c: Float32Array): number =>
+    Math.max(c[1] ?? 0, c[8] ?? 0) / Math.max(1e-9, Math.max(c[0] ?? 0, c[7] ?? 0));
+  assert(leak(sharp) < 0.2, `corrected, the neighbours hold ${(leak(sharp) * 100).toFixed(0)}% `
+    + `of the notes: ${show(sharp, 5)}`);
+  // And the control shows the threshold is not vacuous: uncorrected, the same
+  // signal puts a third of each note a semitone above itself.
+  assert(leak(uncorrected) > 0.25, `uncorrected leak is only `
+    + `${(leak(uncorrected) * 100).toFixed(0)}%: ${show(uncorrected, 5)}`);
+  // The two loudest pitch classes are still the two that were played.
+  const top2 = ranked(sharp).slice(0, 2).map((r) => r.name).sort().join(',');
+  assert(top2 === 'C,G', `a sharp C and G read as ${show(sharp)}`);
+  assert(played > 0.5, `the played notes came out at ${played.toFixed(2)}`);
+
   // Corrected must be closer to the in-tune answer than uncorrected is.
   const distance = (a: Float32Array, b: Float32Array): number => {
     let sum = 0;
@@ -246,7 +273,7 @@ check('shifting the axis moves energy the way the sign says', () => {
 check('a sawtooth C is a C, not a C7', () => {
   // Its own partials are C, G, C, E, G, B♭ — a dominant seventh, from ONE
   // note.  This is the largest single source of wrong thirds and sevenths in
-  // any template matcher, and the reason suppression is subtractive.
+  // any template matcher, and the reason suppression exists at all.
   const raw = meanChroma(saw(hz(48), 1.6), { harmonicSuppression: 0 });
   const clean = meanChroma(saw(hz(48), 1.6));
   assert(ranked(clean)[0]!.name === 'C', `suppressed saw reads as ${show(clean)}`);
@@ -259,6 +286,71 @@ check('a sawtooth C is a C, not a C7', () => {
   assert(third(clean) < 0.5, `E is ${(third(clean) * 100).toFixed(0)}% of C in a single note`);
 });
 
+check('a partial LOUDER than its own fundamental is still removed', () => {
+  // The whole reason this mechanism replaced a subtractive one.  A string
+  // plucked at a fraction p of its length has partial h at |sin(hπp)|, so at
+  // the 13 % the acoustic guitar uses the third partial is 2.35× the
+  // fundamental — and subtracting a multiple of the fundamental cannot cancel
+  // something larger than the fundamental, at any strength.
+  const layout = DEFAULT_CQT;
+  const perSemitone = layout.binsPerOctave / 12;
+  const frame = new Float32Array(layout.bins);
+  const root = 36;                                   // C3
+  const twelfth = root + Math.round(19.0196 * perSemitone);
+  frame[root] = 0.40;
+  frame[twelfth] = 0.94;                             // the measured ratio
+  const out = suppressHarmonics(frame, layout, 0.95);
+  assert((out[twelfth] ?? 0) < 0.94 * 0.1,
+    `the twelfth kept ${((out[twelfth] ?? 0) / 0.94 * 100).toFixed(0)}% of itself`);
+  // And the fundamental, which nothing below explains, is left alone.
+  assert((out[root] ?? 0) > 0.40 * 0.9,
+    `the fundamental was cut to ${(out[root] ?? 0).toFixed(3)}`);
+});
+
+check('a fundamental below the presence floor explains nothing', () => {
+  // Without a floor, the analyser's own skirts and its noise are "a note
+  // below", and then every bin in the frame is explained by something.
+  const layout = DEFAULT_CQT;
+  const perSemitone = layout.binsPerOctave / 12;
+  const twelfth = 36 + Math.round(19.0196 * perSemitone);
+  const loud = new Float32Array(layout.bins);
+  loud[0] = 1;                                       // sets the frame's peak
+  loud[36] = HARMONIC_PRESENCE_FLOOR * 2;
+  loud[twelfth] = 0.5;
+  const above = suppressHarmonics(loud, layout, 0.95);
+  assert((above[twelfth] ?? 0) < 0.5 * 0.1,
+    `a fundamental over the floor failed to explain: ${(above[twelfth] ?? 0).toFixed(3)}`);
+
+  const quiet = new Float32Array(layout.bins);
+  quiet[0] = 1;
+  quiet[36] = HARMONIC_PRESENCE_FLOOR / 4;
+  quiet[twelfth] = 0.5;
+  const below = suppressHarmonics(quiet, layout, 0.95);
+  assert((below[twelfth] ?? 0) > 0.5 * 0.6,
+    `a fundamental under the floor still explained it away: ${(below[twelfth] ?? 0).toFixed(3)}`);
+});
+
+check('the untestable bottom octave is not left standing over the rest', () => {
+  // The lowest octave of the transform has no subharmonic position inside it,
+  // so nothing there can be tested.  Left at full level while everything above
+  // is scaled down, it becomes the loudest thing in the frame and its noise
+  // picks the chord: measured, a guitar C major under broadband noise 14 dB
+  // down came back as C♯:minMaj7, a root the audio never contained.
+  const layout = DEFAULT_CQT;
+  const flat = new Float32Array(layout.bins);
+  flat.fill(1);
+  const out = suppressHarmonics(flat, layout, 0.95);
+  const band = (from: number, to: number): number => {
+    let sum = 0;
+    for (let k = from; k < to; k++) sum += out[k] ?? 0;
+    return sum / (to - from);
+  };
+  const bottom = band(0, layout.binsPerOctave);
+  const rest = band(layout.binsPerOctave, layout.bins);
+  assert(bottom < rest * 3,
+    `the bottom octave came out ${(bottom / Math.max(1e-9, rest)).toFixed(1)}× the rest of the frame`);
+});
+
 check('suppression never produces a negative magnitude', () => {
   // A negative magnitude is a sign error that normalisation turns into a
   // confident wrong answer.
@@ -269,6 +361,40 @@ check('suppression never produces a negative magnitude', () => {
   for (let k = 0; k < out.length; k++) {
     assert((out[k] ?? 0) >= 0, `bin ${k} came out at ${out[k]}`);
   }
+});
+
+check('the register weight halves every three semitones above the register', () => {
+  const layout = DEFAULT_CQT;
+  const perSemitone = layout.binsPerOctave / 12;
+  const frame = new Float32Array(layout.bins);
+  frame.fill(1);
+  const from = 12;
+  const out = weightByRegister(frame, layout, from);
+  const top = from + CHROMA_REGISTER_OCTAVES * layout.binsPerOctave;
+  assert((out[top - 1] ?? 0) === 1, `inside the register the weight is ${out[top - 1]}`);
+  const half = top + Math.round(CHROMA_REGISTER_HALF_LIFE * perSemitone);
+  assert(Math.abs((out[half] ?? 0) - 0.5) < 0.02,
+    `one half-life up the weight is ${(out[half] ?? 0).toFixed(3)}, not 0.5`);
+  const quarter = top + Math.round(2 * CHROMA_REGISTER_HALF_LIFE * perSemitone);
+  assert(Math.abs((out[quarter] ?? 0) - 0.25) < 0.02,
+    `two half-lives up the weight is ${(out[quarter] ?? 0).toFixed(3)}, not 0.25`);
+  // And the register is measured from the bin it was given, not from bin 0.
+  const lower = weightByRegister(frame, layout, 0);
+  assert((lower[top - 1] ?? 0) < 1,
+    'the register did not move with the bass note it was given');
+});
+
+check('the lowest strong bin is the bass, not the loudest note', () => {
+  const layout = DEFAULT_CQT;
+  const frame = new Float32Array(layout.bins);
+  frame[40] = 0.3;                 // a quiet bass
+  frame[100] = 1;                  // a loud note two octaves up
+  assert(lowestStrongBin(frame) === 40, `read bin ${lowestStrongBin(frame)}`);
+  // Below the floor it is not a note.
+  const faint = new Float32Array(layout.bins);
+  faint[40] = 0.01;
+  faint[100] = 1;
+  assert(lowestStrongBin(faint) === 100, `a bin at 1% of the peak counted as the bass`);
 });
 
 // ── Chords ──────────────────────────────────────────────────────────────────
@@ -309,6 +435,56 @@ check('a seventh is visible, which is what the default vocabulary needs', () => 
 });
 
 // ── Housekeeping ────────────────────────────────────────────────────────────
+
+check('a guitar chord is the chord, not the chord plus its own partials', () => {
+  // The case this pipeline was rebuilt for, end to end.  Six strings plucked at
+  // 13 % of their length, voiced C3 E3 G3 C4 E4 G4 — a plain C major.  It read
+  // C:maj7 for as long as suppression predicted a partial's amplitude from its
+  // fundamental, because the B that makes the seventh is the third partial of
+  // the E and the fifth of the G, and both of those are LOUDER than the
+  // fundamentals they belong to.
+  const voicing = [48, 52, 55, 60, 64, 67];
+  let sum: Float32Array | null = null;
+  for (const pitch of voicing) {
+    const string = pluckedString({
+      sampleRate: SR, seconds: 1.6, freqHz: hz(pitch), damping: 0.997,
+      brightness: 0.62, pickPosition: 0.13, seed: 900 + pitch,
+    });
+    if (sum === null) sum = new Float32Array(string.length);
+    for (let i = 0; i < sum.length; i++) sum[i]! += string[i]! / voicing.length;
+  }
+  const chroma = meanChroma(sum!);
+  const m = matchChord(chroma);
+  const named = m ? `${NAMES[m.chord.root]}:${m.chord.qualityId}` : 'none';
+  assert(named === 'C:maj', `the guitar's C major read as ${named} — ${show(chroma, 5)}`);
+  // The B is the measurement, not the label: cosine similarity needs it below
+  // 0.43 to prefer C over Cmaj7, and it used to sit at 0.80.
+  const b = (chroma[11] ?? 0) / Math.max(1e-9, Math.max(...chroma));
+  assert(b < 0.43, `the seventh is at ${b.toFixed(2)} of the loudest note`);
+});
+
+check('a chord over its own bass note is still that chord', () => {
+  // What the register weight is for.  Suppression removes what a note below
+  // explains, and a root in the bass explains a great deal: C2's partials fall
+  // on C3, G3, C4, E4, G4 — which is the chord.  What survives is whatever the
+  // bass could NOT explain, and piled up high it spells something else:
+  // measured, this read C:min7b5 before the fold started discounting the bins
+  // too far above the chord's own bass to be part of it.
+  const voicing = [36, 48, 52, 55, 60, 64, 67];
+  let sum: Float32Array | null = null;
+  for (const pitch of voicing) {
+    const string = pluckedString({
+      sampleRate: SR, seconds: 1.6, freqHz: hz(pitch), damping: 0.997,
+      brightness: pitch < 40 ? 0.3 : 0.62, pickPosition: 0.13, seed: 900 + pitch,
+    });
+    if (sum === null) sum = new Float32Array(string.length);
+    for (let i = 0; i < sum.length; i++) sum[i]! += string[i]! / voicing.length;
+  }
+  const chroma = meanChroma(sum!);
+  const m = matchChord(chroma);
+  const named = m ? `${NAMES[m.chord.root]}:${m.chord.qualityId}` : 'none';
+  assert(named === 'C:maj', `a C major over a C2 bass read as ${named} — ${show(chroma, 5)}`);
+});
 
 check('silence is zero, not normalised noise', () => {
   const quiet = new Float32Array(SR);

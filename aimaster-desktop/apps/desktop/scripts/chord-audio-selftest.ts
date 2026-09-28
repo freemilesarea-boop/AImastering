@@ -538,42 +538,23 @@ async function main(): Promise<void> {
 
   /**
    * What each instrument scores on Am–F–C–G, pinned rather than assumed to be
-   * perfect — and the guitar is not, for a reason worth writing down.
+   * perfect.
    *
-   * It read 100 % until the plucked-string engine's excitation stopped being a
-   * different random draw at every sample rate.  That looks like a regression and
-   * is not one: measured over 24 seeds, the old time-domain noise excitation had
-   * a mean spectral tilt of 5.02 dB with a spread of ±2.16, and the harmonic-
-   * domain one that replaced it sits at 4.17 dB with a spread of ±0.15.  So the
-   * new excitation is 0.85 dB DARKER than the old one's average and lands inside
-   * its own scatter; what went away is the scatter.  The old 100 % was the
-   * favourable half of a ±2 dB lottery, not a property of the recogniser.
+   * The guitar sat at 0.75 for as long as harmonic suppression predicted a
+   * partial's amplitude from its fundamental.  It called the C a Cmaj7, and
+   * the cause was structural: the guitar is plucked at 13 % of the string, so
+   * the comb leaves its FUNDAMENTAL at 0.40 and its third partial at 0.94 —
+   * and the B that makes Cmaj7 out of C is the third partial of the E and the
+   * fifth of the G, both louder than the fundamentals they belong to.  No
+   * strength closed that, because no strength multiplies a smaller number into
+   * a larger one.
    *
-   * What it gets wrong is the C, which it calls Cmaj7, and the cause is
-   * structural rather than a threshold:
-   *
-   *   · the guitar is plucked at 13 % of the string, so the comb attenuates its
-   *     FUNDAMENTAL to 0.40 while leaving its third partial at 0.94
-   *   · the B that makes Cmaj7 out of C is the third partial of E and the fifth
-   *     of G, both of which are therefore LOUDER than the fundamentals they
-   *     belong to
-   *   · `suppressHarmonics` predicts a partial downward from its fundamental, so
-   *     here it is predicting something strong from something weak
-   *
-   * No setting closes that.  Extending the partial list from 8 to 16 did not
-   * (the 2/h weights are three times too small for this spectrum), and raising
-   * the suppression strength from 0.6 to 0.95 did not either — multiplying a
-   * weak prediction by a larger constant still cannot cancel a strong partial.
-   * Cosine similarity needs the B below 0.43 to prefer C and it sits at 0.80.
-   *
-   * Fixing it needs a mechanism that does not assume the fundamental is the
-   * loudest partial, which is its own piece of work on a calibrated feature.
-   * Pinned at 0.75 in the meantime so that either direction is news: lower is a
-   * regression, higher means somebody built that mechanism and this number and
-   * its explanation should go.
+   * Suppression now asks whether a NOTE exists below rather than how loud it
+   * is, and the guitar reads 100 %.  If it falls back to 0.75 the thing to
+   * look at is `suppressHarmonics`, not this table.
    */
   const MINOR_EXPECTED: Readonly<Record<string, number>> = {
-    polysynth: 1, epiano: 1, agtr: 0.75,
+    polysynth: 1, epiano: 1, agtr: 1,
   };
 
   await check('the same progression through three different instruments', async () => {
@@ -993,33 +974,55 @@ async function main(): Promise<void> {
     }
   });
 
-  await check('an extra note has to earn its place', async () => {
-    // The third of a triad, sounding alone, puts its own third harmonic a
-    // major seventh above the root.  So an arpeggiated C major arrives with a
-    // real B in it and reads as Cmaj7 with nothing wrong anywhere — measured,
-    // not supposed: this is rendered audio, and turning the penalty off is
-    // what shows where the B comes from.
-    const audio = await render(['C', 'C', 'C', 'C'], { arpeggio: true });
-    const readout = detectChordsFromAudio(audio.mix, SR, { tempo: TEMPO });
-    const free = detectChordsFromAudio(audio.mix, SR, {
-      tempo: TEMPO, segment: { smooth: { sizePenalty: 0 } },
-    });
-    const label = (r: typeof readout): string =>
-      (r.segments[0] ? formatChord(r.segments[0].chord) : '—');
-    assert(label(readout) === 'C', `an arpeggiated C read as ${label(readout)}`);
-    assert(label(free) !== 'C',
-      `without the penalty this audio already read as C — it proves nothing (${label(free)})`);
-    console.log(`      (arpeggiated C major: ${label(free)} without the size penalty, ${label(readout)} with it)`);
-
+  await check('an extra note has to earn its place', () => {
+    // What the penalty does, at the edge where it does it.  Cosine similarity
+    // alone prefers Cmaj7 over C as soon as the B reaches 0.449 of the root —
+    // that is arithmetic, not a measurement: a triad template has three ones
+    // and a seventh four, so the fourth note is worth more to the larger
+    // template than it costs in length.  The penalty moves that boundary to
+    // about 0.55, which is the difference between a B that is a partial and a
+    // B somebody played.
+    const withB = (b: number): Float32Array => {
+      const c = new Float32Array(12);
+      c[0] = 1; c[4] = 0.95; c[7] = 0.95; c[11] = b;
+      return c;
+    };
+    const label = (b: number, sizePenalty?: number): string => {
+      const frames = [withB(b), withB(b), withB(b), withB(b)];
+      const path = sizePenalty === undefined
+        ? smoothChords(frames).path : smoothChords(frames, { sizePenalty }).path;
+      return path[0] ? formatChord(path[0]) : '—';
+    };
+    assert(label(0.5) === 'C', `a B at 0.5 read as ${label(0.5)}`);
+    assert(label(0.5, 0) === 'Cmaj7',
+      `without the penalty a B at 0.5 read as ${label(0.5, 0)} — the check proves nothing`);
     // And a seventh that is really there must still be written, or the
     // penalty has simply deleted the vocabulary the user asked for.
-    const real = new Float32Array(12);
-    real[0] = 1; real[4] = 0.95; real[7] = 0.95; real[11] = 0.9;
-    const sevenths = smoothChords([real, real, real, real]).path
-      .map((c) => (c ? formatChord(c) : '—'));
-    assert(sevenths.every((l) => l === 'Cmaj7'),
-      `a real major seventh must survive the penalty: ${sevenths.join(' ')}`);
+    assert(label(0.9) === 'Cmaj7', `a real major seventh read as ${label(0.9)}`);
     assert(DEFAULT_SIZE_PENALTY > 0, 'the size penalty is off by default');
+  });
+
+  await check('an arpeggiated triad is a triad, not a seventh', async () => {
+    // The third of a triad, sounding alone, puts its own third harmonic a
+    // major seventh above the root, so an arpeggiated C major arrives with a
+    // real B in it.  This used to be the audio that proved the size penalty
+    // was load-bearing: turning the penalty off made it read Cmaj7.
+    //
+    // It does not any more, and that is the point.  Harmonic suppression now
+    // asks whether a note exists below rather than how loud it is, and the B
+    // that the penalty was compensating for is removed before the templates
+    // see it — measured across eight renders (poly synth, e-piano, both
+    // guitars, arpeggiated and block, with and without a melody) the penalty
+    // no longer changes the answer on any of them.  So the penalty is checked
+    // where it still decides something, on the chroma above, and this check
+    // keeps the audio claim it can still make: the chord that was played is
+    // the chord that comes back.
+    for (const instrumentId of ['polysynth', 'agtr', 'epiano']) {
+      const audio = await render(['C', 'C', 'C', 'C'], { arpeggio: true, instrumentId });
+      const readout = detectChordsFromAudio(audio.mix, SR, { tempo: TEMPO });
+      const got = readout.segments[0] ? formatChord(readout.segments[0].chord) : '—';
+      assert(got === 'C', `an arpeggiated C on the ${instrumentId} read as ${got}`);
+    }
   });
 
   await check('silence stays silence through the smoother', () => {
@@ -1040,8 +1043,15 @@ async function main(): Promise<void> {
     // asserted.  Block chords were already right; arpeggios were not, and a
     // four-chord loop is too short to show it — half of a four-chord answer
     // can be right by accident.
+    //
+    // With a MELODY over it, which is the case a lead sheet is actually for.
+    // A bare arpeggio no longer makes the point: since harmonic suppression
+    // stopped predicting a partial's amplitude from its fundamental, beat by
+    // beat already reads three quarters of one, and a control that barely
+    // separates the two settings is not a control.  With non-chord tones over
+    // the top it reads a quarter.
     const prog = ['C', 'Am', 'F', 'G', 'Em', 'Am', 'Dm7', 'G7'];
-    const audio = await render(prog, { arpeggio: true });
+    const audio = await render(prog, { arpeggio: true, melody: 'line' });
     const smoothed = labelsFor(audio, prog);
     const perBeat = labelsFor(audio, prog, 1, { segment: { smooth: false } });
     const withSmoothing = accuracy(prog, smoothed);
@@ -1053,8 +1063,8 @@ async function main(): Promise<void> {
       + `(${(without * 100).toFixed(0)}% → ${(withSmoothing * 100).toFixed(0)}%) — `
       + `beat by beat: ${perBeat.join(' ')}`);
     console.log(
-      `      (8 arpeggiated chords: beat by beat ${(without * 100).toFixed(0)}% → smoothed `
-      + `${(withSmoothing * 100).toFixed(0)}% — ${smoothed.join(' ')})`,
+      `      (8 arpeggiated chords under a melody: beat by beat ${(without * 100).toFixed(0)}% `
+      + `→ smoothed ${(withSmoothing * 100).toFixed(0)}% — ${smoothed.join(' ')})`,
     );
   });
 
