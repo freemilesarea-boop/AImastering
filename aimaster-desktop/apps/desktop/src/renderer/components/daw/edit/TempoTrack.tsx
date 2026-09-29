@@ -27,8 +27,11 @@ import {
   MAX_BPM, MIN_BPM, addMeterEvent, addTempoEvent, barBeatAt, barStartBeat,
   beatToSec, clampBpm, compileTempoMap, gridLines, meterAtBar, removeMeterEvent,
   removeTempoEvent, secToBeat, tempoAtBeat, tempoMapOf, updateMeterEvent,
-  updateTempoEvent, withTempoMap,
+  updateTempoEvent,
 } from '../../../daw/model/tempo-map.js';
+// Every edit in this file is a tempo or meter edit, so all of them want the
+// arrangement to come along — see model/tempo-reanchor.ts.
+import { withTempoMap } from '../../../daw/model/tempo-reanchor.js';
 import { premium } from '../../../theme/premium.js';
 import type { DawSession, TempoEvent } from '../../../daw/model/types.js';
 

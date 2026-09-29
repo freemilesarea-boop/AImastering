@@ -56,6 +56,7 @@ import type { AutomationLane } from '../../../daw/model/types.js';
 import {
   describeTempoMap, formatBarBeat, isConstantTempo, tempoMapOf,
 } from '../../../daw/model/tempo-map.js';
+import { clipWarp } from '../../../daw/model/warp.js';
 import TempoTrack, { TempoTrackHeader } from './TempoTrack.js';
 import SectionLane, { SectionLaneHeader } from './SectionLane.js';
 import ChordLane, { ChordLaneHeader } from './ChordLane.js';
@@ -310,8 +311,12 @@ export default function EditWindow() {
   // A session with only a master track is not "empty timeline", it is "you
   // have nothing to work on yet" — and a blank grid says neither.
   const hasMaterial = session.tracks.some((t) => t.kind === 'audio' || t.kind === 'instrument');
-  const hasMidiParts = session.tracks.some((t) => t.playlists.some(
-    (p) => p.clips.some((c) => c.kind === 'midi')));
+  // Audio whose LENGTH cannot follow the tempo: unwarped, or warped and told
+  // not to follow.  Its start moves with the bar like everything else, so a
+  // tempo change opens gaps and overlaps between such clips — which is worth
+  // saying out loud, because it is the one thing a tempo edit no longer keeps.
+  const hasFixedLengthAudio = session.tracks.some((t) => t.playlists.some(
+    (p) => p.clips.some((c) => c.kind === 'audio' && clipWarp(c) === null)));
   const queueCount = useAudioStore((s) => s.queue.length);
 
   /**
@@ -566,15 +571,18 @@ export default function EditWindow() {
               title="템포 트랙에서 변화를 추가할 수 있습니다">
           {describeTempoMap(tempoMap)}
         </span>
-        {/* Said where it matters, not only in a document: audio follows the
-            map, MIDI does not yet, and finding that out by ear is the worst
-            way to find it out. */}
-        {!isConstantTempo(tempoMap) && hasMidiParts && (
+        {/* This used to say "⚠ MIDI 미추종", and it was false: notes are stored
+            in beats (model/midi.ts) and always followed the map, and parts now
+            follow it too (model/tempo-reanchor.ts).  What is true is narrower —
+            an unwarped clip's start moves to its bar and its length cannot, so
+            the gaps between such clips change.  Said where it matters, because
+            finding that out by ear is the worst way to find it out. */}
+        {!isConstantTempo(tempoMap) && hasFixedLengthAudio && (
           <span
             className="text-[10px] font-mono"
             style={{ color: 'rgb(251,191,36)' }}
-            title="워프된 오디오는 템포 맵을 따라갑니다. MIDI 노트는 아직 초 단위로 저장되어 있어 템포 변화를 따라가지 않습니다 — 노트는 있던 시각에 그대로 남습니다."
-          >⚠ MIDI 미추종</span>
+            title="템포가 바뀌면 클립은 자기 마디로 따라옵니다. 워프하지 않은 오디오는 길이가 그대로이므로 클립 사이에 빈틈이나 겹침이 생길 수 있습니다 — 길이까지 따라오게 하려면 워프를 켜세요."
+          >⚠ 오디오 길이 고정</span>
         )}
 
         <button

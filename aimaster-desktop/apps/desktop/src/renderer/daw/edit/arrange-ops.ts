@@ -27,7 +27,7 @@ import { splitClip } from './clip-edit.js';
 import { pointValueAt } from '../model/automation.js';
 import { clipEnd } from '../model/session-ops.js';
 import {
-  beatsPerBar, meterAtBeat, secToBeat, tempoAtSec, tempoMapOf, withTempoMap,
+  beatsPerBar, meterAtBeat, secToBeat, tempoAtSec, tempoMapOf, withTempoMapKeepingSeconds,
 } from '../model/tempo-map.js';
 import {
   rangeOf, removeSectionMarker, sectionLabel, sectionRanges, sectionsOf, shiftSections,
@@ -333,7 +333,14 @@ export function rippleInsert(
   if (meters === null) {
     problems.push('삽입 길이가 마디 단위가 아니라 박자 변경은 그대로 두었습니다');
   }
-  next = withTempoMap(next, meters === null ? shifted : { ...shifted, meters });
+  // Keeping seconds, not re-anchoring: every position above was already moved by
+  // `lengthSec`, and re-anchoring on top of that reads each clip's own four (or
+  // however many) seconds of shift on the map WHERE THE CLIP SITS, which is not
+  // the tempo the time was inserted at.  Measured, with 60 bpm from beat 16 and
+  // a clip there: inserting 4 s at 4 s correctly shifts it 8 s → 12 s, which is
+  // the 8 beats of 120 bpm time that went in; re-anchoring puts it at 10 s,
+  // because four seconds at 60 bpm is four beats, not eight.
+  next = withTempoMapKeepingSeconds(next, meters === null ? shifted : { ...shifted, meters });
   next = withSections(next, shiftSections(sectionsOf(session), atSec, lengthSec));
   return { session: next, problems };
 }
@@ -366,7 +373,7 @@ export function rippleDelete(
   if (meters === null) {
     problems.push('삭제 길이가 마디 단위가 아니라 박자 변경은 그대로 두었습니다');
   }
-  next = withTempoMap(next, meters === null ? cut : { ...cut, meters });
+  next = withTempoMapKeepingSeconds(next, meters === null ? cut : { ...cut, meters });
 
   // Sections strictly inside the cut go with it; the rest slide back.
   const kept = sectionsOf(session).filter(
@@ -542,7 +549,7 @@ export function dropSection(
   if (meters === null) {
     problems.push('구간 길이가 마디 단위가 아니라 박자 변경은 그대로 두었습니다');
   }
-  next = withTempoMap(next, meters === null ? withTempo : { ...withTempo, meters });
+  next = withTempoMapKeepingSeconds(next, meters === null ? withTempo : { ...withTempo, meters });
 
   const shiftedSections = shiftSections(sectionsOf(session), at, length);
   const boundary = options.boundary;

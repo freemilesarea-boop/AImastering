@@ -22,8 +22,9 @@ import { describeGroove } from '../../../daw/model/groove.js';
 import {
   DEFAULT_WARP, beatSeconds, buildWarpMap, clipWarp, destToSource, describeWarp,
   moveMarker, removeMarker, addMarker, resolveBpm, sourceToDest, validateWarp,
-  setSessionTempo, type WarpMode,
+  type WarpMode,
 } from '../../../daw/model/warp.js';
+import { setSessionTempo } from '../../../daw/model/tempo-reanchor.js';
 import {
   autoWarpClip, setFollowTempo, setWarpEnabled, setWarpMode, unwarpClip, updateWarp,
   warpClipToTempo,

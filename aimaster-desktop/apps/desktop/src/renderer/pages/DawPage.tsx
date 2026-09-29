@@ -34,7 +34,7 @@ import IntelPanel from '../components/daw/intel/IntelPanel.js';
 import PluginWindowLayer from '../components/daw/plugin/PluginWindowLayer.js';
 import RegionLab from '../components/daw/region/RegionLab.js';
 import { createStack } from '../daw/model/stacks.js';
-import { setSessionTempo } from '../daw/model/warp.js';
+
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
 import {
   addTrack, createTrack, createBus, findTrack, renameSession, sessionEndSec,
@@ -56,6 +56,7 @@ import PanelWindowLayer from '../components/daw/PanelWindowLayer.js';
 import { usePanelWindowStore } from '../stores/panelWindowStore.js';
 import { DAW_PANELS, type DawWindow } from '../daw/model/view-window.js';
 import LayoutMenu from '../components/daw/LayoutMenu.js';
+import { setSessionTempo } from '../daw/model/tempo-reanchor.js';
 
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00.000';

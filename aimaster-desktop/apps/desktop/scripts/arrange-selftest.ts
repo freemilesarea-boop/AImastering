@@ -28,7 +28,8 @@ import {
   addFile, addTrack, createClip, createSession, createTrack, findTrack, updateClips,
   updateTrack,} from '../src/renderer/daw/model/session-ops.js';
 import {
-  addTempoEvent, beatToSec, secToBeat, tempoMapOf, withTempoMap,} from '../src/renderer/daw/model/tempo-map.js';
+  addTempoEvent, beatToSec, secToBeat, tempoMapOf, } from '../src/renderer/daw/model/tempo-map.js';
+import { withTempoMap } from '../src/renderer/daw/model/tempo-reanchor.js';
 import { createLane} from '../src/renderer/daw/model/automation.js';
 import { resetIds} from '../src/renderer/daw/model/ids.js';
 import type { DawSession, Section} from '../src/renderer/daw/model/types.js';
@@ -196,6 +197,35 @@ check('inserting time pushes everything after it later, and splits what straddle
   eq(sectionsOf(next).map((s) => s.startSec).join(','), '0,8,20,28', 'and the sections');
 });
 
+check('inserting time before a tempo change still moves later clips by the time inserted', () => {
+  // This is what decides which of the two tempo-map setters `rippleInsert` may
+  // use.  It moves every position by `lengthSec` itself and then hands over a
+  // map with beats spliced in, so it must use the setter that KEEPS seconds.
+  //
+  // Measured, with 60 bpm from beat 16 and a clip sitting there: inserting 4 s
+  // at 4 s shifts the clip 8 s → 12 s, which is beat 24 in the new map, and the
+  // 8 beats of inserted 120 bpm time account for exactly that.  Re-anchoring on
+  // top puts it at 10 s — beat 20 — because the clip's own four seconds of
+  // shift, read on the old map WHERE THE CLIP SITS, is four beats at 60 bpm and
+  // not the eight that were inserted.
+  // One clip, after the change, and empty time where the insert goes — so the
+  // only thing this measures is the shift, not a split.
+  const { session, trackId } = song();
+  const emptied = updateClips(session, trackId, () => [
+    createClip('f1', 'after', { startSec: 16, offsetSec: 0, durationSec: 4 }),
+  ]);
+  const slowed = withTempoMap(emptied, addTempoEvent(tempoMapOf(emptied), 16, 60, 'jump'));
+  const was = clipsOf(slowed, trackId)[0]!.startSec;
+  const { session: next, problems } = rippleInsert(slowed, 4, 4);
+  eq(problems.length, 0, `clean — ${problems.join(' | ')}`);
+  const clips = clipsOf(next, trackId);
+  eq(clips.length, 1, 'still one clip');
+  close(clips[0]!.startSec, was + 4, `the clip sat at ${was} s and four seconds went in before it`);
+  close(secToBeat(tempoMapOf(next), clips[0]!.startSec),
+    secToBeat(tempoMapOf(slowed), was) + 8,
+    'and it is eight beats later, which is what four seconds of 120 bpm inserted');
+});
+
 check('inserting time moves the tempo map in BEATS, so later bars keep their bars', () => {
   const { session } = song();
   // A tempo change at 16 s = beat 32 at 120 bpm.
@@ -348,11 +378,19 @@ check('the duplicate carries the section’s own tempo change', () => {
   eq(nineties.length, 2, 'the change happens twice now');
   const beats = nineties.map((t) => t.beat).sort((a, b) => a - b);
   close(beats[0]!, 40, 'the original stays where it was');
-  // The section's length in BEATS is read from the map that actually has the
-  // change in it — 16 to 24 seconds is fourteen beats, not sixteen, precisely
-  // because it slows down halfway through.
-  const sectionBeats = secToBeat(tempoMapOf(withTempo), 24) - secToBeat(tempoMapOf(withTempo), 16);
-  close(sectionBeats, 14, 'the chorus is fourteen beats long once it slows down');
+  // The section's length in BEATS, read from where the sections actually are
+  // rather than from the seconds they were written at — because adding the
+  // tempo change MOVED them.  The chorus was written as eight seconds at
+  // 120 bpm, so sixteen beats, and re-anchoring is what keeps it sixteen when
+  // the tempo drops halfway through: its end slid from 24 s to 25.33 s to hold
+  // the same musical length.  Asserting the sixteen is asserting that.
+  const moved = sectionsOf(withTempo);
+  const chorusBeats = secToBeat(tempoMapOf(withTempo), moved[3]!.startSec)
+    - secToBeat(tempoMapOf(withTempo), moved[2]!.startSec);
+  close(chorusBeats, 16, 'the chorus keeps its sixteen beats through the tempo change');
+  close(moved[3]!.startSec - moved[2]!.startSec, 9.3333333,
+    'which is nine and a third seconds once the second half is at 90 bpm');
+  const sectionBeats = chorusBeats;
   close(beats[1]! - beats[0]!, sectionBeats,
     'and the copy is exactly one section further on, in beats');
 });

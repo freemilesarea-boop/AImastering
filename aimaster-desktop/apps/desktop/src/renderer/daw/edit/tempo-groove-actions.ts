@@ -12,7 +12,7 @@
 // to be more certain than the detector; it is not a default.
 
 import { findTrack, trackClips, updateClip } from '../model/session-ops.js';
-import { setSessionTempo } from '../model/warp.js';
+
 import { transientMarksFor } from '../engine/audio-cache.js';
 import {
   TRUST_THRESHOLD, describeDetection, detectTempo,
@@ -23,6 +23,7 @@ import {
   type ApplyOptions, type ExtractOptions, type Groove, type GrooveExtraction,
 } from '../model/groove.js';
 import type { Clip, ClipId, DawSession, TrackId } from '../model/types.js';
+import { setSessionTempo } from '../model/tempo-reanchor.js';
 
 function requireClip(session: DawSession, trackId: TrackId, clipId: ClipId): Clip {
   const track = findTrack(session, trackId);

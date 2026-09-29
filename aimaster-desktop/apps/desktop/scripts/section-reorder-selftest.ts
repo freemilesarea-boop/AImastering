@@ -28,8 +28,9 @@ import {
 import {
   describeOrder, moveSection, nudgeSection, songEnd,} from '../src/renderer/daw/edit/arrange-ops.js';
 import { createLane} from '../src/renderer/daw/model/automation.js';
-import { tempoMapOf, withTempoMap, addTempoEvent, secToBeat}
+import { tempoMapOf, addTempoEvent, secToBeat}
   from '../src/renderer/daw/model/tempo-map.js';
+import { withTempoMap } from '../src/renderer/daw/model/tempo-reanchor.js';
 import { makeChord} from '../src/renderer/daw/model/chords.js';
 import { setChordTrack} from '../src/renderer/daw/model/session-ops.js';
 import { pointValueAt} from '../src/renderer/daw/model/automation.js';

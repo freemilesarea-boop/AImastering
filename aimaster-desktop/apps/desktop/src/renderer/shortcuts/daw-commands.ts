@@ -117,8 +117,8 @@ import { findLane } from '../daw/model/automation.js';
 import {
   addTempoEvent, barBeatAt, beatsPerBar, meterAtBeat, secToBeat, tempoAtBeat,
   tempoMapOf, updateTempoEvent,
-  withTempoMap,
 } from '../daw/model/tempo-map.js';
+import { withTempoMap } from '../daw/model/tempo-reanchor.js';
 import {
   availableTargets, ensureLane, setLaneVisible, visibleLanes,
 } from '../daw/edit/automation-lanes.js';
