@@ -99,6 +99,22 @@ interface BaseParameterDef {
   automatable: boolean;
   /** Engine binding target — see {@link EngineBindingTarget}. */
   binding: EngineBindingTarget;
+  /**
+   * Set when NOTHING implements this parameter yet.
+   *
+   * Different from `binding.status`, which says whether the Python preview
+   * render carries the value.  This says the value reaches no engine at all:
+   * move it and neither chain config changes, so no renderer, preview or
+   * export can behave differently.
+   *
+   * Measured rather than asserted — `scripts/parameter-reach-selftest.ts`
+   * moves every parameter with its module forced into the config and fails
+   * both ways: an undeclared parameter that reaches nothing, and a declared
+   * one that has started working and needs the flag taken off.  A panel that
+   * shows a control the engine has never heard of is the failure this
+   * prevents; the string is what it tells the user.
+   */
+  unimplemented?: string;
 }
 
 export interface NumericParameterDef extends BaseParameterDef {
