@@ -25,6 +25,8 @@ import { diffPresets} from '../src/renderer/audio/presets/preset-compare.js';
 import { ALL_MODULE_PARAMETER_DEFS} from '../src/renderer/audio/parameters/module-parameter-definitions.js';
 import { MODULE_IDS} from '../src/renderer/audio/parameters/parameter-state.js';
 import { stateToChainConfig} from '../src/renderer/audio/realtime-mastering-chain.js';
+import { RECOMMENDED } from '../src/renderer/audio/presets/recommended-defaults.js';
+import { inertTunedParameters } from './lib/inert-parameters.js';
 
 // ── Tiny harness ────────────────────────────────────────────────────────────
 
@@ -137,6 +139,28 @@ check('chain config reflects preset renderable params', () => {
       near(cfg.outputGainDb, eq['outputGainDb'] as number, 1e-6, `${p.id} outputGain`);
     }
   }
+});
+
+check('no preset tunes a value the render cannot carry', () => {
+  // The check above names four parameters by hand, which is why it never
+  // noticed the rest.  This one is mechanical: move each tuned value back to
+  // its default on its own and see whether either chain config changes.
+  //
+  // What it caught: `ai-vocal-texture` asked for a 78 % top band and a 92 %
+  // mid-high band, and the app had no way to send a per-band width — the
+  // engine has one, `chain-config.ts` built the field, and nothing read it.
+  // The preset's overall width was 100 %, so its imager did nothing at all
+  // while a green check said it narrowed the top.
+  const bad: string[] = [];
+  for (const p of LOUI_PRESETS) {
+    for (const item of inertTunedParameters(p.tuning)) bad.push(`${p.id}: ${item}`);
+  }
+  assert(bad.length === 0, bad.join(' | '));
+});
+
+check('the recommended defaults do not recommend one either', () => {
+  const bad = inertTunedParameters(RECOMMENDED);
+  assert(bad.length === 0, bad.join(' | '));
 });
 
 // ── 5. diff behaviour ────────────────────────────────────────────────────────

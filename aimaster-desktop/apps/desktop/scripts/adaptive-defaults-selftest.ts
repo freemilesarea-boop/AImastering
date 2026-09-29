@@ -22,6 +22,7 @@ import {
   type SongProfile,
 } from '../src/renderer/audio/presets/adaptive-defaults.js';
 import { RECOMMENDED } from '../src/renderer/audio/presets/recommended-defaults.js';
+import { inertTunedParameters } from './lib/inert-parameters.js';
 
 let passed = 0;
 let failed = 0;
@@ -344,6 +345,33 @@ console.log('\n=== EVERY ADAPTED VALUE IS STILL LEGAL AND EXPLAINED ===\n');
     'a nonsense profile still produces legal settings',
     bad.length === 0,
     bad.length === 0 ? 'all clamped' : bad.slice(0, 4).join(' · '),
+  );
+}
+
+{
+  // Nothing the analysis decides may be something the render cannot carry.
+  // It was: a song already wide got `bandHighPct = 88` and the note told the
+  // user "고역을 살짝 좁혔습니다" — the app had no way to send a per-band width,
+  // so nothing was narrowed and the sentence was describing a move that did
+  // not happen.  See scripts/lib/inert-parameters.ts.
+  const profiles: [string, SongProfile][] = [
+    ['neutral', baseProfile()],
+    ['already wide', { ...baseProfile(), widthPct: 90 }],
+    ['narrow', { ...baseProfile(), widthPct: 8 }],
+    ['low end out of phase', { ...baseProfile(), lowCorrelation: 0.2 }],
+    ['quiet and dull', { ...baseProfile(), integratedLufs: -24, airDb: -20 }],
+    ['hot and harsh', { ...baseProfile(), integratedLufs: -7, harshDb: 6, sibilanceDb: -3 }],
+  ];
+  const bad: string[] = [];
+  for (const [name, profile] of profiles) {
+    for (const item of inertTunedParameters(adaptRecommended(profile).entries)) {
+      bad.push(`${name}: ${item}`);
+    }
+  }
+  check(
+    'the analysis never sets something the render cannot carry',
+    bad.length === 0,
+    bad.length === 0 ? `${profiles.length} profiles clean` : bad.join(' · '),
   );
 }
 
