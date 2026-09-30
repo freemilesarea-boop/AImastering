@@ -832,6 +832,7 @@ class DawRuntime {
     if (!this.player) return;
 
     this.player.start(session, fromSec);
+    this.primeClick(session);
     this.startTicking();
 
     // Fill in anything still missing behind the play head.
@@ -863,6 +864,7 @@ class DawRuntime {
     this.metronome.reset();
     if (wasPlaying) {
       this.player?.start(session, Math.max(0, toSec));
+      this.primeClick(session);
       this.startTicking();
     } else {
       this.onPosition?.(Math.max(0, toSec));
@@ -980,6 +982,24 @@ class DawRuntime {
     );
   }
 
+  /**
+   * Click the first window as soon as playback starts, not on the first tick.
+   *
+   * `player.start` places its first second of material synchronously, while
+   * the transport's timer does not fire for at least TICK_MS — and the lead
+   * is 60 ms, measured.  So by the time the first tick asked the metronome
+   * for clicks, the click ON the play position was already in the past and
+   * was dropped as late: measured in the app, nine notes out of ten shared
+   * their moment with a click and the FIRST one had none.  The clips do not
+   * have this problem because nothing waits for a timer to place them; this
+   * gives the click the same head start, out of the same window list.
+   */
+  private primeClick(session: DawSession): void {
+    const player = this.player;
+    if (!player) return;
+    this.metronome.tickWindows(tempoMapOf(session), player.lastWindows);
+  }
+
   private startTicking(): void {
     this.startPositionFrames();
     if (this.timer) return;
@@ -1010,9 +1030,13 @@ class DawRuntime {
       this.engine?.pollMeters();
 
       player.tick(session, LOOKAHEAD_SEC);
-      // The click rides the same tick and the same origin as the clips, so a
-      // beat and a kick on that beat are scheduled to the same context time.
-      this.metronome.tick(tempoMapOf(session), pos, LOOKAHEAD_SEC, player.originSec);
+      // The click rides the same tick and the same WINDOWS as the clips — the
+      // list the player just walked, per-pass origins and all — so a beat and
+      // a kick on that beat are scheduled to the same context time, and a
+      // loop cannot leave the click behind.  It used to be handed the
+      // position and a lookahead and work the rest out itself, which inside a
+      // loop meant it stopped clicking altogether.
+      this.metronome.tickWindows(tempoMapOf(session), player.lastWindows);
       // The cursor is NOT reported from here — see `startPositionFrames`.
 
       // Stop at the end of the last clip (plus a tail for effects).

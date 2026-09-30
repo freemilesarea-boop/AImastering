@@ -73,6 +73,26 @@ export interface LoopSpan {
   endSec: number;
 }
 
+/**
+ * One look-ahead window, in the pass it belongs to.
+ *
+ * Inside a loop the look-ahead is not one window but several: cut at the loop
+ * end, continued from the loop start, each with its own context-time origin.
+ * The list is published (`lastWindows`) because the CLICK has to be scheduled
+ * into exactly the same windows with exactly the same origins — that is what
+ * "a beat and a kick on that beat sound together" means, and a second copy of
+ * this arithmetic in the transport would be a second chance to get it wrong.
+ */
+export interface PassWindow {
+  /** Timeline seconds, half-open: `[fromSec, toSec)`. */
+  fromSec: number;
+  toSec: number;
+  /** The context time that timeline zero maps to for this pass. */
+  originSec: number;
+  /** Which pass of the loop this is; 0 outside one. */
+  pass: number;
+}
+
 interface Voice {
   /** Where the samples come from: a resident buffer or a stream off disk. */
   source: AudioBufferSourceNode | StreamVoice;
@@ -151,6 +171,16 @@ export class ClipPlayer {
 
   /** Context time that timeline zero maps to — what the metronome anchors on. */
   get originSec(): number { return this.origin; }
+
+  /**
+   * The windows the last `tick` placed material in — see `PassWindow`.
+   *
+   * Empty until the first tick.  The transport reads this to schedule the
+   * click, so the click cannot be planned from a different clock reading than
+   * the clips were: the walk is done once, here.
+   */
+  private windows: PassWindow[] = [];
+  get lastWindows(): readonly PassWindow[] { return this.windows; }
 
   /**
    * Repeat `[startSec, endSec)` until told otherwise, or null for straight
@@ -270,28 +300,23 @@ export class ClipPlayer {
    */
   private audioKey(clipId: string): string { return `${this.pass}:${clipId}`; }
 
-  /** Look-ahead tick — call every ~50 ms while playing. */
-  tick(session: DawSession, lookaheadSec = 1.0): void {
-    if (!this.playing) return;
-    this.advancePass();
+  /**
+   * Plan the look-ahead: which timeline windows, at which origins.
+   *
+   * Pure apart from reading the clock, so the transport can walk the same
+   * list for the click without re-deriving any of it.
+   */
+  private planWindows(lookaheadSec: number): PassWindow[] {
     const now = this.position();
-    if (!this.loop) {
-      this.placeOrigin = this.origin;
-      this.scheduleWindow(session, now, now + lookaheadSec);
-      this.scheduleAutomation(session, now, now + lookaheadSec);
-      this.reapVoices();
-      return;
+    const length = this.loop ? this.loop.endSec - this.loop.startSec : 0;
+    if (!this.loop || length <= 0) {
+      return [{ fromSec: now, toSec: now + lookaheadSec, originSec: this.origin, pass: this.pass }];
     }
 
-    // Inside a loop the window is cut at the loop end and continued from the
-    // loop start, as many times as the look-ahead reaches — so the next pass
-    // is already in the graph before the current one ends and nothing has to
-    // be stopped and started at the boundary.
     const { startSec, endSec } = this.loop;
-    const length = endSec - startSec;
-    const basePass = this.pass;
-    let passOrigin = this.origin;
+    const out: PassWindow[] = [];
     let remaining = lookaheadSec;
+    let passOrigin = this.origin;
 
     // Playing INTO the loop from before it: that stretch is played once, on
     // the way in, and only then does the repeat begin.  Clamping the first
@@ -299,24 +324,39 @@ export class ClipPlayer {
     // playhead and the locator.
     if (now < startSec) {
       const to = Math.min(now + remaining, startSec);
-      this.placeOrigin = passOrigin;
-      this.scheduleWindow(session, now, to);
-      this.scheduleAutomation(session, now, to);
+      out.push({ fromSec: now, toSec: to, originSec: passOrigin, pass: this.pass });
       remaining -= to - now;
-      if (remaining <= 1e-9) { this.placeOrigin = this.origin; this.reapVoices(); return; }
+      if (remaining <= 1e-9) return out;
     }
 
+    // Inside the loop the window is cut at the loop end and continued from the
+    // loop start, as many times as the look-ahead reaches — so the next pass
+    // is already in the graph before the current one ends and nothing has to
+    // be stopped and started at the boundary.
     let from = Math.max(now, startSec);
     for (let step = 0; remaining > 1e-9 && step < 64; step += 1) {
       const to = Math.min(from + remaining, endSec);
-      this.placeOrigin = passOrigin;
-      this.pass = basePass + step;
-      this.scheduleWindow(session, from, to);
-      this.scheduleAutomation(session, from, to);
+      out.push({ fromSec: from, toSec: to, originSec: passOrigin, pass: this.pass + step });
       remaining -= to - from;
       if (to < endSec) break;
       from = startSec;
       passOrigin += length;
+    }
+    return out;
+  }
+
+  /** Look-ahead tick — call every ~50 ms while playing. */
+  tick(session: DawSession, lookaheadSec = 1.0): void {
+    if (!this.playing) return;
+    this.advancePass();
+    const windows = this.planWindows(lookaheadSec);
+    this.windows = windows;
+    const basePass = this.pass;
+    for (const w of windows) {
+      this.placeOrigin = w.originSec;
+      this.pass = w.pass;
+      this.scheduleWindow(session, w.fromSec, w.toSec);
+      this.scheduleAutomation(session, w.fromSec, w.toSec);
     }
     this.pass = basePass;
     this.placeOrigin = this.origin;

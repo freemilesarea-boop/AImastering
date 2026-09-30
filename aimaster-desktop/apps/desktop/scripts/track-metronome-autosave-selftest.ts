@@ -258,7 +258,7 @@ check('the scheduler never clicks the same beat twice', () => {
   metro.attach(ctx);
   metro.setEnabled(true);
   // Tick every 50 ms across two seconds with a 1 s lookahead.
-  for (let t = 0; t < 2; t += 0.05) metro.tick(map, t, 1, 0);
+  for (let t = 0; t < 2; t += 0.05) metro.tick(map, t, t + 1, 0);
   // The last tick is at 1.95 with a 1 s lookahead, so the covered window is
   // [0, 2.95): beats at 0, 0.5, 1.0, 1.5, 2.0, 2.5 — six, each exactly once.
   eq(scheduled, 6, `each beat once, got ${scheduled}`);
@@ -273,7 +273,7 @@ check('a disabled metronome makes no sound at all', () => {
   };
   const metro = new Metronome();
   metro.attach(ctx);
-  metro.tick(defaultTempoMap(120, [4, 4]), 0, 1, 0);
+  metro.tick(defaultTempoMap(120, [4, 4]), 0, 1, 0);   // window [0, 1)
   eq(scheduled, 0, 'off means off');
   eq(metro.enabled, false, 'and it says so');
 });

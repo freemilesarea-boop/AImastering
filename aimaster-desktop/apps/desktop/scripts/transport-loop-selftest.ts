@@ -30,6 +30,15 @@
  * claim that something cannot be tested has to be checked as hard as a claim
  * that it works.
  *
+ * The CLICK is in here too, on a rig of its own (`clicksUnderLoop`): a clock
+ * that moves 50 ms at a time, the real `ClipPlayer` planning the windows and
+ * the real `Metronome` filling them, which is the pair of calls the transport
+ * makes.  It is here because the click's failure was the same failure as the
+ * loop's: its horizon was kept in TIMELINE seconds, so once a loop carried the
+ * position back behind it every later window tested empty and the click simply
+ * stopped — measured in the app, 7 clicks in 13 seconds of a 2 s loop where 26
+ * were due, the last eight seconds silent.
+ *
  * What this canNOT reach is `advancePass`, which rolls the heard origin forward
  * so `position()` reports somewhere inside the loop rather than running off
  * the end of it.  An `OfflineAudioContext` renders in one go — its clock does
@@ -46,6 +55,8 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 
 import { MixerEngine } from '../src/renderer/daw/engine/mixer-engine.js';
 import { ClipPlayer, type LoopSpan } from '../src/renderer/daw/engine/clip-player.js';
+import { Metronome } from '../src/renderer/daw/engine/metronome.js';
+import { tempoMapOf } from '../src/renderer/daw/model/tempo-map.js';
 import {
   addFile, addTrack, createClip, createSession, createTrack, updateClips,
 } from '../src/renderer/daw/model/session-ops.js';
@@ -191,6 +202,67 @@ function gaps(onsets: readonly number[]): number[] {
   return out;
 }
 
+interface Click { at: number; accent: boolean }
+
+/**
+ * The transport's driving loop in miniature: a clock that moves, the real
+ * `ClipPlayer` planning the windows, the real `Metronome` filling them.
+ *
+ * The clock is the reason this rig exists at all.  An `OfflineAudioContext`
+ * renders in one go and its `currentTime` never advances, so the render-based
+ * checks above place every pass from a single tick — which is exactly the
+ * situation a horizon bug survives.  Here `now` is stepped 50 ms at a time,
+ * the same cadence `DawRuntime` ticks at, and `player.tick` then
+ * `metronome.tickWindows(map, player.lastWindows)` is the same pair of calls
+ * the transport makes, in the same order, on the same objects.
+ */
+function clicksUnderLoop(loop: LoopSpan | null, runSec: number): Click[] {
+  const fired: Click[] = [];
+  let now = 0;
+  let pendingAccent = false;
+  const ctx = {
+    get currentTime() { return now; },
+    destination: {} as AudioNode,
+    createOscillator: () => ({
+      frequency: { set value(hz: number) { pendingAccent = hz > 1300; }, get value() { return 0; } },
+      connect: () => ({ connect: () => undefined }),
+      start: (at: number) => { fired.push({ at: +at.toFixed(6), accent: pendingAccent }); },
+      stop: () => undefined,
+    } as unknown as OscillatorNode),
+    createGain: () => ({
+      gain: {
+        setValueAtTime: () => undefined,
+        linearRampToValueAtTime: () => undefined,
+        exponentialRampToValueAtTime: () => undefined,
+      },
+      connect: (n: unknown) => n,
+    } as unknown as GainNode),
+  };
+
+  // No mixer channels, so nothing is placed — the windows are what is under
+  // test, and a full engine would only add noise to the measurement.
+  const engine = { ctx, channel: () => null } as unknown as MixerEngine;
+  const session = song([0]);
+  const player = new ClipPlayer(engine);
+  player.setLoop(loop);
+  player.start(session, loop ? loop.startSec : 0, 0);
+
+  const metro = new Metronome();
+  metro.attach(ctx, null);
+  metro.setEnabled(true);
+  const map = tempoMapOf(session);
+
+  for (let step = 0; step * 0.05 < runSec; step += 1) {
+    now = +(step * 0.05).toFixed(6);
+    player.tick(session, 1.0);
+    metro.tickWindows(map, player.lastWindows);
+  }
+  // NOT de-duplicated.  Collapsing two clicks scheduled to the same moment
+  // would hide the very thing the horizon exists to prevent — the gap checks
+  // below read a doubled click as a gap of zero.
+  return fired.sort((a, b) => a.at - b.at);
+}
+
 async function main(): Promise<void> {
   await check('a loop repeats what is inside it, at the right places', async () => {
     const onsets = await onsetsOf(song(), { startSec: 0, endSec: 1 }, 3);
@@ -331,6 +403,110 @@ async function main(): Promise<void> {
       `five ticks rendered ${five.toFixed(4)} against ${once.toFixed(4)} — the clip was scheduled again on every tick`);
     console.log(`      (1 tick ${once.toFixed(3)}, 5 ticks ${five.toFixed(3)})`);
     clearAudioCache();
+  });
+
+  await check('the click keeps clicking, pass after pass', async () => {
+    // The measurement that opened this: in the app, a 2 s loop clicked seven
+    // times in thirteen seconds where twenty-six were due and then went
+    // silent for the last eight.  The horizon had run past the loop end while
+    // the position wrapped back behind it, so every later window tested empty.
+    const clicks = clicksUnderLoop({ startSec: 0, endSec: 2 }, 12);
+    const want = Math.floor(12 / 0.5);          // 120 bpm, a click every 0.5 s
+    assert(clicks.length >= want - 1,
+      `${clicks.length} clicks in 12 s of a 2 s loop, expected about ${want}`);
+    for (let i = 1; i < clicks.length; i += 1) {
+      const gap = clicks[i]!.at - clicks[i - 1]!.at;
+      assert(Math.abs(gap - 0.5) < 1e-6,
+        `a gap of ${gap.toFixed(4)} s at ${clicks[i]!.at.toFixed(3)} — the click lost the loop`);
+    }
+    console.log(`      (${clicks.length} clicks in 12 s, every gap 0.500 s)`);
+    await Promise.resolve();
+  });
+
+  await check('each pass clicks the loop\'s own beats, not the ones after it', async () => {
+    // A loop that does not start at zero: [1.0, 2.5) holds the beats at 1.0,
+    // 1.5 and 2.0.  Folding every click back into the loop must give those
+    // three and nothing else — a click at 2.5 or 3.0 would be the transport
+    // counting past its own locator.
+    const loop = { startSec: 1, endSec: 2.5 };
+    const clicks = clicksUnderLoop(loop, 12);
+    const length = loop.endSec - loop.startSec;
+    const inLoop = new Set(clicks
+      .filter((c) => c.at >= loop.startSec - 1e-9)
+      .map((c) => +(((c.at - loop.startSec) % length) + loop.startSec).toFixed(4)));
+    const got = [...inLoop].sort((a, b) => a - b);
+    assert(got.length === 3 && Math.abs(got[0]! - 1) < 1e-3
+      && Math.abs(got[1]! - 1.5) < 1e-3 && Math.abs(got[2]! - 2) < 1e-3,
+      `the loop's beats came out as ${got.join(' ')}`);
+    console.log(`      (loop [1, 2.5) clicks at ${got.join(' ')} of every pass)`);
+    await Promise.resolve();
+  });
+
+  await check('the accent stays where the bar is, not where the loop starts', async () => {
+    // 4/4 at 120 bpm: beat 4 of the song is timeline 2.0 s and it is a
+    // downbeat; the loop's own start, 1.0 s, is beat 2 and is not.  So a pass
+    // reads weak, weak, ACCENT — the click agrees with the ruler and the bar
+    // numbers rather than re-accenting wherever the locator happens to be.
+    // Read from the first click on, and in CONTEXT time: playback starts at
+    // the locator, so timeline 1.0 s is context 0 — filtering the list by
+    // `at >= 1` would drop a whole pass and read the pattern from the middle.
+    const clicks = clicksUnderLoop({ startSec: 1, endSec: 2.5 }, 8);
+    assert(clicks.length >= 6, `only ${clicks.length} clicks to read`);
+    const pattern = clicks.slice(0, 6).map((c) => (c.accent ? 'A' : '.')).join('');
+    assert(pattern === '..A..A', `the accents came out ${pattern}, not ..A..A`);
+    console.log(`      (accents: ${pattern} — beat 1 of the bar, never the locator)`);
+    await Promise.resolve();
+  });
+
+  await check('a loop that is not a whole beat long keeps every click', async () => {
+    // 1.75 s at 120 bpm is three and a half beats, so the seam is short: the
+    // pass clicks at 0, 0.5, 1.0, 1.5 and then the next pass starts 0.25 s
+    // later.  That odd gap is the honest answer — the loop really is not on
+    // the grid — and what must NOT happen is a missing click or a drift.
+    const clicks = clicksUnderLoop({ startSec: 0, endSec: 1.75 }, 7);
+    assert(clicks.length >= 13, `${clicks.length} clicks in 7 s of a 1.75 s loop`);
+    const seams = clicks.slice(1).filter((c, i) => Math.abs(c.at - clicks[i]!.at - 0.25) < 1e-6);
+    assert(seams.length >= 3, `the short seam is missing: ${clicks.map((c) => c.at.toFixed(2)).join(' ')}`);
+    for (let i = 1; i < clicks.length; i += 1) {
+      const gap = clicks[i]!.at - clicks[i - 1]!.at;
+      assert(gap > 0.24 && gap < 0.51, `a gap of ${gap.toFixed(4)} s — a click went missing`);
+    }
+    console.log(`      (${clicks.length} clicks, ${seams.length} short seams of 0.250 s)`);
+    await Promise.resolve();
+  });
+
+  await check('the first window is published before the first tick', async () => {
+    // What priming the click rests on.  `DawRuntime.play` hands the metronome
+    // `player.lastWindows` the moment `start` returns, because the transport's
+    // timer does not fire for at least 50 ms while the lead is 60 ms — so a
+    // click ON the play position was being dropped as late.  Measured in the
+    // app with notes on beats the click also marks: nine of ten notes shared
+    // their moment with a click and the FIRST one had none; with the priming,
+    // ten of ten.  The runtime's own call is one line and is verified there;
+    // what is checked here is that the list exists to be handed over at all.
+    const engine = {
+      ctx: { currentTime: 0, destination: {} as AudioNode },
+      channel: () => null,
+    } as unknown as MixerEngine;
+    const player = new ClipPlayer(engine);
+    player.setLoop({ startSec: 0, endSec: 2 });
+    assert(player.lastWindows.length === 0, 'nothing is published before playback');
+    player.start(song([0]), 0.75, 0);
+    const windows = player.lastWindows;
+    assert(windows.length > 0, 'start published no window for the click to use');
+    assert(windows[0]!.fromSec <= 0.75 && windows[0]!.toSec > 0.75,
+      `the first window is [${windows[0]!.fromSec}, ${windows[0]!.toSec}), which does not hold the play position`);
+    await Promise.resolve();
+  });
+
+  await check('without a loop the same rig clicks straight through', async () => {
+    // The control.  Without it the four checks above would pass on a click
+    // that fires every 0.5 s no matter what the transport is doing.
+    const clicks = clicksUnderLoop(null, 9);
+    assert(clicks.length >= 17, `${clicks.length} clicks in 9 s without a loop`);
+    const last = clicks[clicks.length - 1]!.at;
+    assert(last > 8, `the click stopped at ${last.toFixed(3)} s`);
+    await Promise.resolve();
   });
 
   console.log('');

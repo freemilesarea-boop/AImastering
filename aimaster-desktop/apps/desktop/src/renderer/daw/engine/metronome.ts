@@ -39,6 +39,7 @@
 // context) still gets a click.
 
 import { barBeatAt, beatToSec, meterAtBeat, secToBeat } from '../model/tempo-map.js';
+import type { PassWindow } from './clip-player.js';
 import type { TempoMap } from '../model/types.js';
 
 export interface MetronomeOptions {
@@ -140,14 +141,26 @@ export class Metronome {
   /** Where the click is heard.  Null means the context destination. */
   private output: AudioNode | null = null;
   private options: MetronomeOptions = DEFAULT_METRONOME;
-  /** Timeline seconds already covered.  −1 means "nothing yet". */
-  private scheduledTo = -1;
+  /**
+   * The latest CONTEXT time already clicked.  −1 means "nothing yet".
+   *
+   * Context time, not timeline time, and that is the whole point.  The horizon
+   * used to be kept in timeline seconds, which works until the timeline
+   * repeats: inside a loop the horizon ran past the loop end, the position
+   * wrapped back to the start, and `to > from` was false from then on — the
+   * click simply stopped.  Measured in the app with a 2 s loop, 7 clicks were
+   * heard where 26 were due, the last eight seconds silent.  Context time only
+   * ever moves forward, so the same beat in the next pass is a later moment
+   * and is clicked again, while two overlapping windows in the same pass still
+   * cannot click one beat twice.
+   */
+  private scheduledCtxTo = -1;
   private on = false;
 
   attach(ctx: AudioContextLike | null, output: AudioNode | null = null): void {
     this.ctx = ctx;
     this.output = output;
-    this.scheduledTo = -1;
+    this.scheduledCtxTo = -1;
   }
 
   /** What the next click will connect to — the monitor path, or the speakers. */
@@ -159,7 +172,7 @@ export class Metronome {
     this.on = on;
     // Forget the horizon so re-enabling mid-song starts from where the
     // playhead actually is, not from where it was when it was switched off.
-    this.scheduledTo = -1;
+    this.scheduledCtxTo = -1;
   }
 
   get enabled(): boolean { return this.on; }
@@ -169,31 +182,43 @@ export class Metronome {
   }
 
   /** A locate happened; whatever was scheduled ahead is no longer true. */
-  reset(): void { this.scheduledTo = -1; }
+  reset(): void { this.scheduledCtxTo = -1; }
 
   /**
-   * Schedule the clicks in `[positionSec, positionSec + lookaheadSec)`.
+   * Schedule the clicks of one look-ahead window.
    *
-   * `originSec` is the context time that corresponds to timeline zero — the
-   * same anchor the clip player uses, so a click and a kick that fall on the
-   * same beat are scheduled to the same context time.
+   * `originSec` is the context time that corresponds to timeline zero FOR
+   * THIS WINDOW — inside a loop each pass has its own, which is why the window
+   * comes in rather than being worked out here.  It is the same anchor the
+   * clip player placed that window's material at, so a click and a kick on
+   * the same beat are scheduled to the same context time.
+   *
+   * Bar positions come from the tempo map as they stand: a loop that starts on
+   * beat 2 of a bar clicks a weak beat there, because the click has to agree
+   * with the ruler and the bar numbers the rest of the app shows.
    */
-  tick(map: TempoMap, positionSec: number, lookaheadSec: number, originSec: number): void {
+  tick(map: TempoMap, fromSec: number, toSec: number, originSec: number): void {
     const ctx = this.ctx;
     if (!ctx || !this.on) return;
+    if (!(toSec > fromSec)) return;
 
-    const from = this.scheduledTo < 0 ? positionSec : Math.max(this.scheduledTo, positionSec);
-    const to = positionSec + lookaheadSec;
-    if (!(to > from)) return;
-
-    for (const click of clicksBetween(map, from, to, this.options)) {
+    for (const click of clicksBetween(map, fromSec, toSec, this.options)) {
       const at = originSec + click.timeSec;
       // A click whose moment has already gone is dropped rather than fired
       // late: a late click is worse than a missing one.
       if (at < ctx.currentTime) continue;
+      // Already scheduled — the transport ticks far more often than a beat
+      // goes by, and a metronome that stacked three clicks on every beat
+      // would be its own instrument.
+      if (at <= this.scheduledCtxTo + 1e-9) continue;
       this.sound(ctx, at, click);
+      this.scheduledCtxTo = at;
     }
-    this.scheduledTo = to;
+  }
+
+  /** Every window of one transport tick — see `PassWindow`. */
+  tickWindows(map: TempoMap, windows: readonly PassWindow[]): void {
+    for (const w of windows) this.tick(map, w.fromSec, w.toSec, w.originSec);
   }
 
   private sound(ctx: AudioContextLike, at: number, click: ClickEvent): void {
