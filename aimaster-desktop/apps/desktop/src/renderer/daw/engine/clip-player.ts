@@ -67,11 +67,24 @@ export function fadeCurve(shape: Fade['shape'], steps = FADE_STEPS): Float32Arra
   return curve;
 }
 
+/** A span of timeline the transport repeats. */
+export interface LoopSpan {
+  startSec: number;
+  endSec: number;
+}
+
 interface Voice {
   /** Where the samples come from: a resident buffer or a stream off disk. */
   source: AudioBufferSourceNode | StreamVoice;
   gain: GainNode;
   clipId: string;
+  /**
+   * The key this voice is registered under in `scheduled` — which pass of the
+   * loop placed it, not just which clip it is.  Kept ON the voice because the
+   * pass has moved on by the time the voice is reaped, and deleting
+   * `${pass}:${clipId}` computed THEN would clear a key nobody wrote.
+   */
+  key: string;
   endsAtCtxTime: number;
 }
 
@@ -122,9 +135,39 @@ export class ClipPlayer {
   /** Files this pass has already asked the cache for, so it asks once. */
   private requested = new Set<string>();
   private origin = 0;
+  /**
+   * Context time timeline zero maps to for the pass being SCHEDULED.
+   *
+   * The same as `origin` outside a loop.  Inside one the look-ahead runs past
+   * the loop end and keeps going from the loop start, and that later material
+   * belongs to the NEXT pass — one loop length further along the context
+   * clock.  Placement reads this; `position()` and the metronome read
+   * `origin`, which is the pass being heard.
+   */
+  private placeOrigin = 0;
+  /** Which pass the scheduler is placing, so a clip can be placed once per pass. */
+  private pass = 0;
+  private loop: LoopSpan | null = null;
 
   /** Context time that timeline zero maps to — what the metronome anchors on. */
   get originSec(): number { return this.origin; }
+
+  /**
+   * Repeat `[startSec, endSec)` until told otherwise, or null for straight
+   * through.
+   *
+   * The scheduler owns the loop rather than the transport polling for it.  The
+   * transport used to notice the end had passed on its 50 ms tick, stop every
+   * voice at once and start again 60 ms later, and the loop came out about a
+   * tenth of a second long every pass: measured in the app, a 1.000 s loop ran
+   * 1.0999, a 2.000 s loop 2.0997 and a 4.000 s loop 4.0960 — a constant
+   * ~99 ms, which is the 60 ms restart lead plus the average of the poll, and
+   * not a rate error.  A loop that is 100 ms long at any length is not a loop:
+   * it drifts against the click by that much every pass.
+   */
+  setLoop(loop: LoopSpan | null): void {
+    this.loop = loop && loop.endSec > loop.startSec ? { ...loop } : null;
+  }
   private playing = false;
   /**
    * Streaming is for the live transport only.  An offline render runs faster
@@ -204,19 +247,101 @@ export class ClipPlayer {
   start(session: DawSession, fromSec: number, leadSec = 0.06): void {
     this.stop();
     this.origin = this.engine.ctx.currentTime + leadSec - fromSec;
+    this.placeOrigin = this.origin;
+    this.pass = 0;
     this.playing = true;
     this.startedAtSec = fromSec;
-    this.scheduleWindow(session, fromSec, fromSec + 1.0);
-    this.scheduleAutomation(session, fromSec, fromSec + 1.0);
+    // Through the same window walk as the look-ahead, so the loop is honoured
+    // from the first second.  Scheduling it straight let a loop shorter than a
+    // second play material from past its own end — measured, a [0, 0.5) loop
+    // sounded a note at 0.75 on the first pass and never again.
+    this.tick(session, 1.0);
   }
+
+  /**
+   * What an audio clip is remembered by once it has been scheduled.
+   *
+   * The pass is IN the key: inside a loop the same clip is placed again on
+   * every pass, and a key of the clip alone would mean it played once and
+   * never came back.  The check in `scheduleWindow` and the add in
+   * `scheduleClip` go through here so they cannot drift apart — they did
+   * once, and the result was an audio clip restarted on every 50 ms tick,
+   * 229 overlapping copies in seven seconds, measured in the app.
+   */
+  private audioKey(clipId: string): string { return `${this.pass}:${clipId}`; }
 
   /** Look-ahead tick — call every ~50 ms while playing. */
   tick(session: DawSession, lookaheadSec = 1.0): void {
     if (!this.playing) return;
+    this.advancePass();
     const now = this.position();
-    this.scheduleWindow(session, now, now + lookaheadSec);
-    this.scheduleAutomation(session, now, now + lookaheadSec);
+    if (!this.loop) {
+      this.placeOrigin = this.origin;
+      this.scheduleWindow(session, now, now + lookaheadSec);
+      this.scheduleAutomation(session, now, now + lookaheadSec);
+      this.reapVoices();
+      return;
+    }
+
+    // Inside a loop the window is cut at the loop end and continued from the
+    // loop start, as many times as the look-ahead reaches — so the next pass
+    // is already in the graph before the current one ends and nothing has to
+    // be stopped and started at the boundary.
+    const { startSec, endSec } = this.loop;
+    const length = endSec - startSec;
+    const basePass = this.pass;
+    let passOrigin = this.origin;
+    let remaining = lookaheadSec;
+
+    // Playing INTO the loop from before it: that stretch is played once, on
+    // the way in, and only then does the repeat begin.  Clamping the first
+    // window up to the loop start instead would silence everything between the
+    // playhead and the locator.
+    if (now < startSec) {
+      const to = Math.min(now + remaining, startSec);
+      this.placeOrigin = passOrigin;
+      this.scheduleWindow(session, now, to);
+      this.scheduleAutomation(session, now, to);
+      remaining -= to - now;
+      if (remaining <= 1e-9) { this.placeOrigin = this.origin; this.reapVoices(); return; }
+    }
+
+    let from = Math.max(now, startSec);
+    for (let step = 0; remaining > 1e-9 && step < 64; step += 1) {
+      const to = Math.min(from + remaining, endSec);
+      this.placeOrigin = passOrigin;
+      this.pass = basePass + step;
+      this.scheduleWindow(session, from, to);
+      this.scheduleAutomation(session, from, to);
+      remaining -= to - from;
+      if (to < endSec) break;
+      from = startSec;
+      passOrigin += length;
+    }
+    this.pass = basePass;
+    this.placeOrigin = this.origin;
     this.reapVoices();
+  }
+
+  /**
+   * Roll the heard origin forward for every pass that has finished.
+   *
+   * `position()` is measured from `origin`, so this is what makes the
+   * transport report a position inside the loop rather than running off the
+   * end of it.  A `while` and not an `if`: a stalled tab can leave several
+   * passes behind, and reporting a position four loops past the end would be
+   * a cursor nowhere near the music.
+   */
+  private advancePass(): void {
+    if (!this.loop) return;
+    const length = this.loop.endSec - this.loop.startSec;
+    if (length <= 0) return;
+    let guard = 0;
+    while (this.position() >= this.loop.endSec && guard < 1024) {
+      this.origin += length;
+      this.pass += 1;
+      guard += 1;
+    }
   }
 
   stop(): void {
@@ -258,7 +383,7 @@ export class ClipPlayer {
           this.scheduleMidi(session, track, clip, channel.input, fromSec, toSec, shift);
           continue;
         }
-        if (this.scheduled.has(clip.id)) continue;
+        if (this.scheduled.has(this.audioKey(clip.id))) continue;
         this.scheduleClip(
           session, clip, channel.input, Math.max(fromSec, clip.startSec + shift), shift);
       }
@@ -324,7 +449,7 @@ export class ClipPlayer {
       // one-shot voice, so it is skipped rather than retriggered late.
       if (absoluteStart < fromSec - 1e-6) continue;
 
-      const key = `${clip.id}:${note.id}`;
+      const key = `${this.pass}:${clip.id}:${note.id}`;
       if (this.scheduled.has(key)) continue;
       if (!this.passesProbability(note)) { this.scheduled.add(key); continue; }
 
@@ -333,12 +458,12 @@ export class ClipPlayer {
         destination,
         note,
         config: clip.midiConfig,
-        when: this.origin + absoluteStart,
+        when: this.placeOrigin + absoluteStart,
         durationSec: span.durationSec,
         params,
       });
       this.scheduled.add(key);
-      this.noteVoices.push({ stop: voice.stop, endsAtCtxTime: this.origin + absoluteEnd + 4 });
+      this.noteVoices.push({ stop: voice.stop, endsAtCtxTime: this.placeOrigin + absoluteEnd + 4 });
     }
   }
 
@@ -386,6 +511,8 @@ export class ClipPlayer {
     // reader thread keeping up: an offline pass always plays resident buffers.
     this.streaming = false;
     this.origin = -fromSec;
+    this.placeOrigin = this.origin;
+    this.pass = 0;
     this.scheduleWindow(session, fromSec, toSec);
     this.scheduleAutomation(session, fromSec, toSec);
   }
@@ -409,8 +536,23 @@ export class ClipPlayer {
     const remaining = clip.durationSec - skipSec;
     if (remaining <= 0.001) return;
 
-    const startAt = this.origin + enterSec;
-    const stopAt  = this.origin + soundsAt + clip.durationSec;
+    const startAt = this.placeOrigin + enterSec;
+    // A clip that would ring past the loop end is cut there: the next pass
+    // starts it again from the top, and two copies overlapping is not what a
+    // loop sounds like.
+    const naturalEnd = this.placeOrigin + soundsAt + clip.durationSec;
+    const stopAt = Math.min(
+      naturalEnd,
+      this.loop ? this.placeOrigin + this.loop.endSec : Number.POSITIVE_INFINITY,
+    );
+    // The LENGTH handed to the source, which is what actually cuts it off.
+    // Computing `stopAt` and then starting the source for the clip's whole
+    // length cuts nothing: the first version of this did exactly that, and an
+    // eight-second clip in a 1.5 s loop rang over its own next pass until the
+    // voice was reaped 200 ms later.  Rendered, the level after the wrap came
+    // out HIGHER than before it.
+    const playSec = stopAt - startAt;
+    if (playSec <= 0.001) return;
 
     // A warped clip plays its rendered buffer, which already starts at the
     // clip's first sample — so the read offset is the skip alone.  Warping
@@ -426,7 +568,7 @@ export class ClipPlayer {
       ? createStreamVoice(ctx, store, {
           startAtSec: Math.max(0, startAt),
           offsetFrames: Math.round((clip.offsetSec + skipSec) * store.sampleRate),
-          durationFrames: Math.round(remaining * store.sampleRate),
+          durationFrames: Math.round(playSec * store.sampleRate),
         })
       : null;
 
@@ -479,22 +621,28 @@ export class ClipPlayer {
       for (let i = 0; i < curve.length; i++) {
         reversed[i] = (curve[curve.length - 1 - i] ?? 0) * base;
       }
-      const fadeStart = Math.max(startAt, stopAt - fadeOut);
-      gain.gain.setValueCurveAtTime(reversed, fadeStart, Math.min(fadeOut, stopAt - fadeStart));
+      // Anchored at the clip's OWN end, not at `stopAt`.  A clip longer than
+      // the loop is cut at the loop end, and reading the cut as the end of
+      // the clip would put a fade the user never drew across the seam on
+      // every pass — a six-second fade on an eight-second clip in a 1.5 s
+      // loop faded the whole loop out.  The tail is simply never reached.
+      const fadeStart = Math.max(startAt, naturalEnd - fadeOut);
+      gain.gain.setValueCurveAtTime(reversed, fadeStart, Math.min(fadeOut, naturalEnd - fadeStart));
     }
 
     if (isBufferSource(source)) {
       source.connect(gain).connect(destination);
       const offset = warped ? skipSec : clip.offsetSec + skipSec;
-      source.start(Math.max(0, startAt), Math.max(0, offset), remaining);
+      source.start(Math.max(0, startAt), Math.max(0, offset), playSec);
     } else {
       // The worklet holds its own start frame and length; it emits silence
       // until then, so there is nothing to schedule here.
       source.node.connect(gain).connect(destination);
     }
 
-    this.scheduled.add(clip.id);
-    this.voices.push({ source, gain, clipId: clip.id, endsAtCtxTime: stopAt });
+    const key = this.audioKey(clip.id);
+    this.scheduled.add(key);
+    this.voices.push({ source, gain, clipId: clip.id, key, endsAtCtxTime: stopAt });
   }
 
   // ── Automation playback ─────────────────────────────────────────────────
@@ -608,7 +756,7 @@ export class ClipPlayer {
     map: (value: number) => number,
     subdivideSec = 0,
   ): void {
-    const startCtx = this.origin + fromSec;
+    const startCtx = this.placeOrigin + fromSec;
     // Anchor at the window start so the first ramp has a defined origin.
     const startValue = map(pointValueAt(points, fromSec, points[0]?.value ?? 0));
     param.cancelScheduledValues(Math.max(0, startCtx));
@@ -634,10 +782,10 @@ export class ClipPlayer {
         const value = map(pointValueAt(points, t, fallback));
         if (value === last) { flatAt = t; continue; }
         if (flatAt >= 0) {
-          param.setValueAtTime(last, Math.max(0, this.origin + flatAt));
+          param.setValueAtTime(last, Math.max(0, this.placeOrigin + flatAt));
           flatAt = -1;
         }
-        param.linearRampToValueAtTime(value, Math.max(0, this.origin + t));
+        param.linearRampToValueAtTime(value, Math.max(0, this.placeOrigin + t));
         last = value;
       }
       return;
@@ -645,7 +793,7 @@ export class ClipPlayer {
 
     for (const p of points) {
       if (p.timeSec <= fromSec || p.timeSec > toSec) continue;
-      param.linearRampToValueAtTime(map(p.value), Math.max(0, this.origin + p.timeSec));
+      param.linearRampToValueAtTime(map(p.value), Math.max(0, this.placeOrigin + p.timeSec));
     }
   }
 
@@ -656,7 +804,7 @@ export class ClipPlayer {
       if (v.endsAtCtxTime < now - 0.2) {
         stopSource(v.source, now);
         try { v.gain.disconnect(); } catch { /* ignore */ }
-        this.scheduled.delete(v.clipId);
+        this.scheduled.delete(v.key);
       } else {
         alive.push(v);
       }

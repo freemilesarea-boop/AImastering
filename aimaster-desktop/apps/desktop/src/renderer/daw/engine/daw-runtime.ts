@@ -757,6 +757,10 @@ class DawRuntime {
       this.controlRoom.apply(this.controlRoomState);
       this.engine = new MixerEngine(this.ctx, this.controlRoom.input, { meters: true });
       this.player = new ClipPlayer(this.engine);
+      // The locators are usually set before the first transport gesture — a
+      // context only exists once the user has asked for sound — so the loop is
+      // handed over here as well as in `setLoop`.
+      this.setLoop(this.loop);
       // The click is heard in the room, so it goes through the room.  Attached
       // here rather than only in `setMetronome`, which never ran at all if the
       // click was switched on before there was a context to attach to.
@@ -782,7 +786,17 @@ class DawRuntime {
     this.engine.sync(session);
   }
 
-  setLoop(loop: LoopState): void { this.loop = loop; }
+  setLoop(loop: LoopState): void {
+    this.loop = loop;
+    // The scheduler owns the repeat — see `ClipPlayer.setLoop` for the
+    // measurements that moved it there.  This object keeps its copy because
+    // the record path reads the locators.
+    this.player?.setLoop(
+      loop.enabled && loop.endSec > loop.startSec
+        ? { startSec: loop.startSec, endSec: loop.endSec }
+        : null,
+    );
+  }
 
   /**
    * Decode what the transport needs.
@@ -984,13 +998,12 @@ class DawRuntime {
         return;
       }
 
-      // Loop: wrap at the right locator by re-arming the scheduler there.
-      if (this.loop.enabled && this.loop.endSec > this.loop.startSec && pos >= this.loop.endSec) {
-        player.stop();
-        player.start(session, this.loop.startSec);
-        this.onPosition?.(this.loop.startSec);
-        return;
-      }
+      // No wrap here.  This used to notice the loop end had gone by, stop every
+      // voice and start again 60 ms later, and the loop came out about a tenth
+      // of a second long every pass — measured in the app, a 1.000 s loop ran
+      // 1.0999 and a 4.000 s one 4.0960, a constant ~99 ms rather than a rate
+      // error.  The scheduler wraps its own look-ahead window now, so the next
+      // pass is in the graph before the current one ends.
 
       // Meters ride the transport tick so the over latch is fed during
       // playback whether or not the Mix window is open.
