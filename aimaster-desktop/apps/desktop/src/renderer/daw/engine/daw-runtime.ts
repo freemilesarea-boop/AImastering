@@ -23,7 +23,7 @@ import {
 import { midiInsertsOf } from '../model/midi-insert-track.js';
 import { getCached, pinFiles, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
-import { InputCapture, openCapture, scheduleCountIn } from './recorder.js';
+import { InputCapture, openCapture } from './recorder.js';
 import { Metronome } from './metronome.js';
 import { tempoMapOf } from '../model/tempo-map.js';
 import { noteSpan, partClock } from '../model/note-time.js';
@@ -677,12 +677,13 @@ class DawRuntime {
 
     let lead = 0.06;
     if (plan.countInSec > 0) {
-      scheduleCountIn(ctx, ctx.destination, {
-        tempoBpm: session.tempoBpm,
-        beatsPerBar: session.timeSignature[0],
-        bars: Math.round(plan.countInSec / (session.timeSignature[0] * (60 / session.tempoBpm))),
-        when: ctx.currentTime + lead,
-      });
+      // Every number comes from the plan, which read them off the tempo map at
+      // the record point.  Re-deriving any of them here is what counted a take
+      // in at the session's opening tempo — see `RecordPlan.countInBeats`.
+      this.metronome.countIn(
+        ctx.currentTime + lead,
+        plan.countInBeats, plan.countInBeatSec, plan.countInBeatsPerBar,
+      );
       lead += plan.countInSec;
     }
 

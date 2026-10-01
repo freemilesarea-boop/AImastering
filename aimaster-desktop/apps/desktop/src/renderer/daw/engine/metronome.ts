@@ -290,6 +290,51 @@ export class Metronome {
     }
   }
 
+  /**
+   * Count a take in: `beats` clicks before the transport rolls, accented every
+   * `beatsPerBar`, starting at `startAtCtx`.  Returns how long it lasts.
+   *
+   * It is HERE, and not a second click generator next to the recorder, for
+   * three reasons that were each measured first.
+   *
+   *   · The room.  The count-in used to be wired straight to
+   *     `ctx.destination`, while the playback click goes through the control
+   *     room — so MUTE, DIM, the speaker trim and the monitor level reached
+   *     one click and not the other.  Rendered with MUTE engaged: the
+   *     count-in came out at 0.248 peak down the destination and 0.0015
+   *     through the room.  Press MUTE to take a phone call and the count-in
+   *     carried on into the speakers.  Scheduling it through the same object
+   *     that holds `output` makes that impossible rather than unlikely.
+   *
+   *   · The cancel.  Nothing held those oscillators — `scheduleCountIn`
+   *     returned a duration — so no stop could reach them: rendered after
+   *     every stop the app can make, the peak was unchanged.  Up to four bars
+   *     of clicking, against the 600 ms the playback click used to leak.
+   *     Here they are voices like any other and `reset` takes them out.
+   *
+   *   · The tempo.  The caller passes the beat length; `planRecording` reads
+   *     it off the tempo map at the record point, which is the tempo the
+   *     player is about to play.  The transport used to divide the plan's own
+   *     duration by the session's opening tempo and count at that instead.
+   *
+   * Deliberately not gated on `enabled`: a count-in is asked for by arming
+   * one, not by the click being on.  Switching the click OFF during one does
+   * silence it, because OFF means off.
+   */
+  countIn(startAtCtx: number, beats: number, beatSec: number, beatsPerBar: number): number {
+    const ctx = this.ctx;
+    const n = Math.max(0, Math.floor(beats));
+    const step = Math.max(1e-3, beatSec);
+    if (!ctx || n === 0) return 0;
+    const bar = Math.max(1, Math.floor(beatsPerBar));
+    for (let i = 0; i < n; i += 1) {
+      this.sound(ctx, startAtCtx + i * step, {
+        timeSec: i * step, accent: i % bar === 0, weak: false,
+      });
+    }
+    return n * step;
+  }
+
   /** Every window of one transport tick — see `PassWindow`. */
   tickWindows(map: TempoMap, windows: readonly PassWindow[]): void {
     for (const w of windows) this.tick(map, w.fromSec, w.toSec, w.originSec);

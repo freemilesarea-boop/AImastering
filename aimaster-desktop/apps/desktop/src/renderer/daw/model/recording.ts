@@ -83,6 +83,24 @@ export const DEFAULT_RECORD_SETTINGS: RecordSettings = {
 export interface RecordPlan {
   /** Seconds of clicks before the transport moves.  0 when there is no count-in. */
   countInSec: number;
+  /**
+   * The count-in, spelled out so nobody has to work it back out.
+   *
+   * `countInSec` alone is not enough to SOUND a count-in, and the transport
+   * used to recover the rest of it by dividing by the session's opening tempo
+   * — which is the one number that is wrong whenever the take does not start
+   * at the top of the song.  Measured on a session that drops to 90 bpm at
+   * bar 2, with a one-bar count-in into beat 8: this plan said 2.6667 s, the
+   * transport re-derived four clicks 0.5 s apart (120 bpm), and the player
+   * got counted in at the wrong speed and then two thirds of a beat of
+   * silence before the music came in.  The numbers that decide what is heard
+   * belong with the number that says how long it lasts.
+   */
+  countInBeats: number;
+  /** Seconds per count-in beat, from the map AT the record point. */
+  countInBeatSec: number;
+  /** Which beat gets the accent — the meter at the record point. */
+  countInBeatsPerBar: number;
   /** Where the transport starts rolling. */
   transportStartSec: number;
   /** First sample kept. */
@@ -126,8 +144,10 @@ export function planRecording(
     ? Math.min(settings.punchStartSec, settings.punchEndSec) : playheadSec;
   const meterHere = meterAtBeat(map, secToBeat(map, Math.max(0, punchAt)));
   const beatsPerBar = meterHere.numerator;
-  const countInSec = countInSeconds(
-    settings.countInBars, tempoAtSec(map, Math.max(0, punchAt)), beatsPerBar);
+  const countInTempo = tempoAtSec(map, Math.max(0, punchAt));
+  const countInBeats = Math.max(0, Math.round(settings.countInBars)) * beatsPerBar;
+  const countInBeatSec = beatSeconds(countInTempo);
+  const countInSec = countInSeconds(settings.countInBars, countInTempo, beatsPerBar);
 
   const punchStart = Math.min(settings.punchStartSec, settings.punchEndSec);
   const punchEnd = Math.max(settings.punchStartSec, settings.punchEndSec);
@@ -144,6 +164,9 @@ export function planRecording(
 
   return {
     countInSec,
+    countInBeats,
+    countInBeatSec,
+    countInBeatsPerBar: beatsPerBar,
     transportStartSec,
     recordStartSec,
     recordEndSec,

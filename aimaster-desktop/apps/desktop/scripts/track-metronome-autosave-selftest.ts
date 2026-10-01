@@ -286,7 +286,11 @@ check('a disabled metronome makes no sound at all', () => {
  * graph means stopping it before the moment it was first given.  A click with
  * `stopAt <= at` is never heard at all.
  */
-interface ClickRec { at: number; hz: number; stopAt: number | null; zeroRampAt: number | null }
+interface ClickRec {
+  at: number; hz: number; stopAt: number | null; zeroRampAt: number | null;
+  /** The node the click's gain was connected to — where it is heard. */
+  out: unknown;
+}
 function clickRig(): {
   ctx: Parameters<Metronome['attach']>[0]; all: ClickRec[]; setNow: (t: number) => void;
 } {
@@ -297,7 +301,7 @@ function clickRig(): {
     get currentTime() { return now; },
     destination: {} as AudioNode,
     createOscillator: () => {
-      const rec: ClickRec = { at: NaN, hz: 0, stopAt: null, zeroRampAt: null };
+      const rec: ClickRec = { at: NaN, hz: 0, stopAt: null, zeroRampAt: null, out: null };
       current = rec;
       all.push(rec);
       return {
@@ -319,7 +323,7 @@ function clickRig(): {
           exponentialRampToValueAtTime: () => undefined,
           cancelScheduledValues: () => undefined,
         },
-        connect: (n: unknown) => n,
+        connect: (n: unknown) => { if (rec) rec.out = n; return n; },
       } as unknown as GainNode;
     },
   };
@@ -418,6 +422,70 @@ check('the clicks in the graph do not pile up all session', () => {
   // look-ahead's worth, not the session's.
   assert(metro.pendingClicks <= 4,
     `${metro.pendingClicks} clicks still on the list after 20 s of ticks`);
+});
+
+// ── The count-in ──────────────────────────────────────────────────────────────
+//
+// It used to be a second click generator in `recorder.ts`, wired straight to
+// `ctx.destination` and holding no references to what it had made.  Measured
+// offline: with MUTE engaged it came out at 0.248 peak down the destination
+// and 0.0015 through the control room, and after every stop the app can make
+// the peak was unchanged — up to four bars of clicking nothing could reach.
+
+check('a count-in is the beats it was given, accented on the bar', () => {
+  const { ctx, all } = clickRig();
+  const metro = new Metronome();
+  metro.attach(ctx);
+  // NOT enabled: a count-in is asked for by arming one, not by the click
+  // being switched on.
+  const len = metro.countIn(10, 8, 0.5, 4);
+  close(len, 4, 'two bars at 120 in 4/4');
+  eq(all.length, 8, `${all.length} clicks for eight beats`);
+  const ats = all.map((r) => +r.at.toFixed(4));
+  eq(ats.join(' '), '10 10.5 11 11.5 12 12.5 13 13.5', 'one every beat, from where it was told');
+  const accents = all.map((r) => (r.hz > 1300 ? 'A' : '.')).join('');
+  eq(accents, 'A...A...', 'accented on the first of each bar');
+});
+
+check('a count-in counts the beat it is handed, not a tempo of its own', () => {
+  // The number comes from `planRecording`, which reads the map at the record
+  // point — this is the other half of that contract: whatever it is handed is
+  // what is heard.
+  const { ctx, all } = clickRig();
+  const metro = new Metronome();
+  metro.attach(ctx);
+  const len = metro.countIn(0, 4, 60 / 90, 4);           // a bar at 90 bpm
+  close(len, 4 * (60 / 90), 'a bar at 90 is longer than a bar at 120');
+  const gaps = all.slice(1).map((r, i) => +(r.at - all[i]!.at).toFixed(4));
+  for (const g of gaps) close(g, 0.6667, `a 90 bpm beat, got ${g}`, 1e-3);
+});
+
+check('a stop during a count-in takes the rest of it out', () => {
+  const { ctx, all, setNow } = clickRig();
+  const metro = new Metronome();
+  metro.attach(ctx);
+  metro.countIn(0, 8, 0.5, 4);
+  setNow(1.2);
+  metro.reset();
+  const future = all.filter((r) => r.at > 1.2);
+  assert(future.length >= 4, `only ${future.length} clicks left to cancel`);
+  for (const r of future) {
+    assert(r.stopAt !== null && r.stopAt <= 1.2 + 1e-9,
+      `a count-in click at ${r.at} survived the stop (stop at ${String(r.stopAt)})`);
+  }
+  eq(metro.pendingClicks, 0, 'and nothing is left on the list');
+});
+
+check('a count-in is heard where the click is heard, not at the speakers', () => {
+  const room = { label: 'control room input' };
+  const { ctx, all } = clickRig();
+  const metro = new Metronome();
+  metro.attach(ctx, room as unknown as AudioNode);
+  metro.countIn(0, 4, 0.5, 4);
+  assert(all.length === 4, `${all.length} clicks`);
+  for (const r of all) {
+    eq(r.out, room, 'every count-in click goes to the monitor path');
+  }
 });
 
 check('the read-out names the bar, the meter and the state', () => {

@@ -270,47 +270,4 @@ export async function openCapture(
   }
 }
 
-// ── Count-in click ────────────────────────────────────────────────────────────
-
-export interface ClickOptions {
-  tempoBpm: number;
-  beatsPerBar: number;
-  bars: number;
-  /** Context time to start the first click. */
-  when: number;
-  accentHz?: number;
-  beatHz?: number;
-  gain?: number;
-}
-
-/**
- * Schedule count-in clicks with plain oscillators — no samples to load, and
- * sample-accurate because the whole pattern is scheduled up front.
- * Returns the total length in seconds.
- */
-export function scheduleCountIn(
-  ctx: BaseAudioContext, destination: AudioNode, options: ClickOptions,
-): number {
-  const { tempoBpm, beatsPerBar, bars, when } = options;
-  const accentHz = options.accentHz ?? 1600;
-  const beatHz = options.beatHz ?? 1000;
-  const level = options.gain ?? 0.25;
-  const beat = 60 / Math.max(1, tempoBpm);
-  const total = Math.max(0, bars) * Math.max(1, beatsPerBar);
-
-  for (let i = 0; i < total; i++) {
-    const at = when + i * beat;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.frequency.value = i % beatsPerBar === 0 ? accentHz : beatHz;
-    gain.gain.setValueAtTime(0, at);
-    gain.gain.linearRampToValueAtTime(level, at + 0.002);
-    gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.06);
-    osc.connect(gain).connect(destination);
-    osc.start(at);
-    osc.stop(at + 0.08);
-  }
-  return total * beat;
-}
-
 export { RecordBuffer };
