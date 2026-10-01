@@ -25,6 +25,7 @@ import { getCached, pinFiles, preloadAll } from './audio-cache.js';
 import { findInstrument } from './instruments.js';
 import { InputCapture, openCapture } from './recorder.js';
 import { Metronome } from './metronome.js';
+import { SlotPlayer, type SlotVoice } from './slot-player.js';
 import { tempoMapOf } from '../model/tempo-map.js';
 import { noteSpan, partClock } from '../model/note-time.js';
 import {
@@ -114,7 +115,14 @@ class DawRuntime {
    */
   private sessionOrigin: number | null = null;
   private sessionBarSec = 2;
-  private slotVoices = new Map<TrackId, Array<{ stop: (at: number) => void }>>();
+  /**
+   * Session View slots.  The repeat is the SlotPlayer's; the sounds are made
+   * here and handed to it — see `slot-player.ts` for why a slot cannot lean
+   * on the transport's tick.
+   */
+  private slotPlayer = new SlotPlayer(() => this.ctx?.currentTime ?? 0, LOOKAHEAD_SEC);
+  /** Runs only while a slot is live; the transport's own timer may be off. */
+  private slotTimer: ReturnType<typeof setInterval> | null = null;
 
   /** Position updates while the transport runs (seconds). */
   onPosition: ((sec: number) => void) | null = null;
@@ -1125,68 +1133,100 @@ class DawRuntime {
     if (!ctx || !channel) return;
 
     this.stopSlot(trackId);
-    const voices: Array<{ stop: (at: number) => void }> = [];
     const startAt = ctx.currentTime + 0.03;
 
     if (clip.kind === 'audio') {
       const cached = getCached(clip.fileId);
       if (!cached) return;
-      const source = ctx.createBufferSource();
-      source.buffer = cached.buffer;
-      source.loop = loop;
-      source.loopStart = clip.offsetSec;
-      source.loopEnd = clip.offsetSec + clip.durationSec;
-      const gain = ctx.createGain();
-      gain.gain.value = Math.pow(10, clip.gainDb / 20);
-      source.connect(gain).connect(channel.input);
-      source.start(startAt, clip.offsetSec, loop ? undefined : clip.durationSec);
-      voices.push({
-        stop: (at: number) => {
-          try { source.stop(at); } catch { /* already stopped */ }
-          try { source.disconnect(); gain.disconnect(); } catch { /* ignore */ }
+      // Audio repeats in the source node, so there is one pass however long
+      // the slot is held.
+      this.slotPlayer.start(trackId, {
+        lengthSec: clip.durationSec, loop: false, startAt,
+        schedule: (at): SlotVoice[] => {
+          const source = ctx.createBufferSource();
+          source.buffer = cached.buffer;
+          source.loop = loop;
+          source.loopStart = clip.offsetSec;
+          source.loopEnd = clip.offsetSec + clip.durationSec;
+          const gain = ctx.createGain();
+          gain.gain.value = Math.pow(10, clip.gainDb / 20);
+          source.connect(gain).connect(channel.input);
+          source.start(at, clip.offsetSec, loop ? undefined : clip.durationSec);
+          return [{
+            endsAt: loop ? Number.POSITIVE_INFINITY : at + clip.durationSec,
+            stop: (stopAt: number) => {
+              try { source.stop(stopAt); } catch { /* already stopped */ }
+              try { source.disconnect(); gain.disconnect(); } catch { /* ignore */ }
+            },
+          }];
         },
       });
-    } else {
-      const track = session.tracks.find((t) => t.id === trackId);
-      const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
-      if (!instrument) return;
-      const passes = loop ? 4 : 1;
-      // A Session slot is fired by hand, not placed on the timeline, so its
-      // notes are read against the tempo map from the clip's own start.
-      const clock = partClock(tempoMapOf(session), clip.startSec);
-      for (let pass = 0; pass < passes; pass++) {
+      this.startSlotTicking();
+      return;
+    }
+
+    const track = session.tracks.find((t) => t.id === trackId);
+    const instrument = findInstrument(track?.instrumentId ?? 'polysynth');
+    if (!instrument) return;
+    // A Session slot is fired by hand, not placed on the timeline, so its
+    // notes are read against the tempo map from the clip's own start.
+    const clock = partClock(tempoMapOf(session), clip.startSec);
+
+    this.slotPlayer.start(trackId, {
+      lengthSec: clip.durationSec, loop, startAt,
+      schedule: (at): SlotVoice[] => {
+        const made: SlotVoice[] = [];
         for (const note of clip.notes) {
           if (note.muted) continue;
           const span = noteSpan(clock, note);
+          const when = at + (span.startSec - clip.startSec);
           const voice = instrument.playNote({
             ctx,
             destination: channel.input,
             note,
             config: clip.midiConfig,
-            when: startAt + pass * clip.durationSec + (span.startSec - clip.startSec),
+            when,
             durationSec: span.durationSec,
             params: { ...(track?.instrumentParams ?? {}) },
           });
-          voices.push(voice);
+          made.push({ ...voice, endsAt: when + span.durationSec + 2 });
         }
-      }
-    }
+        return made;
+      },
+    });
+    this.startSlotTicking();
+  }
 
-    this.slotVoices.set(trackId, voices);
+  /**
+   * The slot timer: it exists because the transport's does not.
+   *
+   * A slot is played without the play head moving, so `startTicking` is not
+   * running — which is exactly how a looping part came to be scheduled four
+   * passes deep and then abandoned.  It stops itself as soon as the last slot
+   * is released, so an idle window has no timer.
+   */
+  private startSlotTicking(): void {
+    if (this.slotTimer !== null) return;
+    this.slotTimer = setInterval(() => {
+      if (this.slotPlayer.liveKeys.length === 0) { this.stopSlotTicking(); return; }
+      this.slotPlayer.tick();
+    }, TICK_MS);
+  }
+
+  private stopSlotTicking(): void {
+    if (this.slotTimer === null) return;
+    clearInterval(this.slotTimer);
+    this.slotTimer = null;
   }
 
   stopSlot(trackId: TrackId): void {
-    const voices = this.slotVoices.get(trackId);
-    if (!voices) return;
-    const at = this.ctx?.currentTime ?? 0;
-    for (const voice of voices) {
-      try { voice.stop(at); } catch { /* ignore */ }
-    }
-    this.slotVoices.delete(trackId);
+    this.slotPlayer.stop(trackId, this.ctx?.currentTime ?? 0);
+    if (this.slotPlayer.liveKeys.length === 0) this.stopSlotTicking();
   }
 
   stopAllSlots(): void {
-    for (const trackId of [...this.slotVoices.keys()]) this.stopSlot(trackId);
+    this.slotPlayer.stopAll(this.ctx?.currentTime ?? 0);
+    this.stopSlotTicking();
   }
 
   dispose(): void {
