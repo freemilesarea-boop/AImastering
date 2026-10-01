@@ -278,6 +278,148 @@ check('a disabled metronome makes no sound at all', () => {
   eq(metro.enabled, false, 'and it says so');
 });
 
+/**
+ * A stub context that remembers every click it was handed: when it starts,
+ * when it was told to stop, and whether its gain was ramped to zero.
+ *
+ * `stopAt` keeps the EARLIEST stop, because taking a click back out of the
+ * graph means stopping it before the moment it was first given.  A click with
+ * `stopAt <= at` is never heard at all.
+ */
+interface ClickRec { at: number; hz: number; stopAt: number | null; zeroRampAt: number | null }
+function clickRig(): {
+  ctx: Parameters<Metronome['attach']>[0]; all: ClickRec[]; setNow: (t: number) => void;
+} {
+  let now = 0;
+  const all: ClickRec[] = [];
+  let current: ClickRec | null = null;
+  const ctx = {
+    get currentTime() { return now; },
+    destination: {} as AudioNode,
+    createOscillator: () => {
+      const rec: ClickRec = { at: NaN, hz: 0, stopAt: null, zeroRampAt: null };
+      current = rec;
+      all.push(rec);
+      return {
+        frequency: { set value(hz: number) { rec.hz = hz; }, get value() { return rec.hz; } },
+        connect: (n: unknown) => n,
+        start: (at: number) => { rec.at = at; },
+        stop: (at: number) => { rec.stopAt = rec.stopAt === null ? at : Math.min(rec.stopAt, at); },
+      } as unknown as OscillatorNode;
+    },
+    createGain: () => {
+      const rec = current;
+      return {
+        gain: {
+          value: 0.25,
+          setValueAtTime: () => undefined,
+          linearRampToValueAtTime: (v: number, at: number) => {
+            if (v === 0 && rec) rec.zeroRampAt = at;
+          },
+          exponentialRampToValueAtTime: () => undefined,
+          cancelScheduledValues: () => undefined,
+        },
+        connect: (n: unknown) => n,
+      } as unknown as GainNode;
+    },
+  };
+  return { ctx, all, setNow: (t: number) => { now = t; } };
+}
+
+// ── The clicks already in the graph ───────────────────────────────────────────
+//
+// Scheduling ahead means the audio thread is holding up to a look-ahead of
+// clicks that have not sounded yet.  Measured in the running app: pressing
+// STOP at context time 3.04 left two of them, the last ending at 3.64 — the
+// click went on for 600 ms after the transport had stopped.  And switching the
+// click off and straight back on put twelve oscillators on ten moments: two
+// beats clicked twice, about 6 dB louder than the rest.  Both because nothing
+// held a reference to a click once it was handed over.
+
+check('a stop takes the clicks already in the graph back out', () => {
+  const { ctx, all, setNow } = clickRig();
+  const metro = new Metronome();
+  metro.attach(ctx);
+  metro.setEnabled(true);
+  metro.tick(defaultTempoMap(120, [4, 4]), 0, 1, 0);      // beats at 0 and 0.5
+  assert(all.length >= 2, `only ${all.length} clicks scheduled to take back`);
+
+  setNow(0.3);
+  metro.reset();
+  const future = all.filter((r) => r.at > 0.3);
+  assert(future.length > 0, 'nothing was scheduled past the stop');
+  for (const r of future) {
+    assert(r.stopAt !== null && r.stopAt <= 0.3 + 1e-9,
+      `a click at ${r.at} still sounds after the stop (stop at ${String(r.stopAt)})`);
+  }
+  eq(metro.pendingClicks, 0, 'and nothing is left on the list');
+});
+
+check('a click that is already sounding is faded, not cut', () => {
+  // Ending a tone on a step is a click of its own; silencing the metronome
+  // with a pop would be a poor trade.
+  const { ctx, all, setNow } = clickRig();
+  const metro = new Metronome();
+  metro.attach(ctx);
+  metro.setEnabled(true);
+  metro.tick(defaultTempoMap(120, [4, 4]), 0, 1, 0);
+  const first = all.find((r) => Math.abs(r.at) < 1e-9);
+  assert(first !== undefined, 'no click on the first beat');
+
+  setNow(0.03);                                            // 30 ms into an 80 ms click
+  metro.reset();
+  close(first!.zeroRampAt ?? -1, 0.035, 'the ramp to silence lands 5 ms out');
+  close(first!.stopAt ?? -1, 0.04, 'and the oscillator stops after the ramp');
+});
+
+check('switching the click off stops it now, not at the end of the look-ahead', () => {
+  const { ctx, all, setNow } = clickRig();
+  const metro = new Metronome();
+  metro.attach(ctx);
+  metro.setEnabled(true);
+  metro.tick(defaultTempoMap(120, [4, 4]), 0, 1, 0);
+  setNow(0.1);
+  metro.setEnabled(false);
+  for (const r of all.filter((x) => x.at > 0.1)) {
+    assert(r.stopAt !== null && r.stopAt <= 0.1 + 1e-9,
+      `OFF left a click at ${r.at} in the graph (stop at ${String(r.stopAt)})`);
+  }
+});
+
+check('off and on again does not stack two clicks on one beat', () => {
+  const { ctx, all, setNow } = clickRig();
+  const metro = new Metronome();
+  const map = defaultTempoMap(120, [4, 4]);
+  metro.attach(ctx);
+  metro.setEnabled(true);
+  metro.tick(map, 0, 1, 0);
+  setNow(0.02);
+  metro.setEnabled(false);
+  metro.setEnabled(true);
+  metro.tick(map, 0, 1, 0);
+  // The beat at 0.5 was scheduled twice; only one of the two may still be
+  // able to sound, because the first was taken out before its moment.
+  const sounding = all.filter((r) => Math.abs(r.at - 0.5) < 1e-9
+    && (r.stopAt === null || r.stopAt > r.at + 1e-9));
+  eq(sounding.length, 1, `${sounding.length} oscillators will sound the beat at 0.5`);
+});
+
+check('the clicks in the graph do not pile up all session', () => {
+  const { ctx, setNow } = clickRig();
+  const metro = new Metronome();
+  const map = defaultTempoMap(120, [4, 4]);
+  metro.attach(ctx);
+  metro.setEnabled(true);
+  for (let t = 0; t < 20; t += 0.05) {
+    setNow(+t.toFixed(4));
+    metro.tick(map, t, t + 1, 0);
+  }
+  // Twenty seconds at 120 bpm is forty clicks; what may be held is the
+  // look-ahead's worth, not the session's.
+  assert(metro.pendingClicks <= 4,
+    `${metro.pendingClicks} clicks still on the list after 20 s of ticks`);
+});
+
 check('the read-out names the bar, the meter and the state', () => {
   const map = defaultTempoMap(120, [4, 4]);
   const text = describeMetronome(map, 0, true);

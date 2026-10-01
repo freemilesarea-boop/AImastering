@@ -122,6 +122,16 @@ function isDownbeat(map: TempoMap, beat: number): boolean {
 
 // ── Sounding it ───────────────────────────────────────────────────────────────
 
+/** A click in the graph: the nodes, and the moment it is over. */
+interface ClickVoice {
+  osc: OscillatorNode;
+  gain: GainNode;
+  /** Context time it starts at. */
+  at: number;
+  /** Context time its own `stop` was set to. */
+  endsAt: number;
+}
+
 interface AudioContextLike {
   currentTime: number;
   destination: AudioNode;
@@ -155,9 +165,22 @@ export class Metronome {
    * cannot click one beat twice.
    */
   private scheduledCtxTo = -1;
+  /**
+   * The clicks already handed to the graph, and when each one is over.
+   *
+   * Nothing used to hold them, and the consequence was two measured bugs:
+   * pressing STOP left up to a look-ahead of clicks committed to the audio
+   * thread — 600 ms of clicking after the transport had stopped, measured in
+   * the app — and switching the click off and straight back on re-scheduled
+   * beats that were already in the graph, stacking two oscillators on one
+   * beat (two moments out of ten, measured).  A click cannot be unscheduled
+   * without a reference to it.
+   */
+  private voices: ClickVoice[] = [];
   private on = false;
 
   attach(ctx: AudioContextLike | null, output: AudioNode | null = null): void {
+    this.silence();
     this.ctx = ctx;
     this.output = output;
     this.scheduledCtxTo = -1;
@@ -170,8 +193,14 @@ export class Metronome {
 
   setEnabled(on: boolean): void {
     this.on = on;
+    // OFF means off NOW, not at the end of the look-ahead: the clicks already
+    // in the graph are taken back out, or the button is a request rather than
+    // a switch.
+    this.silence();
     // Forget the horizon so re-enabling mid-song starts from where the
     // playhead actually is, not from where it was when it was switched off.
+    // Safe because `silence` took the committed clicks with it — resetting the
+    // horizon while they were still in the graph is what doubled them.
     this.scheduledCtxTo = -1;
   }
 
@@ -181,8 +210,52 @@ export class Metronome {
     this.options = { ...this.options, ...patch };
   }
 
-  /** A locate happened; whatever was scheduled ahead is no longer true. */
-  reset(): void { this.scheduledCtxTo = -1; }
+  /**
+   * A locate or a stop happened; whatever was scheduled ahead is no longer
+   * true — including the part of it the audio thread already has.
+   */
+  reset(): void {
+    this.silence();
+    this.scheduledCtxTo = -1;
+  }
+
+  /**
+   * Take every click back out of the graph.
+   *
+   * A click that has not started yet is simply stopped before its moment and
+   * is never heard.  One that is SOUNDING is faded over 5 ms instead of being
+   * cut: the envelope is mid-ramp at a non-zero level, and ending a tone on a
+   * step is a click of its own — silencing the metronome with a pop would be
+   * a poor trade.
+   */
+  private silence(): void {
+    const ctx = this.ctx;
+    const now = ctx ? ctx.currentTime : 0;
+    for (const v of this.voices) {
+      try {
+        if (v.at > now) {
+          v.osc.stop(now);
+        } else if (v.endsAt > now) {
+          v.gain.gain.cancelScheduledValues(now);
+          v.gain.gain.setValueAtTime(v.gain.gain.value, now);
+          v.gain.gain.linearRampToValueAtTime(0, now + 0.005);
+          v.osc.stop(now + 0.01);
+        }
+      } catch { /* already stopped, or a stub context in a test */ }
+    }
+    this.voices = [];
+  }
+
+  /** Forget the clicks that are over, so the list cannot grow all session. */
+  private reapVoices(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.voices = this.voices.filter((v) => v.endsAt >= now);
+  }
+
+  /** How many clicks are in the graph right now — for the self-tests. */
+  get pendingClicks(): number { return this.voices.length; }
 
   /**
    * Schedule the clicks of one look-ahead window.
@@ -200,6 +273,7 @@ export class Metronome {
   tick(map: TempoMap, fromSec: number, toSec: number, originSec: number): void {
     const ctx = this.ctx;
     if (!ctx || !this.on) return;
+    this.reapVoices();
     if (!(toSec > fromSec)) return;
 
     for (const click of clicksBetween(map, fromSec, toSec, this.options)) {
@@ -237,6 +311,7 @@ export class Metronome {
     osc.connect(gain).connect(this.output ?? ctx.destination);
     osc.start(at);
     osc.stop(at + 0.08);
+    this.voices.push({ osc, gain, at, endsAt: at + 0.08 });
   }
 }
 
