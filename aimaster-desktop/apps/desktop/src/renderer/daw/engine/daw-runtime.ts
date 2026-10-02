@@ -1239,7 +1239,10 @@ class DawRuntime {
             durationSec: span.durationSec,
             params: { ...(track?.instrumentParams ?? {}) },
           });
-          made.push({ ...voice, endsAt: when + span.durationSec + 2 });
+          // The voice's own end, not the note's plus a margin: a sampler
+          // zone's release comes out of its library and can outlast any
+          // margin, and a drum has finished long before one.
+          made.push(voice);
         }
         return made;
       },

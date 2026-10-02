@@ -155,6 +155,29 @@ interface NoteVoice {
   endsAtCtxTime: number;
 }
 
+/**
+ * Drop the voices that are done, AND tell each of them to stop on the way out.
+ *
+ * A voice whose `stop` is never called is still connected, and a connected
+ * voice is still processed — so forgetting one costs the rest of the render.
+ * Pulled out of the player because that is the whole of the decision, and
+ * because the player's own list is private: here it can be handed two voices
+ * and asked which one was stopped.
+ */
+export function reapFinished<V extends NoteVoice>(
+  voices: readonly V[], now: number,
+): V[] {
+  const alive: V[] = [];
+  for (const v of voices) {
+    if (v.endsAtCtxTime < now) {
+      try { v.stop(now); } catch { /* already stopped */ }
+      continue;
+    }
+    alive.push(v);
+  }
+  return alive;
+}
+
 export interface PlayerState {
   playing: boolean;
   /** Timeline position in seconds. */
@@ -520,7 +543,7 @@ export class ClipPlayer {
         params,
       });
       this.scheduled.add(key);
-      this.noteVoices.push({ stop: voice.stop, endsAtCtxTime: this.placeOrigin + absoluteEnd + 4 });
+      this.noteVoices.push({ stop: voice.stop, endsAtCtxTime: voice.endsAt });
     }
   }
 
@@ -741,8 +764,18 @@ export class ClipPlayer {
 
         if (lane.target.kind === 'volume') {
           this.engine.markAutomated(track.id, 'volume');
+          // Subdivided, because the lane is drawn in DECIBELS and a plain
+          // `linearRamp` is linear in the AudioParam's units — gain.  A line
+          // drawn from −24 dB to 0 dB is a constant number of dB per second
+          // to whoever drew it, and a single gain ramp is not that curve: it
+          // hugs the quiet end and then rushes.  The two interpretations
+          // agree only at the breakpoints, which is why a whole-session
+          // render and the live preview of the same fade did not match —
+          // measured, a worst sample difference of 0.031 against an RMS of
+          // 0.028.  Sampling the lane makes both follow the drawing.
           this.rampParam(channel.fader.gain, lane.points, fromSec, toSec, (db) =>
-            (audible ? dbToGain(db + effectiveFaderDb(session, track) - track.volumeDb) : 0));
+            (audible ? dbToGain(db + effectiveFaderDb(session, track) - track.volumeDb) : 0),
+          AUTOMATION_BLOCK_SEC);
         } else if (lane.target.kind === 'pan') {
           this.engine.markAutomated(track.id, 'pan');
           this.rampParam(channel.panner.pan, lane.points, fromSec, toSec,
@@ -751,7 +784,9 @@ export class ClipPlayer {
           const node = channel.sends.get(lane.target.sendId);
           if (!node) continue;
           this.engine.markAutomated(track.id, `send:${lane.target.sendId}`);
-          this.rampParam(node.gain.gain, lane.points, fromSec, toSec, (db) => dbToGain(db));
+          // Decibels again — same reason as the fader above.
+          this.rampParam(node.gain.gain, lane.points, fromSec, toSec,
+            (db) => dbToGain(db), AUTOMATION_BLOCK_SEC);
         } else if (lane.target.kind === 'sendPan') {
           // New here only because the send had nowhere to put a pan until it
           // grew a panner.  Same ramp, same clock, same code as the channel
@@ -848,9 +883,29 @@ export class ClipPlayer {
       return;
     }
 
+    // Every breakpoint inside the window, and then the FIRST ONE PAST IT.
+    //
+    // That last ramp is what makes the result independent of how big the
+    // window is.  Without it the value holds at the window's start value
+    // until some later window happens to contain the next breakpoint, so a
+    // lane that rises over six seconds came out as a staircase whose tread
+    // was the window size — 50 ms live, and one whole chunk in a render.
+    // Measured between a chunked render and a whole-session one of the same
+    // six-second sweep: a worst sample difference of 0.033 against an RMS of
+    // 0.028, which is the shape of the automation, not noise.
+    //
+    // Scheduling past the window is safe because the next window begins with
+    // `cancelScheduledValues` at its own start and re-issues from there: the
+    // ramp is always replaced before its far end is reached, and what is
+    // heard is the straight line between the two breakpoints either way.
+    let next: { timeSec: number; value: number } | null = null;
     for (const p of points) {
-      if (p.timeSec <= fromSec || p.timeSec > toSec) continue;
+      if (p.timeSec <= fromSec) continue;
+      if (p.timeSec > toSec) { next = next ?? p; continue; }
       param.linearRampToValueAtTime(map(p.value), Math.max(0, this.placeOrigin + p.timeSec));
+    }
+    if (next) {
+      param.linearRampToValueAtTime(map(next.value), Math.max(0, this.placeOrigin + next.timeSec));
     }
   }
 
@@ -868,11 +923,28 @@ export class ClipPlayer {
     }
     this.voices = alive;
 
-    const aliveNotes: NoteVoice[] = [];
-    for (const v of this.noteVoices) {
-      if (v.endsAtCtxTime < now) continue;                 // its nodes already stopped
-      aliveNotes.push(v);
-    }
-    this.noteVoices = aliveNotes;
+    // A finished note is told to stop, not merely forgotten.
+    //
+    // This used to drop the voice from the list with the comment "its nodes
+    // already stopped", and the sources had — each one was given its own
+    // `stop(end)`.  What had NOT happened is the disconnection: an
+    // instrument's voice is a source into a filter into a gain, and a
+    // connected filter has a tail, so the graph goes on processing it for
+    // every block of the rest of the session.  The instruments do the
+    // disconnecting in their own `stop`, and nothing was calling it.
+    //
+    // Measured on an offline render, which is the same graph with the clock
+    // off the leash: 256 notes inside the first eight seconds cost 2459 ms to
+    // render over eight seconds and 4654 ms over twenty-four — 137 ms of work
+    // per second of SILENCE, because two hundred and fifty-six dead voices
+    // were still being processed.  Reaped, the same three renders cost
+    // 1353 / 1219 / 1279 ms: the silence is free.
+    //
+    // The mark is the voice's OWN end, which it declares, not a margin past
+    // the written end of the note: measured across the nineteen instruments
+    // with every tail knob at its maximum, the longest ran 4.02 s past the
+    // note and the shortest 0.03 s, and a sampler zone states its release in
+    // its own file and can outlast both.
+    this.noteVoices = reapFinished(this.noteVoices, now);
   }
 }

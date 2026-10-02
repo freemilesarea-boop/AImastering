@@ -87,12 +87,28 @@ export interface VoiceContext {
   params: Record<string, number>;
 }
 
+/**
+ * One sounding voice: how to cut it short, and when it ends on its own.
+ *
+ * The end time is the voice's OWN, in context seconds, because only the voice
+ * knows it.  The player used to guess — four seconds past the written end of
+ * the note — and a guess is wrong in both directions: a sampler zone with an
+ * eight-second release got cut off halfway down its own fade, while a drum
+ * that had finished in a fifth of a second stayed connected, and a connected
+ * voice is a processed voice for the rest of the render.
+ */
+export interface InstrumentVoice {
+  stop: (at: number) => void;
+  /** Context time after which this voice makes no sound. */
+  endsAt: number;
+}
+
 export interface InstrumentDescriptor {
   id: string;
   name: string;
   params: InstrumentParamDef[];
   /** Build and schedule one voice.  Returns its nodes for cleanup. */
-  playNote: (voice: VoiceContext) => { stop: (at: number) => void };
+  playNote: (voice: VoiceContext) => InstrumentVoice;
 }
 
 /**
@@ -351,7 +367,7 @@ function drumNoise(
  * The families differ in WHICH of the two generators above they use and how
  * many, not in kind — which is why a kit this small can cover a GM map.
  */
-function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
+function drumVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, when, params } = v;
   // Which KIT, then which piece.  The kit is a number in `instrumentParams`
   // so it survives save, undo, freeze and the offline bounce without any of
@@ -515,6 +531,7 @@ function drumVoice(v: VoiceContext): { stop: (at: number) => void } {
   }
 
   return {
+    endsAt: end,
     stop: (at: number) => {
       // A drum has already decided how long it rings — a stop can only cut it
       // short, and it has to do that with a ramp.  Every source here already
@@ -642,7 +659,7 @@ function pluckVoice(
     /** This guitar's output trim — the two share a voice, not a level. */
     trim: number;
   },
-): { stop: (at: number) => void } {
+): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const freq = pitchToFrequency(soundingPitch(note));
   const level = (params['level'] ?? CALIBRATED_LEVEL) * tuning.trim * (0.25 + 0.75 * note.velocity);
@@ -778,6 +795,7 @@ function pluckVoice(
   src.stop(releaseEnd + 0.02);
   if (twin) { twin.start(start); twin.stop(releaseEnd + 0.02); }
   return {
+    endsAt: releaseEnd + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       if (twin) { try { twin.stop(at); } catch { /* already stopped */ } }
@@ -888,7 +906,7 @@ function pianoBuffer(
  */
 function pianoVoice(
   v: VoiceContext, tuning: PianoTuning,
-): { stop: (at: number) => void } {
+): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
   const freq = pitchToFrequency(pitch);
@@ -978,6 +996,7 @@ function pianoVoice(
   src.start(start);
   src.stop(stopAt + 0.02);
   return {
+    endsAt: stopAt + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       try {
@@ -1025,7 +1044,7 @@ const BAR_CACHE_MAX = 240;
  * and the motor in the resonator, which are the two things a bar on its own
  * does not have.
  */
-function malletVoice(v: VoiceContext): { stop: (at: number) => void } {
+function malletVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
   const freq = pitchToFrequency(pitch);
@@ -1125,6 +1144,7 @@ function malletVoice(v: VoiceContext): { stop: (at: number) => void } {
   src.start(start);
   src.stop(stopAt + 0.02);
   return {
+    endsAt: stopAt + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       try { lfo?.stop(at); } catch { /* already stopped */ }
@@ -1268,7 +1288,7 @@ const DRAWBAR_REFERENCE_PEAK = (() => {
  * only thing a player's speed changes on a tonewheel organ is how fast the
  * contacts close.
  */
-function organVoice(v: VoiceContext): { stop: (at: number) => void } {
+function organVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
   const freq = pitchToFrequency(pitch);
@@ -1327,6 +1347,8 @@ function organVoice(v: VoiceContext): { stop: (at: number) => void } {
   const percLevel = Math.max(0, Math.min(1, params['perc'] ?? 0));
   let perc: OscillatorNode | null = null;
   let percGain: GainNode | null = null;
+  // The percussion can be set to ring on after the key is lifted.
+  let percEnd = 0;
   if (percLevel > 0.01) {
     perc = ctx.createOscillator();
     perc.type = 'sine';
@@ -1339,6 +1361,7 @@ function organVoice(v: VoiceContext): { stop: (at: number) => void } {
     perc.connect(percGain).connect(destination);
     perc.start(start);
     perc.stop(start + decay + 0.02);
+    percEnd = start + decay + 0.02;
   }
 
   const noteEnd = start + Math.max(0.02, durationSec);
@@ -1355,6 +1378,7 @@ function organVoice(v: VoiceContext): { stop: (at: number) => void } {
   osc.start(start);
   osc.stop(noteEnd + edge + 0.02);
   return {
+    endsAt: Math.max(noteEnd + edge + 0.02, percEnd),
     stop: (at: number) => {
       try { osc.stop(at); } catch { /* already stopped */ }
       try { perc?.stop(at); } catch { /* already stopped */ }
@@ -1499,7 +1523,7 @@ function synthKey(
   return `${h1.toString(36)}.${h2.toString(36)}`;
 }
 
-function waveSynthVoice(v: VoiceContext): { stop: (at: number) => void } {
+function waveSynthVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
   const freq = pitchToFrequency(pitch);
@@ -1559,6 +1583,7 @@ function waveSynthVoice(v: VoiceContext): { stop: (at: number) => void } {
   src.start(start);
   src.stop(start + seconds + 0.02);
   return {
+    endsAt: start + seconds + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
@@ -1796,7 +1821,7 @@ const DRUM_MACHINE_PARAM_IDS: readonly string[] = DRUM_MACHINE_PARAMS.map((d) =>
 const DRUM_MACHINE_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
 const DRUM_MACHINE_CACHE_MAX = 160;
 
-function drumMachineVoice(v: VoiceContext): { stop: (at: number) => void } {
+function drumMachineVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, when, params } = v;
   const pitch = soundingPitch(note);
   const voice = drumVoiceFor(pitch);
@@ -1844,6 +1869,7 @@ function drumMachineVoice(v: VoiceContext): { stop: (at: number) => void } {
   src.start(start);
   src.stop(start + seconds + 0.02);
   return {
+    endsAt: start + seconds + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
@@ -1857,7 +1883,7 @@ const FM_PARAM_IDS: readonly string[] = FM_PARAMS.map((d) => d.id);
 const FM_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
 const FM_CACHE_MAX = 96;
 
-function fmVoice(v: VoiceContext): { stop: (at: number) => void } {
+function fmVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
   const freq = pitchToFrequency(pitch);
@@ -1922,6 +1948,7 @@ function fmVoice(v: VoiceContext): { stop: (at: number) => void } {
   src.start(start);
   src.stop(start + seconds + 0.02);
   return {
+    endsAt: start + seconds + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
@@ -1941,7 +1968,7 @@ const BOWED_CACHE_MAX = 64;
  * on every input, because a held string section is the same note again and
  * again and solving it twice is wasted.
  */
-function bowedVoice(v: VoiceContext): { stop: (at: number) => void } {
+function bowedVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
   const freq = pitchToFrequency(pitch);
@@ -1990,6 +2017,7 @@ function bowedVoice(v: VoiceContext): { stop: (at: number) => void } {
   src.start(start);
   src.stop(start + seconds + 0.02);
   return {
+    endsAt: start + seconds + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
@@ -2007,7 +2035,7 @@ const REED_CACHE_MAX = 96;
 const CLAV_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
 const CLAV_CACHE_MAX = 96;
 
-function clavVoice(v: VoiceContext): { stop: (at: number) => void } {
+function clavVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
   const freq = pitchToFrequency(pitch);
@@ -2059,6 +2087,7 @@ function clavVoice(v: VoiceContext): { stop: (at: number) => void } {
   src.start(start);
   src.stop(start + seconds + 0.02);
   return {
+    endsAt: start + seconds + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
@@ -2066,7 +2095,7 @@ function clavVoice(v: VoiceContext): { stop: (at: number) => void } {
   };
 }
 
-function reedVoice(v: VoiceContext): { stop: (at: number) => void } {
+function reedVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
   const freq = pitchToFrequency(pitch);
@@ -2115,6 +2144,7 @@ function reedVoice(v: VoiceContext): { stop: (at: number) => void } {
   src.start(start);
   src.stop(start + seconds + 0.02);
   return {
+    endsAt: start + seconds + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
@@ -2128,7 +2158,7 @@ const ANALOG_PARAM_IDS: readonly string[] = ANALOG_PARAMS.map((d) => d.id);
 const ANALOG_CACHE = new Map<string, { left: Float32Array; right: Float32Array }>();
 const ANALOG_CACHE_MAX = 96;
 
-function analogVoice(v: VoiceContext): { stop: (at: number) => void } {
+function analogVoice(v: VoiceContext): InstrumentVoice {
   const { ctx, destination, note, config, when, durationSec, params } = v;
   const pitch = soundingPitch(note);
   const freq = pitchToFrequency(pitch);
@@ -2184,6 +2214,7 @@ function analogVoice(v: VoiceContext): { stop: (at: number) => void } {
   src.start(start);
   src.stop(start + seconds + 0.02);
   return {
+    endsAt: start + seconds + 0.02,
     stop: (at: number) => {
       try { src.stop(at); } catch { /* already stopped */ }
       try { src.disconnect(); amp.disconnect(); } catch { /* ignore */ }
@@ -2631,6 +2662,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       if (lfo) { lfo.start(start); lfo.stop(stopAt); }
 
       return {
+        endsAt: stopAt,
         stop: (at: number) => {
           for (const o of [...oscs, subOsc, lfo]) {
             if (o) { try { o.stop(at); } catch { /* already stopped */ } }
@@ -2828,6 +2860,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       if (lfo) lfo.stop(releaseEnd + 0.02);
 
       return {
+        endsAt: releaseEnd + 0.02,
         stop: (at: number) => {
           try {
             carrier.stop(at); modulator.stop(at);
@@ -3253,7 +3286,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       // robin exists to prevent.
       const zone = pickZone(candidates, (params['rrOff'] ?? 0) >= 0.5 ? 0 : nextRoundRobin());
       const buffer = zone ? bufferFor(zone.resolvedPath) : undefined;
-      if (!zone || !buffer) return { stop: () => { /* nothing sounding */ } };
+      if (!zone || !buffer) return { stop: () => { /* nothing sounding */ }, endsAt: when };
 
       const src = ctx.createBufferSource();
       src.buffer = buffer;
@@ -3331,6 +3364,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       src.start(start);
       src.stop(releaseEnd + 0.02);
       return {
+        endsAt: releaseEnd + 0.02,
         stop: (at: number) => {
           try { src.stop(at); } catch { /* already stopped */ }
           try {

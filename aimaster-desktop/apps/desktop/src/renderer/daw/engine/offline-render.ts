@@ -102,6 +102,169 @@ function neededFiles(session: DawSession): Array<{ id: string; path: string }> {
 }
 
 /**
+ * Seconds of material scheduled between pauses in an offline render.
+ *
+ * Small enough that the voices of one chunk are reaped before the next is
+ * placed, large enough that the pause bookkeeping is noise.
+ */
+const RENDER_CHUNK_SEC = 2;
+
+/** What a pausable renderer has to offer, and all this needs of it. */
+export interface RenderPausing {
+  suspend: (atSec: number) => Promise<void>;
+  resume: () => void;
+}
+
+/**
+ * Walk a render in chunks, running `onPause` at every boundary.
+ *
+ * Separated out because the ORDER is the part that can be wrong and the part
+ * no audio host is needed to check: the next pause has to be registered while
+ * the clock is still stopped, or it can be run past before it exists, and
+ * `onPause` has to happen between the two.  A host that cannot do this at all
+ * is a different question — see `canPauseRenders`.
+ */
+export async function pauseEveryChunk(
+  pausing: RenderPausing, lengthSec: number, chunkSec: number,
+  onPause: () => void,
+): Promise<void> {
+  const step = Math.max(0.01, chunkSec);
+  let next = step;
+  let paused = next < lengthSec ? pausing.suspend(next) : null;
+  while (paused) {
+    await paused;
+    onPause();
+    next += step;
+    // Registered BEFORE the resume, on purpose.
+    paused = next < lengthSec ? pausing.suspend(next) : null;
+    pausing.resume();
+  }
+}
+
+/**
+ * Can this renderer be paused mid-render, more than once, and carry on
+ * correctly?
+ *
+ * Asked by doing exactly what the chunked render does — pause, register the
+ * NEXT pause while stopped, resume, schedule into the last chunk, read the
+ * output back — once per process, because asking less is not enough.  Two
+ * weaker versions of this check both said yes and shipped a broken render:
+ * one only waited for a pause to arrive, and the next did a single pause.
+ * `node-web-audio-api` passes both and then panics on the SECOND pause,
+ * which is what turned three stem-export checks red.  A host that cannot do
+ * the whole dance gets the whole-session schedule instead.
+ */
+let suspendable: boolean | null = null;
+async function canPauseRenders(sampleRate: number): Promise<boolean> {
+  if (suspendable !== null) return suspendable;
+  suspendable = false;
+  try {
+    const ctx = makeOfflineContext(1, Math.ceil(sampleRate * 0.3), sampleRate);
+    const pausing = ctx as unknown as {
+      suspend?: (t: number) => Promise<void>;
+      resume?: () => Promise<void>;
+    };
+    if (typeof pausing.suspend !== 'function' || typeof pausing.resume !== 'function') {
+      return false;
+    }
+    const ones = ctx.createBuffer(1, Math.ceil(sampleRate * 0.03), sampleRate);
+    ones.getChannelData(0).fill(1);
+    const tone = (at: number): void => {
+      const src = ctx.createBufferSource();
+      src.buffer = ones;
+      src.connect(ctx.destination);
+      src.start(at);
+    };
+    tone(0);
+
+    const waitFor = async (paused: Promise<void>): Promise<boolean> => Promise.race([
+      paused.then(() => true, () => false),
+      new Promise<boolean>((done) => { globalThis.setTimeout(() => done(false), 1000); }),
+    ]);
+
+    let paused = pausing.suspend(0.1);
+    const rendering = ctx.startRendering();
+    if (!await waitFor(paused)) {
+      await rendering.catch(() => undefined);
+      return false;
+    }
+    // Register the second pause while stopped, exactly as the render does.
+    paused = pausing.suspend(0.2);
+    void pausing.resume();
+    if (!await waitFor(paused)) {
+      await rendering.catch(() => undefined);
+      return false;
+    }
+    // Something scheduled in the LAST chunk has to be heard.
+    tone(0.22);
+    void pausing.resume();
+    const out = await rendering;
+    const ch = out.getChannelData(0);
+    const energy = (fromSec: number, toSec: number): number => {
+      let sum = 0;
+      const a = Math.round(fromSec * sampleRate);
+      const b = Math.min(ch.length, Math.round(toSec * sampleRate));
+      for (let i = a; i < b; i += 1) sum += ch[i]! * ch[i]!;
+      return sum;
+    };
+    suspendable = energy(0, 0.02) > 0 && energy(0.23, 0.25) > 0;
+  } catch {
+    suspendable = false;
+  }
+  return suspendable;
+}
+
+/**
+ * Render a prepared graph, scheduling as it goes.
+ *
+ * Offline used to schedule EVERYTHING up front and render in one go, and that
+ * left no moment for the player to reap a finished voice — so every note's
+ * nodes stayed connected and were processed for the rest of the render.
+ * Measured: 256 notes inside the first eight seconds cost 2459 ms to render
+ * over eight seconds, 3269 over sixteen and 4654 over twenty-four, which is
+ * 137 ms of work per second of silence.  A 24-track, 30-second bounce took
+ * four and a quarter minutes — a tenth of real time.
+ *
+ * Pausing the render on a chunk boundary and ticking the player is the same
+ * look-ahead the live transport walks, which is also why it reaps: the cost
+ * stops growing with the length of the piece.  The same three renders then
+ * cost 1353 / 1219 / 1279 ms and the bounce 18.8 s — 1.6x real time, with
+ * the rendered peak unchanged.  Where a renderer cannot be paused, the old
+ * whole-session schedule still runs.
+ */
+async function renderChunked(
+  ctx: OfflineAudioContext, session: DawSession, player: ClipPlayer,
+  fromSec: number, toSec: number, lengthSec: number, sampleRate: number,
+): Promise<AudioBuffer> {
+  player.useResidentBuffers();
+  if (!await canPauseRenders(sampleRate)) {
+    player.scheduleAll(session, fromSec, toSec);
+    return ctx.startRendering();
+  }
+
+  const native = ctx as unknown as {
+    suspend: (t: number) => Promise<void>; resume: () => Promise<void>;
+  };
+  const pausing: RenderPausing = {
+    suspend: (at) => native.suspend(at),
+    resume: () => { void native.resume(); },
+  };
+  // Lead zero: an offline render starts at its first sample, not 60 ms later.
+  player.start(session, fromSec, 0);
+  player.tick(session, RENDER_CHUNK_SEC * 2);
+
+  const rendering = ctx.startRendering();
+  await pauseEveryChunk(pausing, lengthSec, RENDER_CHUNK_SEC, () => {
+    player.tick(session, RENDER_CHUNK_SEC * 2);
+  });
+  // No `player.stop()` here.  The render is over, its nodes are finished, and
+  // stopping a source on a context that has completed panicked
+  // `node-web-audio-api` — two stem-export checks went red before this line
+  // came out.  The player is discarded with the context.
+  return rendering;
+}
+
+/**
  * Render a session (or a slice of it) offline.  The graph, the automation and
  * the clip gain are exactly what the live engine builds.
  */
@@ -125,9 +288,8 @@ export async function renderSession(
   const engine = new MixerEngine(ctx, ctx.destination, { meters: false });
   engine.sync(session);
   const player = new ClipPlayer(engine);
-  player.scheduleAll(session, range.startSec, range.endSec + tail);
-
-  const rendered = await ctx.startRendering();
+  const rendered = await renderChunked(
+    ctx, session, player, range.startSec, range.endSec + tail, lengthSec, sampleRate);
   engine.dispose();
   return rendered;
 }

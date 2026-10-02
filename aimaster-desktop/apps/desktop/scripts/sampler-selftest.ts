@@ -64,6 +64,10 @@ writeProbeSample('soft.wav', 0.25);
 writeProbeSample('hard.wav', 2.2);
 
 const ONE_LAYER_SFZ = '<region> sample=soft.wav lokey=48 hikey=72 pitch_keycenter=57';
+// A library that asks for a release longer than any margin the engine could
+// have picked for it.  Eight seconds is not unusual for a hall-recorded tail.
+const LONG_RELEASE_SFZ =
+  '<region> sample=soft.wav lokey=48 hikey=72 pitch_keycenter=57 ampeg_release=8';
 const TWO_LAYER_SFZ = [
   '<region> sample=soft.wav lokey=48 hikey=72 pitch_keycenter=57 lovel=0 hivel=63',
   '<region> sample=hard.wav lokey=48 hikey=72 pitch_keycenter=57 lovel=64 hivel=127',
@@ -417,6 +421,43 @@ function shapeOf(ch: Float32Array[]): number[] {
 function apart(a: number[], b: number[]): number {
   return a.reduce((s, v, i) => s + Math.abs(v - b[i]!), 0);
 }
+
+checkAsync('a voice declares the end its own library asked for', async () => {
+  // The player reaps a voice at the end the voice DECLARES, and disconnects
+  // it there — so a declaration that comes early cuts the tail off mid-fade.
+  // Nothing in the engine can know this number: the release is in the
+  // library's own file, and eight seconds outlasts any margin the player
+  // could have chosen.  (It had chosen four.)
+  await loadProbe(LONG_RELEASE_SFZ);
+  const inst = findInstrument('sampler')!;
+  const ctx = new OfflineAudioContext(2, Math.round(RENDER_SR * 2), RENDER_SR);
+  // Every `stop` a source is given, so the end is read off the graph rather
+  // than recomputed from the arithmetic that produced the declaration.
+  let lastStop = Number.NEGATIVE_INFINITY;
+  const proto = Object.getPrototypeOf(ctx.createBufferSource()) as { stop: (at?: number) => void };
+  const original = proto.stop;
+  proto.stop = function patched(this: unknown, at?: number): void {
+    if (typeof at === 'number' && at > lastStop) lastStop = at;
+    (original as (at?: number) => void).call(this, at);
+  };
+  let declared = NaN;
+  try {
+    declared = inst.playNote({
+      ctx: ctx as unknown as BaseAudioContext,
+      destination: ctx.destination as unknown as AudioNode,
+      note: createNote({ pitch: 57, velocity: 0.8, startBeat: 0, durationBeat: 2 }),
+      config: DEFAULT_MIDI_CONFIG, when: 0, durationSec: 1.5,
+      params: { ...defaultInstrumentParams('sampler') },
+    }).endsAt;
+  } finally {
+    proto.stop = original;
+  }
+  // 1.5 s of note, then the library's eight.
+  assert(declared > 9.4,
+    `the voice declares ${declared.toFixed(2)} s for a 1.5 s note with an 8 s release`);
+  assert(Math.abs(declared - lastStop) < 0.05,
+    `declared ${declared.toFixed(3)} but its source runs to ${lastStop.toFixed(3)}`);
+});
 
 checkAsync('a library that layers its velocities is left alone', async () => {
   // The half that matters most, because getting it wrong is invisible: the
