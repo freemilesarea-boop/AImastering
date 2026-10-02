@@ -849,6 +849,14 @@ pub struct ImagerConfig {
     pub band_width_pct: [f64; 4],
     /// Crossover points for the per-band widths.
     pub crossover_hz: [f64; 3],
+    /// Spread a mono (or near-mono) source by adding a decorrelated Side.
+    ///
+    /// The Side is a cascade of true allpasses fed from Mid, so the MID is
+    /// untouched and a mono fold-down returns the input unchanged.  It is
+    /// injected before the low-mono high-pass and before the width scaling,
+    /// which is what keeps synthetic width out of the bass and leaves the
+    /// Width control in charge of how much of it is heard.
+    pub stereoize: bool,
     pub bypass: bool,
 }
 
@@ -857,6 +865,7 @@ impl Default for ImagerConfig {
         Self {
             width_pct: 100.0, low_mono_hz: 20.0,
             band_width_pct: [100.0; 4], crossover_hz: [120.0, 800.0, 5_000.0],
+            stereoize: false,
             bypass: false,
         }
     }

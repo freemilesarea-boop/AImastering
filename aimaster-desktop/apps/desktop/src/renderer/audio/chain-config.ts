@@ -167,7 +167,7 @@ export interface ChainConfigWire {
   };
 
   imager?: {
-    widthPct?: number; lowMonoHz?: number;
+    widthPct?: number; lowMonoHz?: number; stereoize?: boolean;
     bandWidthPct?: number[]; crossoverHz?: number[]; bypass?: boolean;
   };
   limiter?: {
@@ -733,11 +733,13 @@ export function buildChainConfig(input: ChainConfigInput): ChainConfigWire {
     const active =
       num(img, 'widthPct', 100) !== 100 ||
       num(img, 'lowMonoHz', 20) > 20 ||
+      bool(img, 'stereoize', false) ||
       bandWidths.some((w) => w !== 100);
     if (engaged(img, active)) {
       cfg.imager = {
         widthPct: num(img, 'widthPct', 100),
         lowMonoHz: num(img, 'lowMonoHz', 20),
+        stereoize: bool(img, 'stereoize', false),
         bandWidthPct: bandWidths,
         bypass: img.bypass,
       };

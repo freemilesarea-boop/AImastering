@@ -164,7 +164,7 @@ export interface RealtimeDspOverrides {
   dynThresholdDb?: number; dynRatio?:     number;
   dynAttackMs?:    number; dynReleaseMs?: number;
   dynMixPct?:      number;
-  imgWidthPct?:  number; imgLowMonoHz?: number;
+  imgWidthPct?:  number; imgLowMonoHz?: number; imgStereoize?: boolean;
   limCeilingDbtp?: number;
   eqBypass?: boolean; dynBypass?: boolean; imgBypass?: boolean; limBypass?: boolean;
   masterBypass?: boolean;
@@ -218,6 +218,7 @@ const defaultRtOverrides: RealtimeDspOverrides = {
   dynMixPct:      100,
   imgWidthPct:    100,
   imgLowMonoHz:   120,
+  imgStereoize:   false,
   limCeilingDbtp: -1,
   eqBypass:       false,
   dynBypass:      false,

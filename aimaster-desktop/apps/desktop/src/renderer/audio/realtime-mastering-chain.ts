@@ -27,7 +27,7 @@ export interface RealtimeChainConfig {
   eqAdaptive: boolean; eqBypass: boolean;
   dynThresholdDb: number; dynRatio: number; dynAttackMs: number; dynReleaseMs: number;
   dynMixPct: number; dynBypass: boolean;
-  imgWidthPct: number; imgLowMonoHz: number; imgBypass: boolean;
+  imgWidthPct: number; imgLowMonoHz: number; imgStereoize: boolean; imgBypass: boolean;
   limCeilingDbtp: number; limLookaheadMs: number; limIsp: boolean; limBypass: boolean;
   outputGainDb: number;
   masterBypass: boolean;
@@ -66,6 +66,7 @@ export function stateToChainConfig(state: AllModulesParameterState): RealtimeCha
     dynBypass:      state.dynamics.bypass,
     imgWidthPct:   num(img['widthPct'], 100),
     imgLowMonoHz:  num(img['lowMonoHz'], 20),
+    imgStereoize:  bool(img['stereoize'], false),
     imgBypass:     state.imager.bypass,
     limCeilingDbtp: num(lim['ceilingDbtp'], -1),
     limLookaheadMs: num(lim['lookaheadMs'], 2.5),

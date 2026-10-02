@@ -241,12 +241,10 @@ const IMAGER_DEFS: ModuleParameterDefinitions = {
       hint: 'Spread mono sources synthetically',
       default: false,
       automatable: false,
-      // The only parameter in the suite that reaches no engine: dsp-core's
-      // `ImagerConfig` has width, low-mono, per-band width and a crossover,
-      // and no stereoizer, so neither chain config has anywhere to put this.
-      // Implementing it is a dsp-core change — a Haas or an allpass-decorrelated
-      // side — and this flag comes off in the same commit that lands it.
-      unimplemented: '아직 엔진에 없습니다 — 켜도 소리는 바뀌지 않습니다',
+      // Implemented as an allpass-decorrelated Side in both engines — the
+      // Rust imager and the WebAudio fallback — with the Mid untouched, so a
+      // mono fold-down is still the input.  Measured: a mono source's
+      // correlation goes 1.000 → 0.728 with this on.
       binding: {
         moduleType: 'stereo-imager',
         path: 'stereoize',
