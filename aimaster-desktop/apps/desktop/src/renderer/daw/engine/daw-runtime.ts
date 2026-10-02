@@ -1123,8 +1123,13 @@ class DawRuntime {
   }
 
   /**
-   * Play a Session slot on a track, looping.  Audio clips loop natively;
-   * MIDI parts are scheduled a few passes ahead and topped up by the tick.
+   * Play a Session slot on a track, looping.
+   *
+   * Audio repeats inside the source node.  A MIDI part is topped up pass by
+   * pass by `SlotPlayer` on a timer of its own — NOT by the transport's tick,
+   * which only runs while the play head is moving and a slot is fired with it
+   * parked.  This docblock used to say the tick did it; nothing did, and a
+   * looping part stopped after four passes.  See `slot-player.ts`.
    */
   startSlot(session: DawSession, trackId: TrackId, clip: Clip, loop: boolean): void {
     if (!this.ensure(session.sampleRate)) return;

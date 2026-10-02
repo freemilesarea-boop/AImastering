@@ -1,10 +1,16 @@
 // Engine command contract.
 //
-// All UI parameter changes flow through this command shape on their way
-// to the (future) DSP engine.  For now nothing downstream consumes
-// commands — the provider in `useModuleParameterState.tsx` only keeps a
-// rolling log for inspection.  M3-P-NEXT-5B will dispatch commands to
-// the engine bridge.
+// All UI parameter changes flow through this command shape, which is where
+// validation and clamping happen.  Nothing downstream consumes the COMMANDS:
+// the provider in `useModuleParameterState.tsx` keeps a rolling log for
+// inspection, and the app installs the no-op dispatcher.
+//
+// That is not the same as "parameter changes do not reach the engine".  They
+// do, by a different route: the parameter STATE those commands produce is
+// turned into a chain config (`chain-config.ts` for the render,
+// `realtime-mastering-chain.ts` for the preview) and sent to the mastering
+// worklet on every edit — which is why the transport can tell the user a
+// change is audible immediately.
 //
 // Why an explicit command type:
 //   • Validation and clamping happen exactly once, when the command is

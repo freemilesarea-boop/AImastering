@@ -171,6 +171,15 @@ check('the runtime tops slots up on a timer of their own', () => {
   assert(/this\.slotPlayer\.tick\(\)/.test(runtime), 'and it tops the slots up');
   assert(!/passes\s*=\s*loop\s*\?\s*\d+/.test(runtime),
     'no fixed number of passes is scheduled up front any more');
+  // And the docblock does not say the tick does it.  That sentence outlived
+  // the code it described by one commit — the four-pass schedule was
+  // replaced and the comment above it still claimed a top-up that had never
+  // existed, which is the same lie in a quieter place.
+  const slotDoc = runtime.slice(
+    Math.max(0, runtime.indexOf('startSlot(session') - 700),
+    runtime.indexOf('startSlot(session'));
+  assert(!/topped up by the tick/.test(slotDoc),
+    'the startSlot docblock still credits the transport tick');
   // Released slots must not leave a timer running in an idle window.
   assert(/stopSlotTicking\s*\(\s*\)/.test(runtime)
     && /liveKeys\.length === 0/.test(runtime),

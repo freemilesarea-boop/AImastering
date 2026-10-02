@@ -5,8 +5,12 @@
 // for built-in keyboard + screen-reader accessibility, with the track
 // styled via inline CSS variables.
 //
-// TODO(M3-P-NEXT-5 binding): caller-supplied `onChange` will pipe into
-// engine parameter writes.  For now: pure UI state.
+// `onChange` is the caller's to interpret, and in the app it is already an
+// engine write: `ModuleParameterPanel` — the panel StudioPage renders, and
+// the one this row is used by — passes it into the central parameter state,
+// which builds the offline render's chain config and the preview's alike.
+// The bespoke panels in this folder are workbench pieces, alive through
+// Storybook rather than through a page.
 
 import React from 'react';
 import { surface, text, typography, meter, space } from '../../../theme/loui-theme.js';

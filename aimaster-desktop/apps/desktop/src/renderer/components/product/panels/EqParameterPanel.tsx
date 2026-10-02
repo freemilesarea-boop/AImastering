@@ -7,9 +7,13 @@
 //   • If no props are passed, the panel manages local state — keeps
 //     Storybook stories ergonomic.
 //
-// TODO(M3-P-NEXT-5B binding): the central provider's command log now
-// captures every change; M3-P-NEXT-5B will dispatch those commands to
-// the engine bridge.
+// The dispatch this file used to wait on exists: a change reaches the
+// central parameter state, and `buildChainConfig` / `stateToChainConfig`
+// turn that state into the offline render's config and the preview's.
+// Measured through it — flipping the imager's Stereoize in the state puts
+// `stereoize: true` in both.  This panel itself is a workbench piece: the
+// app renders the generic `ModuleParameterPanel` for every module, and this
+// one is reachable through Storybook.
 
 import React from 'react';
 import {

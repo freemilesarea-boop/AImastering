@@ -4,7 +4,8 @@
 // from centre to arc edge.  Track is dimmed; filled arc uses
 // `meter.accent`.
 //
-// Interaction (UI shell, no DSP write):
+// Interaction (a controlled component — what a change DOES is the caller's;
+// see the note at the bottom of this block):
 //   • Pointer drag — vertical drag changes value
 //     (drag up = increase, sensitivity 1 unit per 2 px)
 //   • Keyboard — when focused, ArrowUp/ArrowDown +/- step,
@@ -15,8 +16,15 @@
 //   • Controlled component — caller owns `value`, listens to `onChange`
 //   • Bounded to [min, max] with optional `step` quantisation
 //
-// TODO(M3-P-NEXT-5 binding): replace `onChange` callers with engine
-// parameter writes once the Rust mastering chain bridge lands.
+// Where a change goes.  The bridge this file used to wait on has landed: the
+// app's own module panel is the generic `ModuleParameterPanel`, whose
+// `onChange` writes into the central parameter state, and that state builds
+// BOTH chain configs — the offline render's and the realtime preview's.
+// This knob is not on that path; it is a Loui workbench primitive, used by
+// `DynamicsParameterPanel` and reachable only through Storybook, which
+// `reachable-files-selftest` reports and holds as a deliberate state.  So
+// there is nothing pending here, and no TODO: a caller decides what a change
+// means, and in the app that caller writes to the engine.
 
 import React from 'react';
 import { surface, text, typography, meter } from '../../../theme/loui-theme.js';

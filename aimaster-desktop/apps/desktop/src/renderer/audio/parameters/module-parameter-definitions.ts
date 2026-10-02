@@ -5,10 +5,18 @@
 //
 //   • min / max / step / default values
 //   • display label + hint copy
-//   • engine binding target (used by M3-P-NEXT-5B / M2-full)
+//   • engine binding target
 //
-// IMPORTANT — this module does NOT touch the DSP chain.  The `binding`
-// field is purely informational until M3-P-NEXT-5B wires it.
+// IMPORTANT — this module does NOT touch the DSP chain itself: it is a
+// description, and something else reads it.  The `binding` field is NOT
+// merely informational, which this header used to claim:
+// `engine-bridge/export-parameter-adapter.ts` grades every parameter's
+// export support from `binding.status` and `binding.moduleType`, and
+// `engine-bridge/engine-dispatcher.ts` reads it to translate a wired
+// parameter into engine space.  What a parameter SOUNDS like goes through a
+// different seam — `chain-config.ts` and `realtime-mastering-chain.ts` build
+// the render's config and the preview's from the parameter STATE — and
+// `parameter-reach-selftest` holds every parameter to reaching one of them.
 
 import type {
   AllModulesDefinitions,
@@ -418,7 +426,7 @@ const EXPORT_DEFS: ModuleParameterDefinitions = {
         moduleType: null,
         path: 'export.format',
         status: 'unavailable',
-        note: 'Today the Electron main process exports MP3 + WAV; FLAC/AIFF/OGG land in M3-P-NEXT-5B.',
+        note: 'The main process writes WAV and MP3 itself and transcodes FLAC / AIFF / OGG through ffmpeg (file:save-audio); a missing encoder comes back as a warning rather than a silent failure.',
       },
     },
     {

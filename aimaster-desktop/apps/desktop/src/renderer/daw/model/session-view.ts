@@ -209,8 +209,14 @@ export interface AdvanceResult {
 }
 
 /**
- * Move the transport to `bar` and apply everything whose boundary has passed.
- * The engine calls this every block; the UI reads the result.
+ * Move the Session clock to `bar` and apply everything whose boundary has
+ * passed.
+ *
+ * The caller is the UI — `SessionViewGrid` on a 40 ms timer, reading
+ * `dawRuntime.sessionBar()`, which is the audio clock in bars.  No engine
+ * code calls this (it used to say "the engine calls this every block", and
+ * none ever has); the engine only hears about the result, as `startSlot` and
+ * `stopSlot`.
  */
 export function advance(state: LaunchState, grid: SessionGrid, bar: number): AdvanceResult {
   const due = state.queued.filter((q) => q.atBar <= bar + 1e-9);

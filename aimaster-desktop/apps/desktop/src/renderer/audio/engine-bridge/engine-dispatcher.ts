@@ -4,8 +4,14 @@
 // M3-P-NEXT-5B scope (read carefully):
 //   • This is the FIRST connection — only the parameters whose binding
 //     status is `wired` get translated into engine space.
-//   • There is NO live DSP write today.  The production runtime preview
-//     plays a pre-rendered file.  `runPreset` DOES now run the preset's own
+//   • This dispatcher performs no DSP write: the app installs
+//     `NOOP_DISPATCHER`, so nothing here reaches an engine.  It does NOT
+//     follow that parameter edits are inaudible — this header used to say
+//     the preview "plays a pre-rendered file" and stop there.  The file is
+//     the source; the parameter state is built into a chain config on every
+//     edit and posted to the mastering worklet, so an edit is heard while
+//     the file plays.  What is still true is that it does not come through
+//     THIS seam.  `runPreset` DOES now run the preset's own
 //     loudness target, true-peak ceiling and limiter strength rather than its
 //     bucket's — it used to render every preset in a bucket identically — but
 //     it is an offline render of a saved preset, not a live parameter write.
