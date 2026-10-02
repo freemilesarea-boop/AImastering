@@ -840,6 +840,37 @@ function damperSeconds(pitch: number, scale: number): number {
 }
 
 /**
+ * The Rhodes pickup's transfer curve: asymmetric, and zero at zero.
+ *
+ * Asymmetric on purpose — the pickup faces the tine off-centre, which is what
+ * puts EVEN harmonics in a Rhodes, and a symmetric curve would remove the
+ * thing being modelled.
+ *
+ * The point count is ODD so that one sample sits exactly at an input of zero.
+ * A WaveShaper maps x in [-1, 1] onto index (x + 1) / 2 * (n - 1) and
+ * interpolates between neighbours, so with an even count there is no sample
+ * at zero and SILENCE comes out as the midpoint of the two nearest — which,
+ * for a curve this asymmetric, was 4.5e-4: a constant on the bus for as long
+ * as the voice stayed connected.  The envelope detector in `plugin-kit`
+ * forces an odd count for the same reason.
+ *
+ * Exported so a test can ask what it does with silence, which is the one
+ * thing about it that is not a matter of taste.
+ */
+export function pickupCurve(amount: number): Float32Array<ArrayBuffer> {
+  const n = 1025;
+  const curve = new Float32Array(n);
+  const k = 1 + 4 * amount;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * 2 - 1;
+    // The positive half is compressed harder than the negative one.
+    const bias = x >= 0 ? k : k * 0.55;
+    curve[i] = Math.tanh(x * bias) / Math.tanh(bias);
+  }
+  return curve;
+}
+
+/**
  * The piano for one note, cached.
  *
  * Same argument as the plucked string's cache and the same shape: a part
@@ -2423,7 +2454,7 @@ function driveCurve(amount: number): Float32Array<ArrayBuffer> {
   return out;
 }
 
-export const INSTRUMENTS: InstrumentDescriptor[] = [
+const BARE_INSTRUMENTS: InstrumentDescriptor[] = [
   {
     id: 'polysynth',
     name: 'Poly Synth',
@@ -2762,17 +2793,7 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
       let shaper: WaveShaperNode | null = null;
       if (pickupAmount > 0.001) {
         shaper = ctx.createWaveShaper();
-        const N = 1024;
-        const curve = new Float32Array(N);
-        const k = 1 + 4 * pickupAmount;
-        for (let i = 0; i < N; i++) {
-          const x = (i / (N - 1)) * 2 - 1;
-          // Asymmetric: the positive half is compressed harder than the
-          // negative one.
-          const bias = x >= 0 ? k : k * 0.55;
-          curve[i] = Math.tanh(x * bias) / Math.tanh(bias);
-        }
-        shaper.curve = curve;
+        shaper.curve = pickupCurve(pickupAmount);
         shaper.oversample = '2x';
       }
 
@@ -3375,6 +3396,89 @@ export const INSTRUMENTS: InstrumentDescriptor[] = [
     },
   },
 ];
+
+/**
+ * Where an instrument's output is coupled.
+ *
+ * Real instrument electronics are capacitor-coupled, and here it is not
+ * cosmetic: a waveshaper that is asymmetric ON PURPOSE puts out DC, and so
+ * does a pulse wave whose duty is not a half.  Measured on the bus, four
+ * notes of each instrument through the bounce path, DC against the same
+ * passage's RMS:
+ *
+ *     epiano      0.00403    -14.0 dB    <- the Rhodes pickup
+ *     analog      0.000387   -38.3 dB    <- pulse width
+ *     everything else         below -53 dB
+ *
+ * A fifth of the electric piano's level was a constant.  It eats headroom
+ * where no meter shows it, it biases the peak the limiter sees — an
+ * asymmetric waveform reaches its ceiling on one side first — and it SUMS:
+ * eight such voices make it -5 dB of pure offset.
+ *
+ * 5 Hz, and not the 20 Hz a real coupling capacitor sits at, because 20 Hz
+ * turned out NOT to be free.  At 20 Hz the poly synth's Organ patch — a
+ * sustained stack with its sub oscillator up — kept exactly its loudness and
+ * gained 1.33 dB of TRUE PEAK, from -3.92 to -2.59 dBTP, over the -3 dBTP
+ * ceiling the whole bank is calibrated to: rotating the phase of the lowest
+ * partials reshapes the waveform, and a crest is not a level.  At 5 Hz the
+ * same patch reads -3.62 dBTP.
+ *
+ * Measured, DC against the passage's own RMS, worst in the bank:
+ *
+ *     no coupling   -14.0 dB (epiano), -38.3 dB (analog)
+ *     5 Hz          -181 dB
+ *     20 Hz         -194 dB
+ *
+ * Both corners remove it completely — a highpass has no gain at 0 Hz — so
+ * the only thing the extra 15 Hz buys is a faster settle on the step a note
+ * makes (32 ms against 8), and it costs the peak above.
+ *
+ * What the bottom of the keyboard loses, measured against the same notes
+ * rendered with no coupling at all:
+ *
+ *                     5 Hz      20 Hz    20 Hz by the formula
+ *     41 Hz (E1)     0.010 dB   0.26 dB        0.23 dB
+ *     32.7 Hz (C1)   0.014 dB   0.60 dB        0.57 dB
+ *     27.5 Hz (A0)   0.012 dB   1.06 dB        1.07 dB
+ *
+ * At 20 Hz the measurement and the Butterworth formula agree to 0.03 dB; at
+ * 5 Hz the formula says a thousandth of a decibel and what is left is the
+ * renderer's own float32 noise floor, not the filter.
+ */
+const DC_BLOCK_HZ = 5;
+
+/**
+ * One instrument, with its output coupled.
+ *
+ * Wrapped around the DESCRIPTOR rather than written into each of the nineteen
+ * voices, because it is the same sentence nineteen times and because a voice
+ * that forgot it would be silently wrong — the DC does not announce itself.
+ * The filter belongs to the voice: it is built per note and let go when the
+ * voice is, so a finished note still disconnects everything it made (see
+ * `reapFinished` in the clip player).
+ */
+function dcCoupled(instrument: InstrumentDescriptor): InstrumentDescriptor {
+  return {
+    ...instrument,
+    playNote: (v): InstrumentVoice => {
+      const block = v.ctx.createBiquadFilter();
+      block.type = 'highpass';
+      block.frequency.value = DC_BLOCK_HZ;
+      block.Q.value = BUTTERWORTH_Q;
+      block.connect(v.destination);
+      const voice = instrument.playNote({ ...v, destination: block });
+      return {
+        endsAt: voice.endsAt,
+        stop: (at: number): void => {
+          voice.stop(at);
+          try { block.disconnect(); } catch { /* context gone */ }
+        },
+      };
+    },
+  };
+}
+
+export const INSTRUMENTS: InstrumentDescriptor[] = BARE_INSTRUMENTS.map(dcCoupled);
 
 export function findInstrument(id: string | null): InstrumentDescriptor | undefined {
   return id ? INSTRUMENTS.find((i) => i.id === id) : undefined;

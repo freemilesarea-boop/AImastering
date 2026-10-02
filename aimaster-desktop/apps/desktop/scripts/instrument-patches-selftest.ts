@@ -316,10 +316,18 @@ function distance(a: ReturnType<typeof fingerprint>, b: ReturnType<typeof finger
  *     median 0.065    p75 0.369    p90 0.866    p95 1.226
  *
  * 0.40 is just above the 75th percentile: a quarter turn of one knob beats it
- * one time in four.  Across all 1002 pairs in the bank the closest is
- * 0.426 (the bowed init against its solo violin), so the floor sits just
+ * one time in four.  Across all 1918 pairs in the bank the closest is
+ * 0.4254 (the Rhodes' harpsi against its glass-keys), so the floor sits just
  * under the tightest pair that is genuinely two patches — which is where a
  * floor earns its place rather than waving everything through.
+ *
+ * Re-measured when the instruments were given an output coupling, because
+ * removing a DC offset removes whatever distance it was contributing: the
+ * Rhodes' init and its Mellow Tine, which differ in PICKUP and so differed
+ * in offset, fell from 0.4538 to 0.3858 — and the measure was right to say
+ * so, since a constant is not a timbre.  The patch was revoiced rather than
+ * the floor lowered (1.5:1 at an index of 0.4, where it had been 2.2:1 at
+ * 0.8), and reads 0.4831 on the same measurement.
  */
 const MIN_DISTINCTNESS = 0.40;
 

@@ -49,7 +49,9 @@
 import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
-import { INSTRUMENTS, findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
+import {
+  INSTRUMENTS, findInstrument, defaultInstrumentParams, pickupCurve,
+} from '../src/renderer/daw/engine/instruments.js';
 import { createNote, DEFAULT_MIDI_CONFIG } from '../src/renderer/daw/model/midi.js';
 import { getLoudnessMetrics, type AudioBufferLike } from '../src/renderer/audio/loudnessCore.js';
 import { GENRE_ORDER } from '../src/renderer/daw/engine/plugin-presets-genre.js';
@@ -299,6 +301,61 @@ async function main(): Promise<void> {
     const hard = getLoudnessMetrics(await render(id, hardChord(root), 3));
     measured.set(id, { lufs: phrase.integratedLufs, hard: hard.truePeakDbtp });
   }
+
+  await check('a shaper fed silence gives silence back', async () => {
+    // What a WaveShaper does with an input of exactly zero is decided by its
+    // point COUNT, not by the shape: the spec maps x in [-1, 1] onto index
+    // (x + 1) / 2 * (n - 1) and interpolates, so an even count has no sample
+    // at zero and answers with the midpoint of the two nearest.  For a curve
+    // that is asymmetric on purpose that midpoint is not zero — 4.5e-4 for
+    // the Rhodes pickup, which rode on the bus for as long as the voice was
+    // connected.  Checked across the whole knob, because the error grows
+    // with the asymmetry.
+    const atZero = (curve: Float32Array): number => {
+      const idx = (curve.length - 1) / 2;
+      const lo = Math.floor(idx), hi = Math.ceil(idx);
+      return curve[lo]! * (1 - (idx - lo)) + curve[hi]! * (idx - lo);
+    };
+    for (const amount of [0.001, 0.1, 0.35, 0.7, 1]) {
+      const curve = pickupCurve(amount);
+      assert(curve.length % 2 === 1,
+        `the pickup curve has ${curve.length} points — an even count has no sample at zero`);
+      const dc = atZero(curve);
+      assert(dc === 0, `pickup ${amount} maps silence to ${dc.toExponential(2)}`);
+    }
+    await Promise.resolve();
+  });
+
+  await check('no instrument leaves DC on the bus', async () => {
+    // A waveshaper that is asymmetric on purpose puts out DC, and so does a
+    // pulse wave whose duty is not a half.  Both are correct modelling and
+    // both need what the real electronics have: an output coupling.  Measured
+    // in the app before there was one, DC against the same passage's RMS —
+    // the Rhodes pickup at −14.0 dB (a fifth of its level was a constant) and
+    // the analog synth's pulse at −38.3 dB.  It eats headroom where no meter
+    // shows it, biases the peak a limiter sees, and SUMS across voices.
+    //
+    // −60 dB is the bar because every instrument here is now below −70, and
+    // both of the ones that failed were tens of dB above it.
+    const worst: Array<{ id: string; db: number }> = [];
+    for (const inst of INSTRUMENTS) {
+      if (inst.id === 'sampler') continue;              // silent with no library loaded
+      const root = REFERENCE_ROOT[inst.id] ?? 48;
+      const buf = await render(inst.id, referencePhrase(root), REFERENCE_PHRASE_SECONDS);
+      const ch = buf.getChannelData(0);
+      let sum = 0, sq = 0;
+      for (let i = 0; i < ch.length; i += 1) { sum += ch[i]!; sq += ch[i]! * ch[i]!; }
+      const dc = sum / ch.length;
+      const rms = Math.sqrt(sq / ch.length);
+      assert(rms > 1e-4, `${inst.id} rendered silence (${rms.toExponential(2)})`);
+      worst.push({ id: inst.id, db: 20 * Math.log10(Math.abs(dc) / rms) });
+    }
+    worst.sort((a, b) => b.db - a.db);
+    const over = worst.filter((w) => w.db > -60);
+    assert(over.length === 0,
+      `DC on the bus: ${over.map((w) => `${w.id} ${w.db.toFixed(1)} dB`).join(', ')}`);
+    console.log(`      (worst DC: ${worst.slice(0, 3).map((w) => `${w.id} ${w.db.toFixed(1)}`).join(', ')} dB of their own RMS)`);
+  });
 
   await check('a string instrument sounds as loud at 48 kHz as at 44.1', async () => {
     // Rendered here rather than reusing `measured`, because `render` uses the
