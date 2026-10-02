@@ -112,9 +112,19 @@ check('the cursor is fed the audible clock',
 
 // The half that is easy to get wrong: moving the scheduler onto the audible
 // clock would schedule everything late by the latency.
-const tickAt = runtime.indexOf('player.tick(session, LOOKAHEAD_SEC)');
+//
+// What this pins is the CLOCK, not the distance.  It used to require the
+// literal `player.tick(session, LOOKAHEAD_SEC)`, and that broke the day the
+// transport started reaching a growing distance instead of a fixed one —
+// `start` schedules a short window so the first sound is not waiting on a
+// second of work, and the rest is filled in steps (see `FIRST_WINDOW_SEC`).
+// The distance is still bounded by LOOKAHEAD_SEC; what must never happen is
+// an audible position being handed to the scheduler.  Which clock the
+// window planner itself reads is held by 'the click still rides the write
+// clock' below.
 check('the scheduler still runs on the write clock',
-  tickAt >= 0 && /player\.tick\(session, LOOKAHEAD_SEC\)/.test(runtime)
+  /player\.tick\(session, (?:LOOKAHEAD_SEC|this\.reachSec)\)/.test(runtime)
+  && /Math\.min\(LOOKAHEAD_SEC,/.test(runtime)
   && !/player\.tick\([^)]*audiblePosition/.test(runtime));
 
 // Anchored past the nested call in the first argument — `[^)]*` stops at the

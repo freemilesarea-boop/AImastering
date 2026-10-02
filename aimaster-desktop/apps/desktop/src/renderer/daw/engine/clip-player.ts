@@ -74,6 +74,20 @@ export interface LoopSpan {
 }
 
 /**
+ * How much is scheduled by `start`, before the first sound.
+ *
+ * `start` runs on the thread that pressed PLAY, and the lead before the
+ * first sample is 60 ms — so whatever it schedules has to fit inside that.
+ * A full look-ahead second does not: measured in the app on a 48-track
+ * session, `play()` took 82.6 ms and fourteen notes were handed to the graph
+ * with a moment already behind the clock, which Web Audio clamps to "now" —
+ * a flam on the first beat.  A sixth of a second of the same material costs
+ * about a tenth of that, and the look-ahead is filled right after, off the
+ * critical path.
+ */
+export const FIRST_WINDOW_SEC = 0.15;
+
+/**
  * One look-ahead window, in the pass it belongs to.
  *
  * Inside a loop the look-ahead is not one window but several: cut at the loop
@@ -282,10 +296,13 @@ export class ClipPlayer {
     this.playing = true;
     this.startedAtSec = fromSec;
     // Through the same window walk as the look-ahead, so the loop is honoured
-    // from the first second.  Scheduling it straight let a loop shorter than a
-    // second play material from past its own end — measured, a [0, 0.5) loop
-    // sounded a note at 0.75 on the first pass and never again.
-    this.tick(session, 1.0);
+    // from the first window.  Scheduling it straight let a loop shorter than
+    // this window play material from past its own end — measured, a [0, 0.5)
+    // loop sounded a note at 0.75 on the first pass and never again.
+    //
+    // Short on purpose: see `FIRST_WINDOW_SEC`.  The caller fills the rest of
+    // the look-ahead as soon as the thread is free.
+    this.tick(session, FIRST_WINDOW_SEC);
   }
 
   /**

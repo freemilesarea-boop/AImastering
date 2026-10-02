@@ -13,7 +13,7 @@ import { MixerEngine } from './mixer-engine.js';
 import type { ChannelMeterReading } from '../model/channel-meter.js';
 import { LoudnessStream, type LiveLoudnessMetrics } from '../../audio/loudnessStream.js';
 import { trackClips } from '../model/session-ops.js';
-import { ClipPlayer } from './clip-player.js';
+import { ClipPlayer, FIRST_WINDOW_SEC } from './clip-player.js';
 import { ControlRoomNode } from './control-room-node.js';
 import { DEFAULT_CONTROL_ROOM, type ControlRoomState } from '../model/control-room.js';
 import {
@@ -123,6 +123,15 @@ class DawRuntime {
   private slotPlayer = new SlotPlayer(() => this.ctx?.currentTime ?? 0, LOOKAHEAD_SEC);
   /** Runs only while a slot is live; the transport's own timer may be off. */
   private slotTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * How far ahead the scheduler is currently asked to reach.
+   *
+   * It starts small when playback begins and grows to `LOOKAHEAD_SEC` — see
+   * `fillLookahead`.  The transport's timer reads the SAME number, or it
+   * would race the staged fill and do the whole remaining second in one
+   * block, which is the thing being avoided.
+   */
+  private reachSec = LOOKAHEAD_SEC;
 
   /** Position updates while the transport runs (seconds). */
   onPosition: ((sec: number) => void) | null = null;
@@ -843,6 +852,7 @@ class DawRuntime {
     this.player.start(session, fromSec);
     this.primeClick(session);
     this.startTicking();
+    this.fillLookahead(session);
 
     // Fill in anything still missing behind the play head.
     // Failures are announced by the cache (`onMissingFile`); this catch is for the
@@ -875,6 +885,7 @@ class DawRuntime {
       this.player?.start(session, Math.max(0, toSec));
       this.primeClick(session);
       this.startTicking();
+      this.fillLookahead(session);
     } else {
       this.onPosition?.(Math.max(0, toSec));
     }
@@ -992,6 +1003,40 @@ class DawRuntime {
   }
 
   /**
+   * Fill the rest of the look-ahead after the sound has started, a slice at a
+   * time.
+   *
+   * `player.start` schedules only `FIRST_WINDOW_SEC`, so the first sample is
+   * not waiting on a second of work — measured, that took 82.6 ms on a
+   * 48-track session against a 60 ms lead, and fourteen notes went into the
+   * graph already behind the clock.  The rest of the second still has to be
+   * scheduled, and doing it in one go simply moves an 80 ms block a few
+   * milliseconds later, where it is a dropped frame instead of a flam.  So
+   * it is extended in `FIRST_WINDOW_SEC` steps, one per timeout, each about
+   * the cost of the first — small enough to sit inside a frame.
+   *
+   * It also closes a gap the 50 ms timer would leave on its own: a first
+   * tick late enough that the play head is already past the short window
+   * would SKIP the notes in between, because a note whose moment has passed
+   * is dropped rather than fired late.
+   */
+  private fillLookahead(session: DawSession): void {
+    this.reachSec = Math.min(LOOKAHEAD_SEC, FIRST_WINDOW_SEC);
+    const step = (): void => {
+      globalThis.setTimeout(() => {
+        const player = this.player;
+        // A stop, or a different session, and this fill is about the past.
+        if (!player?.isPlaying || this.session !== session) return;
+        this.reachSec = Math.min(LOOKAHEAD_SEC, this.reachSec + FIRST_WINDOW_SEC);
+        player.tick(session, this.reachSec);
+        this.primeClick(session);
+        if (this.reachSec < LOOKAHEAD_SEC) step();
+      }, 0);
+    };
+    step();
+  }
+
+  /**
    * Click the first window as soon as playback starts, not on the first tick.
    *
    * `player.start` places its first second of material synchronously, while
@@ -1038,7 +1083,7 @@ class DawRuntime {
       // playback whether or not the Mix window is open.
       this.engine?.pollMeters();
 
-      player.tick(session, LOOKAHEAD_SEC);
+      player.tick(session, this.reachSec);
       // The click rides the same tick and the same WINDOWS as the clips — the
       // list the player just walked, per-pass origins and all — so a beat and
       // a kick on that beat are scheduled to the same context time, and a

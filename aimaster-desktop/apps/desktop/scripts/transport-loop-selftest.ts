@@ -54,7 +54,13 @@ import { OfflineAudioContext } from 'node-web-audio-api';
 (globalThis as unknown as { OfflineAudioContext: unknown }).OfflineAudioContext = OfflineAudioContext;
 
 import { MixerEngine } from '../src/renderer/daw/engine/mixer-engine.js';
-import { ClipPlayer, type LoopSpan } from '../src/renderer/daw/engine/clip-player.js';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  ClipPlayer, FIRST_WINDOW_SEC, type LoopSpan,
+} from '../src/renderer/daw/engine/clip-player.js';
 import { Metronome } from '../src/renderer/daw/engine/metronome.js';
 import { tempoMapOf } from '../src/renderer/daw/model/tempo-map.js';
 import {
@@ -186,6 +192,36 @@ async function onsetsOf(
   let top = 0;
   for (const v of env) top = Math.max(top, v);
   assert(top > 1e-4, 'the render is silent — nothing was scheduled');
+  const out: number[] = [];
+  let armed = true;
+  for (let i = 0; i < env.length; i++) {
+    if (armed && env[i]! > top * 0.25) { out.push((i * win) / SR); armed = false; }
+    else if (!armed && env[i]! < top * 0.05) armed = true;
+  }
+  return out;
+}
+
+/** Onsets from a render where `start` ran and no tick followed it. */
+async function onsetsOfStartOnly(session: DawSession, seconds: number): Promise<number[]> {
+  const ctx = new OfflineAudioContext(2, Math.round(SR * seconds), SR);
+  const engine = new MixerEngine(
+    ctx as unknown as BaseAudioContext, ctx.destination as unknown as AudioNode);
+  engine.sync(session);
+  const player = new ClipPlayer(engine);
+  player.useResidentBuffers();
+  player.setLoop(null);
+  player.start(session, 0, 0);
+  const ch = (await ctx.startRendering()).getChannelData(0);
+  const win = Math.round(SR * 0.002);
+  const env: number[] = [];
+  for (let i = 0; i + win <= ch.length; i += win) {
+    let sum = 0;
+    for (let k = 0; k < win; k++) sum += ch[i + k]! * ch[i + k]!;
+    env.push(Math.sqrt(sum / win));
+  }
+  let top = 0;
+  for (const v of env) top = Math.max(top, v);
+  if (top <= 1e-5) return [];
   const out: number[] = [];
   let armed = true;
   for (let i = 0; i < env.length; i++) {
@@ -472,6 +508,57 @@ async function main(): Promise<void> {
       assert(gap > 0.24 && gap < 0.51, `a gap of ${gap.toFixed(4)} s — a click went missing`);
     }
     console.log(`      (${clicks.length} clicks, ${seams.length} short seams of 0.250 s)`);
+    await Promise.resolve();
+  });
+
+  await check('pressing play schedules a short window, not a whole second', async () => {
+    // `start` runs on the thread that pressed PLAY and the lead before the
+    // first sample is 60 ms.  Measured in the app on a 48-track session, a
+    // full look-ahead second took 82.6 ms there and fourteen notes went into
+    // the graph with a moment already behind the clock — which Web Audio
+    // clamps to "now", so they flam on the first beat.  After: 24.5 ms and
+    // none of them late.
+    //
+    // Notes at 0 s and 0.75 s, so one is inside the short window and one is
+    // not.
+    const started = await onsetsOfStartOnly(song(), 2);
+    assert(started.length === 1,
+      `start placed ${started.length} notes: ${started.map((x) => x.toFixed(3)).join(' ')}`);
+    assert(started[0]! < 0.02, `the first note is at ${started[0]!.toFixed(3)} s`);
+    assert(FIRST_WINDOW_SEC < 0.75,
+      'this check only means something while the window is shorter than the second note');
+
+    // And the look-ahead still gets there — the same session, ticked.
+    const ticked = await onsetsOf(song(), null, 2);
+    assert(ticked.length === 2,
+      `the look-ahead placed ${ticked.length} notes: ${ticked.map((x) => x.toFixed(3)).join(' ')}`);
+    console.log(`      (start alone: ${started.length} note; after the look-ahead: ${ticked.length})`);
+  });
+
+  await check('the timer and the staged fill reach the same distance', async () => {
+    // The rest of the second is scheduled in steps, off the thread that
+    // pressed play — otherwise the 80 ms block is merely moved a few
+    // milliseconds later, where it is a dropped frame instead of a flam.
+    // The 50 ms timer has to read the SAME growing reach, or it overtakes
+    // the staging and does the whole remainder in one go: measured, that was
+    // the difference between a 43.7 ms worst tick and a 26.4 ms one.
+    const runtime = fs.readFileSync(path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '../src/renderer/daw/engine/daw-runtime.ts'), 'utf8');
+    // Scoped to the TIMER's body: `fillLookahead` contains the same call, so
+    // an unscoped search for it passes while the timer reaches past the
+    // staging — which is exactly the state being ruled out, and this check
+    // passed in it until the scope was added.
+    const ticking = runtime.slice(
+      runtime.indexOf('private startTicking()'), runtime.indexOf('private startPositionFrames'));
+    assert(ticking.length > 200, 'could not find the transport timer to read');
+    assert(/player\.tick\(session, this\.reachSec\)/.test(ticking),
+      'the transport timer does not read the shared reach');
+    assert(!/LOOKAHEAD_SEC/.test(ticking),
+      'the transport timer still reaches a fixed distance of its own');
+    assert(/this\.reachSec = Math\.min\(LOOKAHEAD_SEC, this\.reachSec \+ FIRST_WINDOW_SEC\)/.test(runtime),
+      'the staged fill does not grow the reach a window at a time');
+    assert(/fillLookahead\(session\)/.test(runtime), 'nothing fills the look-ahead');
     await Promise.resolve();
   });
 
