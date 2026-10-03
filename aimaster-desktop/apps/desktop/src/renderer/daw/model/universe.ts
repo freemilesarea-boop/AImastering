@@ -23,6 +23,7 @@
 // is unfalsifiable by eye on a five-minute song, and obvious in a test.
 
 import { clipEnd, sessionEndSec, trackClips } from './session-ops.js';
+import { collapsedOverviewClips, isHidden } from './stacks.js';
 import { MAX_PX_PER_SEC, MIN_PX_PER_SEC, type ViewChange, type Viewport } from './viewport.js';
 import type { DawSession, Track, TrackKind } from './types.js';
 
@@ -125,36 +126,51 @@ export interface UniverseRow {
   blocks: UniverseBlock[];
 }
 
-export interface UniverseOptions {
-  /** Tracks to leave out — a hidden or folded track has no row. */
-  hiddenTrackIds?: ReadonlySet<string>;
-}
-
 /**
- * One row per track, in the session's own order.
+ * One row per track the ARRANGEMENT draws, in the session's own order.
  *
  * A track with no clips STILL gets a row.  The strip is read against the
  * arrangement beside it, and a strip that silently skipped empty tracks would
  * put every row below the gap next to the wrong track name.
+ *
+ * Which is exactly what it did for a HIDDEN or FOLDED one.  The visibility
+ * used to arrive as an option the caller could pass — and the only caller
+ * never did, so with one track hidden the arrangement drew T0, T2, T3 while
+ * the strip drew T0, T1, T2, T3, and with a folder collapsed the arrangement
+ * drew three rows against the strip's five.  Every stripe below the gap named
+ * the wrong lane.  So the answer is taken from the session rather than asked
+ * for: `isHidden` is the same function the arrange window filters by, and it
+ * covers both reasons a row is not there.
  */
 export function universeRows(
-  session: DawSession, widthPx: number, options: UniverseOptions = {},
+  session: DawSession, widthPx: number,
 ): UniverseRow[] {
   const span = universeSpan(session);
   const scale = universeScale(span, widthPx);
   const rows: UniverseRow[] = [];
+  const place = (startSec: number, endSec: number): { x: number; width: number } => ({
+    x: (startSec - span.startSec) * scale,
+    // A clip narrower than a pixel is still a clip.  Rounded away it
+    // vanishes, and a strip that does not show a short take is lying about
+    // what is in the song.
+    width: Math.max(1, (endSec - startSec) * scale),
+  });
 
   for (const track of session.tracks) {
     if (!isUniverseTrack(track)) continue;
-    if (options.hiddenTrackIds?.has(track.id)) continue;
+    if (isHidden(session, track.id)) continue;
     const blocks: UniverseBlock[] = [];
+    // A folded folder stands in for its children, so their material has to
+    // appear on its row: it is the only row they have left, and an overview
+    // that drops a take while it is folded away is worse than one that
+    // mislabels it.
+    const folded = track.kind === 'folder' && track.collapsed === true;
+    const merged = folded ? collapsedOverviewClips(session, track.id) : [];
+    for (const [i, clip] of merged.entries()) {
+      blocks.push({ clipId: `${track.id}:folded:${i}`, ...place(clip.startSec, clip.endSec), muted: false });
+    }
     for (const clip of trackClips(track)) {
-      const x = (clip.startSec - span.startSec) * scale;
-      // A clip narrower than a pixel is still a clip.  Rounded away it
-      // vanishes, and a strip that does not show a short take is lying about
-      // what is in the song.
-      const width = Math.max(1, (clipEnd(clip) - clip.startSec) * scale);
-      blocks.push({ clipId: clip.id, x, width, muted: clip.muted });
+      blocks.push({ clipId: clip.id, ...place(clip.startSec, clipEnd(clip)), muted: clip.muted });
     }
     rows.push({
       trackId: track.id,
@@ -281,5 +297,12 @@ export function describeUniverse(session: DawSession, view: Viewport): string {
   const percent = Math.round((visibleSec / spanSeconds(span)) * 100);
   const tracks = session.tracks.filter(isUniverseTrack);
   const clips = tracks.reduce((n, t: Track) => n + trackClips(t).length, 0);
-  return `${tracks.length}개 트랙 · 클립 ${clips}개 · 곡의 ${Math.max(1, Math.min(100, percent))}% 보는 중`;
+  // What is DRAWN, and what is not.  This used to count every clip track in
+  // the session, which said "5개 트랙" over a strip showing three — and the
+  // two tracks it was counting were the ones folded away, so the number
+  // disagreed with the thing it was describing.
+  const drawn = tracks.filter((t) => !isHidden(session, t.id)).length;
+  const away = tracks.length - drawn;
+  return `${drawn}개 트랙${away > 0 ? ` (${away}개 숨김)` : ''} · 클립 ${clips}개 · `
+    + `곡의 ${Math.max(1, Math.min(100, percent))}% 보는 중`;
 }
