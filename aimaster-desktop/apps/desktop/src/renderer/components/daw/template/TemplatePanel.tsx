@@ -66,8 +66,9 @@ export default function TemplatePanel({ onClose }: { onClose: () => void }) {
     const missing = missingDevices(template);
     let problems: string[] = [];
     let made = 0;
+    const at = useDawStore.getState().insertIndex();
     apply((s) => {
-      const result = applyTrackTemplate(s, template, { count });
+      const result = applyTrackTemplate(s, template, at === undefined ? { count } : { count, atIndex: at });
       problems = result.problems;
       made = result.trackIds.length;
       if (result.createdBuses.length > 0) {

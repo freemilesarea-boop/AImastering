@@ -195,9 +195,9 @@ export function needsDrumMap(instrumentId: string): boolean {
  * value a test can call and inspect.
  */
 export function addInstrumentSlot(
-  session: DawSession, track: Track, part: Clip,
+  session: DawSession, track: Track, part: Clip, atIndex?: number,
 ): DawSession {
-  const withPart = updateClips(addTrack(session, track), track.id, () => [part]);
+  const withPart = updateClips(addTrack(session, track, atIndex), track.id, () => [part]);
   return needsDrumMap(track.instrumentId ?? '')
     ? assignDrumMap(withPart, track.id, GM_DRUM_MAP)
     : withPart;

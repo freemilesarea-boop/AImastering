@@ -53,9 +53,7 @@ import { formatLabel, TIME_FORMATS } from '../daw/model/spot-time.js';
 import { alignClipToGuide, describeAlign } from '../daw/edit/align-actions.js';
 import { consolidationSpans, describeOutcome, outcomeOf } from '../daw/edit/consolidate.js';
 import { editPoints, tabBackward, tabForward } from '../daw/edit/navigation.js';
-import {
-  addTrack, createTrack, findTrack, sessionEndSec,
-} from '../daw/model/session-ops.js';
+import { findTrack, sessionEndSec } from '../daw/model/session-ops.js';
 import { matchTrackToTrack } from '../daw/edit/match-between-tracks.js';
 import { slotLetter } from '../daw/edit/match-from-reference.js';
 import {
@@ -919,7 +917,9 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     'daw.newTrack': () => {
-      daw().apply((s) => addTrack(s, createTrack(`Audio ${s.tracks.length}`, 'audio')));
+      // The same action the toolbar button runs — it used to be a second copy
+      // of the body, which is how the two drifted on where the track lands.
+      daw().addTrackHere('audio');
       notify('트랙을 추가했습니다');
     },
 

@@ -264,6 +264,31 @@ export function updateClip(
 
 // ── Track management ──────────────────────────────────────────────────────────
 
+/**
+ * Where a new track goes when some tracks are selected: right after them.
+ *
+ * `undefined` means the end, which is what `addTrack` does with no index —
+ * so "nothing selected" and "the id is not in this session" both fall back to
+ * appending, and a caller can pass this straight through.
+ *
+ * After the LAST of a multi-selection, not the first: selecting three drum
+ * tracks and adding a fourth puts it under the group rather than into the
+ * middle of it.
+ */
+export function indexAfterTracks(
+  session: DawSession, ids: readonly TrackId[],
+): number | undefined {
+  let last = -1;
+  for (const id of ids) {
+    const at = session.tracks.findIndex((t) => t.id === id);
+    // The master is always last and cannot be a neighbour to insert after:
+    // `addTrack` clamps above it, so a selected master would mean "the end"
+    // anyway — which is what leaving it out of the maximum gives.
+    if (at > last && session.tracks[at]!.kind !== 'master') last = at;
+  }
+  return last === -1 ? undefined : last + 1;
+}
+
 export function addTrack(session: DawSession, track: Track, atIndex?: number): DawSession {
   const tracks = [...session.tracks];
   // Master always stays last, like the far-right strip in a console.

@@ -101,7 +101,8 @@ export default function InstrumentRack({ onClose }: { onClose: () => void }) {
     // Track, part and (for a kit) its map arrive as one value — see
     // `addInstrumentSlot`, which exists so a test can check the map is there
     // rather than grep for the call that adds it.
-    apply((s) => addInstrumentSlot(s, track, part));
+    const at = useDawStore.getState().insertIndex();
+    apply((s) => addInstrumentSlot(s, track, part, at));
     useDawStore.getState().setFocusedTrack(track.id);
     useMidiEditorStore.getState().openPart({ trackId: track.id, clipId: part.id });
     setWindow('midi');

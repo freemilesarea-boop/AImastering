@@ -36,9 +36,7 @@ import RegionLab from '../components/daw/region/RegionLab.js';
 import { createStack } from '../daw/model/stacks.js';
 
 import { useMidiEditorStore } from '../stores/midiEditorStore.js';
-import {
-  addTrack, createTrack, createBus, findTrack, renameSession, sessionEndSec,
-} from '../daw/model/session-ops.js';
+import { findTrack, renameSession, sessionEndSec } from '../daw/model/session-ops.js';
 import { shouldAdoptQueue } from '../daw/model/import-audio.js';
 import { describeImport, importIntoSession } from '../daw/edit/session-import.js';
 import { importSessionData, deserializeDawSession, serializeDawSession } from '../daw/model/session-io.js';
@@ -553,22 +551,13 @@ export default function DawPage() {
             홈 트랙 가져오기 ({queue.length})
           </ToolbarButton>
         )}
-        <ToolbarButton onClick={() => apply((s) => addTrack(s, createTrack(`Audio ${s.tracks.length}`, 'audio')))}>
+        <ToolbarButton onClick={() => useDawStore.getState().addTrackHere('audio')}>
           + 트랙
         </ToolbarButton>
         <ToolbarButton onClick={handleAddInstrument}>+ 인스트루먼트</ToolbarButton>
         <ToolbarButton onClick={handleImportMidi}>MIDI 가져오기</ToolbarButton>
-        <ToolbarButton onClick={() => apply((s) => {
-          const bus = createBus(`Bus ${s.buses.length + 1}`);
-          const aux = createTrack(`Aux ${s.tracks.filter((t) => t.kind === 'aux').length + 1}`, 'aux', {
-            input: bus.id,
-          });
-          return addTrack({ ...s, buses: [...s.buses, bus] }, aux);
-        })}>+ Aux</ToolbarButton>
-        <ToolbarButton onClick={() => apply((s) => addTrack(s,
-          createTrack(`VCA ${s.tracks.filter((t) => t.kind === 'vca').length + 1}`, 'vca', {
-            output: { kind: 'none' },
-          })))}>+ VCA</ToolbarButton>
+        <ToolbarButton onClick={() => useDawStore.getState().addTrackHere('aux')}>+ Aux</ToolbarButton>
+        <ToolbarButton onClick={() => useDawStore.getState().addTrackHere('vca')}>+ VCA</ToolbarButton>
 
         <span className="w-px h-5 bg-zinc-800 mx-1" />
 

@@ -81,12 +81,13 @@ export default function StepSequencer() {
   const place = (patternId: string): void => {
     const pattern = findPattern(session, patternId);
     if (!pattern) return;
+    const at = useDawStore.getState().insertIndex();
     apply((s) => {
       let next = s;
       let track = next.tracks.find((t) => t.kind === 'instrument' && t.name === 'Drums');
       if (!track) {
         track = createTrack('Drums', 'instrument');
-        next = addTrack(next, track);
+        next = addTrack(next, track, at);
       }
       const base = createMidiPart(pattern.name, {});
       const placement = { ...base, ...patternClip(pattern, playheadSec, next.tempoBpm) };

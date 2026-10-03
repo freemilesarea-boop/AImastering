@@ -9,7 +9,7 @@
 // So everything that IDENTIFIES a copy is new, and everything that DESCRIBES
 // it is carried over.
 
-import { addTrack, findTrack } from '../model/session-ops.js';
+import { addTrack, findTrack, indexAfterTracks } from '../model/session-ops.js';
 import { nextId } from '../model/ids.js';
 import type { DawSession, Track, TrackId } from '../model/types.js';
 
@@ -75,12 +75,10 @@ export function duplicateTrack(session: DawSession, trackId: TrackId): DawSessio
 
   // Placed directly under the original, where a duplicate belongs — appending
   // it to the end of a forty-track session is the same as losing it.
-  const next = addTrack(session, copy);
-  const from = next.tracks.findIndex((t) => t.id === copy.id);
-  const at = next.tracks.findIndex((t) => t.id === source.id);
-  if (from < 0 || at < 0 || from === at + 1) return next;
-  const tracks = [...next.tracks];
-  const [moved] = tracks.splice(from, 1);
-  tracks.splice(at + (from > at ? 1 : 0), 0, moved!);
-  return { ...next, tracks };
+  //
+  // One index rather than the append-then-move it used to be.  That ALSO
+  // landed it under the original — the behaviour here is unchanged, and the
+  // check in track-placement-selftest passes either way — but it said so in
+  // seven lines of splicing, and a reader had to run them to find out.
+  return addTrack(session, copy, indexAfterTracks(session, [source.id]));
 }

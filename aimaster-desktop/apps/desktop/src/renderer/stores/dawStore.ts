@@ -12,7 +12,9 @@ import {
   undo as undoHistory, redo as redoHistory,
   canUndo, canRedo, type History,
 } from '../audio/options-history.js';
-import { createSession, sessionEndSec } from '../daw/model/session-ops.js';
+import {
+  addTrack, createBus, createSession, createTrack, indexAfterTracks, sessionEndSec,
+} from '../daw/model/session-ops.js';
 import type { DawSession, TrackId } from '../daw/model/types.js';
 import { EMPTY_SELECTION, type TimeSelection } from '../daw/edit/clip-edit.js';
 import { expandSelection } from '../daw/edit/edit-groups.js';
@@ -109,6 +111,16 @@ export interface DawState {
   /** Track the keyboard acts on when the selection spans none. */
   focusedTrackId: TrackId | null;
   setFocusedTrack: (id: TrackId | null) => void;
+  /**
+   * Where the next new track goes: after the selection, or the end.
+   *
+   * Here rather than in each button because every one of them was getting it
+   * wrong in the same way — six add-track paths, all appending to the end of
+   * a thirty-track session, while `addTrack` had taken an index all along.
+   */
+  insertIndex: () => number | undefined;
+  /** Add a track of this kind where `insertIndex` says, and select it. */
+  addTrackHere: (kind: 'audio' | 'aux' | 'vca') => void;
 
   playheadSec: number;
   setPlayhead: (sec: number) => void;
@@ -502,6 +514,46 @@ export const useDawStore = create<DawState>((set, get) => ({
   setSelectedTracks: (ids) => set({ selectedTrackIds: ids }),
   focusedTrackId: null,
   setFocusedTrack: (id) => set({ focusedTrackId: id }),
+
+  insertIndex: () => {
+    const { session, selectedTrackIds, focusedTrackId } = get();
+    const ids = selectedTrackIds.length > 0
+      ? selectedTrackIds
+      : (focusedTrackId ? [focusedTrackId] : []);
+    return indexAfterTracks(session, ids);
+  },
+
+  addTrackHere: (kind) => {
+    const at = get().insertIndex();
+    let made = '';
+    get().apply((s) => {
+      if (kind === 'aux') {
+        // An aux reads from a bus, so the bus comes with it.
+        const bus = createBus(`Bus ${s.buses.length + 1}`);
+        const aux = createTrack(
+          `Aux ${s.tracks.filter((t) => t.kind === 'aux').length + 1}`, 'aux', { input: bus.id });
+        made = aux.id;
+        return addTrack({ ...s, buses: [...s.buses, bus] }, aux, at);
+      }
+      if (kind === 'vca') {
+        const vca = createTrack(
+          `VCA ${s.tracks.filter((t) => t.kind === 'vca').length + 1}`, 'vca',
+          { output: { kind: 'none' } });
+        made = vca.id;
+        return addTrack(s, vca, at);
+      }
+      // Numbered by how many audio tracks there are, not by the track count:
+      // the count includes the master and every aux, so a second audio track
+      // in a session with a few buses came out called "Audio 6".
+      const audio = createTrack(
+        `Audio ${s.tracks.filter((t) => t.kind === 'audio').length + 1}`, 'audio');
+      made = audio.id;
+      return addTrack(s, audio, at);
+    });
+    // The new row is what the next add should land after, and what the
+    // keyboard should act on.
+    if (made) set({ selectedTrackIds: [made], focusedTrackId: made });
+  },
 
   clipboard: null,
   setClipboard: (clipboard) => set({ clipboard }),
