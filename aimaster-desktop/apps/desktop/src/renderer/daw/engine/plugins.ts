@@ -19,7 +19,8 @@ import {
   oversampleAlign,
   absShaper, dbToGain, envelopeFollower, halfWaveGainCurve, makeDbReductionCurve,
   makeExpanderCurve,
-  makeGainCurve, makeShaper, smoother, stereoSplit, tanhCurve, wetDry, wholeSamplesSec,
+  dcBlock, makeGainCurve, makeShaper, smoother, stereoSplit, tanhCurve, wetDry,
+  wholeSamplesSec,
   withBypass,
   automatableFrom,
   type PluginDescriptor, type PluginInstance, type PluginParamDef,
@@ -461,7 +462,10 @@ const CORE_PLUGINS: PluginDescriptor[] = [
 
       const blend = wetDry(ctx, params['mix'] ?? 0);
 
-      drive.connect(shaper).connect(compensate);
+      // The coupling sits between the curve and the compensation, so the
+      // offset never reaches the blend or the meter.
+      const block = dcBlock(ctx);
+      drive.connect(shaper).connect(block).connect(compensate);
       input.connect(drive);
       compensate.connect(blend.wet).connect(output);
       // The dry side goes through a matching delay: the wet side has been
@@ -478,7 +482,7 @@ const CORE_PLUGINS: PluginDescriptor[] = [
             drive.disconnect(shaper);
             shaper.disconnect();
             shaper = makeShaper(ctx, tanhCurve(v), '4x');
-            drive.connect(shaper).connect(compensate);
+            drive.connect(shaper).connect(block);
           }
         },
         automatable: automatableFrom({ mix: blend.mix }),

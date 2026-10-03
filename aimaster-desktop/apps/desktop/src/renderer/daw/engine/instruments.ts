@@ -24,7 +24,7 @@ import { WAVETABLES } from './wavetable.js';
 import { LFO_SHAPES, MATRIX_ROWS, MOD_DESTS, MOD_SOURCES, noteRandom, rowParams } from './mod-matrix.js';
 import { SUB_SHAPES, renderVoice, tailSeconds } from './wave-synth.js';
 import { ANALOG_SHAPES } from './analog-model.js';
-import { BUTTERWORTH_Q } from './plugin-kit.js';
+import { BUTTERWORTH_Q, dcBlock } from './plugin-kit.js';
 import { analogTail, renderAnalogVoice, voiceSlot } from './analog-synth.js';
 import { FM_ALGORITHMS, FM_OPERATORS, FM_WAVES } from './fm-core.js';
 import { fmTail, renderFmVoice } from './fm-synth.js';
@@ -3423,18 +3423,11 @@ const BARE_INSTRUMENTS: InstrumentDescriptor[] = [
  * partials reshapes the waveform, and a crest is not a level.  At 5 Hz the
  * same patch reads -3.62 dBTP.
  *
- * Measured, DC against the passage's own RMS, worst in the bank:
- *
- *     no coupling   -14.0 dB (epiano), -38.3 dB (analog)
- *     5 Hz          -181 dB
- *     20 Hz         -194 dB
- *
- * Both corners remove it completely — a highpass has no gain at 0 Hz — so
- * the only thing the extra 15 Hz buys is a faster settle on the step a note
- * makes (32 ms against 8), and it costs the peak above.
- *
- * What the bottom of the keyboard loses, measured against the same notes
- * rendered with no coupling at all:
+ * Both corners remove the offset — a highpass has no gain at 0 Hz — so what
+ * the extra 15 Hz buys is only a faster settle on the step a note makes
+ * (32 ms against 8), and it costs the peak above.  The bottom of the keyboard
+ * pays for it either way, measured against the same notes rendered with no
+ * coupling at all:
  *
  *                     5 Hz      20 Hz    20 Hz by the formula
  *     41 Hz (E1)     0.010 dB   0.26 dB        0.23 dB
@@ -3442,10 +3435,23 @@ const BARE_INSTRUMENTS: InstrumentDescriptor[] = [
  *     27.5 Hz (A0)   0.012 dB   1.06 dB        1.07 dB
  *
  * At 20 Hz the measurement and the Butterworth formula agree to 0.03 dB; at
- * 5 Hz the formula says a thousandth of a decibel and what is left is the
- * renderer's own float32 noise floor, not the filter.
+ * 5 Hz the formula says a thousandth of a decibel, which is below what the
+ * renderer resolves.
+ *
+ * The filter itself is `dcBlock` from `plugin-kit`, a one pole rather than a
+ * biquad, and that is not a detail: a 5 Hz BIQUAD rejects a constant by only
+ * 56 dB in Chromium — measured — while removing it completely in Node.  The
+ * corner lives there too, with the devices that share it.
+ *
+ * What is left afterwards, and why it is not zero.  An asymmetric curve's
+ * offset is proportional to the signal through it, so under notes it is not a
+ * constant but a slow bulge that follows the envelope, and a 5 Hz coupling
+ * passes what moves at envelope rate.  Measured: the worst in the bank is the
+ * Rhodes at -58.6 dB of its own RMS over a four-note passage in the app, and
+ * -181 dB in Node; through a device at a STEADY tone, where the offset really
+ * is a constant, the same filter reads -213 dB.  Before the coupling the same
+ * passage read -14.0 dB.
  */
-const DC_BLOCK_HZ = 5;
 
 /**
  * One instrument, with its output coupled.
@@ -3461,10 +3467,7 @@ function dcCoupled(instrument: InstrumentDescriptor): InstrumentDescriptor {
   return {
     ...instrument,
     playNote: (v): InstrumentVoice => {
-      const block = v.ctx.createBiquadFilter();
-      block.type = 'highpass';
-      block.frequency.value = DC_BLOCK_HZ;
-      block.Q.value = BUTTERWORTH_Q;
+      const block = dcBlock(v.ctx);
       block.connect(v.destination);
       const voice = instrument.playNote({ ...v, destination: block });
       return {

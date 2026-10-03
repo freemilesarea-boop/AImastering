@@ -45,7 +45,7 @@ const SPECTRUM_SLOPE_NOTES: readonly string[] = [
 import {
   BUTTERWORTH_Q, oversample2xLatencySamples, crossoverSide, dynamicsLatencySamples, oversampleLatencySamples,
   oversampleAlign,
-  absShaper, automatableFrom, dbToGain, envelopeFollower, makeShaper,
+  absShaper, automatableFrom, dbToGain, dcBlock, envelopeFollower, makeShaper,
   stereoSplit, tanhCurve, wetDry,
   withBypass, type AutomatableParam, type PluginDescriptor,
 } from './plugin-kit.js';
@@ -431,24 +431,48 @@ export function bitCurve(bits: number): Float32Array<ArrayBuffer> {
  * a FEEDBACK LOOP it is a loop gain above one, and a loop gain above one is an
  * oscillator.
  *
- * Derived rather than measured: d/dx of (tanh((x+b)k) − tanh(bk)) / tanh(k)
- * at x = 0 is k·sech²(bk)/tanh(k).  The self-test checks it against the curve
+ * Derived rather than measured: d/dx of (tanh((x + b/k)k) − tanh(b)) / tanh(k)
+ * at x = 0 is k·sech²(b)/tanh(k).  The self-test checks it against the curve
  * the function actually builds, so the two cannot drift apart.
  */
 export function tubeSmallSignalGain(drive: number, bias: number): number {
   const k = 1 + drive * 24;
-  const sech2 = 1 / Math.cosh(bias * k) ** 2;
+  const sech2 = 1 / Math.cosh(bias) ** 2;
   return (k * sech2) / Math.max(1e-6, Math.tanh(k));
 }
 
 export function tubeCurve(drive: number, bias: number): Float32Array<ArrayBuffer> {
-  const n = 4096;
+  // The bias is an offset at the KNEE, not at the input.
+  //
+  // It used to be added straight to the sample, and the knee is at 1/k, so a
+  // bias of 0.15 against a k of 8.2 pushed the whole positive half past
+  // saturation.  Measured on a 220 Hz tone at 0.3, output RMS and the second
+  // harmonic against the first, as Bias goes up its own travel at the default
+  // drive:
+  //
+  //                  before                     after
+  //     bias 0      rms 0.847  h2  none      rms 0.847  h2  none
+  //     bias 0.15   rms 0.878  h2  -8.2 dB   rms 0.853  h2 -26.1 dB
+  //     bias 0.3    rms 0.398  h2  -3.9 dB   rms 0.866  h2 -20.1 dB
+  //     bias 0.5    rms 0.026  h2  -3.0 dB   rms 0.890  h2 -15.7 dB
+  //
+  // The knob used to MUTE the device at its own maximum — 30 dB down, and at
+  // full drive the output was silence — while its second harmonic ran level
+  // with the third, which is a mangler and not a preamp.  Dividing the bias
+  // by k makes it a fraction of the knee instead: the level holds to 0.4 dB
+  // across the whole travel and the second harmonic rises on its own, which
+  // is what the control is for.
+  //
+  // ODD point count, so one sample sits exactly at an input of zero: a
+  // WaveShaper interpolates between neighbours, and an asymmetric curve with
+  // an even count answers silence with something that is not silence.
+  const n = 4097;
   const curve = new Float32Array(n);
   const k = 1 + drive * 24;
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
-    const b = x + bias;
-    const shaped = Math.tanh(b * k) - Math.tanh(bias * k);
+    const b = x + bias / k;
+    const shaped = Math.tanh(b * k) - Math.tanh(bias);
     curve[i] = shaped / Math.max(1e-6, Math.tanh(k));
   }
   return curve;
@@ -1620,8 +1644,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       const setMix = (percent: number): void => blend.setMix(percent / 100);
       setMix(p(params, 'mix', 100));
 
+      // The coupling a valve stage has and a WaveShaper has not.
+      const block = dcBlock(ctx);
       input.connect(shaper);
-      shaper.connect(tone).connect(wet).connect(out);
+      shaper.connect(block).connect(tone).connect(wet).connect(out);
       // The dry side takes the shaper's own delay, or the Mix knob is a comb.
       input.connect(oversampleAlign(ctx)).connect(dry).connect(out);
       out.connect(output);
@@ -1639,7 +1665,7 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
             shaper.disconnect();
             shaper = next;
             input.connect(shaper);
-            shaper.connect(tone);
+            shaper.connect(block);
           }
         },
         // `drive` and `bias` rebuild the tube curve together, so neither is
@@ -2136,7 +2162,20 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       cabWet.connect(out);
       cabBypass.connect(out);
       setCab(p(params, 'cab', 1));
-      out.connect(output);
+      // The output transformer's coupling.  With the cabinet switched off
+      // nothing else blocks what the valve stages put out: measured -9.2 dB
+      // of DC against the output's own RMS.
+      //
+      // 30 Hz here rather than the 5 the other devices use, because a guitar
+      // amp is the one place where the real circuit is NOT subtle about it:
+      // the preamp stages already cut at 45, 120 and 220 Hz and the cabinet
+      // stops around 80, so a 30 Hz output coupling changes nothing anyone
+      // can hear on an instrument whose lowest note is 82 Hz.  It also
+      // settles in 5 ms instead of 32, which matters because the sag check
+      // reads the level 20 ms in: at 5 Hz the coupling's own charge-up read
+      // as 0.7 dB of sag with the Sag knob at zero.
+      const block = dcBlock(ctx, 30);
+      out.connect(block).connect(output);
 
       return {
         setParam: (id, v) => {
@@ -2474,7 +2513,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
 
       input.connect(delay);
       delay.connect(tone).connect(lowCut).connect(sat);
-      sat.connect(norm);
+      // Blocked BEFORE the feedback tap: the head's asymmetry puts out a
+      // constant, and a constant inside a feedback loop accumulates.
+      const block = dcBlock(ctx);
+      sat.connect(block).connect(norm);
       norm.connect(fb).connect(delay);
       norm.connect(wet).connect(output);
       input.connect(output);

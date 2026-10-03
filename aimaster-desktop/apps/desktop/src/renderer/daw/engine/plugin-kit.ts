@@ -790,6 +790,58 @@ export function makeDbReductionCurve(
 }
 
 /**
+ * Where a saturator's output is coupled, in hertz.
+ *
+ * Low on purpose.  The job is to remove a CONSTANT, and a highpass has no
+ * gain at zero whatever its corner, so the corner is chosen for what it does
+ * to the music instead: at 5 Hz a 30 Hz fundamental loses 0.0003 dB, and the
+ * phase rotation that would otherwise reshape a waveform's crest stays below
+ * the audible band.  Measured elsewhere in this repo, a 20 Hz second-order
+ * corner moved one instrument patch's TRUE PEAK by 1.33 dB while leaving its
+ * loudness exactly where it was.
+ */
+const DC_BLOCK_HZ = 5;
+
+/**
+ * An output coupling: the thing a saturator needs and a WaveShaper has not
+ * got.
+ *
+ * A curve that is asymmetric on purpose — which is what makes the even
+ * harmonics these devices exist for — is asymmetric about zero, so it has a
+ * mean.  Measured on a 220 Hz tone at 0.3 through each device's own graph,
+ * DC against the output's own RMS:
+ *
+ *     tube          -5.3 dB at its DEFAULTS, -4.5 at full drive
+ *     amp           -9.2 dB with the cabinet switched off
+ *     tapedelay    -18.7 dB, and inside its feedback loop
+ *     saturation   -20.5 dB with Bias at either end
+ *
+ * Constant offset eats headroom where no meter shows it, biases the peak a
+ * limiter sees — an asymmetric waveform reaches its ceiling on one side
+ * first — and in a feedback loop it accumulates.  Real valve and tape
+ * circuits are capacitor-coupled at every stage for exactly this reason.
+ */
+export function dcBlock(ctx: BaseAudioContext, hz = DC_BLOCK_HZ): IIRFilterNode {
+  // A one-pole `y = x - x[-1] + r * y[-1]`, and NOT a biquad highpass.
+  //
+  // Measured in the renderer the user actually hears, a constant of 0.5 under
+  // a tone, through nothing but the filter:
+  //
+  //                      5 Hz      10 Hz     20 Hz
+  //     biquad         -55.6 dB   -95.8 dB  -92.2 dB
+  //     one pole      -196.9 dB  -216.7 dB -192.9 dB
+  //
+  // A biquad at 5 Hz puts its poles so close to z = 1 that Chromium cannot
+  // hold them: it rejects a constant by 56 dB and no more, which is a tenth
+  // of the job.  `node-web-audio-api` removes the same constant completely,
+  // so a Node-only test would have called this fixed — the same shape of
+  // mistake as a WebAudio cycle's extra render quantum, which also only
+  // appears in one implementation.
+  const r = 1 - (2 * Math.PI * hz) / Math.max(1, ctx.sampleRate);
+  return ctx.createIIRFilter([1, -1], [1, -Math.min(0.999999, Math.max(0, r))]);
+}
+
+/**
  * A WaveShaper's curve may only be assigned once, so a parameter change that
  * reshapes the transfer function has to REPLACE the node.  This helper keeps
  * that swap in one place instead of scattering rewiring through every plugin.
