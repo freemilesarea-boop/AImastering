@@ -86,6 +86,21 @@ check('the clipper draws BOTH its stages, so the ceiling drawn is the real one',
   assert(spec!.curves.length === 2, `two stages, got ${spec!.curves.length}`);
   sameArray(spec!.curves[0]!, clipCurve(ceiling, 0.2), 'clipper shaper');
   sameArray(spec!.curves[1]!, clipCurve(ceiling, 1), 'clipper guard');
+  // The two lines above prove the picture is not a SECOND COPY of the maths.
+  // They cannot prove it is the right shape — when `clipCurve` carried +26 dB
+  // of gain and squared everything above −25 dBFS, both sides of the
+  // comparison agreed, and the window drew an honest picture of a square.
+  // So the shape itself is pinned here too; clipper-selftest does the rest.
+  const drawn = spec!.curves[0]!;
+  const readAt = (x: number): number => {
+    const t = ((x + 1) / 2) * (drawn.length - 1);
+    const i = Math.max(0, Math.min(drawn.length - 2, Math.floor(t)));
+    return drawn[i]! + (drawn[i + 1]! - drawn[i]!) * (t - i);
+  };
+  const quiet = Math.pow(10, -40 / 20);
+  assert(Math.abs(readAt(quiet) / quiet - 1) < 1e-3,
+    `the drawn curve passes −40 dBFS through: ${(readAt(quiet) / quiet).toFixed(4)}×`);
+  assert(readAt(1) <= ceiling + 1e-6, 'and never draws above the ceiling');
 });
 
 check('the gate draws the array its shaper is loaded with', () => {

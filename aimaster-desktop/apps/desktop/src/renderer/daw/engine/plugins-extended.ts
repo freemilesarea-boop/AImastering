@@ -367,16 +367,48 @@ function rotor(
   };
 }
 
-/** Soft clip: tanh-ish above the ceiling, straight through below it. */
+/**
+ * Soft clip: unity below the knee, bending to the ceiling above it.
+ *
+ * `hardness` is the KNEE, as a fraction of the ceiling: 0 starts bending at
+ * silence (a pure tanh, the softest this gets), 1 passes everything straight
+ * through and cuts flat at the ceiling.  Below the knee the curve is exactly
+ * unity at every setting, which is what a clipper means by "below the
+ * ceiling, nothing happens".
+ *
+ * It used to be `tanh(k·x/ceiling) / tanh(k) · ceiling` with `k = 1 + 40·h`.
+ * That lands on the ceiling at x = ceiling, which looks right, but its slope
+ * at the origin is k — so at the factory hardness of 0.5 the curve carried
+ * +26.4 dB of gain and flattened everything above about −25 dBFS.  Measured
+ * through the device at its defaults, a 1 kHz tone came out at −1.00 dBFS
+ * with 43 % THD from EVERY input level between −40 and 0 dBFS: a −40 dBFS
+ * whisper arrived 39 dB louder, as a square wave.  It was also the loudest
+ * aliaser in the plugin set (−14.3 dB at 7 kHz, and level-independent,
+ * because the output was a square whatever went in).
+ *
+ * The knee form fixes the slope at 1 where it matters and keeps the ceiling
+ * as an asymptote, so below the knee the device is audibly absent and above
+ * it the ceiling is never exceeded — which also leaves the hard guard after
+ * the oversampler with nothing to shave on ordinary material.
+ *
+ * The length is ODD so that x = 0 is a real entry.  An even-length curve has
+ * no sample at the origin, and an odd-symmetric shape sampled off-centre is
+ * no longer odd-symmetric — the same reason the pickup curve in instruments
+ * carries 1025 points rather than 1024.
+ */
 export function clipCurve(ceiling: number, hardness: number): Float32Array<ArrayBuffer> {
-  const n = 4096;
+  const n = 4097;
   const curve = new Float32Array(n);
-  const k = 1 + hardness * 40;
+  const c = Math.max(1e-4, ceiling);
+  const t = Math.max(0, Math.min(1, hardness));
+  const soft = 1 - t;
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
-    const scaled = x / Math.max(1e-4, ceiling);
-    const shaped = Math.tanh(scaled * k) / Math.tanh(k);
-    curve[i] = shaped * ceiling;
+    const u = Math.abs(x) / c;
+    const f = u <= t ? u
+      : soft < 1e-6 ? 1
+      : t + soft * Math.tanh((u - t) / soft);
+    curve[i] = Math.sign(x) * f * c;
   }
   return curve;
 }
@@ -1567,6 +1599,10 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
     latencyFor: (_params, sampleRate) => oversampleLatencySamples(sampleRate),
     // Shaves the two dB of drum transient that would otherwise cost the whole
     // master three dB of limiting.  Instant, no detector, no pumping.
+    //
+    // Below the knee it is audibly absent: measured through the device at the
+    // factory settings, a 1 kHz tone from −40 to −12 dBFS comes out at its
+    // own level with THD between −108 and −139 dB.
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       const drive = ctx.createGain();
       drive.gain.value = dbToGain(p(params, 'driveDb', 0));
@@ -1579,9 +1615,18 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
       shaper.oversample = '4x';
 
       // Oversampling costs something: the resampling filter rings, so the
-      // output overshoots the curve by a dB or so.  A clipper whose ceiling is
-      // a suggestion is not a clipper, so a hard, un-oversampled stage after
-      // it makes the ceiling true.
+      // output overshoots the curve.  Measured against a −1 dB ceiling, the
+      // 4x shaper alone peaks +0.25 dB over at 1 kHz driven 24 dB, +1.30 at
+      // 7 kHz, and +1.99 at 12 kHz with a hard knee.  A clipper whose ceiling
+      // is a suggestion is not a clipper, so a hard, un-oversampled stage
+      // after it makes the ceiling true — and it lands exactly on it.
+      //
+      // Un-oversampled on purpose, and that is not free: a hard clip folds
+      // its own harmonics down.  It costs nothing here because it only ever
+      // sees the overshoot — on undriven material the soft curve stays below
+      // the ceiling and the guard passes it through untouched.  That was the
+      // whole problem with the old `clipCurve`, which carried +26 dB of gain
+      // and handed the guard a square wave to shave at every level.
       let guard = makeShaper(ctx, clipCurve(dbToGain(p(params, 'ceilingDb', -1)), 1));
       drive.connect(shaper);
       shaper.connect(guard);
