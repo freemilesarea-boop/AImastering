@@ -84,33 +84,63 @@ check('the master is never a neighbour to insert after', () => {
   assert(indexAfterTracks(s, [master.id]) === undefined, 'the master alone means the end');
 });
 
-check('the toolbar and the shortcut put the track under the selection', () => {
+check('the toolbar and the shortcut put the track under the focused row', () => {
+  // Driven the way the app drives it: pressing a lane header calls
+  // `setFocusedTrack`, and that is the only thing in the product that marks a
+  // track.  An earlier version of this check called `setSelectedTracks`,
+  // which nothing in the app calls — a test supplying an input the product
+  // does not supply, which is how the shadowing below went unnoticed.
   const { session: s, ids } = session();
   const store = useDawStore.getState();
   store.apply(() => s);
-  store.setSelectedTracks([ids[1]!]);
+  store.setSelectedTracks([]);
+  store.setFocusedTrack(ids[1]!);
   useDawStore.getState().addTrackHere('audio');
   assert(names(useDawStore.getState().session) === 'T0,T1,Audio 5,T2,T3,Master',
     `got ${names(useDawStore.getState().session)}`);
 });
 
-check('the new row becomes the selection, so the next add lands under it', () => {
+check('the new row takes the focus, so the next add lands under it', () => {
   const { session: s, ids } = session();
   const store = useDawStore.getState();
   store.apply(() => s);
-  store.setSelectedTracks([ids[1]!]);
+  store.setSelectedTracks([]);
+  store.setFocusedTrack(ids[1]!);
   useDawStore.getState().addTrackHere('audio');
   useDawStore.getState().addTrackHere('audio');
   // Two adds in a row read downwards, not inside out.
   assert(names(useDawStore.getState().session) === 'T0,T1,Audio 5,Audio 6,T2,T3,Master',
     `got ${names(useDawStore.getState().session)}`);
+  const made = useDawStore.getState().session.tracks.find((t) => t.name === 'Audio 6')!;
+  assert(useDawStore.getState().focusedTrackId === made.id, 'the new row holds the focus');
+});
+
+check('a selection left over from somewhere else cannot shadow the focus', () => {
+  // What actually broke it in the app: this action used to set
+  // `selectedTrackIds` as well, and `insertIndex` took a non-empty selection
+  // as the answer — so the row the user had just pressed was ignored in
+  // favour of the row added before it.  Measured through the UI: a header
+  // press focused Audio 2, the header drew itself focused, and the next add
+  // still went to the bottom.
+  const { session: s, ids } = session();
+  const store = useDawStore.getState();
+  store.apply(() => s);
+  store.setSelectedTracks(['trk-from-another-session' as never]);
+  store.setFocusedTrack(ids[1]!);
+  assert(useDawStore.getState().insertIndex() === 2,
+    `a selection that names nothing here must not win — got ${String(useDawStore.getState().insertIndex())}`);
+  // A selection that DOES name rows still wins: it is the stronger statement.
+  store.setSelectedTracks([ids[3]!]);
+  assert(useDawStore.getState().insertIndex() === 4,
+    `a live selection decides — got ${String(useDawStore.getState().insertIndex())}`);
 });
 
 check('an aux brings its bus, a VCA its routing, and both land in place', () => {
   const { session: s, ids } = session();
   const store = useDawStore.getState();
   store.apply(() => s);
-  store.setSelectedTracks([ids[0]!]);
+  store.setSelectedTracks([]);
+  store.setFocusedTrack(ids[0]!);
   useDawStore.getState().addTrackHere('aux');
   const afterAux = useDawStore.getState().session;
   assert(names(afterAux) === 'T0,Aux 1,T1,T2,T3,Master', `aux: ${names(afterAux)}`);
@@ -118,7 +148,7 @@ check('an aux brings its bus, a VCA its routing, and both land in place', () => 
   assert(aux.input !== null && afterAux.buses.some((b) => b.id === aux.input),
     'the aux reads from a bus that exists');
 
-  store.setSelectedTracks([ids[2]!]);
+  store.setFocusedTrack(ids[2]!);
   useDawStore.getState().addTrackHere('vca');
   const afterVca = useDawStore.getState().session;
   assert(names(afterVca) === 'T0,Aux 1,T1,T2,VCA 1,T3,Master', `vca: ${names(afterVca)}`);
@@ -145,6 +175,7 @@ check('a new audio track is numbered by the audio tracks, not by the row count',
   const store = useDawStore.getState();
   store.apply(() => createSession('numbering', 48_000));
   store.setSelectedTracks([]);
+  store.setFocusedTrack(null);
   useDawStore.getState().addTrackHere('aux');
   useDawStore.getState().addTrackHere('audio');
   useDawStore.getState().addTrackHere('audio');

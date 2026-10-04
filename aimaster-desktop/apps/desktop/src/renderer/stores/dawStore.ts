@@ -517,10 +517,16 @@ export const useDawStore = create<DawState>((set, get) => ({
 
   insertIndex: () => {
     const { session, selectedTrackIds, focusedTrackId } = get();
-    const ids = selectedTrackIds.length > 0
-      ? selectedTrackIds
-      : (focusedTrackId ? [focusedTrackId] : []);
-    return indexAfterTracks(session, ids);
+    // The selection wins, but only while it still names rows that are here.
+    //
+    // Measured in the running app: pressing a lane header focused that row —
+    // the header draws itself differently, so the UI said so — and the next
+    // add still went to the bottom, because a selection left over from an
+    // earlier session was non-empty and matched nothing.  Checking the length
+    // and stopping there let the stale list shadow the live focus.
+    const fromSelection = indexAfterTracks(session, selectedTrackIds);
+    if (fromSelection !== undefined) return fromSelection;
+    return focusedTrackId ? indexAfterTracks(session, [focusedTrackId]) : undefined;
   },
 
   addTrackHere: (kind) => {
@@ -552,7 +558,16 @@ export const useDawStore = create<DawState>((set, get) => ({
     });
     // The new row is what the next add should land after, and what the
     // keyboard should act on.
-    if (made) set({ selectedTrackIds: [made], focusedTrackId: made });
+    //
+    // The FOCUS only.  `selectedTrackIds` has no writer anywhere in the app —
+    // every feature reads "the selection, else the focus", and in practice
+    // that has always meant the focus — so setting it here made this action
+    // the only source of a value everything else reads, and a list left over
+    // from the last add then shadowed the row the user had just pressed.
+    // Measured in the app: a header press focused Audio 2, the header drew
+    // itself focused, and the next track still landed at the bottom because
+    // the selection still said Audio 3.
+    if (made) set({ focusedTrackId: made });
   },
 
   clipboard: null,
