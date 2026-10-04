@@ -37,7 +37,7 @@ import {
 import { createNote, DEFAULT_MIDI_CONFIG } from '../src/renderer/daw/model/midi.js';
 import { findInstrument, defaultInstrumentParams } from '../src/renderer/daw/engine/instruments.js';
 import {
-  chordTemplates, matchChord, bassPitchOf, VOCABULARY_QUALITIES,
+  chordScores, chordTemplates, matchChord, bassPitchOf, VOCABULARY_QUALITIES,
 } from '../src/renderer/daw/audio/chroma/chord-match.js';
 import {
   beatChroma, beatGrid, segmentChords, describeProgression, MIN_TEMPO_CONFIDENCE,
@@ -45,6 +45,7 @@ import {
 import {
   smoothChords, DEFAULT_SIZE_PENALTY,
 } from '../src/renderer/daw/audio/chroma/chord-hmm.js';
+import { createHash } from 'node:crypto';
 import { chromagram, majorityPitchClass } from '../src/renderer/daw/audio/chroma/chroma.js';
 import {
   formatHarteLabel, formatLab, parseHarteLabel, parseLab, scoreChords,
@@ -348,6 +349,61 @@ function labelsFor(
   });
 }
 
+/**
+ * A short fingerprint of a render, so two runs can be compared after the fact.
+ *
+ * The point is only to answer one question when a rendered check fails: did
+ * the AUDIO move, or did the decision?  A matching fingerprint across a
+ * passing and a failing run rules out the whole engine in one line.
+ */
+function audioDigest(mix: Float32Array): string {
+  return createHash('sha256')
+    .update(Buffer.from(mix.buffer, mix.byteOffset, mix.byteLength))
+    .digest('hex').slice(0, 12);
+}
+
+/**
+ * For each bar that came back wrong, what the detector nearly said instead.
+ *
+ * Scored on the bar's own averaged chroma rather than on the segmenter's
+ * output, because the question a failure raises is how close the call was —
+ * a 10 % margin that flipped means something upstream moved, while a 0.3 %
+ * margin means the fixture was always going to be fragile.
+ */
+function explainBars(
+  mix: Float32Array, want: readonly string[], got: readonly string[],
+): string {
+  const gram = chromagram(mix, SR);
+  const grid = beatGrid(mix.length / SR, TEMPO);
+  const spans = beatChroma(gram.frames, gram.hopSec, grid.times);
+  const templates = chordTemplates();
+  const parts: string[] = [];
+  for (let bar = 0; bar < want.length; bar += 1) {
+    if (want[bar] === got[bar]) continue;
+    const acc = new Float32Array(PITCH_CLASS_COUNT);
+    let n = 0;
+    for (let b = bar * BEATS_PER_BAR; b < (bar + 1) * BEATS_PER_BAR && b < spans.length; b += 1) {
+      const span = spans[b];
+      if (!span) continue;
+      for (let i = 0; i < PITCH_CLASS_COUNT; i += 1) acc[i] = acc[i]! + (span[i] ?? 0);
+      n += 1;
+    }
+    if (n === 0) { parts.push(`bar ${bar + 1}: no frames`); continue; }
+    for (let i = 0; i < PITCH_CLASS_COUNT; i += 1) acc[i] = acc[i]! / n;
+    const scores = chordScores(acc);
+    if (!scores) { parts.push(`bar ${bar + 1}: silence`); continue; }
+    const ranked = [...scores]
+      .map((v, t) => ({ v, name: formatChord(templates[t]!.chord) }))
+      .sort((a, b) => b.v - a.v);
+    const top = ranked[0]!;
+    const next = ranked[1]!;
+    const margin = top.v - next.v;
+    parts.push(`bar ${bar + 1} wanted ${want[bar]}: ${top.name}=${top.v.toFixed(4)} `
+      + `over ${next.name}=${next.v.toFixed(4)}, margin ${((margin / top.v) * 100).toFixed(2)}%`);
+  }
+  return parts.join('; ') || 'every bar matched, so the slot read is the problem';
+}
+
 function accuracy(want: readonly string[], got: readonly string[]): number {
   let right = 0;
   for (let i = 0; i < want.length; i++) if (want[i] === got[i]) right += 1;
@@ -552,6 +608,22 @@ async function main(): Promise<void> {
    * Suppression now asks whether a NOTE exists below rather than how loud it
    * is, and the guitar reads 100 %.  If it falls back to 0.75 the thing to
    * look at is `suppressHarmonics`, not this table.
+   *
+   * This check once reported `agtr 75% (Am F Cmaj7 G)` in a full-suite run on
+   * a tree whose diff touched nothing in the instrument or detector path, and
+   * then passed on every re-run.  Chasing it found no mechanism: the render
+   * is bit-identical across twelve renders in one process, five separate
+   * processes and three runs under eight times oversubscribed CPU; the
+   * detector is pure, with no clock, no randomness and no cache; and the
+   * margin between the right chord and the runner-up is 9 to 12 % on all
+   * three instruments, which is not a knife edge.
+   *
+   * So rather than loosen a threshold that is measuring the right thing, the
+   * failure now carries what the next occurrence needs: the margin and the
+   * runner-up for the bar that went wrong, and the hash of the audio it was
+   * read from.  A differing hash says the render moved and the fault is
+   * upstream of the detector; an identical hash with a different label says
+   * the decision moved, and the margin says by how much it had to.
    */
   const MINOR_EXPECTED: Readonly<Record<string, number>> = {
     polysynth: 1, epiano: 1, agtr: 1,
@@ -565,7 +637,8 @@ async function main(): Promise<void> {
       const acc = accuracy(MINOR, got);
       if (Math.abs(acc - want) > 1e-9) {
         bad.push(`${id} ${(acc * 100).toFixed(0)}%, pinned at `
-          + `${(want * 100).toFixed(0)}% (${got.join(' ')})`);
+          + `${(want * 100).toFixed(0)}% (${got.join(' ')}) `
+          + `— audio ${audioDigest(audio.mix)}; ${explainBars(audio.mix, MINOR, got)}`);
       }
     }
     assert(bad.length === 0, bad.join(' | '));
