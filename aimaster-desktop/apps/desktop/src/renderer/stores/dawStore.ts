@@ -42,6 +42,8 @@ import {
   clearAudioCache, forgetMissing, missingFileIds, missingFiles, onMissingFile,
 } from '../daw/engine/audio-cache.js';
 import { tempoMapOf } from '../daw/model/tempo-map.js';
+import { DEFAULT_NUDGE, type NudgeContext, type NudgeSetting } from '../daw/model/nudge.js';
+import { videoOf } from '../daw/model/video.js';
 import {
   cycleSnap, eventTimes, snapMove as snapMoveMode, snapTime as snapTimeMode,
   type SnapContext, type SnapMode,
@@ -157,8 +159,16 @@ export interface DawState {
   snapMode: SnapMode;
   setSnapMode: (m: SnapMode) => void;
   cycleSnapMode: () => void;
-  nudgeSec: number;
-  setNudgeSec: (s: number) => void;
+  /**
+   * How far one nudge moves — a choice, not a number.
+   *
+   * It was `nudgeSec: 0.1` with a setter nothing called, so every nudge in
+   * the app moved exactly 100 ms: a distance that lands on no grid line at
+   * any tempo.  Holding the CHOICE instead means `grid` keeps following the
+   * ruler through a tempo change, and `frame` keeps following the picture.
+   */
+  nudge: NudgeSetting;
+  setNudge: (n: NudgeSetting) => void;
   tabToTransient: boolean;
   toggleTabToTransient: () => void;
 
@@ -759,8 +769,8 @@ export const useDawStore = create<DawState>((set, get) => ({
   snapMode: 'grid',
   setSnapMode: (m) => set({ snapMode: m }),
   cycleSnapMode: () => set((s) => ({ snapMode: cycleSnap(s.snapMode) })),
-  nudgeSec: 0.1,
-  setNudgeSec: (s) => set({ nudgeSec: Math.max(0.001, s) }),
+  nudge: DEFAULT_NUDGE,
+  setNudge: (nudge) => set({ nudge }),
   tabToTransient: true,
   toggleTabToTransient: () => set((s) => ({ tabToTransient: !s.tabToTransient })),
 
@@ -843,6 +853,24 @@ export function snapContext(mode: SnapMode): SnapContext {
       (session.markers ?? []).map((m) => m.timeSec),
       [playheadSec],
     ),
+  };
+}
+
+/**
+ * What a nudge needs to know to turn a choice into seconds.
+ *
+ * Built in one place because the toolbar readout and the two numpad commands
+ * must agree: a label that says 125 ms while the key press moves 100 is
+ * worse than no label at all.
+ */
+export function nudgeContext(atSec: number): NudgeContext {
+  const { session, gridDivision } = useDawStore.getState();
+  const video = videoOf(session);
+  return {
+    tempoMap: tempoMapOf(session),
+    gridDivision,
+    atSec,
+    fps: video && video.fps > 0 ? video.fps : null,
   };
 }
 

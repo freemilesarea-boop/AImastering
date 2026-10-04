@@ -68,6 +68,11 @@ import HistoryPanel from './HistoryPanel.js';
 import PoolPanel from './PoolPanel.js';
 import BatchFadeDialog from './BatchFadeDialog.js';
 import { SNAP_LABELS, SNAP_MODES, describeSnap } from '../../../daw/model/snap-modes.js';
+import {
+  DEFAULT_NUDGE, NUDGE_CHOICES, describeNudge, nudgeChoiceId, nudgeSettingFromId,
+  type NudgeContext,
+} from '../../../daw/model/nudge.js';
+import { videoOf } from '../../../daw/model/video.js';
 import QuantizeDialog from './QuantizeDialog.js';
 import { separateAt } from '../../../daw/edit/clip-edit.js';
 import { useRegionLabStore } from '../../../stores/regionLabStore.js';
@@ -146,7 +151,8 @@ export default function EditWindow() {
   const setEditMode  = useDawStore((s) => s.setEditMode);
   const gridDivision = useDawStore((s) => s.gridDivision);
   const setGridDivision = useDawStore((s) => s.setGridDivision);
-  const nudgeSec     = useDawStore((s) => s.nudgeSec);
+  const nudge        = useDawStore((s) => s.nudge);
+  const setNudge     = useDawStore((s) => s.setNudge);
   const tabToTransient = useDawStore((s) => s.tabToTransient);
   const toggleTab    = useDawStore((s) => s.toggleTabToTransient);
   const loopEnabled  = useDawStore((s) => s.loopEnabled);
@@ -512,6 +518,19 @@ export default function EditWindow() {
   // second interval would sit next to the music instead of on it.  Beat lines
   // appear once a bar is wide enough to hold them.
   const tempoMap = useMemo(() => tempoMapOf(session), [session]);
+  // Where the NEXT nudge would land, so the readout and the key press cannot
+  // disagree.  Resolved at the selection start when there is one — the same
+  // point the command resolves it at — and at the play head otherwise, which
+  // is where a selection made right now would begin.
+  const nudgeView = useMemo<NudgeContext>(() => {
+    const video = videoOf(session);
+    return {
+      tempoMap,
+      gridDivision,
+      atSec: selection.endSec > selection.startSec ? selection.startSec : playheadSec,
+      fps: video && video.fps > 0 ? video.fps : null,
+    };
+  }, [session, tempoMap, gridDivision, selection, playheadSec]);
   // The ruler can count in bars, timecode, minutes or samples.  All four
   // already existed in spot-time.ts and only the Spot dialog could reach
   // them; the ruler was bars whatever the material was, which is the wrong
@@ -566,7 +585,20 @@ export default function EditWindow() {
             ))}
           </select>
         </label>
-        <span className="text-[10px] font-mono text-zinc-600">Nudge {nudgeSec}s</span>
+        <label className="flex items-center gap-1 text-[10px] font-mono text-zinc-600">
+          Nudge
+          <select
+            value={nudgeChoiceId(nudge)}
+            onChange={(e) => setNudge(nudgeSettingFromId(e.target.value) ?? DEFAULT_NUDGE)}
+            className="h-5 rounded px-1 bg-zinc-900 border border-zinc-700 text-zinc-400"
+            title="넘패드 +/− 가 선택 구간을 옮기는 거리입니다"
+          >
+            {NUDGE_CHOICES.map((c) => (
+              <option key={c.id} value={c.id}>{c.label}</option>
+            ))}
+          </select>
+          <span className="text-zinc-500">{describeNudge(nudge, nudgeView)}</span>
+        </label>
         <span className="text-[10px] font-mono" style={{ color: premium.accent.base }}
               title="템포 트랙에서 변화를 추가할 수 있습니다">
           {describeTempoMap(tempoMap)}

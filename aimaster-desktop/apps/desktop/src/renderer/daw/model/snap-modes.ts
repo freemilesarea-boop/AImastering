@@ -159,12 +159,22 @@ export function cycleSnap(mode: SnapMode): SnapMode {
   return SNAP_MODES[(i + 1) % SNAP_MODES.length] as SnapMode;
 }
 
+/**
+ * The grid division as a musician says it — `1마디`, `2박`, `1/16`.
+ *
+ * Exported because the nudge amount names the same divisions, and a second
+ * copy of this arithmetic is a second copy that can drift from the first.
+ */
+export function gridLabel(gridDivision: number): string {
+  return gridDivision >= 4 ? `${gridDivision / 4}마디`
+    : gridDivision >= 1 ? `${gridDivision}박`
+    : `1/${Math.round(4 / gridDivision)}`;
+}
+
 export function describeSnap(mode: SnapMode, gridDivision: number): string {
   if (mode === 'off') return SNAP_LABELS.off;
   if (mode === 'events') return `${SNAP_LABELS.events} — 클립 경계·마커에 붙음`;
-  const grid = gridDivision >= 4 ? `${gridDivision / 4}마디`
-    : gridDivision >= 1 ? `${gridDivision}박`
-    : `1/${Math.round(4 / gridDivision)}`;
+  const grid = gridLabel(gridDivision);
   if (mode === 'relative') return `${SNAP_LABELS.relative} — ${grid} 단위로 이동, 어긋난 위치 유지`;
   if (mode === 'magnetic') return `${SNAP_LABELS.magnetic} — ${grid} 선에 ${SNAP_RADIUS_PX}px 안에서만 붙음`;
   return `${SNAP_LABELS.grid} — ${grid}`;

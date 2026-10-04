@@ -12,7 +12,7 @@
 // fake IPC.
 
 import type { DawState } from '../stores/dawStore.js';
-import { snapToGrid, targetTrackIds } from '../stores/dawStore.js';
+import { nudgeContext, snapToGrid, targetTrackIds } from '../stores/dawStore.js';
 import { MEM_DIGITS, ZOOM_DIGITS, type MemDigit, type ZoomDigit } from './definitions.js';
 import { clearFades, countSelectedClips } from '../daw/edit/batch-fade.js';
 import { setTrackNote, trackNote } from '../daw/model/track-header.js';
@@ -40,6 +40,9 @@ import {
   addPlaylist, compRange, cyclePlaylist, duplicatePlaylist, flattenComp,
 } from '../daw/edit/comping.js';
 import { nudgeClipPitch, resetClipPitch } from '../daw/edit/clip-edit.js';
+import {
+  formatNudgeAmount, nudgeAmountSec, nudgeProblem,
+} from '../daw/model/nudge.js';
 import { clipPitch, describePitch } from '../daw/model/clip-pitch.js';
 import { fitRange } from '../daw/model/viewport.js';
 import { describeGroup, editGroupsOf } from '../daw/edit/edit-groups.js';
@@ -471,6 +474,29 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     return sel;
   };
 
+  /**
+   * Move the selection by one nudge.
+   *
+   * The distance is resolved at the selection START, so inside a ritardando
+   * one press is one grid line of the bar being edited rather than of the
+   * tempo the song opened at.  The toast says the resolved time because the
+   * chosen unit may be musical: "+125ms 넛지" is checkable against the ruler,
+   * "+1/16 넛지" is not.
+   */
+  const nudgeBy = (direction: 1 | -1): void => {
+    const sel = needSelection();
+    if (!sel) return;
+    const state = daw();
+    const ctx = nudgeContext(sel.startSec);
+    const amount = nudgeAmountSec(state.nudge, ctx);
+    if (amount === null) {
+      notify(nudgeProblem(state.nudge, ctx) ?? '넛지 거리를 알 수 없습니다', 'warning');
+      return;
+    }
+    state.apply((s) => nudgeSelection(s, sel, direction * amount));
+    notify(`${direction > 0 ? '+' : '−'}${formatNudgeAmount(amount)} 넛지`);
+  };
+
   const tab = (direction: 1 | -1): void => {
     const state = daw();
     const tracks = targetTrackIds();
@@ -877,21 +903,8 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
       notify('클립 피치 원음');
     },
 
-    'daw.nudgeForward': () => {
-      const sel = needSelection();
-      if (!sel) return;
-      const delta = daw().nudgeSec;
-      daw().apply((s) => nudgeSelection(s, sel, delta));
-      notify(`+${delta}s 넛지`);
-    },
-
-    'daw.nudgeBack': () => {
-      const sel = needSelection();
-      if (!sel) return;
-      const delta = daw().nudgeSec;
-      daw().apply((s) => nudgeSelection(s, sel, -delta));
-      notify(`−${delta}s 넛지`);
-    },
+    'daw.nudgeForward': () => nudgeBy(1),
+    'daw.nudgeBack': () => nudgeBy(-1),
 
     'daw.fadeIn': () => {
       const state = daw();
@@ -1811,12 +1824,17 @@ export function buildDawCommands(deps: DawCommandDeps): Record<DawCommandId, Com
     },
 
     /**
-     * Move by a FRAME, not by the nudge amount.
+     * Move the PLAY HEAD by a frame — the nudge commands move the selection.
      *
-     * Against picture the only meaningful step is one frame, and at 23.976
-     * that is 41.7 ms — a number nobody would ever set the nudge to.  With no
-     * picture loaded there is no frame rate to step by, so it says so rather
-     * than inventing 25.
+     * This comment used to say 41.7 ms was "a number nobody would ever set
+     * the nudge to", which was true only because the nudge amount could not
+     * be set at all.  It can now, and `1 Frame` is one of the choices, so
+     * the two are no longer distinguished by the distance: these two step
+     * the cursor against picture, `daw.nudgeForward/Back` move the audio.
+     *
+     * With no picture loaded there is no frame rate to step by, so it says
+     * so rather than inventing 25 — the same refusal the nudge resolver
+     * makes for the same reason.
      */
     'daw.nudgeFrameBack': () => stepFramesWith(daw(), -1, notify),
     'daw.nudgeFrameForward': () => stepFramesWith(daw(), 1, notify),
