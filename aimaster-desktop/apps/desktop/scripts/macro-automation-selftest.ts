@@ -154,12 +154,20 @@ async function run(): Promise<void> {
     // Pinned so a device losing an automatable parameter shows up HERE, as a
     // macro that quietly stopped following, rather than as a mix that
     // changed for no reason anyone can name.
+    //
+    // WARMTH lost one and AIR lost one when the saturator's Drive and the
+    // exciter's Amount became the knee and the asymmetry of their transfer
+    // curves.  They used to be gains in front of a shaper, which is what made
+    // them rampable — and a WaveShaper clamps its input, so the top of each
+    // of those knobs was a hard clip.  A curve is an allocation and not an
+    // AudioParam, so neither can follow a lane now; `fixedReason` says so in
+    // the UI, and that is the honest trade.
     const table = MACROS.map((m) => {
       const c = macroCoverage(m, NEUTRAL);
       return `${m.id}:${c.moving.length}/${m.targets.length}`;
     }).join(' ');
     eq(table,
-      'warmth:5/5 clarity:5/5 punch:6/7 air:4/4 width:2/2 depth:3/4 loudness:2/4',
+      'warmth:4/5 clarity:5/5 punch:6/7 air:3/4 width:2/2 depth:3/4 loudness:2/4',
       'coverage');
   });
 
@@ -213,9 +221,15 @@ async function run(): Promise<void> {
     assert(text.includes('Transient') && text.includes('Attack'),
       `the module and the knob are named — ${text}`);
     assert(text.includes('제외'), `and marked as excluded — ${text}`);
+    // AIR was the complete one until the exciter's Amount became its curve's
+    // asymmetry.  WIDTH is complete and takes its place here, so the "just
+    // the label" half of the rule is still checked against something.
     const air = findCoverage(NEUTRAL, 'air')!;
-    assert(air.complete, 'AIR is complete');
-    eq(describeCoverage(air), air.macro.label, 'so it is just the label');
+    assert(!air.complete, 'AIR is no longer complete');
+    assert(describeCoverage(air).includes('제외'), 'and it says what is excluded');
+    const width = findCoverage(NEUTRAL, 'width')!;
+    assert(width.complete, 'WIDTH is complete');
+    eq(describeCoverage(width), width.macro.label, 'so it is just the label');
   });
 
   // ── The lane, in the model ──────────────────────────────────────────────

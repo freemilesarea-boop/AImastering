@@ -441,57 +441,51 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'mix',     name: 'Mix',   min: 0,  max: 1,  default: 0, unit: '' },
       { id: 'bias',    name: 'Bias',  min: -1, max: 1,  default: 0, unit: '' },
     ],
-    // `driveDb` moves the drive AND its level compensation, and `bias`
-    // rebuilds the transfer curve; only the blend is one parameter.
+    // `driveDb` and `bias` both rebuild the transfer curve now, so neither can
+    // follow a lane or a macro; only the blend is one parameter.  Drive used
+    // to be a gain in front of the shaper paired with a compensating gain
+    // after it, which made it rampable — and made it a hard clipper, because
+    // a WaveShaper clamps its input to [−1, 1].  See `tanhCurve`.
     automatableParams: ['mix'],
-    drivenParams: ['driveDb'],
     latencyFor: (_params, sampleRate) => oversampleLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
-      const drive = ctx.createGain();
-      const compensate = ctx.createGain();
-      let shaper = makeShaper(ctx, tanhCurve(params['bias'] ?? 0), '4x');
-
-      const applyDrive = (db: number): void => {
-        const gain = dbToGain(db);
-        drive.gain.value = gain;
-        // Saturation adds level; compensating keeps the macro from also
-        // acting as a volume knob.
-        compensate.gain.value = 1 / Math.max(1, Math.sqrt(gain));
-      };
-      applyDrive(params['driveDb'] ?? 0);
+      // No gain in front of the shaper and none behind it.  Drive is where
+      // the curve bends, so the signal never leaves the shaper's domain and
+      // there is no added level to compensate for — which is also why the
+      // level no longer falls as the knob rises: a −18 to 0 dBFS sine moves
+      // at most 1.62 dB of RMS across the whole range.
+      let shaper = makeShaper(
+        ctx, tanhCurve(params['bias'] ?? 0, params['driveDb'] ?? 0), '4x');
 
       const blend = wetDry(ctx, params['mix'] ?? 0);
 
-      // The coupling sits between the curve and the compensation, so the
-      // offset never reaches the blend or the meter.
+      // The coupling sits after the curve, so a biased curve's offset never
+      // reaches the blend or the meter.
       const block = dcBlock(ctx);
-      drive.connect(shaper).connect(block).connect(compensate);
-      input.connect(drive);
-      compensate.connect(blend.wet).connect(output);
+      input.connect(shaper).connect(block).connect(blend.wet).connect(output);
       // The dry side goes through a matching delay: the wet side has been
       // through an oversampled shaper and is a render quantum late, and
       // without this a fifty-per-cent Mix cancels instead of blending.
       input.connect(oversampleAlign(ctx)).connect(blend.dry).connect(output);
 
+      const rebuild = (): void => {
+        const next = makeShaper(
+          ctx, tanhCurve(params['bias'] ?? 0, params['driveDb'] ?? 0), '4x');
+        input.disconnect(shaper);
+        shaper.disconnect();
+        shaper = next;
+        input.connect(shaper).connect(block);
+      };
+
       return {
         setParam: (id, v) => {
-          if (id === 'driveDb') applyDrive(v);
-          if (id === 'mix') blend.setMix(v);
-          if (id === 'bias' && v !== (params['bias'] ?? 0)) {
-            params['bias'] = v;
-            drive.disconnect(shaper);
-            shaper.disconnect();
-            shaper = makeShaper(ctx, tanhCurve(v), '4x');
-            drive.connect(shaper).connect(block);
-          }
+          if (id === 'mix') { blend.setMix(v); return; }
+          if (id !== 'driveDb' && id !== 'bias') return;
+          if (v === (params[id] ?? 0)) return;
+          params[id] = v;
+          rebuild();
         },
         automatable: automatableFrom({ mix: blend.mix }),
-        // The drive and its compensation are one control in two gains: a
-        // scalar that decides both can move both, which is what a macro does.
-        drives: (id) => (id === 'driveDb' ? [
-          { param: drive.gain, map: dbToGain },
-          { param: compensate.gain, map: (v) => 1 / Math.max(1, Math.sqrt(dbToGain(v))) },
-        ] : null),
         dispose: () => {
           blend.dispose();
           try { shaper.disconnect(); } catch { /* ignore */ }
@@ -597,8 +591,12 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       { id: 'freqHz', name: 'Freq',   min: 1500, max: 12000, default: 4000, unit: 'Hz' },
       { id: 'mix',    name: 'Mix',    min: 0,   max: 1,     default: 0,    unit: '' },
     ],
+    // `amount` is the curve's knee now, not a gain in front of it, so it
+    // rebuilds the shaper and can follow neither a lane nor a macro.  It used
+    // to scale up to nine times INTO a curve whose domain ends at full scale,
+    // which a WaveShaper clamps — so the top of the Amount knob was a hard
+    // clip, and at 7 kHz it folded images back at −42.7 dB.
     automatableParams: ['freqHz', 'mix'],
-    drivenParams: ['amount'],
     latencyFor: (_params, sampleRate) => oversampleLatencySamples(sampleRate),
     create: (ctx, params) => withBypass(ctx, (input, output) => {
       // Generate harmonics from the top band only, then blend them back —
@@ -609,15 +607,40 @@ const CORE_PLUGINS: PluginDescriptor[] = [
       band.frequency.value = params['freqHz'] ?? 4000;
       band.Q.value = BUTTERWORTH_Q;
 
-      const drive = ctx.createGain();
-      const shaper = makeShaper(ctx, tanhCurve(0.15), '4x');
+      // Amount is the curve's ASYMMETRY, which is what generates air.
+      //
+      // It used to be a gain of up to nine times in front of a fixed curve,
+      // and a WaveShaper clamps its input to [−1, 1]: the wet band was
+      // hard-limited to full scale at any Amount above the floor, so its
+      // level barely moved (+1.10, +4.17, +4.32 dBFS peak at Amount 0, 0.5
+      // and 1) while its folded images climbed to −42.7 dB.  A band pinned
+      // at full scale is a buzz, not air.
+      //
+      // Putting that drive inside the curve as a knee removes the folding —
+      // but it also kills the knob.  Measured on two tones in the band, the
+      // intermodulation the device adds moves only from −31.5 to −28.5 dB
+      // across a knee swept from 0 to 48 dB, because a soft curve's curvature
+      // over a wide span is gentle and the level has to stay put.  The old
+      // Amount had range because it CLIPPED, and a soft curve cannot.
+      //
+      // The asymmetry can.  Sweeping the bias at a fixed knee moves the same
+      // measurement from −43.3 dB to −9.5 dB while the band's RMS stays
+      // within 0.34 dB — a 34 dB range of harmonic content at a steady level,
+      // which is the Aural Exciter's own trick and what this device was
+      // always reaching for.  The knee stays at 12 dB so a hot band is still
+      // caught rather than squared off.
+      const biasFor = (amount: number): number =>
+        Math.max(0, Math.min(1, amount)) * EXCITER_MAX_BIAS;
+      let shaper = makeShaper(
+        ctx, tanhCurve(biasFor(params['amount'] ?? 0), EXCITER_KNEE_DB), '4x');
+      // An asymmetric curve has a mean, and this band is highpassed BEFORE
+      // the shaper, so nothing downstream would take the offset out.
+      const block = dcBlock(ctx);
       const wet = ctx.createGain();
-
-      const applyAmount = (amount: number): void => { drive.gain.value = 1 + amount * 8; };
-      applyAmount(params['amount'] ?? 0);
       wet.gain.value = params['mix'] ?? 0;
 
-      input.connect(band).connect(drive).connect(shaper).connect(wet).connect(output);
+      input.connect(band);
+      (band as AudioNode).connect(shaper).connect(block).connect(wet).connect(output);
       // Through the same delay the harmonics take.  An exciter ADDS its
       // harmonics to the dry signal, so a render quantum between them is not
       // a subtle blend error — it smears the thing the device exists to add.
@@ -625,20 +648,19 @@ const CORE_PLUGINS: PluginDescriptor[] = [
 
       return {
         setParam: (id, v) => {
-          if (id === 'amount') applyAmount(v);
-          if (id === 'freqHz') band.frequency.value = v;
-          if (id === 'mix') wet.gain.value = v;
+          if (id === 'freqHz') { band.frequency.value = v; return; }
+          if (id === 'mix') { wet.gain.value = v; return; }
+          if (id !== 'amount' || v === (params['amount'] ?? 0)) return;
+          params['amount'] = v;
+          const next = makeShaper(ctx, tanhCurve(biasFor(v), EXCITER_KNEE_DB), '4x');
+          (band as AudioNode).connect(next).connect(block);
+          try { (band as AudioNode).disconnect(shaper); shaper.disconnect(); } catch { /* not connected */ }
+          shaper = next;
         },
-        // `amount` is not offered: it scales the drive going INTO the shaper,
-        // and the harmonics it generates are a function of that level, so a
-        // lane on it would be ramping a curve's input, not a gain.
+        // `amount` is not offered: it is where the curve bends, and a lane
+        // cannot ramp an array.
         automatable: automatableFrom({ freqHz: band.frequency, mix: wet.gain }),
-        // Not offered as a lane above — as an insert knob it ramps the level
-        // going into a shaper, so the harmonics it makes are a function of a
-        // moving target.  A macro drives it from the same scalar as the mix
-        // it feeds, which is the case that reads as one gesture.
-        drives: (id) => (id === 'amount'
-          ? [{ param: drive.gain, map: (v) => 1 + v * 8 }] : null),
+        dispose: () => { try { shaper.disconnect(); } catch { /* ignore */ } },
       };
     }),
   },
@@ -927,6 +949,17 @@ const CORE_PLUGINS: PluginDescriptor[] = [
  * Order is the order the picker shows them in within a category, so the ones
  * an engineer reaches for most sit at the top of their group.
  */
+/**
+ * How asymmetric the exciter's curve gets at full Amount, and where it bends.
+ *
+ * 1.5 of bias measures −12.0 dB of added intermodulation on two tones in the
+ * band, against −43.3 dB at zero: a 34 dB range with the band's RMS steady
+ * inside 0.34 dB.  The knee is fixed because Amount is the asymmetry here —
+ * 12 dB keeps a hot band compressed rather than squared.
+ */
+export const EXCITER_MAX_BIAS = 1.5;
+export const EXCITER_KNEE_DB = 12;
+
 export const PLUGINS: PluginDescriptor[] = [...CORE_PLUGINS, ...REVERB_PLUGINS, ...EXTENDED_PLUGINS];
 
 export function findPlugin(id: string): PluginDescriptor | undefined {

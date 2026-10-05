@@ -20,6 +20,7 @@ import {
   type BiquadSpec, type Complex,
 } from './plugin-curves.js';
 import { tanhCurve } from '../engine/plugin-kit.js';
+import { EXCITER_KNEE_DB, EXCITER_MAX_BIAS } from '../engine/plugins.js';
 import { upwardCurve } from '../engine/upward.js';
 import {
   bitCurve, clipCurve, gateGainCurve, tubeCurve,
@@ -131,13 +132,15 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
 
   if (pluginId === 'saturation') {
     const driveDb = num(params, 'driveDb', 0);
-    const gain = dbToGain(driveDb);
     return {
-      inputGain: gain,
-      curves: [tanhCurve(num(params, 'bias', 0))],
-      // The engine compensates the level the drive adds, so the macro is not
-      // also a volume knob.  It is inside the wet path, not after the blend.
-      wetGain: 1 / Math.max(1, Math.sqrt(gain)),
+      // No gain either side of the curve any more: Drive is where the curve
+      // bends, so the picture is the curve and nothing else.  It used to draw
+      // a pre-gain of up to sixteen times into a curve whose axes stop at
+      // full scale, which is a picture of a device walking off its own graph
+      // — and that was exactly what the engine did.
+      inputGain: 1,
+      curves: [tanhCurve(num(params, 'bias', 0), driveDb)],
+      wetGain: 1,
       mix: num(params, 'mix', 0),
       dryGain: 1 - num(params, 'mix', 0),
       postGain: 1,
@@ -162,18 +165,21 @@ export function shaperFor(pluginId: string, params: Record<string, number>): Sha
   if (pluginId === 'exciter') {
     const amount = num(params, 'amount', 0);
     const mix = num(params, 'mix', 0);
-    // `input -> highpass -> drive(1 + amount*8) -> tanh(0.15) -> wet(mix) -> out`
+    // `input -> highpass -> asymmetric curve -> dc block -> wet(mix) -> out`
     // with `input -> out` at FULL level alongside.  This curve is what content
     // above the corner meets; the corner is a filter and has no place on a
     // transfer curve's axes, so it is said in the caption instead of drawn.
+    //
+    // Amount is the curve's asymmetry, so the picture shows the asymmetry
+    // rather than a pre-gain pushing the signal off the graph.
     return {
-      inputGain: 1 + amount * 8,
-      curves: [tanhCurve(0.15)],
+      inputGain: 1,
+      curves: [tanhCurve(amount * EXCITER_MAX_BIAS, EXCITER_KNEE_DB)],
       wetGain: 1,
       mix,
       dryGain: 1,
       postGain: 1,
-      caption: `${(num(params, 'freqHz', 4000) / 1000).toFixed(1)} kHz 위만 · 드라이브 ×${(1 + amount * 8).toFixed(1)} · ${(mix * 100).toFixed(0)}% 더함`,
+      caption: `${(num(params, 'freqHz', 4000) / 1000).toFixed(1)} kHz 위만 · 치우침 ${(amount * EXCITER_MAX_BIAS).toFixed(2)} · ${(mix * 100).toFixed(0)}% 더함`,
     };
   }
 

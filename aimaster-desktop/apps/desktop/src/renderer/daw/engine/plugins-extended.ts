@@ -2327,22 +2327,33 @@ export const EXTENDED_PLUGINS: PluginDescriptor[] = [
         angle,
       });
 
-      // Drive as a PRE-GAIN into a fixed curve, rather than by rebuilding the
-      // curve.  Two reasons and both are practical: a `WaveShaper`'s curve
-      // cannot be assigned twice under `node-web-audio-api`, which is what the
-      // offline suite renders on, and a gain is an AudioParam while a curve is
-      // an allocation.  The post-gain puts full scale back where it was, so
-      // the knob changes the harmonics and not the level.
+      // Drive is where the curve BENDS, not a gain in front of it.
+      //
+      // It used to be a pre-gain of up to eight times into a fixed curve, with
+      // a post-gain putting full scale back — and the comment here argued for
+      // that because "a `WaveShaper`'s curve cannot be assigned twice under
+      // `node-web-audio-api`".  True, and not a reason: the tape machine two
+      // thousand lines down swaps the whole NODE for a new one, which is what
+      // the clipper and the saturator do too.  What the pre-gain actually did
+      // was push the signal past [−1, 1], where a WaveShaper clamps — so the
+      // top of a Leslie's drive was a hard clip, folding images back at
+      // −40.8 dB on a 7 kHz tone, and −50.5 dB at the factory 20 %.
+      //
+      // Eight times is +18.1 dB, so that is the knee at full drive.  The knee
+      // family keeps the level by construction, which is what the post-gain
+      // was computing by hand.
+      const kneeDbFor = (percent: number): number =>
+        20 * Math.log10(1 + (Math.max(0, Math.min(100, percent)) / 100) * 7);
       const drivePre = ctx.createGain();
-      const driveShape = makeShaper(ctx, tanhCurve(0), '2x');
+      let driveShape = makeShaper(ctx, tanhCurve(0, kneeDbFor(p(params, 'drive', 20))), '2x');
       const drivePost = ctx.createGain();
       drivePre.connect(driveShape).connect(drivePost);
       const setDrive = (percent: number): void => {
-        const amount = 1 + (Math.max(0, Math.min(100, percent)) / 100) * 7;
-        drivePre.gain.value = amount;
-        drivePost.gain.value = Math.tanh(1.6) / Math.tanh(1.6 * amount);
+        const next = makeShaper(ctx, tanhCurve(0, kneeDbFor(percent)), '2x');
+        drivePre.connect(next).connect(drivePost);
+        try { drivePre.disconnect(driveShape); driveShape.disconnect(); } catch { /* not connected */ }
+        driveShape = next;
       };
-      setDrive(p(params, 'drive', 20));
 
       // The horn and the drum are summed back after their own rotors, so this
       // crossover has to add up to one — and a single lowpass and highpass at

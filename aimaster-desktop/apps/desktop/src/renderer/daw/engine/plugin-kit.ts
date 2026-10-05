@@ -713,14 +713,57 @@ export function makeGainCurve(
   return shaper;
 }
 
-/** Soft-clipping transfer curve with an optional even-harmonic bias. */
-export function tanhCurve(bias = 0): Float32Array<ArrayBuffer> {
-  const n = 2048;
+/**
+ * Soft-saturation transfer curve: unity below the knee, tanh bend to full
+ * scale above it, with an optional even-harmonic bias.
+ *
+ * `driveDb` is how far BELOW full scale the bend starts, which is what makes
+ * it a drive in decibels: 0 passes everything straight through, 12 saturates
+ * what is above −12 dBFS, 24 what is above −24.
+ *
+ * Why the drive is a property of the CURVE and not a gain in front of it.
+ * This used to be `tanh(1.6·x) / tanh(1.6)`, a fixed array, and `saturation`
+ * drove up to 24 dB of gain into it.  A WaveShaper's domain is [−1, 1] and it
+ * CLAMPS outside that, so every sample past full scale landed on the last
+ * entry — a flat top.  The device labelled Saturation became a hard clipper
+ * as soon as the Drive knob left its floor, and a hard clip is the one thing
+ * oversampling cannot save you from.  Measured at mix 1 on a 7 kHz tone, the
+ * images folding back down read −145 dB at Drive 0 and 6, then −68.9, −58.8
+ * and −37.2 dB at 12, 18 and 24.  Tube Drive, whose drive IS a curve
+ * parameter, sits at −84 dB at full drive in the same renderer with the same
+ * oversampling: the architecture was the difference, not the filter.
+ *
+ * The old normalisation was wrong in the same way the clipper's was: dividing
+ * by `tanh(1.6)` makes the curve pass through 1 at x = 1, but leaves the slope
+ * at the origin at 1.6/tanh(1.6) = 1.736, so the curve carried +4.79 dB of
+ * gain.  At Drive 0 a −6 dBFS tone came out at −2.83 dBFS with 4.6 % THD: the
+ * knob's minimum was already distorting.
+ *
+ * Unity below the knee and an asymptote at full scale cannot both hold for a
+ * plain tanh — the slope at the origin and the value at 1 are one number —
+ * which is why this is a knee family, the same one `clipCurve` uses.  It also
+ * fixes what the drive can do: with the level preserved, only material ABOVE
+ * the knee is coloured.  A −18 dBFS sine comes back at 0.03 % THD with Drive
+ * at 24, while a full-scale one runs 0 % → 6.6 % across the range and its RMS
+ * never moves more than 1.62 dB.  That is what level-preserving saturation
+ * is: it works on what is loud, and a quiet track needs level into it rather
+ * than more Drive.
+ *
+ * Odd length, so x = 0 is a real entry — see `clipCurve`.
+ */
+export function tanhCurve(bias = 0, driveDb = 0): Float32Array<ArrayBuffer> {
+  const n = 4097;
   const curve = new Float32Array(n);
+  const knee = Math.min(1, dbToGain(-Math.max(0, driveDb)));
+  const soft = 1 - knee;
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * 2 - 1;
     const biased = x + bias * x * x * 0.5;
-    curve[i] = Math.tanh(biased * 1.6) / Math.tanh(1.6);
+    const u = Math.abs(biased);
+    const shaped = u <= knee ? u
+      : soft < 1e-6 ? Math.min(u, 1)
+      : knee + soft * Math.tanh((u - knee) / soft);
+    curve[i] = Math.sign(biased) * Math.min(1, shaped);
   }
   return curve;
 }

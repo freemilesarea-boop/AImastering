@@ -131,12 +131,24 @@ check('a curve is read the way WaveShaperNode reads it', () => {
 
 // ── The gains sit where the graph puts them ─────────────────────────────────
 
-check("the saturator's compensation is inside its wet path, so mix uncovers the dry signal", () => {
+check('the saturator has no gain on either side of its curve', () => {
+  // It used to draw a pre-gain of up to sixteen times into a curve whose axes
+  // stop at full scale, with a 1/sqrt(gain) compensation inside the wet path
+  // to undo it — a picture of a device walking off its own graph, and the
+  // engine did exactly that: a WaveShaper clamps, so the Drive knob's top was
+  // a hard clip.  Drive is the curve's knee now, so the picture is the curve.
   const spec = shaperFor('saturation', { driveDb: 18, bias: 0, mix: 0 })!;
-  // Fully dry: whatever the drive and compensation are, nothing may change.
   near(shaperOutput(spec, 0.5), 0.5, 1e-6, 'mix 0 passes the input through');
-  assert(spec.postGain === 1, 'the saturator has no gain after the blend');
-  assert(spec.wetGain < 1, `18 dB of drive must be compensated — ${spec.wetGain}`);
+  assert(spec.postGain === 1, 'no gain after the blend');
+  assert(spec.inputGain === 1, `no gain before the curve — ${spec.inputGain}`);
+  assert(spec.wetGain === 1, `and none inside the wet path — ${spec.wetGain}`);
+  // And the curve itself is what moved: at 18 dB of drive it bends.
+  const driven = shaperFor('saturation', { driveDb: 18, bias: 0, mix: 1 })!;
+  const flat = shaperFor('saturation', { driveDb: 0, bias: 0, mix: 1 })!;
+  assert(shaperOutput(driven, 0.9) < shaperOutput(flat, 0.9) - 0.01,
+    'drive compresses the top');
+  near(shaperOutput(driven, 0.02), shaperOutput(flat, 0.02), 1e-4,
+    'and leaves a quiet signal where it was');
 });
 
 check("the tube's output trim is AFTER the blend, so it moves the dry signal too", () => {
@@ -806,9 +818,20 @@ check('the exciter ADDS its band — its mix does not uncover the dry signal', (
   assert(shaperOutput(loud, 0.2) > 0.2 + 0.05, `mix should pile on — ${shaperOutput(loud, 0.2)}`);
 });
 
-check("the exciter's drive follows its amount knob, 1x to 9x", () => {
-  near(shaperFor('exciter', { amount: 0, mix: 1 })!.inputGain, 1, 1e-9, 'no amount, no drive');
-  near(shaperFor('exciter', { amount: 1, mix: 1 })!.inputGain, 9, 1e-9, 'full amount is 9x');
+check("the exciter's amount is drawn as the curve's asymmetry, not as a pre-gain", () => {
+  // It used to draw `inputGain: 1 + amount * 8`, up to nine times into a
+  // curve that stops at full scale — which is what the engine did, and what
+  // hard-clipped the band.  Amount is the asymmetry now, so the picture has
+  // to show an asymmetric curve and no gain in front of it.
+  for (const amount of [0, 0.5, 1]) {
+    const spec = shaperFor('exciter', { amount, mix: 1 })!;
+    near(spec.inputGain, 1, 1e-9, `no gain in front at amount ${amount}`);
+  }
+  const none = shaperFor('exciter', { amount: 0, mix: 1 })!.curves[0]!;
+  const full = shaperFor('exciter', { amount: 1, mix: 1 })!.curves[0]!;
+  const lean = (c: Float32Array): number => Math.abs(readCurve(c, 0.5) + readCurve(c, -0.5));
+  assert(lean(none) < 1e-6, `no amount is symmetric — ${lean(none)}`);
+  assert(lean(full) > 0.05, `full amount leans — ${lean(full)}`);
 });
 
 check('the Haas widener delays one side and leaves the other alone', () => {

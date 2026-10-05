@@ -636,8 +636,30 @@ async function main(): Promise<void> {
     const quietRms = channelRms(quiet, 0, from, to);
     const loudRms = channelRms(loud, 0, from, to);
     assert(quietRms > 0.01, 'the rack passes audio');
-    assert(Math.abs(loudRms - quietRms) > quietRms * 0.05,
-      `BODY changes the sound — ${quietRms.toFixed(4)} → ${loudRms.toFixed(4)}`);
+    // What changed, not how loud it got.  This used to compare the two RMS
+    // figures and demand 5 % — and what it was reading was the saturator's
+    // level INVERTING as its Drive came up, which was the defect: a pre-gain
+    // into a clamping curve with a 1/sqrt compensation that over-compensated
+    // once the curve saturated.  Drive is the curve's knee now and the level
+    // is held inside 1.7 dB by construction, so a level test of "the macro
+    // does something" would be a test of a bug returning.
+    const a = quiet.getChannelData(0);
+    const b = loud.getChannelData(0);
+    let diff = 0;
+    for (let i = from; i < to; i += 1) diff += (b[i]! - a[i]!) ** 2;
+    const diffRms = Math.sqrt(diff / (to - from));
+    // 0.97 % on this tone, measured.  Small, and that is a finding rather
+    // than a threshold to tune: BODY moves `saturation.driveDb` 0 → 10 dB and
+    // its Mix 0 → 0.45, and with the knee at −10 dBFS a −11 dBFS tone barely
+    // reaches it.  The macro's audible effect used to come from the level
+    // inverting, so the range it was tuned against no longer exists.  The
+    // ranges are worth revisiting across the racks; what this check is for is
+    // that the chain renders and the knob reaches it at all.
+    assert(diffRms > quietRms * 0.005,
+      `BODY changes the sound — difference ${(diffRms / quietRms * 100).toFixed(2)} % of the signal `
+      + `(${quietRms.toFixed(4)} → ${loudRms.toFixed(4)})`);
+    console.log(`      (BODY: ${quietRms.toFixed(4)} → ${loudRms.toFixed(4)} rms, `
+      + `difference ${(diffRms / quietRms * 100).toFixed(2)} % of the signal)`);
   });
 
   // ── Decode memory ─────────────────────────────────────────────────────────
