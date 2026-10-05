@@ -244,7 +244,11 @@ check('the vocal rack contains the chain from the brief', () => {
   resetIds();
   const rack = buildRack('loui-vocal');
   assert(rack !== null, 'built');
-  eq(describeRack(rack!), 'DENOISE → PITCH → DYN EQ → COMP → DE-ESSER → SATURATION → AIR',
+  // The EQ joined the chain so PRESENCE has a band of its own: it used to
+  // own the dynamic EQ's FREQUENCY while CLEAN owned its range, whose
+  // default is 0 — a switched-off band — so the knob swept the corner of a
+  // filter that was doing nothing.  Measured at 0.0 % of the render.
+  eq(describeRack(rack!), 'DENOISE → PITCH → DYN EQ → COMP → EQ → DE-ESSER → SATURATION → AIR',
     'device order');
   eq(rack!.macros.map((m) => m.name).join(','), 'CLEAN,BODY,PRESENCE,AIR', 'four knobs');
   eq(validateRack(rack!).length, 0, 'every mapping points somewhere real');
@@ -277,13 +281,26 @@ check('a rack macro moves its parameters from FROM to TO', () => {
 check('one macro can push one parameter up while pulling another down', () => {
   resetIds();
   const rack = buildRack('loui-vocal')!;
-  const presence = rack.macros.find((m) => m.name === 'PRESENCE')!;
+  // BODY, which owns the compressor now: the ratio rises while the threshold
+  // drops, which is one gesture over two knobs and the whole point of a
+  // macro.  This used to read PRESENCE's ratio against its attack — and that
+  // split was the bug, because BODY's threshold then had nothing to act on.
+  const body = rack.macros.find((m) => m.name === 'BODY')!;
   const comp = deviceOrder(rack.graph).find((n) => n.label === 'COMP')!;
 
   const zero = resolveRack(rack).get(comp.id)!;
-  const one = resolveRack(setRackMacro(rack, presence.id, 1)).get(comp.id)!;
+  const one = resolveRack(setRackMacro(rack, body.id, 1)).get(comp.id)!;
   assert((one['ratio'] ?? 0) > (zero['ratio'] ?? 0), 'ratio rises');
-  assert((one['attackMs'] ?? 0) < (zero['attackMs'] ?? 0), 'attack shortens at the same time');
+  assert((one['thresholdDb'] ?? 0) < (zero['thresholdDb'] ?? 0),
+    'threshold drops at the same time');
+
+  // And PRESENCE still moves two the same way, on the EQ it now owns.
+  const presence = rack.macros.find((m) => m.name === 'PRESENCE')!;
+  const eqNode = deviceOrder(rack.graph).find((n) => n.label === 'EQ')!;
+  const flat = resolveRack(rack).get(eqNode.id)!;
+  const lifted = resolveRack(setRackMacro(rack, presence.id, 1)).get(eqNode.id)!;
+  assert((lifted['midDb'] ?? 0) > (flat['midDb'] ?? 0), 'the bell lifts');
+  assert((lifted['midHz'] ?? 0) > (flat['midHz'] ?? 0), 'and moves up the band');
 });
 
 check('the rack view can say which macro owns a parameter', () => {

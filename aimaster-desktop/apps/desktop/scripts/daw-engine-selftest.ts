@@ -648,14 +648,17 @@ async function main(): Promise<void> {
     let diff = 0;
     for (let i = from; i < to; i += 1) diff += (b[i]! - a[i]!) ** 2;
     const diffRms = Math.sqrt(diff / (to - from));
-    // 0.97 % on this tone, measured.  Small, and that is a finding rather
-    // than a threshold to tune: BODY moves `saturation.driveDb` 0 → 10 dB and
-    // its Mix 0 → 0.45, and with the knee at −10 dBFS a −11 dBFS tone barely
-    // reaches it.  The macro's audible effect used to come from the level
-    // inverting, so the range it was tuned against no longer exists.  The
-    // ranges are worth revisiting across the racks; what this check is for is
-    // that the chain renders and the knob reaches it at all.
-    assert(diffRms > quietRms * 0.005,
+    // 32 % on this tone.  It read 0.97 % for a while: BODY's only audible
+    // work used to be the saturator's level INVERTING as its Drive came up,
+    // and once Drive became the curve's knee a −11 dBFS tone stopped reaching
+    // it at all.  BODY owns the compressor now — threshold, ratio and makeup
+    // together — which is what a thickness knob is, and rack-macros-selftest
+    // measures all seven macros of both racks the same way.
+    //
+    // The level falls here because this fixture is a STEADY tone: there is
+    // nothing for a compressor to do to it but turn it down.  On material
+    // with an envelope the same macro moves the level +0.44 dB.
+    assert(diffRms > quietRms * 0.05,
       `BODY changes the sound — difference ${(diffRms / quietRms * 100).toFixed(2)} % of the signal `
       + `(${quietRms.toFixed(4)} → ${loudRms.toFixed(4)})`);
     console.log(`      (BODY: ${quietRms.toFixed(4)} → ${loudRms.toFixed(4)} rms, `
