@@ -749,7 +749,13 @@ export function makeGainCurve(
  * is: it works on what is loud, and a quiet track needs level into it rather
  * than more Drive.
  *
- * Odd length, so x = 0 is a real entry — see `clipCurve`.
+ * Odd length, which for this curve is load-bearing and for `clipCurve` is
+ * not: a bias makes the shape ASYMMETRIC, and an even-length grid has no
+ * entry at the origin, so silence comes back as the midpoint of the two
+ * nearest.  Measured at bias 0.4, that midpoint is 5e-8 — small, and the
+ * reason it is small is that this shape's slope is continuous at zero.  Where
+ * the slope JUMPS it is not small: `pickupCurve` measured 4.48e-4, a constant
+ * on the bus for as long as the voice stayed connected.
  */
 export function tanhCurve(bias = 0, driveDb = 0): Float32Array<ArrayBuffer> {
   const n = 4097;

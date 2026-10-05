@@ -391,10 +391,18 @@ function rotor(
  * it the ceiling is never exceeded — which also leaves the hard guard after
  * the oversampler with nothing to shave on ordinary material.
  *
- * The length is ODD so that x = 0 is a real entry.  An even-length curve has
- * no sample at the origin, and an odd-symmetric shape sampled off-centre is
- * no longer odd-symmetric — the same reason the pickup curve in instruments
- * carries 1025 points rather than 1024.
+ * The length is odd to match the rest of the family, and for this curve that
+ * is all it is: an earlier version of this comment claimed an even length
+ * would break the symmetry, and that is wrong.  A WaveShaper's grid,
+ * `i / (n - 1) * 2 - 1`, is symmetric at any length, so index i and
+ * n - 1 - i hold exactly opposite inputs and an odd function stays odd.
+ * Measured, this shape gives f(0) = 0 at 2048, 2049, 4096 and 4097 alike.
+ *
+ * The count matters only when the SLOPE jumps at the origin — see
+ * `pickupCurve` in instruments, whose gain differs by polarity, so its two
+ * neighbours are −1.489e-3 and +2.385e-3 and an even length answers with
+ * their midpoint.  Nothing here is kinked, and if a bias is ever added it
+ * will be, so the odd length stays as the safe default.
  */
 export function clipCurve(ceiling: number, hardness: number): Float32Array<ArrayBuffer> {
   const n = 4097;

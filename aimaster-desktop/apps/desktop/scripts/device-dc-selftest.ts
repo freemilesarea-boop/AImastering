@@ -177,10 +177,20 @@ async function main(): Promise<void> {
   });
 
   await check('a shaper fed silence gives silence back', async () => {
-    // Decided by the point COUNT, not by the shape: a WaveShaper maps x in
-    // [-1, 1] onto index (x + 1) / 2 * (n - 1) and interpolates, so an even
-    // count has no sample at zero and answers with the midpoint of the two
-    // nearest — which for a curve that is asymmetric by design is not zero.
+    // Decided by the SHAPE first and the point count second, which is the
+    // other way round from what this comment used to say.  A WaveShaper maps
+    // x in [−1, 1] onto index (x + 1) / 2 * (n - 1) and interpolates, and
+    // that grid is symmetric at ANY length: index i and n − 1 − i hold
+    // exactly opposite inputs.  So a smooth odd function gives zero whatever
+    // the count — measured, `tapeCurve` does at 4096 and a biased tanh does
+    // at 2048, the latter to 5e-8.
+    //
+    // The count bites where the SLOPE jumps at the origin.  `pickupCurve`'s
+    // gain differs by polarity, so its neighbours are −1.489e-3 and
+    // +2.385e-3 and an even length hands back their midpoint: 4.48e-4 at
+    // amount 0.35, a constant on the bus for as long as the voice played.
+    // curve-silence-selftest sweeps every curve the app builds; these are
+    // the ones this file's devices are made of.
     for (const [name, curve] of [
       ['tubeCurve(0.3, 0.15)', tubeCurve(0.3, 0.15)],
       ['tubeCurve(1, 0.5)', tubeCurve(1, 0.5)],
