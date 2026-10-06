@@ -38,6 +38,7 @@
 import { createOfflineChain, type WasmMasteringChain } from './load-mastering-chain-node.js';
 import { decodeToFloatStereo, deinterleaveStereo } from './process-audio-file-rust.js';
 import { measureStereoLoudness } from './offline-loudness.js';
+import { findLoudSpan } from './loud-span.js';
 
 /** Sample rate everything is measured at. */
 const SR = 48_000;
@@ -111,8 +112,10 @@ function curveOf(left: Float32Array, right: Float32Array, from: number, to: numb
   }
   const raw = Array.from(chain.tonalCurveDb());
   chain.free?.();
-  // Unobserved bands come back as -Infinity; filled from the nearest
-  // measured neighbour so one empty band cannot poison a mean.
+  // Unobserved bands come back as -Infinity; filled from a measured
+  // neighbour — the one below when there is one, otherwise the first above
+  // — so one empty band cannot poison a mean.  Not "the nearest", which is
+  // what this said: the lower neighbour wins however far away it is.
   const out = raw.slice();
   for (let i = 0; i < out.length; i++) {
     if (Number.isFinite(out[i]!)) continue;
@@ -196,29 +199,17 @@ export async function profileSong(filePath: string): Promise<SongProfile> {
   const loudness = measureStereoLoudness(left, right, SR);
 
   // ── Find the loud span and the quietest window ─────────────────────────
-  // One pass of windowed RMS drives both.
-  const win = Math.floor(QUIET_WINDOW_S * SR);
-  const step = Math.floor(win / 2);
-  const rmsAt: number[] = [];
-  let quietStart = 0;
-  let quietRms = Infinity;
-  let loudIdx = 0;
-  let loudRms = 0;
+  //
+  // In `loud-span` rather than here, because `reference-curve` needs the
+  // same thing and was doing it with a fixed window instead — see that
+  // module's header for what that cost.
+  const span = findLoudSpan(left, right, SR, {
+    maxSec: TONE_SECONDS, windowSec: QUIET_WINDOW_S,
+  });
+  const { quietStart, quietRms, windowSamples: win } = span;
+
   let peak = 0;
   let totalSq = 0;
-  for (let a = 0; a + win <= n; a += step) {
-    let sq = 0;
-    for (let i = a; i < a + win; i++) {
-      const m = (left[i]! + right[i]!) * 0.5;
-      sq += m * m;
-    }
-    const rms = Math.sqrt(sq / win);
-    rmsAt.push(rms);
-    // A window that is essentially digital silence is not a noise floor —
-    // it is a gap, and measuring it would recommend gating everything.
-    if (rms < quietRms && rms > 1e-5) { quietRms = rms; quietStart = a; }
-    if (rms > loudRms) { loudRms = rms; loudIdx = rmsAt.length - 1; }
-  }
   for (let i = 0; i < n; i++) {
     const m = Math.max(Math.abs(left[i]!), Math.abs(right[i]!));
     if (m > peak) peak = m;
@@ -229,28 +220,7 @@ export async function profileSong(filePath: string): Promise<SongProfile> {
   const crestDb = 20 * Math.log10(Math.max(peak, 1e-9) / Math.max(rmsAll, 1e-9));
 
   // ── Tone, from the LOUD part ───────────────────────────────────────────
-  //
-  // Not "the middle", and not "the whole file". The engine's band average is
-  // an exponential decay with a ~2 s constant, so whatever the analysed span
-  // ENDS on is most of what it reports. A span that runs into an outro or a
-  // gap measures the gap: the first version of this ran to the end of the
-  // file and came back with a -210 dBFS curve on every input, dark and
-  // bright alike, because both ended in silence.
-  //
-  // So the span starts at the loudest window and extends only while the
-  // music stays up. That is the record, which is what a tonal profile is
-  // supposed to describe.
-  const toneFrom = loudIdx * step;
-  let toneEndIdx = loudIdx;
-  while (
-    toneEndIdx + 1 < rmsAt.length
-    && rmsAt[toneEndIdx + 1]! > loudRms * 0.25
-    && (toneEndIdx - loudIdx + 1) * step < TONE_SECONDS * SR
-  ) {
-    toneEndIdx++;
-  }
-  const toneTo = Math.min(n, toneEndIdx * step + win);
-  const curveDb = curveOf(left, right, toneFrom, toneTo);
+  const curveDb = curveOf(left, right, span.from, span.to);
 
   // ── The noise floor, from the quietest window ──────────────────────────
   const quietCurve = Number.isFinite(quietRms)
