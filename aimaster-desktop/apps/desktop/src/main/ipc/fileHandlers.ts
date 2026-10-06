@@ -263,16 +263,10 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   // arbitrary system files is the only thing this handler can leak, but we
   // refuse to participate in path-traversal probing all the same.
   ipc.handle('file:get-info', (_e, filePath: unknown) => {
-    if (typeof filePath !== 'string' || filePath.length === 0) {
-      throw new Error('file:get-info: filePath must be a non-empty string');
-    }
-    if (filePath.includes('\0')) {
-      throw new Error('file:get-info: null byte in path');
-    }
-    const resolved = path.resolve(filePath);
-    if (!path.isAbsolute(resolved)) {
-      throw new Error('file:get-info: path must resolve to an absolute location');
-    }
+    // Through the shared validator rather than its own copy of the same
+    // three checks — which included the same `isAbsolute(resolve(x))` that
+    // can never fail, so this channel had the hole twice over.
+    const resolved = validateAbsoluteFilePath(filePath, 'file:get-info');
     try {
       const stat = fs.statSync(resolved);
       if (!stat.isFile()) {
