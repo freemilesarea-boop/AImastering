@@ -25,6 +25,7 @@ import { diffPresets} from '../src/renderer/audio/presets/preset-compare.js';
 import { ALL_MODULE_PARAMETER_DEFS} from '../src/renderer/audio/parameters/module-parameter-definitions.js';
 import { MODULE_IDS} from '../src/renderer/audio/parameters/parameter-state.js';
 import { stateToChainConfig} from '../src/renderer/audio/realtime-mastering-chain.js';
+import { buildChainConfig } from '../src/renderer/audio/chain-config.js';
 import { RECOMMENDED } from '../src/renderer/audio/presets/recommended-defaults.js';
 import { inertTunedParameters } from './lib/inert-parameters.js';
 
@@ -115,11 +116,86 @@ check('presetToParameterState + stateToChainConfig are finite', () => {
   }
 });
 
+// ── 3b. A broken number never reaches the chain ──────────────────────────────
+//
+// The check above walks `stateToChainConfig`, the flat five-module mapping,
+// which nothing in the app calls: the preview sends `buildChainConfig`
+// through `setConfigJson` and so does the export.  The obvious follow-up —
+// "the suite config is finite for every preset" — turns out to be
+// unfailable, and measuring that was worth more than adding it: every
+// number in the builder goes through `num(value, fallback)`, so a NaN
+// becomes the module's DEFAULT rather than appearing in the config.
+//
+//   NaN into top-rebuild.crossoverHz  →  the config carries 9000
+//
+// Which is the right behaviour, and is what this asserts — a vacuous
+// `Number.isFinite` sweep would pass whether that substitution happened or
+// not.  Also asserted: a module whose own amount is NaN is dropped rather
+// than engaged at a nonsense setting.
+
+function nonFinite(v: unknown, where = ''): string | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? null : `${where} = ${v}`;
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) {
+      const r = nonFinite(v[i], `${where}[${i}]`);
+      if (r) return r;
+    }
+    return null;
+  }
+  if (v && typeof v === 'object') {
+    for (const [k, x] of Object.entries(v)) {
+      const r = nonFinite(x, `${where}.${k}`);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
+check('a non-finite parameter becomes the default, not part of the config', () => {
+  const base = presetToParameterState(LOUI_PRESETS[0]!, ALL_MODULE_PARAMETER_DEFS);
+  const clean = buildChainConfig({ state: base }) as Record<string, Record<string, unknown>>;
+  for (const key of ['crossoverHz', 'sourceHz', 'characterPct', 'followMs'] as const) {
+    const state = presetToParameterState(LOUI_PRESETS[0]!, ALL_MODULE_PARAMETER_DEFS);
+    state['top-rebuild'] = {
+      ...state['top-rebuild'], bypass: false,
+      // `amountPct` engages the module; `key` is the broken one.
+      parameters: { ...state['top-rebuild'].parameters, amountPct: 50, [key]: NaN },
+    };
+    const cfg = buildChainConfig({ state }) as Record<string, Record<string, unknown>>;
+    const block = cfg['topRebuild'];
+    assert(block !== undefined, `topRebuild dropped when ${key} was NaN`);
+    const bad = nonFinite(cfg, 'suiteConfig');
+    assert(bad === null, `a NaN in ${key} reached the chain: ${String(bad)}`);
+    assert(
+      block![key] === clean['topRebuild']?.[key],
+      `${key} should fall back to its default ${String(clean['topRebuild']?.[key])}, got ${String(block![key])}`,
+    );
+  }
+});
+
+check('a module whose own amount is NaN is dropped, not engaged', () => {
+  const state = presetToParameterState(LOUI_PRESETS[0]!, ALL_MODULE_PARAMETER_DEFS);
+  state['top-rebuild'] = {
+    ...state['top-rebuild'], bypass: false,
+    parameters: { ...state['top-rebuild'].parameters, amountPct: NaN },
+  };
+  const cfg = buildChainConfig({ state }) as Record<string, unknown>;
+  assert(cfg['topRebuild'] === undefined, 'a module with a NaN amount was engaged anyway');
+});
+
 // ── 4. Preview ↔ export consistency (no parameter drift) ─────────────────────
 //
 // The renderable params (targetLufs / ceiling / width / output gain) the
 // chain config carries must equal the preset's tuned values — same state,
-// same direction.  This is the guarantee against preview/export drift.
+// same direction.
+//
+// Checked on the flat mapping, which is NOT what either side sends — the
+// older comment here called this "the guarantee against preview/export
+// drift", and it cannot be: preview and export both go through
+// `buildChainConfig`, and this sees `stateToChainConfig`.  It is a check
+// that the preset's numbers survive a mapping, which is worth having; the
+// real drift guarantee is that both sides call the same builder, which
+// `song-settings-selftest` and `export-config-selftest` cover.
 
 check('chain config reflects preset renderable params', () => {
   for (const p of LOUI_PRESETS) {

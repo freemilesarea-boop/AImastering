@@ -17,6 +17,13 @@ import type { RealtimeChainConfig } from '../src/renderer/audio/realtime-masteri
 // it is called, not when it is imported.
 import { renderStereoBuffer } from '../src/main/offline/rust-offline-render-core.js';
 
+// NOTE: this pins the WASM build by path on purpose, which means it does
+// NOT exercise the loader's own resolution — and for a long time nothing
+// did.  The loader counted directories, landing one level too high from
+// `dist-electron/main`, so the app never found the offline engine while
+// every test here stayed green.  `wasm-resolve-selftest` now owns that
+// question; this override stays so a path problem fails in one place
+// instead of five.
 process.env['LOUI_WASM_NODE_PATH'] = path.resolve(
   __dirname, '../../../packages/dsp-wasm/pkg-node/loui_dsp_wasm.cjs',
 );

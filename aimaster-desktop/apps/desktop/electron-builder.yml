@@ -93,6 +93,22 @@ extraMetadata:
 # Mac.  electron-builder skips a missing extraResources entry, so a build on
 # Linux or Windows — where there is no AU hosting anyway — is unaffected.
 extraResources:
+  # The node-target WASM MasteringChain — the offline render engine.
+  #
+  # It was in NO packaging list, while the main process looked for it at
+  # `resources/dsp-wasm-node`.  So `isRustOfflineAvailable()` was false in
+  # every packaged build, every Studio render fell back to an engine that
+  # cannot read a chain config, and the master came out as if nothing had
+  # been set.  `to:` must stay equal to WASM_NODE_RESOURCE_DIR in
+  # src/main/offline/load-mastering-chain-node.ts — a selftest checks it.
+  #
+  # Outside app.asar on purpose: the glue `require`s its .wasm sibling by
+  # real path.
+  - from: "../../packages/dsp-wasm/pkg-node"
+    to:   "dsp-wasm-node"
+    filter:
+      - "*.cjs"
+      - "*.wasm"
   - from: "public/bin"
     to:   "bin"
     filter:

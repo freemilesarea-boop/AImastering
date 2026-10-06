@@ -218,7 +218,7 @@ clearAllSongSettings();
     back?.presetId === 'ai-vocal-texture',
     String(back?.presetId),
   );
-  check('and the save is timestamped', saved.savedAt > 0);
+  check('and the save is timestamped', saved.entry !== null && saved.entry.savedAt > 0);
 }
 
 {
@@ -256,6 +256,113 @@ clearAllSongSettings();
     back?.state.eq.parameters.airDb === 5 && all.length === 1,
     `${all.length} entry for that path`,
   );
+}
+
+console.log('\n=== A SAVE THAT DID NOT HAPPEN MUST NOT LOOK LIKE ONE THAT DID ===\n');
+
+{
+  // The reported symptom had two possible causes and this is the second
+  // one: `writeEnvelope` was `try { setItem } catch { /* quota */ }`, so a
+  // storage that refused produced a green badge, a cleared dirty flag and
+  // "저장했습니다" — and a render that found nothing. Here storage refuses
+  // on purpose.
+  const good = (globalThis as { localStorage?: unknown }).localStorage;
+  const refusing = {
+    getItem: () => null,
+    setItem: () => { throw new Error('QuotaExceededError'); },
+    removeItem: () => {}, clear: () => {}, key: () => null, length: 0,
+  };
+  (globalThis as { localStorage?: unknown }).localStorage = refusing;
+  const res = saveSongSettings({
+    filePath: '/songs/full.wav', state: baseState(), freeBands: [],
+    masterBypass: false, presetId: null,
+  });
+  check(
+    'a storage that throws is reported as a failed save',
+    res.stored === false && res.entry === null,
+    `stored=${String(res.stored)}, entry=${res.entry ? 'an entry' : 'null'}`,
+  );
+
+  // The quieter failure, and the one a try/catch cannot see: storage takes
+  // the call and keeps nothing. A private window and a cleared-site-data
+  // policy both behave this way.
+  const amnesiac = {
+    getItem: () => null,
+    setItem: () => { /* accepted, and forgotten */ },
+    removeItem: () => {}, clear: () => {}, key: () => null, length: 0,
+  };
+  (globalThis as { localStorage?: unknown }).localStorage = amnesiac;
+  const res2 = saveSongSettings({
+    filePath: '/songs/amnesia.wav', state: baseState(), freeBands: [],
+    masterBypass: false, presetId: null,
+  });
+  check(
+    'a storage that accepts and keeps nothing is also a failed save',
+    res2.stored === false && res2.entry === null,
+    'only a read-back can see this one',
+  );
+
+  (globalThis as { localStorage?: unknown }).localStorage = good;
+  // And it still works once storage does.
+  const ok = saveSongSettings({
+    filePath: '/songs/after.wav', state: baseState(), freeBands: [],
+    masterBypass: false, presetId: null,
+  });
+  check(
+    'a working storage still reports success',
+    ok.stored === true && ok.entry !== null && loadSongSettings('/songs/after.wav') !== null,
+  );
+  check(
+    'and nothing was left behind by the failed saves',
+    loadSongSettings('/songs/full.wav') === null && loadSongSettings('/songs/amnesia.wav') === null,
+  );
+  clearSongSettings('/songs/after.wav');
+}
+
+{
+  // A storage with room for only a few songs must shed the OLDEST OTHER
+  // songs and keep the one being saved — and say how many it dropped,
+  // because that is somebody's work.
+  const good = (globalThis as { localStorage?: unknown }).localStorage;
+  let cap = Infinity;
+  let held: string | null = null;
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: () => held,
+    setItem: (_k: string, v: string) => {
+      if (v.length > cap) throw new Error('QuotaExceededError');
+      held = v;
+    },
+    removeItem: () => { held = null; },
+    clear: () => { held = null; }, key: () => null, length: 1,
+  };
+  for (let i = 0; i < 8; i++) {
+    saveSongSettings({
+      filePath: `/songs/bulk${i}.wav`, state: baseState(), freeBands: [],
+      masterBypass: false, presetId: null,
+    });
+  }
+  const before = savedSongPaths().length;
+  // Now shrink the box to roughly half of what is in it.
+  cap = Math.floor((held ?? '').length * 0.6);
+  const res = saveSongSettings({
+    filePath: '/songs/newest.wav', state: baseState(), freeBands: [],
+    masterBypass: false, presetId: null,
+  });
+  check(
+    'a full storage sheds older songs rather than failing the save',
+    res.stored === true && res.evicted > 0,
+    `stored=${String(res.stored)}, evicted=${res.evicted} of ${before}`,
+  );
+  check(
+    'and the song being saved is never the one dropped',
+    loadSongSettings('/songs/newest.wav') !== null,
+  );
+  check(
+    'the eviction count is reported, because it is data loss',
+    savedSongPaths().length === before + 1 - res.evicted,
+    `${savedSongPaths().length} left, expected ${before + 1 - res.evicted}`,
+  );
+  (globalThis as { localStorage?: unknown }).localStorage = good;
 }
 
 {
@@ -505,6 +612,75 @@ async function renderChecks(): Promise<void> {
     });
   } catch { threw = true; }
   check('a failed render throws rather than reporting done', threw);
+
+  // The reported bug, as a test.
+  //
+  // The main process used to answer a failed Rust render with `ok: true,
+  // backend: 'python', fallbackUsed: true` — a master produced by an engine
+  // that cannot read a chain config, i.e. the song with none of the
+  // Studio work in it. `renderSong` accepted that as a finished render, so
+  // the queue row went green and the user concluded 설정 저장 does nothing.
+  //
+  // `chainConfigHonored: false` is the main process saying it could not
+  // apply the chain. A render must not come back done.
+  (globalThis as { window?: { electronAPI: { invoke: unknown } } }).window = {
+    electronAPI: {
+      invoke: async () => ({
+        ok: true, backend: 'python', fallbackUsed: true, chainConfigHonored: false,
+        outputPath: '/out/notwhatyouset.wav', previewPath: '/out/x.mp3',
+        error: 'rust offline backend unavailable',
+      }),
+    },
+  };
+  let msg = '';
+  try {
+    await renderSong({
+      filePath: '/songs/tuned.wav', analysis, options,
+      settings: {
+        filePath: '/songs/tuned.wav', savedAt: 1, state: s,
+        freeBands: [], masterBypass: false, presetId: null,
+      },
+      albumPreset: null,
+    });
+  } catch (e) { msg = (e as Error).message; }
+  check(
+    'a render that could not apply the saved settings is not reported as done',
+    msg !== '',
+    'it returned an output path, so the old code called it a finished master',
+  );
+  check(
+    'and the message says the settings ARE saved, since that is what was doubted',
+    msg.includes('설정은 저장되어 있습니다'),
+    msg || 'no error raised',
+  );
+  check(
+    'and names the real cause rather than blaming the save',
+    msg.includes('rust offline backend unavailable'),
+    msg || 'no error raised',
+  );
+
+  // A missing field is an older main process, not a dropped chain — reading
+  // it as "dropped" would fail every render on a mismatched build.
+  (globalThis as { window?: { electronAPI: { invoke: unknown } } }).window = {
+    electronAPI: {
+      invoke: async () => ({
+        ok: true, backend: 'rust', fallbackUsed: false,
+        outputPath: '/out/x.wav', previewPath: '/out/x.mp3',
+      }),
+    },
+  };
+  const noField = await renderSong({
+    filePath: '/songs/tuned.wav', analysis, options,
+    settings: {
+      filePath: '/songs/tuned.wav', savedAt: 1, state: s,
+      freeBands: [], masterBypass: false, presetId: null,
+    },
+    albumPreset: null,
+  });
+  check(
+    'a response with no chainConfigHonored field still renders',
+    noField.path === 'studio' && noField.result.outputPath === '/out/x.wav',
+  );
 }
 
 void renderChecks().then(() => {

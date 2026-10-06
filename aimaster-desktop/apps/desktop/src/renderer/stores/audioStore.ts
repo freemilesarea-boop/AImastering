@@ -135,6 +135,16 @@ export interface QueueItem {
    * every row parsing storage on every render.
    */
   studioSavedAt?: number;
+  /**
+   * Which render path this row actually came out of, once it is done.
+   *
+   * `renderSong` has always returned it "for the queue row to report
+   * honestly" and the caller always threw it away, so a row that was
+   * mastered WITHOUT the user's saved settings looked exactly like one that
+   * was mastered with them.  Saving is only trustworthy if the result says
+   * the settings arrived.
+   */
+  renderedPath?: 'studio' | 'classic';
 }
 
 export const MAX_QUEUE_SIZE = 20;

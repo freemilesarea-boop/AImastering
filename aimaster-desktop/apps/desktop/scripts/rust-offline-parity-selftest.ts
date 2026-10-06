@@ -14,17 +14,24 @@ import path from 'node:path';
 import {
   renderStereoBuffer, type RenderResult,
 } from '../src/main/offline/rust-offline-render-core.js';
-import type { OfflineChainConfig } from '../src/main/offline/load-mastering-chain-node.js';
+import type { OfflineFlatChainConfig } from '../src/main/offline/load-mastering-chain-node.js';
 import { loadWasmModule } from '../src/main/offline/load-mastering-chain-node.js';
 
 // Point the loader at the workspace node-WASM build explicitly.
+// NOTE: this pins the WASM build by path on purpose, which means it does
+// NOT exercise the loader's own resolution — and for a long time nothing
+// did.  The loader counted directories, landing one level too high from
+// `dist-electron/main`, so the app never found the offline engine while
+// every test here stayed green.  `wasm-resolve-selftest` now owns that
+// question; this override stays so a path problem fails in one place
+// instead of five.
 process.env['LOUI_WASM_NODE_PATH'] = path.resolve(
   __dirname, '../../../packages/dsp-wasm/pkg-node/loui_dsp_wasm.cjs',
 );
 
 const SR = 48000;
 
-function cfg(over: Partial<OfflineChainConfig> = {}): OfflineChainConfig {
+function cfg(over: Partial<OfflineFlatChainConfig> = {}): OfflineFlatChainConfig {
   return {
     inputGainDb: 0,
     eqLowCutHz: 30, eqLowShelfDb: 1.0, eqPresenceDb: 0.5, eqAirDb: 2.0, eqAdaptive: false, eqBypass: false,

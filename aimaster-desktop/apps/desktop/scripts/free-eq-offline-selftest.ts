@@ -15,12 +15,19 @@
 
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
+// NOTE: this pins the WASM build by path on purpose, which means it does
+// NOT exercise the loader's own resolution — and for a long time nothing
+// did.  The loader counted directories, landing one level too high from
+// `dist-electron/main`, so the app never found the offline engine while
+// every test here stayed green.  `wasm-resolve-selftest` now owns that
+// question; this override stays so a path problem fails in one place
+// instead of five.
 process.env['LOUI_WASM_NODE_PATH'] = path.resolve(
   __dirname, '../../../packages/dsp-wasm/pkg-node/loui_dsp_wasm.cjs',
 );
 
 import { renderStereoBuffer } from '../src/main/offline/rust-offline-render-core.js';
-import { loadWasmModule, type OfflineChainConfig, type OfflineParametricBand } from '../src/main/offline/load-mastering-chain-node.js';
+import { loadWasmModule, type OfflineFlatChainConfig, type OfflineParametricBand } from '../src/main/offline/load-mastering-chain-node.js';
 import { buildChainConfig } from '../src/renderer/audio/chain-config.js';
 import { freeBandToWire } from '../src/renderer/audio/modules/eq-graph-model.js';
 import { defaultAllModulesState } from '../src/renderer/audio/parameters/parameter-state.js';
@@ -29,7 +36,7 @@ import { ALL_MODULE_PARAMETER_DEFS } from '../src/renderer/audio/parameters/modu
 const SR = 48_000;
 const N = SR * 1; // 1 second is enough to settle the filters + measure RMS.
 
-function flatCfg(parametricBands?: OfflineParametricBand[]): OfflineChainConfig {
+function flatCfg(parametricBands?: OfflineParametricBand[]): OfflineFlatChainConfig {
   // All non-EQ modules at unity — isolate the parametric EQ contribution.
   return {
     inputGainDb: 0,

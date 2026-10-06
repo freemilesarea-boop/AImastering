@@ -26,6 +26,8 @@ import { recordFailure } from '../utils/failureLog.js';
 import { recordPipelineWarning } from '../utils/supportBundle.js';
 import { validateAbsoluteFilePath } from '../utils/ipcValidation.js';
 import { applyBundledFfmpegEnv } from '../utils/ffmpegEnv.js';
+import { pythonFallbackMayStandIn } from '../offline/load-mastering-chain-node.js';
+import { findUp, PYTHON_ENTRY_REL } from '../utils/workspace-paths.js';
 
 let bridge: PythonBridge | null = null;
 
@@ -75,9 +77,16 @@ function resolvePaths(): { pythonPath: string; scriptPath: string } {
     };
   }
 
-  // DEV: use system python + source tree
+  // DEV: use system python + source tree.
+  //
+  // Found by walking up rather than by counting `..`.  The count that was
+  // here (four) is right from `dist-electron/main`, where `pnpm dev:main`
+  // runs the bundle, and wrong from `src/main/ipc`, so it worked only
+  // because nothing runs this from source — the same arithmetic that made
+  // the offline render engine unfindable, waiting for the build output to
+  // move one level.
   const pythonPath = process.env['AIMASTER_PYTHON'] ?? 'python3';
-  const scriptPath = path.join(__dirname, '../../../../services/python-audio/app/main.py');
+  const scriptPath = findUp(__dirname, PYTHON_ENTRY_REL) ?? path.join(__dirname, PYTHON_ENTRY_REL);
   // PYTHONPATH must point to the directory containing the `app` package
   process.env['PYTHONPATH'] = path.dirname(path.dirname(scriptPath));
 
@@ -370,10 +379,23 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
   });
 
   // ── Rust offline render (experimental, RUST-OFFLINE-RENDER-1) ───────────
-  // Additive path: render the file through the SAME Rust MasteringChain as
-  // the realtime preview.  On ANY failure it falls back to the Python
-  // `masterFile` so the user always gets an output.  `audio:master` is
-  // unchanged.
+  // Render the file through the SAME Rust MasteringChain as the realtime
+  // preview.  `audio:master` is unchanged and is still the path for a song
+  // with no Studio work.
+  //
+  // It used to fall back to the Python `masterFile` on ANY failure, "so the
+  // user always gets an output".  But `masterFile` takes five scalar
+  // options and cannot read a chain config at all, so when the caller had
+  // sent one the fallback produced a master with none of the user's
+  // settings in it — and returned `ok: true`.  That is precisely the
+  // reported bug: mix in the Studio, press 설정 저장, run the mastering, get
+  // the original back with no sign anything went wrong.
+  //
+  // So: a request that carries a `suiteConfig` is a request for THAT chain.
+  // If it cannot be honoured, this refuses, and the renderer turns the
+  // refusal into a visible error on the row.  An output nobody asked for is
+  // worse than no output.  Requests without a suiteConfig keep the old
+  // fallback.
   ipc.handle('audio:master-rust-experimental', async (
     _e,
     req: {
@@ -412,27 +434,51 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
       await encodePreviewMp3(wavTempPath, mp3Path);
       return {
         requestId, ok: true, backend: 'rust' as const, fallbackUsed: false,
+        chainConfigHonored: true as const,
         loudnessNormalized: rendered.loudnessNormalized,
         outputPath: rendered.outputPath, previewPath: mp3Path,
         metrics: rendered.metrics, renderMs: Date.now() - t0,
       };
     } catch (rustErr) {
+      const reason = (rustErr as Error).message;
+      // A chain config the Python engine cannot read.  Refuse — see the
+      // header.  `chainConfigHonored: false` is what the renderer keys on,
+      // so this can never again be mistaken for a finished master.
+      if (!pythonFallbackMayStandIn(chainConfig)) {
+        log.error('[audio:master-rust-experimental] chain config cannot be honoured', { err: reason });
+        recordPipelineWarning({
+          code: 'rust_offline_unavailable', level: 'error',
+          userMessage: `offline chain render unavailable, refused rather than rendering without the chain: ${reason}`,
+        });
+        return {
+          requestId, ok: false as const, backend: 'rust' as const,
+          fallbackUsed: false, chainConfigHonored: false as const,
+          error: reason, renderMs: Date.now() - t0,
+        };
+      }
       log.warn('[audio:master-rust-experimental] rust render failed, falling back to Python', {
-        err: (rustErr as Error).message,
+        err: reason,
       });
-      recordPipelineWarning({ code: 'rust_offline_fallback', level: 'warning', userMessage: `rust offline render fell back to Python: ${(rustErr as Error).message}` });
-      // Fallback: the proven Python path.
+      recordPipelineWarning({ code: 'rust_offline_fallback', level: 'warning', userMessage: `rust offline render fell back to Python: ${reason}` });
+      // Fallback: the proven Python path.  Reached only when there was no
+      // chain config to drop.
       try {
         const b = getBridge();
         const result = await masterFile(b, safeSourcePath, wavTempPath, options, {});
         return {
           requestId, ok: true, backend: 'python' as const, fallbackUsed: true,
+          // Python honours a chain config of any shape exactly as well as it
+          // honours a suite one: not at all.  The refusal above is what
+          // stops a suite config getting here, but the flag still has to
+          // say the truth about whatever did.
+          chainConfigHonored: !chainConfig,
           outputPath: result.outputPath, previewPath: result.previewPath || mp3Path,
           metrics: result.loudnessAfter, renderMs: Date.now() - t0,
         };
       } catch (pyErr) {
         return {
           requestId, ok: false, backend: 'python' as const, fallbackUsed: true,
+          chainConfigHonored: !chainConfig,
           error: (pyErr as Error).message, renderMs: Date.now() - t0,
         };
       }

@@ -119,6 +119,33 @@ export interface NormalizeOptions extends LoudnessGainPolicy {
 }
 
 /**
+ * Add `addDb` to whichever input-gain field this config actually feeds the
+ * chain.
+ *
+ * Pass 2 used to write `inputGainDb` on the config object unconditionally.
+ * That is the flat `setConfig` field — and a suite config is applied with
+ * `setConfigJson`, which never looks at it.  So on the Studio's render path
+ * the solved loudness gain went into a field the chain does not read (and
+ * was `undefined + gain` = NaN into the bargain), the second pass produced
+ * the same audio as the first, and the whole two-pass normalisation was a
+ * no-op.  Measured on a −33.2 LUFS signal asking for −9: it solved +12.00
+ * dB and the render came out at −33.2, 24.2 dB under target.
+ *
+ * `render-song` switches the chain's own realtime loudness loop OFF for an
+ * export precisely because this two-pass is supposed to do the job better.
+ * It was doing nothing instead, so a Studio export had no loudness control
+ * of any kind.
+ */
+function withAddedInputGain(config: OfflineChainConfig, addDb: number): OfflineChainConfig {
+  if (config.suiteConfig) {
+    const prev = config.suiteConfig['inputGainDb'];
+    const base = typeof prev === 'number' ? prev : 0;
+    return { ...config, suiteConfig: { ...config.suiteConfig, inputGainDb: base + addDb } };
+  }
+  return { ...config, inputGainDb: config.inputGainDb + addDb };
+}
+
+/**
  * Two-pass loudness-aware render (RUST-OFFLINE-RENDER-2):
  *   Pass 1 — run the chain, measure integrated LUFS.
  *   Solve  — input-gain to push toward targetLufs (bounded; silence skipped).
@@ -148,7 +175,7 @@ export function renderStereoBufferNormalized(
   let final = p1;
   let finalMeas = m1;
   if (Math.abs(sol.appliedGainDb) > 0.05) {
-    const cfg2: OfflineChainConfig = { ...config, inputGainDb: config.inputGainDb + sol.appliedGainDb };
+    const cfg2 = withAddedInputGain(config, sol.appliedGainDb);
     final = renderStereoBuffer(inLeft, inRight, cfg2, sampleRate, blockSize, (f) => onProgress?.(0.45 + f * 0.45));
     finalMeas = measureStereoLoudness(final.left, final.right, sampleRate);
   }
