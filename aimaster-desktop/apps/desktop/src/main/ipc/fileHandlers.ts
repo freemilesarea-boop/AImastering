@@ -289,16 +289,16 @@ export function registerFileHandlers(ipc: IpcMain, win: BrowserWindow | null): v
   // renderer-supplied paths (that would let the renderer scatter empty
   // directories anywhere on the filesystem).
   ipc.handle('file:open-in-finder', (_e, filePath: unknown) => {
-    if (typeof filePath !== 'string' || filePath.length === 0 || filePath.includes('\0')) {
-      throw new Error('file:open-in-finder: invalid path');
-    }
+    // 'logs' is a SENTINEL, not a path, so it is answered before the path
+    // validator ever sees it — handing a sentinel to a path validator is how
+    // a working channel breaks the day the validator gets stricter.
     if (filePath === 'logs') {
       const logDir = path.join(app.getPath('userData'), 'logs');
       if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
       shell.showItemInFolder(logDir);
       return;
     }
-    const resolved = path.resolve(filePath);
+    const resolved = validateAbsoluteFilePath(filePath, 'file:open-in-finder');
     if (!fs.existsSync(resolved)) {
       throw new Error('file:open-in-finder: path does not exist');
     }

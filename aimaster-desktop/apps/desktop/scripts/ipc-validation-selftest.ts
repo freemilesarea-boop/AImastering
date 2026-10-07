@@ -173,6 +173,29 @@ check(
     ? `also in: ${offenders.join(', ')} — route it through validateAbsoluteFilePath instead`
     : OWNERS.join(' + '),
 );
+
+// The null-byte test is the second marker, and a better one: nothing needs
+// to look for `\0` in a string unless it is about to treat it as a path.
+// Three channels were found this way — `daw:pcm-source`, `video:probe` and
+// `file:open-in-finder` — each with its own copy of the string / empty /
+// null-byte trio, and each accepting a RELATIVE path that the shared
+// validator refuses. Same shape as the `file:get-info` copy that carried
+// the dead check.
+//
+// `settingsHandlers.ts` is allowed: its null-byte test guards a settings
+// VALUE on its way into the store, not a path on its way to `fs`.
+const NULLBYTE_OK = [...OWNERS, 'src/main/ipc/settingsHandlers.ts'];
+const handRolled = filesUnder(path.join(DESKTOP, 'src', 'main'))
+  .filter((f) => /includes\('\\0'\)/.test(codeOnly(fs.readFileSync(f, 'utf8'))))
+  .map((f) => path.relative(DESKTOP, f).split(path.sep).join('/'))
+  .filter((f) => !NULLBYTE_OK.includes(f));
+check(
+  'no handler re-implements the path checks for itself',
+  handRolled.length === 0,
+  handRolled.length > 0
+    ? `hand-rolled in: ${handRolled.join(', ')}`
+    : 'every renderer path goes through one of the two validators',
+);
 // And the owner is where it says it is, so the check above cannot pass by
 // looking at the wrong tree.
 check(
