@@ -396,6 +396,24 @@ export function registerAudioHandlers(ipc: IpcMain, win: BrowserWindow | null): 
   // refusal into a visible error on the row.  An output nobody asked for is
   // worse than no output.  Requests without a suiteConfig keep the old
   // fallback.
+  //
+  // Verified on-device, because nothing automated reaches this branch: it
+  // needs an Electron main process, so the selftests can only cover the
+  // pieces around it (`pythonFallbackMayStandIn`, and `renderSong` refusing
+  // a `chainConfigHonored: false` answer).  Driven through the real IPC in
+  // a running app, with a suite config carrying lowShelf +6 / air +6 /
+  // presence +4:
+  //
+  //   engine present → ok: true, backend 'rust', fallbackUsed false,
+  //                    chainConfigHonored true, renderMs 879,
+  //                    measuredProcessedLufs -10.33 → finalLufs -13.73
+  //                    against a -14 target (the two-pass working)
+  //   engine removed → ok: false, chainConfigHonored false, renderMs 5,
+  //                    'rust offline backend unavailable'
+  //
+  // The second case is what every build actually did before the loader path
+  // was fixed, and five milliseconds is the point: it no longer spends a
+  // render producing something the user did not ask for.
   ipc.handle('audio:master-rust-experimental', async (
     _e,
     req: {
