@@ -2,9 +2,10 @@
 //
 // A two-state toggle (A = Before / B = After) with a keyboard shortcut
 // (B) for instant comparison.  The actual audio source swap is owned by
-// the parent (ProductPage) — this component is the affordance + state
-// surface, so the comparison is a REAL preview source swap, never a fake
-// bypass.
+// the parent — this component is the affordance + state surface, so the
+// comparison is a REAL preview source swap, never a fake bypass.  The
+// parent was ProductPage, which was retired; nothing in the app renders
+// this toggle today.
 //
 // Optional loudness compensation: when the before/after loudness differs
 // (e.g. the user changed Target LUFS), the parent applies a volume trim

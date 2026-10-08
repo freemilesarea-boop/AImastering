@@ -45,7 +45,14 @@ echo "vite     up"
 DISPLAY=":$DISP" AIMASTER_FFMPEG="$FF" AIMASTER_FFPROBE="$FP" \
   npx electron --no-sandbox --remote-debugging-port="$PORT" \
   dist-electron/main/index.js > "$WORK/electron.log" 2>&1 &
-sleep 22
+# Poll rather than sleep for a fixed time.  A flat `sleep 22` reported
+# "CDP down" on a run where Electron was simply still starting — the
+# socket came up a few seconds later, and the only thing wrong was the
+# wait.  Booting is slower on a cold page cache, so the budget is 90s.
+for _ in $(seq 1 90); do
+  curl -s -m 2 "http://localhost:$PORT/json/version" > /dev/null && break
+  sleep 1
+done
 curl -s -m 5 "http://localhost:$PORT/json/version" > /dev/null \
   && echo "electron CDP on $PORT" \
-  || { echo "CDP down — see $WORK/electron.log"; exit 1; }
+  || { echo "CDP down after 90s — see $WORK/electron.log"; exit 1; }

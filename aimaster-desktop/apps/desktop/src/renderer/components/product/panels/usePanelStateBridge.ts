@@ -2,7 +2,9 @@
 //
 // Every parameter panel (EQ / Dynamics / …) supports two modes:
 //   • Controlled — caller passes `state` + `onParamChange` (etc.)
-//     Production: ProductPage wires this from `useModuleParameters()`.
+//     ProductPage wired this from `useModuleParameters()`; it was retired,
+//     and the panels in this folder are now reached only through
+//     Storybook, whose stories pass the props themselves.
 //   • Uncontrolled — no props passed.  The panel manages its own
 //     local useState, mirroring the M3-P-NEXT-4 behaviour.
 //
@@ -47,8 +49,8 @@ export interface PanelStateBridge<TState> {
  *
  * The generic `TState` is unconstrained — each panel defines its own
  * narrow shape (e.g. `EqState`), and the bridge casts the loosely-typed
- * controlled `state` prop back to that shape at the merge point.  We
- * trust ProductPage to pass keys that match the panel's expectations
+ * controlled `state` prop back to that shape at the merge point.  The
+ * caller is trusted to pass keys that match the panel's expectations
  * (the central parameter definitions enforce this contract).
  */
 export function usePanelStateBridge<TState>(

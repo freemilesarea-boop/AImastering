@@ -5,12 +5,21 @@
 // The state model is a single source of truth for every parameter the
 // user can twist in the product layout slide-over panels.  It is:
 //
-//   • UI-state-only — no DSP value is written from this module.
-//   • Engine-agnostic — each parameter carries a `binding` field
-//     pointing to a future EngineSchema target; the binding is what
-//     M2-full / M3-P-NEXT-5B will consume to write to the real DSP.
-//   • Validated — `engine-command.ts` provides clamp/quantise helpers
-//     so every value entering state is in-range and step-aligned.
+//   • UI-state-only — no DSP value is written from THIS module.  The
+//     state it defines does reach the DSP; `chain-config.ts` turns an
+//     all-modules state into the offline render's config and the
+//     preview's alike.
+//   • Engine-agnostic — each parameter carries a `binding` field naming
+//     its EngineSchema target.  The binding is read today, not someday:
+//     `engine-bridge/engine-dispatcher.ts` refuses a command whose
+//     binding is not `wired`, `export-parameter-adapter.ts` grades a
+//     parameter's export support from it, and `pending-summary.ts`
+//     counts what is still unimplemented.
+//   • Validated — `engine-command.ts` provides clamp/quantise helpers.
+//     They are reached through `makeSetParamCommand`, which means
+//     through `ModuleParameterStateProvider` — see the note in
+//     `useModuleParameterState.tsx` about who mounts that, because the
+//     page the app ships writes this state WITHOUT them.
 //
 // Reference docs:
 //   docs/redesign/loui-mastering-v2/m3-product-next-5a/00-OVERVIEW.md

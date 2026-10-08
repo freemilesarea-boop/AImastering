@@ -34,8 +34,11 @@ export interface LouiModuleSlideOverProps {
   width?: number;
   /**
    * Optional header content slotted to the left of the close button —
-   * used by ProductPage for the "(modified)" badge / Reset / Bypass
-   * actions surfaced from the central parameter state.
+   * for the "(modified)" badge / Reset / Bypass actions surfaced from the
+   * all-modules parameter state.  ProductPage filled it and was retired;
+   * no caller passes it today — the one the app reaches,
+   * `LouiPresetSlideOver`, leaves it out, and StudioPage draws its own
+   * reset button rather than going through this slide-over at all.
    */
   headerActions?: React.ReactNode;
   children: React.ReactNode;

@@ -1,7 +1,7 @@
 // EqParameterPanel — UI shell for the EQ module slide-over.
 //
 // Controlled-or-uncontrolled:
-//   • If a parent (ProductPage) passes `state` + `onParamChange`, the
+//   • If a parent passes `state` + `onParamChange`, the
 //     panel is fully controlled and writes flow into the central
 //     parameter state model.
 //   • If no props are passed, the panel manages local state — keeps

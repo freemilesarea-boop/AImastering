@@ -6,8 +6,9 @@
 //   • rendering / updated / error state
 //   • last-rendered timestamp
 //
-// Pure presentation — the parent (ProductPage) owns the controller and
-// passes state + handlers down.
+// Pure presentation — the parent owns the controller and passes state +
+// handlers down.  That parent was ProductPage, which was retired; in this
+// tree the only caller left is this file's stories.
 
 import React from 'react';
 import { surface, text, typography, meter, space, radius } from '../../theme/loui-theme.js';

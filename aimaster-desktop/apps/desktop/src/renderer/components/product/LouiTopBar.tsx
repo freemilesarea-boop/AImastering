@@ -6,9 +6,11 @@
 //   • Right-side dropdown affordances (Preset · Settings) — shells
 //
 // All buttons are styled with `loui-theme` tokens.  None of them are
-// wired to real handlers in this milestone — they are pure UI shells
-// that real ProductPage callers fill in via the `onImport` / `onExport`
-// / `onSettings` / `onPresetMenu` props.
+// wired to real handlers — they are pure UI shells a caller fills in via
+// the `onImport` / `onExport` / `onSettings` / `onPresetMenu` props.  The
+// caller that was going to was ProductPage, which was retired; StudioPage
+// renders the separate `components/TopBar.tsx` instead, so this bar is
+// reached only through Storybook.
 
 import React from 'react';
 import { surface, text, typography, radius, space, meter } from '../../theme/loui-theme.js';

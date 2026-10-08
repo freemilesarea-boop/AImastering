@@ -35,6 +35,14 @@ const fmt = {
   oneDec:  (v: number): string => v.toFixed(1),
   /** 2-decimal ratio. */
   ratio:   (v: number): string => v.toFixed(1),
+  /**
+   * 3-decimal Q.
+   *
+   * For the filter Q controls whose step is 0.001, because 0.707 is the
+   * value they default to and `ratio`'s single decimal shows it as "0.7" —
+   * a control the user can move a hundred times without the number moving.
+   */
+  qFactor: (v: number): string => v.toFixed(3),
 };
 
 // ── EQ ───────────────────────────────────────────────────────────────────
@@ -62,8 +70,16 @@ const EQ_DEFS: ModuleParameterDefinitions = {
     {
       kind: 'number', id: 'lowCutQ', label: 'Low Cut Q',
       hint: 'Resonance at the corner',
-      min: 0.3, max: 6, default: 0.707, step: 0.01,
-      format: fmt.ratio, automatable: true,
+      // step 0.001, not 0.01: the default is Butterworth, 1/sqrt(2) =
+      // 0.707, and a control's reachable values are min + n*step — on a
+      // 0.01 grid from 0.3 that set stops at 0.70 and 0.71, so the slider
+      // could not hold the value it opens with.  The value is what stays
+      // fixed: `eq-curve-model.ts` draws all three of these bands with a
+      // literal `q: 0.707`, and `recommended-defaults.ts` asks for 0.707,
+      // so moving the default to 0.71 would put three files into
+      // disagreement to save a slider.
+      min: 0.3, max: 6, default: 0.707, step: 0.001,
+      format: fmt.qFactor, automatable: true,
       binding: { moduleType: 'adaptive-eq', path: 'bands[lowCut].q', status: 'pending' },
     },
     {
@@ -87,8 +103,9 @@ const EQ_DEFS: ModuleParameterDefinitions = {
     },
     {
       kind: 'number', id: 'lowShelfQ', label: 'Low Shelf Slope',
-      min: 0.3, max: 2, default: 0.707, step: 0.01,
-      format: fmt.ratio, automatable: true,
+      // step 0.001 for the Butterworth default — see lowCutQ above.
+      min: 0.3, max: 2, default: 0.707, step: 0.001,
+      format: fmt.qFactor, automatable: true,
       binding: { moduleType: 'adaptive-eq', path: 'bands[lowShelf].q', status: 'pending' },
     },
     {
@@ -132,8 +149,9 @@ const EQ_DEFS: ModuleParameterDefinitions = {
     },
     {
       kind: 'number', id: 'airQ', label: 'Air Slope',
-      min: 0.3, max: 2, default: 0.707, step: 0.01,
-      format: fmt.ratio, automatable: true,
+      // step 0.001 for the Butterworth default — see lowCutQ above.
+      min: 0.3, max: 2, default: 0.707, step: 0.001,
+      format: fmt.qFactor, automatable: true,
       binding: { moduleType: 'adaptive-eq', path: 'bands[air].q', status: 'pending' },
     },
     {
@@ -185,8 +203,19 @@ const DYNAMICS_DEFS: ModuleParameterDefinitions = {
       binding: { moduleType: 'bus-comp', path: 'ratio', status: 'wired' },
     },
     {
+      // min is 0.5, not 0.1, because a range input's grid is anchored at
+      // `min` — its reachable values are min + n*step.  With min 0.1 and
+      // step 0.5 the grid was 0.1, 0.6, 1.1, 2.1 ... : no round attack time
+      // on it, and not this parameter's own default.  Measured in the app:
+      // setting the slider to 10 left it holding 10.1, so the control and
+      // the value disagreed from the first paint, and all fourteen shipped
+      // presets (4, 5, 8, 10, 12, 14, 16, 18, 28 ms) were off-grid too.
+      // 0.5 puts every multiple of 0.5 on the grid and matches the three
+      // DSP-backed siblings — vintage-comp, multiband and dynamic-eq all
+      // use [0.5 .. /0.5].  Nothing shipped asks for an attack under
+      // 0.5 ms, so the range this gives up is a range nothing used.
       kind: 'number', id: 'attackMs', label: 'Attack',
-      unit: 'ms', min: 0.1, max: 100, default: 10, step: 0.5,
+      unit: 'ms', min: 0.5, max: 100, default: 10, step: 0.5,
       format: fmt.oneDec, automatable: true,
       binding: { moduleType: 'bus-comp', path: 'attackMs', status: 'wired' },
     },
@@ -261,25 +290,35 @@ const IMAGER_DEFS: ModuleParameterDefinitions = {
     },
     {
       kind: 'number', id: 'bandLowPct', label: 'Low Band',
-      unit: '%', min: 0, max: 200, default: 40, step: 5,
+      // step 1, matching `widthPct` above — same unit, same 0..200
+      // range, same thing being set.  On a step-5 grid a control's
+      // reachable values are 0, 5, 10 ..., and `ai-vocal-texture` asks
+      // for 78 and 92: values written in the idiom widthPct already
+      // uses (112, 106, 94, 98, 95, 88).  The preset was not wrong
+      // about the number; these four were the only width controls in
+      // the module that could not express it.
+      unit: '%', min: 0, max: 200, default: 40, step: 1,
       format: fmt.integer, automatable: false,
       binding: { moduleType: 'stereo-imager', path: 'bands[0].width', status: 'pending' },
     },
     {
       kind: 'number', id: 'bandMidLowPct', label: 'Mid-Low Band',
-      unit: '%', min: 0, max: 200, default: 100, step: 5,
+      // step 1 — see bandLowPct above.
+      unit: '%', min: 0, max: 200, default: 100, step: 1,
       format: fmt.integer, automatable: false,
       binding: { moduleType: 'stereo-imager', path: 'bands[1].width', status: 'pending' },
     },
     {
       kind: 'number', id: 'bandMidHighPct', label: 'Mid-High Band',
-      unit: '%', min: 0, max: 200, default: 110, step: 5,
+      // step 1 — see bandLowPct above.
+      unit: '%', min: 0, max: 200, default: 110, step: 1,
       format: fmt.integer, automatable: false,
       binding: { moduleType: 'stereo-imager', path: 'bands[2].width', status: 'pending' },
     },
     {
       kind: 'number', id: 'bandHighPct', label: 'High Band',
-      unit: '%', min: 0, max: 200, default: 90, step: 5,
+      // step 1 — see bandLowPct above.
+      unit: '%', min: 0, max: 200, default: 90, step: 1,
       format: fmt.integer, automatable: false,
       binding: { moduleType: 'stereo-imager', path: 'bands[3].width', status: 'pending' },
     },
