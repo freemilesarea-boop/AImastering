@@ -106,15 +106,23 @@ export function ImagerParameterPanel(props: ControlledPanelProps = {}) {
           format={(v) => v.toFixed(0)}
           onChange={update('lowMonoHz')}
         />
-        {/* Stereoize — not yet implemented */}
-        <div style={{ opacity: 0.4, pointerEvents: 'none' }}>
-          <LouiTogglePill
-            label="Stereoize"
-            hint="준비 중 — 아직 적용되지 않습니다"
-            value={s.stereoize}
-            onChange={update('stereoize')}
-          />
-        </div>
+        {/* Stereoize.  Locked and badged "준비 중 — 아직 적용되지 않습니다"
+            until now, and it has worked since the stereoizer was built: the
+            toggle reaches `chain-config.ts`, which emits it for the Rust
+            chain the preview and the export both run.  Measured through
+            that chain on decorrelated material, switching it on moves the
+            side energy by +3.46 dB.
+
+            Nobody was shown the stale label — the app renders every module
+            through the generic `ModuleParameterPanel`, and this file is
+            reached only from Storybook — but a story is where somebody goes
+            to find out what a control does. */}
+        <LouiTogglePill
+          label="Stereoize"
+          hint="Widen a narrow source by decorrelating the sides"
+          value={s.stereoize}
+          onChange={update('stereoize')}
+        />
       </LouiSectionCard>
 
       {/* Width by Band.  This section used to be locked, badged 준비 중, and

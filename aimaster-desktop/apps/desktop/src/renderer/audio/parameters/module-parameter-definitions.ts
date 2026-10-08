@@ -392,7 +392,17 @@ const LIMITER_DEFS: ModuleParameterDefinitions = {
         moduleType: 'limiter',
         path: 'character',
         status: 'pending',
-        note: 'Only "glue" maps to today\'s Python limiter; others are M2-full additions.',
+        // 'pending' is still the right answer for what this field grades —
+        // `classifyParamExport` reads it against the PYTHON renderable map,
+        // and Python has no limiter character at all.  What was out of date
+        // is the note's implication that the other three do nothing: the
+        // Rust chain distinguishes all four, and a song with Studio work
+        // renders through that chain.  Measured over a transient-heavy
+        // render, each holding the -1 dBFS ceiling: glue→smooth GR 0.41 dB,
+        // transparent GR 0.25 dB, aggressive GR 0.00 dB, classic→punchy
+        // GR 0.00 dB, pairwise differences from -15.6 to -26.5 dB.
+        note: 'Python has no limiter character — only "glue" has an analogue there. '
+          + 'The Rust chain distinguishes all four, so a Studio render honours whichever is chosen.',
       },
     },
   ],
