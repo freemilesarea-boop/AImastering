@@ -32,13 +32,43 @@ export interface RealtimeMetricSample {
 
 /** Aggregated, display-ready metrics. */
 export interface RealtimeMetricsSnapshot {
-  /** Estimated CPU load of the mastering chain (0..1) = avgProcessMs / blockPeriodMs. */
+  /**
+   * Chain load = avgProcessMs / blockPeriodMs.  NOT clamped: 1 is the
+   * deadline, and what matters past it is how far past.
+   *
+   * It used to be `Math.min(1, …)`, which made the two cases a performance
+   * readout exists to tell apart look identical — measured against a
+   * 2.667 ms quantum, 8.0 ms per block (3x over, unusable) and 2.667 ms
+   * (exactly at the deadline, the moment trouble starts) both reported
+   * 100.0 %.  A scale whose top is where the problem begins cannot report
+   * the size of the problem.
+   */
   cpuLoad: number;
+  /**
+   * False when the worklet has not reported a block period yet, so
+   * `cpuLoad` is a guess rather than a measurement.
+   *
+   * Without this, a missing period made `cpuLoad` 0: 5 ms of work per block
+   * against an unknown budget read as an idle chain — the most alarming
+   * state rendered as the calmest.
+   */
+  cpuLoadKnown: boolean;
   avgProcessMs: number;
   peakProcessMs: number;
   blockPeriodMs: number;
   /** Cumulative xrun count since reset. */
   totalXruns: number;
+  /**
+   * Xruns in the last `XRUN_WINDOW` samples.
+   *
+   * Cumulative alone cannot answer the question anybody asks of it. One
+   * xrun while the audio graph is being built is ordinary; xruns still
+   * arriving a minute later are the problem. Measured on the old
+   * accumulator: one startup xrun followed by 60 s of clean samples left
+   * `totalXruns` at 1 forever, and the panel's rule (`> 0` is danger)
+   * painted it red for the rest of the session.
+   */
+  recentXruns: number;
   limiterGrDb: number;
   /** Dynamics (compressor) gain reduction (dB) from the latest sample. */
   dynamicsGrDb: number;
@@ -55,10 +85,21 @@ export interface RealtimeMetricsSnapshot {
 }
 
 const EMPTY: RealtimeMetricsSnapshot = {
-  cpuLoad: 0, avgProcessMs: 0, peakProcessMs: 0, blockPeriodMs: 0,
-  totalXruns: 0, limiterGrDb: 0, dynamicsGrDb: 0, safetyEvents: 0,
-  processCalls: 0, audioBlocks: 0, nonSilentBlocks: 0, samples: 0,
+  cpuLoad: 0, cpuLoadKnown: false, avgProcessMs: 0, peakProcessMs: 0,
+  blockPeriodMs: 0, totalXruns: 0, recentXruns: 0, limiterGrDb: 0,
+  dynamicsGrDb: 0, safetyEvents: 0, processCalls: 0, audioBlocks: 0,
+  nonSilentBlocks: 0, samples: 0,
 };
+
+/**
+ * How many samples `recentXruns` looks back over.
+ *
+ * The worklet posts about ten times a second, so thirty samples is roughly
+ * the last three seconds — long enough that a single glitch does not vanish
+ * before anyone reads it, short enough that it clears once the chain
+ * settles.
+ */
+export const XRUN_WINDOW = 30;
 
 /**
  * Aggregates worklet metric samples.  Keeps an EMA of process time +
@@ -69,6 +110,8 @@ export class RealtimeMetrics {
   private peakMs = 0;
   private blockMs = 0;
   private totalXruns = 0;
+  /** The last `XRUN_WINDOW` samples' xrun counts, oldest first. */
+  private xrunRing: number[] = [];
   private gr = 0;
   private dynGr = 0;
   private safety = 0;
@@ -88,6 +131,8 @@ export class RealtimeMetrics {
     this.peakMs = Math.max(this.peakMs * 0.9, s.peakProcessMs); // decaying peak
     this.blockMs = s.blockPeriodMs;
     this.totalXruns += s.xruns;
+    this.xrunRing.push(s.xruns);
+    if (this.xrunRing.length > XRUN_WINDOW) this.xrunRing.shift();
     this.gr = s.limiterGrDb;
     if (typeof s.dynamicsGrDb === 'number' && Number.isFinite(s.dynamicsGrDb)) this.dynGr = s.dynamicsGrDb;
     if (typeof s.safetyEvents === 'number' && Number.isFinite(s.safetyEvents)) {
@@ -104,11 +149,13 @@ export class RealtimeMetrics {
   snapshot(): RealtimeMetricsSnapshot {
     if (this.count === 0) return EMPTY;
     return {
-      cpuLoad: this.blockMs > 0 ? Math.min(1, this.avgMs / this.blockMs) : 0,
+      cpuLoad: this.blockMs > 0 ? this.avgMs / this.blockMs : 0,
+      cpuLoadKnown: this.blockMs > 0,
       avgProcessMs: this.avgMs,
       peakProcessMs: this.peakMs,
       blockPeriodMs: this.blockMs,
       totalXruns: this.totalXruns,
+      recentXruns: this.xrunRing.reduce((a, b) => a + b, 0),
       limiterGrDb: this.gr,
       dynamicsGrDb: this.dynGr,
       safetyEvents: this.safety,
@@ -122,7 +169,7 @@ export class RealtimeMetrics {
   /** Reset all counters. */
   reset(): void {
     this.avgMs = 0; this.peakMs = 0; this.blockMs = 0;
-    this.totalXruns = 0; this.gr = 0; this.dynGr = 0; this.safety = 0;
+    this.totalXruns = 0; this.xrunRing = []; this.gr = 0; this.dynGr = 0; this.safety = 0;
     this.processCalls = 0; this.audioBlocks = 0; this.nonSilentBlocks = 0;
     this.count = 0;
   }
