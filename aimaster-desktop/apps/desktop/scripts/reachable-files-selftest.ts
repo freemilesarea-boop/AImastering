@@ -226,14 +226,29 @@ check('the worker bundles are vouched for by their build script, not by an impor
   }
 });
 
+/**
+ * Files whose only way in is a story — the shipped app renders none of them.
+ *
+ * Defined once because two things ask it: the check below, and the report at
+ * the bottom that names them.  Asking twice is how a report comes to disagree
+ * with the check it is reporting on.
+ */
+function storyOnlySources(): string[] {
+  return SOURCES
+    .filter((f) => {
+      const s = surfacesFor(f);
+      return s.length === 1 && s[0] === 'storybook' && !/\.stories\.tsx?$/.test(f);
+    })
+    .sort();
+}
+
 check('a story is a caller, and the design system is alive because of it', () => {
-  // The other half of the argument dead-exports-selftest makes.  37 files are
-  // reachable ONLY through Storybook; an audit read that as "dead" and was
-  // wrong.  Holding it here means the next reader sees the reason.
-  const storyOnly = SOURCES.filter((f) => {
-    const s = surfacesFor(f);
-    return s.length === 1 && s[0] === 'storybook' && !/\.stories\.tsx?$/.test(f);
-  });
+  // The other half of the argument dead-exports-selftest makes.  Dozens of
+  // files are reachable ONLY through Storybook; an audit read that as "dead"
+  // and was wrong.  Holding it here means the next reader sees the reason.
+  // The count lives in the report at the bottom, which derives it — it was
+  // written here as "37" and had drifted to 36 by the time anyone looked.
+  const storyOnly = storyOnlySources();
   assert(storyOnly.length > 0,
     'nothing is story-only any more — if the Loui workbench was removed, remove this check with it');
   assert(existsSync('.storybook'),
@@ -262,6 +277,22 @@ for (const r of results) console.log(`[${r.pass ? 'PASS' : 'FAIL'}] ${r.name}${r
 console.log(`\n${SOURCES.length} source files, reached by:`);
 for (const [key, n] of [...tally].sort((a, b) => b[1] - a[1])) {
   console.log(`  ${String(n).padStart(4)}  ${key}`);
+}
+
+// Name the story-only files, not just count them.
+//
+// The docblock above says the report exists so that "alive only because of
+// Storybook" is something a future reader can see "without re-deriving it".
+// The tally said `25  storybook` and stopped there, so the one surface where
+// the next question is always WHICH kept its answer to itself — and the next
+// reader re-derived the list by hand, which is how this line came to be
+// written.  It is the surface worth naming: a file alive only through a story
+// is a component the shipped app never renders, and anybody reading one needs
+// to know that before they trust a label in it.
+const storyOnlyFiles = storyOnlySources();
+if (storyOnlyFiles.length > 0) {
+  console.log(`\nalive only through Storybook — the app renders none of these (${storyOnlyFiles.length}):`);
+  for (const f of storyOnlyFiles) console.log(`    ${f}`);
 }
 console.log(`\n${passed}/${results.length} passed${failed ? `, ${failed} FAILED` : ''}`);
 if (failed > 0) process.exit(1);
