@@ -297,6 +297,88 @@ try {
       `status '${row.status}', renderedPath '${row.renderedPath}'`,
     );
   }
+  // 9 — and it is still there after a reload.  The reported bug's own
+  //     words were "원본으로 돌아간다" — saved, came back, gone — and every
+  //     step above proves the save only within one page.  `song-settings`
+  //     stores into `localStorage`, which the headless tests stub, so
+  //     whether a real renderer hands the same bytes back after a reload is
+  //     a question only the real app can answer.  Reuses the entry step 5
+  //     wrote rather than saving a second one: the assertion is that the
+  //     value a user set is the value that survives.
+  //
+  //     Last, because a reload throws away the store the steps above built.
+  if (saved.stored) {
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    const fresh = browser.contexts()[0].pages().find((q) => q.url().includes("5173")) ?? page;
+    let reloaded = { found: false, readBack: null, e: 'the page never came back' };
+    for (let i = 0; i < 20; i++) {
+      try {
+        reloaded = await fresh.evaluate(async (f) => {
+          const ss = await import('/audio/session/song-settings.ts');
+          const back = ss.loadSongSettings(f);
+          return {
+            found: back !== null,
+            readBack: back?.state?.eq?.parameters?.lowShelfDb ?? null,
+            savedPaths: ss.savedSongPaths().length,
+            e: null,
+          };
+        }, src);
+        break;
+      } catch (e) { reloaded = { found: false, readBack: null, e: String(e?.message ?? e) }; }
+      await fresh.waitForTimeout(1_000);
+    }
+    expect(
+      reloaded.found && reloaded.readBack === 6,
+      'the saved move is still there after a reload',
+      reloaded.e ?? `found=${reloaded.found}, lowShelfDb reads ${reloaded.readBack}`
+        + `, ${reloaded.savedPaths} song(s) saved`,
+    );
+  } else {
+    skip('the saved move is still there after a reload', 'the save step');
+  }
+
+  // 10 — every control can hold the value the app opens it with.
+  //
+  //      A range input's reachable values are `min + n*step`, anchored at
+  //      `min`.  `parameter-grid-selftest` checks the definitions against
+  //      that rule — but it checks them against the rule AS WRITTEN DOWN
+  //      HERE, so if the rule were misread both would be wrong together.
+  //      This asks the browser instead: set each control to its own
+  //      default and read back what it holds.  That is how the bus
+  //      compressor's Attack was caught holding 10.1 where the state said
+  //      10, and it is the only version of this check with an independent
+  //      judge.
+  const held = await page.evaluate(async () => {
+    const mod = await import('/audio/parameters/module-parameter-definitions.ts');
+    const suite = await import('/audio/parameters/suite-parameter-definitions.ts');
+    const el = document.createElement('input');
+    el.type = 'range';
+    document.body.appendChild(el);
+    const bad = [];
+    let checked = 0;
+    for (const bundle of [mod.ALL_MODULE_PARAMETER_DEFS, suite.SUITE_PARAMETER_DEFS]) {
+      for (const m of Object.values(bundle)) {
+        for (const d of m.parameters) {
+          if (d.kind !== 'number') continue;
+          checked++;
+          el.min = String(d.min); el.max = String(d.max); el.step = String(d.step);
+          el.value = String(d.default);
+          if (Number(el.value) !== Number(d.default)) {
+            bad.push(`${m.moduleId}.${d.id} default ${d.default} -> control holds ${el.value}`);
+          }
+        }
+      }
+    }
+    el.remove();
+    return { checked, bad };
+  });
+  expect(
+    held.checked > 300 && held.bad.length === 0,
+    'every control can hold the value the app opens it with',
+    held.bad.length === 0
+      ? `${held.checked} numeric controls, all reachable`
+      : `${held.bad.length} of ${held.checked}: ${held.bad.slice(0, 4).join('; ')}`,
+  );
 } finally {
   await browser.close();
 }

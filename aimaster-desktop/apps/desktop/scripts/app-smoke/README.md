@@ -32,6 +32,27 @@ change. Run this before a release, and after any change to the main
 process, the IPC surface, or the render path — the three places a headless
 test cannot follow.
 
+## Two steps that exist for a reason worth stating
+
+**"the saved move is still there after a reload."** Every other step proves
+the save only within one page. `song-settings` writes into `localStorage`,
+which the headless tests stub, so whether a real renderer hands the same
+bytes back afterwards is a question only the real app can answer — and
+"saved, came back, gone" is the reported bug's own wording. It reuses the
+entry the save step wrote instead of making a second one, and it runs last,
+because a reload throws away the store the steps before it built. Breaking
+it is instructive: swap `store()` for an in-memory map and the save step
+still passes while this one fails, which is the whole gap in one line.
+
+**"every control can hold the value the app opens it with."**
+`parameter-grid-selftest` checks the same invariant headlessly — but it
+checks the definitions against the rule *as written down in that file*, so a
+misreading of the rule would make both the code and its test wrong
+together. This step asks the browser instead: it sets each of the 332
+numeric controls to its own default and reads back what the control holds.
+That is how the bus compressor's Attack was caught holding 10.1 where the
+state said 10.
+
 ## What it does NOT do
 
 It does not click pixels. A native file dialog cannot be driven headlessly,
