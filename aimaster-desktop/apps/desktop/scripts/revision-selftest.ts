@@ -7,7 +7,7 @@
 import {
   initGroup, addRevision, setActiveRevision, removeRevision, renameRevision,
   toggleFavorite, getActiveRevision, getBaselineRevision, nextRevisionLabel,
-  findDuplicate, formatOptionsSummary,
+  findDuplicate,
 } from '../src/renderer/audio/revisions/revision-logic.js';
 import type { RevisionInput } from '../src/renderer/audio/revisions/revision-types.js';
 import type { MasteringOptions } from '../src/renderer/stores/audioStore.js';
@@ -112,11 +112,11 @@ check('nextRevisionLabel', () => {
   eq(nextRevisionLabel(g), 'Revision 2', 'after 1');
 });
 
-check('formatOptionsSummary includes width/gain when non-default', () => {
-  const s = formatOptionsSummary(opts({ stereoWidth: 1.2, outputGainDb: 1.5 }));
-  assert(s.includes('W 120%'), 'width');
-  assert(s.includes('G +1.5'), 'gain');
-});
+// `formatOptionsSummary` was checked here.  It and `formatMetrics` were the
+// revision card's two display strings, and the card — `LouiRevisionStack` —
+// was deleted with the rest of the retired ProductPage chrome, so the
+// functions went too.  This check went with them rather than being kept to
+// vouch for an export nothing else called.
 
 const passed = results.filter((r) => r.pass).length;
 const failed = results.length - passed;

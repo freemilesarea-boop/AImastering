@@ -118,10 +118,17 @@ function scriptFiles(): string[] { return find(['mjs', 'cjs']); }
  *
  * They stay in `sourceFiles` — and so in the import graph — because a story IS
  * one of the real callers of the component it renders.  Dropping them from the
- * search entirely made eleven live components (`LouiTopBar`, `LouiABCompare`,
- * `DraggableEQCurveEditor` …) read as dead: their story file was the importer
- * that had been vouching for them.  Candidate and reference are two different
- * sets, and conflating them breaks it in both directions.
+ * search entirely made eleven live components (`DraggableEQCurveEditor`,
+ * `LouiGainReductionMeter`, `EQCurveOverlay` …) read as dead: their story file
+ * was the importer that had been vouching for them.  Candidate and reference
+ * are two different sets, and conflating them breaks it in both directions.
+ *
+ * Two of the eleven this note used to name — `LouiTopBar` and `LouiABCompare`
+ * — have since been deleted, and that is not the naive search turning out to
+ * be right.  They were ProductPage's chrome; ProductPage was retired, the page
+ * that replaced it has its own, and nothing was ever going to adopt them.  A
+ * deliberate removal and "the graph cannot see the caller" are different
+ * findings, and only the second one is this file's business.
  */
 function declaringFiles(): string[] {
   return sourceFiles().filter((f) => !/\.stories\.tsx?$/.test(f));

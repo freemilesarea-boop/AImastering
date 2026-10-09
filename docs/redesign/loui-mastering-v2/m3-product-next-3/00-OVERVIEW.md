@@ -3,6 +3,16 @@
 > Turn the analyzer panels from "developer instruments stacked in a card"
 > into a commercial-grade product layout that reads as Loui Mastering.
 
+> **이후 변경 (코드 기준).** 이 마일스톤이 만든 `ProductPage` 는 `ResultPage`
+> 가 최종 결과 화면이 되면서 은퇴했고, 그 크롬 다섯 개 ― `LouiTopBar`,
+> `LouiModuleStrip`, `LouiPreviewControl`, `LouiABCompare`,
+> `LouiRevisionStack` ― 는 삭제되었다. 자리를 물려받은 `StudioPage` 는
+> `components/TopBar.tsx`, `LouiMonitorBar`, `LouiStudioPresetBar`,
+> `LouiPreviewTransport` 로 같은 일을 하고, 리비전은 `audioStore` 와
+> `shortcuts/commands.ts` 에 있다. 이 폴더의 문서들은 **그때의 계획과
+> 레이아웃 기록**이며, 지금 코드의 설명이 아니다 — 컴포넌트 이름으로
+> 코드를 찾으면 없다.
+
 ---
 
 ## 1. What changed
